@@ -2,6 +2,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QDockWidget>
 #include <QEasingCurve>
 #include <QHBoxLayout>
 #include <QKeyEvent>
@@ -58,13 +59,12 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
     mEdit->setPlaceholderText(tr("Find in logs\u2026"));
     mEdit->setClearButtonEnabled(true);
     mEdit->setMinimumWidth(EDIT_MIN_WIDTH);
-    // Leading magnifying-glass affordance. The action is decorative
-    // only; clicking it focuses the field (idempotent, since the
-    // user just clicked into the field).
-    auto *searchIconAction = mEdit->addAction(
+    // Leading magnifying-glass affordance. Decorative only -- the
+    // leading-position icon in `QLineEdit` does not emit
+    // `triggered` on click, so wiring a slot is dead code.
+    mEdit->addAction(
         QApplication::style()->standardIcon(QStyle::SP_FileDialogContentsView), QLineEdit::LeadingPosition
     );
-    connect(searchIconAction, &QAction::triggered, mEdit, qOverload<>(&QWidget::setFocus));
 
     // Trailing toggle "buttons" embedded in the line edit. `addAction`
     // with `TrailingPosition` renders them as small icon buttons
@@ -114,9 +114,9 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
     // reachable via Tab once focus is in the bar.
     setTabOrder(mEdit, mButtonPrevious);
     setTabOrder(mButtonPrevious, mButtonNext);
-
-    mEdit->setFocus();
-    QTimer::singleShot(0, mEdit, qOverload<>(&QWidget::setFocus));
+    // No constructor `setFocus`: the host (dock or layout) is not
+    // realised yet, so the call is a no-op. Real focus is granted
+    // by `SetEditFocus` from `RevealAndFocus` / `Find`.
 
     connect(mButtonNext, &QToolButton::clicked, this, &FindRecordWidget::FindNext);
     connect(mButtonPrevious, &QToolButton::clicked, this, &FindRecordWidget::FindPrevious);
@@ -126,19 +126,32 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
     // modifier state.
     connect(mEdit, &QLineEdit::returnPressed, this, &FindRecordWidget::FindNext);
 
+    // Owned single-shot timer; `start()` restarts it on each
+    // keystroke so multi-keystroke edits coalesce into one
+    // `MatchCountRequested` emit. `QTimer::singleShot` does not
+    // coalesce because each call schedules an independent fire.
+    mMatchCountTimer = new QTimer(this);
+    mMatchCountTimer->setSingleShot(true);
+    mMatchCountTimer->setInterval(MATCH_COUNT_DEBOUNCE_MS);
+    connect(mMatchCountTimer, &QTimer::timeout, this, &FindRecordWidget::EmitMatchCountRequest);
+
     // Text + toggle changes drive live match-count requests. We
-    // debounce so a fast typist doesn't trigger a full-table scan
-    // on every keystroke.
+    // debounce via `mMatchCountTimer` so a fast typist doesn't
+    // trigger a full-table scan on every keystroke.
     connect(mEdit, &QLineEdit::textChanged, this, &FindRecordWidget::RequestMatchCountSoon);
     connect(mWildcardsAction, &QAction::toggled, this, &FindRecordWidget::RequestMatchCountSoon);
     connect(mRegexAction, &QAction::toggled, this, &FindRecordWidget::RequestMatchCountSoon);
 
-    // Escape hides the bar instead of an explicit "X" button.
-    // Scope `WindowShortcut` so the shortcut fires whenever this
-    // widget (or any descendant focusable) has focus.
+    // Escape dismisses the bar. Scope `WidgetWithChildrenShortcut`
+    // so the shortcut fires whenever this widget (or any
+    // descendant focusable) has focus. When hosted in a
+    // `QDockWidget`, close the dock so its `visibilityChanged`
+    // mirrors the toggle action and a subsequent `RevealAndFocus`
+    // properly re-shows everything. The legacy in-layout fallback
+    // (no dock parent) keeps the slide-out animation.
     auto *escapeShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
     escapeShortcut->setContext(Qt::WidgetWithChildrenShortcut);
-    connect(escapeShortcut, &QShortcut::activated, this, &FindRecordWidget::HideAnimated);
+    connect(escapeShortcut, &QShortcut::activated, this, &FindRecordWidget::DismissBar);
 }
 
 void FindRecordWidget::SetEditFocus()
@@ -191,6 +204,38 @@ void FindRecordWidget::RevealAnimated()
     animation->setEasingCurve(QEasingCurve::OutCubic);
     animation->start(QAbstractAnimation::DeleteWhenStopped);
     mAnimation = animation;
+}
+
+void FindRecordWidget::BumpMatchCountDebounce()
+{
+    if (mEdit == nullptr || mEdit->text().isEmpty())
+    {
+        return;
+    }
+    // Restart the timer; identical mechanism to the textChanged
+    // path. A burst of model signals collapses into one final
+    // recount.
+    mMatchCountTimer->start();
+}
+
+void FindRecordWidget::DismissBar()
+{
+    // Walk up the parent chain to a `QDockWidget` host (the
+    // typical layout). Closing the dock is the only correct
+    // dismiss: hiding only the inner widget leaves the dock title
+    // bar floating over an empty body, and a later `show()` on
+    // the dock will not un-hide an explicitly-hidden child.
+    for (QWidget *p = parentWidget(); p != nullptr; p = p->parentWidget())
+    {
+        if (auto *dock = qobject_cast<QDockWidget *>(p))
+        {
+            dock->close();
+            return;
+        }
+    }
+    // No dock host (legacy in-layout call site): fall back to the
+    // slide-out animation so the bar collapses gracefully.
+    HideAnimated();
 }
 
 void FindRecordWidget::HideAnimated()
@@ -270,14 +315,17 @@ void FindRecordWidget::RequestMatchCountSoon()
     {
         // Empty needle: clear immediately without bouncing off
         // the debounce timer, so the label can't lag a clear.
+        // Cancel any in-flight tick so a stale needle doesn't
+        // overwrite the cleared state.
+        mMatchCountTimer->stop();
         SetMatchInfo(0, 0);
         emit MatchCountRequested(QString(), mWildcardsAction->isChecked(), mRegexAction->isChecked());
         return;
     }
-    // Debounce so multi-keystroke edits coalesce into one count
-    // request. `singleShot` against `this` so destruction cancels
-    // the pending fire.
-    QTimer::singleShot(MATCH_COUNT_DEBOUNCE_MS, this, &FindRecordWidget::EmitMatchCountRequest);
+    // `start()` resets the countdown if already running, so a
+    // fast typist coalesces N keystrokes into a single trailing
+    // match-count scan.
+    mMatchCountTimer->start();
 }
 
 void FindRecordWidget::EmitMatchCountRequest()

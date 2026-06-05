@@ -443,7 +443,19 @@ private slots:
     /// `FindRecordWidget::MatchCountRequested`. Skips work when
     /// the bar is hidden / the proxy model is unset / the needle
     /// is empty.
+    ///
+    /// Caches the row list keyed by `(needle, wildcards, regex)`.
+    /// Subsequent calls with the same needle (e.g. after a
+    /// Next / Previous click moved the current index) skip the
+    /// full-table scan and just resolve `i` via binary search.
+    /// `InvalidateFindMatchCache` is wired to model / proxy
+    /// signals that change which rows match.
     void UpdateFindMatchCount(const QString &text, bool wildcards, bool regularExpressions);
+
+    /// Drop the cached match-row list. Wired to model resets and
+    /// proxy layout changes so a stale cache cannot survive a
+    /// filter add / remove or a streaming append.
+    void InvalidateFindMatchCache();
 
     void Find();
     void FindRecords(const QString &text, bool next, bool wildcards, bool regularExpressions);
@@ -808,6 +820,23 @@ private:
     /// dock has entries; clicking it opens the dock. Mirrors the
     /// pattern used by `mDiagnosticsButton`.
     QPushButton *mParseErrorsStatusButton = nullptr;
+
+    /// Cached match-row list for the find bar's "*i* of *N*"
+    /// indicator. Keyed by `(needle, wildcards, regex)` so a
+    /// Next / Previous click after the count was last computed
+    /// can resolve the new `i` via binary search instead of
+    /// re-running `MatchRow` over the entire proxy. `sortedRows`
+    /// is row-deduplicated (a row matching in N visible columns
+    /// counts once) so the indicator agrees with how
+    /// `FindRecords` walks the table.
+    struct FindMatchCache
+    {
+        QString needle;
+        bool wildcards = false;
+        bool regularExpressions = false;
+        std::vector<int> sortedRows;
+    };
+    std::optional<FindMatchCache> mFindMatchCache;
     PreferencesEditor *mPreferencesEditor;
     /// Non-owning. Lives in `main()` (or the test fixture).
     /// `nullptr` for legacy no-args construction; theme code paths

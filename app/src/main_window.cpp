@@ -666,9 +666,29 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
         }
     );
 
-    mActionToggleFind = new QAction(tr("Find"), this);
+    // Any signal that mutates the proxy's row set invalidates the
+    // find bar's cached match list. We always drop the cache
+    // (cheap) and -- when the bar is visible -- bump its debounce
+    // timer so a single recount runs once activity settles. Doing
+    // a synchronous recount per signal would melt under streaming
+    // (one batch arrives every ~250 ms; each scan is O(rows)).
+    auto refreshFindCount = [this]() {
+        InvalidateFindMatchCache();
+        if (mFindRecord != nullptr && mFindDock != nullptr && mFindDock->isVisible())
+        {
+            mFindRecord->BumpMatchCountDebounce();
+        }
+    };
+    connect(mModel, &QAbstractItemModel::modelReset, this, refreshFindCount);
+    connect(mSortFilterProxyModel, &QAbstractItemModel::rowsInserted, this, refreshFindCount);
+    connect(mSortFilterProxyModel, &QAbstractItemModel::rowsRemoved, this, refreshFindCount);
+    connect(mSortFilterProxyModel, &QAbstractItemModel::layoutChanged, this, refreshFindCount);
+    connect(mSortFilterProxyModel, &QAbstractItemModel::modelReset, this, refreshFindCount);
+
+    mActionToggleFind = new QAction(tr("Find Bar"), this);
     mActionToggleFind->setObjectName(QStringLiteral("actionToggleFind"));
     mActionToggleFind->setCheckable(true);
+    mActionToggleFind->setToolTip(tr("Show or hide the find bar (Ctrl+F to focus)."));
     addAction(mActionToggleFind);
     connect(mActionToggleFind, &QAction::toggled, this, [this](bool on) {
         if (on && !isVisible())
@@ -696,14 +716,24 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
 
     // Parse-errors dock replaces the old `QMessageBox::warning`
     // popups for streaming / open errors. Hidden until the first
-    // error of a session; `ShowParseErrors` auto-raises.
+    // error of a session; `ShowParseErrors` auto-raises only on
+    // the first batch (subsequent batches use the status-bar
+    // indicator).
     mParseErrorsDock = new ParseErrorsDock(this);
     addDockWidget(Qt::BottomDockWidgetArea, mParseErrorsDock);
     mParseErrorsDock->hide();
 
+    // Default layout: tabify the two bottom docks so they share
+    // the same horizontal strip rather than stacking vertically
+    // and eating ~30% of the editor height when both are open.
+    // Manual drag-to-tabify still works after this; restoreState
+    // overrides on subsequent launches.
+    tabifyDockWidget(mFindDock, mParseErrorsDock);
+
     mActionToggleParseErrors = new QAction(tr("Parse Errors"), this);
     mActionToggleParseErrors->setObjectName(QStringLiteral("actionToggleParseErrors"));
     mActionToggleParseErrors->setCheckable(true);
+    mActionToggleParseErrors->setToolTip(tr("Show or hide the Parse Errors panel."));
     addAction(mActionToggleParseErrors);
     connect(mActionToggleParseErrors, &QAction::toggled, this, [this](bool on) {
         if (on && !isVisible())
@@ -729,6 +759,12 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     mRecordDetailDock = new RecordDetailDock(mModel, this);
     addDockWidget(Qt::RightDockWidgetArea, mRecordDetailDock);
     mRecordDetailDock->hide();
+
+    // Tab the two right-side docks (Anchors + Record Details) so
+    // they share the same panel by default. `restoreState` (run
+    // at the end of the constructor) overrides on subsequent
+    // launches if the user moved them.
+    tabifyDockWidget(mAnchorsDock, mRecordDetailDock);
     // `actionToggleRecordDetails` is declared in `main_window.ui` but
     // not placed in any `<addaction>`, so uic doesn't add it to any
     // widget's `actions()`. A QAction's shortcut only fires once it
@@ -1615,6 +1651,13 @@ void MainWindow::NewSession()
         mAnchors->ClearAll();
     }
 
+    // Parse errors are also session-scoped: a fresh session must
+    // not show diagnostics inherited from the discarded one.
+    if (mParseErrorsDock != nullptr)
+    {
+        mParseErrorsDock->ClearErrors();
+    }
+
     mCurrentSource.reset();
     mSessionMode = SessionMode::Idle;
     mLastTerminalSessionMode = SessionMode::Idle;
@@ -1841,6 +1884,11 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
         if (mAnchors != nullptr)
         {
             mAnchors->ClearAll();
+        }
+        // Parse errors are also session-scoped; preserved on append.
+        if (mParseErrorsDock != nullptr)
+        {
+            mParseErrorsDock->ClearErrors();
         }
         mCurrentSource.reset();
         mSessionMode = SessionMode::Idle;
@@ -2160,6 +2208,11 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     {
         mAnchors->ClearAll();
     }
+    // Parse errors are session-scoped.
+    if (mParseErrorsDock != nullptr)
+    {
+        mParseErrorsDock->ClearErrors();
+    }
     // Live-tail is transient and not auto-saved; leaving the prior
     // static session's uuid pinned would let closeEvent's
     // `RemoveOpenWindowUuid` drop that session from the multi-
@@ -2278,6 +2331,11 @@ void MainWindow::OpenNetworkStream()
     if (mAnchors != nullptr)
     {
         mAnchors->ClearAll();
+    }
+    // Parse errors are session-scoped.
+    if (mParseErrorsDock != nullptr)
+    {
+        mParseErrorsDock->ClearErrors();
     }
     DetachAutoSaveUuid();
 
@@ -3448,48 +3506,83 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
     }
     if (text.isEmpty())
     {
+        InvalidateFindMatchCache();
         mFindRecord->SetMatchInfo(0, 0);
         return;
     }
-    Qt::MatchFlags flags = Qt::MatchContains | Qt::MatchWrap | Qt::MatchRecursive;
-    if (wildcards)
-    {
-        flags |= Qt::MatchWildcard;
-    }
-    if (regularExpressions)
-    {
-        flags |= Qt::MatchRegularExpression;
-    }
-    const QModelIndex start = mSortFilterProxyModel->index(0, 0);
-    if (!start.isValid())
-    {
-        mFindRecord->SetMatchInfo(0, 0);
-        return;
-    }
-    const QVariant value = QVariant::fromValue(text);
-    const QModelIndexList matches =
-        mSortFilterProxyModel->MatchRow(start, Qt::DisplayRole, value, LogFilterModel::UNLIMITED_HITS, flags, true, 0);
-    const int total = static_cast<int>(matches.size());
 
-    int currentOneBased = 0;
-    if (total > 0)
+    // Rebuild the cache only when the needle / flags actually
+    // changed. A Next / Previous click reports the same needle,
+    // so the second call skips the full-table scan and just
+    // updates `i` via the binary-search below.
+    const bool cacheHit = mFindMatchCache.has_value() && mFindMatchCache->needle == text &&
+                          mFindMatchCache->wildcards == wildcards &&
+                          mFindMatchCache->regularExpressions == regularExpressions;
+    if (!cacheHit)
     {
-        // Locate the current selection within the match list so
-        // the bar can render "i of N" instead of just "N matches".
-        const QModelIndex currentIdx = mTableView != nullptr ? mTableView->currentIndex() : QModelIndex();
+        Qt::MatchFlags flags = Qt::MatchContains | Qt::MatchWrap | Qt::MatchRecursive;
+        if (wildcards)
+        {
+            flags |= Qt::MatchWildcard;
+        }
+        if (regularExpressions)
+        {
+            flags |= Qt::MatchRegularExpression;
+        }
+        const QModelIndex start = mSortFilterProxyModel->index(0, 0);
+        if (!start.isValid())
+        {
+            InvalidateFindMatchCache();
+            mFindRecord->SetMatchInfo(0, 0);
+            return;
+        }
+        const QVariant value = QVariant::fromValue(text);
+        const QModelIndexList matches = mSortFilterProxyModel->MatchRow(
+            start, Qt::DisplayRole, value, LogFilterModel::UNLIMITED_HITS, flags, true, 0
+        );
+        // Dedupe to row level: a row matching in N visible
+        // columns yields N entries from `MatchRow`, but the user
+        // navigates and counts in row order. Sorting + uniquing
+        // also unlocks the binary-search lookup below.
+        std::vector<int> rows;
+        rows.reserve(matches.size());
+        for (const QModelIndex &m : matches)
+        {
+            rows.push_back(m.row());
+        }
+        std::ranges::sort(rows);
+        const auto last = std::ranges::unique(rows);
+        rows.erase(last.begin(), last.end());
+        mFindMatchCache = FindMatchCache{
+            .needle = text,
+            .wildcards = wildcards,
+            .regularExpressions = regularExpressions,
+            .sortedRows = std::move(rows),
+        };
+    }
+
+    const int total = static_cast<int>(mFindMatchCache->sortedRows.size());
+    int currentOneBased = 0;
+    if (total > 0 && mTableView != nullptr)
+    {
+        const QModelIndex currentIdx = mTableView->currentIndex();
         if (currentIdx.isValid())
         {
-            for (int i = 0; i < matches.size(); ++i)
+            const auto begin = mFindMatchCache->sortedRows.begin();
+            const auto end = mFindMatchCache->sortedRows.end();
+            const auto it = std::lower_bound(begin, end, currentIdx.row());
+            if (it != end && *it == currentIdx.row())
             {
-                if (matches[i].row() == currentIdx.row())
-                {
-                    currentOneBased = i + 1;
-                    break;
-                }
+                currentOneBased = static_cast<int>(it - begin) + 1;
             }
         }
     }
     mFindRecord->SetMatchInfo(currentOneBased, total);
+}
+
+void MainWindow::InvalidateFindMatchCache()
+{
+    mFindMatchCache.reset();
 }
 
 bool MainWindow::DoLoadConfiguration(const QString &path)
@@ -3529,6 +3622,12 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         const SessionSwitchScope switchGuard(*this);
 
         mModel->Reset();
+        // Parse errors are session-scoped: a config load is a
+        // destructive session boundary just like `NewSession`.
+        if (mParseErrorsDock != nullptr)
+        {
+            mParseErrorsDock->ClearErrors();
+        }
         mModel->ConfigurationManager().SetConfiguration(std::move(parsed));
         // `SetConfiguration` does not emit a model signal; the
         // reset re-initialises the header section count and the
@@ -3844,9 +3943,12 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
     }
 
     // Refresh the find bar's "i of N" indicator now that the
-    // current index has moved. Gated on the bar actually being
-    // visible so a programmatic `FindRecords` call from a test
-    // path does not pay for the full-table count scan.
+    // current index has moved. With the match-row cache in place,
+    // the same `(text, flags)` is a cache hit and resolves the new
+    // `i` via binary search -- no full-table scan. Gated on the
+    // bar being visible so a programmatic `FindRecords` call from
+    // a test path doesn't pay even for the cache rebuild on the
+    // first hit.
     if (mFindDock != nullptr && mFindDock->isVisible())
     {
         UpdateFindMatchCount(text, wildcards, regularExpressions);

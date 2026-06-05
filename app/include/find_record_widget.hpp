@@ -60,7 +60,32 @@ public slots:
 
     /// Animated hide. The widget remains in the layout but its
     /// `maximumHeight` is driven to 0 before `hide()`.
+    ///
+    /// Only safe for the legacy in-layout host. When hosted in a
+    /// `QDockWidget`, prefer `DismissBar` (or close the dock
+    /// directly): hiding the inner widget while the dock stays
+    /// visible leaves the dock title bar floating above an empty
+    /// body, and a later `show()` on the dock won't un-hide an
+    /// explicitly-hidden child.
     void HideAnimated();
+
+    /// Close the bar in a host-aware way.
+    ///
+    /// - When parented to a `QDockWidget`, calls `close()` on the
+    ///   dock so `visibilityChanged` mirrors the toggle action and
+    ///   subsequent reveals properly re-show the inner widget.
+    /// - Otherwise falls back to `HideAnimated` (in-layout host).
+    ///
+    /// Idempotent: a no-op when the bar is already hidden.
+    void DismissBar();
+
+    /// Re-arm the debounce timer so a `MatchCountRequested` fires
+    /// once after the next quiet window. Used by `MainWindow` to
+    /// react to model / proxy mutations (filter changes, streaming
+    /// batches) without doing a full-table scan on every signal:
+    /// activity in the underlying model just keeps resetting the
+    /// timer until things settle. No-op for an empty needle.
+    void BumpMatchCountDebounce();
 
 signals:
     void FindRecords(const QString &text, bool next, bool wildcards, bool regularExpressions);
@@ -100,4 +125,11 @@ private:
     /// target for `RevealAnimated`.
     int mNaturalHeight = 0;
     QPointer<QPropertyAnimation> mAnimation;
+
+    /// Real debounce timer for `MatchCountRequested`. A single
+    /// owned `QTimer::start()` per keystroke restarts the
+    /// countdown so a fast typist coalesces into one match-count
+    /// scan instead of N. Plain `QTimer::singleShot` does not
+    /// coalesce (each call schedules a fresh fire).
+    QTimer *mMatchCountTimer = nullptr;
 };

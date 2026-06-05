@@ -2,12 +2,17 @@
 
 #include <QApplication>
 #include <QBrush>
+#include <QClipboard>
 #include <QFont>
+#include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QKeySequence>
 #include <QLabel>
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QPushButton>
+#include <QShortcut>
+#include <QStringList>
 #include <QStyle>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -24,6 +29,11 @@ constexpr int DOCK_MIN_WIDTH = 320;
 constexpr int OUTER_MARGIN = 6;
 constexpr int HEADER_SPACING = 6;
 constexpr int LAYOUT_SPACING = 4;
+
+/// `Qt::UserRole` flag set on the trailing "+N more dropped"
+/// footer item so `TrimToCap` can replace it in place instead of
+/// minting a new one each batch.
+constexpr int OVERFLOW_FOOTER_ROLE = Qt::UserRole + 1;
 } // namespace
 
 ParseErrorsDock::ParseErrorsDock(QWidget *parent)
@@ -60,7 +70,7 @@ ParseErrorsDock::ParseErrorsDock(QWidget *parent)
     mList->setObjectName(QStringLiteral("parseErrorsList"));
     // Read-only: parse errors are diagnostic data, not something
     // the user edits. Selectable so they can copy individual
-    // lines.
+    // lines via Ctrl+C.
     mList->setSelectionMode(QAbstractItemView::ExtendedSelection);
     mList->setUniformItemSizes(false);
     mList->setTextElideMode(Qt::ElideMiddle);
@@ -71,6 +81,16 @@ ParseErrorsDock::ParseErrorsDock(QWidget *parent)
     setMinimumWidth(DOCK_MIN_WIDTH);
 
     connect(mClearButton, &QPushButton::clicked, this, &ParseErrorsDock::ClearErrors);
+
+    // Ctrl+C copies the selected error rows. Scoped to the list
+    // so it doesn't shadow window-level Copy when focus is
+    // elsewhere. Without this, `setSelectionMode(ExtendedSelection)`
+    // would let the user select rows that they couldn't actually
+    // copy.
+    auto *copyShortcut = new QShortcut(QKeySequence::Copy, mList);
+    copyShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(copyShortcut, &QShortcut::activated, this, &ParseErrorsDock::CopySelection);
+
     RefreshSummary();
 }
 
@@ -82,6 +102,26 @@ void ParseErrorsDock::AppendErrors(const QString &title, const std::vector<std::
     }
 
     const QIcon warningIcon = QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning);
+
+    // Auto-raise only on the first batch of a session (i.e. when
+    // the dock was previously empty). Subsequent batches update
+    // silently and rely on the status-bar indicator -- a streaming
+    // user who has explicitly closed the dock should not have it
+    // pop back open every batch.
+    const bool firstBatchOfSession = mErrorCount == 0 && mDroppedCount == 0;
+
+    // The trailing overflow footer (if any) must move to the
+    // bottom after the new entries land. Drop it before the
+    // append so we can re-mint it once cap-trimming settles.
+    for (int i = mList->count() - 1; i >= 0; --i)
+    {
+        QListWidgetItem *item = mList->item(i);
+        if (item != nullptr && item->data(OVERFLOW_FOOTER_ROLE).toBool())
+        {
+            delete mList->takeItem(i);
+            break;
+        }
+    }
 
     // Group header so consecutive batches stay visually grouped
     // even after the user scrolls into them. The header is
@@ -100,68 +140,141 @@ void ParseErrorsDock::AppendErrors(const QString &title, const std::vector<std::
         item->setToolTip(QString::fromStdString(error));
         item->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
         mList->addItem(item);
+        ++mErrorCount;
     }
 
-    // Surface the new entries: scroll to the latest, then
-    // show + raise the dock so a hidden / tabified one comes to
-    // the front.
+    TrimToCap();
+
     mList->scrollToBottom();
-    if (!isVisible())
+    if (firstBatchOfSession)
     {
-        show();
+        if (!isVisible())
+        {
+            show();
+        }
+        raise();
     }
-    raise();
 
     RefreshSummary();
 }
 
 void ParseErrorsDock::ClearErrors()
 {
-    if (mList->count() == 0)
+    if (mList->count() == 0 && mErrorCount == 0 && mDroppedCount == 0)
     {
         return;
     }
     mList->clear();
+    mErrorCount = 0;
+    mDroppedCount = 0;
     RefreshSummary();
 }
 
-int ParseErrorsDock::Count() const noexcept
+void ParseErrorsDock::TrimToCap()
 {
-    if (mList == nullptr)
+    if (mErrorCount <= MAX_DISPLAYED_ERRORS)
     {
-        return 0;
+        return;
     }
-    // The list interleaves group-header items with error rows;
-    // only error rows count toward the user-visible total.
-    int count = 0;
-    for (int i = 0; i < mList->count(); ++i)
+    // Walk from the top, evicting entries until we are back under
+    // the cap. Group headers (`ItemIsEnabled` only) don't count
+    // toward `mErrorCount`; they ride along when evicting from
+    // their batch, but we never strand a header above its
+    // surviving rows -- after the loop we sweep front-side
+    // headers only when they are immediately followed by another
+    // header (orphan), preserving any header that still has rows
+    // beneath it.
+    while (mList->count() > 0 && mErrorCount > MAX_DISPLAYED_ERRORS)
     {
-        const QListWidgetItem *item = mList->item(i);
+        QListWidgetItem *item = mList->takeItem(0);
         if (item == nullptr)
         {
             continue;
         }
-        // Group headers are flagged `ItemIsEnabled` only; error
-        // rows are also `ItemIsSelectable`.
         if (item->flags().testFlag(Qt::ItemIsSelectable))
         {
-            ++count;
+            --mErrorCount;
+            ++mDroppedCount;
+        }
+        delete item;
+    }
+
+    // Compact orphan headers at the front: a header followed
+    // immediately by another header (or by nothing) lost its
+    // entire batch and should go. A header followed by an error
+    // row stays put -- it still labels surviving entries.
+    while (mList->count() > 0)
+    {
+        QListWidgetItem *first = mList->item(0);
+        if (first == nullptr || first->flags().testFlag(Qt::ItemIsSelectable))
+        {
+            break;
+        }
+        // First item is a header. Look at its successor.
+        QListWidgetItem *second = mList->count() > 1 ? mList->item(1) : nullptr;
+        const bool isOrphan = second == nullptr || !second->flags().testFlag(Qt::ItemIsSelectable);
+        if (!isOrphan)
+        {
+            break;
+        }
+        delete mList->takeItem(0);
+    }
+
+    if (mDroppedCount > 0)
+    {
+        // Single overflow footer at the tail; re-minted on each
+        // call (we removed the prior one in `AppendErrors` before
+        // adding the new batch) so the count stays current.
+        auto *footer = new QListWidgetItem(tr("(\u2026 %n earlier error(s) dropped)", nullptr, mDroppedCount));
+        QFont footerFont = footer->font();
+        footerFont.setItalic(true);
+        footer->setFont(footerFont);
+        footer->setFlags(Qt::ItemIsEnabled);
+        footer->setData(OVERFLOW_FOOTER_ROLE, true);
+        mList->addItem(footer);
+    }
+}
+
+void ParseErrorsDock::CopySelection() const
+{
+    if (mList == nullptr)
+    {
+        return;
+    }
+    const QList<QListWidgetItem *> selected = mList->selectedItems();
+    if (selected.isEmpty())
+    {
+        return;
+    }
+    // Preserve list order; `selectedItems` returns selection
+    // order which can confuse readers expecting top-to-bottom.
+    QStringList lines;
+    lines.reserve(selected.size());
+    for (int i = 0; i < mList->count(); ++i)
+    {
+        QListWidgetItem *item = mList->item(i);
+        if (item != nullptr && item->isSelected())
+        {
+            lines.append(item->text());
         }
     }
-    return count;
+    QGuiApplication::clipboard()->setText(lines.join(QChar::fromLatin1('\n')));
 }
 
 void ParseErrorsDock::RefreshSummary()
 {
-    const int count = Count();
-    if (count == 0)
+    if (mErrorCount == 0)
     {
         mSummary->setText(tr("No parse errors."));
     }
+    else if (mDroppedCount > 0)
+    {
+        mSummary->setText(tr("%1 error(s); %2 earlier dropped.").arg(mErrorCount).arg(mDroppedCount));
+    }
     else
     {
-        mSummary->setText(tr("%n error(s).", nullptr, count));
+        mSummary->setText(tr("%n error(s).", nullptr, mErrorCount));
     }
-    mClearButton->setEnabled(count > 0);
-    emit countChanged(count);
+    mClearButton->setEnabled(mErrorCount > 0 || mDroppedCount > 0);
+    emit countChanged(mErrorCount);
 }
