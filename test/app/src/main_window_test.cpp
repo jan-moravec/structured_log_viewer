@@ -10086,6 +10086,219 @@ private slots:
         );
     }
 
+    // Regression: `ParseErrorsDock::AppendErrors` used to call
+    // `scrollToBottom()` on every append, yanking the user back
+    // to the tail every time a new batch arrived during a
+    // streaming session. The chat / log convention is to
+    // auto-follow only when the user was already at the tail,
+    // otherwise preserve their scroll position so they can read
+    // earlier rows without being interrupted.
+    void TestParseErrorsDockAutoFollowOnlyWhenAtTail()
+    {
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY2(dock != nullptr, "MainWindow must own a ParseErrorsDock");
+        dock->ClearErrors();
+
+        auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
+        QVERIFY2(list != nullptr, "ParseErrorsDock must expose its internal QListWidget");
+
+        // Realise the dock so the scrollbar has a real viewport
+        // geometry; offscreen QPA still pumps the scrollbar's
+        // min/max/value updates as long as the widget tree is
+        // shown.
+        mWindow->show();
+        QVERIFY(QTest::qWaitForWindowExposed(mWindow, 5000));
+        dock->show();
+        dock->raise();
+        QCoreApplication::processEvents();
+
+        // Seed enough entries that the list scrolls. The user is
+        // by definition at the tail (the list was empty before
+        // this append), so the auto-follow path should pin us to
+        // the bottom afterwards.
+        std::vector<std::string> seed;
+        seed.reserve(200);
+        for (int i = 0; i < 200; ++i)
+        {
+            seed.emplace_back(std::string("seed-") + std::to_string(i));
+        }
+        dock->AppendErrors(QStringLiteral("Seed"), seed);
+        QCoreApplication::processEvents();
+
+        QScrollBar *vBar = list->verticalScrollBar();
+        QVERIFY2(vBar != nullptr, "QListWidget must have a vertical scrollbar");
+        // With 200 entries in a small dock the scrollbar should be
+        // non-degenerate; if the offscreen geometry left
+        // `maximum() == minimum()` the auto-follow assertion below
+        // can't distinguish "still at tail" from "moved by us",
+        // so the test is meaningless on this platform / driver.
+        if (vBar->maximum() <= vBar->minimum())
+        {
+            QSKIP("offscreen QPA produced a degenerate scrollbar -- can't exercise auto-follow");
+        }
+
+        // Park the user mid-list. Any position comfortably above
+        // `maximum()` works; pick the middle so the slack
+        // tolerance (4 px) cannot accidentally include us.
+        const int parkedPosition = vBar->minimum() + (vBar->maximum() - vBar->minimum()) / 2;
+        vBar->setValue(parkedPosition);
+        QCoreApplication::processEvents();
+        QCOMPARE(vBar->value(), parkedPosition);
+
+        // New batch arrives mid-read. The user did not move; the
+        // scrollbar should stay parked.
+        std::vector<std::string> later{"late-0", "late-1", "late-2", "late-3", "late-4"};
+        dock->AppendErrors(QStringLiteral("Later"), later);
+        QCoreApplication::processEvents();
+        QVERIFY2(
+            vBar->value() == parkedPosition,
+            qPrintable(QStringLiteral(
+                           "Scroll position must be preserved when the user was not at the tail "
+                           "(parked=%1, after=%2, max=%3)"
+            )
+                           .arg(parkedPosition)
+                           .arg(vBar->value())
+                           .arg(vBar->maximum()))
+        );
+
+        // Scroll back to the tail. A subsequent batch should
+        // re-pin us there (auto-follow re-engages once the user
+        // returns to the end).
+        vBar->setValue(vBar->maximum());
+        QCoreApplication::processEvents();
+        QCOMPARE(vBar->value(), vBar->maximum());
+
+        std::vector<std::string> trailing{"tail-0", "tail-1", "tail-2"};
+        dock->AppendErrors(QStringLiteral("Trailing"), trailing);
+        QCoreApplication::processEvents();
+        // After more items land, `maximum()` grew; the auto-follow
+        // path must have moved `value` along with it.
+        QVERIFY2(
+            vBar->value() >= vBar->maximum() - 4,
+            qPrintable(
+                QStringLiteral("Auto-follow must re-pin to the tail when the user was at the tail "
+                               "(value=%1, max=%2)")
+                    .arg(vBar->value())
+                    .arg(vBar->maximum())
+            )
+        );
+    }
+
+    // Regression: `UpdateFindMatchCount` used to run the full
+    // proxy scan even when the find dock was hidden -- a debounce
+    // timer armed while the bar was visible can still fire after
+    // the user dismisses it. The slot now bails when
+    // `mFindDock->isVisible()` is false, matching the gates on
+    // `OnFindCacheInvalidated` and `FindRecords`'s post-jump
+    // refresh. We pin this by inspecting `SetMatchInfo`'s effect:
+    // with the bar hidden, the slot must not populate the
+    // indicator label.
+    void TestUpdateFindMatchCountSkipsWorkWhenDockHidden()
+    {
+        auto *findRecord = mWindow->findChild<FindRecordWidget *>();
+        QVERIFY2(findRecord != nullptr, "MainWindow must own a FindRecordWidget");
+        auto *findDock = mWindow->findChild<FindDock *>();
+        QVERIFY2(findDock != nullptr, "MainWindow must own a FindDock");
+        auto *label = findRecord->findChild<QLabel *>(QStringLiteral("findMatchCount"));
+        QVERIFY2(label != nullptr, "FindRecordWidget must expose its match-count label");
+
+        // Make sure the dock is hidden going into the test.
+        findDock->hide();
+        QVERIFY(!findDock->isVisible());
+
+        // Seed the label with a known non-empty marker so we can
+        // detect any subsequent write -- a successful write would
+        // either clear the label (empty-needle branch) or set it
+        // to "N matches".
+        label->setText(QStringLiteral("sentinel-do-not-touch"));
+
+        // Invoke the slot directly. The visibility gate must
+        // short-circuit before the label is touched.
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "UpdateFindMatchCount",
+                Qt::DirectConnection,
+                Q_ARG(QString, QStringLiteral("info")),
+                Q_ARG(bool, false),
+                Q_ARG(bool, false)
+            ),
+            "UpdateFindMatchCount must be invocable via meta-object"
+        );
+        QCOMPARE(label->text(), QStringLiteral("sentinel-do-not-touch"));
+
+        // And an empty-needle programmatic call must also
+        // short-circuit -- pre-fix it would have cleared the
+        // label even though nothing was on screen to clear.
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "UpdateFindMatchCount",
+                Qt::DirectConnection,
+                Q_ARG(QString, QString()),
+                Q_ARG(bool, false),
+                Q_ARG(bool, false)
+            ),
+            "UpdateFindMatchCount must accept an empty needle"
+        );
+        QCOMPARE(label->text(), QStringLiteral("sentinel-do-not-touch"));
+    }
+
+    // Regression: the parse-errors status button used to display
+    // "X parse errors" where X was `count + droppedCount`. The
+    // dock summary read "X errors; Y earlier dropped", so the
+    // button's total didn't match the dock body and a user
+    // clicking through to investigate the discrepancy would
+    // suspect a bug. The fix is to render the dropped count
+    // inline on the button when non-zero.
+    void TestParseErrorsStatusButtonShowsDroppedHint()
+    {
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY2(dock != nullptr, "MainWindow must own a ParseErrorsDock");
+        auto *statusButton = mWindow->findChild<QPushButton *>(QStringLiteral("parseErrorsStatusButton"));
+        QVERIFY2(statusButton != nullptr, "MainWindow must own the parse-errors status button");
+        dock->ClearErrors();
+
+        // No drops yet: the button uses the simple "%n errors"
+        // form, no "dropped" hint anywhere on it.
+        dock->AppendErrors(QStringLiteral("First"), {"a", "b", "c"});
+        QCoreApplication::processEvents();
+        QVERIFY2(
+            !statusButton->text().contains(QStringLiteral("dropped"), Qt::CaseInsensitive),
+            qPrintable(QStringLiteral("status button must not mention 'dropped' when nothing was dropped: %1")
+                           .arg(statusButton->text()))
+        );
+
+        // Force an overflow so `droppedCount > 0`. A single batch
+        // larger than `MAX_DISPLAYED_ERRORS` pre-trims to mint a
+        // dropped count without any prior content getting evicted.
+        const int cap = ParseErrorsDock::MAX_DISPLAYED_ERRORS;
+        std::vector<std::string> huge;
+        huge.reserve(static_cast<size_t>(cap + 50));
+        for (int i = 0; i < cap + 50; ++i)
+        {
+            huge.emplace_back(std::string("err-") + std::to_string(i));
+        }
+        dock->AppendErrors(QStringLiteral("Huge"), huge);
+        QCoreApplication::processEvents();
+        QVERIFY2(dock->DroppedCount() > 0, "fixture must produce a non-zero dropped count");
+
+        // The button label must now include the dropped hint so
+        // the user can tell from the status bar (without opening
+        // the dock) that the visible total isn't the whole story.
+        QVERIFY2(
+            statusButton->text().contains(QStringLiteral("dropped"), Qt::CaseInsensitive),
+            qPrintable(QStringLiteral("status button must surface dropped count in its label; got: %1")
+                           .arg(statusButton->text()))
+        );
+        // And the tooltip continues to spell out the breakdown.
+        QVERIFY2(
+            statusButton->toolTip().contains(QStringLiteral("dropped"), Qt::CaseInsensitive),
+            qPrintable(QStringLiteral("status button tooltip must still spell out the breakdown; got: %1")
+                           .arg(statusButton->toolTip()))
+        );
+    }
+
     // An enum column with an empty dictionary must show the placeholder
     // and disable OK so a "hide everything" filter cannot be submitted.
     void TestFilterEditorEmptyEnumPickerDisablesOk()

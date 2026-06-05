@@ -419,8 +419,18 @@ void FindRecordWidget::EmitMatchCountRequest()
 {
     // Stop the *other* timer so a max-age fire doesn't get
     // followed 50 ms later by a redundant trailing fire (and
-    // vice versa).
+    // vice versa). The re-entrancy guard catches the harder
+    // case: when both timers' `timeout` events landed in the
+    // queue on the same pass, stopping them here doesn't undo
+    // the second event that's already queued -- but the guard
+    // collapses it.
+    if (mEmittingMatchCountRequest)
+    {
+        return;
+    }
+    mEmittingMatchCountRequest = true;
     mMatchCountTimer->stop();
     mMatchCountMaxAgeTimer->stop();
     emit MatchCountRequested(mEdit->text(), mWildcardsAction->isChecked(), mRegexAction->isChecked());
+    mEmittingMatchCountRequest = false;
 }

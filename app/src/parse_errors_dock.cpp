@@ -13,6 +13,7 @@
 #include <QListWidgetItem>
 #include <QLocale>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QShortcut>
 #include <QStringList>
 #include <QStyle>
@@ -36,6 +37,15 @@ constexpr int LAYOUT_SPACING = 4;
 /// footer item so `TrimToCap` can replace it in place instead of
 /// minting a new one each batch.
 constexpr int OVERFLOW_FOOTER_ROLE = Qt::UserRole + 1;
+
+/// Pixel slack on the vertical scrollbar's `max - value` reading
+/// below which we treat the user as "still at the tail". Anything
+/// inside this band auto-follows new batches; anything outside it
+/// preserves the user's scroll position so they can read earlier
+/// errors without being yanked back to the end on every append.
+/// Sized to absorb a row or two of rounding from
+/// `verticalScrollBar()`'s integer reporting.
+constexpr int AUTO_FOLLOW_TAIL_SLACK_PX = 4;
 } // namespace
 
 ParseErrorsDock::ParseErrorsDock(QWidget *parent)
@@ -116,6 +126,16 @@ void ParseErrorsDock::AppendErrors(const QString &title, const std::vector<std::
     // pop back open every batch.
     const bool firstBatchOfSession = mErrorCount == 0 && mDroppedCount == 0;
 
+    // Snapshot the user's scroll position *before* mutating the
+    // list. If they were already pinned at the tail (auto-follow
+    // case, also the initial empty-list case), we'll re-pin after
+    // the append; if they had scrolled up to read earlier errors,
+    // we leave the viewport alone so the new batch doesn't yank
+    // them out of context. Mirrors the chat / log convention.
+    const QScrollBar *vBar = mList->verticalScrollBar();
+    const bool wasAtTail =
+        vBar == nullptr || (vBar->maximum() - vBar->value()) <= AUTO_FOLLOW_TAIL_SLACK_PX;
+
     // The trailing overflow footer (if any) must move to the
     // bottom after the new entries land. It is always the last
     // item by construction (`TrimToCap` appends it after every
@@ -174,7 +194,15 @@ void ParseErrorsDock::AppendErrors(const QString &title, const std::vector<std::
     // `mDroppedCount` regardless of which path got us there.
     RebuildOverflowFooter();
 
-    mList->scrollToBottom();
+    // Re-pin to the tail only when the user was already there.
+    // Otherwise the new batch lands silently and the user keeps
+    // reading whatever earlier rows they had scrolled up to. The
+    // status-bar indicator already surfaces the running count so
+    // they can tell something arrived without being interrupted.
+    if (wasAtTail)
+    {
+        mList->scrollToBottom();
+    }
     RefreshSummary();
     if (firstBatchOfSession)
     {

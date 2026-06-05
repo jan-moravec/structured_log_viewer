@@ -3668,14 +3668,24 @@ void MainWindow::UpdateParseErrorsStatus(int count, int droppedCount)
     // jitter the button width as counts grew across a streaming
     // session.
     const int displayedTotal = count + droppedCount;
-    mParseErrorsStatusButton->setText(tr("%Ln parse error(s)", nullptr, displayedTotal));
     if (droppedCount > 0)
     {
+        // Surface the dropped-count on the button label itself
+        // (not just the tooltip) so the user can tell at a glance
+        // that the dock has truncated. Without this the button
+        // reports "12,345 parse errors" but clicking it opens a
+        // dock that reads "11,345 errors; 1,000 earlier dropped"
+        // -- the discrepancy reads as a bug.
+        const QLocale locale = QLocale::system();
+        mParseErrorsStatusButton->setText(
+            tr("%1 parse error(s) (+%2 dropped)")
+                .arg(locale.toString(static_cast<qlonglong>(count)))
+                .arg(locale.toString(static_cast<qlonglong>(droppedCount)))
+        );
         // Two independent counts -> can't use a single `%Ln`
         // plural; format both via QLocale so the tooltip matches
         // the dock summary ("12,345 errors; 1,000 earlier
         // dropped").
-        const QLocale locale = QLocale::system();
         mParseErrorsStatusButton->setToolTip(
             tr("%1 parse error(s) in this session "
                "(%2 visible, %3 earlier dropped). Click to open the Parse Errors panel.")
@@ -3686,6 +3696,7 @@ void MainWindow::UpdateParseErrorsStatus(int count, int droppedCount)
     }
     else
     {
+        mParseErrorsStatusButton->setText(tr("%Ln parse error(s)", nullptr, displayedTotal));
         mParseErrorsStatusButton->setToolTip(
             tr("%Ln parse error(s) in this session. Click to open the Parse Errors panel.", nullptr, count)
         );
@@ -3696,6 +3707,20 @@ void MainWindow::UpdateParseErrorsStatus(int count, int droppedCount)
 void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool regularExpressions)
 {
     if (mFindRecord == nullptr || mSortFilterProxyModel == nullptr)
+    {
+        return;
+    }
+    // Skip the full-table scan when the bar is hidden -- a
+    // debounce timer armed while the bar was visible can fire
+    // after the user dismissed the dock, and `FindRecords` calls
+    // us back after a Next / Previous click for the indicator
+    // refresh (which is also pointless when the indicator isn't
+    // on screen). `OnFindCacheInvalidated` and `FindRecords`
+    // already gate their own paths the same way; this slot was
+    // the asymmetric outlier. We still drop the cache below for
+    // an empty needle so a later reveal doesn't show a stale "i
+    // of N" against the wrong needle.
+    if (mFindDock == nullptr || !mFindDock->isVisible())
     {
         return;
     }
@@ -3760,8 +3785,13 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
         // it would silently pass and let the dedup contract drift
         // unnoticed. Order: assert sorted, defensively sort if
         // not, then assert dedup, then defensively unique.
-        Q_ASSERT(std::ranges::is_sorted(rows));
-        if (!std::ranges::is_sorted(rows))
+        //
+        // Hoist `is_sorted` into a local so the `Q_ASSERT` and the
+        // fallback `if` share one walk in debug builds (in release,
+        // `Q_ASSERT` compiles out and only the `if` runs once).
+        const bool sortedAsExpected = std::ranges::is_sorted(rows);
+        Q_ASSERT(sortedAsExpected);
+        if (!sortedAsExpected)
         {
             std::ranges::sort(rows);
         }

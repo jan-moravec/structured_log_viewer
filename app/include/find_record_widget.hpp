@@ -144,4 +144,14 @@ private:
     /// started. Both timers' `timeout` route through
     /// `EmitMatchCountRequest`, which stops both.
     QTimer *mMatchCountMaxAgeTimer = nullptr;
+
+    /// Re-entrancy guard for `EmitMatchCountRequest`. Both timers
+    /// route to the same slot; when their intervals elapse on the
+    /// same event-loop pass, Qt enqueues two `timeout` events.
+    /// The first invocation stops both timers, but the second
+    /// event is already in the queue and would emit a duplicate
+    /// `MatchCountRequested`. The guard collapses the duplicate.
+    /// The recount is idempotent so this is purely a "don't pay
+    /// twice" optimisation.
+    bool mEmittingMatchCountRequest = false;
 };

@@ -1222,6 +1222,16 @@ bool LogFilterModel::Matches(const QVariant &data, const QVariant &value, Qt::Ma
     // disjoint-bit rationale) and short-circuit MatchExactly on the
     // QVariant equality, which is cheaper than stringifying twice and
     // preserves typed comparisons (numeric, timestamp, enum id).
+    //
+    // Caveat: because `MatchExactly == 0`, *any* `flags` value with
+    // no match-type bit set (e.g. `MatchWrap | MatchRecursive` on
+    // its own) now silently routes through the exact-equality
+    // branch. Previously the testFlag ladder rejected that case
+    // outright. No in-tree caller currently passes a flag set with
+    // no type bit -- `ComposeFindFlags` always picks one of
+    // Contains / Wildcard / Regex -- but a future caller should be
+    // aware that the type field defaults to `MatchExactly`, not
+    // "no-match".
     constexpr int MATCH_TYPE_MASK = 0x000F;
     const int matchType = static_cast<int>(flags) & MATCH_TYPE_MASK;
     if (matchType == Qt::MatchExactly)
@@ -1269,6 +1279,13 @@ bool LogFilterModel::Matches(const QString &text, const QString &needle, Qt::Mat
         return regex.match(text).hasMatch();
     }
     default:
+        // `Qt::MatchFixedString` (value 8) lands here and is
+        // deliberately *not* implemented -- no in-tree caller
+        // needs it, and the find bar exposes contains/regex/
+        // wildcard explicitly. A future contributor adding it
+        // should slot a case label in above; today the default
+        // is "no match" so a typo'd flag set fails closed
+        // instead of silently behaving like contains.
         return false;
     }
 }
