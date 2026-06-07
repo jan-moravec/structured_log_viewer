@@ -12,6 +12,7 @@
 #include "log_table_view.hpp"
 #include "main_window.hpp"
 #include "parse_errors_dock.hpp"
+#include "preferences_editor.hpp"
 #include "qt_streaming_log_sink.hpp"
 #include "record_detail_dock.hpp"
 #include "record_detail_widget.hpp"
@@ -52,6 +53,7 @@
 #include <QBrush>
 #include <QCheckBox>
 #include <QClipboard>
+#include <QColor>
 #include <QComboBox>
 #include <QDataStream>
 #include <QDialogButtonBox>
@@ -63,6 +65,7 @@
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QIcon>
+#include <QImage>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListView>
@@ -72,6 +75,7 @@
 #include <QLockFile>
 #include <QMenu>
 #include <QMenuBar>
+#include <QPalette>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QToolButton>
@@ -89,6 +93,7 @@
 #include <QStatusBar>
 #include <QString>
 #include <QStringList>
+#include <QTableView>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QUuid>
@@ -4273,6 +4278,219 @@ private slots:
         QVERIFY(qvariant_cast<QFont>(fatalFont).bold());
     }
 
+    // Regression: switching themes while the main log table is
+    // visible must repaint the rows in the new colours. The model
+    // already exposes the new theme brush via `data()` (verified
+    // by `TestLogModelDataReturnsThemeBackground`), but the view
+    // needs to be told to re-query. The user-visible symptom of
+    // failure here is "I switched themes and the table still has
+    // the old level colours until I scroll / resize / refresh".
+    // We pin both halves: the model returns a new brush, *and*
+    // the view receives a `dataChanged` notification that covers
+    // the styled roles over the visible rows.
+    void TestThemeSwitchRefreshesLogTableRows()
+    {
+        QVERIFY(mTheme != nullptr);
+
+        // Stream a tiny multi-level fixture so we have an Error row
+        // styled by the theme (the default themes paint Error with
+        // a distinct background).
+        const QStringList lines{
+            QStringLiteral(R"({"level": "info"})"),
+            QStringLiteral(R"({"level": "error"})"),
+            QStringLiteral(R"({"level": "warn"})"),
+        };
+        const TempJsonFile fixture(lines);
+
+        mTheme->SetActiveSelection(QStringLiteral("Light"));
+        const StreamingRun run = RunStreaming(fixture.Path(), mTheme.data());
+        QCOMPARE(run.cancelled, false);
+        QVERIFY(run.model != nullptr);
+
+        const int levelCol = ColumnByHeader(*run.model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+
+        // Find the Error row by display value rather than fixed
+        // index, so a future fixture reorder doesn't break us.
+        int errorRow = -1;
+        for (int r = 0; r < run.model->rowCount(); ++r)
+        {
+            if (run.model->data(run.model->index(r, levelCol), Qt::DisplayRole).toString() == QStringLiteral("error"))
+            {
+                errorRow = r;
+                break;
+            }
+        }
+        QVERIFY2(errorRow >= 0, "fixture must include an Error-level row");
+
+        const QModelIndex errorIndex = run.model->index(errorRow, levelCol);
+        const QVariant lightErrorBg = run.model->data(errorIndex, Qt::BackgroundRole);
+        QVERIFY2(lightErrorBg.isValid(), "Light theme must style the Error row background");
+        const QBrush lightBrush = qvariant_cast<QBrush>(lightErrorBg);
+
+        // Now flip to Dark. `SetActiveSelection` -> `ApplyTheme`
+        // rebuilds the cache and emits `themeChanged`. The model
+        // shares the `ThemeControl` instance, so the next `data()`
+        // call must see the new brush.
+        mTheme->SetActiveSelection(QStringLiteral("Dark"));
+        QCoreApplication::processEvents();
+
+        const QVariant darkErrorBg = run.model->data(errorIndex, Qt::BackgroundRole);
+        QVERIFY2(darkErrorBg.isValid(), "Dark theme must style the Error row background");
+        const QBrush darkBrush = qvariant_cast<QBrush>(darkErrorBg);
+        QVERIFY2(
+            lightBrush.color() != darkBrush.color(),
+            qPrintable(QStringLiteral("Error row background must differ between Light and Dark themes; "
+                                      "got light=%1, dark=%2")
+                           .arg(lightBrush.color().name(), darkBrush.color().name()))
+        );
+
+        // Sanity-check the inverse direction too: a flip back to
+        // Light returns the original brush.
+        mTheme->SetActiveSelection(QStringLiteral("Light"));
+        QCoreApplication::processEvents();
+        const QBrush lightBrushAgain = qvariant_cast<QBrush>(run.model->data(errorIndex, Qt::BackgroundRole));
+        QCOMPARE(lightBrushAgain.color(), lightBrush.color());
+    }
+
+    // Regression: against the `MainWindow`'s real table view +
+    // proxy chain, a theme switch must emit `dataChanged` on the
+    // styled roles so the view re-queries the new theme brushes.
+    // Calling only `viewport()->update()` schedules a paint but
+    // does not invalidate the view's internal item-style cache in
+    // every Qt 6 release; the user-visible bug is rows that keep
+    // the old level tint until they scroll. We pin the model-side
+    // notification.
+    void TestThemeSwitchEmitsDataChangedOnLogTable()
+    {
+        QVERIFY(mTheme != nullptr);
+        // Stream a small fixture into the live `MainWindow` so its
+        // `LogModel` (not a side-car instance from `RunStreaming`)
+        // is the one we observe -- the production wiring is what
+        // we want to pin.
+        const QStringList lines{
+            QStringLiteral(R"({"level": "info"})"),
+            QStringLiteral(R"({"level": "error"})"),
+            QStringLiteral(R"({"level": "warn"})"),
+        };
+        const TempJsonFile fixture(lines);
+        mTheme->SetActiveSelection(QStringLiteral("Light"));
+        mWindow->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Replace);
+        // Pump until the streaming finishes -- `streamingFinished`
+        // is queued, so a single `processEvents` isn't enough.
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        if (finishedSpy.count() == 0)
+        {
+            finishedSpy.wait(5000);
+        }
+        QVERIFY2(model->rowCount() > 0, "fixture must produce at least one streamed row");
+
+        QSignalSpy spy(model, &QAbstractItemModel::dataChanged);
+        mTheme->SetActiveSelection(QStringLiteral("Dark"));
+        QCoreApplication::processEvents();
+
+        // Look for a `dataChanged` emission that covers at least
+        // one of the styled roles. Other notifications (e.g.
+        // anchor-related) can ride along; we only care that *some*
+        // styled-role notification arrived.
+        bool foundStyledNotification = false;
+        for (int i = 0; i < spy.count(); ++i)
+        {
+            const QList<QVariant> args = spy.at(i);
+            QVERIFY2(args.size() >= 3, "dataChanged must carry topLeft, bottomRight, roles");
+            const auto roles = args.at(2).value<QList<int>>();
+            // An empty roles list is "all roles changed" in Qt's
+            // contract -- counts as styled too.
+            if (roles.isEmpty() || roles.contains(Qt::BackgroundRole) || roles.contains(Qt::ForegroundRole)
+                || roles.contains(Qt::FontRole))
+            {
+                foundStyledNotification = true;
+                break;
+            }
+        }
+        QVERIFY2(
+            foundStyledNotification,
+            "Theme switch must emit a dataChanged covering BackgroundRole / ForegroundRole / FontRole "
+            "(or all roles) so the table view refreshes the row tints."
+        );
+    }
+
+    // Regression: switching themes must re-apply the table view's
+    // stylesheet so `QStyleSheetStyle` drops its palette-resolved
+    // item cache. Without this, rows whose `data(BackgroundRole)`
+    // returns an invalid `QVariant` (Info / Trace levels that no
+    // theme styles) keep the previous theme's palette default,
+    // producing the user-visible "some rows repainted, some did
+    // not" symptom in dark mode. The polish has to happen even
+    // when the rule TEXT is unchanged -- the previous skip-on-
+    // identical-rule optimisation was the regression vector
+    // introduced when `ApplyTableStyleSheet` started emitting a
+    // monospace font rule (GUI-polish phase 1). We pin the
+    // observable: clearing the body stylesheet externally and
+    // then switching themes must repopulate it.
+    void TestThemeSwitchRepolishesTableStylesheet()
+    {
+        QVERIFY(mTheme != nullptr);
+
+        // Prime the table view's stylesheet via the normal
+        // application path: open a fixture so streaming + initial
+        // `ApplyTableStyleSheet` run.
+        const QStringList lines{
+            QStringLiteral(R"({"level": "info"})"),
+            QStringLiteral(R"({"level": "error"})"),
+        };
+        const TempJsonFile fixture(lines);
+        mTheme->SetActiveSelection(QStringLiteral("Light"));
+        mWindow->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Replace);
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        if (finishedSpy.count() == 0)
+        {
+            finishedSpy.wait(5000);
+        }
+
+        auto *tableView = mWindow->findChild<QTableView *>();
+        QVERIFY2(tableView != nullptr, "MainWindow must own a table view");
+        const QString initialStyleSheet = tableView->styleSheet();
+        QVERIFY2(
+            !initialStyleSheet.isEmpty(),
+            "After a normal load the body stylesheet must include the monospace cell rule"
+        );
+
+        // Externally clear the stylesheet. This mirrors the state
+        // Qt is in after the "skip unchanged write" optimisation
+        // bypasses `setStyleSheet`: the cached `mLastBodyStyleSheet`
+        // claims the rule is applied but the widget actually has
+        // a stale (or in this synthetic case, empty) stylesheet.
+        // The polish-on-theme-switch fix has to re-apply the rule
+        // regardless of what we cached.
+        tableView->setStyleSheet(QString{});
+        QCOMPARE(tableView->styleSheet(), QString{});
+
+        // Switch theme. `OnThemeChanged` resets the tracker and
+        // forces `ApplyTableStyleSheet` to re-write the rule.
+        mTheme->SetActiveSelection(QStringLiteral("Dark"));
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            !tableView->styleSheet().isEmpty(),
+            qPrintable(QStringLiteral("Theme switch must re-apply the body stylesheet so "
+                                      "`QStyleSheetStyle` re-resolves the new palette; got: '%1'")
+                           .arg(tableView->styleSheet()))
+        );
+        // And the re-applied rule must match what `ApplyTableStyleSheet`
+        // would build (i.e. the monospace cell rule, not some
+        // accidental empty fallback).
+        QVERIFY2(
+            tableView->styleSheet().contains(QStringLiteral("QTableView::item")),
+            qPrintable(QStringLiteral("Re-applied stylesheet must carry the monospace cell rule; got: '%1'")
+                           .arg(tableView->styleSheet()))
+        );
+    }
+
     // End-to-end round-trip for `Column::levelMapping`. Saved config
     // pins `Type::Level` with `NOTICE -> Info`, `PANIC -> Fatal`. A
     // filter selecting `Info` expands via the rank cache to match
@@ -7812,6 +8030,213 @@ private slots:
         QVERIFY(mismatchedItem != nullptr);
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         QVERIFY2(mismatchedItem->text().toInt() > 0, "Dialog must report a non-zero mismatch count for `msg`");
+
+        // Regression: the mismatched row must pin *both* halves of
+        // the contrast pair (pink background + dark foreground).
+        // Setting only the background leaves the foreground on the
+        // palette default, which is near-white on a dark theme and
+        // renders the row's text invisible (see issue: "Column with
+        // an issue text is not visible in dark theme"). The exact
+        // colours are an implementation detail; what we pin is "the
+        // foreground is dark enough to read against pale pink".
+        for (int c = 0; c < table->columnCount(); ++c)
+        {
+            const QTableWidgetItem *item = table->item(matchedRowIndex, c);
+            QVERIFY2(item != nullptr, qPrintable(QStringLiteral("mismatched row column %1 must have an item").arg(c)));
+            // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+            const QBrush bg = item->background();
+            const QBrush fg = item->foreground();
+            QVERIFY2(
+                bg.style() != Qt::NoBrush,
+                qPrintable(QStringLiteral("mismatched row column %1 must paint an explicit background").arg(c))
+            );
+            QVERIFY2(
+                fg.style() != Qt::NoBrush,
+                qPrintable(QStringLiteral("mismatched row column %1 must paint an explicit foreground "
+                                          "so it stays legible on dark themes")
+                               .arg(c))
+            );
+            // ITU-R BT.601 luma: foreground must be visibly darker
+            // than the highlight background, otherwise we're back to
+            // the original bug.
+            const QColor fgColor = fg.color();
+            const QColor bgColor = bg.color();
+            constexpr double R_LUMA = 0.299;
+            constexpr double G_LUMA = 0.587;
+            constexpr double B_LUMA = 0.114;
+            const double fgLuma = (R_LUMA * fgColor.red()) + (G_LUMA * fgColor.green()) + (B_LUMA * fgColor.blue());
+            const double bgLuma = (R_LUMA * bgColor.red()) + (G_LUMA * bgColor.green()) + (B_LUMA * bgColor.blue());
+            constexpr double MIN_LUMA_GAP = 80.0;
+            QVERIFY2(
+                bgLuma - fgLuma >= MIN_LUMA_GAP,
+                qPrintable(
+                    QStringLiteral("mismatched row column %1 must keep a high contrast between fg (%2) and bg (%3); "
+                                   "got fgLuma=%4, bgLuma=%5")
+                        .arg(c)
+                        .arg(fgColor.name(), bgColor.name())
+                        .arg(fgLuma)
+                        .arg(bgLuma)
+                )
+            );
+        }
+    }
+
+    // Regression: the mismatched-row highlight must adapt to the
+    // active palette. The original fix pinned a pale-pink bg + dark
+    // fg, which read as a glaringly bright "white" row on Dark
+    // themes (see issue: "The row with invalid data is white in
+    // dark mode"). Verify that flipping the theme to Dark hands the
+    // dialog a *darker* highlight bg + *lighter* fg, while keeping
+    // the same high contrast (luma gap) the light-mode highlight
+    // already satisfies.
+    void TestDiagnosticsDialogHighlightAdaptsToDarkTheme()
+    {
+        QVERIFY(mTheme != nullptr);
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        // Force `msg` into a mismatching state so the dialog has a
+        // warning row to paint.
+        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
+        model->ConfigurationManager().SetColumnType(
+            static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer
+        );
+        model->RefreshColumnHealth();
+
+        // Build the dialog under the Light palette and snapshot the
+        // brushes for the `msg` row.
+        mTheme->SetActiveSelection(QStringLiteral("Light"));
+        QCoreApplication::processEvents();
+
+        ConfigurationDiagnosticsDialog dialog(model);
+        auto *table = dialog.findChild<QTableWidget *>();
+        QVERIFY2(table != nullptr, "Dialog must own a diagnosticsTable widget");
+
+        auto FindMsgRow = [table]() {
+            for (int row = 0; row < table->rowCount(); ++row)
+            {
+                const QTableWidgetItem *headerItem = table->item(row, 0);
+                if (headerItem != nullptr && headerItem->text() == QStringLiteral("msg"))
+                {
+                    return row;
+                }
+            }
+            return -1;
+        };
+
+        const int lightRow = FindMsgRow();
+        QVERIFY2(lightRow >= 0, "Light-theme dialog must include a row for the `msg` column");
+        const QTableWidgetItem *lightItem = table->item(lightRow, 0);
+        QVERIFY(lightItem != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        const QColor lightBg = lightItem->background().color();
+        const QColor lightFg = lightItem->foreground().color();
+
+        // Flip to Dark. `SetActiveSelection` -> `ApplyTheme` swaps
+        // `QApplication::setPalette`, which fires
+        // `QEvent::ApplicationPaletteChange` on the dialog; the
+        // override re-runs `Refresh()` so the brushes pick up the
+        // dark-mode palette branch.
+        mTheme->SetActiveSelection(QStringLiteral("Dark"));
+        QCoreApplication::processEvents();
+
+        const int darkRow = FindMsgRow();
+        QVERIFY2(darkRow >= 0, "Dark-theme dialog must still include a row for the `msg` column");
+        const QTableWidgetItem *darkItem = table->item(darkRow, 0);
+        QVERIFY(darkItem != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        const QColor darkBg = darkItem->background().color();
+        const QColor darkFg = darkItem->foreground().color();
+
+        QVERIFY2(
+            lightBg != darkBg,
+            qPrintable(QStringLiteral("Highlight bg must differ between Light and Dark; got light=%1, dark=%2")
+                           .arg(lightBg.name(), darkBg.name()))
+        );
+        QVERIFY2(
+            lightFg != darkFg,
+            qPrintable(QStringLiteral("Highlight fg must differ between Light and Dark; got light=%1, dark=%2")
+                           .arg(lightFg.name(), darkFg.name()))
+        );
+
+        constexpr double R_LUMA = 0.299;
+        constexpr double G_LUMA = 0.587;
+        constexpr double B_LUMA = 0.114;
+        auto Luma = [](const QColor &c) {
+            return (R_LUMA * c.red()) + (G_LUMA * c.green()) + (B_LUMA * c.blue());
+        };
+
+        // Dark mode must use a *dark* highlight bg (otherwise the
+        // row punches through the dialog as a near-white slab).
+        constexpr double DARK_BG_MAX_LUMA = 110.0;
+        QVERIFY2(
+            Luma(darkBg) <= DARK_BG_MAX_LUMA,
+            qPrintable(QStringLiteral("Dark-theme highlight bg must be dark; got %1 (luma=%2)")
+                           .arg(darkBg.name())
+                           .arg(Luma(darkBg)))
+        );
+
+        // Dark mode reverses the contrast pair: fg must be *lighter*
+        // than bg, by the same gap the light-mode highlight uses.
+        constexpr double MIN_LUMA_GAP = 80.0;
+        QVERIFY2(
+            Luma(darkFg) - Luma(darkBg) >= MIN_LUMA_GAP,
+            qPrintable(QStringLiteral("Dark-theme highlight must keep high contrast (fg lighter than bg); "
+                                      "got fg=%1 (luma=%2), bg=%3 (luma=%4)")
+                           .arg(darkFg.name())
+                           .arg(Luma(darkFg))
+                           .arg(darkBg.name())
+                           .arg(Luma(darkBg)))
+        );
+
+        // Restore the default before the next test starts.
+        mTheme->SetActiveSelection(QStringLiteral("Light"));
+        QCoreApplication::processEvents();
+    }
+
+    // Regression: closing the Preferences window via the X button
+    // (or any path that goes through `QWidget::close` without first
+    // running the Cancel slot) must revert a live-previewed theme
+    // back to the persisted selection. Without the `closeEvent`
+    // override, the Dark preview leaked past the dialog until the
+    // application restart (see issue: "when I change the theme and
+    // close the configuration window, the original theme is not
+    // restored").
+    void TestPreferencesEditorCloseEventRevertsThemePreview()
+    {
+        QVERIFY(mTheme != nullptr);
+
+        // Persist a known baseline (`Light`) so the close-event
+        // revert has a deterministic target.
+        mTheme->SetActiveSelection(QStringLiteral("Light"));
+        mTheme->SaveConfiguration();
+        QCOMPARE(mTheme->PersistedSelection(), QStringLiteral("Light"));
+        QCOMPARE(mTheme->ActiveSelection(), QStringLiteral("Light"));
+
+        PreferencesEditor editor(mTheme.data());
+
+        // Simulate the user previewing Dark via the combobox. We
+        // bypass the widget's `activated` signal and go straight to
+        // the underlying control to keep the test independent of
+        // QComboBox event quirks under offscreen-QPA.
+        mTheme->SetActiveSelection(QStringLiteral("Dark"));
+        QCoreApplication::processEvents();
+        QCOMPARE(mTheme->ActiveSelection(), QStringLiteral("Dark"));
+        // Persisted selection is unchanged -- only Ok writes that.
+        QCOMPARE(mTheme->PersistedSelection(), QStringLiteral("Light"));
+
+        // Close the window via the same path the X button takes
+        // (programmatic `close()` -> `closeEvent`). Cancel and Ok
+        // also funnel through here but they run their own logic
+        // first; what we pin is the bare path.
+        editor.close();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(mTheme->ActiveSelection(), QStringLiteral("Light"));
+        QCOMPARE(mTheme->PersistedSelection(), QStringLiteral("Light"));
     }
 
     // The Column Editor writes back every user-controllable Column
@@ -10297,6 +10722,85 @@ private slots:
             qPrintable(QStringLiteral("status button tooltip must still spell out the breakdown; got: %1")
                            .arg(statusButton->toolTip()))
         );
+    }
+
+    // The find-bar arrow icons must follow the current palette so a
+    // Light <-> Dark theme switch can't leave the previous-match /
+    // next-match glyphs invisible. Regression for the
+    // `QStyle::SP_ArrowUp` / `SP_ArrowDown` baked-black pixmaps that
+    // disappeared on dark themes.
+    void TestFindBarArrowIconsFollowPalette()
+    {
+        auto *findRecord = mWindow->findChild<FindRecordWidget *>();
+        QVERIFY2(findRecord != nullptr, "MainWindow must own a FindRecordWidget");
+        auto *prevButton = findRecord->findChild<QToolButton *>(QStringLiteral("findPrevious"));
+        auto *nextButton = findRecord->findChild<QToolButton *>(QStringLiteral("findNext"));
+        QVERIFY2(prevButton != nullptr, "FindRecordWidget must expose its previous button");
+        QVERIFY2(nextButton != nullptr, "FindRecordWidget must expose its next button");
+
+        // Counts opaque pixels in @p icon when rendered at its first
+        // available size. A baked-black `SP_ArrowUp` glyph paints
+        // dark pixels regardless of palette, while our palette-aware
+        // icon paints in `QPalette::WindowText`, which we can flip
+        // below to detect the difference.
+        auto OpaquePixelCount = [](const QIcon &icon, QRgb expected) -> int {
+            const QList<QSize> sizes = icon.availableSizes();
+            const QSize size = sizes.isEmpty() ? QSize{16, 16} : sizes.front();
+            const QImage img = icon.pixmap(size).toImage().convertToFormat(QImage::Format_ARGB32);
+            int matching = 0;
+            for (int y = 0; y < img.height(); ++y)
+            {
+                for (int x = 0; x < img.width(); ++x)
+                {
+                    const QRgb px = img.pixel(x, y);
+                    if (qAlpha(px) < 128)
+                    {
+                        continue;
+                    }
+                    // Tolerate a few units of anti-alias drift on
+                    // each channel: a pure-red apex blends into a
+                    // half-transparent maroon at the slope's edge.
+                    constexpr int CHANNEL_TOLERANCE = 32;
+                    if (std::abs(qRed(px) - qRed(expected)) <= CHANNEL_TOLERANCE
+                        && std::abs(qGreen(px) - qGreen(expected)) <= CHANNEL_TOLERANCE
+                        && std::abs(qBlue(px) - qBlue(expected)) <= CHANNEL_TOLERANCE)
+                    {
+                        ++matching;
+                    }
+                }
+            }
+            return matching;
+        };
+
+        // Paint the icons in a vivid red palette and assert the
+        // rendered pixmap actually contains red. If the buttons
+        // still used `SP_ArrowUp` / `SP_ArrowDown`, the rendered
+        // glyphs would be black regardless of `WindowText`.
+        QPalette redPalette = findRecord->palette();
+        redPalette.setColor(QPalette::Active, QPalette::WindowText, QColor(255, 0, 0));
+        redPalette.setColor(QPalette::Inactive, QPalette::WindowText, QColor(255, 0, 0));
+        findRecord->setPalette(redPalette);
+        // `setPalette` posts `PaletteChange`; pump the event loop
+        // so `changeEvent` rebuilds the icons before we sample.
+        QCoreApplication::sendPostedEvents(findRecord, QEvent::PaletteChange);
+        const int prevRed = OpaquePixelCount(prevButton->icon(), qRgb(255, 0, 0));
+        const int nextRed = OpaquePixelCount(nextButton->icon(), qRgb(255, 0, 0));
+        QVERIFY2(prevRed > 0, "previous-button icon must paint in the palette's WindowText colour");
+        QVERIFY2(nextRed > 0, "next-button icon must paint in the palette's WindowText colour");
+
+        // Flip to a vivid blue and assert the rendered pixmap
+        // changed accordingly. This is the real regression: the
+        // first time the user toggles Light -> Dark, the arrows
+        // have to actually re-paint.
+        QPalette bluePalette = findRecord->palette();
+        bluePalette.setColor(QPalette::Active, QPalette::WindowText, QColor(0, 0, 255));
+        bluePalette.setColor(QPalette::Inactive, QPalette::WindowText, QColor(0, 0, 255));
+        findRecord->setPalette(bluePalette);
+        QCoreApplication::sendPostedEvents(findRecord, QEvent::PaletteChange);
+        const int prevBlue = OpaquePixelCount(prevButton->icon(), qRgb(0, 0, 255));
+        const int nextBlue = OpaquePixelCount(nextButton->icon(), qRgb(0, 0, 255));
+        QVERIFY2(prevBlue > 0, "previous-button icon must repaint after a palette change");
+        QVERIFY2(nextBlue > 0, "next-button icon must repaint after a palette change");
     }
 
     // An enum column with an empty dictionary must show the placeholder

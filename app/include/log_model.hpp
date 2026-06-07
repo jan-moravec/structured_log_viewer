@@ -246,6 +246,19 @@ public:
         int columnIndex
     ) const noexcept;
 
+    /// Emit `dataChanged` for the theme-derived style roles
+    /// (Background, Foreground, Font) across the whole visible
+    /// table. `MainWindow::OnThemeChanged` calls this so a Light
+    /// <-> Dark flip refreshes the rendered row tints. A bare
+    /// `viewport()->update()` does not reliably invalidate the
+    /// view's per-item style cache in every Qt 6 release; emitting
+    /// `dataChanged` forces every visible delegate to re-query the
+    /// new brushes. Roles are restricted to the styled set so the
+    /// existing `dataChanged` listeners (find-cache, record-detail
+    /// pane) can filter the notification out and skip their own
+    /// per-emission work -- nothing semantic actually changed.
+    void RefreshAllRowStyles();
+
 signals:
     /// Cumulative error count, emitted when a batch carries errors.
     void errorCountChanged(qsizetype count);

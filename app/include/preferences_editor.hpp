@@ -7,6 +7,7 @@
 #include <QTimer>
 #include <QWidget>
 
+class QCloseEvent;
 class ThemeControl;
 
 class PreferencesEditor : public QWidget
@@ -22,6 +23,15 @@ public:
     explicit PreferencesEditor(ThemeControl *theme = nullptr, QWidget *parent = nullptr);
 
     void UpdateFields();
+
+protected:
+    /// Treat closing the window (X button, Esc, OS shortcut) as
+    /// Cancel: revert any live-previewed theme to the persisted
+    /// selection and reload the streaming/session config. Without
+    /// this, a Dark preview leaks past the dialog until the next
+    /// application restart, because `QWidget::close()` does not go
+    /// through the Cancel slot.
+    void closeEvent(QCloseEvent *event) override;
 
 signals:
     /// Fired after Ok commits the new retention cap to `QSettings`.

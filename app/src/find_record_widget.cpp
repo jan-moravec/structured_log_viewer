@@ -2,12 +2,20 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QColor>
 #include <QDockWidget>
 #include <QEvent>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPalette>
+#include <QPen>
+#include <QPixmap>
+#include <QPointF>
 #include <QShortcut>
 #include <QSizePolicy>
 #include <QStyle>
@@ -54,6 +62,59 @@ constexpr int LAYOUT_SPACING = 4;
 /// Reserved width for the "i of N" label so the count digits
 /// don't shift the arrow buttons left/right as totals grow.
 constexpr int MATCH_LABEL_MIN_WIDTH = 80;
+
+/// Edge length for the painted arrow icons. Falls back to this
+/// when `QStyle::PM_SmallIconSize` returns nonsense (offscreen
+/// QPA with no style hint table).
+constexpr int ARROW_ICON_FALLBACK_PX = 14;
+
+/// Fraction of the icon edge to inset the triangle from each
+/// side. Tuned by eye to match the visual weight of the
+/// surrounding `.*` / `*?` toggle glyphs.
+constexpr qreal ARROW_INSET_RATIO = 0.18;
+
+/// Centre of the icon expressed as a fraction of the edge.
+constexpr qreal ARROW_CENTRE_RATIO = 0.5;
+
+/// Build a small chevron-style arrow icon painted in @p color so
+/// the glyph follows the active palette / theme. `pointingUp =
+/// true` mints the previous-match arrow (apex at the top), false
+/// the next-match arrow (apex at the bottom). Replaces
+/// `QStyle::SP_ArrowUp` / `SP_ArrowDown`, which Qt bakes as raster
+/// black-on-transparent pixmaps that vanish on dark themes.
+[[nodiscard]] QIcon MakeArrowIcon(int sizePx, bool pointingUp, const QColor &color)
+{
+    QPixmap pix(sizePx, sizePx);
+    pix.fill(Qt::transparent);
+    QPainter painter(&pix);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    const qreal inset = sizePx * ARROW_INSET_RATIO;
+    const qreal apex = pointingUp ? inset : sizePx - inset;
+    const qreal base = pointingUp ? sizePx - inset : inset;
+    QPainterPath triangle;
+    triangle.moveTo(QPointF(sizePx * ARROW_CENTRE_RATIO, apex));
+    triangle.lineTo(QPointF(inset, base));
+    triangle.lineTo(QPointF(sizePx - inset, base));
+    triangle.closeSubpath();
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(color);
+    painter.drawPath(triangle);
+    painter.end();
+    return QIcon{pix};
+}
+
+[[nodiscard]] int ArrowIconPixels(const QWidget *widget)
+{
+    if (const QStyle *style = (widget != nullptr) ? widget->style() : QApplication::style(); style != nullptr)
+    {
+        const int metric = style->pixelMetric(QStyle::PM_SmallIconSize, nullptr, widget);
+        if (metric > 0)
+        {
+            return metric;
+        }
+    }
+    return ARROW_ICON_FALLBACK_PX;
+}
 } // namespace
 
 FindRecordWidget::FindRecordWidget(QWidget *parent)
@@ -132,17 +193,23 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
 
     mButtonPrevious = new QToolButton(this);
     mButtonPrevious->setObjectName(QStringLiteral("findPrevious"));
-    mButtonPrevious->setIcon(QApplication::style()->standardIcon(QStyle::SP_ArrowUp));
     mButtonPrevious->setToolTip(tr("Previous match (Shift+Enter)"));
     mButtonPrevious->setAutoRaise(true);
     hLayout->addWidget(mButtonPrevious);
 
     mButtonNext = new QToolButton(this);
     mButtonNext->setObjectName(QStringLiteral("findNext"));
-    mButtonNext->setIcon(QApplication::style()->standardIcon(QStyle::SP_ArrowDown));
     mButtonNext->setToolTip(tr("Next match (Enter)"));
     mButtonNext->setAutoRaise(true);
     hLayout->addWidget(mButtonNext);
+
+    // Paint the arrow glyphs from the palette so they remain
+    // visible after a Light <-> Dark theme switch. The default
+    // `QStyle::SP_ArrowUp` / `SP_ArrowDown` pixmaps are baked
+    // black on Windows and vanish on a dark background; our own
+    // icons follow `QPalette::WindowText`. `changeEvent` re-runs
+    // this when the application palette / style updates.
+    RefreshArrowIcons();
 
     setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Preferred);
     // Width floor so a floating `FindDock` (the dock has no
@@ -413,6 +480,44 @@ void FindRecordWidget::RequestMatchCountSoon()
     {
         mMatchCountMaxAgeTimer->start();
     }
+}
+
+void FindRecordWidget::changeEvent(QEvent *event)
+{
+    QWidget::changeEvent(event);
+    if (event == nullptr)
+    {
+        return;
+    }
+    // Both events fire on a theme switch:
+    //   PaletteChange  - new colours rolled into `palette()`
+    //   StyleChange    - theme also swapped `qApp->style()`
+    // Either one is sufficient to mint stale icons, so handle
+    // both. The repaint is cheap (two 14x14 triangles) and
+    // `RefreshArrowIcons` is idempotent.
+    const QEvent::Type type = event->type();
+    if (type == QEvent::PaletteChange || type == QEvent::StyleChange || type == QEvent::ApplicationPaletteChange)
+    {
+        RefreshArrowIcons();
+    }
+}
+
+void FindRecordWidget::RefreshArrowIcons()
+{
+    if (mButtonPrevious == nullptr || mButtonNext == nullptr)
+    {
+        return;
+    }
+    // Pull `WindowText` rather than `ButtonText`: the buttons are
+    // `autoRaise` toolbuttons whose backdrop matches the
+    // surrounding find-bar surface, not a raised button face, so
+    // `WindowText` is the contrast colour the user actually sees
+    // these glyphs against. Matches the colour the `.*` / `*?`
+    // toggle action glyphs render in.
+    const QColor color = palette().color(QPalette::Active, QPalette::WindowText);
+    const int sizePx = ArrowIconPixels(this);
+    mButtonPrevious->setIcon(MakeArrowIcon(sizePx, /*pointingUp=*/true, color));
+    mButtonNext->setIcon(MakeArrowIcon(sizePx, /*pointingUp=*/false, color));
 }
 
 void FindRecordWidget::EmitMatchCountRequest()

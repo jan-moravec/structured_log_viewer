@@ -4775,15 +4775,50 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
 
 void MainWindow::OnThemeChanged()
 {
+    // Force Qt's QSS engine to re-resolve palette references on
+    // the table view. Once `ApplyTableStyleSheet` has installed a
+    // body QSS rule (the monospace `QTableView::item` font, added
+    // in the GUI-polish phase 1) the view enters QSS-managed item
+    // painting, and `QStyleSheetStyle` caches palette-derived
+    // colours at polish time. Our "skip unchanged writes"
+    // optimisation in `ApplyTableStyleSheet` then makes the next
+    // call a no-op (rule text unchanged) so the cached resolution
+    // never refreshes -- the user sees rows whose level brush
+    // doesn't change (Info / Trace) stuck on the previous theme's
+    // palette, while rows whose `data(BackgroundRole)` returns a
+    // different brush (Error / Warn / anchor-coloured) repaint
+    // correctly via the `RefreshAllRowStyles` notification below.
+    // Clearing our cached "last applied" tracker before
+    // `ApplyTableStyleSheet` forces the polish cascade to run on
+    // every theme switch, which is the cheap-but-correct fix.
+    // Theme switches are rare; the polish cost doesn't matter.
+    mLastBodyStyleSheet = QString{};
+    mLastHeaderStyleSheet = QString{};
     ApplyTableStyleSheet();
     ApplyThemedWindowIcon();
 
-    // Repaint just the viewport — Qt re-queries `data()` for visible cells.
-    // Avoids the proxy-chain walk that a full `dataChanged` would force.
-    // (`ApplyTableStyleSheet` above already re-resolved the monospace rule.)
+    // Tell the view to re-query the new theme brushes. Necessary
+    // for cells whose `data(BackgroundRole)` returns a different
+    // brush between themes -- the `setStyleSheet` polish above
+    // covers the palette-default cells, but the explicit-brush
+    // cells need a model-level `dataChanged` to invalidate the
+    // view's per-item style cache.
+    if (mModel != nullptr)
+    {
+        mModel->RefreshAllRowStyles();
+    }
     if (mTableView != nullptr)
     {
+        // Headers don't go through `data()`, so the `dataChanged`
+        // emit above doesn't reach them. The header QSS is now
+        // guaranteed re-applied by the tracker reset above, but
+        // an explicit repaint flushes any backing-store fragments
+        // left behind by a modal dialog (Preferences) that was
+        // overlapping the table when the user picked the new
+        // theme.
         mTableView->viewport()->update();
+        mTableView->horizontalHeader()->update();
+        mTableView->verticalHeader()->update();
     }
 
     // These widgets cache palette-derived state (e.g. brushes

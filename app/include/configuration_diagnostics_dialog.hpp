@@ -30,6 +30,14 @@ public:
     /// data. Shared between the status-bar summary and the dialog.
     [[nodiscard]] static int MismatchedColumnCount(const LogModel &model);
 
+protected:
+    /// Re-run `Refresh()` whenever the palette/style flips so the
+    /// theme-aware warning-row highlight tracks Light <-> Dark
+    /// switches while the dialog is open. Without this, the cell
+    /// brushes stay frozen at whatever colour they were when the
+    /// dialog was first populated.
+    void changeEvent(QEvent *event) override;
+
 signals:
     /// Emitted when the user double-clicks a row. `MainWindow` opens
     /// the column editor in response.

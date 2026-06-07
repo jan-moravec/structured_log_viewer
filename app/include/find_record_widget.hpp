@@ -5,6 +5,7 @@
 
 class QAction;
 class QEvent;
+class QIcon;
 class QKeyEvent;
 class QLabel;
 class QLineEdit;
@@ -105,6 +106,16 @@ protected:
     /// VS Code convention).
     bool eventFilter(QObject *watched, QEvent *event) override;
 
+    /// Re-paint the next / previous arrow icons whenever the
+    /// application palette or style changes -- the icons are
+    /// painted in `palette().color(WindowText)` so a switch from
+    /// the Light theme to the Dark theme has to refresh them or
+    /// the previously-baked black glyphs stay invisible on the
+    /// new dark background. `QEvent::PaletteChange` covers theme
+    /// switches; `QEvent::StyleChange` covers the parallel
+    /// style swap a theme can apply via `qApp->setStyle`.
+    void changeEvent(QEvent *event) override;
+
 private slots:
     void FindNext();
     void FindPrevious();
@@ -154,4 +165,14 @@ private:
     /// The recount is idempotent so this is purely a "don't pay
     /// twice" optimisation.
     bool mEmittingMatchCountRequest = false;
+
+    /// Paint a small upward / downward chevron in the current
+    /// palette's `WindowText` colour and assign it to the
+    /// respective arrow button. Replaces `QStyle::SP_ArrowUp` /
+    /// `SP_ArrowDown` -- those standard pixmaps are baked black
+    /// on Windows and become invisible on a dark theme.
+    /// `changeEvent` re-runs this on `PaletteChange` /
+    /// `StyleChange` so a theme switch refreshes the glyphs in
+    /// place.
+    void RefreshArrowIcons();
 };

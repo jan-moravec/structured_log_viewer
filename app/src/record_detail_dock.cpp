@@ -85,12 +85,23 @@ RecordDetailDock::RecordDetailDock(LogModel *model, QWidget *parent)
             mModel,
             &QAbstractItemModel::dataChanged,
             this,
-            [this](const QModelIndex &topLeft, const QModelIndex &bottomRight, const QList<int> & /*roles*/) {
+            [this](const QModelIndex &topLeft, const QModelIndex &bottomRight, const QList<int> &roles) {
                 if (!mCurrentSourceIndex.isValid())
                 {
                     return;
                 }
                 if (!IsVisibleForRefresh())
+                {
+                    return;
+                }
+                // Skip style-only emits (theme switch repaints fire
+                // `dataChanged` covering Background / Foreground /
+                // Font only). The pane renders Display / Edit-role
+                // text, so a re-tint doesn't change what we show.
+                // An empty `roles` list is Qt's "I don't know what
+                // changed" sentinel; treat it conservatively as a
+                // value edit and refresh.
+                if (!roles.isEmpty() && !roles.contains(Qt::DisplayRole) && !roles.contains(Qt::EditRole))
                 {
                     return;
                 }

@@ -9,9 +9,11 @@
 #include <QBrush>
 #include <QColor>
 #include <QDialogButtonBox>
+#include <QEvent>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QPalette>
 #include <QPushButton>
 #include <QStringList>
 #include <QStyle>
@@ -25,6 +27,9 @@ namespace
 {
 constexpr int DIALOG_INITIAL_WIDTH = 720;
 constexpr int DIALOG_INITIAL_HEIGHT = 480;
+/// `QColor::lightness` is 0..255. Below this we treat the dialog as
+/// running on a dark palette and pick the dark-mode highlight colours.
+constexpr int BASE_LUMA_DARK_THRESHOLD = 128;
 constexpr int COL_HEADER = 0;
 constexpr int COL_TYPE = 1;
 constexpr int COL_AUTODETECT = 2;
@@ -270,12 +275,24 @@ void ConfigurationDiagnosticsDialog::Refresh()
 
         if (mismatched > 0)
         {
-            const QBrush highlight(QColor(255, 235, 235));
+            // Theme-aware "warning row" highlight. We pair an explicit
+            // background and foreground so legibility holds on every
+            // palette: a uniform pale pink reads as near-white on
+            // dark themes (the bug the original explicit-fg fix
+            // tried to mitigate but still left the row glaringly
+            // bright). On Dark we flip to a muted maroon bg with a
+            // light-pink fg so the row still reads as "warning" but
+            // sits inside the dark dialog instead of punching through
+            // it.
+            const bool darkMode = palette().color(QPalette::Base).lightness() < BASE_LUMA_DARK_THRESHOLD;
+            const QBrush highlightBg(darkMode ? QColor(80, 30, 30) : QColor(255, 235, 235));
+            const QBrush highlightFg(darkMode ? QColor(255, 210, 210) : QColor(60, 0, 0));
             for (int c = 0; c < mTable->columnCount(); ++c)
             {
                 if (auto *item = mTable->item(i, c); item != nullptr)
                 {
-                    item->setBackground(highlight);
+                    item->setBackground(highlightBg);
+                    item->setForeground(highlightFg);
                 }
             }
         }
@@ -317,4 +334,24 @@ int ConfigurationDiagnosticsDialog::MismatchedColumnCount(const LogModel &model)
         }
     }
     return mismatched;
+}
+
+void ConfigurationDiagnosticsDialog::changeEvent(QEvent *event)
+{
+    if (event != nullptr)
+    {
+        const QEvent::Type type = event->type();
+        if (type == QEvent::PaletteChange || type == QEvent::StyleChange ||
+            type == QEvent::ApplicationPaletteChange || type == QEvent::ThemeChange)
+        {
+            // Re-render so the warning-row brushes follow the new
+            // palette. Guarded on `mModel` because `Refresh()`
+            // dereferences it.
+            if (mModel != nullptr)
+            {
+                Refresh();
+            }
+        }
+    }
+    QDialog::changeEvent(event);
 }

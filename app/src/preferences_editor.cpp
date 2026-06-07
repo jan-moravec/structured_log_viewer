@@ -7,6 +7,7 @@
 #include <loglib/theme.hpp>
 
 #include <QApplication>
+#include <QCloseEvent>
 #include <QDebug>
 #include <QFile>
 #include <QGroupBox>
@@ -401,4 +402,23 @@ void PreferencesEditor::ShowThemeStatus(const QString &message)
         return;
     }
     mThemeStatusClearTimer->start(THEME_STATUS_CLEAR_MS);
+}
+
+void PreferencesEditor::closeEvent(QCloseEvent *event)
+{
+    // Treat the window-close paths (X, Alt+F4, Esc on platforms that
+    // map it to close, programmatic `close()` from anywhere other
+    // than Ok/Cancel) as Cancel: revert any live-previewed theme
+    // and reload the streaming/session config from disk. The Ok and
+    // Cancel handlers both ultimately invoke `close()`, so this slot
+    // also runs in those paths -- but the revert is idempotent there
+    // because `Ok` has already persisted the new selection (making
+    // `PersistedSelection()` match the current state) and `Cancel`
+    // has already reverted before calling `close()`.
+    if (mTheme != nullptr)
+    {
+        mTheme->SetActiveSelection(mTheme->PersistedSelection());
+    }
+    StreamingControl::LoadConfiguration();
+    QWidget::closeEvent(event);
 }
