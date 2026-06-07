@@ -4326,7 +4326,7 @@ private slots:
         const QModelIndex errorIndex = run.model->index(errorRow, levelCol);
         const QVariant lightErrorBg = run.model->data(errorIndex, Qt::BackgroundRole);
         QVERIFY2(lightErrorBg.isValid(), "Light theme must style the Error row background");
-        const QBrush lightBrush = qvariant_cast<QBrush>(lightErrorBg);
+        const auto lightBrush = qvariant_cast<QBrush>(lightErrorBg);
 
         // Now flip to Dark. `SetActiveSelection` -> `ApplyTheme`
         // rebuilds the cache and emits `themeChanged`. The model
@@ -4337,7 +4337,7 @@ private slots:
 
         const QVariant darkErrorBg = run.model->data(errorIndex, Qt::BackgroundRole);
         QVERIFY2(darkErrorBg.isValid(), "Dark theme must style the Error row background");
-        const QBrush darkBrush = qvariant_cast<QBrush>(darkErrorBg);
+        const auto darkBrush = qvariant_cast<QBrush>(darkErrorBg);
         QVERIFY2(
             lightBrush.color() != darkBrush.color(),
             qPrintable(QStringLiteral("Error row background must differ between Light and Dark themes; "
@@ -4349,7 +4349,7 @@ private slots:
         // Light returns the original brush.
         mTheme->SetActiveSelection(QStringLiteral("Light"));
         QCoreApplication::processEvents();
-        const QBrush lightBrushAgain = qvariant_cast<QBrush>(run.model->data(errorIndex, Qt::BackgroundRole));
+        const auto lightBrushAgain = qvariant_cast<QBrush>(run.model->data(errorIndex, Qt::BackgroundRole));
         QCOMPARE(lightBrushAgain.color(), lightBrush.color());
     }
 
@@ -4385,9 +4385,10 @@ private slots:
         {
             finishedSpy.wait(5000);
         }
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QVERIFY2(model->rowCount() > 0, "fixture must produce at least one streamed row");
 
-        QSignalSpy spy(model, &QAbstractItemModel::dataChanged);
+        const QSignalSpy spy(model, &QAbstractItemModel::dataChanged);
         mTheme->SetActiveSelection(QStringLiteral("Dark"));
         QCoreApplication::processEvents();
 
@@ -4398,7 +4399,7 @@ private slots:
         bool foundStyledNotification = false;
         for (int i = 0; i < spy.count(); ++i)
         {
-            const QList<QVariant> args = spy.at(i);
+            const QList<QVariant> &args = spy.at(i);
             QVERIFY2(args.size() >= 3, "dataChanged must carry topLeft, bottomRight, roles");
             const auto roles = args.at(2).value<QList<int>>();
             // An empty roles list is "all roles changed" in Qt's
@@ -8110,11 +8111,12 @@ private slots:
         mTheme->SetActiveSelection(QStringLiteral("Light"));
         QCoreApplication::processEvents();
 
-        ConfigurationDiagnosticsDialog dialog(model);
+        const ConfigurationDiagnosticsDialog dialog(model);
         auto *table = dialog.findChild<QTableWidget *>();
         QVERIFY2(table != nullptr, "Dialog must own a diagnosticsTable widget");
 
-        auto FindMsgRow = [table]() {
+        auto findMsgRow = [table]() {
+            // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
             for (int row = 0; row < table->rowCount(); ++row)
             {
                 const QTableWidgetItem *headerItem = table->item(row, 0);
@@ -8126,7 +8128,7 @@ private slots:
             return -1;
         };
 
-        const int lightRow = FindMsgRow();
+        const int lightRow = findMsgRow();
         QVERIFY2(lightRow >= 0, "Light-theme dialog must include a row for the `msg` column");
         const QTableWidgetItem *lightItem = table->item(lightRow, 0);
         QVERIFY(lightItem != nullptr);
@@ -8142,7 +8144,7 @@ private slots:
         mTheme->SetActiveSelection(QStringLiteral("Dark"));
         QCoreApplication::processEvents();
 
-        const int darkRow = FindMsgRow();
+        const int darkRow = findMsgRow();
         QVERIFY2(darkRow >= 0, "Dark-theme dialog must still include a row for the `msg` column");
         const QTableWidgetItem *darkItem = table->item(darkRow, 0);
         QVERIFY(darkItem != nullptr);
@@ -8164,29 +8166,29 @@ private slots:
         constexpr double R_LUMA = 0.299;
         constexpr double G_LUMA = 0.587;
         constexpr double B_LUMA = 0.114;
-        auto Luma = [](const QColor &c) { return (R_LUMA * c.red()) + (G_LUMA * c.green()) + (B_LUMA * c.blue()); };
+        auto luma = [](const QColor &c) { return (R_LUMA * c.red()) + (G_LUMA * c.green()) + (B_LUMA * c.blue()); };
 
         // Dark mode must use a *dark* highlight bg (otherwise the
         // row punches through the dialog as a near-white slab).
         constexpr double DARK_BG_MAX_LUMA = 110.0;
         QVERIFY2(
-            Luma(darkBg) <= DARK_BG_MAX_LUMA,
+            luma(darkBg) <= DARK_BG_MAX_LUMA,
             qPrintable(QStringLiteral("Dark-theme highlight bg must be dark; got %1 (luma=%2)")
                            .arg(darkBg.name())
-                           .arg(Luma(darkBg)))
+                           .arg(luma(darkBg)))
         );
 
         // Dark mode reverses the contrast pair: fg must be *lighter*
         // than bg, by the same gap the light-mode highlight uses.
         constexpr double MIN_LUMA_GAP = 80.0;
         QVERIFY2(
-            Luma(darkFg) - Luma(darkBg) >= MIN_LUMA_GAP,
+            luma(darkFg) - luma(darkBg) >= MIN_LUMA_GAP,
             qPrintable(QStringLiteral("Dark-theme highlight must keep high contrast (fg lighter than bg); "
                                       "got fg=%1 (luma=%2), bg=%3 (luma=%4)")
                            .arg(darkFg.name())
-                           .arg(Luma(darkFg))
+                           .arg(luma(darkFg))
                            .arg(darkBg.name())
-                           .arg(Luma(darkBg)))
+                           .arg(luma(darkBg)))
         );
 
         // Restore the default before the next test starts.
@@ -9871,6 +9873,7 @@ private slots:
 
         regex->setChecked(true);
         QVERIFY2(regex->isChecked(), "regex toggle must accept setChecked(true)");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QVERIFY2(!wildcards->isChecked(), "regex setChecked(true) must leave wildcards off");
 
         wildcards->setChecked(true);
@@ -9920,7 +9923,7 @@ private slots:
         int wildcardsIdx = -1;
         int prevIdx = -1;
         int nextIdx = -1;
-        QWidget *cursor = edit;
+        const QWidget *cursor = edit;
         for (int hop = 0; hop < MAX_HOPS && cursor != nullptr; ++hop)
         {
             cursor = cursor->nextInFocusChain();
@@ -9994,7 +9997,7 @@ private slots:
         dock->ResetSessionState();
 
         QSignalSpy countSpy(dock, &ParseErrorsDock::countChanged);
-        QSignalSpy firstBatchSpy(dock, &ParseErrorsDock::firstBatchArrived);
+        const QSignalSpy firstBatchSpy(dock, &ParseErrorsDock::firstBatchArrived);
         QVERIFY(countSpy.isValid());
         QVERIFY(firstBatchSpy.isValid());
 
@@ -10059,7 +10062,7 @@ private slots:
         QVERIFY2(dock != nullptr, "MainWindow must own a ParseErrorsDock");
         dock->ResetSessionState();
 
-        QSignalSpy firstBatchSpy(dock, &ParseErrorsDock::firstBatchArrived);
+        const QSignalSpy firstBatchSpy(dock, &ParseErrorsDock::firstBatchArrived);
         QVERIFY(firstBatchSpy.isValid());
 
         dock->AppendErrors(QStringLiteral("Initial batch"), {"a"});
@@ -10104,7 +10107,7 @@ private slots:
 
         const int cap = ParseErrorsDock::MAX_DISPLAYED_ERRORS;
         std::vector<std::string> huge;
-        huge.reserve(static_cast<size_t>(cap + 25));
+        huge.reserve(static_cast<size_t>(cap) + 25);
         for (int i = 0; i < cap + 25; ++i)
         {
             huge.emplace_back(std::string("err ") + std::to_string(i));
@@ -10121,13 +10124,13 @@ private slots:
         // with `Qt::UserRole + 1`. Searching from the tail also
         // guarantees we don't accidentally find a stale footer
         // sitting somewhere in the middle.
-        QListWidgetItem *footer = nullptr;
+        const QListWidgetItem *footer = nullptr;
         int footerIndex = -1;
         int footerHits = 0;
         const int footerRole = Qt::UserRole + 1;
         for (int i = 0; i < list->count(); ++i)
         {
-            QListWidgetItem *item = list->item(i);
+            const QListWidgetItem *item = list->item(i);
             if (item != nullptr && item->data(footerRole).toBool())
             {
                 ++footerHits;
@@ -10176,7 +10179,7 @@ private slots:
         QCOMPARE(dock->DroppedCount(), 0);
         for (int i = 0; i < list->count(); ++i)
         {
-            QListWidgetItem *item = list->item(i);
+            const QListWidgetItem *item = list->item(i);
             QVERIFY2(item == nullptr || !item->data(footerRole).toBool(), "no footer when nothing has been dropped");
         }
 
@@ -10192,7 +10195,7 @@ private slots:
         dock->AppendErrors(QStringLiteral("B"), second);
         QCOMPARE(dock->Count(), cap);
         QCOMPARE(dock->DroppedCount(), overflow);
-        QListWidgetItem *tail = list->item(list->count() - 1);
+        const QListWidgetItem *tail = list->item(list->count() - 1);
         QVERIFY2(
             tail != nullptr && tail->data(footerRole).toBool(),
             "overflow footer must be the trailing item after eviction"
@@ -10210,10 +10213,10 @@ private slots:
         dock->AppendErrors(QStringLiteral("C"), third);
         QCOMPARE(dock->DroppedCount(), overflow * 2);
         int footerHits = 0;
-        QListWidgetItem *latestFooter = nullptr;
+        const QListWidgetItem *latestFooter = nullptr;
         for (int i = 0; i < list->count(); ++i)
         {
-            QListWidgetItem *item = list->item(i);
+            const QListWidgetItem *item = list->item(i);
             if (item != nullptr && item->data(footerRole).toBool())
             {
                 ++footerHits;
@@ -10250,7 +10253,7 @@ private slots:
         {
             batchA.emplace_back("A-" + std::to_string(i));
         }
-        std::vector<std::string> batchB{"B-0", "B-1", "B-2", "B-3", "B-4", "B-5", "B-6"};
+        const std::vector<std::string> batchB{"B-0", "B-1", "B-2", "B-3", "B-4", "B-5", "B-6"};
 
         dock->AppendErrors(QStringLiteral("Batch A"), batchA);
         dock->AppendErrors(QStringLiteral("Batch B"), batchB);
@@ -10265,7 +10268,7 @@ private slots:
         int firstBRow = -1;
         for (int i = 0; i < list->count(); ++i)
         {
-            QListWidgetItem *item = list->item(i);
+            const QListWidgetItem *item = list->item(i);
             if (item == nullptr)
             {
                 continue;
@@ -10375,7 +10378,7 @@ private slots:
         int firstSelectableRow = -1;
         for (int i = 0; i < list->count(); ++i)
         {
-            QListWidgetItem *item = list->item(i);
+            const QListWidgetItem *item = list->item(i);
             if (item != nullptr && item->flags().testFlag(Qt::ItemIsSelectable))
             {
                 firstSelectableRow = i;
@@ -10383,13 +10386,13 @@ private slots:
             }
         }
         QVERIFY2(firstSelectableRow > 0, "surviving error rows must follow at least one header");
-        QListWidgetItem *firstError = list->item(firstSelectableRow);
+        const QListWidgetItem *firstError = list->item(firstSelectableRow);
         QVERIFY2(firstError != nullptr, "first selectable row lookup must succeed");
         QVERIFY2(
             firstError->text().startsWith(QStringLiteral("A-")),
             qPrintable(QStringLiteral("first survivor must be from batch A; got: %1").arg(firstError->text()))
         );
-        QListWidgetItem *headerAbove = list->item(firstSelectableRow - 1);
+        const QListWidgetItem *headerAbove = list->item(firstSelectableRow - 1);
         QVERIFY2(headerAbove != nullptr, "row above first survivor must exist");
         QVERIFY2(
             !headerAbove->flags().testFlag(Qt::ItemIsSelectable),
@@ -10610,14 +10613,14 @@ private slots:
         // Park the user mid-list. Any position comfortably above
         // `maximum()` works; pick the middle so the slack
         // tolerance (4 px) cannot accidentally include us.
-        const int parkedPosition = vBar->minimum() + (vBar->maximum() - vBar->minimum()) / 2;
+        const int parkedPosition = vBar->minimum() + ((vBar->maximum() - vBar->minimum()) / 2);
         vBar->setValue(parkedPosition);
         QCoreApplication::processEvents();
         QCOMPARE(vBar->value(), parkedPosition);
 
         // New batch arrives mid-read. The user did not move; the
         // scrollbar should stay parked.
-        std::vector<std::string> later{"late-0", "late-1", "late-2", "late-3", "late-4"};
+        const std::vector<std::string> later{"late-0", "late-1", "late-2", "late-3", "late-4"};
         dock->AppendErrors(QStringLiteral("Later"), later);
         QCoreApplication::processEvents();
         QVERIFY2(
@@ -10636,7 +10639,7 @@ private slots:
         QCoreApplication::processEvents();
         QCOMPARE(vBar->value(), vBar->maximum());
 
-        std::vector<std::string> trailing{"tail-0", "tail-1", "tail-2"};
+        const std::vector<std::string> trailing{"tail-0", "tail-1", "tail-2"};
         dock->AppendErrors(QStringLiteral("Trailing"), trailing);
         QCoreApplication::processEvents();
         // After more items land, `maximum()` grew; the auto-follow
@@ -10729,6 +10732,7 @@ private slots:
         // form, no "dropped" hint anywhere on it.
         dock->AppendErrors(QStringLiteral("First"), {"a", "b", "c"});
         QCoreApplication::processEvents();
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QVERIFY2(
             !statusButton->text().contains(QStringLiteral("dropped"), Qt::CaseInsensitive),
             qPrintable(QStringLiteral("status button must not mention 'dropped' when nothing was dropped: %1")
@@ -10740,7 +10744,7 @@ private slots:
         // dropped count without any prior content getting evicted.
         const int cap = ParseErrorsDock::MAX_DISPLAYED_ERRORS;
         std::vector<std::string> huge;
-        huge.reserve(static_cast<size_t>(cap + 50));
+        huge.reserve(static_cast<size_t>(cap) + 50);
         for (int i = 0; i < cap + 50; ++i)
         {
             huge.emplace_back(std::string("err-") + std::to_string(i));
@@ -10784,7 +10788,7 @@ private slots:
         // dark pixels regardless of palette, while our palette-aware
         // icon paints in `QPalette::WindowText`, which we can flip
         // below to detect the difference.
-        auto OpaquePixelCount = [](const QIcon &icon, QRgb expected) -> int {
+        auto opaquePixelCount = [](const QIcon &icon, QRgb expected) -> int {
             const QList<QSize> sizes = icon.availableSizes();
             const QSize size = sizes.isEmpty() ? QSize{16, 16} : sizes.front();
             const QImage img = icon.pixmap(size).toImage().convertToFormat(QImage::Format_ARGB32);
@@ -10824,8 +10828,8 @@ private slots:
         // `setPalette` posts `PaletteChange`; pump the event loop
         // so `changeEvent` rebuilds the icons before we sample.
         QCoreApplication::sendPostedEvents(findRecord, QEvent::PaletteChange);
-        const int prevRed = OpaquePixelCount(prevButton->icon(), qRgb(255, 0, 0));
-        const int nextRed = OpaquePixelCount(nextButton->icon(), qRgb(255, 0, 0));
+        const int prevRed = opaquePixelCount(prevButton->icon(), qRgb(255, 0, 0));
+        const int nextRed = opaquePixelCount(nextButton->icon(), qRgb(255, 0, 0));
         QVERIFY2(prevRed > 0, "previous-button icon must paint in the palette's WindowText colour");
         QVERIFY2(nextRed > 0, "next-button icon must paint in the palette's WindowText colour");
 
@@ -10838,8 +10842,8 @@ private slots:
         bluePalette.setColor(QPalette::Inactive, QPalette::WindowText, QColor(0, 0, 255));
         findRecord->setPalette(bluePalette);
         QCoreApplication::sendPostedEvents(findRecord, QEvent::PaletteChange);
-        const int prevBlue = OpaquePixelCount(prevButton->icon(), qRgb(0, 0, 255));
-        const int nextBlue = OpaquePixelCount(nextButton->icon(), qRgb(0, 0, 255));
+        const int prevBlue = opaquePixelCount(prevButton->icon(), qRgb(0, 0, 255));
+        const int nextBlue = opaquePixelCount(nextButton->icon(), qRgb(0, 0, 255));
         QVERIFY2(prevBlue > 0, "previous-button icon must repaint after a palette change");
         QVERIFY2(nextBlue > 0, "next-button icon must repaint after a palette change");
     }
@@ -10881,7 +10885,7 @@ private slots:
             // Backing pixel size should also scale: a sizePx-wide
             // logical icon at 2x DPR should have a 2*sizePx-wide
             // backing pixmap.
-            const int expectedBackingPx = static_cast<int>(sizes.front().width() * hostDpr + 0.5);
+            const int expectedBackingPx = static_cast<int>(std::lround(sizes.front().width() * hostDpr));
             QVERIFY2(
                 pix.size().width() >= expectedBackingPx - 1 && pix.size().width() <= expectedBackingPx + 1,
                 qPrintable(QStringLiteral("backing pixmap width %1 should be ~ logical %2 * DPR %3")
@@ -10929,17 +10933,25 @@ private slots:
     void TestComposeFindFlagsPriorityAndBaseline()
     {
         constexpr Qt::MatchFlags BASELINE = Qt::MatchWrap | Qt::MatchRecursive;
-        QCOMPARE(LogFilterModel::ComposeFindFlags(/*wildcards=*/false, /*regex=*/false), BASELINE | Qt::MatchContains);
-        QCOMPARE(LogFilterModel::ComposeFindFlags(/*wildcards=*/true, /*regex=*/false), BASELINE | Qt::MatchWildcard);
         QCOMPARE(
-            LogFilterModel::ComposeFindFlags(/*wildcards=*/false, /*regex=*/true), BASELINE | Qt::MatchRegularExpression
+            LogFilterModel::ComposeFindFlags(/*wildcards=*/false, /*regularExpressions=*/false),
+            BASELINE | Qt::MatchContains
+        );
+        QCOMPARE(
+            LogFilterModel::ComposeFindFlags(/*wildcards=*/true, /*regularExpressions=*/false),
+            BASELINE | Qt::MatchWildcard
+        );
+        QCOMPARE(
+            LogFilterModel::ComposeFindFlags(/*wildcards=*/false, /*regularExpressions=*/true),
+            BASELINE | Qt::MatchRegularExpression
         );
         // Both toggles checked: regex wins (the UI enforces this
         // visually too -- `mWildcardsAction` and `mRegexAction`
         // are mutually exclusive -- but the helper itself must
         // not depend on that invariant being upheld upstream).
         QCOMPARE(
-            LogFilterModel::ComposeFindFlags(/*wildcards=*/true, /*regex=*/true), BASELINE | Qt::MatchRegularExpression
+            LogFilterModel::ComposeFindFlags(/*wildcards=*/true, /*regularExpressions=*/true),
+            BASELINE | Qt::MatchRegularExpression
         );
     }
 
@@ -10972,7 +10984,9 @@ private slots:
         // First Bump arms both timers (the textChanged emit above
         // also arms them, but Bump is idempotent on that state).
         findRecord->BumpMatchCountDebounce();
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QVERIFY2(trailing->isActive(), "first BumpMatchCountDebounce must arm the trailing timer");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
         QVERIFY2(maxAge->isActive(), "first BumpMatchCountDebounce must arm the max-age timer");
 
         // Sleep a couple of ms so the trailing timer's

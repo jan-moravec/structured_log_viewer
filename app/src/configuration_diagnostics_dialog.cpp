@@ -271,7 +271,7 @@ void ConfigurationDiagnosticsDialog::Refresh()
     // luminance heuristic on platforms / Qt builds that return
     // `Unknown`.
     Qt::ColorScheme scheme = Qt::ColorScheme::Unknown;
-    if (QStyleHints *hints = QGuiApplication::styleHints(); hints != nullptr)
+    if (const QStyleHints *hints = QGuiApplication::styleHints(); hints != nullptr)
     {
         scheme = hints->colorScheme();
     }

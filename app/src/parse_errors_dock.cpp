@@ -159,7 +159,7 @@ void ParseErrorsDock::AppendErrors(const QString &title, const std::vector<std::
     // the list.
     if (const int last = mList->count() - 1; last >= 0)
     {
-        QListWidgetItem *tail = mList->item(last);
+        const QListWidgetItem *tail = mList->item(last);
         if (tail != nullptr && tail->data(OVERFLOW_FOOTER_ROLE).toBool())
         {
             delete mList->takeItem(last);
@@ -296,7 +296,7 @@ void ParseErrorsDock::TrimToCap()
     bool haveEvictedHeader = false;
     while (mList->count() > 0 && mErrorCount > MAX_DISPLAYED_ERRORS)
     {
-        QListWidgetItem *item = mList->takeItem(0);
+        const QListWidgetItem *item = mList->takeItem(0);
         if (item == nullptr)
         {
             continue;
@@ -328,7 +328,7 @@ void ParseErrorsDock::TrimToCap()
     // the *next* batch's header sitting below them.
     if (haveEvictedHeader && mList->count() > 0)
     {
-        QListWidgetItem *first = mList->item(0);
+        const QListWidgetItem *first = mList->item(0);
         if (first != nullptr && first->flags().testFlag(Qt::ItemIsSelectable))
         {
             auto *replacement = new QListWidgetItem(lastEvictedHeaderText);
@@ -350,13 +350,13 @@ void ParseErrorsDock::TrimToCap()
     // its header survive after the eviction-then-reinsert dance.
     while (mList->count() > 0)
     {
-        QListWidgetItem *first = mList->item(0);
+        const QListWidgetItem *first = mList->item(0);
         if (first == nullptr || first->flags().testFlag(Qt::ItemIsSelectable))
         {
             break;
         }
         // First item is a header. Look at its successor.
-        QListWidgetItem *second = mList->count() > 1 ? mList->item(1) : nullptr;
+        const QListWidgetItem *second = mList->count() > 1 ? mList->item(1) : nullptr;
         const bool isOrphan = second == nullptr || !second->flags().testFlag(Qt::ItemIsSelectable);
         if (!isOrphan)
         {
@@ -412,12 +412,12 @@ void ParseErrorsDock::CopySelection() const
     // self-contained text rather than orphaned messages.
     QStringList lines;
     const int count = mList->count();
-    QListWidgetItem *currentHeader = nullptr;
+    const QListWidgetItem *currentHeader = nullptr;
     bool currentHeaderEmitted = false;
     bool sawAnyError = false;
     for (int i = 0; i < count; ++i)
     {
-        QListWidgetItem *item = mList->item(i);
+        const QListWidgetItem *item = mList->item(i);
         if (item == nullptr)
         {
             continue;
@@ -454,7 +454,7 @@ void ParseErrorsDock::CopySelection() const
         // header summary.
         for (int i = count - 1; i >= 0; --i)
         {
-            QListWidgetItem *item = mList->item(i);
+            const QListWidgetItem *item = mList->item(i);
             if (item != nullptr && item->data(OVERFLOW_FOOTER_ROLE).toBool())
             {
                 lines.append(item->text());
