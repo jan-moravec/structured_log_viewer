@@ -63,13 +63,15 @@ signals:
     /// `SetMatchInfo`. Empty `text` means "no needle".
     void MatchCountRequested(const QString &text, bool wildcards, bool regularExpressions);
 
-protected:
-    void keyPressEvent(QKeyEvent *event) override;
-
+public:
     /// Catches `Shift+Return` on `mEdit` before `QLineEdit` swallows
     /// it; `returnPressed` is modifier-agnostic and `keyPressEvent`
     /// doesn't bubble, so the filter is the only way to wire find-prev.
+    /// Public to match `QObject::eventFilter`'s visibility.
     bool eventFilter(QObject *watched, QEvent *event) override;
+
+protected:
+    void keyPressEvent(QKeyEvent *event) override;
 
     /// Re-paint arrow icons on palette / style change; the default
     /// `SP_ArrowUp/Down` pixmaps are baked black and vanish on dark.
