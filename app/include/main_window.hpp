@@ -808,8 +808,20 @@ private:
     /// Uses `Qt::UniqueConnection`, so repeat calls are idempotent.
     void RebindRecordDetailSelectionTracking();
 
-    /// True iff the find dock is realised and on-screen. The
-    /// `mFindDock != nullptr` half guards against early
+    /// True iff the find dock is realised and on-screen.
+    ///
+    /// Tabified-dock semantics: when the dock is the inactive tab
+    /// of a tabified group, Qt's `QDockWidget::isVisible()`
+    /// returns `false` (the buried tab's widget really is hidden
+    /// under the tab bar). That's the desired behaviour here --
+    /// we don't want to pay for a full-table match-count recount
+    /// when the indicator label can't be seen. This relies on an
+    /// observed Qt 6 behaviour rather than an explicitly
+    /// documented contract; if a future Qt release flips it, the
+    /// `OnFindCacheInvalidated` bump would start firing for
+    /// buried tabs too -- still correct but no longer free.
+    ///
+    /// The `mFindDock != nullptr` half guards against early
     /// constructor-phase callers (signals from the proxy can fire
     /// while the dock is still being built) and against shutdown
     /// (the `QPointer` clears before the connection is torn

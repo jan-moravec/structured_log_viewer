@@ -3665,11 +3665,17 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
                           "deduplicating defensively. This is a contract violation worth investigating.";
         }
         rows.erase(std::ranges::unique(rows).begin(), rows.end());
-        if (overflowed)
+        // Guard on `>` (not just `if (overflowed)`): the defensive
+        // dedup above can drop entries, so a `matches.size() ==
+        // cap + 1` result could end up with `rows.size() < cap`
+        // after de-duplication. An unconditional `resize(cap)`
+        // would then *grow* the vector with default-constructed
+        // zero ints -- those zeros look like spurious matches at
+        // proxy row 0 to both the total count and the
+        // `std::lower_bound` below. Trim only when we genuinely
+        // have surplus rows to discard.
+        if (rows.size() > static_cast<size_t>(MAX_FIND_MATCH_COUNT))
         {
-            // We requested cap+1 hits to detect overflow; trim
-            // the surplus before storing so `sortedRows.size()`
-            // matches the cap exactly.
             rows.resize(static_cast<size_t>(MAX_FIND_MATCH_COUNT));
         }
         mFindMatchCache = FindMatchCache{

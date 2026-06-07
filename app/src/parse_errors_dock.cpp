@@ -117,6 +117,21 @@ void ParseErrorsDock::AppendErrors(const QString &title, const std::vector<std::
         return;
     }
 
+    // Fall back to a non-empty group label when the caller passed
+    // an empty title. An empty `title` would otherwise render as
+    // a blank bold list row that looks like a missing translation
+    // or a corrupt entry. Every in-tree caller wraps the title in
+    // `tr(...)`, so this guard is purely defensive against a
+    // future caller that forgets -- the `qWarning` makes the
+    // omission visible instead of silently rendering a
+    // mystery-blank row.
+    QString effectiveTitle = title;
+    if (effectiveTitle.isEmpty())
+    {
+        qWarning() << "ParseErrorsDock::AppendErrors: empty title; using fallback label";
+        effectiveTitle = tr("Errors");
+    }
+
     const QIcon warningIcon = QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning);
 
     // Decide whether this batch should fire `firstBatchArrived`
@@ -171,7 +186,7 @@ void ParseErrorsDock::AppendErrors(const QString &title, const std::vector<std::
     // even after the user scrolls into them. The header is
     // disabled (non-selectable in keyboard nav) so arrow keys
     // step over it.
-    auto *headerItem = new QListWidgetItem(title);
+    auto *headerItem = new QListWidgetItem(effectiveTitle);
     QFont headerFont = headerItem->font();
     headerFont.setBold(true);
     headerItem->setFont(headerFont);

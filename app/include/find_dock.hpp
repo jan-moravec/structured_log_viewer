@@ -35,10 +35,15 @@ public:
     /// Show + raise the dock and focus the embedded line edit so
     /// the next keystroke lands in the search field. Idempotent.
     ///
-    /// Captures the currently-focused widget so a subsequent
-    /// `hideEvent` (Esc, "X" button, View menu toggle off) can
-    /// hand focus back to it. Without this, dismissing the bar
-    /// leaves focus dangling on whatever Qt picks next.
+    /// Re-stashes the currently-focused widget on *every* call
+    /// whose source focus is outside our subtree, so a Ctrl+F
+    /// invoked while the bar is already on-screen but the user
+    /// had clicked back into the table view picks up the most
+    /// recent target (rather than holding the original from the
+    /// very first reveal). The ancestor guard keeps a focus that
+    /// already lives inside the bar from stashing itself --
+    /// otherwise dismissing the bar would just bounce focus back
+    /// into the bar's own widget tree.
     void RevealAndFocus();
 
 signals:
@@ -83,8 +88,10 @@ protected:
 private:
     FindRecordWidget *mWidget = nullptr;
 
-    /// Stashed focus target captured by `RevealAndFocus`. Cleared
-    /// when consumed by `closeEvent` so a second close (after a
+    /// Stashed focus target refreshed by every `RevealAndFocus`
+    /// whose source focus is outside the bar's subtree (see
+    /// `RevealAndFocus` for the full rationale). Cleared when
+    /// consumed by `closeEvent` so a second close (after a
     /// second reveal without a fresh focus target) can't restore
     /// to a stale pointer.
     QPointer<QWidget> mFocusBeforeReveal;

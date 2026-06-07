@@ -23,19 +23,24 @@ FindDock::FindDock(QWidget *parent)
 
 void FindDock::RevealAndFocus()
 {
-    // Capture the pre-reveal focus only on a real reveal: a second
-    // call while the bar is already open should not overwrite the
-    // saved target with the find edit itself.
+    // Refresh `mFocusBeforeReveal` on *every* reveal whose source
+    // focus is outside our subtree. Earlier we gated this on
+    // `!isVisible()`, which meant a Ctrl+F invoked while the bar
+    // was already on-screen (but the user had clicked back into
+    // the table view) kept the stash pointing at whatever was
+    // focused on the very first reveal -- often a widget that no
+    // longer existed or no longer made sense to restore. The
+    // `isAncestorOf` guard still prevents a focus already inside
+    // the bar (the edit, the regex toggle, ...) from overwriting
+    // the saved target with itself; otherwise dismissing the bar
+    // would just bounce focus back into the bar's own widget tree.
+    QWidget *current = QApplication::focusWidget();
+    if (current != nullptr && !isAncestorOf(current))
+    {
+        mFocusBeforeReveal = current;
+    }
     if (!isVisible())
     {
-        QWidget *current = QApplication::focusWidget();
-        // Don't re-stash a pointer into our own subtree -- if the
-        // bar was hidden but somehow holds focus (test path), the
-        // restore would just bounce back into the find edit.
-        if (current != nullptr && !isAncestorOf(current))
-        {
-            mFocusBeforeReveal = current;
-        }
         show();
     }
     raise();

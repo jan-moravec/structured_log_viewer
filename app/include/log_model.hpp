@@ -270,6 +270,16 @@ public:
     /// An empty `roles` is Qt's "I don't know what changed"
     /// sentinel; this helper reports `false` for it so callers
     /// conservatively refresh on the sentinel.
+    ///
+    /// Emitter contract: any `dataChanged` that lists *only*
+    /// these four roles MUST NOT mutate `Qt::DisplayRole` /
+    /// `Qt::EditRole` (or any other value-bearing role) for the
+    /// emitted range -- if it does, the listeners that filter via
+    /// this helper will fall out of sync with the underlying
+    /// data. `RefreshAllRowStyles` upholds the contract for its
+    /// own emit; future style-only emits must do the same or add
+    /// the appropriate value role to the list so listeners
+    /// refresh.
     [[nodiscard]] static bool IsStyleOnlyRoleChange(const QList<int> &roles) noexcept;
 
 signals:

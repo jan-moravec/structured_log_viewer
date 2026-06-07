@@ -3,6 +3,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QColor>
+#include <QDebug>
 #include <QDockWidget>
 #include <QEvent>
 #include <QHBoxLayout>
@@ -260,7 +261,13 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
     // keystroke so multi-keystroke edits coalesce into one
     // `MatchCountRequested` emit. `QTimer::singleShot` does not
     // coalesce because each call schedules an independent fire.
+    //
+    // `objectName` is set so tests can probe the trailing vs
+    // max-age timers individually via `findChild<QTimer*>(...)`
+    // instead of walking every timer parented to this widget and
+    // guessing which is which.
     mMatchCountTimer = new QTimer(this);
+    mMatchCountTimer->setObjectName(QStringLiteral("matchCountDebounceTimer"));
     mMatchCountTimer->setSingleShot(true);
     mMatchCountTimer->setInterval(MATCH_COUNT_DEBOUNCE_MS);
     connect(mMatchCountTimer, &QTimer::timeout, this, &FindRecordWidget::EmitMatchCountRequest);
@@ -272,6 +279,7 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
     // a held-down key can't strand the "*i* of *N*" indicator at
     // its pre-activity value.
     mMatchCountMaxAgeTimer = new QTimer(this);
+    mMatchCountMaxAgeTimer->setObjectName(QStringLiteral("matchCountMaxAgeTimer"));
     mMatchCountMaxAgeTimer->setSingleShot(true);
     mMatchCountMaxAgeTimer->setInterval(MATCH_COUNT_MAX_AGE_MS);
     connect(mMatchCountMaxAgeTimer, &QTimer::timeout, this, &FindRecordWidget::EmitMatchCountRequest);
@@ -418,6 +426,15 @@ void FindRecordWidget::DismissBar()
             return;
         }
     }
+    // No host dock -- production never hits this (the widget is
+    // always parented under `FindDock`), but a test or future
+    // embedding could. Surface a `qWarning` so the silent no-op
+    // isn't mistaken for a working Escape: the user pressed Esc
+    // and nothing happened, which is hard to debug without a
+    // breadcrumb. Doesn't fire `Q_ASSERT` because non-dock
+    // hosting is a legitimate design choice for future variants
+    // (the bar simply has no chrome to dismiss).
+    qWarning() << "FindRecordWidget::DismissBar: no QDockWidget ancestor; Escape is a no-op in this configuration";
 }
 
 void FindRecordWidget::keyPressEvent(QKeyEvent *event)

@@ -10981,51 +10981,29 @@ private slots:
         QVERIFY2(findRecord != nullptr, "MainWindow must own a FindRecordWidget");
         auto *findEdit = findRecord->findChild<QLineEdit *>(QStringLiteral("findEdit"));
         QVERIFY2(findEdit != nullptr, "FindRecordWidget must expose its QLineEdit");
-        auto *trailingTimer = findRecord->findChild<QTimer *>(QStringLiteral("matchCountDebounceTimer"));
-        auto *maxAgeTimer = findRecord->findChild<QTimer *>(QStringLiteral("matchCountMaxAgeTimer"));
-        // Object names may not be set; fall back to walking timers.
-        if (trailingTimer == nullptr || maxAgeTimer == nullptr)
-        {
-            const QList<QTimer *> timers = findRecord->findChildren<QTimer *>();
-            // Skip the test gracefully if the timers aren't named.
-            if (timers.size() < 2)
-            {
-                QSKIP("FindRecordWidget timers are unnamed; cannot probe directly");
-            }
-        }
+        // `FindRecordWidget` names both timers via `setObjectName`
+        // so the test can probe them without the fragile "walk
+        // all timers and guess which is which" dance. If either
+        // name disappears the failure surfaces as a clear "the
+        // timer probe regressed" instead of a generic assertion
+        // mid-test.
+        auto *trailing = findRecord->findChild<QTimer *>(QStringLiteral("matchCountDebounceTimer"));
+        auto *maxAge = findRecord->findChild<QTimer *>(QStringLiteral("matchCountMaxAgeTimer"));
+        QVERIFY2(trailing != nullptr, "FindRecordWidget must name its trailing debounce timer");
+        QVERIFY2(maxAge != nullptr, "FindRecordWidget must name its max-age debounce timer");
 
         findEdit->setText(QStringLiteral("needle"));
-        // First Bump arms both timers.
+        // First Bump arms both timers (the textChanged emit above
+        // also arms them, but Bump is idempotent on that state).
         findRecord->BumpMatchCountDebounce();
-        // Second Bump while both already active: must not perturb
-        // their state. We verify by recording the remaining time
-        // before the second call and asserting it doesn't snap
-        // back to the full interval after.
-        const QList<QTimer *> timers = findRecord->findChildren<QTimer *>();
-        QTimer *trailing = nullptr;
-        QTimer *maxAge = nullptr;
-        for (QTimer *t : timers)
-        {
-            if (!t->isActive())
-            {
-                continue;
-            }
-            if (trailing == nullptr)
-            {
-                trailing = t;
-            }
-            else if (maxAge == nullptr && t != trailing)
-            {
-                maxAge = t;
-            }
-        }
-        QVERIFY2(trailing != nullptr, "first BumpMatchCountDebounce must arm the trailing timer");
-        QVERIFY2(maxAge != nullptr, "first BumpMatchCountDebounce must arm the max-age timer");
+        QVERIFY2(trailing->isActive(), "first BumpMatchCountDebounce must arm the trailing timer");
+        QVERIFY2(maxAge->isActive(), "first BumpMatchCountDebounce must arm the max-age timer");
 
-        // Sleep a couple of ms so the timer's `remainingTime()`
-        // ticks down. Then re-bump and assert the remaining time
-        // did NOT bounce back up (which would indicate the
-        // trailing timer was reset).
+        // Sleep a couple of ms so the trailing timer's
+        // `remainingTime()` ticks down. Then re-bump and assert
+        // the remaining time did NOT bounce back up (which would
+        // indicate the trailing timer was reset by the second
+        // bump -- the bug this guard is pinning).
         QTest::qWait(20);
         const int remainingBefore = trailing->remainingTime();
         findRecord->BumpMatchCountDebounce();
