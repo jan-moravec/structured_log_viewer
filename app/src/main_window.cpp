@@ -1920,7 +1920,7 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
         const size_t cut = std::min(mStreamingErrorsCut, allErrors.size());
         if (cut < allErrors.size())
         {
-            std::vector<std::string> thisFileErrors(
+            const std::vector<std::string> thisFileErrors(
                 allErrors.begin() + static_cast<std::ptrdiff_t>(cut), allErrors.end()
             );
             const QString title = mStreamingFileName.isEmpty()
