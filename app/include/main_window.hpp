@@ -1037,6 +1037,16 @@ private:
     qsizetype mStreamingLineCount = 0;
     qsizetype mStreamingErrorCount = 0;
 
+    /// High-water mark into `mModel->StreamingErrors()` consumed by
+    /// the per-file batch in `OnStreamingFinished`. Multi-file static
+    /// opens accumulate every file's errors in a single vector on
+    /// the model; this watermark lets us peel off only the errors
+    /// produced by the file that just finished so each file gets
+    /// its own labelled batch in the `ParseErrorsDock`. Reset to 0
+    /// alongside every `mParseErrorsDock->ResetSessionState()` to
+    /// stay in lockstep with the model's `mStreamingErrors.clear()`.
+    size_t mStreamingErrorsCut = 0;
+
     /// True after the first non-empty batch; gates the one-shot column
     /// auto-resize.
     bool mFirstStreamingBatchSeen = false;

@@ -1611,11 +1611,14 @@ void MainWindow::NewSession()
     }
 
     // Parse errors are session-scoped. `ResetSessionState` re-arms
-    // the auto-raise for the new session.
+    // the auto-raise for the new session. The per-file watermark
+    // mirrors the dock reset so the next session's first batch
+    // starts at index 0.
     if (mParseErrorsDock != nullptr)
     {
         mParseErrorsDock->ResetSessionState();
     }
+    mStreamingErrorsCut = 0;
 
     mCurrentSource.reset();
     mSessionMode = SessionMode::Idle;
@@ -1845,10 +1848,12 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
             mAnchors->ClearAll();
         }
         // Session-scoped; `ResetSessionState` re-arms the auto-raise.
+        // Watermark resets in lockstep with the dock + model error vector.
         if (mParseErrorsDock != nullptr)
         {
             mParseErrorsDock->ResetSessionState();
         }
+        mStreamingErrorsCut = 0;
         mCurrentSource.reset();
         mSessionMode = SessionMode::Idle;
         mLastTerminalSessionMode = SessionMode::Idle;
@@ -1895,6 +1900,36 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
 
     // Clear the `Source unavailable` latch.
     mSourceWaiting = false;
+
+    // Per-file batch under a header that names the file (or stream)
+    // that just finished. Fires *before* the chaining check so the
+    // intermediate file's errors don't get folded into the last
+    // file's batch in a multi-file static open. `mStreamingFileName`
+    // is still set to the just-finished source here -- the chaining
+    // path below will overwrite it for the next file.
+    //
+    // Open-failure entries in `mPendingOpenErrors` are intentionally
+    // *not* folded in here: they aren't tied to any one streamed file
+    // and would be misleading under a file-named header. They're
+    // surfaced under their own batch at the bottom of this function.
+    if (result == StreamingResult::Success)
+    {
+        const auto &allErrors = mModel->StreamingErrors();
+        // `std::min` guards against a model reset that landed between
+        // our last slice and now (would leave the watermark past end).
+        const size_t cut = std::min(mStreamingErrorsCut, allErrors.size());
+        if (cut < allErrors.size())
+        {
+            std::vector<std::string> thisFileErrors(
+                allErrors.begin() + static_cast<std::ptrdiff_t>(cut), allErrors.end()
+            );
+            const QString title = mStreamingFileName.isEmpty()
+                                      ? tr("Error Parsing Logs")
+                                      : tr("Error Parsing Logs \u2014 %1").arg(mStreamingFileName);
+            ShowParseErrors(title, thisFileErrors);
+        }
+        mStreamingErrorsCut = allErrors.size();
+    }
 
     // Multi-file static open: Success advances the queue. Keep
     // `mSessionMode == Static` across `StreamNextPendingFile` so
@@ -1946,22 +1981,17 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
     // settled. Drives the header warning glyph and the status-bar
     // mismatch summary via `columnHealthChanged`.
     mModel->RefreshColumnHealth();
-    // Only Success produces a post-parse error summary.
-    if (result == StreamingResult::Success)
+    // Per-file parse-error batches were already surfaced at the top
+    // of this function (one per file in the chain). What remains is
+    // any open-failure residue from the multi-file queue -- those
+    // entries are tied to files that never streamed, so they get
+    // their own dedicated batch instead of being mislabeled under
+    // a streamed-file header.
+    if (result == StreamingResult::Success && !mPendingOpenErrors.empty())
     {
-        std::vector<std::string> errors = mModel->StreamingErrors();
-        errors.insert(
-            errors.end(),
-            std::make_move_iterator(mPendingOpenErrors.begin()),
-            std::make_move_iterator(mPendingOpenErrors.end())
-        );
-        mPendingOpenErrors.clear();
-        ShowParseErrors(tr("Error Parsing Logs"), errors);
+        ShowParseErrors(tr("Error Opening File"), mPendingOpenErrors);
     }
-    else
-    {
-        mPendingOpenErrors.clear();
-    }
+    mPendingOpenErrors.clear();
     mStreamingFileName.clear();
     // Keep `mCurrentSource` on Success / Cancelled (rows are
     // still present, descriptor still describes them); drop it
@@ -2168,10 +2198,12 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
         mAnchors->ClearAll();
     }
     // Session-scoped; `ResetSessionState` re-arms the auto-raise.
+    // Watermark resets in lockstep with the dock + model error vector.
     if (mParseErrorsDock != nullptr)
     {
         mParseErrorsDock->ResetSessionState();
     }
+    mStreamingErrorsCut = 0;
     // Live-tail is transient and not auto-saved; leaving the prior
     // static session's uuid pinned would let closeEvent's
     // `RemoveOpenWindowUuid` drop that session from the multi-
@@ -2292,10 +2324,12 @@ void MainWindow::OpenNetworkStream()
         mAnchors->ClearAll();
     }
     // Session-scoped; `ResetSessionState` re-arms the auto-raise.
+    // Watermark resets in lockstep with the dock + model error vector.
     if (mParseErrorsDock != nullptr)
     {
         mParseErrorsDock->ResetSessionState();
     }
+    mStreamingErrorsCut = 0;
     DetachAutoSaveUuid();
 
     mStreamingFileName = QString::fromStdString(displayName);
@@ -3645,11 +3679,13 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         const SessionSwitchScope switchGuard(*this);
 
         mModel->Reset();
-        // Config load is a session boundary; re-arm the auto-raise.
+        // Config load is a session boundary; re-arm the auto-raise
+        // and reset the per-file slice watermark.
         if (mParseErrorsDock != nullptr)
         {
             mParseErrorsDock->ResetSessionState();
         }
+        mStreamingErrorsCut = 0;
         mModel->ConfigurationManager().SetConfiguration(std::move(parsed));
         // `SetConfiguration` does not emit a model signal; the
         // reset re-initialises the header section count and the
