@@ -11,151 +11,99 @@ class QListWidget;
 class QPushButton;
 class QLabel;
 
-/// Dockable panel that shows accumulated parse / open errors.
+/// Dockable panel that collects parse / open errors.
 ///
 /// Replaces the modal `QMessageBox::warning` that used to surface
-/// errors from `MainWindow::ShowParseErrors`. A persistent panel
-/// is better suited to streaming sessions where new errors can
-/// arrive at any moment without the user wanting to dismiss a
-/// dialog each time.
+/// errors from `MainWindow::ShowParseErrors`; a persistent panel
+/// fits streaming sessions where errors arrive continuously.
 ///
-/// Position persists across runs via `QMainWindow::saveState()`
-/// / `restoreState()` keyed on the dock's `objectName`. Entries
-/// are session-scoped — every destructive open path in
-/// `MainWindow` calls `ClearErrors()`.
-///
-/// To keep pathological streams (millions of malformed lines)
-/// from OOM-ing the GUI, the live store is capped at
-/// `MAX_DISPLAYED_ERRORS`. Past the cap the dock evicts oldest
-/// entries and shows a sticky "and N more dropped" footer so the
-/// user knows the count is honest.
+/// Position persists via `QMainWindow::saveState()` / `restoreState()`.
+/// Entries are session-scoped: every destructive open path in
+/// `MainWindow` calls `ResetSessionState()`. The live store is
+/// capped at `MAX_DISPLAYED_ERRORS`; older entries are evicted and
+/// a sticky overflow footer reports the dropped count.
 class ParseErrorsDock : public QDockWidget
 {
     Q_OBJECT
 
 public:
-    /// Hard cap on stored entries. Beyond this the oldest are
-    /// evicted; the eviction count surfaces in the summary.
+    /// Hard cap on stored entries. Older ones are evicted and the
+    /// count is surfaced in the summary.
     static constexpr int MAX_DISPLAYED_ERRORS = 1000;
 
     explicit ParseErrorsDock(QWidget *parent = nullptr);
 
-    /// Append one batch of errors under @p title. No-op for an
-    /// empty @p errors. The dock fires `firstBatchArrived` only
-    /// once per session boundary (see `ResetSessionState`);
-    /// subsequent batches update silently and rely on the
-    /// status-bar indicator. This avoids stealing focus from a
-    /// streaming-session user who has already deliberately closed
-    /// the dock or used the Clear button mid-session.
+    /// Append one batch of errors under @p title. No-op for empty
+    /// @p errors. Fires `firstBatchArrived` once per session
+    /// (cleared only by `ResetSessionState`) so a user who already
+    /// dismissed the dock isn't yanked back to it mid-session.
     void AppendErrors(const QString &title, const std::vector<std::string> &errors);
 
-    /// Drop every displayed entry. Wired to the in-dock Clear
-    /// button. Does **not** re-arm `firstBatchArrived`: a user
-    /// who clicks Clear and dismisses the dock should not have
-    /// it re-pop the next time a streaming line fails to parse.
-    /// Use `ResetSessionState()` for the destructive session
-    /// boundary path (NewSession, OpenLogStreamFromPath, ...).
+    /// Drop every displayed entry. Does NOT re-arm
+    /// `firstBatchArrived`; use `ResetSessionState` for that.
     void ClearErrors();
 
-    /// Drop every displayed entry **and** re-arm
-    /// `firstBatchArrived` so the next call to `AppendErrors`
-    /// fires it again. `MainWindow` calls this from every
-    /// destructive session boundary (NewSession,
-    /// OpenLogStreamFromPath, OpenNetworkStream,
-    /// ApplyLoadedConfiguration, append-replace) so a fresh
-    /// session can auto-raise the dock on its first error.
+    /// Drop every entry AND re-arm `firstBatchArrived`. Called
+    /// from every destructive session boundary in `MainWindow`.
     void ResetSessionState();
 
-    /// Total number of error entries currently displayed (does
-    /// not include evicted entries; see @p DroppedCount). O(1).
+    /// Total entries currently displayed (excludes evicted). O(1).
     [[nodiscard]] int Count() const noexcept
     {
         return mErrorCount;
     }
 
-    /// Number of entries evicted by the `MAX_DISPLAYED_ERRORS`
-    /// cap since the last `ClearErrors()`. Reflected in the
-    /// summary header.
+    /// Entries evicted by `MAX_DISPLAYED_ERRORS` since the last
+    /// `ClearErrors()`. Reflected in the summary header.
     [[nodiscard]] int DroppedCount() const noexcept
     {
         return mDroppedCount;
     }
 
 signals:
-    /// Emitted whenever the displayed-error count or the dropped
-    /// count changes. The status-bar indicator listens here so it
-    /// can hide itself when the dock empties and surface both
-    /// figures in its tooltip.
+    /// Emitted on every count change. The status-bar indicator listens
+    /// here to hide itself when empty and to update its tooltip.
     void countChanged(int count, int droppedCount);
 
-    /// Emitted on the first batch appended after a `ClearErrors()`
-    /// (or since construction). `MainWindow` listens so it can
-    /// decide whether to raise / show the dock, factoring in
-    /// whether the user is currently doing something the auto-raise
-    /// would interrupt (e.g. typing in the find bar). Moving the
-    /// raise decision out of the dock keeps the dock unaware of
-    /// the rest of the chrome.
+    /// First batch after construction or `ResetSessionState`.
+    /// `MainWindow` decides whether to raise the dock (it shouldn't
+    /// interrupt e.g. an in-progress find).
     void firstBatchArrived();
 
-    /// Emitted when the user actually dismisses the dock. Not
-    /// emitted on tab inactivation -- see `FindDock::closed` for
-    /// the same idiom and rationale.
+    /// Emitted on genuine user dismissal. See `FindDock::closed`
+    /// for the rationale.
     void closed();
 
 protected:
-    /// Emit `closed` once the base class has accepted the close so
-    /// the View-menu checkmark can drop without false-firing on
-    /// tab switches.
     void closeEvent(QCloseEvent *event) override;
 
 private:
-    /// Refresh the header summary (e.g. "12 entries") and emit
-    /// `countChanged`.
+    /// Refresh the header summary and emit `countChanged`.
     void RefreshSummary();
 
-    /// Copy the selected error rows to the clipboard, one entry
-    /// per line. Group headers and the overflow footer are
-    /// included verbatim so the pasted block reads coherently.
+    /// Copy selected error rows (with synthesised headers and
+    /// overflow footer) to the clipboard.
     void CopySelection() const;
 
-    /// Keep `mList` under the cap by evicting oldest entries
-    /// (and any group header that becomes orphaned). Increments
-    /// `mDroppedCount` per evicted error row.
-    ///
-    /// Does *not* manage the overflow footer -- that's
-    /// `RebuildOverflowFooter`'s job. Splitting them matters
-    /// because a single batch larger than the cap reaches
-    /// `mErrorCount == MAX_DISPLAYED_ERRORS` exactly (the
-    /// pre-trim in `AppendErrors` lops the surplus off the
-    /// *input* before items are minted), so this method has no
-    /// eviction work to do but the dock still owes the user a
-    /// footer reflecting the pre-trimmed drops.
+    /// Evict oldest entries until the count is back under the cap.
+    /// Re-mints the most recently evicted group header when its
+    /// surviving rows would otherwise be stranded.
     void TrimToCap();
 
-    /// Ensure the trailing overflow footer is present iff
-    /// `mDroppedCount > 0`, with text reflecting the current
-    /// count. Idempotent. The caller is responsible for having
-    /// removed any prior footer (`AppendErrors` does this at the
-    /// top of the function) so this method only ever *adds* a
-    /// footer; it never has to compare-and-replace.
+    /// Append the "...N more dropped" footer iff `mDroppedCount > 0`.
+    /// Caller is responsible for stripping any prior footer first.
     void RebuildOverflowFooter();
 
     QListWidget *mList = nullptr;
     QLabel *mSummary = nullptr;
     QPushButton *mClearButton = nullptr;
 
-    /// Running tally of error rows in `mList`. Maintained on
-    /// every append / evict / clear so `Count()` stays O(1) and
-    /// `RefreshSummary` doesn't walk the list.
+    /// Running tally of error rows in `mList` so `Count()` stays O(1).
     int mErrorCount = 0;
     /// Cumulative evictions since the last `ClearErrors()`.
     int mDroppedCount = 0;
-    /// `false` until the first `AppendErrors` of the session, then
-    /// `true` until `ResetSessionState` re-arms it. Decoupled from
-    /// `mErrorCount`/`mDroppedCount` so the in-dock Clear button
-    /// (which zeroes both counters) does not retrigger
-    /// `firstBatchArrived` on the next streamed parse error -- if
-    /// the user just clicked Clear they have signalled they're
-    /// not interested in being interrupted again.
+    /// First-batch latch; cleared only by `ResetSessionState`. Decoupled
+    /// from the counts so the in-dock Clear button doesn't re-arm the
+    /// auto-raise -- the user already signalled they're not interested.
     bool mHasSeenFirstBatch = false;
 };

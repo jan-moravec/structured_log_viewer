@@ -94,18 +94,9 @@ RecordDetailDock::RecordDetailDock(LogModel *model, QWidget *parent)
                 {
                     return;
                 }
-                // Skip style-only emits (theme switch repaints fire
-                // `dataChanged` covering Background / Foreground /
-                // Font only). The pane renders Display / Edit-role
-                // text, so a re-tint doesn't change what we show.
-                // Filter out the theme-refresh notifications via
-                // `LogModel::IsStyleOnlyRoleChange` -- the dock
-                // body only shows display-role text, so a
-                // Background/Foreground/Font flip can't change
-                // anything visible. Empty `roles` list is Qt's
-                // "I don't know what changed" sentinel; the
-                // helper reports `false` so we conservatively
-                // refresh.
+                // Skip style-only emits (theme-switch repaints): the
+                // pane renders display-role text, so Background /
+                // Foreground / Font flips don't change what we show.
                 if (LogModel::IsStyleOnlyRoleChange(roles))
                 {
                     return;

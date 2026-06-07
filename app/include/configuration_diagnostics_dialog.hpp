@@ -31,11 +31,8 @@ public:
     [[nodiscard]] static int MismatchedColumnCount(const LogModel &model);
 
 protected:
-    /// Re-run `Refresh()` whenever the palette/style flips so the
-    /// theme-aware warning-row highlight tracks Light <-> Dark
-    /// switches while the dialog is open. Without this, the cell
-    /// brushes stay frozen at whatever colour they were when the
-    /// dialog was first populated.
+    /// Re-render so the warning-row tint follows Light <-> Dark
+    /// switches while the dialog is open.
     void changeEvent(QEvent *event) override;
 
 signals:

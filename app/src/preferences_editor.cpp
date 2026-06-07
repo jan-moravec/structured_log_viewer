@@ -255,11 +255,7 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
     auto *cancelButton = new QPushButton("Cancel", this);
 
     connect(okButton, &QPushButton::clicked, this, [this]() {
-        // Mark the close as button-initiated so `closeEvent` skips
-        // the revert: Ok has already persisted the new state, and
-        // re-applying `PersistedSelection()` plus a fresh
-        // `StreamingControl::LoadConfiguration()` would just hit
-        // disk again to no effect.
+        // Bypass `closeEvent`'s revert: Ok already persisted state.
         mClosingViaButton = true;
         // Theme selection is already live; Ok just persists it.
         if (mTheme != nullptr)
@@ -301,12 +297,9 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
         {
             mTheme->SetActiveSelection(mTheme->PersistedSelection());
         }
-        // Revert the spinbox-edited values to the persisted ones; no
-        // emit needed because the on-disk values are unchanged.
+        // Revert spinbox-edited values to persisted; on-disk unchanged.
         StreamingControl::LoadConfiguration();
-        // Cancel has already done the revert; mark the close as
-        // button-initiated so `closeEvent` doesn't redo the same
-        // disk read.
+        // Bypass `closeEvent`'s revert: Cancel already reverted.
         mClosingViaButton = true;
         close();
     });
@@ -416,22 +409,16 @@ void PreferencesEditor::ShowThemeStatus(const QString &message)
 
 void PreferencesEditor::closeEvent(QCloseEvent *event)
 {
-    // Bypass the revert when Ok/Cancel routed us here -- they
-    // have already taken care of the persisted state, and
-    // re-running `StreamingControl::LoadConfiguration()` would
-    // just hit disk again (and could surface a transient I/O
-    // error during a perfectly normal Ok). Reset the flag so a
-    // re-shown dialog falls back to the genuine-close path.
     if (mClosingViaButton)
     {
+        // Ok / Cancel already took care of persisted state. Reset
+        // the flag so a re-shown dialog falls back to genuine close.
         mClosingViaButton = false;
         QWidget::closeEvent(event);
         return;
     }
-    // Genuine close (X, Alt+F4, programmatic `close()` from
-    // anywhere else): treat as Cancel. Revert any live-previewed
-    // theme and reload the streaming/session config from disk so
-    // a Dark preview doesn't leak past the dialog.
+    // Genuine close (X / Alt+F4 / programmatic `close()`): treat
+    // as Cancel so a live-previewed theme doesn't leak past the dialog.
     if (mTheme != nullptr)
     {
         mTheme->SetActiveSelection(mTheme->PersistedSelection());

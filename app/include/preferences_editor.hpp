@@ -25,20 +25,10 @@ public:
     void UpdateFields();
 
 protected:
-    /// Treat closing the window (X button, Esc, OS shortcut) as
-    /// Cancel: revert any live-previewed theme to the persisted
-    /// selection and reload the streaming/session config. Without
-    /// this, a Dark preview leaks past the dialog until the next
-    /// application restart, because `QWidget::close()` does not go
-    /// through the Cancel slot.
-    ///
-    /// Both Ok and Cancel slots set `mClosingViaButton` and call
-    /// `close()`, so this slot fires for them too. Skipping the
-    /// revert in those paths avoids an extra disk read on Ok and
-    /// a redundant theme round-trip on Cancel; the bypass is keyed
-    /// on the flag rather than just an idempotency claim because
-    /// `StreamingControl::LoadConfiguration` is not free and could
-    /// surface transient I/O errors during a perfectly normal Ok.
+    /// Treat genuine close (X / Esc / OS shortcut) as Cancel so a
+    /// live-previewed theme doesn't leak past the dialog. Ok / Cancel
+    /// slots set `mClosingViaButton` to bypass this path -- they've
+    /// already taken care of state.
     void closeEvent(QCloseEvent *event) override;
 
 signals:
@@ -83,10 +73,7 @@ private:
     /// its theme work in that case.
     ThemeControl *mTheme;
 
-    /// Set by the Ok / Cancel button slots immediately before they
-    /// call `close()`, so `closeEvent` can skip the revert path.
-    /// The X button / Alt+F4 / programmatic `close()` from
-    /// elsewhere all leave it `false`, which is the case the
-    /// revert exists for.
+    /// Set by Ok / Cancel before they call `close()` so `closeEvent`
+    /// skips the revert path. Genuine close (X / Alt+F4) leaves it false.
     bool mClosingViaButton = false;
 };

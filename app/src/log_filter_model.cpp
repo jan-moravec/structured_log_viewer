@@ -1232,24 +1232,14 @@ Qt::MatchFlags LogFilterModel::ComposeFindFlags(bool wildcards, bool regularExpr
 
 bool LogFilterModel::Matches(const QVariant &data, const QVariant &value, Qt::MatchFlags flags)
 {
-    // `Qt::MatchExactly == 0`, so `flags.testFlag(Qt::MatchExactly)`
-    // returns true only when `flags` is exactly 0 -- every caller in
-    // this codebase OR-s in `MatchWrap | MatchRecursive`, so the
-    // direct-equality branch was historically dead code. Mask the
-    // match-type field (see the QString overload below for the
-    // disjoint-bit rationale) and short-circuit MatchExactly on the
-    // QVariant equality, which is cheaper than stringifying twice and
-    // preserves typed comparisons (numeric, timestamp, enum id).
+    // Mask the match-type field (see QString overload below for the
+    // disjoint-bit rationale). Short-circuit MatchExactly on the
+    // QVariant compare -- cheaper than stringifying and preserves
+    // typed comparisons.
     //
-    // Caveat: because `MatchExactly == 0`, *any* `flags` value with
-    // no match-type bit set (e.g. `MatchWrap | MatchRecursive` on
-    // its own) silently routes through the exact-equality branch.
-    // No in-tree caller currently passes a flag set with no type
-    // bit -- `LogFilterModel::ComposeFindFlags` always picks one
-    // of Contains / Wildcard / Regex -- but a future caller mis-composing flags
-    // would otherwise get the wrong match silently. The Q_ASSERT
-    // below blows up loudly in debug; release builds still default
-    // to MatchExactly to preserve Qt's documented semantics.
+    // `MatchExactly == 0`, so flags with no match-type bit silently
+    // route here. The assert catches mis-composed flags in debug;
+    // release defaults to MatchExactly per Qt's documented semantics.
     constexpr int MATCH_TYPE_MASK = 0x000F;
     const int matchType = static_cast<int>(flags) & MATCH_TYPE_MASK;
     Q_ASSERT_X(
@@ -1268,19 +1258,12 @@ bool LogFilterModel::Matches(const QVariant &data, const QVariant &value, Qt::Ma
 
 bool LogFilterModel::Matches(const QString &text, const QString &needle, Qt::MatchFlags flags)
 {
-    // `Qt::MatchFlag`'s match-type values are *not* disjoint bit
-    // flags: `MatchWildcard = 5` overlaps `MatchContains = 1` and
+    // `Qt::MatchFlag`'s match-type values are NOT disjoint bits:
+    // `MatchWildcard = 5` overlaps `MatchContains = 1` and
     // `MatchRegularExpression = 4`; `MatchEndsWith = 3` overlaps
-    // `MatchContains = 1` and `MatchStartsWith = 2`. A naive
-    // `testFlag` ladder therefore picks the *first* check whose
-    // bit subset is present, which is silently the *least*
-    // specific match -- so `MatchWildcard` would fall into the
-    // `MatchContains` branch and the wildcard search would run
-    // as a plain substring scan with the literal `*` / `?`. Mask
-    // the match-type field and compare for exact equality so the
-    // semantics line up with how Qt's own item-view searches
-    // interpret these constants. The QVariant overload above uses
-    // the same mask so the two stay in lock-step.
+    // `MatchContains | MatchStartsWith`. A `testFlag` ladder would
+    // silently pick the least specific match. Mask and compare for
+    // equality so the semantics match Qt's own item-view searches.
     constexpr int MATCH_TYPE_MASK = 0x000F;
     const int matchType = static_cast<int>(flags) & MATCH_TYPE_MASK;
     switch (matchType)
@@ -1304,13 +1287,9 @@ bool LogFilterModel::Matches(const QString &text, const QString &needle, Qt::Mat
         return regex.match(text).hasMatch();
     }
     default:
-        // `Qt::MatchFixedString` (value 8) lands here and is
-        // deliberately *not* implemented -- no in-tree caller
-        // needs it, and the find bar exposes contains/regex/
-        // wildcard explicitly. A future contributor adding it
-        // should slot a case label in above; today the default
-        // is "no match" so a typo'd flag set fails closed
-        // instead of silently behaving like contains.
+        // `Qt::MatchFixedString` (8) is deliberately not implemented;
+        // no in-tree caller needs it. Fail closed rather than silently
+        // behaving like contains.
         return false;
     }
 }

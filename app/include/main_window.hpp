@@ -437,38 +437,24 @@ private slots:
     /// mismatches are present.
     void UpdateDiagnosticsStatus();
 
-    /// Refresh the status-bar parse-errors indicator. Wired to
-    /// `ParseErrorsDock::countChanged`; hides the button when the
-    /// dock is empty. @p droppedCount surfaces in the tooltip so
-    /// the user can tell when the dock has truncated.
+    /// Refresh the status-bar parse-errors indicator. Hooked to
+    /// `ParseErrorsDock::countChanged`; hides when the dock is empty.
     void UpdateParseErrorsStatus(int count, int droppedCount);
 
     /// Recount matches for the current find query and push the
-    /// result back into the find bar. Hooked up to
-    /// `FindRecordWidget::MatchCountRequested`. Skips work when
-    /// the bar is hidden / the proxy model is unset / the needle
-    /// is empty.
-    ///
-    /// Caches the row list keyed by `(needle, wildcards, regex)`.
-    /// Subsequent calls with the same needle (e.g. after a
-    /// Next / Previous click moved the current index) skip the
-    /// full-table scan and just resolve `i` via binary search.
-    /// `InvalidateFindMatchCache` is wired to model / proxy
-    /// signals that change which rows match.
+    /// result back into the find bar. Caches the row list keyed by
+    /// `(needle, wildcards, regex)` so Next / Previous clicks reuse
+    /// the scan and just resolve the new `i` via binary search.
+    /// Skipped when the bar is hidden / proxy is unset / needle empty.
     void UpdateFindMatchCount(const QString &text, bool wildcards, bool regularExpressions);
 
     /// Drop the cached match-row list. Wired to model resets and
-    /// proxy layout changes so a stale cache cannot survive a
-    /// filter add / remove or a streaming append.
+    /// proxy layout changes so a stale cache cannot survive.
     void InvalidateFindMatchCache();
 
-    /// Centralised invalidation + debounced re-request. Wired to
-    /// every model / proxy signal that can change the match set
-    /// (`rowsInserted`, `rowsRemoved`, `layoutChanged`, model
-    /// resets, `dataChanged`). Doing a synchronous re-scan per
-    /// signal would melt under streaming, so the cache is dropped
-    /// eagerly and the visible find bar's debounce timer is
-    /// nudged so a single recount runs after activity settles.
+    /// Centralised invalidate + debounced re-request. Wired to every
+    /// model / proxy signal that can change the match set; a sync
+    /// re-scan per signal would melt under streaming.
     void OnFindCacheInvalidated();
 
     void Find();
@@ -808,60 +794,33 @@ private:
     /// Uses `Qt::UniqueConnection`, so repeat calls are idempotent.
     void RebindRecordDetailSelectionTracking();
 
-    /// True iff the find dock is realised and on-screen.
-    ///
-    /// Tabified-dock semantics: when the dock is the inactive tab
-    /// of a tabified group, Qt's `QDockWidget::isVisible()`
-    /// returns `false` (the buried tab's widget really is hidden
-    /// under the tab bar). That's the desired behaviour here --
-    /// we don't want to pay for a full-table match-count recount
-    /// when the indicator label can't be seen. This relies on an
-    /// observed Qt 6 behaviour rather than an explicitly
-    /// documented contract; if a future Qt release flips it, the
-    /// `OnFindCacheInvalidated` bump would start firing for
-    /// buried tabs too -- still correct but no longer free.
-    ///
-    /// The `mFindDock != nullptr` half guards against early
-    /// constructor-phase callers (signals from the proxy can fire
-    /// while the dock is still being built) and against shutdown
-    /// (the `QPointer` clears before the connection is torn
-    /// down). Centralised so every find-aware path goes through
-    /// the same null + visibility check.
+    /// True iff the find dock is realised and visible. Tabified-dock
+    /// semantics: the inactive tab of a tabified group reports
+    /// `isVisible() == false`, which is exactly what we want -- no
+    /// match-count recount when the indicator can't be seen. The null
+    /// check guards constructor-phase and shutdown races.
     [[nodiscard]] bool IsFindBarVisible() const noexcept
     {
         return mFindDock != nullptr && mFindDock->isVisible();
     }
 
-    /// True iff the find dock is visible AND keyboard focus sits
-    /// inside its widget tree. Used by the parse-errors auto-raise
-    /// guard (don't yank focus from a user mid-search) and the
-    /// `Find()` smart toggle (Ctrl+F closes the bar only when
-    /// focus is already in it).
+    /// True iff the find dock is visible AND holds keyboard focus.
+    /// Used by the parse-errors auto-raise guard and `Find()`'s smart
+    /// toggle (Ctrl+F closes only when focus is already in the bar).
     [[nodiscard]] bool FindBarHoldsFocus() const noexcept
     {
         return IsFindBarVisible() && mFindDock->isAncestorOf(QApplication::focusWidget());
     }
 
     /// Wire the standard dock toggle pattern: `action->toggled` opens
-    /// (`onShow` callback, defaults to `dock->show() + dock->raise()`)
-    /// or closes (`dock->close()`) the dock; `dock->visibilityChanged(true)`
-    /// re-checks the action (covers tab activations and `restoreState`);
-    /// `dock->closed` un-checks it on genuine user dismissal.
-    /// Splitting visibility into "on" via `visibilityChanged(true)` and
-    /// "off" via `closed` is what lets the menu checkmark survive tab
-    /// switches inside a tabified group -- `visibilityChanged(false)`
-    /// fires for both genuine close and tab inactivation, so listening
-    /// to it would un-check the action every time the user switched tabs.
+    /// (`onShow`, default show+raise) or closes (`close()`) the dock;
+    /// `visibilityChanged(true)` re-checks the action; `closedSignal`
+    /// un-checks it on genuine dismissal. Splitting on/off across
+    /// these two signals is what lets the menu checkmark survive
+    /// tab switches in a tabified group.
     ///
-    /// `onShown` runs after the visibility-change handler checks the
-    /// action and is the place to plug per-dock side effects (e.g.
-    /// `RecordDetailDock` re-pulling the table selection, `FindDock`
-    /// catching up the match count). Defaults to no-op.
-    ///
-    /// All four dock toggles in `MainWindow` (Anchors, Find,
-    /// ParseErrors, RecordDetails) used to inline this 25-line
-    /// pattern, which made it easy to drift one wiring relative to
-    /// the others; centralising fixes the contract in one spot.
+    /// `onShown` runs after the action is re-checked and is the hook
+    /// for per-dock catch-up work (selection refresh, match count, ...).
     template <typename DockT>
     void WireDockToggle(
         DockT *dock,
@@ -877,55 +836,36 @@ private:
     LogFilterModel *mSortFilterProxyModel;
     LogTableView *mTableView;
     LogModel *mModel;
-    /// Dockable find bar. Owned via `QMainWindow` parentage.
-    /// `mFindRecord` is the `FindRecordWidget` it hosts. Both
-    /// are `QPointer`s so a model / proxy signal that fires
-    /// during shutdown -- after Qt has destroyed the find dock
-    /// subtree but before the connection on `MainWindow` is torn
-    /// down -- finds them already null instead of dangling. The
-    /// connections are wired with PMFs to slots on `this`, which
-    /// lives until the very end of `~MainWindow`, so the window
-    /// of vulnerability is real even if narrow.
+    /// Dockable find bar (owned via `QMainWindow` parentage).
+    /// `mFindRecord` is the hosted widget. `QPointer` on both so
+    /// model / proxy signals that fire during shutdown find them
+    /// null instead of dangling.
     QPointer<FindDock> mFindDock;
     QPointer<FindRecordWidget> mFindRecord;
     /// Dockable replacement for the old `QMessageBox::warning`
     /// parse-error popups. Hidden by default; auto-raised on the
-    /// first error of a session. `QPointer` for the same shutdown
-    /// reasoning as `mFindDock`.
+    /// first error of a session.
     QPointer<ParseErrorsDock> mParseErrorsDock;
     /// Toggle action for `mFindDock`, mirrored onto the View menu.
-    /// Programmatic because the .ui has no entry; re-added on
-    /// every `RebuildViewMenu`.
+    /// Programmatic because the .ui has no entry.
     QAction *mActionToggleFind = nullptr;
-    /// Toggle action for `mParseErrorsDock`. Same lifecycle as
-    /// `mActionToggleFind`.
+    /// Toggle action for `mParseErrorsDock`.
     QAction *mActionToggleParseErrors = nullptr;
-    /// Status-bar indicator that surfaces when the parse-errors
-    /// dock has entries; clicking it opens the dock. Mirrors the
-    /// pattern used by `mDiagnosticsButton`.
+    /// Status-bar indicator that surfaces when the parse-errors dock
+    /// has entries; clicking it opens the dock.
     QPushButton *mParseErrorsStatusButton = nullptr;
 
-    /// Hard cap on rows the live "*i* of *N*" scan may collect
-    /// before short-circuiting. The scan runs synchronously on
-    /// the GUI thread; an unbounded walk over a million-row
-    /// proxy with a frequent needle ("the", " ", ...) freezes
-    /// the UI for hundreds of ms per recount. Past the cap the
-    /// indicator shows "*N*+" so the user can tell the count is
-    /// truncated; Next / Previous still work via the live
-    /// `FindRecords` path which has its own start position and
-    /// doesn't pay the full-table scan.
+    /// Hard cap on the "*i* of *N*" scan. The scan runs synchronously
+    /// on the GUI thread; an unbounded walk over a million-row proxy
+    /// with a frequent needle would freeze the UI per recount. Past
+    /// the cap the indicator shows "*N*+"; Next / Previous still work.
     static constexpr int MAX_FIND_MATCH_COUNT = 10000;
 
-    /// Cached match-row list for the find bar's "*i* of *N*"
-    /// indicator. Keyed by `(needle, wildcards, regex)` so a
-    /// Next / Previous click after the count was last computed
-    /// can resolve the new `i` via binary search instead of
-    /// re-running `MatchRow` over the entire proxy. `sortedRows`
-    /// is row-deduplicated (a row matching in N visible columns
-    /// counts once) so the indicator agrees with how
-    /// `FindRecords` walks the table. `overflowed` is set when
-    /// the scan stopped at `MAX_FIND_MATCH_COUNT` rather than
-    /// running to completion.
+    /// Cached match-row list for the "*i* of *N*" indicator. Keyed by
+    /// `(needle, wildcards, regex)` so a Next / Previous click can
+    /// resolve the new `i` via binary search instead of re-scanning.
+    /// Row-deduplicated so the indicator agrees with how `FindRecords`
+    /// walks the table. `overflowed` is set when the scan hit the cap.
     struct FindMatchCache
     {
         QString needle;
@@ -1147,10 +1087,9 @@ void MainWindow::WireDockToggle(
 {
     Q_ASSERT(dock != nullptr);
     Q_ASSERT(action != nullptr);
-    // Toggle action -> show / close. Reverts the toggle when the
-    // host main window is not yet realised (early test driver
-    // call) so the action can't sit checked while the dock stays
-    // hidden.
+    // Toggle -> show / close. Reverts the toggle when the host
+    // isn't realised (early test driver) so the action can't sit
+    // checked while the dock stays hidden.
     connect(action, &QAction::toggled, this, [this, dock, action, onShow](bool on) {
         if (on && !isVisible())
         {
@@ -1172,16 +1111,15 @@ void MainWindow::WireDockToggle(
         }
         else
         {
-            // `close()` (not `hide()`) so the dock subclass'
-            // `closeEvent` fires and `closedSignal` propagates.
+            // `close()` (not `hide()`) so `closeEvent` fires and
+            // `closedSignal` propagates.
             dock->close();
         }
     });
-    // On-edge: `visibilityChanged(true)` fires for cold reveals
-    // *and* tab activations, both of which want the action
-    // checked. Off-edge `visibilityChanged(false)` is ambiguous
-    // (tab inactivation looks the same), so we don't listen for
-    // it -- `closedSignal` handles that side.
+    // `visibilityChanged(true)` fires for cold reveals AND tab
+    // activations; both want the action checked. We don't listen
+    // to the false edge -- `closedSignal` handles that side because
+    // tab inactivation also fires `visibilityChanged(false)`.
     connect(dock, &QDockWidget::visibilityChanged, this, [action, onShown](bool visible) {
         if (!visible)
         {

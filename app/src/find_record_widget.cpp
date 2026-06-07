@@ -25,72 +25,42 @@
 
 namespace
 {
-/// Debounce window after a key press before we ask the parent to
-/// recount matches. Avoids a full-table scan on every keystroke
-/// of a long word.
+/// Trailing-edge debounce after a keystroke / model bump before we
+/// recount matches. Coalesces fast typing into one scan.
 constexpr int MATCH_COUNT_DEBOUNCE_MS = 120;
 
-/// Hard cap on how long a match-count emit can be deferred. The
-/// trailing-edge debounce restarts on every keystroke / model
-/// bump, which under continuous activity (live-tail streaming,
-/// long words held down) means it would never fire and the "*i*
-/// of *N*" indicator would lag the live data by minutes. The
-/// max-age timer is armed once when the trailing debounce first
-/// starts and is *not* restarted, so it guarantees an emit
-/// within this window even when the trailing timer keeps
-/// resetting.
+/// Max age the debounced match-count emit can be deferred. The
+/// trailing timer restarts on every bump and would never fire under
+/// sustained activity (streaming, held keys), so this caps the lag.
 constexpr int MATCH_COUNT_MAX_AGE_MS = 750;
 
-/// Visual minimum so the search field doesn't collapse to nothing
-/// when the bar is squeezed.
+/// Visual minimum for the search field.
 constexpr int EDIT_MIN_WIDTH = 220;
 
-/// Floor for the find bar as a whole. Drives `setMinimumWidth` on
-/// the widget so a floating `FindDock` can't collapse below this
-/// (the line edit's own minimum protects only the inner layout,
-/// not the dock's outer frame). Sized to fit the line edit, both
-/// toggles, the count label, and both arrow buttons without
-/// truncation.
+/// Widget-level minimum so a floating `FindDock` can't be dragged
+/// narrow enough to truncate the toggles or count label.
 constexpr int WIDGET_MIN_WIDTH = 360;
 
-/// Outer margins / spacing for the find bar's horizontal layout.
-/// Matches the densities of the other docks (`anchors_dock`,
-/// `record_detail_widget`).
 constexpr int LAYOUT_OUTER_H_MARGIN = 6;
 constexpr int LAYOUT_OUTER_V_MARGIN = 4;
 constexpr int LAYOUT_SPACING = 4;
 
-/// Reserved width for the "i of N" label so the count digits
-/// don't shift the arrow buttons left/right as totals grow.
+/// Reserved width for the count label so digits don't shift the arrow
+/// buttons around as totals grow.
 constexpr int MATCH_LABEL_MIN_WIDTH = 80;
 
-/// Edge length for the painted arrow icons. Falls back to this
-/// when `QStyle::PM_SmallIconSize` returns nonsense (offscreen
-/// QPA with no style hint table).
+/// Edge length for the arrow icons when `PM_SmallIconSize` is unavailable.
 constexpr int ARROW_ICON_FALLBACK_PX = 14;
 
-/// Fraction of the icon edge to inset the triangle from each
-/// side. Tuned by eye to match the visual weight of the
-/// surrounding `.*` / `*?` toggle glyphs.
+/// Triangle inset / centre as fractions of the icon edge. Tuned by
+/// eye to match the visual weight of the `.*` / `*?` toggle glyphs.
 constexpr qreal ARROW_INSET_RATIO = 0.18;
-
-/// Centre of the icon expressed as a fraction of the edge.
 constexpr qreal ARROW_CENTRE_RATIO = 0.5;
 
-/// Build a small chevron-style arrow icon painted in @p color so
-/// the glyph follows the active palette / theme. `pointingUp =
-/// true` mints the previous-match arrow (apex at the top), false
-/// the next-match arrow (apex at the bottom). Replaces
-/// `QStyle::SP_ArrowUp` / `SP_ArrowDown`, which Qt bakes as raster
-/// black-on-transparent pixmaps that vanish on dark themes.
-///
-/// @p devicePixelRatio scales the backing pixmap so the painted
-/// triangle is sharp on HiDPI displays. Without it the pixmap is
-/// minted at logical pixel size and Qt up-scales the rasterised
-/// triangle, leaving the chevrons softer than the surrounding
-/// `.*` / `*?` text glyphs. The painter still draws in logical
-/// coordinates because we set `setDevicePixelRatio` before
-/// drawing.
+/// Paint a chevron arrow icon in @p color (so it tracks the active
+/// palette / theme). `pointingUp` selects prev (apex up) vs next
+/// (apex down). @p devicePixelRatio sizes the backing pixmap so the
+/// glyph stays sharp on HiDPI.
 [[nodiscard]] QIcon MakeArrowIcon(int sizePx, bool pointingUp, const QColor &color, qreal devicePixelRatio)
 {
     const qreal dpr = devicePixelRatio > 0.0 ? devicePixelRatio : 1.0;
@@ -145,17 +115,9 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
 
     hLayout->addWidget(mEdit, /*stretch=*/1);
 
-    // Regex / wildcard toggles. Rendered as small flat `QToolButton`s
-    // beside the line edit (not `QLineEdit::addAction` icons) because:
-    //   - we want the glyphs ".*" and "*?" visible, but
-    //     `QLineEdit::addAction` only renders the action's icon and
-    //     hides the text; and
-    //   - Qt's `QStyle::SP_*` icon catalogue has no recognisable
-    //     regex / wildcard glyph, so falling back to file-dialog
-    //     icons (as the previous version did) reads as a file-view
-    //     toggle and misleads users about what the toggle does.
-    // `setAutoRaise(true)` matches the find-next / find-prev
-    // buttons' flat look.
+    // Toggles rendered as flat `QToolButton`s with text glyphs (not
+    // `QLineEdit::addAction` icons): `addAction` hides text and the
+    // `SP_*` catalogue has no regex/wildcard icon.
     mRegexAction = new QAction(this);
     mRegexAction->setObjectName(QStringLiteral("regexToggle"));
     mRegexAction->setCheckable(true);
@@ -167,11 +129,8 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
     regexButton->setDefaultAction(mRegexAction);
     regexButton->setAutoRaise(true);
     regexButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    // Defensive: `setDefaultAction` propagates the action's text in
-    // most styles, but a few platform styles only render text when
-    // `QToolButton` has its own. Setting it explicitly pins the
-    // glyph regardless of style; click handling continues to flow
-    // through the action.
+    // Pin the button text explicitly; a few platform styles don't
+    // propagate the action's text when the button has none of its own.
     regexButton->setText(mRegexAction->text());
     hLayout->addWidget(regexButton);
 
@@ -186,7 +145,7 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
     wildcardsButton->setDefaultAction(mWildcardsAction);
     wildcardsButton->setAutoRaise(true);
     wildcardsButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    // Same rationale as `regexButton` above.
+    // See `regexButton` above for why we pin the text explicitly.
     wildcardsButton->setText(mWildcardsAction->text());
     hLayout->addWidget(wildcardsButton);
 
@@ -194,11 +153,8 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
     mMatchCountLabel->setObjectName(QStringLiteral("findMatchCount"));
     mMatchCountLabel->setAlignment(Qt::AlignCenter);
     mMatchCountLabel->setMinimumWidth(MATCH_LABEL_MIN_WIDTH);
-    // Always present in the layout (just empty) so the arrow
-    // buttons keep their horizontal position when the indicator
-    // toggles between "no needle" and "12 matches"; otherwise
-    // they jump left/right on every keystroke that crosses the
-    // empty boundary.
+    // Keep the label slot reserved (just blank) so the arrow buttons
+    // don't jitter when the indicator toggles between empty and populated.
     mMatchCountLabel->setText(QString());
     hLayout->addWidget(mMatchCountLabel);
 
@@ -214,89 +170,50 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
     mButtonNext->setAutoRaise(true);
     hLayout->addWidget(mButtonNext);
 
-    // Paint the arrow glyphs from the palette so they remain
-    // visible after a Light <-> Dark theme switch. The default
-    // `QStyle::SP_ArrowUp` / `SP_ArrowDown` pixmaps are baked
-    // black on Windows and vanish on a dark background; our own
-    // icons follow `QPalette::WindowText`. `changeEvent` re-runs
-    // this when the application palette / style updates.
     RefreshArrowIcons();
 
     setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Preferred);
-    // Width floor so a floating `FindDock` (the dock has no
-    // minimum of its own) can't be dragged narrow enough to
-    // truncate the toggles or the count label. The line edit's
-    // `EDIT_MIN_WIDTH` covers the layout's inner shrinking, not
-    // the outer frame.
     setMinimumWidth(WIDGET_MIN_WIDTH);
-    // Focus order: line edit -> regex toggle -> wildcards toggle ->
-    // previous -> next. Each `setTabOrder(a, b)` re-inserts `b`
-    // immediately after `a` and detaches it from its prior slot --
-    // so the chain has to name *every* focusable widget, not just
-    // the endpoints, otherwise the unnamed siblings get severed
-    // from the chain and become unreachable via Tab. (Earlier
-    // versions of this widget chained only `mEdit -> previous ->
-    // next`, which made the regex/wildcards toggles keyboard-
-    // unreachable.)
+    // Focus order must name every focusable widget: each `setTabOrder`
+    // detaches `b` from its prior slot, so omitting the toggles here
+    // would make them keyboard-unreachable.
     setTabOrder(mEdit, regexButton);
     setTabOrder(regexButton, wildcardsButton);
     setTabOrder(wildcardsButton, mButtonPrevious);
     setTabOrder(mButtonPrevious, mButtonNext);
-    // No constructor `setFocus`: the host (dock or layout) is not
-    // realised yet, so the call is a no-op. Real focus is granted
-    // by `SetEditFocus` from `RevealAndFocus` / `Find`.
+    // No constructor `setFocus`: the host dock isn't realised yet.
+    // `SetEditFocus` from `RevealAndFocus` / `Find` does the real work.
 
     connect(mButtonNext, &QToolButton::clicked, this, &FindRecordWidget::FindNext);
     connect(mButtonPrevious, &QToolButton::clicked, this, &FindRecordWidget::FindPrevious);
 
-    // Plain Return -> find-next via `returnPressed`. Shift+Return
-    // -> find-previous is wired through `eventFilter` below;
-    // `QLineEdit::keyPressEvent` accepts Return for itself, so the
-    // event never bubbles to our `keyPressEvent`, and
-    // `returnPressed` carries no modifier state.
+    // Plain Return -> find-next. Shift+Return -> find-prev is wired
+    // in `eventFilter`: `returnPressed` is modifier-agnostic and
+    // `QLineEdit::keyPressEvent` accepts the event without bubbling.
     connect(mEdit, &QLineEdit::returnPressed, this, &FindRecordWidget::FindNext);
     mEdit->installEventFilter(this);
 
-    // Owned single-shot timer; `start()` restarts it on each
-    // keystroke so multi-keystroke edits coalesce into one
-    // `MatchCountRequested` emit. `QTimer::singleShot` does not
-    // coalesce because each call schedules an independent fire.
-    //
-    // `objectName` is set so tests can probe the trailing vs
-    // max-age timers individually via `findChild<QTimer*>(...)`
-    // instead of walking every timer parented to this widget and
-    // guessing which is which.
+    // `objectName`s on both timers let tests probe trailing vs max-age
+    // individually instead of guessing which `findChild<QTimer*>` is which.
     mMatchCountTimer = new QTimer(this);
     mMatchCountTimer->setObjectName(QStringLiteral("matchCountDebounceTimer"));
     mMatchCountTimer->setSingleShot(true);
     mMatchCountTimer->setInterval(MATCH_COUNT_DEBOUNCE_MS);
     connect(mMatchCountTimer, &QTimer::timeout, this, &FindRecordWidget::EmitMatchCountRequest);
 
-    // Companion max-age timer: armed alongside `mMatchCountTimer`
-    // (only when the trailing timer wasn't already running) and
-    // *never* restarted by subsequent bumps. Forces an emit after
-    // at most `MATCH_COUNT_MAX_AGE_MS`, so live-tail streaming or
-    // a held-down key can't strand the "*i* of *N*" indicator at
-    // its pre-activity value.
     mMatchCountMaxAgeTimer = new QTimer(this);
     mMatchCountMaxAgeTimer->setObjectName(QStringLiteral("matchCountMaxAgeTimer"));
     mMatchCountMaxAgeTimer->setSingleShot(true);
     mMatchCountMaxAgeTimer->setInterval(MATCH_COUNT_MAX_AGE_MS);
     connect(mMatchCountMaxAgeTimer, &QTimer::timeout, this, &FindRecordWidget::EmitMatchCountRequest);
 
-    // Text + toggle changes drive live match-count requests. We
-    // debounce via `mMatchCountTimer` so a fast typist doesn't
-    // trigger a full-table scan on every keystroke.
     connect(mEdit, &QLineEdit::textChanged, this, &FindRecordWidget::RequestMatchCountSoon);
     connect(mWildcardsAction, &QAction::toggled, this, &FindRecordWidget::RequestMatchCountSoon);
     connect(mRegexAction, &QAction::toggled, this, &FindRecordWidget::RequestMatchCountSoon);
 
-    // Regex and wildcards are mutually exclusive match modes in the
-    // backend (`LogFilterModel::Matches` treats them as alternatives,
-    // not modifiers). Mirror that in the UI so toggling one
-    // automatically untoggles the other instead of leaving the user
-    // with two enabled-looking toggles where only one actually takes
-    // effect.
+    // Regex and wildcards are mutually exclusive in the backend
+    // (`LogFilterModel::Matches`); mirror that in the UI so toggling
+    // one automatically untoggles the other.
     connect(mRegexAction, &QAction::toggled, this, [this](bool on) {
         if (on && mWildcardsAction->isChecked())
         {
@@ -312,12 +229,8 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
         }
     });
 
-    // Escape dismisses the bar. Scope `WidgetWithChildrenShortcut`
-    // so the shortcut fires whenever this widget (or any
-    // descendant focusable) has focus. `DismissBar` closes the
-    // host `QDockWidget` so its `visibilityChanged` mirrors the
-    // toggle action and a subsequent `RevealAndFocus` properly
-    // re-shows everything.
+    // Escape dismisses the bar via the host dock. Widget-scoped so
+    // the shortcut only fires when this widget (or a descendant) has focus.
     auto *escapeShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
     escapeShortcut->setContext(Qt::WidgetWithChildrenShortcut);
     connect(escapeShortcut, &QShortcut::activated, this, &FindRecordWidget::DismissBar);
@@ -333,18 +246,11 @@ void FindRecordWidget::SetMatchInfo(int current, int total, bool overflowed)
 {
     if (total <= 0)
     {
-        // Keep the label slot in the layout but blank, so the
-        // arrow buttons don't shift left/right as the indicator
-        // appears and disappears around each keystroke that
-        // empties or refills the search field. The reserved
-        // `MATCH_LABEL_MIN_WIDTH` continues to hold the slot
-        // open.
+        // Blank label, slot stays reserved (see `MATCH_LABEL_MIN_WIDTH`).
         mMatchCountLabel->clear();
         return;
     }
-    // Locale-grouped digits matching the rest of the GUI; the "+"
-    // suffix surfaces the parent's hit cap so a million-row log
-    // doesn't pretend the count is exactly at the cap.
+    // Locale-grouped digits; "+" suffix surfaces the parent's hit cap.
     const QLocale locale = QLocale::system();
     const QString totalText =
         locale.toString(static_cast<qlonglong>(total)) + (overflowed ? QStringLiteral("+") : QString());
@@ -355,13 +261,9 @@ void FindRecordWidget::SetMatchInfo(int current, int total, bool overflowed)
     }
     else
     {
-        // Two formatters because `%n` / `%Ln` only handles one
-        // number; we already formatted `totalText` above.
-        // `%Ln` (not `%n`) keeps digit grouping consistent with
-        // the "%1 of %2" branch above and with
-        // `ParseErrorsDock::RefreshSummary` -- otherwise a count
-        // of 10000 would render unstyled while the next-click
-        // refresh would render `1 of 10,000`.
+        // `%Ln` keeps digit grouping consistent with the "%1 of %2"
+        // branch above. Two formatters when overflowed because `%Ln`
+        // only handles one number and we already formatted `totalText`.
         text = overflowed ? tr("%1 matches").arg(totalText) : tr("%Ln matches", nullptr, total);
     }
     mMatchCountLabel->setText(text);
@@ -373,36 +275,17 @@ void FindRecordWidget::BumpMatchCountDebounce()
     {
         return;
     }
-    // Fast path: trailing timer already running AND max-age
-    // timer already running means a recount is already queued
-    // and capped. Skip the `start()` call entirely -- it's
-    // technically idempotent (`QTimer::start` resets the
-    // countdown), but the trailing-timer reset *defeats*
-    // coalescing in the streaming-burst case where this is the
-    // hottest invalidation path:
-    //
-    //   model emits dataChanged 100x/sec while live-tailing,
-    //   each emit calls OnFindCacheInvalidated, which calls
-    //   BumpMatchCountDebounce. Without this guard, every emit
-    //   restarts the trailing timer and the recount never
-    //   actually fires until streaming pauses; the max-age
-    //   timer is the only thing forcing progress. With the
-    //   guard, the *first* invalidation arms both timers and
-    //   subsequent invalidations are no-ops -- the trailing
-    //   timer expires on schedule and the recount runs.
+    // Skip the `start()` call when both timers are already armed.
+    // Restarting the trailing timer on every dataChanged during
+    // streaming would defeat coalescing and only the max-age timer
+    // would force the recount through.
     if (mMatchCountTimer->isActive() && mMatchCountMaxAgeTimer->isActive())
     {
         return;
     }
-    // Restart the trailing timer; identical mechanism to the
-    // textChanged path. A burst of model signals collapses into
-    // one final recount.
-    //
-    // Arm the max-age timer only when it isn't already running,
-    // so continuous activity can't keep pushing the deadline
-    // out -- it caps the longest possible delay between an
-    // invalidation and the visible recount.
     mMatchCountTimer->start();
+    // Max-age timer arms only on the leading edge so continuous
+    // activity can't keep pushing the deadline out.
     if (!mMatchCountMaxAgeTimer->isActive())
     {
         mMatchCountMaxAgeTimer->start();
@@ -411,13 +294,11 @@ void FindRecordWidget::BumpMatchCountDebounce()
 
 void FindRecordWidget::DismissBar()
 {
-    // Walk up to the host `QDockWidget` and close it. Closing the
-    // dock is the only correct dismiss: hiding only the inner
-    // widget leaves the dock title bar floating over an empty
-    // body, and a later `show()` on the dock will not un-hide an
-    // explicitly-hidden child. Walking the parent chain (instead
-    // of asserting a single hop) keeps this resilient to any
-    // future intermediate container the dock framework introduces.
+    // Closing the dock is the only correct dismiss: hiding just the
+    // inner widget leaves the dock framed around an empty body, and
+    // a later `show()` on the dock won't un-hide an explicitly-hidden
+    // child. Walk the parent chain in case the dock framework ever
+    // introduces an intermediate container.
     for (QWidget *p = parentWidget(); p != nullptr; p = p->parentWidget())
     {
         if (auto *dock = qobject_cast<QDockWidget *>(p))
@@ -426,24 +307,17 @@ void FindRecordWidget::DismissBar()
             return;
         }
     }
-    // No host dock -- production never hits this (the widget is
-    // always parented under `FindDock`), but a test or future
-    // embedding could. Surface a `qWarning` so the silent no-op
-    // isn't mistaken for a working Escape: the user pressed Esc
-    // and nothing happened, which is hard to debug without a
-    // breadcrumb. Doesn't fire `Q_ASSERT` because non-dock
-    // hosting is a legitimate design choice for future variants
-    // (the bar simply has no chrome to dismiss).
+    // Production never hits this (always parented under `FindDock`),
+    // but a test or future embedding could. Surface the no-op so a
+    // silent Escape isn't mistaken for a working one.
     qWarning() << "FindRecordWidget::DismissBar: no QDockWidget ancestor; Escape is a no-op in this configuration";
 }
 
 void FindRecordWidget::keyPressEvent(QKeyEvent *event)
 {
-    // Reachable only when focus is on the bar but not on `mEdit`
-    // (the toggle / arrow buttons). For `mEdit`, the line edit
-    // accepts Return for itself and the modifier-bearing variant
-    // is handled in `eventFilter`. Handling it here too keeps the
-    // VS Code / Chromium convention for the rest of the bar.
+    // Only reaches us when focus is on a toggle / arrow button. For
+    // `mEdit`, the line edit handles Return itself and `eventFilter`
+    // handles Shift+Return.
     if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
     {
         if (event->modifiers().testFlag(Qt::ShiftModifier))
@@ -464,16 +338,14 @@ bool FindRecordWidget::eventFilter(QObject *watched, QEvent *event)
 {
     if (watched == mEdit && event->type() == QEvent::KeyPress)
     {
-        // `QEvent::KeyPress` guarantees the dynamic type; Qt does
-        // not enable RTTI on `QEvent`. Same idiom as the
-        // `QFileOpenEvent` cast in `main.cpp`.
+        // `QEvent::KeyPress` guarantees the dynamic type; Qt doesn't
+        // enable RTTI on `QEvent`.
         auto *ke = static_cast<QKeyEvent *>(event); // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
         if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) && ke->modifiers().testFlag(Qt::ShiftModifier))
         {
-            // Intercept before `QLineEdit::keyPressEvent` runs.
-            // Otherwise it would emit `returnPressed` (wired to
-            // `FindNext`) and accept the event, swallowing the
-            // shift-modified variant.
+            // Intercept before `QLineEdit::keyPressEvent`, which
+            // would otherwise emit `returnPressed` (-> FindNext)
+            // and swallow the shift-modified variant.
             FindPrevious();
             return true;
         }
@@ -503,25 +375,14 @@ void FindRecordWidget::RequestMatchCountSoon()
 {
     if (mEdit->text().isEmpty())
     {
-        // Empty needle: clear immediately without bouncing off
-        // the debounce timer, so the label can't lag a clear.
-        // Cancel any in-flight tick (trailing + max-age) so a
-        // stale needle doesn't overwrite the cleared state. No
-        // signal emitted -- the parent has nothing to recount,
-        // and a per-keystroke round-trip just to be told "still
-        // empty" is wasted work. The cache the parent holds is
-        // keyed by needle, so the next non-empty query rebuilds
-        // it anyway.
+        // Empty needle: clear immediately and cancel any in-flight
+        // tick so a stale needle can't overwrite the cleared state.
+        // No emit; the parent has nothing to recount.
         mMatchCountTimer->stop();
         mMatchCountMaxAgeTimer->stop();
         SetMatchInfo(0, 0);
         return;
     }
-    // `start()` resets the countdown if already running, so a
-    // fast typist coalesces N keystrokes into a single trailing
-    // match-count scan. The max-age timer arms once on the
-    // leading edge so it caps the longest possible delay even
-    // under sustained typing.
     mMatchCountTimer->start();
     if (!mMatchCountMaxAgeTimer->isActive())
     {
@@ -536,12 +397,9 @@ void FindRecordWidget::changeEvent(QEvent *event)
     {
         return;
     }
-    // Both events fire on a theme switch:
-    //   PaletteChange  - new colours rolled into `palette()`
-    //   StyleChange    - theme also swapped `qApp->style()`
-    // Either one is sufficient to mint stale icons, so handle
-    // both. The repaint is cheap (two 14x14 triangles) and
-    // `RefreshArrowIcons` is idempotent.
+    // Both events can fire on a theme switch (PaletteChange when
+    // colours roll into `palette()`, StyleChange when the theme
+    // also swaps `qApp->style()`); `RefreshArrowIcons` is idempotent.
     const QEvent::Type type = event->type();
     if (type == QEvent::PaletteChange || type == QEvent::StyleChange || type == QEvent::ApplicationPaletteChange)
     {
@@ -551,13 +409,9 @@ void FindRecordWidget::changeEvent(QEvent *event)
 
 bool FindRecordWidget::event(QEvent *event)
 {
-    // `DevicePixelRatioChange` fires when the window backing the
-    // widget moves between monitors with different scale factors
-    // (e.g. dragging a floating `FindDock` from a 100% laptop
-    // panel to a 200% external display). The icon pixmap was
-    // allocated at the previous DPR, so re-mint it now or Qt
-    // will up-scale a low-resolution rasterisation. The cost is
-    // two tiny pixmaps; safe to do unconditionally.
+    // Re-mint at the new DPR when the bar moves between monitors
+    // with different scale factors; otherwise Qt up-scales the
+    // pixmap allocated at the previous DPR.
     if (event != nullptr && event->type() == QEvent::DevicePixelRatioChange)
     {
         RefreshArrowIcons();
@@ -571,19 +425,11 @@ void FindRecordWidget::RefreshArrowIcons()
     {
         return;
     }
-    // Pull `WindowText` rather than `ButtonText`: the buttons are
-    // `autoRaise` toolbuttons whose backdrop matches the
-    // surrounding find-bar surface, not a raised button face, so
-    // `WindowText` is the contrast colour the user actually sees
-    // these glyphs against. Matches the colour the `.*` / `*?`
-    // toggle action glyphs render in.
+    // `WindowText` (not `ButtonText`): these are autoRaise toolbuttons
+    // whose backdrop is the find-bar surface, not a raised button face.
+    // Matches the colour of the `.*` / `*?` toggle glyphs.
     const QColor color = palette().color(QPalette::Active, QPalette::WindowText);
     const int sizePx = ArrowIconPixels(this);
-    // `devicePixelRatioF()` walks up the parent chain to the host
-    // window; on a 200% scaled monitor this returns 2.0 and the
-    // pixmap is allocated 2x in each axis so the triangle is
-    // pixel-sharp. Falls back to 1.0 when the widget is not yet
-    // realised (early constructor call before `show()`).
     const qreal dpr = devicePixelRatioF();
     mButtonPrevious->setIcon(MakeArrowIcon(sizePx, /*pointingUp=*/true, color, dpr));
     mButtonNext->setIcon(MakeArrowIcon(sizePx, /*pointingUp=*/false, color, dpr));
@@ -591,13 +437,9 @@ void FindRecordWidget::RefreshArrowIcons()
 
 void FindRecordWidget::EmitMatchCountRequest()
 {
-    // Stop the *other* timer so a max-age fire doesn't get
-    // followed 50 ms later by a redundant trailing fire (and
-    // vice versa). The re-entrancy guard catches the harder
-    // case: when both timers' `timeout` events landed in the
-    // queue on the same pass, stopping them here doesn't undo
-    // the second event that's already queued -- but the guard
-    // collapses it.
+    // Re-entrancy guard: both timers route here, and if both
+    // `timeout` events landed in the queue on the same pass, the
+    // first invocation's `stop()` calls can't undo the queued second.
     if (mEmittingMatchCountRequest)
     {
         return;

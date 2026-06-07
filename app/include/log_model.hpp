@@ -247,39 +247,23 @@ public:
     ) const noexcept;
 
     /// Emit `dataChanged` for the theme-derived style roles
-    /// (Background, Foreground, Font) across the whole visible
-    /// table. `MainWindow::OnThemeChanged` calls this so a Light
-    /// <-> Dark flip refreshes the rendered row tints. A bare
-    /// `viewport()->update()` does not reliably invalidate the
-    /// view's per-item style cache in every Qt 6 release; emitting
-    /// `dataChanged` forces every visible delegate to re-query the
-    /// new brushes. Roles are restricted to the styled set so the
-    /// existing `dataChanged` listeners (find-cache, record-detail
-    /// pane) can filter the notification out and skip their own
-    /// per-emission work -- nothing semantic actually changed.
+    /// (Background, Foreground, Font) across the whole table.
+    /// `MainWindow::OnThemeChanged` calls this on Light <-> Dark
+    /// flips; `viewport()->update()` alone doesn't reliably
+    /// invalidate the view's per-item style cache.
     void RefreshAllRowStyles();
 
-    /// True iff @p roles is non-empty AND every entry is a purely
-    /// decorative role (`BackgroundRole`, `ForegroundRole`,
-    /// `FontRole`, `DecorationRole`). Used by `dataChanged`
-    /// listeners that only care about value-affecting changes
-    /// (find cache, record-detail pane) to filter out the
-    /// theme-refresh notifications emitted by
-    /// `RefreshAllRowStyles`.
+    /// True iff @p roles is non-empty AND every entry is purely
+    /// decorative (Background / Foreground / Font / Decoration).
+    /// Listeners that only care about value-affecting changes
+    /// (find cache, record-detail pane) use this to filter out
+    /// theme-refresh emits from `RefreshAllRowStyles`.
     ///
-    /// An empty `roles` is Qt's "I don't know what changed"
-    /// sentinel; this helper reports `false` for it so callers
-    /// conservatively refresh on the sentinel.
+    /// Empty `roles` is Qt's "I don't know what changed" sentinel;
+    /// this helper reports `false` so callers conservatively refresh.
     ///
-    /// Emitter contract: any `dataChanged` that lists *only*
-    /// these four roles MUST NOT mutate `Qt::DisplayRole` /
-    /// `Qt::EditRole` (or any other value-bearing role) for the
-    /// emitted range -- if it does, the listeners that filter via
-    /// this helper will fall out of sync with the underlying
-    /// data. `RefreshAllRowStyles` upholds the contract for its
-    /// own emit; future style-only emits must do the same or add
-    /// the appropriate value role to the list so listeners
-    /// refresh.
+    /// Emitter contract: any `dataChanged` listing only these roles
+    /// MUST NOT mutate value-bearing roles for the emitted range.
     [[nodiscard]] static bool IsStyleOnlyRoleChange(const QList<int> &roles) noexcept;
 
 signals:

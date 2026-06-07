@@ -1270,10 +1270,8 @@ void LogModel::RefreshAllRowStyles()
     {
         return;
     }
-    // FontRole rides along: themes can bold/italicise per level
-    // (`Theme::levelTypes[level].bold/italic`), so a flip can
-    // change font weight on rows whose level matches a re-styled
-    // entry. Including the role here is cheaper than two emits.
+    // FontRole rides along: themes can bold/italicise per level, so
+    // a flip can change font weight on level-styled rows.
     emit dataChanged(index(0, 0), index(rows - 1, cols - 1), {Qt::BackgroundRole, Qt::ForegroundRole, Qt::FontRole});
 }
 
@@ -1281,14 +1279,9 @@ bool LogModel::IsStyleOnlyRoleChange(const QList<int> &roles) noexcept
 {
     if (roles.isEmpty())
     {
-        // Qt's "I don't know what changed" sentinel; conservative
-        // listeners must refresh.
+        // Qt's "I don't know what changed" sentinel; refresh conservatively.
         return false;
     }
-    // Hand-rolled set membership (3-4 entries on the hot path) is
-    // cheaper than building a `QSet`. Roles match those emitted
-    // by `RefreshAllRowStyles` plus `DecorationRole` (covers
-    // future icon-only changes) so the common case short-circuits.
     return std::ranges::all_of(roles, [](int role) {
         return role == Qt::BackgroundRole || role == Qt::ForegroundRole || role == Qt::FontRole ||
                role == Qt::DecorationRole;

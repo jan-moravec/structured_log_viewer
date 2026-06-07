@@ -65,18 +65,12 @@ signals:
     /// source row, or -1 when no row is pinned.
     void openInNewWindowRequested(int sourceRow);
 
-    /// Emitted when the user actually dismisses the dock (X
-    /// button, system close). Not emitted on tab inactivation,
-    /// so the View-menu toggle stays accurate when the dock is
-    /// tabified with another (e.g. `AnchorsDock`).
+    /// Emitted on genuine user dismissal (X button, system close).
+    /// Distinct from `visibilityChanged(false)`, which also fires on
+    /// tab inactivation in a tabified group.
     void closed();
 
 protected:
-    /// Emit `closed` once the base class accepts the close.
-    /// `visibilityChanged(false)` alone is ambiguous for tabified
-    /// docks (it fires on tab switches too); this signal lets the
-    /// View-menu checkmark react only to genuine user-initiated
-    /// dismissals.
     void closeEvent(QCloseEvent *event) override;
 
 #ifdef LOGAPP_BUILD_TESTING

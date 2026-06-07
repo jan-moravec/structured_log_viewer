@@ -49,23 +49,14 @@ public:
     /// Sentinel `hits` value meaning "return every match".
     static constexpr int UNLIMITED_HITS = -1;
 
-    /// Build the `Qt::MatchFlags` for an incremental find query.
+    /// Build `Qt::MatchFlags` for an incremental find query.
     ///
-    /// The match-type values in `Qt::MatchFlag` are *alternatives*,
-    /// not bit-mask modifiers (`Matches` masks the type field and
-    /// dispatches with a switch), so OR-ing `MatchContains` next
-    /// to `MatchWildcard` / `MatchRegularExpression` silently
-    /// demotes the search to plain substring matching -- the
-    /// regex / wildcard toggles look enabled but match like
-    /// they're off. Routing every find call site through this
-    /// helper guarantees the flag composition stays in lock-step
-    /// with the dispatch in `Matches`.
-    ///
-    /// `MatchWrap | MatchRecursive` are always set so the find
-    /// bar wraps around the table and recurses into proxy
-    /// children. Exactly one of `MatchRegularExpression`,
-    /// `MatchWildcard`, `MatchContains` is added based on the UI
-    /// toggles, in that priority order.
+    /// Single source of truth for find call sites: the match-type
+    /// values in `Qt::MatchFlag` are alternatives (not bit-mask
+    /// modifiers), so OR-ing `MatchContains` with `MatchWildcard` /
+    /// `MatchRegularExpression` silently demotes to substring matching.
+    /// Always sets `MatchWrap | MatchRecursive`; picks exactly one of
+    /// regex / wildcard / contains based on the UI toggles.
     [[nodiscard]] static Qt::MatchFlags ComposeFindFlags(bool wildcards, bool regularExpressions);
 
     /// Find proxy-coord rows whose cell matches @p value under @p role.
