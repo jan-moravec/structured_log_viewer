@@ -275,9 +275,9 @@ void ConfigurationDiagnosticsDialog::Refresh()
     {
         scheme = hints->colorScheme();
     }
-    const bool darkMode = (scheme == Qt::ColorScheme::Dark) ||
-                          (scheme == Qt::ColorScheme::Unknown &&
-                           palette().color(QPalette::Base).lightness() < BASE_LUMA_DARK_THRESHOLD);
+    const bool darkMode =
+        (scheme == Qt::ColorScheme::Dark) ||
+        (scheme == Qt::ColorScheme::Unknown && palette().color(QPalette::Base).lightness() < BASE_LUMA_DARK_THRESHOLD);
     // Tint the row red but anchor saturation/value to the surface
     // so the highlight sits *inside* the dialog instead of
     // punching through it. Alpha is kept low so alternate-row
@@ -294,13 +294,12 @@ void ConfigurationDiagnosticsDialog::Refresh()
     );
     warningBg.setAlpha(WARNING_TINT_ALPHA);
     const QColor textColor = palette().color(QPalette::Text);
-    const QColor warningFg = darkMode
-        ? QColor(
-              std::min(textColor.red() + WARNING_FG_RED_BIAS_DARK, 255),
-              WARNING_FG_GREEN_BLUE_DARK,
-              WARNING_FG_GREEN_BLUE_DARK
-          )
-        : QColor(std::max(textColor.red() / 2, WARNING_FG_RED_FLOOR_LIGHT), 0, 0);
+    const QColor warningFg = darkMode ? QColor(
+                                            std::min(textColor.red() + WARNING_FG_RED_BIAS_DARK, 255),
+                                            WARNING_FG_GREEN_BLUE_DARK,
+                                            WARNING_FG_GREEN_BLUE_DARK
+                                        )
+                                      : QColor(std::max(textColor.red() / 2, WARNING_FG_RED_FLOOR_LIGHT), 0, 0);
     const QBrush highlightBg(warningBg);
     const QBrush highlightFg(warningFg);
 
@@ -400,8 +399,8 @@ void ConfigurationDiagnosticsDialog::changeEvent(QEvent *event)
     if (event != nullptr)
     {
         const QEvent::Type type = event->type();
-        if (type == QEvent::PaletteChange || type == QEvent::StyleChange ||
-            type == QEvent::ApplicationPaletteChange || type == QEvent::ThemeChange)
+        if (type == QEvent::PaletteChange || type == QEvent::StyleChange || type == QEvent::ApplicationPaletteChange ||
+            type == QEvent::ThemeChange)
         {
             // Re-render so the warning-row brushes follow the new
             // palette. Guarded on `mModel` because `Refresh()`

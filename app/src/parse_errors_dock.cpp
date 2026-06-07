@@ -150,8 +150,7 @@ void ParseErrorsDock::AppendErrors(const QString &title, const std::vector<std::
     // we leave the viewport alone so the new batch doesn't yank
     // them out of context. Mirrors the chat / log convention.
     const QScrollBar *vBar = mList->verticalScrollBar();
-    const bool wasAtTail =
-        vBar == nullptr || (vBar->maximum() - vBar->value()) <= AUTO_FOLLOW_TAIL_SLACK_PX;
+    const bool wasAtTail = vBar == nullptr || (vBar->maximum() - vBar->value()) <= AUTO_FOLLOW_TAIL_SLACK_PX;
 
     // The trailing overflow footer (if any) must move to the
     // bottom after the new entries land. It is always the last
@@ -379,9 +378,7 @@ void ParseErrorsDock::RebuildOverflowFooter()
     // refactor that calls `RebuildOverflowFooter` from a path
     // that doesn't strip the tail would silently grow a stack
     // of duplicate footers; the assert blows up loudly in debug.
-    Q_ASSERT(
-        mList->count() == 0 || !mList->item(mList->count() - 1)->data(OVERFLOW_FOOTER_ROLE).toBool()
-    );
+    Q_ASSERT(mList->count() == 0 || !mList->item(mList->count() - 1)->data(OVERFLOW_FOOTER_ROLE).toBool());
     // Single overflow footer at the tail. `AppendErrors` strips
     // any prior footer at the top of the call, so this method
     // only ever appends -- never compares-and-replaces. `%Ln`

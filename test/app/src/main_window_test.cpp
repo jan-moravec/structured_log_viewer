@@ -78,7 +78,6 @@
 #include <QPalette>
 #include <QPlainTextEdit>
 #include <QPushButton>
-#include <QToolButton>
 #include <QRegularExpression>
 #include <QScopeGuard>
 #include <QScopedPointer>
@@ -96,6 +95,7 @@
 #include <QTableView>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QToolButton>
 #include <QUuid>
 #include <QVariant>
 #include <QWheelEvent>
@@ -4403,8 +4403,8 @@ private slots:
             const auto roles = args.at(2).value<QList<int>>();
             // An empty roles list is "all roles changed" in Qt's
             // contract -- counts as styled too.
-            if (roles.isEmpty() || roles.contains(Qt::BackgroundRole) || roles.contains(Qt::ForegroundRole)
-                || roles.contains(Qt::FontRole))
+            if (roles.isEmpty() || roles.contains(Qt::BackgroundRole) || roles.contains(Qt::ForegroundRole) ||
+                roles.contains(Qt::FontRole))
             {
                 foundStyledNotification = true;
                 break;
@@ -4456,8 +4456,7 @@ private slots:
         QVERIFY2(tableView != nullptr, "MainWindow must own a table view");
         const QString initialStyleSheet = tableView->styleSheet();
         QVERIFY2(
-            !initialStyleSheet.isEmpty(),
-            "After a normal load the body stylesheet must include the monospace cell rule"
+            !initialStyleSheet.isEmpty(), "After a normal load the body stylesheet must include the monospace cell rule"
         );
 
         // Externally clear the stylesheet. This mirrors the state
@@ -8165,9 +8164,7 @@ private slots:
         constexpr double R_LUMA = 0.299;
         constexpr double G_LUMA = 0.587;
         constexpr double B_LUMA = 0.114;
-        auto Luma = [](const QColor &c) {
-            return (R_LUMA * c.red()) + (G_LUMA * c.green()) + (B_LUMA * c.blue());
-        };
+        auto Luma = [](const QColor &c) { return (R_LUMA * c.red()) + (G_LUMA * c.green()) + (B_LUMA * c.blue()); };
 
         // Dark mode must use a *dark* highlight bg (otherwise the
         // row punches through the dialog as a near-white slab).
@@ -9961,9 +9958,9 @@ private slots:
         );
         QVERIFY2(
             prevIdx >= 0 && nextIdx >= 0,
-            qPrintable(QStringLiteral("arrow buttons must be on the tab chain (prev=%1 next=%2)")
-                           .arg(prevIdx)
-                           .arg(nextIdx))
+            qPrintable(
+                QStringLiteral("arrow buttons must be on the tab chain (prev=%1 next=%2)").arg(prevIdx).arg(nextIdx)
+            )
         );
         // Order: edit -> regex -> wildcards -> prev -> next.
         // Strict ordering on the toggles vs the arrow buttons is
@@ -10016,10 +10013,8 @@ private slots:
         dock->AppendErrors(QStringLiteral("Second batch"), {"d", "e"});
         QCOMPARE(dock->Count(), 5);
         QCOMPARE(dock->DroppedCount(), 0);
-        QCOMPARE(
-            firstBatchSpy.count(),
-            1
-        ); // No second emit until a session boundary re-arms the latch.
+        QCOMPARE(firstBatchSpy.count(),
+                 1); // No second emit until a session boundary re-arms the latch.
         QCOMPARE(countSpy.last().at(0).toInt(), 5);
 
         // ClearErrors zeroes both counters but leaves the
@@ -10149,10 +10144,7 @@ private slots:
         );
         // Footer must be non-selectable so arrow-key navigation
         // and Ctrl+A don't pull it into the user's selection.
-        QVERIFY2(
-            !footer->flags().testFlag(Qt::ItemIsSelectable),
-            "overflow footer must not be user-selectable"
-        );
+        QVERIFY2(!footer->flags().testFlag(Qt::ItemIsSelectable), "overflow footer must not be user-selectable");
     }
 
     // Streaming-style: many smaller batches that collectively
@@ -10185,10 +10177,7 @@ private slots:
         for (int i = 0; i < list->count(); ++i)
         {
             QListWidgetItem *item = list->item(i);
-            QVERIFY2(
-                item == nullptr || !item->data(footerRole).toBool(),
-                "no footer when nothing has been dropped"
-            );
+            QVERIFY2(item == nullptr || !item->data(footerRole).toBool(), "no footer when nothing has been dropped");
         }
 
         // Second small batch tips the dock over the cap. Walk
@@ -10204,8 +10193,10 @@ private slots:
         QCOMPARE(dock->Count(), cap);
         QCOMPARE(dock->DroppedCount(), overflow);
         QListWidgetItem *tail = list->item(list->count() - 1);
-        QVERIFY2(tail != nullptr && tail->data(footerRole).toBool(),
-                 "overflow footer must be the trailing item after eviction");
+        QVERIFY2(
+            tail != nullptr && tail->data(footerRole).toBool(),
+            "overflow footer must be the trailing item after eviction"
+        );
 
         // Third batch grows `mDroppedCount` further; footer text
         // must update to the new total, and the dock must not
@@ -10446,10 +10437,7 @@ private slots:
         edit->clear();
         spy.clear();
         emit dock->revealed();
-        QVERIFY2(
-            !spy.wait(300),
-            "FindDock::revealed must NOT trigger MatchCountRequested for an empty needle"
-        );
+        QVERIFY2(!spy.wait(300), "FindDock::revealed must NOT trigger MatchCountRequested for an empty needle");
     }
 
     // Regression: under continuous activity (live-tail streaming,
@@ -10634,10 +10622,8 @@ private slots:
         QCoreApplication::processEvents();
         QVERIFY2(
             vBar->value() == parkedPosition,
-            qPrintable(QStringLiteral(
-                           "Scroll position must be preserved when the user was not at the tail "
-                           "(parked=%1, after=%2, max=%3)"
-            )
+            qPrintable(QStringLiteral("Scroll position must be preserved when the user was not at the tail "
+                                      "(parked=%1, after=%2, max=%3)")
                            .arg(parkedPosition)
                            .arg(vBar->value())
                            .arg(vBar->maximum()))
@@ -10657,12 +10643,10 @@ private slots:
         // path must have moved `value` along with it.
         QVERIFY2(
             vBar->value() >= vBar->maximum() - 4,
-            qPrintable(
-                QStringLiteral("Auto-follow must re-pin to the tail when the user was at the tail "
-                               "(value=%1, max=%2)")
-                    .arg(vBar->value())
-                    .arg(vBar->maximum())
-            )
+            qPrintable(QStringLiteral("Auto-follow must re-pin to the tail when the user was at the tail "
+                                      "(value=%1, max=%2)")
+                           .arg(vBar->value())
+                           .arg(vBar->maximum()))
         );
     }
 
@@ -10818,9 +10802,9 @@ private slots:
                     // each channel: a pure-red apex blends into a
                     // half-transparent maroon at the slope's edge.
                     constexpr int CHANNEL_TOLERANCE = 32;
-                    if (std::abs(qRed(px) - qRed(expected)) <= CHANNEL_TOLERANCE
-                        && std::abs(qGreen(px) - qGreen(expected)) <= CHANNEL_TOLERANCE
-                        && std::abs(qBlue(px) - qBlue(expected)) <= CHANNEL_TOLERANCE)
+                    if (std::abs(qRed(px) - qRed(expected)) <= CHANNEL_TOLERANCE &&
+                        std::abs(qGreen(px) - qGreen(expected)) <= CHANNEL_TOLERANCE &&
+                        std::abs(qBlue(px) - qBlue(expected)) <= CHANNEL_TOLERANCE)
                     {
                         ++matching;
                     }
@@ -10929,9 +10913,7 @@ private slots:
         QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::FontRole}));
         QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::DecorationRole}));
         QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::BackgroundRole, Qt::ForegroundRole, Qt::FontRole}));
-        QVERIFY2(
-            !LogModel::IsStyleOnlyRoleChange({Qt::DisplayRole}), "DisplayRole change must trigger a refresh"
-        );
+        QVERIFY2(!LogModel::IsStyleOnlyRoleChange({Qt::DisplayRole}), "DisplayRole change must trigger a refresh");
         QVERIFY2(!LogModel::IsStyleOnlyRoleChange({Qt::EditRole}), "EditRole change must trigger a refresh");
         QVERIFY2(
             !LogModel::IsStyleOnlyRoleChange({Qt::BackgroundRole, Qt::DisplayRole}),
@@ -10947,23 +10929,17 @@ private slots:
     void TestComposeFindFlagsPriorityAndBaseline()
     {
         constexpr Qt::MatchFlags BASELINE = Qt::MatchWrap | Qt::MatchRecursive;
+        QCOMPARE(LogFilterModel::ComposeFindFlags(/*wildcards=*/false, /*regex=*/false), BASELINE | Qt::MatchContains);
+        QCOMPARE(LogFilterModel::ComposeFindFlags(/*wildcards=*/true, /*regex=*/false), BASELINE | Qt::MatchWildcard);
         QCOMPARE(
-            LogFilterModel::ComposeFindFlags(/*wildcards=*/false, /*regex=*/false), BASELINE | Qt::MatchContains
-        );
-        QCOMPARE(
-            LogFilterModel::ComposeFindFlags(/*wildcards=*/true, /*regex=*/false), BASELINE | Qt::MatchWildcard
-        );
-        QCOMPARE(
-            LogFilterModel::ComposeFindFlags(/*wildcards=*/false, /*regex=*/true),
-            BASELINE | Qt::MatchRegularExpression
+            LogFilterModel::ComposeFindFlags(/*wildcards=*/false, /*regex=*/true), BASELINE | Qt::MatchRegularExpression
         );
         // Both toggles checked: regex wins (the UI enforces this
         // visually too -- `mWildcardsAction` and `mRegexAction`
         // are mutually exclusive -- but the helper itself must
         // not depend on that invariant being upheld upstream).
         QCOMPARE(
-            LogFilterModel::ComposeFindFlags(/*wildcards=*/true, /*regex=*/true),
-            BASELINE | Qt::MatchRegularExpression
+            LogFilterModel::ComposeFindFlags(/*wildcards=*/true, /*regex=*/true), BASELINE | Qt::MatchRegularExpression
         );
     }
 
@@ -11013,9 +10989,8 @@ private slots:
         // timer (which would push remaining back near interval()).
         QVERIFY2(
             remainingAfter <= remainingBefore + 5,
-            qPrintable(QStringLiteral(
-                           "second bump must not reset the trailing timer (before=%1, after=%2, interval=%3)"
-                       )
+            qPrintable(QStringLiteral("second bump must not reset the trailing timer (before=%1, after=%2, interval=%3)"
+            )
                            .arg(remainingBefore)
                            .arg(remainingAfter)
                            .arg(trailing->interval()))

@@ -3531,11 +3531,9 @@ void MainWindow::UpdateParseErrorsStatus(int count, int droppedCount)
         // dock that reads "11,345 errors; 1,000 earlier dropped"
         // -- the discrepancy reads as a bug.
         const QLocale locale = QLocale::system();
-        mParseErrorsStatusButton->setText(
-            tr("%1 parse error(s) (+%2 dropped)")
-                .arg(locale.toString(static_cast<qlonglong>(count)))
-                .arg(locale.toString(static_cast<qlonglong>(droppedCount)))
-        );
+        mParseErrorsStatusButton->setText(tr("%1 parse error(s) (+%2 dropped)")
+                                              .arg(locale.toString(static_cast<qlonglong>(count)))
+                                              .arg(locale.toString(static_cast<qlonglong>(droppedCount))));
         // Two independent counts -> can't use a single `%Ln`
         // plural; format both via QLocale so the tooltip matches
         // the dock summary ("12,345 errors; 1,000 earlier
@@ -3614,9 +3612,8 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
         // common needle like " ") used to block the GUI for
         // hundreds of ms; the cap keeps the recount bounded
         // regardless of input size.
-        const QModelIndexList matches = mSortFilterProxyModel->MatchRow(
-            start, Qt::DisplayRole, value, MAX_FIND_MATCH_COUNT + 1, flags, true, 0
-        );
+        const QModelIndexList matches =
+            mSortFilterProxyModel->MatchRow(start, Qt::DisplayRole, value, MAX_FIND_MATCH_COUNT + 1, flags, true, 0);
         const bool overflowed = matches.size() > MAX_FIND_MATCH_COUNT;
         // `MatchRow` is documented to return at most one entry
         // per row (it `break`s on the first matching column) and

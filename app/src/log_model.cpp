@@ -1274,9 +1274,7 @@ void LogModel::RefreshAllRowStyles()
     // (`Theme::levelTypes[level].bold/italic`), so a flip can
     // change font weight on rows whose level matches a re-styled
     // entry. Including the role here is cheaper than two emits.
-    emit dataChanged(
-        index(0, 0), index(rows - 1, cols - 1), {Qt::BackgroundRole, Qt::ForegroundRole, Qt::FontRole}
-    );
+    emit dataChanged(index(0, 0), index(rows - 1, cols - 1), {Qt::BackgroundRole, Qt::ForegroundRole, Qt::FontRole});
 }
 
 bool LogModel::IsStyleOnlyRoleChange(const QList<int> &roles) noexcept

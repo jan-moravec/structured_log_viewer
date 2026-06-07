@@ -468,8 +468,7 @@ bool FindRecordWidget::eventFilter(QObject *watched, QEvent *event)
         // not enable RTTI on `QEvent`. Same idiom as the
         // `QFileOpenEvent` cast in `main.cpp`.
         auto *ke = static_cast<QKeyEvent *>(event); // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
-        if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) &&
-            ke->modifiers().testFlag(Qt::ShiftModifier))
+        if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) && ke->modifiers().testFlag(Qt::ShiftModifier))
         {
             // Intercept before `QLineEdit::keyPressEvent` runs.
             // Otherwise it would emit `returnPressed` (wired to
