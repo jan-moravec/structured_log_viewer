@@ -116,6 +116,14 @@ protected:
     /// style swap a theme can apply via `qApp->setStyle`.
     void changeEvent(QEvent *event) override;
 
+    /// Catch device-pixel-ratio changes when the bar moves between
+    /// monitors of different DPI. The icon's backing pixmap is
+    /// allocated at the current `devicePixelRatioF()`; without
+    /// this hook a drag from a 100% to a 200% display would leave
+    /// the chevrons rasterised at the lower resolution and Qt
+    /// would up-scale them.
+    bool event(QEvent *event) override;
+
 private slots:
     void FindNext();
     void FindPrevious();

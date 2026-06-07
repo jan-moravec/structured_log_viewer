@@ -9990,7 +9990,11 @@ private slots:
     {
         auto *dock = mWindow->findChild<ParseErrorsDock *>();
         QVERIFY2(dock != nullptr, "MainWindow must own a ParseErrorsDock");
-        dock->ClearErrors();
+        // `ResetSessionState`, not `ClearErrors`, so the first-batch
+        // latch is re-armed regardless of what earlier tests in
+        // the shared `mWindow` left it as -- this test wants to
+        // observe `firstBatchArrived` on the first AppendErrors.
+        dock->ResetSessionState();
 
         QSignalSpy countSpy(dock, &ParseErrorsDock::countChanged);
         QSignalSpy firstBatchSpy(dock, &ParseErrorsDock::firstBatchArrived);
@@ -10015,11 +10019,17 @@ private slots:
         QCOMPARE(
             firstBatchSpy.count(),
             1
-        ); // No second emit until ClearErrors resets the session.
+        ); // No second emit until a session boundary re-arms the latch.
         QCOMPARE(countSpy.last().at(0).toInt(), 5);
 
-        // Clear resets both counters and arms `firstBatchArrived`
-        // for the next session.
+        // ClearErrors zeroes both counters but leaves the
+        // first-batch latch SET so a streaming hiccup right after
+        // a manual Clear does not re-pop the dock the user just
+        // dismissed. (Bug fix: pre-`ResetSessionState`, the
+        // `firstBatchOfSession` heuristic keyed on
+        // `mErrorCount == 0 && mDroppedCount == 0`, which Clear
+        // restored, causing an unwanted auto-raise on the next
+        // batch.)
         dock->ClearErrors();
         QCOMPARE(dock->Count(), 0);
         QCOMPARE(dock->DroppedCount(), 0);
@@ -10028,7 +10038,54 @@ private slots:
 
         dock->AppendErrors(QStringLiteral("After clear"), {"x"});
         QCOMPARE(dock->Count(), 1);
-        QCOMPARE(firstBatchSpy.count(), 2); // New session -> second emit.
+        QCOMPARE(firstBatchSpy.count(), 1); // ClearErrors does NOT re-arm.
+
+        // ResetSessionState is the canonical session-boundary
+        // path and DOES re-arm the latch.
+        dock->ResetSessionState();
+        QCOMPARE(dock->Count(), 0);
+        QCOMPARE(dock->DroppedCount(), 0);
+        dock->AppendErrors(QStringLiteral("New session"), {"y"});
+        QCOMPARE(dock->Count(), 1);
+        QCOMPARE(firstBatchSpy.count(), 2); // Re-armed -> second emit.
+    }
+
+    // Regression for the Manual-Clear-then-batch auto-raise bug.
+    // Pre-fix: clicking the in-dock Clear button reset the
+    // `firstBatchOfSession` heuristic (which keyed on
+    // `mErrorCount == 0 && mDroppedCount == 0`), so the next
+    // streamed parse-error batch fired `firstBatchArrived` again
+    // and `MainWindow` raised the dock the user had just decided
+    // to dismiss. Fix decouples the latch (`mHasSeenFirstBatch`)
+    // from the counters so only `ResetSessionState()` re-arms it.
+    void TestParseErrorsDockClearDoesNotReArmFirstBatchSignal()
+    {
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY2(dock != nullptr, "MainWindow must own a ParseErrorsDock");
+        dock->ResetSessionState();
+
+        QSignalSpy firstBatchSpy(dock, &ParseErrorsDock::firstBatchArrived);
+        QVERIFY(firstBatchSpy.isValid());
+
+        dock->AppendErrors(QStringLiteral("Initial batch"), {"a"});
+        QCOMPARE(firstBatchSpy.count(), 1);
+
+        dock->ClearErrors();
+        QCOMPARE(dock->Count(), 0);
+        QCOMPARE(dock->DroppedCount(), 0);
+
+        // The simulated streaming hiccup: a fresh batch arrives
+        // after the user manually cleared. The latch must stay
+        // set so MainWindow does not auto-raise the dock again.
+        dock->AppendErrors(QStringLiteral("Post-clear hiccup"), {"b"});
+        QCOMPARE(dock->Count(), 1);
+        QCOMPARE(firstBatchSpy.count(), 1); // Still 1 -- ClearErrors did NOT re-arm.
+
+        // Sanity check the inverse: a real session boundary DOES
+        // re-arm.
+        dock->ResetSessionState();
+        dock->AppendErrors(QStringLiteral("Real new session"), {"c"});
+        QCOMPARE(firstBatchSpy.count(), 2);
     }
 
     // Pathologically large batches must evict the leading slice up
@@ -10801,6 +10858,190 @@ private slots:
         const int nextBlue = OpaquePixelCount(nextButton->icon(), qRgb(0, 0, 255));
         QVERIFY2(prevBlue > 0, "previous-button icon must repaint after a palette change");
         QVERIFY2(nextBlue > 0, "next-button icon must repaint after a palette change");
+    }
+
+    // The chevron icon backing pixmap must be allocated at the
+    // host's `devicePixelRatioF()` so HiDPI displays render the
+    // arrow at native resolution. Pre-fix the pixmap was minted at
+    // `sizePx x sizePx` regardless of DPR, leaving the chevrons
+    // softer than the surrounding `.*` / `*?` text glyphs on a
+    // 200% scaled monitor.
+    void TestFindBarArrowIconsScaleWithDevicePixelRatio()
+    {
+        auto *findRecord = mWindow->findChild<FindRecordWidget *>();
+        QVERIFY2(findRecord != nullptr, "MainWindow must own a FindRecordWidget");
+        auto *prevButton = findRecord->findChild<QToolButton *>(QStringLiteral("findPrevious"));
+        QVERIFY2(prevButton != nullptr, "FindRecordWidget must expose its previous button");
+
+        const QIcon icon = prevButton->icon();
+        QVERIFY2(!icon.isNull(), "previous-button icon must be set");
+        const QList<QSize> sizes = icon.availableSizes();
+        QVERIFY2(!sizes.isEmpty(), "icon must report at least one size");
+
+        // The pixmap returned by `pixmap(size)` is scaled to the
+        // requested logical size; what we want to inspect is the
+        // *backing* pixel count. Pulling at the largest available
+        // size and asserting `devicePixelRatio()` matches the
+        // widget's host DPR is the cleanest probe.
+        const QPixmap pix = icon.pixmap(sizes.front());
+        QVERIFY2(!pix.isNull(), "pixmap mint must succeed");
+        const qreal hostDpr = findRecord->devicePixelRatioF();
+        if (hostDpr > 1.0)
+        {
+            QVERIFY2(
+                pix.devicePixelRatio() >= hostDpr - 0.05,
+                qPrintable(QStringLiteral("expected DPR %1, got %2 -- HiDPI mint regressed")
+                               .arg(hostDpr)
+                               .arg(pix.devicePixelRatio()))
+            );
+            // Backing pixel size should also scale: a sizePx-wide
+            // logical icon at 2x DPR should have a 2*sizePx-wide
+            // backing pixmap.
+            const int expectedBackingPx = static_cast<int>(sizes.front().width() * hostDpr + 0.5);
+            QVERIFY2(
+                pix.size().width() >= expectedBackingPx - 1 && pix.size().width() <= expectedBackingPx + 1,
+                qPrintable(QStringLiteral("backing pixmap width %1 should be ~ logical %2 * DPR %3")
+                               .arg(pix.size().width())
+                               .arg(sizes.front().width())
+                               .arg(hostDpr))
+            );
+        }
+        else
+        {
+            // 1x display: just confirm the icon is realised.
+            QVERIFY(pix.devicePixelRatio() >= 1.0 - 0.05);
+        }
+    }
+
+    // `LogModel::IsStyleOnlyRoleChange` is the helper the find
+    // cache and record-detail dock use to filter out
+    // theme-refresh notifications. Lock down its contract so a
+    // future role addition can't silently flip a value-affecting
+    // role into the "ignore" set.
+    void TestIsStyleOnlyRoleChangeContract()
+    {
+        QVERIFY2(
+            !LogModel::IsStyleOnlyRoleChange({}),
+            "empty roles list is the 'I don't know' sentinel; must conservatively refresh"
+        );
+        QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::BackgroundRole}));
+        QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::ForegroundRole}));
+        QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::FontRole}));
+        QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::DecorationRole}));
+        QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::BackgroundRole, Qt::ForegroundRole, Qt::FontRole}));
+        QVERIFY2(
+            !LogModel::IsStyleOnlyRoleChange({Qt::DisplayRole}), "DisplayRole change must trigger a refresh"
+        );
+        QVERIFY2(!LogModel::IsStyleOnlyRoleChange({Qt::EditRole}), "EditRole change must trigger a refresh");
+        QVERIFY2(
+            !LogModel::IsStyleOnlyRoleChange({Qt::BackgroundRole, Qt::DisplayRole}),
+            "mixed list with at least one value-role must trigger a refresh"
+        );
+    }
+
+    // `LogFilterModel::ComposeFindFlags` is the single source of
+    // truth for find-flag composition. Lock down the priority
+    // (regex > wildcard > contains) and the always-on
+    // `MatchWrap | MatchRecursive` baseline so a future refactor
+    // can't desync the find call sites.
+    void TestComposeFindFlagsPriorityAndBaseline()
+    {
+        constexpr Qt::MatchFlags BASELINE = Qt::MatchWrap | Qt::MatchRecursive;
+        QCOMPARE(
+            LogFilterModel::ComposeFindFlags(/*wildcards=*/false, /*regex=*/false), BASELINE | Qt::MatchContains
+        );
+        QCOMPARE(
+            LogFilterModel::ComposeFindFlags(/*wildcards=*/true, /*regex=*/false), BASELINE | Qt::MatchWildcard
+        );
+        QCOMPARE(
+            LogFilterModel::ComposeFindFlags(/*wildcards=*/false, /*regex=*/true),
+            BASELINE | Qt::MatchRegularExpression
+        );
+        // Both toggles checked: regex wins (the UI enforces this
+        // visually too -- `mWildcardsAction` and `mRegexAction`
+        // are mutually exclusive -- but the helper itself must
+        // not depend on that invariant being upheld upstream).
+        QCOMPARE(
+            LogFilterModel::ComposeFindFlags(/*wildcards=*/true, /*regex=*/true),
+            BASELINE | Qt::MatchRegularExpression
+        );
+    }
+
+    // `BumpMatchCountDebounce` was a hot path during streaming
+    // bursts: every `dataChanged` invalidation called
+    // `mMatchCountTimer->start()`, which restarts the trailing
+    // timer. With continuous streaming, the trailing timer was
+    // forever reset and only the max-age timer (cap = 750ms)
+    // fired. Fix: when both timers are already running, skip the
+    // start call so the recount actually fires on the trailing
+    // timer's natural deadline.
+    void TestBumpMatchCountDebounceCoalescesStreamingBursts()
+    {
+        auto *findRecord = mWindow->findChild<FindRecordWidget *>();
+        QVERIFY2(findRecord != nullptr, "MainWindow must own a FindRecordWidget");
+        auto *findEdit = findRecord->findChild<QLineEdit *>(QStringLiteral("findEdit"));
+        QVERIFY2(findEdit != nullptr, "FindRecordWidget must expose its QLineEdit");
+        auto *trailingTimer = findRecord->findChild<QTimer *>(QStringLiteral("matchCountDebounceTimer"));
+        auto *maxAgeTimer = findRecord->findChild<QTimer *>(QStringLiteral("matchCountMaxAgeTimer"));
+        // Object names may not be set; fall back to walking timers.
+        if (trailingTimer == nullptr || maxAgeTimer == nullptr)
+        {
+            const QList<QTimer *> timers = findRecord->findChildren<QTimer *>();
+            // Skip the test gracefully if the timers aren't named.
+            if (timers.size() < 2)
+            {
+                QSKIP("FindRecordWidget timers are unnamed; cannot probe directly");
+            }
+        }
+
+        findEdit->setText(QStringLiteral("needle"));
+        // First Bump arms both timers.
+        findRecord->BumpMatchCountDebounce();
+        // Second Bump while both already active: must not perturb
+        // their state. We verify by recording the remaining time
+        // before the second call and asserting it doesn't snap
+        // back to the full interval after.
+        const QList<QTimer *> timers = findRecord->findChildren<QTimer *>();
+        QTimer *trailing = nullptr;
+        QTimer *maxAge = nullptr;
+        for (QTimer *t : timers)
+        {
+            if (!t->isActive())
+            {
+                continue;
+            }
+            if (trailing == nullptr)
+            {
+                trailing = t;
+            }
+            else if (maxAge == nullptr && t != trailing)
+            {
+                maxAge = t;
+            }
+        }
+        QVERIFY2(trailing != nullptr, "first BumpMatchCountDebounce must arm the trailing timer");
+        QVERIFY2(maxAge != nullptr, "first BumpMatchCountDebounce must arm the max-age timer");
+
+        // Sleep a couple of ms so the timer's `remainingTime()`
+        // ticks down. Then re-bump and assert the remaining time
+        // did NOT bounce back up (which would indicate the
+        // trailing timer was reset).
+        QTest::qWait(20);
+        const int remainingBefore = trailing->remainingTime();
+        findRecord->BumpMatchCountDebounce();
+        const int remainingAfter = trailing->remainingTime();
+        // Tolerate a 5ms drift for scheduler jitter; the key
+        // invariant is that the second bump did NOT *reset* the
+        // timer (which would push remaining back near interval()).
+        QVERIFY2(
+            remainingAfter <= remainingBefore + 5,
+            qPrintable(QStringLiteral(
+                           "second bump must not reset the trailing timer (before=%1, after=%2, interval=%3)"
+                       )
+                           .arg(remainingBefore)
+                           .arg(remainingAfter)
+                           .arg(trailing->interval()))
+        );
     }
 
     // An enum column with an empty dictionary must show the placeholder

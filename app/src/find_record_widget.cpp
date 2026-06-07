@@ -82,9 +82,19 @@ constexpr qreal ARROW_CENTRE_RATIO = 0.5;
 /// the next-match arrow (apex at the bottom). Replaces
 /// `QStyle::SP_ArrowUp` / `SP_ArrowDown`, which Qt bakes as raster
 /// black-on-transparent pixmaps that vanish on dark themes.
-[[nodiscard]] QIcon MakeArrowIcon(int sizePx, bool pointingUp, const QColor &color)
+///
+/// @p devicePixelRatio scales the backing pixmap so the painted
+/// triangle is sharp on HiDPI displays. Without it the pixmap is
+/// minted at logical pixel size and Qt up-scales the rasterised
+/// triangle, leaving the chevrons softer than the surrounding
+/// `.*` / `*?` text glyphs. The painter still draws in logical
+/// coordinates because we set `setDevicePixelRatio` before
+/// drawing.
+[[nodiscard]] QIcon MakeArrowIcon(int sizePx, bool pointingUp, const QColor &color, qreal devicePixelRatio)
 {
-    QPixmap pix(sizePx, sizePx);
+    const qreal dpr = devicePixelRatio > 0.0 ? devicePixelRatio : 1.0;
+    QPixmap pix(QSize(sizePx, sizePx) * dpr);
+    pix.setDevicePixelRatio(dpr);
     pix.fill(Qt::transparent);
     QPainter painter(&pix);
     painter.setRenderHint(QPainter::Antialiasing, true);
@@ -355,6 +365,27 @@ void FindRecordWidget::BumpMatchCountDebounce()
     {
         return;
     }
+    // Fast path: trailing timer already running AND max-age
+    // timer already running means a recount is already queued
+    // and capped. Skip the `start()` call entirely -- it's
+    // technically idempotent (`QTimer::start` resets the
+    // countdown), but the trailing-timer reset *defeats*
+    // coalescing in the streaming-burst case where this is the
+    // hottest invalidation path:
+    //
+    //   model emits dataChanged 100x/sec while live-tailing,
+    //   each emit calls OnFindCacheInvalidated, which calls
+    //   BumpMatchCountDebounce. Without this guard, every emit
+    //   restarts the trailing timer and the recount never
+    //   actually fires until streaming pauses; the max-age
+    //   timer is the only thing forcing progress. With the
+    //   guard, the *first* invalidation arms both timers and
+    //   subsequent invalidations are no-ops -- the trailing
+    //   timer expires on schedule and the recount runs.
+    if (mMatchCountTimer->isActive() && mMatchCountMaxAgeTimer->isActive())
+    {
+        return;
+    }
     // Restart the trailing timer; identical mechanism to the
     // textChanged path. A burst of model signals collapses into
     // one final recount.
@@ -502,6 +533,22 @@ void FindRecordWidget::changeEvent(QEvent *event)
     }
 }
 
+bool FindRecordWidget::event(QEvent *event)
+{
+    // `DevicePixelRatioChange` fires when the window backing the
+    // widget moves between monitors with different scale factors
+    // (e.g. dragging a floating `FindDock` from a 100% laptop
+    // panel to a 200% external display). The icon pixmap was
+    // allocated at the previous DPR, so re-mint it now or Qt
+    // will up-scale a low-resolution rasterisation. The cost is
+    // two tiny pixmaps; safe to do unconditionally.
+    if (event != nullptr && event->type() == QEvent::DevicePixelRatioChange)
+    {
+        RefreshArrowIcons();
+    }
+    return QWidget::event(event);
+}
+
 void FindRecordWidget::RefreshArrowIcons()
 {
     if (mButtonPrevious == nullptr || mButtonNext == nullptr)
@@ -516,8 +563,14 @@ void FindRecordWidget::RefreshArrowIcons()
     // toggle action glyphs render in.
     const QColor color = palette().color(QPalette::Active, QPalette::WindowText);
     const int sizePx = ArrowIconPixels(this);
-    mButtonPrevious->setIcon(MakeArrowIcon(sizePx, /*pointingUp=*/true, color));
-    mButtonNext->setIcon(MakeArrowIcon(sizePx, /*pointingUp=*/false, color));
+    // `devicePixelRatioF()` walks up the parent chain to the host
+    // window; on a 200% scaled monitor this returns 2.0 and the
+    // pixmap is allocated 2x in each axis so the triangle is
+    // pixel-sharp. Falls back to 1.0 when the widget is not yet
+    // realised (early constructor call before `show()`).
+    const qreal dpr = devicePixelRatioF();
+    mButtonPrevious->setIcon(MakeArrowIcon(sizePx, /*pointingUp=*/true, color, dpr));
+    mButtonNext->setIcon(MakeArrowIcon(sizePx, /*pointingUp=*/false, color, dpr));
 }
 
 void FindRecordWidget::EmitMatchCountRequest()

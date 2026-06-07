@@ -20,6 +20,8 @@
 // the full type comes in transitively through `log_filter_model.hpp`.
 
 #include <QAction>
+#include <QApplication>
+#include <QDockWidget>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QElapsedTimer>
@@ -30,6 +32,7 @@
 #include <QMimeData>
 #include <QPointer>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
@@ -37,6 +40,7 @@
 #include <QVBoxLayout>
 
 #include <array>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -804,6 +808,57 @@ private:
     /// Uses `Qt::UniqueConnection`, so repeat calls are idempotent.
     void RebindRecordDetailSelectionTracking();
 
+    /// True iff the find dock is realised and on-screen. The
+    /// `mFindDock != nullptr` half guards against early
+    /// constructor-phase callers (signals from the proxy can fire
+    /// while the dock is still being built) and against shutdown
+    /// (the `QPointer` clears before the connection is torn
+    /// down). Centralised so every find-aware path goes through
+    /// the same null + visibility check.
+    [[nodiscard]] bool IsFindBarVisible() const noexcept
+    {
+        return mFindDock != nullptr && mFindDock->isVisible();
+    }
+
+    /// True iff the find dock is visible AND keyboard focus sits
+    /// inside its widget tree. Used by the parse-errors auto-raise
+    /// guard (don't yank focus from a user mid-search) and the
+    /// `Find()` smart toggle (Ctrl+F closes the bar only when
+    /// focus is already in it).
+    [[nodiscard]] bool FindBarHoldsFocus() const noexcept
+    {
+        return IsFindBarVisible() && mFindDock->isAncestorOf(QApplication::focusWidget());
+    }
+
+    /// Wire the standard dock toggle pattern: `action->toggled` opens
+    /// (`onShow` callback, defaults to `dock->show() + dock->raise()`)
+    /// or closes (`dock->close()`) the dock; `dock->visibilityChanged(true)`
+    /// re-checks the action (covers tab activations and `restoreState`);
+    /// `dock->closed` un-checks it on genuine user dismissal.
+    /// Splitting visibility into "on" via `visibilityChanged(true)` and
+    /// "off" via `closed` is what lets the menu checkmark survive tab
+    /// switches inside a tabified group -- `visibilityChanged(false)`
+    /// fires for both genuine close and tab inactivation, so listening
+    /// to it would un-check the action every time the user switched tabs.
+    ///
+    /// `onShown` runs after the visibility-change handler checks the
+    /// action and is the place to plug per-dock side effects (e.g.
+    /// `RecordDetailDock` re-pulling the table selection, `FindDock`
+    /// catching up the match count). Defaults to no-op.
+    ///
+    /// All four dock toggles in `MainWindow` (Anchors, Find,
+    /// ParseErrors, RecordDetails) used to inline this 25-line
+    /// pattern, which made it easy to drift one wiring relative to
+    /// the others; centralising fixes the contract in one spot.
+    template <typename DockT>
+    void WireDockToggle(
+        DockT *dock,
+        QAction *action,
+        void (DockT::*closedSignal)(),
+        const std::function<void()> &onShow = {},
+        const std::function<void()> &onShown = {}
+    );
+
     Ui::MainWindow *ui;
     QVBoxLayout *mLayout;
     RowOrderProxyModel *mRowOrderProxyModel;
@@ -811,14 +866,21 @@ private:
     LogTableView *mTableView;
     LogModel *mModel;
     /// Dockable find bar. Owned via `QMainWindow` parentage.
-    /// `mFindRecord` is the `FindRecordWidget` it hosts; both
-    /// pointers stay valid for the window's lifetime.
-    FindDock *mFindDock = nullptr;
-    FindRecordWidget *mFindRecord = nullptr;
+    /// `mFindRecord` is the `FindRecordWidget` it hosts. Both
+    /// are `QPointer`s so a model / proxy signal that fires
+    /// during shutdown -- after Qt has destroyed the find dock
+    /// subtree but before the connection on `MainWindow` is torn
+    /// down -- finds them already null instead of dangling. The
+    /// connections are wired with PMFs to slots on `this`, which
+    /// lives until the very end of `~MainWindow`, so the window
+    /// of vulnerability is real even if narrow.
+    QPointer<FindDock> mFindDock;
+    QPointer<FindRecordWidget> mFindRecord;
     /// Dockable replacement for the old `QMessageBox::warning`
     /// parse-error popups. Hidden by default; auto-raised on the
-    /// first error of a session.
-    ParseErrorsDock *mParseErrorsDock = nullptr;
+    /// first error of a session. `QPointer` for the same shutdown
+    /// reasoning as `mFindDock`.
+    QPointer<ParseErrorsDock> mParseErrorsDock;
     /// Toggle action for `mFindDock`, mirrored onto the View menu.
     /// Programmatic because the .ui has no entry; re-added on
     /// every `RebuildViewMenu`.
@@ -1061,3 +1123,67 @@ private:
     int mLastDroppedFilterCountForTest = 0;
 #endif
 };
+
+template <typename DockT>
+void MainWindow::WireDockToggle(
+    DockT *dock,
+    QAction *action,
+    void (DockT::*closedSignal)(),
+    const std::function<void()> &onShow,
+    const std::function<void()> &onShown
+)
+{
+    Q_ASSERT(dock != nullptr);
+    Q_ASSERT(action != nullptr);
+    // Toggle action -> show / close. Reverts the toggle when the
+    // host main window is not yet realised (early test driver
+    // call) so the action can't sit checked while the dock stays
+    // hidden.
+    connect(action, &QAction::toggled, this, [this, dock, action, onShow](bool on) {
+        if (on && !isVisible())
+        {
+            const QSignalBlocker blocker(action);
+            action->setChecked(false);
+            return;
+        }
+        if (on)
+        {
+            if (onShow)
+            {
+                onShow();
+            }
+            else
+            {
+                dock->show();
+                dock->raise();
+            }
+        }
+        else
+        {
+            // `close()` (not `hide()`) so the dock subclass'
+            // `closeEvent` fires and `closedSignal` propagates.
+            dock->close();
+        }
+    });
+    // On-edge: `visibilityChanged(true)` fires for cold reveals
+    // *and* tab activations, both of which want the action
+    // checked. Off-edge `visibilityChanged(false)` is ambiguous
+    // (tab inactivation looks the same), so we don't listen for
+    // it -- `closedSignal` handles that side.
+    connect(dock, &QDockWidget::visibilityChanged, this, [action, onShown](bool visible) {
+        if (!visible)
+        {
+            return;
+        }
+        const QSignalBlocker blocker(action);
+        action->setChecked(true);
+        if (onShown)
+        {
+            onShown();
+        }
+    });
+    connect(dock, closedSignal, this, [action]() {
+        const QSignalBlocker blocker(action);
+        action->setChecked(false);
+    });
+}

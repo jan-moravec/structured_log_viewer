@@ -255,6 +255,12 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
     auto *cancelButton = new QPushButton("Cancel", this);
 
     connect(okButton, &QPushButton::clicked, this, [this]() {
+        // Mark the close as button-initiated so `closeEvent` skips
+        // the revert: Ok has already persisted the new state, and
+        // re-applying `PersistedSelection()` plus a fresh
+        // `StreamingControl::LoadConfiguration()` would just hit
+        // disk again to no effect.
+        mClosingViaButton = true;
         // Theme selection is already live; Ok just persists it.
         if (mTheme != nullptr)
         {
@@ -298,6 +304,10 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
         // Revert the spinbox-edited values to the persisted ones; no
         // emit needed because the on-disk values are unchanged.
         StreamingControl::LoadConfiguration();
+        // Cancel has already done the revert; mark the close as
+        // button-initiated so `closeEvent` doesn't redo the same
+        // disk read.
+        mClosingViaButton = true;
         close();
     });
 
@@ -406,15 +416,22 @@ void PreferencesEditor::ShowThemeStatus(const QString &message)
 
 void PreferencesEditor::closeEvent(QCloseEvent *event)
 {
-    // Treat the window-close paths (X, Alt+F4, Esc on platforms that
-    // map it to close, programmatic `close()` from anywhere other
-    // than Ok/Cancel) as Cancel: revert any live-previewed theme
-    // and reload the streaming/session config from disk. The Ok and
-    // Cancel handlers both ultimately invoke `close()`, so this slot
-    // also runs in those paths -- but the revert is idempotent there
-    // because `Ok` has already persisted the new selection (making
-    // `PersistedSelection()` match the current state) and `Cancel`
-    // has already reverted before calling `close()`.
+    // Bypass the revert when Ok/Cancel routed us here -- they
+    // have already taken care of the persisted state, and
+    // re-running `StreamingControl::LoadConfiguration()` would
+    // just hit disk again (and could surface a transient I/O
+    // error during a perfectly normal Ok). Reset the flag so a
+    // re-shown dialog falls back to the genuine-close path.
+    if (mClosingViaButton)
+    {
+        mClosingViaButton = false;
+        QWidget::closeEvent(event);
+        return;
+    }
+    // Genuine close (X, Alt+F4, programmatic `close()` from
+    // anywhere else): treat as Cancel. Revert any live-previewed
+    // theme and reload the streaming/session config from disk so
+    // a Dark preview doesn't leak past the dialog.
     if (mTheme != nullptr)
     {
         mTheme->SetActiveSelection(mTheme->PersistedSelection());

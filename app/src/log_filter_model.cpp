@@ -1212,6 +1212,24 @@ QList<QModelIndex> LogFilterModel::MatchRow(
     return result;
 }
 
+Qt::MatchFlags LogFilterModel::ComposeFindFlags(bool wildcards, bool regularExpressions)
+{
+    Qt::MatchFlags flags = Qt::MatchWrap | Qt::MatchRecursive;
+    if (regularExpressions)
+    {
+        flags |= Qt::MatchRegularExpression;
+    }
+    else if (wildcards)
+    {
+        flags |= Qt::MatchWildcard;
+    }
+    else
+    {
+        flags |= Qt::MatchContains;
+    }
+    return flags;
+}
+
 bool LogFilterModel::Matches(const QVariant &data, const QVariant &value, Qt::MatchFlags flags)
 {
     // `Qt::MatchExactly == 0`, so `flags.testFlag(Qt::MatchExactly)`
@@ -1225,15 +1243,22 @@ bool LogFilterModel::Matches(const QVariant &data, const QVariant &value, Qt::Ma
     //
     // Caveat: because `MatchExactly == 0`, *any* `flags` value with
     // no match-type bit set (e.g. `MatchWrap | MatchRecursive` on
-    // its own) now silently routes through the exact-equality
-    // branch. Previously the testFlag ladder rejected that case
-    // outright. No in-tree caller currently passes a flag set with
-    // no type bit -- `ComposeFindFlags` always picks one of
-    // Contains / Wildcard / Regex -- but a future caller should be
-    // aware that the type field defaults to `MatchExactly`, not
-    // "no-match".
+    // its own) silently routes through the exact-equality branch.
+    // No in-tree caller currently passes a flag set with no type
+    // bit -- `LogFilterModel::ComposeFindFlags` always picks one
+    // of Contains / Wildcard / Regex -- but a future caller mis-composing flags
+    // would otherwise get the wrong match silently. The Q_ASSERT
+    // below blows up loudly in debug; release builds still default
+    // to MatchExactly to preserve Qt's documented semantics.
     constexpr int MATCH_TYPE_MASK = 0x000F;
     const int matchType = static_cast<int>(flags) & MATCH_TYPE_MASK;
+    Q_ASSERT_X(
+        matchType != Qt::MatchExactly || flags == Qt::MatchExactly,
+        "LogFilterModel::Matches",
+        "no match-type bit set (Contains/Wildcard/Regex/StartsWith/EndsWith) -- "
+        "flags has Wrap/Recursive but no type, which silently routes through MatchExactly. "
+        "Use LogFilterModel::ComposeFindFlags or pick a type explicitly."
+    );
     if (matchType == Qt::MatchExactly)
     {
         return data == value;

@@ -41,17 +41,30 @@ public:
     explicit ParseErrorsDock(QWidget *parent = nullptr);
 
     /// Append one batch of errors under @p title. No-op for an
-    /// empty @p errors. The dock auto-raises only on the first
-    /// batch of a session (i.e. when the panel was previously
-    /// empty); subsequent batches update silently and rely on the
-    /// status-bar indicator to surface the new count. This avoids
-    /// stealing focus from a streaming-session user who has
-    /// already deliberately closed the dock.
+    /// empty @p errors. The dock fires `firstBatchArrived` only
+    /// once per session boundary (see `ResetSessionState`);
+    /// subsequent batches update silently and rely on the
+    /// status-bar indicator. This avoids stealing focus from a
+    /// streaming-session user who has already deliberately closed
+    /// the dock or used the Clear button mid-session.
     void AppendErrors(const QString &title, const std::vector<std::string> &errors);
 
-    /// Drop every entry. Used when the user clicks the Clear
-    /// button and from `MainWindow` on session discards.
+    /// Drop every displayed entry. Wired to the in-dock Clear
+    /// button. Does **not** re-arm `firstBatchArrived`: a user
+    /// who clicks Clear and dismisses the dock should not have
+    /// it re-pop the next time a streaming line fails to parse.
+    /// Use `ResetSessionState()` for the destructive session
+    /// boundary path (NewSession, OpenLogStreamFromPath, ...).
     void ClearErrors();
+
+    /// Drop every displayed entry **and** re-arm
+    /// `firstBatchArrived` so the next call to `AppendErrors`
+    /// fires it again. `MainWindow` calls this from every
+    /// destructive session boundary (NewSession,
+    /// OpenLogStreamFromPath, OpenNetworkStream,
+    /// ApplyLoadedConfiguration, append-replace) so a fresh
+    /// session can auto-raise the dock on its first error.
+    void ResetSessionState();
 
     /// Total number of error entries currently displayed (does
     /// not include evicted entries; see @p DroppedCount). O(1).
@@ -137,4 +150,12 @@ private:
     int mErrorCount = 0;
     /// Cumulative evictions since the last `ClearErrors()`.
     int mDroppedCount = 0;
+    /// `false` until the first `AppendErrors` of the session, then
+    /// `true` until `ResetSessionState` re-arms it. Decoupled from
+    /// `mErrorCount`/`mDroppedCount` so the in-dock Clear button
+    /// (which zeroes both counters) does not retrigger
+    /// `firstBatchArrived` on the next streamed parse error -- if
+    /// the user just clicked Clear they have signalled they're
+    /// not interested in being interrupted again.
+    bool mHasSeenFirstBatch = false;
 };

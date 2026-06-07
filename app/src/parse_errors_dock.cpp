@@ -119,12 +119,14 @@ void ParseErrorsDock::AppendErrors(const QString &title, const std::vector<std::
 
     const QIcon warningIcon = QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning);
 
-    // Auto-raise only on the first batch of a session (i.e. when
-    // the dock was previously empty). Subsequent batches update
-    // silently and rely on the status-bar indicator -- a streaming
-    // user who has explicitly closed the dock should not have it
-    // pop back open every batch.
-    const bool firstBatchOfSession = mErrorCount == 0 && mDroppedCount == 0;
+    // Decide whether this batch should fire `firstBatchArrived`
+    // (which `MainWindow` translates into auto-raising the dock).
+    // The flag flips on the first batch *per session* and is
+    // cleared only by `ResetSessionState` -- the in-dock Clear
+    // button leaves it set, so a user who clicked Clear and
+    // dismissed the dock is not yanked back to it the next time a
+    // streaming line fails to parse.
+    const bool firstBatchOfSession = !mHasSeenFirstBatch;
 
     // Snapshot the user's scroll position *before* mutating the
     // list. If they were already pinned at the tail (auto-follow
@@ -206,6 +208,11 @@ void ParseErrorsDock::AppendErrors(const QString &title, const std::vector<std::
     RefreshSummary();
     if (firstBatchOfSession)
     {
+        // Latch the flag before emitting so a re-entrant
+        // `AppendErrors` from a slot connected to
+        // `firstBatchArrived` (defensive — none today) cannot
+        // double-fire it.
+        mHasSeenFirstBatch = true;
         // Let `MainWindow` decide whether to actually raise the
         // dock -- the dock itself does not know about the rest of
         // the GUI chrome and shouldn't yank focus off the find
@@ -223,6 +230,28 @@ void ParseErrorsDock::ClearErrors()
     mList->clear();
     mErrorCount = 0;
     mDroppedCount = 0;
+    // `mHasSeenFirstBatch` deliberately *not* reset: the user
+    // already chose to dismiss this session's errors; popping the
+    // dock back open on the next streaming hiccup would be the
+    // bug we are guarding against. `ResetSessionState` is the
+    // canonical path to re-arm the auto-raise.
+    RefreshSummary();
+}
+
+void ParseErrorsDock::ResetSessionState()
+{
+    // Same surface as ClearErrors plus the auto-raise re-arm.
+    // Skip the work entirely if we are already in the pristine
+    // post-construction state to avoid a spurious `countChanged`
+    // emit on every session boundary in idle apps.
+    if (mList->count() == 0 && mErrorCount == 0 && mDroppedCount == 0 && !mHasSeenFirstBatch)
+    {
+        return;
+    }
+    mList->clear();
+    mErrorCount = 0;
+    mDroppedCount = 0;
+    mHasSeenFirstBatch = false;
     RefreshSummary();
 }
 
@@ -329,6 +358,15 @@ void ParseErrorsDock::RebuildOverflowFooter()
     {
         return;
     }
+    // Pin the contract: caller (`AppendErrors`) is responsible
+    // for stripping any prior footer before we run, so this
+    // method only ever *appends* a fresh footer. A future
+    // refactor that calls `RebuildOverflowFooter` from a path
+    // that doesn't strip the tail would silently grow a stack
+    // of duplicate footers; the assert blows up loudly in debug.
+    Q_ASSERT(
+        mList->count() == 0 || !mList->item(mList->count() - 1)->data(OVERFLOW_FOOTER_ROLE).toBool()
+    );
     // Single overflow footer at the tail. `AppendErrors` strips
     // any prior footer at the top of the call, so this method
     // only ever appends -- never compares-and-replaces. `%Ln`

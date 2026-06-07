@@ -259,6 +259,19 @@ public:
     /// per-emission work -- nothing semantic actually changed.
     void RefreshAllRowStyles();
 
+    /// True iff @p roles is non-empty AND every entry is a purely
+    /// decorative role (`BackgroundRole`, `ForegroundRole`,
+    /// `FontRole`, `DecorationRole`). Used by `dataChanged`
+    /// listeners that only care about value-affecting changes
+    /// (find cache, record-detail pane) to filter out the
+    /// theme-refresh notifications emitted by
+    /// `RefreshAllRowStyles`.
+    ///
+    /// An empty `roles` is Qt's "I don't know what changed"
+    /// sentinel; this helper reports `false` for it so callers
+    /// conservatively refresh on the sentinel.
+    [[nodiscard]] static bool IsStyleOnlyRoleChange(const QList<int> &roles) noexcept;
+
 signals:
     /// Cumulative error count, emitted when a batch carries errors.
     void errorCountChanged(qsizetype count);

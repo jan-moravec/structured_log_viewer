@@ -1279,6 +1279,24 @@ void LogModel::RefreshAllRowStyles()
     );
 }
 
+bool LogModel::IsStyleOnlyRoleChange(const QList<int> &roles) noexcept
+{
+    if (roles.isEmpty())
+    {
+        // Qt's "I don't know what changed" sentinel; conservative
+        // listeners must refresh.
+        return false;
+    }
+    // Hand-rolled set membership (3-4 entries on the hot path) is
+    // cheaper than building a `QSet`. Roles match those emitted
+    // by `RefreshAllRowStyles` plus `DecorationRole` (covers
+    // future icon-only changes) so the common case short-circuits.
+    return std::ranges::all_of(roles, [](int role) {
+        return role == Qt::BackgroundRole || role == Qt::ForegroundRole || role == Qt::FontRole ||
+               role == Qt::DecorationRole;
+    });
+}
+
 void LogModel::DropAnchorsForEvictionPrefix(int dropCount)
 {
     if (mAnchors == nullptr || dropCount <= 0 || mAnchors->Empty())
