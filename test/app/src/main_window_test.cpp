@@ -10857,6 +10857,107 @@ private slots:
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
     }
 
+    // Regression for the split-button blank-icon bug: the split
+    // button was added to the toolbar via `addWidget`, which wraps
+    // it in an internal `QWidgetAction` that does NOT appear in
+    // `mMainToolbar->actions()`. The first cut of `RefreshThemedIcons`
+    // iterated only the toolbar's `actions()` list, so
+    // `actionOpenLogStream` (tagged with `svgIconPath`) was never
+    // reached; the split button's `setDefaultAction` sync therefore
+    // pulled an empty icon and the button rendered as a blank box.
+    // The corresponding `actionOpenNetworkStream` entry in the
+    // dropdown menu had the same problem.
+    //
+    // We now route every themed action through `mThemedActions`
+    // (anchor-driven, not toolbar-iteration-driven). Three asserts
+    // pin the contract: both underlying actions carry a non-empty
+    // icon, AND the button face (synced from the default action)
+    // renders one too. Any future refactor that reverts to the
+    // toolbar-iteration shape would lose one or more of these.
+    void TestOpenStreamSplitButtonAndMenuHaveThemedIcons()
+    {
+        auto *button = mWindow->findChild<QToolButton *>(QStringLiteral("openStreamSplitButton"));
+        auto *openLog = mWindow->findChild<QAction *>(QStringLiteral("actionOpenLogStream"));
+        auto *openNet = mWindow->findChild<QAction *>(QStringLiteral("actionOpenNetworkStream"));
+        QVERIFY2(button != nullptr, "primary toolbar must host the open-stream split button");
+        QVERIFY2(openLog != nullptr, "actionOpenLogStream must exist");
+        QVERIFY2(openNet != nullptr, "actionOpenNetworkStream must exist");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QVERIFY2(
+            !openLog->icon().isNull(),
+            "actionOpenLogStream must carry a themed icon (split button's default-action icon source)"
+        );
+        QVERIFY2(
+            !openNet->icon().isNull(),
+            "actionOpenNetworkStream must carry a themed icon (popup-menu entry next to Log Stream)"
+        );
+        // QToolButton::setDefaultAction syncs the action's icon
+        // onto the button; an empty action icon would land an
+        // empty button icon. Asserting on the button face directly
+        // catches the visual regression even if the sync is ever
+        // re-routed.
+        QVERIFY2(!button->icon().isNull(), "split button face must render a non-empty icon");
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Companion regression for the split-button blank-icon bug:
+    // it is not enough that the icons are non-null at construction.
+    // The original bug also meant a Light <-> Dark flip would
+    // leave the (initial-tint) icon stale while every other
+    // toolbar action repainted. Pinning palette tracking on
+    // `actionOpenLogStream` specifically guards against a future
+    // refactor that keeps the constructor-time tint but drops the
+    // refresh hook for this action.
+    void TestOpenStreamActionsTrackPalette()
+    {
+        auto *toolbar = mWindow->findChild<QToolBar *>(QStringLiteral("mainToolbar"));
+        auto *openLog = mWindow->findChild<QAction *>(QStringLiteral("actionOpenLogStream"));
+        QVERIFY2(toolbar != nullptr, "MainWindow must own the primary toolbar");
+        QVERIFY2(openLog != nullptr, "actionOpenLogStream must exist");
+
+        // Match the AA-tolerant pixel walk used by
+        // `TestMainToolbarIconsTrackPalette`; kept inline rather
+        // than hoisted so a future cleanup that drops one test
+        // doesn't leave the other one referencing a vanished helper.
+        auto opaquePixelCount = [](const QIcon &icon, QRgb expected) -> int {
+            const QSize size{20, 20};
+            const QImage img = icon.pixmap(size).toImage().convertToFormat(QImage::Format_ARGB32);
+            int matching = 0;
+            for (int y = 0; y < img.height(); ++y)
+            {
+                for (int x = 0; x < img.width(); ++x)
+                {
+                    const QRgb px = img.pixel(x, y);
+                    if (qAlpha(px) < 128)
+                    {
+                        continue;
+                    }
+                    constexpr int CHANNEL_TOLERANCE = 32;
+                    if (std::abs(qRed(px) - qRed(expected)) <= CHANNEL_TOLERANCE &&
+                        std::abs(qGreen(px) - qGreen(expected)) <= CHANNEL_TOLERANCE &&
+                        std::abs(qBlue(px) - qBlue(expected)) <= CHANNEL_TOLERANCE)
+                    {
+                        ++matching;
+                    }
+                }
+            }
+            return matching;
+        };
+
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QPalette greenPalette = toolbar->palette();
+        greenPalette.setColor(QPalette::Active, QPalette::WindowText, QColor(0, 200, 0));
+        greenPalette.setColor(QPalette::Inactive, QPalette::WindowText, QColor(0, 200, 0));
+        toolbar->setPalette(greenPalette);
+        mWindow->setPalette(greenPalette);
+        QCoreApplication::processEvents();
+        QVERIFY2(
+            opaquePixelCount(openLog->icon(), qRgb(0, 200, 0)) > 0,
+            "actionOpenLogStream icon must repaint in the palette WindowText colour"
+        );
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
     // Item 1: `RebuildViewMenu` re-adds the primary toolbar's
     // `toggleViewAction` on every menu open. Without this the user
     // who hid the toolbar would have no discoverable way to bring

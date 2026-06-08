@@ -2910,48 +2910,75 @@ void MainWindow::BuildMainToolbar()
         mStreamToolbar->setIconSize(toolbarIconSize);
     }
 
-    // Stash the SVG path on each action so `RefreshThemedIcons`
-    // can re-tint on a palette / DPR change without hard-coding a
-    // per-action switch. Actions without the property are skipped
-    // by the refresh loop, so future actions that ship their own
-    // QIcon don't accidentally get clobbered.
+    // Stash the SVG path on each action AND register it in
+    // `mThemedActions` paired with the widget that will drive its
+    // render policy (palette / iconSize / DPR). `RefreshThemedIcons`
+    // walks the registry rather than `QToolBar::actions()`, so
+    // actions reached through `addWidget` (the split button's
+    // default action, its dropdown menu entries) participate in
+    // the refresh -- without this they would be wrapped in an
+    // internal `QWidgetAction` invisible to a toolbar-iteration
+    // refresh and the split button would render blank.
+    //
+    // Actions without an `svgIconPath` property are skipped by the
+    // refresh loop, so future actions that ship their own QIcon
+    // don't accidentally get clobbered.
     //
     // `svgIconPathChecked` is a second optional property for
     // checkable actions whose On state needs a different glyph
     // (e.g. Pause -> Play when paused). When absent the refresh
     // loop reuses the Off pixmap for the On state, so most actions
     // need only the single tag.
+    //
+    // `mThemedActions.clear()` defends against any future caller
+    // that ever runs `BuildMainToolbar` twice: without it the
+    // registry would grow duplicate entries and `RefreshThemedIcons`
+    // would do redundant work, plus stale-anchor entries (the
+    // first build's toolbar is gone) would litter the list.
+    mThemedActions.clear();
     const auto tag =
-        [](QAction *action, const char *resourcePath, const char *checkedResourcePath = nullptr) {
+        [this](QAction *action, QWidget *anchor, const QString &resourcePath, const QString &checkedResourcePath = {}) {
             if (action == nullptr)
             {
                 return;
             }
-            action->setProperty("svgIconPath", QString::fromLatin1(resourcePath));
-            if (checkedResourcePath != nullptr)
+            action->setProperty("svgIconPath", resourcePath);
+            if (!checkedResourcePath.isEmpty())
             {
-                action->setProperty("svgIconPathChecked", QString::fromLatin1(checkedResourcePath));
+                action->setProperty("svgIconPathChecked", checkedResourcePath);
             }
+            mThemedActions.append({QPointer<QAction>(action), QPointer<QWidget>(anchor)});
         };
 
-    tag(ui->actionOpen, ":/icons/folder-open.svg");
-    tag(ui->actionOpenLogStream, ":/icons/square-play.svg");
-    tag(ui->actionOpenNetworkStream, ":/icons/radio-tower.svg");
-    tag(ui->actionAddFilter, ":/icons/funnel-plus.svg");
-    tag(ui->actionClearAllFilters, ":/icons/funnel-x.svg");
-    tag(mActionToggleFind, ":/icons/search.svg");
-    tag(ui->actionToggleRecordDetails, ":/icons/panel-right-open.svg");
-    tag(mActionToggleAnchors, ":/icons/bookmark.svg");
-    tag(ui->actionPreferences, ":/icons/settings-2.svg");
+    tag(ui->actionOpen, mMainToolbar, QStringLiteral(":/icons/folder-open.svg"));
+    // The open-stream actions live behind the split button (added
+    // via `addWidget` below). Anchor them to `mMainToolbar` so
+    // their pixmaps are rasterised at the toolbar's iconSize and
+    // the split button's default-action sync picks up a non-empty
+    // icon. `actionOpenNetworkStream` only appears in the popup
+    // menu but is anchored to the toolbar too so its size matches
+    // the rest of the strip and theme flips refresh it through
+    // the same loop.
+    tag(ui->actionOpenLogStream, mMainToolbar, QStringLiteral(":/icons/square-play.svg"));
+    tag(ui->actionOpenNetworkStream, mMainToolbar, QStringLiteral(":/icons/radio-tower.svg"));
+    tag(ui->actionAddFilter, mMainToolbar, QStringLiteral(":/icons/funnel-plus.svg"));
+    tag(ui->actionClearAllFilters, mMainToolbar, QStringLiteral(":/icons/funnel-x.svg"));
+    tag(mActionToggleFind, mMainToolbar, QStringLiteral(":/icons/search.svg"));
+    tag(ui->actionToggleRecordDetails, mMainToolbar, QStringLiteral(":/icons/panel-right-open.svg"));
+    tag(mActionToggleAnchors, mMainToolbar, QStringLiteral(":/icons/bookmark.svg"));
+    tag(ui->actionPreferences, mMainToolbar, QStringLiteral(":/icons/settings-2.svg"));
     // Stream toolbar gets the same treatment so the combined strip
     // looks uniform when both bars are visible. Pause is the one
     // action where the On state is semantically distinct from Off
     // (paused vs running), so we override its checked glyph with
     // the play icon -- users expect the button to invite the
     // opposite transition, mirroring media-player conventions.
-    tag(ui->actionPauseStream, ":/icons/pause.svg", ":/icons/square-play.svg");
-    tag(ui->actionFollowTail, ":/icons/arrow-down-to-line.svg");
-    tag(ui->actionStopStream, ":/icons/square.svg");
+    tag(ui->actionPauseStream,
+        mStreamToolbar,
+        QStringLiteral(":/icons/pause.svg"),
+        QStringLiteral(":/icons/square-play.svg"));
+    tag(ui->actionFollowTail, mStreamToolbar, QStringLiteral(":/icons/arrow-down-to-line.svg"));
+    tag(ui->actionStopStream, mStreamToolbar, QStringLiteral(":/icons/square.svg"));
 
     mMainToolbar->addAction(ui->actionOpen);
 
@@ -3006,15 +3033,12 @@ void MainWindow::BuildMainToolbar()
 
     // Themed actions outside of any toolbar. The File -> Recent
     // Sessions submenu gets the `file-clock` glyph so the entry
-    // is recognisable at a glance and the icon tracks the active
-    // palette through the same refresh pipeline as toolbar actions.
+    // is recognisable at a glance. Anchored to the window because
+    // there is no host toolbar; the refresh loop falls back to
+    // `PM_LargeIconSize` for sizing.
     if (ui->menuRecentSessions != nullptr)
     {
-        if (QAction *recentMenuAction = ui->menuRecentSessions->menuAction(); recentMenuAction != nullptr)
-        {
-            recentMenuAction->setProperty("svgIconPath", QStringLiteral(":/icons/file-clock.svg"));
-            mThemedMenuActions.append(QPointer<QAction>(recentMenuAction));
-        }
+        tag(ui->menuRecentSessions->menuAction(), this, QStringLiteral(":/icons/file-clock.svg"));
     }
 
     // Primary-toolbar toggle action. Created once here so its
@@ -3040,42 +3064,23 @@ void MainWindow::RefreshThemedIcons()
     {
         return;
     }
-    // Composes a `QIcon` whose Off pixmap is `svgIconPath` and,
-    // when present, On pixmap is `svgIconPathChecked`. Both are
-    // rasterised at the anchor's iconSize / palette / DPR so the
-    // checked-state glyph stays pixel-aligned with the unchecked
-    // one when the action toggles. Returns an empty QIcon if the
-    // base path is missing or the SVG fails to load -- callers
-    // should accept the text-only fallback.
+
+    // Mints a `QIcon` whose Off pixmap is `offPath` and, when
+    // present, On pixmap is `onPath`. The render parameters are
+    // resolved once per anchor so both states share the same
+    // tint / size / DPR -- otherwise the checked-state glyph
+    // could land a pixel off-grid from the unchecked one when the
+    // action toggles. Returns an empty QIcon if the Off SVG fails
+    // to load; callers accept the text-only fallback.
     const auto buildIcon = [](const QString &offPath, const QString &onPath, const QWidget *anchor) {
-        QIcon icon = icon_loader::MakeThemedIcon(offPath, anchor);
+        const icon_loader::IconRenderParams params = icon_loader::ResolveAnchorIconParams(anchor);
+        QIcon icon = icon_loader::MakeThemedIcon(offPath, params.tint, params.sizePx, params.devicePixelRatio);
         if (icon.isNull() || onPath.isEmpty())
         {
             return icon;
         }
-        // Reuse the anchor-resolved size/tint/dpr from the Off
-        // overload: render the On pixmap with the same parameters
-        // so both states share dimensions.
-        const QPalette palette = (anchor != nullptr) ? anchor->palette() : QApplication::palette();
-        const QColor tint = palette.color(QPalette::Active, QPalette::WindowText);
-        const qreal dpr = (anchor != nullptr) ? anchor->devicePixelRatioF() : qApp->devicePixelRatio();
-        int sizePx = 20;
-        if (const auto *toolbar = qobject_cast<const QToolBar *>(anchor); toolbar != nullptr)
-        {
-            if (const QSize size = toolbar->iconSize(); size.width() > 0)
-            {
-                sizePx = size.width();
-            }
-        }
-        else if (const QStyle *style = (anchor != nullptr) ? anchor->style() : QApplication::style();
-                 style != nullptr)
-        {
-            if (const int metric = style->pixelMetric(QStyle::PM_LargeIconSize, nullptr, anchor); metric > 0)
-            {
-                sizePx = metric;
-            }
-        }
-        const QPixmap onPixmap = icon_loader::MakeThemedPixmap(onPath, tint, sizePx, dpr);
+        const QPixmap onPixmap =
+            icon_loader::MakeThemedPixmap(onPath, params.tint, params.sizePx, params.devicePixelRatio);
         if (!onPixmap.isNull())
         {
             // `QIcon::Normal / On` matches the state Qt asks for
@@ -3085,45 +3090,29 @@ void MainWindow::RefreshThemedIcons()
         return icon;
     };
 
-    const auto tintAction = [&buildIcon](QAction *action, const QWidget *anchor) {
-        if (action == nullptr || action->isSeparator())
+    for (const ThemedActionEntry &entry : std::as_const(mThemedActions))
+    {
+        QAction *action = entry.action.data();
+        if (action == nullptr)
         {
-            return;
+            // Action torn down out of order during shutdown; the
+            // `QPointer` keeps us honest.
+            continue;
         }
-        const QVariant prop = action->property("svgIconPath");
-        if (!prop.isValid())
-        {
-            return;
-        }
-        const QString path = prop.toString();
+        const QString path = action->property("svgIconPath").toString();
         if (path.isEmpty())
         {
-            return;
+            // Property cleared, e.g. by a future caller swapping
+            // to a non-themed icon. Leave the existing icon alone.
+            continue;
         }
         const QString onPath = action->property("svgIconPathChecked").toString();
-        action->setIcon(buildIcon(path, onPath, anchor));
-    };
-
-    const auto tintBar = [&tintAction](QToolBar *bar) {
-        if (bar == nullptr)
-        {
-            return;
-        }
-        for (QAction *action : bar->actions())
-        {
-            tintAction(action, bar);
-        }
-    };
-    tintBar(mMainToolbar.data());
-    tintBar(mStreamToolbar);
-
-    // Non-toolbar themed actions: refresh against the window's
-    // palette/DPR since they have no inherent host widget. Stale
-    // `QPointer`s (action torn down by its owning menu) are
-    // silently skipped.
-    for (const QPointer<QAction> &actionPtr : mThemedMenuActions)
-    {
-        tintAction(actionPtr.data(), this);
+        // Anchor falls back to the window so a registered action
+        // whose anchor widget has been torn down still re-tints
+        // (with the window's palette / DPR) instead of silently
+        // going stale.
+        QWidget *anchor = entry.anchor.data();
+        action->setIcon(buildIcon(path, onPath, anchor != nullptr ? anchor : this));
     }
 }
 

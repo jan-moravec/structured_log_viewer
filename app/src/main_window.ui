@@ -192,7 +192,7 @@
   </action>
   <action name="actionClearAllFilters">
    <property name="text">
-    <string> Clear All Filters</string>
+    <string>Clear All Filters</string>
    </property>
    <property name="iconText">
     <string>Clear All Filters</string>
