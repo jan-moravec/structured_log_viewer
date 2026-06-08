@@ -387,14 +387,16 @@ protected:
     bool event(QEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
 
-    /// Re-tint the primary + stream toolbar icons on a palette /
-    /// style / DPR change so a Light <-> Dark flip (or a monitor
-    /// move between different scale factors) keeps the Lucide
-    /// glyphs aligned with the new `QPalette::WindowText` and
-    /// rasterised at the new device-pixel ratio. The companion
-    /// hook in `OnThemeChanged` covers application-driven theme
-    /// switches; this hook catches OS-level changes that bypass
-    /// `ThemeControl`. Same idiom as `FindRecordWidget::changeEvent`.
+    /// Re-tint every themed icon on a palette / style / theme /
+    /// DPR change so a Light <-> Dark flip (or a monitor move
+    /// between different scale factors) keeps the Lucide glyphs
+    /// aligned with the new `QPalette::WindowText` and rasterised
+    /// at the new device-pixel ratio. The companion hook in
+    /// `OnThemeChanged` covers application-driven theme switches;
+    /// this hook catches OS-level changes that bypass
+    /// `ThemeControl` (Windows light/dark notification arrives as
+    /// `QEvent::ThemeChange` and may not always be preceded by a
+    /// palette diff). Same idiom as `FindRecordWidget::changeEvent`.
     void changeEvent(QEvent *event) override;
 
 private slots:
@@ -799,23 +801,28 @@ private:
     /// Build the persistent primary `QToolBar` and `insertToolBar`
     /// it ahead of `mStreamToolbar` so the two bars share the top
     /// dock area as one strip (main first, stream second). Tags
-    /// every populated action with a `svgIconPath` property so
-    /// `RefreshToolbarIcons` can re-tint without a per-action
-    /// switch. Called once at the end of the constructor, after
-    /// `mActionToggleParseErrors` exists so all referenced actions
-    /// are wired but before `RestoreWindowChrome` reads the
-    /// persisted dock state.
+    /// every populated action with a `svgIconPath` property (and,
+    /// where applicable, `svgIconPathChecked` for a distinct
+    /// On-state glyph) so `RefreshThemedIcons` can re-tint without
+    /// a per-action switch. Called once at the end of the
+    /// constructor, after `mStreamToolbar`, `mActionToggleFind`
+    /// and `mActionToggleAnchors` are wired (every action the
+    /// builder references must already exist) but before
+    /// `RestoreWindowChrome` reads the persisted dock state.
     void BuildMainToolbar();
 
-    /// Re-render every toolbar action's icon at the current palette
-    /// `WindowText` colour and device-pixel ratio. Iterates both
-    /// toolbars and reads the `svgIconPath` property each action
-    /// carries; actions without the property are skipped, so it's
-    /// safe to run before `BuildMainToolbar` (no-op when
-    /// `mMainToolbar` is still null) and idempotent under
-    /// duplicate triggers (theme switch + DPR change firing within
-    /// the same event loop pass).
-    void RefreshToolbarIcons();
+    /// Re-render every themed icon at the current palette
+    /// `WindowText` colour and device-pixel ratio. Iterates the
+    /// primary toolbar, the stream toolbar, and any registered
+    /// non-toolbar actions (`mThemedMenuActions`, e.g. the Recent
+    /// Sessions submenu indicator) and reads the `svgIconPath` /
+    /// `svgIconPathChecked` properties each action carries.
+    /// Actions without the property are skipped, so it's safe to
+    /// run before `BuildMainToolbar` (no-op when `mMainToolbar`
+    /// is still null) and idempotent under duplicate triggers
+    /// (theme switch + DPR change firing within the same event
+    /// loop pass).
+    void RefreshThemedIcons();
 
     /// Re-evaluate the stream toolbar's visibility against the current
     /// session mode.
@@ -1009,13 +1016,23 @@ private:
     /// Preferences). Inserted ahead of `mStreamToolbar` in the top
     /// dock area, so the combined strip reads "Main | Stream"
     /// left-to-right when both are visible. `QPointer` because
-    /// `RefreshToolbarIcons` can be invoked during shutdown after
+    /// `RefreshThemedIcons` can be invoked during shutdown after
     /// Qt has begun tearing down child widgets but before the
     /// `MainWindow` destructor finishes; a dangling raw pointer
     /// would crash on the next palette change. `objectName` is
     /// `mainToolbar` so `restoreState` round-trips its dock area
     /// and visibility.
     QPointer<QToolBar> mMainToolbar;
+
+    /// Themed actions that are not parented to a toolbar (e.g. the
+    /// File -> Recent Sessions submenu's `menuAction`). Tagged
+    /// with the same `svgIconPath` property as toolbar actions so
+    /// `RefreshThemedIcons` can drive them through the same
+    /// re-tint loop. `QPointer` for the same shutdown-ordering
+    /// reasons as `mMainToolbar` -- a `QMenu`'s action is parented
+    /// to the menu, and a stale raw pointer on teardown would
+    /// crash the next palette change.
+    QList<QPointer<QAction>> mThemedMenuActions;
 
     /// Ctrl+/ action that opens the shortcuts reference dialog.
     QAction *mActionShowShortcuts = nullptr;

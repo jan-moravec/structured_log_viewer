@@ -1119,9 +1119,11 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
 
     // Persistent primary toolbar. Built after every referenced
     // action exists -- both .ui actions (`ui->action*`) and the
-    // programmatic dock toggles (`mActionToggle*`) -- and before
-    // `RestoreWindowChrome` so the persisted state can place the
-    // toolbar in its saved dock area.
+    // programmatic dock toggles (`mActionToggleFind`,
+    // `mActionToggleAnchors`) and `mStreamToolbar` (the new bar
+    // is inserted ahead of it) -- and before `RestoreWindowChrome`
+    // so the persisted state can place the toolbar in its saved
+    // dock area.
     BuildMainToolbar();
 
     // Run after every dock/toolbar has its `objectName` so `restoreState`
@@ -2891,22 +2893,46 @@ void MainWindow::BuildMainToolbar()
     // edge length keeps the bar visually consistent even when a
     // theme swaps the active `QStyle` (which can shift the metric).
     constexpr int TOOLBAR_ICON_PX = 20;
-    mMainToolbar->setIconSize(QSize(TOOLBAR_ICON_PX, TOOLBAR_ICON_PX));
+    const QSize toolbarIconSize{TOOLBAR_ICON_PX, TOOLBAR_ICON_PX};
+    mMainToolbar->setIconSize(toolbarIconSize);
 
     insertToolBar(mStreamToolbar, mMainToolbar);
 
-    // Stash the SVG path on each action so `RefreshToolbarIcons`
+    // Stream toolbar shares the row, so mirror the visual policy:
+    // icon-only + matching icon edge length. The actions on the
+    // stream toolbar get themed icons below; without this the
+    // combined strip would jump from compact-icon (main) to
+    // icon+text (stream) mid-row and look unfinished. Tooltips
+    // (assigned in the .ui) still name each button on hover.
+    if (mStreamToolbar != nullptr)
+    {
+        mStreamToolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        mStreamToolbar->setIconSize(toolbarIconSize);
+    }
+
+    // Stash the SVG path on each action so `RefreshThemedIcons`
     // can re-tint on a palette / DPR change without hard-coding a
     // per-action switch. Actions without the property are skipped
     // by the refresh loop, so future actions that ship their own
     // QIcon don't accidentally get clobbered.
-    const auto tag = [](QAction *action, const char *resourcePath) {
-        if (action == nullptr)
-        {
-            return;
-        }
-        action->setProperty("svgIconPath", QString::fromLatin1(resourcePath));
-    };
+    //
+    // `svgIconPathChecked` is a second optional property for
+    // checkable actions whose On state needs a different glyph
+    // (e.g. Pause -> Play when paused). When absent the refresh
+    // loop reuses the Off pixmap for the On state, so most actions
+    // need only the single tag.
+    const auto tag =
+        [](QAction *action, const char *resourcePath, const char *checkedResourcePath = nullptr) {
+            if (action == nullptr)
+            {
+                return;
+            }
+            action->setProperty("svgIconPath", QString::fromLatin1(resourcePath));
+            if (checkedResourcePath != nullptr)
+            {
+                action->setProperty("svgIconPathChecked", QString::fromLatin1(checkedResourcePath));
+            }
+        };
 
     tag(ui->actionOpen, ":/icons/folder-open.svg");
     tag(ui->actionOpenLogStream, ":/icons/square-play.svg");
@@ -2918,8 +2944,12 @@ void MainWindow::BuildMainToolbar()
     tag(mActionToggleAnchors, ":/icons/bookmark.svg");
     tag(ui->actionPreferences, ":/icons/settings-2.svg");
     // Stream toolbar gets the same treatment so the combined strip
-    // looks uniform when both bars are visible.
-    tag(ui->actionPauseStream, ":/icons/pause.svg");
+    // looks uniform when both bars are visible. Pause is the one
+    // action where the On state is semantically distinct from Off
+    // (paused vs running), so we override its checked glyph with
+    // the play icon -- users expect the button to invite the
+    // opposite transition, mirroring media-player conventions.
+    tag(ui->actionPauseStream, ":/icons/pause.svg", ":/icons/square-play.svg");
     tag(ui->actionFollowTail, ":/icons/arrow-down-to-line.svg");
     tag(ui->actionStopStream, ":/icons/square.svg");
 
@@ -2930,13 +2960,20 @@ void MainWindow::BuildMainToolbar()
     // (not `InstantPopup`) keeps the more-common log path one
     // click away while making the network entry discoverable.
     // `setDefaultAction` would normally also wire the button's
-    // icon -- so the explicit `setIcon` from `RefreshToolbarIcons`
+    // icon -- so the explicit `setIcon` from `RefreshThemedIcons`
     // happens *after* the menu / default-action plumbing is in
     // place and re-installs the themed icon.
     auto *openStreamButton = new QToolButton(mMainToolbar);
     openStreamButton->setObjectName(QStringLiteral("openStreamSplitButton"));
     openStreamButton->setDefaultAction(ui->actionOpenLogStream);
     openStreamButton->setPopupMode(QToolButton::MenuButtonPopup);
+    // `addWidget` keeps custom buttons out of the toolbar's
+    // auto-layout, so the toolbar's iconSize / button-style do
+    // NOT propagate. Mirror them explicitly so the split button
+    // sits in the strip at the same edge length and icon-only
+    // policy as every other action.
+    openStreamButton->setIconSize(toolbarIconSize);
+    openStreamButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
     auto *streamMenu = new QMenu(openStreamButton);
     streamMenu->setObjectName(QStringLiteral("openStreamSplitMenu"));
     streamMenu->addAction(ui->actionOpenLogStream);
@@ -2948,9 +2985,15 @@ void MainWindow::BuildMainToolbar()
     mMainToolbar->addAction(ui->actionAddFilter);
     mMainToolbar->addAction(ui->actionClearAllFilters);
     mMainToolbar->addSeparator();
-    mMainToolbar->addAction(mActionToggleFind);
+    if (mActionToggleFind != nullptr)
+    {
+        mMainToolbar->addAction(mActionToggleFind);
+    }
     mMainToolbar->addAction(ui->actionToggleRecordDetails);
-    mMainToolbar->addAction(mActionToggleAnchors);
+    if (mActionToggleAnchors != nullptr)
+    {
+        mMainToolbar->addAction(mActionToggleAnchors);
+    }
 
     // Expanding spacer pushes Preferences to the far right edge,
     // matching the "tools / settings on the right" convention used
@@ -2961,10 +3004,33 @@ void MainWindow::BuildMainToolbar()
     mMainToolbar->addWidget(spacer);
     mMainToolbar->addAction(ui->actionPreferences);
 
-    RefreshToolbarIcons();
+    // Themed actions outside of any toolbar. The File -> Recent
+    // Sessions submenu gets the `file-clock` glyph so the entry
+    // is recognisable at a glance and the icon tracks the active
+    // palette through the same refresh pipeline as toolbar actions.
+    if (ui->menuRecentSessions != nullptr)
+    {
+        if (QAction *recentMenuAction = ui->menuRecentSessions->menuAction(); recentMenuAction != nullptr)
+        {
+            recentMenuAction->setProperty("svgIconPath", QStringLiteral(":/icons/file-clock.svg"));
+            mThemedMenuActions.append(QPointer<QAction>(recentMenuAction));
+        }
+    }
+
+    // Primary-toolbar toggle action. Created once here so its
+    // metadata (objectName, text) does not get rewritten on every
+    // `RebuildViewMenu` (the menu rebuild only re-adds the cached
+    // action to the freshly cleared menu).
+    if (QAction *toggleMainToolbar = mMainToolbar->toggleViewAction(); toggleMainToolbar != nullptr)
+    {
+        toggleMainToolbar->setObjectName(QStringLiteral("actionToggleMainToolbar"));
+        toggleMainToolbar->setText(tr("Main Toolbar"));
+    }
+
+    RefreshThemedIcons();
 }
 
-void MainWindow::RefreshToolbarIcons()
+void MainWindow::RefreshThemedIcons()
 {
     // Constructor-time `changeEvent` (an initial palette
     // notification can land before `BuildMainToolbar` runs) and
@@ -2974,32 +3040,91 @@ void MainWindow::RefreshToolbarIcons()
     {
         return;
     }
-    const auto tint = [](QToolBar *bar) {
+    // Composes a `QIcon` whose Off pixmap is `svgIconPath` and,
+    // when present, On pixmap is `svgIconPathChecked`. Both are
+    // rasterised at the anchor's iconSize / palette / DPR so the
+    // checked-state glyph stays pixel-aligned with the unchecked
+    // one when the action toggles. Returns an empty QIcon if the
+    // base path is missing or the SVG fails to load -- callers
+    // should accept the text-only fallback.
+    const auto buildIcon = [](const QString &offPath, const QString &onPath, const QWidget *anchor) {
+        QIcon icon = icon_loader::MakeThemedIcon(offPath, anchor);
+        if (icon.isNull() || onPath.isEmpty())
+        {
+            return icon;
+        }
+        // Reuse the anchor-resolved size/tint/dpr from the Off
+        // overload: render the On pixmap with the same parameters
+        // so both states share dimensions.
+        const QPalette palette = (anchor != nullptr) ? anchor->palette() : QApplication::palette();
+        const QColor tint = palette.color(QPalette::Active, QPalette::WindowText);
+        const qreal dpr = (anchor != nullptr) ? anchor->devicePixelRatioF() : qApp->devicePixelRatio();
+        int sizePx = 20;
+        if (const auto *toolbar = qobject_cast<const QToolBar *>(anchor); toolbar != nullptr)
+        {
+            if (const QSize size = toolbar->iconSize(); size.width() > 0)
+            {
+                sizePx = size.width();
+            }
+        }
+        else if (const QStyle *style = (anchor != nullptr) ? anchor->style() : QApplication::style();
+                 style != nullptr)
+        {
+            if (const int metric = style->pixelMetric(QStyle::PM_LargeIconSize, nullptr, anchor); metric > 0)
+            {
+                sizePx = metric;
+            }
+        }
+        const QPixmap onPixmap = icon_loader::MakeThemedPixmap(onPath, tint, sizePx, dpr);
+        if (!onPixmap.isNull())
+        {
+            // `QIcon::Normal / On` matches the state Qt asks for
+            // when rendering a checked QAction button.
+            icon.addPixmap(onPixmap, QIcon::Normal, QIcon::On);
+        }
+        return icon;
+    };
+
+    const auto tintAction = [&buildIcon](QAction *action, const QWidget *anchor) {
+        if (action == nullptr || action->isSeparator())
+        {
+            return;
+        }
+        const QVariant prop = action->property("svgIconPath");
+        if (!prop.isValid())
+        {
+            return;
+        }
+        const QString path = prop.toString();
+        if (path.isEmpty())
+        {
+            return;
+        }
+        const QString onPath = action->property("svgIconPathChecked").toString();
+        action->setIcon(buildIcon(path, onPath, anchor));
+    };
+
+    const auto tintBar = [&tintAction](QToolBar *bar) {
         if (bar == nullptr)
         {
             return;
         }
         for (QAction *action : bar->actions())
         {
-            if (action == nullptr || action->isSeparator())
-            {
-                continue;
-            }
-            const QVariant prop = action->property("svgIconPath");
-            if (!prop.isValid())
-            {
-                continue;
-            }
-            const QString path = prop.toString();
-            if (path.isEmpty())
-            {
-                continue;
-            }
-            action->setIcon(icon_loader::MakeThemedIcon(path, bar));
+            tintAction(action, bar);
         }
     };
-    tint(mMainToolbar.data());
-    tint(mStreamToolbar);
+    tintBar(mMainToolbar.data());
+    tintBar(mStreamToolbar);
+
+    // Non-toolbar themed actions: refresh against the window's
+    // palette/DPR since they have no inherent host widget. Stale
+    // `QPointer`s (action torn down by its owning menu) are
+    // silently skipped.
+    for (const QPointer<QAction> &actionPtr : mThemedMenuActions)
+    {
+        tintAction(actionPtr.data(), this);
+    }
 }
 
 void MainWindow::changeEvent(QEvent *event)
@@ -3014,14 +3139,17 @@ void MainWindow::changeEvent(QEvent *event)
     // theme can apply via `qApp->setStyle`. `DevicePixelRatioChange`
     // covers a drag between monitors of different DPI -- the icon's
     // backing pixmap is allocated at the current DPR and must be
-    // re-rasterised at the new one. `OnThemeChanged` covers the
-    // application-driven switch; this hook catches OS-level events
-    // that reach the window without going through `ThemeControl`.
+    // re-rasterised at the new one. `ThemeChange` covers OS-level
+    // light/dark notifications (Windows in particular) that can
+    // arrive without an accompanying palette diff. `OnThemeChanged`
+    // covers the application-driven switch; this hook catches the
+    // OS-level events that reach the window without going through
+    // `ThemeControl`.
     const QEvent::Type type = event->type();
     if (type == QEvent::PaletteChange || type == QEvent::StyleChange || type == QEvent::ApplicationPaletteChange ||
-        type == QEvent::DevicePixelRatioChange)
+        type == QEvent::ThemeChange || type == QEvent::DevicePixelRatioChange)
     {
-        RefreshToolbarIcons();
+        RefreshThemedIcons();
     }
 }
 
@@ -4879,7 +5007,7 @@ void MainWindow::OnThemeChanged()
     // changes, but `themeChanged` is the in-app entry point and
     // can land without an event-loop palette change (e.g. a Force
     // mode toggle that pins the same OS scheme).
-    RefreshToolbarIcons();
+    RefreshThemedIcons();
 }
 
 void MainWindow::ApplyThemedWindowIcon()
@@ -5922,20 +6050,19 @@ void MainWindow::RebuildViewMenu()
     }
 
     // Primary toolbar toggle. `QToolBar::toggleViewAction` returns a
-    // checkable action whose state mirrors `QToolBar::isVisible()`
+    // cached checkable action whose state mirrors `QToolBar::isVisible()`
     // and which Qt keeps in sync without further wiring -- toggling
     // hides the toolbar and the user has a discoverable way to bring
-    // it back. We deliberately don't expose `mStreamToolbar`'s
-    // toggle here: `UpdateStreamToolbarVisibility` is the single
-    // source of truth for that bar (auto-shown when streaming, idle
-    // otherwise) and a parallel menu toggle would let the two
-    // states diverge.
+    // it back. Metadata (objectName, text) was set once in
+    // `BuildMainToolbar`; we only need to re-add the action to the
+    // freshly cleared menu here. We deliberately don't expose
+    // `mStreamToolbar`'s toggle: `UpdateStreamToolbarVisibility` is
+    // the single source of truth for that bar (auto-shown when
+    // streaming, idle otherwise) and a parallel menu toggle would
+    // let the two states diverge.
     if (mMainToolbar != nullptr)
     {
-        QAction *toggleMainToolbar = mMainToolbar->toggleViewAction();
-        toggleMainToolbar->setObjectName(QStringLiteral("actionToggleMainToolbar"));
-        toggleMainToolbar->setText(tr("Main Toolbar"));
-        viewMenu->addAction(toggleMainToolbar);
+        viewMenu->addAction(mMainToolbar->toggleViewAction());
     }
 
     const auto &columns = mModel->Configuration().columns;
