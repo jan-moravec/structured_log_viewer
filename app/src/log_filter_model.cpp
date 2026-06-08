@@ -1212,9 +1212,44 @@ QList<QModelIndex> LogFilterModel::MatchRow(
     return result;
 }
 
+Qt::MatchFlags LogFilterModel::ComposeFindFlags(bool wildcards, bool regularExpressions)
+{
+    Qt::MatchFlags flags = Qt::MatchWrap | Qt::MatchRecursive;
+    if (regularExpressions)
+    {
+        flags |= Qt::MatchRegularExpression;
+    }
+    else if (wildcards)
+    {
+        flags |= Qt::MatchWildcard;
+    }
+    else
+    {
+        flags |= Qt::MatchContains;
+    }
+    return flags;
+}
+
 bool LogFilterModel::Matches(const QVariant &data, const QVariant &value, Qt::MatchFlags flags)
 {
-    if (flags.testFlag(Qt::MatchExactly))
+    // Mask the match-type field (see QString overload below for the
+    // disjoint-bit rationale). Short-circuit MatchExactly on the
+    // QVariant compare -- cheaper than stringifying and preserves
+    // typed comparisons.
+    //
+    // `MatchExactly == 0`, so flags with no match-type bit silently
+    // route here. The assert catches mis-composed flags in debug;
+    // release defaults to MatchExactly per Qt's documented semantics.
+    constexpr int MATCH_TYPE_MASK = 0x000F;
+    const int matchType = static_cast<int>(flags) & MATCH_TYPE_MASK;
+    Q_ASSERT_X(
+        matchType != Qt::MatchExactly || flags == Qt::MatchExactly,
+        "LogFilterModel::Matches",
+        "no match-type bit set (Contains/Wildcard/Regex/StartsWith/EndsWith) -- "
+        "flags has Wrap/Recursive but no type, which silently routes through MatchExactly. "
+        "Use LogFilterModel::ComposeFindFlags or pick a type explicitly."
+    );
+    if (matchType == Qt::MatchExactly)
     {
         return data == value;
     }
@@ -1223,31 +1258,38 @@ bool LogFilterModel::Matches(const QVariant &data, const QVariant &value, Qt::Ma
 
 bool LogFilterModel::Matches(const QString &text, const QString &needle, Qt::MatchFlags flags)
 {
-    if (flags.testFlag(Qt::MatchExactly))
+    // `Qt::MatchFlag`'s match-type values are NOT disjoint bits:
+    // `MatchWildcard = 5` overlaps `MatchContains = 1` and
+    // `MatchRegularExpression = 4`; `MatchEndsWith = 3` overlaps
+    // `MatchContains | MatchStartsWith`. A `testFlag` ladder would
+    // silently pick the least specific match. Mask and compare for
+    // equality so the semantics match Qt's own item-view searches.
+    constexpr int MATCH_TYPE_MASK = 0x000F;
+    const int matchType = static_cast<int>(flags) & MATCH_TYPE_MASK;
+    switch (matchType)
     {
+    case Qt::MatchExactly:
         return text == needle;
-    }
-    if (flags.testFlag(Qt::MatchStartsWith))
-    {
+    case Qt::MatchStartsWith:
         return text.startsWith(needle);
-    }
-    if (flags.testFlag(Qt::MatchEndsWith))
-    {
+    case Qt::MatchEndsWith:
         return text.endsWith(needle);
-    }
-    if (flags.testFlag(Qt::MatchContains))
-    {
+    case Qt::MatchContains:
         return text.contains(needle);
-    }
-    if (flags.testFlag(Qt::MatchRegularExpression))
+    case Qt::MatchRegularExpression:
     {
         const QRegularExpression regex(needle);
         return regex.match(text).hasMatch();
     }
-    if (flags.testFlag(Qt::MatchWildcard))
+    case Qt::MatchWildcard:
     {
         const QRegularExpression regex(QRegularExpression::wildcardToRegularExpression(needle));
         return regex.match(text).hasMatch();
     }
-    return false;
+    default:
+        // `Qt::MatchFixedString` (8) is deliberately not implemented;
+        // no in-tree caller needs it. Fail closed rather than silently
+        // behaving like contains.
+        return false;
+    }
 }

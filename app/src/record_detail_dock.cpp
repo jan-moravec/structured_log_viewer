@@ -4,6 +4,7 @@
 #include "record_detail_widget.hpp"
 
 #include <QAbstractItemModel>
+#include <QCloseEvent>
 #include <QList>
 #include <QModelIndex>
 #include <QObject>
@@ -84,12 +85,19 @@ RecordDetailDock::RecordDetailDock(LogModel *model, QWidget *parent)
             mModel,
             &QAbstractItemModel::dataChanged,
             this,
-            [this](const QModelIndex &topLeft, const QModelIndex &bottomRight, const QList<int> & /*roles*/) {
+            [this](const QModelIndex &topLeft, const QModelIndex &bottomRight, const QList<int> &roles) {
                 if (!mCurrentSourceIndex.isValid())
                 {
                     return;
                 }
                 if (!IsVisibleForRefresh())
+                {
+                    return;
+                }
+                // Skip style-only emits (theme-switch repaints): the
+                // pane renders display-role text, so Background /
+                // Foreground / Font flips don't change what we show.
+                if (LogModel::IsStyleOnlyRoleChange(roles))
                 {
                     return;
                 }
@@ -196,4 +204,13 @@ void RecordDetailDock::OnOpenInNewWindowRequested()
     // Read the row through the persistent index so eviction shifts
     // are reflected and the snapshot points at the actual record.
     emit openInNewWindowRequested(CurrentSourceRow());
+}
+
+void RecordDetailDock::closeEvent(QCloseEvent *event)
+{
+    QDockWidget::closeEvent(event);
+    if (event->isAccepted())
+    {
+        emit closed();
+    }
 }

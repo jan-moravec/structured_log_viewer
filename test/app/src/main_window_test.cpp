@@ -5,10 +5,14 @@
 #include "columns_manager_dialog.hpp"
 #include "configuration_diagnostics_dialog.hpp"
 #include "filter_editor.hpp"
+#include "find_dock.hpp"
+#include "find_record_widget.hpp"
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
 #include "log_table_view.hpp"
 #include "main_window.hpp"
+#include "parse_errors_dock.hpp"
+#include "preferences_editor.hpp"
 #include "qt_streaming_log_sink.hpp"
 #include "record_detail_dock.hpp"
 #include "record_detail_widget.hpp"
@@ -49,6 +53,7 @@
 #include <QBrush>
 #include <QCheckBox>
 #include <QClipboard>
+#include <QColor>
 #include <QComboBox>
 #include <QDataStream>
 #include <QDialogButtonBox>
@@ -60,6 +65,7 @@
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QIcon>
+#include <QImage>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListView>
@@ -69,6 +75,7 @@
 #include <QLockFile>
 #include <QMenu>
 #include <QMenuBar>
+#include <QPalette>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -76,6 +83,7 @@
 #include <QScopedPointer>
 #include <QScrollBar>
 #include <QSettings>
+#include <QShortcut>
 #include <QSignalSpy>
 #include <QSortFilterProxyModel>
 #include <QStandardItem>
@@ -84,8 +92,10 @@
 #include <QStatusBar>
 #include <QString>
 #include <QStringList>
+#include <QTableView>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QToolButton>
 #include <QUuid>
 #include <QVariant>
 #include <QWheelEvent>
@@ -4268,6 +4278,178 @@ private slots:
         QVERIFY(qvariant_cast<QFont>(fatalFont).bold());
     }
 
+    // Regression: a theme switch must repaint the visible rows.
+    // Symptom of failure: rows keep the old level colours until
+    // the user scrolls or resizes the table.
+    void TestThemeSwitchRefreshesLogTableRows()
+    {
+        QVERIFY(mTheme != nullptr);
+
+        // Tiny multi-level fixture to get a themed Error row.
+        const QStringList lines{
+            QStringLiteral(R"({"level": "info"})"),
+            QStringLiteral(R"({"level": "error"})"),
+            QStringLiteral(R"({"level": "warn"})"),
+        };
+        const TempJsonFile fixture(lines);
+
+        mTheme->SetActiveSelection(QStringLiteral("Light"));
+        const StreamingRun run = RunStreaming(fixture.Path(), mTheme.data());
+        QCOMPARE(run.cancelled, false);
+        QVERIFY(run.model != nullptr);
+
+        const int levelCol = ColumnByHeader(*run.model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+
+        // Locate the Error row by display value (robust to reorders).
+        int errorRow = -1;
+        for (int r = 0; r < run.model->rowCount(); ++r)
+        {
+            if (run.model->data(run.model->index(r, levelCol), Qt::DisplayRole).toString() == QStringLiteral("error"))
+            {
+                errorRow = r;
+                break;
+            }
+        }
+        QVERIFY2(errorRow >= 0, "fixture must include an Error-level row");
+
+        const QModelIndex errorIndex = run.model->index(errorRow, levelCol);
+        const QVariant lightErrorBg = run.model->data(errorIndex, Qt::BackgroundRole);
+        QVERIFY2(lightErrorBg.isValid(), "Light theme must style the Error row background");
+        const auto lightBrush = qvariant_cast<QBrush>(lightErrorBg);
+
+        // Flip to Dark; `ThemeControl` rebuilds its cache so the
+        // next `data()` call sees the new brush.
+        mTheme->SetActiveSelection(QStringLiteral("Dark"));
+        QCoreApplication::processEvents();
+
+        const QVariant darkErrorBg = run.model->data(errorIndex, Qt::BackgroundRole);
+        QVERIFY2(darkErrorBg.isValid(), "Dark theme must style the Error row background");
+        const auto darkBrush = qvariant_cast<QBrush>(darkErrorBg);
+        QVERIFY2(
+            lightBrush.color() != darkBrush.color(),
+            qPrintable(QStringLiteral("Error row background must differ between Light and Dark themes; "
+                                      "got light=%1, dark=%2")
+                           .arg(lightBrush.color().name(), darkBrush.color().name()))
+        );
+
+        // Inverse: Light -> Dark -> Light returns the original brush.
+        mTheme->SetActiveSelection(QStringLiteral("Light"));
+        QCoreApplication::processEvents();
+        const auto lightBrushAgain = qvariant_cast<QBrush>(run.model->data(errorIndex, Qt::BackgroundRole));
+        QCOMPARE(lightBrushAgain.color(), lightBrush.color());
+    }
+
+    // Regression: a theme switch must emit `dataChanged` on the
+    // styled roles so the view drops its per-item style cache.
+    // `viewport()->update()` alone doesn't reliably invalidate it.
+    void TestThemeSwitchEmitsDataChangedOnLogTable()
+    {
+        QVERIFY(mTheme != nullptr);
+        // Stream into the live `MainWindow` to observe the
+        // production-wired `LogModel`.
+        const QStringList lines{
+            QStringLiteral(R"({"level": "info"})"),
+            QStringLiteral(R"({"level": "error"})"),
+            QStringLiteral(R"({"level": "warn"})"),
+        };
+        const TempJsonFile fixture(lines);
+        mTheme->SetActiveSelection(QStringLiteral("Light"));
+        mWindow->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Replace);
+        // Pump until `streamingFinished` arrives (queued connection).
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        if (finishedSpy.count() == 0)
+        {
+            finishedSpy.wait(5000);
+        }
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        QVERIFY2(model->rowCount() > 0, "fixture must produce at least one streamed row");
+
+        const QSignalSpy spy(model, &QAbstractItemModel::dataChanged);
+        mTheme->SetActiveSelection(QStringLiteral("Dark"));
+        QCoreApplication::processEvents();
+
+        // At least one `dataChanged` must cover a styled role.
+        // Other (e.g. anchor-related) notifications can ride along.
+        bool foundStyledNotification = false;
+        for (int i = 0; i < spy.count(); ++i)
+        {
+            const QList<QVariant> &args = spy.at(i);
+            QVERIFY2(args.size() >= 3, "dataChanged must carry topLeft, bottomRight, roles");
+            const auto roles = args.at(2).value<QList<int>>();
+            // Empty roles = "all roles changed" in Qt; counts as styled.
+            if (roles.isEmpty() || roles.contains(Qt::BackgroundRole) || roles.contains(Qt::ForegroundRole) ||
+                roles.contains(Qt::FontRole))
+            {
+                foundStyledNotification = true;
+                break;
+            }
+        }
+        QVERIFY2(
+            foundStyledNotification,
+            "Theme switch must emit a dataChanged covering BackgroundRole / ForegroundRole / FontRole "
+            "(or all roles) so the table view refreshes the row tints."
+        );
+    }
+
+    // Regression: a theme switch must re-apply the table view's
+    // stylesheet so `QStyleSheetStyle` drops its palette cache.
+    // Otherwise rows with no explicit Background brush (Info /
+    // Trace) keep the previous theme's default, even when the
+    // rule text is unchanged.
+    void TestThemeSwitchRepolishesTableStylesheet()
+    {
+        QVERIFY(mTheme != nullptr);
+
+        // Prime the stylesheet via the normal app path.
+        const QStringList lines{
+            QStringLiteral(R"({"level": "info"})"),
+            QStringLiteral(R"({"level": "error"})"),
+        };
+        const TempJsonFile fixture(lines);
+        mTheme->SetActiveSelection(QStringLiteral("Light"));
+        mWindow->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Replace);
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        if (finishedSpy.count() == 0)
+        {
+            finishedSpy.wait(5000);
+        }
+
+        auto *tableView = mWindow->findChild<QTableView *>();
+        QVERIFY2(tableView != nullptr, "MainWindow must own a table view");
+        const QString initialStyleSheet = tableView->styleSheet();
+        QVERIFY2(
+            !initialStyleSheet.isEmpty(), "After a normal load the body stylesheet must include the monospace cell rule"
+        );
+
+        // Mirror the post-optimisation state where
+        // `mLastBodyStyleSheet` claims the rule is applied but the
+        // widget's stylesheet is stale. Fix must re-apply anyway.
+        tableView->setStyleSheet(QString{});
+        QCOMPARE(tableView->styleSheet(), QString{});
+
+        // `OnThemeChanged` resets the tracker and forces a re-write.
+        mTheme->SetActiveSelection(QStringLiteral("Dark"));
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            !tableView->styleSheet().isEmpty(),
+            qPrintable(QStringLiteral("Theme switch must re-apply the body stylesheet so "
+                                      "`QStyleSheetStyle` re-resolves the new palette; got: '%1'")
+                           .arg(tableView->styleSheet()))
+        );
+        // Re-applied stylesheet must still carry the monospace rule.
+        QVERIFY2(
+            tableView->styleSheet().contains(QStringLiteral("QTableView::item")),
+            qPrintable(QStringLiteral("Re-applied stylesheet must carry the monospace cell rule; got: '%1'")
+                           .arg(tableView->styleSheet()))
+        );
+    }
+
     // End-to-end round-trip for `Column::levelMapping`. Saved config
     // pins `Type::Level` with `NOTICE -> Info`, `PANIC -> Fatal`. A
     // filter selecting `Info` expands via the rank cache to match
@@ -7807,6 +7989,189 @@ private slots:
         QVERIFY(mismatchedItem != nullptr);
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         QVERIFY2(mismatchedItem->text().toInt() > 0, "Dialog must report a non-zero mismatch count for `msg`");
+
+        // Regression: the mismatched row must pin both halves of the
+        // contrast pair; bg alone leaves fg on the palette default,
+        // which is near-white on a dark theme (row text invisible).
+        for (int c = 0; c < table->columnCount(); ++c)
+        {
+            const QTableWidgetItem *item = table->item(matchedRowIndex, c);
+            QVERIFY2(item != nullptr, qPrintable(QStringLiteral("mismatched row column %1 must have an item").arg(c)));
+            // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+            const QBrush bg = item->background();
+            const QBrush fg = item->foreground();
+            QVERIFY2(
+                bg.style() != Qt::NoBrush,
+                qPrintable(QStringLiteral("mismatched row column %1 must paint an explicit background").arg(c))
+            );
+            QVERIFY2(
+                fg.style() != Qt::NoBrush,
+                qPrintable(QStringLiteral("mismatched row column %1 must paint an explicit foreground "
+                                          "so it stays legible on dark themes")
+                               .arg(c))
+            );
+            // ITU-R BT.601 luma: foreground must be visibly darker
+            // than the background, or we're back to the original bug.
+            const QColor fgColor = fg.color();
+            const QColor bgColor = bg.color();
+            constexpr double R_LUMA = 0.299;
+            constexpr double G_LUMA = 0.587;
+            constexpr double B_LUMA = 0.114;
+            const double fgLuma = (R_LUMA * fgColor.red()) + (G_LUMA * fgColor.green()) + (B_LUMA * fgColor.blue());
+            const double bgLuma = (R_LUMA * bgColor.red()) + (G_LUMA * bgColor.green()) + (B_LUMA * bgColor.blue());
+            constexpr double MIN_LUMA_GAP = 80.0;
+            QVERIFY2(
+                bgLuma - fgLuma >= MIN_LUMA_GAP,
+                qPrintable(
+                    QStringLiteral("mismatched row column %1 must keep a high contrast between fg (%2) and bg (%3); "
+                                   "got fgLuma=%4, bgLuma=%5")
+                        .arg(c)
+                        .arg(fgColor.name(), bgColor.name())
+                        .arg(fgLuma)
+                        .arg(bgLuma)
+                )
+            );
+        }
+    }
+
+    // Regression: the mismatched-row highlight must adapt to the
+    // active palette. The original fix pinned a pale-pink bg + dark
+    // fg which read as a glaringly bright row in Dark themes.
+    // Flipping to Dark must hand the dialog a darker bg + lighter
+    // fg while keeping the same luma gap.
+    void TestDiagnosticsDialogHighlightAdaptsToDarkTheme()
+    {
+        QVERIFY(mTheme != nullptr);
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        // Force `msg` into a mismatch so the dialog paints a warning row.
+        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
+        model->ConfigurationManager().SetColumnType(
+            static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer
+        );
+        model->RefreshColumnHealth();
+
+        // Snapshot the Light-theme brushes for the `msg` row.
+        mTheme->SetActiveSelection(QStringLiteral("Light"));
+        QCoreApplication::processEvents();
+
+        const ConfigurationDiagnosticsDialog dialog(model);
+        auto *table = dialog.findChild<QTableWidget *>();
+        QVERIFY2(table != nullptr, "Dialog must own a diagnosticsTable widget");
+
+        auto findMsgRow = [table]() {
+            // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+            for (int row = 0; row < table->rowCount(); ++row)
+            {
+                const QTableWidgetItem *headerItem = table->item(row, 0);
+                if (headerItem != nullptr && headerItem->text() == QStringLiteral("msg"))
+                {
+                    return row;
+                }
+            }
+            return -1;
+        };
+
+        const int lightRow = findMsgRow();
+        QVERIFY2(lightRow >= 0, "Light-theme dialog must include a row for the `msg` column");
+        const QTableWidgetItem *lightItem = table->item(lightRow, 0);
+        QVERIFY(lightItem != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        const QColor lightBg = lightItem->background().color();
+        const QColor lightFg = lightItem->foreground().color();
+
+        // Flip to Dark. The palette change fires `ApplicationPaletteChange`
+        // on the dialog; the override re-runs `Refresh()`.
+        mTheme->SetActiveSelection(QStringLiteral("Dark"));
+        QCoreApplication::processEvents();
+
+        const int darkRow = findMsgRow();
+        QVERIFY2(darkRow >= 0, "Dark-theme dialog must still include a row for the `msg` column");
+        const QTableWidgetItem *darkItem = table->item(darkRow, 0);
+        QVERIFY(darkItem != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        const QColor darkBg = darkItem->background().color();
+        const QColor darkFg = darkItem->foreground().color();
+
+        QVERIFY2(
+            lightBg != darkBg,
+            qPrintable(QStringLiteral("Highlight bg must differ between Light and Dark; got light=%1, dark=%2")
+                           .arg(lightBg.name(), darkBg.name()))
+        );
+        QVERIFY2(
+            lightFg != darkFg,
+            qPrintable(QStringLiteral("Highlight fg must differ between Light and Dark; got light=%1, dark=%2")
+                           .arg(lightFg.name(), darkFg.name()))
+        );
+
+        constexpr double R_LUMA = 0.299;
+        constexpr double G_LUMA = 0.587;
+        constexpr double B_LUMA = 0.114;
+        auto luma = [](const QColor &c) { return (R_LUMA * c.red()) + (G_LUMA * c.green()) + (B_LUMA * c.blue()); };
+
+        // Dark-mode highlight bg must actually be dark; otherwise the
+        // row punches through the dialog as a near-white slab.
+        constexpr double DARK_BG_MAX_LUMA = 110.0;
+        QVERIFY2(
+            luma(darkBg) <= DARK_BG_MAX_LUMA,
+            qPrintable(QStringLiteral("Dark-theme highlight bg must be dark; got %1 (luma=%2)")
+                           .arg(darkBg.name())
+                           .arg(luma(darkBg)))
+        );
+
+        // Dark mode reverses the pair: fg must be lighter than bg,
+        // by the same gap as the light-mode highlight.
+        constexpr double MIN_LUMA_GAP = 80.0;
+        QVERIFY2(
+            luma(darkFg) - luma(darkBg) >= MIN_LUMA_GAP,
+            qPrintable(QStringLiteral("Dark-theme highlight must keep high contrast (fg lighter than bg); "
+                                      "got fg=%1 (luma=%2), bg=%3 (luma=%4)")
+                           .arg(darkFg.name())
+                           .arg(luma(darkFg))
+                           .arg(darkBg.name())
+                           .arg(luma(darkBg)))
+        );
+
+        // Restore the default before the next test starts.
+        mTheme->SetActiveSelection(QStringLiteral("Light"));
+        QCoreApplication::processEvents();
+    }
+
+    // Regression: closing the Preferences window via the X button
+    // must revert a live-previewed theme to the persisted selection.
+    // Without the `closeEvent` override the Dark preview leaked
+    // past the dialog until the next app restart.
+    void TestPreferencesEditorCloseEventRevertsThemePreview()
+    {
+        QVERIFY(mTheme != nullptr);
+
+        // Persist a known baseline so the revert has a deterministic target.
+        mTheme->SetActiveSelection(QStringLiteral("Light"));
+        mTheme->SaveConfiguration();
+        QCOMPARE(mTheme->PersistedSelection(), QStringLiteral("Light"));
+        QCOMPARE(mTheme->ActiveSelection(), QStringLiteral("Light"));
+
+        PreferencesEditor editor(mTheme.data());
+
+        // Preview Dark directly via `ThemeControl` to stay independent
+        // of QComboBox event quirks under offscreen-QPA.
+        mTheme->SetActiveSelection(QStringLiteral("Dark"));
+        QCoreApplication::processEvents();
+        QCOMPARE(mTheme->ActiveSelection(), QStringLiteral("Dark"));
+        // Persisted unchanged -- only Ok writes that.
+        QCOMPARE(mTheme->PersistedSelection(), QStringLiteral("Light"));
+
+        // Same path the X button takes (programmatic `close()` ->
+        // `closeEvent` without first running Cancel).
+        editor.close();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(mTheme->ActiveSelection(), QStringLiteral("Light"));
+        QCOMPARE(mTheme->PersistedSelection(), QStringLiteral("Light"));
     }
 
     // The Column Editor writes back every user-controllable Column
@@ -9253,6 +9618,1179 @@ private slots:
         model->EndStreaming(false);
     }
 
+    // Regression: `FindRecords` used to OR `MatchContains` with the
+    // regex / wildcard flags. `Matches` short-circuits on contains,
+    // so the toggles were silently no-ops.
+    void TestFindUsesRegexFlagAndIgnoresContainsShadow()
+    {
+        const QStringList lines{
+            QStringLiteral(R"({"msg": "abc-123"})"),
+            QStringLiteral(R"({"msg": "abc-xyz"})"),
+            QStringLiteral(R"({"msg": "zzz-123"})"),
+            QStringLiteral(R"({"msg": "abc-456"})"),
+        };
+        const TempJsonFile fixture(lines);
+
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QCOMPARE(model->rowCount(), lines.size());
+
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        QVERIFY2(tableView != nullptr, "MainWindow must own a LogTableView");
+        auto *filterModel = mWindow->FilterModel();
+        QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel");
+
+        // Anchor at row 0 so `FindRecords` walks forward from row 1.
+        tableView->selectionModel()->setCurrentIndex(
+            filterModel->index(0, 0), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows
+        );
+
+        // Regex `abc-\d+` matches rows 0 and 3 but rejects 1 and 2.
+        // The old contains-wins bug would have found nothing
+        // (substring `abc-\d+` is in none of them) and left the
+        // selection at row 0. The fix routes through regex, so we
+        // expect a hit at row 3.
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FindRecords",
+                Qt::DirectConnection,
+                Q_ARG(QString, QStringLiteral("abc-\\d+")),
+                Q_ARG(bool, true),
+                Q_ARG(bool, false),
+                Q_ARG(bool, true)
+            ),
+            "FindRecords slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+
+        QModelIndex selected = tableView->selectionModel()->currentIndex();
+        QVERIFY2(selected.isValid(), "regex find must advance to a match");
+        QVERIFY2(selected.row() != 0, "regex find must not stall on the start row");
+        const QString cell = filterModel->index(selected.row(), 0).data(Qt::DisplayRole).toString();
+        QVERIFY2(
+            cell.contains(QStringLiteral("abc-")) && cell != QStringLiteral("abc-xyz"),
+            qPrintable(QStringLiteral("regex find landed on unexpected row text: %1").arg(cell))
+        );
+
+        // Wildcard branch: drive `MatchRow` directly with
+        // `MatchWildcard`, independent of `FindRecords` bookkeeping.
+        // `*xyz*` against a literal substring of `*xyz*` matches no
+        // row, so a hit here proves the wildcard branch took effect
+        // rather than the (substring) contains branch. `MatchFlag`
+        // values are not disjoint -- `MatchWildcard=5` has the
+        // `MatchContains=1` bit set, so the old testFlag ladder would
+        // demote to contains even when callers passed wildcard alone.
+        const QModelIndex wildcardStart = filterModel->index(0, 0);
+        QVERIFY(wildcardStart.isValid());
+        const QModelIndexList wildcardHits = filterModel->MatchRow(
+            wildcardStart,
+            Qt::DisplayRole,
+            QVariant::fromValue(QStringLiteral("*xyz*")),
+            LogFilterModel::UNLIMITED_HITS,
+            Qt::MatchWildcard | Qt::MatchWrap | Qt::MatchRecursive,
+            true,
+            0
+        );
+        QCOMPARE(wildcardHits.size(), 1);
+        const QString wildcardCell = filterModel->index(wildcardHits[0].row(), 0).data(Qt::DisplayRole).toString();
+        QVERIFY2(
+            wildcardCell.contains(QStringLiteral("xyz")),
+            qPrintable(QStringLiteral("wildcard hit landed on a non-xyz row: %1").arg(wildcardCell))
+        );
+
+        // Once more via the public `FindRecords` slot to pin that
+        // `MainWindow`'s flag composition is also right.
+        tableView->selectionModel()->setCurrentIndex(
+            filterModel->index(0, 0), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows
+        );
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FindRecords",
+                Qt::DirectConnection,
+                Q_ARG(QString, QStringLiteral("*xyz*")),
+                Q_ARG(bool, true),
+                Q_ARG(bool, true),
+                Q_ARG(bool, false)
+            ),
+            "FindRecords slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+        selected = tableView->selectionModel()->currentIndex();
+        QVERIFY2(selected.isValid(), "FindRecords with wildcards must advance to a match");
+        QCOMPARE(filterModel->index(selected.row(), 0).data(Qt::DisplayRole).toString(), QStringLiteral("abc-xyz"));
+
+        // Contains needle `abc`: should reach every "abc-..." row.
+        // Pin it so a future flag-composition refactor can't silently
+        // demote contains too.
+        tableView->selectionModel()->setCurrentIndex(
+            filterModel->index(2, 0), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows
+        );
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FindRecords",
+                Qt::DirectConnection,
+                Q_ARG(QString, QStringLiteral("abc")),
+                Q_ARG(bool, true),
+                Q_ARG(bool, false),
+                Q_ARG(bool, false)
+            ),
+            "FindRecords slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+        selected = tableView->selectionModel()->currentIndex();
+        QVERIFY2(selected.isValid(), "contains find must advance to a match");
+        QVERIFY2(
+            filterModel->index(selected.row(), 0).data(Qt::DisplayRole).toString().startsWith(QStringLiteral("abc-")),
+            "contains find must land on an `abc-...` row"
+        );
+
+        model->EndStreaming(false);
+    }
+
+    // Toggling regex must un-check wildcards (and vice versa). They
+    // are mutually exclusive in `Matches`, so leaving both checked
+    // would make the bar look like it's running two modes.
+    void TestFindBarRegexAndWildcardsAreMutuallyExclusive()
+    {
+        auto *findRecord = mWindow->findChild<FindRecordWidget *>();
+        QVERIFY2(findRecord != nullptr, "MainWindow must own a FindRecordWidget");
+        auto *regex = findRecord->findChild<QAction *>(QStringLiteral("regexToggle"));
+        auto *wildcards = findRecord->findChild<QAction *>(QStringLiteral("wildcardsToggle"));
+        QVERIFY2(regex != nullptr && wildcards != nullptr, "Find bar must expose regex + wildcards toggles");
+
+        regex->setChecked(true);
+        QVERIFY2(regex->isChecked(), "regex toggle must accept setChecked(true)");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        QVERIFY2(!wildcards->isChecked(), "regex setChecked(true) must leave wildcards off");
+
+        wildcards->setChecked(true);
+        QVERIFY2(wildcards->isChecked(), "wildcards toggle must accept setChecked(true)");
+        QVERIFY2(!regex->isChecked(), "enabling wildcards must auto-un-check regex");
+
+        regex->setChecked(true);
+        QVERIFY2(regex->isChecked(), "regex toggle must re-engage after wildcards turn off");
+        QVERIFY2(!wildcards->isChecked(), "re-enabling regex must auto-un-check wildcards");
+    }
+
+    // Regression: an earlier `setTabOrder(mEdit, mButtonPrevious)`
+    // severed the regex / wildcards toggles from the Tab chain.
+    // We can't reliably drive `focusNextChild` under offscreen-QPA,
+    // so verify the static graph: walk `nextInFocusChain()` from
+    // the search field and confirm the toggles appear before the
+    // arrow buttons.
+    void TestFindBarTabOrderIncludesRegexAndWildcardsToggles()
+    {
+        auto *findRecord = mWindow->findChild<FindRecordWidget *>();
+        QVERIFY2(findRecord != nullptr, "MainWindow must own a FindRecordWidget");
+        auto *edit = findRecord->findChild<QLineEdit *>(QStringLiteral("findEdit"));
+        auto *regexButton = findRecord->findChild<QToolButton *>(QStringLiteral("regexToggleButton"));
+        auto *wildcardsButton = findRecord->findChild<QToolButton *>(QStringLiteral("wildcardsToggleButton"));
+        auto *prevButton = findRecord->findChild<QToolButton *>(QStringLiteral("findPrevious"));
+        auto *nextButton = findRecord->findChild<QToolButton *>(QStringLiteral("findNext"));
+        QVERIFY2(edit != nullptr, "findEdit must exist");
+        QVERIFY2(regexButton != nullptr, "regexToggleButton must exist");
+        QVERIFY2(wildcardsButton != nullptr, "wildcardsToggleButton must exist");
+        QVERIFY2(prevButton != nullptr, "findPrevious must exist");
+        QVERIFY2(nextButton != nullptr, "findNext must exist");
+
+        // Walk forward, recording the first hop at which each target
+        // is seen. Generous budget so unrelated children can't
+        // starve us before we encounter the targets.
+        constexpr int MAX_HOPS = 64;
+        int regexIdx = -1;
+        int wildcardsIdx = -1;
+        int prevIdx = -1;
+        int nextIdx = -1;
+        const QWidget *cursor = edit;
+        for (int hop = 0; hop < MAX_HOPS && cursor != nullptr; ++hop)
+        {
+            cursor = cursor->nextInFocusChain();
+            if (cursor == regexButton && regexIdx < 0)
+            {
+                regexIdx = hop;
+            }
+            if (cursor == wildcardsButton && wildcardsIdx < 0)
+            {
+                wildcardsIdx = hop;
+            }
+            if (cursor == prevButton && prevIdx < 0)
+            {
+                prevIdx = hop;
+            }
+            if (cursor == nextButton && nextIdx < 0)
+            {
+                nextIdx = hop;
+            }
+            if (regexIdx >= 0 && wildcardsIdx >= 0 && prevIdx >= 0 && nextIdx >= 0)
+            {
+                break;
+            }
+            if (cursor == edit)
+            {
+                // Wrapped without finding a target -- bail.
+                break;
+            }
+        }
+        QVERIFY2(
+            regexIdx >= 0 && wildcardsIdx >= 0,
+            qPrintable(QStringLiteral("regex/wildcards toggles must be on the tab chain (regex=%1 wildcards=%2)")
+                           .arg(regexIdx)
+                           .arg(wildcardsIdx))
+        );
+        QVERIFY2(
+            prevIdx >= 0 && nextIdx >= 0,
+            qPrintable(
+                QStringLiteral("arrow buttons must be on the tab chain (prev=%1 next=%2)").arg(prevIdx).arg(nextIdx)
+            )
+        );
+        // Expected order: edit -> regex -> wildcards -> prev -> next.
+        // Toggles before arrow buttons is the regression guard --
+        // the bug pinned them after (or out of the chain entirely).
+        QVERIFY2(
+            regexIdx < prevIdx && wildcardsIdx < prevIdx,
+            qPrintable(QStringLiteral("regex/wildcards toggles must precede the arrow buttons in the tab chain "
+                                      "(regex=%1 wildcards=%2 prev=%3)")
+                           .arg(regexIdx)
+                           .arg(wildcardsIdx)
+                           .arg(prevIdx))
+        );
+        QVERIFY2(prevIdx < nextIdx, "previous-arrow must come before next-arrow in the tab chain");
+    }
+
+    // `ParseErrorsDock::AppendErrors` must:
+    //   - track Count() / DroppedCount() correctly across batches,
+    //   - emit `countChanged(count, droppedCount)` on every change,
+    //   - emit `firstBatchArrived()` exactly once per session (i.e.
+    //     not on subsequent batches after the first).
+    void TestParseErrorsDockTracksCountsAndFirstBatchSignal()
+    {
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY2(dock != nullptr, "MainWindow must own a ParseErrorsDock");
+        // `ResetSessionState` (not `ClearErrors`) re-arms the
+        // first-batch latch, so this test can observe
+        // `firstBatchArrived` regardless of prior test state.
+        dock->ResetSessionState();
+
+        QSignalSpy countSpy(dock, &ParseErrorsDock::countChanged);
+        const QSignalSpy firstBatchSpy(dock, &ParseErrorsDock::firstBatchArrived);
+        QVERIFY(countSpy.isValid());
+        QVERIFY(firstBatchSpy.isValid());
+
+        QCOMPARE(dock->Count(), 0);
+        QCOMPARE(dock->DroppedCount(), 0);
+
+        dock->AppendErrors(QStringLiteral("First batch"), {"a", "b", "c"});
+        QCOMPARE(dock->Count(), 3);
+        QCOMPARE(dock->DroppedCount(), 0);
+        QCOMPARE(firstBatchSpy.count(), 1);
+        // countChanged carries (count, droppedCount) -- two ints.
+        QVERIFY2(countSpy.count() >= 1, "countChanged must fire on append");
+        QCOMPARE(countSpy.last().at(0).toInt(), 3);
+        QCOMPARE(countSpy.last().at(1).toInt(), 0);
+
+        dock->AppendErrors(QStringLiteral("Second batch"), {"d", "e"});
+        QCOMPARE(dock->Count(), 5);
+        QCOMPARE(dock->DroppedCount(), 0);
+        QCOMPARE(firstBatchSpy.count(),
+                 1); // No second emit until a session boundary re-arms the latch.
+        QCOMPARE(countSpy.last().at(0).toInt(), 5);
+
+        // Clear zeroes the counters but leaves the first-batch latch
+        // SET, so a streaming hiccup right after a manual Clear can't
+        // re-pop the dock the user just dismissed.
+        dock->ClearErrors();
+        QCOMPARE(dock->Count(), 0);
+        QCOMPARE(dock->DroppedCount(), 0);
+        QCOMPARE(countSpy.last().at(0).toInt(), 0);
+        QCOMPARE(countSpy.last().at(1).toInt(), 0);
+
+        dock->AppendErrors(QStringLiteral("After clear"), {"x"});
+        QCOMPARE(dock->Count(), 1);
+        QCOMPARE(firstBatchSpy.count(), 1); // ClearErrors does NOT re-arm.
+
+        // `ResetSessionState` is the canonical session boundary
+        // and DOES re-arm the latch.
+        dock->ResetSessionState();
+        QCOMPARE(dock->Count(), 0);
+        QCOMPARE(dock->DroppedCount(), 0);
+        dock->AppendErrors(QStringLiteral("New session"), {"y"});
+        QCOMPARE(dock->Count(), 1);
+        QCOMPARE(firstBatchSpy.count(), 2); // Re-armed -> second emit.
+    }
+
+    // Regression: pre-fix, clicking Clear reset the
+    // `firstBatchOfSession` heuristic (it keyed on the counters
+    // being zero), so the next streamed batch fired
+    // `firstBatchArrived` again and re-raised the dock the user
+    // had just dismissed.
+    void TestParseErrorsDockClearDoesNotReArmFirstBatchSignal()
+    {
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY2(dock != nullptr, "MainWindow must own a ParseErrorsDock");
+        dock->ResetSessionState();
+
+        const QSignalSpy firstBatchSpy(dock, &ParseErrorsDock::firstBatchArrived);
+        QVERIFY(firstBatchSpy.isValid());
+
+        dock->AppendErrors(QStringLiteral("Initial batch"), {"a"});
+        QCOMPARE(firstBatchSpy.count(), 1);
+
+        dock->ClearErrors();
+        QCOMPARE(dock->Count(), 0);
+        QCOMPARE(dock->DroppedCount(), 0);
+
+        // Simulated streaming hiccup after a manual Clear. The latch
+        // must stay set so MainWindow does not auto-raise the dock.
+        dock->AppendErrors(QStringLiteral("Post-clear hiccup"), {"b"});
+        QCOMPARE(dock->Count(), 1);
+        QCOMPARE(firstBatchSpy.count(), 1); // Still 1 -- Clear did NOT re-arm.
+
+        // Inverse: a real session boundary DOES re-arm.
+        dock->ResetSessionState();
+        dock->AppendErrors(QStringLiteral("Real new session"), {"c"});
+        QCOMPARE(firstBatchSpy.count(), 2);
+    }
+
+    // A single batch larger than the cap must pre-trim the input
+    // and still surface the in-list overflow footer.
+    //
+    // Regression: when `mErrorCount` landed exactly at the cap
+    // after pre-trim, the old `TrimToCap` short-circuited and
+    // skipped appending the footer, leaving the "N dropped"
+    // summary and the list view out of sync.
+    void TestParseErrorsDockTrimsToCapAndAddsOverflowFooter()
+    {
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY2(dock != nullptr, "MainWindow must own a ParseErrorsDock");
+        dock->ClearErrors();
+
+        const int cap = ParseErrorsDock::MAX_DISPLAYED_ERRORS;
+        std::vector<std::string> huge;
+        huge.reserve(static_cast<size_t>(cap) + 25);
+        for (int i = 0; i < cap + 25; ++i)
+        {
+            huge.emplace_back(std::string("err ") + std::to_string(i));
+        }
+        dock->AppendErrors(QStringLiteral("Huge"), huge);
+        QCOMPARE(dock->Count(), cap);
+        QCOMPARE(dock->DroppedCount(), 25);
+
+        auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
+        QVERIFY2(list != nullptr, "ParseErrorsDock must expose its internal QListWidget");
+
+        // Footer must be the last item and the only one flagged
+        // with `Qt::UserRole + 1` (so we'd also catch a stale
+        // footer left somewhere in the middle).
+        const QListWidgetItem *footer = nullptr;
+        int footerIndex = -1;
+        int footerHits = 0;
+        const int footerRole = Qt::UserRole + 1;
+        for (int i = 0; i < list->count(); ++i)
+        {
+            const QListWidgetItem *item = list->item(i);
+            if (item != nullptr && item->data(footerRole).toBool())
+            {
+                ++footerHits;
+                footer = item;
+                footerIndex = i;
+            }
+        }
+        QCOMPARE(footerHits, 1);
+        QCOMPARE(footerIndex, list->count() - 1);
+        QVERIFY2(footer != nullptr, "footer item lookup must succeed");
+        QVERIFY2(
+            footer->text().contains(QStringLiteral("dropped"), Qt::CaseInsensitive),
+            qPrintable(QStringLiteral("footer must read like an overflow notice; got: %1").arg(footer->text()))
+        );
+        // Non-selectable so arrow-key navigation and Ctrl+A don't
+        // pull the footer into the user's selection.
+        QVERIFY2(!footer->flags().testFlag(Qt::ItemIsSelectable), "overflow footer must not be user-selectable");
+    }
+
+    // Streaming-style overflow: many small batches sum past the
+    // cap. Exercises `TrimToCap`'s walk-from-the-top path (the
+    // single-batch test above covers the pre-trim path); the
+    // footer must surface here too and track `mDroppedCount`.
+    void TestParseErrorsDockOverflowFooterTracksMultipleBatches()
+    {
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY2(dock != nullptr, "MainWindow must own a ParseErrorsDock");
+        dock->ClearErrors();
+
+        auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
+        QVERIFY2(list != nullptr, "ParseErrorsDock must expose its internal QListWidget");
+        const int footerRole = Qt::UserRole + 1;
+
+        const int cap = ParseErrorsDock::MAX_DISPLAYED_ERRORS;
+        // Fill exactly to the cap -- no overflow yet, no footer.
+        std::vector<std::string> first;
+        first.reserve(static_cast<size_t>(cap));
+        for (int i = 0; i < cap; ++i)
+        {
+            first.emplace_back(std::string("a-") + std::to_string(i));
+        }
+        dock->AppendErrors(QStringLiteral("A"), first);
+        QCOMPARE(dock->DroppedCount(), 0);
+        for (int i = 0; i < list->count(); ++i)
+        {
+            const QListWidgetItem *item = list->item(i);
+            QVERIFY2(item == nullptr || !item->data(footerRole).toBool(), "no footer when nothing has been dropped");
+        }
+
+        // Tip past the cap; walk eviction kicks in, footer surfaces.
+        const int overflow = 50;
+        std::vector<std::string> second;
+        second.reserve(static_cast<size_t>(overflow));
+        for (int i = 0; i < overflow; ++i)
+        {
+            second.emplace_back(std::string("b-") + std::to_string(i));
+        }
+        dock->AppendErrors(QStringLiteral("B"), second);
+        QCOMPARE(dock->Count(), cap);
+        QCOMPARE(dock->DroppedCount(), overflow);
+        const QListWidgetItem *tail = list->item(list->count() - 1);
+        QVERIFY2(
+            tail != nullptr && tail->data(footerRole).toBool(),
+            "overflow footer must be the trailing item after eviction"
+        );
+
+        // Third batch grows the drop count; footer text must update
+        // and the dock must not accumulate stale footers.
+        std::vector<std::string> third;
+        third.reserve(static_cast<size_t>(overflow));
+        for (int i = 0; i < overflow; ++i)
+        {
+            third.emplace_back(std::string("c-") + std::to_string(i));
+        }
+        dock->AppendErrors(QStringLiteral("C"), third);
+        QCOMPARE(dock->DroppedCount(), overflow * 2);
+        int footerHits = 0;
+        const QListWidgetItem *latestFooter = nullptr;
+        for (int i = 0; i < list->count(); ++i)
+        {
+            const QListWidgetItem *item = list->item(i);
+            if (item != nullptr && item->data(footerRole).toBool())
+            {
+                ++footerHits;
+                latestFooter = item;
+            }
+        }
+        QCOMPARE(footerHits, 1);
+        QVERIFY2(latestFooter != nullptr, "footer lookup must succeed after third batch");
+        QVERIFY2(
+            latestFooter->text().contains(QString::number(overflow * 2)) ||
+                latestFooter->text().contains(QLocale::system().toString(static_cast<qlonglong>(overflow * 2))),
+            qPrintable(QStringLiteral("footer must surface the running drop count; got: %1").arg(latestFooter->text()))
+        );
+    }
+
+    // `CopySelection` must synthesise group headers and the
+    // overflow footer around the selection so the pasted block
+    // reads coherently. Headers / footer are non-selectable.
+    void TestParseErrorsDockCopySelectionIncludesHeaderAndFooter()
+    {
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY2(dock != nullptr, "MainWindow must own a ParseErrorsDock");
+        dock->ClearErrors();
+
+        // Two batches -> two headers; cap-overflow forces a footer.
+        const int cap = ParseErrorsDock::MAX_DISPLAYED_ERRORS;
+        std::vector<std::string> batchA;
+        batchA.reserve(static_cast<size_t>(cap - 5));
+        for (int i = 0; i < cap - 5; ++i)
+        {
+            batchA.emplace_back("A-" + std::to_string(i));
+        }
+        const std::vector<std::string> batchB{"B-0", "B-1", "B-2", "B-3", "B-4", "B-5", "B-6"};
+
+        dock->AppendErrors(QStringLiteral("Batch A"), batchA);
+        dock->AppendErrors(QStringLiteral("Batch B"), batchB);
+        QVERIFY2(dock->DroppedCount() > 0, "cap overflow must mint an overflow footer");
+
+        auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
+        QVERIFY2(list != nullptr, "ParseErrorsDock must expose its internal QListWidget");
+
+        // Find Batch B's header + first error row.
+        int batchBHeaderRow = -1;
+        int firstBRow = -1;
+        for (int i = 0; i < list->count(); ++i)
+        {
+            const QListWidgetItem *item = list->item(i);
+            if (item == nullptr)
+            {
+                continue;
+            }
+            if (item->text() == QStringLiteral("Batch B") && !item->flags().testFlag(Qt::ItemIsSelectable))
+            {
+                batchBHeaderRow = i;
+            }
+            if (item->text().startsWith(QStringLiteral("B-")) && item->flags().testFlag(Qt::ItemIsSelectable))
+            {
+                if (firstBRow < 0)
+                {
+                    firstBRow = i;
+                }
+            }
+        }
+        QVERIFY2(batchBHeaderRow >= 0, "Batch B header must survive trimming (its rows did)");
+        QVERIFY2(firstBRow > batchBHeaderRow, "Batch B's first error row must follow its header");
+
+        list->clearSelection();
+        list->item(firstBRow)->setSelected(true);
+
+        auto *clipboard = QGuiApplication::clipboard();
+        clipboard->clear();
+
+        // `CopySelection` is private; trigger the Ctrl+C shortcut
+        // instead. It's parented on the dock content widget (so it
+        // stays live even when focus is on the Clear button), so
+        // search the whole dock subtree.
+        QShortcut *copyShortcut = nullptr;
+        const QList<QShortcut *> shortcuts = dock->findChildren<QShortcut *>();
+        for (QShortcut *s : shortcuts)
+        {
+            if (s->key() == QKeySequence(QKeySequence::Copy))
+            {
+                copyShortcut = s;
+                break;
+            }
+        }
+        QVERIFY2(copyShortcut != nullptr, "ParseErrorsDock must wire Ctrl+C somewhere in its subtree");
+        emit copyShortcut->activated();
+        QCoreApplication::processEvents();
+
+        const QString clip = clipboard->text();
+        QVERIFY2(!clip.isEmpty(), "CopySelection must populate the clipboard");
+        QVERIFY2(
+            clip.contains(QStringLiteral("Batch B")),
+            qPrintable(QStringLiteral("clipboard must include the group header; got:\n%1").arg(clip))
+        );
+        QVERIFY2(
+            clip.contains(QStringLiteral("B-0")),
+            qPrintable(QStringLiteral("clipboard must include the selected error row; got:\n%1").arg(clip))
+        );
+        // Footer is `tr()`-rendered, so match the locale-stable
+        // "dropped" hint rather than the full string.
+        QVERIFY2(
+            clip.contains(QStringLiteral("dropped"), Qt::CaseInsensitive),
+            qPrintable(QStringLiteral("clipboard must include the overflow footer; got:\n%1").arg(clip))
+        );
+    }
+
+    // Regression: trimming evicted the first batch's group header
+    // along with some rows, leaving the surviving rows headerless
+    // above the next batch's title. Fix re-mints the evicted header
+    // above the survivors.
+    void TestParseErrorsDockTrimPreservesSurvivingBatchHeader()
+    {
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY2(dock != nullptr, "MainWindow must own a ParseErrorsDock");
+        dock->ClearErrors();
+
+        auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
+        QVERIFY2(list != nullptr, "ParseErrorsDock must expose its internal QListWidget");
+
+        const int cap = ParseErrorsDock::MAX_DISPLAYED_ERRORS;
+        // Batch A fills most of the cap; batch B tips us over,
+        // evicting A's header plus a chunk of its rows.
+        const int batchAStart = cap - 200;
+        std::vector<std::string> batchA;
+        batchA.reserve(static_cast<size_t>(batchAStart));
+        for (int i = 0; i < batchAStart; ++i)
+        {
+            batchA.emplace_back("A-" + std::to_string(i));
+        }
+        std::vector<std::string> batchB;
+        batchB.reserve(300);
+        for (int i = 0; i < 300; ++i)
+        {
+            batchB.emplace_back("B-" + std::to_string(i));
+        }
+        dock->AppendErrors(QStringLiteral("Batch A"), batchA);
+        dock->AppendErrors(QStringLiteral("Batch B"), batchB);
+
+        QVERIFY2(dock->DroppedCount() > 0, "second batch must have evicted some of batch A");
+
+        // First surviving row must be an `A-...` entry, with a
+        // "Batch A" header immediately above it (not "Batch B"
+        // floating above orphan A rows).
+        int firstSelectableRow = -1;
+        for (int i = 0; i < list->count(); ++i)
+        {
+            const QListWidgetItem *item = list->item(i);
+            if (item != nullptr && item->flags().testFlag(Qt::ItemIsSelectable))
+            {
+                firstSelectableRow = i;
+                break;
+            }
+        }
+        QVERIFY2(firstSelectableRow > 0, "surviving error rows must follow at least one header");
+        const QListWidgetItem *firstError = list->item(firstSelectableRow);
+        QVERIFY2(firstError != nullptr, "first selectable row lookup must succeed");
+        QVERIFY2(
+            firstError->text().startsWith(QStringLiteral("A-")),
+            qPrintable(QStringLiteral("first survivor must be from batch A; got: %1").arg(firstError->text()))
+        );
+        const QListWidgetItem *headerAbove = list->item(firstSelectableRow - 1);
+        QVERIFY2(headerAbove != nullptr, "row above first survivor must exist");
+        QVERIFY2(
+            !headerAbove->flags().testFlag(Qt::ItemIsSelectable),
+            "row above first survivor must be a group header (non-selectable)"
+        );
+        QCOMPARE(headerAbove->text(), QStringLiteral("Batch A"));
+    }
+
+    // Regression: re-opening the find bar after a model reset used
+    // to show the stale match count from the previous dataset.
+    // `FindDock::revealed` is the trigger for a catch-up recount.
+    void TestFindBarRevealedSignalTriggersCatchUpRecount()
+    {
+        auto *dock = mWindow->findChild<FindDock *>();
+        QVERIFY2(dock != nullptr, "MainWindow must own a FindDock");
+        auto *bar = dock->Widget();
+        QVERIFY2(bar != nullptr, "FindDock must host a FindRecordWidget");
+        auto *edit = bar->findChild<QLineEdit *>(QStringLiteral("findEdit"));
+        QVERIFY2(edit != nullptr, "FindRecordWidget must expose its line edit");
+
+        // Drive the signal directly rather than going through Qt's
+        // tab system (which needs a realised main window): the
+        // wiring under test is "revealed -> BumpMatchCountDebounce".
+        // With a non-empty needle, the debounce timer should arm and
+        // eventually emit `MatchCountRequested`.
+        edit->setText(QStringLiteral("anything"));
+        QSignalSpy spy(bar, &FindRecordWidget::MatchCountRequested);
+        QVERIFY(spy.isValid());
+        spy.clear();
+
+        emit dock->revealed();
+
+        // Wait for the 120 ms debounce to fire. `wait()` doesn't
+        // depend on the test driver's clock ticking.
+        QVERIFY2(
+            spy.count() > 0 || spy.wait(1000),
+            "FindDock::revealed must trigger a debounced MatchCountRequested for a non-empty needle"
+        );
+
+        // Empty needle: the bar suppresses the request.
+        edit->clear();
+        spy.clear();
+        emit dock->revealed();
+        QVERIFY2(!spy.wait(300), "FindDock::revealed must NOT trigger MatchCountRequested for an empty needle");
+    }
+
+    // Regression: under continuous activity (live-tail, held key)
+    // the trailing 120 ms debounce restarts on every bump and
+    // never fires, stranding the indicator at the pre-activity
+    // count. A max-age timer (capped at 750 ms) that survives
+    // subsequent bumps guarantees an emit within that window.
+    void TestFindBarDebounceMaxAgeForcesEmitUnderContinuousActivity()
+    {
+        auto *findRecord = mWindow->findChild<FindRecordWidget *>();
+        QVERIFY2(findRecord != nullptr, "MainWindow must own a FindRecordWidget");
+        auto *edit = findRecord->findChild<QLineEdit *>(QStringLiteral("findEdit"));
+        QVERIFY2(edit != nullptr, "FindRecordWidget must expose its line edit");
+
+        edit->setText(QStringLiteral("anything"));
+        QSignalSpy spy(findRecord, &FindRecordWidget::MatchCountRequested);
+        QVERIFY(spy.isValid());
+        // Drain the textChanged-triggered debounce.
+        QVERIFY2(spy.count() > 0 || spy.wait(1500), "initial textChanged must emit");
+        spy.clear();
+
+        // Bump every 50 ms (under the 120 ms trailing window) for
+        // 1 s. Without the max-age cap the trailing timer never
+        // fires; with it, an emit arrives within ~750 ms.
+        QElapsedTimer wallClock;
+        wallClock.start();
+        constexpr int BUMP_INTERVAL_MS = 50;
+        constexpr int TOTAL_BUMP_DURATION_MS = 1000;
+        constexpr int MAX_AGE_TOLERANCE_MS = 1000; // a bit above the 750 ms cap
+        bool emittedDuringHammer = false;
+        while (wallClock.elapsed() < TOTAL_BUMP_DURATION_MS)
+        {
+            findRecord->BumpMatchCountDebounce();
+            QTest::qWait(BUMP_INTERVAL_MS);
+            if (spy.count() > 0)
+            {
+                emittedDuringHammer = true;
+                break;
+            }
+        }
+        QVERIFY2(
+            emittedDuringHammer,
+            qPrintable(QStringLiteral(
+                           "max-age cap must fire MatchCountRequested under continuous bumps; got %1 emits in %2 ms"
+            )
+                           .arg(spy.count())
+                           .arg(wallClock.elapsed()))
+        );
+        QVERIFY2(
+            wallClock.elapsed() <= MAX_AGE_TOLERANCE_MS,
+            qPrintable(QStringLiteral("first emit took longer than the max-age cap: %1 ms").arg(wallClock.elapsed()))
+        );
+    }
+
+    // Regression: `MatchRow` skips hidden columns, but column-
+    // visibility flips don't emit any of the proxy signals the find
+    // cache hooks. Without explicit invalidation the "*i* of *N*"
+    // indicator would strand a count that includes hits in
+    // now-hidden columns. `SetColumnVisible` /
+    // `ApplyColumnVisibility` now call `OnFindCacheInvalidated`.
+    //
+    // The main window must be realised so the find dock is visible
+    // (the bump gate skips recounts when the bar is hidden).
+    void TestHidingColumnInvalidatesFindCache()
+    {
+        const int categoryCol = StreamFixtureForColumnTests();
+        QVERIFY2(categoryCol >= 0, "category column must exist after streaming");
+
+        auto *findRecord = mWindow->findChild<FindRecordWidget *>();
+        QVERIFY2(findRecord != nullptr, "MainWindow must own a FindRecordWidget");
+        auto *findDock = mWindow->findChild<FindDock *>();
+        QVERIFY2(findDock != nullptr, "MainWindow must own a FindDock");
+        auto *edit = findRecord->findChild<QLineEdit *>(QStringLiteral("findEdit"));
+        QVERIFY2(edit != nullptr, "FindRecordWidget must expose its line edit");
+
+        // Realise the window so the bump gate lets through.
+        mWindow->show();
+        QVERIFY(QTest::qWaitForWindowExposed(mWindow, 5000));
+        findDock->show();
+        QCoreApplication::processEvents();
+        QVERIFY2(findDock->isVisible(), "find dock must be visible for the bump gate to pass");
+
+        edit->setText(QStringLiteral("info"));
+        QSignalSpy spy(findRecord, &FindRecordWidget::MatchCountRequested);
+        QVERIFY(spy.isValid());
+        // Drain the textChanged debounce so the next emit is
+        // unambiguously caused by the hide.
+        QVERIFY2(spy.count() > 0 || spy.wait(1500), "initial textChanged must trigger a debounced MatchCountRequested");
+        spy.clear();
+
+        mWindow->SetColumnVisible(categoryCol, false);
+        QVERIFY2(
+            spy.count() > 0 || spy.wait(1500),
+            "Hiding a column must invalidate the find cache and trigger a fresh MatchCountRequested"
+        );
+    }
+
+    // Regression: `AppendErrors` used to `scrollToBottom()` on every
+    // append, yanking the user back to the tail mid-read. Chat/log
+    // convention: auto-follow only when already at the tail.
+    void TestParseErrorsDockAutoFollowOnlyWhenAtTail()
+    {
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY2(dock != nullptr, "MainWindow must own a ParseErrorsDock");
+        dock->ClearErrors();
+
+        auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
+        QVERIFY2(list != nullptr, "ParseErrorsDock must expose its internal QListWidget");
+
+        // Realise the dock so the scrollbar has a real viewport.
+        // Offscreen QPA still pumps min/max/value updates as long
+        // as the widget tree is shown.
+        mWindow->show();
+        QVERIFY(QTest::qWaitForWindowExposed(mWindow, 5000));
+        dock->show();
+        dock->raise();
+        QCoreApplication::processEvents();
+
+        // Seed enough entries that the list scrolls. We start at
+        // the tail (list was empty), so auto-follow pins us there.
+        std::vector<std::string> seed;
+        seed.reserve(200);
+        for (int i = 0; i < 200; ++i)
+        {
+            seed.emplace_back(std::string("seed-") + std::to_string(i));
+        }
+        dock->AppendErrors(QStringLiteral("Seed"), seed);
+        QCoreApplication::processEvents();
+
+        QScrollBar *vBar = list->verticalScrollBar();
+        QVERIFY2(vBar != nullptr, "QListWidget must have a vertical scrollbar");
+        // If offscreen geometry leaves `maximum() == minimum()`
+        // we can't distinguish "still at tail" from "moved by us",
+        // so the test is meaningless on this platform.
+        if (vBar->maximum() <= vBar->minimum())
+        {
+            QSKIP("offscreen QPA produced a degenerate scrollbar -- can't exercise auto-follow");
+        }
+
+        // Park mid-list -- comfortably outside the 4 px tail slack.
+        const int parkedPosition = vBar->minimum() + ((vBar->maximum() - vBar->minimum()) / 2);
+        vBar->setValue(parkedPosition);
+        QCoreApplication::processEvents();
+        QCOMPARE(vBar->value(), parkedPosition);
+
+        // New batch mid-read must leave the scrollbar parked.
+        const std::vector<std::string> later{"late-0", "late-1", "late-2", "late-3", "late-4"};
+        dock->AppendErrors(QStringLiteral("Later"), later);
+        QCoreApplication::processEvents();
+        QVERIFY2(
+            vBar->value() == parkedPosition,
+            qPrintable(QStringLiteral("Scroll position must be preserved when the user was not at the tail "
+                                      "(parked=%1, after=%2, max=%3)")
+                           .arg(parkedPosition)
+                           .arg(vBar->value())
+                           .arg(vBar->maximum()))
+        );
+
+        // Scroll back to tail; auto-follow must re-engage.
+        vBar->setValue(vBar->maximum());
+        QCoreApplication::processEvents();
+        QCOMPARE(vBar->value(), vBar->maximum());
+
+        const std::vector<std::string> trailing{"tail-0", "tail-1", "tail-2"};
+        dock->AppendErrors(QStringLiteral("Trailing"), trailing);
+        QCoreApplication::processEvents();
+        // After more items land `maximum()` grew; auto-follow
+        // must have moved `value` along with it.
+        QVERIFY2(
+            vBar->value() >= vBar->maximum() - 4,
+            qPrintable(QStringLiteral("Auto-follow must re-pin to the tail when the user was at the tail "
+                                      "(value=%1, max=%2)")
+                           .arg(vBar->value())
+                           .arg(vBar->maximum()))
+        );
+    }
+
+    // Regression: `UpdateFindMatchCount` used to run the full
+    // proxy scan even when the find dock was hidden (a debounce
+    // armed while the bar was visible can still fire after the
+    // user dismisses it). The slot now bails on hidden, matching
+    // the gates on `OnFindCacheInvalidated` and `FindRecords`.
+    void TestUpdateFindMatchCountSkipsWorkWhenDockHidden()
+    {
+        auto *findRecord = mWindow->findChild<FindRecordWidget *>();
+        QVERIFY2(findRecord != nullptr, "MainWindow must own a FindRecordWidget");
+        auto *findDock = mWindow->findChild<FindDock *>();
+        QVERIFY2(findDock != nullptr, "MainWindow must own a FindDock");
+        auto *label = findRecord->findChild<QLabel *>(QStringLiteral("findMatchCount"));
+        QVERIFY2(label != nullptr, "FindRecordWidget must expose its match-count label");
+
+        findDock->hide();
+        QVERIFY(!findDock->isVisible());
+
+        // Sentinel so any write (clear or "N matches") is detectable.
+        label->setText(QStringLiteral("sentinel-do-not-touch"));
+
+        // The visibility gate must short-circuit before any write.
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "UpdateFindMatchCount",
+                Qt::DirectConnection,
+                Q_ARG(QString, QStringLiteral("info")),
+                Q_ARG(bool, false),
+                Q_ARG(bool, false)
+            ),
+            "UpdateFindMatchCount must be invocable via meta-object"
+        );
+        QCOMPARE(label->text(), QStringLiteral("sentinel-do-not-touch"));
+
+        // Empty needle must also short-circuit -- pre-fix it would
+        // have cleared the sentinel even though nothing was on
+        // screen to clear.
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "UpdateFindMatchCount",
+                Qt::DirectConnection,
+                Q_ARG(QString, QString()),
+                Q_ARG(bool, false),
+                Q_ARG(bool, false)
+            ),
+            "UpdateFindMatchCount must accept an empty needle"
+        );
+        QCOMPARE(label->text(), QStringLiteral("sentinel-do-not-touch"));
+    }
+
+    // Regression: the status button used to total `count +
+    // droppedCount`, which didn't match the dock summary ("X
+    // errors; Y earlier dropped"). Now the button renders the
+    // dropped count inline when non-zero.
+    void TestParseErrorsStatusButtonShowsDroppedHint()
+    {
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY2(dock != nullptr, "MainWindow must own a ParseErrorsDock");
+        auto *statusButton = mWindow->findChild<QPushButton *>(QStringLiteral("parseErrorsStatusButton"));
+        QVERIFY2(statusButton != nullptr, "MainWindow must own the parse-errors status button");
+        dock->ClearErrors();
+
+        // No drops yet: button uses the plain "%n errors" form.
+        dock->AppendErrors(QStringLiteral("First"), {"a", "b", "c"});
+        QCoreApplication::processEvents();
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        QVERIFY2(
+            !statusButton->text().contains(QStringLiteral("dropped"), Qt::CaseInsensitive),
+            qPrintable(QStringLiteral("status button must not mention 'dropped' when nothing was dropped: %1")
+                           .arg(statusButton->text()))
+        );
+
+        // Force an overflow so `droppedCount > 0`. A batch larger
+        // than the cap pre-trims to mint a dropped count.
+        const int cap = ParseErrorsDock::MAX_DISPLAYED_ERRORS;
+        std::vector<std::string> huge;
+        huge.reserve(static_cast<size_t>(cap) + 50);
+        for (int i = 0; i < cap + 50; ++i)
+        {
+            huge.emplace_back(std::string("err-") + std::to_string(i));
+        }
+        dock->AppendErrors(QStringLiteral("Huge"), huge);
+        QCoreApplication::processEvents();
+        QVERIFY2(dock->DroppedCount() > 0, "fixture must produce a non-zero dropped count");
+
+        // Button must now surface the dropped hint so the user can
+        // tell from the status bar that the visible total isn't
+        // the whole story.
+        QVERIFY2(
+            statusButton->text().contains(QStringLiteral("dropped"), Qt::CaseInsensitive),
+            qPrintable(QStringLiteral("status button must surface dropped count in its label; got: %1")
+                           .arg(statusButton->text()))
+        );
+        // And the tooltip continues to spell out the breakdown.
+        QVERIFY2(
+            statusButton->toolTip().contains(QStringLiteral("dropped"), Qt::CaseInsensitive),
+            qPrintable(QStringLiteral("status button tooltip must still spell out the breakdown; got: %1")
+                           .arg(statusButton->toolTip()))
+        );
+    }
+
+    // Regression: the find-bar arrow icons used `SP_ArrowUp` /
+    // `SP_ArrowDown`, whose baked-black pixmaps disappeared on dark
+    // themes. The icons must follow `QPalette::WindowText`.
+    void TestFindBarArrowIconsFollowPalette()
+    {
+        auto *findRecord = mWindow->findChild<FindRecordWidget *>();
+        QVERIFY2(findRecord != nullptr, "MainWindow must own a FindRecordWidget");
+        auto *prevButton = findRecord->findChild<QToolButton *>(QStringLiteral("findPrevious"));
+        auto *nextButton = findRecord->findChild<QToolButton *>(QStringLiteral("findNext"));
+        QVERIFY2(prevButton != nullptr, "FindRecordWidget must expose its previous button");
+        QVERIFY2(nextButton != nullptr, "FindRecordWidget must expose its next button");
+
+        // Count opaque pixels in @p icon matching @p expected (with
+        // a small per-channel tolerance for anti-alias drift). A
+        // baked-black glyph never matches a non-black @p expected.
+        auto opaquePixelCount = [](const QIcon &icon, QRgb expected) -> int {
+            const QList<QSize> sizes = icon.availableSizes();
+            const QSize size = sizes.isEmpty() ? QSize{16, 16} : sizes.front();
+            const QImage img = icon.pixmap(size).toImage().convertToFormat(QImage::Format_ARGB32);
+            int matching = 0;
+            for (int y = 0; y < img.height(); ++y)
+            {
+                for (int x = 0; x < img.width(); ++x)
+                {
+                    const QRgb px = img.pixel(x, y);
+                    if (qAlpha(px) < 128)
+                    {
+                        continue;
+                    }
+                    // Tolerate AA drift -- a pure-red apex blends to
+                    // half-transparent maroon at the slope's edge.
+                    constexpr int CHANNEL_TOLERANCE = 32;
+                    if (std::abs(qRed(px) - qRed(expected)) <= CHANNEL_TOLERANCE &&
+                        std::abs(qGreen(px) - qGreen(expected)) <= CHANNEL_TOLERANCE &&
+                        std::abs(qBlue(px) - qBlue(expected)) <= CHANNEL_TOLERANCE)
+                    {
+                        ++matching;
+                    }
+                }
+            }
+            return matching;
+        };
+
+        // Vivid red palette: the rendered pixmap must contain red.
+        // The old baked-black icons would be black regardless of
+        // `WindowText`.
+        QPalette redPalette = findRecord->palette();
+        redPalette.setColor(QPalette::Active, QPalette::WindowText, QColor(255, 0, 0));
+        redPalette.setColor(QPalette::Inactive, QPalette::WindowText, QColor(255, 0, 0));
+        findRecord->setPalette(redPalette);
+        // `setPalette` posts `PaletteChange`; pump the event loop
+        // so `changeEvent` rebuilds the icons before we sample.
+        QCoreApplication::sendPostedEvents(findRecord, QEvent::PaletteChange);
+        const int prevRed = opaquePixelCount(prevButton->icon(), qRgb(255, 0, 0));
+        const int nextRed = opaquePixelCount(nextButton->icon(), qRgb(255, 0, 0));
+        QVERIFY2(prevRed > 0, "previous-button icon must paint in the palette's WindowText colour");
+        QVERIFY2(nextRed > 0, "next-button icon must paint in the palette's WindowText colour");
+
+        // Flip to vivid blue: the rendered pixmap must change too.
+        // The real regression is that the first Light -> Dark
+        // toggle must actually re-paint the arrows.
+        QPalette bluePalette = findRecord->palette();
+        bluePalette.setColor(QPalette::Active, QPalette::WindowText, QColor(0, 0, 255));
+        bluePalette.setColor(QPalette::Inactive, QPalette::WindowText, QColor(0, 0, 255));
+        findRecord->setPalette(bluePalette);
+        QCoreApplication::sendPostedEvents(findRecord, QEvent::PaletteChange);
+        const int prevBlue = opaquePixelCount(prevButton->icon(), qRgb(0, 0, 255));
+        const int nextBlue = opaquePixelCount(nextButton->icon(), qRgb(0, 0, 255));
+        QVERIFY2(prevBlue > 0, "previous-button icon must repaint after a palette change");
+        QVERIFY2(nextBlue > 0, "next-button icon must repaint after a palette change");
+    }
+
+    // Regression: the chevron pixmap was minted at logical size
+    // regardless of DPR, leaving the arrows softer than the
+    // surrounding `.*` / `*?` glyphs on a 200%-scaled monitor.
+    // Backing pixmap must scale with `devicePixelRatioF()`.
+    void TestFindBarArrowIconsScaleWithDevicePixelRatio()
+    {
+        auto *findRecord = mWindow->findChild<FindRecordWidget *>();
+        QVERIFY2(findRecord != nullptr, "MainWindow must own a FindRecordWidget");
+        auto *prevButton = findRecord->findChild<QToolButton *>(QStringLiteral("findPrevious"));
+        QVERIFY2(prevButton != nullptr, "FindRecordWidget must expose its previous button");
+
+        const QIcon icon = prevButton->icon();
+        QVERIFY2(!icon.isNull(), "previous-button icon must be set");
+        const QList<QSize> sizes = icon.availableSizes();
+        QVERIFY2(!sizes.isEmpty(), "icon must report at least one size");
+
+        // The pixmap returned by `pixmap(size)` is scaled to the
+        // logical size; we want the *backing* pixel count. Pull the
+        // largest available size and check `devicePixelRatio()`
+        // matches the host widget's DPR.
+        const QPixmap pix = icon.pixmap(sizes.front());
+        QVERIFY2(!pix.isNull(), "pixmap mint must succeed");
+        const qreal hostDpr = findRecord->devicePixelRatioF();
+        if (hostDpr > 1.0)
+        {
+            QVERIFY2(
+                pix.devicePixelRatio() >= hostDpr - 0.05,
+                qPrintable(QStringLiteral("expected DPR %1, got %2 -- HiDPI mint regressed")
+                               .arg(hostDpr)
+                               .arg(pix.devicePixelRatio()))
+            );
+            // Backing pixel size scales with DPR: an N-wide logical
+            // icon at 2x DPR has a 2N-wide backing pixmap.
+            const int expectedBackingPx = static_cast<int>(std::lround(sizes.front().width() * hostDpr));
+            QVERIFY2(
+                pix.size().width() >= expectedBackingPx - 1 && pix.size().width() <= expectedBackingPx + 1,
+                qPrintable(QStringLiteral("backing pixmap width %1 should be ~ logical %2 * DPR %3")
+                               .arg(pix.size().width())
+                               .arg(sizes.front().width())
+                               .arg(hostDpr))
+            );
+        }
+        else
+        {
+            // 1x display: just confirm the pixmap is realised.
+            QVERIFY(pix.devicePixelRatio() >= 1.0 - 0.05);
+        }
+    }
+
+    // `IsStyleOnlyRoleChange` is the helper the find cache and
+    // record-detail dock use to ignore theme-refresh emits. Lock
+    // the contract so a future role addition can't silently flip a
+    // value-affecting role into the "ignore" set.
+    void TestIsStyleOnlyRoleChangeContract()
+    {
+        QVERIFY2(
+            !LogModel::IsStyleOnlyRoleChange({}),
+            "empty roles list is the 'I don't know' sentinel; must conservatively refresh"
+        );
+        QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::BackgroundRole}));
+        QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::ForegroundRole}));
+        QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::FontRole}));
+        QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::DecorationRole}));
+        QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::BackgroundRole, Qt::ForegroundRole, Qt::FontRole}));
+        QVERIFY2(!LogModel::IsStyleOnlyRoleChange({Qt::DisplayRole}), "DisplayRole change must trigger a refresh");
+        QVERIFY2(!LogModel::IsStyleOnlyRoleChange({Qt::EditRole}), "EditRole change must trigger a refresh");
+        QVERIFY2(
+            !LogModel::IsStyleOnlyRoleChange({Qt::BackgroundRole, Qt::DisplayRole}),
+            "mixed list with at least one value-role must trigger a refresh"
+        );
+    }
+
+    // `ComposeFindFlags` is the single source of truth for find-
+    // flag composition. Lock the priority (regex > wildcard >
+    // contains) and the always-on `MatchWrap | MatchRecursive`
+    // baseline so a future refactor can't desync call sites.
+    void TestComposeFindFlagsPriorityAndBaseline()
+    {
+        constexpr Qt::MatchFlags BASELINE = Qt::MatchWrap | Qt::MatchRecursive;
+        QCOMPARE(
+            LogFilterModel::ComposeFindFlags(/*wildcards=*/false, /*regularExpressions=*/false),
+            BASELINE | Qt::MatchContains
+        );
+        QCOMPARE(
+            LogFilterModel::ComposeFindFlags(/*wildcards=*/true, /*regularExpressions=*/false),
+            BASELINE | Qt::MatchWildcard
+        );
+        QCOMPARE(
+            LogFilterModel::ComposeFindFlags(/*wildcards=*/false, /*regularExpressions=*/true),
+            BASELINE | Qt::MatchRegularExpression
+        );
+        // Both toggles set: regex wins. The UI enforces mutual
+        // exclusion, but the helper must not depend on it.
+        QCOMPARE(
+            LogFilterModel::ComposeFindFlags(/*wildcards=*/true, /*regularExpressions=*/true),
+            BASELINE | Qt::MatchRegularExpression
+        );
+    }
+
+    // Regression: every `dataChanged` invalidation used to call
+    // `mMatchCountTimer->start()`, which restarted the trailing
+    // timer. Under streaming the trailing timer never fired and
+    // only the max-age cap (750 ms) ever delivered. Fix: when both
+    // timers are already running, skip the start so the trailing
+    // timer can run to its natural deadline.
+    void TestBumpMatchCountDebounceCoalescesStreamingBursts()
+    {
+        auto *findRecord = mWindow->findChild<FindRecordWidget *>();
+        QVERIFY2(findRecord != nullptr, "MainWindow must own a FindRecordWidget");
+        auto *findEdit = findRecord->findChild<QLineEdit *>(QStringLiteral("findEdit"));
+        QVERIFY2(findEdit != nullptr, "FindRecordWidget must expose its QLineEdit");
+        // Both timers carry `objectName` so the test can probe them
+        // without the fragile "walk all timers and guess" dance.
+        auto *trailing = findRecord->findChild<QTimer *>(QStringLiteral("matchCountDebounceTimer"));
+        auto *maxAge = findRecord->findChild<QTimer *>(QStringLiteral("matchCountMaxAgeTimer"));
+        QVERIFY2(trailing != nullptr, "FindRecordWidget must name its trailing debounce timer");
+        QVERIFY2(maxAge != nullptr, "FindRecordWidget must name its max-age debounce timer");
+
+        findEdit->setText(QStringLiteral("needle"));
+        // First bump arms both timers (the textChanged emit above
+        // already armed them; bump is idempotent on that state).
+        findRecord->BumpMatchCountDebounce();
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        QVERIFY2(trailing->isActive(), "first BumpMatchCountDebounce must arm the trailing timer");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY2` aborts on null.
+        QVERIFY2(maxAge->isActive(), "first BumpMatchCountDebounce must arm the max-age timer");
+
+        // Let the trailing timer tick down, then re-bump. Remaining
+        // time must NOT bounce back up -- that would mean the
+        // second bump reset the timer (the bug we're pinning).
+        QTest::qWait(20);
+        const int remainingBefore = trailing->remainingTime();
+        findRecord->BumpMatchCountDebounce();
+        const int remainingAfter = trailing->remainingTime();
+        // 5 ms slack for scheduler jitter; the invariant is "did
+        // not jump back near `interval()`".
+        QVERIFY2(
+            remainingAfter <= remainingBefore + 5,
+            qPrintable(QStringLiteral("second bump must not reset the trailing timer (before=%1, after=%2, interval=%3)"
+            )
+                           .arg(remainingBefore)
+                           .arg(remainingAfter)
+                           .arg(trailing->interval()))
+        );
+    }
+
     // An enum column with an empty dictionary must show the placeholder
     // and disable OK so a "hide everything" filter cannot be submitted.
     void TestFilterEditorEmptyEnumPickerDisablesOk()
@@ -9446,13 +10984,11 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Regression: a streaming batch through `LogFilterModel` with no
-    // active sort and no filter emits one bracketed `rowsInserted`
-    // pair covering the whole accepted range, not one pair per
-    // source row. The reverse-index rebuild lives inside the
-    // bracket so no O(n) staleness window on `mSourceRowToProxyRow`
-    // is observable.
-    // and rebuilds the reverse index inside it.
+    // Regression: a streaming batch through `LogFilterModel` (no
+    // sort, no filter) must emit one bracketed `rowsInserted` pair
+    // covering the whole range, not one pair per source row. The
+    // reverse-index rebuild lives inside the bracket so no O(n)
+    // staleness window on `mSourceRowToProxyRow` is observable.
     void TestStreamingBatchEmitsSingleRowsInsertedBracket()
     {
         auto *model = mWindow->findChild<LogModel *>();
@@ -9460,9 +10996,8 @@ private slots:
         auto *filterModel = mWindow->FilterModel();
         QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel");
 
-        // Empty fixture, driven by direct `AppendBatch` calls so the
-        // batch boundary is well-defined and the only `rowsInserted`
-        // emission on the proxy is the one under test.
+        // Drive via direct `AppendBatch` so the batch boundary is
+        // well-defined and the only `rowsInserted` emission is ours.
         const TempJsonFile emptyFixture(QStringList{});
         auto file = std::make_unique<loglib::LogFile>(emptyFixture.Path().toStdString());
         auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
@@ -9501,9 +11036,8 @@ private slots:
         QCOMPARE(args.at(1).toInt(), 0);
         QCOMPARE(args.at(2).toInt(), BATCH_SIZE - 1);
 
-        // Reverse index must be consistent post-bracket: a
-        // `mapToSource` -> `mapFromSource` round-trip pins both
-        // directions of the proxy after the bulk insert.
+        // Reverse index must be consistent: `mapToSource` ->
+        // `mapFromSource` round-trips for every row.
         for (int proxyRow = 0; proxyRow < BATCH_SIZE; ++proxyRow)
         {
             const QModelIndex proxyIdx = filterModel->index(proxyRow, 0);

@@ -6,6 +6,7 @@
 
 class LogModel;
 class RecordDetailWidget;
+class QCloseEvent;
 
 /// Dockable host for a single `RecordDetailWidget`. Owned by
 /// `MainWindow`; lives next to the central table view.
@@ -63,6 +64,14 @@ signals:
     /// User clicked "Open in new window". Argument is the current
     /// source row, or -1 when no row is pinned.
     void openInNewWindowRequested(int sourceRow);
+
+    /// Emitted on genuine user dismissal (X button, system close).
+    /// Distinct from `visibilityChanged(false)`, which also fires on
+    /// tab inactivation in a tabified group.
+    void closed();
+
+protected:
+    void closeEvent(QCloseEvent *event) override;
 
 #ifdef LOGAPP_BUILD_TESTING
 public:

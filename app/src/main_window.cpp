@@ -473,25 +473,7 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     mActionToggleAnchors->setCheckable(true);
     mActionToggleAnchors->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_K));
     addAction(mActionToggleAnchors);
-    connect(mActionToggleAnchors, &QAction::toggled, this, [this](bool on) {
-        if (on && !isVisible())
-        {
-            // Host not realised (early Ctrl+K). Revert so the
-            // action can't sit checked while the dock stays hidden.
-            const QSignalBlocker blocker(mActionToggleAnchors);
-            mActionToggleAnchors->setChecked(false);
-            return;
-        }
-        mAnchorsDock->setVisible(on);
-        if (on)
-        {
-            mAnchorsDock->raise();
-        }
-    });
-    connect(mAnchorsDock, &QDockWidget::visibilityChanged, this, [this](bool visible) {
-        const QSignalBlocker blocker(mActionToggleAnchors);
-        mActionToggleAnchors->setChecked(visible);
-    });
+    WireDockToggle(mAnchorsDock, mActionToggleAnchors, &AnchorsDock::closed);
     // `modelReset` clears the header's hidden flags, but
     // `Column::visible` survives. Re-apply on every reset so load /
     // re-stream / teardown all stay consistent with the saved config.
@@ -607,6 +589,8 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     connect(ui->actionExit, &QAction::triggered, this, [] { QApplication::closeAllWindows(); });
 
     connect(ui->actionCopy, &QAction::triggered, mTableView, &LogTableView::CopySelectedRowsToClipboard);
+    // Tooltip reflects `Find`'s smart toggle behaviour.
+    ui->actionFind->setToolTip(tr("Find in logs. Press again to close."));
     connect(ui->actionFind, &QAction::triggered, this, &MainWindow::Find);
 
     connect(ui->actionAddFilter, &QAction::triggered, this, [this]() { AddFilter(QUuid::createUuid().toString()); });
@@ -647,48 +631,131 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
         }
     });
 
-    mFindRecord = new FindRecordWidget(this);
+    // Find bar lives in a dockable host so the user can float / dock
+    // it and the layout round-trips through `saveState`. The hosted
+    // `FindRecordWidget` keeps the same slots, so existing wiring
+    // (see `FindRecords` below) is unchanged.
+    mFindDock = new FindDock(this);
+    addDockWidget(Qt::BottomDockWidgetArea, mFindDock);
+    mFindDock->hide();
+    mFindRecord = mFindDock->Widget();
     connect(mFindRecord, &FindRecordWidget::FindRecords, this, &MainWindow::FindRecords);
-    mLayout->addWidget(mFindRecord);
-    mFindRecord->hide();
+    connect(mFindRecord, &FindRecordWidget::MatchCountRequested, this, &MainWindow::UpdateFindMatchCount);
+
+    // Every signal that can change the match set invalidates the
+    // find bar's match cache. Hooked on the proxy only -- the
+    // source-side signals chain through and would otherwise
+    // double-fire. Column changes invalidate too because
+    // `MatchRow` honours `Column::visible`.
+    connect(mSortFilterProxyModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::OnFindCacheInvalidated);
+    connect(mSortFilterProxyModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::OnFindCacheInvalidated);
+    connect(mSortFilterProxyModel, &QAbstractItemModel::layoutChanged, this, &MainWindow::OnFindCacheInvalidated);
+    connect(mSortFilterProxyModel, &QAbstractItemModel::modelReset, this, &MainWindow::OnFindCacheInvalidated);
+    connect(mSortFilterProxyModel, &QAbstractItemModel::columnsInserted, this, &MainWindow::OnFindCacheInvalidated);
+    connect(mSortFilterProxyModel, &QAbstractItemModel::columnsRemoved, this, &MainWindow::OnFindCacheInvalidated);
+    connect(mSortFilterProxyModel, &QAbstractItemModel::columnsMoved, this, &MainWindow::OnFindCacheInvalidated);
+    // `dataChanged` covers in-place cell updates. Filter out style-only
+    // emits via `IsStyleOnlyRoleChange` so theme repaints don't wake
+    // the debounce timer for nothing.
+    connect(
+        mSortFilterProxyModel,
+        &QAbstractItemModel::dataChanged,
+        this,
+        [this](const QModelIndex & /*topLeft*/, const QModelIndex & /*bottomRight*/, const QList<int> &roles) {
+            if (LogModel::IsStyleOnlyRoleChange(roles))
+            {
+                return;
+            }
+            OnFindCacheInvalidated();
+        }
+    );
+
+    mActionToggleFind = new QAction(tr("Find Bar"), this);
+    mActionToggleFind->setObjectName(QStringLiteral("actionToggleFind"));
+    mActionToggleFind->setCheckable(true);
+    mActionToggleFind->setToolTip(tr("Show or hide the find bar. Ctrl+F focuses it; Ctrl+F again or Esc closes it."));
+    addAction(mActionToggleFind);
+    // Custom show callback: `RevealAndFocus` also moves keyboard focus
+    // into the search field so the toggle behaves like every IDE find bar.
+    WireDockToggle(
+        mFindDock.data(),
+        mActionToggleFind,
+        &FindDock::closed,
+        /*onShow=*/[this]() { mFindDock->RevealAndFocus(); }
+    );
+    // Catch up the match count after a reveal: the cache may have
+    // been invalidated while the bar was hidden / buried, and the
+    // current selection may have moved (so `i` can be stale even
+    // when the row list is still correct). The cache-hit recount is
+    // cheap; `BumpMatchCountDebounce` no-ops on an empty needle.
+    connect(mFindDock, &FindDock::revealed, this, [this]() {
+        if (mFindRecord != nullptr)
+        {
+            mFindRecord->BumpMatchCountDebounce();
+        }
+    });
+
+    // Parse-errors dock replaces the old `QMessageBox::warning`
+    // popups. Hidden until the first error of a session.
+    mParseErrorsDock = new ParseErrorsDock(this);
+    addDockWidget(Qt::BottomDockWidgetArea, mParseErrorsDock);
+    mParseErrorsDock->hide();
+
+    // Tabify the two bottom docks by default so they share the same
+    // horizontal strip; `restoreState` overrides on later launches.
+    tabifyDockWidget(mFindDock, mParseErrorsDock);
+
+    mActionToggleParseErrors = new QAction(tr("Parse Errors"), this);
+    mActionToggleParseErrors->setObjectName(QStringLiteral("actionToggleParseErrors"));
+    mActionToggleParseErrors->setCheckable(true);
+    mActionToggleParseErrors->setToolTip(tr("Show or hide the Parse Errors panel."));
+    addAction(mActionToggleParseErrors);
+    WireDockToggle(mParseErrorsDock.data(), mActionToggleParseErrors, &ParseErrorsDock::closed);
+    connect(mParseErrorsDock, &ParseErrorsDock::countChanged, this, &MainWindow::UpdateParseErrorsStatus);
+    // Auto-raise on the first batch of a session, unless the find
+    // bar holds focus -- raising would yank focus mid-search. The
+    // status-bar indicator is enough notice in that case.
+    connect(mParseErrorsDock, &ParseErrorsDock::firstBatchArrived, this, [this]() {
+        if (mParseErrorsDock == nullptr)
+        {
+            return;
+        }
+        if (FindBarHoldsFocus())
+        {
+            return;
+        }
+        if (!mParseErrorsDock->isVisible())
+        {
+            mParseErrorsDock->show();
+        }
+        mParseErrorsDock->raise();
+    });
 
     // Record-detail dock: hidden by default; the View menu's Ctrl+I
     // toggle and row double-click both surface it.
     mRecordDetailDock = new RecordDetailDock(mModel, this);
     addDockWidget(Qt::RightDockWidgetArea, mRecordDetailDock);
     mRecordDetailDock->hide();
+
+    // Tabify the two right-side docks by default; `restoreState`
+    // (later in the constructor) overrides if the user moved them.
+    tabifyDockWidget(mAnchorsDock, mRecordDetailDock);
     // `actionToggleRecordDetails` is declared in `main_window.ui` but
     // not placed in any `<addaction>`, so uic doesn't add it to any
     // widget's `actions()`. A QAction's shortcut only fires once it
     // is associated with a widget; add it here so `Ctrl+I` is live
     // from a cold launch, before the View menu is ever opened.
     addAction(ui->actionToggleRecordDetails);
-    connect(ui->actionToggleRecordDetails, &QAction::toggled, this, [this](bool on) {
-        // Gate hidden->visible on a realised host window (see
-        // `ShowRecordDetailsForProxyIndex`). Revert the check so a
-        // hidden dock can't be paired with a checked toggle.
-        if (on && !isVisible())
-        {
-            const QSignalBlocker blocker(ui->actionToggleRecordDetails);
-            ui->actionToggleRecordDetails->setChecked(false);
-            return;
-        }
-        mRecordDetailDock->setVisible(on);
-        if (on)
-        {
-            mRecordDetailDock->raise();
-        }
-    });
-    // Mirror dock visibility back onto the menu entry so the title-bar
-    // X also un-checks it. `QSignalBlocker` breaks the toggled loop.
-    connect(mRecordDetailDock, &QDockWidget::visibilityChanged, this, [this](bool visible) {
-        const QSignalBlocker blocker(ui->actionToggleRecordDetails);
-        ui->actionToggleRecordDetails->setChecked(visible);
-        if (visible)
-        {
-            UpdateRecordDetailsFromSelection();
-        }
-    });
+    // On every visibility-true edge (reveal AND tab activation)
+    // re-pull the table selection so the dock body reflects the
+    // currently-focused row.
+    WireDockToggle(
+        mRecordDetailDock,
+        ui->actionToggleRecordDetails,
+        &RecordDetailDock::closed,
+        /*onShow=*/{},
+        /*onShown=*/[this]() { UpdateRecordDetailsFromSelection(); }
+    );
     connect(mRecordDetailDock, &RecordDetailDock::openInNewWindowRequested, this, &MainWindow::OpenRecordDetailWindow);
 
     connect(mTableView, &QAbstractItemView::doubleClicked, this, &MainWindow::ShowRecordDetailsForProxyIndex);
@@ -794,6 +861,29 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     statusBar()->addPermanentWidget(mDiagnosticsButton);
     connect(mDiagnosticsButton, &QPushButton::clicked, this, &MainWindow::ShowConfigurationDiagnostics);
     connect(mModel, &LogModel::columnHealthChanged, this, &MainWindow::UpdateDiagnosticsStatus);
+
+    // Status-bar indicator for the parse-errors dock. Same UX as
+    // `mDiagnosticsButton`: hides when empty, opens the dock on click.
+    mParseErrorsStatusButton = new QPushButton(this);
+    mParseErrorsStatusButton->setObjectName(QStringLiteral("parseErrorsStatusButton"));
+    // Warning (not Critical): these are recoverable line-level
+    // failures, not application-level fatals.
+    mParseErrorsStatusButton->setIcon(QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning));
+    mParseErrorsStatusButton->setFlat(true);
+    mParseErrorsStatusButton->setCursor(Qt::PointingHandCursor);
+    mParseErrorsStatusButton->hide();
+    statusBar()->addPermanentWidget(mParseErrorsStatusButton);
+    connect(mParseErrorsStatusButton, &QPushButton::clicked, this, [this]() {
+        if (mParseErrorsDock == nullptr)
+        {
+            return;
+        }
+        if (!mParseErrorsDock->isVisible())
+        {
+            mParseErrorsDock->show();
+        }
+        mParseErrorsDock->raise();
+    });
 
     connect(mModel, &LogModel::lineCountChanged, this, [this](qsizetype count) {
         mStreamingLineCount = count;
@@ -1520,6 +1610,16 @@ void MainWindow::NewSession()
         mAnchors->ClearAll();
     }
 
+    // Parse errors are session-scoped. `ResetSessionState` re-arms
+    // the auto-raise for the new session. The per-file watermark
+    // mirrors the dock reset so the next session's first batch
+    // starts at index 0.
+    if (mParseErrorsDock != nullptr)
+    {
+        mParseErrorsDock->ResetSessionState();
+    }
+    mStreamingErrorsCut = 0;
+
     mCurrentSource.reset();
     mSessionMode = SessionMode::Idle;
     mLastTerminalSessionMode = SessionMode::Idle;
@@ -1747,6 +1847,13 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
         {
             mAnchors->ClearAll();
         }
+        // Session-scoped; `ResetSessionState` re-arms the auto-raise.
+        // Watermark resets in lockstep with the dock + model error vector.
+        if (mParseErrorsDock != nullptr)
+        {
+            mParseErrorsDock->ResetSessionState();
+        }
+        mStreamingErrorsCut = 0;
         mCurrentSource.reset();
         mSessionMode = SessionMode::Idle;
         mLastTerminalSessionMode = SessionMode::Idle;
@@ -1793,6 +1900,36 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
 
     // Clear the `Source unavailable` latch.
     mSourceWaiting = false;
+
+    // Per-file batch under a header that names the file (or stream)
+    // that just finished. Fires *before* the chaining check so the
+    // intermediate file's errors don't get folded into the last
+    // file's batch in a multi-file static open. `mStreamingFileName`
+    // is still set to the just-finished source here -- the chaining
+    // path below will overwrite it for the next file.
+    //
+    // Open-failure entries in `mPendingOpenErrors` are intentionally
+    // *not* folded in here: they aren't tied to any one streamed file
+    // and would be misleading under a file-named header. They're
+    // surfaced under their own batch at the bottom of this function.
+    if (result == StreamingResult::Success)
+    {
+        const auto &allErrors = mModel->StreamingErrors();
+        // `std::min` guards against a model reset that landed between
+        // our last slice and now (would leave the watermark past end).
+        const size_t cut = std::min(mStreamingErrorsCut, allErrors.size());
+        if (cut < allErrors.size())
+        {
+            const std::vector<std::string> thisFileErrors(
+                allErrors.begin() + static_cast<std::ptrdiff_t>(cut), allErrors.end()
+            );
+            const QString title = mStreamingFileName.isEmpty()
+                                      ? tr("Error Parsing Logs")
+                                      : tr("Error Parsing Logs \u2014 %1").arg(mStreamingFileName);
+            ShowParseErrors(title, thisFileErrors);
+        }
+        mStreamingErrorsCut = allErrors.size();
+    }
 
     // Multi-file static open: Success advances the queue. Keep
     // `mSessionMode == Static` across `StreamNextPendingFile` so
@@ -1844,22 +1981,17 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
     // settled. Drives the header warning glyph and the status-bar
     // mismatch summary via `columnHealthChanged`.
     mModel->RefreshColumnHealth();
-    // Only Success produces a post-parse error summary.
-    if (result == StreamingResult::Success)
+    // Per-file parse-error batches were already surfaced at the top
+    // of this function (one per file in the chain). What remains is
+    // any open-failure residue from the multi-file queue -- those
+    // entries are tied to files that never streamed, so they get
+    // their own dedicated batch instead of being mislabeled under
+    // a streamed-file header.
+    if (result == StreamingResult::Success && !mPendingOpenErrors.empty())
     {
-        std::vector<std::string> errors = mModel->StreamingErrors();
-        errors.insert(
-            errors.end(),
-            std::make_move_iterator(mPendingOpenErrors.begin()),
-            std::make_move_iterator(mPendingOpenErrors.end())
-        );
-        mPendingOpenErrors.clear();
-        ShowParseErrors("Error Parsing Logs", errors);
+        ShowParseErrors(tr("Error Opening File"), mPendingOpenErrors);
     }
-    else
-    {
-        mPendingOpenErrors.clear();
-    }
+    mPendingOpenErrors.clear();
     mStreamingFileName.clear();
     // Keep `mCurrentSource` on Success / Cancelled (rows are
     // still present, descriptor still describes them); drop it
@@ -1987,7 +2119,7 @@ void MainWindow::StreamNextPendingFile()
     // otherwise the `streamingFinished` summary folds them in.
     if (!IsSessionActive() && !mPendingOpenErrors.empty())
     {
-        ShowParseErrors("Error Opening File", mPendingOpenErrors);
+        ShowParseErrors(tr("Error Opening File"), mPendingOpenErrors);
         mPendingOpenErrors.clear();
     }
 }
@@ -2024,7 +2156,7 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     catch (const std::exception &e)
     {
         ShowParseErrors(
-            "Error Opening Log Stream",
+            tr("Error Opening Log Stream"),
             {std::string("Failed to open '") + file.toStdString() + "' for streaming: " + e.what()}
         );
         return;
@@ -2065,6 +2197,13 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     {
         mAnchors->ClearAll();
     }
+    // Session-scoped; `ResetSessionState` re-arms the auto-raise.
+    // Watermark resets in lockstep with the dock + model error vector.
+    if (mParseErrorsDock != nullptr)
+    {
+        mParseErrorsDock->ResetSessionState();
+    }
+    mStreamingErrorsCut = 0;
     // Live-tail is transient and not auto-saved; leaving the prior
     // static session's uuid pinned would let closeEvent's
     // `RemoveOpenWindowUuid` drop that session from the multi-
@@ -2154,7 +2293,7 @@ void MainWindow::OpenNetworkStream()
     catch (const std::exception &e)
     {
         ShowParseErrors(
-            "Error Opening Network Stream",
+            tr("Error Opening Network Stream"),
             {std::string("Failed to start network listener on ") + cfg.bindAddress.toStdString() + ":" +
              std::to_string(cfg.port) + ": " + e.what()}
         );
@@ -2184,6 +2323,13 @@ void MainWindow::OpenNetworkStream()
     {
         mAnchors->ClearAll();
     }
+    // Session-scoped; `ResetSessionState` re-arms the auto-raise.
+    // Watermark resets in lockstep with the dock + model error vector.
+    if (mParseErrorsDock != nullptr)
+    {
+        mParseErrorsDock->ResetSessionState();
+    }
+    mStreamingErrorsCut = 0;
     DetachAutoSaveUuid();
 
     mStreamingFileName = QString::fromStdString(displayName);
@@ -2755,20 +2901,17 @@ void MainWindow::ShowParseErrors(const QString &title, const std::vector<std::st
     {
         return;
     }
-
-    constexpr size_t MAX_ERRORS_SHOWN = 20;
-    QString message;
-    const size_t shown = std::min(errors.size(), MAX_ERRORS_SHOWN);
-    for (size_t i = 0; i < shown; ++i)
+    if (mParseErrorsDock == nullptr)
     {
-        message += QString::fromStdString(errors[i]) + QLatin1Char('\n');
+        // Should never hit in production (the dock is built in the
+        // constructor before any open path runs). Surface so a test
+        // fixture poking `ShowParseErrors` on a stripped-down window
+        // doesn't lose the diagnostic silently.
+        qWarning() << "ShowParseErrors: parse-errors dock is unavailable; dropping" << errors.size() << "error(s) under"
+                   << title;
+        return;
     }
-    if (errors.size() > MAX_ERRORS_SHOWN)
-    {
-        message += QString("... and %1 more error(s).").arg(errors.size() - MAX_ERRORS_SHOWN);
-    }
-
-    QMessageBox::warning(this, title, message);
+    mParseErrorsDock->AppendErrors(title, errors);
 }
 
 void MainWindow::ShowDroppedFiltersDialog(int droppedCount, const QString &message)
@@ -3195,6 +3338,7 @@ namespace
     }
     return sourceIndex.row();
 }
+
 } // namespace
 
 void MainWindow::ShowRecordDetailsForProxyIndex(const QModelIndex &proxyIndex)
@@ -3329,6 +3473,175 @@ void MainWindow::UpdateDiagnosticsStatus()
     mDiagnosticsButton->show();
 }
 
+void MainWindow::UpdateParseErrorsStatus(int count, int droppedCount)
+{
+    if (mParseErrorsStatusButton == nullptr)
+    {
+        return;
+    }
+    if (count <= 0 && droppedCount <= 0)
+    {
+        mParseErrorsStatusButton->hide();
+        mParseErrorsStatusButton->setText(QString());
+        mParseErrorsStatusButton->setToolTip(QString());
+        return;
+    }
+    // `%Ln` -> locale-grouped digits matching the streaming-status
+    // text (no width jitter as counts grow).
+    const int displayedTotal = count + droppedCount;
+    if (droppedCount > 0)
+    {
+        // Surface the dropped-count on the label itself; otherwise
+        // the button says "12,345 parse errors" but the dock reads
+        // "11,345 errors; 1,000 earlier dropped" -- looks like a bug.
+        const QLocale locale = QLocale::system();
+        mParseErrorsStatusButton->setText(tr("%1 parse error(s) (+%2 dropped)")
+                                              .arg(locale.toString(static_cast<qlonglong>(count)))
+                                              .arg(locale.toString(static_cast<qlonglong>(droppedCount))));
+        // Two independent counts -> can't use a single `%Ln` plural.
+        mParseErrorsStatusButton->setToolTip(
+            tr("%1 parse error(s) in this session "
+               "(%2 visible, %3 earlier dropped). Click to open the Parse Errors panel.")
+                .arg(locale.toString(static_cast<qlonglong>(displayedTotal)))
+                .arg(locale.toString(static_cast<qlonglong>(count)))
+                .arg(locale.toString(static_cast<qlonglong>(droppedCount)))
+        );
+    }
+    else
+    {
+        mParseErrorsStatusButton->setText(tr("%Ln parse error(s)", nullptr, displayedTotal));
+        mParseErrorsStatusButton->setToolTip(
+            tr("%Ln parse error(s) in this session. Click to open the Parse Errors panel.", nullptr, count)
+        );
+    }
+    mParseErrorsStatusButton->show();
+}
+
+void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool regularExpressions)
+{
+    if (mFindRecord == nullptr || mSortFilterProxyModel == nullptr)
+    {
+        return;
+    }
+    // Skip the full-table scan when the bar isn't visible; a debounce
+    // timer armed before the dismissal can fire after the fact, and
+    // refreshing an off-screen indicator is pointless.
+    if (!IsFindBarVisible())
+    {
+        return;
+    }
+    if (text.isEmpty())
+    {
+        // Only reachable via a programmatic call (the widget
+        // suppresses the signal on empty text). Keep the label
+        // clear in case the cache was previously populated.
+        InvalidateFindMatchCache();
+        mFindRecord->SetMatchInfo(0, 0);
+        return;
+    }
+
+    // Rebuild only when the needle / flags actually changed. A
+    // Next / Previous click reports the same needle, so the second
+    // call just resolves the new `i` via binary search below.
+    const bool cacheHit = mFindMatchCache.has_value() && mFindMatchCache->needle == text &&
+                          mFindMatchCache->wildcards == wildcards &&
+                          mFindMatchCache->regularExpressions == regularExpressions;
+    if (!cacheHit)
+    {
+        const Qt::MatchFlags flags = LogFilterModel::ComposeFindFlags(wildcards, regularExpressions);
+        const QModelIndex start = mSortFilterProxyModel->index(0, 0);
+        if (!start.isValid())
+        {
+            InvalidateFindMatchCache();
+            mFindRecord->SetMatchInfo(0, 0);
+            return;
+        }
+        const QVariant value = QVariant::fromValue(text);
+        // Cap + 1: the extra hit lets us distinguish "exactly at the
+        // cap" from "ran off the end". Keeps the GUI bounded on huge
+        // tables with a common needle.
+        const QModelIndexList matches =
+            mSortFilterProxyModel->MatchRow(start, Qt::DisplayRole, value, MAX_FIND_MATCH_COUNT + 1, flags, true, 0);
+        const bool overflowed = matches.size() > MAX_FIND_MATCH_COUNT;
+        // `MatchRow` is contracted to return one entry per row in
+        // ascending order. Sort + unique defensively so a future
+        // contract drift can't silently corrupt the binary search;
+        // asserts catch the regression at the source in debug builds.
+        std::vector<int> rows;
+        rows.reserve(static_cast<size_t>(matches.size()));
+        for (const QModelIndex &m : matches)
+        {
+            rows.push_back(m.row());
+        }
+        // Sort check must precede dedup check: `adjacent_find` only
+        // spots adjacent dupes, so unsorted input with non-adjacent
+        // duplicates would slip through. `qWarning` mirrors the
+        // assert because release builds compile it out.
+        const bool sortedAsExpected = std::ranges::is_sorted(rows);
+        Q_ASSERT(sortedAsExpected);
+        if (!sortedAsExpected)
+        {
+            qWarning() << "MainWindow::UpdateFindMatchCount: MatchRow returned unsorted rows; "
+                          "sorting defensively. This is a contract violation worth investigating.";
+            std::ranges::sort(rows);
+        }
+        const bool dedupedAsExpected = std::ranges::adjacent_find(rows) == rows.end();
+        Q_ASSERT(dedupedAsExpected);
+        if (!dedupedAsExpected)
+        {
+            qWarning() << "MainWindow::UpdateFindMatchCount: MatchRow returned duplicate rows; "
+                          "deduplicating defensively. This is a contract violation worth investigating.";
+        }
+        rows.erase(std::ranges::unique(rows).begin(), rows.end());
+        // Trim only when there's surplus -- the dedup above can drop
+        // entries below the cap, and a blind `resize(cap)` would then
+        // grow the vector with zeros that look like matches at row 0.
+        if (rows.size() > static_cast<size_t>(MAX_FIND_MATCH_COUNT))
+        {
+            rows.resize(static_cast<size_t>(MAX_FIND_MATCH_COUNT));
+        }
+        mFindMatchCache = FindMatchCache{
+            .needle = text,
+            .wildcards = wildcards,
+            .regularExpressions = regularExpressions,
+            .overflowed = overflowed,
+            .sortedRows = std::move(rows),
+        };
+    }
+
+    const int total = static_cast<int>(mFindMatchCache->sortedRows.size());
+    int currentOneBased = 0;
+    if (total > 0 && mTableView != nullptr)
+    {
+        const QModelIndex currentIdx = mTableView->currentIndex();
+        if (currentIdx.isValid())
+        {
+            const auto begin = mFindMatchCache->sortedRows.begin();
+            const auto end = mFindMatchCache->sortedRows.end();
+            const auto it = std::lower_bound(begin, end, currentIdx.row());
+            if (it != end && *it == currentIdx.row())
+            {
+                currentOneBased = static_cast<int>(it - begin) + 1;
+            }
+        }
+    }
+    mFindRecord->SetMatchInfo(currentOneBased, total, mFindMatchCache->overflowed);
+}
+
+void MainWindow::InvalidateFindMatchCache()
+{
+    mFindMatchCache.reset();
+}
+
+void MainWindow::OnFindCacheInvalidated()
+{
+    InvalidateFindMatchCache();
+    if (mFindRecord != nullptr && IsFindBarVisible())
+    {
+        mFindRecord->BumpMatchCountDebounce();
+    }
+}
+
 bool MainWindow::DoLoadConfiguration(const QString &path)
 {
     // Parse into a temporary first so a parse failure cannot
@@ -3366,6 +3679,13 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         const SessionSwitchScope switchGuard(*this);
 
         mModel->Reset();
+        // Config load is a session boundary; re-arm the auto-raise
+        // and reset the per-file slice watermark.
+        if (mParseErrorsDock != nullptr)
+        {
+            mParseErrorsDock->ResetSessionState();
+        }
+        mStreamingErrorsCut = 0;
         mModel->ConfigurationManager().SetConfiguration(std::move(parsed));
         // `SetConfiguration` does not emit a model signal; the
         // reset re-initialises the header section count and the
@@ -3490,9 +3810,21 @@ void MainWindow::RebuildFiltersFromConfiguration()
 
 void MainWindow::Find()
 {
-    mFindRecord->show();
-    mFindRecord->setFocus();
-    mFindRecord->SetEditFocus();
+    if (mFindDock == nullptr)
+    {
+        return;
+    }
+    // Smart toggle (VS Code / Chrome convention):
+    //   - hidden / tab-buried        -> reveal + focus
+    //   - visible, focus outside     -> focus the field (no close)
+    //   - visible, focus inside      -> close (Ctrl+F is also the
+    //                                   dismiss verb -- no chasing Esc)
+    if (FindBarHoldsFocus())
+    {
+        mFindDock->close();
+        return;
+    }
+    mFindDock->RevealAndFocus();
 }
 
 void MainWindow::SelectSourceRow(int sourceRow)
@@ -3648,15 +3980,11 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
     {
         searchStartIndex = mTableView->currentIndex();
     }
-    Qt::MatchFlags flags = Qt::MatchContains | Qt::MatchWrap | Qt::MatchRecursive;
-    if (wildcards)
-    {
-        flags |= Qt::MatchWildcard;
-    }
-    if (regularExpressions)
-    {
-        flags |= Qt::MatchRegularExpression;
-    }
+    // Match-type flags are alternatives, not additions; OR-ing
+    // contains with regex / wildcard silently demotes the search.
+    // `ComposeFindFlags` is the single source of truth shared with
+    // `UpdateFindMatchCount`.
+    const Qt::MatchFlags flags = LogFilterModel::ComposeFindFlags(wildcards, regularExpressions);
     int skipFirstN = 0;
     if (mTableView->selectionModel()->isRowSelected(searchStartIndex.row()))
     {
@@ -3676,6 +4004,14 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
         mTableView->scrollTo(matches[0]);
         mTableView->selectionModel()->select(matches[0], QItemSelectionModel::Select | QItemSelectionModel::Rows);
         mTableView->selectionModel()->setCurrentIndex(matches[0], QItemSelectionModel::NoUpdate);
+    }
+
+    // Refresh the "i of N" indicator now that the current index moved.
+    // Cache-hit resolves the new `i` via binary search; gated on
+    // visibility so a programmatic call from tests pays nothing.
+    if (IsFindBarVisible())
+    {
+        UpdateFindMatchCount(text, wildcards, regularExpressions);
     }
 }
 
@@ -4220,15 +4556,30 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
 
 void MainWindow::OnThemeChanged()
 {
+    // Clear the "last applied" tracker so `ApplyTableStyleSheet` re-runs
+    // the polish cascade. `QStyleSheetStyle` caches palette-derived
+    // colours at polish time, and our "skip unchanged writes" guard
+    // would otherwise leave the cache frozen on the old theme.
+    mLastBodyStyleSheet = QString{};
+    mLastHeaderStyleSheet = QString{};
     ApplyTableStyleSheet();
     ApplyThemedWindowIcon();
 
-    // Repaint just the viewport — Qt re-queries `data()` for visible cells.
-    // Avoids the proxy-chain walk that a full `dataChanged` would force.
-    // (`ApplyTableStyleSheet` above already re-resolved the monospace rule.)
+    // Re-query brushes for cells whose `data(BackgroundRole)` returns
+    // an explicit colour (Error / Warn / anchor); the QSS polish above
+    // only covers palette-default cells.
+    if (mModel != nullptr)
+    {
+        mModel->RefreshAllRowStyles();
+    }
     if (mTableView != nullptr)
     {
+        // Headers don't go through `data()`, so the emit above doesn't
+        // reach them. Repaint also flushes any backing-store fragments
+        // left by a modal dialog (e.g. Preferences) that was overlapping.
         mTableView->viewport()->update();
+        mTableView->horizontalHeader()->update();
+        mTableView->verticalHeader()->update();
     }
 
     // These widgets cache palette-derived state (e.g. brushes
@@ -5227,6 +5578,11 @@ void MainWindow::SetColumnVisible(int logicalIndex, bool visible)
     {
         mTableView->sortByColumn(-1, Qt::AscendingOrder);
     }
+    // `MatchRow` honours `Column::visible`, but visibility flips
+    // don't emit any of the signals `OnFindCacheInvalidated` listens
+    // to. Invalidate explicitly so the indicator can't strand a
+    // count that still includes hits from hidden columns.
+    OnFindCacheInvalidated();
 }
 
 void MainWindow::ApplyColumnVisibility()
@@ -5242,6 +5598,10 @@ void MainWindow::ApplyColumnVisibility()
     {
         header->setSectionHidden(static_cast<int>(i), !columns[i].visible);
     }
+    // Visibility may have changed without a signal -- this is also
+    // called from header-recovery and configuration-load paths. Drop
+    // the find cache for the same reason as `SetColumnVisible`.
+    OnFindCacheInvalidated();
 }
 
 void MainWindow::RebuildViewMenu()
@@ -5268,6 +5628,17 @@ void MainWindow::RebuildViewMenu()
     if (mActionToggleAnchors != nullptr)
     {
         viewMenu->addAction(mActionToggleAnchors);
+    }
+
+    // Find + parse-errors dock toggles, re-added on every rebuild
+    // (same pattern as `mActionToggleAnchors`).
+    if (mActionToggleFind != nullptr)
+    {
+        viewMenu->addAction(mActionToggleFind);
+    }
+    if (mActionToggleParseErrors != nullptr)
+    {
+        viewMenu->addAction(mActionToggleParseErrors);
     }
 
     const auto &columns = mModel->Configuration().columns;

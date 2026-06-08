@@ -30,6 +30,11 @@ public:
     /// data. Shared between the status-bar summary and the dialog.
     [[nodiscard]] static int MismatchedColumnCount(const LogModel &model);
 
+protected:
+    /// Re-render so the warning-row tint follows Light <-> Dark
+    /// switches while the dialog is open.
+    void changeEvent(QEvent *event) override;
+
 signals:
     /// Emitted when the user double-clicks a row. `MainWindow` opens
     /// the column editor in response.

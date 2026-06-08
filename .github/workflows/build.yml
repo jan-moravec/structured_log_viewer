@@ -178,8 +178,11 @@ jobs:
         # fail_ci_if_error: a broken upload (e.g. app uninstalled) fails the leg
         # loudly instead of silently producing zero-coverage runs.
         # SHA-pinned so a tag re-cut can't change what we run.
+        # v7.0.0: ships the new `codecovsecops` GPG key after Codecov's
+        # `codecovsecurity` keybase migration left the wrapper unable to verify
+        # the uploader binary's signature on `v6.0.1` and earlier.
         if: matrix.mode == 'coverage'
-        uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354 # v6.0.1
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           files: ./coverage.lcov
           fail_ci_if_error: true

@@ -9,12 +9,16 @@
 #include <QBrush>
 #include <QColor>
 #include <QDialogButtonBox>
+#include <QEvent>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QPalette>
 #include <QPushButton>
 #include <QStringList>
 #include <QStyle>
+#include <QStyleHints>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QVBoxLayout>
@@ -25,6 +29,19 @@ namespace
 {
 constexpr int DIALOG_INITIAL_WIDTH = 720;
 constexpr int DIALOG_INITIAL_HEIGHT = 480;
+/// Lightness fallback for "is this dark?" when `colorScheme()` returns Unknown.
+constexpr int BASE_LUMA_DARK_THRESHOLD = 128;
+/// Warning-tint alpha: low enough to let alternate-row banding through.
+constexpr int WARNING_TINT_ALPHA = 64;
+/// HSV saturation for the warning tint; dark themes need a punchier red.
+constexpr int WARNING_HSV_SATURATION_DARK = 200;
+constexpr int WARNING_HSV_SATURATION_LIGHT = 110;
+/// Floor on surface value so a near-black base doesn't render an invisible red.
+constexpr int WARNING_HSV_VALUE_FLOOR = 40;
+/// Warning-text colour biases per theme: nudge red up on dark, clamp down on light.
+constexpr int WARNING_FG_RED_BIAS_DARK = 40;
+constexpr int WARNING_FG_GREEN_BLUE_DARK = 200;
+constexpr int WARNING_FG_RED_FLOOR_LIGHT = 100;
 constexpr int COL_HEADER = 0;
 constexpr int COL_TYPE = 1;
 constexpr int COL_AUTODETECT = 2;
@@ -231,6 +248,37 @@ void ConfigurationDiagnosticsDialog::Refresh()
     mTable->clearContents();
     mTable->setRowCount(static_cast<int>(columns.size()));
 
+    // Resolve warning brushes once from the active palette so user
+    // themes get sane highlights without a separate code path.
+    // `colorScheme()` (Qt 6.5+) is the "is this dark?" probe; the
+    // luminance heuristic covers Qt builds that return Unknown.
+    Qt::ColorScheme scheme = Qt::ColorScheme::Unknown;
+    if (const QStyleHints *hints = QGuiApplication::styleHints(); hints != nullptr)
+    {
+        scheme = hints->colorScheme();
+    }
+    const bool darkMode =
+        (scheme == Qt::ColorScheme::Dark) ||
+        (scheme == Qt::ColorScheme::Unknown && palette().color(QPalette::Base).lightness() < BASE_LUMA_DARK_THRESHOLD);
+    // Tint anchored to the surface (instead of a fixed colour) so the
+    // highlight sits inside the dialog rather than punching through it.
+    const QColor surface = palette().color(QPalette::Base);
+    QColor warningBg = QColor::fromHsv(
+        /*h=*/0,
+        darkMode ? WARNING_HSV_SATURATION_DARK : WARNING_HSV_SATURATION_LIGHT,
+        std::max(surface.value(), WARNING_HSV_VALUE_FLOOR)
+    );
+    warningBg.setAlpha(WARNING_TINT_ALPHA);
+    const QColor textColor = palette().color(QPalette::Text);
+    const QColor warningFg = darkMode ? QColor(
+                                            std::min(textColor.red() + WARNING_FG_RED_BIAS_DARK, 255),
+                                            WARNING_FG_GREEN_BLUE_DARK,
+                                            WARNING_FG_GREEN_BLUE_DARK
+                                        )
+                                      : QColor(std::max(textColor.red() / 2, WARNING_FG_RED_FLOOR_LIGHT), 0, 0);
+    const QBrush highlightBg(warningBg);
+    const QBrush highlightFg(warningFg);
+
     int mismatchedColumns = 0;
     for (int i = 0; std::cmp_less(i, columns.size()); ++i)
     {
@@ -270,12 +318,12 @@ void ConfigurationDiagnosticsDialog::Refresh()
 
         if (mismatched > 0)
         {
-            const QBrush highlight(QColor(255, 235, 235));
             for (int c = 0; c < mTable->columnCount(); ++c)
             {
                 if (auto *item = mTable->item(i, c); item != nullptr)
                 {
-                    item->setBackground(highlight);
+                    item->setBackground(highlightBg);
+                    item->setForeground(highlightFg);
                 }
             }
         }
@@ -317,4 +365,22 @@ int ConfigurationDiagnosticsDialog::MismatchedColumnCount(const LogModel &model)
         }
     }
     return mismatched;
+}
+
+void ConfigurationDiagnosticsDialog::changeEvent(QEvent *event)
+{
+    if (event != nullptr)
+    {
+        const QEvent::Type type = event->type();
+        if (type == QEvent::PaletteChange || type == QEvent::StyleChange || type == QEvent::ApplicationPaletteChange ||
+            type == QEvent::ThemeChange)
+        {
+            // Re-render so the warning-row brushes follow the new palette.
+            if (mModel != nullptr)
+            {
+                Refresh();
+            }
+        }
+    }
+    QDialog::changeEvent(event);
 }

@@ -49,6 +49,16 @@ public:
     /// Sentinel `hits` value meaning "return every match".
     static constexpr int UNLIMITED_HITS = -1;
 
+    /// Build `Qt::MatchFlags` for an incremental find query.
+    ///
+    /// Single source of truth for find call sites: the match-type
+    /// values in `Qt::MatchFlag` are alternatives (not bit-mask
+    /// modifiers), so OR-ing `MatchContains` with `MatchWildcard` /
+    /// `MatchRegularExpression` silently demotes to substring matching.
+    /// Always sets `MatchWrap | MatchRecursive`; picks exactly one of
+    /// regex / wildcard / contains based on the UI toggles.
+    [[nodiscard]] static Qt::MatchFlags ComposeFindFlags(bool wildcards, bool regularExpressions);
+
     /// Find proxy-coord rows whose cell matches @p value under @p role.
     /// Returns up to @p hits matches (all when `UNLIMITED_HITS`).
     QList<QModelIndex> MatchRow(

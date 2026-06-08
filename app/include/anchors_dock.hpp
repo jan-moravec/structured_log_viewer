@@ -7,6 +7,7 @@
 
 class LogModel;
 class ThemeControl;
+class QCloseEvent;
 class QListWidget;
 class QListWidgetItem;
 class QPushButton;
@@ -40,6 +41,14 @@ signals:
     /// User asked to navigate to source-model row @p sourceRow.
     /// Argument is -1 when the anchor key has no live row.
     void jumpToAnchorRequested(int sourceRow);
+
+    /// Emitted on genuine user dismissal (X button, system close).
+    /// Distinct from `visibilityChanged(false)`, which also fires on
+    /// tab inactivation in a tabified group.
+    void closed();
+
+protected:
+    void closeEvent(QCloseEvent *event) override;
 
 #ifdef LOGAPP_BUILD_TESTING
 public:

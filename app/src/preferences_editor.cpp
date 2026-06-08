@@ -7,6 +7,7 @@
 #include <loglib/theme.hpp>
 
 #include <QApplication>
+#include <QCloseEvent>
 #include <QDebug>
 #include <QFile>
 #include <QGroupBox>
@@ -254,6 +255,8 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
     auto *cancelButton = new QPushButton("Cancel", this);
 
     connect(okButton, &QPushButton::clicked, this, [this]() {
+        // Bypass `closeEvent`'s revert: Ok already persisted state.
+        mClosingViaButton = true;
         // Theme selection is already live; Ok just persists it.
         if (mTheme != nullptr)
         {
@@ -294,9 +297,10 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
         {
             mTheme->SetActiveSelection(mTheme->PersistedSelection());
         }
-        // Revert the spinbox-edited values to the persisted ones; no
-        // emit needed because the on-disk values are unchanged.
+        // Revert spinbox-edited values to persisted; on-disk unchanged.
         StreamingControl::LoadConfiguration();
+        // Bypass `closeEvent`'s revert: Cancel already reverted.
+        mClosingViaButton = true;
         close();
     });
 
@@ -401,4 +405,24 @@ void PreferencesEditor::ShowThemeStatus(const QString &message)
         return;
     }
     mThemeStatusClearTimer->start(THEME_STATUS_CLEAR_MS);
+}
+
+void PreferencesEditor::closeEvent(QCloseEvent *event)
+{
+    if (mClosingViaButton)
+    {
+        // Ok / Cancel already took care of persisted state. Reset
+        // the flag so a re-shown dialog falls back to genuine close.
+        mClosingViaButton = false;
+        QWidget::closeEvent(event);
+        return;
+    }
+    // Genuine close (X / Alt+F4 / programmatic `close()`): treat
+    // as Cancel so a live-previewed theme doesn't leak past the dialog.
+    if (mTheme != nullptr)
+    {
+        mTheme->SetActiveSelection(mTheme->PersistedSelection());
+    }
+    StreamingControl::LoadConfiguration();
+    QWidget::closeEvent(event);
 }

@@ -7,6 +7,7 @@
 #include <QTimer>
 #include <QWidget>
 
+class QCloseEvent;
 class ThemeControl;
 
 class PreferencesEditor : public QWidget
@@ -22,6 +23,13 @@ public:
     explicit PreferencesEditor(ThemeControl *theme = nullptr, QWidget *parent = nullptr);
 
     void UpdateFields();
+
+protected:
+    /// Treat genuine close (X / Esc / OS shortcut) as Cancel so a
+    /// live-previewed theme doesn't leak past the dialog. Ok / Cancel
+    /// slots set `mClosingViaButton` to bypass this path -- they've
+    /// already taken care of state.
+    void closeEvent(QCloseEvent *event) override;
 
 signals:
     /// Fired after Ok commits the new retention cap to `QSettings`.
@@ -64,4 +72,8 @@ private:
     /// `nullptr` is tolerated for tests; the theme group skips
     /// its theme work in that case.
     ThemeControl *mTheme;
+
+    /// Set by Ok / Cancel before they call `close()` so `closeEvent`
+    /// skips the revert path. Genuine close (X / Alt+F4) leaves it false.
+    bool mClosingViaButton = false;
 };

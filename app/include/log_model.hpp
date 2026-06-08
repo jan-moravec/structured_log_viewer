@@ -246,6 +246,26 @@ public:
         int columnIndex
     ) const noexcept;
 
+    /// Emit `dataChanged` for the theme-derived style roles
+    /// (Background, Foreground, Font) across the whole table.
+    /// `MainWindow::OnThemeChanged` calls this on Light <-> Dark
+    /// flips; `viewport()->update()` alone doesn't reliably
+    /// invalidate the view's per-item style cache.
+    void RefreshAllRowStyles();
+
+    /// True iff @p roles is non-empty AND every entry is purely
+    /// decorative (Background / Foreground / Font / Decoration).
+    /// Listeners that only care about value-affecting changes
+    /// (find cache, record-detail pane) use this to filter out
+    /// theme-refresh emits from `RefreshAllRowStyles`.
+    ///
+    /// Empty `roles` is Qt's "I don't know what changed" sentinel;
+    /// this helper reports `false` so callers conservatively refresh.
+    ///
+    /// Emitter contract: any `dataChanged` listing only these roles
+    /// MUST NOT mutate value-bearing roles for the emitted range.
+    [[nodiscard]] static bool IsStyleOnlyRoleChange(const QList<int> &roles) noexcept;
+
 signals:
     /// Cumulative error count, emitted when a batch carries errors.
     void errorCountChanged(qsizetype count);

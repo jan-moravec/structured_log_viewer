@@ -1,0 +1,14 @@
+{"id":1,"msg":"first valid record"}
+this line is not JSON at all
+{"id":2,"msg":"second valid record"}
+{"id":3,"msg":"unterminated string
+[1,2,3]
+"a bare JSON string"
+42
+true
+null
+{"id":4,"msg":"third valid record"}
+{trailing,comma:bad}
+{"id":5,"msg":"fourth valid record"}
+{"id":6,"msg":"missing colon" "extra":"x"}
+{"id":7,"msg":"fifth valid record"}

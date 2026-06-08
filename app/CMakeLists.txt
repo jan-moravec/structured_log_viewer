@@ -27,6 +27,10 @@ set(PROJECT_SOURCES
     include/log_table_view.hpp
     src/find_record_widget.cpp
     include/find_record_widget.hpp
+    src/find_dock.cpp
+    include/find_dock.hpp
+    src/parse_errors_dock.cpp
+    include/parse_errors_dock.hpp
     src/log_filter_model.cpp
     include/log_filter_model.hpp
     src/row_order_proxy_model.cpp

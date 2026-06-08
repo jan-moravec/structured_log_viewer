@@ -6,6 +6,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QBrush>
+#include <QCloseEvent>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QListWidget>
@@ -303,6 +304,15 @@ bool AnchorsDock::IsVisibleForRefresh() const noexcept
         return false;
     }
     return mPerceivedVisible;
+}
+
+void AnchorsDock::closeEvent(QCloseEvent *event)
+{
+    QDockWidget::closeEvent(event);
+    if (event->isAccepted())
+    {
+        emit closed();
+    }
 }
 
 int AnchorsDock::SourceRowForItem(const QListWidgetItem *item) const
