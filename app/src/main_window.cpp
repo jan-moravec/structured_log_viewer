@@ -2947,7 +2947,7 @@ void MainWindow::BuildMainToolbar()
             {
                 action->setProperty("svgIconPathChecked", checkedResourcePath);
             }
-            mThemedActions.append({QPointer<QAction>(action), QPointer<QWidget>(anchor)});
+            mThemedActions.append({.action = QPointer<QAction>(action), .anchor = QPointer<QWidget>(anchor)});
         };
 
     tag(ui->actionOpen, mMainToolbar, QStringLiteral(":/icons/folder-open.svg"));
@@ -3173,7 +3173,7 @@ void MainWindow::RefreshThemedIcons()
         // whose anchor widget has been torn down still re-tints
         // (with the window's palette / DPR) instead of silently
         // going stale.
-        QWidget *anchor = entry.anchor.data();
+        const QWidget *anchor = entry.anchor.data();
         action->setIcon(buildIcon(path, onPath, anchor != nullptr ? anchor : this));
     }
 }

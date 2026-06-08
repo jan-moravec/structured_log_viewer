@@ -10798,7 +10798,7 @@ private slots:
         };
 
         QStringList actual;
-        for (QAction *act : toolbar->actions())
+        for (const QAction *act : toolbar->actions())
         {
             if (act == nullptr)
             {
@@ -10838,14 +10838,14 @@ private slots:
         // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
         QCOMPARE(button->popupMode(), QToolButton::MenuButtonPopup);
 
-        QAction *defaultAction = button->defaultAction();
+        const QAction *defaultAction = button->defaultAction();
         QVERIFY2(defaultAction != nullptr, "split button must have a default action");
         QCOMPARE(defaultAction->objectName(), QStringLiteral("actionOpenLogStream"));
 
-        QMenu *menu = button->menu();
+        const QMenu *menu = button->menu();
         QVERIFY2(menu != nullptr, "split button must have a popup menu");
         QStringList menuNames;
-        for (QAction *act : menu->actions())
+        for (const QAction *act : menu->actions())
         {
             menuNames.append(act != nullptr ? act->objectName() : QStringLiteral("<null>"));
         }
@@ -10973,11 +10973,11 @@ private slots:
         // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
         QCOMPARE(button->popupMode(), QToolButton::MenuButtonPopup);
 
-        QAction *defaultAction = button->defaultAction();
+        const QAction *defaultAction = button->defaultAction();
         QVERIFY2(defaultAction != nullptr, "split button must have a default action");
         QCOMPARE(defaultAction->objectName(), QStringLiteral("actionAddFilter"));
 
-        QMenu *menu = button->menu();
+        const QMenu *menu = button->menu();
         QVERIFY2(menu != nullptr, "split button must have a popup menu");
         QCOMPARE(menu->objectName(), QStringLiteral("addFilterSplitMenu"));
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
@@ -11093,11 +11093,11 @@ private slots:
         // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
         QCOMPARE(button->popupMode(), QToolButton::MenuButtonPopup);
 
-        QAction *defaultAction = button->defaultAction();
+        const QAction *defaultAction = button->defaultAction();
         QVERIFY2(defaultAction != nullptr, "split button must have a default action");
         QCOMPARE(defaultAction->objectName(), QStringLiteral("actionClearAllFilters"));
 
-        QMenu *menu = button->menu();
+        const QMenu *menu = button->menu();
         QVERIFY2(menu != nullptr, "split button must have a popup menu");
         QCOMPARE(menu->objectName(), QStringLiteral("clearFiltersSplitMenu"));
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
@@ -11215,7 +11215,7 @@ private slots:
         // adjacent (column-row primary sort), so the `msg` entry
         // is either the first or the last entry, never sandwiched
         // between the level entries.
-        const int msgIdx = entryIds.indexOf(msgFilter);
+        const qsizetype msgIdx = entryIds.indexOf(msgFilter);
         QVERIFY2(
             msgIdx == 0 || msgIdx == entries.size() - 1,
             "msg-column filter must not split the level-column group (column grouping)"
@@ -11527,7 +11527,7 @@ private slots:
         auto *recentMenu = mWindow->findChild<QMenu *>(QStringLiteral("menuRecentSessions"));
         QVERIFY2(recentMenu != nullptr, "File menu must expose menuRecentSessions");
         // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
-        QAction *menuAction = recentMenu->menuAction();
+        const QAction *menuAction = recentMenu->menuAction();
         QVERIFY2(menuAction != nullptr, "menuRecentSessions must have a menuAction");
         QVERIFY2(!menuAction->icon().isNull(), "menuRecentSessions menuAction must carry a themed icon");
         // The path stays as a property so `RefreshThemedIcons` can
