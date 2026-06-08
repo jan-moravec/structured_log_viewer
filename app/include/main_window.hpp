@@ -387,6 +387,16 @@ protected:
     bool event(QEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
 
+    /// Re-tint the primary + stream toolbar icons on a palette /
+    /// style / DPR change so a Light <-> Dark flip (or a monitor
+    /// move between different scale factors) keeps the Lucide
+    /// glyphs aligned with the new `QPalette::WindowText` and
+    /// rasterised at the new device-pixel ratio. The companion
+    /// hook in `OnThemeChanged` covers application-driven theme
+    /// switches; this hook catches OS-level changes that bypass
+    /// `ThemeControl`. Same idiom as `FindRecordWidget::changeEvent`.
+    void changeEvent(QEvent *event) override;
+
 private slots:
     /// Discard the current session and return to an empty view.
     /// Bound to `actionNewSession` (Ctrl+N).
@@ -786,6 +796,27 @@ private:
     /// names the shortcut, so it's safe to re-run.
     void FinaliseActionMetadata();
 
+    /// Build the persistent primary `QToolBar` and `insertToolBar`
+    /// it ahead of `mStreamToolbar` so the two bars share the top
+    /// dock area as one strip (main first, stream second). Tags
+    /// every populated action with a `svgIconPath` property so
+    /// `RefreshToolbarIcons` can re-tint without a per-action
+    /// switch. Called once at the end of the constructor, after
+    /// `mActionToggleParseErrors` exists so all referenced actions
+    /// are wired but before `RestoreWindowChrome` reads the
+    /// persisted dock state.
+    void BuildMainToolbar();
+
+    /// Re-render every toolbar action's icon at the current palette
+    /// `WindowText` colour and device-pixel ratio. Iterates both
+    /// toolbars and reads the `svgIconPath` property each action
+    /// carries; actions without the property are skipped, so it's
+    /// safe to run before `BuildMainToolbar` (no-op when
+    /// `mMainToolbar` is still null) and idempotent under
+    /// duplicate triggers (theme switch + DPR change firing within
+    /// the same event loop pass).
+    void RefreshToolbarIcons();
+
     /// Re-evaluate the stream toolbar's visibility against the current
     /// session mode.
     void UpdateStreamToolbarVisibility();
@@ -973,6 +1004,18 @@ private:
     /// Toolbar holding Pause/Follow tail/Stop; visible only during a
     /// live-tail session.
     QToolBar *mStreamToolbar = nullptr;
+
+    /// Persistent primary toolbar (Open / Filter / View toggles /
+    /// Preferences). Inserted ahead of `mStreamToolbar` in the top
+    /// dock area, so the combined strip reads "Main | Stream"
+    /// left-to-right when both are visible. `QPointer` because
+    /// `RefreshToolbarIcons` can be invoked during shutdown after
+    /// Qt has begun tearing down child widgets but before the
+    /// `MainWindow` destructor finishes; a dangling raw pointer
+    /// would crash on the next palette change. `objectName` is
+    /// `mainToolbar` so `restoreState` round-trips its dock area
+    /// and visibility.
+    QPointer<QToolBar> mMainToolbar;
 
     /// Ctrl+/ action that opens the shortcuts reference dialog.
     QAction *mActionShowShortcuts = nullptr;

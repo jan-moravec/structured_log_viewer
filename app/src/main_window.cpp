@@ -5,6 +5,7 @@
 #include "columns_manager_dialog.hpp"
 #include "configuration_diagnostics_dialog.hpp"
 #include "filter_editor.hpp"
+#include "icon_loader.hpp"
 #include "log_warning.hpp"
 #include "network_stream_dialog.hpp"
 #include "qt_streaming_log_sink.hpp"
@@ -56,13 +57,17 @@
 #include <QSignalBlocker>
 #include <QStandardItemModel>
 #include <QStandardPaths>
+#include <QSizePolicy>
 #include <QStatusBar>
 #include <QStringList>
 #include <QStyle>
 #include <QTableView>
 #include <QTimer>
+#include <QToolBar>
+#include <QToolButton>
 #include <QUuid>
 #include <QVBoxLayout>
+#include <QVariant>
 
 #include <algorithm>
 #include <exception>
@@ -1111,6 +1116,13 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
 
     // Run after every action is wired so they can all be decorated in one pass.
     FinaliseActionMetadata();
+
+    // Persistent primary toolbar. Built after every referenced
+    // action exists -- both .ui actions (`ui->action*`) and the
+    // programmatic dock toggles (`mActionToggle*`) -- and before
+    // `RestoreWindowChrome` so the persisted state can place the
+    // toolbar in its saved dock area.
+    BuildMainToolbar();
 
     // Run after every dock/toolbar has its `objectName` so `restoreState`
     // can resolve them. No-op on first launch.
@@ -2857,6 +2869,160 @@ void MainWindow::StopLiveTailTicker()
     }
     // Leave `mLiveTailTimer` armed so the final status line can still report
     // the session length. It's restarted on the next live-tail open.
+}
+
+void MainWindow::BuildMainToolbar()
+{
+    // Two adjacent toolbars on the same row: the new primary
+    // toolbar hosts the persistent actions, and `mStreamToolbar`
+    // continues to surface only during live-tail. `insertToolBar`
+    // lands the new bar *before* the stream bar in the top dock
+    // area, so the combined strip reads "Main | Stream"
+    // left-to-right when both are visible.
+    mMainToolbar = new QToolBar(tr("Main"), this);
+    mMainToolbar->setObjectName(QStringLiteral("mainToolbar"));
+    mMainToolbar->setMovable(true);
+    mMainToolbar->setAllowedAreas(Qt::AllToolBarAreas);
+    // Icon-only keeps the bar compact; `FinaliseActionMetadata`
+    // has already populated each action's tooltip with the
+    // shortcut, so hover-help still names what every button does.
+    mMainToolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    // 20px is `PM_LargeIconSize` on Windows / macOS; pinning the
+    // edge length keeps the bar visually consistent even when a
+    // theme swaps the active `QStyle` (which can shift the metric).
+    constexpr int TOOLBAR_ICON_PX = 20;
+    mMainToolbar->setIconSize(QSize(TOOLBAR_ICON_PX, TOOLBAR_ICON_PX));
+
+    insertToolBar(mStreamToolbar, mMainToolbar);
+
+    // Stash the SVG path on each action so `RefreshToolbarIcons`
+    // can re-tint on a palette / DPR change without hard-coding a
+    // per-action switch. Actions without the property are skipped
+    // by the refresh loop, so future actions that ship their own
+    // QIcon don't accidentally get clobbered.
+    const auto tag = [](QAction *action, const char *resourcePath) {
+        if (action == nullptr)
+        {
+            return;
+        }
+        action->setProperty("svgIconPath", QString::fromLatin1(resourcePath));
+    };
+
+    tag(ui->actionOpen, ":/icons/folder-open.svg");
+    tag(ui->actionOpenLogStream, ":/icons/square-play.svg");
+    tag(ui->actionOpenNetworkStream, ":/icons/radio-tower.svg");
+    tag(ui->actionAddFilter, ":/icons/funnel-plus.svg");
+    tag(ui->actionClearAllFilters, ":/icons/funnel-x.svg");
+    tag(mActionToggleFind, ":/icons/search.svg");
+    tag(ui->actionToggleRecordDetails, ":/icons/panel-right-open.svg");
+    tag(mActionToggleAnchors, ":/icons/bookmark.svg");
+    tag(ui->actionPreferences, ":/icons/settings-2.svg");
+    // Stream toolbar gets the same treatment so the combined strip
+    // looks uniform when both bars are visible.
+    tag(ui->actionPauseStream, ":/icons/pause.svg");
+    tag(ui->actionFollowTail, ":/icons/arrow-down-to-line.svg");
+    tag(ui->actionStopStream, ":/icons/square.svg");
+
+    mMainToolbar->addAction(ui->actionOpen);
+
+    // Split button: primary click opens the log-file stream; the
+    // dropdown surfaces the network variant. `MenuButtonPopup`
+    // (not `InstantPopup`) keeps the more-common log path one
+    // click away while making the network entry discoverable.
+    // `setDefaultAction` would normally also wire the button's
+    // icon -- so the explicit `setIcon` from `RefreshToolbarIcons`
+    // happens *after* the menu / default-action plumbing is in
+    // place and re-installs the themed icon.
+    auto *openStreamButton = new QToolButton(mMainToolbar);
+    openStreamButton->setObjectName(QStringLiteral("openStreamSplitButton"));
+    openStreamButton->setDefaultAction(ui->actionOpenLogStream);
+    openStreamButton->setPopupMode(QToolButton::MenuButtonPopup);
+    auto *streamMenu = new QMenu(openStreamButton);
+    streamMenu->setObjectName(QStringLiteral("openStreamSplitMenu"));
+    streamMenu->addAction(ui->actionOpenLogStream);
+    streamMenu->addAction(ui->actionOpenNetworkStream);
+    openStreamButton->setMenu(streamMenu);
+    mMainToolbar->addWidget(openStreamButton);
+
+    mMainToolbar->addSeparator();
+    mMainToolbar->addAction(ui->actionAddFilter);
+    mMainToolbar->addAction(ui->actionClearAllFilters);
+    mMainToolbar->addSeparator();
+    mMainToolbar->addAction(mActionToggleFind);
+    mMainToolbar->addAction(ui->actionToggleRecordDetails);
+    mMainToolbar->addAction(mActionToggleAnchors);
+
+    // Expanding spacer pushes Preferences to the far right edge,
+    // matching the "tools / settings on the right" convention used
+    // by VS Code, Sublime, JetBrains, etc.
+    auto *spacer = new QWidget(mMainToolbar);
+    spacer->setObjectName(QStringLiteral("mainToolbarSpacer"));
+    spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    mMainToolbar->addWidget(spacer);
+    mMainToolbar->addAction(ui->actionPreferences);
+
+    RefreshToolbarIcons();
+}
+
+void MainWindow::RefreshToolbarIcons()
+{
+    // Constructor-time `changeEvent` (an initial palette
+    // notification can land before `BuildMainToolbar` runs) and
+    // shutdown-time refreshes (Qt has already cleared the
+    // `QPointer`) both reach here harmlessly via the null guard.
+    if (mMainToolbar == nullptr)
+    {
+        return;
+    }
+    const auto tint = [](QToolBar *bar) {
+        if (bar == nullptr)
+        {
+            return;
+        }
+        for (QAction *action : bar->actions())
+        {
+            if (action == nullptr || action->isSeparator())
+            {
+                continue;
+            }
+            const QVariant prop = action->property("svgIconPath");
+            if (!prop.isValid())
+            {
+                continue;
+            }
+            const QString path = prop.toString();
+            if (path.isEmpty())
+            {
+                continue;
+            }
+            action->setIcon(icon_loader::MakeThemedIcon(path, bar));
+        }
+    };
+    tint(mMainToolbar.data());
+    tint(mStreamToolbar);
+}
+
+void MainWindow::changeEvent(QEvent *event)
+{
+    QMainWindow::changeEvent(event);
+    if (event == nullptr)
+    {
+        return;
+    }
+    // Light/dark theme flip changes `WindowText` -> re-mint every
+    // tinted icon. `StyleChange` covers the parallel style swap a
+    // theme can apply via `qApp->setStyle`. `DevicePixelRatioChange`
+    // covers a drag between monitors of different DPI -- the icon's
+    // backing pixmap is allocated at the current DPR and must be
+    // re-rasterised at the new one. `OnThemeChanged` covers the
+    // application-driven switch; this hook catches OS-level events
+    // that reach the window without going through `ThemeControl`.
+    const QEvent::Type type = event->type();
+    if (type == QEvent::PaletteChange || type == QEvent::StyleChange || type == QEvent::ApplicationPaletteChange ||
+        type == QEvent::DevicePixelRatioChange)
+    {
+        RefreshToolbarIcons();
+    }
 }
 
 void MainWindow::UpdateStreamToolbarVisibility()
@@ -4707,6 +4873,13 @@ void MainWindow::OnThemeChanged()
     {
         mColumnsManagerDialog->RefreshPalette();
     }
+
+    // Re-tint the Lucide icons so a Light <-> Dark flip keeps them
+    // visible. `changeEvent` also fires for OS-driven palette
+    // changes, but `themeChanged` is the in-app entry point and
+    // can land without an event-loop palette change (e.g. a Force
+    // mode toggle that pins the same OS scheme).
+    RefreshToolbarIcons();
 }
 
 void MainWindow::ApplyThemedWindowIcon()
