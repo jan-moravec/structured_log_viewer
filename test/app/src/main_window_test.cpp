@@ -10695,6 +10695,305 @@ private slots:
         QCOMPARE(toolbar->allowedAreas(), Qt::ToolBarAreas(Qt::AllToolBarAreas));
     }
 
+    // Item 1: the persistent primary toolbar exists, is movable, and
+    // sits in the top dock area. `objectName` is the contract that
+    // `restoreState()` keys on; if it ever drifts we lose persisted
+    // dock geometry across restarts.
+    void TestMainToolbarExistsMovableAndOnTop()
+    {
+        auto *toolbar = mWindow->findChild<QToolBar *>(QStringLiteral("mainToolbar"));
+        QVERIFY2(toolbar != nullptr, "MainWindow must own the primary toolbar");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QVERIFY2(toolbar->isMovable(), "primary toolbar must be user-movable");
+        QCOMPARE(toolbar->allowedAreas(), Qt::ToolBarAreas(Qt::AllToolBarAreas));
+        QCOMPARE(mWindow->toolBarArea(toolbar), Qt::TopToolBarArea);
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Item 1: `insertToolBar(mStreamToolbar, mMainToolbar)` puts the
+    // primary toolbar ahead of the stream toolbar in the top dock
+    // area, so the combined strip reads "Main | Stream" left to
+    // right when streaming. Regressed shape would be "Stream | Main"
+    // which looks broken when a live-tail session starts.
+    void TestMainToolbarPrecedesStreamToolbar()
+    {
+        auto *mainBar = mWindow->findChild<QToolBar *>(QStringLiteral("mainToolbar"));
+        auto *streamBar = mWindow->findChild<QToolBar *>(QStringLiteral("streamToolbar"));
+        QVERIFY2(mainBar != nullptr, "MainWindow must own the primary toolbar");
+        QVERIFY2(streamBar != nullptr, "MainWindow must own the stream toolbar");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QCOMPARE(mWindow->toolBarArea(mainBar), Qt::TopToolBarArea);
+        QCOMPARE(mWindow->toolBarArea(streamBar), Qt::TopToolBarArea);
+
+        // Walk top-level toolbars in the window's child order; the
+        // primary toolbar must appear before the stream toolbar.
+        // `findChildren<QToolBar*>` returns children in the order
+        // they were `addChild`-ed (which is the `insertToolBar` /
+        // `addToolBar` order). The pre-existing `streamToolbar`
+        // child was added first, but `insertToolBar` re-parents the
+        // new bar ahead of it in the dock area, which is what
+        // `QMainWindow` queries to lay them out.
+        const QList<QToolBar *> bars =
+            mWindow->findChildren<QToolBar *>(QString{}, Qt::FindDirectChildrenOnly);
+        const int mainIdx = static_cast<int>(bars.indexOf(mainBar));
+        const int streamIdx = static_cast<int>(bars.indexOf(streamBar));
+        QVERIFY2(mainIdx >= 0, "primary toolbar must be a direct child of MainWindow");
+        QVERIFY2(streamIdx >= 0, "stream toolbar must be a direct child of MainWindow");
+
+        // X coordinates (in window space) are the most reliable
+        // visual-order witness because both bars share the top
+        // dock area row. The stream toolbar starts hidden, so we
+        // force it visible for the geometry probe and restore
+        // afterwards. `adjustSize` flushes the pending layout pass.
+        const bool streamWasVisible = streamBar->isVisible();
+        streamBar->setVisible(true);
+        mWindow->adjustSize();
+        QCoreApplication::processEvents();
+        QVERIFY2(
+            mainBar->x() < streamBar->x(),
+            qPrintable(QStringLiteral("main toolbar (x=%1) must precede stream toolbar (x=%2)")
+                           .arg(mainBar->x())
+                           .arg(streamBar->x()))
+        );
+        streamBar->setVisible(streamWasVisible);
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Item 1: the primary toolbar exposes the agreed action set in
+    // the agreed order. Pinned against drift -- any future tweak
+    // (re-order, remove, add) has to update this list deliberately
+    // rather than slipping into the diff.
+    void TestMainToolbarActionsInOrder()
+    {
+        auto *toolbar = mWindow->findChild<QToolBar *>(QStringLiteral("mainToolbar"));
+        QVERIFY2(toolbar != nullptr, "MainWindow must own the primary toolbar");
+
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        // Sentinel values: `__sep` for a `QAction::isSeparator()`
+        // boundary, `__widget` for an `addWidget`-inserted custom
+        // control (split button, spacer). Comparing in two stages
+        // keeps the assertion message readable.
+        const QStringList expected = {
+            QStringLiteral("actionOpen"),
+            QStringLiteral("__widget"),  // openStreamSplitButton
+            QStringLiteral("__sep"),
+            QStringLiteral("actionAddFilter"),
+            QStringLiteral("actionClearAllFilters"),
+            QStringLiteral("__sep"),
+            QStringLiteral("actionToggleFind"),
+            QStringLiteral("actionToggleRecordDetails"),
+            QStringLiteral("actionToggleAnchors"),
+            QStringLiteral("__widget"),  // expanding spacer
+            QStringLiteral("actionPreferences"),
+        };
+
+        QStringList actual;
+        for (QAction *act : toolbar->actions())
+        {
+            if (act == nullptr)
+            {
+                actual.append(QStringLiteral("<null>"));
+                continue;
+            }
+            if (act->isSeparator())
+            {
+                actual.append(QStringLiteral("__sep"));
+                continue;
+            }
+            const QString name = act->objectName();
+            if (name.isEmpty())
+            {
+                // Toolbar `addWidget` registers an internal action whose
+                // `objectName` is empty; treat it as a widget marker.
+                actual.append(QStringLiteral("__widget"));
+                continue;
+            }
+            actual.append(name);
+        }
+
+        QCOMPARE(actual, expected);
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Item 1: the "Open Stream" split button surfaces the log-stream
+    // action on its primary face and the network-stream action in
+    // its dropdown. Validates both the default-action wiring and the
+    // popup-menu population so a `setDefaultAction` regression (no
+    // icon on the button) or a missing menu entry would be caught
+    // separately.
+    void TestOpenStreamSplitButtonPopup()
+    {
+        auto *button = mWindow->findChild<QToolButton *>(QStringLiteral("openStreamSplitButton"));
+        QVERIFY2(button != nullptr, "primary toolbar must host the open-stream split button");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QCOMPARE(button->popupMode(), QToolButton::MenuButtonPopup);
+
+        QAction *defaultAction = button->defaultAction();
+        QVERIFY2(defaultAction != nullptr, "split button must have a default action");
+        QCOMPARE(defaultAction->objectName(), QStringLiteral("actionOpenLogStream"));
+
+        QMenu *menu = button->menu();
+        QVERIFY2(menu != nullptr, "split button must have a popup menu");
+        QStringList menuNames;
+        for (QAction *act : menu->actions())
+        {
+            menuNames.append(act != nullptr ? act->objectName() : QStringLiteral("<null>"));
+        }
+        QCOMPARE(
+            menuNames,
+            (QStringList{QStringLiteral("actionOpenLogStream"), QStringLiteral("actionOpenNetworkStream")})
+        );
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Item 1: `RebuildViewMenu` re-adds the primary toolbar's
+    // `toggleViewAction` on every menu open. Without this the user
+    // who hid the toolbar would have no discoverable way to bring
+    // it back (no Ctrl shortcut, no other UI affordance).
+    void TestMainToolbarToggleAppearsInViewMenu()
+    {
+        auto *viewMenu = mWindow->findChild<QMenu *>(QStringLiteral("menuView"));
+        QVERIFY2(viewMenu != nullptr, "View menu must exist");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        emit viewMenu->aboutToShow();
+
+        QAction *toggle = nullptr;
+        for (QAction *act : viewMenu->actions())
+        {
+            if (act != nullptr && act->objectName() == QStringLiteral("actionToggleMainToolbar"))
+            {
+                toggle = act;
+                break;
+            }
+        }
+        QVERIFY2(toggle != nullptr, "View menu must contain the primary-toolbar toggle");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QVERIFY2(toggle->isCheckable(), "primary-toolbar toggle must be checkable");
+
+        auto *toolbar = mWindow->findChild<QToolBar *>(QStringLiteral("mainToolbar"));
+        QVERIFY2(toolbar != nullptr, "MainWindow must own the primary toolbar");
+
+        // `QToolBar::toggleViewAction()`'s internal slot is gated
+        // on `q->isHidden()` (Qt source) -- the toolbar must be
+        // genuinely realised on screen for the toggle to flip
+        // anything, otherwise the slot short-circuits. Realise the
+        // window the same way the find-bar / record-detail tests
+        // do, then re-fetch the toggle (it caches the action on
+        // first call, and the cached `isChecked` reflects the
+        // pre-show visibility otherwise).
+        mWindow->show();
+        QVERIFY(QTest::qWaitForWindowExposed(mWindow, 5000));
+        QCoreApplication::processEvents();
+
+        emit viewMenu->aboutToShow();
+        toggle = nullptr;
+        for (QAction *act : viewMenu->actions())
+        {
+            if (act != nullptr && act->objectName() == QStringLiteral("actionToggleMainToolbar"))
+            {
+                toggle = act;
+                break;
+            }
+        }
+        QVERIFY2(toggle != nullptr, "View menu must still contain the primary-toolbar toggle after show");
+
+        const bool startHidden = toolbar->isHidden();
+        QVERIFY2(!startHidden, "primary toolbar must start visible after the window is exposed");
+        QVERIFY2(toggle->isChecked(), "toggle must be checked while the toolbar is visible");
+
+        toggle->trigger();
+        QCoreApplication::processEvents();
+        QVERIFY2(toolbar->isHidden(), "triggering an active toggle must hide the toolbar");
+        QVERIFY2(!toggle->isChecked(), "toggle checked state must follow the toolbar visibility");
+
+        toggle->trigger();
+        QCoreApplication::processEvents();
+        QVERIFY2(!toolbar->isHidden(), "re-triggering must bring the toolbar back");
+        QVERIFY2(toggle->isChecked(), "toggle checked state must follow the toolbar back to visible");
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Item 1: toolbar icons are re-rendered via
+    // `icon_loader::MakeThemedIcon` whenever the palette changes,
+    // so a Light <-> Dark theme flip keeps the glyphs visible on
+    // the new background. Without the `changeEvent` /
+    // `OnThemeChanged` hooks the SVGs would stay tinted in the
+    // old `WindowText` colour and disappear after one toggle.
+    void TestMainToolbarIconsTrackPalette()
+    {
+        auto *toolbar = mWindow->findChild<QToolBar *>(QStringLiteral("mainToolbar"));
+        QVERIFY2(toolbar != nullptr, "MainWindow must own the primary toolbar");
+
+        // `actionOpen` is the first non-separator action on the
+        // toolbar and carries the `svgIconPath` property, so it is
+        // guaranteed to be re-tinted by `RefreshToolbarIcons`.
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        auto *openAction = mWindow->findChild<QAction *>(QStringLiteral("actionOpen"));
+        QVERIFY2(openAction != nullptr, "actionOpen must exist");
+
+        auto opaquePixelCount = [](const QIcon &icon, QRgb expected) -> int {
+            const QSize size{20, 20};
+            const QImage img = icon.pixmap(size).toImage().convertToFormat(QImage::Format_ARGB32);
+            int matching = 0;
+            for (int y = 0; y < img.height(); ++y)
+            {
+                for (int x = 0; x < img.width(); ++x)
+                {
+                    const QRgb px = img.pixel(x, y);
+                    if (qAlpha(px) < 128)
+                    {
+                        continue;
+                    }
+                    constexpr int CHANNEL_TOLERANCE = 32;
+                    if (std::abs(qRed(px) - qRed(expected)) <= CHANNEL_TOLERANCE &&
+                        std::abs(qGreen(px) - qGreen(expected)) <= CHANNEL_TOLERANCE &&
+                        std::abs(qBlue(px) - qBlue(expected)) <= CHANNEL_TOLERANCE)
+                    {
+                        ++matching;
+                    }
+                }
+            }
+            return matching;
+        };
+
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        // Vivid red palette: every opaque pixel of the tinted icon
+        // must be red (within AA tolerance). A baked icon would
+        // stay neutral grey regardless of the palette and fail.
+        // `setPalette` is applied to the toolbar directly so the
+        // assertion does not depend on Qt's palette-propagation
+        // timing through `QMainWindow -> QToolBar`; `processEvents`
+        // then flushes the resulting `PaletteChange` which
+        // `MainWindow::changeEvent` translates into a refresh.
+        QPalette redPalette = toolbar->palette();
+        redPalette.setColor(QPalette::Active, QPalette::WindowText, QColor(255, 0, 0));
+        redPalette.setColor(QPalette::Inactive, QPalette::WindowText, QColor(255, 0, 0));
+        toolbar->setPalette(redPalette);
+        // Mirror the palette onto the window too, so `MainWindow::
+        // changeEvent` (which is what wires `RefreshToolbarIcons`)
+        // actually fires -- a palette set only on the toolbar
+        // would propagate `PaletteChange` to its child widgets,
+        // not back up to the window.
+        mWindow->setPalette(redPalette);
+        QCoreApplication::processEvents();
+        const int redPixels = opaquePixelCount(openAction->icon(), qRgb(255, 0, 0));
+        QVERIFY2(redPixels > 0, "primary toolbar icons must paint in the palette's WindowText colour");
+
+        // Flip to vivid blue: the icon must re-mint -- the real
+        // regression target is the very first theme toggle, which
+        // would leave the cached red pixmap in place if
+        // `RefreshToolbarIcons` were not wired into `changeEvent`.
+        QPalette bluePalette = toolbar->palette();
+        bluePalette.setColor(QPalette::Active, QPalette::WindowText, QColor(0, 0, 255));
+        bluePalette.setColor(QPalette::Inactive, QPalette::WindowText, QColor(0, 0, 255));
+        toolbar->setPalette(bluePalette);
+        mWindow->setPalette(bluePalette);
+        QCoreApplication::processEvents();
+        const int bluePixels = opaquePixelCount(openAction->icon(), qRgb(0, 0, 255));
+        QVERIFY2(bluePixels > 0, "primary toolbar icons must repaint after a palette flip");
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
     // Regression: the find-bar arrow icons used `SP_ArrowUp` /
     // `SP_ArrowDown`, whose baked-black pixmaps disappeared on dark
     // themes. The icons must follow `QPalette::WindowText`.
