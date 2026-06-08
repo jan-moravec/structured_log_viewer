@@ -10733,8 +10733,7 @@ private slots:
         // child was added first, but `insertToolBar` re-parents the
         // new bar ahead of it in the dock area, which is what
         // `QMainWindow` queries to lay them out.
-        const QList<QToolBar *> bars =
-            mWindow->findChildren<QToolBar *>(QString{}, Qt::FindDirectChildrenOnly);
+        const QList<QToolBar *> bars = mWindow->findChildren<QToolBar *>(QString{}, Qt::FindDirectChildrenOnly);
         const int mainIdx = static_cast<int>(bars.indexOf(mainBar));
         const int streamIdx = static_cast<int>(bars.indexOf(streamBar));
         QVERIFY2(mainIdx >= 0, "primary toolbar must be a direct child of MainWindow");
@@ -10786,7 +10785,7 @@ private slots:
         // keeps the assertion message readable.
         const QStringList expected = {
             QStringLiteral("actionOpen"),
-            QStringLiteral("__widget"),  // openStreamSplitButton
+            QStringLiteral("__widget"), // openStreamSplitButton
             QStringLiteral("__sep"),
             QStringLiteral("actionAddFilter"),
             QStringLiteral("actionClearAllFilters"),
@@ -10794,7 +10793,7 @@ private slots:
             QStringLiteral("actionToggleFind"),
             QStringLiteral("actionToggleRecordDetails"),
             QStringLiteral("actionToggleAnchors"),
-            QStringLiteral("__widget"),  // expanding spacer
+            QStringLiteral("__widget"), // expanding spacer
             QStringLiteral("actionPreferences"),
         };
 
@@ -10851,8 +10850,7 @@ private slots:
             menuNames.append(act != nullptr ? act->objectName() : QStringLiteral("<null>"));
         }
         QCOMPARE(
-            menuNames,
-            (QStringList{QStringLiteral("actionOpenLogStream"), QStringLiteral("actionOpenNetworkStream")})
+            menuNames, (QStringList{QStringLiteral("actionOpenLogStream"), QStringLiteral("actionOpenNetworkStream")})
         );
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
     }
@@ -11141,8 +11139,7 @@ private slots:
         QVERIFY2(!offImage.isNull(), "Off-state pixmap must be available");
         QVERIFY2(!onImage.isNull(), "On-state pixmap must be available");
         QVERIFY2(
-            offImage != onImage,
-            "actionPauseStream's checked-state icon must differ from its unchecked-state icon"
+            offImage != onImage, "actionPauseStream's checked-state icon must differ from its unchecked-state icon"
         );
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
     }

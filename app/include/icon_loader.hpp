@@ -74,13 +74,15 @@ struct IconRenderParams
 /// entirely). Substituting an opaque sentinel keeps the alpha
 /// channel populated so the `SourceIn` mask below has something
 /// to colour.
-[[nodiscard]] QPixmap
-MakeThemedPixmap(const QString &resourcePath, const QColor &tintColor, int sizePx, qreal devicePixelRatio);
+[[nodiscard]] QPixmap MakeThemedPixmap(
+    const QString &resourcePath, const QColor &tintColor, int sizePx, qreal devicePixelRatio
+);
 
 /// Convenience wrapper around `MakeThemedPixmap` for the common
 /// single-state case.
-[[nodiscard]] QIcon
-MakeThemedIcon(const QString &resourcePath, const QColor &tintColor, int sizePx, qreal devicePixelRatio);
+[[nodiscard]] QIcon MakeThemedIcon(
+    const QString &resourcePath, const QColor &tintColor, int sizePx, qreal devicePixelRatio
+);
 
 /// Convenience overload: resolves the tint / size / DPR via
 /// `ResolveAnchorIconParams(anchor)`, then forwards to the

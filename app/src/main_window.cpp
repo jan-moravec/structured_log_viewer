@@ -55,9 +55,9 @@
 #include <QScopeGuard>
 #include <QSettings>
 #include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QStandardItemModel>
 #include <QStandardPaths>
-#include <QSizePolicy>
 #include <QStatusBar>
 #include <QStringList>
 #include <QStyle>
