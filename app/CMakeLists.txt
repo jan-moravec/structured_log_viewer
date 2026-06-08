@@ -29,6 +29,8 @@ set(PROJECT_SOURCES
     include/find_record_widget.hpp
     src/find_dock.cpp
     include/find_dock.hpp
+    src/icon_loader.cpp
+    include/icon_loader.hpp
     src/parse_errors_dock.cpp
     include/parse_errors_dock.hpp
     src/log_filter_model.cpp
