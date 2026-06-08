@@ -10787,8 +10787,8 @@ private slots:
             QStringLiteral("actionOpen"),
             QStringLiteral("__widget"), // openStreamSplitButton
             QStringLiteral("__sep"),
-            QStringLiteral("actionAddFilter"),
-            QStringLiteral("actionClearAllFilters"),
+            QStringLiteral("__widget"), // addFilterSplitButton
+            QStringLiteral("__widget"), // clearFiltersSplitButton
             QStringLiteral("__sep"),
             QStringLiteral("actionToggleFind"),
             QStringLiteral("actionToggleRecordDetails"),
@@ -10952,6 +10952,344 @@ private slots:
         QVERIFY2(
             opaquePixelCount(openLog->icon(), qRgb(0, 200, 0)) > 0,
             "actionOpenLogStream icon must repaint in the palette WindowText colour"
+        );
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Shape contract for the Add-filter split button: it must be
+    // a `MenuButtonPopup` `QToolButton` whose default action is
+    // the bare `actionAddFilter` (so a click on the face still
+    // opens the generic editor, preserving the pre-split UX) and
+    // whose dropdown menu carries the `addFilterSplitMenu`
+    // objectName the per-column tests find by.
+    //
+    // Pinned so a future cleanup that drops the dropdown and
+    // reverts to a bare `addAction(actionAddFilter)` would trip
+    // here, not silently regress the per-column shortcut.
+    void TestAddFilterSplitButtonShape()
+    {
+        auto *button = mWindow->findChild<QToolButton *>(QStringLiteral("addFilterSplitButton"));
+        QVERIFY2(button != nullptr, "primary toolbar must host the add-filter split button");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QCOMPARE(button->popupMode(), QToolButton::MenuButtonPopup);
+
+        QAction *defaultAction = button->defaultAction();
+        QVERIFY2(defaultAction != nullptr, "split button must have a default action");
+        QCOMPARE(defaultAction->objectName(), QStringLiteral("actionAddFilter"));
+
+        QMenu *menu = button->menu();
+        QVERIFY2(menu != nullptr, "split button must have a popup menu");
+        QCOMPARE(menu->objectName(), QStringLiteral("addFilterSplitMenu"));
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // The Add-filter dropdown lists every *visible* column under
+    // `Add filter on "<col>"…`. Verifies both the population
+    // (one entry per visible column, in column order) and the
+    // hidden-column filter (toggling a column hidden must drop
+    // its entry on the next open, mirroring the header
+    // right-click which refuses to expose hidden columns).
+    void TestAddFilterDropdownListsVisibleColumns()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "fixture must produce columns");
+
+        auto *menu = mWindow->findChild<QMenu *>(QStringLiteral("addFilterSplitMenu"));
+        QVERIFY2(menu != nullptr, "add-filter dropdown must exist");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        // `aboutToShow` is the production rebuild trigger; firing
+        // it directly is what every other rebuild-on-show test
+        // does (`TestMainToolbarToggleAppearsInViewMenu`,
+        // `RebuildViewMenu` tests).
+        emit menu->aboutToShow();
+
+        QStringList entryTexts;
+        for (const QAction *act : menu->actions())
+        {
+            entryTexts.append(act != nullptr ? act->text() : QStringLiteral("<null>"));
+        }
+        QVERIFY2(!entryTexts.isEmpty(), "dropdown must list at least one column after streaming a fixture");
+        for (const QString &text : entryTexts)
+        {
+            QVERIFY2(
+                text.startsWith(QStringLiteral("Add filter on")),
+                "every dropdown entry must follow the `Add filter on \"<col>\"...` shape"
+            );
+        }
+
+        // Hide the `level` column and re-open: its entry must
+        // drop. Cross-checks the visible-only filter.
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "fixture must expose `msg` column");
+        mWindow->SetColumnVisible(msgCol, false);
+        emit menu->aboutToShow();
+
+        for (const QAction *act : menu->actions())
+        {
+            QVERIFY2(
+                !act->text().contains(QStringLiteral("\"msg\"")),
+                "hidden column must not surface in the dropdown after hide"
+            );
+        }
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Triggering an `Add filter on "<col>"…` dropdown entry opens
+    // a `FilterEditor` with the row combobox pre-pointed at the
+    // clicked column -- same contract the header right-click
+    // `TestHeaderContextMenuAddFilterOpensEditorWithColumnPreselected`
+    // pins, replicated for the toolbar entry point so a refactor
+    // that changes the `AddFilter` signature can't silently break
+    // the new shortcut without tripping a test.
+    void TestAddFilterDropdownTriggerPreselectsColumn()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "fixture must produce columns");
+
+        auto *menu = mWindow->findChild<QMenu *>(QStringLiteral("addFilterSplitMenu"));
+        QVERIFY2(menu != nullptr, "add-filter dropdown must exist");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        emit menu->aboutToShow();
+
+        QAction *categoryEntry = nullptr;
+        for (QAction *act : menu->actions())
+        {
+            if (act != nullptr && act->text().contains(QStringLiteral("\"category\"")))
+            {
+                categoryEntry = act;
+                break;
+            }
+        }
+        QVERIFY2(categoryEntry != nullptr, "dropdown must offer an entry for the `category` column");
+
+        categoryEntry->trigger();
+        QCoreApplication::processEvents();
+
+        FilterEditor *editor = nullptr;
+        for (QWidget *widget : QApplication::topLevelWidgets())
+        {
+            if (auto *e = qobject_cast<FilterEditor *>(widget))
+            {
+                editor = e;
+                break;
+            }
+        }
+        QVERIFY2(editor != nullptr, "triggering a dropdown entry must spawn a FilterEditor");
+        QCOMPARE(editor->GetRowToFilter(), levelCol);
+        editor->close();
+        editor->deleteLater();
+        QCoreApplication::processEvents();
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Shape contract for the Clear-filters split button, mirrors
+    // `TestAddFilterSplitButtonShape`: pinned so a revert to the
+    // bare `addAction(actionClearAllFilters)` would trip here.
+    void TestClearFiltersSplitButtonShape()
+    {
+        auto *button = mWindow->findChild<QToolButton *>(QStringLiteral("clearFiltersSplitButton"));
+        QVERIFY2(button != nullptr, "primary toolbar must host the clear-filters split button");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QCOMPARE(button->popupMode(), QToolButton::MenuButtonPopup);
+
+        QAction *defaultAction = button->defaultAction();
+        QVERIFY2(defaultAction != nullptr, "split button must have a default action");
+        QCOMPARE(defaultAction->objectName(), QStringLiteral("actionClearAllFilters"));
+
+        QMenu *menu = button->menu();
+        QVERIFY2(menu != nullptr, "split button must have a popup menu");
+        QCOMPARE(menu->objectName(), QStringLiteral("clearFiltersSplitMenu"));
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // With zero filters the Clear-filters dropdown must still
+    // surface a `(no filters)` placeholder rather than open as a
+    // blank box. The placeholder is disabled (no-op click), but
+    // its presence makes the empty state self-explanatory on the
+    // styles where the menu arrow remains clickable while the
+    // face button is disabled.
+    void TestClearFiltersDropdownPlaceholderWhenEmpty()
+    {
+        auto *menu = mWindow->findChild<QMenu *>(QStringLiteral("clearFiltersSplitMenu"));
+        QVERIFY2(menu != nullptr, "clear-filters dropdown must exist");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(0));
+        emit menu->aboutToShow();
+
+        const QList<QAction *> entries = menu->actions();
+        QCOMPARE(entries.size(), 1);
+        QVERIFY2(!entries.front()->isEnabled(), "empty-state placeholder must be disabled (no-op)");
+        QVERIFY2(
+            entries.front()->text().contains(QStringLiteral("no filters")),
+            "empty-state placeholder text must mention `no filters`"
+        );
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // The Clear-filters dropdown lists one entry per active
+    // filter, grouped by column index then sorted by title.
+    // Seeds two filters on `level` and one on `msg`, verifies all
+    // three appear with the `Remove "<col>": <title>` shape, and
+    // pins the column-grouping order so a future user-visible
+    // sort change here trips the test instead of silently
+    // shuffling the menu.
+    void TestClearFiltersDropdownListsActiveFilters()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "fixture must produce columns");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "fixture must expose `msg` column");
+
+        const QString levelFilterInfo = QStringLiteral("clear-list-level-info");
+        const QString levelFilterWarn = QStringLiteral("clear-list-level-warn");
+        const QString msgFilter = QStringLiteral("clear-list-msg");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, levelFilterInfo),
+                Q_ARG(int, levelCol),
+                Q_ARG(QStringList, QStringList{QStringLiteral("info")})
+            ),
+            "FilterEnumSubmitted must be invocable"
+        );
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, levelFilterWarn),
+                Q_ARG(int, levelCol),
+                Q_ARG(QStringList, QStringList{QStringLiteral("warn")})
+            ),
+            "FilterEnumSubmitted must be invocable"
+        );
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, msgFilter),
+                Q_ARG(int, msgCol),
+                Q_ARG(QString, QStringLiteral("m1")),
+                Q_ARG(int, static_cast<int>(loglib::LogConfiguration::LogFilter::Match::Contains))
+            ),
+            "FilterSubmitted must be invocable"
+        );
+        QCoreApplication::processEvents();
+        QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(3));
+
+        auto *menu = mWindow->findChild<QMenu *>(QStringLiteral("clearFiltersSplitMenu"));
+        QVERIFY2(menu != nullptr, "clear-filters dropdown must exist");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        emit menu->aboutToShow();
+
+        const QList<QAction *> entries = menu->actions();
+        QCOMPARE(entries.size(), 3);
+
+        // ObjectName carries the UUID, so find by id rather than
+        // by display text. Cheaper to reason about and survives
+        // a label tweak.
+        QStringList entryIds;
+        QStringList entryTexts;
+        for (const QAction *act : entries)
+        {
+            entryIds.append(act->objectName());
+            entryTexts.append(act->text());
+        }
+        QVERIFY2(entryIds.contains(levelFilterInfo), "dropdown must contain the level=info filter");
+        QVERIFY2(entryIds.contains(levelFilterWarn), "dropdown must contain the level=warn filter");
+        QVERIFY2(entryIds.contains(msgFilter), "dropdown must contain the msg=m1 filter");
+        for (const QString &text : entryTexts)
+        {
+            QVERIFY2(
+                text.startsWith(QStringLiteral("Remove \"")),
+                "every entry must follow the `Remove \"<col>\": <title>` shape"
+            );
+        }
+
+        // Grouping check: the two `level` filters must sit
+        // adjacent (column-row primary sort), so the `msg` entry
+        // is either the first or the last entry, never sandwiched
+        // between the level entries.
+        const int msgIdx = entryIds.indexOf(msgFilter);
+        QVERIFY2(
+            msgIdx == 0 || msgIdx == entries.size() - 1,
+            "msg-column filter must not split the level-column group (column grouping)"
+        );
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Triggering one entry in the Clear-filters dropdown removes
+    // *only* that filter -- the rest stay. Guards the "let me
+    // drop just one filter without nuking the whole set" promise
+    // the dropdown sells.
+    void TestClearFiltersDropdownTriggerRemovesSingleFilter()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "fixture must produce columns");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "fixture must expose `msg` column");
+
+        const QString keepId = QStringLiteral("single-remove-keep");
+        const QString dropId = QStringLiteral("single-remove-drop");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, keepId),
+                Q_ARG(int, levelCol),
+                Q_ARG(QStringList, QStringList{QStringLiteral("info")})
+            ),
+            "FilterEnumSubmitted must be invocable"
+        );
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, dropId),
+                Q_ARG(int, msgCol),
+                Q_ARG(QString, QStringLiteral("noise")),
+                Q_ARG(int, static_cast<int>(loglib::LogConfiguration::LogFilter::Match::Contains))
+            ),
+            "FilterSubmitted must be invocable"
+        );
+        QCoreApplication::processEvents();
+        QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(2));
+
+        auto *menu = mWindow->findChild<QMenu *>(QStringLiteral("clearFiltersSplitMenu"));
+        QVERIFY2(menu != nullptr, "clear-filters dropdown must exist");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        emit menu->aboutToShow();
+
+        QAction *dropEntry = nullptr;
+        for (QAction *act : menu->actions())
+        {
+            if (act != nullptr && act->objectName() == dropId)
+            {
+                dropEntry = act;
+                break;
+            }
+        }
+        QVERIFY2(dropEntry != nullptr, "dropdown must carry an entry for the filter we want to drop");
+
+        dropEntry->trigger();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
+        QVERIFY2(
+            mWindow->Filters().contains(keepId.toStdString()),
+            "the un-triggered filter must survive a single-entry remove"
+        );
+        QVERIFY2(
+            !mWindow->Filters().contains(dropId.toStdString()),
+            "the triggered filter must be gone after a single-entry remove"
         );
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
     }

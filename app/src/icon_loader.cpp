@@ -125,14 +125,22 @@ QPixmap MakeThemedPixmap(const QString &resourcePath, const QColor &tintColor, i
     QPainter painter(&pix);
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    // Logical extent of the pixmap. `QPixmap::rect()` reports
+    // *device* pixels (`edge*dpr`), but the painter is set up in
+    // logical coordinates because `pix` carries a DPR -- mixing
+    // the two undershoots the fill when DPR < 1 and leaves a
+    // fringe of the glyph in the opaque-black sentinel colour.
+    // Same rect feeds both the SVG render and the tint mask so
+    // they cover the exact same area.
+    const QRectF logicalRect(0.0, 0.0, static_cast<qreal>(edge), static_cast<qreal>(edge));
     // First pass: paint the SVG with its native colour. The mask
     // step replaces the RGB but needs the alpha channel populated.
-    renderer.render(&painter, QRectF(0, 0, edge, edge));
+    renderer.render(&painter, logicalRect);
     // Second pass: replace every non-transparent pixel with `tintColor`,
     // keeping the alpha intact. `CompositionMode_SourceIn` is the
     // canonical "tint a monochrome glyph" recipe.
     painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
-    painter.fillRect(pix.rect(), tintColor);
+    painter.fillRect(logicalRect, tintColor);
     painter.end();
 
     return pix;

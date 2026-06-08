@@ -3009,8 +3009,72 @@ void MainWindow::BuildMainToolbar()
     mMainToolbar->addWidget(openStreamButton);
 
     mMainToolbar->addSeparator();
-    mMainToolbar->addAction(ui->actionAddFilter);
-    mMainToolbar->addAction(ui->actionClearAllFilters);
+
+    // Add-filter split button. Face = open the generic
+    // filter editor (`actionAddFilter`'s existing slot, no
+    // preselected column). Dropdown = `Add filter on "<col>"…`
+    // entries, one per visible column, so a user who knows the
+    // target column can land in the editor pre-pointed at it
+    // without having to right-click the header section. Same
+    // entry shape as the header context menu so the muscle
+    // memory carries over.
+    //
+    // `MenuButtonPopup` (not `InstantPopup`) keeps the more-
+    // common generic path one click away (it matches the
+    // pre-split behaviour of the bare action) while making the
+    // per-column shortcut discoverable behind the arrow.
+    //
+    // `setDefaultAction` also tries to install the action's
+    // icon -- the split button's themed-icon refresh therefore
+    // runs through `mThemedActions` (already populated for
+    // `actionAddFilter` above) so a palette / theme flip
+    // re-tints the button face.
+    auto *addFilterButton = new QToolButton(mMainToolbar);
+    addFilterButton->setObjectName(QStringLiteral("addFilterSplitButton"));
+    addFilterButton->setDefaultAction(ui->actionAddFilter);
+    addFilterButton->setPopupMode(QToolButton::MenuButtonPopup);
+    addFilterButton->setIconSize(toolbarIconSize);
+    addFilterButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    auto *addFilterMenu = new QMenu(addFilterButton);
+    addFilterMenu->setObjectName(QStringLiteral("addFilterSplitMenu"));
+    addFilterButton->setMenu(addFilterMenu);
+    // Rebuild on every show so the listing reflects the live
+    // column set without us having to invalidate it from every
+    // column-mutation site (column reorder, hide/show, post-
+    // stream promotion, columns-manager edit, ...). The header
+    // right-click `RebuildViewMenu` uses the same idiom.
+    connect(addFilterMenu, &QMenu::aboutToShow, this, [this, addFilterMenu]() {
+        RebuildAddFilterMenu(addFilterMenu);
+    });
+    mMainToolbar->addWidget(addFilterButton);
+
+    // Clear-filters split button. Face = `actionClearAllFilters`
+    // (drop every active filter; same one-click clear the bare
+    // button used to offer). Dropdown = `Remove "<col>": <title>`
+    // entries, one per active filter, grouped by column index
+    // then sorted by display title -- lets a user with three
+    // filters drop just the misbehaving one without having to
+    // dive into the Filters menu's per-filter submenu.
+    //
+    // `actionClearAllFilters` is gated by `setDisabled(true)`
+    // when `mFilters` is empty, which on most styles disables
+    // the arrow too. That's intentional: there's nothing to
+    // remove either way, so the disabled arrow honestly reports
+    // "nothing to do" instead of opening to a placeholder.
+    auto *clearFiltersButton = new QToolButton(mMainToolbar);
+    clearFiltersButton->setObjectName(QStringLiteral("clearFiltersSplitButton"));
+    clearFiltersButton->setDefaultAction(ui->actionClearAllFilters);
+    clearFiltersButton->setPopupMode(QToolButton::MenuButtonPopup);
+    clearFiltersButton->setIconSize(toolbarIconSize);
+    clearFiltersButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    auto *clearFiltersMenu = new QMenu(clearFiltersButton);
+    clearFiltersMenu->setObjectName(QStringLiteral("clearFiltersSplitMenu"));
+    clearFiltersButton->setMenu(clearFiltersMenu);
+    connect(clearFiltersMenu, &QMenu::aboutToShow, this, [this, clearFiltersMenu]() {
+        RebuildClearFiltersMenu(clearFiltersMenu);
+    });
+    mMainToolbar->addWidget(clearFiltersButton);
+
     mMainToolbar->addSeparator();
     if (mActionToggleFind != nullptr)
     {
@@ -3113,6 +3177,153 @@ void MainWindow::RefreshThemedIcons()
         // going stale.
         QWidget *anchor = entry.anchor.data();
         action->setIcon(buildIcon(path, onPath, anchor != nullptr ? anchor : this));
+    }
+}
+
+void MainWindow::RebuildAddFilterMenu(QMenu *menu)
+{
+    if (menu == nullptr)
+    {
+        return;
+    }
+    menu->clear();
+
+    const auto &columns = mModel->Configuration().columns;
+    if (columns.empty())
+    {
+        // Disabled placeholder so an empty dropdown advertises
+        // *why* it is empty rather than opening as a blank box.
+        // Same idiom as `RebuildViewMenu`'s `(no columns yet)`
+        // sentinel.
+        QAction *placeholder = menu->addAction(tr("(no columns yet)"));
+        placeholder->setEnabled(false);
+        return;
+    }
+
+    // `AddFilter` short-circuits with a status-bar hint when the
+    // model has no rows, so disable the entries up-front rather
+    // than advertise a no-op. The face button (the bare
+    // `actionAddFilter`) gets the same treatment from its
+    // existing `setEnabled` plumbing.
+    const bool modelHasRows = mModel->rowCount() > 0;
+
+    // Header-disambiguated labels (e.g. `name` vs `name [user|id]`)
+    // so two columns sharing the same display header still produce
+    // unambiguous entries -- same helper the View menu uses.
+    const std::vector<QString> labels = BuildAllColumnMenuLabels();
+
+    bool addedAny = false;
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        // Hidden columns are skipped to mirror the header
+        // right-click menu (`SetInitialColumn` refuses to
+        // preselect a hidden column, so an entry here would
+        // advertise a preselection the editor would drop).
+        // Re-show is delegated to the View menu, same as for
+        // the header right-click.
+        if (!columns[i].visible)
+        {
+            continue;
+        }
+        const QString &label = labels[i];
+        QAction *act = menu->addAction(tr("Add filter on \"%1\"…").arg(label));
+        act->setEnabled(modelHasRows);
+        // Capture stable `keys` so a column reorder landing
+        // between menu build and click still hits the right
+        // column. Matches the header-context-menu lambda.
+        connect(act, &QAction::triggered, this, [this, keys = columns[i].keys]() {
+            const int idx = FindColumnIndexByKeys(keys);
+            if (idx < 0)
+            {
+                return;
+            }
+            AddFilter(QUuid::createUuid().toString(), std::nullopt, /*openEditor=*/true, /*initialColumn=*/idx);
+        });
+        addedAny = true;
+    }
+
+    if (!addedAny)
+    {
+        // Every column hidden -- legal end state. Surface the
+        // condition explicitly so the user understands why the
+        // dropdown is empty (and where to re-show columns).
+        QAction *placeholder = menu->addAction(tr("(every column is hidden – use View menu to show one)"));
+        placeholder->setEnabled(false);
+    }
+}
+
+void MainWindow::RebuildClearFiltersMenu(QMenu *menu)
+{
+    if (menu == nullptr)
+    {
+        return;
+    }
+    menu->clear();
+
+    if (mFilters.empty())
+    {
+        QAction *placeholder = menu->addAction(tr("(no filters)"));
+        placeholder->setEnabled(false);
+        return;
+    }
+
+    // Disambiguated column labels (same helper the View menu /
+    // Add-filter dropdown use) so two columns sharing a header
+    // produce distinct entries.
+    const std::vector<QString> labels = BuildAllColumnMenuLabels();
+
+    // Flatten + sort so the menu order is deterministic.
+    // `mFilters` is an unordered_map keyed by UUID, so without
+    // sorting the visible order would change every time Qt's
+    // hash seed changes.
+    struct Entry
+    {
+        std::string id;
+        QString columnLabel;
+        QString filterTitle;
+        int columnRow = -1;
+    };
+    std::vector<Entry> entries;
+    entries.reserve(mFilters.size());
+    for (const auto &[id, filter] : mFilters)
+    {
+        const int row = filter.row;
+        QString columnLabel = (row >= 0 && static_cast<size_t>(row) < labels.size())
+                                  ? labels[static_cast<size_t>(row)]
+                                  // Filter pointing at a column that no
+                                  // longer exists (e.g. a config carrying
+                                  // over a renamed key). Surface it as
+                                  // `(unknown column)` so the user can
+                                  // still get rid of it via the dropdown.
+                                  : tr("(unknown column)");
+        entries.push_back({.id = id, .columnLabel = std::move(columnLabel), .filterTitle = BuildFilterTitle(filter), .columnRow = row});
+    }
+    std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
+        // Group by column first so all filters on `level` sit
+        // next to each other regardless of UUID order; secondary
+        // sort by title puts e.g. `error, warn` near `info` in
+        // the same column block. UUID tie-break keeps the order
+        // stable across reopens.
+        if (a.columnRow != b.columnRow)
+        {
+            return a.columnRow < b.columnRow;
+        }
+        const int cmp = a.filterTitle.localeAwareCompare(b.filterTitle);
+        if (cmp != 0)
+        {
+            return cmp < 0;
+        }
+        return a.id < b.id;
+    });
+
+    for (const Entry &entry : entries)
+    {
+        const QString filterId = QString::fromStdString(entry.id);
+        QAction *act = menu->addAction(tr("Remove \"%1\": %2").arg(entry.columnLabel, entry.filterTitle));
+        // ObjectName carries the UUID so a test can find the
+        // entry by id without parsing display text.
+        act->setObjectName(filterId);
+        connect(act, &QAction::triggered, this, [this, filterId]() { ClearFilter(filterId); });
     }
 }
 

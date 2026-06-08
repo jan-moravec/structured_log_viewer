@@ -831,6 +831,47 @@ private:
     /// leaving the split button blank on theme flip.
     void RefreshThemedIcons();
 
+    /// Repopulate the Add-filter split-button dropdown with one
+    /// `Add filter on "<col>"…` entry per *visible* column.
+    /// Connected to the menu's `aboutToShow` so the listing
+    /// always reflects the current configuration without us
+    /// having to invalidate it from every column-mutation site
+    /// (`SetColumnVisible`, `OnSourceColumnsMoved`,
+    /// `ColumnsManagerDialog::Accept`, post-stream column
+    /// promotion, …). The clicked entry routes through the same
+    /// `AddFilter(uuid, nullopt, openEditor=true, initialColumn=idx)`
+    /// path the header right-click uses, so column reorders
+    /// between menu build and click resolve via the stable `keys`
+    /// captured in the lambda.
+    ///
+    /// Hidden columns are skipped (`SetInitialColumn` refuses to
+    /// preselect them, mirroring the header context menu) and
+    /// each entry is disabled when the model has no rows
+    /// (`AddFilter` would short-circuit with a status-bar hint).
+    /// An empty configuration produces a single disabled
+    /// `(no columns yet)` placeholder so the dropdown is never
+    /// silently empty.
+    void RebuildAddFilterMenu(QMenu *menu);
+
+    /// Repopulate the Clear-filters split-button dropdown with
+    /// one `Remove "<col>": <title>` entry per active filter,
+    /// grouped by column index then sorted by display title.
+    /// Connected to the menu's `aboutToShow`; we don't have to
+    /// invalidate it from `AddLogFilter` / `ClearFilter` /
+    /// `ClearAllFilters` because the menu is rebuilt every time
+    /// it's opened.
+    ///
+    /// When `mFilters` is empty the menu shows a single disabled
+    /// `(no filters)` placeholder so the dropdown surfaces a
+    /// hint instead of opening blank. (The button's default
+    /// action stays gated by `actionClearAllFilters->setDisabled`
+    /// in the empty-filters branch; on the styles where the
+    /// menu arrow shares the disabled state with the button face
+    /// the dropdown won't open at all -- that's a graceful
+    /// degradation, not a regression, since there's nothing to
+    /// remove.)
+    void RebuildClearFiltersMenu(QMenu *menu);
+
     /// Re-evaluate the stream toolbar's visibility against the current
     /// session mode.
     void UpdateStreamToolbarVisibility();

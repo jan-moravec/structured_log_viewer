@@ -177,7 +177,7 @@
     <string>Add Filter</string>
    </property>
    <property name="toolTip">
-    <string>Add a new filter rule. Opens the filter editor preselected to the right type for the column.</string>
+    <string>Add a new filter rule. Click the arrow for a per-column shortcut that preselects the filter type.</string>
    </property>
   </action>
   <action name="actionShow">
@@ -198,7 +198,7 @@
     <string>Clear All Filters</string>
    </property>
    <property name="toolTip">
-    <string>Remove every active filter rule and show every row.</string>
+    <string>Remove every active filter rule and show every row. Click the arrow to remove a single filter.</string>
    </property>
   </action>
   <action name="actionPreferences">
