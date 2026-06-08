@@ -1,14 +1,15 @@
 cmake_minimum_required(VERSION 3.28)
 
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Network)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Network Svg)
 
-# `Network` is required at this scope because logapp now PUBLIC-links
-# Qt::Network (the network-stream dialog uses `QHostAddress` to validate
-# the bind-address field). The Qt CMake auto-finalizer walks transitive
-# dependencies and warns on missing targets otherwise; pulling the
-# find_package up here keeps the warning silent without bloating the
-# tests' own dependency surface.
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Test Widgets Network)
+# `Network` / `Svg` are required at this scope because logapp now
+# PUBLIC-links both: `QHostAddress` validates the network-stream
+# dialog's bind-address, and `QSvgRenderer` powers the themed-icon
+# loader behind the primary toolbar. The Qt CMake auto-finalizer
+# walks transitive dependencies and warns on missing targets
+# otherwise; pulling the find_package up here keeps the warning
+# silent without bloating the tests' own dependency surface.
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Test Widgets Network Svg)
 
 set(CMAKE_AUTOMOC ON)
 
