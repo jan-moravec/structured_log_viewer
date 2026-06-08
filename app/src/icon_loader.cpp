@@ -8,6 +8,7 @@
 #include <QSize>
 #include <QStyle>
 #include <QSvgRenderer>
+#include <QToolBar>
 #include <QWidget>
 #include <QtGlobal>
 
@@ -30,7 +31,7 @@ constexpr int FALLBACK_ICON_PX = 20;
 
 } // namespace
 
-QIcon MakeThemedIcon(const QString &resourcePath, const QColor &tintColor, int sizePx, qreal devicePixelRatio)
+QPixmap MakeThemedPixmap(const QString &resourcePath, const QColor &tintColor, int sizePx, qreal devicePixelRatio)
 {
     QSvgRenderer renderer(resourcePath);
     if (!renderer.isValid())
@@ -61,6 +62,16 @@ QIcon MakeThemedIcon(const QString &resourcePath, const QColor &tintColor, int s
     painter.fillRect(pix.rect(), tintColor);
     painter.end();
 
+    return pix;
+}
+
+QIcon MakeThemedIcon(const QString &resourcePath, const QColor &tintColor, int sizePx, qreal devicePixelRatio)
+{
+    const QPixmap pix = MakeThemedPixmap(resourcePath, tintColor, sizePx, devicePixelRatio);
+    if (pix.isNull())
+    {
+        return {};
+    }
     return QIcon{pix};
 }
 
@@ -72,7 +83,20 @@ QIcon MakeThemedIcon(const QString &resourcePath, const QWidget *anchor)
     const qreal dpr = (anchor != nullptr) ? anchor->devicePixelRatioF() : qApp->devicePixelRatio();
 
     int sizePx = FALLBACK_ICON_PX;
-    if (const QStyle *style = (anchor != nullptr) ? anchor->style() : QApplication::style(); style != nullptr)
+    // Prefer the toolbar's actual `iconSize` over the style's
+    // `PM_LargeIconSize`: a toolbar that pins itself to e.g. 20 px
+    // would otherwise be handed a 32-48 px pixmap on platforms
+    // whose style reports a larger value, forcing Qt to downsample
+    // every paint. Same-size rasterisation also keeps stroke
+    // widths consistent across themes.
+    if (const auto *toolbar = qobject_cast<const QToolBar *>(anchor); toolbar != nullptr)
+    {
+        if (const QSize iconSize = toolbar->iconSize(); iconSize.width() > 0)
+        {
+            sizePx = iconSize.width();
+        }
+    }
+    else if (const QStyle *style = (anchor != nullptr) ? anchor->style() : QApplication::style(); style != nullptr)
     {
         if (const int metric = style->pixelMetric(QStyle::PM_LargeIconSize, nullptr, anchor); metric > 0)
         {
