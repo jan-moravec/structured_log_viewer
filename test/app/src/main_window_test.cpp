@@ -10744,9 +10744,16 @@ private slots:
         // visual-order witness because both bars share the top
         // dock area row. The stream toolbar starts hidden, so we
         // force it visible for the geometry probe and restore
-        // afterwards. `adjustSize` flushes the pending layout pass.
+        // afterwards. Showing the window + `qWaitForWindowExposed`
+        // is what makes the layout deterministic across hosts --
+        // an offscreen-platform fixture that never enters the
+        // event loop has been observed to leave both bars at x=0
+        // until something exposes the window.
+        const bool windowWasVisible = mWindow->isVisible();
         const bool streamWasVisible = streamBar->isVisible();
         streamBar->setVisible(true);
+        mWindow->show();
+        QVERIFY(QTest::qWaitForWindowExposed(mWindow, 5000));
         mWindow->adjustSize();
         QCoreApplication::processEvents();
         QVERIFY2(
@@ -10756,6 +10763,10 @@ private slots:
                            .arg(streamBar->x()))
         );
         streamBar->setVisible(streamWasVisible);
+        if (!windowWasVisible)
+        {
+            mWindow->hide();
+        }
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
     }
 
@@ -10910,6 +10921,13 @@ private slots:
         QCoreApplication::processEvents();
         QVERIFY2(!toolbar->isHidden(), "re-triggering must bring the toolbar back");
         QVERIFY2(toggle->isChecked(), "toggle checked state must follow the toolbar back to visible");
+
+        // Hide the window before returning so later tests in the
+        // same fixture run don't inherit an exposed window (the
+        // offscreen QPA plugin keeps stale exposure state around
+        // until the next show/hide cycle and can confuse
+        // focus-driven tests).
+        mWindow->hide();
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
     }
 
@@ -10926,7 +10944,7 @@ private slots:
 
         // `actionOpen` is the first non-separator action on the
         // toolbar and carries the `svgIconPath` property, so it is
-        // guaranteed to be re-tinted by `RefreshToolbarIcons`.
+        // guaranteed to be re-tinted by `RefreshThemedIcons`.
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
         auto *openAction = mWindow->findChild<QAction *>(QStringLiteral("actionOpen"));
         QVERIFY2(openAction != nullptr, "actionOpen must exist");
@@ -10970,7 +10988,7 @@ private slots:
         redPalette.setColor(QPalette::Inactive, QPalette::WindowText, QColor(255, 0, 0));
         toolbar->setPalette(redPalette);
         // Mirror the palette onto the window too, so `MainWindow::
-        // changeEvent` (which is what wires `RefreshToolbarIcons`)
+        // changeEvent` (which is what wires `RefreshThemedIcons`)
         // actually fires -- a palette set only on the toolbar
         // would propagate `PaletteChange` to its child widgets,
         // not back up to the window.
@@ -10982,7 +11000,7 @@ private slots:
         // Flip to vivid blue: the icon must re-mint -- the real
         // regression target is the very first theme toggle, which
         // would leave the cached red pixmap in place if
-        // `RefreshToolbarIcons` were not wired into `changeEvent`.
+        // `RefreshThemedIcons` were not wired into `changeEvent`.
         QPalette bluePalette = toolbar->palette();
         bluePalette.setColor(QPalette::Active, QPalette::WindowText, QColor(0, 0, 255));
         bluePalette.setColor(QPalette::Inactive, QPalette::WindowText, QColor(0, 0, 255));
@@ -10991,6 +11009,95 @@ private slots:
         QCoreApplication::processEvents();
         const int bluePixels = opaquePixelCount(openAction->icon(), qRgb(0, 0, 255));
         QVERIFY2(bluePixels > 0, "primary toolbar icons must repaint after a palette flip");
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Item 1: `actionPauseStream` carries an alternate
+    // `svgIconPathChecked` glyph so the button invites the
+    // opposite transition (pause when running, play when paused),
+    // matching the media-player convention every user already
+    // knows. Without the On-state pixmap the icon would stay on
+    // the pause glyph even while ingestion is paused, leaving the
+    // user with no visual cue that another click will resume.
+    void TestPauseActionSwapsIconOnCheckedState()
+    {
+        auto *pauseAction = mWindow->findChild<QAction *>(QStringLiteral("actionPauseStream"));
+        QVERIFY2(pauseAction != nullptr, "actionPauseStream must exist");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QVERIFY2(pauseAction->isCheckable(), "actionPauseStream must be checkable");
+
+        const QIcon icon = pauseAction->icon();
+        QVERIFY2(!icon.isNull(), "actionPauseStream must carry a themed icon");
+
+        // `QIcon::pixmap(size, Normal, Off/On)` returns the
+        // best-matching pixmap for the requested state. When the
+        // On state has its own registered pixmap the two images
+        // differ; if the override is missing Qt falls back to the
+        // Off pixmap and the images compare equal.
+        const QSize size{20, 20};
+        const QImage offImage = icon.pixmap(size, QIcon::Normal, QIcon::Off).toImage();
+        const QImage onImage = icon.pixmap(size, QIcon::Normal, QIcon::On).toImage();
+        QVERIFY2(!offImage.isNull(), "Off-state pixmap must be available");
+        QVERIFY2(!onImage.isNull(), "On-state pixmap must be available");
+        QVERIFY2(
+            offImage != onImage,
+            "actionPauseStream's checked-state icon must differ from its unchecked-state icon"
+        );
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Item 1: the split button is added via `QToolBar::addWidget`,
+    // which does NOT propagate the toolbar's `iconSize` /
+    // `toolButtonStyle`. We mirror them explicitly in
+    // `BuildMainToolbar`; this test pins that contract so a future
+    // refactor that drops the explicit setters would leave the
+    // split button visually off-size from every other action.
+    void TestOpenStreamSplitButtonMatchesToolbarSizing()
+    {
+        auto *toolbar = mWindow->findChild<QToolBar *>(QStringLiteral("mainToolbar"));
+        QVERIFY2(toolbar != nullptr, "MainWindow must own the primary toolbar");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        auto *button = mWindow->findChild<QToolButton *>(QStringLiteral("openStreamSplitButton"));
+        QVERIFY2(button != nullptr, "primary toolbar must host the open-stream split button");
+        QCOMPARE(button->iconSize(), toolbar->iconSize());
+        QCOMPARE(button->toolButtonStyle(), Qt::ToolButtonIconOnly);
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Item 1: the stream toolbar shares the top dock-area row with
+    // the main toolbar when streaming, so the two must use the
+    // same icon edge length and button style -- otherwise the
+    // combined strip jumps from compact-icon to icon+text mid-row
+    // and looks unfinished. Pinned to catch any future drift.
+    void TestStreamToolbarMirrorsMainToolbarStyle()
+    {
+        auto *mainBar = mWindow->findChild<QToolBar *>(QStringLiteral("mainToolbar"));
+        auto *streamBar = mWindow->findChild<QToolBar *>(QStringLiteral("streamToolbar"));
+        QVERIFY2(mainBar != nullptr, "MainWindow must own the primary toolbar");
+        QVERIFY2(streamBar != nullptr, "MainWindow must own the stream toolbar");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QCOMPARE(streamBar->iconSize(), mainBar->iconSize());
+        QCOMPARE(streamBar->toolButtonStyle(), mainBar->toolButtonStyle());
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Item 1: the File -> Recent Sessions submenu carries the
+    // `file-clock` Lucide glyph so the entry is recognisable at a
+    // glance. The icon is set on the submenu's `menuAction()` and
+    // refreshed through the same `RefreshThemedIcons` pipeline as
+    // toolbar actions, so a Light <-> Dark flip keeps it visible.
+    void TestRecentSessionsMenuHasThemedIcon()
+    {
+        auto *recentMenu = mWindow->findChild<QMenu *>(QStringLiteral("menuRecentSessions"));
+        QVERIFY2(recentMenu != nullptr, "File menu must expose menuRecentSessions");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QAction *menuAction = recentMenu->menuAction();
+        QVERIFY2(menuAction != nullptr, "menuRecentSessions must have a menuAction");
+        QVERIFY2(!menuAction->icon().isNull(), "menuRecentSessions menuAction must carry a themed icon");
+        // The path stays as a property so `RefreshThemedIcons` can
+        // re-tint without a per-action switch -- the value here is
+        // the contract checked in `BuildMainToolbar`.
+        QCOMPARE(menuAction->property("svgIconPath").toString(), QStringLiteral(":/icons/file-clock.svg"));
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
     }
 
