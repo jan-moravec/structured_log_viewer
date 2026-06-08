@@ -892,9 +892,7 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     // logic stays the single source of truth and the menu, the
     // toolbar (when it lands), and this button all stay in lock-
     // step.
-    connect(
-        mClearFiltersStatusButton, &QPushButton::clicked, ui->actionClearAllFilters, &QAction::trigger
-    );
+    connect(mClearFiltersStatusButton, &QPushButton::clicked, ui->actionClearAllFilters, &QAction::trigger);
 
     // 1 Hz tick that refreshes the live-tail elapsed time and the title's
     // running line count, so neither has to be rewritten per batch.
@@ -2813,9 +2811,9 @@ void MainWindow::UpdateRowsShownStatus()
     QString text;
     if (proxyRows < sourceRows)
     {
-        text = tr("%1 of %2 shown")
-                   .arg(loc.toString(static_cast<qlonglong>(proxyRows)),
-                        loc.toString(static_cast<qlonglong>(sourceRows)));
+        text =
+            tr("%1 of %2 shown")
+                .arg(loc.toString(static_cast<qlonglong>(proxyRows)), loc.toString(static_cast<qlonglong>(sourceRows)));
     }
     else if (sourceRows == 1)
     {

@@ -10638,9 +10638,9 @@ private slots:
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
         const int visibleRows = filterModel->rowCount();
         QVERIFY2(visibleRows > 0 && visibleRows < totalRows, "fixture filter must hide some but not all rows");
-        const QString expectedFiltered = QStringLiteral("%1 of %2 shown")
-                                             .arg(QLocale::system().toString(static_cast<qlonglong>(visibleRows)),
-                                                  totalText);
+        const QString expectedFiltered =
+            QStringLiteral("%1 of %2 shown")
+                .arg(QLocale::system().toString(static_cast<qlonglong>(visibleRows)), totalText);
         QCOMPARE(label->text(), expectedFiltered);
 
         // Branch 3: vacuous filter -- every category selected, so
@@ -10665,10 +10665,7 @@ private slots:
         QCoreApplication::processEvents();
 
         QCOMPARE(filterModel->rowCount(), totalRows);
-        QVERIFY2(
-            !button->isHidden(),
-            "clear-filters button must stay visible even when the filter matches every row"
-        );
+        QVERIFY2(!button->isHidden(), "clear-filters button must stay visible even when the filter matches every row");
         QCOMPARE(label->text(), unfilteredText);
 
         // Clicking the status button must route through
