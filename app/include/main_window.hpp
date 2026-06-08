@@ -441,6 +441,14 @@ private slots:
     /// `ParseErrorsDock::countChanged`; hides when the dock is empty.
     void UpdateParseErrorsStatus(int count, int droppedCount);
 
+    /// Refresh the "*n* shown of *m*" status-bar label and toggle
+    /// the inline Clear-filters button. Wired to source + proxy
+    /// row signals and called from the tail of
+    /// `UpdateStreamingStatus` so every existing status-update
+    /// path picks the new figures up for free. Hides both widgets
+    /// when no session is active.
+    void UpdateRowsShownStatus();
+
     /// Recount matches for the current find query and push the
     /// result back into the find bar. Caches the row list keyed by
     /// `(needle, wildcards, regex)` so Next / Previous clicks reuse
@@ -905,6 +913,19 @@ private:
 
     /// Status-bar label shown while a streaming session is active.
     QLabel *mStatusLabel = nullptr;
+
+    /// Status-bar label that reads "*n* shown of *m*" while a
+    /// filter is hiding rows, or "*m* lines" otherwise. Hidden
+    /// outside an active session. Updated via
+    /// `UpdateRowsShownStatus` from both source / proxy row
+    /// signals and the tail of `UpdateStreamingStatus`.
+    QLabel *mRowsShownLabel = nullptr;
+
+    /// Status-bar funnel button that triggers
+    /// `actionClearAllFilters`. Visible only when at least one
+    /// filter is active and a session is loaded. Mirrors the UX
+    /// of `mDiagnosticsButton` / `mParseErrorsStatusButton`.
+    QPushButton *mClearFiltersStatusButton = nullptr;
 
     /// Status-bar button showing the per-column type-mismatch
     /// summary. Hidden when zero columns are mismatched; opens the

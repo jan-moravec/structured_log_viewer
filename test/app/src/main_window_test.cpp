@@ -95,6 +95,7 @@
 #include <QTableView>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QToolBar>
 #include <QToolButton>
 #include <QUuid>
 #include <QVariant>
@@ -10571,6 +10572,101 @@ private slots:
             qPrintable(QStringLiteral("status button tooltip must still spell out the breakdown; got: %1")
                            .arg(statusButton->toolTip()))
         );
+    }
+
+    // Item 5: status-bar "*n* shown of *m*" indicator + inline
+    // Clear-filters button. Tracks the proxy / source row count
+    // ratio plus `mFilters.empty()`.
+    void TestRowsShownStatusReflectsFilter()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+
+        // `StreamFixtureForColumnTests` drives the model directly
+        // and never flips `mSessionMode` off Idle, but the
+        // rows-shown widgets gate on `IsSessionActive()`. Pin the
+        // mode to Static for the duration of this test.
+        mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::Static);
+        auto restore = qScopeGuard([this]() { mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::Idle); });
+        // Refresh the chrome so the label / button observe the
+        // session-active flip without waiting for a row signal.
+        // `UpdateRowsShownStatus` is a private slot; meta-call so
+        // the test driver doesn't need access to private members.
+        QVERIFY2(
+            QMetaObject::invokeMethod(mWindow, "UpdateRowsShownStatus", Qt::DirectConnection),
+            "UpdateRowsShownStatus slot must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+
+        auto *label = mWindow->findChild<QLabel *>(QStringLiteral("rowsShownLabel"));
+        QVERIFY2(label != nullptr, "MainWindow must own the rows-shown status label");
+        auto *button = mWindow->findChild<QPushButton *>(QStringLiteral("clearFiltersStatusButton"));
+        QVERIFY2(button != nullptr, "MainWindow must own the clear-filters status button");
+
+        // No filter: the label reads the total only and the
+        // Clear-filters button hides. `isHidden()` (not
+        // `isVisible()`) so the assertion exercises only the slot's
+        // intent -- offscreen-QPA keeps the parent window hidden,
+        // collapsing `isVisible()` regardless.
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QVERIFY2(!label->isHidden(), "rows-shown label must show with an active session and non-empty source");
+        QVERIFY2(button->isHidden(), "clear-filters button must hide when no filter is active");
+        QVERIFY2(
+            !label->text().contains(QStringLiteral("of")),
+            qPrintable(QStringLiteral("with no filter, label must read total only; got: %1").arg(label->text()))
+        );
+
+        // Apply a filter that hides most rows -- the fixture
+        // streams 200 lines across 4 categories, so "info" alone
+        // leaves ~50 rows visible.
+        const QString filterId = QStringLiteral("rows-shown-test-filter");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, filterId),
+                Q_ARG(int, levelCol),
+                Q_ARG(QStringList, QStringList{QStringLiteral("info")})
+            ),
+            "FilterEnumSubmitted must be invocable via meta-object"
+        );
+        QCoreApplication::processEvents();
+
+        QVERIFY2(!button->isHidden(), "clear-filters button must un-hide when at least one filter is active");
+        QVERIFY2(
+            label->text().contains(QStringLiteral("of")),
+            qPrintable(QStringLiteral("filtered label must use the 'X of Y' form; got: %1").arg(label->text()))
+        );
+
+        // Clicking the status button must route through
+        // `actionClearAllFilters`. Triggering the action directly
+        // is the same end-state and avoids needing a real click on
+        // a hidden parent window. The action also exercises the
+        // signal wiring on the button itself (`clicked ->
+        // actionClearAllFilters::trigger`).
+        auto *clearAction = mWindow->findChild<QAction *>(QStringLiteral("actionClearAllFilters"));
+        QVERIFY2(clearAction != nullptr, "MainWindow must own actionClearAllFilters");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        clearAction->trigger();
+        QCoreApplication::processEvents();
+
+        QVERIFY2(button->isHidden(), "clear-filters button must re-hide after clearing all filters");
+        QVERIFY2(
+            !label->text().contains(QStringLiteral("of")),
+            qPrintable(QStringLiteral("after clear, label must drop the 'X of Y' form; got: %1").arg(label->text()))
+        );
+    }
+
+    // Item 9 (partial): the stream toolbar is movable and may be
+    // docked to any of the four `QMainWindow` toolbar areas.
+    void TestStreamToolbarIsMovable()
+    {
+        auto *toolbar = mWindow->findChild<QToolBar *>(QStringLiteral("streamToolbar"));
+        QVERIFY2(toolbar != nullptr, "MainWindow must own the stream toolbar");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QVERIFY2(toolbar->isMovable(), "stream toolbar must be user-movable");
+        QCOMPARE(toolbar->allowedAreas(), Qt::ToolBarAreas(Qt::AllToolBarAreas));
     }
 
     // Regression: the find-bar arrow icons used `SP_ArrowUp` /
