@@ -600,11 +600,15 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     // Stream toolbar; hidden until a live-tail stream is opened. The
     // same actions are also in the Stream menu.
     mStreamToolbar = addToolBar(tr("Stream"));
-    mStreamToolbar->setObjectName("streamToolbar");
+    mStreamToolbar->setObjectName(QStringLiteral("streamToolbar"));
     mStreamToolbar->addAction(ui->actionPauseStream);
     mStreamToolbar->addAction(ui->actionFollowTail);
     mStreamToolbar->addAction(ui->actionStopStream);
     mStreamToolbar->setVisible(false);
+    // Both are Qt defaults; pinned explicitly so `TestStreamToolbarIsMovable`
+    // keeps them from regressing.
+    mStreamToolbar->setMovable(true);
+    mStreamToolbar->setAllowedAreas(Qt::AllToolBarAreas);
 
     // Disable while idle so a checked state cannot leak into the next
     // session; `UpdateStreamToolbarVisibility` keeps these in sync after.
@@ -669,6 +673,26 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
             OnFindCacheInvalidated();
         }
     );
+
+    // Status-bar rows-shown indicator. Subscribes to both source
+    // and proxy because either can shift independently:
+    //   - source `rowsInserted/Removed/modelReset`: streaming
+    //     batches, session boundaries.
+    //   - proxy `rowsInserted/Removed/modelReset/layoutChanged`:
+    //     filter rule changes (which can move rows without
+    //     changing the source row count). `layoutChanged` is
+    //     proxy-only because it's how `LogFilterModel` reports
+    //     "the predicate changed but the row pool didn't".
+    // The slot itself is idempotent and cheap (two `rowCount()`
+    // calls + a label assign), so duplicate fires from
+    // adjacent signals are harmless.
+    connect(mModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::UpdateRowsShownStatus);
+    connect(mModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::UpdateRowsShownStatus);
+    connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateRowsShownStatus);
+    connect(mSortFilterProxyModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::UpdateRowsShownStatus);
+    connect(mSortFilterProxyModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::UpdateRowsShownStatus);
+    connect(mSortFilterProxyModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateRowsShownStatus);
+    connect(mSortFilterProxyModel, &QAbstractItemModel::layoutChanged, this, &MainWindow::UpdateRowsShownStatus);
 
     mActionToggleFind = new QAction(tr("Find Bar"), this);
     mActionToggleFind->setObjectName(QStringLiteral("actionToggleFind"));
@@ -841,6 +865,34 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     mStatusLabel = new QLabel(this);
     statusBar()->addPermanentWidget(mStatusLabel);
     mStatusLabel->hide();
+
+    // Rows-shown indicator + inline Clear-filters button. Placed
+    // immediately after `mStatusLabel` so the status reads
+    // left-to-right as "Parsing foo - 12,345 lines | 8,432 of
+    // 12,345 shown [Clear filters] [diagnostics] [parse errors]".
+    // Both widgets are hidden by `UpdateRowsShownStatus` when the
+    // source model is empty (e.g. before the first batch lands or
+    // after `LogModel::Reset`).
+    mRowsShownLabel = new QLabel(this);
+    mRowsShownLabel->setObjectName(QStringLiteral("rowsShownLabel"));
+    mRowsShownLabel->hide();
+    statusBar()->addPermanentWidget(mRowsShownLabel);
+
+    mClearFiltersStatusButton = new QPushButton(this);
+    mClearFiltersStatusButton->setObjectName(QStringLiteral("clearFiltersStatusButton"));
+    mClearFiltersStatusButton->setIcon(QApplication::style()->standardIcon(QStyle::SP_LineEditClearButton));
+    mClearFiltersStatusButton->setText(tr("Clear filters"));
+    mClearFiltersStatusButton->setToolTip(tr("Clear all active filters and show every row."));
+    mClearFiltersStatusButton->setAccessibleName(tr("Clear all filters"));
+    mClearFiltersStatusButton->setFlat(true);
+    mClearFiltersStatusButton->setCursor(Qt::PointingHandCursor);
+    mClearFiltersStatusButton->hide();
+    statusBar()->addPermanentWidget(mClearFiltersStatusButton);
+    // Route through the existing action so its enable/disable
+    // logic stays the single source of truth and the menu, the
+    // toolbar (when it lands), and this button all stay in lock-
+    // step.
+    connect(mClearFiltersStatusButton, &QPushButton::clicked, ui->actionClearAllFilters, &QAction::trigger);
 
     // 1 Hz tick that refreshes the live-tail elapsed time and the title's
     // running line count, so neither has to be rewritten per batch.
@@ -2731,6 +2783,61 @@ void MainWindow::UpdateStreamingStatus()
 
     mStatusLabel->setText(text);
     mStatusLabel->show();
+}
+
+void MainWindow::UpdateRowsShownStatus()
+{
+    if (mRowsShownLabel == nullptr || mClearFiltersStatusButton == nullptr)
+    {
+        return;
+    }
+
+    // Gate on "is there data to count?" rather than session state.
+    // `OnStreamingFinished` flips `mSessionMode` back to `Idle` for
+    // finite static loads, but the user keeps browsing the rows --
+    // hiding the count there would surface only during streaming
+    // and disappear the moment the parse completed.
+    const int sourceRows = (mModel != nullptr) ? mModel->rowCount() : 0;
+    const int proxyRows = (mSortFilterProxyModel != nullptr) ? mSortFilterProxyModel->rowCount() : 0;
+    if (sourceRows <= 0)
+    {
+        mRowsShownLabel->clear();
+        mRowsShownLabel->hide();
+        mClearFiltersStatusButton->hide();
+        return;
+    }
+
+    const QLocale loc = QLocale::system();
+    QString text;
+    if (proxyRows < sourceRows)
+    {
+        text =
+            tr("%1 of %2 shown")
+                .arg(loc.toString(static_cast<qlonglong>(proxyRows)), loc.toString(static_cast<qlonglong>(sourceRows)));
+    }
+    else if (sourceRows == 1)
+    {
+        text = tr("%1 line").arg(loc.toString(static_cast<qlonglong>(sourceRows)));
+    }
+    else
+    {
+        text = tr("%1 lines").arg(loc.toString(static_cast<qlonglong>(sourceRows)));
+    }
+    // Skip the `setText` (and the resulting repaint / re-layout of the
+    // permanent status-bar area) when the digits haven't moved.
+    // `rowsInserted` fires multiple times per streaming batch -- once
+    // from the source and once from the proxy -- so this elides one
+    // of every two paints under load.
+    if (mRowsShownLabel->text() != text)
+    {
+        mRowsShownLabel->setText(text);
+    }
+    mRowsShownLabel->show();
+
+    // Decoupled from `proxyRows < sourceRows`: a filter that matches
+    // every row leaves the counts equal but `mFilters` populated,
+    // and the user still wants the affordance to clear it.
+    mClearFiltersStatusButton->setVisible(!mFilters.empty());
 }
 
 void MainWindow::StartLiveTailTicker()
