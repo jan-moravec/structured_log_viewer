@@ -3043,9 +3043,7 @@ void MainWindow::BuildMainToolbar()
     // column-mutation site (column reorder, hide/show, post-
     // stream promotion, columns-manager edit, ...). The header
     // right-click `RebuildViewMenu` uses the same idiom.
-    connect(addFilterMenu, &QMenu::aboutToShow, this, [this, addFilterMenu]() {
-        RebuildAddFilterMenu(addFilterMenu);
-    });
+    connect(addFilterMenu, &QMenu::aboutToShow, this, [this, addFilterMenu]() { RebuildAddFilterMenu(addFilterMenu); });
     mMainToolbar->addWidget(addFilterButton);
 
     // Clear-filters split button. Face = `actionClearAllFilters`
@@ -3296,7 +3294,9 @@ void MainWindow::RebuildClearFiltersMenu(QMenu *menu)
                                   // `(unknown column)` so the user can
                                   // still get rid of it via the dropdown.
                                   : tr("(unknown column)");
-        entries.push_back({.id = id, .columnLabel = std::move(columnLabel), .filterTitle = BuildFilterTitle(filter), .columnRow = row});
+        entries.push_back(
+            {.id = id, .columnLabel = std::move(columnLabel), .filterTitle = BuildFilterTitle(filter), .columnRow = row}
+        );
     }
     std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
         // Group by column first so all filters on `level` sit
