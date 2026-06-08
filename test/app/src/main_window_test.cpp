@@ -10574,28 +10574,21 @@ private slots:
         );
     }
 
-    // Item 5: status-bar "*n* shown of *m*" indicator + inline
-    // Clear-filters button. Tracks the proxy / source row count
-    // ratio plus `mFilters.empty()`.
+    // Item 5: status-bar "*n* of *m* shown" indicator + inline
+    // Clear-filters button. Three branches:
+    //   - no filter             -> "N lines",   button hidden
+    //   - filter hides rows     -> "M of N shown", button shown
+    //   - filter matches every row -> "N lines", button still shown
+    //     (the comment in `UpdateRowsShownStatus` calls this out
+    //      explicitly; left untested in the original change).
     void TestRowsShownStatusReflectsFilter()
     {
-        const int levelCol = StreamFixtureForColumnTests();
-        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        const int categoryCol = StreamFixtureForColumnTests();
+        QVERIFY2(categoryCol >= 0, "category column must exist after streaming");
 
-        // `StreamFixtureForColumnTests` drives the model directly
-        // and never flips `mSessionMode` off Idle, but the
-        // rows-shown widgets gate on `IsSessionActive()`. Pin the
-        // mode to Static for the duration of this test.
-        mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::Static);
-        auto restore = qScopeGuard([this]() { mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::Idle); });
-        // Refresh the chrome so the label / button observe the
-        // session-active flip without waiting for a row signal.
-        // `UpdateRowsShownStatus` is a private slot; meta-call so
-        // the test driver doesn't need access to private members.
-        QVERIFY2(
-            QMetaObject::invokeMethod(mWindow, "UpdateRowsShownStatus", Qt::DirectConnection),
-            "UpdateRowsShownStatus slot must be invocable via meta-object"
-        );
+        // The fixture leaves `mSessionMode` at Idle, but the
+        // rows-shown slot now gates on `mModel->rowCount() > 0`,
+        // so no `SetSessionModeForTest` dance is needed.
         QCoreApplication::processEvents();
 
         auto *label = mWindow->findChild<QLabel *>(QStringLiteral("rowsShownLabel"));
@@ -10603,30 +10596,36 @@ private slots:
         auto *button = mWindow->findChild<QPushButton *>(QStringLiteral("clearFiltersStatusButton"));
         QVERIFY2(button != nullptr, "MainWindow must own the clear-filters status button");
 
-        // No filter: the label reads the total only and the
-        // Clear-filters button hides. `isHidden()` (not
-        // `isVisible()`) so the assertion exercises only the slot's
-        // intent -- offscreen-QPA keeps the parent window hidden,
-        // collapsing `isVisible()` regardless.
+        // Locale-formatted total used in every "no filter" / "vacuous
+        // filter" assertion below. Matches the slot's own
+        // `QLocale::system()` + `qlonglong` round-trip.
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
-        QVERIFY2(!label->isHidden(), "rows-shown label must show with an active session and non-empty source");
-        QVERIFY2(button->isHidden(), "clear-filters button must hide when no filter is active");
-        QVERIFY2(
-            !label->text().contains(QStringLiteral("of")),
-            qPrintable(QStringLiteral("with no filter, label must read total only; got: %1").arg(label->text()))
-        );
+        auto *model = mWindow->Model();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        const int totalRows = model->rowCount();
+        QVERIFY2(totalRows > 1, "fixture must stream more than one row for the plural branch");
+        const QString totalText = QLocale::system().toString(static_cast<qlonglong>(totalRows));
+        const QString unfilteredText = QStringLiteral("%1 lines").arg(totalText);
 
-        // Apply a filter that hides most rows -- the fixture
-        // streams 200 lines across 4 categories, so "info" alone
-        // leaves ~50 rows visible.
-        const QString filterId = QStringLiteral("rows-shown-test-filter");
+        // Branch 1: no filter. Label reads "<N> lines"; button is
+        // hidden. `isHidden()` (not `isVisible()`) so the assertion
+        // exercises the slot's intent -- offscreen-QPA keeps the
+        // parent hidden, collapsing `isVisible()` regardless.
+        QCOMPARE(label->text(), unfilteredText);
+        QVERIFY2(!label->isHidden(), "rows-shown label must show with a non-empty source");
+        QVERIFY2(button->isHidden(), "clear-filters button must hide when no filter is active");
+
+        // Branch 2: filter hides most rows. The fixture streams 200
+        // lines across 4 categories, so "info" alone leaves ~50.
+        const QString hideFilterId = QStringLiteral("rows-shown-test-filter");
         QVERIFY2(
             QMetaObject::invokeMethod(
                 mWindow,
                 "FilterEnumSubmitted",
                 Qt::DirectConnection,
-                Q_ARG(QString, filterId),
-                Q_ARG(int, levelCol),
+                Q_ARG(QString, hideFilterId),
+                Q_ARG(int, categoryCol),
                 Q_ARG(QStringList, QStringList{QStringLiteral("info")})
             ),
             "FilterEnumSubmitted must be invocable via meta-object"
@@ -10634,10 +10633,43 @@ private slots:
         QCoreApplication::processEvents();
 
         QVERIFY2(!button->isHidden(), "clear-filters button must un-hide when at least one filter is active");
+        auto *filterModel = mWindow->FilterModel();
+        QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        const int visibleRows = filterModel->rowCount();
+        QVERIFY2(visibleRows > 0 && visibleRows < totalRows, "fixture filter must hide some but not all rows");
+        const QString expectedFiltered = QStringLiteral("%1 of %2 shown")
+                                             .arg(QLocale::system().toString(static_cast<qlonglong>(visibleRows)),
+                                                  totalText);
+        QCOMPARE(label->text(), expectedFiltered);
+
+        // Branch 3: vacuous filter -- every category selected, so
+        // proxyRows == sourceRows but `mFilters` is still populated.
+        // Label drops the "of" form; button stays visible.
+        // Build the selection outside `Q_ARG`: brace-initializer commas
+        // are not protected from the macro's argument splitter.
+        const QStringList allCategories{
+            QStringLiteral("info"), QStringLiteral("warn"), QStringLiteral("error"), QStringLiteral("debug")
+        };
         QVERIFY2(
-            label->text().contains(QStringLiteral("of")),
-            qPrintable(QStringLiteral("filtered label must use the 'X of Y' form; got: %1").arg(label->text()))
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, hideFilterId),
+                Q_ARG(int, categoryCol),
+                Q_ARG(QStringList, allCategories)
+            ),
+            "FilterEnumSubmitted (vacuous) must be invocable via meta-object"
         );
+        QCoreApplication::processEvents();
+
+        QCOMPARE(filterModel->rowCount(), totalRows);
+        QVERIFY2(
+            !button->isHidden(),
+            "clear-filters button must stay visible even when the filter matches every row"
+        );
+        QCOMPARE(label->text(), unfilteredText);
 
         // Clicking the status button must route through
         // `actionClearAllFilters`. Triggering the action directly
@@ -10652,10 +10684,7 @@ private slots:
         QCoreApplication::processEvents();
 
         QVERIFY2(button->isHidden(), "clear-filters button must re-hide after clearing all filters");
-        QVERIFY2(
-            !label->text().contains(QStringLiteral("of")),
-            qPrintable(QStringLiteral("after clear, label must drop the 'X of Y' form; got: %1").arg(label->text()))
-        );
+        QCOMPARE(label->text(), unfilteredText);
     }
 
     // Item 9 (partial): the stream toolbar is movable and may be

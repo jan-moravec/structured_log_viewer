@@ -443,10 +443,11 @@ private slots:
 
     /// Refresh the "*n* shown of *m*" status-bar label and toggle
     /// the inline Clear-filters button. Wired to source + proxy
-    /// row signals and called from the tail of
-    /// `UpdateStreamingStatus` so every existing status-update
-    /// path picks the new figures up for free. Hides both widgets
-    /// when no session is active.
+    /// row signals; the label tracks `mModel->rowCount()` (not
+    /// `IsSessionActive`) so the indicator survives the post-load
+    /// `Static -> Idle` flip and stays visible while the user
+    /// browses the parsed rows. Hides both widgets when the source
+    /// model is empty.
     void UpdateRowsShownStatus();
 
     /// Recount matches for the current find query and push the
@@ -914,17 +915,16 @@ private:
     /// Status-bar label shown while a streaming session is active.
     QLabel *mStatusLabel = nullptr;
 
-    /// Status-bar label that reads "*n* shown of *m*" while a
+    /// Status-bar label that reads "*n* of *m* shown" while a
     /// filter is hiding rows, or "*m* lines" otherwise. Hidden
-    /// outside an active session. Updated via
-    /// `UpdateRowsShownStatus` from both source / proxy row
-    /// signals and the tail of `UpdateStreamingStatus`.
+    /// when the source model is empty. Updated via
+    /// `UpdateRowsShownStatus` from source / proxy row signals.
     QLabel *mRowsShownLabel = nullptr;
 
-    /// Status-bar funnel button that triggers
-    /// `actionClearAllFilters`. Visible only when at least one
-    /// filter is active and a session is loaded. Mirrors the UX
-    /// of `mDiagnosticsButton` / `mParseErrorsStatusButton`.
+    /// Status-bar button that triggers `actionClearAllFilters`.
+    /// Visible only when at least one filter is active and the
+    /// source model has rows. Mirrors the UX of
+    /// `mDiagnosticsButton` / `mParseErrorsStatusButton`.
     QPushButton *mClearFiltersStatusButton = nullptr;
 
     /// Status-bar button showing the per-column type-mismatch
