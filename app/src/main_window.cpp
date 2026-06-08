@@ -5921,6 +5921,23 @@ void MainWindow::RebuildViewMenu()
         viewMenu->addAction(mActionToggleParseErrors);
     }
 
+    // Primary toolbar toggle. `QToolBar::toggleViewAction` returns a
+    // checkable action whose state mirrors `QToolBar::isVisible()`
+    // and which Qt keeps in sync without further wiring -- toggling
+    // hides the toolbar and the user has a discoverable way to bring
+    // it back. We deliberately don't expose `mStreamToolbar`'s
+    // toggle here: `UpdateStreamToolbarVisibility` is the single
+    // source of truth for that bar (auto-shown when streaming, idle
+    // otherwise) and a parallel menu toggle would let the two
+    // states diverge.
+    if (mMainToolbar != nullptr)
+    {
+        QAction *toggleMainToolbar = mMainToolbar->toggleViewAction();
+        toggleMainToolbar->setObjectName(QStringLiteral("actionToggleMainToolbar"));
+        toggleMainToolbar->setText(tr("Main Toolbar"));
+        viewMenu->addAction(toggleMainToolbar);
+    }
+
     const auto &columns = mModel->Configuration().columns;
     if (columns.empty())
     {
