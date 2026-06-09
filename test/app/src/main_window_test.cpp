@@ -8010,8 +8010,8 @@ private slots:
         QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(2));
 
         const QString tooltip = model->headerData(msgCol, Qt::Horizontal, Qt::ToolTipRole).toString();
-        const int applePos = tooltip.indexOf(QStringLiteral("apple"));
-        const int zebraPos = tooltip.indexOf(QStringLiteral("zebra"));
+        const qsizetype applePos = tooltip.indexOf(QStringLiteral("apple"));
+        const qsizetype zebraPos = tooltip.indexOf(QStringLiteral("zebra"));
         QVERIFY2(applePos >= 0 && zebraPos >= 0, "tooltip must mention both filter titles");
         QVERIFY2(applePos < zebraPos, "tooltip must list filter titles in alphabetical order");
     }
@@ -8084,7 +8084,7 @@ private slots:
         QCoreApplication::processEvents();
         const QVariant funnelOnlyVariant = model->headerData(msgCol, Qt::Horizontal, Qt::DecorationRole);
         QVERIFY(funnelOnlyVariant.canConvert<QIcon>());
-        const QIcon funnelOnly = funnelOnlyVariant.value<QIcon>();
+        const auto funnelOnly = funnelOnlyVariant.value<QIcon>();
         QVERIFY2(!funnelOnly.isNull(), "filter-only decoration must be the funnel icon");
         const QImage funnelOnlyImage = funnelOnly.pixmap(16, 16).toImage();
 
@@ -8097,7 +8097,7 @@ private slots:
 
         const QVariant combinedVariant = model->headerData(msgCol, Qt::Horizontal, Qt::DecorationRole);
         QVERIFY(combinedVariant.canConvert<QIcon>());
-        const QIcon combined = combinedVariant.value<QIcon>();
+        const auto combined = combinedVariant.value<QIcon>();
         QVERIFY2(!combined.isNull(), "warning+filter decoration must still be non-null");
 
         const QImage combinedImage = combined.pixmap(16, 16).toImage();
@@ -8421,7 +8421,7 @@ private slots:
 
         const QVariant redVariant = model->headerData(msgCol, Qt::Horizontal, Qt::DecorationRole);
         QVERIFY(redVariant.canConvert<QIcon>());
-        const QIcon redIcon = redVariant.value<QIcon>();
+        const auto redIcon = redVariant.value<QIcon>();
         QVERIFY2(!redIcon.isNull(), "funnel decoration must be present under the red palette");
         const int redPixels = opaquePixelCount(redIcon, qRgb(255, 0, 0));
         QVERIFY2(redPixels > 0, "funnel must paint in the red WindowText colour after the first palette flip");
@@ -8437,7 +8437,7 @@ private slots:
 
         const QVariant blueVariant = model->headerData(msgCol, Qt::Horizontal, Qt::DecorationRole);
         QVERIFY(blueVariant.canConvert<QIcon>());
-        const QIcon blueIcon = blueVariant.value<QIcon>();
+        const auto blueIcon = blueVariant.value<QIcon>();
         QVERIFY2(!blueIcon.isNull(), "funnel decoration must be present under the blue palette");
         const int bluePixels = opaquePixelCount(blueIcon, qRgb(0, 0, 255));
         QVERIFY2(bluePixels > 0, "funnel must repaint in the blue WindowText colour after a palette flip");
