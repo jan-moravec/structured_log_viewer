@@ -10695,6 +10695,848 @@ private slots:
         QCOMPARE(toolbar->allowedAreas(), Qt::ToolBarAreas(Qt::AllToolBarAreas));
     }
 
+    // Item 1: the persistent primary toolbar exists, is movable, and
+    // sits in the top dock area. `objectName` is the contract that
+    // `restoreState()` keys on; if it ever drifts we lose persisted
+    // dock geometry across restarts.
+    void TestMainToolbarExistsMovableAndOnTop()
+    {
+        auto *toolbar = mWindow->findChild<QToolBar *>(QStringLiteral("mainToolbar"));
+        QVERIFY2(toolbar != nullptr, "MainWindow must own the primary toolbar");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QVERIFY2(toolbar->isMovable(), "primary toolbar must be user-movable");
+        QCOMPARE(toolbar->allowedAreas(), Qt::ToolBarAreas(Qt::AllToolBarAreas));
+        QCOMPARE(mWindow->toolBarArea(toolbar), Qt::TopToolBarArea);
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Item 1: `insertToolBar(mStreamToolbar, mMainToolbar)` puts the
+    // primary toolbar ahead of the stream toolbar in the top dock
+    // area, so the combined strip reads "Main | Stream" left to
+    // right when streaming. Regressed shape would be "Stream | Main"
+    // which looks broken when a live-tail session starts.
+    void TestMainToolbarPrecedesStreamToolbar()
+    {
+        auto *mainBar = mWindow->findChild<QToolBar *>(QStringLiteral("mainToolbar"));
+        auto *streamBar = mWindow->findChild<QToolBar *>(QStringLiteral("streamToolbar"));
+        QVERIFY2(mainBar != nullptr, "MainWindow must own the primary toolbar");
+        QVERIFY2(streamBar != nullptr, "MainWindow must own the stream toolbar");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QCOMPARE(mWindow->toolBarArea(mainBar), Qt::TopToolBarArea);
+        QCOMPARE(mWindow->toolBarArea(streamBar), Qt::TopToolBarArea);
+
+        // Walk top-level toolbars in the window's child order; the
+        // primary toolbar must appear before the stream toolbar.
+        // `findChildren<QToolBar*>` returns children in the order
+        // they were `addChild`-ed (which is the `insertToolBar` /
+        // `addToolBar` order). The pre-existing `streamToolbar`
+        // child was added first, but `insertToolBar` re-parents the
+        // new bar ahead of it in the dock area, which is what
+        // `QMainWindow` queries to lay them out.
+        const QList<QToolBar *> bars = mWindow->findChildren<QToolBar *>(QString{}, Qt::FindDirectChildrenOnly);
+        const int mainIdx = static_cast<int>(bars.indexOf(mainBar));
+        const int streamIdx = static_cast<int>(bars.indexOf(streamBar));
+        QVERIFY2(mainIdx >= 0, "primary toolbar must be a direct child of MainWindow");
+        QVERIFY2(streamIdx >= 0, "stream toolbar must be a direct child of MainWindow");
+
+        // X coordinates (in window space) are the most reliable
+        // visual-order witness because both bars share the top
+        // dock area row. The stream toolbar starts hidden, so we
+        // force it visible for the geometry probe and restore
+        // afterwards. Showing the window + `qWaitForWindowExposed`
+        // is what makes the layout deterministic across hosts --
+        // an offscreen-platform fixture that never enters the
+        // event loop has been observed to leave both bars at x=0
+        // until something exposes the window.
+        const bool windowWasVisible = mWindow->isVisible();
+        const bool streamWasVisible = streamBar->isVisible();
+        streamBar->setVisible(true);
+        mWindow->show();
+        QVERIFY(QTest::qWaitForWindowExposed(mWindow, 5000));
+        mWindow->adjustSize();
+        QCoreApplication::processEvents();
+        QVERIFY2(
+            mainBar->x() < streamBar->x(),
+            qPrintable(QStringLiteral("main toolbar (x=%1) must precede stream toolbar (x=%2)")
+                           .arg(mainBar->x())
+                           .arg(streamBar->x()))
+        );
+        streamBar->setVisible(streamWasVisible);
+        if (!windowWasVisible)
+        {
+            mWindow->hide();
+        }
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Item 1: the primary toolbar exposes the agreed action set in
+    // the agreed order. Pinned against drift -- any future tweak
+    // (re-order, remove, add) has to update this list deliberately
+    // rather than slipping into the diff.
+    void TestMainToolbarActionsInOrder()
+    {
+        auto *toolbar = mWindow->findChild<QToolBar *>(QStringLiteral("mainToolbar"));
+        QVERIFY2(toolbar != nullptr, "MainWindow must own the primary toolbar");
+
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        // Sentinel values: `__sep` for a `QAction::isSeparator()`
+        // boundary, `__widget` for an `addWidget`-inserted custom
+        // control (split button, spacer). Comparing in two stages
+        // keeps the assertion message readable.
+        const QStringList expected = {
+            QStringLiteral("actionOpen"),
+            QStringLiteral("__widget"), // openStreamSplitButton
+            QStringLiteral("__sep"),
+            QStringLiteral("__widget"), // addFilterSplitButton
+            QStringLiteral("__widget"), // clearFiltersSplitButton
+            QStringLiteral("__sep"),
+            QStringLiteral("actionToggleFind"),
+            QStringLiteral("actionToggleRecordDetails"),
+            QStringLiteral("actionToggleAnchors"),
+            QStringLiteral("__widget"), // expanding spacer
+            QStringLiteral("actionPreferences"),
+        };
+
+        QStringList actual;
+        for (const QAction *act : toolbar->actions())
+        {
+            if (act == nullptr)
+            {
+                actual.append(QStringLiteral("<null>"));
+                continue;
+            }
+            if (act->isSeparator())
+            {
+                actual.append(QStringLiteral("__sep"));
+                continue;
+            }
+            const QString name = act->objectName();
+            if (name.isEmpty())
+            {
+                // Toolbar `addWidget` registers an internal action whose
+                // `objectName` is empty; treat it as a widget marker.
+                actual.append(QStringLiteral("__widget"));
+                continue;
+            }
+            actual.append(name);
+        }
+
+        QCOMPARE(actual, expected);
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Item 1: the "Open Stream" split button surfaces the log-stream
+    // action on its primary face and the network-stream action in
+    // its dropdown. Validates both the default-action wiring and the
+    // popup-menu population so a `setDefaultAction` regression (no
+    // icon on the button) or a missing menu entry would be caught
+    // separately.
+    void TestOpenStreamSplitButtonPopup()
+    {
+        auto *button = mWindow->findChild<QToolButton *>(QStringLiteral("openStreamSplitButton"));
+        QVERIFY2(button != nullptr, "primary toolbar must host the open-stream split button");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QCOMPARE(button->popupMode(), QToolButton::MenuButtonPopup);
+
+        const QAction *defaultAction = button->defaultAction();
+        QVERIFY2(defaultAction != nullptr, "split button must have a default action");
+        QCOMPARE(defaultAction->objectName(), QStringLiteral("actionOpenLogStream"));
+
+        const QMenu *menu = button->menu();
+        QVERIFY2(menu != nullptr, "split button must have a popup menu");
+        QStringList menuNames;
+        for (const QAction *act : menu->actions())
+        {
+            menuNames.append(act != nullptr ? act->objectName() : QStringLiteral("<null>"));
+        }
+        QCOMPARE(
+            menuNames, (QStringList{QStringLiteral("actionOpenLogStream"), QStringLiteral("actionOpenNetworkStream")})
+        );
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Regression for the split-button blank-icon bug: the split
+    // button was added to the toolbar via `addWidget`, which wraps
+    // it in an internal `QWidgetAction` that does NOT appear in
+    // `mMainToolbar->actions()`. The first cut of `RefreshThemedIcons`
+    // iterated only the toolbar's `actions()` list, so
+    // `actionOpenLogStream` (tagged with `svgIconPath`) was never
+    // reached; the split button's `setDefaultAction` sync therefore
+    // pulled an empty icon and the button rendered as a blank box.
+    // The corresponding `actionOpenNetworkStream` entry in the
+    // dropdown menu had the same problem.
+    //
+    // We now route every themed action through `mThemedActions`
+    // (anchor-driven, not toolbar-iteration-driven). Three asserts
+    // pin the contract: both underlying actions carry a non-empty
+    // icon, AND the button face (synced from the default action)
+    // renders one too. Any future refactor that reverts to the
+    // toolbar-iteration shape would lose one or more of these.
+    void TestOpenStreamSplitButtonAndMenuHaveThemedIcons()
+    {
+        auto *button = mWindow->findChild<QToolButton *>(QStringLiteral("openStreamSplitButton"));
+        auto *openLog = mWindow->findChild<QAction *>(QStringLiteral("actionOpenLogStream"));
+        auto *openNet = mWindow->findChild<QAction *>(QStringLiteral("actionOpenNetworkStream"));
+        QVERIFY2(button != nullptr, "primary toolbar must host the open-stream split button");
+        QVERIFY2(openLog != nullptr, "actionOpenLogStream must exist");
+        QVERIFY2(openNet != nullptr, "actionOpenNetworkStream must exist");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QVERIFY2(
+            !openLog->icon().isNull(),
+            "actionOpenLogStream must carry a themed icon (split button's default-action icon source)"
+        );
+        QVERIFY2(
+            !openNet->icon().isNull(),
+            "actionOpenNetworkStream must carry a themed icon (popup-menu entry next to Log Stream)"
+        );
+        // QToolButton::setDefaultAction syncs the action's icon
+        // onto the button; an empty action icon would land an
+        // empty button icon. Asserting on the button face directly
+        // catches the visual regression even if the sync is ever
+        // re-routed.
+        QVERIFY2(!button->icon().isNull(), "split button face must render a non-empty icon");
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Companion regression for the split-button blank-icon bug:
+    // it is not enough that the icons are non-null at construction.
+    // The original bug also meant a Light <-> Dark flip would
+    // leave the (initial-tint) icon stale while every other
+    // toolbar action repainted. Pinning palette tracking on
+    // `actionOpenLogStream` specifically guards against a future
+    // refactor that keeps the constructor-time tint but drops the
+    // refresh hook for this action.
+    void TestOpenStreamActionsTrackPalette()
+    {
+        auto *toolbar = mWindow->findChild<QToolBar *>(QStringLiteral("mainToolbar"));
+        auto *openLog = mWindow->findChild<QAction *>(QStringLiteral("actionOpenLogStream"));
+        QVERIFY2(toolbar != nullptr, "MainWindow must own the primary toolbar");
+        QVERIFY2(openLog != nullptr, "actionOpenLogStream must exist");
+
+        // Match the AA-tolerant pixel walk used by
+        // `TestMainToolbarIconsTrackPalette`; kept inline rather
+        // than hoisted so a future cleanup that drops one test
+        // doesn't leave the other one referencing a vanished helper.
+        auto opaquePixelCount = [](const QIcon &icon, QRgb expected) -> int {
+            const QSize size{20, 20};
+            const QImage img = icon.pixmap(size).toImage().convertToFormat(QImage::Format_ARGB32);
+            int matching = 0;
+            for (int y = 0; y < img.height(); ++y)
+            {
+                for (int x = 0; x < img.width(); ++x)
+                {
+                    const QRgb px = img.pixel(x, y);
+                    if (qAlpha(px) < 128)
+                    {
+                        continue;
+                    }
+                    constexpr int CHANNEL_TOLERANCE = 32;
+                    if (std::abs(qRed(px) - qRed(expected)) <= CHANNEL_TOLERANCE &&
+                        std::abs(qGreen(px) - qGreen(expected)) <= CHANNEL_TOLERANCE &&
+                        std::abs(qBlue(px) - qBlue(expected)) <= CHANNEL_TOLERANCE)
+                    {
+                        ++matching;
+                    }
+                }
+            }
+            return matching;
+        };
+
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QPalette greenPalette = toolbar->palette();
+        greenPalette.setColor(QPalette::Active, QPalette::WindowText, QColor(0, 200, 0));
+        greenPalette.setColor(QPalette::Inactive, QPalette::WindowText, QColor(0, 200, 0));
+        toolbar->setPalette(greenPalette);
+        mWindow->setPalette(greenPalette);
+        QCoreApplication::processEvents();
+        QVERIFY2(
+            opaquePixelCount(openLog->icon(), qRgb(0, 200, 0)) > 0,
+            "actionOpenLogStream icon must repaint in the palette WindowText colour"
+        );
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Shape contract for the Add-filter split button: it must be
+    // a `MenuButtonPopup` `QToolButton` whose default action is
+    // the bare `actionAddFilter` (so a click on the face still
+    // opens the generic editor, preserving the pre-split UX) and
+    // whose dropdown menu carries the `addFilterSplitMenu`
+    // objectName the per-column tests find by.
+    //
+    // Pinned so a future cleanup that drops the dropdown and
+    // reverts to a bare `addAction(actionAddFilter)` would trip
+    // here, not silently regress the per-column shortcut.
+    void TestAddFilterSplitButtonShape()
+    {
+        auto *button = mWindow->findChild<QToolButton *>(QStringLiteral("addFilterSplitButton"));
+        QVERIFY2(button != nullptr, "primary toolbar must host the add-filter split button");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QCOMPARE(button->popupMode(), QToolButton::MenuButtonPopup);
+
+        const QAction *defaultAction = button->defaultAction();
+        QVERIFY2(defaultAction != nullptr, "split button must have a default action");
+        QCOMPARE(defaultAction->objectName(), QStringLiteral("actionAddFilter"));
+
+        const QMenu *menu = button->menu();
+        QVERIFY2(menu != nullptr, "split button must have a popup menu");
+        QCOMPARE(menu->objectName(), QStringLiteral("addFilterSplitMenu"));
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // The Add-filter dropdown lists every *visible* column under
+    // `Add filter on "<col>"…`. Verifies both the population
+    // (one entry per visible column, in column order) and the
+    // hidden-column filter (toggling a column hidden must drop
+    // its entry on the next open, mirroring the header
+    // right-click which refuses to expose hidden columns).
+    void TestAddFilterDropdownListsVisibleColumns()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "fixture must produce columns");
+
+        auto *menu = mWindow->findChild<QMenu *>(QStringLiteral("addFilterSplitMenu"));
+        QVERIFY2(menu != nullptr, "add-filter dropdown must exist");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        // `aboutToShow` is the production rebuild trigger; firing
+        // it directly is what every other rebuild-on-show test
+        // does (`TestMainToolbarToggleAppearsInViewMenu`,
+        // `RebuildViewMenu` tests).
+        emit menu->aboutToShow();
+
+        QStringList entryTexts;
+        for (const QAction *act : menu->actions())
+        {
+            entryTexts.append(act != nullptr ? act->text() : QStringLiteral("<null>"));
+        }
+        QVERIFY2(!entryTexts.isEmpty(), "dropdown must list at least one column after streaming a fixture");
+        for (const QString &text : entryTexts)
+        {
+            QVERIFY2(
+                text.startsWith(QStringLiteral("Add filter on")),
+                "every dropdown entry must follow the `Add filter on \"<col>\"...` shape"
+            );
+        }
+
+        // Hide the `level` column and re-open: its entry must
+        // drop. Cross-checks the visible-only filter.
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "fixture must expose `msg` column");
+        mWindow->SetColumnVisible(msgCol, false);
+        emit menu->aboutToShow();
+
+        for (const QAction *act : menu->actions())
+        {
+            QVERIFY2(
+                !act->text().contains(QStringLiteral("\"msg\"")),
+                "hidden column must not surface in the dropdown after hide"
+            );
+        }
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Triggering an `Add filter on "<col>"…` dropdown entry opens
+    // a `FilterEditor` with the row combobox pre-pointed at the
+    // clicked column -- same contract the header right-click
+    // `TestHeaderContextMenuAddFilterOpensEditorWithColumnPreselected`
+    // pins, replicated for the toolbar entry point so a refactor
+    // that changes the `AddFilter` signature can't silently break
+    // the new shortcut without tripping a test.
+    void TestAddFilterDropdownTriggerPreselectsColumn()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "fixture must produce columns");
+
+        auto *menu = mWindow->findChild<QMenu *>(QStringLiteral("addFilterSplitMenu"));
+        QVERIFY2(menu != nullptr, "add-filter dropdown must exist");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        emit menu->aboutToShow();
+
+        QAction *categoryEntry = nullptr;
+        for (QAction *act : menu->actions())
+        {
+            if (act != nullptr && act->text().contains(QStringLiteral("\"category\"")))
+            {
+                categoryEntry = act;
+                break;
+            }
+        }
+        QVERIFY2(categoryEntry != nullptr, "dropdown must offer an entry for the `category` column");
+
+        categoryEntry->trigger();
+        QCoreApplication::processEvents();
+
+        FilterEditor *editor = nullptr;
+        for (QWidget *widget : QApplication::topLevelWidgets())
+        {
+            if (auto *e = qobject_cast<FilterEditor *>(widget))
+            {
+                editor = e;
+                break;
+            }
+        }
+        QVERIFY2(editor != nullptr, "triggering a dropdown entry must spawn a FilterEditor");
+        QCOMPARE(editor->GetRowToFilter(), levelCol);
+        editor->close();
+        editor->deleteLater();
+        QCoreApplication::processEvents();
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Shape contract for the Clear-filters split button, mirrors
+    // `TestAddFilterSplitButtonShape`: pinned so a revert to the
+    // bare `addAction(actionClearAllFilters)` would trip here.
+    void TestClearFiltersSplitButtonShape()
+    {
+        auto *button = mWindow->findChild<QToolButton *>(QStringLiteral("clearFiltersSplitButton"));
+        QVERIFY2(button != nullptr, "primary toolbar must host the clear-filters split button");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QCOMPARE(button->popupMode(), QToolButton::MenuButtonPopup);
+
+        const QAction *defaultAction = button->defaultAction();
+        QVERIFY2(defaultAction != nullptr, "split button must have a default action");
+        QCOMPARE(defaultAction->objectName(), QStringLiteral("actionClearAllFilters"));
+
+        const QMenu *menu = button->menu();
+        QVERIFY2(menu != nullptr, "split button must have a popup menu");
+        QCOMPARE(menu->objectName(), QStringLiteral("clearFiltersSplitMenu"));
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // With zero filters the Clear-filters dropdown must still
+    // surface a `(no filters)` placeholder rather than open as a
+    // blank box. The placeholder is disabled (no-op click), but
+    // its presence makes the empty state self-explanatory on the
+    // styles where the menu arrow remains clickable while the
+    // face button is disabled.
+    void TestClearFiltersDropdownPlaceholderWhenEmpty()
+    {
+        auto *menu = mWindow->findChild<QMenu *>(QStringLiteral("clearFiltersSplitMenu"));
+        QVERIFY2(menu != nullptr, "clear-filters dropdown must exist");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(0));
+        emit menu->aboutToShow();
+
+        const QList<QAction *> entries = menu->actions();
+        QCOMPARE(entries.size(), 1);
+        QVERIFY2(!entries.front()->isEnabled(), "empty-state placeholder must be disabled (no-op)");
+        QVERIFY2(
+            entries.front()->text().contains(QStringLiteral("no filters")),
+            "empty-state placeholder text must mention `no filters`"
+        );
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // The Clear-filters dropdown lists one entry per active
+    // filter, grouped by column index then sorted by title.
+    // Seeds two filters on `level` and one on `msg`, verifies all
+    // three appear with the `Remove "<col>": <title>` shape, and
+    // pins the column-grouping order so a future user-visible
+    // sort change here trips the test instead of silently
+    // shuffling the menu.
+    void TestClearFiltersDropdownListsActiveFilters()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "fixture must produce columns");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "fixture must expose `msg` column");
+
+        const QString levelFilterInfo = QStringLiteral("clear-list-level-info");
+        const QString levelFilterWarn = QStringLiteral("clear-list-level-warn");
+        const QString msgFilter = QStringLiteral("clear-list-msg");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, levelFilterInfo),
+                Q_ARG(int, levelCol),
+                Q_ARG(QStringList, QStringList{QStringLiteral("info")})
+            ),
+            "FilterEnumSubmitted must be invocable"
+        );
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, levelFilterWarn),
+                Q_ARG(int, levelCol),
+                Q_ARG(QStringList, QStringList{QStringLiteral("warn")})
+            ),
+            "FilterEnumSubmitted must be invocable"
+        );
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, msgFilter),
+                Q_ARG(int, msgCol),
+                Q_ARG(QString, QStringLiteral("m1")),
+                Q_ARG(int, static_cast<int>(loglib::LogConfiguration::LogFilter::Match::Contains))
+            ),
+            "FilterSubmitted must be invocable"
+        );
+        QCoreApplication::processEvents();
+        QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(3));
+
+        auto *menu = mWindow->findChild<QMenu *>(QStringLiteral("clearFiltersSplitMenu"));
+        QVERIFY2(menu != nullptr, "clear-filters dropdown must exist");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        emit menu->aboutToShow();
+
+        const QList<QAction *> entries = menu->actions();
+        QCOMPARE(entries.size(), 3);
+
+        // ObjectName carries the UUID, so find by id rather than
+        // by display text. Cheaper to reason about and survives
+        // a label tweak.
+        QStringList entryIds;
+        QStringList entryTexts;
+        for (const QAction *act : entries)
+        {
+            entryIds.append(act->objectName());
+            entryTexts.append(act->text());
+        }
+        QVERIFY2(entryIds.contains(levelFilterInfo), "dropdown must contain the level=info filter");
+        QVERIFY2(entryIds.contains(levelFilterWarn), "dropdown must contain the level=warn filter");
+        QVERIFY2(entryIds.contains(msgFilter), "dropdown must contain the msg=m1 filter");
+        for (const QString &text : entryTexts)
+        {
+            QVERIFY2(
+                text.startsWith(QStringLiteral("Remove \"")),
+                "every entry must follow the `Remove \"<col>\": <title>` shape"
+            );
+        }
+
+        // Grouping check: the two `level` filters must sit
+        // adjacent (column-row primary sort), so the `msg` entry
+        // is either the first or the last entry, never sandwiched
+        // between the level entries.
+        const qsizetype msgIdx = entryIds.indexOf(msgFilter);
+        QVERIFY2(
+            msgIdx == 0 || msgIdx == entries.size() - 1,
+            "msg-column filter must not split the level-column group (column grouping)"
+        );
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Triggering one entry in the Clear-filters dropdown removes
+    // *only* that filter -- the rest stay. Guards the "let me
+    // drop just one filter without nuking the whole set" promise
+    // the dropdown sells.
+    void TestClearFiltersDropdownTriggerRemovesSingleFilter()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "fixture must produce columns");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "fixture must expose `msg` column");
+
+        const QString keepId = QStringLiteral("single-remove-keep");
+        const QString dropId = QStringLiteral("single-remove-drop");
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterEnumSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, keepId),
+                Q_ARG(int, levelCol),
+                Q_ARG(QStringList, QStringList{QStringLiteral("info")})
+            ),
+            "FilterEnumSubmitted must be invocable"
+        );
+        QVERIFY2(
+            QMetaObject::invokeMethod(
+                mWindow,
+                "FilterSubmitted",
+                Qt::DirectConnection,
+                Q_ARG(QString, dropId),
+                Q_ARG(int, msgCol),
+                Q_ARG(QString, QStringLiteral("noise")),
+                Q_ARG(int, static_cast<int>(loglib::LogConfiguration::LogFilter::Match::Contains))
+            ),
+            "FilterSubmitted must be invocable"
+        );
+        QCoreApplication::processEvents();
+        QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(2));
+
+        auto *menu = mWindow->findChild<QMenu *>(QStringLiteral("clearFiltersSplitMenu"));
+        QVERIFY2(menu != nullptr, "clear-filters dropdown must exist");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        emit menu->aboutToShow();
+
+        QAction *dropEntry = nullptr;
+        for (QAction *act : menu->actions())
+        {
+            if (act != nullptr && act->objectName() == dropId)
+            {
+                dropEntry = act;
+                break;
+            }
+        }
+        QVERIFY2(dropEntry != nullptr, "dropdown must carry an entry for the filter we want to drop");
+
+        dropEntry->trigger();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(mWindow->Filters().size(), static_cast<size_t>(1));
+        QVERIFY2(
+            mWindow->Filters().contains(keepId.toStdString()),
+            "the un-triggered filter must survive a single-entry remove"
+        );
+        QVERIFY2(
+            !mWindow->Filters().contains(dropId.toStdString()),
+            "the triggered filter must be gone after a single-entry remove"
+        );
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Item 1: `RebuildViewMenu` re-adds the primary toolbar's
+    // `toggleViewAction` on every menu open. Without this the user
+    // who hid the toolbar would have no discoverable way to bring
+    // it back (no Ctrl shortcut, no other UI affordance).
+    void TestMainToolbarToggleAppearsInViewMenu()
+    {
+        auto *viewMenu = mWindow->findChild<QMenu *>(QStringLiteral("menuView"));
+        QVERIFY2(viewMenu != nullptr, "View menu must exist");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        emit viewMenu->aboutToShow();
+
+        QAction *toggle = nullptr;
+        for (QAction *act : viewMenu->actions())
+        {
+            if (act != nullptr && act->objectName() == QStringLiteral("actionToggleMainToolbar"))
+            {
+                toggle = act;
+                break;
+            }
+        }
+        QVERIFY2(toggle != nullptr, "View menu must contain the primary-toolbar toggle");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QVERIFY2(toggle->isCheckable(), "primary-toolbar toggle must be checkable");
+
+        auto *toolbar = mWindow->findChild<QToolBar *>(QStringLiteral("mainToolbar"));
+        QVERIFY2(toolbar != nullptr, "MainWindow must own the primary toolbar");
+
+        // `QToolBar::toggleViewAction()`'s internal slot is gated
+        // on `q->isHidden()` (Qt source) -- the toolbar must be
+        // genuinely realised on screen for the toggle to flip
+        // anything, otherwise the slot short-circuits. Realise the
+        // window the same way the find-bar / record-detail tests
+        // do, then re-fetch the toggle (it caches the action on
+        // first call, and the cached `isChecked` reflects the
+        // pre-show visibility otherwise).
+        mWindow->show();
+        QVERIFY(QTest::qWaitForWindowExposed(mWindow, 5000));
+        QCoreApplication::processEvents();
+
+        emit viewMenu->aboutToShow();
+        toggle = nullptr;
+        for (QAction *act : viewMenu->actions())
+        {
+            if (act != nullptr && act->objectName() == QStringLiteral("actionToggleMainToolbar"))
+            {
+                toggle = act;
+                break;
+            }
+        }
+        QVERIFY2(toggle != nullptr, "View menu must still contain the primary-toolbar toggle after show");
+
+        const bool startHidden = toolbar->isHidden();
+        QVERIFY2(!startHidden, "primary toolbar must start visible after the window is exposed");
+        QVERIFY2(toggle->isChecked(), "toggle must be checked while the toolbar is visible");
+
+        toggle->trigger();
+        QCoreApplication::processEvents();
+        QVERIFY2(toolbar->isHidden(), "triggering an active toggle must hide the toolbar");
+        QVERIFY2(!toggle->isChecked(), "toggle checked state must follow the toolbar visibility");
+
+        toggle->trigger();
+        QCoreApplication::processEvents();
+        QVERIFY2(!toolbar->isHidden(), "re-triggering must bring the toolbar back");
+        QVERIFY2(toggle->isChecked(), "toggle checked state must follow the toolbar back to visible");
+
+        // Hide the window before returning so later tests in the
+        // same fixture run don't inherit an exposed window (the
+        // offscreen QPA plugin keeps stale exposure state around
+        // until the next show/hide cycle and can confuse
+        // focus-driven tests).
+        mWindow->hide();
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Item 1: toolbar icons are re-rendered via
+    // `icon_loader::MakeThemedIcon` whenever the palette changes,
+    // so a Light <-> Dark theme flip keeps the glyphs visible on
+    // the new background. Without the `changeEvent` /
+    // `OnThemeChanged` hooks the SVGs would stay tinted in the
+    // old `WindowText` colour and disappear after one toggle.
+    void TestMainToolbarIconsTrackPalette()
+    {
+        auto *toolbar = mWindow->findChild<QToolBar *>(QStringLiteral("mainToolbar"));
+        QVERIFY2(toolbar != nullptr, "MainWindow must own the primary toolbar");
+
+        // `actionOpen` is the first non-separator action on the
+        // toolbar and carries the `svgIconPath` property, so it is
+        // guaranteed to be re-tinted by `RefreshThemedIcons`.
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        auto *openAction = mWindow->findChild<QAction *>(QStringLiteral("actionOpen"));
+        QVERIFY2(openAction != nullptr, "actionOpen must exist");
+
+        auto opaquePixelCount = [](const QIcon &icon, QRgb expected) -> int {
+            const QSize size{20, 20};
+            const QImage img = icon.pixmap(size).toImage().convertToFormat(QImage::Format_ARGB32);
+            int matching = 0;
+            for (int y = 0; y < img.height(); ++y)
+            {
+                for (int x = 0; x < img.width(); ++x)
+                {
+                    const QRgb px = img.pixel(x, y);
+                    if (qAlpha(px) < 128)
+                    {
+                        continue;
+                    }
+                    constexpr int CHANNEL_TOLERANCE = 32;
+                    if (std::abs(qRed(px) - qRed(expected)) <= CHANNEL_TOLERANCE &&
+                        std::abs(qGreen(px) - qGreen(expected)) <= CHANNEL_TOLERANCE &&
+                        std::abs(qBlue(px) - qBlue(expected)) <= CHANNEL_TOLERANCE)
+                    {
+                        ++matching;
+                    }
+                }
+            }
+            return matching;
+        };
+
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        // Vivid red palette: every opaque pixel of the tinted icon
+        // must be red (within AA tolerance). A baked icon would
+        // stay neutral grey regardless of the palette and fail.
+        // `setPalette` is applied to the toolbar directly so the
+        // assertion does not depend on Qt's palette-propagation
+        // timing through `QMainWindow -> QToolBar`; `processEvents`
+        // then flushes the resulting `PaletteChange` which
+        // `MainWindow::changeEvent` translates into a refresh.
+        QPalette redPalette = toolbar->palette();
+        redPalette.setColor(QPalette::Active, QPalette::WindowText, QColor(255, 0, 0));
+        redPalette.setColor(QPalette::Inactive, QPalette::WindowText, QColor(255, 0, 0));
+        toolbar->setPalette(redPalette);
+        // Mirror the palette onto the window too, so `MainWindow::
+        // changeEvent` (which is what wires `RefreshThemedIcons`)
+        // actually fires -- a palette set only on the toolbar
+        // would propagate `PaletteChange` to its child widgets,
+        // not back up to the window.
+        mWindow->setPalette(redPalette);
+        QCoreApplication::processEvents();
+        const int redPixels = opaquePixelCount(openAction->icon(), qRgb(255, 0, 0));
+        QVERIFY2(redPixels > 0, "primary toolbar icons must paint in the palette's WindowText colour");
+
+        // Flip to vivid blue: the icon must re-mint -- the real
+        // regression target is the very first theme toggle, which
+        // would leave the cached red pixmap in place if
+        // `RefreshThemedIcons` were not wired into `changeEvent`.
+        QPalette bluePalette = toolbar->palette();
+        bluePalette.setColor(QPalette::Active, QPalette::WindowText, QColor(0, 0, 255));
+        bluePalette.setColor(QPalette::Inactive, QPalette::WindowText, QColor(0, 0, 255));
+        toolbar->setPalette(bluePalette);
+        mWindow->setPalette(bluePalette);
+        QCoreApplication::processEvents();
+        const int bluePixels = opaquePixelCount(openAction->icon(), qRgb(0, 0, 255));
+        QVERIFY2(bluePixels > 0, "primary toolbar icons must repaint after a palette flip");
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Item 1: `actionPauseStream` carries an alternate
+    // `svgIconPathChecked` glyph so the button invites the
+    // opposite transition (pause when running, play when paused),
+    // matching the media-player convention every user already
+    // knows. Without the On-state pixmap the icon would stay on
+    // the pause glyph even while ingestion is paused, leaving the
+    // user with no visual cue that another click will resume.
+    void TestPauseActionSwapsIconOnCheckedState()
+    {
+        auto *pauseAction = mWindow->findChild<QAction *>(QStringLiteral("actionPauseStream"));
+        QVERIFY2(pauseAction != nullptr, "actionPauseStream must exist");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QVERIFY2(pauseAction->isCheckable(), "actionPauseStream must be checkable");
+
+        const QIcon icon = pauseAction->icon();
+        QVERIFY2(!icon.isNull(), "actionPauseStream must carry a themed icon");
+
+        // `QIcon::pixmap(size, Normal, Off/On)` returns the
+        // best-matching pixmap for the requested state. When the
+        // On state has its own registered pixmap the two images
+        // differ; if the override is missing Qt falls back to the
+        // Off pixmap and the images compare equal.
+        const QSize size{20, 20};
+        const QImage offImage = icon.pixmap(size, QIcon::Normal, QIcon::Off).toImage();
+        const QImage onImage = icon.pixmap(size, QIcon::Normal, QIcon::On).toImage();
+        QVERIFY2(!offImage.isNull(), "Off-state pixmap must be available");
+        QVERIFY2(!onImage.isNull(), "On-state pixmap must be available");
+        QVERIFY2(
+            offImage != onImage, "actionPauseStream's checked-state icon must differ from its unchecked-state icon"
+        );
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Item 1: the split button is added via `QToolBar::addWidget`,
+    // which does NOT propagate the toolbar's `iconSize` /
+    // `toolButtonStyle`. We mirror them explicitly in
+    // `BuildMainToolbar`; this test pins that contract so a future
+    // refactor that drops the explicit setters would leave the
+    // split button visually off-size from every other action.
+    void TestOpenStreamSplitButtonMatchesToolbarSizing()
+    {
+        auto *toolbar = mWindow->findChild<QToolBar *>(QStringLiteral("mainToolbar"));
+        QVERIFY2(toolbar != nullptr, "MainWindow must own the primary toolbar");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        auto *button = mWindow->findChild<QToolButton *>(QStringLiteral("openStreamSplitButton"));
+        QVERIFY2(button != nullptr, "primary toolbar must host the open-stream split button");
+        QCOMPARE(button->iconSize(), toolbar->iconSize());
+        QCOMPARE(button->toolButtonStyle(), Qt::ToolButtonIconOnly);
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Item 1: the stream toolbar shares the top dock-area row with
+    // the main toolbar when streaming, so the two must use the
+    // same icon edge length and button style -- otherwise the
+    // combined strip jumps from compact-icon to icon+text mid-row
+    // and looks unfinished. Pinned to catch any future drift.
+    void TestStreamToolbarMirrorsMainToolbarStyle()
+    {
+        auto *mainBar = mWindow->findChild<QToolBar *>(QStringLiteral("mainToolbar"));
+        auto *streamBar = mWindow->findChild<QToolBar *>(QStringLiteral("streamToolbar"));
+        QVERIFY2(mainBar != nullptr, "MainWindow must own the primary toolbar");
+        QVERIFY2(streamBar != nullptr, "MainWindow must own the stream toolbar");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QCOMPARE(streamBar->iconSize(), mainBar->iconSize());
+        QCOMPARE(streamBar->toolButtonStyle(), mainBar->toolButtonStyle());
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Item 1: the File -> Recent Sessions submenu carries the
+    // `file-clock` Lucide glyph so the entry is recognisable at a
+    // glance. The icon is set on the submenu's `menuAction()` and
+    // refreshed through the same `RefreshThemedIcons` pipeline as
+    // toolbar actions, so a Light <-> Dark flip keeps it visible.
+    void TestRecentSessionsMenuHasThemedIcon()
+    {
+        auto *recentMenu = mWindow->findChild<QMenu *>(QStringLiteral("menuRecentSessions"));
+        QVERIFY2(recentMenu != nullptr, "File menu must expose menuRecentSessions");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        const QAction *menuAction = recentMenu->menuAction();
+        QVERIFY2(menuAction != nullptr, "menuRecentSessions must have a menuAction");
+        QVERIFY2(!menuAction->icon().isNull(), "menuRecentSessions menuAction must carry a themed icon");
+        // The path stays as a property so `RefreshThemedIcons` can
+        // re-tint without a per-action switch -- the value here is
+        // the contract checked in `BuildMainToolbar`.
+        QCOMPARE(menuAction->property("svgIconPath").toString(), QStringLiteral(":/icons/file-clock.svg"));
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
     // Regression: the find-bar arrow icons used `SP_ArrowUp` /
     // `SP_ArrowDown`, whose baked-black pixmaps disappeared on dark
     // themes. The icons must follow `QPalette::WindowText`.

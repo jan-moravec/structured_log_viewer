@@ -154,6 +154,9 @@
    <property name="text">
     <string>Copy</string>
    </property>
+   <property name="toolTip">
+    <string>Copy the selected rows (or cells) to the clipboard.</string>
+   </property>
    <property name="shortcut">
     <string>Ctrl+C</string>
    </property>
@@ -168,7 +171,13 @@
   </action>
   <action name="actionAddFilter">
    <property name="text">
-    <string>Add</string>
+    <string>Add Filter...</string>
+   </property>
+   <property name="iconText">
+    <string>Add Filter</string>
+   </property>
+   <property name="toolTip">
+    <string>Add a new filter rule. Click the arrow for a per-column shortcut that preselects the filter type.</string>
    </property>
   </action>
   <action name="actionShow">
@@ -183,12 +192,21 @@
   </action>
   <action name="actionClearAllFilters">
    <property name="text">
-    <string> Clear All</string>
+    <string>Clear All Filters</string>
+   </property>
+   <property name="iconText">
+    <string>Clear All Filters</string>
+   </property>
+   <property name="toolTip">
+    <string>Remove every active filter rule and show every row. Click the arrow to remove a single filter.</string>
    </property>
   </action>
   <action name="actionPreferences">
    <property name="text">
     <string>Preferences...</string>
+   </property>
+   <property name="toolTip">
+    <string>Open the Preferences dialog (theme, streaming retention, display order).</string>
    </property>
   </action>
   <action name="actionToggleRecordDetails">

@@ -118,6 +118,13 @@ function(bundle_third_party_licenses target_name)
         "GPL-3.0 (Qt LGPL incorporates)" "${_BUNDLE_LICENSES_DIR}/license_snippets/gpl-3.0.txt" LICENSE_ENTRIES
     )
 
+    # Lucide ships SVG icons used by the primary toolbar
+    # (`resources/icons/*.svg`). ISC + MIT (the MIT half is for the
+    # Feather-derived icons; both texts are in the same snippet).
+    _bundle_collect_entry(
+        "Lucide icons (ISC + MIT)" "${_BUNDLE_LICENSES_DIR}/license_snippets/lucide.txt" LICENSE_ENTRIES
+    )
+
     # Compose the aggregated file. Generation runs at configure time
     # so the file is ready before the binary's POST_BUILD copy step.
     set(GENERATED_OUT "${CMAKE_BINARY_DIR}/THIRD_PARTY_LICENSES.txt")

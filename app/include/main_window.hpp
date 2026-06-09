@@ -387,6 +387,18 @@ protected:
     bool event(QEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
 
+    /// Re-tint every themed icon on a palette / style / theme /
+    /// DPR change so a Light <-> Dark flip (or a monitor move
+    /// between different scale factors) keeps the Lucide glyphs
+    /// aligned with the new `QPalette::WindowText` and rasterised
+    /// at the new device-pixel ratio. The companion hook in
+    /// `OnThemeChanged` covers application-driven theme switches;
+    /// this hook catches OS-level changes that bypass
+    /// `ThemeControl` (Windows light/dark notification arrives as
+    /// `QEvent::ThemeChange` and may not always be preceded by a
+    /// palette diff). Same idiom as `FindRecordWidget::changeEvent`.
+    void changeEvent(QEvent *event) override;
+
 private slots:
     /// Discard the current session and return to an empty view.
     /// Bound to `actionNewSession` (Ctrl+N).
@@ -786,6 +798,80 @@ private:
     /// names the shortcut, so it's safe to re-run.
     void FinaliseActionMetadata();
 
+    /// Build the persistent primary `QToolBar` and `insertToolBar`
+    /// it ahead of `mStreamToolbar` so the two bars share the top
+    /// dock area as one strip (main first, stream second). Tags
+    /// every populated action with a `svgIconPath` property (and,
+    /// where applicable, `svgIconPathChecked` for a distinct
+    /// On-state glyph) so `RefreshThemedIcons` can re-tint without
+    /// a per-action switch. Called once at the end of the
+    /// constructor, after `mStreamToolbar`, `mActionToggleFind`
+    /// and `mActionToggleAnchors` are wired (every action the
+    /// builder references must already exist) but before
+    /// `RestoreWindowChrome` reads the persisted dock state.
+    void BuildMainToolbar();
+
+    /// Re-render every themed icon at the current palette
+    /// `WindowText` colour and device-pixel ratio. Walks
+    /// `mThemedActions` (every entry was registered with its
+    /// preferred anchor widget at `BuildMainToolbar` time) and
+    /// reads the `svgIconPath` / `svgIconPathChecked` properties
+    /// each action carries. Actions without the property are
+    /// skipped, so it's safe to run before `BuildMainToolbar`
+    /// (no-op when `mMainToolbar` is still null) and idempotent
+    /// under duplicate triggers (theme switch + DPR change firing
+    /// within the same event loop pass).
+    ///
+    /// Anchor-driven (not toolbar-iteration-driven) so actions
+    /// reached through `QToolBar::addWidget` (the open-stream
+    /// split button's default action, its popup-menu entries)
+    /// participate in the refresh -- those are wrapped in an
+    /// internal `QWidgetAction` that does NOT appear in the
+    /// toolbar's `actions()` list and would otherwise be missed,
+    /// leaving the split button blank on theme flip.
+    void RefreshThemedIcons();
+
+    /// Repopulate the Add-filter split-button dropdown with one
+    /// `Add filter on "<col>"…` entry per *visible* column.
+    /// Connected to the menu's `aboutToShow` so the listing
+    /// always reflects the current configuration without us
+    /// having to invalidate it from every column-mutation site
+    /// (`SetColumnVisible`, `OnSourceColumnsMoved`,
+    /// `ColumnsManagerDialog::Accept`, post-stream column
+    /// promotion, …). The clicked entry routes through the same
+    /// `AddFilter(uuid, nullopt, openEditor=true, initialColumn=idx)`
+    /// path the header right-click uses, so column reorders
+    /// between menu build and click resolve via the stable `keys`
+    /// captured in the lambda.
+    ///
+    /// Hidden columns are skipped (`SetInitialColumn` refuses to
+    /// preselect them, mirroring the header context menu) and
+    /// each entry is disabled when the model has no rows
+    /// (`AddFilter` would short-circuit with a status-bar hint).
+    /// An empty configuration produces a single disabled
+    /// `(no columns yet)` placeholder so the dropdown is never
+    /// silently empty.
+    void RebuildAddFilterMenu(QMenu *menu);
+
+    /// Repopulate the Clear-filters split-button dropdown with
+    /// one `Remove "<col>": <title>` entry per active filter,
+    /// grouped by column index then sorted by display title.
+    /// Connected to the menu's `aboutToShow`; we don't have to
+    /// invalidate it from `AddLogFilter` / `ClearFilter` /
+    /// `ClearAllFilters` because the menu is rebuilt every time
+    /// it's opened.
+    ///
+    /// When `mFilters` is empty the menu shows a single disabled
+    /// `(no filters)` placeholder so the dropdown surfaces a
+    /// hint instead of opening blank. (The button's default
+    /// action stays gated by `actionClearAllFilters->setDisabled`
+    /// in the empty-filters branch; on the styles where the
+    /// menu arrow shares the disabled state with the button face
+    /// the dropdown won't open at all -- that's a graceful
+    /// degradation, not a regression, since there's nothing to
+    /// remove.)
+    void RebuildClearFiltersMenu(QMenu *menu);
+
     /// Re-evaluate the stream toolbar's visibility against the current
     /// session mode.
     void UpdateStreamToolbarVisibility();
@@ -973,6 +1059,55 @@ private:
     /// Toolbar holding Pause/Follow tail/Stop; visible only during a
     /// live-tail session.
     QToolBar *mStreamToolbar = nullptr;
+
+    /// Persistent primary toolbar (Open / Filter / View toggles /
+    /// Preferences). Inserted ahead of `mStreamToolbar` in the top
+    /// dock area, so the combined strip reads "Main | Stream"
+    /// left-to-right when both are visible. `QPointer` because
+    /// `RefreshThemedIcons` can be invoked during shutdown after
+    /// Qt has begun tearing down child widgets but before the
+    /// `MainWindow` destructor finishes; a dangling raw pointer
+    /// would crash on the next palette change. `objectName` is
+    /// `mainToolbar` so `restoreState` round-trips its dock area
+    /// and visibility.
+    QPointer<QToolBar> mMainToolbar;
+
+    /// One themed action plus the widget that drives its tinting
+    /// policy (palette / iconSize / DPR). Used by
+    /// `RefreshThemedIcons` as the single registry of "actions
+    /// that need re-tinting on palette / theme / DPR change".
+    ///
+    /// The anchor is a hint, not an ownership relation: most
+    /// toolbar actions point at their host toolbar so the pixmap
+    /// is rasterised at the toolbar's exact `iconSize` (avoiding
+    /// downsample on platforms whose style reports a larger
+    /// `PM_LargeIconSize`). Actions reached only via menus
+    /// (`menuRecentSessions`) point at the window because there
+    /// is no toolbar to anchor against.
+    ///
+    /// Both fields are `QPointer` so an action / widget torn down
+    /// out of order during shutdown surfaces as null instead of
+    /// dangling.
+    struct ThemedActionEntry
+    {
+        QPointer<QAction> action;
+        QPointer<QWidget> anchor;
+    };
+
+    /// Every action whose icon is generated by `icon_loader` and
+    /// needs re-tinting on palette / theme / DPR change.
+    /// Populated once by `BuildMainToolbar`; cleared on rebuild
+    /// for idempotency. Includes:
+    ///   * Main-toolbar actions (anchor = `mMainToolbar`).
+    ///   * Stream-toolbar actions (anchor = `mStreamToolbar`).
+    ///   * Open-stream split button's default + dropdown actions
+    ///     (anchor = `mMainToolbar`) -- these would be missed by
+    ///     a toolbar-iteration refresh because `addWidget` wraps
+    ///     the button in an internal `QWidgetAction` and the
+    ///     underlying action is not in `toolbar->actions()`.
+    ///   * `File -> Recent Sessions` submenu indicator (anchor =
+    ///     `this`) and any other future menu-only themed action.
+    QList<ThemedActionEntry> mThemedActions;
 
     /// Ctrl+/ action that opens the shortcuts reference dialog.
     QAction *mActionShowShortcuts = nullptr;

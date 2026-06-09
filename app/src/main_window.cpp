@@ -5,6 +5,7 @@
 #include "columns_manager_dialog.hpp"
 #include "configuration_diagnostics_dialog.hpp"
 #include "filter_editor.hpp"
+#include "icon_loader.hpp"
 #include "log_warning.hpp"
 #include "network_stream_dialog.hpp"
 #include "qt_streaming_log_sink.hpp"
@@ -54,6 +55,7 @@
 #include <QScopeGuard>
 #include <QSettings>
 #include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QStatusBar>
@@ -61,8 +63,11 @@
 #include <QStyle>
 #include <QTableView>
 #include <QTimer>
+#include <QToolBar>
+#include <QToolButton>
 #include <QUuid>
 #include <QVBoxLayout>
+#include <QVariant>
 
 #include <algorithm>
 #include <exception>
@@ -1111,6 +1116,15 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
 
     // Run after every action is wired so they can all be decorated in one pass.
     FinaliseActionMetadata();
+
+    // Persistent primary toolbar. Built after every referenced
+    // action exists -- both .ui actions (`ui->action*`) and the
+    // programmatic dock toggles (`mActionToggleFind`,
+    // `mActionToggleAnchors`) and `mStreamToolbar` (the new bar
+    // is inserted ahead of it) -- and before `RestoreWindowChrome`
+    // so the persisted state can place the toolbar in its saved
+    // dock area.
+    BuildMainToolbar();
 
     // Run after every dock/toolbar has its `objectName` so `restoreState`
     // can resolve them. No-op on first launch.
@@ -2857,6 +2871,486 @@ void MainWindow::StopLiveTailTicker()
     }
     // Leave `mLiveTailTimer` armed so the final status line can still report
     // the session length. It's restarted on the next live-tail open.
+}
+
+void MainWindow::BuildMainToolbar()
+{
+    // Two adjacent toolbars on the same row: the new primary
+    // toolbar hosts the persistent actions, and `mStreamToolbar`
+    // continues to surface only during live-tail. `insertToolBar`
+    // lands the new bar *before* the stream bar in the top dock
+    // area, so the combined strip reads "Main | Stream"
+    // left-to-right when both are visible.
+    mMainToolbar = new QToolBar(tr("Main"), this);
+    mMainToolbar->setObjectName(QStringLiteral("mainToolbar"));
+    mMainToolbar->setMovable(true);
+    mMainToolbar->setAllowedAreas(Qt::AllToolBarAreas);
+    // Icon-only keeps the bar compact; `FinaliseActionMetadata`
+    // has already populated each action's tooltip with the
+    // shortcut, so hover-help still names what every button does.
+    mMainToolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    // 20px is `PM_LargeIconSize` on Windows / macOS; pinning the
+    // edge length keeps the bar visually consistent even when a
+    // theme swaps the active `QStyle` (which can shift the metric).
+    constexpr int TOOLBAR_ICON_PX = 20;
+    const QSize toolbarIconSize{TOOLBAR_ICON_PX, TOOLBAR_ICON_PX};
+    mMainToolbar->setIconSize(toolbarIconSize);
+
+    insertToolBar(mStreamToolbar, mMainToolbar);
+
+    // Stream toolbar shares the row, so mirror the visual policy:
+    // icon-only + matching icon edge length. The actions on the
+    // stream toolbar get themed icons below; without this the
+    // combined strip would jump from compact-icon (main) to
+    // icon+text (stream) mid-row and look unfinished. Tooltips
+    // (assigned in the .ui) still name each button on hover.
+    if (mStreamToolbar != nullptr)
+    {
+        mStreamToolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        mStreamToolbar->setIconSize(toolbarIconSize);
+    }
+
+    // Stash the SVG path on each action AND register it in
+    // `mThemedActions` paired with the widget that will drive its
+    // render policy (palette / iconSize / DPR). `RefreshThemedIcons`
+    // walks the registry rather than `QToolBar::actions()`, so
+    // actions reached through `addWidget` (the split button's
+    // default action, its dropdown menu entries) participate in
+    // the refresh -- without this they would be wrapped in an
+    // internal `QWidgetAction` invisible to a toolbar-iteration
+    // refresh and the split button would render blank.
+    //
+    // Actions without an `svgIconPath` property are skipped by the
+    // refresh loop, so future actions that ship their own QIcon
+    // don't accidentally get clobbered.
+    //
+    // `svgIconPathChecked` is a second optional property for
+    // checkable actions whose On state needs a different glyph
+    // (e.g. Pause -> Play when paused). When absent the refresh
+    // loop reuses the Off pixmap for the On state, so most actions
+    // need only the single tag.
+    //
+    // `mThemedActions.clear()` defends against any future caller
+    // that ever runs `BuildMainToolbar` twice: without it the
+    // registry would grow duplicate entries and `RefreshThemedIcons`
+    // would do redundant work, plus stale-anchor entries (the
+    // first build's toolbar is gone) would litter the list.
+    mThemedActions.clear();
+    const auto tag =
+        [this](QAction *action, QWidget *anchor, const QString &resourcePath, const QString &checkedResourcePath = {}) {
+            if (action == nullptr)
+            {
+                return;
+            }
+            action->setProperty("svgIconPath", resourcePath);
+            if (!checkedResourcePath.isEmpty())
+            {
+                action->setProperty("svgIconPathChecked", checkedResourcePath);
+            }
+            mThemedActions.append({.action = QPointer<QAction>(action), .anchor = QPointer<QWidget>(anchor)});
+        };
+
+    tag(ui->actionOpen, mMainToolbar, QStringLiteral(":/icons/folder-open.svg"));
+    // The open-stream actions live behind the split button (added
+    // via `addWidget` below). Anchor them to `mMainToolbar` so
+    // their pixmaps are rasterised at the toolbar's iconSize and
+    // the split button's default-action sync picks up a non-empty
+    // icon. `actionOpenNetworkStream` only appears in the popup
+    // menu but is anchored to the toolbar too so its size matches
+    // the rest of the strip and theme flips refresh it through
+    // the same loop.
+    tag(ui->actionOpenLogStream, mMainToolbar, QStringLiteral(":/icons/square-play.svg"));
+    tag(ui->actionOpenNetworkStream, mMainToolbar, QStringLiteral(":/icons/radio-tower.svg"));
+    tag(ui->actionAddFilter, mMainToolbar, QStringLiteral(":/icons/funnel-plus.svg"));
+    tag(ui->actionClearAllFilters, mMainToolbar, QStringLiteral(":/icons/funnel-x.svg"));
+    tag(mActionToggleFind, mMainToolbar, QStringLiteral(":/icons/search.svg"));
+    tag(ui->actionToggleRecordDetails, mMainToolbar, QStringLiteral(":/icons/panel-right-open.svg"));
+    tag(mActionToggleAnchors, mMainToolbar, QStringLiteral(":/icons/bookmark.svg"));
+    tag(ui->actionPreferences, mMainToolbar, QStringLiteral(":/icons/settings-2.svg"));
+    // Stream toolbar gets the same treatment so the combined strip
+    // looks uniform when both bars are visible. Pause is the one
+    // action where the On state is semantically distinct from Off
+    // (paused vs running), so we override its checked glyph with
+    // the play icon -- users expect the button to invite the
+    // opposite transition, mirroring media-player conventions.
+    tag(ui->actionPauseStream,
+        mStreamToolbar,
+        QStringLiteral(":/icons/pause.svg"),
+        QStringLiteral(":/icons/square-play.svg"));
+    tag(ui->actionFollowTail, mStreamToolbar, QStringLiteral(":/icons/arrow-down-to-line.svg"));
+    tag(ui->actionStopStream, mStreamToolbar, QStringLiteral(":/icons/square.svg"));
+
+    mMainToolbar->addAction(ui->actionOpen);
+
+    // Split button: primary click opens the log-file stream; the
+    // dropdown surfaces the network variant. `MenuButtonPopup`
+    // (not `InstantPopup`) keeps the more-common log path one
+    // click away while making the network entry discoverable.
+    // `setDefaultAction` would normally also wire the button's
+    // icon -- so the explicit `setIcon` from `RefreshThemedIcons`
+    // happens *after* the menu / default-action plumbing is in
+    // place and re-installs the themed icon.
+    auto *openStreamButton = new QToolButton(mMainToolbar);
+    openStreamButton->setObjectName(QStringLiteral("openStreamSplitButton"));
+    openStreamButton->setDefaultAction(ui->actionOpenLogStream);
+    openStreamButton->setPopupMode(QToolButton::MenuButtonPopup);
+    // `addWidget` keeps custom buttons out of the toolbar's
+    // auto-layout, so the toolbar's iconSize / button-style do
+    // NOT propagate. Mirror them explicitly so the split button
+    // sits in the strip at the same edge length and icon-only
+    // policy as every other action.
+    openStreamButton->setIconSize(toolbarIconSize);
+    openStreamButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    auto *streamMenu = new QMenu(openStreamButton);
+    streamMenu->setObjectName(QStringLiteral("openStreamSplitMenu"));
+    streamMenu->addAction(ui->actionOpenLogStream);
+    streamMenu->addAction(ui->actionOpenNetworkStream);
+    openStreamButton->setMenu(streamMenu);
+    mMainToolbar->addWidget(openStreamButton);
+
+    mMainToolbar->addSeparator();
+
+    // Add-filter split button. Face = open the generic
+    // filter editor (`actionAddFilter`'s existing slot, no
+    // preselected column). Dropdown = `Add filter on "<col>"…`
+    // entries, one per visible column, so a user who knows the
+    // target column can land in the editor pre-pointed at it
+    // without having to right-click the header section. Same
+    // entry shape as the header context menu so the muscle
+    // memory carries over.
+    //
+    // `MenuButtonPopup` (not `InstantPopup`) keeps the more-
+    // common generic path one click away (it matches the
+    // pre-split behaviour of the bare action) while making the
+    // per-column shortcut discoverable behind the arrow.
+    //
+    // `setDefaultAction` also tries to install the action's
+    // icon -- the split button's themed-icon refresh therefore
+    // runs through `mThemedActions` (already populated for
+    // `actionAddFilter` above) so a palette / theme flip
+    // re-tints the button face.
+    auto *addFilterButton = new QToolButton(mMainToolbar);
+    addFilterButton->setObjectName(QStringLiteral("addFilterSplitButton"));
+    addFilterButton->setDefaultAction(ui->actionAddFilter);
+    addFilterButton->setPopupMode(QToolButton::MenuButtonPopup);
+    addFilterButton->setIconSize(toolbarIconSize);
+    addFilterButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    auto *addFilterMenu = new QMenu(addFilterButton);
+    addFilterMenu->setObjectName(QStringLiteral("addFilterSplitMenu"));
+    addFilterButton->setMenu(addFilterMenu);
+    // Rebuild on every show so the listing reflects the live
+    // column set without us having to invalidate it from every
+    // column-mutation site (column reorder, hide/show, post-
+    // stream promotion, columns-manager edit, ...). The header
+    // right-click `RebuildViewMenu` uses the same idiom.
+    connect(addFilterMenu, &QMenu::aboutToShow, this, [this, addFilterMenu]() { RebuildAddFilterMenu(addFilterMenu); });
+    mMainToolbar->addWidget(addFilterButton);
+
+    // Clear-filters split button. Face = `actionClearAllFilters`
+    // (drop every active filter; same one-click clear the bare
+    // button used to offer). Dropdown = `Remove "<col>": <title>`
+    // entries, one per active filter, grouped by column index
+    // then sorted by display title -- lets a user with three
+    // filters drop just the misbehaving one without having to
+    // dive into the Filters menu's per-filter submenu.
+    //
+    // `actionClearAllFilters` is gated by `setDisabled(true)`
+    // when `mFilters` is empty, which on most styles disables
+    // the arrow too. That's intentional: there's nothing to
+    // remove either way, so the disabled arrow honestly reports
+    // "nothing to do" instead of opening to a placeholder.
+    auto *clearFiltersButton = new QToolButton(mMainToolbar);
+    clearFiltersButton->setObjectName(QStringLiteral("clearFiltersSplitButton"));
+    clearFiltersButton->setDefaultAction(ui->actionClearAllFilters);
+    clearFiltersButton->setPopupMode(QToolButton::MenuButtonPopup);
+    clearFiltersButton->setIconSize(toolbarIconSize);
+    clearFiltersButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    auto *clearFiltersMenu = new QMenu(clearFiltersButton);
+    clearFiltersMenu->setObjectName(QStringLiteral("clearFiltersSplitMenu"));
+    clearFiltersButton->setMenu(clearFiltersMenu);
+    connect(clearFiltersMenu, &QMenu::aboutToShow, this, [this, clearFiltersMenu]() {
+        RebuildClearFiltersMenu(clearFiltersMenu);
+    });
+    mMainToolbar->addWidget(clearFiltersButton);
+
+    mMainToolbar->addSeparator();
+    if (mActionToggleFind != nullptr)
+    {
+        mMainToolbar->addAction(mActionToggleFind);
+    }
+    mMainToolbar->addAction(ui->actionToggleRecordDetails);
+    if (mActionToggleAnchors != nullptr)
+    {
+        mMainToolbar->addAction(mActionToggleAnchors);
+    }
+
+    // Expanding spacer pushes Preferences to the far right edge,
+    // matching the "tools / settings on the right" convention used
+    // by VS Code, Sublime, JetBrains, etc.
+    auto *spacer = new QWidget(mMainToolbar);
+    spacer->setObjectName(QStringLiteral("mainToolbarSpacer"));
+    spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    mMainToolbar->addWidget(spacer);
+    mMainToolbar->addAction(ui->actionPreferences);
+
+    // Themed actions outside of any toolbar. The File -> Recent
+    // Sessions submenu gets the `file-clock` glyph so the entry
+    // is recognisable at a glance. Anchored to the window because
+    // there is no host toolbar; the refresh loop falls back to
+    // `PM_LargeIconSize` for sizing.
+    if (ui->menuRecentSessions != nullptr)
+    {
+        tag(ui->menuRecentSessions->menuAction(), this, QStringLiteral(":/icons/file-clock.svg"));
+    }
+
+    // Primary-toolbar toggle action. Created once here so its
+    // metadata (objectName, text) does not get rewritten on every
+    // `RebuildViewMenu` (the menu rebuild only re-adds the cached
+    // action to the freshly cleared menu).
+    if (QAction *toggleMainToolbar = mMainToolbar->toggleViewAction(); toggleMainToolbar != nullptr)
+    {
+        toggleMainToolbar->setObjectName(QStringLiteral("actionToggleMainToolbar"));
+        toggleMainToolbar->setText(tr("Main Toolbar"));
+    }
+
+    RefreshThemedIcons();
+}
+
+void MainWindow::RefreshThemedIcons()
+{
+    // Constructor-time `changeEvent` (an initial palette
+    // notification can land before `BuildMainToolbar` runs) and
+    // shutdown-time refreshes (Qt has already cleared the
+    // `QPointer`) both reach here harmlessly via the null guard.
+    if (mMainToolbar == nullptr)
+    {
+        return;
+    }
+
+    // Mints a `QIcon` whose Off pixmap is `offPath` and, when
+    // present, On pixmap is `onPath`. The render parameters are
+    // resolved once per anchor so both states share the same
+    // tint / size / DPR -- otherwise the checked-state glyph
+    // could land a pixel off-grid from the unchecked one when the
+    // action toggles. Returns an empty QIcon if the Off SVG fails
+    // to load; callers accept the text-only fallback.
+    const auto buildIcon = [](const QString &offPath, const QString &onPath, const QWidget *anchor) {
+        const icon_loader::IconRenderParams params = icon_loader::ResolveAnchorIconParams(anchor);
+        QIcon icon = icon_loader::MakeThemedIcon(offPath, params.tint, params.sizePx, params.devicePixelRatio);
+        if (icon.isNull() || onPath.isEmpty())
+        {
+            return icon;
+        }
+        const QPixmap onPixmap =
+            icon_loader::MakeThemedPixmap(onPath, params.tint, params.sizePx, params.devicePixelRatio);
+        if (!onPixmap.isNull())
+        {
+            // `QIcon::Normal / On` matches the state Qt asks for
+            // when rendering a checked QAction button.
+            icon.addPixmap(onPixmap, QIcon::Normal, QIcon::On);
+        }
+        return icon;
+    };
+
+    for (const ThemedActionEntry &entry : std::as_const(mThemedActions))
+    {
+        QAction *action = entry.action.data();
+        if (action == nullptr)
+        {
+            // Action torn down out of order during shutdown; the
+            // `QPointer` keeps us honest.
+            continue;
+        }
+        const QString path = action->property("svgIconPath").toString();
+        if (path.isEmpty())
+        {
+            // Property cleared, e.g. by a future caller swapping
+            // to a non-themed icon. Leave the existing icon alone.
+            continue;
+        }
+        const QString onPath = action->property("svgIconPathChecked").toString();
+        // Anchor falls back to the window so a registered action
+        // whose anchor widget has been torn down still re-tints
+        // (with the window's palette / DPR) instead of silently
+        // going stale.
+        const QWidget *anchor = entry.anchor.data();
+        action->setIcon(buildIcon(path, onPath, anchor != nullptr ? anchor : this));
+    }
+}
+
+void MainWindow::RebuildAddFilterMenu(QMenu *menu)
+{
+    if (menu == nullptr)
+    {
+        return;
+    }
+    menu->clear();
+
+    const auto &columns = mModel->Configuration().columns;
+    if (columns.empty())
+    {
+        // Disabled placeholder so an empty dropdown advertises
+        // *why* it is empty rather than opening as a blank box.
+        // Same idiom as `RebuildViewMenu`'s `(no columns yet)`
+        // sentinel.
+        QAction *placeholder = menu->addAction(tr("(no columns yet)"));
+        placeholder->setEnabled(false);
+        return;
+    }
+
+    // `AddFilter` short-circuits with a status-bar hint when the
+    // model has no rows, so disable the entries up-front rather
+    // than advertise a no-op. The face button (the bare
+    // `actionAddFilter`) gets the same treatment from its
+    // existing `setEnabled` plumbing.
+    const bool modelHasRows = mModel->rowCount() > 0;
+
+    // Header-disambiguated labels (e.g. `name` vs `name [user|id]`)
+    // so two columns sharing the same display header still produce
+    // unambiguous entries -- same helper the View menu uses.
+    const std::vector<QString> labels = BuildAllColumnMenuLabels();
+
+    bool addedAny = false;
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        // Hidden columns are skipped to mirror the header
+        // right-click menu (`SetInitialColumn` refuses to
+        // preselect a hidden column, so an entry here would
+        // advertise a preselection the editor would drop).
+        // Re-show is delegated to the View menu, same as for
+        // the header right-click.
+        if (!columns[i].visible)
+        {
+            continue;
+        }
+        const QString &label = labels[i];
+        QAction *act = menu->addAction(tr("Add filter on \"%1\"…").arg(label));
+        act->setEnabled(modelHasRows);
+        // Capture stable `keys` so a column reorder landing
+        // between menu build and click still hits the right
+        // column. Matches the header-context-menu lambda.
+        connect(act, &QAction::triggered, this, [this, keys = columns[i].keys]() {
+            const int idx = FindColumnIndexByKeys(keys);
+            if (idx < 0)
+            {
+                return;
+            }
+            AddFilter(QUuid::createUuid().toString(), std::nullopt, /*openEditor=*/true, /*initialColumn=*/idx);
+        });
+        addedAny = true;
+    }
+
+    if (!addedAny)
+    {
+        // Every column hidden -- legal end state. Surface the
+        // condition explicitly so the user understands why the
+        // dropdown is empty (and where to re-show columns).
+        QAction *placeholder = menu->addAction(tr("(every column is hidden – use View menu to show one)"));
+        placeholder->setEnabled(false);
+    }
+}
+
+void MainWindow::RebuildClearFiltersMenu(QMenu *menu)
+{
+    if (menu == nullptr)
+    {
+        return;
+    }
+    menu->clear();
+
+    if (mFilters.empty())
+    {
+        QAction *placeholder = menu->addAction(tr("(no filters)"));
+        placeholder->setEnabled(false);
+        return;
+    }
+
+    // Disambiguated column labels (same helper the View menu /
+    // Add-filter dropdown use) so two columns sharing a header
+    // produce distinct entries.
+    const std::vector<QString> labels = BuildAllColumnMenuLabels();
+
+    // Flatten + sort so the menu order is deterministic.
+    // `mFilters` is an unordered_map keyed by UUID, so without
+    // sorting the visible order would change every time Qt's
+    // hash seed changes.
+    struct Entry
+    {
+        std::string id;
+        QString columnLabel;
+        QString filterTitle;
+        int columnRow = -1;
+    };
+    std::vector<Entry> entries;
+    entries.reserve(mFilters.size());
+    for (const auto &[id, filter] : mFilters)
+    {
+        const int row = filter.row;
+        QString columnLabel = (row >= 0 && static_cast<size_t>(row) < labels.size())
+                                  ? labels[static_cast<size_t>(row)]
+                                  // Filter pointing at a column that no
+                                  // longer exists (e.g. a config carrying
+                                  // over a renamed key). Surface it as
+                                  // `(unknown column)` so the user can
+                                  // still get rid of it via the dropdown.
+                                  : tr("(unknown column)");
+        entries.push_back(
+            {.id = id, .columnLabel = std::move(columnLabel), .filterTitle = BuildFilterTitle(filter), .columnRow = row}
+        );
+    }
+    std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
+        // Group by column first so all filters on `level` sit
+        // next to each other regardless of UUID order; secondary
+        // sort by title puts e.g. `error, warn` near `info` in
+        // the same column block. UUID tie-break keeps the order
+        // stable across reopens.
+        if (a.columnRow != b.columnRow)
+        {
+            return a.columnRow < b.columnRow;
+        }
+        const int cmp = a.filterTitle.localeAwareCompare(b.filterTitle);
+        if (cmp != 0)
+        {
+            return cmp < 0;
+        }
+        return a.id < b.id;
+    });
+
+    for (const Entry &entry : entries)
+    {
+        const QString filterId = QString::fromStdString(entry.id);
+        QAction *act = menu->addAction(tr("Remove \"%1\": %2").arg(entry.columnLabel, entry.filterTitle));
+        // ObjectName carries the UUID so a test can find the
+        // entry by id without parsing display text.
+        act->setObjectName(filterId);
+        connect(act, &QAction::triggered, this, [this, filterId]() { ClearFilter(filterId); });
+    }
+}
+
+void MainWindow::changeEvent(QEvent *event)
+{
+    QMainWindow::changeEvent(event);
+    if (event == nullptr)
+    {
+        return;
+    }
+    // Light/dark theme flip changes `WindowText` -> re-mint every
+    // tinted icon. `StyleChange` covers the parallel style swap a
+    // theme can apply via `qApp->setStyle`. `DevicePixelRatioChange`
+    // covers a drag between monitors of different DPI -- the icon's
+    // backing pixmap is allocated at the current DPR and must be
+    // re-rasterised at the new one. `ThemeChange` covers OS-level
+    // light/dark notifications (Windows in particular) that can
+    // arrive without an accompanying palette diff. `OnThemeChanged`
+    // covers the application-driven switch; this hook catches the
+    // OS-level events that reach the window without going through
+    // `ThemeControl`.
+    const QEvent::Type type = event->type();
+    if (type == QEvent::PaletteChange || type == QEvent::StyleChange || type == QEvent::ApplicationPaletteChange ||
+        type == QEvent::ThemeChange || type == QEvent::DevicePixelRatioChange)
+    {
+        RefreshThemedIcons();
+    }
 }
 
 void MainWindow::UpdateStreamToolbarVisibility()
@@ -4707,6 +5201,13 @@ void MainWindow::OnThemeChanged()
     {
         mColumnsManagerDialog->RefreshPalette();
     }
+
+    // Re-tint the Lucide icons so a Light <-> Dark flip keeps them
+    // visible. `changeEvent` also fires for OS-driven palette
+    // changes, but `themeChanged` is the in-app entry point and
+    // can land without an event-loop palette change (e.g. a Force
+    // mode toggle that pins the same OS scheme).
+    RefreshThemedIcons();
 }
 
 void MainWindow::ApplyThemedWindowIcon()
@@ -5746,6 +6247,22 @@ void MainWindow::RebuildViewMenu()
     if (mActionToggleParseErrors != nullptr)
     {
         viewMenu->addAction(mActionToggleParseErrors);
+    }
+
+    // Primary toolbar toggle. `QToolBar::toggleViewAction` returns a
+    // cached checkable action whose state mirrors `QToolBar::isVisible()`
+    // and which Qt keeps in sync without further wiring -- toggling
+    // hides the toolbar and the user has a discoverable way to bring
+    // it back. Metadata (objectName, text) was set once in
+    // `BuildMainToolbar`; we only need to re-add the action to the
+    // freshly cleared menu here. We deliberately don't expose
+    // `mStreamToolbar`'s toggle: `UpdateStreamToolbarVisibility` is
+    // the single source of truth for that bar (auto-shown when
+    // streaming, idle otherwise) and a parallel menu toggle would
+    // let the two states diverge.
+    if (mMainToolbar != nullptr)
+    {
+        viewMenu->addAction(mMainToolbar->toggleViewAction());
     }
 
     const auto &columns = mModel->Configuration().columns;

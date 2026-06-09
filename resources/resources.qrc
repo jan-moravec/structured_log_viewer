@@ -10,5 +10,21 @@
         <file>themes/material_light.json</file>
         <file>themes/monokai_dark.json</file>
         <file>themes/monokai_light.json</file>
+        <!-- Lucide icons (ISC) for the primary toolbar; tinted at
+             load-time by `icon_loader::MakeThemedIcon` so a single
+             asset works for Light and Dark themes. -->
+        <file>icons/arrow-down-to-line.svg</file>
+        <file>icons/bookmark.svg</file>
+        <file>icons/file-clock.svg</file>
+        <file>icons/folder-open.svg</file>
+        <file>icons/funnel-plus.svg</file>
+        <file>icons/funnel-x.svg</file>
+        <file>icons/panel-right-open.svg</file>
+        <file>icons/pause.svg</file>
+        <file>icons/radio-tower.svg</file>
+        <file>icons/search.svg</file>
+        <file>icons/settings-2.svg</file>
+        <file>icons/square-play.svg</file>
+        <file>icons/square.svg</file>
     </qresource>
 </RCC>
