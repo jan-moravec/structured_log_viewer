@@ -35,6 +35,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QCloseEvent>
+#include <QCollator>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QFileDialog>
@@ -1003,6 +1004,24 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
                 if (const auto *levelMapping = mModel->LastBatchLevelDemoteMappingFor(columnIndex);
                     levelMapping != nullptr)
                 {
+                    // Re-entrancy guard: the rewrite + downstream
+                    // `MirrorSessionStateToConfiguration` /
+                    // `SyncColumnFilterIndicators` calls walk
+                    // `mFilters` and the configuration. If any
+                    // of those ever transitively re-emits
+                    // `enumColumnsChanged` for the same column
+                    // (today they don't, but the guard makes the
+                    // invariant local rather than global), the
+                    // re-entrant lambda would see half-rewritten
+                    // `filter.filterValues`. Released before the
+                    // trailing rebuild block so its own
+                    // `mApplyingEnumRebuild` latch can do its job.
+                    if (mApplyingEnumRebuild)
+                    {
+                        return;
+                    }
+                    mApplyingEnumRebuild = true;
+                    const auto demoteGuard = qScopeGuard([this]() { mApplyingEnumRebuild = false; });
                     const auto &columnsCfg = mModel->Configuration().columns;
                     const loglib::LogConfiguration::Column *demotedColumn =
                         std::cmp_less(columnIndex, columnsCfg.size()) ? &columnsCfg[static_cast<size_t>(columnIndex)]
@@ -3126,6 +3145,17 @@ void MainWindow::BuildMainToolbar()
 
 void MainWindow::RefreshThemedIcons()
 {
+    // Drop the model's cached funnel pixmap first, before the
+    // toolbar guard below: the model is built earlier than the
+    // toolbar and outlives it during teardown, so the funnel
+    // refresh needs to run even when the toolbar leg is a no-op.
+    // Constructor-time + shutdown-time refreshes both pass the
+    // model's own null check harmlessly.
+    if (mModel != nullptr)
+    {
+        mModel->RefreshHeaderIcons();
+    }
+
     // Constructor-time `changeEvent` (an initial palette
     // notification can land before `BuildMainToolbar` runs) and
     // shutdown-time refreshes (Qt has already cleared the
@@ -3183,18 +3213,6 @@ void MainWindow::RefreshThemedIcons()
         // going stale.
         const QWidget *anchor = entry.anchor.data();
         action->setIcon(buildIcon(path, onPath, anchor != nullptr ? anchor : this));
-    }
-
-    // Drop the model's cached funnel pixmap so the header decoration
-    // re-renders against the new palette / DPR. No-op when no column
-    // has a filter. Centralised here (rather than in `OnThemeChanged`
-    // alone) so OS-driven `changeEvent` paths -- palette, theme, and
-    // DPI updates -- refresh the funnel alongside toolbar icons; the
-    // funnel is also a tinted glyph and must track the same render
-    // policy.
-    if (mModel != nullptr)
-    {
-        mModel->RefreshHeaderIcons();
     }
 }
 
@@ -5181,6 +5199,14 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     connect(removeAction, &QAction::triggered, this, [this, id]() { ClearFilter(id); });
     ui->actionClearAllFilters->setDisabled(false);
 
+    // Sync mirrors the gating of `MirrorSessionStateToConfiguration`
+    // / `UpdateFilters` above: bulk callers (e.g.
+    // `RebuildFiltersFromConfiguration`) defer this work to a single
+    // trailing call after their loop. `MarkFiltersDirty` above is
+    // intentionally NOT gated -- it's an idempotent boolean flip,
+    // so paying it per-filter during a config reload is free, and a
+    // future caller that forgets to mark dirty after a deferred run
+    // would leak unsaved state.
     if (!deferSync)
     {
         SyncColumnFilterIndicators();
@@ -5212,11 +5238,23 @@ void MainWindow::SyncColumnFilterIndicators()
         }
         // Sort each per-column list by display title so tooltip
         // ordering is stable across `mFilters`'s unordered iteration.
+        // `QCollator` (locale-aware, case-insensitive) reads more
+        // naturally than the default `QString::operator<` for users
+        // running translated locales -- the latter is purely
+        // codepoint-ordered and would put `"Banana"` before
+        // `"apple"` because `'B' < 'a'`. Numeric mode keeps
+        // numeric prefixes in natural order ("9", "10" not "10",
+        // "9").
+        QCollator collator;
+        collator.setCaseSensitivity(Qt::CaseInsensitive);
+        collator.setNumericMode(true);
         for (auto &titles : perColumnTitles)
         {
             if (titles.size() > 1)
             {
-                std::sort(titles.begin(), titles.end());
+                std::sort(titles.begin(), titles.end(), [&collator](const QString &a, const QString &b) {
+                    return collator.compare(a, b) < 0;
+                });
             }
         }
     }
@@ -5847,18 +5885,17 @@ void MainWindow::OnSourceColumnsMoved(
     {
         UpdateFilters();
     }
-    // Always sync header indicators after a move: even when no
-    // `filter.row` changed (so `runtimeFilterChanged` is false),
-    // the model emitted `columnsMoved` and a parallel column
-    // cache that didn't see the move would now be aligned to the
-    // wrong indices. The diff guard inside `SetColumnFilterDetails`
-    // makes the no-op case free.
-    SyncColumnFilterIndicators();
-
     // Re-apply hidden flags after the move. Qt usually carries them
     // through `columnsMoved`, but `initializeSections()` clears them
     // when the source has zero rows. Pinned by
     // `TestSourceColumnMovePreservesHiddenColumn`.
+    //
+    // `ApplyColumnVisibility` ends with its own
+    // `SyncColumnFilterIndicators` call, so the funnel cache picks
+    // up the new section indices in the same pass. Calling sync
+    // before this would emit `headerDataChanged` while hidden flags
+    // are still mid-flight -- a header repaint at that moment could
+    // briefly show the funnel on the wrong column.
     ApplyColumnVisibility();
 }
 

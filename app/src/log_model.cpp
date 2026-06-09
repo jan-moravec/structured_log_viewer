@@ -18,12 +18,14 @@
 
 #include <QApplication>
 #include <QBrush>
+#include <QColor>
 #include <QCoreApplication>
 #include <QFont>
 #include <QFutureWatcher>
 #include <QIcon>
 #include <QMetaObject>
 #include <QModelIndex>
+#include <QPalette>
 #include <QPointer>
 #include <QString>
 #include <QStringList>
@@ -1037,15 +1039,32 @@ QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role
         }
         if (HasFilterForColumn(section))
         {
-            if (mFunnelIconCache.isNull())
+            if (!mFunnelIconAttempted)
             {
-                // Anchor is `nullptr` so the loader resolves
-                // tint / DPR / size from `QApplication`. The
-                // header view's palette tracks the app palette
-                // in every theme we ship, so the result reads
-                // as "default text colour" against the header.
-                mFunnelIconCache =
-                    icon_loader::MakeThemedIcon(QStringLiteral(":/icons/funnel.svg"), nullptr);
+                // Render at `PM_SmallIconSize` (typically 16 px),
+                // not `MakeThemedIcon`'s default `FALLBACK_ICON_PX`
+                // (20 px). Header views paint decorations at the
+                // small-icon metric, so a 20 px source forces Qt
+                // to downscale on every paint. Tint and DPR still
+                // come from the application (the header tracks
+                // the app palette in every theme we ship).
+                //
+                // The latch is set unconditionally so a missing
+                // resource (theoretical -- `funnel.svg` is bundled)
+                // caches the empty `QIcon` instead of re-attempting
+                // the load on every header repaint.
+                const QPalette appPalette = QApplication::palette();
+                const QColor tint = appPalette.color(QPalette::Active, QPalette::WindowText);
+                const qreal dpr = qApp->devicePixelRatio();
+                int smallIconPx = 0;
+                if (const QStyle *style = QApplication::style(); style != nullptr)
+                {
+                    smallIconPx = style->pixelMetric(QStyle::PM_SmallIconSize);
+                }
+                mFunnelIconCache = icon_loader::MakeThemedIcon(
+                    QStringLiteral(":/icons/funnel.svg"), tint, smallIconPx, dpr
+                );
+                mFunnelIconAttempted = true;
             }
             return mFunnelIconCache;
         }
@@ -1149,7 +1168,14 @@ void LogModel::SetColumnFilterDetails(std::vector<QStringList> perColumnTitles)
     if (cols <= 0)
     {
         // Structural reset in flight; drop the cache so a stale
-        // entry can't survive into the next configuration.
+        // entry can't survive into the next configuration. We
+        // skip the `headerDataChanged` emit here because the only
+        // legitimate caller (`MainWindow::ClearAllFilters` reached
+        // via `MainWindow::Reset` -> `mModel->Reset()`) is paired
+        // with a `beginResetModel`/`endResetModel` that already
+        // invalidates every cached header on the view side --
+        // emitting now would force a redundant header repaint
+        // that's about to be superseded.
         if (mColumnFilterDetails.empty())
         {
             return;
@@ -1206,6 +1232,11 @@ bool LogModel::HasFilterForColumn(int section) const noexcept
 void LogModel::RefreshHeaderIcons()
 {
     mFunnelIconCache = QIcon{};
+    // Reset the "load attempted" latch so the next decoration
+    // query re-renders the funnel against the new palette / DPR.
+    // Without this, a Light <-> Dark flip would leave the empty
+    // (or pre-flip-tinted) icon pinned for the rest of the session.
+    mFunnelIconAttempted = false;
     // Re-emit only across the contiguous range of columns that
     // currently have a filter. Columns without a filter don't
     // display the funnel and don't need to re-render. When no

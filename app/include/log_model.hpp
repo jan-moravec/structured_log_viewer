@@ -396,7 +396,18 @@ private:
     /// `const` and the cache fill is a pure speedup -- the
     /// observable return value is the same icon every time until
     /// the next theme flip.
+    ///
+    /// Paired with `mFunnelIconAttempted` so a failed first load
+    /// (e.g. a future qrc rename leaves the resource missing)
+    /// caches the empty `QIcon` rather than re-attempting the
+    /// load on every header repaint.
     mutable QIcon mFunnelIconCache;
+
+    /// Set after the first attempted load of `mFunnelIconCache`.
+    /// `RefreshHeaderIcons` clears it back to `false` to force a
+    /// re-render at the new palette / DPR. See the comment on
+    /// `mFunnelIconCache` for the failed-load motivation.
+    mutable bool mFunnelIconAttempted = false;
 
     /// Cached first-`Type::Level` column index. Sentinel
     /// `LEVEL_COLUMN_UNCACHED` before first scan, `LEVEL_COLUMN_NONE`
