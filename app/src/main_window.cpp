@@ -1063,6 +1063,14 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
                     // snapshotted whole, so per-filter mirroring would
                     // redo the same work.
                     MirrorSessionStateToConfiguration();
+                    // Header funnel titles cache `BuildFilterTitle`,
+                    // which walked the canonical names (`"Info"`, ...)
+                    // before the rewrite and now needs the raw bytes.
+                    // Without this resync the tooltip keeps listing
+                    // the pre-demote names until the next filter
+                    // mutation or `RebuildFiltersFromConfiguration`
+                    // call lands.
+                    SyncColumnFilterIndicators();
                 }
             }
         }
@@ -3176,6 +3184,18 @@ void MainWindow::RefreshThemedIcons()
         const QWidget *anchor = entry.anchor.data();
         action->setIcon(buildIcon(path, onPath, anchor != nullptr ? anchor : this));
     }
+
+    // Drop the model's cached funnel pixmap so the header decoration
+    // re-renders against the new palette / DPR. No-op when no column
+    // has a filter. Centralised here (rather than in `OnThemeChanged`
+    // alone) so OS-driven `changeEvent` paths -- palette, theme, and
+    // DPI updates -- refresh the funnel alongside toolbar icons; the
+    // funnel is also a tinted glyph and must track the same render
+    // policy.
+    if (mModel != nullptr)
+    {
+        mModel->RefreshHeaderIcons();
+    }
 }
 
 void MainWindow::RebuildAddFilterMenu(QMenu *menu)
@@ -5255,15 +5275,10 @@ void MainWindow::OnThemeChanged()
     // changes, but `themeChanged` is the in-app entry point and
     // can land without an event-loop palette change (e.g. a Force
     // mode toggle that pins the same OS scheme).
+    // `RefreshThemedIcons` also drops the model's cached funnel
+    // pixmap so the header decoration re-renders against the new
+    // palette.
     RefreshThemedIcons();
-
-    // Drop the model's cached funnel pixmap so the header decoration
-    // re-renders against the new palette. No-op when no column has
-    // a filter.
-    if (mModel != nullptr)
-    {
-        mModel->RefreshHeaderIcons();
-    }
 }
 
 void MainWindow::ApplyThemedWindowIcon()
