@@ -872,6 +872,24 @@ private:
     /// remove.)
     void RebuildClearFiltersMenu(QMenu *menu);
 
+    /// Rebuild the per-column "active filter titles" snapshot from
+    /// `mFilters` and push it into `LogModel::SetColumnFilterDetails`.
+    /// The model side then drives the funnel decoration + tooltip
+    /// "Filters:" section in `headerData`.
+    ///
+    /// Called from every `mFilters` mutation point (`AddLogFilter`,
+    /// `ClearFilter`, `ClearAllFilters`, `RebuildFiltersFromConfiguration`)
+    /// and from the column-shape signals that can shift `filter.row`
+    /// or hide the column they target (`OnSourceColumnsMoved`,
+    /// `ApplyColumnVisibility`, `SetColumnVisible`). Idempotent: a
+    /// no-change run flows through the model's diff guard without
+    /// emitting `headerDataChanged`, so calling on every row-storm
+    /// signal would still be safe.
+    ///
+    /// Per-column entries are sorted by display title for stable
+    /// tooltip ordering across `mFilters`'s unordered iteration.
+    void SyncColumnFilterIndicators();
+
     /// Re-evaluate the stream toolbar's visibility against the current
     /// session mode.
     void UpdateStreamToolbarVisibility();

@@ -4380,6 +4380,7 @@ void MainWindow::RebuildFiltersFromConfiguration()
     }
     MirrorSessionStateToConfiguration();
     UpdateFilters();
+    SyncColumnFilterIndicators();
 
     if (!dropped.empty())
     {
@@ -4838,6 +4839,7 @@ void MainWindow::ClearAllFilters()
 
     ui->actionClearAllFilters->setDisabled(true);
     MarkFiltersDirty();
+    SyncColumnFilterIndicators();
 }
 
 void MainWindow::ClearFilter(const QString &filterID, bool deferSync)
@@ -4870,6 +4872,11 @@ void MainWindow::ClearFilter(const QString &filterID, bool deferSync)
     if (filters == 0)
     {
         ui->actionClearAllFilters->setDisabled(true);
+    }
+
+    if (!deferSync)
+    {
+        SyncColumnFilterIndicators();
     }
 }
 
@@ -5153,6 +5160,47 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     const QAction *removeAction = menuItem->addAction(tr("Remove"));
     connect(removeAction, &QAction::triggered, this, [this, id]() { ClearFilter(id); });
     ui->actionClearAllFilters->setDisabled(false);
+
+    if (!deferSync)
+    {
+        SyncColumnFilterIndicators();
+    }
+}
+
+void MainWindow::SyncColumnFilterIndicators()
+{
+    if (mModel == nullptr)
+    {
+        return;
+    }
+    const int cols = mModel->columnCount();
+    std::vector<QStringList> perColumnTitles;
+    if (cols > 0)
+    {
+        perColumnTitles.resize(static_cast<size_t>(cols));
+        for (const auto &[id, filter] : mFilters)
+        {
+            if (filter.row < 0 || filter.row >= cols)
+            {
+                // Stale row from a concurrent column drop; skip
+                // silently. The next mutation that touches this
+                // filter (or the next `RebuildFiltersFromConfiguration`)
+                // will either remap or evict it.
+                continue;
+            }
+            perColumnTitles[static_cast<size_t>(filter.row)].append(BuildFilterTitle(filter));
+        }
+        // Sort each per-column list by display title so tooltip
+        // ordering is stable across `mFilters`'s unordered iteration.
+        for (auto &titles : perColumnTitles)
+        {
+            if (titles.size() > 1)
+            {
+                std::sort(titles.begin(), titles.end());
+            }
+        }
+    }
+    mModel->SetColumnFilterDetails(std::move(perColumnTitles));
 }
 
 void MainWindow::OnThemeChanged()
@@ -5208,6 +5256,14 @@ void MainWindow::OnThemeChanged()
     // can land without an event-loop palette change (e.g. a Force
     // mode toggle that pins the same OS scheme).
     RefreshThemedIcons();
+
+    // Drop the model's cached funnel pixmap so the header decoration
+    // re-renders against the new palette. No-op when no column has
+    // a filter.
+    if (mModel != nullptr)
+    {
+        mModel->RefreshHeaderIcons();
+    }
 }
 
 void MainWindow::ApplyThemedWindowIcon()
@@ -5776,6 +5832,13 @@ void MainWindow::OnSourceColumnsMoved(
     {
         UpdateFilters();
     }
+    // Always sync header indicators after a move: even when no
+    // `filter.row` changed (so `runtimeFilterChanged` is false),
+    // the model emitted `columnsMoved` and a parallel column
+    // cache that didn't see the move would now be aligned to the
+    // wrong indices. The diff guard inside `SetColumnFilterDetails`
+    // makes the no-op case free.
+    SyncColumnFilterIndicators();
 
     // Re-apply hidden flags after the move. Qt usually carries them
     // through `columnsMoved`, but `initializeSections()` clears them
@@ -6191,6 +6254,11 @@ void MainWindow::SetColumnVisible(int logicalIndex, bool visible)
     // to. Invalidate explicitly so the indicator can't strand a
     // count that still includes hits from hidden columns.
     OnFindCacheInvalidated();
+    // Header indicator cache is normally a no-op here (hide/show
+    // doesn't change `filter.row` or `BuildFilterTitle`), but
+    // re-syncing keeps the wiring symmetric with `ApplyColumnVisibility`
+    // and costs only a model-side diff when nothing actually moved.
+    SyncColumnFilterIndicators();
 }
 
 void MainWindow::ApplyColumnVisibility()
@@ -6210,6 +6278,10 @@ void MainWindow::ApplyColumnVisibility()
     // called from header-recovery and configuration-load paths. Drop
     // the find cache for the same reason as `SetColumnVisible`.
     OnFindCacheInvalidated();
+    // Same reasoning as `SetColumnVisible`: the cache rarely needs
+    // updating but the sync is cheap and keeps the column-shape
+    // signal points symmetric.
+    SyncColumnFilterIndicators();
 }
 
 void MainWindow::RebuildViewMenu()
