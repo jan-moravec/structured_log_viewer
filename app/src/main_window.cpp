@@ -1005,17 +1005,9 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
                     levelMapping != nullptr)
                 {
                     // Re-entrancy guard: the rewrite + downstream
-                    // `MirrorSessionStateToConfiguration` /
-                    // `SyncColumnFilterIndicators` calls walk
-                    // `mFilters` and the configuration. If any
-                    // of those ever transitively re-emits
-                    // `enumColumnsChanged` for the same column
-                    // (today they don't, but the guard makes the
-                    // invariant local rather than global), the
-                    // re-entrant lambda would see half-rewritten
-                    // `filter.filterValues`. Released before the
-                    // trailing rebuild block so its own
-                    // `mApplyingEnumRebuild` latch can do its job.
+                    // sync calls walk `mFilters`, so a transitive
+                    // re-emit of `enumColumnsChanged` for the same
+                    // column would see half-rewritten state.
                     if (mApplyingEnumRebuild)
                     {
                         return;
@@ -1082,13 +1074,9 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
                     // snapshotted whole, so per-filter mirroring would
                     // redo the same work.
                     MirrorSessionStateToConfiguration();
-                    // Header funnel titles cache `BuildFilterTitle`,
-                    // which walked the canonical names (`"Info"`, ...)
-                    // before the rewrite and now needs the raw bytes.
-                    // Without this resync the tooltip keeps listing
-                    // the pre-demote names until the next filter
-                    // mutation or `RebuildFiltersFromConfiguration`
-                    // call lands.
+                    // Resync the tooltip cache: it was built from
+                    // the canonical names (`"Info"`, ...) and now
+                    // needs the rewritten raw bytes.
                     SyncColumnFilterIndicators();
                 }
             }
@@ -3145,12 +3133,10 @@ void MainWindow::BuildMainToolbar()
 
 void MainWindow::RefreshThemedIcons()
 {
-    // Drop the model's cached funnel pixmap first, before the
-    // toolbar guard below: the model is built earlier than the
-    // toolbar and outlives it during teardown, so the funnel
-    // refresh needs to run even when the toolbar leg is a no-op.
-    // Constructor-time + shutdown-time refreshes both pass the
-    // model's own null check harmlessly.
+    // Drop the model's cached funnel pixmap before the toolbar
+    // null guard below: the model outlives the toolbar across
+    // construction and teardown, so the funnel refresh needs to
+    // run even when the toolbar leg is a no-op.
     if (mModel != nullptr)
     {
         mModel->RefreshHeaderIcons();
@@ -5199,14 +5185,9 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     connect(removeAction, &QAction::triggered, this, [this, id]() { ClearFilter(id); });
     ui->actionClearAllFilters->setDisabled(false);
 
-    // Sync mirrors the gating of `MirrorSessionStateToConfiguration`
-    // / `UpdateFilters` above: bulk callers (e.g.
-    // `RebuildFiltersFromConfiguration`) defer this work to a single
-    // trailing call after their loop. `MarkFiltersDirty` above is
-    // intentionally NOT gated -- it's an idempotent boolean flip,
-    // so paying it per-filter during a config reload is free, and a
-    // future caller that forgets to mark dirty after a deferred run
-    // would leak unsaved state.
+    // Mirror the deferSync gating used for
+    // `MirrorSessionStateToConfiguration` / `UpdateFilters`: bulk
+    // callers run a single trailing sync after their loop.
     if (!deferSync)
     {
         SyncColumnFilterIndicators();
@@ -5228,23 +5209,16 @@ void MainWindow::SyncColumnFilterIndicators()
         {
             if (filter.row < 0 || filter.row >= cols)
             {
-                // Stale row from a concurrent column drop; skip
-                // silently. The next mutation that touches this
-                // filter (or the next `RebuildFiltersFromConfiguration`)
-                // will either remap or evict it.
+                // Stale row from a concurrent column drop; the
+                // next filter mutation will remap or evict it.
                 continue;
             }
             perColumnTitles[static_cast<size_t>(filter.row)].append(BuildFilterTitle(filter));
         }
-        // Sort each per-column list by display title so tooltip
-        // ordering is stable across `mFilters`'s unordered iteration.
-        // `QCollator` (locale-aware, case-insensitive) reads more
-        // naturally than the default `QString::operator<` for users
-        // running translated locales -- the latter is purely
-        // codepoint-ordered and would put `"Banana"` before
-        // `"apple"` because `'B' < 'a'`. Numeric mode keeps
-        // numeric prefixes in natural order ("9", "10" not "10",
-        // "9").
+        // Sort titles so tooltip ordering is stable across
+        // `mFilters`'s unordered iteration. Use `QCollator` for
+        // locale-aware, case-insensitive ordering with numeric
+        // mode (so "9" sorts before "10").
         QCollator collator;
         collator.setCaseSensitivity(Qt::CaseInsensitive);
         collator.setNumericMode(true);
@@ -5309,13 +5283,10 @@ void MainWindow::OnThemeChanged()
     }
 
     // Re-tint the Lucide icons so a Light <-> Dark flip keeps them
-    // visible. `changeEvent` also fires for OS-driven palette
-    // changes, but `themeChanged` is the in-app entry point and
-    // can land without an event-loop palette change (e.g. a Force
-    // mode toggle that pins the same OS scheme).
-    // `RefreshThemedIcons` also drops the model's cached funnel
-    // pixmap so the header decoration re-renders against the new
-    // palette.
+    // visible. `themeChanged` is the in-app entry point and can
+    // land without an event-loop palette change (e.g. a Force-mode
+    // toggle that pins the same OS scheme). Also drops the model's
+    // cached funnel pixmap so the header decoration re-renders.
     RefreshThemedIcons();
 }
 
@@ -5890,12 +5861,10 @@ void MainWindow::OnSourceColumnsMoved(
     // when the source has zero rows. Pinned by
     // `TestSourceColumnMovePreservesHiddenColumn`.
     //
-    // `ApplyColumnVisibility` ends with its own
-    // `SyncColumnFilterIndicators` call, so the funnel cache picks
-    // up the new section indices in the same pass. Calling sync
-    // before this would emit `headerDataChanged` while hidden flags
-    // are still mid-flight -- a header repaint at that moment could
-    // briefly show the funnel on the wrong column.
+    // The trailing `SyncColumnFilterIndicators` inside
+    // `ApplyColumnVisibility` picks up the new section indices.
+    // Syncing earlier could flash the funnel on the wrong column
+    // while hidden flags are still mid-flight.
     ApplyColumnVisibility();
 }
 
@@ -6306,10 +6275,9 @@ void MainWindow::SetColumnVisible(int logicalIndex, bool visible)
     // to. Invalidate explicitly so the indicator can't strand a
     // count that still includes hits from hidden columns.
     OnFindCacheInvalidated();
-    // Header indicator cache is normally a no-op here (hide/show
-    // doesn't change `filter.row` or `BuildFilterTitle`), but
-    // re-syncing keeps the wiring symmetric with `ApplyColumnVisibility`
-    // and costs only a model-side diff when nothing actually moved.
+    // Hide/show doesn't change `filter.row`, so this sync is
+    // usually a model-side no-op. Kept for symmetry with
+    // `ApplyColumnVisibility`.
     SyncColumnFilterIndicators();
 }
 
@@ -6330,9 +6298,8 @@ void MainWindow::ApplyColumnVisibility()
     // called from header-recovery and configuration-load paths. Drop
     // the find cache for the same reason as `SetColumnVisible`.
     OnFindCacheInvalidated();
-    // Same reasoning as `SetColumnVisible`: the cache rarely needs
-    // updating but the sync is cheap and keeps the column-shape
-    // signal points symmetric.
+    // See `SetColumnVisible`: usually a no-op, kept for symmetry
+    // across column-shape signal points.
     SyncColumnFilterIndicators();
 }
 

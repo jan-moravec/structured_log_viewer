@@ -7903,12 +7903,8 @@ private slots:
         QCOMPARE(levelHealth->matchingSlots, levelHealth->presentSlots);
     }
 
-    // Without any active filter the column header is silent: the
-    // decoration role returns a null variant and the tooltip
-    // carries no "Filters:" section. Pin the baseline so the
-    // tests below regress against drift -- a stray funnel here
-    // would mean `SyncColumnFilterIndicators` is being called
-    // with stale state.
+    // With no active filter, the header has no decoration and no
+    // "Filters:" tooltip section. Baseline for the tests below.
     void TestHeaderFilterIndicatorAbsentWithoutFilters()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -7918,13 +7914,8 @@ private slots:
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
         QVERIFY2(mWindow->Filters().empty(), "no filters submitted; baseline state");
-        // Pin the implicit fixture precondition: the `msg` column
-        // is auto-detected as `Type::String` and every cell is a
-        // string ("m0", "m1", ...), so no warning glyph occupies
-        // the decoration slot. If a future fixture change ever
-        // introduces a type mismatch, this assertion makes the
-        // failure mode obvious instead of silently passing through
-        // the canConvert branch below.
+        // Fixture precondition: `msg` is type-clean (every cell is
+        // a string), so no warning glyph competes for the slot.
         const auto msgHealth = model->ColumnHealth(msgCol);
         const size_t mismatched = (msgHealth.has_value() && msgHealth->presentSlots > msgHealth->matchingSlots)
                                       ? msgHealth->presentSlots - msgHealth->matchingSlots
@@ -7932,10 +7923,8 @@ private slots:
         QVERIFY2(mismatched == 0, "fixture precondition: msg column must be type-clean (no warning decoration)");
 
         const QVariant decoration = model->headerData(msgCol, Qt::Horizontal, Qt::DecorationRole);
-        // Either a default-constructed QVariant or an empty QIcon
-        // counts as "no decoration"; the warning-mismatch path
-        // uses the same null sentinel and is exercised separately
-        // by `TestColumnHealthFlagsMismatchedType`.
+        // A null `QVariant` and an empty `QIcon` both mean "no
+        // decoration"; accept either.
         if (decoration.canConvert<QIcon>())
         {
             QVERIFY2(decoration.value<QIcon>().isNull(), "decoration must be empty when no filter is active");
@@ -7949,10 +7938,8 @@ private slots:
         );
     }
 
-    // Submitting a String filter on a column installs the funnel
-    // decoration and appends a "Filters:" bullet list to the
-    // tooltip carrying the filter title (`BuildFilterTitle`
-    // returns the raw filter string for String filters).
+    // Submitting a String filter installs the funnel decoration
+    // and adds a "Filters:" bullet listing the filter title.
     void TestHeaderFilterIndicatorAppearsOnAddFilter()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -7988,13 +7975,10 @@ private slots:
         QVERIFY2(tooltip.contains(needle), "tooltip must list the submitted filter title");
     }
 
-    // Two filters on the same column render as two tooltip
-    // bullets in alphabetical order regardless of insertion
-    // order. Pins the canonical sort that
-    // `MainWindow::SyncColumnFilterIndicators` applies before
-    // pushing into `LogModel::SetColumnFilterDetails`, so
-    // `mFilters`'s unordered iteration cannot flake the rendered
-    // order.
+    // Two filters on the same column render as bullets in
+    // alphabetical order regardless of insertion order. Pins the
+    // sort in `MainWindow::SyncColumnFilterIndicators` against
+    // `mFilters`'s unordered iteration.
     void TestHeaderFilterTooltipListsMultipleFiltersSortedAlphabetically()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -8033,11 +8017,9 @@ private slots:
         QVERIFY2(applePos < zebraPos, "tooltip must list filter titles in alphabetical order");
     }
 
-    // `ClearAllFilters` returns the header to the baseline pinned
-    // in `TestHeaderFilterIndicatorAbsentWithoutFilters`: no
-    // decoration, no "Filters:" tooltip section. Catches the
-    // missing trailing `SyncColumnFilterIndicators()` regression
-    // (the bug where `mColumnFilterDetails` would survive a wipe).
+    // `ClearAllFilters` returns the header to the no-filter
+    // baseline: no decoration, no "Filters:" section. Catches the
+    // missing trailing `SyncColumnFilterIndicators()` regression.
     void TestHeaderFilterIndicatorClearsOnClearAll()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -8080,13 +8062,10 @@ private slots:
         );
     }
 
-    // A column that mismatches its configured type AND has an
-    // active filter still surfaces the warning text in the
-    // tooltip; the "Filters:" section coexists. Per the icon
-    // precedence decision the warning glyph wins the decoration
-    // slot, which we verify by snapshotting the icon both with
-    // and without the warning condition active and asserting the
-    // returned QIcon's pixmap actually changes.
+    // A column with both a type mismatch AND an active filter
+    // shows both sections in the tooltip, but the warning glyph
+    // wins the single decoration slot. Verified by snapshotting
+    // the icon pixmap with and without the warning active.
     void TestHeaderWarningAndFilterCoexistInTooltip()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -8124,10 +8103,9 @@ private slots:
         QVERIFY2(!combined.isNull(), "warning+filter decoration must still be non-null");
 
         const QImage combinedImage = combined.pixmap(16, 16).toImage();
-        // Warning precedence: the glyph painted into the header
-        // cell must have switched from the funnel to the warning
-        // icon. Comparing pixmaps tolerates QIcon cache-key churn
-        // across two separate `headerData` calls.
+        // Warning precedence: the painted glyph must have switched
+        // from the funnel to the warning icon. Comparing pixmaps
+        // (not QIcons) avoids cache-key flakiness.
         QVERIFY2(
             combinedImage != funnelOnlyImage,
             "warning must replace funnel decoration when both conditions apply"
@@ -8144,12 +8122,9 @@ private slots:
         );
     }
 
-    // A column rename (`SetColumnHeader` + `NotifyColumnEdited`)
-    // refreshes the bold header line of the tooltip but leaves
-    // the "Filters:" section intact and keeps the funnel
-    // decoration. Anchors that `mColumnFilterDetails` is keyed
-    // by section index, not by column header text -- a rename
-    // must not strand the indicator on an outdated label.
+    // Renaming a column refreshes the tooltip header but keeps
+    // the funnel and "Filters:" section. Pins that
+    // `mColumnFilterDetails` is keyed by section, not by label.
     void TestHeaderFilterIndicatorSurvivesColumnRename()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -8190,13 +8165,9 @@ private slots:
         QVERIFY2(tooltip.contains(needle), "Filters section must still list the active filter title after rename");
     }
 
-    // Moving a filtered column over another column re-aligns the
-    // funnel decoration with the filter's new section index. Pins
-    // the trailing `SyncColumnFilterIndicators` call inside
-    // `MainWindow::ApplyColumnVisibility` (reached at the end of
-    // `OnSourceColumnsMoved`): without it, the model's
-    // `mColumnFilterDetails` would still report the funnel at the
-    // pre-move section, leaving the decoration stranded.
+    // Moving a filtered column re-aligns the funnel with the new
+    // section index. Pins the `SyncColumnFilterIndicators` call
+    // reached via `OnSourceColumnsMoved -> ApplyColumnVisibility`.
     void TestHeaderFilterIndicatorFollowsColumnMove()
     {
         const int levelColBefore = StreamFixtureForColumnTests();
@@ -8207,9 +8178,8 @@ private slots:
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
-        // Filter on `msg`; after the move below the filter row
-        // remaps onto the new section index, and the funnel must
-        // follow.
+        // Filter on `msg`; the funnel must follow the column to
+        // its new section index after the move below.
         const QString filterId = QStringLiteral("hf-move");
         QMetaObject::invokeMethod(
             mWindow,
@@ -8252,12 +8222,9 @@ private slots:
     }
 
     // Hiding then re-showing a filtered column keeps the funnel
-    // attached to the filter's section index. Pins the trailing
-    // `SyncColumnFilterIndicators` calls in
-    // `MainWindow::SetColumnVisible` and `ApplyColumnVisibility` --
-    // visibility doesn't change `filter.row`, so the diff guard
-    // makes both calls free, but the symmetric wiring is what
-    // keeps the seam from drifting in either direction.
+    // attached. Visibility doesn't change `filter.row`, so the
+    // sync calls in `SetColumnVisible` / `ApplyColumnVisibility`
+    // are no-ops -- but the symmetric wiring is what we pin.
     void TestHeaderFilterIndicatorSurvivesColumnHideShow()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -8280,8 +8247,7 @@ private slots:
 
         mWindow->SetColumnVisible(msgCol, false);
         QCoreApplication::processEvents();
-        // Cache survives a hide -- visibility is a header-view
-        // concern, not a filter-state concern.
+        // Hiding is a header-view concern; the filter cache stays.
         QVERIFY2(
             model->HasFilterForColumn(msgCol),
             "hiding a column must not drop the per-column filter cache entry"
@@ -8302,13 +8268,10 @@ private slots:
         );
     }
 
-    // After a `Type::Level -> Type::String` mid-batch demote the
-    // tooltip's "Filters:" section must reflect the rewritten raw
-    // bytes (`info`, lowercase) rather than the canonical names
-    // the user originally submitted (`Info`). Pins the
-    // `SyncColumnFilterIndicators()` call inside the
-    // `enumColumnsChanged(Demoted)` rewrite block (commit b65edf6).
-    // Mirrors the fixture in `TestLevelFilterTranslatesOnDemoteToString`.
+    // After a mid-batch `Level -> String` demote, the "Filters:"
+    // section must list the rewritten raw bytes (`info`) rather
+    // than the canonical name (`Info`) the user originally
+    // submitted. Pins the resync inside the demote handler.
     void TestHeaderFilterTooltipReflectsRawValuesAfterLevelDemote()
     {
         auto *model = mWindow->findChild<LogModel *>();
@@ -8320,8 +8283,8 @@ private slots:
         loglib::FileLineSource *sourcePtr = fileSource.get();
         (void)model->BeginStreamingForSyncTest(std::move(fileSource));
 
-        // Cap of 3 lets batch 1 promote to Level (dict size 2);
-        // batch 2 trips it and demotes back to String.
+        // Cap of 3: batch 1 promotes to Level (dict size 2);
+        // batch 2 trips the cap and demotes back to String.
         constexpr uint16_t TEST_CAP = 3;
         model->Table().SetEnumValueCap(TEST_CAP);
 
@@ -8348,8 +8311,8 @@ private slots:
             model->Configuration().columns[static_cast<size_t>(levelCol)].type, loglib::LogConfiguration::Type::Level
         );
 
-        // Submit the canonical-name filter `Info` while the column
-        // is still Level. Tooltip pre-demote lists `Info`.
+        // Submit `Info` while the column is still Level; the
+        // pre-demote tooltip lists the canonical name.
         const QString filterId = QStringLiteral("hf-level-demote");
         QVERIFY2(
             QMetaObject::invokeMethod(
@@ -8370,11 +8333,9 @@ private slots:
             "tooltip pre-demote must list the canonical Level name the user submitted"
         );
 
-        // Batch 2: three new distinct values overflow the cap and
-        // demote `level` to String. `MainWindow`'s `Demoted`
-        // handler rewrites `filterValues` from `["Info"]` to
-        // `["info"]` and the trailing
-        // `SyncColumnFilterIndicators` resyncs the tooltip cache.
+        // Batch 2 overflows the cap and demotes `level` to String.
+        // The `Demoted` handler rewrites `["Info"] -> ["info"]`
+        // and resyncs the tooltip cache.
         {
             loglib::StreamedBatch batch;
             batch.firstLineNumber = 4;
@@ -8398,12 +8359,9 @@ private slots:
             tooltipAfter.contains(QStringLiteral("info")),
             "tooltip post-demote must list the rewritten raw value"
         );
-        // Stricter: the canonical-name `Info` (capital I followed
-        // by lowercase) must NOT appear post-demote -- the
-        // rewrite replaced it with the raw byte form `info`. We
-        // can't just check `!contains("Info")` because the raw
-        // `info` is a substring of `Info`; instead we look for the
-        // exact bullet form.
+        // The canonical-name bullet `&bull; Info` must be gone.
+        // We can't just `!contains("Info")` because raw `info`
+        // is a substring of `Info`, so we look for the bullet.
         QVERIFY2(
             !tooltipAfter.contains(QStringLiteral("&bull; Info")),
             "tooltip post-demote must not still list the pre-demote canonical name"
@@ -8412,12 +8370,10 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Flipping the application palette (e.g. a Light <-> Dark
-    // theme toggle) must re-tint the funnel decoration. Pins the
-    // `mModel->RefreshHeaderIcons()` call that `RefreshThemedIcons`
-    // makes against the model: without it, the cached funnel
-    // pixmap rendered against the old `WindowText` colour would
-    // stay pinned for the rest of the session.
+    // A palette flip must re-tint the funnel decoration. Pins
+    // the `RefreshHeaderIcons` call inside `RefreshThemedIcons`:
+    // without it, the cached pixmap would stay pinned to the
+    // pre-flip `WindowText` colour.
     void TestHeaderFilterFunnelRetintsAfterPaletteChange()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -8462,9 +8418,9 @@ private slots:
             return matching;
         };
 
-        // Save + restore the app palette: `QApplication::setPalette`
-        // is process-global and the cleanup-per-test fixture only
-        // resets `mWindow`, not Qt's globals.
+        // `QApplication::setPalette` is process-global; the
+        // per-test fixture only resets `mWindow`, so we save and
+        // restore the app palette ourselves.
         const QPalette savedAppPalette = QApplication::palette();
         const QPalette savedWindowPalette = mWindow->palette();
         const auto paletteGuard = qScopeGuard([&]() {
@@ -8473,11 +8429,9 @@ private slots:
             QCoreApplication::processEvents();
         });
 
-        // Vivid red palette as the first WindowText. The funnel
-        // tints at `MakeThemedPixmap` time using
-        // `QApplication::palette()` so we have to flip the app
-        // palette, not just the window's, for the model-side
-        // re-render to pick up the new colour.
+        // The funnel tints from `QApplication::palette()`, so we
+        // must flip the app palette (not just the window's) for
+        // the re-render to pick up the new colour.
         QPalette redPalette = QApplication::palette();
         redPalette.setColor(QPalette::Active, QPalette::WindowText, QColor(255, 0, 0));
         redPalette.setColor(QPalette::Inactive, QPalette::WindowText, QColor(255, 0, 0));
@@ -8492,9 +8446,8 @@ private slots:
         const int redPixels = opaquePixelCount(redIcon, qRgb(255, 0, 0));
         QVERIFY2(redPixels > 0, "funnel must paint in the red WindowText colour after the first palette flip");
 
-        // Flip to vivid blue. Without `RefreshHeaderIcons` the
-        // cached red pixmap would stay pinned and the blue-pixel
-        // count would be zero.
+        // Flip to blue. Without `RefreshHeaderIcons` the cached
+        // red pixmap would stay pinned and bluePixels would be 0.
         QPalette bluePalette = QApplication::palette();
         bluePalette.setColor(QPalette::Active, QPalette::WindowText, QColor(0, 0, 255));
         bluePalette.setColor(QPalette::Inactive, QPalette::WindowText, QColor(0, 0, 255));
@@ -8510,10 +8463,9 @@ private slots:
         QVERIFY2(bluePixels > 0, "funnel must repaint in the blue WindowText colour after a palette flip");
     }
 
-    // `BuildFilterTitle` has 5 type branches; the existing tests
-    // only exercise the String branch. Pin the Enumeration and
-    // numeric-range branches so a future formatting change to
-    // either renders into the tooltip the way users expect.
+    // The other tests only cover `BuildFilterTitle`'s String
+    // branch. Pin the Enumeration and numeric-range branches so
+    // their tooltip rendering stays correct.
     void TestHeaderFilterTooltipForEnumAndNumericFilters()
     {
         const int levelCol = StreamFixtureForColumnTests();
@@ -8524,12 +8476,10 @@ private slots:
             loglib::LogConfiguration::Type::Enumeration
         );
 
-        // Enumeration branch: `BuildFilterTitle` joins the
-        // selected values. We assert each value is mentioned;
-        // the exact separator is an implementation detail.
-        // Two-value list lifted into a local so the comma inside
-        // `QStringList{...}` doesn't trip the `Q_ARG` macro
-        // expansion.
+        // Enum branch: assert each selected value is mentioned;
+        // the exact separator is an implementation detail. The
+        // local lifts the `{a, b}` list out of the `Q_ARG` macro,
+        // which would mis-parse the embedded comma.
         const QStringList enumValues{QStringLiteral("info"), QStringLiteral("warn")};
         QVERIFY2(
             QMetaObject::invokeMethod(
@@ -8551,18 +8501,16 @@ private slots:
             "enum tooltip must list every selected value"
         );
 
-        // Wipe the enum filter before testing numeric so the two
-        // branches don't share a section and their bullets don't
-        // collide.
+        // Wipe the enum filter so the numeric branch starts clean
+        // and the two filter bullets don't collide.
         QMetaObject::invokeMethod(mWindow, "ClearAllFilters", Qt::DirectConnection);
         QCoreApplication::processEvents();
         QVERIFY2(mWindow->Filters().empty(), "ClearAllFilters must drain mFilters between branches");
 
-        // Numeric-range branch: install a synthetic numeric
-        // filter via the meta-object slot. The fixture's `msg`
-        // column is a string but `BuildFilterTitle` doesn't probe
-        // the column type -- it formats from `LogFilter::Type` --
-        // so a Number filter on any column exercises the branch.
+        // Numeric branch: `BuildFilterTitle` formats from
+        // `LogFilter::Type`, not the column's declared type, so a
+        // numeric filter on the (string) `msg` column still
+        // exercises this branch.
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
         QVERIFY2(
@@ -8584,9 +8532,8 @@ private slots:
             numericTooltip.contains(QStringLiteral("Filters:")),
             "numeric filter must show in the Filters section"
         );
-        // Both bounds must be visible somewhere in the rendered
-        // title. The exact separator (`>=`, `<=`, dash) is an
-        // implementation detail; the bound numerals are not.
+        // Both bounds must appear; the separator (`>=`, `<=`,
+        // dash) is an implementation detail.
         QVERIFY2(
             numericTooltip.contains(QStringLiteral("1.5")) && numericTooltip.contains(QStringLiteral("42")),
             "numeric tooltip must list both bounds"

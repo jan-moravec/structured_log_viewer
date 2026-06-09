@@ -973,9 +973,8 @@ QString BuildHeaderTooltip(
     lines.append(QStringLiteral("type: %1").arg(FormatTypeName(column.type, column.autoDetect)));
     QString tooltip = lines.join(QStringLiteral("<br/>"));
 
-    // Filters section sits between the static column metadata and
-    // the (red) warning section so the warning, when present,
-    // stays the visually dominant trailing block.
+    // Filters section sits between metadata and the warning so the
+    // warning stays the visually dominant trailing block.
     if (!filterTitles.isEmpty())
     {
         QStringList bullets;
@@ -1025,9 +1024,8 @@ QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role
     }
     if (role == Qt::DecorationRole)
     {
-        // Warning wins: a type-mismatch needs the user's attention
-        // more than a "filter present" reminder, and pixel real
-        // estate in a header cell only holds one decoration icon.
+        // Warning wins over the funnel: only one decoration fits
+        // in a header cell and a type mismatch is more important.
         if (auto health = ColumnHealth(section); health.has_value())
         {
             const size_t mismatched =
@@ -1041,18 +1039,10 @@ QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role
         {
             if (!mFunnelIconAttempted)
             {
-                // Render at `PM_SmallIconSize` (typically 16 px),
-                // not `MakeThemedIcon`'s default `FALLBACK_ICON_PX`
-                // (20 px). Header views paint decorations at the
-                // small-icon metric, so a 20 px source forces Qt
-                // to downscale on every paint. Tint and DPR still
-                // come from the application (the header tracks
-                // the app palette in every theme we ship).
-                //
-                // The latch is set unconditionally so a missing
-                // resource (theoretical -- `funnel.svg` is bundled)
-                // caches the empty `QIcon` instead of re-attempting
-                // the load on every header repaint.
+                // Render at `PM_SmallIconSize` so the header view
+                // doesn't downscale on every paint. The latch is
+                // set unconditionally: a missing resource caches
+                // the empty `QIcon` instead of retrying each paint.
                 const QPalette appPalette = QApplication::palette();
                 const QColor tint = appPalette.color(QPalette::Active, QPalette::WindowText);
                 const qreal dpr = qApp->devicePixelRatio();
@@ -1167,15 +1157,9 @@ void LogModel::SetColumnFilterDetails(std::vector<QStringList> perColumnTitles)
     const int cols = columnCount();
     if (cols <= 0)
     {
-        // Structural reset in flight; drop the cache so a stale
-        // entry can't survive into the next configuration. We
-        // skip the `headerDataChanged` emit here because the only
-        // legitimate caller (`MainWindow::ClearAllFilters` reached
-        // via `MainWindow::Reset` -> `mModel->Reset()`) is paired
-        // with a `beginResetModel`/`endResetModel` that already
-        // invalidates every cached header on the view side --
-        // emitting now would force a redundant header repaint
-        // that's about to be superseded.
+        // Structural reset in flight: drop the cache. No emit -
+        // the surrounding `beginResetModel`/`endResetModel` already
+        // invalidates the header on the view side.
         if (mColumnFilterDetails.empty())
         {
             return;
@@ -1184,11 +1168,8 @@ void LogModel::SetColumnFilterDetails(std::vector<QStringList> perColumnTitles)
         return;
     }
 
-    // Normalise the input length to the current column count.
-    // Over-long input is trimmed (extra entries can't reach a
-    // valid section index anyway); under-long is padded with
-    // empty `QStringList`s so a column whose filters were all
-    // removed is reset rather than left at its previous titles.
+    // Normalise input length to current column count: trim extras,
+    // pad with empty lists so cleared columns get reset.
     perColumnTitles.resize(static_cast<size_t>(cols));
     if (mColumnFilterDetails.size() != perColumnTitles.size())
     {
@@ -1210,10 +1191,8 @@ void LogModel::SetColumnFilterDetails(std::vector<QStringList> perColumnTitles)
     }
     if (firstChanged < 0)
     {
-        // Idempotent no-op: same titles in same order on every
-        // column. The MainWindow sync helper calls us on every
-        // row-storm signal; suppressing the redundant emit keeps
-        // the header view from repainting on every batch.
+        // Idempotent no-op: suppress the emit so row-storm signals
+        // don't trigger redundant header repaints.
         return;
     }
     mColumnFilterDetails = std::move(perColumnTitles);
@@ -1232,15 +1211,11 @@ bool LogModel::HasFilterForColumn(int section) const noexcept
 void LogModel::RefreshHeaderIcons()
 {
     mFunnelIconCache = QIcon{};
-    // Reset the "load attempted" latch so the next decoration
-    // query re-renders the funnel against the new palette / DPR.
-    // Without this, a Light <-> Dark flip would leave the empty
-    // (or pre-flip-tinted) icon pinned for the rest of the session.
+    // Reset the latch so the next decoration query re-renders the
+    // funnel against the new palette / DPR.
     mFunnelIconAttempted = false;
-    // Re-emit only across the contiguous range of columns that
-    // currently have a filter. Columns without a filter don't
-    // display the funnel and don't need to re-render. When no
-    // column has a filter we skip the emit entirely.
+    // Re-emit only the contiguous range of filtered columns; the
+    // rest don't show the funnel and need no repaint.
     int firstWith = -1;
     int lastWith = -1;
     for (size_t i = 0; i < mColumnFilterDetails.size(); ++i)
