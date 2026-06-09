@@ -1051,9 +1051,8 @@ QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role
                 {
                     smallIconPx = style->pixelMetric(QStyle::PM_SmallIconSize);
                 }
-                mFunnelIconCache = icon_loader::MakeThemedIcon(
-                    QStringLiteral(":/icons/funnel.svg"), tint, smallIconPx, dpr
-                );
+                mFunnelIconCache =
+                    icon_loader::MakeThemedIcon(QStringLiteral(":/icons/funnel.svg"), tint, smallIconPx, dpr);
                 mFunnelIconAttempted = true;
             }
             return mFunnelIconCache;

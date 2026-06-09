@@ -7966,8 +7966,7 @@ private slots:
         const QVariant decoration = model->headerData(msgCol, Qt::Horizontal, Qt::DecorationRole);
         QVERIFY(decoration.canConvert<QIcon>());
         QVERIFY2(
-            !decoration.value<QIcon>().isNull(),
-            "filtered column header must surface a (themed funnel) decoration"
+            !decoration.value<QIcon>().isNull(), "filtered column header must surface a (themed funnel) decoration"
         );
 
         const QString tooltip = model->headerData(msgCol, Qt::Horizontal, Qt::ToolTipRole).toString();
@@ -8046,8 +8045,7 @@ private slots:
 
         QVERIFY2(mWindow->Filters().empty(), "ClearAllFilters must drain mFilters");
         QVERIFY2(
-            !model->HasFilterForColumn(msgCol),
-            "ClearAllFilters must propagate into LogModel::HasFilterForColumn"
+            !model->HasFilterForColumn(msgCol), "ClearAllFilters must propagate into LogModel::HasFilterForColumn"
         );
 
         const QVariant decoration = model->headerData(msgCol, Qt::Horizontal, Qt::DecorationRole);
@@ -8106,10 +8104,7 @@ private slots:
         // Warning precedence: the painted glyph must have switched
         // from the funnel to the warning icon. Comparing pixmaps
         // (not QIcons) avoids cache-key flakiness.
-        QVERIFY2(
-            combinedImage != funnelOnlyImage,
-            "warning must replace funnel decoration when both conditions apply"
-        );
+        QVERIFY2(combinedImage != funnelOnlyImage, "warning must replace funnel decoration when both conditions apply");
 
         const QString tooltip = model->headerData(msgCol, Qt::Horizontal, Qt::ToolTipRole).toString();
         QVERIFY2(
@@ -8205,20 +8200,13 @@ private slots:
         QVERIFY2(msgColAfter != src, "fixture sanity: msg must have actually moved sections");
 
         QVERIFY2(
-            model->HasFilterForColumn(msgColAfter),
-            "funnel cache must follow the moved column to its new section index"
+            model->HasFilterForColumn(msgColAfter), "funnel cache must follow the moved column to its new section index"
         );
-        QVERIFY2(
-            !model->HasFilterForColumn(src),
-            "funnel must not be left stranded at the pre-move section"
-        );
+        QVERIFY2(!model->HasFilterForColumn(src), "funnel must not be left stranded at the pre-move section");
 
         const QVariant decoration = model->headerData(msgColAfter, Qt::Horizontal, Qt::DecorationRole);
         QVERIFY(decoration.canConvert<QIcon>());
-        QVERIFY2(
-            !decoration.value<QIcon>().isNull(),
-            "funnel decoration must render at the post-move section index"
-        );
+        QVERIFY2(!decoration.value<QIcon>().isNull(), "funnel decoration must render at the post-move section index");
     }
 
     // Hiding then re-showing a filtered column keeps the funnel
@@ -8248,17 +8236,11 @@ private slots:
         mWindow->SetColumnVisible(msgCol, false);
         QCoreApplication::processEvents();
         // Hiding is a header-view concern; the filter cache stays.
-        QVERIFY2(
-            model->HasFilterForColumn(msgCol),
-            "hiding a column must not drop the per-column filter cache entry"
-        );
+        QVERIFY2(model->HasFilterForColumn(msgCol), "hiding a column must not drop the per-column filter cache entry");
 
         mWindow->SetColumnVisible(msgCol, true);
         QCoreApplication::processEvents();
-        QVERIFY2(
-            model->HasFilterForColumn(msgCol),
-            "re-showing the column must surface the same cache entry"
-        );
+        QVERIFY2(model->HasFilterForColumn(msgCol), "re-showing the column must surface the same cache entry");
 
         const QVariant decoration = model->headerData(msgCol, Qt::Horizontal, Qt::DecorationRole);
         QVERIFY(decoration.canConvert<QIcon>());
@@ -8352,12 +8334,10 @@ private slots:
 
         const QString tooltipAfter = model->headerData(levelCol, Qt::Horizontal, Qt::ToolTipRole).toString();
         QVERIFY2(
-            tooltipAfter.contains(QStringLiteral("Filters:")),
-            "tooltip post-demote must keep its Filters section"
+            tooltipAfter.contains(QStringLiteral("Filters:")), "tooltip post-demote must keep its Filters section"
         );
         QVERIFY2(
-            tooltipAfter.contains(QStringLiteral("info")),
-            "tooltip post-demote must list the rewritten raw value"
+            tooltipAfter.contains(QStringLiteral("info")), "tooltip post-demote must list the rewritten raw value"
         );
         // The canonical-name bullet `&bull; Info` must be gone.
         // We can't just `!contains("Info")` because raw `info`
@@ -8529,8 +8509,7 @@ private slots:
 
         const QString numericTooltip = model->headerData(msgCol, Qt::Horizontal, Qt::ToolTipRole).toString();
         QVERIFY2(
-            numericTooltip.contains(QStringLiteral("Filters:")),
-            "numeric filter must show in the Filters section"
+            numericTooltip.contains(QStringLiteral("Filters:")), "numeric filter must show in the Filters section"
         );
         // Both bounds must appear; the separator (`>=`, `<=`,
         // dash) is an implementation detail.
