@@ -12,6 +12,8 @@
 
 #include <QAbstractTableModel>
 #include <QFuture>
+#include <QIcon>
+#include <QStringList>
 
 #include <cstddef>
 #include <cstdint>
@@ -215,6 +217,33 @@ public:
     /// the header tooltip / warning icon and the status-bar summary.
     [[nodiscard]] std::optional<loglib::LogTable::ColumnTypeHealth> ColumnHealth(int section) const;
 
+    /// Replace the per-column "active filter titles" cache that
+    /// feeds the funnel decoration + tooltip section in
+    /// `headerData`. Each entry is the human-readable title of one
+    /// active filter on that column (already sorted by the caller
+    /// for stable display). An empty `QStringList` means "no
+    /// filter on this column". `perColumnTitles` is padded /
+    /// trimmed to the current `columnCount()` so out-of-range
+    /// lookups stay safe across structural changes.
+    ///
+    /// Idempotent: emits `headerDataChanged` only for the
+    /// `[firstChanged, lastChanged]` range and is a no-op when
+    /// every column matches its previous titles list.
+    void SetColumnFilterDetails(std::vector<QStringList> perColumnTitles);
+
+    /// True iff @p section has at least one cached filter title.
+    /// Drives the funnel decoration branch of `headerData`;
+    /// out-of-range returns `false`.
+    [[nodiscard]] bool HasFilterForColumn(int section) const noexcept;
+
+    /// Drop the cached themed funnel pixmap and re-emit
+    /// `headerDataChanged` across columns that currently have a
+    /// filter, so the header view re-fetches a glyph tinted for
+    /// the new palette. No-op when no column has a filter.
+    /// `MainWindow::OnThemeChanged` invokes this after a Light <->
+    /// Dark flip.
+    void RefreshHeaderIcons();
+
     /// Recompute every column's `ColumnTypeHealth` snapshot. Emits
     /// `headerDataChanged` and `columnHealthChanged` when something
     /// moved. Walks the whole table; meant for end-of-stream and
@@ -352,6 +381,22 @@ private:
     /// Per-column health cache, parallel to `Configuration().columns`.
     /// Written only by `RefreshColumnHealth`; empty until first refresh.
     std::vector<loglib::LogTable::ColumnTypeHealth> mColumnHealth;
+
+    /// Per-column titles of currently-active filters, parallel to
+    /// `Configuration().columns`. Written only by
+    /// `SetColumnFilterDetails`; empty entry = no filter on that
+    /// column. Drives the funnel decoration + tooltip section in
+    /// `headerData`.
+    std::vector<QStringList> mColumnFilterDetails;
+
+    /// Lazily-rendered themed funnel glyph for the header
+    /// "column has a filter" indicator. Populated on first
+    /// `Qt::DecorationRole` hit; cleared by `RefreshHeaderIcons`
+    /// when the palette changes. `mutable` because `headerData` is
+    /// `const` and the cache fill is a pure speedup -- the
+    /// observable return value is the same icon every time until
+    /// the next theme flip.
+    mutable QIcon mFunnelIconCache;
 
     /// Cached first-`Type::Level` column index. Sentinel
     /// `LEVEL_COLUMN_UNCACHED` before first scan, `LEVEL_COLUMN_NONE`
