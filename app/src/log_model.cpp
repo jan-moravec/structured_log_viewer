@@ -1,6 +1,7 @@
 #include "log_model.hpp"
 
 #include "anchor_manager.hpp"
+#include "icon_loader.hpp"
 #include "qt_streaming_log_sink.hpp"
 #include "streaming_control.hpp"
 #include "theme_control.hpp"
@@ -17,12 +18,14 @@
 
 #include <QApplication>
 #include <QBrush>
+#include <QColor>
 #include <QCoreApplication>
 #include <QFont>
 #include <QFutureWatcher>
 #include <QIcon>
 #include <QMetaObject>
 #include <QModelIndex>
+#include <QPalette>
 #include <QPointer>
 #include <QString>
 #include <QStringList>
@@ -946,7 +949,9 @@ QString FormatTypeName(loglib::LogConfiguration::Type type, bool autoDetect)
 }
 
 QString BuildHeaderTooltip(
-    const loglib::LogConfiguration::Column &column, std::optional<loglib::LogTable::ColumnTypeHealth> health
+    const loglib::LogConfiguration::Column &column,
+    std::optional<loglib::LogTable::ColumnTypeHealth> health,
+    const QStringList &filterTitles
 )
 {
     // Join with `<br/>` so missing sections don't produce blank lines.
@@ -967,6 +972,19 @@ QString BuildHeaderTooltip(
     }
     lines.append(QStringLiteral("type: %1").arg(FormatTypeName(column.type, column.autoDetect)));
     QString tooltip = lines.join(QStringLiteral("<br/>"));
+
+    // Filters section sits between metadata and the warning so the
+    // warning stays the visually dominant trailing block.
+    if (!filterTitles.isEmpty())
+    {
+        QStringList bullets;
+        bullets.reserve(filterTitles.size());
+        for (const auto &title : filterTitles)
+        {
+            bullets.append(QStringLiteral("&bull; %1").arg(title.toHtmlEscaped()));
+        }
+        tooltip += QStringLiteral("<br/><b>Filters:</b><br/>%1").arg(bullets.join(QStringLiteral("<br/>")));
+    }
 
     if (health.has_value())
     {
@@ -999,10 +1017,15 @@ QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role
     if (role == Qt::ToolTipRole)
     {
         const auto &columns = mLogTable.Configuration().Configuration().columns;
-        return BuildHeaderTooltip(columns[static_cast<size_t>(section)], ColumnHealth(section));
+        const QStringList titles = (static_cast<size_t>(section) < mColumnFilterDetails.size())
+                                       ? mColumnFilterDetails[static_cast<size_t>(section)]
+                                       : QStringList{};
+        return BuildHeaderTooltip(columns[static_cast<size_t>(section)], ColumnHealth(section), titles);
     }
     if (role == Qt::DecorationRole)
     {
+        // Warning wins over the funnel: only one decoration fits
+        // in a header cell and a type mismatch is more important.
         if (auto health = ColumnHealth(section); health.has_value())
         {
             const size_t mismatched =
@@ -1011,6 +1034,28 @@ QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role
             {
                 return QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning);
             }
+        }
+        if (HasFilterForColumn(section))
+        {
+            if (!mFunnelIconAttempted)
+            {
+                // Render at `PM_SmallIconSize` so the header view
+                // doesn't downscale on every paint. The latch is
+                // set unconditionally: a missing resource caches
+                // the empty `QIcon` instead of retrying each paint.
+                const QPalette appPalette = QApplication::palette();
+                const QColor tint = appPalette.color(QPalette::Active, QPalette::WindowText);
+                const qreal dpr = qApp->devicePixelRatio();
+                int smallIconPx = 0;
+                if (const QStyle *style = QApplication::style(); style != nullptr)
+                {
+                    smallIconPx = style->pixelMetric(QStyle::PM_SmallIconSize);
+                }
+                mFunnelIconCache =
+                    icon_loader::MakeThemedIcon(QStringLiteral(":/icons/funnel.svg"), tint, smallIconPx, dpr);
+                mFunnelIconAttempted = true;
+            }
+            return mFunnelIconCache;
         }
         return {};
     }
@@ -1104,6 +1149,90 @@ std::optional<loglib::LogTable::ColumnTypeHealth> LogModel::ColumnHealth(int sec
         return std::nullopt;
     }
     return mColumnHealth[static_cast<size_t>(section)];
+}
+
+void LogModel::SetColumnFilterDetails(std::vector<QStringList> perColumnTitles)
+{
+    const int cols = columnCount();
+    if (cols <= 0)
+    {
+        // Structural reset in flight: drop the cache. No emit -
+        // the surrounding `beginResetModel`/`endResetModel` already
+        // invalidates the header on the view side.
+        if (mColumnFilterDetails.empty())
+        {
+            return;
+        }
+        mColumnFilterDetails.clear();
+        return;
+    }
+
+    // Normalise input length to current column count: trim extras,
+    // pad with empty lists so cleared columns get reset.
+    perColumnTitles.resize(static_cast<size_t>(cols));
+    if (mColumnFilterDetails.size() != perColumnTitles.size())
+    {
+        mColumnFilterDetails.resize(perColumnTitles.size());
+    }
+
+    int firstChanged = -1;
+    int lastChanged = -1;
+    for (int i = 0; i < cols; ++i)
+    {
+        if (mColumnFilterDetails[static_cast<size_t>(i)] != perColumnTitles[static_cast<size_t>(i)])
+        {
+            if (firstChanged < 0)
+            {
+                firstChanged = i;
+            }
+            lastChanged = i;
+        }
+    }
+    if (firstChanged < 0)
+    {
+        // Idempotent no-op: suppress the emit so row-storm signals
+        // don't trigger redundant header repaints.
+        return;
+    }
+    mColumnFilterDetails = std::move(perColumnTitles);
+    emit headerDataChanged(Qt::Horizontal, firstChanged, lastChanged);
+}
+
+bool LogModel::HasFilterForColumn(int section) const noexcept
+{
+    if (section < 0 || static_cast<size_t>(section) >= mColumnFilterDetails.size())
+    {
+        return false;
+    }
+    return !mColumnFilterDetails[static_cast<size_t>(section)].isEmpty();
+}
+
+void LogModel::RefreshHeaderIcons()
+{
+    mFunnelIconCache = QIcon{};
+    // Reset the latch so the next decoration query re-renders the
+    // funnel against the new palette / DPR.
+    mFunnelIconAttempted = false;
+    // Re-emit only the contiguous range of filtered columns; the
+    // rest don't show the funnel and need no repaint.
+    int firstWith = -1;
+    int lastWith = -1;
+    for (size_t i = 0; i < mColumnFilterDetails.size(); ++i)
+    {
+        if (!mColumnFilterDetails[i].isEmpty())
+        {
+            if (firstWith < 0)
+            {
+                firstWith = static_cast<int>(i);
+            }
+            lastWith = static_cast<int>(i);
+        }
+    }
+    if (firstWith < 0)
+    {
+        return;
+    }
+    emit headerDataChanged(Qt::Horizontal, firstWith, lastWith);
 }
 
 void LogModel::RefreshColumnHealth()

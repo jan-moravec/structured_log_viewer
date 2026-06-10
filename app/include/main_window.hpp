@@ -872,6 +872,16 @@ private:
     /// remove.)
     void RebuildClearFiltersMenu(QMenu *menu);
 
+    /// Snapshot active filter titles per column from `mFilters` and
+    /// push them into `LogModel::SetColumnFilterDetails`, which
+    /// drives the funnel decoration + "Filters:" tooltip section.
+    /// Sorts each column's titles for stable display.
+    ///
+    /// Called from every `mFilters` mutation point and from
+    /// column-shape signals that can shift `filter.row`. Idempotent
+    /// via the model-side diff guard.
+    void SyncColumnFilterIndicators();
+
     /// Re-evaluate the stream toolbar's visibility against the current
     /// session mode.
     void UpdateStreamToolbarVisibility();

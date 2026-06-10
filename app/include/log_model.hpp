@@ -12,6 +12,8 @@
 
 #include <QAbstractTableModel>
 #include <QFuture>
+#include <QIcon>
+#include <QStringList>
 
 #include <cstddef>
 #include <cstdint>
@@ -215,6 +217,23 @@ public:
     /// the header tooltip / warning icon and the status-bar summary.
     [[nodiscard]] std::optional<loglib::LogTable::ColumnTypeHealth> ColumnHealth(int section) const;
 
+    /// Replace the per-column active-filter titles cache used by
+    /// the funnel decoration and tooltip in `headerData`. Each
+    /// entry holds the titles of one column's active filters
+    /// (caller pre-sorts them); empty entry = no filter.
+    /// `perColumnTitles` is resized to `columnCount()`. Idempotent:
+    /// emits `headerDataChanged` only for the changed range.
+    void SetColumnFilterDetails(std::vector<QStringList> perColumnTitles);
+
+    /// True if @p section has any cached filter title. Out-of-range
+    /// returns `false`.
+    [[nodiscard]] bool HasFilterForColumn(int section) const noexcept;
+
+    /// Drop the cached funnel icon and re-emit `headerDataChanged`
+    /// for filtered columns so the header re-renders against the
+    /// new palette. Called from `MainWindow::OnThemeChanged`.
+    void RefreshHeaderIcons();
+
     /// Recompute every column's `ColumnTypeHealth` snapshot. Emits
     /// `headerDataChanged` and `columnHealthChanged` when something
     /// moved. Walks the whole table; meant for end-of-stream and
@@ -352,6 +371,23 @@ private:
     /// Per-column health cache, parallel to `Configuration().columns`.
     /// Written only by `RefreshColumnHealth`; empty until first refresh.
     std::vector<loglib::LogTable::ColumnTypeHealth> mColumnHealth;
+
+    /// Per-column active-filter titles, parallel to
+    /// `Configuration().columns`. Written only by
+    /// `SetColumnFilterDetails`; empty entry = no filter.
+    std::vector<QStringList> mColumnFilterDetails;
+
+    /// Themed funnel glyph for the "column has a filter" header
+    /// decoration, rendered lazily on first decoration query and
+    /// cleared by `RefreshHeaderIcons` on palette changes.
+    /// `mutable` so `headerData` (const) can populate the cache.
+    /// `mFunnelIconAttempted` guards against re-rendering on every
+    /// repaint if the resource ever fails to load.
+    mutable QIcon mFunnelIconCache;
+
+    /// Latched after the first `mFunnelIconCache` load attempt;
+    /// reset by `RefreshHeaderIcons` to force a re-render.
+    mutable bool mFunnelIconAttempted = false;
 
     /// Cached first-`Type::Level` column index. Sentinel
     /// `LEVEL_COLUMN_UNCACHED` before first scan, `LEVEL_COLUMN_NONE`
