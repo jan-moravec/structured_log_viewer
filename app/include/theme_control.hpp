@@ -6,6 +6,7 @@
 #include <QBrush>
 #include <QDir>
 #include <QFont>
+#include <QIcon>
 #include <QList>
 #include <QObject>
 #include <QString>
@@ -98,6 +99,43 @@ public:
     /// styling.
     [[nodiscard]] QBrush AnchorBrushFor(std::uint8_t colorIndex, int role) const noexcept;
 
+    /// True iff the active theme ships a `levelColumnOverride`.
+    /// Single source of truth for "is this theme using icon mode?"
+    /// -- `LogModel`, `LevelCellDelegate`, and `MainWindow` all
+    /// consult this one bool instead of probing the caches.
+    [[nodiscard]] bool HasLevelColumnOverride() const noexcept;
+
+    /// Cached themed icon for @p level. Null `QIcon` when the
+    /// theme is in icon mode but didn't supply an icon for this
+    /// level, or when icon mode is off.
+    [[nodiscard]] QIcon IconFor(loglib::LogLevel level) const noexcept;
+
+    /// Pill background brush for @p level. Invalid brush when the
+    /// theme omits `pillBackground` for this level (delegate then
+    /// skips the pill and paints the icon directly).
+    [[nodiscard]] QBrush PillBackgroundFor(loglib::LogLevel level) const noexcept;
+
+    /// Pill foreground brush for @p level. This is the colour used
+    /// to tint the icon; the resolution chain is
+    /// `override.pillForeground` -> `LevelStyle::foreground` ->
+    /// `QPalette::WindowText`. Always returns a valid brush when
+    /// the theme is in icon mode (one of the three fallbacks
+    /// always resolves).
+    [[nodiscard]] QBrush PillForegroundFor(loglib::LogLevel level) const noexcept;
+
+    /// Theme's header-text override, when set. `std::nullopt`
+    /// means the theme did not override the header text -- callers
+    /// fall back to `LogConfiguration::Column::header`. An empty
+    /// `QString` is a legitimate override meaning "render no text
+    /// in the header" (used by icon-only themes).
+    [[nodiscard]] std::optional<QString> LevelColumnHeaderTextOverride() const;
+
+    /// Theme's header-icon override, when set. Null `QIcon` means
+    /// the theme did not override the header icon -- callers fall
+    /// back to today's `DecorationRole` priority (warning > funnel
+    /// > nothing).
+    [[nodiscard]] QIcon LevelColumnHeaderIcon() const;
+
     /// In-memory active selection (empty = Auto).
     [[nodiscard]] QString ActiveSelection() const;
 
@@ -185,11 +223,24 @@ private:
     {
         loglib::Theme theme;
         bool fromUser = false;
+        /// Directory the theme JSON was loaded from. For built-ins
+        /// this is `":/themes"`; for user themes it's the absolute
+        /// path of `UserThemesDir()`. Used by `BuildStyleCache` to
+        /// resolve relative icon paths (see plan section 3).
+        QString sourceDir;
     };
     std::map<QString, IndexEntry> mIndex;
 
     loglib::Theme mActive;
     QString mActiveName;
+    /// Source directory of the currently-active theme. Cached so
+    /// `BuildStyleCache` can resolve relative icon paths without
+    /// having to re-look up `mActiveName` in `mIndex`.
+    QString mActiveSourceDir;
+    /// Whether the active theme came from `UserThemesDir()`.
+    /// Gates the looser path-resolution rules for user-supplied
+    /// icons (absolute paths allowed, parent-traversal rejected).
+    bool mActiveFromUser = false;
 
     /// `theme/active` value (empty = Auto).
     QString mActiveSelection;
@@ -213,6 +264,30 @@ private:
     /// `theme.anchorPalette`, with the built-in palette filling gaps.
     std::array<QBrush, loglib::ANCHOR_PALETTE_SIZE> mAnchorBackground;
     std::array<QBrush, loglib::ANCHOR_PALETTE_SIZE> mAnchorForeground;
+
+    /// Mirrors `theme.levelColumnOverride.has_value()`. The single
+    /// switch every consumer reads.
+    bool mHasLevelColumnOverride = false;
+
+    /// Optional header-text override; `nullopt` means "fall back
+    /// to `Column::header`". Empty string is preserved (means
+    /// "render no header text").
+    std::optional<QString> mLevelColumnHeaderText;
+
+    /// Optional header identity icon (null when the theme didn't
+    /// set `headerIcon`).
+    QIcon mLevelColumnHeaderIcon;
+
+    /// Per-`LogLevel` icon cache, parallel to `mForeground`.
+    /// Null icon means "no icon for this level"; the cell paints
+    /// blank.
+    std::array<QIcon, LEVEL_SLOTS> mLevelIcons;
+
+    /// Per-`LogLevel` pill brushes. Invalid brush in
+    /// `mPillBackground` means "no pill" (icon paints transparently
+    /// over the row tint).
+    std::array<QBrush, LEVEL_SLOTS> mPillBackground;
+    std::array<QBrush, LEVEL_SLOTS> mPillForeground;
 
     /// Any-level bold-or-italic flag for the `HasAnyFontStyle`
     /// fast-path. Refreshed by `BuildStyleCache`.

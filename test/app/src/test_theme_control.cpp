@@ -525,6 +525,162 @@ private slots:
         QCOMPARE(spy.count(), 0);
     }
 
+    /// Built-in themes all ship `levelColumnOverride`, so picking
+    /// one flips `HasLevelColumnOverride()` on and populates the
+    /// per-level caches. Regression for the headline icon-mode
+    /// switch: every consumer reads this single bool.
+    void TestBuiltinThemeOptsIntoIconMode()
+    {
+        mTheme->SetActiveSelection(QStringLiteral("Dark"));
+
+        QVERIFY(mTheme->HasLevelColumnOverride());
+        // Built-in dark.json sets icons for all seven levels.
+        QVERIFY(!mTheme->IconFor(loglib::LogLevel::Info).isNull());
+        QVERIFY(!mTheme->IconFor(loglib::LogLevel::Warn).isNull());
+        QVERIFY(!mTheme->IconFor(loglib::LogLevel::Fatal).isNull());
+        QVERIFY(!mTheme->IconFor(loglib::LogLevel::Unknown).isNull());
+        // Built-in dark.json sets a pillBackground for Info..Fatal
+        // but omits it for Trace/Debug/Unknown.
+        QVERIFY(mTheme->PillBackgroundFor(loglib::LogLevel::Info).style() != Qt::NoBrush);
+        QVERIFY(mTheme->PillBackgroundFor(loglib::LogLevel::Warn).style() != Qt::NoBrush);
+        QVERIFY(mTheme->PillBackgroundFor(loglib::LogLevel::Trace).style() == Qt::NoBrush);
+        QVERIFY(mTheme->PillBackgroundFor(loglib::LogLevel::Unknown).style() == Qt::NoBrush);
+        // The pill foreground always resolves (one of the three
+        // fallbacks fires) when icon mode is on.
+        QVERIFY(mTheme->PillForegroundFor(loglib::LogLevel::Info).style() != Qt::NoBrush);
+        // Built-in dark.json doesn't override header text or icon.
+        QVERIFY(!mTheme->LevelColumnHeaderTextOverride().has_value());
+        QVERIFY(mTheme->LevelColumnHeaderIcon().isNull());
+    }
+
+    /// A theme that omits `levelColumnOverride` keeps icon mode
+    /// off, with all per-level caches cleared.
+    void TestUserThemeWithoutOverrideTurnsIconModeOff()
+    {
+        const QDir userDir = ThemeControl::UserThemesDir();
+        WriteUserTheme(
+            userDir,
+            QStringLiteral("plain.json"),
+            QStringLiteral(R"({
+                "name": "Plain",
+                "kind": "light",
+                "levels": { "Info": { "foreground": "#222222" } },
+                "table": {},
+                "chrome": {},
+                "app": {}
+            })")
+        );
+        mTheme->ReloadAll();
+        mTheme->SetActiveSelection(QStringLiteral("Plain"));
+
+        QVERIFY(!mTheme->HasLevelColumnOverride());
+        QVERIFY(mTheme->IconFor(loglib::LogLevel::Info).isNull());
+        QVERIFY(mTheme->PillBackgroundFor(loglib::LogLevel::Info).style() == Qt::NoBrush);
+        QVERIFY(!mTheme->LevelColumnHeaderTextOverride().has_value());
+        QVERIFY(mTheme->LevelColumnHeaderIcon().isNull());
+    }
+
+    /// Switching from an icon-mode theme to a plain theme must
+    /// scrub the per-level caches; otherwise the next paint would
+    /// still resolve stale icons.
+    void TestSwitchAwayFromIconThemeClearsCaches()
+    {
+        mTheme->SetActiveSelection(QStringLiteral("Dark"));
+        QVERIFY(mTheme->HasLevelColumnOverride());
+        QVERIFY(!mTheme->IconFor(loglib::LogLevel::Info).isNull());
+
+        const QDir userDir = ThemeControl::UserThemesDir();
+        WriteUserTheme(
+            userDir,
+            QStringLiteral("plain.json"),
+            QStringLiteral(R"({
+                "name": "Plain",
+                "kind": "light",
+                "levels": {},
+                "table": {},
+                "chrome": {},
+                "app": {}
+            })")
+        );
+        mTheme->ReloadAll();
+        mTheme->SetActiveSelection(QStringLiteral("Plain"));
+
+        QVERIFY(!mTheme->HasLevelColumnOverride());
+        QVERIFY(mTheme->IconFor(loglib::LogLevel::Info).isNull());
+        QVERIFY(mTheme->PillBackgroundFor(loglib::LogLevel::Warn).style() == Qt::NoBrush);
+    }
+
+    /// `header: ""` is a legitimate override -- it means "render
+    /// no header text" -- and must round-trip through the runtime
+    /// caches as a present-but-empty optional.
+    void TestThemeHeaderOverrideRoundTripIncludingEmptyString()
+    {
+        const QDir userDir = ThemeControl::UserThemesDir();
+        WriteUserTheme(
+            userDir,
+            QStringLiteral("blank_header.json"),
+            QStringLiteral(R"({
+                "name": "BlankHeader",
+                "kind": "light",
+                "levels": {},
+                "table": {},
+                "chrome": {},
+                "app": {},
+                "levelColumnOverride": {
+                    "header": "",
+                    "headerIcon": ":/icons/level-info.svg",
+                    "levels": {
+                        "Info": { "icon": ":/icons/level-info.svg" }
+                    }
+                }
+            })")
+        );
+        mTheme->ReloadAll();
+        mTheme->SetActiveSelection(QStringLiteral("BlankHeader"));
+
+        QVERIFY(mTheme->HasLevelColumnOverride());
+        const std::optional<QString> headerText = mTheme->LevelColumnHeaderTextOverride();
+        QVERIFY(headerText.has_value());
+        QVERIFY(headerText->isEmpty());
+        QVERIFY(!mTheme->LevelColumnHeaderIcon().isNull());
+    }
+
+    /// User theme with a `..` path traversal in its icon path must
+    /// be rejected at cache-build time. The level still flips to
+    /// icon-mode-on (because the override block is present), but
+    /// `IconFor` returns a null icon -- which `LogModel` handles
+    /// as "no icon for this level".
+    void TestThemeControlRejectsParentPathTraversal()
+    {
+        const QDir userDir = ThemeControl::UserThemesDir();
+        WriteUserTheme(
+            userDir,
+            QStringLiteral("traversal.json"),
+            QStringLiteral(R"({
+                "name": "Traversal",
+                "kind": "light",
+                "levels": {},
+                "table": {},
+                "chrome": {},
+                "app": {},
+                "levelColumnOverride": {
+                    "levels": {
+                        "Info":  { "icon": "../../../etc/passwd" },
+                        "Warn":  { "icon": ":/icons/level-warn.svg" }
+                    }
+                }
+            })")
+        );
+        mTheme->ReloadAll();
+        mTheme->SetActiveSelection(QStringLiteral("Traversal"));
+
+        QVERIFY(mTheme->HasLevelColumnOverride());
+        // Traversal path was rejected -> null icon. Sibling level
+        // with a clean path still resolves.
+        QVERIFY(mTheme->IconFor(loglib::LogLevel::Info).isNull());
+        QVERIFY(!mTheme->IconFor(loglib::LogLevel::Warn).isNull());
+    }
+
 private:
     /// Style name captured at `init()` so `cleanup()` can restore
     /// it after tests that pin `app.qtStyle`.
