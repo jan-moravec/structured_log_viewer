@@ -15,6 +15,7 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QStringList>
 #include <QVBoxLayout>
@@ -28,6 +29,12 @@ namespace
 constexpr int PREFERENCES_MIN_WIDTH_PX = 300;
 constexpr int RETENTION_LINES_SPIN_SINGLE_STEP = 1000;
 constexpr int THEME_STATUS_CLEAR_MS = 5000;
+
+/// `QSettings` key for the "Show level icons" preference. Lives
+/// in the GUI scope (`ui/`) because it controls a render
+/// decision, not a parser / streaming setting. Mirror of the
+/// startup read in `MainWindow::MainWindow`.
+constexpr char SETTINGS_SHOW_LEVEL_ICONS[] = "ui/showLevelIcons";
 
 /// Label for the synthetic "Auto" combo entry. The entry's user
 /// data carries `ThemeControl::AUTO_TOKEN` (an empty string) so a
@@ -179,6 +186,12 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
     mStreamRetentionSpinBox = new QSpinBox(this);
     mStreamNewestFirstCheckBox = new QCheckBox("Show newest lines first", this);
     mStaticNewestFirstCheckBox = new QCheckBox("Show newest lines first", this);
+    mShowLevelIconsCheckBox = new QCheckBox("Show level icons", this);
+    mShowLevelIconsCheckBox->setToolTip(
+        "When enabled, the level column renders themed glyphs inside a coloured pill instead of "
+        "the plain level text. Themes opt in by shipping a `levelColumnOverride` block; every "
+        "built-in theme does. The raw level text is still available for copy and Find searches."
+    );
     mRestoreLastSessionCheckBox = new QCheckBox("Restore last session on launch", this);
     mRestoreLastSessionCheckBox->setToolTip(
         "When enabled, the most recent auto-saved session is reopened automatically on startup. "
@@ -228,6 +241,7 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
     themeButtonLayout->addWidget(duplicateThemeButton);
     themeButtonLayout->addWidget(reloadThemesButton);
     appearanceLayout->addLayout(themeButtonLayout);
+    appearanceLayout->addWidget(mShowLevelIconsCheckBox);
     appearanceLayout->addWidget(mThemeStatusLabel);
 
     auto *streamingGroup = new QGroupBox("Streaming", this);
@@ -276,6 +290,24 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
         StreamingControl::SaveConfiguration();
         SessionHistoryManager::SetRestoreLastSessionOnLaunch(mRestoreLastSessionCheckBox->isChecked());
         SessionHistoryManager::SetMaxEntries(mRecentSessionsMaxSpinBox->value());
+        // Persist + emit the level-icon toggle. Default-true on
+        // first read keeps the new behaviour discoverable; once
+        // the user opens Preferences and clicks Ok the chosen
+        // value sticks even when they toggle it back to the
+        // default later. The signal is gated on an actual change
+        // so the delegate-detach/reattach + repaint chain in
+        // `MainWindow` doesn't fire on every Ok click.
+        {
+            QSettings settings;
+            const bool showLevelIcons = mShowLevelIconsCheckBox->isChecked();
+            const bool previousShowLevelIcons =
+                settings.value(QString::fromLatin1(SETTINGS_SHOW_LEVEL_ICONS), true).toBool();
+            if (showLevelIcons != previousShowLevelIcons)
+            {
+                settings.setValue(QString::fromLatin1(SETTINGS_SHOW_LEVEL_ICONS), showLevelIcons);
+                emit showLevelIconsChanged(showLevelIcons);
+            }
+        }
         emit streamingRetentionChanged(static_cast<qulonglong>(StreamingControl::RetentionLines()));
         // Only emit on a real toggle so the re-sort chain does not run
         // on every Ok click.
@@ -321,9 +353,17 @@ void PreferencesEditor::UpdateFields()
     mStaticNewestFirstCheckBox->setChecked(StreamingControl::IsStaticNewestFirst());
     mRestoreLastSessionCheckBox->setChecked(SessionHistoryManager::RestoreLastSessionOnLaunch());
     mRecentSessionsMaxSpinBox->setValue(SessionHistoryManager::MaxEntries());
+    // Default-true on first read so fresh installs see the new
+    // visual on themes that ship `levelColumnOverride`. Matches
+    // the `MainWindow::MainWindow` startup read.
+    {
+        QSettings settings;
+        mShowLevelIconsCheckBox->setChecked(
+            settings.value(QString::fromLatin1(SETTINGS_SHOW_LEVEL_ICONS), true).toBool()
+        );
+    }
     RepopulateThemeCombo();
     RefreshThemePreview();
-    // Wipe any leftover status message from a previous open.
     ShowThemeStatus(QString());
 }
 

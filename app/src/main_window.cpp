@@ -851,6 +851,24 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     connect(mPreferencesEditor, &PreferencesEditor::staticDisplayOrderChanged, this, [this](bool) {
         ApplyDisplayOrder();
     });
+    // Detach the delegate *before* flipping the model flag when
+    // icons go off: the delegate's self-gate would handle the
+    // wrong order too (it forwards to the base delegate on
+    // `IsLevelIconModeActive() == false`), but the explicit
+    // sequence saves a per-cell proxy-chain walk on the next
+    // repaint and keeps the toggle-order documentation honest.
+    // When icons go on, attaching first lets the next paint hit
+    // the delegate immediately rather than via a full repaint
+    // round-trip.
+    connect(mPreferencesEditor, &PreferencesEditor::showLevelIconsChanged, this, [this](bool on) {
+        if (mModel == nullptr)
+        {
+            return;
+        }
+        mModel->SetShowLevelIcons(on);
+        ApplyLevelCellDelegate();
+        mModel->RefreshAllRowStyles();
+    });
 
     // Anchor hotkeys (programmatic so the .ui isn't bloated):
     //   Ctrl+1..8     anchor selection at colour N

@@ -46,6 +46,15 @@ signals:
     /// the current session is a static (file-mode) session.
     void staticDisplayOrderChanged(bool newestFirst);
 
+    /// Fired after Ok commits the "Show level icons" toggle.
+    /// `MainWindow` slots in to detach the `LevelCellDelegate`
+    /// before flipping `LogModel::SetShowLevelIcons(on)` -- the
+    /// delegate's self-gate keeps in-between paints correct
+    /// either way, but doing the detach first lets the default
+    /// delegate paint the level text again without paying the
+    /// delegate's proxy-chain walk on the next paint.
+    void showLevelIconsChanged(bool on);
+
 private:
     /// Refill the theme combo from `ThemeControl::AvailableThemes`
     /// and select the active entry (Auto is the first entry).
@@ -65,6 +74,7 @@ private:
     QSpinBox *mStreamRetentionSpinBox;
     QCheckBox *mStreamNewestFirstCheckBox;
     QCheckBox *mStaticNewestFirstCheckBox;
+    QCheckBox *mShowLevelIconsCheckBox;
     QCheckBox *mRestoreLastSessionCheckBox;
     QSpinBox *mRecentSessionsMaxSpinBox;
 
