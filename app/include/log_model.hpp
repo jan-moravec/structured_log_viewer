@@ -285,6 +285,30 @@ public:
     /// MUST NOT mutate value-bearing roles for the emitted range.
     [[nodiscard]] static bool IsStyleOnlyRoleChange(const QList<int> &roles) noexcept;
 
+    /// Cached first-`Type::Level` column index, lazily filled on
+    /// first call. Returns `-1` ("no level column") when the table
+    /// has none. Exposed publicly so `MainWindow::ApplyLevelCellDelegate`
+    /// can install / detach the delegate on the same index the
+    /// `data()` / `headerData()` branches gate on, without
+    /// duplicating the scan.
+    [[nodiscard]] int FirstLevelColumnIndex() const noexcept;
+
+    /// Flip the user-facing "Show level icons" preference. When
+    /// the active theme supplies a `levelColumnOverride` and this
+    /// is true, the level column renders as an icon-only pill
+    /// (text falls through to tooltip + clipboard via
+    /// `DisplayRole`). Emits `headerDataChanged` on the level
+    /// column so a header-text override (`Theme::levelColumnOverride.header`)
+    /// pops in / out without a full reset. Background /
+    /// Foreground / Font roles are unaffected by this flag.
+    void SetShowLevelIcons(bool show);
+
+    /// `mShowLevelIcons && mTheme && mTheme->HasLevelColumnOverride()`.
+    /// Single source of truth for "is the level column in
+    /// icon-pill mode?" -- the cell `DecorationRole` branch and
+    /// the delegate's self-gate both consult this.
+    [[nodiscard]] bool IsLevelIconModeActive() const noexcept;
+
 signals:
     /// Cumulative error count, emitted when a batch carries errors.
     void errorCountChanged(qsizetype count);
@@ -394,6 +418,13 @@ private:
     /// when no level column exists. Invalidated by every structural
     /// mutator.
     mutable int mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
+
+    /// User preference: render the level column as an icon-only
+    /// pill when the active theme opts into icon mode. Persisted
+    /// by `MainWindow` as `ui/showLevelIcons`; defaults to true so
+    /// fresh installs see the new visual on themes that ship the
+    /// override (every built-in does).
+    bool mShowLevelIcons = true;
 
     /// Non-owning theme controller pointer. May be null when the
     /// model is constructed via the legacy default ctor (test

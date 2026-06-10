@@ -1012,6 +1012,18 @@ QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role
 
     if (role == Qt::DisplayRole)
     {
+        // Theme override: in icon mode, a theme can supply a short
+        // header text (e.g. "L" or ""). `nullopt` ⇒ fall through
+        // to `Column::header`; empty string ⇒ legitimate "blank
+        // header text" (so icon-only mode shows just the
+        // identity icon).
+        if (IsLevelIconModeActive() && section == FirstLevelColumnIndex())
+        {
+            if (auto override = mTheme->LevelColumnHeaderTextOverride(); override.has_value())
+            {
+                return *override;
+            }
+        }
         return QString::fromStdString(mLogTable.GetHeader(static_cast<size_t>(section)));
     }
     if (role == Qt::ToolTipRole)
@@ -1056,6 +1068,18 @@ QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role
                 mFunnelIconAttempted = true;
             }
             return mFunnelIconCache;
+        }
+        // Theme-supplied identity icon for the level column. Last
+        // in the priority chain so warning + funnel keep winning
+        // on transient state; the override only fills the gap
+        // when neither indicator is firing.
+        if (IsLevelIconModeActive() && section == FirstLevelColumnIndex())
+        {
+            const QIcon themed = mTheme->LevelColumnHeaderIcon();
+            if (!themed.isNull())
+            {
+                return themed;
+            }
         }
         return {};
     }
@@ -1399,9 +1423,16 @@ void LogModel::RefreshAllRowStyles()
     {
         return;
     }
-    // FontRole rides along: themes can bold/italicise per level, so
-    // a flip can change font weight on level-styled rows.
-    emit dataChanged(index(0, 0), index(rows - 1, cols - 1), {Qt::BackgroundRole, Qt::ForegroundRole, Qt::FontRole});
+    // FontRole rides along: themes can bold/italicise per level,
+    // so a flip can change font weight on level-styled rows.
+    // DecorationRole too: a theme flip can swap the level-cell
+    // icon (or add / remove icons entirely if one theme opts into
+    // icon mode and the next doesn't).
+    emit dataChanged(
+        index(0, 0),
+        index(rows - 1, cols - 1),
+        {Qt::BackgroundRole, Qt::ForegroundRole, Qt::FontRole, Qt::DecorationRole}
+    );
 }
 
 bool LogModel::IsStyleOnlyRoleChange(const QList<int> &roles) noexcept
@@ -1444,15 +1475,63 @@ void LogModel::DropAnchorsForEvictionPrefix(int dropCount)
 
 std::optional<loglib::LogLevel> LogModel::LevelForRow(int row) const noexcept
 {
+    const int levelCol = FirstLevelColumnIndex();
+    if (levelCol < 0 || row < 0)
+    {
+        return std::nullopt;
+    }
+    return mLogTable.GetLevelForRow(static_cast<size_t>(row), static_cast<size_t>(levelCol));
+}
+
+int LogModel::FirstLevelColumnIndex() const noexcept
+{
     if (mFirstLevelColumnCache == LEVEL_COLUMN_UNCACHED)
     {
         mFirstLevelColumnCache = ComputeFirstLevelColumnIndex();
     }
-    if (mFirstLevelColumnCache < 0 || row < 0)
+    // `LEVEL_COLUMN_NONE` (-1) is the documented "no level column"
+    // sentinel; callers compare against `>= 0` to gate their
+    // branches. `LEVEL_COLUMN_UNCACHED` (-2) is never returned --
+    // the lazy-fill above always resolves to one of the other two.
+    return mFirstLevelColumnCache;
+}
+
+void LogModel::SetShowLevelIcons(bool show)
+{
+    if (mShowLevelIcons == show)
     {
-        return std::nullopt;
+        return;
     }
-    return mLogTable.GetLevelForRow(static_cast<size_t>(row), static_cast<size_t>(mFirstLevelColumnCache));
+    mShowLevelIcons = show;
+    // The level column header may carry a theme-defined text
+    // override (`Theme::levelColumnOverride.header`) that is only
+    // active in icon mode; nudge the view so the title pops in /
+    // out without forcing a full reset. The cell-side decoration
+    // is refreshed by `MainWindow::ApplyLevelCellDelegate` (which
+    // attaches/detaches the delegate); flipping the model flag
+    // alone is enough to update header text + tooltips.
+    const int levelCol = FirstLevelColumnIndex();
+    if (levelCol >= 0)
+    {
+        emit headerDataChanged(Qt::Horizontal, levelCol, levelCol);
+        const int rows = rowCount();
+        if (rows > 0)
+        {
+            // Decoration role moves with icon-mode; tooltips too
+            // (they include the level name in both modes, but
+            // QHeaderView caches them per-column on first paint).
+            emit dataChanged(
+                index(0, levelCol),
+                index(rows - 1, levelCol),
+                {Qt::DecorationRole, Qt::ToolTipRole, Qt::DisplayRole}
+            );
+        }
+    }
+}
+
+bool LogModel::IsLevelIconModeActive() const noexcept
+{
+    return mShowLevelIcons && mTheme != nullptr && mTheme->HasLevelColumnOverride();
 }
 
 QVariant LogModel::data(const QModelIndex &index, int role) const
@@ -1551,6 +1630,51 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
             return {};
         }
         return mTheme->FontFor(*level);
+    }
+
+    case Qt::DecorationRole:
+    {
+        // Cheap column-index gate first: every non-level cell on
+        // every paint must skip this branch without paying the
+        // `LevelForRow` resolve. Cache lookup is amortised by
+        // `FirstLevelColumnIndex`.
+        if (!IsLevelIconModeActive())
+        {
+            return {};
+        }
+        const int levelCol = FirstLevelColumnIndex();
+        if (levelCol < 0 || index.column() != levelCol)
+        {
+            return {};
+        }
+        const auto level = LevelForRow(index.row());
+        if (!level.has_value())
+        {
+            return {};
+        }
+        const QIcon icon = mTheme->IconFor(*level);
+        return icon.isNull() ? QVariant{} : QVariant(icon);
+    }
+
+    case Qt::ToolTipRole:
+    {
+        // Deliberately not gated on `IsLevelIconModeActive()`: the
+        // level name belongs in a tooltip whenever the cell is a
+        // level cell, regardless of whether icons are on.
+        // Icon-mode-off users still get a hover label that spells
+        // out the level when `Column::header` has been renamed or
+        // shortened.
+        const int levelCol = FirstLevelColumnIndex();
+        if (levelCol < 0 || index.column() != levelCol)
+        {
+            return {};
+        }
+        const auto level = LevelForRow(index.row());
+        if (!level.has_value())
+        {
+            return {};
+        }
+        return QString::fromUtf8(loglib::CanonicalLevelName(*level).data());
     }
 
     case LogModelItemDataRole::SortRole:
