@@ -37,5 +37,16 @@
     },
     "app": {
         "qtStyle": "fusion"
+    },
+    "levelColumnOverride": {
+        "levels": {
+            "Trace":   { "icon": ":/icons/level-trace.svg" },
+            "Debug":   { "icon": ":/icons/level-debug.svg" },
+            "Info":    { "icon": ":/icons/level-info.svg",    "pillBackground": "#DBEAFE" },
+            "Warn":    { "icon": ":/icons/level-warn.svg",    "pillBackground": "#FEF3C7" },
+            "Error":   { "icon": ":/icons/level-error.svg",   "pillBackground": "#FECACA" },
+            "Fatal":   { "icon": ":/icons/level-fatal.svg",   "pillBackground": "#FCA5A5", "pillForeground": "#7F1D1D" },
+            "Unknown": { "icon": ":/icons/level-unknown.svg" }
+        }
     }
 }
