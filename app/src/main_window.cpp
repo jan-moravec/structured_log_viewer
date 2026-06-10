@@ -6,6 +6,7 @@
 #include "configuration_diagnostics_dialog.hpp"
 #include "filter_editor.hpp"
 #include "icon_loader.hpp"
+#include "level_cell_delegate.hpp"
 #include "log_warning.hpp"
 #include "network_stream_dialog.hpp"
 #include "qt_streaming_log_sink.hpp"
@@ -524,6 +525,40 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     mTableView->setModel(mSortFilterProxyModel);
     mTableView->setSortingEnabled(true);
     mTableView->sortByColumn(-1, Qt::SortOrder::AscendingOrder);
+
+    // The icon-pill delegate only exists when a `ThemeControl`
+    // is available. The no-theme test fixture path keeps the
+    // level column on the standard text delegate, which is the
+    // only correct behaviour: `IsLevelIconModeActive()` returns
+    // false without a theme, so a delegate here would do nothing
+    // useful and just add a paint indirection.
+    if (mTheme != nullptr)
+    {
+        mLevelCellDelegate = new LevelCellDelegate(mTheme, this);
+
+        // Hook every signal that can change `FirstLevelColumnIndex`:
+        // a model reset (config Load, BeginStreaming teardown), a
+        // column move (header drag, Time/Level auto-bubble), an
+        // insert / remove (config edit), and enum-column promotion
+        // / demotion (this is what flips a previously-string column
+        // into `Type::Level`, the most common reason the first level
+        // column index changes during streaming).
+        connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::ApplyLevelCellDelegate);
+        connect(mModel, &QAbstractItemModel::columnsMoved, this, &MainWindow::ApplyLevelCellDelegate);
+        connect(mModel, &QAbstractItemModel::columnsInserted, this, &MainWindow::ApplyLevelCellDelegate);
+        connect(mModel, &QAbstractItemModel::columnsRemoved, this, &MainWindow::ApplyLevelCellDelegate);
+        // The existing `enumColumnsChanged` slot (defined further
+        // down this ctor as a lambda over filter-cache invalidation)
+        // also needs to reapply -- a Promote/Demote between
+        // `Type::Level` and other enum types flips which column is
+        // "the level column". We avoid editing that lambda and
+        // wire a parallel connection here; Qt invokes slots in
+        // registration order, so the filter-cache rebuild and the
+        // delegate reapply both run on every change.
+        connect(mModel, &LogModel::enumColumnsChanged, this, [this]() { ApplyLevelCellDelegate(); });
+
+        ApplyLevelCellDelegate();
+    }
 
     mTableView->resizeColumnsToContents();
 
@@ -1128,6 +1163,20 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     StreamingControl::LoadConfiguration();
     ApplyStreamingRetention();
     ApplyDisplayOrder();
+
+    // Read the user-facing "Show level icons" preference (default
+    // true so fresh installs see the new visual on themes that
+    // ship `levelColumnOverride`; every built-in does). The
+    // delegate's self-gate makes the order between this and any
+    // subsequent `ApplyLevelCellDelegate()` call irrelevant for
+    // correctness -- the model flag falling off mid-paint makes
+    // the delegate forward to the base class.
+    if (mModel != nullptr)
+    {
+        QSettings settings;
+        const bool showLevelIcons = settings.value(QStringLiteral("ui/showLevelIcons"), true).toBool();
+        mModel->SetShowLevelIcons(showLevelIcons);
+    }
 
     // Run after every action is wired so they can all be decorated in one pass.
     FinaliseActionMetadata();
@@ -5288,6 +5337,16 @@ void MainWindow::OnThemeChanged()
     // toggle that pins the same OS scheme). Also drops the model's
     // cached funnel pixmap so the header decoration re-renders.
     RefreshThemedIcons();
+
+    // A theme switch can flip icon mode on / off
+    // (`Theme::levelColumnOverride.has_value()`). The delegate's
+    // self-gate keeps the cell painting correct without this
+    // call, but reapplying lets us detach the delegate when icon
+    // mode becomes inactive: the table-wide default delegate then
+    // paints the level cells faster (no proxy-chain walk per
+    // paint). When icon mode flipped on, the call attaches the
+    // delegate so the next paint already routes through it.
+    ApplyLevelCellDelegate();
 }
 
 void MainWindow::ApplyThemedWindowIcon()
@@ -6301,6 +6360,47 @@ void MainWindow::ApplyColumnVisibility()
     // See `SetColumnVisible`: usually a no-op, kept for symmetry
     // across column-shape signal points.
     SyncColumnFilterIndicators();
+}
+
+void MainWindow::ApplyLevelCellDelegate()
+{
+    // No delegate in the no-theme path. The test fixture that
+    // constructs `MainWindow` without a `ThemeControl` skips icon
+    // mode entirely; the level column keeps its plain text
+    // rendering through the default `QStyledItemDelegate`.
+    if (mLevelCellDelegate == nullptr || mTableView == nullptr || mModel == nullptr)
+    {
+        return;
+    }
+
+    const int newColumn = mModel->FirstLevelColumnIndex();
+
+    // Detach from the previous column first when it has moved.
+    // Without this a reload that lands the level column at a
+    // different index would leave the icon-pill delegate
+    // suppressing text on the old column.
+    if (mInstalledLevelDelegateColumn >= 0 && mInstalledLevelDelegateColumn != newColumn)
+    {
+        // `setItemDelegateForColumn(col, nullptr)` reverts to the
+        // table-wide default delegate for that column. Qt does
+        // not delete `mLevelCellDelegate`; we keep ownership via
+        // `QObject` parentage.
+        mTableView->setItemDelegateForColumn(mInstalledLevelDelegateColumn, nullptr);
+        mInstalledLevelDelegateColumn = -1;
+    }
+
+    if (newColumn < 0)
+    {
+        return;
+    }
+
+    if (mInstalledLevelDelegateColumn == newColumn)
+    {
+        return;
+    }
+
+    mTableView->setItemDelegateForColumn(newColumn, mLevelCellDelegate);
+    mInstalledLevelDelegateColumn = newColumn;
 }
 
 void MainWindow::RebuildViewMenu()

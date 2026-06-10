@@ -250,6 +250,27 @@ public:
     /// run after a load or reorder.
     void ApplyColumnVisibility();
 
+    /// Install (or detach) the icon-pill delegate on whichever
+    /// column the model currently reports as the first
+    /// `Type::Level`. Idempotent: when the level column has moved
+    /// since the last call, the delegate is detached from the
+    /// previous column before being attached to the new one (so a
+    /// reload that lands the column elsewhere doesn't leave the
+    /// delegate suppressing text on a non-level column). When the
+    /// model has no level column at all, the previous delegate is
+    /// detached and `mInstalledLevelDelegateColumn` resets to
+    /// `-1`. Safe to call from the streaming hot path -- the work
+    /// is one `int` compare + at most two
+    /// `setItemDelegateForColumn` calls.
+    ///
+    /// Proxy note: the view's chain is
+    /// `LogFilterModel(RowOrderProxyModel(LogModel))`. Both proxies
+    /// pass `columnCount` through 1:1, so the source column index
+    /// reported by `LogModel::FirstLevelColumnIndex()` is also the
+    /// view-side column index `setItemDelegateForColumn` expects.
+    /// A future column-reordering proxy would have to remap here.
+    void ApplyLevelCellDelegate();
+
     /// Restore the header so visual == logical for every section.
     /// Suppresses re-entry into `OnHeaderSectionMoved` while doing
     /// so. Idempotent.
@@ -941,6 +962,23 @@ private:
     LogFilterModel *mSortFilterProxyModel;
     LogTableView *mTableView;
     LogModel *mModel;
+    /// Custom delegate for the level column when the active
+    /// theme opts into icon mode (`Theme::levelColumnOverride`).
+    /// Owned via `QObject` parentage (this `MainWindow`); raw
+    /// pointer because Qt's `setItemDelegateForColumn` does not
+    /// take ownership and the same instance can be re-attached to
+    /// different columns over the table's life. `nullptr` for the
+    /// no-theme test fixture path (icon mode is skipped entirely
+    /// there).
+    class LevelCellDelegate *mLevelCellDelegate = nullptr;
+
+    /// Column index the level delegate is currently installed
+    /// on, or `-1` when detached. Stored so the next call to
+    /// `ApplyLevelCellDelegate()` can detach from the *previous*
+    /// column before attaching to the new one (otherwise a
+    /// reload that lands the level column at a different index
+    /// leaves the delegate suppressing text on the old column).
+    int mInstalledLevelDelegateColumn = -1;
     /// Dockable find bar (owned via `QMainWindow` parentage).
     /// `mFindRecord` is the hosted widget. `QPointer` on both so
     /// model / proxy signals that fire during shutdown find them
