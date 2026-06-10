@@ -27,5 +27,15 @@
         <file>icons/settings-2.svg</file>
         <file>icons/square-play.svg</file>
         <file>icons/square.svg</file>
+        <!-- Per-level glyphs for `Theme::levelColumnOverride` (icon-mode
+             rendering of the level column). Same tinting story as the
+             toolbar icons above. -->
+        <file>icons/level-trace.svg</file>
+        <file>icons/level-debug.svg</file>
+        <file>icons/level-info.svg</file>
+        <file>icons/level-warn.svg</file>
+        <file>icons/level-error.svg</file>
+        <file>icons/level-fatal.svg</file>
+        <file>icons/level-unknown.svg</file>
     </qresource>
 </RCC>
