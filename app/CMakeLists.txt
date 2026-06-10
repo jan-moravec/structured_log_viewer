@@ -31,6 +31,8 @@ set(PROJECT_SOURCES
     include/find_dock.hpp
     src/icon_loader.cpp
     include/icon_loader.hpp
+    src/level_cell_delegate.cpp
+    include/level_cell_delegate.hpp
     src/parse_errors_dock.cpp
     include/parse_errors_dock.hpp
     src/log_filter_model.cpp
