@@ -1971,6 +1971,23 @@ void LogTable::MaybePromoteToLevel(size_t columnIndex)
     }
 
     mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::Level);
+    // Mirror the Time-to-position-0 bubble in `LogConfigurationManager::Update`:
+    // land the freshly-promoted level column at the canonical
+    // index. One-shot on first promotion; saved column orders
+    // survive subsequent `Load`/`SetConfiguration` paths because
+    // those paths don't call the bubble helper.
+    //
+    // `LogTable::MoveColumn` (not the manager-level helper) so
+    // the parallel `mColumnKeyIds` vector stays in lockstep with
+    // the column rotation -- without that, `GetEnumValueId(row, col)`
+    // would read the wrong key id and the freshly-promoted level
+    // cell would render as blank. Policy is shared with the free
+    // helper through `ShouldBubbleLevelColumn`.
+    if (ShouldBubbleLevelColumn(mConfiguration.Configuration(), columnIndex))
+    {
+        MoveColumn(columnIndex, CANONICAL_LEVEL_COLUMN_INDEX);
+        columnIndex = CANONICAL_LEVEL_COLUMN_INDEX;
+    }
     RefreshLevelRankCache(columnIndex);
 }
 

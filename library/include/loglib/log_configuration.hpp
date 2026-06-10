@@ -358,4 +358,32 @@ private:
     mutable bool mCacheStale = true;
 };
 
+/// Canonical position for a `Type::Level` column. Mirrors the
+/// `Type::Time` rule that lands timestamp columns at index 0;
+/// `Level` columns land at index 1 so the natural reading order
+/// is time -> severity -> message.
+inline constexpr size_t CANONICAL_LEVEL_COLUMN_INDEX = 1;
+
+/// True iff a column at @p columnIndex should be bubbled to
+/// `CANONICAL_LEVEL_COLUMN_INDEX`. Encapsulates the no-op
+/// conditions (out-of-range, already in place, single-column
+/// config) so call sites in `LogTable::MaybePromoteToLevel` and
+/// `BubbleLevelColumnToCanonicalPosition` share the same policy
+/// without duplicating the checks.
+[[nodiscard]] bool ShouldBubbleLevelColumn(const LogConfiguration &config, size_t columnIndex) noexcept;
+
+/// Move the column at @p columnIndex to `CANONICAL_LEVEL_COLUMN_INDEX`
+/// using @p mgr `MoveColumn` (so persisted `filters[*].row` is
+/// remapped along with the rotation). No-op when
+/// `ShouldBubbleLevelColumn` returns false.
+///
+/// Intended for callers that only need to move the configuration
+/// (e.g. unit tests asserting the bubble behaviour directly on
+/// `LogConfigurationManager`). `LogTable::MaybePromoteToLevel`
+/// uses `LogTable::MoveColumn` instead so its parallel
+/// `mColumnKeyIds` vector stays in lockstep with the rotation;
+/// it consults `ShouldBubbleLevelColumn` for the same policy
+/// without going through this helper.
+void BubbleLevelColumnToCanonicalPosition(LogConfigurationManager &mgr, size_t columnIndex);
+
 } // namespace loglib

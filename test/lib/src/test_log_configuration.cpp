@@ -1225,6 +1225,114 @@ TEST_CASE(
     CHECK(manager.Configuration().filters[1].filterString == std::string{"y"});
 }
 
+TEST_CASE(
+    "BubbleLevelColumnToCanonicalPosition mirrors the Time bubble",
+    "[LogConfigurationManager][level_bubble]"
+)
+{
+    // Manager-level coverage of the new free helper. The
+    // `LogTable::MaybePromoteToLevel` integration is tested in
+    // `test_log_table.cpp`; here we exercise the helper directly
+    // so a regression in the rotation is caught even when the
+    // promotion gate doesn't fire.
+    SECTION("Move from end to canonical position 1")
+    {
+        LogConfigurationManager manager;
+        manager.AppendKeys({"col_zero", "col_one", "level"});
+        REQUIRE(manager.Configuration().columns.size() == 3);
+        REQUIRE(manager.Configuration().columns[2].header == "level");
+
+        BubbleLevelColumnToCanonicalPosition(manager, 2);
+
+        REQUIRE(manager.Configuration().columns.size() == 3);
+        CHECK(manager.Configuration().columns[0].header == "col_zero");
+        CHECK(manager.Configuration().columns[1].header == "level");
+        CHECK(manager.Configuration().columns[2].header == "col_one");
+    }
+
+    SECTION("No-op when already at canonical position")
+    {
+        LogConfigurationManager manager;
+        manager.AppendKeys({"col_zero", "level", "col_two"});
+
+        BubbleLevelColumnToCanonicalPosition(manager, 1);
+
+        CHECK(manager.Configuration().columns[0].header == "col_zero");
+        CHECK(manager.Configuration().columns[1].header == "level");
+        CHECK(manager.Configuration().columns[2].header == "col_two");
+    }
+
+    SECTION("No-op for a single-column configuration")
+    {
+        // A `Type::Level` column promoted as the only column has
+        // nothing to swap with; the helper must not throw or
+        // self-move.
+        LogConfigurationManager manager;
+        manager.AppendKeys({"level"});
+
+        BubbleLevelColumnToCanonicalPosition(manager, 0);
+
+        REQUIRE(manager.Configuration().columns.size() == 1);
+        CHECK(manager.Configuration().columns[0].header == "level");
+    }
+
+    SECTION("Move from position 0 to position 1 in a two-column config")
+    {
+        LogConfigurationManager manager;
+        manager.AppendKeys({"level", "col_one"});
+
+        BubbleLevelColumnToCanonicalPosition(manager, 0);
+
+        REQUIRE(manager.Configuration().columns.size() == 2);
+        CHECK(manager.Configuration().columns[0].header == "col_one");
+        CHECK(manager.Configuration().columns[1].header == "level");
+    }
+
+    SECTION("Out-of-range index is a no-op")
+    {
+        LogConfigurationManager manager;
+        manager.AppendKeys({"col_zero", "col_one"});
+
+        BubbleLevelColumnToCanonicalPosition(manager, 99);
+
+        REQUIRE(manager.Configuration().columns.size() == 2);
+        CHECK(manager.Configuration().columns[0].header == "col_zero");
+        CHECK(manager.Configuration().columns[1].header == "col_one");
+    }
+
+    SECTION("Persisted filter row follows the bubble")
+    {
+        // Same shape as the Time bubble test above -- proves the
+        // helper delegates to `LogConfigurationManager::MoveColumn`
+        // rather than open-coding the rotation, so persisted
+        // `filters[*].row` stays in sync with the new column order.
+        LogConfigurationManager manager;
+        manager.AppendKeys({"col_zero", "col_one", "level"});
+
+        // Pin a filter on `level` (the column we're about to
+        // bubble) so the remap is observable.
+        LogConfiguration cfg = manager.Configuration();
+        cfg.filters.push_back(LogConfiguration::LogFilter{
+            .type = LogConfiguration::LogFilter::Type::String,
+            .row = 2,
+            .filterString = std::string{"warn"},
+            .matchType = LogConfiguration::LogFilter::Match::Contains,
+            .filterBegin = std::nullopt,
+            .filterEnd = std::nullopt,
+            .filterMinValue = std::nullopt,
+            .filterMaxValue = std::nullopt,
+            .filterValues = {},
+        });
+        manager.SetConfiguration(std::move(cfg));
+
+        BubbleLevelColumnToCanonicalPosition(manager, 2);
+
+        REQUIRE(manager.Configuration().filters.size() == 1);
+        // Filter row followed the column to its new position.
+        CHECK(manager.Configuration().filters[0].row == 1);
+    }
+}
+
 TEST_CASE("Failed Load leaves the previous configuration intact", "[LogConfigurationManager][atomic_load]")
 {
     // A malformed file must not corrupt the previously loaded

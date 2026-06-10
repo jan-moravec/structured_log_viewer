@@ -333,6 +333,35 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
     }
 }
 
+bool ShouldBubbleLevelColumn(const LogConfiguration &config, size_t columnIndex) noexcept
+{
+    // Mirrors the Time bubble's no-op conditions in
+    // `LogConfigurationManager::Update`: a single-column config
+    // has nothing to swap with, and a column already at the
+    // canonical index would be a self-move.
+    if (columnIndex >= config.columns.size())
+    {
+        return false;
+    }
+    if (config.columns.size() < 2)
+    {
+        return false;
+    }
+    if (columnIndex == CANONICAL_LEVEL_COLUMN_INDEX)
+    {
+        return false;
+    }
+    return true;
+}
+
+void BubbleLevelColumnToCanonicalPosition(LogConfigurationManager &mgr, size_t columnIndex)
+{
+    if (ShouldBubbleLevelColumn(mgr.Configuration(), columnIndex))
+    {
+        mgr.MoveColumn(columnIndex, CANONICAL_LEVEL_COLUMN_INDEX);
+    }
+}
+
 void LogConfigurationManager::MoveColumn(size_t srcIndex, size_t destIndex)
 {
     if (srcIndex == destIndex || srcIndex >= mConfiguration.columns.size() ||
