@@ -76,6 +76,19 @@ template <> struct glz::meta<loglib::AppStyle>
         object("qtStyle", &T::qtStyle, "fontFamily", &T::fontFamily, "fontSize", &T::fontSize);
 };
 
+template <> struct glz::meta<loglib::LevelDisplayOverride>
+{
+    using T = loglib::LevelDisplayOverride;
+    static constexpr auto value =
+        object("icon", &T::icon, "pillBackground", &T::pillBackground, "pillForeground", &T::pillForeground);
+};
+
+template <> struct glz::meta<loglib::LevelColumnOverride>
+{
+    using T = loglib::LevelColumnOverride;
+    static constexpr auto value = object("header", &T::header, "headerIcon", &T::headerIcon, "levels", &T::levels);
+};
+
 template <> struct glz::meta<loglib::Theme>
 {
     using T = loglib::Theme;
@@ -93,7 +106,9 @@ template <> struct glz::meta<loglib::Theme>
         "app",
         &T::app,
         "anchorPalette",
-        &T::anchorPalette
+        &T::anchorPalette,
+        "levelColumnOverride",
+        &T::levelColumnOverride
     );
 };
 // NOLINTEND(readability-identifier-naming)

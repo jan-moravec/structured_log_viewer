@@ -89,6 +89,67 @@ struct AppStyle
     friend bool operator==(const AppStyle &, const AppStyle &) = default;
 };
 
+/// Per-level icon + pill spec for the level column override.
+/// All fields optional so a level can be left at "use defaults".
+/// Colours are `#RRGGBB` (or `#AARRGGBB`) strings to keep this
+/// header Qt-free, mirroring `LevelStyle`.
+struct LevelDisplayOverride
+{
+    /// Icon path. `:/...` (Qt resource) or relative-to-theme-dir.
+    /// Absent ⇒ no icon for this level; the cell paints blank under
+    /// the delegate's pill (or nothing when no pill is configured).
+    std::optional<std::string> icon;
+
+    /// Rounded-rect pill background. Absent ⇒ no pill (the icon
+    /// paints directly over the cell, on top of whatever
+    /// `BackgroundRole` filled the row with).
+    std::optional<std::string> pillBackground;
+
+    /// Tint for the icon glyph. Absent ⇒ fall back to
+    /// `LevelStyle::foreground` for the level, then to the
+    /// palette's `WindowText`. Distinct from `LevelStyle::foreground`
+    /// (which colours the cell text on non-icon rows).
+    std::optional<std::string> pillForeground;
+
+    friend bool operator==(const LevelDisplayOverride &, const LevelDisplayOverride &) = default;
+};
+
+/// Opts a theme into icon-rendering for the level column.
+/// `Theme::levelColumnOverride.has_value()` is the single switch
+/// every consumer reads -- no scattered "does any level have an
+/// icon?" probes.
+///
+/// Header chrome is purely additive: when a field is absent the
+/// app falls back to whatever the column is already configured to
+/// show (`LogConfiguration::Column::header` and the existing
+/// warning > funnel decoration priority). The theme override is
+/// the *opt-in*, not a default replacement.
+struct LevelColumnOverride
+{
+    /// Header text override. Set ⇒ use this string (`""` ⇒ blank
+    /// header text). Absent ⇒ fall back to `Column::header`.
+    std::optional<std::string> header;
+
+    /// Header icon override (Qt resource path or
+    /// relative-to-theme-dir). Set ⇒ render this icon as the
+    /// level-column identity icon (warning + funnel still take
+    /// precedence when active). Absent ⇒ no identity icon;
+    /// today's `DecorationRole` priority (warning > funnel >
+    /// nothing) applies.
+    std::optional<std::string> headerIcon;
+
+    /// Per-level icon + pill specs. Keyed by canonical level name
+    /// (`"Trace"`..`"Fatal"`, or `"Unknown"`) for wire-format
+    /// symmetry with `Theme::levels`. `ThemeControl::BuildStyleCache`
+    /// projects this into a `LogLevel`-indexed `std::array` for
+    /// O(1) paint-path lookup; non-canonical keys warn via the
+    /// shared `WarnOnUnknownLevelKeys` machinery. Missing keys
+    /// mean "no icon for this level" -- the cell shows blank.
+    std::map<std::string, LevelDisplayOverride> levels;
+
+    friend bool operator==(const LevelColumnOverride &, const LevelColumnOverride &) = default;
+};
+
 /// Self-contained theme bundle. JSON keys mirror the field names
 /// (lowerCamelCase). `levels` keys must be canonical level names
 /// (`Trace`..`Fatal`, or `Unknown`); other keys are ignored.
@@ -114,6 +175,13 @@ struct Theme
     /// rows. Missing slots fall back to the app's built-in palette
     /// in `ThemeControl::AnchorBrushFor`.
     std::vector<std::string> anchorPalette;
+
+    /// `nullopt` ⇒ level column renders as plain text (today's
+    /// behaviour). Set ⇒ icon mode, gated additionally by the
+    /// `ui/showLevelIcons` user preference. Cell + header
+    /// resolution rules live in `app/include/log_model.hpp`
+    /// `headerData` / `data` (see plan section 5 for the table).
+    std::optional<LevelColumnOverride> levelColumnOverride;
 
     friend bool operator==(const Theme &, const Theme &) = default;
 };

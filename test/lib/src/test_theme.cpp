@@ -202,6 +202,78 @@ TEST_CASE("Theme without anchorPalette decodes as an empty vector", "[Theme][anc
     CHECK(parsed.anchorPalette.empty());
 }
 
+TEST_CASE("Theme round-trips a full levelColumnOverride block", "[Theme][levelOverride]")
+{
+    Theme original;
+    original.name = "Iconic";
+    original.kind = ThemeKind::Dark;
+    LevelColumnOverride override;
+    override.header = "Sev";
+    override.headerIcon = ":/icons/level-info.svg";
+    override.levels["Info"] = LevelDisplayOverride{
+        .icon = ":/icons/level-info.svg",
+        .pillBackground = "#1E3A5F",
+    };
+    override.levels["Warn"] = LevelDisplayOverride{
+        .icon = ":/icons/level-warn.svg",
+        .pillBackground = "#7C5A12",
+        .pillForeground = "#FFFFFF",
+    };
+    override.levels["Error"] = LevelDisplayOverride{.icon = ":/icons/level-error.svg"};
+    original.levelColumnOverride = std::move(override);
+
+    const std::string json = SerializeTheme(original);
+    // Wire-format sanity check so a future field rename surfaces here.
+    CHECK(json.contains("\"levelColumnOverride\""));
+    CHECK(json.contains("\"pillBackground\""));
+
+    const Theme reloaded = ParseTheme(json);
+    REQUIRE(reloaded.levelColumnOverride.has_value());
+    CHECK(reloaded.levelColumnOverride->header == "Sev");
+    CHECK(reloaded.levelColumnOverride->headerIcon == ":/icons/level-info.svg");
+    REQUIRE(reloaded.levelColumnOverride->levels.contains("Info"));
+    CHECK(reloaded.levelColumnOverride->levels.at("Info").pillBackground == "#1E3A5F");
+    CHECK(reloaded.levelColumnOverride->levels.at("Warn").pillForeground == "#FFFFFF");
+    CHECK_FALSE(reloaded.levelColumnOverride->levels.at("Error").pillBackground.has_value());
+    // Defaulted `operator==` propagates through the new optional.
+    CHECK(reloaded == original);
+}
+
+TEST_CASE("Theme without levelColumnOverride parses as nullopt", "[Theme][levelOverride]")
+{
+    constexpr std::string_view JSON = R"({
+        "name": "Pre-icon",
+        "kind": "dark",
+        "levels": {},
+        "table": {},
+        "chrome": {},
+        "app": {}
+    })";
+
+    const Theme parsed = ParseTheme(JSON);
+    CHECK(parsed.name == "Pre-icon");
+    CHECK_FALSE(parsed.levelColumnOverride.has_value());
+}
+
+TEST_CASE("Theme preserves blank-string header override through round-trip", "[Theme][levelOverride]")
+{
+    Theme original;
+    original.name = "Blank";
+    original.kind = ThemeKind::Light;
+    LevelColumnOverride override;
+    // Empty string is a legitimate value: render no header text.
+    // Distinct from `std::nullopt`, which means "fall back to
+    // `Column::header`".
+    override.header = "";
+    original.levelColumnOverride = std::move(override);
+
+    const std::string json = SerializeTheme(original);
+    const Theme reloaded = ParseTheme(json);
+    REQUIRE(reloaded.levelColumnOverride.has_value());
+    REQUIRE(reloaded.levelColumnOverride->header.has_value());
+    CHECK(reloaded.levelColumnOverride->header->empty());
+}
+
 TEST_CASE("Theme tolerates a sparse anchorPalette with empty slots", "[Theme][anchor]")
 {
     // Empty strings let a theme override only a couple of slots and
