@@ -175,6 +175,12 @@ LogTable::LogTable(LogData data, LogConfigurationManager configuration)
     std::optional<size_t> lastBackfilled;
     RunEnumPassForAppendBatch(0U, firstBackfilled, lastBackfilled);
     FinalizeAutoDetection();
+    // Static load path: the caller (`LogConfigurationManager::Load`)
+    // follows up with a model reset, so the bubble is invisible
+    // to Qt either way. Drain inline so callers that read
+    // `Configuration()` immediately after construction see the
+    // canonical column order.
+    ApplyPendingLevelBubbles();
 }
 
 // MSVC's `unordered_set` move ctor allocates a 1-cell container proxy and
@@ -196,10 +202,12 @@ LogTable::LogTable(LogTable &&other) noexcept
       mIsStreaming(other.mIsStreaming),
       mLastBackfillRange(std::move(other.mLastBackfillRange)),
       mLastBatchDemotedKeys(std::move(other.mLastBatchDemotedKeys)),
-      mLevelRankCache(std::move(other.mLevelRankCache))
+      mLevelRankCache(std::move(other.mLevelRankCache)),
+      mPendingLevelBubbleKeys(std::move(other.mPendingLevelBubbleKeys))
 {
     other.mIsStreaming = false;
     other.mLastBatchDemotedKeys.clear();
+    other.mPendingLevelBubbleKeys.clear();
     // Each `LineSource` cached `&other.mEnumDictionaries`; rebind to ours.
     RewireSourceRegistries();
 }
@@ -226,6 +234,8 @@ LogTable &LogTable::operator=(LogTable &&other) noexcept
     mLastBatchDemotedKeys = std::move(other.mLastBatchDemotedKeys);
     other.mLastBatchDemotedKeys.clear();
     mLevelRankCache = std::move(other.mLevelRankCache);
+    mPendingLevelBubbleKeys = std::move(other.mPendingLevelBubbleKeys);
+    other.mPendingLevelBubbleKeys.clear();
     // Each `LineSource` cached `&other.mEnumDictionaries`; rebind to ours.
     RewireSourceRegistries();
     return *this;
@@ -252,6 +262,10 @@ void LogTable::Update(LogData &&data)
     std::optional<size_t> lastBackfilled;
     RunEnumPassForAppendBatch(oldLineCount, firstBackfilled, lastBackfilled);
     FinalizeAutoDetection();
+    // Same rationale as the streaming-free ctor: this is the
+    // static `Update` path and its caller resets the model after,
+    // so the bubble can land inline.
+    ApplyPendingLevelBubbles();
 }
 
 void LogTable::Reset()
@@ -263,6 +277,7 @@ void LogTable::Reset()
     mEnumTrackers.clear();
     mEnumColumnHealth.clear();
     mLevelRankCache.clear();
+    mPendingLevelBubbleKeys.clear();
     mIsStreaming = false;
     mLastBackfillRange.reset();
     // Match the sibling teardown paths so a reader between `Reset` and
@@ -293,6 +308,7 @@ void LogTable::BeginStreaming(std::unique_ptr<LineSource> source)
 {
     mLastBackfillRange.reset();
     mLastBatchDemotedKeys.clear();
+    mPendingLevelBubbleKeys.clear();
     // Eager promotion + no cardinality bail until `FinalizeAutoDetection`.
     mIsStreaming = true;
 
@@ -342,6 +358,13 @@ void LogTable::AppendBatch(StreamedBatch batch)
 {
     mLastBackfillRange.reset();
     mLastBatchDemotedKeys.clear();
+    // Defensive: each batch starts with an empty pending-bubble
+    // queue. The streaming consumer (`LogModel::AppendBatch`)
+    // takes pending bubbles after every `AppendBatch` call; the
+    // clear here guards against a forgotten drain leaking pending
+    // entries into the next batch where the recorded `KeyId`s
+    // might re-resolve to columns whose state changed.
+    mPendingLevelBubbleKeys.clear();
 
     if (!batch.newKeys.empty())
     {
@@ -1098,7 +1121,15 @@ void LogTable::RunEnumPassForAppendBatch(
                     MaybePromoteToLevel(columnIndex);
                 }
             }
-            if (column.type == LogConfiguration::Type::Level)
+            // Re-read the column reference: `MaybePromoteToLevel`
+            // can have flipped the type to `Level`. The promotion
+            // path no longer rotates the column in place (the
+            // bubble is queued for `LogModel` to apply), so the
+            // index is still valid and the dict is keyed by
+            // canonical `KeyId` -- but the type must come from the
+            // post-promotion configuration.
+            const auto &columnAfterMaybe = columns[columnIndex];
+            if (columnAfterMaybe.type == LogConfiguration::Type::Level)
             {
                 // Idempotent: a just-promoted column's cache is already
                 // populated, an existing one picks up this batch's new
@@ -1971,24 +2002,69 @@ void LogTable::MaybePromoteToLevel(size_t columnIndex)
     }
 
     mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::Level);
-    // Mirror the Time-to-position-0 bubble in `LogConfigurationManager::Update`:
-    // land the freshly-promoted level column at the canonical
-    // index. One-shot on first promotion; saved column orders
-    // survive subsequent `Load`/`SetConfiguration` paths because
-    // those paths don't call the bubble helper.
-    //
-    // `LogTable::MoveColumn` (not the manager-level helper) so
-    // the parallel `mColumnKeyIds` vector stays in lockstep with
-    // the column rotation -- without that, `GetEnumValueId(row, col)`
-    // would read the wrong key id and the freshly-promoted level
-    // cell would render as blank. Policy is shared with the free
-    // helper through `ShouldBubbleLevelColumn`.
-    if (ShouldBubbleLevelColumn(mConfiguration.Configuration(), columnIndex))
-    {
-        MoveColumn(columnIndex, CANONICAL_LEVEL_COLUMN_INDEX);
-        columnIndex = CANONICAL_LEVEL_COLUMN_INDEX;
-    }
     RefreshLevelRankCache(columnIndex);
+    // Queue the canonical-position bubble instead of moving inline.
+    // The streaming consumer (`LogModel::AppendBatch` /
+    // `EndStreaming`) drains the queue via
+    // `TakePendingLevelBubbleKeys` and wraps each `MoveColumn` in
+    // `begin/endMoveColumns` so Qt's view state stays in sync.
+    // Static-load paths (`LogTable` ctor + `Update`) call
+    // `ApplyPendingLevelBubblesInternal` themselves because a
+    // model reset covers the rotation.
+    //
+    // Queueing by canonical `KeyId` (not column index) keeps the
+    // entry stable across other queued bubbles: when two columns
+    // promote in the same batch, applying the first one shifts
+    // the second's slot, so the consumer must re-resolve at apply
+    // time. `canonical` is the resolved key from above.
+    mPendingLevelBubbleKeys.push_back(canonical);
+}
+
+std::vector<KeyId> LogTable::TakePendingLevelBubbleKeys() noexcept
+{
+    return std::exchange(mPendingLevelBubbleKeys, std::vector<KeyId>{});
+}
+
+void LogTable::ApplyPendingLevelBubbles()
+{
+    // Drain by `KeyId` and re-resolve the current column index
+    // per iteration: an earlier `MoveColumn` shifts later
+    // canonical positions.
+    const std::vector<KeyId> pending = TakePendingLevelBubbleKeys();
+    for (const KeyId kid : pending)
+    {
+        if (kid == INVALID_KEY_ID)
+        {
+            continue;
+        }
+        const auto &columns = mConfiguration.Configuration().columns;
+        size_t srcIndex = columns.size();
+        for (size_t i = 0; i < columns.size(); ++i)
+        {
+            bool found = false;
+            for (const std::string &key : columns[i].keys)
+            {
+                if (mData.Keys().Find(key) == kid)
+                {
+                    srcIndex = i;
+                    found = true;
+                    break;
+                }
+            }
+            if (found)
+            {
+                break;
+            }
+        }
+        if (srcIndex >= columns.size())
+        {
+            continue;
+        }
+        if (ShouldBubbleLevelColumn(mConfiguration.Configuration(), srcIndex))
+        {
+            MoveColumn(srcIndex, CANONICAL_LEVEL_COLUMN_INDEX);
+        }
+    }
 }
 
 void LogTable::RefreshLevelRankCache(size_t columnIndex)

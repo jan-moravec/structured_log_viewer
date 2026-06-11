@@ -2733,14 +2733,17 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "LogTable -- promoted Level column auto-bubbles to canonical position 1",
+    "LogTable -- promoted Level column queues a canonical-position bubble",
     "[log_table][append_batch][level][level_bubble]"
 )
 {
-    // Mirror the existing Time-to-position-0 bubble: when
-    // `MaybePromoteToLevel` flips a column to `Type::Level`, it
-    // also moves it to `CANONICAL_LEVEL_COLUMN_INDEX` so the
-    // natural reading order is time -> severity -> message.
+    // `MaybePromoteToLevel` queues the bubble onto
+    // `mPendingLevelBubbleKeys`; the consumer (`LogModel` in the
+    // app, `ApplyPendingLevelBubbles` here) wraps the move in the
+    // Qt-side `begin/endMoveColumns` so view state stays in sync.
+    // Asserting both halves (queue populated, then drained) keeps
+    // a regression from re-introducing the silent in-`AppendBatch`
+    // rotation that desyncs Qt's column-keyed state.
     const TestLogFile testFile("level_bubble.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2758,18 +2761,27 @@ TEST_CASE(
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
     REQUIRE(table.Configuration().Configuration().columns[0].header == "body");
 
-    // Second batch: a level column shows up. After enum promotion
-    // and `MaybePromoteToLevel`, the new column lands at index 1
-    // -- *not* at the tail where `AppendKeys` would have placed it.
+    // Second batch: a level column shows up. `AppendBatch`
+    // promotes it to `Type::Level` and queues the bubble; the
+    // column stays at its appended tail position until the queue
+    // is drained.
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 2, 6, true));
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 2);
     CHECK(table.Configuration().Configuration().columns[0].header == "body");
     CHECK(table.Configuration().Configuration().columns[1].header == "level");
     CHECK(table.Configuration().Configuration().columns[1].type == LogConfiguration::Type::Level);
-    // Sanity check the canonical-position constant is what the
-    // bubble target was.
+    // Sanity check the canonical-position constant.
     CHECK(loglib::CANONICAL_LEVEL_COLUMN_INDEX == 1);
+
+    // Drain via `ApplyPendingLevelBubbles` (the static-load /
+    // test entry point). In the app this branch runs inside
+    // `LogModel::AppendBatch` wrapped in `begin/endMoveColumns`.
+    table.ApplyPendingLevelBubbles();
+    REQUIRE(table.Configuration().Configuration().columns.size() == 2);
+    CHECK(table.Configuration().Configuration().columns[0].header == "body");
+    CHECK(table.Configuration().Configuration().columns[1].header == "level");
+    CHECK(table.Configuration().Configuration().columns[1].type == LogConfiguration::Type::Level);
 }
 
 TEST_CASE(
@@ -2778,11 +2790,12 @@ TEST_CASE(
 )
 {
     // When more than two columns are present, the freshly-promoted
-    // Level column still lands at `CANONICAL_LEVEL_COLUMN_INDEX`,
-    // pushing the column previously sitting there to index 2.
-    // (The Time bubble is path-specific to `Update` and not
-    // exercised from the streaming `AppendKeys` path used here;
-    // its coverage stays in `test_log_configuration.cpp`.)
+    // Level column still lands at `CANONICAL_LEVEL_COLUMN_INDEX`
+    // *after the queue drain*, pushing the column previously
+    // sitting there to index 2. (The Time bubble is path-specific
+    // to `Update` and not exercised from the streaming `AppendKeys`
+    // path used here; its coverage stays in
+    // `test_log_configuration.cpp`.)
     const TestLogFile testFile("level_bubble_multi.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2804,11 +2817,19 @@ TEST_CASE(
     REQUIRE(table.Configuration().Configuration().columns[1].header == "col_b");
     REQUIRE(table.Configuration().Configuration().columns[2].header == "col_c");
 
-    // Now introduce a level column. It's appended at index 3 by
-    // `AppendKeys`, then `MaybePromoteToLevel` flips it to
-    // `Type::Level` and bubbles it to index 1, pushing `col_b`
-    // and `col_c` rightward.
+    // Introduce a level column. `AppendKeys` appends it at index
+    // 3; `MaybePromoteToLevel` flips it to `Type::Level` and
+    // queues the bubble. Before the drain, the column is still
+    // at index 3 (queued, not moved).
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 2, 6, true));
+
+    REQUIRE(table.Configuration().Configuration().columns.size() == 4);
+    CHECK(table.Configuration().Configuration().columns[3].header == "level");
+    CHECK(table.Configuration().Configuration().columns[3].type == LogConfiguration::Type::Level);
+
+    // Drain the queue: `level` lands at the canonical index 1,
+    // pushing `col_b` and `col_c` rightward.
+    table.ApplyPendingLevelBubbles();
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 4);
     CHECK(table.Configuration().Configuration().columns[0].header == "col_a");
@@ -2818,6 +2839,43 @@ TEST_CASE(
     CHECK(table.Configuration().Configuration().columns[3].header == "col_c");
     // Sanity: the rank cache built against the post-bubble index.
     CHECK(table.GetLevelForRow(1, 1) == LogLevel::Info);
+}
+
+TEST_CASE(
+    "LogTable -- pending Level bubble is visible via TakePendingLevelBubbleKeys",
+    "[log_table][append_batch][level][level_bubble]"
+)
+{
+    // Regression: `TakePendingLevelBubbleKeys` is the streaming
+    // consumer's entry point. It must report the canonical
+    // `KeyId` of the freshly-promoted column (so the consumer can
+    // wrap the follow-up `MoveColumn` in `begin/endMoveColumns`),
+    // and the second call must return an empty queue.
+    const TestLogFile testFile("level_bubble_take.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+
+    std::vector<std::vector<std::pair<std::string, LogValue>>> firstRows;
+    firstRows.emplace_back();
+    firstRows.back().emplace_back("body", std::string("hello"));
+    table.AppendBatch(BuildStreamedBatch(keys, *sourcePtr, firstRows, 0, 1));
+
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 2, 6, true));
+
+    const KeyId levelKey = table.Keys().Find("level");
+    REQUIRE(levelKey != loglib::INVALID_KEY_ID);
+
+    const std::vector<KeyId> pending = table.TakePendingLevelBubbleKeys();
+    REQUIRE(pending.size() == 1);
+    CHECK(pending.front() == levelKey);
+
+    // Second drain yields an empty queue.
+    CHECK(table.TakePendingLevelBubbleKeys().empty());
 }
 
 TEST_CASE(

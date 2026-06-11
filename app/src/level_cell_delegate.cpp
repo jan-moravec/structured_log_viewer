@@ -227,8 +227,17 @@ void LevelCellDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
         const QRectF iconRect = QRectF(
             pillRect.center().x() - (iconEdge / TWO), pillRect.center().y() - (iconEdge / TWO), iconEdge, iconEdge
         );
-        const QIcon::Mode mode = (option.state & QStyle::State_Selected) ? QIcon::Selected : QIcon::Normal;
-        icon.paint(painter, iconRect.toRect(), Qt::AlignCenter, mode);
+        // Always paint in `QIcon::Normal`: the cached icon was
+        // minted as a single-mode `QIcon` (one `Normal` pixmap)
+        // already tinted to `pillForeground`. Asking for
+        // `QIcon::Selected` would route through
+        // `QStyle::generatedIconPixmap`, which by default
+        // overlays the highlight palette and clobbers the
+        // themed tint. The row-level selection overlay is
+        // already drawn behind the pill via the
+        // `CE_ItemViewItem` fill above, so the cell still reads
+        // as selected without re-tinting the glyph.
+        icon.paint(painter, iconRect.toRect(), Qt::AlignCenter, QIcon::Normal);
     }
 
     painter->restore();

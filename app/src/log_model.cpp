@@ -763,6 +763,45 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         }
     }
 
+    // Drain any `Type::Level` canonical-position bubbles queued
+    // by `mLogTable.AppendBatch`. `MaybePromoteToLevel` records
+    // the canonical `KeyId` of every freshly-promoted column
+    // instead of moving it inline; the move happens here so it
+    // can be wrapped in `begin/endMoveColumns`.
+    //
+    // Without this hoist the bubble would happen silently inside
+    // `mLogTable.AppendBatch` between `beginInsertColumns` and
+    // `endInsertColumns`. Qt then believes the new columns were
+    // appended at the tail (the `begin/endInsertColumns` contract)
+    // while the underlying vector actually rotated, leaving
+    // section-keyed view state (widths, hidden flags, the proxy
+    // chain's column map, `MainWindow::mFilters[*].row`) attached
+    // to the wrong column. Repro: any payload whose first
+    // appearance of the level field has at least two non-Time
+    // columns ahead of it (e.g. `{message, scope, level}`).
+    //
+    // Re-resolve current column indices per iteration via
+    // `findColumnIndexForKey`: an earlier move can shift later
+    // targets. `MoveColumn` invalidates `mFirstLevelColumnCache`
+    // and Qt's `columnsMoved` signal triggers
+    // `MainWindow::OnSourceColumnsMoved` which remaps the
+    // runtime filter map.
+    for (const loglib::KeyId kid : mLogTable.TakePendingLevelBubbleKeys())
+    {
+        const int srcIndex = findColumnIndexForKey(kid);
+        if (srcIndex < 0)
+        {
+            continue;
+        }
+        if (!loglib::ShouldBubbleLevelColumn(
+                mLogTable.Configuration().Configuration(), static_cast<size_t>(srcIndex)
+            ))
+        {
+            continue;
+        }
+        MoveColumn(srcIndex, static_cast<int>(loglib::CANONICAL_LEVEL_COLUMN_INDEX));
+    }
+
     mErrorCount += capturedErrorCount;
     emit lineCountChanged(static_cast<qsizetype>(newRowCount));
     if (capturedErrorCount > 0)
@@ -886,6 +925,46 @@ void LogModel::EndStreaming(bool cancelled)
                 }
                 emit enumColumnsChanged(EnumColumnsChangeReason::Demoted, static_cast<int>(i));
             }
+        }
+
+        // Drain Level-to-canonical-position bubbles queued by
+        // `FinalizeAutoDetection`. Same rationale as the
+        // `AppendBatch` drain above: the move is hoisted out of
+        // `LogTable` so we can wrap it in `begin/endMoveColumns`
+        // (via `MoveColumn`). Re-resolve current indices per
+        // iteration: an earlier move can shift later targets.
+        for (const loglib::KeyId kid : mLogTable.TakePendingLevelBubbleKeys())
+        {
+            int srcIndex = -1;
+            const auto &columnsAfterDrain = mLogTable.Configuration().Configuration().columns;
+            for (size_t colIdx = 0; colIdx < columnsAfterDrain.size(); ++colIdx)
+            {
+                bool matched = false;
+                for (const std::string &key : columnsAfterDrain[colIdx].keys)
+                {
+                    if (mLogTable.Keys().Find(key) == kid)
+                    {
+                        srcIndex = static_cast<int>(colIdx);
+                        matched = true;
+                        break;
+                    }
+                }
+                if (matched)
+                {
+                    break;
+                }
+            }
+            if (srcIndex < 0)
+            {
+                continue;
+            }
+            if (!loglib::ShouldBubbleLevelColumn(
+                    mLogTable.Configuration().Configuration(), static_cast<size_t>(srcIndex)
+                ))
+            {
+                continue;
+            }
+            MoveColumn(srcIndex, static_cast<int>(loglib::CANONICAL_LEVEL_COLUMN_INDEX));
         }
     }
 
@@ -1517,14 +1596,15 @@ void LogModel::SetShowLevelIcons(bool show)
         const int rows = rowCount();
         if (rows > 0)
         {
-            // Decoration role moves with icon-mode; tooltips too
-            // (they include the level name in both modes, but
-            // QHeaderView caches them per-column on first paint).
-            emit dataChanged(
-                index(0, levelCol),
-                index(rows - 1, levelCol),
-                {Qt::DecorationRole, Qt::ToolTipRole, Qt::DisplayRole}
-            );
+            // Only `DecorationRole` actually flips with icon mode:
+            // the cell `data()` returns the icon when on and an
+            // invalid `QVariant` when off, gated on
+            // `IsLevelIconModeActive()`. Cell `DisplayRole` and
+            // `ToolTipRole` are unchanged either way, so listing
+            // them here would defeat `IsStyleOnlyRoleChange` and
+            // wake the find-cache invalidation + record-detail
+            // refresh paths for no net change.
+            emit dataChanged(index(0, levelCol), index(rows - 1, levelCol), {Qt::DecorationRole});
         }
     }
 }
@@ -1658,12 +1738,21 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
 
     case Qt::ToolTipRole:
     {
-        // Deliberately not gated on `IsLevelIconModeActive()`: the
-        // level name belongs in a tooltip whenever the cell is a
-        // level cell, regardless of whether icons are on.
-        // Icon-mode-off users still get a hover label that spells
-        // out the level when `Column::header` has been renamed or
-        // shortened.
+        // Only synthesise a tooltip when icon mode is active:
+        // then the displayed glyph carries no text, so the
+        // canonical name is the only way for the user to spell
+        // out the level. With icon mode off, the cell already
+        // shows the raw text (`info` / `WARNING` / ...) and
+        // returning the canonical name (`Info` / `Warn`) here
+        // would shadow the displayed text with a different
+        // casing / spelling -- confusing rather than helpful.
+        // Returning an invalid `QVariant` lets Qt fall back to
+        // its default behaviour (show the raw text only when
+        // the cell is elided).
+        if (!IsLevelIconModeActive())
+        {
+            return {};
+        }
         const int levelCol = FirstLevelColumnIndex();
         if (levelCol < 0 || index.column() != levelCol)
         {

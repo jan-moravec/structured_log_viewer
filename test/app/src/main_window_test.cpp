@@ -4221,6 +4221,105 @@ private slots:
         QCOMPARE(run.model->Table().GetLevelForRow(5, col).value(), loglib::LogLevel::Fatal);
     }
 
+    /// Regression: when an auto-promoted `Type::Level` column has
+    /// other non-Time, non-canonical-position columns ahead of it,
+    /// `LogModel::AppendBatch` (or `EndStreaming`) must bubble it
+    /// to `CANONICAL_LEVEL_COLUMN_INDEX` via Qt's
+    /// `begin/endMoveColumns`. The earlier implementation rotated
+    /// the column silently inside `mLogTable.AppendBatch`,
+    /// leaving Qt's column-keyed view state attached to the wrong
+    /// section (widths, hidden flags, the proxy chain's column
+    /// map, persisted filter rows).
+    void TestStreamingLevelBubbleEmitsColumnsMoved()
+    {
+        // Fixture: each record has `body`, `scope`, and `level`
+        // keys. `body` and `scope` are non-Time, non-Level, so
+        // they appear at indices 0 and 1. `level` is appended at
+        // index 2 and -- once promoted to `Type::Level` --
+        // bubbles to index 1, pushing `scope` to index 2.
+        const QStringList levels{
+            QStringLiteral("info"),
+            QStringLiteral("warn"),
+            QStringLiteral("error"),
+        };
+        QStringList lines;
+        lines.reserve(200);
+        for (int i = 0; i < 200; ++i)
+        {
+            lines.append(QStringLiteral(R"({"body": "msg %1", "scope": "core", "level": "%2"})")
+                             .arg(i)
+                             .arg(levels[i % levels.size()]));
+        }
+        const TempJsonFile fixture(lines);
+
+        auto model = std::make_unique<LogModel>(nullptr, nullptr);
+        QSignalSpy columnsMovedSpy(model.get(), &QAbstractItemModel::columnsMoved);
+        QSignalSpy columnsInsertedSpy(model.get(), &QAbstractItemModel::columnsInserted);
+        QSignalSpy finishedSpy(model.get(), &LogModel::streamingFinished);
+        QVERIFY(columnsMovedSpy.isValid());
+        QVERIFY(columnsInsertedSpy.isValid());
+        QVERIFY(finishedSpy.isValid());
+
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+        {
+            loglib::ParserOptions options;
+            options.stopToken = stopToken;
+            loglib::internal::AdvancedParserOptions advanced;
+            advanced.threads = 1;
+            const loglib::JsonParser parser;
+            loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        }
+        if (finishedSpy.count() == 0)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "streamingFinished must arrive");
+        }
+
+        // Post-bubble column layout: `body, level, scope`.
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        QCOMPARE(levelCol, static_cast<int>(loglib::CANONICAL_LEVEL_COLUMN_INDEX));
+        const auto &columns = model->Configuration().columns;
+        QCOMPARE(columns.size(), static_cast<size_t>(3));
+        QCOMPARE(columns[0].header, std::string{"body"});
+        QCOMPARE(columns[1].header, std::string{"level"});
+        QCOMPARE(columns[1].type, loglib::LogConfiguration::Type::Level);
+        QCOMPARE(columns[2].header, std::string{"scope"});
+
+        // The bubble must have arrived via `columnsMoved` -- without
+        // this signal, Qt's view layer keeps section-keyed state on
+        // the wrong column. At least one move (the level bubble);
+        // exactly one when no Time column is in play.
+        QVERIFY2(
+            columnsMovedSpy.count() >= 1,
+            qPrintable(QStringLiteral("expected at least one columnsMoved emit; got %1").arg(columnsMovedSpy.count()))
+        );
+        // Inspect the most recent move: source must be the
+        // pre-bubble level column (originally appended at the
+        // tail), destination must be the canonical index. Qt's
+        // `destinationColumn` parameter uses "insert before"
+        // semantics, so for leftward moves it equals the final
+        // index.
+        const QList<QVariant> lastMove = columnsMovedSpy.last();
+        const int movedFirst = lastMove.value(1).toInt();
+        const int movedLast = lastMove.value(2).toInt();
+        const int movedDestColumn = lastMove.value(4).toInt();
+        QCOMPARE(movedFirst, movedLast);
+        QVERIFY2(movedFirst >= 0, "moved source column must be valid");
+        QCOMPARE(movedDestColumn, static_cast<int>(loglib::CANONICAL_LEVEL_COLUMN_INDEX));
+
+        // Cell payload sanity: the rank cache built against the
+        // post-bubble column index, so `GetLevelForRow` returns
+        // the right canonical level for row 0 (`info`).
+        QCOMPARE(
+            model->Table().GetLevelForRow(0, static_cast<size_t>(levelCol)).value(), loglib::LogLevel::Info
+        );
+
+        model->EndStreaming(false);
+    }
+
     /// Integration: a streamed `Type::Level` column makes
     /// `LogModel::data(Qt::BackgroundRole)` return the cached
     /// theme brush for styled levels and an empty QVariant for

@@ -88,6 +88,33 @@ public:
     /// `beginMoveColumns`/`endMoveColumns`.
     void MoveColumn(size_t srcIndex, size_t destIndex);
 
+    /// Canonical `KeyId`s of columns that `MaybePromoteToLevel`
+    /// flipped to `Type::Level` since the last drain, but whose
+    /// canonical-position bubble has been deferred so the
+    /// streaming consumer (`LogModel`) can wrap each follow-up
+    /// `MoveColumn` in `begin/endMoveColumns`. Returned in
+    /// queue order; the caller is responsible for resolving each
+    /// `KeyId` to its current column index (via
+    /// `Configuration().columns[i].keys`) immediately before its
+    /// move, because an earlier move can shift later targets.
+    ///
+    /// Static-load paths (`LogTable` ctor + `Update`) call
+    /// `ApplyPendingLevelBubbles` instead and never read this
+    /// queue; the queue is therefore always empty when those
+    /// paths return. Tests that exercise `AppendBatch` /
+    /// `FinalizeAutoDetection` directly can either call
+    /// `ApplyPendingLevelBubbles` to mimic the static-load path,
+    /// or drain and apply the queue manually to mimic the
+    /// streaming consumer.
+    [[nodiscard]] std::vector<KeyId> TakePendingLevelBubbleKeys() noexcept;
+
+    /// Drain `mPendingLevelBubbleKeys` and apply each bubble via
+    /// `MoveColumn`. No Qt-side notifications -- intended for
+    /// static load paths whose callers follow up with a model
+    /// reset (and for tests that don't exercise the
+    /// `LogModel`-side streaming consumer).
+    void ApplyPendingLevelBubbles();
+
     /// Pre-allocation hint forwarded to the streaming `LogFile`.
     void ReserveLineOffsets(size_t count);
 
@@ -339,6 +366,13 @@ private:
     /// has at most one unrecognized entry per `LEVEL_DICT_TOLERANCE_RATIO`
     /// canonical ones. Dict-weighted, so re-evaluation only matters
     /// when the dictionary grows. No-op otherwise. `O(dict size)`.
+    ///
+    /// Does not perform the canonical-position bubble inline.
+    /// Instead the canonical `KeyId` is queued on
+    /// `mPendingLevelBubbleKeys` so the streaming consumer
+    /// (`LogModel`) can wrap each follow-up `MoveColumn` in
+    /// `begin/endMoveColumns`. Static-load paths drain the queue
+    /// via `ApplyPendingLevelBubbles`.
     void MaybePromoteToLevel(size_t columnIndex);
 
     /// Rebuild / extend the `EnumValueId -> LogLevel` cache. Idempotent;
@@ -416,6 +450,12 @@ private:
     /// registry), so column reorders are automatic and same-header
     /// columns with different keys cannot alias each other.
     std::unordered_map<KeyId, std::vector<LogLevel>> mLevelRankCache;
+
+    /// Queue of canonical `KeyId`s whose columns were freshly
+    /// promoted to `Type::Level` since the last drain, but whose
+    /// canonical-position bubble has been deferred. See
+    /// `MaybePromoteToLevel` and `TakePendingLevelBubbleKeys`.
+    std::vector<KeyId> mPendingLevelBubbleKeys;
 };
 
 } // namespace loglib

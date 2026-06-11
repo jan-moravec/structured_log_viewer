@@ -851,15 +851,17 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     connect(mPreferencesEditor, &PreferencesEditor::staticDisplayOrderChanged, this, [this](bool) {
         ApplyDisplayOrder();
     });
-    // Detach the delegate *before* flipping the model flag when
-    // icons go off: the delegate's self-gate would handle the
-    // wrong order too (it forwards to the base delegate on
-    // `IsLevelIconModeActive() == false`), but the explicit
-    // sequence saves a per-cell proxy-chain walk on the next
-    // repaint and keeps the toggle-order documentation honest.
-    // When icons go on, attaching first lets the next paint hit
-    // the delegate immediately rather than via a full repaint
-    // round-trip.
+    // Toggle order: `SetShowLevelIcons` flips the model flag and
+    // emits a tightly-scoped `dataChanged(DecorationRole)` on the
+    // level column. The follow-up `ApplyLevelCellDelegate` makes
+    // sure the delegate is installed on whichever column the
+    // model now reports as the first `Type::Level` (it's an
+    // idempotent install when icon mode was already on, or a
+    // first-time install if the delegate has never been
+    // attached). No `RefreshAllRowStyles` here: the model emit is
+    // already the smallest correct repaint, and a full-row-styles
+    // emit would defeat `IsStyleOnlyRoleChange` for receivers
+    // that gate on it.
     connect(mPreferencesEditor, &PreferencesEditor::showLevelIconsChanged, this, [this](bool on) {
         if (mModel == nullptr)
         {
@@ -867,7 +869,6 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
         }
         mModel->SetShowLevelIcons(on);
         ApplyLevelCellDelegate();
-        mModel->RefreshAllRowStyles();
     });
 
     // Anchor hotkeys (programmatic so the .ui isn't bloated):
@@ -5358,12 +5359,15 @@ void MainWindow::OnThemeChanged()
 
     // A theme switch can flip icon mode on / off
     // (`Theme::levelColumnOverride.has_value()`). The delegate's
-    // self-gate keeps the cell painting correct without this
-    // call, but reapplying lets us detach the delegate when icon
-    // mode becomes inactive: the table-wide default delegate then
-    // paints the level cells faster (no proxy-chain walk per
-    // paint). When icon mode flipped on, the call attaches the
-    // delegate so the next paint already routes through it.
+    // self-gate keeps the cell painting correct either way, but
+    // the call also reacts to a level column having shifted (e.g.
+    // a theme reload that triggered a re-parse): the delegate is
+    // re-attached on whichever column the model now reports as
+    // the first `Type::Level`, and detached from the previous
+    // column if it moved. The delegate is *not* detached when
+    // icon mode flips off without a column change -- the
+    // self-gate handles that fast-path (forwards to the base
+    // class on every paint).
     ApplyLevelCellDelegate();
 }
 
