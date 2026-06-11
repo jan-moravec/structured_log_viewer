@@ -61,6 +61,11 @@ constexpr qreal TWO = 2.0;
 /// `QModelIndex` when the chain root is not a `LogModel` (e.g. a
 /// test stub) -- callers fall through to the base class which
 /// keeps text rendering.
+///
+/// @p outLogModel receives the resolved `LogModel*` (or nullptr
+/// when the chain root isn't a `LogModel`). Single-walk variant:
+/// folds the model-resolve and the index-translate the paint
+/// path used to do as two separate chain walks into one.
 QModelIndex MapToLogModelSource(const QModelIndex &index, const LogModel **outLogModel) noexcept
 {
     if (outLogModel != nullptr)
@@ -109,6 +114,10 @@ LevelCellDelegate::LevelCellDelegate(ThemeControl *theme, QObject *parent)
 
 const LogModel *LevelCellDelegate::ResolveLogModel(const QAbstractItemModel *model) const noexcept
 {
+    // `sizeHint` doesn't need a translated index, only the model
+    // identity; reusing `MapToLogModelSource` with an invalid index
+    // would early-out before the qobject_cast chain so we keep a
+    // dedicated index-free walk here.
     const QAbstractItemModel *current = model;
     while (current != nullptr)
     {
@@ -128,31 +137,27 @@ const LogModel *LevelCellDelegate::ResolveLogModel(const QAbstractItemModel *mod
 
 void LevelCellDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const
 {
-    // Self-gate: if icon mode is off (either the user toggled
-    // it, the theme has no override, or this isn't a LogModel)
-    // we fall straight through to the base delegate so text
-    // rendering keeps working. This makes the install/detach
-    // order in `MainWindow::ApplyLevelCellDelegate` an
-    // optimisation rather than a correctness requirement.
-    const LogModel *logModel = ResolveLogModel(index.model());
-    if (logModel == nullptr || mTheme == nullptr || !logModel->IsLevelIconModeActive())
+    // Resolve the source-side `LogModel` and the source-side index
+    // in a single proxy-chain walk: the gate check (`IsLevelIconModeActive`)
+    // and the level lookup (`GetLevelForRow`) both need them, so
+    // a separate `ResolveLogModel` call here would walk the chain
+    // twice on the paint hot path.
+    //
+    // Self-gate: if anything is missing (no LogModel, no theme,
+    // icon mode toggled off, or the proxy chain is malformed) we
+    // fall straight through to the base delegate so text rendering
+    // keeps working. This makes the install/detach order in
+    // `MainWindow::ApplyLevelCellDelegate` an optimisation rather
+    // than a correctness requirement.
+    const LogModel *logModel = nullptr;
+    const QModelIndex sourceIndex = MapToLogModelSource(index, &logModel);
+    if (logModel == nullptr || mTheme == nullptr || !sourceIndex.isValid() || !logModel->IsLevelIconModeActive())
     {
         QStyledItemDelegate::paint(painter, option, index);
         return;
     }
 
-    // Resolve the level for the row through the proxy chain so
-    // we can pick the right pill brushes. Falls back to the base
-    // delegate if anything along the chain is malformed.
-    const LogModel *resolvedLogModel = nullptr;
-    const QModelIndex sourceIndex = MapToLogModelSource(index, &resolvedLogModel);
-    if (!sourceIndex.isValid() || resolvedLogModel == nullptr)
-    {
-        QStyledItemDelegate::paint(painter, option, index);
-        return;
-    }
-
-    const auto level = resolvedLogModel->Table().GetLevelForRow(
+    const auto level = logModel->Table().GetLevelForRow(
         static_cast<size_t>(sourceIndex.row()), static_cast<size_t>(sourceIndex.column())
     );
     if (!level.has_value())
@@ -166,6 +171,13 @@ void LevelCellDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
     // background / selection still show through outside the pill.
     // We pass an empty-text option to suppress the base class's
     // text draw without losing the row fill.
+    //
+    // `initStyleOption` is required even though the view passed
+    // us `option`: the view leaves the model-derived fields
+    // (BackgroundRole / ForegroundRole / FontRole, decoration,
+    // text) unpopulated, expecting each delegate to finalise them
+    // for its index. Without this, the cell fill below would
+    // ignore the theme's per-level background brush.
     QStyleOptionViewItem fillOption = option;
     initStyleOption(&fillOption, index);
     fillOption.text = QString();
@@ -246,8 +258,7 @@ void LevelCellDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
 QSize LevelCellDelegate::sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const
 {
     // Default to the base delegate's hint so text-mode columns
-    // (icon mode off) keep the historical row height. We only
-    // tighten the *width* when icon mode is active.
+    // (icon mode off) keep the historical row height + width.
     const QSize baseHint = QStyledItemDelegate::sizeHint(option, index);
 
     const LogModel *logModel = ResolveLogModel(index.model());
@@ -265,7 +276,18 @@ QSize LevelCellDelegate::sizeHint(const QStyleOptionViewItem &option, const QMod
     // + pill padding, plus the header sort-indicator size so the
     // chevron stays visible when the user clicks the column.
     const int iconWidth = smallIcon + (2 * ICON_INSET_INSIDE_PILL_PX) + (2 * PILL_PADDING_PX);
-    const int minWidth = iconWidth + std::max(0, headerMark);
+    const int width = iconWidth + std::max(0, headerMark);
+    // Height: keep the base hint's row height (e.g. text font
+    // ascent + leading from the QStyle) so icon rows align with
+    // text rows visually; only force a floor when the icon would
+    // overflow a too-small base hint.
     const int height = std::max(baseHint.height(), smallIcon + (2 * PILL_PADDING_PX));
-    return QSize(std::max(baseHint.width(), minWidth), height);
+    // In icon mode the *displayed* content is just the pill+icon;
+    // returning the base hint's text width (e.g. for "WARNING")
+    // would keep the column visually as wide as the longest
+    // suppressed string. Returning the narrow icon width lets
+    // `resizeColumnsToContents()` actually shrink the column to
+    // the icon footprint, which is the headline visual change of
+    // icon mode.
+    return QSize(width, height);
 }

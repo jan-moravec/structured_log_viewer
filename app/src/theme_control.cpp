@@ -87,15 +87,23 @@ size_t LevelIndex(loglib::LogLevel level) noexcept
     return static_cast<size_t>(level);
 }
 
-QBrush BrushFromHex(const std::optional<std::string> &hex) noexcept
+QBrush BrushFromHex(const std::optional<std::string> &hex)
 {
     if (!hex.has_value() || hex->empty())
     {
         return QBrush{}; // invalid -> "use palette default"
     }
-    const QColor color(QString::fromStdString(*hex));
+    const QString hexQ = QString::fromStdString(*hex);
+    const QColor color(hexQ);
     if (!color.isValid())
     {
+        // A non-empty hex that fails to parse is almost always a
+        // typo (e.g. `#XYZ`, missing `#`, wrong length). Silent
+        // fallback was previously masking these; surface the
+        // offender so users can spot the bad field in their theme
+        // JSON. Not throwing -- a malformed colour shouldn't
+        // refuse the rest of the theme.
+        qWarning("Theme hex colour `%s` did not parse; using palette default.", qUtf8Printable(hexQ));
         return QBrush{};
     }
     return QBrush{color};
@@ -1214,7 +1222,20 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
         QColor pillFgColor;
         if (entry->pillForeground.has_value() && !entry->pillForeground->empty())
         {
-            pillFgColor = QColor(QString::fromStdString(*entry->pillForeground));
+            const QString hexQ = QString::fromStdString(*entry->pillForeground);
+            pillFgColor = QColor(hexQ);
+            if (!pillFgColor.isValid())
+            {
+                // Match `BrushFromHex`'s warning surface so a typo
+                // in `pillForeground` is just as discoverable as
+                // one in `LevelStyle::foreground`. We don't bail
+                // -- the chain falls back to `LevelStyle.foreground`
+                // then `WindowText`, both of which the user expects.
+                qWarning(
+                    "Theme pillForeground hex `%s` did not parse; falling back to LevelStyle foreground / palette.",
+                    qUtf8Printable(hexQ)
+                );
+            }
         }
         if (!pillFgColor.isValid())
         {

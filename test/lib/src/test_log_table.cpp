@@ -2851,7 +2851,57 @@ TEST_CASE(
     // `KeyId` of the freshly-promoted column (so the consumer can
     // wrap the follow-up `MoveColumn` in `begin/endMoveColumns`),
     // and the second call must return an empty queue.
+    //
+    // Fixture uses three pre-existing non-level columns so the
+    // freshly-introduced level column lands at index 3 -- two
+    // steps away from `CANONICAL_LEVEL_COLUMN_INDEX == 1` -- so
+    // a bubble is genuinely needed. `MaybePromoteToLevel` skips
+    // the queue when no move is needed (e.g. a level column
+    // appended into a single-column table lands at index 1
+    // already), so the test fixture must reflect a non-no-op
+    // configuration to exercise the queue surface.
     const TestLogFile testFile("level_bubble_take.json");
+    testFile.Write("");
+    auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
+    FileLineSource *sourcePtr = source.get();
+
+    LogTable table;
+    table.BeginStreaming(std::move(source));
+    KeyIndex &keys = table.Keys();
+
+    std::vector<std::vector<std::pair<std::string, LogValue>>> firstRows;
+    firstRows.emplace_back();
+    firstRows.back().emplace_back("col_a", std::string("a"));
+    firstRows.back().emplace_back("col_b", std::string("b"));
+    firstRows.back().emplace_back("col_c", std::string("c"));
+    table.AppendBatch(BuildStreamedBatch(keys, *sourcePtr, firstRows, 0, 1));
+    REQUIRE(table.Configuration().Configuration().columns.size() == 3);
+
+    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 2, 6, true));
+
+    const KeyId levelKey = table.Keys().Find("level");
+    REQUIRE(levelKey != loglib::INVALID_KEY_ID);
+
+    const std::vector<KeyId> pending = table.TakePendingLevelBubbleKeys();
+    REQUIRE(pending.size() == 1);
+    CHECK(pending.front() == levelKey);
+
+    // Second drain yields an empty queue.
+    CHECK(table.TakePendingLevelBubbleKeys().empty());
+}
+
+TEST_CASE(
+    "LogTable -- MaybePromoteToLevel skips queueing when no bubble is needed",
+    "[log_table][append_batch][level][level_bubble]"
+)
+{
+    // Companion to the queue-visible test above: when a freshly
+    // promoted Level column already lands at
+    // `CANONICAL_LEVEL_COLUMN_INDEX` (e.g. only `body` ahead of
+    // it), no move is needed and the queue must stay empty. This
+    // pins the policy that `mPendingLevelBubbleKeys` reflects
+    // pending *work*, not "every promotion ever observed".
+    const TestLogFile testFile("level_bubble_noop.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
     FileLineSource *sourcePtr = source.get();
@@ -2867,14 +2917,9 @@ TEST_CASE(
 
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 2, 6, true));
 
-    const KeyId levelKey = table.Keys().Find("level");
-    REQUIRE(levelKey != loglib::INVALID_KEY_ID);
-
-    const std::vector<KeyId> pending = table.TakePendingLevelBubbleKeys();
-    REQUIRE(pending.size() == 1);
-    CHECK(pending.front() == levelKey);
-
-    // Second drain yields an empty queue.
+    // Level landed at index 1 == canonical; bubble would be a self-move.
+    REQUIRE(table.Configuration().Configuration().columns.size() == 2);
+    REQUIRE(table.Configuration().Configuration().columns[1].type == LogConfiguration::Type::Level);
     CHECK(table.TakePendingLevelBubbleKeys().empty());
 }
 

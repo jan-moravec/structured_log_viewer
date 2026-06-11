@@ -47,12 +47,12 @@ signals:
     void staticDisplayOrderChanged(bool newestFirst);
 
     /// Fired after Ok commits the "Show level icons" toggle.
-    /// `MainWindow` slots in to detach the `LevelCellDelegate`
-    /// before flipping `LogModel::SetShowLevelIcons(on)` -- the
-    /// delegate's self-gate keeps in-between paints correct
-    /// either way, but doing the detach first lets the default
-    /// delegate paint the level text again without paying the
-    /// delegate's proxy-chain walk on the next paint.
+    /// `MainWindow` calls `LogModel::SetShowLevelIcons(on)` (which
+    /// emits a tightly-scoped `DecorationRole` change on the level
+    /// column) and then `ApplyLevelCellDelegate()` so the delegate
+    /// attaches / detaches on the right column. The delegate's
+    /// self-gate keeps in-between paints correct regardless of
+    /// ordering.
     void showLevelIconsChanged(bool on);
 
 private:
@@ -66,6 +66,15 @@ private:
     /// Show a transient status message that auto-clears after a
     /// few seconds. Empty string clears immediately.
     void ShowThemeStatus(const QString &message);
+
+    /// Enable / disable the "Show level icons" checkbox based on
+    /// whether the *currently-applied* theme ships a
+    /// `levelColumnOverride`. Called from `UpdateFields()` (dialog
+    /// open) and on every `ThemeControl::themeChanged` emit while
+    /// the dialog is alive (user picks a different theme, OS dark
+    /// flip in Auto mode, etc.) so the checkbox state stays in
+    /// sync with what a toggle would actually do.
+    void RefreshLevelIconsCheckboxAvailability();
 
     QComboBox *mThemeComboBox;
     QLabel *mThemePreviewLabel;

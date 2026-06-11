@@ -2009,15 +2009,26 @@ void LogTable::MaybePromoteToLevel(size_t columnIndex)
     // `TakePendingLevelBubbleKeys` and wraps each `MoveColumn` in
     // `begin/endMoveColumns` so Qt's view state stays in sync.
     // Static-load paths (`LogTable` ctor + `Update`) call
-    // `ApplyPendingLevelBubblesInternal` themselves because a
-    // model reset covers the rotation.
+    // `ApplyPendingLevelBubbles` themselves because a model reset
+    // covers the rotation.
     //
     // Queueing by canonical `KeyId` (not column index) keeps the
     // entry stable across other queued bubbles: when two columns
     // promote in the same batch, applying the first one shifts
     // the second's slot, so the consumer must re-resolve at apply
     // time. `canonical` is the resolved key from above.
-    mPendingLevelBubbleKeys.push_back(canonical);
+    //
+    // Skip the queue when no move is needed: a single-column
+    // config or a column already at `CANONICAL_LEVEL_COLUMN_INDEX`
+    // has nothing to bubble. Without this gate the drainer would
+    // still walk the queue and call `ShouldBubbleLevelColumn` to
+    // no-op; gating here keeps the queue an accurate reflection
+    // of pending work and avoids a stale-stretch `KeyId` reaching
+    // a consumer whose configuration has since changed shape.
+    if (ShouldBubbleLevelColumn(mConfiguration.Configuration(), columnIndex))
+    {
+        mPendingLevelBubbleKeys.push_back(canonical);
+    }
 }
 
 std::vector<KeyId> LogTable::TakePendingLevelBubbleKeys() noexcept
@@ -2033,38 +2044,37 @@ void LogTable::ApplyPendingLevelBubbles()
     const std::vector<KeyId> pending = TakePendingLevelBubbleKeys();
     for (const KeyId kid : pending)
     {
-        if (kid == INVALID_KEY_ID)
+        const int srcIndex = FindColumnIndexByKey(kid);
+        if (srcIndex < 0)
         {
             continue;
         }
-        const auto &columns = mConfiguration.Configuration().columns;
-        size_t srcIndex = columns.size();
-        for (size_t i = 0; i < columns.size(); ++i)
+        if (ShouldBubbleLevelColumn(mConfiguration.Configuration(), static_cast<size_t>(srcIndex)))
         {
-            bool found = false;
-            for (const std::string &key : columns[i].keys)
-            {
-                if (mData.Keys().Find(key) == kid)
-                {
-                    srcIndex = i;
-                    found = true;
-                    break;
-                }
-            }
-            if (found)
-            {
-                break;
-            }
-        }
-        if (srcIndex >= columns.size())
-        {
-            continue;
-        }
-        if (ShouldBubbleLevelColumn(mConfiguration.Configuration(), srcIndex))
-        {
-            MoveColumn(srcIndex, CANONICAL_LEVEL_COLUMN_INDEX);
+            MoveColumn(static_cast<size_t>(srcIndex), CANONICAL_LEVEL_COLUMN_INDEX);
         }
     }
+}
+
+int LogTable::FindColumnIndexByKey(KeyId kid) const noexcept
+{
+    if (kid == INVALID_KEY_ID)
+    {
+        return -1;
+    }
+    const auto &columns = mConfiguration.Configuration().columns;
+    const auto &keys = mData.Keys();
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        for (const std::string &key : columns[i].keys)
+        {
+            if (keys.Find(key) == kid)
+            {
+                return static_cast<int>(i);
+            }
+        }
+    }
+    return -1;
 }
 
 void LogTable::RefreshLevelRankCache(size_t columnIndex)

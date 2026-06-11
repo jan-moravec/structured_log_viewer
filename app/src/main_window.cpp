@@ -555,7 +555,22 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
         // wire a parallel connection here; Qt invokes slots in
         // registration order, so the filter-cache rebuild and the
         // delegate reapply both run on every change.
-        connect(mModel, &LogModel::enumColumnsChanged, this, [this]() { ApplyLevelCellDelegate(); });
+        //
+        // `Grew` is filtered out: a dictionary expansion on a
+        // non-Level column never changes which column is the first
+        // `Type::Level`, and on a Level column it doesn't move the
+        // column either. Skipping it spares the cache-walk on every
+        // streamed enum value.
+        connect(
+            mModel, &LogModel::enumColumnsChanged, this,
+            [this](EnumColumnsChangeReason reason, int /*columnIndex*/) {
+                if (reason == EnumColumnsChangeReason::Grew)
+                {
+                    return;
+                }
+                ApplyLevelCellDelegate();
+            }
+        );
 
         ApplyLevelCellDelegate();
     }

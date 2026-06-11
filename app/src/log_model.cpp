@@ -604,27 +604,10 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         endInsertColumns();
     }
 
-    // `KeyId` -> source-column index lookup. Linear, but column
-    // counts are tens at most, so the per-batch cost is negligible.
-    const auto findColumnIndexForKey = [this](loglib::KeyId kid) -> int {
-        if (kid == loglib::INVALID_KEY_ID)
-        {
-            return -1;
-        }
-        const auto &columns = mLogTable.Configuration().Configuration().columns;
-        const auto &keys = mLogTable.Keys();
-        for (size_t i = 0; i < columns.size(); ++i)
-        {
-            for (const auto &key : columns[i].keys)
-            {
-                if (keys.Find(key) == kid)
-                {
-                    return static_cast<int>(i);
-                }
-            }
-        }
-        return -1;
-    };
+    // `KeyId` -> source-column index lookup is delegated to
+    // `LogTable::FindColumnIndexByKey` so the streaming consumer
+    // shares one implementation with `ApplyPendingLevelBubbles`
+    // and the static-load path.
 
     // Diff snapshot vs post-batch registry, one signal per (column, reason):
     //   - `Grew`: dictionary size changed.
@@ -677,7 +660,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     // `LastBatchDemotedKeys()` and de-dupe against snapshot demotes.
     for (const loglib::KeyId kid : mLogTable.LastBatchDemotedKeys())
     {
-        const int columnIndex = findColumnIndexForKey(kid);
+        const int columnIndex = mLogTable.FindColumnIndexByKey(kid);
         if (columnIndex < 0)
         {
             continue;
@@ -781,14 +764,14 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     // columns ahead of it (e.g. `{message, scope, level}`).
     //
     // Re-resolve current column indices per iteration via
-    // `findColumnIndexForKey`: an earlier move can shift later
-    // targets. `MoveColumn` invalidates `mFirstLevelColumnCache`
-    // and Qt's `columnsMoved` signal triggers
-    // `MainWindow::OnSourceColumnsMoved` which remaps the
-    // runtime filter map.
+    // `LogTable::FindColumnIndexByKey`: an earlier move can shift
+    // later targets. `MoveColumn` invalidates
+    // `mFirstLevelColumnCache` and Qt's `columnsMoved` signal
+    // triggers `MainWindow::OnSourceColumnsMoved` which remaps
+    // the runtime filter map.
     for (const loglib::KeyId kid : mLogTable.TakePendingLevelBubbleKeys())
     {
-        const int srcIndex = findColumnIndexForKey(kid);
+        const int srcIndex = mLogTable.FindColumnIndexByKey(kid);
         if (srcIndex < 0)
         {
             continue;
@@ -931,29 +914,12 @@ void LogModel::EndStreaming(bool cancelled)
         // `FinalizeAutoDetection`. Same rationale as the
         // `AppendBatch` drain above: the move is hoisted out of
         // `LogTable` so we can wrap it in `begin/endMoveColumns`
-        // (via `MoveColumn`). Re-resolve current indices per
-        // iteration: an earlier move can shift later targets.
+        // (via `MoveColumn`). `LogTable::FindColumnIndexByKey`
+        // re-resolves current indices per iteration so an earlier
+        // move shifting later targets stays correct.
         for (const loglib::KeyId kid : mLogTable.TakePendingLevelBubbleKeys())
         {
-            int srcIndex = -1;
-            const auto &columnsAfterDrain = mLogTable.Configuration().Configuration().columns;
-            for (size_t colIdx = 0; colIdx < columnsAfterDrain.size(); ++colIdx)
-            {
-                bool matched = false;
-                for (const std::string &key : columnsAfterDrain[colIdx].keys)
-                {
-                    if (mLogTable.Keys().Find(key) == kid)
-                    {
-                        srcIndex = static_cast<int>(colIdx);
-                        matched = true;
-                        break;
-                    }
-                }
-                if (matched)
-                {
-                    break;
-                }
-            }
+            const int srcIndex = mLogTable.FindColumnIndexByKey(kid);
             if (srcIndex < 0)
             {
                 continue;

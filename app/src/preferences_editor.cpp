@@ -180,6 +180,7 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
         connect(mTheme, &ThemeControl::themeChanged, this, [this]() {
             RepopulateThemeCombo();
             RefreshThemePreview();
+            RefreshLevelIconsCheckboxAvailability();
         });
     }
 
@@ -187,6 +188,9 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
     mStreamNewestFirstCheckBox = new QCheckBox("Show newest lines first", this);
     mStaticNewestFirstCheckBox = new QCheckBox("Show newest lines first", this);
     mShowLevelIconsCheckBox = new QCheckBox("Show level icons", this);
+    // Default tooltip; `RefreshLevelIconsCheckboxAvailability` swaps
+    // in an explanatory variant when the active theme doesn't ship
+    // a `levelColumnOverride` block (so the toggle would be a no-op).
     mShowLevelIconsCheckBox->setToolTip(
         "When enabled, the level column renders themed glyphs inside a coloured pill instead of "
         "the plain level text. Themes opt in by shipping a `levelColumnOverride` block; every "
@@ -364,7 +368,38 @@ void PreferencesEditor::UpdateFields()
     }
     RepopulateThemeCombo();
     RefreshThemePreview();
+    RefreshLevelIconsCheckboxAvailability();
     ShowThemeStatus(QString());
+}
+
+void PreferencesEditor::RefreshLevelIconsCheckboxAvailability()
+{
+    // The checkbox is only meaningful when the active theme
+    // supplies a `levelColumnOverride` block; otherwise toggling
+    // it changes a persisted bit but nothing in the UI moves,
+    // which is confusing. Disable + retooltip in that case.
+    // The check honours `nullptr` for the no-theme test fixture
+    // (`mTheme` is constructor-injected; some test paths skip it)
+    // and treats it as "no override available" so the disabled
+    // surface still renders correctly.
+    const bool hasOverride = (mTheme != nullptr) && mTheme->HasLevelColumnOverride();
+    mShowLevelIconsCheckBox->setEnabled(hasOverride);
+    if (hasOverride)
+    {
+        mShowLevelIconsCheckBox->setToolTip(
+            "When enabled, the level column renders themed glyphs inside a coloured pill instead of "
+            "the plain level text. Themes opt in by shipping a `levelColumnOverride` block; every "
+            "built-in theme does. The raw level text is still available for copy and Find searches."
+        );
+    }
+    else
+    {
+        mShowLevelIconsCheckBox->setToolTip(
+            "The active theme does not ship a `levelColumnOverride` block, so there are no icons "
+            "to render for the level column. Pick a theme that supplies the block (every built-in "
+            "theme does) to enable this toggle."
+        );
+    }
 }
 
 void PreferencesEditor::RepopulateThemeCombo()

@@ -4290,25 +4290,34 @@ private slots:
 
         // The bubble must have arrived via `columnsMoved` -- without
         // this signal, Qt's view layer keeps section-keyed state on
-        // the wrong column. At least one move (the level bubble);
-        // exactly one when no Time column is in play.
+        // the wrong column. We don't assume "the last move is the
+        // level move": a future fixture that also carries a Time
+        // column would trigger the Time bubble too, and the order
+        // between Time and Level moves is an implementation detail.
+        // Instead, find any single-column move whose destination is
+        // the canonical level index.
+        //
+        // Qt's `destinationColumn` parameter uses "insert before"
+        // semantics, so for a leftward move (which a bubble always
+        // is when triggered from the appended tail) it equals the
+        // final index.
+        // Parameter is named `signalArgs` -- `emit` is a Qt
+        // macro keyword and using it as an identifier breaks
+        // moc's pre-processing.
+        const auto matchesLevelBubble = [](const QList<QVariant> &signalArgs) {
+            const int first = signalArgs.value(1).toInt();
+            const int last = signalArgs.value(2).toInt();
+            const int destColumn = signalArgs.value(4).toInt();
+            return first == last && first >= 0 &&
+                   destColumn == static_cast<int>(loglib::CANONICAL_LEVEL_COLUMN_INDEX);
+        };
+        const bool sawLevelBubble = std::any_of(columnsMovedSpy.begin(), columnsMovedSpy.end(), matchesLevelBubble);
         QVERIFY2(
-            columnsMovedSpy.count() >= 1,
-            qPrintable(QStringLiteral("expected at least one columnsMoved emit; got %1").arg(columnsMovedSpy.count()))
+            sawLevelBubble,
+            qPrintable(QStringLiteral("expected a columnsMoved emit with destination=%1; got %2 emit(s)")
+                           .arg(static_cast<int>(loglib::CANONICAL_LEVEL_COLUMN_INDEX))
+                           .arg(columnsMovedSpy.count()))
         );
-        // Inspect the most recent move: source must be the
-        // pre-bubble level column (originally appended at the
-        // tail), destination must be the canonical index. Qt's
-        // `destinationColumn` parameter uses "insert before"
-        // semantics, so for leftward moves it equals the final
-        // index.
-        const QList<QVariant> lastMove = columnsMovedSpy.last();
-        const int movedFirst = lastMove.value(1).toInt();
-        const int movedLast = lastMove.value(2).toInt();
-        const int movedDestColumn = lastMove.value(4).toInt();
-        QCOMPARE(movedFirst, movedLast);
-        QVERIFY2(movedFirst >= 0, "moved source column must be valid");
-        QCOMPARE(movedDestColumn, static_cast<int>(loglib::CANONICAL_LEVEL_COLUMN_INDEX));
 
         // Cell payload sanity: the rank cache built against the
         // post-bubble column index, so `GetLevelForRow` returns

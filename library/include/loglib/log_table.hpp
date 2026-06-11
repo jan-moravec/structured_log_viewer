@@ -115,6 +115,17 @@ public:
     /// `LogModel`-side streaming consumer).
     void ApplyPendingLevelBubbles();
 
+    /// First column whose `keys` list contains a key that resolves
+    /// to @p kid in the table's key index. Returns `-1` when the
+    /// id is invalid or no column matches.
+    ///
+    /// Linear in (columns * keys-per-column); column counts are
+    /// tens at most, so this is fine on per-batch / per-bubble
+    /// paths. Shared by `ApplyPendingLevelBubbles`, the streaming
+    /// consumer's pending-bubble drain, and the `Demoted`-by-key
+    /// reverse lookup in `LogModel`.
+    [[nodiscard]] int FindColumnIndexByKey(KeyId kid) const noexcept;
+
     /// Pre-allocation hint forwarded to the streaming `LogFile`.
     void ReserveLineOffsets(size_t count);
 
