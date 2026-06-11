@@ -29,7 +29,10 @@
         <file>icons/square.svg</file>
         <!-- Per-level glyphs for `Theme::levelColumnOverride` (icon-mode
              rendering of the level column). Same tinting story as the
-             toolbar icons above. -->
+             toolbar icons above. `gauge` is the column-header icon
+             (Lucide speedometer): a generic level-column indicator
+             distinct from every per-level glyph below. -->
+        <file>icons/gauge.svg</file>
         <file>icons/level-trace.svg</file>
         <file>icons/level-debug.svg</file>
         <file>icons/level-info.svg</file>

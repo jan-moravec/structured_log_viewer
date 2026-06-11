@@ -548,9 +548,12 @@ private slots:
         // The pill foreground always resolves (one of the three
         // fallbacks fires) when icon mode is on.
         QVERIFY(mTheme->PillForegroundFor(loglib::LogLevel::Info).style() != Qt::NoBrush);
-        // Built-in dark.json doesn't override header text or icon.
+        // Built-in dark.json doesn't override header *text*; it does
+        // ship a `headerIcon` (Lucide gauge) so the level column has
+        // a generic identifier in icon mode that's distinct from the
+        // per-level glyphs.
         QVERIFY(!mTheme->LevelColumnHeaderTextOverride().has_value());
-        QVERIFY(mTheme->LevelColumnHeaderIcon().isNull());
+        QVERIFY(!mTheme->LevelColumnHeaderIcon().isNull());
     }
 
     /// A theme that omits `levelColumnOverride` keeps icon mode

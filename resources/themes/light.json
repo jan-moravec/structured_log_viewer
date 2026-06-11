@@ -39,6 +39,7 @@
         "qtStyle": "fusion"
     },
     "levelColumnOverride": {
+        "headerIcon": ":/icons/gauge.svg",
         "levels": {
             "Trace":   { "icon": ":/icons/level-trace.svg" },
             "Debug":   { "icon": ":/icons/level-debug.svg" },
