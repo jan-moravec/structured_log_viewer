@@ -1082,6 +1082,26 @@ QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role
         }
         return QString::fromStdString(mLogTable.GetHeader(static_cast<size_t>(section)));
     }
+    if (role == Qt::TextAlignmentRole)
+    {
+        // Centre the level header when it's icon-only: the cells
+        // below paint a centred pill (`LevelCellDelegate`), and a
+        // left-aligned gauge in the header floats off to one side
+        // of the centred pills, which reads as "decoration that
+        // doesn't belong to this column". Same gate as the text
+        // suppression above so the two stay in lock-step. A theme
+        // that opts back into header text via an explicit
+        // `header` override falls through to Qt's default
+        // alignment (matching its left-aligned text label).
+        if (IsLevelIconModeActive() && section == FirstLevelColumnIndex())
+        {
+            if (!mTheme->LevelColumnHeaderTextOverride().has_value() && !mTheme->LevelColumnHeaderIcon().isNull())
+            {
+                return static_cast<int>(Qt::AlignCenter);
+            }
+        }
+        return {};
+    }
     if (role == Qt::ToolTipRole)
     {
         const auto &columns = mLogTable.Configuration().Configuration().columns;

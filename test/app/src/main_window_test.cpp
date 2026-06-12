@@ -4428,17 +4428,45 @@ private slots:
             qPrintable(QStringLiteral("level header must render blank text when an icon is present, got '%1'").arg(displayed))
         );
 
+        // Centre alignment: the cells paint a centred pill, so the
+        // header icon must centre too -- otherwise the gauge sits
+        // off to one side of the centred pills below it.
+        const QVariant alignment = run.model->headerData(levelCol, Qt::Horizontal, Qt::TextAlignmentRole);
+        QVERIFY2(alignment.isValid(), "icon-only level header must report an explicit Qt::TextAlignmentRole");
+        QCOMPARE(alignment.toInt(), static_cast<int>(Qt::AlignCenter));
+
+        // Sibling text columns must keep the default alignment
+        // (the model returns an empty QVariant so the view falls
+        // back to its style default) -- centring is strictly the
+        // icon-only column's prerogative.
+        for (int col = 0; col < run.model->columnCount(); ++col)
+        {
+            if (col == levelCol)
+            {
+                continue;
+            }
+            const QVariant siblingAlignment = run.model->headerData(col, Qt::Horizontal, Qt::TextAlignmentRole);
+            QVERIFY2(
+                !siblingAlignment.isValid(),
+                qPrintable(QStringLiteral("text column %1 must inherit the default header alignment").arg(col))
+            );
+        }
+
         // Tooltip still describes the column -- the suppression is
         // strictly about the on-screen label, not the metadata.
         const QString tooltip = run.model->headerData(levelCol, Qt::Horizontal, Qt::ToolTipRole).toString();
         QVERIFY2(tooltip.contains(QStringLiteral("level")), qPrintable(QStringLiteral("tooltip must keep naming the column, got '%1'").arg(tooltip)));
 
         // Toggling the user pref off restores the configured header
-        // text: with icon mode disabled, the icon is hidden and the
-        // text must come back so the column is still identifiable.
+        // text *and* the default alignment: with icon mode disabled,
+        // the icon is hidden, the text must come back, and a
+        // centred-then-suddenly-text header would look just as
+        // wrong as the original duplication.
         run.model->SetShowLevelIcons(false);
         const QString restored = run.model->headerData(levelCol, Qt::Horizontal, Qt::DisplayRole).toString();
         QCOMPARE(restored, QStringLiteral("level"));
+        const QVariant restoredAlignment = run.model->headerData(levelCol, Qt::Horizontal, Qt::TextAlignmentRole);
+        QVERIFY2(!restoredAlignment.isValid(), "level header must drop the centre alignment when icon mode is off");
     }
 
     // Regression: a theme switch must repaint the visible rows.
