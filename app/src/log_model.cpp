@@ -1520,7 +1520,7 @@ bool LogModel::IsStyleOnlyRoleChange(const QList<int> &roles) noexcept
     }
     return std::ranges::all_of(roles, [](int role) {
         return role == Qt::BackgroundRole || role == Qt::ForegroundRole || role == Qt::FontRole ||
-               role == Qt::DecorationRole;
+               role == Qt::DecorationRole || role == Qt::ToolTipRole;
     });
 }
 
@@ -1593,15 +1593,21 @@ void LogModel::SetShowLevelIcons(bool show)
         const int rows = rowCount();
         if (rows > 0)
         {
-            // Only `DecorationRole` actually flips with icon mode:
-            // the cell `data()` returns the icon when on and an
-            // invalid `QVariant` when off, gated on
-            // `IsLevelIconModeActive()`. Cell `DisplayRole` and
-            // `ToolTipRole` are unchanged either way, so listing
-            // them here would defeat `IsStyleOnlyRoleChange` and
-            // wake the find-cache invalidation + record-detail
-            // refresh paths for no net change.
-            emit dataChanged(index(0, levelCol), index(rows - 1, levelCol), {Qt::DecorationRole});
+            // Two roles flip with icon mode:
+            //   - `DecorationRole`: cell icon on/off.
+            //   - `ToolTipRole`: returns the canonical level name
+            //     when icon mode is on (the displayed glyph
+            //     carries no text), and an invalid `QVariant`
+            //     when off (so Qt falls back to its default
+            //     elided-cell tooltip behaviour).
+            // Both are in `IsStyleOnlyRoleChange`'s allow list,
+            // so the find-cache and record-detail listeners
+            // correctly skip this emit instead of waking up.
+            // Listing `ToolTipRole` is more than cosmetic: a
+            // hover that started before the toggle could
+            // otherwise see a stale tooltip until the next
+            // mouse-move re-queries the role.
+            emit dataChanged(index(0, levelCol), index(rows - 1, levelCol), {Qt::DecorationRole, Qt::ToolTipRole});
         }
     }
 }

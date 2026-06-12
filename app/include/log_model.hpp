@@ -273,10 +273,13 @@ public:
     void RefreshAllRowStyles();
 
     /// True iff @p roles is non-empty AND every entry is purely
-    /// decorative (Background / Foreground / Font / Decoration).
-    /// Listeners that only care about value-affecting changes
-    /// (find cache, record-detail pane) use this to filter out
-    /// theme-refresh emits from `RefreshAllRowStyles`.
+    /// decorative (Background / Foreground / Font / Decoration /
+    /// ToolTip). Listeners that only care about value-affecting
+    /// changes (find cache, record-detail pane) use this to
+    /// filter out theme-refresh emits from `RefreshAllRowStyles`
+    /// and icon-mode toggles from `SetShowLevelIcons` (which
+    /// flips the level column's tooltip between the canonical
+    /// name and an invalid `QVariant`).
     ///
     /// Empty `roles` is Qt's "I don't know what changed" sentinel;
     /// this helper reports `false` so callers conservatively refresh.

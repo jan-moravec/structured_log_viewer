@@ -4334,6 +4334,69 @@ private slots:
         model->EndStreaming(false);
     }
 
+    /// Regression: when a single batch introduces both a
+    /// `Type::Level` column AND a `Type::Time` column with the
+    /// level appearing *before* the time in the JSON, the level
+    /// column briefly lands at index 1 (canonical) at promotion
+    /// time. The `LogModel::AppendBatch` time-bubble then moves
+    /// the time column to index 0, shifting level to index 2 --
+    /// out of canonical position. The fix unconditionally queues
+    /// the level bubble at promotion time and lets the drainer
+    /// re-evaluate `ShouldBubbleLevelColumn` against the
+    /// post-time-bubble layout, so the level column rejoins
+    /// `CANONICAL_LEVEL_COLUMN_INDEX == 1`.
+    ///
+    /// Pre-fix bug: final layout was `[time, body, level]` with
+    /// `level` stranded at index 2.
+    /// Post-fix expected: `[time, level, body]` with `level` at
+    /// the canonical index.
+    void TestStreamingLevelBubblesAfterTimeBubbleSameBatch()
+    {
+        // Fixture order matters: `body` first so `AppendKeys`
+        // would land it at index 0, `level` second (lands at
+        // index 1 == canonical *transiently*), `time` third
+        // (lands at index 2). The time-bubble then moves time
+        // to index 0, which is what shifts level out of
+        // canonical position before the fix.
+        QStringList lines;
+        lines.reserve(200);
+        const QStringList levels{
+            QStringLiteral("info"),
+            QStringLiteral("warn"),
+            QStringLiteral("error"),
+        };
+        for (int i = 0; i < 200; ++i)
+        {
+            lines.append(QStringLiteral(R"({"body": "msg %1", "level": "%2", "time": "2025-01-15T12:34:%3Z"})")
+                             .arg(i)
+                             .arg(levels[i % levels.size()])
+                             .arg(i % 60, 2, 10, QLatin1Char('0')));
+        }
+        const TempJsonFile fixture(lines);
+
+        const StreamingRun run = RunStreaming(fixture.Path());
+        QCOMPARE(run.finishedCount, 1);
+        QCOMPARE(run.cancelled, false);
+
+        const auto &columns = run.model->Configuration().columns;
+        QCOMPARE(columns.size(), static_cast<size_t>(3));
+        // Time bubble owns index 0.
+        QCOMPARE(columns[0].header, std::string{"time"});
+        QCOMPARE(columns[0].type, loglib::LogConfiguration::Type::Time);
+        // Level bubble must land at canonical index 1 even though
+        // a same-batch time bubble shifted it out of place.
+        QCOMPARE(columns[1].header, std::string{"level"});
+        QCOMPARE(columns[1].type, loglib::LogConfiguration::Type::Level);
+        QCOMPARE(columns[2].header, std::string{"body"});
+
+        const int levelCol = ColumnByHeader(*run.model, QStringLiteral("level"));
+        QCOMPARE(levelCol, static_cast<int>(loglib::CANONICAL_LEVEL_COLUMN_INDEX));
+        // Sanity: rank cache survived both bubbles intact.
+        QCOMPARE(
+            run.model->Table().GetLevelForRow(0, static_cast<size_t>(levelCol)).value(), loglib::LogLevel::Info
+        );
+    }
+
     /// Integration: a streamed `Type::Level` column makes
     /// `LogModel::data(Qt::BackgroundRole)` return the cached
     /// theme brush for styled levels and an empty QVariant for
@@ -12534,12 +12597,21 @@ private slots:
         QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::ForegroundRole}));
         QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::FontRole}));
         QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::DecorationRole}));
+        QVERIFY2(
+            LogModel::IsStyleOnlyRoleChange({Qt::ToolTipRole}),
+            "ToolTipRole flips with `SetShowLevelIcons`; receivers must skip it"
+        );
         QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::BackgroundRole, Qt::ForegroundRole, Qt::FontRole}));
+        QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::DecorationRole, Qt::ToolTipRole}));
         QVERIFY2(!LogModel::IsStyleOnlyRoleChange({Qt::DisplayRole}), "DisplayRole change must trigger a refresh");
         QVERIFY2(!LogModel::IsStyleOnlyRoleChange({Qt::EditRole}), "EditRole change must trigger a refresh");
         QVERIFY2(
             !LogModel::IsStyleOnlyRoleChange({Qt::BackgroundRole, Qt::DisplayRole}),
             "mixed list with at least one value-role must trigger a refresh"
+        );
+        QVERIFY2(
+            !LogModel::IsStyleOnlyRoleChange({Qt::ToolTipRole, Qt::DisplayRole}),
+            "tooltip + display still has a value-role; must refresh"
         );
     }
 

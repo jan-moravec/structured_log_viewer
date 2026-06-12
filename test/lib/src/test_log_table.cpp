@@ -2854,12 +2854,11 @@ TEST_CASE(
     //
     // Fixture uses three pre-existing non-level columns so the
     // freshly-introduced level column lands at index 3 -- two
-    // steps away from `CANONICAL_LEVEL_COLUMN_INDEX == 1` -- so
-    // a bubble is genuinely needed. `MaybePromoteToLevel` skips
-    // the queue when no move is needed (e.g. a level column
-    // appended into a single-column table lands at index 1
-    // already), so the test fixture must reflect a non-no-op
-    // configuration to exercise the queue surface.
+    // steps away from `CANONICAL_LEVEL_COLUMN_INDEX == 1`. The
+    // queueing policy is unconditional (see the canonical-at-
+    // promotion test below), but a multi-step bubble keeps this
+    // case clearly distinguishable from a self-move and pins the
+    // streaming consumer's typical work item.
     const TestLogFile testFile("level_bubble_take.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2891,17 +2890,27 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "LogTable -- MaybePromoteToLevel skips queueing when no bubble is needed",
+    "LogTable -- MaybePromoteToLevel queues even when column already at canonical index",
     "[log_table][append_batch][level][level_bubble]"
 )
 {
-    // Companion to the queue-visible test above: when a freshly
-    // promoted Level column already lands at
-    // `CANONICAL_LEVEL_COLUMN_INDEX` (e.g. only `body` ahead of
-    // it), no move is needed and the queue must stay empty. This
-    // pins the policy that `mPendingLevelBubbleKeys` reflects
-    // pending *work*, not "every promotion ever observed".
-    const TestLogFile testFile("level_bubble_noop.json");
+    // Promotion always queues the bubble, even when the level
+    // column happens to land at `CANONICAL_LEVEL_COLUMN_INDEX`
+    // at promotion time. The drain consumer re-evaluates
+    // `ShouldBubbleLevelColumn` per iteration and no-ops on
+    // self-moves -- so a "redundant" queue entry costs one
+    // `FindColumnIndexByKey` plus one `ShouldBubbleLevelColumn`
+    // check, both O(columns).
+    //
+    // Why unconditional queueing matters: in the same batch a
+    // freshly-promoted `Type::Time` column can still get bubbled
+    // to position 0 *after* `MaybePromoteToLevel` returns (see
+    // the time-bubble loop in `LogModel::AppendBatch`). That
+    // shifts an already-canonical level column out of canonical
+    // position. Without the queue entry the drainer wouldn't
+    // know to bubble it back, leaving level stranded at index 2
+    // and breaking the canonical `[time, level, ...]` layout.
+    const TestLogFile testFile("level_bubble_canonical_at_promotion.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
     FileLineSource *sourcePtr = source.get();
@@ -2917,10 +2926,26 @@ TEST_CASE(
 
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 2, 6, true));
 
-    // Level landed at index 1 == canonical; bubble would be a self-move.
+    // Level lands at index 1 == canonical at promotion time, but
+    // the queue must still report the canonical KeyId so a
+    // later same-batch reorder can re-bubble it if needed.
     REQUIRE(table.Configuration().Configuration().columns.size() == 2);
     REQUIRE(table.Configuration().Configuration().columns[1].type == LogConfiguration::Type::Level);
-    CHECK(table.TakePendingLevelBubbleKeys().empty());
+    const KeyId levelKey = table.Keys().Find("level");
+    REQUIRE(levelKey != loglib::INVALID_KEY_ID);
+    const std::vector<KeyId> pending = table.TakePendingLevelBubbleKeys();
+    REQUIRE(pending.size() == 1);
+    CHECK(pending.front() == levelKey);
+
+    // `ApplyPendingLevelBubbles` is the canonical drain path and
+    // must no-op when the column is already canonical -- the
+    // re-check inside the drain loop is the safety net that
+    // keeps unconditional queueing cheap.
+    table.ApplyPendingLevelBubbles();
+    REQUIRE(table.Configuration().Configuration().columns.size() == 2);
+    CHECK(table.Configuration().Configuration().columns[0].header == "body");
+    CHECK(table.Configuration().Configuration().columns[1].header == "level");
+    CHECK(table.Configuration().Configuration().columns[1].type == LogConfiguration::Type::Level);
 }
 
 TEST_CASE(

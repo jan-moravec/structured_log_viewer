@@ -2018,17 +2018,19 @@ void LogTable::MaybePromoteToLevel(size_t columnIndex)
     // the second's slot, so the consumer must re-resolve at apply
     // time. `canonical` is the resolved key from above.
     //
-    // Skip the queue when no move is needed: a single-column
-    // config or a column already at `CANONICAL_LEVEL_COLUMN_INDEX`
-    // has nothing to bubble. Without this gate the drainer would
-    // still walk the queue and call `ShouldBubbleLevelColumn` to
-    // no-op; gating here keeps the queue an accurate reflection
-    // of pending work and avoids a stale-stretch `KeyId` reaching
-    // a consumer whose configuration has since changed shape.
-    if (ShouldBubbleLevelColumn(mConfiguration.Configuration(), columnIndex))
-    {
-        mPendingLevelBubbleKeys.push_back(canonical);
-    }
+    // We always queue, even when the column is currently at
+    // `CANONICAL_LEVEL_COLUMN_INDEX`. The drain consumer
+    // re-evaluates `ShouldBubbleLevelColumn` per iteration and
+    // no-ops when no move is needed, which is cheap. Gating here
+    // would be incorrect: in the same batch a freshly-promoted
+    // `Type::Time` column can still get bubbled to position 0
+    // *after* this function returns (see the time-bubble loop in
+    // `LogModel::AppendBatch`), shifting an already-canonical
+    // level column out of place. Always queueing, plus the
+    // drain's re-check, lets the level column rejoin its
+    // canonical position regardless of the order of intra-batch
+    // reordering.
+    mPendingLevelBubbleKeys.push_back(canonical);
 }
 
 std::vector<KeyId> LogTable::TakePendingLevelBubbleKeys() noexcept

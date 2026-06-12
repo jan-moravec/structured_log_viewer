@@ -684,6 +684,106 @@ private slots:
         QVERIFY(!mTheme->IconFor(loglib::LogLevel::Warn).isNull());
     }
 
+    /// `QDir::cleanPath` normalises Windows-style backslash
+    /// separators to forward slashes before the traversal guard
+    /// inspects the path, so a `..\..\` escape is caught the same
+    /// way `../../` is. This pins the cross-platform behaviour
+    /// so a future refactor that swaps in a different cleanup
+    /// helper can't silently regress on Windows.
+    void TestThemeControlRejectsBackslashTraversal()
+    {
+        const QDir userDir = ThemeControl::UserThemesDir();
+        WriteUserTheme(
+            userDir,
+            QStringLiteral("traversal_backslash.json"),
+            QStringLiteral(R"({
+                "name": "TraversalBackslash",
+                "kind": "light",
+                "levels": {},
+                "table": {},
+                "chrome": {},
+                "app": {},
+                "levelColumnOverride": {
+                    "levels": {
+                        "Info":  { "icon": "..\\..\\..\\etc\\passwd" },
+                        "Warn":  { "icon": ":/icons/level-warn.svg" }
+                    }
+                }
+            })")
+        );
+        mTheme->ReloadAll();
+        mTheme->SetActiveSelection(QStringLiteral("TraversalBackslash"));
+
+        QVERIFY(mTheme->HasLevelColumnOverride());
+        QVERIFY(mTheme->IconFor(loglib::LogLevel::Info).isNull());
+        QVERIFY(!mTheme->IconFor(loglib::LogLevel::Warn).isNull());
+    }
+
+    /// A bare `..` segment (no separator) must also be rejected:
+    /// `QDir::cleanPath("..")` returns `..` unchanged, which the
+    /// guard catches via the explicit equality check.
+    void TestThemeControlRejectsBareParentSegment()
+    {
+        const QDir userDir = ThemeControl::UserThemesDir();
+        WriteUserTheme(
+            userDir,
+            QStringLiteral("traversal_bare.json"),
+            QStringLiteral(R"({
+                "name": "TraversalBare",
+                "kind": "light",
+                "levels": {},
+                "table": {},
+                "chrome": {},
+                "app": {},
+                "levelColumnOverride": {
+                    "levels": {
+                        "Info":  { "icon": ".." },
+                        "Warn":  { "icon": ":/icons/level-warn.svg" }
+                    }
+                }
+            })")
+        );
+        mTheme->ReloadAll();
+        mTheme->SetActiveSelection(QStringLiteral("TraversalBare"));
+
+        QVERIFY(mTheme->HasLevelColumnOverride());
+        QVERIFY(mTheme->IconFor(loglib::LogLevel::Info).isNull());
+        QVERIFY(!mTheme->IconFor(loglib::LogLevel::Warn).isNull());
+    }
+
+    /// A `:/` Qt resource path is allowed for both built-in and
+    /// user themes; the qrc namespace is shared. Pin both halves
+    /// (built-in + user) so a refactor can't silently lock user
+    /// themes out of the resource namespace.
+    void TestThemeControlAcceptsQtResourcePath()
+    {
+        const QDir userDir = ThemeControl::UserThemesDir();
+        WriteUserTheme(
+            userDir,
+            QStringLiteral("resource_path.json"),
+            QStringLiteral(R"({
+                "name": "ResourcePath",
+                "kind": "light",
+                "levels": {},
+                "table": {},
+                "chrome": {},
+                "app": {},
+                "levelColumnOverride": {
+                    "levels": {
+                        "Info":  { "icon": ":/icons/level-info.svg" },
+                        "Warn":  { "icon": ":/icons/level-warn.svg" }
+                    }
+                }
+            })")
+        );
+        mTheme->ReloadAll();
+        mTheme->SetActiveSelection(QStringLiteral("ResourcePath"));
+
+        QVERIFY(mTheme->HasLevelColumnOverride());
+        QVERIFY(!mTheme->IconFor(loglib::LogLevel::Info).isNull());
+        QVERIFY(!mTheme->IconFor(loglib::LogLevel::Warn).isNull());
+    }
+
 private:
     /// Style name captured at `init()` so `cleanup()` can restore
     /// it after tests that pin `app.qtStyle`.
