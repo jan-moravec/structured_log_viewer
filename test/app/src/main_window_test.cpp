@@ -15683,6 +15683,92 @@ private slots:
         QCOMPARE(restored->Model()->rowCount(), fixtureLines.size());
     }
 
+    // Regression: `RestoreLastSessionFromPath` on a session with a
+    // saved sort must defer the sort until streaming finishes.
+    // `LogFilterModel::OnSourceRowsInserted` falls into a per-row
+    // `beginInsertRows`/`endInsertRows` loop while a sort is
+    // active, which is O(N^2) over the entire stream -- a 1 GB
+    // session restore "never finishes" on the user-reported case.
+    // The asserts below check both halves: the proxy stays at
+    // `SortColumn() == -1` between `RestoreLastSessionFromPath`
+    // returning and `streamingFinished` firing (= bulk-insert
+    // path), and the loaded sort is applied exactly once after
+    // streaming completes.
+    void TestRestoreLastSessionDefersSortUntilStreamingFinishes()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Seed: stream a fixture, engage a sort, let the close-
+        // event autosave land. The autosave mirror reads the
+        // proxy's live sort so the saved JSON carries it.
+        auto seeder = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
+        const QStringList fixtureLines{
+            QStringLiteral(R"({"category": "info", "msg": "alpha"})"),
+            QStringLiteral(R"({"category": "warn", "msg": "beta"})"),
+        };
+        const TempJsonFile fixture(fixtureLines);
+
+        QSignalSpy seederFinishedSpy(seeder->Model(), &LogModel::streamingFinished);
+        seeder->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(seederFinishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const int categoryCol = ColumnByHeader(*seeder->Model(), QStringLiteral("category"));
+        QVERIFY2(categoryCol >= 0, "category column must exist after streaming");
+        auto *seederTable = seeder->findChild<LogTableView *>();
+        QVERIFY(seederTable != nullptr);
+        seederTable->sortByColumn(categoryCol, Qt::DescendingOrder);
+        QCoreApplication::processEvents();
+
+        // Trigger the `closeEvent`-time autosave so the manual sort
+        // engaged after `streamingFinished` makes it into the saved
+        // JSON. (The streamingFinished autosave from `OpenFilesForTest`
+        // already wrote a snapshot, but it captured the proxy *before*
+        // the sort below was engaged.) Mirrors the real cold-start
+        // order: closeEvent autosave -> next launch restore.
+        seeder->close();
+        QCoreApplication::processEvents();
+        seeder.reset();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QCoreApplication::processEvents();
+
+        const auto lastPath = manager.LastSessionPath();
+        QVERIFY(lastPath.has_value());
+
+        // Sanity: the saved JSON carries the sort.
+        {
+            loglib::LogConfigurationManager probe;
+            probe.Load(lastPath->toStdString());
+            QCOMPARE(probe.Configuration().sort.columnIndex, categoryCol);
+            QVERIFY(probe.Configuration().sort.descending);
+        }
+
+        // Fresh window restores the snapshot.
+        auto restored = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
+        auto *restoredFilter = restored->FilterModel();
+        QVERIFY2(restoredFilter != nullptr, "restored window must own a LogFilterModel");
+
+        QSignalSpy restoredFinishedSpy(restored->Model(), &LogModel::streamingFinished);
+        restored->RestoreLastSessionFromPath(*lastPath);
+        // Right after the call returns, the configuration is loaded
+        // and the streaming worker has been started, but no batches
+        // have been processed yet (the main thread hasn't drained
+        // the queued `rowsInserted` events). Sort must still be
+        // deferred -- proxy reports `-1`.
+        QCOMPARE(restoredFilter->SortColumn(), -1);
+
+        QVERIFY(restoredFinishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        // After streaming finishes the deferred sort is applied
+        // exactly once via `ApplyDeferredSortFromConfig`.
+        QCOMPARE(restoredFilter->SortColumn(), categoryCol);
+        QCOMPARE(restoredFilter->SortOrder(), Qt::DescendingOrder);
+        QCOMPARE(restored->Model()->rowCount(), fixtureLines.size());
+    }
+
     // Recent Sessions submenu rebuild on `aboutToShow`. Asserts:
     // entries + separator + Clear are present, clicking an entry
     // reopens the configuration, and `mAutoSaveUuid` is pinned so

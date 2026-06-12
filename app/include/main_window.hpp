@@ -779,6 +779,20 @@ private:
     /// `enumColumnsChanged` tick triggers a filter-rule rebuild.
     [[nodiscard]] bool EnumFilterFullyResolved(const loglib::LogConfiguration::LogFilter &filter) const;
 
+    /// Consume `mPendingApplySortFromConfig` by applying the
+    /// configuration's saved sort to the view. No-op when the latch
+    /// is clear, when the user manually sorted mid-stream
+    /// (proxy `SortColumn() >= 0`), or when the saved column is
+    /// out-of-range. Always clears the latch on return.
+    ///
+    /// Called from `OnStreamingFinished` (deferred-apply tail) and
+    /// from `StreamFromCurrentSourceOrSkip`'s early-return paths
+    /// (no source / non-File). Streaming and the proxy's "single
+    /// O(N log N) sort" are mutually exclusive in cost: applying
+    /// here lets the per-batch insert path stay on the fast bulk
+    /// branch, then sorts once over the full row set.
+    void ApplyDeferredSortFromConfig();
+
     void SetConfigurationUiEnabled(bool enabled);
     void UpdateStreamingStatus();
 
@@ -1273,6 +1287,26 @@ private:
     /// signal against half-updated state. The outer call finishes
     /// its rebuild and the queued re-entry becomes a no-op.
     bool mApplyingEnumRebuild = false;
+
+    /// Latch set by `ApplyLoadedConfiguration` when the loaded
+    /// session carries a sort and a source is bound. The sort is
+    /// *not* applied at load time: `LogFilterModel::OnSourceRowsInserted`
+    /// falls into a per-row `beginInsertRows`/`endInsertRows` loop
+    /// while a sort is active, which is O(N^2) over the entire
+    /// stream (a 1 GB session restore "never finishes" on the
+    /// user-reported case -- pinned by
+    /// `TestRestoreLastSessionDeferSortUntilStreamingFinishes`).
+    /// The deferred sort is applied once in `OnStreamingFinished`
+    /// if the proxy is still unsorted (user didn't pick a different
+    /// sort mid-stream), or immediately by
+    /// `StreamFromCurrentSourceOrSkip`'s early-return paths when no
+    /// streaming will happen.
+    ///
+    /// `MirrorSessionStateToConfiguration` reads this latch so an
+    /// auto-save mid-stream preserves the loaded sort in the
+    /// configuration rather than overwriting it with the proxy's
+    /// transient `-1`.
+    bool mPendingApplySortFromConfig = false;
 
     /// Latch held by the `SessionSwitchScope` RAII helper across a
     /// destructive `mModel->Reset()`. `OnStreamingFinished` short-

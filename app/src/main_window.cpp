@@ -1560,8 +1560,13 @@ void MainWindow::RestoreLastSessionFromPath(const QString &jsonPath)
     // the live-tail guard in `ShouldAutoSaveSession` on the next
     // closeEvent.
     mLastTerminalSessionMode = SessionMode::Idle;
+    // Defer the loaded sort until streaming finishes; see
+    // `ApplyDeferredSortFromConfig` for the O(N^2) symptom this
+    // avoids.
+    mPendingApplySortFromConfig = true;
     if (!DoLoadConfiguration(jsonPath))
     {
+        mPendingApplySortFromConfig = false;
         return;
     }
 
@@ -1667,10 +1672,16 @@ void MainWindow::OpenRecentSession(const QString &uuid)
     // our previous uuid; we re-pin below.
     NewSession();
 
+    // Defer the loaded sort until streaming finishes; see
+    // `ApplyDeferredSortFromConfig` for the O(N^2) symptom this
+    // avoids. `NewSession` above clears the latch, so set after.
+    mPendingApplySortFromConfig = true;
+
     // Apply failure surfaces a `QMessageBox`; bail without queueing
     // files so the view is at least empty rather than mixed.
     if (!ApplyLoadedConfiguration(std::move(parsed)))
     {
+        mPendingApplySortFromConfig = false;
         return;
     }
 
@@ -1698,7 +1709,10 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
     if (!loglib::HasLocators(mCurrentSource))
     {
         // Config has no source -- columns / filters are installed
-        // but there's nothing to stream.
+        // but there's nothing to stream. The deferred sort latch
+        // would otherwise leak across the next session restore;
+        // apply it now (the proxy is empty so it's effectively free).
+        ApplyDeferredSortFromConfig();
         return;
     }
 
@@ -1725,6 +1739,9 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
                 );
             }
         }
+        // No streaming on the non-File branch either; consume the
+        // deferral so the latch can't outlive this attempt.
+        ApplyDeferredSortFromConfig();
         return;
     }
 
@@ -1792,6 +1809,9 @@ void MainWindow::NewSession()
     mStreamingErrorCount = 0;
     mFirstStreamingBatchSeen = false;
     mSourceWaiting = false;
+    // A `NewSession` wipes any pending deferred-sort apply -- the
+    // configuration that requested it is gone.
+    mPendingApplySortFromConfig = false;
     // Drop the pinned uuid + open-windows membership so the next
     // AutoSave creates a fresh entry and a crash before then
     // doesn't re-restore the discarded session.
@@ -1982,12 +2002,16 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
 
     // Mixed: apply config with a full reset, then append the logs
     // so the loaded columns / filters / sort apply to the rows.
+    // Defer the loaded sort until streaming finishes (per-row insert
+    // path under sort is O(N^2); see `ApplyDeferredSortFromConfig`).
+    mPendingApplySortFromConfig = true;
     if (!DoLoadConfiguration(configPath))
     {
         // TOCTOU: the file was rewritten between probe and commit.
         // The model was reset before the throw, so streaming logs
         // against the unintended default columns would mislead --
         // bail without queueing anything.
+        mPendingApplySortFromConfig = false;
         return MixedInputResult{.outcome = MixedInputDispatch::QueuedLogsOnly, .appliedConfigPath = QString()};
     }
     StartStreamingOpenQueue(logPaths, OpenMode::Append);
@@ -2021,6 +2045,9 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
         mCurrentSource.reset();
         mSessionMode = SessionMode::Idle;
         mLastTerminalSessionMode = SessionMode::Idle;
+        // Destructive open replaces the previously-loaded session;
+        // its deferred-sort intent goes with it.
+        mPendingApplySortFromConfig = false;
         DetachAutoSaveUuid();
     }
     else if (mModel->IsStreamingActive())
@@ -2164,6 +2191,15 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
     {
         mCurrentSource.reset();
     }
+
+    // Consume the deferred sort *before* the auto-save below so the
+    // mirror reads the applied sort from the proxy (no special-case
+    // needed inside `MirrorSessionStateToConfiguration`). Applies on
+    // every terminal result -- Success/Cancelled/Failed all leave the
+    // proxy in a state where a single bulk sort beats the per-row
+    // path. No-op when the latch is clear or when the user picked a
+    // different sort mid-stream.
+    ApplyDeferredSortFromConfig();
 
     // Auto-save on success so Recent Sessions + restore-on-launch
     // can reopen this view. `ShouldAutoSaveSession` filters out
@@ -3688,11 +3724,22 @@ void MainWindow::MirrorSessionStateToConfiguration()
     mModel->ConfigurationManager().SetFilters(std::move(snapshot));
 
     // Sort: read live from the proxy so the persisted value matches
-    // what the user sees in the header indicator.
-    loglib::LogConfiguration::Sort sort;
-    sort.columnIndex = mSortFilterProxyModel->SortColumn();
-    sort.descending = (mSortFilterProxyModel->SortOrder() == Qt::DescendingOrder);
-    mModel->ConfigurationManager().SetSort(sort);
+    // what the user sees in the header indicator. *Exception:* when
+    // `mPendingApplySortFromConfig` is set and the user hasn't
+    // manually sorted yet (proxy reports `-1`), the loaded sort
+    // hasn't been applied to the proxy yet -- preserve the
+    // configuration's existing sort instead of clobbering it with
+    // the transient `-1`. Once `ApplyDeferredSortFromConfig` runs
+    // (end of stream / early-return), this branch becomes
+    // unreachable and the live mirror resumes.
+    const int proxySortColumn = mSortFilterProxyModel->SortColumn();
+    if (proxySortColumn >= 0 || !mPendingApplySortFromConfig)
+    {
+        loglib::LogConfiguration::Sort sort;
+        sort.columnIndex = proxySortColumn;
+        sort.descending = (mSortFilterProxyModel->SortOrder() == Qt::DescendingOrder);
+        mModel->ConfigurationManager().SetSort(sort);
+    }
 
     // Drop empty-locator Sources before mirroring: on-disk schema
     // omits `source` when nothing is bound, so a `Source{...,
@@ -4406,12 +4453,29 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         // session state and would otherwise overwrite the loaded
         // sort with the cleared proxy sort. Columns-only files
         // default to the `-1` "no sort" sentinel.
-        const auto loadedSort = mModel->Configuration().sort;
-        if (loadedSort.columnIndex >= 0 && loadedSort.columnIndex < mModel->columnCount())
+        //
+        // *Exception*: when `mPendingApplySortFromConfig` is already
+        // set (callers that will follow up with streaming opt in
+        // before calling `DoLoadConfiguration`), skip the eager
+        // apply. `LogFilterModel::OnSourceRowsInserted` falls into a
+        // per-row `beginInsertRows`/`endInsertRows` loop with a
+        // sort active, which is O(N^2) over the whole stream -- a
+        // 1 GB session restore "never finishes" on the user-
+        // reported case. The deferred sort is consumed in
+        // `OnStreamingFinished` or in
+        // `StreamFromCurrentSourceOrSkip`'s early-return paths.
+        // `MirrorSessionStateToConfiguration` reads the latch so an
+        // auto-save mid-stream preserves the loaded sort instead of
+        // overwriting it with the proxy's transient `-1`.
+        if (!mPendingApplySortFromConfig)
         {
-            mTableView->sortByColumn(
-                loadedSort.columnIndex, loadedSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
-            );
+            const auto loadedSort = mModel->Configuration().sort;
+            if (loadedSort.columnIndex >= 0 && loadedSort.columnIndex < mModel->columnCount())
+            {
+                mTableView->sortByColumn(
+                    loadedSort.columnIndex, loadedSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
+                );
+            }
         }
 
         // Mirror the loaded source so the next save round-trips
@@ -5464,6 +5528,32 @@ const loglib::EnumDictionary *MainWindow::ResolveEnumDictionary(int columnIndex)
         return nullptr;
     }
     return mModel->Table().ResolveEnumColumn(static_cast<size_t>(columnIndex)).dictionary;
+}
+
+void MainWindow::ApplyDeferredSortFromConfig()
+{
+    // Always clear the latch -- a no-op apply still consumes the
+    // deferral so subsequent `MirrorSessionStateToConfiguration`
+    // calls read the proxy's live sort instead of preserving the
+    // loaded one.
+    const auto guard = qScopeGuard([this]() { mPendingApplySortFromConfig = false; });
+    if (!mPendingApplySortFromConfig)
+    {
+        return;
+    }
+    // User manually sorted during streaming -- their choice wins.
+    // `MirrorSessionStateToConfiguration` will pick up the proxy's
+    // current sort on the next save.
+    if (mSortFilterProxyModel->SortColumn() >= 0)
+    {
+        return;
+    }
+    const auto &cfgSort = mModel->Configuration().sort;
+    if (cfgSort.columnIndex < 0 || cfgSort.columnIndex >= mModel->columnCount())
+    {
+        return;
+    }
+    mTableView->sortByColumn(cfgSort.columnIndex, cfgSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder);
 }
 
 bool MainWindow::EnumFilterFullyResolved(const loglib::LogConfiguration::LogFilter &filter) const
