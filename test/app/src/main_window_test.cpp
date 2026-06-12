@@ -4469,6 +4469,62 @@ private slots:
         QVERIFY2(!restoredAlignment.isValid(), "level header must drop the centre alignment when icon mode is off");
     }
 
+    // Regression: `LogTableView` must install `LogHeaderView` as its
+    // horizontal header, and that subclass's icon-centering rule
+    // must flip `QStyleOptionHeader::iconAlignment` to centre when
+    // a section has an icon but no text. Without the override Qt's
+    // default (`Qt::AlignVCenter`, i.e. left-aligned horizontally)
+    // leaves the icon pinned to the section's left edge -- the
+    // symptom that the model-side `Qt::TextAlignmentRole` rule
+    // alone cannot fix because text alignment doesn't move the
+    // icon. Exercising the rule via the public static helper
+    // (`CenterIconAlignmentForIconOnlySection`) sidesteps the
+    // model dependency that the protected
+    // `initStyleOptionForIndex` carries.
+    void TestLogHeaderViewCentersIconOnlySections()
+    {
+        // The `MainWindow`'s table view exists in the fixture; reach
+        // through the production wiring rather than constructing a
+        // detached view, so we also pin the install path.
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        QVERIFY2(tableView != nullptr, "MainWindow must own a LogTableView");
+
+        auto *headerView = dynamic_cast<LogHeaderView *>(tableView->horizontalHeader());
+        QVERIFY2(headerView != nullptr, "LogTableView must install LogHeaderView as its horizontal header");
+
+        // Empty text + non-null icon -> centred icon.
+        QStyleOptionHeader iconOnly;
+        iconOnly.text = QString{};
+        iconOnly.icon = QApplication::style()->standardIcon(QStyle::SP_MessageBoxInformation);
+        iconOnly.iconAlignment = Qt::AlignVCenter; // QHeaderView's default
+        LogHeaderView::CenterIconAlignmentForIconOnlySection(&iconOnly);
+        QCOMPARE(static_cast<int>(iconOnly.iconAlignment), static_cast<int>(Qt::AlignCenter));
+
+        // Icon + text together -> stay at the default (icon to the
+        // left of the text). Mirrors the funnel / warning case where
+        // the configured header text is still showing.
+        QStyleOptionHeader textAndIcon;
+        textAndIcon.text = QStringLiteral("level");
+        textAndIcon.icon = QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning);
+        textAndIcon.iconAlignment = Qt::AlignVCenter;
+        LogHeaderView::CenterIconAlignmentForIconOnlySection(&textAndIcon);
+        QCOMPARE(static_cast<int>(textAndIcon.iconAlignment), static_cast<int>(Qt::AlignVCenter));
+
+        // No icon at all -> the rule is a strict no-op even when the
+        // text is empty (defensive: a section with neither icon nor
+        // text is degenerate, but we shouldn't pretend it had one).
+        QStyleOptionHeader emptyBoth;
+        emptyBoth.text = QString{};
+        emptyBoth.icon = QIcon{};
+        emptyBoth.iconAlignment = Qt::AlignVCenter;
+        LogHeaderView::CenterIconAlignmentForIconOnlySection(&emptyBoth);
+        QCOMPARE(static_cast<int>(emptyBoth.iconAlignment), static_cast<int>(Qt::AlignVCenter));
+
+        // Defensive: nullptr is a no-op (real callers can hand us
+        // null on degenerate paint paths; the rule mustn't crash).
+        LogHeaderView::CenterIconAlignmentForIconOnlySection(nullptr);
+    }
+
     // Regression: a theme switch must repaint the visible rows.
     // Symptom of failure: rows keep the old level colours until
     // the user scrolls or resizes the table.
