@@ -1062,11 +1062,22 @@ QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role
         // to `Column::header`; empty string ⇒ legitimate "blank
         // header text" (so icon-only mode shows just the
         // identity icon).
+        //
+        // When the theme ships a `headerIcon` but no explicit
+        // `header` text override, treat the icon as the column's
+        // identifier and suppress the text -- otherwise the
+        // header reads "<gauge> level" which is just visual
+        // noise. A theme that wants both must opt in by setting
+        // `header` to a non-empty string.
         if (IsLevelIconModeActive() && section == FirstLevelColumnIndex())
         {
             if (auto override = mTheme->LevelColumnHeaderTextOverride(); override.has_value())
             {
                 return *override;
+            }
+            if (!mTheme->LevelColumnHeaderIcon().isNull())
+            {
+                return QString{};
             }
         }
         return QString::fromStdString(mLogTable.GetHeader(static_cast<size_t>(section)));

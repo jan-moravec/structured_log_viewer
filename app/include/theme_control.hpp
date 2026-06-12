@@ -125,9 +125,13 @@ public:
 
     /// Theme's header-text override, when set. `std::nullopt`
     /// means the theme did not override the header text -- callers
-    /// fall back to `LogConfiguration::Column::header`. An empty
-    /// `QString` is a legitimate override meaning "render no text
-    /// in the header" (used by icon-only themes).
+    /// fall back to `LogConfiguration::Column::header`, except
+    /// when a `headerIcon` is also set: `LogModel::headerData`
+    /// then suppresses the text so the icon stands alone (a theme
+    /// that wants both must set `header` to a non-empty string
+    /// explicitly). An empty `QString` is a legitimate override
+    /// meaning "render no text in the header" (used by icon-only
+    /// themes that want the suppression without an icon).
     [[nodiscard]] std::optional<QString> LevelColumnHeaderTextOverride() const;
 
     /// Theme's header-icon override, when set. Null `QIcon` means

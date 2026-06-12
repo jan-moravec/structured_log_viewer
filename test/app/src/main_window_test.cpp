@@ -387,15 +387,20 @@ bool WaitForLineCount(LogModel &model, qsizetype target, std::chrono::millisecon
     return true;
 }
 
-// Returns the column index whose header equals @p header, or -1 if none.
+// Returns the column index whose configured `Column::header`
+// equals @p header, or -1 if none. Reads the configuration
+// directly (not `Qt::DisplayRole`) so the lookup survives theme
+// overrides that suppress the displayed text -- e.g. icon-mode
+// themes that ship a `headerIcon` and let the text fall away.
 int ColumnByHeader(const LogModel &model, const QString &header)
 {
-    const int columnCount = model.columnCount();
-    for (int col = 0; col < columnCount; ++col)
+    const std::string needle = header.toStdString();
+    const auto &columns = model.Configuration().columns;
+    for (size_t col = 0; col < columns.size(); ++col)
     {
-        if (model.headerData(col, Qt::Horizontal, Qt::DisplayRole).toString() == header)
+        if (columns[col].header == needle)
         {
-            return col;
+            return static_cast<int>(col);
         }
     }
     return -1;
@@ -4385,6 +4390,55 @@ private slots:
         const QVariant fatalFont = run.model->data(fatalIndex, Qt::FontRole);
         QVERIFY2(fatalFont.isValid(), "Fatal row must carry a bold font (theme sets bold=true)");
         QVERIFY(qvariant_cast<QFont>(fatalFont).bold());
+    }
+
+    // Regression: a theme that ships a `headerIcon` for the level
+    // column but no explicit `header` text override must paint the
+    // icon alone -- without a duplicated "level" label next to it
+    // -- because the icon *is* the column's identifier in icon
+    // mode. The funnel / warning decoration priority and the
+    // tooltip stay unchanged; only the displayed text is
+    // suppressed.
+    void TestLevelHeaderIconSuppressesDisplayText()
+    {
+        QVERIFY(mTheme != nullptr);
+        mTheme->SetActiveSelection(QStringLiteral("Light"));
+        QVERIFY2(mTheme->HasLevelColumnOverride(), "shipped Light theme must opt into icon mode");
+        QVERIFY2(!mTheme->LevelColumnHeaderIcon().isNull(), "shipped Light theme must ship a `headerIcon`");
+        QVERIFY2(
+            !mTheme->LevelColumnHeaderTextOverride().has_value(),
+            "shipped Light theme must not set an explicit `header` -- this test pins the implicit-blank rule"
+        );
+
+        const QStringList lines{
+            QStringLiteral(R"({"level": "info"})"),
+            QStringLiteral(R"({"level": "warn"})"),
+        };
+        const TempJsonFile fixture(lines);
+        const StreamingRun run = RunStreaming(fixture.Path(), mTheme.data());
+        QCOMPARE(run.cancelled, false);
+        QVERIFY(run.model != nullptr);
+
+        const int levelCol = ColumnByHeader(*run.model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "level column must resolve via configured Column::header");
+
+        const QString displayed = run.model->headerData(levelCol, Qt::Horizontal, Qt::DisplayRole).toString();
+        QVERIFY2(
+            displayed.isEmpty(),
+            qPrintable(QStringLiteral("level header must render blank text when an icon is present, got '%1'").arg(displayed))
+        );
+
+        // Tooltip still describes the column -- the suppression is
+        // strictly about the on-screen label, not the metadata.
+        const QString tooltip = run.model->headerData(levelCol, Qt::Horizontal, Qt::ToolTipRole).toString();
+        QVERIFY2(tooltip.contains(QStringLiteral("level")), qPrintable(QStringLiteral("tooltip must keep naming the column, got '%1'").arg(tooltip)));
+
+        // Toggling the user pref off restores the configured header
+        // text: with icon mode disabled, the icon is hidden and the
+        // text must come back so the column is still identifiable.
+        run.model->SetShowLevelIcons(false);
+        const QString restored = run.model->headerData(levelCol, Qt::Horizontal, Qt::DisplayRole).toString();
+        QCOMPARE(restored, QStringLiteral("level"));
     }
 
     // Regression: a theme switch must repaint the visible rows.
