@@ -17829,9 +17829,24 @@ private slots:
         QCOMPARE(wired->Model()->rowCount(), 2);
     }
 
-    // Empty `{}` must be classified as a log (parsing fails), not
-    // as a configuration. Otherwise it would wipe columns or
-    // trigger a multi-config modal.
+    // Empty `{}` must be classified as a log, not as a
+    // configuration. Otherwise it would wipe columns or trigger a
+    // multi-config modal. The classification gate lives in
+    // `FileLooksLikeConfiguration`, which requires the bounded
+    // probe to mention `"columns"` -- `{}` doesn't, so it falls
+    // through to the log queue and the dispatch must report
+    // `QueuedLogsOnly`. That's the load-bearing assertion; the
+    // row-count side-check exists to pin "didn't classify as
+    // config" without re-reading the model wiring.
+    //
+    // JsonParser is intentionally permissive: an `{}` line parses
+    // as one 0-field record (no error path is taken in
+    // `ParseJsonLine`). So both files in this fixture stream
+    // successfully -- `{}` adds 1 empty row, the real log adds 1
+    // row with `msg`, total 2. We wait for both
+    // `streamingFinished` emits so the assertion doesn't race
+    // with the sequential `StreamNextPendingFile` chain that
+    // `OnStreamingFinished` kicks off.
     void TestDispatchMixedRejectsEmptyJsonObjectAsConfig()
     {
         const QTemporaryDir sessionsDir;
@@ -17857,12 +17872,15 @@ private slots:
         const MainWindow::MixedInputDispatch result =
             wired->OpenMixedFilesForTest({emptyPath, log.Path()}, MainWindow::OpenMode::Append);
         QCOMPARE(result, MainWindow::MixedInputDispatch::QueuedLogsOnly);
-        QVERIFY(finishedSpy.wait(5000));
+        // Wait for *both* per-file `streamingFinished` emits: file
+        // 1 (`{}`) chains to file 2 (real log) via
+        // `OnStreamingFinished -> StreamNextPendingFile`. Waiting
+        // for only the first emit raced with the second file's
+        // batch landing during `processEvents()`.
+        QTRY_VERIFY_WITH_TIMEOUT(finishedSpy.count() >= 2, 5000);
         QCoreApplication::processEvents();
 
-        // Real log row survives; the `{}` parse error lands in
-        // `ShowParseErrors` (not asserted here).
-        QCOMPARE(wired->Model()->rowCount(), 1);
+        QCOMPARE(wired->Model()->rowCount(), 2);
     }
 
     // CLI variant: `app cfg.json log.json` applies the cfg first
