@@ -99,6 +99,8 @@ template <> struct glz::meta<loglib::Theme>
         &T::kind,
         "levels",
         &T::levels,
+        "levelsHighContrast",
+        &T::levelsHighContrast,
         "table",
         &T::table,
         "chrome",

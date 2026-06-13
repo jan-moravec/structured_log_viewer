@@ -274,6 +274,78 @@ TEST_CASE("Theme preserves blank-string header override through round-trip", "[T
     CHECK(reloaded.levelColumnOverride->header->empty());
 }
 
+TEST_CASE("Theme round-trips a levelsHighContrast override map", "[Theme][highContrast]")
+{
+    Theme original;
+    original.name = "Punchy";
+    original.kind = ThemeKind::Dark;
+    // Subtle defaults.
+    original.levels["Warn"] = LevelStyle{.foreground = "#FCD34D", .background = "#272620"};
+    original.levels["Error"] = LevelStyle{.foreground = "#FCA5A5", .background = "#352121"};
+    original.levels["Fatal"] = LevelStyle{.foreground = "#FECACA", .background = "#4A1E1E", .bold = true};
+    // Loud overrides for the same keys.
+    original.levelsHighContrast["Warn"] = LevelStyle{.foreground = "#FCD34D", .background = "#2A2418"};
+    original.levelsHighContrast["Error"] = LevelStyle{.foreground = "#FCA5A5", .background = "#4C1D1D"};
+    original.levelsHighContrast["Fatal"] =
+        LevelStyle{.foreground = "#FECACA", .background = "#7F1D1D", .bold = true};
+
+    const std::string json = SerializeTheme(original);
+    CHECK(json.contains("\"levelsHighContrast\""));
+
+    const Theme reloaded = ParseTheme(json);
+    REQUIRE(reloaded.levelsHighContrast.size() == 3);
+    CHECK(reloaded.levelsHighContrast.at("Warn").background == "#2A2418");
+    CHECK(reloaded.levelsHighContrast.at("Error").background == "#4C1D1D");
+    CHECK(reloaded.levelsHighContrast.at("Fatal").bold == true);
+    // Defaulted `operator==` propagates through the new map.
+    CHECK(reloaded == original);
+}
+
+TEST_CASE("Theme without levelsHighContrast decodes as an empty map", "[Theme][highContrast]")
+{
+    constexpr std::string_view JSON = R"({
+        "name": "Pre-toggle",
+        "kind": "dark",
+        "levels": { "Error": { "foreground": "#FF0000" } },
+        "table": {},
+        "chrome": {},
+        "app": {}
+    })";
+
+    const Theme parsed = ParseTheme(JSON);
+    CHECK(parsed.levelsHighContrast.empty());
+}
+
+TEST_CASE("StyleForLevel honours useHighContrast with sparse fall-back", "[Theme][highContrast]")
+{
+    Theme theme;
+    theme.levels["Warn"] = LevelStyle{.foreground = "#AA8800", .background = "#272620"};
+    theme.levels["Error"] = LevelStyle{.foreground = "#AA0000", .background = "#352121"};
+    theme.levels["Fatal"] = LevelStyle{.foreground = "#FF6688", .background = "#4A1E1E", .bold = true};
+    // Sparse override: only `Error` boosts; `Warn` and `Fatal` keep
+    // the subtle entry when high contrast is on.
+    theme.levelsHighContrast["Error"] = LevelStyle{.foreground = "#FF0000", .background = "#7F1D1D"};
+
+    // useHighContrast=false matches the no-bool overload.
+    const LevelStyle warnSubtle = StyleForLevel(theme, LogLevel::Warn, false);
+    CHECK(warnSubtle.background == "#272620");
+    const LevelStyle warnLoud = StyleForLevel(theme, LogLevel::Warn, true);
+    CHECK(warnLoud.background == "#272620"); // sparse: falls back to `levels`
+
+    // Explicit override wins when present.
+    const LevelStyle errorSubtle = StyleForLevel(theme, LogLevel::Error, false);
+    CHECK(errorSubtle.background == "#352121");
+    const LevelStyle errorLoud = StyleForLevel(theme, LogLevel::Error, true);
+    CHECK(errorLoud.background == "#7F1D1D");
+    CHECK(errorLoud.foreground == "#FF0000");
+
+    // Fatal sits in `levels` only -- both branches resolve to the
+    // same `LevelStyle`, including bold.
+    const LevelStyle fatalLoud = StyleForLevel(theme, LogLevel::Fatal, true);
+    CHECK(fatalLoud.background == "#4A1E1E");
+    CHECK(fatalLoud.bold == true);
+}
+
 TEST_CASE("Theme tolerates a sparse anchorPalette with empty slots", "[Theme][anchor]")
 {
     // Empty strings let a theme override only a couple of slots and

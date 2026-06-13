@@ -23,6 +23,20 @@ LevelStyle StyleForLevel(const Theme &theme, LogLevel level)
     return it->second;
 }
 
+LevelStyle StyleForLevel(const Theme &theme, LogLevel level, bool useHighContrast)
+{
+    if (useHighContrast)
+    {
+        const std::string_view canonical = CanonicalLevelName(level);
+        const auto it = theme.levelsHighContrast.find(std::string(canonical));
+        if (it != theme.levelsHighContrast.end())
+        {
+            return it->second;
+        }
+    }
+    return StyleForLevel(theme, level);
+}
+
 Theme ParseTheme(std::string_view content)
 {
     // `error_on_unknown_keys=false` lets new schema fields roll

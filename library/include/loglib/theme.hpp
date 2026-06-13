@@ -165,7 +165,26 @@ struct Theme
 
     /// Per-level row styles, keyed by canonical level name
     /// (`Trace`..`Fatal`) or `"Unknown"`. Other keys are ignored.
+    ///
+    /// These are the **subtle defaults** -- the showcase look used
+    /// when the user pref `ui/highContrastLevels` is off (the
+    /// default). When the pref is on, `levelsHighContrast` overrides
+    /// per-level.
     std::map<std::string, LevelStyle> levels;
+
+    /// Optional per-level overrides applied on top of `levels` when
+    /// the user pref `ui/highContrastLevels` is on. Sparse: missing
+    /// keys fall back to `levels[key]`, so a theme can boost only
+    /// `Warn`/`Error`/`Fatal` and keep `Trace`/`Debug` identical.
+    ///
+    /// Keys are the canonical level names (`Trace`..`Fatal`, or
+    /// `Unknown`). Non-canonical keys warn via the shared
+    /// `WarnOnUnknownLevelKeys` machinery in `theme_control.cpp`.
+    ///
+    /// An empty map means the theme opts out of the toggle; the
+    /// Preferences checkbox disables itself in that case (same UX
+    /// as the pills toggle when `levelColumnOverride` is absent).
+    std::map<std::string, LevelStyle> levelsHighContrast;
 
     TableStyle table;
     ChromeStyle chrome;
@@ -193,6 +212,16 @@ inline constexpr std::size_t ANCHOR_PALETTE_SIZE = 8;
 /// Returns the style for @p level, or a default-constructed
 /// `LevelStyle` when the theme has no entry for it.
 [[nodiscard]] LevelStyle StyleForLevel(const Theme &theme, LogLevel level);
+
+/// Same as `StyleForLevel(theme, level)` when @p useHighContrast is
+/// false. When true, looks up @p level in `theme.levelsHighContrast`
+/// first and falls back to `theme.levels` if the override is absent.
+/// Sparse overrides are resolved at the *whole-`LevelStyle` granularity*:
+/// if `levelsHighContrast[name]` exists, its fields (foreground,
+/// background, bold, italic) replace the subtle entry entirely. This
+/// matches how theme authors think about the two looks (hand-tuned
+/// per level), and avoids surprising blends of subtle + loud fields.
+[[nodiscard]] LevelStyle StyleForLevel(const Theme &theme, LogLevel level, bool useHighContrast);
 
 /// Parse a theme from JSON. Throws `std::runtime_error` on any
 /// parse error. `kind` must be `"light"` or `"dark"`.
