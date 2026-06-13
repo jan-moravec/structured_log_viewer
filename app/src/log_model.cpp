@@ -776,9 +776,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         {
             continue;
         }
-        if (!loglib::ShouldBubbleLevelColumn(
-                mLogTable.Configuration().Configuration(), static_cast<size_t>(srcIndex)
-            ))
+        if (!loglib::ShouldBubbleLevelColumn(mLogTable.Configuration().Configuration(), static_cast<size_t>(srcIndex)))
         {
             continue;
         }

@@ -1225,10 +1225,7 @@ TEST_CASE(
     CHECK(manager.Configuration().filters[1].filterString == std::string{"y"});
 }
 
-TEST_CASE(
-    "BubbleLevelColumnToCanonicalPosition mirrors the Time bubble",
-    "[LogConfigurationManager][level_bubble]"
-)
+TEST_CASE("BubbleLevelColumnToCanonicalPosition mirrors the Time bubble", "[LogConfigurationManager][level_bubble]")
 {
     // Manager-level coverage of the new free helper. The
     // `LogTable::MaybePromoteToLevel` integration is tested in

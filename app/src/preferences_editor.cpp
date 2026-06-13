@@ -208,9 +208,7 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
     // / close reverts via the same signal with `mInitialShowLevelIcons`.
     // `UpdateFields()` uses `QSignalBlocker` to set the initial state
     // without firing this slot.
-    connect(mShowLevelIconsCheckBox, &QCheckBox::toggled, this, [this](bool on) {
-        emit showLevelIconsChanged(on);
-    });
+    connect(mShowLevelIconsCheckBox, &QCheckBox::toggled, this, [this](bool on) { emit showLevelIconsChanged(on); });
 
     mHighContrastLevelsCheckBox = new QCheckBox("High contrast levels", this);
     // Default tooltip mirrors `mShowLevelIconsCheckBox`'s pattern;
@@ -448,8 +446,7 @@ void PreferencesEditor::UpdateFields()
     {
         QSettings settings;
         mInitialShowLevelIcons = settings.value(QString::fromLatin1(SETTINGS_SHOW_LEVEL_ICONS), true).toBool();
-        mInitialHighContrastLevels =
-            settings.value(QString::fromLatin1(SETTINGS_HIGH_CONTRAST_LEVELS), false).toBool();
+        mInitialHighContrastLevels = settings.value(QString::fromLatin1(SETTINGS_HIGH_CONTRAST_LEVELS), false).toBool();
         {
             const QSignalBlocker blocker(mShowLevelIconsCheckBox);
             mShowLevelIconsCheckBox->setChecked(mInitialShowLevelIcons);

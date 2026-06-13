@@ -2786,10 +2786,7 @@ TEST_CASE(
     CHECK(table.Configuration().Configuration().columns[1].type == LogConfiguration::Type::Level);
 }
 
-TEST_CASE(
-    "LogTable -- Level bubble respects multi-column ordering",
-    "[log_table][append_batch][level][level_bubble]"
-)
+TEST_CASE("LogTable -- Level bubble respects multi-column ordering", "[log_table][append_batch][level][level_bubble]")
 {
     // When more than two columns are present, the freshly-promoted
     // Level column still lands at `CANONICAL_LEVEL_COLUMN_INDEX`

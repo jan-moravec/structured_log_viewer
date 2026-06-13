@@ -79,12 +79,7 @@ target_include_directories(logapp PUBLIC ./include)
 
 target_link_libraries(
     logapp
-    PUBLIC
-        Qt6::Widgets
-        Qt6::Network
-        Qt6::Svg
-        loglib
-        project_warnings
+    PUBLIC Qt6::Widgets Qt6::Network Qt6::Svg loglib project_warnings
 )
 
 qt_add_resources(RESOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../resources/resources.qrc)

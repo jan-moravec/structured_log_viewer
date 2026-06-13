@@ -197,7 +197,7 @@ void WarnOnUnknownLevelKeys(const QString &source, const loglib::Theme &theme)
 }
 
 /// Walk every hex-bearing field in @p theme and emit one
-/// `qWarning` per unparseable colour. Called once per theme at
+/// `qWarning` per unparsable colour. Called once per theme at
 /// discovery time so the warnings name the offending field path
 /// (`chrome.toolTipBase`, `levels.Warn.foreground`, ...) and don't
 /// spam the log on every `BuildStyleCache` call (theme switch,

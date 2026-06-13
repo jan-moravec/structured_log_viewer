@@ -286,8 +286,7 @@ TEST_CASE("Theme round-trips a levelsHighContrast override map", "[Theme][highCo
     // Loud overrides for the same keys.
     original.levelsHighContrast["Warn"] = LevelStyle{.foreground = "#FCD34D", .background = "#2A2418"};
     original.levelsHighContrast["Error"] = LevelStyle{.foreground = "#FCA5A5", .background = "#4C1D1D"};
-    original.levelsHighContrast["Fatal"] =
-        LevelStyle{.foreground = "#FECACA", .background = "#7F1D1D", .bold = true};
+    original.levelsHighContrast["Fatal"] = LevelStyle{.foreground = "#FECACA", .background = "#7F1D1D", .bold = true};
 
     const std::string json = SerializeTheme(original);
     CHECK(json.contains("\"levelsHighContrast\""));

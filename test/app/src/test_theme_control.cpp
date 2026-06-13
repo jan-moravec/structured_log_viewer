@@ -561,18 +561,14 @@ private slots:
     void TestUserThemeWithoutOverrideTurnsIconModeOff()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
-        WriteUserTheme(
-            userDir,
-            QStringLiteral("plain.json"),
-            QStringLiteral(R"({
+        WriteUserTheme(userDir, QStringLiteral("plain.json"), QStringLiteral(R"({
                 "name": "Plain",
                 "kind": "light",
                 "levels": { "Info": { "foreground": "#222222" } },
                 "table": {},
                 "chrome": {},
                 "app": {}
-            })")
-        );
+            })"));
         mTheme->ReloadAll();
         mTheme->SetActiveSelection(QStringLiteral("Plain"));
 
@@ -593,18 +589,14 @@ private slots:
         QVERIFY(!mTheme->IconFor(loglib::LogLevel::Info).isNull());
 
         const QDir userDir = ThemeControl::UserThemesDir();
-        WriteUserTheme(
-            userDir,
-            QStringLiteral("plain.json"),
-            QStringLiteral(R"({
+        WriteUserTheme(userDir, QStringLiteral("plain.json"), QStringLiteral(R"({
                 "name": "Plain",
                 "kind": "light",
                 "levels": {},
                 "table": {},
                 "chrome": {},
                 "app": {}
-            })")
-        );
+            })"));
         mTheme->ReloadAll();
         mTheme->SetActiveSelection(QStringLiteral("Plain"));
 
@@ -619,10 +611,7 @@ private slots:
     void TestThemeHeaderOverrideRoundTripIncludingEmptyString()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
-        WriteUserTheme(
-            userDir,
-            QStringLiteral("blank_header.json"),
-            QStringLiteral(R"({
+        WriteUserTheme(userDir, QStringLiteral("blank_header.json"), QStringLiteral(R"({
                 "name": "BlankHeader",
                 "kind": "light",
                 "levels": {},
@@ -636,8 +625,7 @@ private slots:
                         "Info": { "icon": ":/icons/level-info.svg" }
                     }
                 }
-            })")
-        );
+            })"));
         mTheme->ReloadAll();
         mTheme->SetActiveSelection(QStringLiteral("BlankHeader"));
 
@@ -656,10 +644,7 @@ private slots:
     void TestThemeControlRejectsParentPathTraversal()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
-        WriteUserTheme(
-            userDir,
-            QStringLiteral("traversal.json"),
-            QStringLiteral(R"({
+        WriteUserTheme(userDir, QStringLiteral("traversal.json"), QStringLiteral(R"({
                 "name": "Traversal",
                 "kind": "light",
                 "levels": {},
@@ -672,8 +657,7 @@ private slots:
                         "Warn":  { "icon": ":/icons/level-warn.svg" }
                     }
                 }
-            })")
-        );
+            })"));
         mTheme->ReloadAll();
         mTheme->SetActiveSelection(QStringLiteral("Traversal"));
 
@@ -693,10 +677,7 @@ private slots:
     void TestThemeControlRejectsBackslashTraversal()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
-        WriteUserTheme(
-            userDir,
-            QStringLiteral("traversal_backslash.json"),
-            QStringLiteral(R"({
+        WriteUserTheme(userDir, QStringLiteral("traversal_backslash.json"), QStringLiteral(R"({
                 "name": "TraversalBackslash",
                 "kind": "light",
                 "levels": {},
@@ -709,8 +690,7 @@ private slots:
                         "Warn":  { "icon": ":/icons/level-warn.svg" }
                     }
                 }
-            })")
-        );
+            })"));
         mTheme->ReloadAll();
         mTheme->SetActiveSelection(QStringLiteral("TraversalBackslash"));
 
@@ -725,10 +705,7 @@ private slots:
     void TestThemeControlRejectsBareParentSegment()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
-        WriteUserTheme(
-            userDir,
-            QStringLiteral("traversal_bare.json"),
-            QStringLiteral(R"({
+        WriteUserTheme(userDir, QStringLiteral("traversal_bare.json"), QStringLiteral(R"({
                 "name": "TraversalBare",
                 "kind": "light",
                 "levels": {},
@@ -741,8 +718,7 @@ private slots:
                         "Warn":  { "icon": ":/icons/level-warn.svg" }
                     }
                 }
-            })")
-        );
+            })"));
         mTheme->ReloadAll();
         mTheme->SetActiveSelection(QStringLiteral("TraversalBare"));
 
@@ -786,10 +762,7 @@ private slots:
         {
             const auto loaded = mTheme->Load(name);
             QVERIFY2(loaded.has_value(), qUtf8Printable(QStringLiteral("missing built-in: ") + name));
-            QVERIFY2(
-                !loaded->levels.empty(),
-                qUtf8Printable(QStringLiteral("built-in has empty levels: ") + name)
-            );
+            QVERIFY2(!loaded->levels.empty(), qUtf8Printable(QStringLiteral("built-in has empty levels: ") + name));
             QVERIFY2(
                 !loaded->levelsHighContrast.empty(),
                 qUtf8Printable(QStringLiteral("built-in has empty levelsHighContrast: ") + name)
@@ -803,10 +776,7 @@ private slots:
     void TestThemeControlHighContrastTogglesBrushes()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
-        WriteUserTheme(
-            userDir,
-            QStringLiteral("highContrast.json"),
-            QStringLiteral(R"({
+        WriteUserTheme(userDir, QStringLiteral("highContrast.json"), QStringLiteral(R"({
                 "name": "HighContrastFixture",
                 "kind": "dark",
                 "levels": {
@@ -818,8 +788,7 @@ private slots:
                 "table": {},
                 "chrome": {},
                 "app": {}
-            })")
-        );
+            })"));
         mTheme->ReloadAll();
         mTheme->SetActiveSelection(QStringLiteral("HighContrastFixture"));
         // Start from a known default.
@@ -849,10 +818,7 @@ private slots:
     void TestThemeControlHighContrastSparseFallback()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
-        WriteUserTheme(
-            userDir,
-            QStringLiteral("sparseContrast.json"),
-            QStringLiteral(R"({
+        WriteUserTheme(userDir, QStringLiteral("sparseContrast.json"), QStringLiteral(R"({
                 "name": "SparseContrast",
                 "kind": "dark",
                 "levels": {
@@ -865,8 +831,7 @@ private slots:
                 "table": {},
                 "chrome": {},
                 "app": {}
-            })")
-        );
+            })"));
         mTheme->ReloadAll();
         mTheme->SetActiveSelection(QStringLiteral("SparseContrast"));
         mTheme->SetHighContrast(true);
@@ -889,10 +854,7 @@ private slots:
     void TestThemeControlHighContrastEmptyMap()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
-        WriteUserTheme(
-            userDir,
-            QStringLiteral("noContrast.json"),
-            QStringLiteral(R"({
+        WriteUserTheme(userDir, QStringLiteral("noContrast.json"), QStringLiteral(R"({
                 "name": "NoContrast",
                 "kind": "dark",
                 "levels": {
@@ -901,8 +863,7 @@ private slots:
                 "table": {},
                 "chrome": {},
                 "app": {}
-            })")
-        );
+            })"));
         mTheme->ReloadAll();
         mTheme->SetActiveSelection(QStringLiteral("NoContrast"));
 
@@ -935,10 +896,7 @@ private slots:
     void TestThemeControlAcceptsQtResourcePath()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
-        WriteUserTheme(
-            userDir,
-            QStringLiteral("resource_path.json"),
-            QStringLiteral(R"({
+        WriteUserTheme(userDir, QStringLiteral("resource_path.json"), QStringLiteral(R"({
                 "name": "ResourcePath",
                 "kind": "light",
                 "levels": {},
@@ -951,8 +909,7 @@ private slots:
                         "Warn":  { "icon": ":/icons/level-warn.svg" }
                     }
                 }
-            })")
-        );
+            })"));
         mTheme->ReloadAll();
         mTheme->SetActiveSelection(QStringLiteral("ResourcePath"));
 

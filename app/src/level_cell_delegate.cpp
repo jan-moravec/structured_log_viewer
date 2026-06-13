@@ -107,8 +107,7 @@ QModelIndex MapToLogModelSource(const QModelIndex &index, const LogModel **outLo
 } // namespace
 
 LevelCellDelegate::LevelCellDelegate(ThemeControl *theme, QObject *parent)
-    : QStyledItemDelegate(parent)
-    , mTheme(theme)
+    : QStyledItemDelegate(parent), mTheme(theme)
 {
 }
 
@@ -213,9 +212,7 @@ void LevelCellDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
     // narrower than its corner radius would imply (degenerate
     // shapes look like a square dot).
     const QRect cellRect = option.rect;
-    QRectF pillRect = QRectF(cellRect).adjusted(
-        PILL_PADDING_PX, PILL_PADDING_PX, -PILL_PADDING_PX, -PILL_PADDING_PX
-    );
+    QRectF pillRect = QRectF(cellRect).adjusted(PILL_PADDING_PX, PILL_PADDING_PX, -PILL_PADDING_PX, -PILL_PADDING_PX);
     if (pillRect.width() < PILL_CORNER_RADIUS_PX * TWO)
     {
         const qreal centerX = pillRect.center().x();

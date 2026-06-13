@@ -82,7 +82,6 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
-#include <QStyleOptionViewItem>
 #include <QScopeGuard>
 #include <QScopedPointer>
 #include <QScrollBar>
@@ -96,6 +95,7 @@
 #include <QStatusBar>
 #include <QString>
 #include <QStringList>
+#include <QStyleOptionViewItem>
 #include <QTableView>
 #include <QTableWidget>
 #include <QTemporaryDir>
@@ -4317,8 +4317,7 @@ private slots:
             const int first = signalArgs.value(1).toInt();
             const int last = signalArgs.value(2).toInt();
             const int destColumn = signalArgs.value(4).toInt();
-            return first == last && first >= 0 &&
-                   destColumn == static_cast<int>(loglib::CANONICAL_LEVEL_COLUMN_INDEX);
+            return first == last && first >= 0 && destColumn == static_cast<int>(loglib::CANONICAL_LEVEL_COLUMN_INDEX);
         };
         const bool sawLevelBubble = std::any_of(columnsMovedSpy.begin(), columnsMovedSpy.end(), matchesLevelBubble);
         QVERIFY2(
@@ -4331,9 +4330,7 @@ private slots:
         // Cell payload sanity: the rank cache built against the
         // post-bubble column index, so `GetLevelForRow` returns
         // the right canonical level for row 0 (`info`).
-        QCOMPARE(
-            model->Table().GetLevelForRow(0, static_cast<size_t>(levelCol)).value(), loglib::LogLevel::Info
-        );
+        QCOMPARE(model->Table().GetLevelForRow(0, static_cast<size_t>(levelCol)).value(), loglib::LogLevel::Info);
 
         model->EndStreaming(false);
     }
@@ -4396,9 +4393,7 @@ private slots:
         const int levelCol = ColumnByHeader(*run.model, QStringLiteral("level"));
         QCOMPARE(levelCol, static_cast<int>(loglib::CANONICAL_LEVEL_COLUMN_INDEX));
         // Sanity: rank cache survived both bubbles intact.
-        QCOMPARE(
-            run.model->Table().GetLevelForRow(0, static_cast<size_t>(levelCol)).value(), loglib::LogLevel::Info
-        );
+        QCOMPARE(run.model->Table().GetLevelForRow(0, static_cast<size_t>(levelCol)).value(), loglib::LogLevel::Info);
     }
 
     /// Integration: a streamed `Type::Level` column makes
@@ -4492,7 +4487,9 @@ private slots:
         const QString displayed = run.model->headerData(levelCol, Qt::Horizontal, Qt::DisplayRole).toString();
         QVERIFY2(
             displayed.isEmpty(),
-            qPrintable(QStringLiteral("level header must render blank text when an icon is present, got '%1'").arg(displayed))
+            qPrintable(
+                QStringLiteral("level header must render blank text when an icon is present, got '%1'").arg(displayed)
+            )
         );
 
         // Centre alignment: the cells paint a centred pill, so the
@@ -4522,7 +4519,10 @@ private slots:
         // Tooltip still describes the column -- the suppression is
         // strictly about the on-screen label, not the metadata.
         const QString tooltip = run.model->headerData(levelCol, Qt::Horizontal, Qt::ToolTipRole).toString();
-        QVERIFY2(tooltip.contains(QStringLiteral("level")), qPrintable(QStringLiteral("tooltip must keep naming the column, got '%1'").arg(tooltip)));
+        QVERIFY2(
+            tooltip.contains(QStringLiteral("level")),
+            qPrintable(QStringLiteral("tooltip must keep naming the column, got '%1'").arg(tooltip))
+        );
 
         // Toggling the user pref off restores the configured header
         // text *and* the default alignment: with icon mode disabled,
@@ -4657,10 +4657,10 @@ private slots:
                 const QRgb actual = image.pixel(x, y);
                 QVERIFY2(
                     qRed(actual) == 0xFF && qGreen(actual) == 0x00 && qBlue(actual) == 0xFF,
-                    qPrintable(
-                        QStringLiteral("delegate painted outside option.rect at (%1, %2); RGBA=#%3")
-                            .arg(x).arg(y).arg(QString::number(actual, 16))
-                    )
+                    qPrintable(QStringLiteral("delegate painted outside option.rect at (%1, %2); RGBA=#%3")
+                                   .arg(x)
+                                   .arg(y)
+                                   .arg(QString::number(actual, 16)))
                 );
             }
         }
@@ -9391,10 +9391,7 @@ private slots:
         editor->close();
         QCoreApplication::processEvents();
 
-        QVERIFY2(
-            !mTheme->IsHighContrast(),
-            "Closing the dialog without Ok must revert the high-contrast live preview"
-        );
+        QVERIFY2(!mTheme->IsHighContrast(), "Closing the dialog without Ok must revert the high-contrast live preview");
     }
 
     // The Column Editor writes back every user-controllable Column

@@ -568,7 +568,9 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
         // column either. Skipping it spares the cache-walk on every
         // streamed enum value.
         connect(
-            mModel, &LogModel::enumColumnsChanged, this,
+            mModel,
+            &LogModel::enumColumnsChanged,
+            this,
             [this](EnumColumnsChangeReason reason, int /*columnIndex*/) {
                 if (reason == EnumColumnsChangeReason::Grew)
                 {
