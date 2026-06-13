@@ -68,6 +68,14 @@ constexpr char BUILTIN_MATERIAL_DARK_PATH[] = ":/themes/material_dark.json";
 constexpr char BUILTIN_MATERIAL_LIGHT_PATH[] = ":/themes/material_light.json";
 constexpr char BUILTIN_MONOKAI_DARK_PATH[] = ":/themes/monokai_dark.json";
 constexpr char BUILTIN_MONOKAI_LIGHT_PATH[] = ":/themes/monokai_light.json";
+constexpr char BUILTIN_SOLARIZED_DARK_PATH[] = ":/themes/solarized_dark.json";
+constexpr char BUILTIN_SOLARIZED_LIGHT_PATH[] = ":/themes/solarized_light.json";
+constexpr char BUILTIN_NORD_PATH[] = ":/themes/nord.json";
+constexpr char BUILTIN_DRACULA_PATH[] = ":/themes/dracula.json";
+constexpr char BUILTIN_TOKYO_NIGHT_PATH[] = ":/themes/tokyo_night.json";
+constexpr char BUILTIN_CATPPUCCIN_MOCHA_PATH[] = ":/themes/catppuccin_mocha.json";
+constexpr char BUILTIN_PAPER_LIGHT_PATH[] = ":/themes/paper_light.json";
+constexpr char BUILTIN_HIGH_CONTRAST_DARK_PATH[] = ":/themes/high_contrast_dark.json";
 
 /// Linear `lerp(@p fg, @p bg, @p t)` in sRGB. Used to dim Disabled
 /// text roles toward their surrounding surface.
@@ -765,7 +773,7 @@ void ThemeControl::DiscoverThemes()
     };
 
     // Built-ins first, so a same-named user file overrides them.
-    constexpr std::array<const char *, 8> BUILTIN_PATHS = {
+    constexpr std::array<const char *, 16> BUILTIN_PATHS = {
         BUILTIN_LIGHT_PATH,
         BUILTIN_DARK_PATH,
         BUILTIN_GITHUB_DARK_PATH,
@@ -773,7 +781,15 @@ void ThemeControl::DiscoverThemes()
         BUILTIN_MATERIAL_DARK_PATH,
         BUILTIN_MATERIAL_LIGHT_PATH,
         BUILTIN_MONOKAI_DARK_PATH,
-        BUILTIN_MONOKAI_LIGHT_PATH
+        BUILTIN_MONOKAI_LIGHT_PATH,
+        BUILTIN_SOLARIZED_DARK_PATH,
+        BUILTIN_SOLARIZED_LIGHT_PATH,
+        BUILTIN_NORD_PATH,
+        BUILTIN_DRACULA_PATH,
+        BUILTIN_TOKYO_NIGHT_PATH,
+        BUILTIN_CATPPUCCIN_MOCHA_PATH,
+        BUILTIN_PAPER_LIGHT_PATH,
+        BUILTIN_HIGH_CONTRAST_DARK_PATH
     };
     for (const char *path : BUILTIN_PATHS)
     {
