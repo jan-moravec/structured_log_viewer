@@ -55,6 +55,12 @@ signals:
     /// ordering.
     void showLevelIconsChanged(bool on);
 
+    /// Fired after Ok commits the "High contrast levels" toggle.
+    /// `MainWindow` forwards to `ThemeControl::SetHighContrast(on)`,
+    /// which re-runs `BuildStyleCache` and emits `themeChanged()` so
+    /// the table re-paints with the boosted (or subtle) row colours.
+    void highContrastLevelsChanged(bool on);
+
 private:
     /// Refill the theme combo from `ThemeControl::AvailableThemes`
     /// and select the active entry (Auto is the first entry).
@@ -76,6 +82,14 @@ private:
     /// sync with what a toggle would actually do.
     void RefreshLevelIconsCheckboxAvailability();
 
+    /// Same idea as `RefreshLevelIconsCheckboxAvailability`, but
+    /// gates the high-contrast checkbox on whether the active theme
+    /// ships a non-empty `levelsHighContrast` block. Themes that
+    /// omit it (most user themes by default) grey the toggle out
+    /// with an explanatory tooltip so the user can tell the no-op
+    /// state apart from a "stuck" checkbox.
+    void RefreshHighContrastCheckboxAvailability();
+
     QComboBox *mThemeComboBox;
     QLabel *mThemePreviewLabel;
     QLabel *mThemeStatusLabel;
@@ -84,6 +98,7 @@ private:
     QCheckBox *mStreamNewestFirstCheckBox;
     QCheckBox *mStaticNewestFirstCheckBox;
     QCheckBox *mShowLevelIconsCheckBox;
+    QCheckBox *mHighContrastLevelsCheckBox;
     QCheckBox *mRestoreLastSessionCheckBox;
     QSpinBox *mRecentSessionsMaxSpinBox;
 

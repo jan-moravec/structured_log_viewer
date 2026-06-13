@@ -36,6 +36,12 @@ constexpr int THEME_STATUS_CLEAR_MS = 5000;
 /// startup read in `MainWindow::MainWindow`.
 constexpr char SETTINGS_SHOW_LEVEL_ICONS[] = "ui/showLevelIcons";
 
+/// `QSettings` key for the "High contrast levels" preference.
+/// Same scope as `SETTINGS_SHOW_LEVEL_ICONS`: a render-time
+/// decision driven by user preference. Default `false` (subtle
+/// row colours) on first read.
+constexpr char SETTINGS_HIGH_CONTRAST_LEVELS[] = "ui/highContrastLevels";
+
 /// Label for the synthetic "Auto" combo entry. The entry's user
 /// data carries `ThemeControl::AUTO_TOKEN` (an empty string) so a
 /// real theme literally named "Auto..." still round-trips.
@@ -181,6 +187,7 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
             RepopulateThemeCombo();
             RefreshThemePreview();
             RefreshLevelIconsCheckboxAvailability();
+            RefreshHighContrastCheckboxAvailability();
         });
     }
 
@@ -195,6 +202,17 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
         "When enabled, the level column renders themed glyphs inside a coloured pill instead of "
         "the plain level text. Themes opt in by shipping a `levelColumnOverride` block; every "
         "built-in theme does. The raw level text is still available for copy and Find searches."
+    );
+
+    mHighContrastLevelsCheckBox = new QCheckBox("High contrast levels", this);
+    // Default tooltip mirrors `mShowLevelIconsCheckBox`'s pattern;
+    // `RefreshHighContrastCheckboxAvailability` swaps in the
+    // disabled-state explanation when the active theme doesn't
+    // ship a `levelsHighContrast` block.
+    mHighContrastLevelsCheckBox->setToolTip(
+        "When enabled, the level row backgrounds use the theme's loud `levelsHighContrast` colours "
+        "instead of the subtle defaults. Useful for triage screens where Warn/Error/Fatal rows need "
+        "to jump out. Themes opt in by shipping a `levelsHighContrast` block; every built-in does."
     );
     mRestoreLastSessionCheckBox = new QCheckBox("Restore last session on launch", this);
     mRestoreLastSessionCheckBox->setToolTip(
@@ -246,6 +264,7 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
     themeButtonLayout->addWidget(reloadThemesButton);
     appearanceLayout->addLayout(themeButtonLayout);
     appearanceLayout->addWidget(mShowLevelIconsCheckBox);
+    appearanceLayout->addWidget(mHighContrastLevelsCheckBox);
     appearanceLayout->addWidget(mThemeStatusLabel);
 
     auto *streamingGroup = new QGroupBox("Streaming", this);
@@ -312,6 +331,22 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
                 emit showLevelIconsChanged(showLevelIcons);
             }
         }
+        // Persist + emit the high-contrast toggle. Default-false on
+        // first read so fresh installs land on the subtle look.
+        // Same gating rationale as the level-icon block above:
+        // signal only on a real change to avoid spurious cache
+        // rebuilds on every Ok click.
+        {
+            QSettings settings;
+            const bool highContrast = mHighContrastLevelsCheckBox->isChecked();
+            const bool previousHighContrast =
+                settings.value(QString::fromLatin1(SETTINGS_HIGH_CONTRAST_LEVELS), false).toBool();
+            if (highContrast != previousHighContrast)
+            {
+                settings.setValue(QString::fromLatin1(SETTINGS_HIGH_CONTRAST_LEVELS), highContrast);
+                emit highContrastLevelsChanged(highContrast);
+            }
+        }
         emit streamingRetentionChanged(static_cast<qulonglong>(StreamingControl::RetentionLines()));
         // Only emit on a real toggle so the re-sort chain does not run
         // on every Ok click.
@@ -365,10 +400,16 @@ void PreferencesEditor::UpdateFields()
         mShowLevelIconsCheckBox->setChecked(
             settings.value(QString::fromLatin1(SETTINGS_SHOW_LEVEL_ICONS), true).toBool()
         );
+        // Default-false on first read: subtle is the new showcase
+        // look; users opt in to the loud variant deliberately.
+        mHighContrastLevelsCheckBox->setChecked(
+            settings.value(QString::fromLatin1(SETTINGS_HIGH_CONTRAST_LEVELS), false).toBool()
+        );
     }
     RepopulateThemeCombo();
     RefreshThemePreview();
     RefreshLevelIconsCheckboxAvailability();
+    RefreshHighContrastCheckboxAvailability();
     ShowThemeStatus(QString());
 }
 
@@ -398,6 +439,32 @@ void PreferencesEditor::RefreshLevelIconsCheckboxAvailability()
             "The active theme does not ship a `levelColumnOverride` block, so there are no icons "
             "to render for the level column. Pick a theme that supplies the block (every built-in "
             "theme does) to enable this toggle."
+        );
+    }
+}
+
+void PreferencesEditor::RefreshHighContrastCheckboxAvailability()
+{
+    // Mirror `RefreshLevelIconsCheckboxAvailability`: the toggle is
+    // only meaningful when the active theme ships a non-empty
+    // `levelsHighContrast` block. User themes typically don't, so
+    // the grey-out state is the common case there.
+    const bool hasOverride = (mTheme != nullptr) && mTheme->HasLevelsHighContrast();
+    mHighContrastLevelsCheckBox->setEnabled(hasOverride);
+    if (hasOverride)
+    {
+        mHighContrastLevelsCheckBox->setToolTip(
+            "When enabled, the level row backgrounds use the theme's loud `levelsHighContrast` colours "
+            "instead of the subtle defaults. Useful for triage screens where Warn/Error/Fatal rows need "
+            "to jump out. Themes opt in by shipping a `levelsHighContrast` block; every built-in does."
+        );
+    }
+    else
+    {
+        mHighContrastLevelsCheckBox->setToolTip(
+            "The active theme does not ship a `levelsHighContrast` block, so the boosted colours "
+            "have nothing to swap in. Pick a theme that supplies the block (every built-in theme "
+            "does) to enable this toggle."
         );
     }
 }
