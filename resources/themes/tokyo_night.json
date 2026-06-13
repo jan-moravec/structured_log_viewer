@@ -1,0 +1,58 @@
+{
+    "name": "Tokyo Night",
+    "kind": "dark",
+    "levels": {
+        "Trace": { "foreground": "#565F89", "background": "#15161E" },
+        "Debug": { "foreground": "#7DCFFF", "background": "#162735" },
+        "Info":  {},
+        "Warn":  { "foreground": "#E0AF68", "background": "#24221E" },
+        "Error": { "foreground": "#F7768E", "background": "#28202A" },
+        "Fatal": { "foreground": "#FFDBE5", "background": "#48202F", "bold": true }
+    },
+    "levelsHighContrast": {
+        "Warn":  { "foreground": "#E0AF68", "background": "#312818" },
+        "Error": { "foreground": "#F7768E", "background": "#3A1C22" },
+        "Fatal": { "foreground": "#FFDBE5", "background": "#7A1F3D", "bold": true }
+    },
+    "table": {
+        "background": "#1A1B26",
+        "alternateRowBackground": "#16161E",
+        "selectionBackground": "#33467C",
+        "selectionForeground": "#C0CAF5"
+    },
+    "anchorPalette": [
+        "#F7768E",
+        "#FF9E64",
+        "#E0AF68",
+        "#9ECE6A",
+        "#73DACA",
+        "#7AA2F7",
+        "#BB9AF7",
+        "#7DCFFF"
+    ],
+    "chrome": {
+        "window": "#16161E",
+        "windowText": "#C0CAF5",
+        "text": "#C0CAF5",
+        "button": "#1F2335",
+        "buttonText": "#C0CAF5",
+        "placeholderText": "#565F89",
+        "toolTipBase": "#16161E",
+        "toolTipText": "#C0CAF5"
+    },
+    "app": {
+        "qtStyle": "fusion"
+    },
+    "levelColumnOverride": {
+        "headerIcon": ":/icons/gauge.svg",
+        "levels": {
+            "Trace":   { "icon": ":/icons/level-trace.svg" },
+            "Debug":   { "icon": ":/icons/level-debug.svg" },
+            "Info":    { "icon": ":/icons/level-info.svg",    "pillBackground": "#1D3D60" },
+            "Warn":    { "icon": ":/icons/level-warn.svg",    "pillBackground": "#5C4515" },
+            "Error":   { "icon": ":/icons/level-error.svg",   "pillBackground": "#6B2233" },
+            "Fatal":   { "icon": ":/icons/level-fatal.svg",   "pillBackground": "#7A1F3D", "pillForeground": "#FFDBE5" },
+            "Unknown": { "icon": ":/icons/level-unknown.svg" }
+        }
+    }
+}

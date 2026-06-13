@@ -1,0 +1,60 @@
+{
+    "name": "High Contrast Dark",
+    "kind": "dark",
+    "levels": {
+        "Trace": { "foreground": "#9CA3AF", "background": "#0A0A0A" },
+        "Debug": { "foreground": "#5EB7FF", "background": "#0A1A2A" },
+        "Info":  {},
+        "Warn":  { "foreground": "#FFD23F", "background": "#332600" },
+        "Error": { "foreground": "#FF6B6B", "background": "#330000" },
+        "Fatal": { "foreground": "#FFFFFF", "background": "#A00000", "bold": true }
+    },
+    "levelsHighContrast": {
+        "Trace": { "foreground": "#FFFFFF", "background": "#1F1F1F" },
+        "Debug": { "foreground": "#A3D8FF", "background": "#0D2540" },
+        "Warn":  { "foreground": "#FFE066", "background": "#5C4300", "bold": true },
+        "Error": { "foreground": "#FFFFFF", "background": "#7A0000", "bold": true },
+        "Fatal": { "foreground": "#FFFFFF", "background": "#D90000", "bold": true }
+    },
+    "table": {
+        "background": "#000000",
+        "alternateRowBackground": "#0A0A0A",
+        "selectionBackground": "#1F4470",
+        "selectionForeground": "#FFFFFF"
+    },
+    "anchorPalette": [
+        "#FF4D4D",
+        "#FF8800",
+        "#FFD23F",
+        "#33CC33",
+        "#00CCAA",
+        "#3399FF",
+        "#AA66FF",
+        "#FF66CC"
+    ],
+    "chrome": {
+        "window": "#0A0A0A",
+        "windowText": "#FFFFFF",
+        "text": "#FFFFFF",
+        "button": "#1F1F1F",
+        "buttonText": "#FFFFFF",
+        "placeholderText": "#888888",
+        "toolTipBase": "#0A0A0A",
+        "toolTipText": "#FFFFFF"
+    },
+    "app": {
+        "qtStyle": "fusion"
+    },
+    "levelColumnOverride": {
+        "headerIcon": ":/icons/gauge.svg",
+        "levels": {
+            "Trace":   { "icon": ":/icons/level-trace.svg" },
+            "Debug":   { "icon": ":/icons/level-debug.svg" },
+            "Info":    { "icon": ":/icons/level-info.svg",    "pillBackground": "#1F4470" },
+            "Warn":    { "icon": ":/icons/level-warn.svg",    "pillBackground": "#7A5C00" },
+            "Error":   { "icon": ":/icons/level-error.svg",   "pillBackground": "#7A0000" },
+            "Fatal":   { "icon": ":/icons/level-fatal.svg",   "pillBackground": "#A00000", "pillForeground": "#FFFFFF" },
+            "Unknown": { "icon": ":/icons/level-unknown.svg" }
+        }
+    }
+}

@@ -1,0 +1,58 @@
+{
+    "name": "Catppuccin Mocha",
+    "kind": "dark",
+    "levels": {
+        "Trace": { "foreground": "#6C7086", "background": "#181826" },
+        "Debug": { "foreground": "#89B4FA", "background": "#1D2335" },
+        "Info":  {},
+        "Warn":  { "foreground": "#F9E2AF", "background": "#272828" },
+        "Error": { "foreground": "#F38BA8", "background": "#2A222E" },
+        "Fatal": { "foreground": "#FFE5EC", "background": "#48253A", "bold": true }
+    },
+    "levelsHighContrast": {
+        "Warn":  { "foreground": "#F9E2AF", "background": "#34301C" },
+        "Error": { "foreground": "#F38BA8", "background": "#372029" },
+        "Fatal": { "foreground": "#FFE5EC", "background": "#7A2942", "bold": true }
+    },
+    "table": {
+        "background": "#1E1E2E",
+        "alternateRowBackground": "#181825",
+        "selectionBackground": "#45475A",
+        "selectionForeground": "#CDD6F4"
+    },
+    "anchorPalette": [
+        "#F38BA8",
+        "#FAB387",
+        "#F9E2AF",
+        "#A6E3A1",
+        "#94E2D5",
+        "#89B4FA",
+        "#CBA6F7",
+        "#F5C2E7"
+    ],
+    "chrome": {
+        "window": "#181825",
+        "windowText": "#CDD6F4",
+        "text": "#CDD6F4",
+        "button": "#313244",
+        "buttonText": "#CDD6F4",
+        "placeholderText": "#6C7086",
+        "toolTipBase": "#181825",
+        "toolTipText": "#CDD6F4"
+    },
+    "app": {
+        "qtStyle": "fusion"
+    },
+    "levelColumnOverride": {
+        "headerIcon": ":/icons/gauge.svg",
+        "levels": {
+            "Trace":   { "icon": ":/icons/level-trace.svg" },
+            "Debug":   { "icon": ":/icons/level-debug.svg" },
+            "Info":    { "icon": ":/icons/level-info.svg",    "pillBackground": "#2A3556" },
+            "Warn":    { "icon": ":/icons/level-warn.svg",    "pillBackground": "#5C5118" },
+            "Error":   { "icon": ":/icons/level-error.svg",   "pillBackground": "#682E3D" },
+            "Fatal":   { "icon": ":/icons/level-fatal.svg",   "pillBackground": "#7A2942", "pillForeground": "#FFE5EC" },
+            "Unknown": { "icon": ":/icons/level-unknown.svg" }
+        }
+    }
+}
