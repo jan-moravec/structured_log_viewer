@@ -188,6 +188,18 @@ public:
     /// columns, monostate slots, or unmapped dictionary entries.
     [[nodiscard]] std::optional<LogLevel> GetLevelForRow(size_t row, size_t columnIndex) const noexcept;
 
+    /// Like `GetLevelForRow` but preserves `LogLevel::Unknown` for
+    /// rows whose value exists in the level column but did not
+    /// resolve to a canonical level via the alias table (so the
+    /// icon-mode paint path can render a generic "unknown" glyph
+    /// instead of falling back to blank). `std::nullopt` is
+    /// reserved for "no value in this slot at all" (non-Level
+    /// columns, monostate, dictionary id out of range, etc.).
+    /// Sort / styling paths intentionally keep using
+    /// `GetLevelForRow` so unmapped values stay in the tail
+    /// bucket and are not styled.
+    [[nodiscard]] std::optional<LogLevel> GetDisplayLevelForRow(size_t row, size_t columnIndex) const noexcept;
+
     /// `EnumValueId -> LogLevel` cache for a `Type::Level` column.
     /// `ranks[id]` is the canonical level for dictionary entry `id`, or
     /// `LogLevel::Unknown` if the raw string did not resolve. Returns

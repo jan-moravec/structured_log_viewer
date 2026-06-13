@@ -17,7 +17,6 @@
         <file>themes/tokyo_night.json</file>
         <file>themes/catppuccin_mocha.json</file>
         <file>themes/paper_light.json</file>
-        <file>themes/high_contrast_dark.json</file>
         <!-- Lucide icons (ISC) for the primary toolbar; tinted at
              load-time by `icon_loader::MakeThemedIcon` so a single
              asset works for Light and Dark themes. -->

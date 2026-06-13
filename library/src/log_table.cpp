@@ -2135,6 +2135,16 @@ void LogTable::RefreshLevelRankCache(size_t columnIndex)
 
 std::optional<LogLevel> LogTable::GetLevelForRow(size_t row, size_t columnIndex) const noexcept
 {
+    const auto level = GetDisplayLevelForRow(row, columnIndex);
+    if (!level.has_value() || *level == LogLevel::Unknown)
+    {
+        return std::nullopt;
+    }
+    return level;
+}
+
+std::optional<LogLevel> LogTable::GetDisplayLevelForRow(size_t row, size_t columnIndex) const noexcept
+{
     const auto &columns = mConfiguration.Configuration().columns;
     if (columnIndex >= columns.size())
     {
@@ -2162,14 +2172,13 @@ std::optional<LogLevel> LogTable::GetLevelForRow(size_t row, size_t columnIndex)
     }
     if (static_cast<size_t>(*id) >= cacheIt->second.size())
     {
-        return std::nullopt;
+        // Slot has a value but the rank cache hasn't grown to include
+        // this dictionary entry yet (very rare race during streaming).
+        // Treat it as Unknown so the icon mode still renders a glyph
+        // rather than a blank cell.
+        return LogLevel::Unknown;
     }
-    const LogLevel level = cacheIt->second[static_cast<size_t>(*id)];
-    if (level == LogLevel::Unknown)
-    {
-        return std::nullopt;
-    }
-    return level;
+    return cacheIt->second[static_cast<size_t>(*id)];
 }
 
 const std::vector<LogLevel> *LogTable::LevelRankCache(size_t columnIndex) const noexcept

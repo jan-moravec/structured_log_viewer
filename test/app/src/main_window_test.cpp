@@ -7,6 +7,7 @@
 #include "filter_editor.hpp"
 #include "find_dock.hpp"
 #include "find_record_widget.hpp"
+#include "level_cell_delegate.hpp"
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
 #include "log_table_view.hpp"
@@ -75,10 +76,13 @@
 #include <QLockFile>
 #include <QMenu>
 #include <QMenuBar>
+#include <QPainter>
 #include <QPalette>
+#include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QStyleOptionViewItem>
 #include <QScopeGuard>
 #include <QScopedPointer>
 #include <QScrollBar>
@@ -4530,6 +4534,156 @@ private slots:
         QCOMPARE(restored, QStringLiteral("level"));
         const QVariant restoredAlignment = run.model->headerData(levelCol, Qt::Horizontal, Qt::TextAlignmentRole);
         QVERIFY2(!restoredAlignment.isValid(), "level header must drop the centre alignment when icon mode is off");
+    }
+
+    // Regression: `LevelCellDelegate::paint` must (1) actually
+    // render the pill in the inset rect (so themes that wire a
+    // `pillBackground` *show* it), (2) hard-clip to `option.rect`
+    // so a degenerate / narrow column can't bleed the pill or icon
+    // into the neighbouring cell, and (3) fall back to the base
+    // delegate's text rendering when icon mode is off.
+    //
+    // Why a pixmap round-trip: the previous coverage all stopped at
+    // model-side roles (`DecorationRole`, `ToolTipRole`) and at the
+    // sizing/alignment knobs, leaving the actual painter output
+    // unwatched. A pixel assertion in the pill region pins the
+    // visual contract: changing the inset constants, the clip, the
+    // icon-mode gate, or the pill brush resolution surfaces here.
+    void TestLevelCellDelegatePaintsPillAndClipsToRect()
+    {
+        QVERIFY(mTheme != nullptr);
+        // Dark ships an `Info` pill background (`#1E3A5F` per the
+        // theme JSON), which is what we'll assert against. Using a
+        // fixed theme rather than `Light` avoids pinning the test
+        // to the (currently lighter) light-theme pill choices.
+        mTheme->SetActiveSelection(QStringLiteral("Dark"));
+        QVERIFY(mTheme->HasLevelColumnOverride());
+        const QBrush expectedPill = mTheme->PillBackgroundFor(loglib::LogLevel::Info);
+        QVERIFY2(expectedPill.style() != Qt::NoBrush, "Dark theme must define an Info pill background");
+        const QColor expectedPillColor = expectedPill.color();
+        QVERIFY(expectedPillColor.isValid());
+
+        // Minimal fixture: one `info` row so the rank cache is
+        // populated and the delegate's `GetDisplayLevelForRow` call
+        // returns a real level.
+        const QStringList lines{
+            QStringLiteral(R"({"level": "info"})"),
+            QStringLiteral(R"({"level": "info"})"),
+        };
+        const TempJsonFile fixture(lines);
+        const StreamingRun run = RunStreaming(fixture.Path(), mTheme.data());
+        QCOMPARE(run.cancelled, false);
+        QVERIFY(run.model != nullptr);
+        run.model->SetShowLevelIcons(true);
+        QVERIFY(run.model->IsLevelIconModeActive());
+
+        const int levelCol = ColumnByHeader(*run.model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "fixture must resolve a level column");
+        const QModelIndex cell = run.model->index(0, levelCol);
+        QVERIFY(cell.isValid());
+
+        LevelCellDelegate delegate(mTheme.data());
+
+        // Pixmap is larger than `option.rect` so we can assert
+        // that the delegate's clip kept the paint inside the cell.
+        // The margin (`OUTSIDE_MARGIN`) is painted with a sentinel
+        // colour up front; if any sentinel pixel changes after the
+        // delegate runs, the clip leaked.
+        constexpr int CELL_WIDTH = 64;
+        constexpr int CELL_HEIGHT = 24;
+        constexpr int OUTSIDE_MARGIN = 8;
+        constexpr int PIXMAP_WIDTH = CELL_WIDTH + (2 * OUTSIDE_MARGIN);
+        constexpr int PIXMAP_HEIGHT = CELL_HEIGHT + (2 * OUTSIDE_MARGIN);
+        const QColor sentinel(0xFF, 0x00, 0xFF); // magenta -- not used by Dark theme.
+
+        QPixmap pix(PIXMAP_WIDTH, PIXMAP_HEIGHT);
+        pix.fill(sentinel);
+
+        QStyleOptionViewItem option;
+        option.rect = QRect(OUTSIDE_MARGIN, OUTSIDE_MARGIN, CELL_WIDTH, CELL_HEIGHT);
+        option.state = QStyle::State_Enabled;
+        option.widget = nullptr;
+
+        {
+            QPainter painter(&pix);
+            delegate.paint(&painter, option, cell);
+        }
+        const QImage image = pix.toImage();
+
+        // (1) The pill paint actually ran: at least one pixel
+        // inside the cell rect matches the theme's pill brush
+        // colour. We sample a small ring of pixels just inside the
+        // inset (where the rounded-rect fill is guaranteed solid),
+        // and consider the test passed as soon as one of them
+        // matches -- avoiding false negatives from anti-aliased
+        // edges or DPR rounding.
+        constexpr int PILL_PROBE_INSET = 6;
+        const QPoint sampleCentre = option.rect.center();
+        const std::array<QPoint, 5> samples = {
+            sampleCentre,
+            QPoint(option.rect.left() + PILL_PROBE_INSET, sampleCentre.y()),
+            QPoint(option.rect.right() - PILL_PROBE_INSET, sampleCentre.y()),
+            QPoint(sampleCentre.x(), option.rect.top() + PILL_PROBE_INSET),
+            QPoint(sampleCentre.x(), option.rect.bottom() - PILL_PROBE_INSET)
+        };
+        const auto colorsMatch = [](QRgb actual, const QColor &expected) {
+            // Anti-aliased edges + Qt's "approximate" pill fill
+            // (rounded-rect path) can shave a few units off any
+            // channel; allow a small tolerance per channel so the
+            // assertion is robust to a stylesheet that swaps the
+            // base painter compositing mode.
+            constexpr int CHANNEL_TOLERANCE = 3;
+            return std::abs(qRed(actual) - expected.red()) <= CHANNEL_TOLERANCE &&
+                   std::abs(qGreen(actual) - expected.green()) <= CHANNEL_TOLERANCE &&
+                   std::abs(qBlue(actual) - expected.blue()) <= CHANNEL_TOLERANCE;
+        };
+        const bool pillVisible = std::ranges::any_of(samples, [&](const QPoint &pt) {
+            return colorsMatch(image.pixel(pt), expectedPillColor);
+        });
+        QVERIFY2(pillVisible, "expected at least one pixel inside the cell to match the Dark Info pill brush");
+
+        // (2) The clip held: every pixel outside the cell rect is
+        // still the sentinel colour. Without `setClipRect` the
+        // pill's rounded corners or the icon paint could bleed
+        // into the margin, especially at fractional DPRs.
+        for (int y = 0; y < PIXMAP_HEIGHT; ++y)
+        {
+            for (int x = 0; x < PIXMAP_WIDTH; ++x)
+            {
+                if (option.rect.contains(x, y))
+                {
+                    continue;
+                }
+                const QRgb actual = image.pixel(x, y);
+                QVERIFY2(
+                    qRed(actual) == 0xFF && qGreen(actual) == 0x00 && qBlue(actual) == 0xFF,
+                    qPrintable(
+                        QStringLiteral("delegate painted outside option.rect at (%1, %2); RGBA=#%3")
+                            .arg(x).arg(y).arg(QString::number(actual, 16))
+                    )
+                );
+            }
+        }
+
+        // (3) With icon mode off, the delegate self-gates and
+        // delegates to the base `QStyledItemDelegate::paint`. We
+        // observe the gate by clearing the cell again and
+        // re-painting: the pill colour must no longer appear at
+        // the centre sample. (We don't pin the *exact* fallback
+        // colour because it depends on the active palette; the
+        // absence of the pill colour is the contract.)
+        run.model->SetShowLevelIcons(false);
+        QVERIFY(!run.model->IsLevelIconModeActive());
+        pix.fill(sentinel);
+        {
+            QPainter painter(&pix);
+            delegate.paint(&painter, option, cell);
+        }
+        const QImage offModeImage = pix.toImage();
+        QVERIFY2(
+            !colorsMatch(offModeImage.pixel(sampleCentre), expectedPillColor),
+            "with icon mode disabled the delegate must not paint the pill"
+        );
     }
 
     // Regression: `LogTableView` must install `LogHeaderView` as its

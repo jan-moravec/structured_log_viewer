@@ -11,7 +11,7 @@
     },
     "levelsHighContrast": {
         "Warn":  { "foreground": "#F9E2AF", "background": "#34301C" },
-        "Error": { "foreground": "#F38BA8", "background": "#372029" },
+        "Error": { "foreground": "#F38BA8", "background": "#4A1F2D" },
         "Fatal": { "foreground": "#FFE5EC", "background": "#7A2942", "bold": true }
     },
     "table": {

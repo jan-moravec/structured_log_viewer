@@ -1559,6 +1559,16 @@ std::optional<loglib::LogLevel> LogModel::LevelForRow(int row) const noexcept
     return mLogTable.GetLevelForRow(static_cast<size_t>(row), static_cast<size_t>(levelCol));
 }
 
+std::optional<loglib::LogLevel> LogModel::DisplayLevelForRow(int row) const noexcept
+{
+    const int levelCol = FirstLevelColumnIndex();
+    if (levelCol < 0 || row < 0)
+    {
+        return std::nullopt;
+    }
+    return mLogTable.GetDisplayLevelForRow(static_cast<size_t>(row), static_cast<size_t>(levelCol));
+}
+
 int LogModel::FirstLevelColumnIndex() const noexcept
 {
     if (mFirstLevelColumnCache == LEVEL_COLUMN_UNCACHED)
@@ -1719,8 +1729,8 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
     {
         // Cheap column-index gate first: every non-level cell on
         // every paint must skip this branch without paying the
-        // `LevelForRow` resolve. Cache lookup is amortised by
-        // `FirstLevelColumnIndex`.
+        // `DisplayLevelForRow` resolve. Cache lookup is amortised
+        // by `FirstLevelColumnIndex`.
         if (!IsLevelIconModeActive())
         {
             return {};
@@ -1730,7 +1740,11 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         {
             return {};
         }
-        const auto level = LevelForRow(index.row());
+        // `DisplayLevelForRow` (not `LevelForRow`) so an unmapped
+        // value (e.g. raw `"WAT"`) surfaces as `LogLevel::Unknown`
+        // and gets the generic glyph; nullopt remains "no value at
+        // all", which paints blank.
+        const auto level = DisplayLevelForRow(index.row());
         if (!level.has_value())
         {
             return {};
@@ -1761,7 +1775,11 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         {
             return {};
         }
-        const auto level = LevelForRow(index.row());
+        // `DisplayLevelForRow` so unmapped values get the
+        // "Unknown" tooltip rather than falling back to Qt's
+        // elision-only behaviour (which would show nothing for a
+        // narrow icon-mode column).
+        const auto level = DisplayLevelForRow(index.row());
         if (!level.has_value())
         {
             return {};

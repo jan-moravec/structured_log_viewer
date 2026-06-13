@@ -5449,16 +5449,16 @@ void MainWindow::OnThemeChanged()
     RefreshThemedIcons();
 
     // A theme switch can flip icon mode on / off
-    // (`Theme::levelColumnOverride.has_value()`). The delegate's
-    // self-gate keeps the cell painting correct either way, but
-    // the call also reacts to a level column having shifted (e.g.
-    // a theme reload that triggered a re-parse): the delegate is
-    // re-attached on whichever column the model now reports as
-    // the first `Type::Level`, and detached from the previous
-    // column if it moved. The delegate is *not* detached when
-    // icon mode flips off without a column change -- the
-    // self-gate handles that fast-path (forwards to the base
-    // class on every paint).
+    // (`Theme::levelColumnOverride.has_value()`). The call
+    // reacts to two things: the model's `IsLevelIconModeActive`
+    // having changed (delegate gets attached or fully detached
+    // for the text-mode paint fast-path), and the first
+    // `Type::Level` column index having shifted (delegate
+    // re-attaches to the new column and detaches from the old).
+    // The delegate's own self-gate is still a safety net for
+    // mid-paint flips, but the explicit detach here avoids
+    // routing every text-mode paint through the proxy-chain
+    // walk inside the delegate.
     ApplyLevelCellDelegate();
 }
 
@@ -6512,7 +6512,14 @@ void MainWindow::ApplyLevelCellDelegate()
         return;
     }
 
-    const int newColumn = mModel->FirstLevelColumnIndex();
+    // Gate on icon-mode-active: when the user pref / theme says
+    // text mode, we detach the delegate entirely rather than
+    // leaving it attached to forward each paint through its
+    // self-gate. Cheap correctness + a real fast-path win for
+    // text-mode sessions (every paint skips the proxy-chain walk
+    // and the `IsLevelIconModeActive` check inside the delegate).
+    const bool iconMode = mModel->IsLevelIconModeActive();
+    const int newColumn = iconMode ? mModel->FirstLevelColumnIndex() : -1;
 
     // Detach from the previous column first when it has moved.
     // Without this a reload that lands the level column at a

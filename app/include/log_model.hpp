@@ -357,6 +357,16 @@ private:
     /// Foreground / Font role branches in `data()`.
     [[nodiscard]] std::optional<loglib::LogLevel> LevelForRow(int row) const noexcept;
 
+    /// Like `LevelForRow` but surfaces `LogLevel::Unknown` for rows
+    /// whose value exists in the level column but did not resolve
+    /// to a canonical level via the alias table. Used by the
+    /// icon-mode paint paths (`DecorationRole`, `ToolTipRole`, and
+    /// the level-cell delegate) so the generic "unknown" glyph is
+    /// reachable for unmapped values. nullopt is reserved for "no
+    /// value at all" in the level slot, which keeps blank cells
+    /// truly blank.
+    [[nodiscard]] std::optional<loglib::LogLevel> DisplayLevelForRow(int row) const noexcept;
+
     /// Linear scan for the first `Type::Level` column. Returns
     /// `LEVEL_COLUMN_NONE` when none match.
     [[nodiscard]] int ComputeFirstLevelColumnIndex() const noexcept;

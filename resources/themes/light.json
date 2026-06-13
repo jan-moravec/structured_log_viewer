@@ -10,8 +10,8 @@
         "Fatal": { "foreground": "#7F1D1D", "background": "#FACBCB", "bold": true }
     },
     "levelsHighContrast": {
-        "Warn":  { "foreground": "#D97706", "background": "#FEF8E0" },
-        "Error": { "foreground": "#B91C1C", "background": "#FECACA" },
+        "Warn":  { "foreground": "#D97706", "background": "#FFE49E" },
+        "Error": { "foreground": "#B91C1C", "background": "#FEB2B2" },
         "Fatal": { "foreground": "#7F1D1D", "background": "#FCA5A5", "bold": true }
     },
     "table": {

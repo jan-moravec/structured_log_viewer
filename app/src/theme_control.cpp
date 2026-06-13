@@ -75,7 +75,6 @@ constexpr char BUILTIN_DRACULA_PATH[] = ":/themes/dracula.json";
 constexpr char BUILTIN_TOKYO_NIGHT_PATH[] = ":/themes/tokyo_night.json";
 constexpr char BUILTIN_CATPPUCCIN_MOCHA_PATH[] = ":/themes/catppuccin_mocha.json";
 constexpr char BUILTIN_PAPER_LIGHT_PATH[] = ":/themes/paper_light.json";
-constexpr char BUILTIN_HIGH_CONTRAST_DARK_PATH[] = ":/themes/high_contrast_dark.json";
 
 /// Linear `lerp(@p fg, @p bg, @p t)` in sRGB. Used to dim Disabled
 /// text roles toward their surrounding surface.
@@ -105,13 +104,13 @@ QBrush BrushFromHex(const std::optional<std::string> &hex)
     const QColor color(hexQ);
     if (!color.isValid())
     {
-        // A non-empty hex that fails to parse is almost always a
-        // typo (e.g. `#XYZ`, missing `#`, wrong length). Silent
-        // fallback was previously masking these; surface the
-        // offender so users can spot the bad field in their theme
-        // JSON. Not throwing -- a malformed colour shouldn't
-        // refuse the rest of the theme.
-        qWarning("Theme hex colour `%s` did not parse; using palette default.", qUtf8Printable(hexQ));
+        // Silent fallback here: `WarnOnUnparsableHex` emits a
+        // single warning per bad hex at theme-discovery time. We
+        // don't re-warn from this hot path because `BuildStyleCache`
+        // runs on every active-theme change (and on every theme
+        // toggle, font change, OS scheme flip, ...). Re-warning
+        // here would spam the log with the same message N times
+        // for each broken field.
         return QBrush{};
     }
     return QBrush{color};
@@ -181,7 +180,7 @@ void WarnOnUnknownLevelKeys(const QString &source, const loglib::Theme &theme)
     }
     if (theme.levelColumnOverride.has_value())
     {
-        for (const auto &[key, value] : theme.levelColumnOverride->levels)
+        for (const auto &[key, ignored] : theme.levelColumnOverride->levels)
         {
             if (!IsCanonicalLevelKey(key))
             {
@@ -193,6 +192,77 @@ void WarnOnUnknownLevelKeys(const QString &source, const loglib::Theme &theme)
                     key.c_str()
                 );
             }
+        }
+    }
+}
+
+/// Walk every hex-bearing field in @p theme and emit one
+/// `qWarning` per unparseable colour. Called once per theme at
+/// discovery time so the warnings name the offending field path
+/// (`chrome.toolTipBase`, `levels.Warn.foreground`, ...) and don't
+/// spam the log on every `BuildStyleCache` call (theme switch,
+/// font change, OS scheme flip).
+///
+/// Empty / nullopt values are treated as "use palette default",
+/// not as an error. Only non-empty strings that `QColor` rejects
+/// trigger a warning.
+void WarnOnUnparsableHex(const QString &source, const loglib::Theme &theme)
+{
+    auto check = [&](const std::string &fieldPath, const std::optional<std::string> &hex) {
+        if (!hex.has_value() || hex->empty())
+        {
+            return;
+        }
+        const QString hexQ = QString::fromStdString(*hex);
+        if (QColor(hexQ).isValid())
+        {
+            return;
+        }
+        qWarning(
+            "Theme %s field `%s` has hex `%s` that did not parse; using palette default.",
+            qUtf8Printable(source),
+            fieldPath.c_str(),
+            qUtf8Printable(hexQ)
+        );
+    };
+
+    for (const auto &[key, style] : theme.levels)
+    {
+        const std::string base = "levels." + key + ".";
+        check(base + "foreground", style.foreground);
+        check(base + "background", style.background);
+    }
+    for (const auto &[key, style] : theme.levelsHighContrast)
+    {
+        const std::string base = "levelsHighContrast." + key + ".";
+        check(base + "foreground", style.foreground);
+        check(base + "background", style.background);
+    }
+    check("table.background", theme.table.background);
+    check("table.alternateRowBackground", theme.table.alternateRowBackground);
+    check("table.selectionBackground", theme.table.selectionBackground);
+    check("table.selectionForeground", theme.table.selectionForeground);
+    check("table.headerBackground", theme.table.headerBackground);
+    check("table.headerForeground", theme.table.headerForeground);
+    check("chrome.window", theme.chrome.window);
+    check("chrome.windowText", theme.chrome.windowText);
+    check("chrome.text", theme.chrome.text);
+    check("chrome.button", theme.chrome.button);
+    check("chrome.buttonText", theme.chrome.buttonText);
+    check("chrome.placeholderText", theme.chrome.placeholderText);
+    check("chrome.toolTipBase", theme.chrome.toolTipBase);
+    check("chrome.toolTipText", theme.chrome.toolTipText);
+    for (size_t i = 0; i < theme.anchorPalette.size(); ++i)
+    {
+        check("anchorPalette[" + std::to_string(i) + "]", std::optional<std::string>(theme.anchorPalette[i]));
+    }
+    if (theme.levelColumnOverride.has_value())
+    {
+        for (const auto &[key, levelOverride] : theme.levelColumnOverride->levels)
+        {
+            const std::string base = "levelColumnOverride.levels." + key + ".";
+            check(base + "pillBackground", levelOverride.pillBackground);
+            check(base + "pillForeground", levelOverride.pillForeground);
         }
     }
 }
@@ -763,6 +833,7 @@ void ThemeControl::DiscoverThemes()
             }
         }
         WarnOnUnknownLevelKeys(path, *theme);
+        WarnOnUnparsableHex(path, *theme);
         // `QFileInfo::absolutePath()` works for both qrc paths
         // (`":/themes/dark.json"` -> `":/themes"`) and on-disk
         // paths, so the same lookup feeds both built-ins and user
@@ -773,7 +844,7 @@ void ThemeControl::DiscoverThemes()
     };
 
     // Built-ins first, so a same-named user file overrides them.
-    constexpr std::array<const char *, 16> BUILTIN_PATHS = {
+    constexpr std::array<const char *, 15> BUILTIN_PATHS = {
         BUILTIN_LIGHT_PATH,
         BUILTIN_DARK_PATH,
         BUILTIN_GITHUB_DARK_PATH,
@@ -789,7 +860,6 @@ void ThemeControl::DiscoverThemes()
         BUILTIN_TOKYO_NIGHT_PATH,
         BUILTIN_CATPPUCCIN_MOCHA_PATH,
         BUILTIN_PAPER_LIGHT_PATH,
-        BUILTIN_HIGH_CONTRAST_DARK_PATH
     };
     for (const char *path : BUILTIN_PATHS)
     {
@@ -1287,20 +1357,12 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
         QColor pillFgColor;
         if (entry->pillForeground.has_value() && !entry->pillForeground->empty())
         {
-            const QString hexQ = QString::fromStdString(*entry->pillForeground);
-            pillFgColor = QColor(hexQ);
-            if (!pillFgColor.isValid())
-            {
-                // Match `BrushFromHex`'s warning surface so a typo
-                // in `pillForeground` is just as discoverable as
-                // one in `LevelStyle::foreground`. We don't bail
-                // -- the chain falls back to `LevelStyle.foreground`
-                // then `WindowText`, both of which the user expects.
-                qWarning(
-                    "Theme pillForeground hex `%s` did not parse; falling back to LevelStyle foreground / palette.",
-                    qUtf8Printable(hexQ)
-                );
-            }
+            // Parse only; `WarnOnUnparsableHex` already emits a
+            // single discovery-time warning per bad hex (so a typo
+            // surfaces once, not on every `BuildStyleCache` call).
+            // The fallback chain below is identical regardless of
+            // why `isValid()` is false.
+            pillFgColor = QColor(QString::fromStdString(*entry->pillForeground));
         }
         if (!pillFgColor.isValid())
         {

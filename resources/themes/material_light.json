@@ -10,9 +10,9 @@
         "Fatal": { "foreground": "#B71C1C", "background": "#FBD9DC", "bold": true }
     },
     "levelsHighContrast": {
-        "Warn":  { "foreground": "#C17E00", "background": "#FFF8E1" },
-        "Error": { "foreground": "#E53935", "background": "#FFEBEE" },
-        "Fatal": { "foreground": "#B71C1C", "background": "#FFCDD2", "bold": true }
+        "Warn":  { "foreground": "#C17E00", "background": "#FFE69D" },
+        "Error": { "foreground": "#E53935", "background": "#FFCAD0" },
+        "Fatal": { "foreground": "#B71C1C", "background": "#F5A2A8", "bold": true }
     },
     "table": {
         "background": "#FAFAFA",

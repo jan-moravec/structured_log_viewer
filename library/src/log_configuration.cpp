@@ -351,6 +351,19 @@ bool ShouldBubbleLevelColumn(const LogConfiguration &config, size_t columnIndex)
     {
         return false;
     }
+    // Multi-Level guard: only one Level column gets the canonical
+    // slot. If the slot is already occupied by a `Type::Level`
+    // column, leave this one where it is -- "first promoted wins"
+    // gives a deterministic outcome for payloads that carry more
+    // than one Level-typed key (e.g. `level` *and* `severity`)
+    // and have all of them promoted in the same batch. Without
+    // this guard, draining multiple queued bubbles would shuffle
+    // the previous occupant of the canonical slot back out.
+    if (CANONICAL_LEVEL_COLUMN_INDEX < config.columns.size() &&
+        config.columns[CANONICAL_LEVEL_COLUMN_INDEX].type == LogConfiguration::Type::Level)
+    {
+        return false;
+    }
     return true;
 }
 

@@ -761,9 +761,9 @@ private slots:
         const auto listings = mTheme->AvailableThemes();
         // The exact count is intentionally not pinned (so adding
         // another built-in doesn't require an unrelated test edit),
-        // but we expect at least the 16 named themes after the
+        // but we expect at least the 15 named themes after the
         // gallery expansion.
-        QVERIFY(listings.size() >= 16);
+        QVERIFY(listings.size() >= 15);
 
         const QStringList expected = {
             QStringLiteral("Light"),
@@ -781,7 +781,6 @@ private slots:
             QStringLiteral("Tokyo Night"),
             QStringLiteral("Catppuccin Mocha"),
             QStringLiteral("Paper Light"),
-            QStringLiteral("High Contrast Dark"),
         };
         for (const QString &name : expected)
         {

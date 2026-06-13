@@ -157,7 +157,12 @@ void LevelCellDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
         return;
     }
 
-    const auto level = logModel->Table().GetLevelForRow(
+    // `GetDisplayLevelForRow` (not `GetLevelForRow`) so an unmapped
+    // raw value surfaces as `LogLevel::Unknown` -- the delegate
+    // then paints the theme's generic "unknown" glyph rather than
+    // falling through to text rendering. nullopt still means "no
+    // value at all" (truly blank cell).
+    const auto level = logModel->Table().GetDisplayLevelForRow(
         static_cast<size_t>(sourceIndex.row()), static_cast<size_t>(sourceIndex.column())
     );
     if (!level.has_value())
@@ -189,6 +194,13 @@ void LevelCellDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
 
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
+    // Hard-clip to the cell so a degenerate column (user dragged
+    // the level column narrower than the pill's minimum diameter)
+    // can't bleed the pill / icon into the neighbour column.
+    // `sizeHint` already pushes back on shrinking below the
+    // icon-only width, but Qt honours manual section resizes
+    // beyond the hint.
+    painter->setClipRect(option.rect);
 
     // Compute the pill rectangle: cell rect inset by
     // `PILL_PADDING_PX`. Width is clamped so the pill is never
@@ -214,7 +226,7 @@ void LevelCellDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
     const QBrush pillBackground = mTheme->PillBackgroundFor(*level);
     if (pillBackground.style() != Qt::NoBrush)
     {
-        // Tip a clip path so anti-aliased pill edges stay inside
+        // Use a clip path so anti-aliased pill edges stay inside
         // the inset rect even on fractional DPRs.
         QPainterPath path;
         path.addRoundedRect(pillRect, PILL_CORNER_RADIUS_PX, PILL_CORNER_RADIUS_PX);
