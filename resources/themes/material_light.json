@@ -2,9 +2,14 @@
     "name": "Material Light",
     "kind": "light",
     "levels": {
-        "Trace": { "foreground": "#90A4AE", "background": "#ECEFF1" },
-        "Debug": { "foreground": "#3A77B6", "background": "#E3F2FD" },
+        "Trace": { "foreground": "#90A4AE", "background": "#F3F5F6" },
+        "Debug": { "foreground": "#3A77B6", "background": "#EFF6FB" },
         "Info":  {},
+        "Warn":  { "foreground": "#A56F00", "background": "#FCF6E6" },
+        "Error": { "foreground": "#E53935", "background": "#FCEEF1" },
+        "Fatal": { "foreground": "#B71C1C", "background": "#FBD9DC", "bold": true }
+    },
+    "levelsHighContrast": {
         "Warn":  { "foreground": "#C17E00", "background": "#FFF8E1" },
         "Error": { "foreground": "#E53935", "background": "#FFEBEE" },
         "Fatal": { "foreground": "#B71C1C", "background": "#FFCDD2", "bold": true }

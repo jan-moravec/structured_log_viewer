@@ -2,9 +2,14 @@
     "name": "Material Dark",
     "kind": "dark",
     "levels": {
-        "Trace": { "foreground": "#546E7A", "background": "#1F272A" },
-        "Debug": { "foreground": "#82AAFF", "background": "#1A2332" },
+        "Trace": { "foreground": "#546E7A", "background": "#222D31" },
+        "Debug": { "foreground": "#82AAFF", "background": "#1F2A36" },
         "Info":  {},
+        "Warn":  { "foreground": "#FFCB6B", "background": "#2C2E25" },
+        "Error": { "foreground": "#F07178", "background": "#322830" },
+        "Fatal": { "foreground": "#FFCDD2", "background": "#421F2D", "bold": true }
+    },
+    "levelsHighContrast": {
         "Warn":  { "foreground": "#FFCB6B", "background": "#332A18" },
         "Error": { "foreground": "#F07178", "background": "#3A1F22" },
         "Fatal": { "foreground": "#FFCDD2", "background": "#5C1B25", "bold": true }

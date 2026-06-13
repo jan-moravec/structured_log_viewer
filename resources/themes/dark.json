@@ -5,6 +5,11 @@
         "Trace": { "foreground": "#64748B", "background": "#1F2228" },
         "Debug": { "foreground": "#94A3B8", "background": "#20252E" },
         "Info":  {},
+        "Warn":  { "foreground": "#FCD34D", "background": "#272620" },
+        "Error": { "foreground": "#FCA5A5", "background": "#352121" },
+        "Fatal": { "foreground": "#FECACA", "background": "#4A1E1E", "bold": true }
+    },
+    "levelsHighContrast": {
         "Warn":  { "foreground": "#FCD34D", "background": "#2A2418" },
         "Error": { "foreground": "#FCA5A5", "background": "#4C1D1D" },
         "Fatal": { "foreground": "#FECACA", "background": "#7F1D1D", "bold": true }

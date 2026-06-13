@@ -2,9 +2,14 @@
     "name": "Monokai Dark",
     "kind": "dark",
     "levels": {
-        "Trace": { "foreground": "#75715E", "background": "#2D2E27" },
-        "Debug": { "foreground": "#66D9EF", "background": "#1E2A2D" },
+        "Trace": { "foreground": "#75715E", "background": "#2A2B25" },
+        "Debug": { "foreground": "#66D9EF", "background": "#222927" },
         "Info":  {},
+        "Warn":  { "foreground": "#FD971F", "background": "#302C22" },
+        "Error": { "foreground": "#F92672", "background": "#312027" },
+        "Fatal": { "foreground": "#FFAAC1", "background": "#42202F", "bold": true }
+    },
+    "levelsHighContrast": {
         "Warn":  { "foreground": "#FD971F", "background": "#3A2F1A" },
         "Error": { "foreground": "#F92672", "background": "#3A1A22" },
         "Fatal": { "foreground": "#FFAAC1", "background": "#5C1B30", "bold": true }

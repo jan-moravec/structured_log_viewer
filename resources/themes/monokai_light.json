@@ -2,9 +2,14 @@
     "name": "Monokai Light",
     "kind": "light",
     "levels": {
-        "Trace": { "foreground": "#7C7361", "background": "#F0E9C9" },
-        "Debug": { "foreground": "#1C8CA8", "background": "#D5EBF0" },
+        "Trace": { "foreground": "#7C7361", "background": "#F5EFCA" },
+        "Debug": { "foreground": "#1C8CA8", "background": "#EAEFD0" },
         "Info":  {},
+        "Warn":  { "foreground": "#B8740A", "background": "#FAEEC8" },
+        "Error": { "foreground": "#E14775", "background": "#F8E0CF" },
+        "Fatal": { "foreground": "#9E1F4E", "background": "#F4C9C9", "bold": true }
+    },
+    "levelsHighContrast": {
         "Warn":  { "foreground": "#CC7A0A", "background": "#FBE6CA" },
         "Error": { "foreground": "#E14775", "background": "#F8D5DD" },
         "Fatal": { "foreground": "#9E1F4E", "background": "#F2A0B8", "bold": true }

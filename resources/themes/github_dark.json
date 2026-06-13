@@ -2,9 +2,14 @@
     "name": "GitHub Dark",
     "kind": "dark",
     "levels": {
-        "Trace": { "foreground": "#6E7681", "background": "#161B22" },
-        "Debug": { "foreground": "#79C0FF", "background": "#0D1F2D" },
+        "Trace": { "foreground": "#6E7681", "background": "#10151C" },
+        "Debug": { "foreground": "#79C0FF", "background": "#0D1822" },
         "Info":  {},
+        "Warn":  { "foreground": "#D29922", "background": "#231B0B" },
+        "Error": { "foreground": "#F85149", "background": "#251313" },
+        "Fatal": { "foreground": "#FFDCD7", "background": "#4F1414", "bold": true }
+    },
+    "levelsHighContrast": {
         "Warn":  { "foreground": "#D29922", "background": "#3D2E0A" },
         "Error": { "foreground": "#F85149", "background": "#3D1212" },
         "Fatal": { "foreground": "#FFDCD7", "background": "#7F1D1D", "bold": true }

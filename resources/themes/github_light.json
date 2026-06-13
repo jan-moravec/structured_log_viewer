@@ -2,9 +2,14 @@
     "name": "GitHub Light",
     "kind": "light",
     "levels": {
-        "Trace": { "foreground": "#6E7781", "background": "#F6F8FA" },
-        "Debug": { "foreground": "#0969DA", "background": "#DDF4FF" },
+        "Trace": { "foreground": "#6E7781", "background": "#FAFBFC" },
+        "Debug": { "foreground": "#0969DA", "background": "#ECF7FB" },
         "Info":  {},
+        "Warn":  { "foreground": "#9A6700", "background": "#FFFCE3" },
+        "Error": { "foreground": "#CF222E", "background": "#FFF3F2" },
+        "Fatal": { "foreground": "#82071E", "background": "#FFE2E1", "bold": true }
+    },
+    "levelsHighContrast": {
         "Warn":  { "foreground": "#9A6700", "background": "#FFF8C5" },
         "Error": { "foreground": "#CF222E", "background": "#FFEBE9" },
         "Fatal": { "foreground": "#82071E", "background": "#FFCECB", "bold": true }
