@@ -751,6 +751,53 @@ private slots:
         QVERIFY(!mTheme->IconFor(loglib::LogLevel::Warn).isNull());
     }
 
+    /// Every built-in theme listed in the index must parse cleanly,
+    /// ship a non-empty ``levels`` map, and (post subtle-default
+    /// rework) carry a non-empty ``levelsHighContrast`` map. Catches
+    /// typos in the new theme JSONs at test time instead of when a
+    /// user picks a theme that fails to load.
+    void TestThemeControlBuiltInThemesAreWellFormed()
+    {
+        const auto listings = mTheme->AvailableThemes();
+        // The exact count is intentionally not pinned (so adding
+        // another built-in doesn't require an unrelated test edit),
+        // but we expect at least the 16 named themes after the
+        // gallery expansion.
+        QVERIFY(listings.size() >= 16);
+
+        const QStringList expected = {
+            QStringLiteral("Light"),
+            QStringLiteral("Dark"),
+            QStringLiteral("GitHub Dark"),
+            QStringLiteral("GitHub Light"),
+            QStringLiteral("Material Dark"),
+            QStringLiteral("Material Light"),
+            QStringLiteral("Monokai Dark"),
+            QStringLiteral("Monokai Light"),
+            QStringLiteral("Solarized Dark"),
+            QStringLiteral("Solarized Light"),
+            QStringLiteral("Nord"),
+            QStringLiteral("Dracula"),
+            QStringLiteral("Tokyo Night"),
+            QStringLiteral("Catppuccin Mocha"),
+            QStringLiteral("Paper Light"),
+            QStringLiteral("High Contrast Dark"),
+        };
+        for (const QString &name : expected)
+        {
+            const auto loaded = mTheme->Load(name);
+            QVERIFY2(loaded.has_value(), qUtf8Printable(QStringLiteral("missing built-in: ") + name));
+            QVERIFY2(
+                !loaded->levels.empty(),
+                qUtf8Printable(QStringLiteral("built-in has empty levels: ") + name)
+            );
+            QVERIFY2(
+                !loaded->levelsHighContrast.empty(),
+                qUtf8Printable(QStringLiteral("built-in has empty levelsHighContrast: ") + name)
+            );
+        }
+    }
+
     /// `SetHighContrast(true)` projects `levelsHighContrast` brushes
     /// over the subtle defaults; `false` restores them. Toggling to
     /// the same value is a no-op (no signal, no rebuild).
