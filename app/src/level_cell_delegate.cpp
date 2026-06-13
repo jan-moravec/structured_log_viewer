@@ -187,7 +187,13 @@ void LevelCellDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
     initStyleOption(&fillOption, index);
     fillOption.text = QString();
     fillOption.icon = QIcon();
-    fillOption.features &= ~QStyleOptionViewItem::HasDecoration;
+    // Also clear `HasDisplay`: with an empty `text` the QStyle still
+    // reserves a text sub-rect (focus rect layout, sub-element
+    // calculations) when the feature flag is set. Pairing the flag
+    // clear with the field clear matches the "no text, no icon"
+    // intent and keeps focus/selection geometry consistent with the
+    // pill-only render.
+    fillOption.features &= ~(QStyleOptionViewItem::HasDecoration | QStyleOptionViewItem::HasDisplay);
     const QWidget *widget = option.widget;
     const QStyle *style = (widget != nullptr) ? widget->style() : QApplication::style();
     style->drawControl(QStyle::CE_ItemViewItem, &fillOption, painter, widget);

@@ -537,14 +537,20 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
         mLevelCellDelegate = new LevelCellDelegate(mTheme, this);
 
         // Hook every signal that can change `FirstLevelColumnIndex`:
-        // a model reset (config Load, BeginStreaming teardown), a
-        // column move (header drag, Time/Level auto-bubble), an
+        // a model reset (config Load, BeginStreaming teardown), an
         // insert / remove (config edit), and enum-column promotion
         // / demotion (this is what flips a previously-string column
         // into `Type::Level`, the most common reason the first level
         // column index changes during streaming).
+        //
+        // `columnsMoved` is deliberately NOT wired here: the move
+        // path (header drag, Time/Level auto-bubble) also needs
+        // `OnSourceColumnsMoved` to remap `mFilters` before the view
+        // repaints. Running the delegate reapply *after* the filter
+        // remap keeps the per-paint state consistent, so the
+        // reapply lives as a tail call inside `OnSourceColumnsMoved`
+        // instead of as a parallel slot here.
         connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::ApplyLevelCellDelegate);
-        connect(mModel, &QAbstractItemModel::columnsMoved, this, &MainWindow::ApplyLevelCellDelegate);
         connect(mModel, &QAbstractItemModel::columnsInserted, this, &MainWindow::ApplyLevelCellDelegate);
         connect(mModel, &QAbstractItemModel::columnsRemoved, this, &MainWindow::ApplyLevelCellDelegate);
         // The existing `enumColumnsChanged` slot (defined further
@@ -1222,6 +1228,14 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
         QSettings settings;
         const bool showLevelIcons = settings.value(QStringLiteral("ui/showLevelIcons"), true).toBool();
         mModel->SetShowLevelIcons(showLevelIcons);
+        // No explicit `ApplyLevelCellDelegate()` follow-up needed:
+        // the model has no columns at ctor time, so a call here
+        // would short-circuit on `FirstLevelColumnIndex() == -1`.
+        // The actual delegate attach happens later via the
+        // `modelReset` / `columnsInserted` connections wired in the
+        // theme block above -- which fire on every column-bearing
+        // path (streaming `AppendBatch`, cold `ApplyLoadedConfiguration`,
+        // post-Open `NotifyConfigurationReplaced`).
     }
 
     // Run after every action is wired so they can all be decorated in one pass.
@@ -6064,6 +6078,15 @@ void MainWindow::OnSourceColumnsMoved(
     // Syncing earlier could flash the funnel on the wrong column
     // while hidden flags are still mid-flight.
     ApplyColumnVisibility();
+
+    // Reapply the level-cell delegate AFTER the filter remap above:
+    // the move can shift the first `Type::Level` column index, and
+    // running the reapply here (rather than as a parallel
+    // `columnsMoved` slot) guarantees the filter store is already
+    // remapped if any future delegate work ever needs to consult
+    // filters. Cheap when nothing changed -- `ApplyLevelCellDelegate`
+    // early-outs on `mInstalledLevelDelegateColumn == newColumn`.
+    ApplyLevelCellDelegate();
 }
 
 void MainWindow::ResetHeaderToIdentity()

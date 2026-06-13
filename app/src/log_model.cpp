@@ -1071,9 +1071,9 @@ QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role
         // `header` to a non-empty string.
         if (IsLevelIconModeActive() && section == FirstLevelColumnIndex())
         {
-            if (auto override = mTheme->LevelColumnHeaderTextOverride(); override.has_value())
+            if (auto headerTextOverride = mTheme->LevelColumnHeaderTextOverride(); headerTextOverride.has_value())
             {
-                return *override;
+                return *headerTextOverride;
             }
             if (!mTheme->LevelColumnHeaderIcon().isNull())
             {

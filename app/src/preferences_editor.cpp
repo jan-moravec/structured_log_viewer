@@ -203,6 +203,14 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
         "the plain level text. Themes opt in by shipping a `levelColumnOverride` block; every "
         "built-in theme does. The raw level text is still available for copy and Find searches."
     );
+    // Live preview: every toggle emits the change signal so
+    // `MainWindow` updates the model + delegate immediately. Cancel
+    // / close reverts via the same signal with `mInitialShowLevelIcons`.
+    // `UpdateFields()` uses `QSignalBlocker` to set the initial state
+    // without firing this slot.
+    connect(mShowLevelIconsCheckBox, &QCheckBox::toggled, this, [this](bool on) {
+        emit showLevelIconsChanged(on);
+    });
 
     mHighContrastLevelsCheckBox = new QCheckBox("High contrast levels", this);
     // Default tooltip mirrors `mShowLevelIconsCheckBox`'s pattern;
@@ -214,6 +222,10 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
         "instead of the subtle defaults. Useful for triage screens where Warn/Error/Fatal rows need "
         "to jump out. Themes opt in by shipping a `levelsHighContrast` block; every built-in does."
     );
+    // Same live-preview pattern as the level-icons checkbox above.
+    connect(mHighContrastLevelsCheckBox, &QCheckBox::toggled, this, [this](bool on) {
+        emit highContrastLevelsChanged(on);
+    });
     mRestoreLastSessionCheckBox = new QCheckBox("Restore last session on launch", this);
     mRestoreLastSessionCheckBox->setToolTip(
         "When enabled, the most recent auto-saved session is reopened automatically on startup. "
@@ -313,38 +325,32 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
         StreamingControl::SaveConfiguration();
         SessionHistoryManager::SetRestoreLastSessionOnLaunch(mRestoreLastSessionCheckBox->isChecked());
         SessionHistoryManager::SetMaxEntries(mRecentSessionsMaxSpinBox->value());
-        // Persist + emit the level-icon toggle. Default-true on
-        // first read keeps the new behaviour discoverable; once
-        // the user opens Preferences and clicks Ok the chosen
-        // value sticks even when they toggle it back to the
-        // default later. The signal is gated on an actual change
-        // so the delegate-detach/reattach + repaint chain in
-        // `MainWindow` doesn't fire on every Ok click.
+        // Persist the level-icon toggle. The live-preview
+        // `QCheckBox::toggled` slot already emitted the change
+        // signal for `MainWindow`, so Ok just needs to write the
+        // final state to `QSettings`. Gating on a real change
+        // (vs the persisted value at dialog-open time) avoids
+        // touching `QSettings` on a no-op click. The captured
+        // `mInitial*` flag stays the rollback target until the
+        // dialog is reopened.
         {
             QSettings settings;
             const bool showLevelIcons = mShowLevelIconsCheckBox->isChecked();
-            const bool previousShowLevelIcons =
-                settings.value(QString::fromLatin1(SETTINGS_SHOW_LEVEL_ICONS), true).toBool();
-            if (showLevelIcons != previousShowLevelIcons)
+            if (showLevelIcons != mInitialShowLevelIcons)
             {
                 settings.setValue(QString::fromLatin1(SETTINGS_SHOW_LEVEL_ICONS), showLevelIcons);
-                emit showLevelIconsChanged(showLevelIcons);
             }
         }
-        // Persist + emit the high-contrast toggle. Default-false on
-        // first read so fresh installs land on the subtle look.
-        // Same gating rationale as the level-icon block above:
-        // signal only on a real change to avoid spurious cache
-        // rebuilds on every Ok click.
+        // Persist the high-contrast toggle. Same rationale as the
+        // level-icon block above: live preview already fired, Ok
+        // only writes `QSettings` when the final value differs from
+        // the persisted starting point.
         {
             QSettings settings;
             const bool highContrast = mHighContrastLevelsCheckBox->isChecked();
-            const bool previousHighContrast =
-                settings.value(QString::fromLatin1(SETTINGS_HIGH_CONTRAST_LEVELS), false).toBool();
-            if (highContrast != previousHighContrast)
+            if (highContrast != mInitialHighContrastLevels)
             {
                 settings.setValue(QString::fromLatin1(SETTINGS_HIGH_CONTRAST_LEVELS), highContrast);
-                emit highContrastLevelsChanged(highContrast);
             }
         }
         emit streamingRetentionChanged(static_cast<qulonglong>(StreamingControl::RetentionLines()));
@@ -368,6 +374,21 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
         {
             mTheme->SetActiveSelection(mTheme->PersistedSelection());
         }
+        // Revert the level-icon / high-contrast live previews. The
+        // re-emit uses the captured `mInitial*` values so
+        // `MainWindow`'s slots roll back the model + theme to the
+        // pre-dialog state. Both `MainWindow` slots and the
+        // underlying setters are idempotent on no-change, so the
+        // common case where the user opened the dialog without
+        // touching either checkbox is free.
+        if (mShowLevelIconsCheckBox->isChecked() != mInitialShowLevelIcons)
+        {
+            emit showLevelIconsChanged(mInitialShowLevelIcons);
+        }
+        if (mHighContrastLevelsCheckBox->isChecked() != mInitialHighContrastLevels)
+        {
+            emit highContrastLevelsChanged(mInitialHighContrastLevels);
+        }
         // Revert spinbox-edited values to persisted; on-disk unchanged.
         StreamingControl::LoadConfiguration();
         // Bypass `closeEvent`'s revert: Cancel already reverted.
@@ -383,6 +404,29 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
 
     RepopulateThemeCombo();
     RefreshThemePreview();
+
+    // Seed `mInitial*` + the checkbox state from `QSettings` at
+    // construction time so the revert-on-close path is correct
+    // even when a caller `show()`s the dialog without first
+    // calling `UpdateFields()`. The menu action in `MainWindow`
+    // always pairs `show()` with `UpdateFields()`; tests don't, so
+    // this seeding keeps the rollback target in sync with the
+    // persisted state without depending on the call order.
+    // `QSignalBlocker` around `setChecked` so the live-preview
+    // slots wired above don't fire during construction.
+    {
+        QSettings settings;
+        mInitialShowLevelIcons = settings.value(QString::fromLatin1(SETTINGS_SHOW_LEVEL_ICONS), true).toBool();
+        mInitialHighContrastLevels = settings.value(QString::fromLatin1(SETTINGS_HIGH_CONTRAST_LEVELS), false).toBool();
+        {
+            const QSignalBlocker blocker(mShowLevelIconsCheckBox);
+            mShowLevelIconsCheckBox->setChecked(mInitialShowLevelIcons);
+        }
+        {
+            const QSignalBlocker blocker(mHighContrastLevelsCheckBox);
+            mHighContrastLevelsCheckBox->setChecked(mInitialHighContrastLevels);
+        }
+    }
 }
 
 void PreferencesEditor::UpdateFields()
@@ -395,16 +439,25 @@ void PreferencesEditor::UpdateFields()
     // Default-true on first read so fresh installs see the new
     // visual on themes that ship `levelColumnOverride`. Matches
     // the `MainWindow::MainWindow` startup read.
+    //
+    // `QSignalBlocker` around the `setChecked` calls so the
+    // live-preview slot we wired in the ctor doesn't fire while we
+    // are merely loading the persisted state. The captured
+    // `mInitial*` values are also the rollback target used by
+    // Cancel / close.
     {
         QSettings settings;
-        mShowLevelIconsCheckBox->setChecked(
-            settings.value(QString::fromLatin1(SETTINGS_SHOW_LEVEL_ICONS), true).toBool()
-        );
-        // Default-false on first read: subtle is the new showcase
-        // look; users opt in to the loud variant deliberately.
-        mHighContrastLevelsCheckBox->setChecked(
-            settings.value(QString::fromLatin1(SETTINGS_HIGH_CONTRAST_LEVELS), false).toBool()
-        );
+        mInitialShowLevelIcons = settings.value(QString::fromLatin1(SETTINGS_SHOW_LEVEL_ICONS), true).toBool();
+        mInitialHighContrastLevels =
+            settings.value(QString::fromLatin1(SETTINGS_HIGH_CONTRAST_LEVELS), false).toBool();
+        {
+            const QSignalBlocker blocker(mShowLevelIconsCheckBox);
+            mShowLevelIconsCheckBox->setChecked(mInitialShowLevelIcons);
+        }
+        {
+            const QSignalBlocker blocker(mHighContrastLevelsCheckBox);
+            mHighContrastLevelsCheckBox->setChecked(mInitialHighContrastLevels);
+        }
     }
     RepopulateThemeCombo();
     RefreshThemePreview();
@@ -564,6 +617,18 @@ void PreferencesEditor::closeEvent(QCloseEvent *event)
     if (mTheme != nullptr)
     {
         mTheme->SetActiveSelection(mTheme->PersistedSelection());
+    }
+    // Mirror the Cancel slot: roll back the level-icon / high-contrast
+    // live previews to the captured `mInitial*` state. Keeps the X /
+    // Alt+F4 close path symmetric with explicit Cancel so a stray
+    // close never leaks a preview past the dialog.
+    if (mShowLevelIconsCheckBox->isChecked() != mInitialShowLevelIcons)
+    {
+        emit showLevelIconsChanged(mInitialShowLevelIcons);
+    }
+    if (mHighContrastLevelsCheckBox->isChecked() != mInitialHighContrastLevels)
+    {
+        emit highContrastLevelsChanged(mInitialHighContrastLevels);
     }
     StreamingControl::LoadConfiguration();
     QWidget::closeEvent(event);

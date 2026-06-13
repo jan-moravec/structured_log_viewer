@@ -532,6 +532,19 @@ void ThemeControl::SetHighContrast(bool on)
         return;
     }
     mHighContrast = on;
+    // No-op fast path: when the active theme doesn't ship a
+    // `levelsHighContrast` block, toggling the flag changes
+    // nothing the user can see -- `BuildStyleCache` would
+    // recompute identical brushes from `theme.levels` either way.
+    // Skip the full rebuild + repaint cascade in that case; the
+    // flag stays in sync for a future theme switch that DOES ship
+    // the block. The preferences dialog independently greys the
+    // checkbox out via `HasLevelsHighContrast()` so this branch
+    // only triggers on a programmatic flip.
+    if (!mHasLevelsHighContrast)
+    {
+        return;
+    }
     // Re-project the active theme through the new flag. The pill
     // caches are unaffected (the toggle only changes row colours),
     // but `BuildStyleCache` rebuilds them anyway -- keeping a single

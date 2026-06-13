@@ -879,7 +879,13 @@ private slots:
 
     /// A theme that omits `levelsHighContrast` reports the empty
     /// map via `HasLevelsHighContrast()`; toggling the pref is then
-    /// a no-op for brush resolution.
+    /// a no-op for brush resolution AND must skip the
+    /// `themeChanged()` cascade entirely (no full table repaint /
+    /// no QSS re-stamp on widgets that listen on the signal). The
+    /// fast-path in `SetHighContrast` is what makes the
+    /// preferences-dialog "grey out the checkbox" UX coherent: the
+    /// flag stays in sync for a later theme switch that DOES ship
+    /// the block, but the user sees nothing in the meantime.
     void TestThemeControlHighContrastEmptyMap()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
@@ -904,9 +910,22 @@ private slots:
 
         mTheme->SetHighContrast(false);
         const QColor before = mTheme->BackgroundFor(loglib::LogLevel::Error).color();
+        // Spy attached AFTER the initial state-flip so the
+        // potential rebuild from `SetActiveSelection` above doesn't
+        // pollute the count. We're only interested in what
+        // `SetHighContrast` does once the active theme is settled.
+        QSignalSpy themeChangedSpy(mTheme.data(), &ThemeControl::themeChanged);
+        QVERIFY(themeChangedSpy.isValid());
         mTheme->SetHighContrast(true);
         const QColor after = mTheme->BackgroundFor(loglib::LogLevel::Error).color();
         QCOMPARE(before, after);
+        QCOMPARE(themeChangedSpy.count(), 0);
+        // Flag still flipped so a later theme switch picks it up.
+        QVERIFY(mTheme->IsHighContrast());
+        // Toggling back: same fast-path, still no emit.
+        mTheme->SetHighContrast(false);
+        QCOMPARE(themeChangedSpy.count(), 0);
+        QVERIFY(!mTheme->IsHighContrast());
     }
 
     /// A `:/` Qt resource path is allowed for both built-in and

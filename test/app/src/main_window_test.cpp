@@ -9254,6 +9254,149 @@ private slots:
         QCOMPARE(mTheme->PersistedSelection(), QStringLiteral("Light"));
     }
 
+    // Live preview + rollback: toggling the "Show level icons" /
+    // "High contrast levels" checkboxes inside Preferences must
+    // update the model + theme controller *immediately* (not wait
+    // for Ok). Cancel or X-close must rewind whatever the user
+    // previewed back to the pre-dialog state. Mirrors the theme
+    // preview/rollback path covered above so all three live-preview
+    // surfaces are pinned to the same UX contract.
+    void TestPreferencesEditorLevelIconsLivePreviewAndRevert()
+    {
+        QVERIFY(mTheme != nullptr);
+
+        // Persist a known baseline: showLevelIcons=true so toggling
+        // off is a real change. Built-in themes ship the
+        // `levelColumnOverride` block, so icon mode would activate
+        // when the flag is true.
+        {
+            QSettings settings;
+            settings.setValue(QStringLiteral("ui/showLevelIcons"), true);
+        }
+        mTheme->SetActiveSelection(QStringLiteral("Dark"));
+        QCoreApplication::processEvents();
+        QVERIFY(mTheme->HasLevelColumnOverride());
+        // Drive the model into the "icon mode active" state so we
+        // can observe the live-preview flip back to text mode.
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+        model->SetShowLevelIcons(true);
+        QVERIFY(model->IsLevelIconModeActive());
+
+        auto *editor = mWindow->findChild<PreferencesEditor *>();
+        QVERIFY2(editor != nullptr, "MainWindow must own a PreferencesEditor");
+        // Open path: `UpdateFields` seeds `mInitial*` from QSettings
+        // (true here), so the checkbox starts checked.
+        editor->UpdateFields();
+        // Find the level-icons checkbox by its user-visible label.
+        // There are multiple `QCheckBox` children in Preferences;
+        // targeting by `objectName` would require touching
+        // production code just for the test, so we walk the
+        // checkbox list and match on `text()`.
+        QCheckBox *checkbox = nullptr;
+        for (auto *cb : editor->findChildren<QCheckBox *>())
+        {
+            if (cb->text() == QStringLiteral("Show level icons"))
+            {
+                checkbox = cb;
+                break;
+            }
+        }
+        QVERIFY2(checkbox != nullptr, "Preferences must expose a `Show level icons` checkbox");
+        QVERIFY(checkbox->isChecked());
+
+        // Live preview: untoggle the checkbox; the model's icon
+        // mode must flip OFF immediately, well before Ok / Cancel.
+        // The signal handler in `MainWindow` calls
+        // `LogModel::SetShowLevelIcons(false)` synchronously.
+        checkbox->setChecked(false);
+        QCoreApplication::processEvents();
+        QVERIFY2(!model->IsLevelIconModeActive(), "Untoggling the checkbox must live-preview icon mode OFF");
+
+        // Persisted value is unchanged: only Ok writes
+        // `ui/showLevelIcons`. Cancel / close revert via the
+        // captured `mInitialShowLevelIcons` instead.
+        {
+            QSettings settings;
+            QVERIFY(settings.value(QStringLiteral("ui/showLevelIcons")).toBool());
+        }
+
+        // Same close path the X button takes -> closeEvent revert.
+        editor->close();
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            model->IsLevelIconModeActive(),
+            "Closing the dialog without Ok must revert the level-icons live preview to the initial state"
+        );
+        {
+            QSettings settings;
+            QVERIFY(settings.value(QStringLiteral("ui/showLevelIcons")).toBool());
+        }
+    }
+
+    // Mirror of the level-icons test for the high-contrast toggle.
+    // Live preview goes through `ThemeControl::SetHighContrast`,
+    // which rebuilds the style cache and re-emits
+    // `themeChanged()`, so we observe the round-trip on the
+    // controller flag rather than on a model role.
+    void TestPreferencesEditorHighContrastLivePreviewAndRevert()
+    {
+        QVERIFY(mTheme != nullptr);
+
+        // Baseline: highContrast=false, built-in theme with a
+        // `levelsHighContrast` block (Dark ships one). The
+        // checkbox must be enabled so the toggle reaches the
+        // signal path.
+        {
+            QSettings settings;
+            settings.setValue(QStringLiteral("ui/highContrastLevels"), false);
+        }
+        mTheme->SetActiveSelection(QStringLiteral("Dark"));
+        QCoreApplication::processEvents();
+        QVERIFY(mTheme->HasLevelsHighContrast());
+        mTheme->SetHighContrast(false);
+        QVERIFY(!mTheme->IsHighContrast());
+
+        auto *editor = mWindow->findChild<PreferencesEditor *>();
+        QVERIFY2(editor != nullptr, "MainWindow must own a PreferencesEditor");
+        editor->UpdateFields();
+
+        QCheckBox *checkbox = nullptr;
+        for (auto *cb : editor->findChildren<QCheckBox *>())
+        {
+            if (cb->text() == QStringLiteral("High contrast levels"))
+            {
+                checkbox = cb;
+                break;
+            }
+        }
+        QVERIFY2(checkbox != nullptr, "Preferences must expose a `High contrast levels` checkbox");
+        QVERIFY(!checkbox->isChecked());
+
+        // Live preview: toggle ON; the theme controller's flag
+        // must flip immediately (and `themeChanged` fires through
+        // the existing signal chain).
+        checkbox->setChecked(true);
+        QCoreApplication::processEvents();
+        QVERIFY2(mTheme->IsHighContrast(), "Toggling the checkbox must live-preview high contrast ON");
+
+        // Persisted value is still false: only Ok writes.
+        {
+            QSettings settings;
+            QVERIFY(!settings.value(QStringLiteral("ui/highContrastLevels")).toBool());
+        }
+
+        // Close-as-Cancel: revert via `closeEvent`.
+        editor->close();
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            !mTheme->IsHighContrast(),
+            "Closing the dialog without Ok must revert the high-contrast live preview"
+        );
+    }
+
     // The Column Editor writes back every user-controllable Column
     // field on Apply: header, type, autoDetect, visible. Verify each
     // surface lands in the live configuration and the health cache

@@ -46,19 +46,27 @@ signals:
     /// the current session is a static (file-mode) session.
     void staticDisplayOrderChanged(bool newestFirst);
 
-    /// Fired after Ok commits the "Show level icons" toggle.
-    /// `MainWindow` calls `LogModel::SetShowLevelIcons(on)` (which
-    /// emits a tightly-scoped `DecorationRole` change on the level
-    /// column) and then `ApplyLevelCellDelegate()` so the delegate
-    /// attaches / detaches on the right column. The delegate's
-    /// self-gate keeps in-between paints correct regardless of
-    /// ordering.
+    /// Fired on every toggle of the "Show level icons" checkbox
+    /// (live preview) and again on Cancel/close to revert to the
+    /// pre-dialog state when needed. `MainWindow` calls
+    /// `LogModel::SetShowLevelIcons(on)` (which emits a tightly-
+    /// scoped `DecorationRole` change on the level column) and then
+    /// `ApplyLevelCellDelegate()` so the delegate attaches /
+    /// detaches on the right column. The delegate's self-gate keeps
+    /// in-between paints correct regardless of ordering. Persisting
+    /// to `QSettings` happens only on Ok (the dialog writes
+    /// `ui/showLevelIcons` from the final state and skips the write
+    /// when the value didn't actually change from the persisted
+    /// value).
     void showLevelIconsChanged(bool on);
 
-    /// Fired after Ok commits the "High contrast levels" toggle.
+    /// Fired on every toggle of the "High contrast levels"
+    /// checkbox (live preview) and again on Cancel/close to revert.
     /// `MainWindow` forwards to `ThemeControl::SetHighContrast(on)`,
     /// which re-runs `BuildStyleCache` and emits `themeChanged()` so
     /// the table re-paints with the boosted (or subtle) row colours.
+    /// Persisting to `QSettings` happens only on Ok with the same
+    /// "only-on-real-change" gate as the level-icons toggle.
     void highContrastLevelsChanged(bool on);
 
 private:
@@ -110,4 +118,15 @@ private:
     /// Set by Ok / Cancel before they call `close()` so `closeEvent`
     /// skips the revert path. Genuine close (X / Alt+F4) leaves it false.
     bool mClosingViaButton = false;
+
+    /// Captured by `UpdateFields()` at dialog-open time so
+    /// Cancel/close can rewind a live preview that the user
+    /// toggled inside the dialog. Both flags mirror the persisted
+    /// values: when the dialog opens they are the same as
+    /// `QSettings::value(ui/...)`. On Ok the dialog persists the
+    /// current state to `QSettings`; on Cancel/close it re-emits
+    /// the corresponding signal with these initial values so the
+    /// model / theme controller revert.
+    bool mInitialShowLevelIcons = true;
+    bool mInitialHighContrastLevels = false;
 };
