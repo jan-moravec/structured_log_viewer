@@ -751,6 +751,118 @@ private slots:
         QVERIFY(!mTheme->IconFor(loglib::LogLevel::Warn).isNull());
     }
 
+    /// `SetHighContrast(true)` projects `levelsHighContrast` brushes
+    /// over the subtle defaults; `false` restores them. Toggling to
+    /// the same value is a no-op (no signal, no rebuild).
+    void TestThemeControlHighContrastTogglesBrushes()
+    {
+        const QDir userDir = ThemeControl::UserThemesDir();
+        WriteUserTheme(
+            userDir,
+            QStringLiteral("highContrast.json"),
+            QStringLiteral(R"({
+                "name": "HighContrastFixture",
+                "kind": "dark",
+                "levels": {
+                    "Error": { "foreground": "#FCA5A5", "background": "#352121" }
+                },
+                "levelsHighContrast": {
+                    "Error": { "foreground": "#FCA5A5", "background": "#4C1D1D" }
+                },
+                "table": {},
+                "chrome": {},
+                "app": {}
+            })")
+        );
+        mTheme->ReloadAll();
+        mTheme->SetActiveSelection(QStringLiteral("HighContrastFixture"));
+        // Start from a known default.
+        mTheme->SetHighContrast(false);
+
+        QVERIFY(mTheme->HasLevelsHighContrast());
+        QVERIFY(!mTheme->IsHighContrast());
+        QCOMPARE(mTheme->BackgroundFor(loglib::LogLevel::Error).color(), QColor(QStringLiteral("#352121")));
+
+        QSignalSpy spy(mTheme.get(), &ThemeControl::themeChanged);
+        mTheme->SetHighContrast(true);
+        QCOMPARE(spy.count(), 1);
+        QVERIFY(mTheme->IsHighContrast());
+        QCOMPARE(mTheme->BackgroundFor(loglib::LogLevel::Error).color(), QColor(QStringLiteral("#4C1D1D")));
+
+        // Idempotent: same value -> no signal, no rebuild.
+        mTheme->SetHighContrast(true);
+        QCOMPARE(spy.count(), 1);
+
+        mTheme->SetHighContrast(false);
+        QCOMPARE(spy.count(), 2);
+        QCOMPARE(mTheme->BackgroundFor(loglib::LogLevel::Error).color(), QColor(QStringLiteral("#352121")));
+    }
+
+    /// Sparse `levelsHighContrast` falls back to `levels` per-level:
+    /// only the overridden entries change when the toggle is on.
+    void TestThemeControlHighContrastSparseFallback()
+    {
+        const QDir userDir = ThemeControl::UserThemesDir();
+        WriteUserTheme(
+            userDir,
+            QStringLiteral("sparseContrast.json"),
+            QStringLiteral(R"({
+                "name": "SparseContrast",
+                "kind": "dark",
+                "levels": {
+                    "Warn":  { "foreground": "#FCD34D", "background": "#272620" },
+                    "Error": { "foreground": "#FCA5A5", "background": "#352121" }
+                },
+                "levelsHighContrast": {
+                    "Error": { "foreground": "#FCA5A5", "background": "#4C1D1D" }
+                },
+                "table": {},
+                "chrome": {},
+                "app": {}
+            })")
+        );
+        mTheme->ReloadAll();
+        mTheme->SetActiveSelection(QStringLiteral("SparseContrast"));
+        mTheme->SetHighContrast(true);
+
+        // `Error` flips to the override.
+        QCOMPARE(mTheme->BackgroundFor(loglib::LogLevel::Error).color(), QColor(QStringLiteral("#4C1D1D")));
+        // `Warn` is absent from the override map -- keep the subtle bg.
+        QCOMPARE(mTheme->BackgroundFor(loglib::LogLevel::Warn).color(), QColor(QStringLiteral("#272620")));
+    }
+
+    /// A theme that omits `levelsHighContrast` reports the empty
+    /// map via `HasLevelsHighContrast()`; toggling the pref is then
+    /// a no-op for brush resolution.
+    void TestThemeControlHighContrastEmptyMap()
+    {
+        const QDir userDir = ThemeControl::UserThemesDir();
+        WriteUserTheme(
+            userDir,
+            QStringLiteral("noContrast.json"),
+            QStringLiteral(R"({
+                "name": "NoContrast",
+                "kind": "dark",
+                "levels": {
+                    "Error": { "foreground": "#FCA5A5", "background": "#352121" }
+                },
+                "table": {},
+                "chrome": {},
+                "app": {}
+            })")
+        );
+        mTheme->ReloadAll();
+        mTheme->SetActiveSelection(QStringLiteral("NoContrast"));
+
+        QVERIFY(!mTheme->HasLevelsHighContrast());
+
+        mTheme->SetHighContrast(false);
+        const QColor before = mTheme->BackgroundFor(loglib::LogLevel::Error).color();
+        mTheme->SetHighContrast(true);
+        const QColor after = mTheme->BackgroundFor(loglib::LogLevel::Error).color();
+        QCOMPARE(before, after);
+    }
+
     /// A `:/` Qt resource path is allowed for both built-in and
     /// user themes; the qrc namespace is shared. Pin both halves
     /// (built-in + user) so a refactor can't silently lock user

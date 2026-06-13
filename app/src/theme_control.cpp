@@ -159,6 +159,18 @@ void WarnOnUnknownLevelKeys(const QString &source, const loglib::Theme &theme)
             );
         }
     }
+    for (const auto &[key, value] : theme.levelsHighContrast)
+    {
+        if (!IsCanonicalLevelKey(key))
+        {
+            qWarning(
+                "Theme %s has unrecognised levelsHighContrast key `%s`; expected "
+                "one of Trace/Debug/Info/Warn/Error/Fatal/Unknown. The entry is ignored.",
+                qUtf8Printable(source),
+                key.c_str()
+            );
+        }
+    }
     if (theme.levelColumnOverride.has_value())
     {
         for (const auto &[key, value] : theme.levelColumnOverride->levels)
@@ -285,6 +297,13 @@ std::optional<loglib::Theme> ParseFileToTheme(const QString &path)
 ThemeControl::ThemeControl(QObject *parent)
     : QObject(parent)
 {
+    // Read the high-contrast pref before the first `BuildStyleCache`
+    // call inside `LoadConfiguration`, so the cache is built with
+    // the right per-level map on startup. The pref is otherwise
+    // owned by `MainWindow` (it persists + emits on Preferences Ok);
+    // we just mirror the value here.
+    const QSettings settings;
+    mHighContrast = settings.value(QStringLiteral("ui/highContrastLevels"), false).toBool();
     LoadConfiguration();
 }
 
@@ -416,6 +435,31 @@ QBrush ThemeControl::AnchorBrushFor(std::uint8_t colorIndex, int role) const noe
 bool ThemeControl::HasLevelColumnOverride() const noexcept
 {
     return mHasLevelColumnOverride;
+}
+
+bool ThemeControl::HasLevelsHighContrast() const noexcept
+{
+    return mHasLevelsHighContrast;
+}
+
+bool ThemeControl::IsHighContrast() const noexcept
+{
+    return mHighContrast;
+}
+
+void ThemeControl::SetHighContrast(bool on)
+{
+    if (mHighContrast == on)
+    {
+        return;
+    }
+    mHighContrast = on;
+    // Re-project the active theme through the new flag. The pill
+    // caches are unaffected (the toggle only changes row colours),
+    // but `BuildStyleCache` rebuilds them anyway -- keeping a single
+    // rebuild entry-point is cheaper than splitting the cache.
+    BuildStyleCache(mActive);
+    emit themeChanged();
 }
 
 QIcon ThemeControl::IconFor(loglib::LogLevel level) const noexcept
@@ -1093,9 +1137,14 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
     const QFont appFont = qApp->font();
     mFonts.fill(appFont);
 
+    // Refresh the "active theme ships a high-contrast block" mirror
+    // before the loop so subsequent UI reads (Preferences enable
+    // state) see the correct flag for the just-applied theme.
+    mHasLevelsHighContrast = !theme.levelsHighContrast.empty();
+
     for (const LogLevel level : ALL_LEVELS)
     {
-        const loglib::LevelStyle style = loglib::StyleForLevel(theme, level);
+        const loglib::LevelStyle style = loglib::StyleForLevel(theme, level, mHighContrast);
         const size_t idx = LevelIndex(level);
         mForeground[idx] = BrushFromHex(style.foreground);
         mBackground[idx] = BrushFromHex(style.background);

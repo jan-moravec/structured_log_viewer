@@ -105,6 +105,24 @@ public:
     /// consult this one bool instead of probing the caches.
     [[nodiscard]] bool HasLevelColumnOverride() const noexcept;
 
+    /// True iff the active theme ships a non-empty
+    /// `levelsHighContrast` map. Mirrors `HasLevelColumnOverride`
+    /// for the high-contrast toggle: when this is false, flipping
+    /// the user pref is a no-op, so the Preferences dialog grays
+    /// out the checkbox with an explanatory tooltip.
+    [[nodiscard]] bool HasLevelsHighContrast() const noexcept;
+
+    /// Current value of the `ui/highContrastLevels` user preference
+    /// as last applied. The pref is owned by `MainWindow`; this is
+    /// the in-memory mirror that drives `BuildStyleCache`.
+    [[nodiscard]] bool IsHighContrast() const noexcept;
+
+    /// Switch between subtle (false, default) and loud (true) row
+    /// styling. No-op when @p on matches the current value; on a
+    /// real change re-runs `BuildStyleCache` for the active theme
+    /// and emits `themeChanged()` so views re-paint.
+    void SetHighContrast(bool on);
+
     /// Cached themed icon for @p level. Null `QIcon` when the
     /// theme is in icon mode but didn't supply an icon for this
     /// level, or when icon mode is off.
@@ -272,6 +290,19 @@ private:
     /// Mirrors `theme.levelColumnOverride.has_value()`. The single
     /// switch every consumer reads.
     bool mHasLevelColumnOverride = false;
+
+    /// Mirrors `!theme.levelsHighContrast.empty()` for the active
+    /// theme. Refreshed by `BuildStyleCache`. The Preferences
+    /// dialog reads `HasLevelsHighContrast()` (which exposes this)
+    /// to grey out the toggle when the active theme opts out.
+    bool mHasLevelsHighContrast = false;
+
+    /// Mirror of `ui/highContrastLevels`. Initial value comes from
+    /// `QSettings` in the constructor; `SetHighContrast` keeps it
+    /// in sync with the Preferences UI. `BuildStyleCache` reads
+    /// this to pick between `theme.levels` and `theme.levelsHighContrast`
+    /// on the per-level resolution.
+    bool mHighContrast = false;
 
     /// Optional header-text override; `nullopt` means "fall back
     /// to `Column::header`". Empty string is preserved (means
