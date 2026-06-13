@@ -886,6 +886,18 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
         ApplyLevelCellDelegate();
     });
 
+    // High-contrast levels: forward to ThemeControl, which re-runs
+    // `BuildStyleCache` and emits `themeChanged()` -- the same hook
+    // every view already listens on for a normal theme swap, so the
+    // repaint chain reuses existing wiring.
+    connect(mPreferencesEditor, &PreferencesEditor::highContrastLevelsChanged, this, [this](bool on) {
+        if (mTheme == nullptr)
+        {
+            return;
+        }
+        mTheme->SetHighContrast(on);
+    });
+
     // Anchor hotkeys (programmatic so the .ui isn't bloated):
     //   Ctrl+1..8     anchor selection at colour N
     //   Ctrl+0        clear anchor on selection
