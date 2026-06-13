@@ -798,7 +798,7 @@ private slots:
         QVERIFY(!mTheme->IsHighContrast());
         QCOMPARE(mTheme->BackgroundFor(loglib::LogLevel::Error).color(), QColor(QStringLiteral("#352121")));
 
-        QSignalSpy spy(mTheme.get(), &ThemeControl::themeChanged);
+        const QSignalSpy spy(mTheme.get(), &ThemeControl::themeChanged);
         mTheme->SetHighContrast(true);
         QCOMPARE(spy.count(), 1);
         QVERIFY(mTheme->IsHighContrast());
@@ -875,7 +875,7 @@ private slots:
         // potential rebuild from `SetActiveSelection` above doesn't
         // pollute the count. We're only interested in what
         // `SetHighContrast` does once the active theme is settled.
-        QSignalSpy themeChangedSpy(mTheme.data(), &ThemeControl::themeChanged);
+        const QSignalSpy themeChangedSpy(mTheme.data(), &ThemeControl::themeChanged);
         QVERIFY(themeChangedSpy.isValid());
         mTheme->SetHighContrast(true);
         const QColor after = mTheme->BackgroundFor(loglib::LogLevel::Error).color();

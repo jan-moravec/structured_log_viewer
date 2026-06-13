@@ -249,8 +249,9 @@ void LevelCellDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
         const int smallIcon = style->pixelMetric(QStyle::PM_SmallIconSize, &option, widget);
         const qreal availableWidth = pillRect.width() - (TWO * ICON_INSET_INSIDE_PILL_PX);
         const qreal availableHeight = pillRect.height() - (TWO * ICON_INSET_INSIDE_PILL_PX);
-        const qreal iconEdge =
-            std::max<qreal>(1.0, std::min<qreal>(smallIcon, std::min(availableWidth, availableHeight)));
+        const qreal iconEdge = std::max<qreal>(
+            1.0, std::min<qreal>({static_cast<qreal>(smallIcon), availableWidth, availableHeight})
+        );
         const QRectF iconRect = QRectF(
             pillRect.center().x() - (iconEdge / TWO), pillRect.center().y() - (iconEdge / TWO), iconEdge, iconEdge
         );
@@ -304,5 +305,5 @@ QSize LevelCellDelegate::sizeHint(const QStyleOptionViewItem &option, const QMod
     // `resizeColumnsToContents()` actually shrink the column to
     // the icon footprint, which is the headline visual change of
     // icon mode.
-    return QSize(width, height);
+    return {width, height};
 }

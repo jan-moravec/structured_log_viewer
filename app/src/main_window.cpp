@@ -1227,7 +1227,7 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     // the delegate forward to the base class.
     if (mModel != nullptr)
     {
-        QSettings settings;
+        const QSettings settings;
         const bool showLevelIcons = settings.value(QStringLiteral("ui/showLevelIcons"), true).toBool();
         mModel->SetShowLevelIcons(showLevelIcons);
         // No explicit `ApplyLevelCellDelegate()` follow-up needed:

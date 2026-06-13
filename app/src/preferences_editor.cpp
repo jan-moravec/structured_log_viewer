@@ -413,7 +413,7 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
     // `QSignalBlocker` around `setChecked` so the live-preview
     // slots wired above don't fire during construction.
     {
-        QSettings settings;
+        const QSettings settings;
         mInitialShowLevelIcons = settings.value(QString::fromLatin1(SETTINGS_SHOW_LEVEL_ICONS), true).toBool();
         mInitialHighContrastLevels = settings.value(QString::fromLatin1(SETTINGS_HIGH_CONTRAST_LEVELS), false).toBool();
         {
@@ -444,7 +444,7 @@ void PreferencesEditor::UpdateFields()
     // `mInitial*` values are also the rollback target used by
     // Cancel / close.
     {
-        QSettings settings;
+        const QSettings settings;
         mInitialShowLevelIcons = settings.value(QString::fromLatin1(SETTINGS_SHOW_LEVEL_ICONS), true).toBool();
         mInitialHighContrastLevels = settings.value(QString::fromLatin1(SETTINGS_HIGH_CONTRAST_LEVELS), false).toBool();
         {

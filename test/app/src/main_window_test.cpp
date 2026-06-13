@@ -4263,7 +4263,7 @@ private slots:
 
         auto model = std::make_unique<LogModel>(nullptr, nullptr);
         QSignalSpy columnsMovedSpy(model.get(), &QAbstractItemModel::columnsMoved);
-        QSignalSpy columnsInsertedSpy(model.get(), &QAbstractItemModel::columnsInserted);
+        const QSignalSpy columnsInsertedSpy(model.get(), &QAbstractItemModel::columnsInserted);
         QSignalSpy finishedSpy(model.get(), &LogModel::streamingFinished);
         QVERIFY(columnsMovedSpy.isValid());
         QVERIFY(columnsInsertedSpy.isValid());
@@ -4317,7 +4317,7 @@ private slots:
             const int first = signalArgs.value(1).toInt();
             const int last = signalArgs.value(2).toInt();
             const int destColumn = signalArgs.value(4).toInt();
-            return first == last && first >= 0 && destColumn == static_cast<int>(loglib::CANONICAL_LEVEL_COLUMN_INDEX);
+            return first == last && first >= 0 && std::cmp_equal(destColumn, loglib::CANONICAL_LEVEL_COLUMN_INDEX);
         };
         const bool sawLevelBubble = std::any_of(columnsMovedSpy.begin(), columnsMovedSpy.end(), matchesLevelBubble);
         QVERIFY2(
@@ -4582,7 +4582,7 @@ private slots:
         const QModelIndex cell = run.model->index(0, levelCol);
         QVERIFY(cell.isValid());
 
-        LevelCellDelegate delegate(mTheme.data());
+        const LevelCellDelegate delegate(mTheme.data());
 
         // Pixmap is larger than `option.rect` so we can assert
         // that the delegate's clip kept the paint inside the cell.
@@ -9303,6 +9303,13 @@ private slots:
             }
         }
         QVERIFY2(checkbox != nullptr, "Preferences must expose a `Show level icons` checkbox");
+        // Explicit guard so clang-analyzer reasons the dereference
+        // below is safe; `QVERIFY2` already returns on failure but
+        // the analyzer doesn't model the Qt-test macro expansion.
+        if (checkbox == nullptr)
+        {
+            return;
+        }
         QVERIFY(checkbox->isChecked());
 
         // Live preview: untoggle the checkbox; the model's icon
@@ -9317,7 +9324,7 @@ private slots:
         // `ui/showLevelIcons`. Cancel / close revert via the
         // captured `mInitialShowLevelIcons` instead.
         {
-            QSettings settings;
+            const QSettings settings;
             QVERIFY(settings.value(QStringLiteral("ui/showLevelIcons")).toBool());
         }
 
@@ -9330,7 +9337,7 @@ private slots:
             "Closing the dialog without Ok must revert the level-icons live preview to the initial state"
         );
         {
-            QSettings settings;
+            const QSettings settings;
             QVERIFY(settings.value(QStringLiteral("ui/showLevelIcons")).toBool());
         }
     }
@@ -9372,6 +9379,13 @@ private slots:
             }
         }
         QVERIFY2(checkbox != nullptr, "Preferences must expose a `High contrast levels` checkbox");
+        // Explicit guard so clang-analyzer reasons the dereference
+        // below is safe; `QVERIFY2` already returns on failure but
+        // the analyzer doesn't model the Qt-test macro expansion.
+        if (checkbox == nullptr)
+        {
+            return;
+        }
         QVERIFY(!checkbox->isChecked());
 
         // Live preview: toggle ON; the theme controller's flag
@@ -9383,7 +9397,7 @@ private slots:
 
         // Persisted value is still false: only Ok writes.
         {
-            QSettings settings;
+            const QSettings settings;
             QVERIFY(!settings.value(QStringLiteral("ui/highContrastLevels")).toBool());
         }
 
@@ -17863,7 +17877,7 @@ private slots:
         const TempJsonFile log({QStringLiteral(R"({"msg": "real"})")});
 
         wired->SetSuppressDialogsForTest(true);
-        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        const QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
         const MainWindow::MixedInputDispatch result =

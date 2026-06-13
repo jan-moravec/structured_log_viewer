@@ -1310,7 +1310,7 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
     // uses for the toolbar).
     constexpr int FALLBACK_ICON_SIZE_PX = 16;
     int sizePx = FALLBACK_ICON_SIZE_PX;
-    if (QStyle *style = qApp->style(); style != nullptr)
+    if (const QStyle *style = qApp->style(); style != nullptr)
     {
         const int metric = style->pixelMetric(QStyle::PM_SmallIconSize);
         if (metric > 0)
