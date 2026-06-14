@@ -6,6 +6,7 @@
 #include "configuration_diagnostics_dialog.hpp"
 #include "filter_editor.hpp"
 #include "icon_loader.hpp"
+#include "level_cell_delegate.hpp"
 #include "log_warning.hpp"
 #include "network_stream_dialog.hpp"
 #include "qt_streaming_log_sink.hpp"
@@ -525,6 +526,39 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     mTableView->setSortingEnabled(true);
     mTableView->sortByColumn(-1, Qt::SortOrder::AscendingOrder);
 
+    // Icon-pill delegate is created only when we have a
+    // `ThemeControl`; the no-theme test fixture keeps the standard
+    // text delegate (`IsLevelIconModeActive` is always false there).
+    if (mTheme != nullptr)
+    {
+        mLevelCellDelegate = new LevelCellDelegate(mTheme, this);
+
+        // Reapply on every signal that can change the first-level
+        // column index. `columnsMoved` is handled inside
+        // `OnSourceColumnsMoved` instead, so the filter-map remap
+        // runs before the delegate reapply.
+        connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::ApplyLevelCellDelegate);
+        connect(mModel, &QAbstractItemModel::columnsInserted, this, &MainWindow::ApplyLevelCellDelegate);
+        connect(mModel, &QAbstractItemModel::columnsRemoved, this, &MainWindow::ApplyLevelCellDelegate);
+        // Promote/Demote between Level and other enum types flips
+        // which column is "the level column". `Grew` is a no-op
+        // for our purposes (dict expansion doesn't move columns).
+        connect(
+            mModel,
+            &LogModel::enumColumnsChanged,
+            this,
+            [this](EnumColumnsChangeReason reason, int /*columnIndex*/) {
+                if (reason == EnumColumnsChangeReason::Grew)
+                {
+                    return;
+                }
+                ApplyLevelCellDelegate();
+            }
+        );
+
+        ApplyLevelCellDelegate();
+    }
+
     mTableView->resizeColumnsToContents();
 
     // Header stylesheet lives in `ApplyTableStyleSheet` so theme
@@ -815,6 +849,28 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     });
     connect(mPreferencesEditor, &PreferencesEditor::staticDisplayOrderChanged, this, [this](bool) {
         ApplyDisplayOrder();
+    });
+    // Level-icons toggle: `SetShowLevelIcons` already emits a
+    // scoped `dataChanged`; `ApplyLevelCellDelegate` then
+    // attaches/detaches the delegate on the right column.
+    connect(mPreferencesEditor, &PreferencesEditor::showLevelIconsChanged, this, [this](bool on) {
+        if (mModel == nullptr)
+        {
+            return;
+        }
+        mModel->SetShowLevelIcons(on);
+        ApplyLevelCellDelegate();
+    });
+
+    // High-contrast toggle: `SetHighContrast` rebuilds the style
+    // cache and emits `themeChanged()`, reusing the normal
+    // theme-swap repaint chain.
+    connect(mPreferencesEditor, &PreferencesEditor::highContrastLevelsChanged, this, [this](bool on) {
+        if (mTheme == nullptr)
+        {
+            return;
+        }
+        mTheme->SetHighContrast(on);
     });
 
     // Anchor hotkeys (programmatic so the .ui isn't bloated):
@@ -1128,6 +1184,17 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     StreamingControl::LoadConfiguration();
     ApplyStreamingRetention();
     ApplyDisplayOrder();
+
+    // Seed "Show level icons" pref (default true). No explicit
+    // `ApplyLevelCellDelegate` follow-up needed: the model has no
+    // columns at ctor time, so the attach happens later via the
+    // `modelReset`/`columnsInserted` connections above.
+    if (mModel != nullptr)
+    {
+        const QSettings settings;
+        const bool showLevelIcons = settings.value(QStringLiteral("ui/showLevelIcons"), true).toBool();
+        mModel->SetShowLevelIcons(showLevelIcons);
+    }
 
     // Run after every action is wired so they can all be decorated in one pass.
     FinaliseActionMetadata();
@@ -1477,8 +1544,12 @@ void MainWindow::RestoreLastSessionFromPath(const QString &jsonPath)
     // the live-tail guard in `ShouldAutoSaveSession` on the next
     // closeEvent.
     mLastTerminalSessionMode = SessionMode::Idle;
+    // Defer the loaded sort until streaming finishes (see
+    // `ApplyDeferredSortFromConfig` for the O(N^2) avoidance).
+    mPendingApplySortFromConfig = true;
     if (!DoLoadConfiguration(jsonPath))
     {
+        mPendingApplySortFromConfig = false;
         return;
     }
 
@@ -1584,10 +1655,16 @@ void MainWindow::OpenRecentSession(const QString &uuid)
     // our previous uuid; we re-pin below.
     NewSession();
 
+    // Defer the loaded sort until streaming finishes (see
+    // `ApplyDeferredSortFromConfig`). Set *after* `NewSession`,
+    // which clears the latch.
+    mPendingApplySortFromConfig = true;
+
     // Apply failure surfaces a `QMessageBox`; bail without queueing
     // files so the view is at least empty rather than mixed.
     if (!ApplyLoadedConfiguration(std::move(parsed)))
     {
+        mPendingApplySortFromConfig = false;
         return;
     }
 
@@ -1614,8 +1691,10 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
 {
     if (!loglib::HasLocators(mCurrentSource))
     {
-        // Config has no source -- columns / filters are installed
-        // but there's nothing to stream.
+        // No source -- columns / filters are installed but there's
+        // nothing to stream. Consume the deferred-sort latch so it
+        // doesn't leak across the next session restore.
+        ApplyDeferredSortFromConfig();
         return;
     }
 
@@ -1642,6 +1721,9 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
                 );
             }
         }
+        // Non-File: no streaming either; consume the deferral so
+        // the latch can't outlive this attempt.
+        ApplyDeferredSortFromConfig();
         return;
     }
 
@@ -1709,6 +1791,8 @@ void MainWindow::NewSession()
     mStreamingErrorCount = 0;
     mFirstStreamingBatchSeen = false;
     mSourceWaiting = false;
+    // The configuration that requested the deferred sort is gone.
+    mPendingApplySortFromConfig = false;
     // Drop the pinned uuid + open-windows membership so the next
     // AutoSave creates a fresh entry and a crash before then
     // doesn't re-restore the discarded session.
@@ -1899,12 +1983,16 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
 
     // Mixed: apply config with a full reset, then append the logs
     // so the loaded columns / filters / sort apply to the rows.
+    // Defer the sort until streaming finishes (see
+    // `ApplyDeferredSortFromConfig`).
+    mPendingApplySortFromConfig = true;
     if (!DoLoadConfiguration(configPath))
     {
         // TOCTOU: the file was rewritten between probe and commit.
         // The model was reset before the throw, so streaming logs
         // against the unintended default columns would mislead --
         // bail without queueing anything.
+        mPendingApplySortFromConfig = false;
         return MixedInputResult{.outcome = MixedInputDispatch::QueuedLogsOnly, .appliedConfigPath = QString()};
     }
     StartStreamingOpenQueue(logPaths, OpenMode::Append);
@@ -1938,6 +2026,8 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
         mCurrentSource.reset();
         mSessionMode = SessionMode::Idle;
         mLastTerminalSessionMode = SessionMode::Idle;
+        // Destructive open: drop the previous session's deferred-sort intent.
+        mPendingApplySortFromConfig = false;
         DetachAutoSaveUuid();
     }
     else if (mModel->IsStreamingActive())
@@ -2081,6 +2171,12 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
     {
         mCurrentSource.reset();
     }
+
+    // Apply the deferred sort before the auto-save below so the
+    // mirror reads the applied sort from the proxy. Runs on every
+    // terminal result; no-op when the latch is clear or the user
+    // sorted mid-stream.
+    ApplyDeferredSortFromConfig();
 
     // Auto-save on success so Recent Sessions + restore-on-launch
     // can reopen this view. `ShouldAutoSaveSession` filters out
@@ -3605,11 +3701,17 @@ void MainWindow::MirrorSessionStateToConfiguration()
     mModel->ConfigurationManager().SetFilters(std::move(snapshot));
 
     // Sort: read live from the proxy so the persisted value matches
-    // what the user sees in the header indicator.
-    loglib::LogConfiguration::Sort sort;
-    sort.columnIndex = mSortFilterProxyModel->SortColumn();
-    sort.descending = (mSortFilterProxyModel->SortOrder() == Qt::DescendingOrder);
-    mModel->ConfigurationManager().SetSort(sort);
+    // what the user sees. *Exception:* while a deferred sort is
+    // pending and the proxy is still unsorted (`-1`), preserve the
+    // configuration's existing sort -- the live `-1` is transient.
+    const int proxySortColumn = mSortFilterProxyModel->SortColumn();
+    if (proxySortColumn >= 0 || !mPendingApplySortFromConfig)
+    {
+        loglib::LogConfiguration::Sort sort;
+        sort.columnIndex = proxySortColumn;
+        sort.descending = (mSortFilterProxyModel->SortOrder() == Qt::DescendingOrder);
+        mModel->ConfigurationManager().SetSort(sort);
+    }
 
     // Drop empty-locator Sources before mirroring: on-disk schema
     // omits `source` when nothing is bound, so a `Source{...,
@@ -4323,12 +4425,19 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         // session state and would otherwise overwrite the loaded
         // sort with the cleared proxy sort. Columns-only files
         // default to the `-1` "no sort" sentinel.
-        const auto loadedSort = mModel->Configuration().sort;
-        if (loadedSort.columnIndex >= 0 && loadedSort.columnIndex < mModel->columnCount())
+        //
+        // *Exception*: when `mPendingApplySortFromConfig` is set
+        // (streaming will follow), skip the eager apply -- see
+        // `ApplyDeferredSortFromConfig` for the O(N^2) avoidance.
+        if (!mPendingApplySortFromConfig)
         {
-            mTableView->sortByColumn(
-                loadedSort.columnIndex, loadedSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
-            );
+            const auto loadedSort = mModel->Configuration().sort;
+            if (loadedSort.columnIndex >= 0 && loadedSort.columnIndex < mModel->columnCount())
+            {
+                mTableView->sortByColumn(
+                    loadedSort.columnIndex, loadedSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder
+                );
+            }
         }
 
         // Mirror the loaded source so the next save round-trips
@@ -5288,6 +5397,12 @@ void MainWindow::OnThemeChanged()
     // toggle that pins the same OS scheme). Also drops the model's
     // cached funnel pixmap so the header decoration re-renders.
     RefreshThemedIcons();
+
+    // A theme switch can flip icon mode on/off; reapply so the
+    // delegate is attached/detached on the right column. Explicit
+    // detach in text mode avoids routing every paint through the
+    // delegate's self-gate.
+    ApplyLevelCellDelegate();
 }
 
 void MainWindow::ApplyThemedWindowIcon()
@@ -5368,6 +5483,28 @@ const loglib::EnumDictionary *MainWindow::ResolveEnumDictionary(int columnIndex)
         return nullptr;
     }
     return mModel->Table().ResolveEnumColumn(static_cast<size_t>(columnIndex)).dictionary;
+}
+
+void MainWindow::ApplyDeferredSortFromConfig()
+{
+    // Always clear the latch so subsequent saves read the proxy's
+    // live sort instead of preserving the loaded one.
+    const auto guard = qScopeGuard([this]() { mPendingApplySortFromConfig = false; });
+    if (!mPendingApplySortFromConfig)
+    {
+        return;
+    }
+    // User sorted mid-stream -- their choice wins.
+    if (mSortFilterProxyModel->SortColumn() >= 0)
+    {
+        return;
+    }
+    const auto &cfgSort = mModel->Configuration().sort;
+    if (cfgSort.columnIndex < 0 || cfgSort.columnIndex >= mModel->columnCount())
+    {
+        return;
+    }
+    mTableView->sortByColumn(cfgSort.columnIndex, cfgSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder);
 }
 
 bool MainWindow::EnumFilterFullyResolved(const loglib::LogConfiguration::LogFilter &filter) const
@@ -5866,6 +6003,12 @@ void MainWindow::OnSourceColumnsMoved(
     // Syncing earlier could flash the funnel on the wrong column
     // while hidden flags are still mid-flight.
     ApplyColumnVisibility();
+
+    // Reapply *after* the filter remap above so the delegate
+    // reapply sees a consistent filter store. Cheap when nothing
+    // changed -- early-out on `mInstalledLevelDelegateColumn ==
+    // newColumn`.
+    ApplyLevelCellDelegate();
 }
 
 void MainWindow::ResetHeaderToIdentity()
@@ -6301,6 +6444,45 @@ void MainWindow::ApplyColumnVisibility()
     // See `SetColumnVisible`: usually a no-op, kept for symmetry
     // across column-shape signal points.
     SyncColumnFilterIndicators();
+}
+
+void MainWindow::ApplyLevelCellDelegate()
+{
+    // No-theme test fixture: no delegate, no icon mode.
+    if (mLevelCellDelegate == nullptr || mTableView == nullptr || mModel == nullptr)
+    {
+        return;
+    }
+
+    // Detach in text mode (don't just rely on the delegate's
+    // self-gate) so text-mode paints skip the proxy-chain walk
+    // inside the delegate.
+    const bool iconMode = mModel->IsLevelIconModeActive();
+    const int newColumn = iconMode ? mModel->FirstLevelColumnIndex() : -1;
+
+    // Detach from the previous column when the level column has
+    // moved -- otherwise the delegate would suppress text on the
+    // old column after a reload.
+    if (mInstalledLevelDelegateColumn >= 0 && mInstalledLevelDelegateColumn != newColumn)
+    {
+        // `nullptr` reverts to the default delegate; Qt keeps
+        // ownership of `mLevelCellDelegate` via this `MainWindow`.
+        mTableView->setItemDelegateForColumn(mInstalledLevelDelegateColumn, nullptr);
+        mInstalledLevelDelegateColumn = -1;
+    }
+
+    if (newColumn < 0)
+    {
+        return;
+    }
+
+    if (mInstalledLevelDelegateColumn == newColumn)
+    {
+        return;
+    }
+
+    mTableView->setItemDelegateForColumn(newColumn, mLevelCellDelegate);
+    mInstalledLevelDelegateColumn = newColumn;
 }
 
 void MainWindow::RebuildViewMenu()

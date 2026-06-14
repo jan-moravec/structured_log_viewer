@@ -202,6 +202,145 @@ TEST_CASE("Theme without anchorPalette decodes as an empty vector", "[Theme][anc
     CHECK(parsed.anchorPalette.empty());
 }
 
+TEST_CASE("Theme round-trips a full levelColumnOverride block", "[Theme][levelOverride]")
+{
+    Theme original;
+    original.name = "Iconic";
+    original.kind = ThemeKind::Dark;
+    LevelColumnOverride override;
+    override.header = "Sev";
+    override.headerIcon = ":/icons/level-info.svg";
+    override.levels["Info"] = LevelDisplayOverride{
+        .icon = ":/icons/level-info.svg",
+        .pillBackground = "#1E3A5F",
+    };
+    override.levels["Warn"] = LevelDisplayOverride{
+        .icon = ":/icons/level-warn.svg",
+        .pillBackground = "#7C5A12",
+        .pillForeground = "#FFFFFF",
+    };
+    override.levels["Error"] = LevelDisplayOverride{.icon = ":/icons/level-error.svg"};
+    original.levelColumnOverride = std::move(override);
+
+    const std::string json = SerializeTheme(original);
+    // Wire-format sanity so a future rename surfaces here.
+    CHECK(json.contains("\"levelColumnOverride\""));
+    CHECK(json.contains("\"pillBackground\""));
+
+    const Theme reloaded = ParseTheme(json);
+    REQUIRE(reloaded.levelColumnOverride.has_value());
+    CHECK(reloaded.levelColumnOverride->header == "Sev");
+    CHECK(reloaded.levelColumnOverride->headerIcon == ":/icons/level-info.svg");
+    REQUIRE(reloaded.levelColumnOverride->levels.contains("Info"));
+    CHECK(reloaded.levelColumnOverride->levels.at("Info").pillBackground == "#1E3A5F");
+    CHECK(reloaded.levelColumnOverride->levels.at("Warn").pillForeground == "#FFFFFF");
+    CHECK_FALSE(reloaded.levelColumnOverride->levels.at("Error").pillBackground.has_value());
+    CHECK(reloaded == original);
+}
+
+TEST_CASE("Theme without levelColumnOverride parses as nullopt", "[Theme][levelOverride]")
+{
+    constexpr std::string_view JSON = R"({
+        "name": "Pre-icon",
+        "kind": "dark",
+        "levels": {},
+        "table": {},
+        "chrome": {},
+        "app": {}
+    })";
+
+    const Theme parsed = ParseTheme(JSON);
+    CHECK(parsed.name == "Pre-icon");
+    CHECK_FALSE(parsed.levelColumnOverride.has_value());
+}
+
+TEST_CASE("Theme preserves blank-string header override through round-trip", "[Theme][levelOverride]")
+{
+    Theme original;
+    original.name = "Blank";
+    original.kind = ThemeKind::Light;
+    LevelColumnOverride override;
+    // "" = render no header text. Distinct from `nullopt` ("fall
+    // back to `Column::header`").
+    override.header = "";
+    original.levelColumnOverride = std::move(override);
+
+    const std::string json = SerializeTheme(original);
+    const Theme reloaded = ParseTheme(json);
+    REQUIRE(reloaded.levelColumnOverride.has_value());
+    REQUIRE(reloaded.levelColumnOverride->header.has_value());
+    CHECK(reloaded.levelColumnOverride->header->empty());
+}
+
+TEST_CASE("Theme round-trips a levelsHighContrast override map", "[Theme][highContrast]")
+{
+    Theme original;
+    original.name = "Punchy";
+    original.kind = ThemeKind::Dark;
+    // Subtle defaults.
+    original.levels["Warn"] = LevelStyle{.foreground = "#FCD34D", .background = "#272620"};
+    original.levels["Error"] = LevelStyle{.foreground = "#FCA5A5", .background = "#352121"};
+    original.levels["Fatal"] = LevelStyle{.foreground = "#FECACA", .background = "#4A1E1E", .bold = true};
+    // Loud overrides for the same keys.
+    original.levelsHighContrast["Warn"] = LevelStyle{.foreground = "#FCD34D", .background = "#2A2418"};
+    original.levelsHighContrast["Error"] = LevelStyle{.foreground = "#FCA5A5", .background = "#4C1D1D"};
+    original.levelsHighContrast["Fatal"] = LevelStyle{.foreground = "#FECACA", .background = "#7F1D1D", .bold = true};
+
+    const std::string json = SerializeTheme(original);
+    CHECK(json.contains("\"levelsHighContrast\""));
+
+    const Theme reloaded = ParseTheme(json);
+    REQUIRE(reloaded.levelsHighContrast.size() == 3);
+    CHECK(reloaded.levelsHighContrast.at("Warn").background == "#2A2418");
+    CHECK(reloaded.levelsHighContrast.at("Error").background == "#4C1D1D");
+    CHECK(reloaded.levelsHighContrast.at("Fatal").bold == true);
+    CHECK(reloaded == original);
+}
+
+TEST_CASE("Theme without levelsHighContrast decodes as an empty map", "[Theme][highContrast]")
+{
+    constexpr std::string_view JSON = R"({
+        "name": "Pre-toggle",
+        "kind": "dark",
+        "levels": { "Error": { "foreground": "#FF0000" } },
+        "table": {},
+        "chrome": {},
+        "app": {}
+    })";
+
+    const Theme parsed = ParseTheme(JSON);
+    CHECK(parsed.levelsHighContrast.empty());
+}
+
+TEST_CASE("StyleForLevel honours useHighContrast with sparse fall-back", "[Theme][highContrast]")
+{
+    Theme theme;
+    theme.levels["Warn"] = LevelStyle{.foreground = "#AA8800", .background = "#272620"};
+    theme.levels["Error"] = LevelStyle{.foreground = "#AA0000", .background = "#352121"};
+    theme.levels["Fatal"] = LevelStyle{.foreground = "#FF6688", .background = "#4A1E1E", .bold = true};
+    // Sparse override: only `Error` boosts.
+    theme.levelsHighContrast["Error"] = LevelStyle{.foreground = "#FF0000", .background = "#7F1D1D"};
+
+    // false branch matches the no-bool overload.
+    const LevelStyle warnSubtle = StyleForLevel(theme, LogLevel::Warn, false);
+    CHECK(warnSubtle.background == "#272620");
+    // true + sparse: falls back to `levels`.
+    const LevelStyle warnLoud = StyleForLevel(theme, LogLevel::Warn, true);
+    CHECK(warnLoud.background == "#272620");
+
+    // Explicit override wins when present.
+    const LevelStyle errorSubtle = StyleForLevel(theme, LogLevel::Error, false);
+    CHECK(errorSubtle.background == "#352121");
+    const LevelStyle errorLoud = StyleForLevel(theme, LogLevel::Error, true);
+    CHECK(errorLoud.background == "#7F1D1D");
+    CHECK(errorLoud.foreground == "#FF0000");
+
+    // Fatal only in `levels` -- both branches match, bold preserved.
+    const LevelStyle fatalLoud = StyleForLevel(theme, LogLevel::Fatal, true);
+    CHECK(fatalLoud.background == "#4A1E1E");
+    CHECK(fatalLoud.bold == true);
+}
+
 TEST_CASE("Theme tolerates a sparse anchorPalette with empty slots", "[Theme][anchor]")
 {
     // Empty strings let a theme override only a couple of slots and

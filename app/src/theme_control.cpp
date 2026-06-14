@@ -1,5 +1,7 @@
 #include "theme_control.hpp"
 
+#include "icon_loader.hpp"
+
 #include <loglib/log_level.hpp>
 #include <loglib/theme.hpp>
 
@@ -28,6 +30,7 @@
 
 #include <algorithm>
 #include <array>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -65,6 +68,13 @@ constexpr char BUILTIN_MATERIAL_DARK_PATH[] = ":/themes/material_dark.json";
 constexpr char BUILTIN_MATERIAL_LIGHT_PATH[] = ":/themes/material_light.json";
 constexpr char BUILTIN_MONOKAI_DARK_PATH[] = ":/themes/monokai_dark.json";
 constexpr char BUILTIN_MONOKAI_LIGHT_PATH[] = ":/themes/monokai_light.json";
+constexpr char BUILTIN_SOLARIZED_DARK_PATH[] = ":/themes/solarized_dark.json";
+constexpr char BUILTIN_SOLARIZED_LIGHT_PATH[] = ":/themes/solarized_light.json";
+constexpr char BUILTIN_NORD_PATH[] = ":/themes/nord.json";
+constexpr char BUILTIN_DRACULA_PATH[] = ":/themes/dracula.json";
+constexpr char BUILTIN_TOKYO_NIGHT_PATH[] = ":/themes/tokyo_night.json";
+constexpr char BUILTIN_CATPPUCCIN_MOCHA_PATH[] = ":/themes/catppuccin_mocha.json";
+constexpr char BUILTIN_PAPER_LIGHT_PATH[] = ":/themes/paper_light.json";
 
 /// Linear `lerp(@p fg, @p bg, @p t)` in sRGB. Used to dim Disabled
 /// text roles toward their surrounding surface.
@@ -84,15 +94,20 @@ size_t LevelIndex(loglib::LogLevel level) noexcept
     return static_cast<size_t>(level);
 }
 
-QBrush BrushFromHex(const std::optional<std::string> &hex) noexcept
+QBrush BrushFromHex(const std::optional<std::string> &hex)
 {
     if (!hex.has_value() || hex->empty())
     {
         return QBrush{}; // invalid -> "use palette default"
     }
-    const QColor color(QString::fromStdString(*hex));
+    const QString hexQ = QString::fromStdString(*hex);
+    const QColor color(hexQ);
     if (!color.isValid())
     {
+        // Silent here: `WarnOnUnparsableHex` already warns once
+        // per bad hex at discovery time. `BuildStyleCache` runs
+        // on every theme/font/palette change, so re-warning would
+        // spam the log.
         return QBrush{};
     }
     return QBrush{color};
@@ -111,26 +126,34 @@ std::optional<std::string> ReadFileUtf8(const QString &path)
     return std::string(bytes.constData(), static_cast<size_t>(bytes.size()));
 }
 
+using loglib::LogLevel;
+
+constexpr std::array<LogLevel, loglib::CANONICAL_LEVEL_COUNT + 1> ALL_LEVELS = {
+    LogLevel::Unknown,
+    LogLevel::Trace,
+    LogLevel::Debug,
+    LogLevel::Info,
+    LogLevel::Warn,
+    LogLevel::Error,
+    LogLevel::Fatal
+};
+
+bool IsCanonicalLevelKey(const std::string &key) noexcept
+{
+    return std::ranges::any_of(ALL_LEVELS, [&key](LogLevel level) {
+        return std::string_view(key) == loglib::CanonicalLevelName(level);
+    });
+}
+
 /// Warn about non-canonical level keys (e.g. typos like `"Worn"`)
-/// so users can tell whether their override was ignored.
+/// so users can tell their override was ignored. Walks
+/// `theme.levels`, `theme.levelsHighContrast`, and
+/// `levelColumnOverride.levels` so typos surface from any of them.
 void WarnOnUnknownLevelKeys(const QString &source, const loglib::Theme &theme)
 {
-    using loglib::LogLevel;
-    static constexpr std::array<LogLevel, loglib::CANONICAL_LEVEL_COUNT + 1> ALL_LEVELS = {
-        LogLevel::Unknown,
-        LogLevel::Trace,
-        LogLevel::Debug,
-        LogLevel::Info,
-        LogLevel::Warn,
-        LogLevel::Error,
-        LogLevel::Fatal
-    };
     for (const auto &[key, value] : theme.levels)
     {
-        const bool matchesCanonical = std::ranges::any_of(ALL_LEVELS, [&key](LogLevel level) {
-            return std::string_view(key) == loglib::CanonicalLevelName(level);
-        });
-        if (!matchesCanonical)
+        if (!IsCanonicalLevelKey(key))
         {
             qWarning(
                 "Theme %s has unrecognised level key `%s`; expected one of "
@@ -140,6 +163,156 @@ void WarnOnUnknownLevelKeys(const QString &source, const loglib::Theme &theme)
             );
         }
     }
+    for (const auto &[key, value] : theme.levelsHighContrast)
+    {
+        if (!IsCanonicalLevelKey(key))
+        {
+            qWarning(
+                "Theme %s has unrecognised levelsHighContrast key `%s`; expected "
+                "one of Trace/Debug/Info/Warn/Error/Fatal/Unknown. The entry is ignored.",
+                qUtf8Printable(source),
+                key.c_str()
+            );
+        }
+    }
+    if (theme.levelColumnOverride.has_value())
+    {
+        for (const auto &[key, ignored] : theme.levelColumnOverride->levels)
+        {
+            if (!IsCanonicalLevelKey(key))
+            {
+                qWarning(
+                    "Theme %s has unrecognised levelColumnOverride.levels key `%s`; "
+                    "expected one of Trace/Debug/Info/Warn/Error/Fatal/Unknown. "
+                    "The entry is ignored.",
+                    qUtf8Printable(source),
+                    key.c_str()
+                );
+            }
+        }
+    }
+}
+
+/// Emit one `qWarning` per unparsable hex in @p theme, naming the
+/// field (`chrome.toolTipBase`, `levels.Warn.foreground`, ...).
+/// Called once at theme-discovery time so the silent fallback in
+/// `BrushFromHex` doesn't spam on every cache rebuild. Empty /
+/// nullopt values are "use palette default" and never warn.
+void WarnOnUnparsableHex(const QString &source, const loglib::Theme &theme)
+{
+    auto check = [&](const std::string &fieldPath, const std::optional<std::string> &hex) {
+        if (!hex.has_value() || hex->empty())
+        {
+            return;
+        }
+        const QString hexQ = QString::fromStdString(*hex);
+        if (QColor(hexQ).isValid())
+        {
+            return;
+        }
+        qWarning(
+            "Theme %s field `%s` has hex `%s` that did not parse; using palette default.",
+            qUtf8Printable(source),
+            fieldPath.c_str(),
+            qUtf8Printable(hexQ)
+        );
+    };
+
+    for (const auto &[key, style] : theme.levels)
+    {
+        const std::string base = "levels." + key + ".";
+        check(base + "foreground", style.foreground);
+        check(base + "background", style.background);
+    }
+    for (const auto &[key, style] : theme.levelsHighContrast)
+    {
+        const std::string base = "levelsHighContrast." + key + ".";
+        check(base + "foreground", style.foreground);
+        check(base + "background", style.background);
+    }
+    check("table.background", theme.table.background);
+    check("table.alternateRowBackground", theme.table.alternateRowBackground);
+    check("table.selectionBackground", theme.table.selectionBackground);
+    check("table.selectionForeground", theme.table.selectionForeground);
+    check("table.headerBackground", theme.table.headerBackground);
+    check("table.headerForeground", theme.table.headerForeground);
+    check("chrome.window", theme.chrome.window);
+    check("chrome.windowText", theme.chrome.windowText);
+    check("chrome.text", theme.chrome.text);
+    check("chrome.button", theme.chrome.button);
+    check("chrome.buttonText", theme.chrome.buttonText);
+    check("chrome.placeholderText", theme.chrome.placeholderText);
+    check("chrome.toolTipBase", theme.chrome.toolTipBase);
+    check("chrome.toolTipText", theme.chrome.toolTipText);
+    for (size_t i = 0; i < theme.anchorPalette.size(); ++i)
+    {
+        check("anchorPalette[" + std::to_string(i) + "]", std::optional<std::string>(theme.anchorPalette[i]));
+    }
+    if (theme.levelColumnOverride.has_value())
+    {
+        for (const auto &[key, levelOverride] : theme.levelColumnOverride->levels)
+        {
+            const std::string base = "levelColumnOverride.levels." + key + ".";
+            check(base + "pillBackground", levelOverride.pillBackground);
+            check(base + "pillForeground", levelOverride.pillForeground);
+        }
+    }
+}
+
+/// Resolve a theme-supplied icon path.
+///   1. `:/...` qrc paths: allowed for built-in and user themes.
+///   2. Absolute paths: allowed only for user themes (built-ins
+///      should always use qrc).
+///   3. Relative paths: resolved against the theme file's dir.
+///   4. User-theme paths containing `..` segments are rejected
+///      (stops a shared JSON from reaching unrelated files).
+/// Returns an empty `QString` on rejection (with a `qWarning`).
+QString ResolveIconPath(const std::string &relativeOrAbsolute, const QString &sourceDir, bool fromUser)
+{
+    QString path = QString::fromStdString(relativeOrAbsolute);
+    if (path.isEmpty())
+    {
+        return {};
+    }
+    if (path.startsWith(QLatin1String(":/")))
+    {
+        return path;
+    }
+    const bool isAbsolute = QFileInfo(path).isAbsolute();
+    if (isAbsolute)
+    {
+        if (!fromUser)
+        {
+            qWarning(
+                "Built-in theme references absolute icon path %s; expected a `:/...` "
+                "resource path. Icon ignored.",
+                qUtf8Printable(path)
+            );
+            return {};
+        }
+        return path;
+    }
+    if (fromUser)
+    {
+        // `QDir::cleanPath` collapses `./` and `..`; anything left
+        // is an escape attempt.
+        const QString cleaned = QDir::cleanPath(path);
+        if (cleaned.startsWith(QStringLiteral("../")) || cleaned == QStringLiteral("..") ||
+            cleaned.contains(QStringLiteral("/../")))
+        {
+            qWarning(
+                "User theme icon path %s uses parent-directory traversal; "
+                "icon ignored.",
+                qUtf8Printable(path)
+            );
+            return {};
+        }
+    }
+    if (sourceDir.isEmpty())
+    {
+        return path;
+    }
+    return QDir(sourceDir).filePath(path);
 }
 
 bool IsReservedWin32DeviceName(const QString &name)
@@ -180,6 +353,11 @@ std::optional<loglib::Theme> ParseFileToTheme(const QString &path)
 ThemeControl::ThemeControl(QObject *parent)
     : QObject(parent)
 {
+    // Seed the high-contrast pref before `LoadConfiguration`
+    // builds the first style cache. The pref is owned by
+    // `MainWindow`; we just mirror it here.
+    const QSettings settings;
+    mHighContrast = settings.value(QStringLiteral("ui/highContrastLevels"), false).toBool();
     LoadConfiguration();
 }
 
@@ -306,6 +484,82 @@ QBrush ThemeControl::AnchorBrushFor(std::uint8_t colorIndex, int role) const noe
         // the caller fall through to its normal handling.
         return {};
     }
+}
+
+bool ThemeControl::HasLevelColumnOverride() const noexcept
+{
+    return mHasLevelColumnOverride;
+}
+
+bool ThemeControl::HasLevelsHighContrast() const noexcept
+{
+    return mHasLevelsHighContrast;
+}
+
+bool ThemeControl::IsHighContrast() const noexcept
+{
+    return mHighContrast;
+}
+
+void ThemeControl::SetHighContrast(bool on)
+{
+    if (mHighContrast == on)
+    {
+        return;
+    }
+    mHighContrast = on;
+    // Fast path when the theme has no `levelsHighContrast`: skip
+    // the rebuild + repaint cascade (brushes wouldn't change).
+    // The flag still flips so a later theme switch picks it up.
+    if (!mHasLevelsHighContrast)
+    {
+        return;
+    }
+    // Rebuild through the single entry point even though the pill
+    // caches don't depend on this flag -- one rebuild path is
+    // cheaper than splitting the cache.
+    BuildStyleCache(mActive);
+    emit themeChanged();
+}
+
+QIcon ThemeControl::IconFor(loglib::LogLevel level) const noexcept
+{
+    const size_t idx = LevelIndex(level);
+    if (idx >= mLevelIcons.size())
+    {
+        return {};
+    }
+    return mLevelIcons[idx];
+}
+
+QBrush ThemeControl::PillBackgroundFor(loglib::LogLevel level) const noexcept
+{
+    const size_t idx = LevelIndex(level);
+    if (idx >= mPillBackground.size())
+    {
+        return {};
+    }
+    return mPillBackground[idx];
+}
+
+QBrush ThemeControl::PillForegroundFor(loglib::LogLevel level) const noexcept
+{
+    const size_t idx = LevelIndex(level);
+    if (idx >= mPillForeground.size())
+    {
+        return {};
+    }
+    return mPillForeground[idx];
+}
+
+std::optional<QString> ThemeControl::LevelColumnHeaderTextOverride() const
+{
+    return mLevelColumnHeaderText;
+}
+
+QIcon ThemeControl::LevelColumnHeaderIcon() const
+{
+    return mLevelColumnHeaderIcon;
 }
 
 QString ThemeControl::ActiveSelection() const
@@ -561,11 +815,16 @@ void ThemeControl::DiscoverThemes()
             }
         }
         WarnOnUnknownLevelKeys(path, *theme);
-        mIndex[name] = IndexEntry{.theme = std::move(*theme), .fromUser = fromUser};
+        WarnOnUnparsableHex(path, *theme);
+        // `QFileInfo::absolutePath()` works for qrc and on-disk
+        // paths alike; `BuildStyleCache` uses it to resolve
+        // relative icon paths.
+        const QString sourceDir = QFileInfo(path).absolutePath();
+        mIndex[name] = IndexEntry{.theme = std::move(*theme), .fromUser = fromUser, .sourceDir = sourceDir};
     };
 
     // Built-ins first, so a same-named user file overrides them.
-    constexpr std::array<const char *, 8> BUILTIN_PATHS = {
+    constexpr std::array<const char *, 15> BUILTIN_PATHS = {
         BUILTIN_LIGHT_PATH,
         BUILTIN_DARK_PATH,
         BUILTIN_GITHUB_DARK_PATH,
@@ -573,7 +832,14 @@ void ThemeControl::DiscoverThemes()
         BUILTIN_MATERIAL_DARK_PATH,
         BUILTIN_MATERIAL_LIGHT_PATH,
         BUILTIN_MONOKAI_DARK_PATH,
-        BUILTIN_MONOKAI_LIGHT_PATH
+        BUILTIN_MONOKAI_LIGHT_PATH,
+        BUILTIN_SOLARIZED_DARK_PATH,
+        BUILTIN_SOLARIZED_LIGHT_PATH,
+        BUILTIN_NORD_PATH,
+        BUILTIN_DRACULA_PATH,
+        BUILTIN_TOKYO_NIGHT_PATH,
+        BUILTIN_CATPPUCCIN_MOCHA_PATH,
+        BUILTIN_PAPER_LIGHT_PATH,
     };
     for (const char *path : BUILTIN_PATHS)
     {
@@ -594,6 +860,8 @@ void ThemeControl::DiscoverThemes()
 void ThemeControl::ResolveAndApplyActive(bool emitWhenUnchanged)
 {
     loglib::Theme chosen;
+    QString chosenSourceDir;
+    bool chosenFromUser = false;
     bool found = false;
 
     if (!mActiveSelection.isEmpty())
@@ -601,6 +869,8 @@ void ThemeControl::ResolveAndApplyActive(bool emitWhenUnchanged)
         if (const auto it = mIndex.find(mActiveSelection); it != mIndex.end())
         {
             chosen = it->second.theme;
+            chosenSourceDir = it->second.sourceDir;
+            chosenFromUser = it->second.fromUser;
             found = true;
         }
         else
@@ -640,6 +910,8 @@ void ThemeControl::ResolveAndApplyActive(bool emitWhenUnchanged)
         if (const auto it = mIndex.find(desiredName); it != mIndex.end())
         {
             chosen = it->second.theme;
+            chosenSourceDir = it->second.sourceDir;
+            chosenFromUser = it->second.fromUser;
             found = true;
         }
     }
@@ -647,6 +919,8 @@ void ThemeControl::ResolveAndApplyActive(bool emitWhenUnchanged)
     {
         // Last resort -- keep the app usable in a broken install.
         chosen = mIndex.begin()->second.theme;
+        chosenSourceDir = mIndex.begin()->second.sourceDir;
+        chosenFromUser = mIndex.begin()->second.fromUser;
         found = true;
     }
     if (!found)
@@ -683,6 +957,8 @@ void ThemeControl::ResolveAndApplyActive(bool emitWhenUnchanged)
 
     mActive = std::move(chosen);
     mActiveName = newName;
+    mActiveSourceDir = chosenSourceDir;
+    mActiveFromUser = chosenFromUser;
     mAppliedSelection = mActiveSelection;
     ApplyTheme(mActive);
     if (!unchanged || emitWhenUnchanged)
@@ -927,20 +1203,13 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
     const QFont appFont = qApp->font();
     mFonts.fill(appFont);
 
-    using loglib::LogLevel;
-    // Includes `Unknown` so themes can style unresolved levels.
-    constexpr std::array<LogLevel, loglib::CANONICAL_LEVEL_COUNT + 1> ALL_LEVELS = {
-        LogLevel::Unknown,
-        LogLevel::Trace,
-        LogLevel::Debug,
-        LogLevel::Info,
-        LogLevel::Warn,
-        LogLevel::Error,
-        LogLevel::Fatal
-    };
+    // Refresh the high-contrast mirror before the loop so
+    // Preferences sees the correct enable state.
+    mHasLevelsHighContrast = !theme.levelsHighContrast.empty();
+
     for (const LogLevel level : ALL_LEVELS)
     {
-        const loglib::LevelStyle style = loglib::StyleForLevel(theme, level);
+        const loglib::LevelStyle style = loglib::StyleForLevel(theme, level, mHighContrast);
         const size_t idx = LevelIndex(level);
         mForeground[idx] = BrushFromHex(style.foreground);
         mBackground[idx] = BrushFromHex(style.background);
@@ -973,5 +1242,118 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
         }
         mAnchorBackground[slot] = QBrush{background};
         mAnchorForeground[slot] = QBrush{ThemeControl::IsDarkColor(background) ? QColor(Qt::white) : QColor(Qt::black)};
+    }
+
+    // Reset the level-column override caches so a theme without
+    // the block reverts to plain text after switching away from
+    // an icon-mode theme.
+    mHasLevelColumnOverride = false;
+    mLevelColumnHeaderText.reset();
+    mLevelColumnHeaderIcon = QIcon{};
+    mLevelIcons.fill(QIcon{});
+    mPillBackground.fill(QBrush{});
+    mPillForeground.fill(QBrush{});
+
+    if (!theme.levelColumnOverride.has_value())
+    {
+        return;
+    }
+    mHasLevelColumnOverride = true;
+    const loglib::LevelColumnOverride &override = *theme.levelColumnOverride;
+
+    // Preserve nullopt vs "" vs set verbatim -- `LogModel::headerData`
+    // distinguishes the three.
+    if (override.header.has_value())
+    {
+        mLevelColumnHeaderText = QString::fromStdString(*override.header);
+    }
+
+    // Rasterise icons at `PM_SmallIconSize` * DPR so strokes stay
+    // sharp; the delegate downsamples to fit the pill.
+    constexpr int FALLBACK_ICON_SIZE_PX = 16;
+    int sizePx = FALLBACK_ICON_SIZE_PX;
+    if (const QStyle *style = qApp->style(); style != nullptr)
+    {
+        const int metric = style->pixelMetric(QStyle::PM_SmallIconSize);
+        if (metric > 0)
+        {
+            sizePx = metric;
+        }
+    }
+    const qreal dpr = qApp->devicePixelRatio();
+    const QColor paletteWindowText = qApp->palette().color(QPalette::Active, QPalette::WindowText);
+
+    // Project string-keyed overrides into a `LogLevel`-indexed
+    // lookup so the per-level loop below is O(1) per level.
+    std::array<const loglib::LevelDisplayOverride *, LEVEL_SLOTS> perLevel{};
+    perLevel.fill(nullptr);
+    for (const auto &[key, value] : override.levels)
+    {
+        for (const LogLevel level : ALL_LEVELS)
+        {
+            if (std::string_view(key) == loglib::CanonicalLevelName(level))
+            {
+                perLevel[LevelIndex(level)] = &value;
+                break;
+            }
+        }
+    }
+
+    // Header identity icon (only set when the theme provides
+    // one). Tinted with `WindowText` since it's not level-specific.
+    if (override.headerIcon.has_value() && !override.headerIcon->empty())
+    {
+        const QString resolved = ResolveIconPath(*override.headerIcon, mActiveSourceDir, mActiveFromUser);
+        if (!resolved.isEmpty())
+        {
+            mLevelColumnHeaderIcon = icon_loader::MakeThemedIcon(resolved, paletteWindowText, sizePx, dpr);
+        }
+    }
+
+    // Per-level icon + pill caches.
+    //   Foreground: override.pillForeground -> LevelStyle.foreground -> WindowText
+    //   Background: override.pillBackground only (absent = no pill;
+    //               delegate skips the rounded-rect fill).
+    for (const LogLevel level : ALL_LEVELS)
+    {
+        const size_t idx = LevelIndex(level);
+        const loglib::LevelDisplayOverride *entry = perLevel[idx];
+        if (entry == nullptr)
+        {
+            continue;
+        }
+
+        const QBrush pillBg = BrushFromHex(entry->pillBackground);
+        mPillBackground[idx] = pillBg;
+
+        QColor pillFgColor;
+        if (entry->pillForeground.has_value() && !entry->pillForeground->empty())
+        {
+            // Silent parse: `WarnOnUnparsableHex` already warned
+            // once at discovery time.
+            pillFgColor = QColor(QString::fromStdString(*entry->pillForeground));
+        }
+        if (!pillFgColor.isValid())
+        {
+            const QBrush levelFg = mForeground[idx];
+            if (levelFg.style() != Qt::NoBrush)
+            {
+                pillFgColor = levelFg.color();
+            }
+        }
+        if (!pillFgColor.isValid())
+        {
+            pillFgColor = paletteWindowText;
+        }
+        mPillForeground[idx] = QBrush{pillFgColor};
+
+        if (entry->icon.has_value() && !entry->icon->empty())
+        {
+            const QString resolved = ResolveIconPath(*entry->icon, mActiveSourceDir, mActiveFromUser);
+            if (!resolved.isEmpty())
+            {
+                mLevelIcons[idx] = icon_loader::MakeThemedIcon(resolved, pillFgColor, sizePx, dpr);
+            }
+        }
     }
 }

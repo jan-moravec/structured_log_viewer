@@ -46,6 +46,18 @@ signals:
     /// the current session is a static (file-mode) session.
     void staticDisplayOrderChanged(bool newestFirst);
 
+    /// Fired on every "Show level icons" toggle (live preview) and
+    /// again on Cancel/close to revert. `MainWindow` flips the
+    /// model + delegate; `QSettings` is written only on Ok and only
+    /// when the value actually changed.
+    void showLevelIconsChanged(bool on);
+
+    /// Fired on every "High contrast levels" toggle (live preview)
+    /// and again on Cancel/close to revert. `MainWindow` forwards
+    /// to `ThemeControl::SetHighContrast`, which reuses the normal
+    /// `themeChanged()` repaint path.
+    void highContrastLevelsChanged(bool on);
+
 private:
     /// Refill the theme combo from `ThemeControl::AvailableThemes`
     /// and select the active entry (Auto is the first entry).
@@ -58,6 +70,17 @@ private:
     /// few seconds. Empty string clears immediately.
     void ShowThemeStatus(const QString &message);
 
+    /// Enable / disable the "Show level icons" checkbox based on
+    /// whether the active theme ships a `levelColumnOverride`. The
+    /// disabled-state tooltip explains why the toggle is a no-op.
+    /// Re-runs on every `themeChanged()` so the state stays in sync.
+    void RefreshLevelIconsCheckboxAvailability();
+
+    /// Same as `RefreshLevelIconsCheckboxAvailability` but gates
+    /// the high-contrast checkbox on a non-empty `levelsHighContrast`
+    /// block.
+    void RefreshHighContrastCheckboxAvailability();
+
     QComboBox *mThemeComboBox;
     QLabel *mThemePreviewLabel;
     QLabel *mThemeStatusLabel;
@@ -65,6 +88,8 @@ private:
     QSpinBox *mStreamRetentionSpinBox;
     QCheckBox *mStreamNewestFirstCheckBox;
     QCheckBox *mStaticNewestFirstCheckBox;
+    QCheckBox *mShowLevelIconsCheckBox;
+    QCheckBox *mHighContrastLevelsCheckBox;
     QCheckBox *mRestoreLastSessionCheckBox;
     QSpinBox *mRecentSessionsMaxSpinBox;
 
@@ -76,4 +101,11 @@ private:
     /// Set by Ok / Cancel before they call `close()` so `closeEvent`
     /// skips the revert path. Genuine close (X / Alt+F4) leaves it false.
     bool mClosingViaButton = false;
+
+    /// Captured at dialog-open time so Cancel/close can roll back
+    /// any live preview the user toggled. Ok persists the current
+    /// state; Cancel/close re-emits the change signal with these
+    /// initial values.
+    bool mInitialShowLevelIcons = true;
+    bool mInitialHighContrastLevels = false;
 };

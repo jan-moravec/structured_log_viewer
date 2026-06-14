@@ -88,6 +88,28 @@ public:
     /// `beginMoveColumns`/`endMoveColumns`.
     void MoveColumn(size_t srcIndex, size_t destIndex);
 
+    /// Canonical `KeyId`s of columns that `MaybePromoteToLevel`
+    /// flipped to `Type::Level` since the last drain. The bubble
+    /// to `CANONICAL_LEVEL_COLUMN_INDEX` is deferred so the
+    /// streaming consumer (`LogModel`) can wrap each move in
+    /// `begin/endMoveColumns`. Caller must re-resolve each
+    /// `KeyId` to its current column index before moving --
+    /// earlier moves can shift later targets.
+    ///
+    /// Static-load paths use `ApplyPendingLevelBubbles` instead
+    /// and leave this queue empty.
+    [[nodiscard]] std::vector<KeyId> TakePendingLevelBubbleKeys() noexcept;
+
+    /// Drain the pending-bubble queue and apply each via
+    /// `MoveColumn`. No Qt-side notifications -- intended for
+    /// static-load paths whose callers reset the model afterward.
+    void ApplyPendingLevelBubbles();
+
+    /// First column whose key list maps to @p kid, or `-1`. Linear
+    /// in (columns * keys-per-column); fine for per-batch use
+    /// since column counts are tens at most.
+    [[nodiscard]] int FindColumnIndexByKey(KeyId kid) const noexcept;
+
     /// Pre-allocation hint forwarded to the streaming `LogFile`.
     void ReserveLineOffsets(size_t count);
 
@@ -149,6 +171,16 @@ public:
     /// `Type::Level` column. Returns `std::nullopt` for non-Level
     /// columns, monostate slots, or unmapped dictionary entries.
     [[nodiscard]] std::optional<LogLevel> GetLevelForRow(size_t row, size_t columnIndex) const noexcept;
+
+    /// Like `GetLevelForRow` but returns `LogLevel::Unknown` for
+    /// values that exist but didn't resolve to a canonical level,
+    /// so the icon-mode paint path can render a generic "unknown"
+    /// glyph. Also surfaces `Unknown` for the rare streaming-only
+    /// race where the rank cache hasn't grown to include a
+    /// just-interned dictionary id. `std::nullopt` still means
+    /// "no value at all". Sort / styling paths intentionally keep
+    /// using `GetLevelForRow` so unmapped values stay unstyled.
+    [[nodiscard]] std::optional<LogLevel> GetDisplayLevelForRow(size_t row, size_t columnIndex) const noexcept;
 
     /// `EnumValueId -> LogLevel` cache for a `Type::Level` column.
     /// `ranks[id]` is the canonical level for dictionary entry `id`, or
@@ -339,6 +371,11 @@ private:
     /// has at most one unrecognized entry per `LEVEL_DICT_TOLERANCE_RATIO`
     /// canonical ones. Dict-weighted, so re-evaluation only matters
     /// when the dictionary grows. No-op otherwise. `O(dict size)`.
+    ///
+    /// The canonical-position bubble is *not* applied inline; the
+    /// `KeyId` is queued on `mPendingLevelBubbleKeys` for the
+    /// consumer to drain (see `TakePendingLevelBubbleKeys` /
+    /// `ApplyPendingLevelBubbles`).
     void MaybePromoteToLevel(size_t columnIndex);
 
     /// Rebuild / extend the `EnumValueId -> LogLevel` cache. Idempotent;
@@ -416,6 +453,11 @@ private:
     /// registry), so column reorders are automatic and same-header
     /// columns with different keys cannot alias each other.
     std::unordered_map<KeyId, std::vector<LogLevel>> mLevelRankCache;
+
+    /// Pending canonical-position bubbles for columns recently
+    /// promoted to `Type::Level`. See `MaybePromoteToLevel` and
+    /// `TakePendingLevelBubbleKeys`.
+    std::vector<KeyId> mPendingLevelBubbleKeys;
 };
 
 } // namespace loglib

@@ -2,11 +2,16 @@
     "name": "Light",
     "kind": "light",
     "levels": {
-        "Trace": { "foreground": "#94A3B8", "background": "#F8FAFC" },
-        "Debug": { "foreground": "#64748B", "background": "#EEF2F7" },
+        "Trace": { "foreground": "#94A3B8", "background": "#FAFBFD" },
+        "Debug": { "foreground": "#64748B", "background": "#F4F6FA" },
         "Info":  {},
-        "Warn":  { "foreground": "#D97706", "background": "#FEF8E0" },
-        "Error": { "foreground": "#B91C1C", "background": "#FECACA" },
+        "Warn":  { "foreground": "#B16B00", "background": "#FFFBEC" },
+        "Error": { "foreground": "#B91C1C", "background": "#FCE4E4" },
+        "Fatal": { "foreground": "#7F1D1D", "background": "#FACBCB", "bold": true }
+    },
+    "levelsHighContrast": {
+        "Warn":  { "foreground": "#D97706", "background": "#FFE49E" },
+        "Error": { "foreground": "#B91C1C", "background": "#FEB2B2" },
         "Fatal": { "foreground": "#7F1D1D", "background": "#FCA5A5", "bold": true }
     },
     "table": {
@@ -37,5 +42,17 @@
     },
     "app": {
         "qtStyle": "fusion"
+    },
+    "levelColumnOverride": {
+        "headerIcon": ":/icons/gauge.svg",
+        "levels": {
+            "Trace":   { "icon": ":/icons/level-trace.svg" },
+            "Debug":   { "icon": ":/icons/level-debug.svg" },
+            "Info":    { "icon": ":/icons/level-info.svg",    "pillBackground": "#DBEAFE" },
+            "Warn":    { "icon": ":/icons/level-warn.svg",    "pillBackground": "#FEF3C7" },
+            "Error":   { "icon": ":/icons/level-error.svg",   "pillBackground": "#FECACA" },
+            "Fatal":   { "icon": ":/icons/level-fatal.svg",   "pillBackground": "#FCA5A5", "pillForeground": "#7F1D1D" },
+            "Unknown": { "icon": ":/icons/level-unknown.svg" }
+        }
     }
 }

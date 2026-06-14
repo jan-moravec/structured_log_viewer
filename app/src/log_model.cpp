@@ -604,27 +604,9 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         endInsertColumns();
     }
 
-    // `KeyId` -> source-column index lookup. Linear, but column
-    // counts are tens at most, so the per-batch cost is negligible.
-    const auto findColumnIndexForKey = [this](loglib::KeyId kid) -> int {
-        if (kid == loglib::INVALID_KEY_ID)
-        {
-            return -1;
-        }
-        const auto &columns = mLogTable.Configuration().Configuration().columns;
-        const auto &keys = mLogTable.Keys();
-        for (size_t i = 0; i < columns.size(); ++i)
-        {
-            for (const auto &key : columns[i].keys)
-            {
-                if (keys.Find(key) == kid)
-                {
-                    return static_cast<int>(i);
-                }
-            }
-        }
-        return -1;
-    };
+    // `KeyId` -> column index lookups below use
+    // `LogTable::FindColumnIndexByKey` so the streaming consumer
+    // shares one implementation with the static-load path.
 
     // Diff snapshot vs post-batch registry, one signal per (column, reason):
     //   - `Grew`: dictionary size changed.
@@ -677,7 +659,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     // `LastBatchDemotedKeys()` and de-dupe against snapshot demotes.
     for (const loglib::KeyId kid : mLogTable.LastBatchDemotedKeys())
     {
-        const int columnIndex = findColumnIndexForKey(kid);
+        const int columnIndex = mLogTable.FindColumnIndexByKey(kid);
         if (columnIndex < 0)
         {
             continue;
@@ -761,6 +743,24 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
                 endMoveColumns();
             }
         }
+    }
+
+    // Drain `Type::Level` bubbles queued by `mLogTable.AppendBatch`.
+    // `MoveColumn` here emits `columnsMoved` so Qt's section-keyed
+    // state (widths, hidden flags, filter rows) follows the column.
+    // Re-resolve per iteration: an earlier move shifts later targets.
+    for (const loglib::KeyId kid : mLogTable.TakePendingLevelBubbleKeys())
+    {
+        const int srcIndex = mLogTable.FindColumnIndexByKey(kid);
+        if (srcIndex < 0)
+        {
+            continue;
+        }
+        if (!loglib::ShouldBubbleLevelColumn(mLogTable.Configuration().Configuration(), static_cast<size_t>(srcIndex)))
+        {
+            continue;
+        }
+        MoveColumn(srcIndex, static_cast<int>(loglib::CANONICAL_LEVEL_COLUMN_INDEX));
     }
 
     mErrorCount += capturedErrorCount;
@@ -887,6 +887,24 @@ void LogModel::EndStreaming(bool cancelled)
                 emit enumColumnsChanged(EnumColumnsChangeReason::Demoted, static_cast<int>(i));
             }
         }
+
+        // Drain Level bubbles queued by `FinalizeAutoDetection`.
+        // Same rationale as the `AppendBatch` drain above.
+        for (const loglib::KeyId kid : mLogTable.TakePendingLevelBubbleKeys())
+        {
+            const int srcIndex = mLogTable.FindColumnIndexByKey(kid);
+            if (srcIndex < 0)
+            {
+                continue;
+            }
+            if (!loglib::ShouldBubbleLevelColumn(
+                    mLogTable.Configuration().Configuration(), static_cast<size_t>(srcIndex)
+                ))
+            {
+                continue;
+            }
+            MoveColumn(srcIndex, static_cast<int>(loglib::CANONICAL_LEVEL_COLUMN_INDEX));
+        }
     }
 
     // `StreamingResult::Failed` is wired up at the worker boundary.
@@ -1012,7 +1030,39 @@ QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role
 
     if (role == Qt::DisplayRole)
     {
+        // Icon-mode header text resolution on the level column:
+        //   - theme set `header`         -> use it (empty = blank)
+        //   - theme set `headerIcon` only -> suppress text so the
+        //     icon stands alone (else the header reads "<gauge> level")
+        //   - neither                    -> fall back to `Column::header`
+        if (IsLevelIconModeActive() && section == FirstLevelColumnIndex())
+        {
+            if (auto headerTextOverride = mTheme->LevelColumnHeaderTextOverride(); headerTextOverride.has_value())
+            {
+                return *headerTextOverride;
+            }
+            if (!mTheme->LevelColumnHeaderIcon().isNull())
+            {
+                return QString{};
+            }
+        }
         return QString::fromStdString(mLogTable.GetHeader(static_cast<size_t>(section)));
+    }
+    if (role == Qt::TextAlignmentRole)
+    {
+        // Centre an icon-only level header so it lines up with the
+        // centred pills below. Same gate as the text-suppression
+        // branch above. A theme that opts back into header text
+        // (explicit `header` override) falls through to the
+        // default alignment.
+        if (IsLevelIconModeActive() && section == FirstLevelColumnIndex())
+        {
+            if (!mTheme->LevelColumnHeaderTextOverride().has_value() && !mTheme->LevelColumnHeaderIcon().isNull())
+            {
+                return static_cast<int>(Qt::AlignCenter);
+            }
+        }
+        return {};
     }
     if (role == Qt::ToolTipRole)
     {
@@ -1056,6 +1106,16 @@ QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role
                 mFunnelIconAttempted = true;
             }
             return mFunnelIconCache;
+        }
+        // Theme identity icon: last in the priority chain, so
+        // warning + funnel keep winning when they're firing.
+        if (IsLevelIconModeActive() && section == FirstLevelColumnIndex())
+        {
+            const QIcon themed = mTheme->LevelColumnHeaderIcon();
+            if (!themed.isNull())
+            {
+                return themed;
+            }
         }
         return {};
     }
@@ -1399,9 +1459,14 @@ void LogModel::RefreshAllRowStyles()
     {
         return;
     }
-    // FontRole rides along: themes can bold/italicise per level, so
-    // a flip can change font weight on level-styled rows.
-    emit dataChanged(index(0, 0), index(rows - 1, cols - 1), {Qt::BackgroundRole, Qt::ForegroundRole, Qt::FontRole});
+    // FontRole rides along: themes can bold/italicise per level.
+    // DecorationRole too: a theme flip can swap or add/remove
+    // level-cell icons.
+    emit dataChanged(
+        index(0, 0),
+        index(rows - 1, cols - 1),
+        {Qt::BackgroundRole, Qt::ForegroundRole, Qt::FontRole, Qt::DecorationRole}
+    );
 }
 
 bool LogModel::IsStyleOnlyRoleChange(const QList<int> &roles) noexcept
@@ -1413,7 +1478,7 @@ bool LogModel::IsStyleOnlyRoleChange(const QList<int> &roles) noexcept
     }
     return std::ranges::all_of(roles, [](int role) {
         return role == Qt::BackgroundRole || role == Qt::ForegroundRole || role == Qt::FontRole ||
-               role == Qt::DecorationRole;
+               role == Qt::DecorationRole || role == Qt::ToolTipRole;
     });
 }
 
@@ -1444,15 +1509,61 @@ void LogModel::DropAnchorsForEvictionPrefix(int dropCount)
 
 std::optional<loglib::LogLevel> LogModel::LevelForRow(int row) const noexcept
 {
+    const int levelCol = FirstLevelColumnIndex();
+    if (levelCol < 0 || row < 0)
+    {
+        return std::nullopt;
+    }
+    return mLogTable.GetLevelForRow(static_cast<size_t>(row), static_cast<size_t>(levelCol));
+}
+
+std::optional<loglib::LogLevel> LogModel::DisplayLevelForRow(int row) const noexcept
+{
+    const int levelCol = FirstLevelColumnIndex();
+    if (levelCol < 0 || row < 0)
+    {
+        return std::nullopt;
+    }
+    return mLogTable.GetDisplayLevelForRow(static_cast<size_t>(row), static_cast<size_t>(levelCol));
+}
+
+int LogModel::FirstLevelColumnIndex() const noexcept
+{
     if (mFirstLevelColumnCache == LEVEL_COLUMN_UNCACHED)
     {
         mFirstLevelColumnCache = ComputeFirstLevelColumnIndex();
     }
-    if (mFirstLevelColumnCache < 0 || row < 0)
+    // Returns `LEVEL_COLUMN_NONE` (-1) when no level column
+    // exists; never returns `LEVEL_COLUMN_UNCACHED`.
+    return mFirstLevelColumnCache;
+}
+
+void LogModel::SetShowLevelIcons(bool show)
+{
+    if (mShowLevelIcons == show)
     {
-        return std::nullopt;
+        return;
     }
-    return mLogTable.GetLevelForRow(static_cast<size_t>(row), static_cast<size_t>(mFirstLevelColumnCache));
+    mShowLevelIcons = show;
+    // Nudge the view: an icon-mode-only header text override may
+    // need to pop in/out, and cell decoration / tooltip flip with
+    // the mode. Both roles are style-only so value listeners
+    // (find cache, record-detail) correctly skip this emit.
+    const int levelCol = FirstLevelColumnIndex();
+    if (levelCol >= 0)
+    {
+        emit headerDataChanged(Qt::Horizontal, levelCol, levelCol);
+        const int rows = rowCount();
+        if (rows > 0)
+        {
+            emit dataChanged(index(0, levelCol), index(rows - 1, levelCol), {Qt::DecorationRole, Qt::ToolTipRole});
+        }
+    }
+}
+
+bool LogModel::IsLevelIconModeActive() const noexcept
+{
+    return mShowLevelIcons && mTheme != nullptr && mTheme->HasLevelColumnOverride();
 }
 
 QVariant LogModel::data(const QModelIndex &index, int role) const
@@ -1551,6 +1662,56 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
             return {};
         }
         return mTheme->FontFor(*level);
+    }
+
+    case Qt::DecorationRole:
+    {
+        // Cheap gate first so non-level cells skip the level
+        // resolve entirely.
+        if (!IsLevelIconModeActive())
+        {
+            return {};
+        }
+        const int levelCol = FirstLevelColumnIndex();
+        if (levelCol < 0 || index.column() != levelCol)
+        {
+            return {};
+        }
+        // `DisplayLevelForRow` -> unmapped values get the generic
+        // "Unknown" glyph; nullopt paints blank.
+        const auto level = DisplayLevelForRow(index.row());
+        if (!level.has_value())
+        {
+            return {};
+        }
+        const QIcon icon = mTheme->IconFor(*level);
+        return icon.isNull() ? QVariant{} : QVariant(icon);
+    }
+
+    case Qt::ToolTipRole:
+    {
+        // Only synthesise a tooltip in icon mode -- the glyph
+        // carries no text, so the canonical name is the only way
+        // to spell out the level. In text mode the cell already
+        // shows the raw value; returning the canonical name here
+        // would shadow it with different casing/spelling.
+        if (!IsLevelIconModeActive())
+        {
+            return {};
+        }
+        const int levelCol = FirstLevelColumnIndex();
+        if (levelCol < 0 || index.column() != levelCol)
+        {
+            return {};
+        }
+        // `DisplayLevelForRow` so unmapped values get "Unknown"
+        // rather than no tooltip at all in a narrow icon column.
+        const auto level = DisplayLevelForRow(index.row());
+        if (!level.has_value())
+        {
+            return {};
+        }
+        return QString::fromUtf8(loglib::CanonicalLevelName(*level).data());
     }
 
     case LogModelItemDataRole::SortRole:

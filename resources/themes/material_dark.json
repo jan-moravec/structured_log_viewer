@@ -2,12 +2,17 @@
     "name": "Material Dark",
     "kind": "dark",
     "levels": {
-        "Trace": { "foreground": "#546E7A", "background": "#1F272A" },
-        "Debug": { "foreground": "#82AAFF", "background": "#1A2332" },
+        "Trace": { "foreground": "#546E7A", "background": "#222D31" },
+        "Debug": { "foreground": "#82AAFF", "background": "#1F2A36" },
         "Info":  {},
-        "Warn":  { "foreground": "#FFCB6B", "background": "#332A18" },
-        "Error": { "foreground": "#F07178", "background": "#3A1F22" },
-        "Fatal": { "foreground": "#FFCDD2", "background": "#5C1B25", "bold": true }
+        "Warn":  { "foreground": "#FFCB6B", "background": "#2C2E25" },
+        "Error": { "foreground": "#F07178", "background": "#322830" },
+        "Fatal": { "foreground": "#FFCDD2", "background": "#421F2D", "bold": true }
+    },
+    "levelsHighContrast": {
+        "Warn":  { "foreground": "#FFCB6B", "background": "#3F320A" },
+        "Error": { "foreground": "#F07178", "background": "#522028" },
+        "Fatal": { "foreground": "#FFCDD2", "background": "#7A1F2A", "bold": true }
     },
     "table": {
         "background": "#263238",
@@ -37,5 +42,17 @@
     },
     "app": {
         "qtStyle": "fusion"
+    },
+    "levelColumnOverride": {
+        "headerIcon": ":/icons/gauge.svg",
+        "levels": {
+            "Trace":   { "icon": ":/icons/level-trace.svg" },
+            "Debug":   { "icon": ":/icons/level-debug.svg" },
+            "Info":    { "icon": ":/icons/level-info.svg",    "pillBackground": "#1A2E55" },
+            "Warn":    { "icon": ":/icons/level-warn.svg",    "pillBackground": "#5C4015" },
+            "Error":   { "icon": ":/icons/level-error.svg",   "pillBackground": "#4A1D1D" },
+            "Fatal":   { "icon": ":/icons/level-fatal.svg",   "pillBackground": "#5C1B25", "pillForeground": "#FFCDD2" },
+            "Unknown": { "icon": ":/icons/level-unknown.svg" }
+        }
     }
 }

@@ -525,6 +525,372 @@ private slots:
         QCOMPARE(spy.count(), 0);
     }
 
+    /// Picking a built-in theme flips `HasLevelColumnOverride()`
+    /// on and populates the per-level caches.
+    void TestBuiltinThemeOptsIntoIconMode()
+    {
+        mTheme->SetActiveSelection(QStringLiteral("Dark"));
+
+        QVERIFY(mTheme->HasLevelColumnOverride());
+        // Built-in dark.json sets icons for all seven levels.
+        QVERIFY(!mTheme->IconFor(loglib::LogLevel::Info).isNull());
+        QVERIFY(!mTheme->IconFor(loglib::LogLevel::Warn).isNull());
+        QVERIFY(!mTheme->IconFor(loglib::LogLevel::Fatal).isNull());
+        QVERIFY(!mTheme->IconFor(loglib::LogLevel::Unknown).isNull());
+        // dark.json: pillBackground for Info..Fatal only.
+        QVERIFY(mTheme->PillBackgroundFor(loglib::LogLevel::Info).style() != Qt::NoBrush);
+        QVERIFY(mTheme->PillBackgroundFor(loglib::LogLevel::Warn).style() != Qt::NoBrush);
+        QVERIFY(mTheme->PillBackgroundFor(loglib::LogLevel::Trace).style() == Qt::NoBrush);
+        QVERIFY(mTheme->PillBackgroundFor(loglib::LogLevel::Unknown).style() == Qt::NoBrush);
+        // PillForeground always resolves via the fallback chain.
+        QVERIFY(mTheme->PillForegroundFor(loglib::LogLevel::Info).style() != Qt::NoBrush);
+        // dark.json: no header text override, but ships a `headerIcon`.
+        QVERIFY(!mTheme->LevelColumnHeaderTextOverride().has_value());
+        QVERIFY(!mTheme->LevelColumnHeaderIcon().isNull());
+    }
+
+    /// A theme without `levelColumnOverride` keeps icon mode off
+    /// and clears the per-level caches.
+    void TestUserThemeWithoutOverrideTurnsIconModeOff()
+    {
+        const QDir userDir = ThemeControl::UserThemesDir();
+        WriteUserTheme(userDir, QStringLiteral("plain.json"), QStringLiteral(R"({
+                "name": "Plain",
+                "kind": "light",
+                "levels": { "Info": { "foreground": "#222222" } },
+                "table": {},
+                "chrome": {},
+                "app": {}
+            })"));
+        mTheme->ReloadAll();
+        mTheme->SetActiveSelection(QStringLiteral("Plain"));
+
+        QVERIFY(!mTheme->HasLevelColumnOverride());
+        QVERIFY(mTheme->IconFor(loglib::LogLevel::Info).isNull());
+        QVERIFY(mTheme->PillBackgroundFor(loglib::LogLevel::Info).style() == Qt::NoBrush);
+        QVERIFY(!mTheme->LevelColumnHeaderTextOverride().has_value());
+        QVERIFY(mTheme->LevelColumnHeaderIcon().isNull());
+    }
+
+    /// Switching from an icon theme to a plain theme scrubs the
+    /// per-level caches.
+    void TestSwitchAwayFromIconThemeClearsCaches()
+    {
+        mTheme->SetActiveSelection(QStringLiteral("Dark"));
+        QVERIFY(mTheme->HasLevelColumnOverride());
+        QVERIFY(!mTheme->IconFor(loglib::LogLevel::Info).isNull());
+
+        const QDir userDir = ThemeControl::UserThemesDir();
+        WriteUserTheme(userDir, QStringLiteral("plain.json"), QStringLiteral(R"({
+                "name": "Plain",
+                "kind": "light",
+                "levels": {},
+                "table": {},
+                "chrome": {},
+                "app": {}
+            })"));
+        mTheme->ReloadAll();
+        mTheme->SetActiveSelection(QStringLiteral("Plain"));
+
+        QVERIFY(!mTheme->HasLevelColumnOverride());
+        QVERIFY(mTheme->IconFor(loglib::LogLevel::Info).isNull());
+        QVERIFY(mTheme->PillBackgroundFor(loglib::LogLevel::Warn).style() == Qt::NoBrush);
+    }
+
+    /// `header: ""` means "no header text" and must round-trip
+    /// as a present-but-empty optional.
+    void TestThemeHeaderOverrideRoundTripIncludingEmptyString()
+    {
+        const QDir userDir = ThemeControl::UserThemesDir();
+        WriteUserTheme(userDir, QStringLiteral("blank_header.json"), QStringLiteral(R"({
+                "name": "BlankHeader",
+                "kind": "light",
+                "levels": {},
+                "table": {},
+                "chrome": {},
+                "app": {},
+                "levelColumnOverride": {
+                    "header": "",
+                    "headerIcon": ":/icons/level-info.svg",
+                    "levels": {
+                        "Info": { "icon": ":/icons/level-info.svg" }
+                    }
+                }
+            })"));
+        mTheme->ReloadAll();
+        mTheme->SetActiveSelection(QStringLiteral("BlankHeader"));
+
+        QVERIFY(mTheme->HasLevelColumnOverride());
+        const std::optional<QString> headerText = mTheme->LevelColumnHeaderTextOverride();
+        QVERIFY(headerText.has_value());
+        QVERIFY(headerText->isEmpty());
+        QVERIFY(!mTheme->LevelColumnHeaderIcon().isNull());
+    }
+
+    /// A `..` icon path is rejected at cache-build time. The
+    /// theme still has an override block (so icon mode is on),
+    /// but `IconFor` returns null and the cell paints blank.
+    void TestThemeControlRejectsParentPathTraversal()
+    {
+        const QDir userDir = ThemeControl::UserThemesDir();
+        WriteUserTheme(userDir, QStringLiteral("traversal.json"), QStringLiteral(R"({
+                "name": "Traversal",
+                "kind": "light",
+                "levels": {},
+                "table": {},
+                "chrome": {},
+                "app": {},
+                "levelColumnOverride": {
+                    "levels": {
+                        "Info":  { "icon": "../../../etc/passwd" },
+                        "Warn":  { "icon": ":/icons/level-warn.svg" }
+                    }
+                }
+            })"));
+        mTheme->ReloadAll();
+        mTheme->SetActiveSelection(QStringLiteral("Traversal"));
+
+        QVERIFY(mTheme->HasLevelColumnOverride());
+        // Traversal path was rejected -> null icon. Sibling level
+        // with a clean path still resolves.
+        QVERIFY(mTheme->IconFor(loglib::LogLevel::Info).isNull());
+        QVERIFY(!mTheme->IconFor(loglib::LogLevel::Warn).isNull());
+    }
+
+    /// Backslash escapes (`..\..\`) are caught too, because
+    /// `QDir::cleanPath` normalises separators first. Pins
+    /// cross-platform behaviour against future cleanup-helper
+    /// swaps.
+    void TestThemeControlRejectsBackslashTraversal()
+    {
+        const QDir userDir = ThemeControl::UserThemesDir();
+        WriteUserTheme(userDir, QStringLiteral("traversal_backslash.json"), QStringLiteral(R"({
+                "name": "TraversalBackslash",
+                "kind": "light",
+                "levels": {},
+                "table": {},
+                "chrome": {},
+                "app": {},
+                "levelColumnOverride": {
+                    "levels": {
+                        "Info":  { "icon": "..\\..\\..\\etc\\passwd" },
+                        "Warn":  { "icon": ":/icons/level-warn.svg" }
+                    }
+                }
+            })"));
+        mTheme->ReloadAll();
+        mTheme->SetActiveSelection(QStringLiteral("TraversalBackslash"));
+
+        QVERIFY(mTheme->HasLevelColumnOverride());
+        QVERIFY(mTheme->IconFor(loglib::LogLevel::Info).isNull());
+        QVERIFY(!mTheme->IconFor(loglib::LogLevel::Warn).isNull());
+    }
+
+    /// A bare `..` segment is rejected too (the guard catches it
+    /// via an explicit equality check after `cleanPath`).
+    void TestThemeControlRejectsBareParentSegment()
+    {
+        const QDir userDir = ThemeControl::UserThemesDir();
+        WriteUserTheme(userDir, QStringLiteral("traversal_bare.json"), QStringLiteral(R"({
+                "name": "TraversalBare",
+                "kind": "light",
+                "levels": {},
+                "table": {},
+                "chrome": {},
+                "app": {},
+                "levelColumnOverride": {
+                    "levels": {
+                        "Info":  { "icon": ".." },
+                        "Warn":  { "icon": ":/icons/level-warn.svg" }
+                    }
+                }
+            })"));
+        mTheme->ReloadAll();
+        mTheme->SetActiveSelection(QStringLiteral("TraversalBare"));
+
+        QVERIFY(mTheme->HasLevelColumnOverride());
+        QVERIFY(mTheme->IconFor(loglib::LogLevel::Info).isNull());
+        QVERIFY(!mTheme->IconFor(loglib::LogLevel::Warn).isNull());
+    }
+
+    /// Every built-in theme parses cleanly and ships non-empty
+    /// `levels` + `levelsHighContrast` maps. Catches typos at
+    /// test time rather than at theme-pick time.
+    void TestThemeControlBuiltInThemesAreWellFormed()
+    {
+        const auto listings = mTheme->AvailableThemes();
+        // Not pinned exactly so adding a built-in doesn't break
+        // this test; we expect at least the 15 named themes.
+        QVERIFY(listings.size() >= 15);
+
+        const QStringList expected = {
+            QStringLiteral("Light"),
+            QStringLiteral("Dark"),
+            QStringLiteral("GitHub Dark"),
+            QStringLiteral("GitHub Light"),
+            QStringLiteral("Material Dark"),
+            QStringLiteral("Material Light"),
+            QStringLiteral("Monokai Dark"),
+            QStringLiteral("Monokai Light"),
+            QStringLiteral("Solarized Dark"),
+            QStringLiteral("Solarized Light"),
+            QStringLiteral("Nord"),
+            QStringLiteral("Dracula"),
+            QStringLiteral("Tokyo Night"),
+            QStringLiteral("Catppuccin Mocha"),
+            QStringLiteral("Paper Light"),
+        };
+        for (const QString &name : expected)
+        {
+            const auto loaded = mTheme->Load(name);
+            QVERIFY2(loaded.has_value(), qUtf8Printable(QStringLiteral("missing built-in: ") + name));
+            QVERIFY2(!loaded->levels.empty(), qUtf8Printable(QStringLiteral("built-in has empty levels: ") + name));
+            QVERIFY2(
+                !loaded->levelsHighContrast.empty(),
+                qUtf8Printable(QStringLiteral("built-in has empty levelsHighContrast: ") + name)
+            );
+        }
+    }
+
+    /// `SetHighContrast(true)` swaps in `levelsHighContrast`
+    /// brushes, `false` restores the subtle defaults, and
+    /// repeated values are no-ops.
+    void TestThemeControlHighContrastTogglesBrushes()
+    {
+        const QDir userDir = ThemeControl::UserThemesDir();
+        WriteUserTheme(userDir, QStringLiteral("highContrast.json"), QStringLiteral(R"({
+                "name": "HighContrastFixture",
+                "kind": "dark",
+                "levels": {
+                    "Error": { "foreground": "#FCA5A5", "background": "#352121" }
+                },
+                "levelsHighContrast": {
+                    "Error": { "foreground": "#FCA5A5", "background": "#4C1D1D" }
+                },
+                "table": {},
+                "chrome": {},
+                "app": {}
+            })"));
+        mTheme->ReloadAll();
+        mTheme->SetActiveSelection(QStringLiteral("HighContrastFixture"));
+        // Start from a known default.
+        mTheme->SetHighContrast(false);
+
+        QVERIFY(mTheme->HasLevelsHighContrast());
+        QVERIFY(!mTheme->IsHighContrast());
+        QCOMPARE(mTheme->BackgroundFor(loglib::LogLevel::Error).color(), QColor(QStringLiteral("#352121")));
+
+        const QSignalSpy spy(mTheme.get(), &ThemeControl::themeChanged);
+        mTheme->SetHighContrast(true);
+        QCOMPARE(spy.count(), 1);
+        QVERIFY(mTheme->IsHighContrast());
+        QCOMPARE(mTheme->BackgroundFor(loglib::LogLevel::Error).color(), QColor(QStringLiteral("#4C1D1D")));
+
+        // Idempotent: same value -> no signal, no rebuild.
+        mTheme->SetHighContrast(true);
+        QCOMPARE(spy.count(), 1);
+
+        mTheme->SetHighContrast(false);
+        QCOMPARE(spy.count(), 2);
+        QCOMPARE(mTheme->BackgroundFor(loglib::LogLevel::Error).color(), QColor(QStringLiteral("#352121")));
+    }
+
+    /// Sparse `levelsHighContrast` falls back to `levels`
+    /// per-level: only overridden entries change when on.
+    void TestThemeControlHighContrastSparseFallback()
+    {
+        const QDir userDir = ThemeControl::UserThemesDir();
+        WriteUserTheme(userDir, QStringLiteral("sparseContrast.json"), QStringLiteral(R"({
+                "name": "SparseContrast",
+                "kind": "dark",
+                "levels": {
+                    "Warn":  { "foreground": "#FCD34D", "background": "#272620" },
+                    "Error": { "foreground": "#FCA5A5", "background": "#352121" }
+                },
+                "levelsHighContrast": {
+                    "Error": { "foreground": "#FCA5A5", "background": "#4C1D1D" }
+                },
+                "table": {},
+                "chrome": {},
+                "app": {}
+            })"));
+        mTheme->ReloadAll();
+        mTheme->SetActiveSelection(QStringLiteral("SparseContrast"));
+        mTheme->SetHighContrast(true);
+
+        // `Error` flips to the override.
+        QCOMPARE(mTheme->BackgroundFor(loglib::LogLevel::Error).color(), QColor(QStringLiteral("#4C1D1D")));
+        // `Warn` is absent from the override map -- keep the subtle bg.
+        QCOMPARE(mTheme->BackgroundFor(loglib::LogLevel::Warn).color(), QColor(QStringLiteral("#272620")));
+    }
+
+    /// A theme without `levelsHighContrast` reports an empty map
+    /// and `SetHighContrast` takes a fast path: no brush change
+    /// and no `themeChanged()` cascade. The flag still flips so a
+    /// later theme switch picks it up.
+    void TestThemeControlHighContrastEmptyMap()
+    {
+        const QDir userDir = ThemeControl::UserThemesDir();
+        WriteUserTheme(userDir, QStringLiteral("noContrast.json"), QStringLiteral(R"({
+                "name": "NoContrast",
+                "kind": "dark",
+                "levels": {
+                    "Error": { "foreground": "#FCA5A5", "background": "#352121" }
+                },
+                "table": {},
+                "chrome": {},
+                "app": {}
+            })"));
+        mTheme->ReloadAll();
+        mTheme->SetActiveSelection(QStringLiteral("NoContrast"));
+
+        QVERIFY(!mTheme->HasLevelsHighContrast());
+
+        mTheme->SetHighContrast(false);
+        const QColor before = mTheme->BackgroundFor(loglib::LogLevel::Error).color();
+        // Attach the spy after settling so any rebuild from
+        // `SetActiveSelection` doesn't pollute the count.
+        const QSignalSpy themeChangedSpy(mTheme.data(), &ThemeControl::themeChanged);
+        QVERIFY(themeChangedSpy.isValid());
+        mTheme->SetHighContrast(true);
+        const QColor after = mTheme->BackgroundFor(loglib::LogLevel::Error).color();
+        QCOMPARE(before, after);
+        QCOMPARE(themeChangedSpy.count(), 0);
+        // Flag still flips so a later theme switch picks it up.
+        QVERIFY(mTheme->IsHighContrast());
+        // Toggling back: same fast path, no emit.
+        mTheme->SetHighContrast(false);
+        QCOMPARE(themeChangedSpy.count(), 0);
+        QVERIFY(!mTheme->IsHighContrast());
+    }
+
+    /// `:/` qrc paths work for user themes too (the qrc
+    /// namespace is shared).
+    void TestThemeControlAcceptsQtResourcePath()
+    {
+        const QDir userDir = ThemeControl::UserThemesDir();
+        WriteUserTheme(userDir, QStringLiteral("resource_path.json"), QStringLiteral(R"({
+                "name": "ResourcePath",
+                "kind": "light",
+                "levels": {},
+                "table": {},
+                "chrome": {},
+                "app": {},
+                "levelColumnOverride": {
+                    "levels": {
+                        "Info":  { "icon": ":/icons/level-info.svg" },
+                        "Warn":  { "icon": ":/icons/level-warn.svg" }
+                    }
+                }
+            })"));
+        mTheme->ReloadAll();
+        mTheme->SetActiveSelection(QStringLiteral("ResourcePath"));
+
+        QVERIFY(mTheme->HasLevelColumnOverride());
+        QVERIFY(!mTheme->IconFor(loglib::LogLevel::Info).isNull());
+        QVERIFY(!mTheme->IconFor(loglib::LogLevel::Warn).isNull());
+    }
+
 private:
     /// Style name captured at `init()` so `cleanup()` can restore
     /// it after tests that pin `app.qtStyle`.

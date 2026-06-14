@@ -4,12 +4,11 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Network Svg)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets Network Svg)
-
-if(${QT_VERSION} LESS 6.1.0)
-    message(FATAL_ERROR "Qt version must be >= 6.1")
-endif()
+# Qt 6.1+ is required: `QHeaderView::initStyleOptionForIndex` (used by
+# `LogHeaderView` to centre icon-only sections) is Qt 6.0+, and the
+# project relies on Qt6 idioms throughout (`qt_add_library`,
+# `qt_add_executable`, MOC's `Q_OBJECT` private-signal contract, etc.).
+find_package(Qt6 6.1 REQUIRED COMPONENTS Widgets Network Svg)
 
 set(PROJECT_SOURCES
     src/main_window.cpp
@@ -31,6 +30,8 @@ set(PROJECT_SOURCES
     include/find_dock.hpp
     src/icon_loader.cpp
     include/icon_loader.hpp
+    src/level_cell_delegate.cpp
+    include/level_cell_delegate.hpp
     src/parse_errors_dock.cpp
     include/parse_errors_dock.hpp
     src/log_filter_model.cpp
@@ -78,12 +79,7 @@ target_include_directories(logapp PUBLIC ./include)
 
 target_link_libraries(
     logapp
-    PUBLIC
-        Qt${QT_VERSION_MAJOR}::Widgets
-        Qt${QT_VERSION_MAJOR}::Network
-        Qt${QT_VERSION_MAJOR}::Svg
-        loglib
-        project_warnings
+    PUBLIC Qt6::Widgets Qt6::Network Qt6::Svg loglib project_warnings
 )
 
 qt_add_resources(RESOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../resources/resources.qrc)

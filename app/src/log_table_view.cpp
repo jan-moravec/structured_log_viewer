@@ -11,6 +11,7 @@
 #include <QClipboard>
 #include <QFont>
 #include <QFontMetrics>
+#include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QKeyEvent>
 #include <QMainWindow>
@@ -22,15 +23,39 @@
 #include <QRect>
 #include <QScrollBar>
 #include <QString>
+#include <QStyleOptionHeader>
 #include <QWheelEvent>
 
 #include <algorithm>
 #include <utility>
 
+void LogHeaderView::CenterIconAlignmentForIconOnlySection(QStyleOptionHeader *option)
+{
+    // `iconAlignment` defaults to left-aligned, so an icon-only
+    // header (theme identity icon, no text) ends up hugging the
+    // section's left edge. Centre it so it lines up with the
+    // centred pills below. Sections with both icon and text keep
+    // the default left-of-text layout.
+    if (option != nullptr && option->text.isEmpty() && !option->icon.isNull())
+    {
+        option->iconAlignment = Qt::AlignCenter;
+    }
+}
+
+void LogHeaderView::initStyleOptionForIndex(QStyleOptionHeader *option, int logicalIndex) const
+{
+    QHeaderView::initStyleOptionForIndex(option, logicalIndex);
+    CenterIconAlignmentForIconOnlySection(option);
+}
+
 LogTableView::LogTableView(QWidget *parent)
     : QTableView(parent)
 {
     setAcceptDrops(true);
+
+    // Custom header so icon-only sections centre their glyph;
+    // Qt takes ownership and deletes the previous default header.
+    setHorizontalHeader(new LogHeaderView(Qt::Horizontal, this));
 
     const QScrollBar *vbar = verticalScrollBar();
 
