@@ -13,30 +13,19 @@
 #include <cstdint>
 #include <vector>
 
-/// Horizontal header that centres the icon of icon-only sections.
-///
-/// The level column in icon mode renders just a `headerIcon` (no text);
-/// Qt's default `QStyleOptionHeader::iconAlignment` keeps that icon
-/// hard-left while the cells below paint centred pills. This subclass
-/// flips `iconAlignment` to `Qt::AlignCenter` whenever the populated
-/// option has an icon and no text, so the decoration lines up with the
-/// content. No new signals / slots / properties are added, so no
-/// `Q_OBJECT` macro is required -- the override works via virtual
-/// dispatch on the existing `QHeaderView::initStyleOptionForIndex`
-/// hook (Qt 6.0+).
+/// Horizontal header that centres the icon in icon-only sections
+/// (e.g. the level column in icon mode), so the header glyph lines
+/// up with the centred pills painted below. Qt's default
+/// `iconAlignment` is left-aligned, which would leave the icon
+/// hugging the section's left edge.
 class LogHeaderView : public QHeaderView
 {
 public:
     using QHeaderView::QHeaderView;
 
-    /// Pure transform: if @p option has an icon and no text, flip
-    /// `iconAlignment` to `Qt::AlignCenter`. Called from
-    /// `initStyleOptionForIndex` after the base class populates the
-    /// model-driven fields, and exposed as a static so the
-    /// transform can be unit-tested without a model attached --
-    /// `QHeaderView::initStyleOptionForIndex` clobbers
-    /// `option->icon` / `option->text` with model values, which
-    /// would defeat any pre-populated probe input.
+    /// If @p option has an icon and no text, flip `iconAlignment`
+    /// to `Qt::AlignCenter`. Exposed as a static pure transform so
+    /// tests can exercise the rule without a model.
     static void CenterIconAlignmentForIconOnlySection(QStyleOptionHeader *option);
 
 protected:

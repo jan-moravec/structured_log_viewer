@@ -31,21 +31,11 @@
 
 void LogHeaderView::CenterIconAlignmentForIconOnlySection(QStyleOptionHeader *option)
 {
-    // `Qt::TextAlignmentRole` from the model only steers the *text*
-    // alignment in a header section -- `QCommonStyle::CE_HeaderLabel`
-    // draws the icon first using `QStyleOptionHeader::iconAlignment`,
-    // which defaults to `Qt::AlignVCenter` (i.e. left-aligned
-    // horizontally). For an icon-only header (theme-supplied identity
-    // icon, no text override) that leaves the glyph hugging the left
-    // edge of the section while every cell below paints a *centred*
-    // pill, so the header decoration reads as belonging to the
-    // previous column. The rule is intentionally generic: any
-    // section whose populated option ends up with no text but does
-    // carry an icon gets the icon centred. Sections that also have
-    // text (e.g. a future theme that opts back into header text via
-    // an explicit `header` override, or any column showing the
-    // funnel / warning indicators alongside the configured header)
-    // keep the standard left-of-text icon position.
+    // `iconAlignment` defaults to left-aligned, so an icon-only
+    // header (theme identity icon, no text) ends up hugging the
+    // section's left edge. Centre it so it lines up with the
+    // centred pills below. Sections with both icon and text keep
+    // the default left-of-text layout.
     if (option != nullptr && option->text.isEmpty() && !option->icon.isNull())
     {
         option->iconAlignment = Qt::AlignCenter;
@@ -63,10 +53,8 @@ LogTableView::LogTableView(QWidget *parent)
 {
     setAcceptDrops(true);
 
-    // Replace the stock horizontal header so icon-only sections (e.g. the
-    // level column in icon mode) centre their glyph above the centred
-    // pills painted by `LevelCellDelegate`. `setHorizontalHeader` reparents
-    // and takes ownership; the previous default header is deleted by Qt.
+    // Custom header so icon-only sections centre their glyph;
+    // Qt takes ownership and deletes the previous default header.
     setHorizontalHeader(new LogHeaderView(Qt::Horizontal, this));
 
     const QScrollBar *vbar = verticalScrollBar();

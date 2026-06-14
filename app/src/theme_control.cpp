@@ -104,13 +104,10 @@ QBrush BrushFromHex(const std::optional<std::string> &hex)
     const QColor color(hexQ);
     if (!color.isValid())
     {
-        // Silent fallback here: `WarnOnUnparsableHex` emits a
-        // single warning per bad hex at theme-discovery time. We
-        // don't re-warn from this hot path because `BuildStyleCache`
-        // runs on every active-theme change (and on every theme
-        // toggle, font change, OS scheme flip, ...). Re-warning
-        // here would spam the log with the same message N times
-        // for each broken field.
+        // Silent here: `WarnOnUnparsableHex` already warns once
+        // per bad hex at discovery time. `BuildStyleCache` runs
+        // on every theme/font/palette change, so re-warning would
+        // spam the log.
         return QBrush{};
     }
     return QBrush{color};
@@ -149,9 +146,9 @@ bool IsCanonicalLevelKey(const std::string &key) noexcept
 }
 
 /// Warn about non-canonical level keys (e.g. typos like `"Worn"`)
-/// so users can tell whether their override was ignored. Walks
-/// both `theme.levels` and the optional `levelColumnOverride.levels`
-/// so a typo in either block surfaces the same way.
+/// so users can tell their override was ignored. Walks
+/// `theme.levels`, `theme.levelsHighContrast`, and
+/// `levelColumnOverride.levels` so typos surface from any of them.
 void WarnOnUnknownLevelKeys(const QString &source, const loglib::Theme &theme)
 {
     for (const auto &[key, value] : theme.levels)
@@ -196,16 +193,11 @@ void WarnOnUnknownLevelKeys(const QString &source, const loglib::Theme &theme)
     }
 }
 
-/// Walk every hex-bearing field in @p theme and emit one
-/// `qWarning` per unparsable colour. Called once per theme at
-/// discovery time so the warnings name the offending field path
-/// (`chrome.toolTipBase`, `levels.Warn.foreground`, ...) and don't
-/// spam the log on every `BuildStyleCache` call (theme switch,
-/// font change, OS scheme flip).
-///
-/// Empty / nullopt values are treated as "use palette default",
-/// not as an error. Only non-empty strings that `QColor` rejects
-/// trigger a warning.
+/// Emit one `qWarning` per unparsable hex in @p theme, naming the
+/// field (`chrome.toolTipBase`, `levels.Warn.foreground`, ...).
+/// Called once at theme-discovery time so the silent fallback in
+/// `BrushFromHex` doesn't spam on every cache rebuild. Empty /
+/// nullopt values are "use palette default" and never warn.
 void WarnOnUnparsableHex(const QString &source, const loglib::Theme &theme)
 {
     auto check = [&](const std::string &fieldPath, const std::optional<std::string> &hex) {
@@ -267,18 +259,14 @@ void WarnOnUnparsableHex(const QString &source, const loglib::Theme &theme)
     }
 }
 
-/// Resolve a level-icon path according to the rules in plan
-/// section 3. Returns an empty `QString` (with a `qWarning`) for
-/// paths that are rejected (path traversal, escape from base).
-///
-/// Inputs:
-///   - `relativeOrAbsolute`: as written in the theme JSON.
-///   - `sourceDir`: the source dir of the theme that referenced
-///     the icon (`":/themes"` for built-ins, an absolute path for
-///     user themes).
-///   - `fromUser`: gates rule 2 (absolute paths) and rule 4
-///     (path-traversal rejection); built-in JSON should only ship
-///     `:/...` paths.
+/// Resolve a theme-supplied icon path.
+///   1. `:/...` qrc paths: allowed for built-in and user themes.
+///   2. Absolute paths: allowed only for user themes (built-ins
+///      should always use qrc).
+///   3. Relative paths: resolved against the theme file's dir.
+///   4. User-theme paths containing `..` segments are rejected
+///      (stops a shared JSON from reaching unrelated files).
+/// Returns an empty `QString` on rejection (with a `qWarning`).
 QString ResolveIconPath(const std::string &relativeOrAbsolute, const QString &sourceDir, bool fromUser)
 {
     QString path = QString::fromStdString(relativeOrAbsolute);
@@ -286,14 +274,10 @@ QString ResolveIconPath(const std::string &relativeOrAbsolute, const QString &so
     {
         return {};
     }
-    // Rule 1: Qt resource path. Allowed for both built-in and user
-    // themes; the qrc namespace is shared.
     if (path.startsWith(QLatin1String(":/")))
     {
         return path;
     }
-    // Rule 2: absolute paths. Allowed only for user themes; the
-    // shipped built-in JSON should never need this.
     const bool isAbsolute = QFileInfo(path).isAbsolute();
     if (isAbsolute)
     {
@@ -308,15 +292,10 @@ QString ResolveIconPath(const std::string &relativeOrAbsolute, const QString &so
         }
         return path;
     }
-    // Rule 4 (applied before rule 3): reject `..` and any path
-    // whose canonical form escapes the resolution base. Not a
-    // security boundary -- we only render the SVG -- but it stops
-    // a shared theme JSON from confused-deputy reaching files the
-    // importer didn't expect.
     if (fromUser)
     {
-        // `QDir::cleanPath` collapses `./` and `..` segments; if any
-        // remain they were trying to escape.
+        // `QDir::cleanPath` collapses `./` and `..`; anything left
+        // is an escape attempt.
         const QString cleaned = QDir::cleanPath(path);
         if (cleaned.startsWith(QStringLiteral("../")) || cleaned == QStringLiteral("..") ||
             cleaned.contains(QStringLiteral("/../")))
@@ -329,7 +308,6 @@ QString ResolveIconPath(const std::string &relativeOrAbsolute, const QString &so
             return {};
         }
     }
-    // Rule 3: resolved against the theme file's directory.
     if (sourceDir.isEmpty())
     {
         return path;
@@ -375,11 +353,9 @@ std::optional<loglib::Theme> ParseFileToTheme(const QString &path)
 ThemeControl::ThemeControl(QObject *parent)
     : QObject(parent)
 {
-    // Read the high-contrast pref before the first `BuildStyleCache`
-    // call inside `LoadConfiguration`, so the cache is built with
-    // the right per-level map on startup. The pref is otherwise
-    // owned by `MainWindow` (it persists + emits on Preferences Ok);
-    // we just mirror the value here.
+    // Seed the high-contrast pref before `LoadConfiguration`
+    // builds the first style cache. The pref is owned by
+    // `MainWindow`; we just mirror it here.
     const QSettings settings;
     mHighContrast = settings.value(QStringLiteral("ui/highContrastLevels"), false).toBool();
     LoadConfiguration();
@@ -532,23 +508,16 @@ void ThemeControl::SetHighContrast(bool on)
         return;
     }
     mHighContrast = on;
-    // No-op fast path: when the active theme doesn't ship a
-    // `levelsHighContrast` block, toggling the flag changes
-    // nothing the user can see -- `BuildStyleCache` would
-    // recompute identical brushes from `theme.levels` either way.
-    // Skip the full rebuild + repaint cascade in that case; the
-    // flag stays in sync for a future theme switch that DOES ship
-    // the block. The preferences dialog independently greys the
-    // checkbox out via `HasLevelsHighContrast()` so this branch
-    // only triggers on a programmatic flip.
+    // Fast path when the theme has no `levelsHighContrast`: skip
+    // the rebuild + repaint cascade (brushes wouldn't change).
+    // The flag still flips so a later theme switch picks it up.
     if (!mHasLevelsHighContrast)
     {
         return;
     }
-    // Re-project the active theme through the new flag. The pill
-    // caches are unaffected (the toggle only changes row colours),
-    // but `BuildStyleCache` rebuilds them anyway -- keeping a single
-    // rebuild entry-point is cheaper than splitting the cache.
+    // Rebuild through the single entry point even though the pill
+    // caches don't depend on this flag -- one rebuild path is
+    // cheaper than splitting the cache.
     BuildStyleCache(mActive);
     emit themeChanged();
 }
@@ -847,11 +816,9 @@ void ThemeControl::DiscoverThemes()
         }
         WarnOnUnknownLevelKeys(path, *theme);
         WarnOnUnparsableHex(path, *theme);
-        // `QFileInfo::absolutePath()` works for both qrc paths
-        // (`":/themes/dark.json"` -> `":/themes"`) and on-disk
-        // paths, so the same lookup feeds both built-ins and user
-        // files. `BuildStyleCache` consumes this to resolve
-        // relative icon paths from the theme JSON.
+        // `QFileInfo::absolutePath()` works for qrc and on-disk
+        // paths alike; `BuildStyleCache` uses it to resolve
+        // relative icon paths.
         const QString sourceDir = QFileInfo(path).absolutePath();
         mIndex[name] = IndexEntry{.theme = std::move(*theme), .fromUser = fromUser, .sourceDir = sourceDir};
     };
@@ -1236,9 +1203,8 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
     const QFont appFont = qApp->font();
     mFonts.fill(appFont);
 
-    // Refresh the "active theme ships a high-contrast block" mirror
-    // before the loop so subsequent UI reads (Preferences enable
-    // state) see the correct flag for the just-applied theme.
+    // Refresh the high-contrast mirror before the loop so
+    // Preferences sees the correct enable state.
     mHasLevelsHighContrast = !theme.levelsHighContrast.empty();
 
     for (const LogLevel level : ALL_LEVELS)
@@ -1278,9 +1244,9 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
         mAnchorForeground[slot] = QBrush{ThemeControl::IsDarkColor(background) ? QColor(Qt::white) : QColor(Qt::black)};
     }
 
-    // Reset the level-column override caches. Anything left over
-    // from a previously-active icon theme must clear out so a
-    // subsequent theme that omits the block reverts to plain text.
+    // Reset the level-column override caches so a theme without
+    // the block reverts to plain text after switching away from
+    // an icon-mode theme.
     mHasLevelColumnOverride = false;
     mLevelColumnHeaderText.reset();
     mLevelColumnHeaderIcon = QIcon{};
@@ -1295,19 +1261,15 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
     mHasLevelColumnOverride = true;
     const loglib::LevelColumnOverride &override = *theme.levelColumnOverride;
 
-    // Header chrome: nullopt vs ""-vs-set is preserved verbatim;
-    // `LogModel::headerData` uses the three cases to decide
-    // whether to fall through to `Column::header`.
+    // Preserve nullopt vs "" vs set verbatim -- `LogModel::headerData`
+    // distinguishes the three.
     if (override.header.has_value())
     {
         mLevelColumnHeaderText = QString::fromStdString(*override.header);
     }
 
-    // Icon rasterisation params: small-icon size + app DPR. The
-    // delegate downsamples further to fit the pill, but starting
-    // from a sharp source keeps stroke widths consistent across
-    // themes (same recipe `icon_loader::ResolveAnchorIconParams`
-    // uses for the toolbar).
+    // Rasterise icons at `PM_SmallIconSize` * DPR so strokes stay
+    // sharp; the delegate downsamples to fit the pill.
     constexpr int FALLBACK_ICON_SIZE_PX = 16;
     int sizePx = FALLBACK_ICON_SIZE_PX;
     if (const QStyle *style = qApp->style(); style != nullptr)
@@ -1321,8 +1283,8 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
     const qreal dpr = qApp->devicePixelRatio();
     const QColor paletteWindowText = qApp->palette().color(QPalette::Active, QPalette::WindowText);
 
-    // Project the string-keyed override map into a `LogLevel`-indexed
-    // local lookup so the per-level loop below stays O(1) per level.
+    // Project string-keyed overrides into a `LogLevel`-indexed
+    // lookup so the per-level loop below is O(1) per level.
     std::array<const loglib::LevelDisplayOverride *, LEVEL_SLOTS> perLevel{};
     perLevel.fill(nullptr);
     for (const auto &[key, value] : override.levels)
@@ -1337,10 +1299,8 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
         }
     }
 
-    // Header identity icon. No compile-default fallback: a theme
-    // that wants one sets `headerIcon` explicitly. Tint resolves
-    // to the palette's `WindowText` because the header isn't
-    // level-specific.
+    // Header identity icon (only set when the theme provides
+    // one). Tinted with `WindowText` since it's not level-specific.
     if (override.headerIcon.has_value() && !override.headerIcon->empty())
     {
         const QString resolved = ResolveIconPath(*override.headerIcon, mActiveSourceDir, mActiveFromUser);
@@ -1350,11 +1310,10 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
         }
     }
 
-    // Per-level icon + pill caches. Foreground resolution chain:
-    //   override.pillForeground -> LevelStyle.foreground -> WindowText
-    // Background resolution: just `override.pillBackground` (no
-    // fallback -- absent means "no pill", which the delegate
-    // honours by skipping the rounded-rect draw).
+    // Per-level icon + pill caches.
+    //   Foreground: override.pillForeground -> LevelStyle.foreground -> WindowText
+    //   Background: override.pillBackground only (absent = no pill;
+    //               delegate skips the rounded-rect fill).
     for (const LogLevel level : ALL_LEVELS)
     {
         const size_t idx = LevelIndex(level);
@@ -1370,11 +1329,8 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
         QColor pillFgColor;
         if (entry->pillForeground.has_value() && !entry->pillForeground->empty())
         {
-            // Parse only; `WarnOnUnparsableHex` already emits a
-            // single discovery-time warning per bad hex (so a typo
-            // surfaces once, not on every `BuildStyleCache` call).
-            // The fallback chain below is identical regardless of
-            // why `isValid()` is false.
+            // Silent parse: `WarnOnUnparsableHex` already warned
+            // once at discovery time.
             pillFgColor = QColor(QString::fromStdString(*entry->pillForeground));
         }
         if (!pillFgColor.isValid())

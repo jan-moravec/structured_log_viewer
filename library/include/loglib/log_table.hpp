@@ -89,41 +89,25 @@ public:
     void MoveColumn(size_t srcIndex, size_t destIndex);
 
     /// Canonical `KeyId`s of columns that `MaybePromoteToLevel`
-    /// flipped to `Type::Level` since the last drain, but whose
-    /// canonical-position bubble has been deferred so the
-    /// streaming consumer (`LogModel`) can wrap each follow-up
-    /// `MoveColumn` in `begin/endMoveColumns`. Returned in
-    /// queue order; the caller is responsible for resolving each
-    /// `KeyId` to its current column index (via
-    /// `Configuration().columns[i].keys`) immediately before its
-    /// move, because an earlier move can shift later targets.
+    /// flipped to `Type::Level` since the last drain. The bubble
+    /// to `CANONICAL_LEVEL_COLUMN_INDEX` is deferred so the
+    /// streaming consumer (`LogModel`) can wrap each move in
+    /// `begin/endMoveColumns`. Caller must re-resolve each
+    /// `KeyId` to its current column index before moving --
+    /// earlier moves can shift later targets.
     ///
-    /// Static-load paths (`LogTable` ctor + `Update`) call
-    /// `ApplyPendingLevelBubbles` instead and never read this
-    /// queue; the queue is therefore always empty when those
-    /// paths return. Tests that exercise `AppendBatch` /
-    /// `FinalizeAutoDetection` directly can either call
-    /// `ApplyPendingLevelBubbles` to mimic the static-load path,
-    /// or drain and apply the queue manually to mimic the
-    /// streaming consumer.
+    /// Static-load paths use `ApplyPendingLevelBubbles` instead
+    /// and leave this queue empty.
     [[nodiscard]] std::vector<KeyId> TakePendingLevelBubbleKeys() noexcept;
 
-    /// Drain `mPendingLevelBubbleKeys` and apply each bubble via
+    /// Drain the pending-bubble queue and apply each via
     /// `MoveColumn`. No Qt-side notifications -- intended for
-    /// static load paths whose callers follow up with a model
-    /// reset (and for tests that don't exercise the
-    /// `LogModel`-side streaming consumer).
+    /// static-load paths whose callers reset the model afterward.
     void ApplyPendingLevelBubbles();
 
-    /// First column whose `keys` list contains a key that resolves
-    /// to @p kid in the table's key index. Returns `-1` when the
-    /// id is invalid or no column matches.
-    ///
-    /// Linear in (columns * keys-per-column); column counts are
-    /// tens at most, so this is fine on per-batch / per-bubble
-    /// paths. Shared by `ApplyPendingLevelBubbles`, the streaming
-    /// consumer's pending-bubble drain, and the `Demoted`-by-key
-    /// reverse lookup in `LogModel`.
+    /// First column whose key list maps to @p kid, or `-1`. Linear
+    /// in (columns * keys-per-column); fine for per-batch use
+    /// since column counts are tens at most.
     [[nodiscard]] int FindColumnIndexByKey(KeyId kid) const noexcept;
 
     /// Pre-allocation hint forwarded to the streaming `LogFile`.
@@ -188,19 +172,14 @@ public:
     /// columns, monostate slots, or unmapped dictionary entries.
     [[nodiscard]] std::optional<LogLevel> GetLevelForRow(size_t row, size_t columnIndex) const noexcept;
 
-    /// Like `GetLevelForRow` but preserves `LogLevel::Unknown` for
-    /// rows whose value exists in the level column but did not
-    /// resolve to a canonical level via the alias table (so the
-    /// icon-mode paint path can render a generic "unknown" glyph
-    /// instead of falling back to blank). Also surfaces `Unknown`
-    /// for the rare transient race where the per-column rank cache
-    /// hasn't yet grown to cover a freshly-interned dictionary id
-    /// (streaming-only; resolves on the next promote / dict-grow
-    /// pass). `std::nullopt` stays reserved for "no value in this
-    /// slot at all" (non-Level columns, monostate slot, missing
-    /// canonical key, dictionary value not found). Sort / styling
-    /// paths intentionally keep using `GetLevelForRow` so unmapped
-    /// values stay in the tail bucket and are not styled.
+    /// Like `GetLevelForRow` but returns `LogLevel::Unknown` for
+    /// values that exist but didn't resolve to a canonical level,
+    /// so the icon-mode paint path can render a generic "unknown"
+    /// glyph. Also surfaces `Unknown` for the rare streaming-only
+    /// race where the rank cache hasn't grown to include a
+    /// just-interned dictionary id. `std::nullopt` still means
+    /// "no value at all". Sort / styling paths intentionally keep
+    /// using `GetLevelForRow` so unmapped values stay unstyled.
     [[nodiscard]] std::optional<LogLevel> GetDisplayLevelForRow(size_t row, size_t columnIndex) const noexcept;
 
     /// `EnumValueId -> LogLevel` cache for a `Type::Level` column.
@@ -393,12 +372,10 @@ private:
     /// canonical ones. Dict-weighted, so re-evaluation only matters
     /// when the dictionary grows. No-op otherwise. `O(dict size)`.
     ///
-    /// Does not perform the canonical-position bubble inline.
-    /// Instead the canonical `KeyId` is queued on
-    /// `mPendingLevelBubbleKeys` so the streaming consumer
-    /// (`LogModel`) can wrap each follow-up `MoveColumn` in
-    /// `begin/endMoveColumns`. Static-load paths drain the queue
-    /// via `ApplyPendingLevelBubbles`.
+    /// The canonical-position bubble is *not* applied inline; the
+    /// `KeyId` is queued on `mPendingLevelBubbleKeys` for the
+    /// consumer to drain (see `TakePendingLevelBubbleKeys` /
+    /// `ApplyPendingLevelBubbles`).
     void MaybePromoteToLevel(size_t columnIndex);
 
     /// Rebuild / extend the `EnumValueId -> LogLevel` cache. Idempotent;
@@ -477,10 +454,9 @@ private:
     /// columns with different keys cannot alias each other.
     std::unordered_map<KeyId, std::vector<LogLevel>> mLevelRankCache;
 
-    /// Queue of canonical `KeyId`s whose columns were freshly
-    /// promoted to `Type::Level` since the last drain, but whose
-    /// canonical-position bubble has been deferred. See
-    /// `MaybePromoteToLevel` and `TakePendingLevelBubbleKeys`.
+    /// Pending canonical-position bubbles for columns recently
+    /// promoted to `Type::Level`. See `MaybePromoteToLevel` and
+    /// `TakePendingLevelBubbleKeys`.
     std::vector<KeyId> mPendingLevelBubbleKeys;
 };
 

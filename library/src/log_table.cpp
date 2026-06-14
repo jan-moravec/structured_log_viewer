@@ -175,11 +175,9 @@ LogTable::LogTable(LogData data, LogConfigurationManager configuration)
     std::optional<size_t> lastBackfilled;
     RunEnumPassForAppendBatch(0U, firstBackfilled, lastBackfilled);
     FinalizeAutoDetection();
-    // Static load path: the caller (`LogConfigurationManager::Load`)
-    // follows up with a model reset, so the bubble is invisible
-    // to Qt either way. Drain inline so callers that read
-    // `Configuration()` immediately after construction see the
-    // canonical column order.
+    // Static load path: caller resets the model afterward, so the
+    // bubble is invisible to Qt. Drain inline so callers reading
+    // `Configuration()` after construction see canonical order.
     ApplyPendingLevelBubbles();
 }
 
@@ -262,9 +260,8 @@ void LogTable::Update(LogData &&data)
     std::optional<size_t> lastBackfilled;
     RunEnumPassForAppendBatch(oldLineCount, firstBackfilled, lastBackfilled);
     FinalizeAutoDetection();
-    // Same rationale as the streaming-free ctor: this is the
-    // static `Update` path and its caller resets the model after,
-    // so the bubble can land inline.
+    // Same rationale as the ctor: static-load path, caller resets
+    // the model afterward, so the bubble can land inline.
     ApplyPendingLevelBubbles();
 }
 
@@ -358,12 +355,8 @@ void LogTable::AppendBatch(StreamedBatch batch)
 {
     mLastBackfillRange.reset();
     mLastBatchDemotedKeys.clear();
-    // Defensive: each batch starts with an empty pending-bubble
-    // queue. The streaming consumer (`LogModel::AppendBatch`)
-    // takes pending bubbles after every `AppendBatch` call; the
-    // clear here guards against a forgotten drain leaking pending
-    // entries into the next batch where the recorded `KeyId`s
-    // might re-resolve to columns whose state changed.
+    // Defensive: guard against a forgotten consumer drain leaking
+    // pending entries into the next batch.
     mPendingLevelBubbleKeys.clear();
 
     if (!batch.newKeys.empty())
@@ -1121,13 +1114,9 @@ void LogTable::RunEnumPassForAppendBatch(
                     MaybePromoteToLevel(columnIndex);
                 }
             }
-            // Re-read the column reference: `MaybePromoteToLevel`
-            // can have flipped the type to `Level`. The promotion
-            // path no longer rotates the column in place (the
-            // bubble is queued for `LogModel` to apply), so the
-            // index is still valid and the dict is keyed by
-            // canonical `KeyId` -- but the type must come from the
-            // post-promotion configuration.
+            // Re-read the column: `MaybePromoteToLevel` may have
+            // flipped it to `Level`. The index is still valid
+            // (the bubble is queued, not applied inline).
             const auto &columnAfterMaybe = columns[columnIndex];
             if (columnAfterMaybe.type == LogConfiguration::Type::Level)
             {
@@ -2003,33 +1992,11 @@ void LogTable::MaybePromoteToLevel(size_t columnIndex)
 
     mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::Level);
     RefreshLevelRankCache(columnIndex);
-    // Queue the canonical-position bubble instead of moving inline.
-    // The streaming consumer (`LogModel::AppendBatch` /
-    // `EndStreaming`) drains the queue via
-    // `TakePendingLevelBubbleKeys` and wraps each `MoveColumn` in
-    // `begin/endMoveColumns` so Qt's view state stays in sync.
-    // Static-load paths (`LogTable` ctor + `Update`) call
-    // `ApplyPendingLevelBubbles` themselves because a model reset
-    // covers the rotation.
-    //
-    // Queueing by canonical `KeyId` (not column index) keeps the
-    // entry stable across other queued bubbles: when two columns
-    // promote in the same batch, applying the first one shifts
-    // the second's slot, so the consumer must re-resolve at apply
-    // time. `canonical` is the resolved key from above.
-    //
-    // We always queue, even when the column is currently at
-    // `CANONICAL_LEVEL_COLUMN_INDEX`. The drain consumer
-    // re-evaluates `ShouldBubbleLevelColumn` per iteration and
-    // no-ops when no move is needed, which is cheap. Gating here
-    // would be incorrect: in the same batch a freshly-promoted
-    // `Type::Time` column can still get bubbled to position 0
-    // *after* this function returns (see the time-bubble loop in
-    // `LogModel::AppendBatch`), shifting an already-canonical
-    // level column out of place. Always queueing, plus the
-    // drain's re-check, lets the level column rejoin its
-    // canonical position regardless of the order of intra-batch
-    // reordering.
+    // Queue by `KeyId` (stable across other bubbles) so the
+    // streaming consumer can wrap the move in `begin/endMoveColumns`.
+    // Always queue, even at canonical: a later same-batch Time
+    // bubble can shift this column outward, and the drain re-checks
+    // `ShouldBubbleLevelColumn` so self-moves no-op.
     mPendingLevelBubbleKeys.push_back(canonical);
 }
 
@@ -2040,9 +2007,8 @@ std::vector<KeyId> LogTable::TakePendingLevelBubbleKeys() noexcept
 
 void LogTable::ApplyPendingLevelBubbles()
 {
-    // Drain by `KeyId` and re-resolve the current column index
-    // per iteration: an earlier `MoveColumn` shifts later
-    // canonical positions.
+    // Re-resolve the column index per iteration: an earlier
+    // `MoveColumn` shifts later targets.
     const std::vector<KeyId> pending = TakePendingLevelBubbleKeys();
     for (const KeyId kid : pending)
     {
@@ -2172,10 +2138,9 @@ std::optional<LogLevel> LogTable::GetDisplayLevelForRow(size_t row, size_t colum
     }
     if (static_cast<size_t>(*id) >= cacheIt->second.size())
     {
-        // Slot has a value but the rank cache hasn't grown to include
-        // this dictionary entry yet (very rare race during streaming).
-        // Treat it as Unknown so the icon mode still renders a glyph
-        // rather than a blank cell.
+        // Rare streaming race: dictionary id is newer than the
+        // rank cache. Return Unknown so icon mode still renders
+        // a glyph rather than a blank cell.
         return LogLevel::Unknown;
     }
     return cacheIt->second[static_cast<size_t>(*id)];

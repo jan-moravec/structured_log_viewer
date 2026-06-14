@@ -525,10 +525,8 @@ private slots:
         QCOMPARE(spy.count(), 0);
     }
 
-    /// Built-in themes all ship `levelColumnOverride`, so picking
-    /// one flips `HasLevelColumnOverride()` on and populates the
-    /// per-level caches. Regression for the headline icon-mode
-    /// switch: every consumer reads this single bool.
+    /// Picking a built-in theme flips `HasLevelColumnOverride()`
+    /// on and populates the per-level caches.
     void TestBuiltinThemeOptsIntoIconMode()
     {
         mTheme->SetActiveSelection(QStringLiteral("Dark"));
@@ -539,25 +537,20 @@ private slots:
         QVERIFY(!mTheme->IconFor(loglib::LogLevel::Warn).isNull());
         QVERIFY(!mTheme->IconFor(loglib::LogLevel::Fatal).isNull());
         QVERIFY(!mTheme->IconFor(loglib::LogLevel::Unknown).isNull());
-        // Built-in dark.json sets a pillBackground for Info..Fatal
-        // but omits it for Trace/Debug/Unknown.
+        // dark.json: pillBackground for Info..Fatal only.
         QVERIFY(mTheme->PillBackgroundFor(loglib::LogLevel::Info).style() != Qt::NoBrush);
         QVERIFY(mTheme->PillBackgroundFor(loglib::LogLevel::Warn).style() != Qt::NoBrush);
         QVERIFY(mTheme->PillBackgroundFor(loglib::LogLevel::Trace).style() == Qt::NoBrush);
         QVERIFY(mTheme->PillBackgroundFor(loglib::LogLevel::Unknown).style() == Qt::NoBrush);
-        // The pill foreground always resolves (one of the three
-        // fallbacks fires) when icon mode is on.
+        // PillForeground always resolves via the fallback chain.
         QVERIFY(mTheme->PillForegroundFor(loglib::LogLevel::Info).style() != Qt::NoBrush);
-        // Built-in dark.json doesn't override header *text*; it does
-        // ship a `headerIcon` (Lucide gauge) so the level column has
-        // a generic identifier in icon mode that's distinct from the
-        // per-level glyphs.
+        // dark.json: no header text override, but ships a `headerIcon`.
         QVERIFY(!mTheme->LevelColumnHeaderTextOverride().has_value());
         QVERIFY(!mTheme->LevelColumnHeaderIcon().isNull());
     }
 
-    /// A theme that omits `levelColumnOverride` keeps icon mode
-    /// off, with all per-level caches cleared.
+    /// A theme without `levelColumnOverride` keeps icon mode off
+    /// and clears the per-level caches.
     void TestUserThemeWithoutOverrideTurnsIconModeOff()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
@@ -579,9 +572,8 @@ private slots:
         QVERIFY(mTheme->LevelColumnHeaderIcon().isNull());
     }
 
-    /// Switching from an icon-mode theme to a plain theme must
-    /// scrub the per-level caches; otherwise the next paint would
-    /// still resolve stale icons.
+    /// Switching from an icon theme to a plain theme scrubs the
+    /// per-level caches.
     void TestSwitchAwayFromIconThemeClearsCaches()
     {
         mTheme->SetActiveSelection(QStringLiteral("Dark"));
@@ -605,9 +597,8 @@ private slots:
         QVERIFY(mTheme->PillBackgroundFor(loglib::LogLevel::Warn).style() == Qt::NoBrush);
     }
 
-    /// `header: ""` is a legitimate override -- it means "render
-    /// no header text" -- and must round-trip through the runtime
-    /// caches as a present-but-empty optional.
+    /// `header: ""` means "no header text" and must round-trip
+    /// as a present-but-empty optional.
     void TestThemeHeaderOverrideRoundTripIncludingEmptyString()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
@@ -636,11 +627,9 @@ private slots:
         QVERIFY(!mTheme->LevelColumnHeaderIcon().isNull());
     }
 
-    /// User theme with a `..` path traversal in its icon path must
-    /// be rejected at cache-build time. The level still flips to
-    /// icon-mode-on (because the override block is present), but
-    /// `IconFor` returns a null icon -- which `LogModel` handles
-    /// as "no icon for this level".
+    /// A `..` icon path is rejected at cache-build time. The
+    /// theme still has an override block (so icon mode is on),
+    /// but `IconFor` returns null and the cell paints blank.
     void TestThemeControlRejectsParentPathTraversal()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
@@ -668,12 +657,10 @@ private slots:
         QVERIFY(!mTheme->IconFor(loglib::LogLevel::Warn).isNull());
     }
 
-    /// `QDir::cleanPath` normalises Windows-style backslash
-    /// separators to forward slashes before the traversal guard
-    /// inspects the path, so a `..\..\` escape is caught the same
-    /// way `../../` is. This pins the cross-platform behaviour
-    /// so a future refactor that swaps in a different cleanup
-    /// helper can't silently regress on Windows.
+    /// Backslash escapes (`..\..\`) are caught too, because
+    /// `QDir::cleanPath` normalises separators first. Pins
+    /// cross-platform behaviour against future cleanup-helper
+    /// swaps.
     void TestThemeControlRejectsBackslashTraversal()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
@@ -699,9 +686,8 @@ private slots:
         QVERIFY(!mTheme->IconFor(loglib::LogLevel::Warn).isNull());
     }
 
-    /// A bare `..` segment (no separator) must also be rejected:
-    /// `QDir::cleanPath("..")` returns `..` unchanged, which the
-    /// guard catches via the explicit equality check.
+    /// A bare `..` segment is rejected too (the guard catches it
+    /// via an explicit equality check after `cleanPath`).
     void TestThemeControlRejectsBareParentSegment()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
@@ -727,18 +713,14 @@ private slots:
         QVERIFY(!mTheme->IconFor(loglib::LogLevel::Warn).isNull());
     }
 
-    /// Every built-in theme listed in the index must parse cleanly,
-    /// ship a non-empty ``levels`` map, and (post subtle-default
-    /// rework) carry a non-empty ``levelsHighContrast`` map. Catches
-    /// typos in the new theme JSONs at test time instead of when a
-    /// user picks a theme that fails to load.
+    /// Every built-in theme parses cleanly and ships non-empty
+    /// `levels` + `levelsHighContrast` maps. Catches typos at
+    /// test time rather than at theme-pick time.
     void TestThemeControlBuiltInThemesAreWellFormed()
     {
         const auto listings = mTheme->AvailableThemes();
-        // The exact count is intentionally not pinned (so adding
-        // another built-in doesn't require an unrelated test edit),
-        // but we expect at least the 15 named themes after the
-        // gallery expansion.
+        // Not pinned exactly so adding a built-in doesn't break
+        // this test; we expect at least the 15 named themes.
         QVERIFY(listings.size() >= 15);
 
         const QStringList expected = {
@@ -770,9 +752,9 @@ private slots:
         }
     }
 
-    /// `SetHighContrast(true)` projects `levelsHighContrast` brushes
-    /// over the subtle defaults; `false` restores them. Toggling to
-    /// the same value is a no-op (no signal, no rebuild).
+    /// `SetHighContrast(true)` swaps in `levelsHighContrast`
+    /// brushes, `false` restores the subtle defaults, and
+    /// repeated values are no-ops.
     void TestThemeControlHighContrastTogglesBrushes()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
@@ -813,8 +795,8 @@ private slots:
         QCOMPARE(mTheme->BackgroundFor(loglib::LogLevel::Error).color(), QColor(QStringLiteral("#352121")));
     }
 
-    /// Sparse `levelsHighContrast` falls back to `levels` per-level:
-    /// only the overridden entries change when the toggle is on.
+    /// Sparse `levelsHighContrast` falls back to `levels`
+    /// per-level: only overridden entries change when on.
     void TestThemeControlHighContrastSparseFallback()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
@@ -842,15 +824,10 @@ private slots:
         QCOMPARE(mTheme->BackgroundFor(loglib::LogLevel::Warn).color(), QColor(QStringLiteral("#272620")));
     }
 
-    /// A theme that omits `levelsHighContrast` reports the empty
-    /// map via `HasLevelsHighContrast()`; toggling the pref is then
-    /// a no-op for brush resolution AND must skip the
-    /// `themeChanged()` cascade entirely (no full table repaint /
-    /// no QSS re-stamp on widgets that listen on the signal). The
-    /// fast-path in `SetHighContrast` is what makes the
-    /// preferences-dialog "grey out the checkbox" UX coherent: the
-    /// flag stays in sync for a later theme switch that DOES ship
-    /// the block, but the user sees nothing in the meantime.
+    /// A theme without `levelsHighContrast` reports an empty map
+    /// and `SetHighContrast` takes a fast path: no brush change
+    /// and no `themeChanged()` cascade. The flag still flips so a
+    /// later theme switch picks it up.
     void TestThemeControlHighContrastEmptyMap()
     {
         const QDir userDir = ThemeControl::UserThemesDir();
@@ -871,28 +848,24 @@ private slots:
 
         mTheme->SetHighContrast(false);
         const QColor before = mTheme->BackgroundFor(loglib::LogLevel::Error).color();
-        // Spy attached AFTER the initial state-flip so the
-        // potential rebuild from `SetActiveSelection` above doesn't
-        // pollute the count. We're only interested in what
-        // `SetHighContrast` does once the active theme is settled.
+        // Attach the spy after settling so any rebuild from
+        // `SetActiveSelection` doesn't pollute the count.
         const QSignalSpy themeChangedSpy(mTheme.data(), &ThemeControl::themeChanged);
         QVERIFY(themeChangedSpy.isValid());
         mTheme->SetHighContrast(true);
         const QColor after = mTheme->BackgroundFor(loglib::LogLevel::Error).color();
         QCOMPARE(before, after);
         QCOMPARE(themeChangedSpy.count(), 0);
-        // Flag still flipped so a later theme switch picks it up.
+        // Flag still flips so a later theme switch picks it up.
         QVERIFY(mTheme->IsHighContrast());
-        // Toggling back: same fast-path, still no emit.
+        // Toggling back: same fast path, no emit.
         mTheme->SetHighContrast(false);
         QCOMPARE(themeChangedSpy.count(), 0);
         QVERIFY(!mTheme->IsHighContrast());
     }
 
-    /// A `:/` Qt resource path is allowed for both built-in and
-    /// user themes; the qrc namespace is shared. Pin both halves
-    /// (built-in + user) so a refactor can't silently lock user
-    /// themes out of the resource namespace.
+    /// `:/` qrc paths work for user themes too (the qrc
+    /// namespace is shared).
     void TestThemeControlAcceptsQtResourcePath()
     {
         const QDir userDir = ThemeControl::UserThemesDir();

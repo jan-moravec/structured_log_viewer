@@ -46,27 +46,16 @@ signals:
     /// the current session is a static (file-mode) session.
     void staticDisplayOrderChanged(bool newestFirst);
 
-    /// Fired on every toggle of the "Show level icons" checkbox
-    /// (live preview) and again on Cancel/close to revert to the
-    /// pre-dialog state when needed. `MainWindow` calls
-    /// `LogModel::SetShowLevelIcons(on)` (which emits a tightly-
-    /// scoped `DecorationRole` change on the level column) and then
-    /// `ApplyLevelCellDelegate()` so the delegate attaches /
-    /// detaches on the right column. The delegate's self-gate keeps
-    /// in-between paints correct regardless of ordering. Persisting
-    /// to `QSettings` happens only on Ok (the dialog writes
-    /// `ui/showLevelIcons` from the final state and skips the write
-    /// when the value didn't actually change from the persisted
-    /// value).
+    /// Fired on every "Show level icons" toggle (live preview) and
+    /// again on Cancel/close to revert. `MainWindow` flips the
+    /// model + delegate; `QSettings` is written only on Ok and only
+    /// when the value actually changed.
     void showLevelIconsChanged(bool on);
 
-    /// Fired on every toggle of the "High contrast levels"
-    /// checkbox (live preview) and again on Cancel/close to revert.
-    /// `MainWindow` forwards to `ThemeControl::SetHighContrast(on)`,
-    /// which re-runs `BuildStyleCache` and emits `themeChanged()` so
-    /// the table re-paints with the boosted (or subtle) row colours.
-    /// Persisting to `QSettings` happens only on Ok with the same
-    /// "only-on-real-change" gate as the level-icons toggle.
+    /// Fired on every "High contrast levels" toggle (live preview)
+    /// and again on Cancel/close to revert. `MainWindow` forwards
+    /// to `ThemeControl::SetHighContrast`, which reuses the normal
+    /// `themeChanged()` repaint path.
     void highContrastLevelsChanged(bool on);
 
 private:
@@ -82,20 +71,14 @@ private:
     void ShowThemeStatus(const QString &message);
 
     /// Enable / disable the "Show level icons" checkbox based on
-    /// whether the *currently-applied* theme ships a
-    /// `levelColumnOverride`. Called from `UpdateFields()` (dialog
-    /// open) and on every `ThemeControl::themeChanged` emit while
-    /// the dialog is alive (user picks a different theme, OS dark
-    /// flip in Auto mode, etc.) so the checkbox state stays in
-    /// sync with what a toggle would actually do.
+    /// whether the active theme ships a `levelColumnOverride`. The
+    /// disabled-state tooltip explains why the toggle is a no-op.
+    /// Re-runs on every `themeChanged()` so the state stays in sync.
     void RefreshLevelIconsCheckboxAvailability();
 
-    /// Same idea as `RefreshLevelIconsCheckboxAvailability`, but
-    /// gates the high-contrast checkbox on whether the active theme
-    /// ships a non-empty `levelsHighContrast` block. Themes that
-    /// omit it (most user themes by default) grey the toggle out
-    /// with an explanatory tooltip so the user can tell the no-op
-    /// state apart from a "stuck" checkbox.
+    /// Same as `RefreshLevelIconsCheckboxAvailability` but gates
+    /// the high-contrast checkbox on a non-empty `levelsHighContrast`
+    /// block.
     void RefreshHighContrastCheckboxAvailability();
 
     QComboBox *mThemeComboBox;
@@ -119,14 +102,10 @@ private:
     /// skips the revert path. Genuine close (X / Alt+F4) leaves it false.
     bool mClosingViaButton = false;
 
-    /// Captured by `UpdateFields()` at dialog-open time so
-    /// Cancel/close can rewind a live preview that the user
-    /// toggled inside the dialog. Both flags mirror the persisted
-    /// values: when the dialog opens they are the same as
-    /// `QSettings::value(ui/...)`. On Ok the dialog persists the
-    /// current state to `QSettings`; on Cancel/close it re-emits
-    /// the corresponding signal with these initial values so the
-    /// model / theme controller revert.
+    /// Captured at dialog-open time so Cancel/close can roll back
+    /// any live preview the user toggled. Ok persists the current
+    /// state; Cancel/close re-emits the change signal with these
+    /// initial values.
     bool mInitialShowLevelIcons = true;
     bool mInitialHighContrastLevels = false;
 };

@@ -250,25 +250,17 @@ public:
     /// run after a load or reorder.
     void ApplyColumnVisibility();
 
-    /// Install (or detach) the icon-pill delegate on whichever
-    /// column the model currently reports as the first
-    /// `Type::Level`. Idempotent: when the level column has moved
-    /// since the last call, the delegate is detached from the
-    /// previous column before being attached to the new one (so a
-    /// reload that lands the column elsewhere doesn't leave the
-    /// delegate suppressing text on a non-level column). When the
-    /// model has no level column at all, the previous delegate is
-    /// detached and `mInstalledLevelDelegateColumn` resets to
-    /// `-1`. Safe to call from the streaming hot path -- the work
-    /// is one `int` compare + at most two
-    /// `setItemDelegateForColumn` calls.
+    /// Install (or detach) the icon-pill delegate on the current
+    /// first `Type::Level` column. Idempotent; detaches from the
+    /// previous column when the level column has moved, and
+    /// detaches entirely when no level column exists. Safe on the
+    /// streaming hot path (at most two `setItemDelegateForColumn`
+    /// calls).
     ///
-    /// Proxy note: the view's chain is
-    /// `LogFilterModel(RowOrderProxyModel(LogModel))`. Both proxies
-    /// pass `columnCount` through 1:1, so the source column index
-    /// reported by `LogModel::FirstLevelColumnIndex()` is also the
-    /// view-side column index `setItemDelegateForColumn` expects.
-    /// A future column-reordering proxy would have to remap here.
+    /// View column index == source column index here because both
+    /// proxies (`LogFilterModel`, `RowOrderProxyModel`) pass
+    /// `columnCount` through 1:1. A future column-reordering proxy
+    /// would have to remap.
     void ApplyLevelCellDelegate();
 
     /// Restore the header so visual == logical for every section.
@@ -779,18 +771,17 @@ private:
     /// `enumColumnsChanged` tick triggers a filter-rule rebuild.
     [[nodiscard]] bool EnumFilterFullyResolved(const loglib::LogConfiguration::LogFilter &filter) const;
 
-    /// Consume `mPendingApplySortFromConfig` by applying the
-    /// configuration's saved sort to the view. No-op when the latch
-    /// is clear, when the user manually sorted mid-stream
-    /// (proxy `SortColumn() >= 0`), or when the saved column is
-    /// out-of-range. Always clears the latch on return.
+    /// Apply the saved sort from `mPendingApplySortFromConfig` to
+    /// the view, then clear the latch. No-op when the latch is
+    /// clear, when the user sorted mid-stream
+    /// (`SortColumn() >= 0`), or when the saved column is
+    /// out-of-range.
     ///
-    /// Called from `OnStreamingFinished` (deferred-apply tail) and
-    /// from `StreamFromCurrentSourceOrSkip`'s early-return paths
-    /// (no source / non-File). Streaming and the proxy's "single
-    /// O(N log N) sort" are mutually exclusive in cost: applying
-    /// here lets the per-batch insert path stay on the fast bulk
-    /// branch, then sorts once over the full row set.
+    /// Called from `OnStreamingFinished` and from
+    /// `StreamFromCurrentSourceOrSkip`'s early-return paths. The
+    /// deferral lets streaming use the fast bulk-insert branch and
+    /// then sorts once over the full row set instead of paying
+    /// O(N^2) per-row inserts under an active sort.
     void ApplyDeferredSortFromConfig();
 
     void SetConfigurationUiEnabled(bool enabled);
@@ -976,22 +967,14 @@ private:
     LogFilterModel *mSortFilterProxyModel;
     LogTableView *mTableView;
     LogModel *mModel;
-    /// Custom delegate for the level column when the active
-    /// theme opts into icon mode (`Theme::levelColumnOverride`).
-    /// Owned via `QObject` parentage (this `MainWindow`); raw
-    /// pointer because Qt's `setItemDelegateForColumn` does not
-    /// take ownership and the same instance can be re-attached to
-    /// different columns over the table's life. `nullptr` for the
-    /// no-theme test fixture path (icon mode is skipped entirely
-    /// there).
+    /// Icon-pill delegate for the level column. Owned via Qt
+    /// parentage; `nullptr` in the no-theme test fixture path
+    /// (icon mode is skipped there).
     class LevelCellDelegate *mLevelCellDelegate = nullptr;
 
-    /// Column index the level delegate is currently installed
-    /// on, or `-1` when detached. Stored so the next call to
-    /// `ApplyLevelCellDelegate()` can detach from the *previous*
-    /// column before attaching to the new one (otherwise a
-    /// reload that lands the level column at a different index
-    /// leaves the delegate suppressing text on the old column).
+    /// Column the level delegate is currently installed on, or
+    /// `-1` when detached. Stored so the next reapply can detach
+    /// the old column before attaching the new one.
     int mInstalledLevelDelegateColumn = -1;
     /// Dockable find bar (owned via `QMainWindow` parentage).
     /// `mFindRecord` is the hosted widget. `QPointer` on both so
@@ -1288,24 +1271,18 @@ private:
     /// its rebuild and the queued re-entry becomes a no-op.
     bool mApplyingEnumRebuild = false;
 
-    /// Latch set by `ApplyLoadedConfiguration` when the loaded
-    /// session carries a sort and a source is bound. The sort is
-    /// *not* applied at load time: `LogFilterModel::OnSourceRowsInserted`
-    /// falls into a per-row `beginInsertRows`/`endInsertRows` loop
-    /// while a sort is active, which is O(N^2) over the entire
-    /// stream (a 1 GB session restore "never finishes" on the
-    /// user-reported case -- pinned by
-    /// `TestRestoreLastSessionDeferSortUntilStreamingFinishes`).
-    /// The deferred sort is applied once in `OnStreamingFinished`
-    /// if the proxy is still unsorted (user didn't pick a different
-    /// sort mid-stream), or immediately by
-    /// `StreamFromCurrentSourceOrSkip`'s early-return paths when no
-    /// streaming will happen.
+    /// Latch: a loaded session's sort is pending, to be applied
+    /// once streaming finishes. Avoids the O(N^2) per-row insert
+    /// path that `LogFilterModel::OnSourceRowsInserted` falls into
+    /// under an active sort (a 1 GB restore "never finishes"
+    /// otherwise; pinned by
+    /// `TestRestoreLastSessionDefersSortUntilStreamingFinishes`).
     ///
-    /// `MirrorSessionStateToConfiguration` reads this latch so an
-    /// auto-save mid-stream preserves the loaded sort in the
-    /// configuration rather than overwriting it with the proxy's
-    /// transient `-1`.
+    /// Consumed by `OnStreamingFinished` (or by
+    /// `StreamFromCurrentSourceOrSkip`'s early-return paths).
+    /// `MirrorSessionStateToConfiguration` reads it so an
+    /// auto-save mid-stream preserves the loaded sort instead of
+    /// overwriting it with the proxy's transient `-1`.
     bool mPendingApplySortFromConfig = false;
 
     /// Latch held by the `SessionSwitchScope` RAII helper across a

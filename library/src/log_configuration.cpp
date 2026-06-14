@@ -335,10 +335,8 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
 
 bool ShouldBubbleLevelColumn(const LogConfiguration &config, size_t columnIndex) noexcept
 {
-    // Mirrors the Time bubble's no-op conditions in
-    // `LogConfigurationManager::Update`: a single-column config
-    // has nothing to swap with, and a column already at the
-    // canonical index would be a self-move.
+    // Same no-op conditions as the Time bubble in
+    // `LogConfigurationManager::Update`.
     if (columnIndex >= config.columns.size())
     {
         return false;
@@ -351,14 +349,10 @@ bool ShouldBubbleLevelColumn(const LogConfiguration &config, size_t columnIndex)
     {
         return false;
     }
-    // Multi-Level guard: only one Level column gets the canonical
-    // slot. If the slot is already occupied by a `Type::Level`
-    // column, leave this one where it is -- "first promoted wins"
-    // gives a deterministic outcome for payloads that carry more
-    // than one Level-typed key (e.g. `level` *and* `severity`)
-    // and have all of them promoted in the same batch. Without
-    // this guard, draining multiple queued bubbles would shuffle
-    // the previous occupant of the canonical slot back out.
+    // Multi-Level guard: "first promoted wins" the canonical slot
+    // when a payload carries more than one Level-typed key (e.g.
+    // `level` and `severity`). Without this, draining multiple
+    // bubbles would shuffle the slot's occupant.
     if (CANONICAL_LEVEL_COLUMN_INDEX < config.columns.size() &&
         config.columns[CANONICAL_LEVEL_COLUMN_INDEX].type == LogConfiguration::Type::Level)
     {

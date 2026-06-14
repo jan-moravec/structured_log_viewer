@@ -391,11 +391,9 @@ bool WaitForLineCount(LogModel &model, qsizetype target, std::chrono::millisecon
     return true;
 }
 
-// Returns the column index whose configured `Column::header`
-// equals @p header, or -1 if none. Reads the configuration
-// directly (not `Qt::DisplayRole`) so the lookup survives theme
-// overrides that suppress the displayed text -- e.g. icon-mode
-// themes that ship a `headerIcon` and let the text fall away.
+// Column index whose configured `Column::header` equals @p header,
+// or -1. Reads the configuration directly (not `DisplayRole`) so
+// it survives theme overrides that suppress the header text.
 int ColumnByHeader(const LogModel &model, const QString &header)
 {
     const std::string needle = header.toStdString();
@@ -4230,22 +4228,15 @@ private slots:
         QCOMPARE(run.model->Table().GetLevelForRow(5, col).value(), loglib::LogLevel::Fatal);
     }
 
-    /// Regression: when an auto-promoted `Type::Level` column has
-    /// other non-Time, non-canonical-position columns ahead of it,
-    /// `LogModel::AppendBatch` (or `EndStreaming`) must bubble it
-    /// to `CANONICAL_LEVEL_COLUMN_INDEX` via Qt's
-    /// `begin/endMoveColumns`. The earlier implementation rotated
-    /// the column silently inside `mLogTable.AppendBatch`,
-    /// leaving Qt's column-keyed view state attached to the wrong
-    /// section (widths, hidden flags, the proxy chain's column
-    /// map, persisted filter rows).
+    /// Regression: an auto-promoted `Type::Level` column with
+    /// non-canonical columns ahead of it must bubble to
+    /// `CANONICAL_LEVEL_COLUMN_INDEX` via `columnsMoved`. The
+    /// pre-fix code rotated silently inside `mLogTable.AppendBatch`,
+    /// leaving Qt's column-keyed view state on the wrong section.
     void TestStreamingLevelBubbleEmitsColumnsMoved()
     {
-        // Fixture: each record has `body`, `scope`, and `level`
-        // keys. `body` and `scope` are non-Time, non-Level, so
-        // they appear at indices 0 and 1. `level` is appended at
-        // index 2 and -- once promoted to `Type::Level` --
-        // bubbles to index 1, pushing `scope` to index 2.
+        // Fixture: `body, scope, level`. Once `level` promotes,
+        // it bubbles to index 1, pushing `scope` to index 2.
         const QStringList levels{
             QStringLiteral("info"),
             QStringLiteral("warn"),
@@ -4297,22 +4288,11 @@ private slots:
         QCOMPARE(columns[1].type, loglib::LogConfiguration::Type::Level);
         QCOMPARE(columns[2].header, std::string{"scope"});
 
-        // The bubble must have arrived via `columnsMoved` -- without
-        // this signal, Qt's view layer keeps section-keyed state on
-        // the wrong column. We don't assume "the last move is the
-        // level move": a future fixture that also carries a Time
-        // column would trigger the Time bubble too, and the order
-        // between Time and Level moves is an implementation detail.
-        // Instead, find any single-column move whose destination is
-        // the canonical level index.
-        //
-        // Qt's `destinationColumn` parameter uses "insert before"
-        // semantics, so for a leftward move (which a bubble always
-        // is when triggered from the appended tail) it equals the
-        // final index.
-        // Parameter is named `signalArgs` -- `emit` is a Qt
-        // macro keyword and using it as an identifier breaks
-        // moc's pre-processing.
+        // Match any single-column `columnsMoved` whose destination
+        // is canonical. We don't pin the last emit because a Time
+        // fixture would interleave its own bubble. Qt's
+        // `destinationColumn` equals the final index for leftward
+        // moves. Param `signalArgs` because `emit` is a Qt macro.
         const auto matchesLevelBubble = [](const QList<QVariant> &signalArgs) {
             const int first = signalArgs.value(1).toInt();
             const int last = signalArgs.value(2).toInt();
@@ -4327,38 +4307,24 @@ private slots:
                            .arg(columnsMovedSpy.count()))
         );
 
-        // Cell payload sanity: the rank cache built against the
-        // post-bubble column index, so `GetLevelForRow` returns
-        // the right canonical level for row 0 (`info`).
+        // Sanity: rank cache survived the bubble.
         QCOMPARE(model->Table().GetLevelForRow(0, static_cast<size_t>(levelCol)).value(), loglib::LogLevel::Info);
 
         model->EndStreaming(false);
     }
 
-    /// Regression: when a single batch introduces both a
-    /// `Type::Level` column AND a `Type::Time` column with the
-    /// level appearing *before* the time in the JSON, the level
-    /// column briefly lands at index 1 (canonical) at promotion
-    /// time. The `LogModel::AppendBatch` time-bubble then moves
-    /// the time column to index 0, shifting level to index 2 --
-    /// out of canonical position. The fix unconditionally queues
-    /// the level bubble at promotion time and lets the drainer
-    /// re-evaluate `ShouldBubbleLevelColumn` against the
-    /// post-time-bubble layout, so the level column rejoins
-    /// `CANONICAL_LEVEL_COLUMN_INDEX == 1`.
+    /// Regression: a single batch carrying both `Level` and
+    /// `Time` columns must end up with `[time, level, ...]`. The
+    /// Time bubble shifts the just-promoted Level out of place,
+    /// and the Level bubble's re-check rebalances it.
     ///
-    /// Pre-fix bug: final layout was `[time, body, level]` with
-    /// `level` stranded at index 2.
-    /// Post-fix expected: `[time, level, body]` with `level` at
-    /// the canonical index.
+    /// Pre-fix bug: `[time, body, level]` -- level stranded.
+    /// Post-fix:    `[time, level, body]`.
     void TestStreamingLevelBubblesAfterTimeBubbleSameBatch()
     {
-        // Fixture order matters: `body` first so `AppendKeys`
-        // would land it at index 0, `level` second (lands at
-        // index 1 == canonical *transiently*), `time` third
-        // (lands at index 2). The time-bubble then moves time
-        // to index 0, which is what shifts level out of
-        // canonical position before the fix.
+        // Fixture order matters: `body, level, time` so level
+        // transiently lands at canonical (index 1) before the
+        // Time bubble shifts it out.
         QStringList lines;
         lines.reserve(200);
         const QStringList levels{
@@ -4381,18 +4347,16 @@ private slots:
 
         const auto &columns = run.model->Configuration().columns;
         QCOMPARE(columns.size(), static_cast<size_t>(3));
-        // Time bubble owns index 0.
         QCOMPARE(columns[0].header, std::string{"time"});
         QCOMPARE(columns[0].type, loglib::LogConfiguration::Type::Time);
-        // Level bubble must land at canonical index 1 even though
-        // a same-batch time bubble shifted it out of place.
+        // Level rejoined canonical index 1 after the Time bubble.
         QCOMPARE(columns[1].header, std::string{"level"});
         QCOMPARE(columns[1].type, loglib::LogConfiguration::Type::Level);
         QCOMPARE(columns[2].header, std::string{"body"});
 
         const int levelCol = ColumnByHeader(*run.model, QStringLiteral("level"));
         QCOMPARE(levelCol, static_cast<int>(loglib::CANONICAL_LEVEL_COLUMN_INDEX));
-        // Sanity: rank cache survived both bubbles intact.
+        // Sanity: rank cache survived both bubbles.
         QCOMPARE(run.model->Table().GetLevelForRow(0, static_cast<size_t>(levelCol)).value(), loglib::LogLevel::Info);
     }
 
@@ -4454,13 +4418,10 @@ private slots:
         QVERIFY(qvariant_cast<QFont>(fatalFont).bold());
     }
 
-    // Regression: a theme that ships a `headerIcon` for the level
-    // column but no explicit `header` text override must paint the
-    // icon alone -- without a duplicated "level" label next to it
-    // -- because the icon *is* the column's identifier in icon
-    // mode. The funnel / warning decoration priority and the
-    // tooltip stay unchanged; only the displayed text is
-    // suppressed.
+    // Regression: a theme that ships only a `headerIcon` (no
+    // explicit `header` override) must paint the icon alone so
+    // the header doesn't read "<gauge> level". Funnel / warning
+    // priority and the tooltip are unchanged.
     void TestLevelHeaderIconSuppressesDisplayText()
     {
         QVERIFY(mTheme != nullptr);
@@ -4492,17 +4453,13 @@ private slots:
             )
         );
 
-        // Centre alignment: the cells paint a centred pill, so the
-        // header icon must centre too -- otherwise the gauge sits
-        // off to one side of the centred pills below it.
+        // Header icon centres so it lines up with the centred
+        // pills below.
         const QVariant alignment = run.model->headerData(levelCol, Qt::Horizontal, Qt::TextAlignmentRole);
         QVERIFY2(alignment.isValid(), "icon-only level header must report an explicit Qt::TextAlignmentRole");
         QCOMPARE(alignment.toInt(), static_cast<int>(Qt::AlignCenter));
 
-        // Sibling text columns must keep the default alignment
-        // (the model returns an empty QVariant so the view falls
-        // back to its style default) -- centring is strictly the
-        // icon-only column's prerogative.
+        // Sibling text columns keep the default alignment.
         for (int col = 0; col < run.model->columnCount(); ++col)
         {
             if (col == levelCol)
@@ -4516,19 +4473,15 @@ private slots:
             );
         }
 
-        // Tooltip still describes the column -- the suppression is
-        // strictly about the on-screen label, not the metadata.
+        // Tooltip still names the column.
         const QString tooltip = run.model->headerData(levelCol, Qt::Horizontal, Qt::ToolTipRole).toString();
         QVERIFY2(
             tooltip.contains(QStringLiteral("level")),
             qPrintable(QStringLiteral("tooltip must keep naming the column, got '%1'").arg(tooltip))
         );
 
-        // Toggling the user pref off restores the configured header
-        // text *and* the default alignment: with icon mode disabled,
-        // the icon is hidden, the text must come back, and a
-        // centred-then-suddenly-text header would look just as
-        // wrong as the original duplication.
+        // Toggling icon mode off restores the configured header
+        // text and the default alignment.
         run.model->SetShowLevelIcons(false);
         const QString restored = run.model->headerData(levelCol, Qt::Horizontal, Qt::DisplayRole).toString();
         QCOMPARE(restored, QStringLiteral("level"));
@@ -4537,25 +4490,16 @@ private slots:
     }
 
     // Regression: `LevelCellDelegate::paint` must (1) actually
-    // render the pill in the inset rect (so themes that wire a
-    // `pillBackground` *show* it), (2) hard-clip to `option.rect`
-    // so a degenerate / narrow column can't bleed the pill or icon
-    // into the neighbouring cell, and (3) fall back to the base
-    // delegate's text rendering when icon mode is off.
-    //
-    // Why a pixmap round-trip: the previous coverage all stopped at
-    // model-side roles (`DecorationRole`, `ToolTipRole`) and at the
-    // sizing/alignment knobs, leaving the actual painter output
-    // unwatched. A pixel assertion in the pill region pins the
-    // visual contract: changing the inset constants, the clip, the
-    // icon-mode gate, or the pill brush resolution surfaces here.
+    // render the pill, (2) hard-clip to `option.rect` so a narrow
+    // column can't bleed into the neighbour, and (3) fall back to
+    // the base delegate when icon mode is off. The pixmap probe
+    // pins the visual contract -- a change to the insets, clip,
+    // gate, or pill-brush resolution surfaces as a pixel diff.
     void TestLevelCellDelegatePaintsPillAndClipsToRect()
     {
         QVERIFY(mTheme != nullptr);
-        // Dark ships an `Info` pill background (`#1E3A5F` per the
-        // theme JSON), which is what we'll assert against. Using a
-        // fixed theme rather than `Light` avoids pinning the test
-        // to the (currently lighter) light-theme pill choices.
+        // Dark ships a concrete Info pill (`#1E3A5F`) to assert
+        // against; pinning to a fixed theme keeps the test stable.
         mTheme->SetActiveSelection(QStringLiteral("Dark"));
         QVERIFY(mTheme->HasLevelColumnOverride());
         const QBrush expectedPill = mTheme->PillBackgroundFor(loglib::LogLevel::Info);
@@ -4563,9 +4507,7 @@ private slots:
         const QColor expectedPillColor = expectedPill.color();
         QVERIFY(expectedPillColor.isValid());
 
-        // Minimal fixture: one `info` row so the rank cache is
-        // populated and the delegate's `GetDisplayLevelForRow` call
-        // returns a real level.
+        // Minimal fixture so the rank cache resolves `info`.
         const QStringList lines{
             QStringLiteral(R"({"level": "info"})"),
             QStringLiteral(R"({"level": "info"})"),
@@ -4584,11 +4526,9 @@ private slots:
 
         const LevelCellDelegate delegate(mTheme.data());
 
-        // Pixmap is larger than `option.rect` so we can assert
-        // that the delegate's clip kept the paint inside the cell.
-        // The margin (`OUTSIDE_MARGIN`) is painted with a sentinel
-        // colour up front; if any sentinel pixel changes after the
-        // delegate runs, the clip leaked.
+        // Pixmap > cell rect, filled with a sentinel colour. Any
+        // sentinel pixel changing after `paint` means the clip
+        // leaked.
         constexpr int CELL_WIDTH = 64;
         constexpr int CELL_HEIGHT = 24;
         constexpr int OUTSIDE_MARGIN = 8;
@@ -4610,13 +4550,10 @@ private slots:
         }
         const QImage image = pix.toImage();
 
-        // (1) The pill paint actually ran: at least one pixel
-        // inside the cell rect matches the theme's pill brush
-        // colour. We sample a small ring of pixels just inside the
-        // inset (where the rounded-rect fill is guaranteed solid),
-        // and consider the test passed as soon as one of them
-        // matches -- avoiding false negatives from anti-aliased
-        // edges or DPR rounding.
+        // (1) Pill paint ran: at least one sampled pixel inside
+        // the inset matches the theme's pill colour. Sampling a
+        // ring avoids false negatives from AA edges and DPR
+        // rounding.
         constexpr int PILL_PROBE_INSET = 6;
         const QPoint sampleCentre = option.rect.center();
         const std::array<QPoint, 5> samples = {
@@ -4627,11 +4564,8 @@ private slots:
             QPoint(sampleCentre.x(), option.rect.bottom() - PILL_PROBE_INSET)
         };
         const auto colorsMatch = [](QRgb actual, const QColor &expected) {
-            // Anti-aliased edges + Qt's "approximate" pill fill
-            // (rounded-rect path) can shave a few units off any
-            // channel; allow a small tolerance per channel so the
-            // assertion is robust to a stylesheet that swaps the
-            // base painter compositing mode.
+            // Per-channel tolerance covers AA edges + a swapped
+            // compositing mode in any installed stylesheet.
             constexpr int CHANNEL_TOLERANCE = 3;
             return std::abs(qRed(actual) - expected.red()) <= CHANNEL_TOLERANCE &&
                    std::abs(qGreen(actual) - expected.green()) <= CHANNEL_TOLERANCE &&
@@ -4642,10 +4576,8 @@ private slots:
         });
         QVERIFY2(pillVisible, "expected at least one pixel inside the cell to match the Dark Info pill brush");
 
-        // (2) The clip held: every pixel outside the cell rect is
-        // still the sentinel colour. Without `setClipRect` the
-        // pill's rounded corners or the icon paint could bleed
-        // into the margin, especially at fractional DPRs.
+        // (2) Clip held: every pixel outside the cell rect is
+        // still the sentinel.
         for (int y = 0; y < PIXMAP_HEIGHT; ++y)
         {
             for (int x = 0; x < PIXMAP_WIDTH; ++x)
@@ -4665,13 +4597,10 @@ private slots:
             }
         }
 
-        // (3) With icon mode off, the delegate self-gates and
-        // delegates to the base `QStyledItemDelegate::paint`. We
-        // observe the gate by clearing the cell again and
-        // re-painting: the pill colour must no longer appear at
-        // the centre sample. (We don't pin the *exact* fallback
-        // colour because it depends on the active palette; the
-        // absence of the pill colour is the contract.)
+        // (3) Icon mode off: the delegate forwards to the base
+        // class. Observed as "pill colour no longer at the
+        // centre sample"; the exact fallback colour is palette-
+        // dependent so we don't pin it.
         run.model->SetShowLevelIcons(false);
         QVERIFY(!run.model->IsLevelIconModeActive());
         pix.fill(sentinel);
@@ -4686,23 +4615,15 @@ private slots:
         );
     }
 
-    // Regression: `LogTableView` must install `LogHeaderView` as its
-    // horizontal header, and that subclass's icon-centering rule
-    // must flip `QStyleOptionHeader::iconAlignment` to centre when
-    // a section has an icon but no text. Without the override Qt's
-    // default (`Qt::AlignVCenter`, i.e. left-aligned horizontally)
-    // leaves the icon pinned to the section's left edge -- the
-    // symptom that the model-side `Qt::TextAlignmentRole` rule
-    // alone cannot fix because text alignment doesn't move the
-    // icon. Exercising the rule via the public static helper
-    // (`CenterIconAlignmentForIconOnlySection`) sidesteps the
-    // model dependency that the protected
-    // `initStyleOptionForIndex` carries.
+    // Regression: `LogTableView` installs `LogHeaderView`, and
+    // its icon-centering rule centres icon-only sections. The
+    // model-side `TextAlignmentRole` alone can't fix this because
+    // text alignment doesn't move the icon. Exercises the rule
+    // via the public static helper to avoid needing a model.
     void TestLogHeaderViewCentersIconOnlySections()
     {
-        // The `MainWindow`'s table view exists in the fixture; reach
-        // through the production wiring rather than constructing a
-        // detached view, so we also pin the install path.
+        // Reach through the production wiring rather than building
+        // a detached view, so the install path is exercised too.
         auto *tableView = mWindow->findChild<LogTableView *>();
         QVERIFY2(tableView != nullptr, "MainWindow must own a LogTableView");
 
@@ -4717,9 +4638,8 @@ private slots:
         LogHeaderView::CenterIconAlignmentForIconOnlySection(&iconOnly);
         QCOMPARE(static_cast<int>(iconOnly.iconAlignment), static_cast<int>(Qt::AlignCenter));
 
-        // Icon + text together -> stay at the default (icon to the
-        // left of the text). Mirrors the funnel / warning case where
-        // the configured header text is still showing.
+        // Icon + text -> default (icon left of text); matches the
+        // funnel / warning case.
         QStyleOptionHeader textAndIcon;
         textAndIcon.text = QStringLiteral("level");
         textAndIcon.icon = QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning);
@@ -4727,9 +4647,7 @@ private slots:
         LogHeaderView::CenterIconAlignmentForIconOnlySection(&textAndIcon);
         QCOMPARE(static_cast<int>(textAndIcon.iconAlignment), static_cast<int>(Qt::AlignVCenter));
 
-        // No icon at all -> the rule is a strict no-op even when the
-        // text is empty (defensive: a section with neither icon nor
-        // text is degenerate, but we shouldn't pretend it had one).
+        // No icon -> no-op, even with empty text.
         QStyleOptionHeader emptyBoth;
         emptyBoth.text = QString{};
         emptyBoth.icon = QIcon{};
@@ -4737,8 +4655,7 @@ private slots:
         LogHeaderView::CenterIconAlignmentForIconOnlySection(&emptyBoth);
         QCOMPARE(static_cast<int>(emptyBoth.iconAlignment), static_cast<int>(Qt::AlignVCenter));
 
-        // Defensive: nullptr is a no-op (real callers can hand us
-        // null on degenerate paint paths; the rule mustn't crash).
+        // Defensive: nullptr is a no-op (must not crash).
         LogHeaderView::CenterIconAlignmentForIconOnlySection(nullptr);
     }
 
@@ -9254,21 +9171,15 @@ private slots:
         QCOMPARE(mTheme->PersistedSelection(), QStringLiteral("Light"));
     }
 
-    // Live preview + rollback: toggling the "Show level icons" /
-    // "High contrast levels" checkboxes inside Preferences must
-    // update the model + theme controller *immediately* (not wait
-    // for Ok). Cancel or X-close must rewind whatever the user
-    // previewed back to the pre-dialog state. Mirrors the theme
-    // preview/rollback path covered above so all three live-preview
-    // surfaces are pinned to the same UX contract.
+    // Live preview + rollback: toggling Preferences checkboxes
+    // updates the model + theme immediately, and Cancel/X-close
+    // rewinds to the pre-dialog state.
     void TestPreferencesEditorLevelIconsLivePreviewAndRevert()
     {
         QVERIFY(mTheme != nullptr);
 
-        // Persist a known baseline: showLevelIcons=true so toggling
-        // off is a real change. Built-in themes ship the
-        // `levelColumnOverride` block, so icon mode would activate
-        // when the flag is true.
+        // Baseline showLevelIcons=true so toggling off is a real
+        // change. Built-in themes ship `levelColumnOverride`.
         {
             QSettings settings;
             settings.setValue(QStringLiteral("ui/showLevelIcons"), true);
@@ -9276,8 +9187,8 @@ private slots:
         mTheme->SetActiveSelection(QStringLiteral("Dark"));
         QCoreApplication::processEvents();
         QVERIFY(mTheme->HasLevelColumnOverride());
-        // Drive the model into the "icon mode active" state so we
-        // can observe the live-preview flip back to text mode.
+        // Drive the model into icon mode so we can observe the
+        // live-preview flip back to text mode.
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
         model->SetShowLevelIcons(true);
@@ -9285,14 +9196,10 @@ private slots:
 
         auto *editor = mWindow->findChild<PreferencesEditor *>();
         QVERIFY2(editor != nullptr, "MainWindow must own a PreferencesEditor");
-        // Open path: `UpdateFields` seeds `mInitial*` from QSettings
-        // (true here), so the checkbox starts checked.
+        // `UpdateFields` seeds `mInitial*` from QSettings.
         editor->UpdateFields();
-        // Find the level-icons checkbox by its user-visible label.
-        // There are multiple `QCheckBox` children in Preferences;
-        // targeting by `objectName` would require touching
-        // production code just for the test, so we walk the
-        // checkbox list and match on `text()`.
+        // Find the checkbox by its label rather than `objectName`
+        // so the test doesn't need production-only metadata.
         QCheckBox *checkbox = nullptr;
         for (auto *cb : editor->findChildren<QCheckBox *>())
         {
@@ -9303,32 +9210,27 @@ private slots:
             }
         }
         QVERIFY2(checkbox != nullptr, "Preferences must expose a `Show level icons` checkbox");
-        // Explicit guard so clang-analyzer reasons the dereference
-        // below is safe; `QVERIFY2` already returns on failure but
-        // the analyzer doesn't model the Qt-test macro expansion.
+        // Explicit null-check for clang-analyzer (it doesn't model
+        // QVERIFY2's early return).
         if (checkbox == nullptr)
         {
             return;
         }
         QVERIFY(checkbox->isChecked());
 
-        // Live preview: untoggle the checkbox; the model's icon
-        // mode must flip OFF immediately, well before Ok / Cancel.
-        // The signal handler in `MainWindow` calls
-        // `LogModel::SetShowLevelIcons(false)` synchronously.
+        // Live preview: untoggle -> icon mode flips off
+        // synchronously via `MainWindow`'s handler.
         checkbox->setChecked(false);
         QCoreApplication::processEvents();
         QVERIFY2(!model->IsLevelIconModeActive(), "Untoggling the checkbox must live-preview icon mode OFF");
 
-        // Persisted value is unchanged: only Ok writes
-        // `ui/showLevelIcons`. Cancel / close revert via the
-        // captured `mInitialShowLevelIcons` instead.
+        // QSettings is untouched until Ok.
         {
             const QSettings settings;
             QVERIFY(settings.value(QStringLiteral("ui/showLevelIcons")).toBool());
         }
 
-        // Same close path the X button takes -> closeEvent revert.
+        // X-close triggers `closeEvent` revert.
         editor->close();
         QCoreApplication::processEvents();
 
@@ -9343,18 +9245,14 @@ private slots:
     }
 
     // Mirror of the level-icons test for the high-contrast toggle.
-    // Live preview goes through `ThemeControl::SetHighContrast`,
-    // which rebuilds the style cache and re-emits
-    // `themeChanged()`, so we observe the round-trip on the
-    // controller flag rather than on a model role.
+    // Observed on `ThemeControl::IsHighContrast` because the live
+    // preview goes through `SetHighContrast`.
     void TestPreferencesEditorHighContrastLivePreviewAndRevert()
     {
         QVERIFY(mTheme != nullptr);
 
-        // Baseline: highContrast=false, built-in theme with a
-        // `levelsHighContrast` block (Dark ships one). The
-        // checkbox must be enabled so the toggle reaches the
-        // signal path.
+        // Baseline highContrast=false on a theme with a
+        // `levelsHighContrast` block so the checkbox is enabled.
         {
             QSettings settings;
             settings.setValue(QStringLiteral("ui/highContrastLevels"), false);
@@ -9379,29 +9277,26 @@ private slots:
             }
         }
         QVERIFY2(checkbox != nullptr, "Preferences must expose a `High contrast levels` checkbox");
-        // Explicit guard so clang-analyzer reasons the dereference
-        // below is safe; `QVERIFY2` already returns on failure but
-        // the analyzer doesn't model the Qt-test macro expansion.
+        // Explicit null-check for clang-analyzer (see sibling test).
         if (checkbox == nullptr)
         {
             return;
         }
         QVERIFY(!checkbox->isChecked());
 
-        // Live preview: toggle ON; the theme controller's flag
-        // must flip immediately (and `themeChanged` fires through
-        // the existing signal chain).
+        // Live preview: toggle on -> controller flag flips
+        // immediately, `themeChanged` fires via existing wiring.
         checkbox->setChecked(true);
         QCoreApplication::processEvents();
         QVERIFY2(mTheme->IsHighContrast(), "Toggling the checkbox must live-preview high contrast ON");
 
-        // Persisted value is still false: only Ok writes.
+        // QSettings still false until Ok.
         {
             const QSettings settings;
             QVERIFY(!settings.value(QStringLiteral("ui/highContrastLevels")).toBool());
         }
 
-        // Close-as-Cancel: revert via `closeEvent`.
+        // X-close reverts via `closeEvent`.
         editor->close();
         QCoreApplication::processEvents();
 
@@ -16201,26 +16096,20 @@ private slots:
         QCOMPARE(restored->Model()->rowCount(), fixtureLines.size());
     }
 
-    // Regression: `RestoreLastSessionFromPath` on a session with a
-    // saved sort must defer the sort until streaming finishes.
-    // `LogFilterModel::OnSourceRowsInserted` falls into a per-row
-    // `beginInsertRows`/`endInsertRows` loop while a sort is
-    // active, which is O(N^2) over the entire stream -- a 1 GB
-    // session restore "never finishes" on the user-reported case.
-    // The asserts below check both halves: the proxy stays at
-    // `SortColumn() == -1` between `RestoreLastSessionFromPath`
-    // returning and `streamingFinished` firing (= bulk-insert
-    // path), and the loaded sort is applied exactly once after
-    // streaming completes.
+    // Regression: a saved sort must be deferred until streaming
+    // finishes. Avoids the O(N^2) per-row insert path
+    // `LogFilterModel::OnSourceRowsInserted` takes under an
+    // active sort (a 1 GB restore "never finishes" otherwise).
+    // Asserts both halves: proxy is unsorted while streaming, and
+    // the saved sort is applied exactly once at the end.
     void TestRestoreLastSessionDefersSortUntilStreamingFinishes()
     {
         const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
-        // Seed: stream a fixture, engage a sort, let the close-
-        // event autosave land. The autosave mirror reads the
-        // proxy's live sort so the saved JSON carries it.
+        // Seed: stream, engage a sort, save the session via the
+        // close-event autosave so the saved JSON carries the sort.
         auto seeder = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
         const QStringList fixtureLines{
             QStringLiteral(R"({"category": "info", "msg": "alpha"})"),
@@ -16240,12 +16129,9 @@ private slots:
         seederTable->sortByColumn(categoryCol, Qt::DescendingOrder);
         QCoreApplication::processEvents();
 
-        // Trigger the `closeEvent`-time autosave so the manual sort
-        // engaged after `streamingFinished` makes it into the saved
-        // JSON. (The streamingFinished autosave from `OpenFilesForTest`
-        // already wrote a snapshot, but it captured the proxy *before*
-        // the sort below was engaged.) Mirrors the real cold-start
-        // order: closeEvent autosave -> next launch restore.
+        // closeEvent autosave captures the manual sort engaged
+        // after `streamingFinished` -- the earlier streaming
+        // autosave saw the proxy before the sort.
         seeder->close();
         QCoreApplication::processEvents();
         seeder.reset();
@@ -16270,18 +16156,15 @@ private slots:
 
         QSignalSpy restoredFinishedSpy(restored->Model(), &LogModel::streamingFinished);
         restored->RestoreLastSessionFromPath(*lastPath);
-        // Right after the call returns, the configuration is loaded
-        // and the streaming worker has been started, but no batches
-        // have been processed yet (the main thread hasn't drained
-        // the queued `rowsInserted` events). Sort must still be
-        // deferred -- proxy reports `-1`.
+        // Sort still deferred immediately after the call returns:
+        // no batches have been processed yet.
         QCOMPARE(restoredFilter->SortColumn(), -1);
 
         QVERIFY(restoredFinishedSpy.wait(5000));
         QCoreApplication::processEvents();
 
-        // After streaming finishes the deferred sort is applied
-        // exactly once via `ApplyDeferredSortFromConfig`.
+        // `ApplyDeferredSortFromConfig` applies the sort once
+        // when streaming finishes.
         QCOMPARE(restoredFilter->SortColumn(), categoryCol);
         QCOMPARE(restoredFilter->SortOrder(), Qt::DescendingOrder);
         QCOMPARE(restored->Model()->rowCount(), fixtureLines.size());
@@ -17840,24 +17723,11 @@ private slots:
         QCOMPARE(wired->Model()->rowCount(), 2);
     }
 
-    // Empty `{}` must be classified as a log, not as a
-    // configuration. Otherwise it would wipe columns or trigger a
-    // multi-config modal. The classification gate lives in
-    // `FileLooksLikeConfiguration`, which requires the bounded
-    // probe to mention `"columns"` -- `{}` doesn't, so it falls
-    // through to the log queue and the dispatch must report
-    // `QueuedLogsOnly`. That's the load-bearing assertion; the
-    // row-count side-check exists to pin "didn't classify as
-    // config" without re-reading the model wiring.
-    //
-    // JsonParser is intentionally permissive: an `{}` line parses
-    // as one 0-field record (no error path is taken in
-    // `ParseJsonLine`). So both files in this fixture stream
-    // successfully -- `{}` adds 1 empty row, the real log adds 1
-    // row with `msg`, total 2. We wait for both
-    // `streamingFinished` emits so the assertion doesn't race
-    // with the sequential `StreamNextPendingFile` chain that
-    // `OnStreamingFinished` kicks off.
+    // `{}` must classify as a log (no `"columns"` key), not a
+    // configuration -- otherwise it would wipe columns. JsonParser
+    // is permissive: `{}` parses as a 0-field record, so both
+    // files stream successfully (total rowCount = 2). We wait for
+    // both finish emits to avoid racing `StreamNextPendingFile`.
     void TestDispatchMixedRejectsEmptyJsonObjectAsConfig()
     {
         const QTemporaryDir sessionsDir;
@@ -17883,11 +17753,8 @@ private slots:
         const MainWindow::MixedInputDispatch result =
             wired->OpenMixedFilesForTest({emptyPath, log.Path()}, MainWindow::OpenMode::Append);
         QCOMPARE(result, MainWindow::MixedInputDispatch::QueuedLogsOnly);
-        // Wait for *both* per-file `streamingFinished` emits: file
-        // 1 (`{}`) chains to file 2 (real log) via
-        // `OnStreamingFinished -> StreamNextPendingFile`. Waiting
-        // for only the first emit raced with the second file's
-        // batch landing during `processEvents()`.
+        // Two emits: file 1 chains to file 2 via
+        // `OnStreamingFinished -> StreamNextPendingFile`.
         QTRY_VERIFY_WITH_TIMEOUT(finishedSpy.count() >= 2, 5000);
         QCoreApplication::processEvents();
 

@@ -526,47 +526,23 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     mTableView->setSortingEnabled(true);
     mTableView->sortByColumn(-1, Qt::SortOrder::AscendingOrder);
 
-    // The icon-pill delegate only exists when a `ThemeControl`
-    // is available. The no-theme test fixture path keeps the
-    // level column on the standard text delegate, which is the
-    // only correct behaviour: `IsLevelIconModeActive()` returns
-    // false without a theme, so a delegate here would do nothing
-    // useful and just add a paint indirection.
+    // Icon-pill delegate is created only when we have a
+    // `ThemeControl`; the no-theme test fixture keeps the standard
+    // text delegate (`IsLevelIconModeActive` is always false there).
     if (mTheme != nullptr)
     {
         mLevelCellDelegate = new LevelCellDelegate(mTheme, this);
 
-        // Hook every signal that can change `FirstLevelColumnIndex`:
-        // a model reset (config Load, BeginStreaming teardown), an
-        // insert / remove (config edit), and enum-column promotion
-        // / demotion (this is what flips a previously-string column
-        // into `Type::Level`, the most common reason the first level
-        // column index changes during streaming).
-        //
-        // `columnsMoved` is deliberately NOT wired here: the move
-        // path (header drag, Time/Level auto-bubble) also needs
-        // `OnSourceColumnsMoved` to remap `mFilters` before the view
-        // repaints. Running the delegate reapply *after* the filter
-        // remap keeps the per-paint state consistent, so the
-        // reapply lives as a tail call inside `OnSourceColumnsMoved`
-        // instead of as a parallel slot here.
+        // Reapply on every signal that can change the first-level
+        // column index. `columnsMoved` is handled inside
+        // `OnSourceColumnsMoved` instead, so the filter-map remap
+        // runs before the delegate reapply.
         connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::ApplyLevelCellDelegate);
         connect(mModel, &QAbstractItemModel::columnsInserted, this, &MainWindow::ApplyLevelCellDelegate);
         connect(mModel, &QAbstractItemModel::columnsRemoved, this, &MainWindow::ApplyLevelCellDelegate);
-        // The existing `enumColumnsChanged` slot (defined further
-        // down this ctor as a lambda over filter-cache invalidation)
-        // also needs to reapply -- a Promote/Demote between
-        // `Type::Level` and other enum types flips which column is
-        // "the level column". We avoid editing that lambda and
-        // wire a parallel connection here; Qt invokes slots in
-        // registration order, so the filter-cache rebuild and the
-        // delegate reapply both run on every change.
-        //
-        // `Grew` is filtered out: a dictionary expansion on a
-        // non-Level column never changes which column is the first
-        // `Type::Level`, and on a Level column it doesn't move the
-        // column either. Skipping it spares the cache-walk on every
-        // streamed enum value.
+        // Promote/Demote between Level and other enum types flips
+        // which column is "the level column". `Grew` is a no-op
+        // for our purposes (dict expansion doesn't move columns).
         connect(
             mModel,
             &LogModel::enumColumnsChanged,
@@ -874,17 +850,9 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     connect(mPreferencesEditor, &PreferencesEditor::staticDisplayOrderChanged, this, [this](bool) {
         ApplyDisplayOrder();
     });
-    // Toggle order: `SetShowLevelIcons` flips the model flag and
-    // emits a tightly-scoped `dataChanged(DecorationRole)` on the
-    // level column. The follow-up `ApplyLevelCellDelegate` makes
-    // sure the delegate is installed on whichever column the
-    // model now reports as the first `Type::Level` (it's an
-    // idempotent install when icon mode was already on, or a
-    // first-time install if the delegate has never been
-    // attached). No `RefreshAllRowStyles` here: the model emit is
-    // already the smallest correct repaint, and a full-row-styles
-    // emit would defeat `IsStyleOnlyRoleChange` for receivers
-    // that gate on it.
+    // Level-icons toggle: `SetShowLevelIcons` already emits a
+    // scoped `dataChanged`; `ApplyLevelCellDelegate` then
+    // attaches/detaches the delegate on the right column.
     connect(mPreferencesEditor, &PreferencesEditor::showLevelIconsChanged, this, [this](bool on) {
         if (mModel == nullptr)
         {
@@ -894,10 +862,9 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
         ApplyLevelCellDelegate();
     });
 
-    // High-contrast levels: forward to ThemeControl, which re-runs
-    // `BuildStyleCache` and emits `themeChanged()` -- the same hook
-    // every view already listens on for a normal theme swap, so the
-    // repaint chain reuses existing wiring.
+    // High-contrast toggle: `SetHighContrast` rebuilds the style
+    // cache and emits `themeChanged()`, reusing the normal
+    // theme-swap repaint chain.
     connect(mPreferencesEditor, &PreferencesEditor::highContrastLevelsChanged, this, [this](bool on) {
         if (mTheme == nullptr)
         {
@@ -1218,26 +1185,15 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     ApplyStreamingRetention();
     ApplyDisplayOrder();
 
-    // Read the user-facing "Show level icons" preference (default
-    // true so fresh installs see the new visual on themes that
-    // ship `levelColumnOverride`; every built-in does). The
-    // delegate's self-gate makes the order between this and any
-    // subsequent `ApplyLevelCellDelegate()` call irrelevant for
-    // correctness -- the model flag falling off mid-paint makes
-    // the delegate forward to the base class.
+    // Seed "Show level icons" pref (default true). No explicit
+    // `ApplyLevelCellDelegate` follow-up needed: the model has no
+    // columns at ctor time, so the attach happens later via the
+    // `modelReset`/`columnsInserted` connections above.
     if (mModel != nullptr)
     {
         const QSettings settings;
         const bool showLevelIcons = settings.value(QStringLiteral("ui/showLevelIcons"), true).toBool();
         mModel->SetShowLevelIcons(showLevelIcons);
-        // No explicit `ApplyLevelCellDelegate()` follow-up needed:
-        // the model has no columns at ctor time, so a call here
-        // would short-circuit on `FirstLevelColumnIndex() == -1`.
-        // The actual delegate attach happens later via the
-        // `modelReset` / `columnsInserted` connections wired in the
-        // theme block above -- which fire on every column-bearing
-        // path (streaming `AppendBatch`, cold `ApplyLoadedConfiguration`,
-        // post-Open `NotifyConfigurationReplaced`).
     }
 
     // Run after every action is wired so they can all be decorated in one pass.
@@ -1588,9 +1544,8 @@ void MainWindow::RestoreLastSessionFromPath(const QString &jsonPath)
     // the live-tail guard in `ShouldAutoSaveSession` on the next
     // closeEvent.
     mLastTerminalSessionMode = SessionMode::Idle;
-    // Defer the loaded sort until streaming finishes; see
-    // `ApplyDeferredSortFromConfig` for the O(N^2) symptom this
-    // avoids.
+    // Defer the loaded sort until streaming finishes (see
+    // `ApplyDeferredSortFromConfig` for the O(N^2) avoidance).
     mPendingApplySortFromConfig = true;
     if (!DoLoadConfiguration(jsonPath))
     {
@@ -1700,9 +1655,9 @@ void MainWindow::OpenRecentSession(const QString &uuid)
     // our previous uuid; we re-pin below.
     NewSession();
 
-    // Defer the loaded sort until streaming finishes; see
-    // `ApplyDeferredSortFromConfig` for the O(N^2) symptom this
-    // avoids. `NewSession` above clears the latch, so set after.
+    // Defer the loaded sort until streaming finishes (see
+    // `ApplyDeferredSortFromConfig`). Set *after* `NewSession`,
+    // which clears the latch.
     mPendingApplySortFromConfig = true;
 
     // Apply failure surfaces a `QMessageBox`; bail without queueing
@@ -1736,10 +1691,9 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
 {
     if (!loglib::HasLocators(mCurrentSource))
     {
-        // Config has no source -- columns / filters are installed
-        // but there's nothing to stream. The deferred sort latch
-        // would otherwise leak across the next session restore;
-        // apply it now (the proxy is empty so it's effectively free).
+        // No source -- columns / filters are installed but there's
+        // nothing to stream. Consume the deferred-sort latch so it
+        // doesn't leak across the next session restore.
         ApplyDeferredSortFromConfig();
         return;
     }
@@ -1767,8 +1721,8 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
                 );
             }
         }
-        // No streaming on the non-File branch either; consume the
-        // deferral so the latch can't outlive this attempt.
+        // Non-File: no streaming either; consume the deferral so
+        // the latch can't outlive this attempt.
         ApplyDeferredSortFromConfig();
         return;
     }
@@ -1837,8 +1791,7 @@ void MainWindow::NewSession()
     mStreamingErrorCount = 0;
     mFirstStreamingBatchSeen = false;
     mSourceWaiting = false;
-    // A `NewSession` wipes any pending deferred-sort apply -- the
-    // configuration that requested it is gone.
+    // The configuration that requested the deferred sort is gone.
     mPendingApplySortFromConfig = false;
     // Drop the pinned uuid + open-windows membership so the next
     // AutoSave creates a fresh entry and a crash before then
@@ -2030,8 +1983,8 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
 
     // Mixed: apply config with a full reset, then append the logs
     // so the loaded columns / filters / sort apply to the rows.
-    // Defer the loaded sort until streaming finishes (per-row insert
-    // path under sort is O(N^2); see `ApplyDeferredSortFromConfig`).
+    // Defer the sort until streaming finishes (see
+    // `ApplyDeferredSortFromConfig`).
     mPendingApplySortFromConfig = true;
     if (!DoLoadConfiguration(configPath))
     {
@@ -2073,8 +2026,7 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
         mCurrentSource.reset();
         mSessionMode = SessionMode::Idle;
         mLastTerminalSessionMode = SessionMode::Idle;
-        // Destructive open replaces the previously-loaded session;
-        // its deferred-sort intent goes with it.
+        // Destructive open: drop the previous session's deferred-sort intent.
         mPendingApplySortFromConfig = false;
         DetachAutoSaveUuid();
     }
@@ -2220,13 +2172,10 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
         mCurrentSource.reset();
     }
 
-    // Consume the deferred sort *before* the auto-save below so the
-    // mirror reads the applied sort from the proxy (no special-case
-    // needed inside `MirrorSessionStateToConfiguration`). Applies on
-    // every terminal result -- Success/Cancelled/Failed all leave the
-    // proxy in a state where a single bulk sort beats the per-row
-    // path. No-op when the latch is clear or when the user picked a
-    // different sort mid-stream.
+    // Apply the deferred sort before the auto-save below so the
+    // mirror reads the applied sort from the proxy. Runs on every
+    // terminal result; no-op when the latch is clear or the user
+    // sorted mid-stream.
     ApplyDeferredSortFromConfig();
 
     // Auto-save on success so Recent Sessions + restore-on-launch
@@ -3752,14 +3701,9 @@ void MainWindow::MirrorSessionStateToConfiguration()
     mModel->ConfigurationManager().SetFilters(std::move(snapshot));
 
     // Sort: read live from the proxy so the persisted value matches
-    // what the user sees in the header indicator. *Exception:* when
-    // `mPendingApplySortFromConfig` is set and the user hasn't
-    // manually sorted yet (proxy reports `-1`), the loaded sort
-    // hasn't been applied to the proxy yet -- preserve the
-    // configuration's existing sort instead of clobbering it with
-    // the transient `-1`. Once `ApplyDeferredSortFromConfig` runs
-    // (end of stream / early-return), this branch becomes
-    // unreachable and the live mirror resumes.
+    // what the user sees. *Exception:* while a deferred sort is
+    // pending and the proxy is still unsorted (`-1`), preserve the
+    // configuration's existing sort -- the live `-1` is transient.
     const int proxySortColumn = mSortFilterProxyModel->SortColumn();
     if (proxySortColumn >= 0 || !mPendingApplySortFromConfig)
     {
@@ -4482,19 +4426,9 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         // sort with the cleared proxy sort. Columns-only files
         // default to the `-1` "no sort" sentinel.
         //
-        // *Exception*: when `mPendingApplySortFromConfig` is already
-        // set (callers that will follow up with streaming opt in
-        // before calling `DoLoadConfiguration`), skip the eager
-        // apply. `LogFilterModel::OnSourceRowsInserted` falls into a
-        // per-row `beginInsertRows`/`endInsertRows` loop with a
-        // sort active, which is O(N^2) over the whole stream -- a
-        // 1 GB session restore "never finishes" on the user-
-        // reported case. The deferred sort is consumed in
-        // `OnStreamingFinished` or in
-        // `StreamFromCurrentSourceOrSkip`'s early-return paths.
-        // `MirrorSessionStateToConfiguration` reads the latch so an
-        // auto-save mid-stream preserves the loaded sort instead of
-        // overwriting it with the proxy's transient `-1`.
+        // *Exception*: when `mPendingApplySortFromConfig` is set
+        // (streaming will follow), skip the eager apply -- see
+        // `ApplyDeferredSortFromConfig` for the O(N^2) avoidance.
         if (!mPendingApplySortFromConfig)
         {
             const auto loadedSort = mModel->Configuration().sort;
@@ -5464,17 +5398,10 @@ void MainWindow::OnThemeChanged()
     // cached funnel pixmap so the header decoration re-renders.
     RefreshThemedIcons();
 
-    // A theme switch can flip icon mode on / off
-    // (`Theme::levelColumnOverride.has_value()`). The call
-    // reacts to two things: the model's `IsLevelIconModeActive`
-    // having changed (delegate gets attached or fully detached
-    // for the text-mode paint fast-path), and the first
-    // `Type::Level` column index having shifted (delegate
-    // re-attaches to the new column and detaches from the old).
-    // The delegate's own self-gate is still a safety net for
-    // mid-paint flips, but the explicit detach here avoids
-    // routing every text-mode paint through the proxy-chain
-    // walk inside the delegate.
+    // A theme switch can flip icon mode on/off; reapply so the
+    // delegate is attached/detached on the right column. Explicit
+    // detach in text mode avoids routing every paint through the
+    // delegate's self-gate.
     ApplyLevelCellDelegate();
 }
 
@@ -5560,18 +5487,14 @@ const loglib::EnumDictionary *MainWindow::ResolveEnumDictionary(int columnIndex)
 
 void MainWindow::ApplyDeferredSortFromConfig()
 {
-    // Always clear the latch -- a no-op apply still consumes the
-    // deferral so subsequent `MirrorSessionStateToConfiguration`
-    // calls read the proxy's live sort instead of preserving the
-    // loaded one.
+    // Always clear the latch so subsequent saves read the proxy's
+    // live sort instead of preserving the loaded one.
     const auto guard = qScopeGuard([this]() { mPendingApplySortFromConfig = false; });
     if (!mPendingApplySortFromConfig)
     {
         return;
     }
-    // User manually sorted during streaming -- their choice wins.
-    // `MirrorSessionStateToConfiguration` will pick up the proxy's
-    // current sort on the next save.
+    // User sorted mid-stream -- their choice wins.
     if (mSortFilterProxyModel->SortColumn() >= 0)
     {
         return;
@@ -6081,13 +6004,10 @@ void MainWindow::OnSourceColumnsMoved(
     // while hidden flags are still mid-flight.
     ApplyColumnVisibility();
 
-    // Reapply the level-cell delegate AFTER the filter remap above:
-    // the move can shift the first `Type::Level` column index, and
-    // running the reapply here (rather than as a parallel
-    // `columnsMoved` slot) guarantees the filter store is already
-    // remapped if any future delegate work ever needs to consult
-    // filters. Cheap when nothing changed -- `ApplyLevelCellDelegate`
-    // early-outs on `mInstalledLevelDelegateColumn == newColumn`.
+    // Reapply *after* the filter remap above so the delegate
+    // reapply sees a consistent filter store. Cheap when nothing
+    // changed -- early-out on `mInstalledLevelDelegateColumn ==
+    // newColumn`.
     ApplyLevelCellDelegate();
 }
 
@@ -6528,34 +6448,25 @@ void MainWindow::ApplyColumnVisibility()
 
 void MainWindow::ApplyLevelCellDelegate()
 {
-    // No delegate in the no-theme path. The test fixture that
-    // constructs `MainWindow` without a `ThemeControl` skips icon
-    // mode entirely; the level column keeps its plain text
-    // rendering through the default `QStyledItemDelegate`.
+    // No-theme test fixture: no delegate, no icon mode.
     if (mLevelCellDelegate == nullptr || mTableView == nullptr || mModel == nullptr)
     {
         return;
     }
 
-    // Gate on icon-mode-active: when the user pref / theme says
-    // text mode, we detach the delegate entirely rather than
-    // leaving it attached to forward each paint through its
-    // self-gate. Cheap correctness + a real fast-path win for
-    // text-mode sessions (every paint skips the proxy-chain walk
-    // and the `IsLevelIconModeActive` check inside the delegate).
+    // Detach in text mode (don't just rely on the delegate's
+    // self-gate) so text-mode paints skip the proxy-chain walk
+    // inside the delegate.
     const bool iconMode = mModel->IsLevelIconModeActive();
     const int newColumn = iconMode ? mModel->FirstLevelColumnIndex() : -1;
 
-    // Detach from the previous column first when it has moved.
-    // Without this a reload that lands the level column at a
-    // different index would leave the icon-pill delegate
-    // suppressing text on the old column.
+    // Detach from the previous column when the level column has
+    // moved -- otherwise the delegate would suppress text on the
+    // old column after a reload.
     if (mInstalledLevelDelegateColumn >= 0 && mInstalledLevelDelegateColumn != newColumn)
     {
-        // `setItemDelegateForColumn(col, nullptr)` reverts to the
-        // table-wide default delegate for that column. Qt does
-        // not delete `mLevelCellDelegate`; we keep ownership via
-        // `QObject` parentage.
+        // `nullptr` reverts to the default delegate; Qt keeps
+        // ownership of `mLevelCellDelegate` via this `MainWindow`.
         mTableView->setItemDelegateForColumn(mInstalledLevelDelegateColumn, nullptr);
         mInstalledLevelDelegateColumn = -1;
     }

@@ -604,10 +604,9 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         endInsertColumns();
     }
 
-    // `KeyId` -> source-column index lookup is delegated to
+    // `KeyId` -> column index lookups below use
     // `LogTable::FindColumnIndexByKey` so the streaming consumer
-    // shares one implementation with `ApplyPendingLevelBubbles`
-    // and the static-load path.
+    // shares one implementation with the static-load path.
 
     // Diff snapshot vs post-batch registry, one signal per (column, reason):
     //   - `Grew`: dictionary size changed.
@@ -746,29 +745,10 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
         }
     }
 
-    // Drain any `Type::Level` canonical-position bubbles queued
-    // by `mLogTable.AppendBatch`. `MaybePromoteToLevel` records
-    // the canonical `KeyId` of every freshly-promoted column
-    // instead of moving it inline; the move happens here so it
-    // can be wrapped in `begin/endMoveColumns`.
-    //
-    // Without this hoist the bubble would happen silently inside
-    // `mLogTable.AppendBatch` between `beginInsertColumns` and
-    // `endInsertColumns`. Qt then believes the new columns were
-    // appended at the tail (the `begin/endInsertColumns` contract)
-    // while the underlying vector actually rotated, leaving
-    // section-keyed view state (widths, hidden flags, the proxy
-    // chain's column map, `MainWindow::mFilters[*].row`) attached
-    // to the wrong column. Repro: any payload whose first
-    // appearance of the level field has at least two non-Time
-    // columns ahead of it (e.g. `{message, scope, level}`).
-    //
-    // Re-resolve current column indices per iteration via
-    // `LogTable::FindColumnIndexByKey`: an earlier move can shift
-    // later targets. `MoveColumn` invalidates
-    // `mFirstLevelColumnCache` and Qt's `columnsMoved` signal
-    // triggers `MainWindow::OnSourceColumnsMoved` which remaps
-    // the runtime filter map.
+    // Drain `Type::Level` bubbles queued by `mLogTable.AppendBatch`.
+    // `MoveColumn` here emits `columnsMoved` so Qt's section-keyed
+    // state (widths, hidden flags, filter rows) follows the column.
+    // Re-resolve per iteration: an earlier move shifts later targets.
     for (const loglib::KeyId kid : mLogTable.TakePendingLevelBubbleKeys())
     {
         const int srcIndex = mLogTable.FindColumnIndexByKey(kid);
@@ -908,13 +888,8 @@ void LogModel::EndStreaming(bool cancelled)
             }
         }
 
-        // Drain Level-to-canonical-position bubbles queued by
-        // `FinalizeAutoDetection`. Same rationale as the
-        // `AppendBatch` drain above: the move is hoisted out of
-        // `LogTable` so we can wrap it in `begin/endMoveColumns`
-        // (via `MoveColumn`). `LogTable::FindColumnIndexByKey`
-        // re-resolves current indices per iteration so an earlier
-        // move shifting later targets stays correct.
+        // Drain Level bubbles queued by `FinalizeAutoDetection`.
+        // Same rationale as the `AppendBatch` drain above.
         for (const loglib::KeyId kid : mLogTable.TakePendingLevelBubbleKeys())
         {
             const int srcIndex = mLogTable.FindColumnIndexByKey(kid);
@@ -1055,18 +1030,11 @@ QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role
 
     if (role == Qt::DisplayRole)
     {
-        // Theme override: in icon mode, a theme can supply a short
-        // header text (e.g. "L" or ""). `nullopt` ⇒ fall through
-        // to `Column::header`; empty string ⇒ legitimate "blank
-        // header text" (so icon-only mode shows just the
-        // identity icon).
-        //
-        // When the theme ships a `headerIcon` but no explicit
-        // `header` text override, treat the icon as the column's
-        // identifier and suppress the text -- otherwise the
-        // header reads "<gauge> level" which is just visual
-        // noise. A theme that wants both must opt in by setting
-        // `header` to a non-empty string.
+        // Icon-mode header text resolution on the level column:
+        //   - theme set `header`         -> use it (empty = blank)
+        //   - theme set `headerIcon` only -> suppress text so the
+        //     icon stands alone (else the header reads "<gauge> level")
+        //   - neither                    -> fall back to `Column::header`
         if (IsLevelIconModeActive() && section == FirstLevelColumnIndex())
         {
             if (auto headerTextOverride = mTheme->LevelColumnHeaderTextOverride(); headerTextOverride.has_value())
@@ -1082,15 +1050,11 @@ QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role
     }
     if (role == Qt::TextAlignmentRole)
     {
-        // Centre the level header when it's icon-only: the cells
-        // below paint a centred pill (`LevelCellDelegate`), and a
-        // left-aligned gauge in the header floats off to one side
-        // of the centred pills, which reads as "decoration that
-        // doesn't belong to this column". Same gate as the text
-        // suppression above so the two stay in lock-step. A theme
-        // that opts back into header text via an explicit
-        // `header` override falls through to Qt's default
-        // alignment (matching its left-aligned text label).
+        // Centre an icon-only level header so it lines up with the
+        // centred pills below. Same gate as the text-suppression
+        // branch above. A theme that opts back into header text
+        // (explicit `header` override) falls through to the
+        // default alignment.
         if (IsLevelIconModeActive() && section == FirstLevelColumnIndex())
         {
             if (!mTheme->LevelColumnHeaderTextOverride().has_value() && !mTheme->LevelColumnHeaderIcon().isNull())
@@ -1143,10 +1107,8 @@ QVariant LogModel::headerData(int section, Qt::Orientation orientation, int role
             }
             return mFunnelIconCache;
         }
-        // Theme-supplied identity icon for the level column. Last
-        // in the priority chain so warning + funnel keep winning
-        // on transient state; the override only fills the gap
-        // when neither indicator is firing.
+        // Theme identity icon: last in the priority chain, so
+        // warning + funnel keep winning when they're firing.
         if (IsLevelIconModeActive() && section == FirstLevelColumnIndex())
         {
             const QIcon themed = mTheme->LevelColumnHeaderIcon();
@@ -1497,11 +1459,9 @@ void LogModel::RefreshAllRowStyles()
     {
         return;
     }
-    // FontRole rides along: themes can bold/italicise per level,
-    // so a flip can change font weight on level-styled rows.
-    // DecorationRole too: a theme flip can swap the level-cell
-    // icon (or add / remove icons entirely if one theme opts into
-    // icon mode and the next doesn't).
+    // FontRole rides along: themes can bold/italicise per level.
+    // DecorationRole too: a theme flip can swap or add/remove
+    // level-cell icons.
     emit dataChanged(
         index(0, 0),
         index(rows - 1, cols - 1),
@@ -1573,10 +1533,8 @@ int LogModel::FirstLevelColumnIndex() const noexcept
     {
         mFirstLevelColumnCache = ComputeFirstLevelColumnIndex();
     }
-    // `LEVEL_COLUMN_NONE` (-1) is the documented "no level column"
-    // sentinel; callers compare against `>= 0` to gate their
-    // branches. `LEVEL_COLUMN_UNCACHED` (-2) is never returned --
-    // the lazy-fill above always resolves to one of the other two.
+    // Returns `LEVEL_COLUMN_NONE` (-1) when no level column
+    // exists; never returns `LEVEL_COLUMN_UNCACHED`.
     return mFirstLevelColumnCache;
 }
 
@@ -1587,13 +1545,10 @@ void LogModel::SetShowLevelIcons(bool show)
         return;
     }
     mShowLevelIcons = show;
-    // The level column header may carry a theme-defined text
-    // override (`Theme::levelColumnOverride.header`) that is only
-    // active in icon mode; nudge the view so the title pops in /
-    // out without forcing a full reset. The cell-side decoration
-    // is refreshed by `MainWindow::ApplyLevelCellDelegate` (which
-    // attaches/detaches the delegate); flipping the model flag
-    // alone is enough to update header text + tooltips.
+    // Nudge the view: an icon-mode-only header text override may
+    // need to pop in/out, and cell decoration / tooltip flip with
+    // the mode. Both roles are style-only so value listeners
+    // (find cache, record-detail) correctly skip this emit.
     const int levelCol = FirstLevelColumnIndex();
     if (levelCol >= 0)
     {
@@ -1601,20 +1556,6 @@ void LogModel::SetShowLevelIcons(bool show)
         const int rows = rowCount();
         if (rows > 0)
         {
-            // Two roles flip with icon mode:
-            //   - `DecorationRole`: cell icon on/off.
-            //   - `ToolTipRole`: returns the canonical level name
-            //     when icon mode is on (the displayed glyph
-            //     carries no text), and an invalid `QVariant`
-            //     when off (so Qt falls back to its default
-            //     elided-cell tooltip behaviour).
-            // Both are in `IsStyleOnlyRoleChange`'s allow list,
-            // so the find-cache and record-detail listeners
-            // correctly skip this emit instead of waking up.
-            // Listing `ToolTipRole` is more than cosmetic: a
-            // hover that started before the toggle could
-            // otherwise see a stale tooltip until the next
-            // mouse-move re-queries the role.
             emit dataChanged(index(0, levelCol), index(rows - 1, levelCol), {Qt::DecorationRole, Qt::ToolTipRole});
         }
     }
@@ -1725,10 +1666,8 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
 
     case Qt::DecorationRole:
     {
-        // Cheap column-index gate first: every non-level cell on
-        // every paint must skip this branch without paying the
-        // `DisplayLevelForRow` resolve. Cache lookup is amortised
-        // by `FirstLevelColumnIndex`.
+        // Cheap gate first so non-level cells skip the level
+        // resolve entirely.
         if (!IsLevelIconModeActive())
         {
             return {};
@@ -1738,10 +1677,8 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         {
             return {};
         }
-        // `DisplayLevelForRow` (not `LevelForRow`) so an unmapped
-        // value (e.g. raw `"WAT"`) surfaces as `LogLevel::Unknown`
-        // and gets the generic glyph; nullopt remains "no value at
-        // all", which paints blank.
+        // `DisplayLevelForRow` -> unmapped values get the generic
+        // "Unknown" glyph; nullopt paints blank.
         const auto level = DisplayLevelForRow(index.row());
         if (!level.has_value())
         {
@@ -1753,17 +1690,11 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
 
     case Qt::ToolTipRole:
     {
-        // Only synthesise a tooltip when icon mode is active:
-        // then the displayed glyph carries no text, so the
-        // canonical name is the only way for the user to spell
-        // out the level. With icon mode off, the cell already
-        // shows the raw text (`info` / `WARNING` / ...) and
-        // returning the canonical name (`Info` / `Warn`) here
-        // would shadow the displayed text with a different
-        // casing / spelling -- confusing rather than helpful.
-        // Returning an invalid `QVariant` lets Qt fall back to
-        // its default behaviour (show the raw text only when
-        // the cell is elided).
+        // Only synthesise a tooltip in icon mode -- the glyph
+        // carries no text, so the canonical name is the only way
+        // to spell out the level. In text mode the cell already
+        // shows the raw value; returning the canonical name here
+        // would shadow it with different casing/spelling.
         if (!IsLevelIconModeActive())
         {
             return {};
@@ -1773,10 +1704,8 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         {
             return {};
         }
-        // `DisplayLevelForRow` so unmapped values get the
-        // "Unknown" tooltip rather than falling back to Qt's
-        // elision-only behaviour (which would show nothing for a
-        // narrow icon-mode column).
+        // `DisplayLevelForRow` so unmapped values get "Unknown"
+        // rather than no tooltip at all in a narrow icon column.
         const auto level = DisplayLevelForRow(index.row());
         if (!level.has_value())
         {

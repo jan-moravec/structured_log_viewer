@@ -1227,11 +1227,9 @@ TEST_CASE(
 
 TEST_CASE("BubbleLevelColumnToCanonicalPosition mirrors the Time bubble", "[LogConfigurationManager][level_bubble]")
 {
-    // Manager-level coverage of the new free helper. The
-    // `LogTable::MaybePromoteToLevel` integration is tested in
-    // `test_log_table.cpp`; here we exercise the helper directly
-    // so a regression in the rotation is caught even when the
-    // promotion gate doesn't fire.
+    // Manager-level coverage of the free helper. Catches rotation
+    // regressions independent of `LogTable::MaybePromoteToLevel`
+    // (which is covered in `test_log_table.cpp`).
     SECTION("Move from end to canonical position 1")
     {
         LogConfigurationManager manager;
@@ -1261,9 +1259,7 @@ TEST_CASE("BubbleLevelColumnToCanonicalPosition mirrors the Time bubble", "[LogC
 
     SECTION("No-op for a single-column configuration")
     {
-        // A `Type::Level` column promoted as the only column has
-        // nothing to swap with; the helper must not throw or
-        // self-move.
+        // Only column -- nothing to swap with; must not throw.
         LogConfigurationManager manager;
         manager.AppendKeys({"level"});
 
@@ -1299,15 +1295,12 @@ TEST_CASE("BubbleLevelColumnToCanonicalPosition mirrors the Time bubble", "[LogC
 
     SECTION("Persisted filter row follows the bubble")
     {
-        // Same shape as the Time bubble test above -- proves the
-        // helper delegates to `LogConfigurationManager::MoveColumn`
-        // rather than open-coding the rotation, so persisted
-        // `filters[*].row` stays in sync with the new column order.
+        // Proves the helper delegates to `MoveColumn` rather than
+        // open-coding the rotation, so `filters[*].row` stays in sync.
         LogConfigurationManager manager;
         manager.AppendKeys({"col_zero", "col_one", "level"});
 
-        // Pin a filter on `level` (the column we're about to
-        // bubble) so the remap is observable.
+        // Pin a filter on `level` so the remap is observable.
         LogConfiguration cfg = manager.Configuration();
         cfg.filters.push_back(LogConfiguration::LogFilter{
             .type = LogConfiguration::LogFilter::Type::String,
@@ -1325,7 +1318,6 @@ TEST_CASE("BubbleLevelColumnToCanonicalPosition mirrors the Time bubble", "[LogC
         BubbleLevelColumnToCanonicalPosition(manager, 2);
 
         REQUIRE(manager.Configuration().filters.size() == 1);
-        // Filter row followed the column to its new position.
         CHECK(manager.Configuration().filters[0].row == 1);
     }
 }

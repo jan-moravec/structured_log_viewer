@@ -2739,13 +2739,10 @@ TEST_CASE(
     "[log_table][append_batch][level][level_bubble]"
 )
 {
-    // `MaybePromoteToLevel` queues the bubble onto
-    // `mPendingLevelBubbleKeys`; the consumer (`LogModel` in the
-    // app, `ApplyPendingLevelBubbles` here) wraps the move in the
-    // Qt-side `begin/endMoveColumns` so view state stays in sync.
-    // Asserting both halves (queue populated, then drained) keeps
-    // a regression from re-introducing the silent in-`AppendBatch`
-    // rotation that desyncs Qt's column-keyed state.
+    // `MaybePromoteToLevel` queues the bubble; the consumer
+    // drains it via `ApplyPendingLevelBubbles`. Asserting both
+    // halves blocks a regression to silent in-`AppendBatch`
+    // rotation that would desync Qt's column-keyed state.
     const TestLogFile testFile("level_bubble.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2755,7 +2752,7 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    // First batch: a non-level column appears at index 0.
+    // Batch 1: non-level column at index 0.
     std::vector<std::vector<std::pair<std::string, LogValue>>> firstRows;
     firstRows.emplace_back();
     firstRows.back().emplace_back("body", std::string("hello"));
@@ -2763,22 +2760,18 @@ TEST_CASE(
     REQUIRE(table.Configuration().Configuration().columns.size() == 1);
     REQUIRE(table.Configuration().Configuration().columns[0].header == "body");
 
-    // Second batch: a level column shows up. `AppendBatch`
-    // promotes it to `Type::Level` and queues the bubble; the
-    // column stays at its appended tail position until the queue
-    // is drained.
+    // Batch 2: introduces the level column. Promoted + queued
+    // but not moved until the drain.
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 2, 6, true));
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 2);
     CHECK(table.Configuration().Configuration().columns[0].header == "body");
     CHECK(table.Configuration().Configuration().columns[1].header == "level");
     CHECK(table.Configuration().Configuration().columns[1].type == LogConfiguration::Type::Level);
-    // Sanity check the canonical-position constant.
     CHECK(loglib::CANONICAL_LEVEL_COLUMN_INDEX == 1);
 
-    // Drain via `ApplyPendingLevelBubbles` (the static-load /
-    // test entry point). In the app this branch runs inside
-    // `LogModel::AppendBatch` wrapped in `begin/endMoveColumns`.
+    // Drain via the static-load / test entry point. The app's
+    // streaming consumer wraps this in `begin/endMoveColumns`.
     table.ApplyPendingLevelBubbles();
     REQUIRE(table.Configuration().Configuration().columns.size() == 2);
     CHECK(table.Configuration().Configuration().columns[0].header == "body");
@@ -2788,13 +2781,10 @@ TEST_CASE(
 
 TEST_CASE("LogTable -- Level bubble respects multi-column ordering", "[log_table][append_batch][level][level_bubble]")
 {
-    // When more than two columns are present, the freshly-promoted
-    // Level column still lands at `CANONICAL_LEVEL_COLUMN_INDEX`
-    // *after the queue drain*, pushing the column previously
-    // sitting there to index 2. (The Time bubble is path-specific
-    // to `Update` and not exercised from the streaming `AppendKeys`
-    // path used here; its coverage stays in
-    // `test_log_configuration.cpp`.)
+    // After the drain, the Level column lands at the canonical
+    // index in a >2-column config, pushing the previous occupant
+    // outward. (Time bubble lives in the `Update` path and is
+    // covered in `test_log_configuration.cpp`.)
     const TestLogFile testFile("level_bubble_multi.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2804,7 +2794,7 @@ TEST_CASE("LogTable -- Level bubble respects multi-column ordering", "[log_table
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    // Three non-level columns first.
+    // Batch 1: three non-level columns.
     std::vector<std::vector<std::pair<std::string, LogValue>>> firstRows;
     firstRows.emplace_back();
     firstRows.back().emplace_back("col_a", std::string("a"));
@@ -2816,18 +2806,15 @@ TEST_CASE("LogTable -- Level bubble respects multi-column ordering", "[log_table
     REQUIRE(table.Configuration().Configuration().columns[1].header == "col_b");
     REQUIRE(table.Configuration().Configuration().columns[2].header == "col_c");
 
-    // Introduce a level column. `AppendKeys` appends it at index
-    // 3; `MaybePromoteToLevel` flips it to `Type::Level` and
-    // queues the bubble. Before the drain, the column is still
-    // at index 3 (queued, not moved).
+    // Batch 2: level column appended at index 3, promoted and
+    // queued (not yet moved).
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 2, 6, true));
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 4);
     CHECK(table.Configuration().Configuration().columns[3].header == "level");
     CHECK(table.Configuration().Configuration().columns[3].type == LogConfiguration::Type::Level);
 
-    // Drain the queue: `level` lands at the canonical index 1,
-    // pushing `col_b` and `col_c` rightward.
+    // Drain: `level` lands at index 1, `col_b` / `col_c` shift right.
     table.ApplyPendingLevelBubbles();
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 4);
@@ -2836,7 +2823,7 @@ TEST_CASE("LogTable -- Level bubble respects multi-column ordering", "[log_table
     CHECK(table.Configuration().Configuration().columns[1].type == LogConfiguration::Type::Level);
     CHECK(table.Configuration().Configuration().columns[2].header == "col_b");
     CHECK(table.Configuration().Configuration().columns[3].header == "col_c");
-    // Sanity: the rank cache built against the post-bubble index.
+    // Sanity: rank cache survives the bubble.
     CHECK(table.GetLevelForRow(1, 1) == LogLevel::Info);
 }
 
@@ -2845,18 +2832,15 @@ TEST_CASE(
     "[log_table][append_batch][level][level_bubble][multi_level]"
 )
 {
-    // Regression: when a payload carries more than one
-    // level-typed key (e.g. `level` *and* `severity`) and both
-    // promote in the same batch, the drain loop must not shuffle
-    // the canonical slot between them on each iteration. The
-    // multi-Level guard in `ShouldBubbleLevelColumn` pins the
-    // first-bubbled column at `CANONICAL_LEVEL_COLUMN_INDEX`
-    // and leaves subsequent Level columns where they are.
+    // Regression: with multiple level-typed keys in one batch
+    // (e.g. `level` + `severity`), the drain must keep the first
+    // at the canonical slot rather than shuffling it on every
+    // iteration. The multi-Level guard in `ShouldBubbleLevelColumn`
+    // does this.
     //
-    // Pre-fix bug: each drain iteration moved the freshly-checked
-    // Level column to index 1, displacing the previous occupant
-    // outward. After the loop, only the *last* drained Level
-    // column ended up at the canonical slot.
+    // Pre-fix bug: each iteration moved the freshly-checked Level
+    // column to index 1, displacing the previous occupant. Only
+    // the last drained column ended up at canonical.
     const TestLogFile testFile("level_bubble_multi_level.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2866,9 +2850,8 @@ TEST_CASE(
     table.BeginStreaming(std::move(source));
     KeyIndex &keys = table.Keys();
 
-    // Pre-existing non-level column so the bubble actually moves
-    // (a two-column config short-circuits on size < 2 -- but here
-    // we end up with three columns, so the bubble engages).
+    // Pre-existing non-level column so the bubble engages
+    // (size < 2 short-circuits).
     std::vector<std::vector<std::pair<std::string, LogValue>>> firstRows;
     firstRows.emplace_back();
     firstRows.back().emplace_back("body", std::string("hello"));
@@ -2877,9 +2860,8 @@ TEST_CASE(
     const size_t keyCountBeforeLevelBatch = keys.Size();
     REQUIRE(keyCountBeforeLevelBatch == 1);
 
-    // Two level-typed keys promoted in the same batch. Both must
-    // queue; the drain then keeps the first one (`level`) at
-    // canonical and leaves `severity` where it landed.
+    // Two level-typed keys in one batch -- both queue, drain
+    // keeps the first (`level`) at canonical.
     std::vector<std::vector<std::pair<std::string, LogValue>>> levelRows;
     levelRows.reserve(6);
     const std::array<std::string_view, 3> values = {"info", "warn", "error"};
@@ -2888,55 +2870,35 @@ TEST_CASE(
         const std::string value(values[i % values.size()]);
         levelRows.push_back({{"level", value}, {"severity", value}});
     }
-    // `prevKeyCount` is the key-count *before* this batch processes
-    // (so `BuildStreamedBatch` populates `newKeys` with both `level`
-    // and `severity`). Hard-pinning to a literal would silently drop
-    // `severity` from `newKeys` if the fixture grew an extra
-    // pre-existing column above; capturing it from `keys.Size()`
-    // keeps the test robust to that kind of edit.
+    // Pass the live key count so both `level` and `severity`
+    // land in `newKeys`; hard-pinning would silently drop one if
+    // the fixture later grows an extra pre-existing column.
     table.AppendBatch(BuildStreamedBatch(keys, *sourcePtr, levelRows, keyCountBeforeLevelBatch, 2));
 
     REQUIRE(table.Configuration().Configuration().columns.size() == 3);
 
-    // Drain the queue. Both keys are queued; only one wins the
-    // canonical slot.
     table.ApplyPendingLevelBubbles();
 
     const auto &columns = table.Configuration().Configuration().columns;
     REQUIRE(columns.size() == 3);
 
-    // First-wins: `level` (the first promoted) takes the canonical
-    // slot. `severity` keeps its post-promotion position rather
-    // than displacing `level`. Headers are added in JSON-key order
-    // per row; `level` precedes `severity` in `levelRows`, so
-    // `level` enters the config first and gets first dibs.
+    // First-wins: `level` precedes `severity` in `levelRows`, so
+    // it enters the config first and takes the canonical slot.
     CHECK(columns[1].header == "level");
     CHECK(columns[1].type == LogConfiguration::Type::Level);
 
-    // `severity` stayed put -- specifically, it did *not* take
-    // over index 1. Its exact post-drain column index is the
-    // append order: `body` is at 0, `level` was added at 1 then
-    // moved to canonical (still 1), `severity` was added at 2.
-    // The canonical-slot guard kept `severity` at index 2.
+    // `severity` stayed at its append index (2) -- the
+    // canonical-slot guard rejected its bubble.
     CHECK(columns[2].header == "severity");
     CHECK(columns[2].type == LogConfiguration::Type::Level);
 
-    // `body` is at index 0 unchanged.
     CHECK(columns[0].header == "body");
 
-    // Sanity: both rank caches resolve their rows. Row 0 is the
-    // initial `body=hello` row (no level value); the first level
-    // row lives at index 1 because the second batch appended its
-    // own rows after the first batch's row 0. Index `i % 3` in
-    // `values` is `info` for `i == 0`, so row 1 (first appended
-    // level row) is `info`.
+    // Row 1 (first appended level row) resolves to `info` on
+    // both columns.
     CHECK(table.GetLevelForRow(1, 1) == LogLevel::Info);
     CHECK(table.GetLevelForRow(1, 2) == LogLevel::Info);
-    // Row 0 has no value in the level slots (the body-only batch
-    // never carried `level` / `severity` keys), so both lookups
-    // return nullopt -- pinning the contract that
-    // `GetLevelForRow` keeps reporting "no level" for genuinely
-    // empty slots even after the multi-Level guard kicks in.
+    // Row 0 (body-only batch) has no level/severity value.
     CHECK_FALSE(table.GetLevelForRow(0, 1).has_value());
     CHECK_FALSE(table.GetLevelForRow(0, 2).has_value());
 }
@@ -2946,19 +2908,10 @@ TEST_CASE(
     "[log_table][append_batch][level][level_bubble]"
 )
 {
-    // Regression: `TakePendingLevelBubbleKeys` is the streaming
-    // consumer's entry point. It must report the canonical
-    // `KeyId` of the freshly-promoted column (so the consumer can
-    // wrap the follow-up `MoveColumn` in `begin/endMoveColumns`),
-    // and the second call must return an empty queue.
-    //
-    // Fixture uses three pre-existing non-level columns so the
-    // freshly-introduced level column lands at index 3 -- two
-    // steps away from `CANONICAL_LEVEL_COLUMN_INDEX == 1`. The
-    // queueing policy is unconditional (see the canonical-at-
-    // promotion test below), but a multi-step bubble keeps this
-    // case clearly distinguishable from a self-move and pins the
-    // streaming consumer's typical work item.
+    // `TakePendingLevelBubbleKeys` reports the queued `KeyId`,
+    // then a second call returns empty. Fixture uses three
+    // pre-existing columns so the bubble is multi-step (clearly
+    // distinct from a self-move).
     const TestLogFile testFile("level_bubble_take.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -2985,7 +2938,6 @@ TEST_CASE(
     REQUIRE(pending.size() == 1);
     CHECK(pending.front() == levelKey);
 
-    // Second drain yields an empty queue.
     CHECK(table.TakePendingLevelBubbleKeys().empty());
 }
 
@@ -2994,22 +2946,14 @@ TEST_CASE(
     "[log_table][append_batch][level][level_bubble]"
 )
 {
-    // Promotion always queues the bubble, even when the level
-    // column happens to land at `CANONICAL_LEVEL_COLUMN_INDEX`
-    // at promotion time. The drain consumer re-evaluates
-    // `ShouldBubbleLevelColumn` per iteration and no-ops on
-    // self-moves -- so a "redundant" queue entry costs one
-    // `FindColumnIndexByKey` plus one `ShouldBubbleLevelColumn`
-    // check, both O(columns).
+    // Promotion always queues, even when level already sits at
+    // canonical. The drain re-checks per iteration and no-ops on
+    // self-moves, so the redundant queue entry is cheap.
     //
-    // Why unconditional queueing matters: in the same batch a
-    // freshly-promoted `Type::Time` column can still get bubbled
-    // to position 0 *after* `MaybePromoteToLevel` returns (see
-    // the time-bubble loop in `LogModel::AppendBatch`). That
-    // shifts an already-canonical level column out of canonical
-    // position. Without the queue entry the drainer wouldn't
-    // know to bubble it back, leaving level stranded at index 2
-    // and breaking the canonical `[time, level, ...]` layout.
+    // Why unconditional matters: a same-batch Time-column bubble
+    // (run after `MaybePromoteToLevel`) can shift level out of
+    // canonical. Without a queue entry the drainer wouldn't
+    // know to bubble level back.
     const TestLogFile testFile("level_bubble_canonical_at_promotion.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));
@@ -3026,9 +2970,8 @@ TEST_CASE(
 
     table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error"}, 2, 6, true));
 
-    // Level lands at index 1 == canonical at promotion time, but
-    // the queue must still report the canonical KeyId so a
-    // later same-batch reorder can re-bubble it if needed.
+    // Level lands at canonical (1), but the queue must still
+    // report its KeyId so a later same-batch reorder can re-bubble.
     REQUIRE(table.Configuration().Configuration().columns.size() == 2);
     REQUIRE(table.Configuration().Configuration().columns[1].type == LogConfiguration::Type::Level);
     const KeyId levelKey = table.Keys().Find("level");
@@ -3037,10 +2980,7 @@ TEST_CASE(
     REQUIRE(pending.size() == 1);
     CHECK(pending.front() == levelKey);
 
-    // `ApplyPendingLevelBubbles` is the canonical drain path and
-    // must no-op when the column is already canonical -- the
-    // re-check inside the drain loop is the safety net that
-    // keeps unconditional queueing cheap.
+    // Drain must no-op on the already-canonical column.
     table.ApplyPendingLevelBubbles();
     REQUIRE(table.Configuration().Configuration().columns.size() == 2);
     CHECK(table.Configuration().Configuration().columns[0].header == "body");
@@ -3053,8 +2993,8 @@ TEST_CASE(
     "[log_table][append_batch][level]"
 )
 {
-    // Same dictionary as the previous test but key is `tier` (not a
-    // level key). Promotion stops at `Type::Enumeration`.
+    // Same dictionary, but key `tier` isn't a level key. Promotion
+    // stops at `Type::Enumeration`.
     const TestLogFile testFile("level_no_name_match.json");
     testFile.Write("");
     auto source = std::make_unique<FileLineSource>(std::make_unique<LogFile>(testFile.GetFilePath()));

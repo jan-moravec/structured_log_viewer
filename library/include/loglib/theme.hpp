@@ -89,26 +89,20 @@ struct AppStyle
     friend bool operator==(const AppStyle &, const AppStyle &) = default;
 };
 
-/// Per-level icon + pill spec for the level column override.
-/// All fields optional so a level can be left at "use defaults".
-/// Colours are `#RRGGBB` (or `#AARRGGBB`) strings to keep this
-/// header Qt-free, mirroring `LevelStyle`.
+/// Per-level icon + pill spec. All fields optional so a level can
+/// be left at the defaults. Colours are `#RRGGBB` / `#AARRGGBB`
+/// strings (kept Qt-free like `LevelStyle`).
 struct LevelDisplayOverride
 {
-    /// Icon path. `:/...` (Qt resource) or relative-to-theme-dir.
-    /// Absent ⇒ no icon for this level; the cell paints blank under
-    /// the delegate's pill (or nothing when no pill is configured).
+    /// `:/...` qrc path or relative-to-theme-dir. Absent = no icon.
     std::optional<std::string> icon;
 
-    /// Rounded-rect pill background. Absent ⇒ no pill (the icon
-    /// paints directly over the cell, on top of whatever
-    /// `BackgroundRole` filled the row with).
+    /// Rounded-rect pill background. Absent = no pill (icon
+    /// paints over the row's `BackgroundRole`).
     std::optional<std::string> pillBackground;
 
-    /// Tint for the icon glyph. Absent ⇒ fall back to
-    /// `LevelStyle::foreground` for the level, then to the
-    /// palette's `WindowText`. Distinct from `LevelStyle::foreground`
-    /// (which colours the cell text on non-icon rows).
+    /// Tint for the icon glyph. Absent = fall back to
+    /// `LevelStyle::foreground` then to palette `WindowText`.
     std::optional<std::string> pillForeground;
 
     friend bool operator==(const LevelDisplayOverride &, const LevelDisplayOverride &) = default;
@@ -116,35 +110,23 @@ struct LevelDisplayOverride
 
 /// Opts a theme into icon-rendering for the level column.
 /// `Theme::levelColumnOverride.has_value()` is the single switch
-/// every consumer reads -- no scattered "does any level have an
-/// icon?" probes.
-///
-/// Header chrome is purely additive: when a field is absent the
-/// app falls back to whatever the column is already configured to
-/// show (`LogConfiguration::Column::header` and the existing
-/// warning > funnel decoration priority). The theme override is
-/// the *opt-in*, not a default replacement.
+/// every consumer reads. All fields are additive: absent fields
+/// fall back to today's `Column::header` / warning > funnel
+/// header priority.
 struct LevelColumnOverride
 {
-    /// Header text override. Set ⇒ use this string (`""` ⇒ blank
-    /// header text). Absent ⇒ fall back to `Column::header`.
+    /// Header text override. Set = use it (`""` = blank text).
+    /// Absent = fall back to `Column::header`.
     std::optional<std::string> header;
 
-    /// Header icon override (Qt resource path or
-    /// relative-to-theme-dir). Set ⇒ render this icon as the
-    /// level-column identity icon (warning + funnel still take
-    /// precedence when active). Absent ⇒ no identity icon;
-    /// today's `DecorationRole` priority (warning > funnel >
-    /// nothing) applies.
+    /// Header identity icon (qrc or relative-to-theme-dir).
+    /// Warning + funnel still take precedence when firing.
     std::optional<std::string> headerIcon;
 
-    /// Per-level icon + pill specs. Keyed by canonical level name
-    /// (`"Trace"`..`"Fatal"`, or `"Unknown"`) for wire-format
-    /// symmetry with `Theme::levels`. `ThemeControl::BuildStyleCache`
-    /// projects this into a `LogLevel`-indexed `std::array` for
-    /// O(1) paint-path lookup; non-canonical keys warn via the
-    /// shared `WarnOnUnknownLevelKeys` machinery. Missing keys
-    /// mean "no icon for this level" -- the cell shows blank.
+    /// Per-level icon + pill specs, keyed by canonical level name
+    /// (`"Trace"`..`"Fatal"`, or `"Unknown"`). Missing keys = no
+    /// icon for that level (cell shows blank). Non-canonical
+    /// keys warn via `WarnOnUnknownLevelKeys`.
     std::map<std::string, LevelDisplayOverride> levels;
 
     friend bool operator==(const LevelColumnOverride &, const LevelColumnOverride &) = default;
@@ -163,27 +145,15 @@ struct Theme
     /// knows which slot they belong to.
     ThemeKind kind = ThemeKind::Light;
 
-    /// Per-level row styles, keyed by canonical level name
-    /// (`Trace`..`Fatal`) or `"Unknown"`. Other keys are ignored.
-    ///
-    /// These are the **subtle defaults** -- the showcase look used
-    /// when the user pref `ui/highContrastLevels` is off (the
-    /// default). When the pref is on, `levelsHighContrast` overrides
-    /// per-level.
+    /// Per-level row styles (subtle defaults). Keyed by canonical
+    /// level name. Used when `ui/highContrastLevels` is off (the
+    /// default); when on, `levelsHighContrast` overrides per-level.
     std::map<std::string, LevelStyle> levels;
 
-    /// Optional per-level overrides applied on top of `levels` when
-    /// the user pref `ui/highContrastLevels` is on. Sparse: missing
-    /// keys fall back to `levels[key]`, so a theme can boost only
-    /// `Warn`/`Error`/`Fatal` and keep `Trace`/`Debug` identical.
-    ///
-    /// Keys are the canonical level names (`Trace`..`Fatal`, or
-    /// `Unknown`). Non-canonical keys warn via the shared
-    /// `WarnOnUnknownLevelKeys` machinery in `theme_control.cpp`.
-    ///
-    /// An empty map means the theme opts out of the toggle; the
-    /// Preferences checkbox disables itself in that case (same UX
-    /// as the pills toggle when `levelColumnOverride` is absent).
+    /// Loud overrides applied on top of `levels` when
+    /// `ui/highContrastLevels` is on. Sparse: missing keys fall
+    /// back to `levels[key]`. An empty map opts the theme out of
+    /// the toggle (the Preferences checkbox greys out).
     std::map<std::string, LevelStyle> levelsHighContrast;
 
     TableStyle table;
@@ -195,11 +165,9 @@ struct Theme
     /// in `ThemeControl::AnchorBrushFor`.
     std::vector<std::string> anchorPalette;
 
-    /// `nullopt` ⇒ level column renders as plain text (today's
-    /// behaviour). Set ⇒ icon mode, gated additionally by the
-    /// `ui/showLevelIcons` user preference. Cell + header
-    /// resolution rules live in `app/include/log_model.hpp`
-    /// `headerData` / `data` (see plan section 5 for the table).
+    /// nullopt = plain-text level column. Set = icon mode (also
+    /// gated on the `ui/showLevelIcons` user pref). Cell + header
+    /// resolution rules live in `LogModel::data`/`headerData`.
     std::optional<LevelColumnOverride> levelColumnOverride;
 
     friend bool operator==(const Theme &, const Theme &) = default;
@@ -213,14 +181,11 @@ inline constexpr std::size_t ANCHOR_PALETTE_SIZE = 8;
 /// `LevelStyle` when the theme has no entry for it.
 [[nodiscard]] LevelStyle StyleForLevel(const Theme &theme, LogLevel level);
 
-/// Same as `StyleForLevel(theme, level)` when @p useHighContrast is
-/// false. When true, looks up @p level in `theme.levelsHighContrast`
-/// first and falls back to `theme.levels` if the override is absent.
-/// Sparse overrides are resolved at the *whole-`LevelStyle` granularity*:
-/// if `levelsHighContrast[name]` exists, its fields (foreground,
-/// background, bold, italic) replace the subtle entry entirely. This
-/// matches how theme authors think about the two looks (hand-tuned
-/// per level), and avoids surprising blends of subtle + loud fields.
+/// When @p useHighContrast is true, look up @p level in
+/// `theme.levelsHighContrast` first and fall back to
+/// `theme.levels` if absent. Override is whole-`LevelStyle`
+/// granular (fg, bg, bold, italic replace as a set) to avoid
+/// surprising blends.
 [[nodiscard]] LevelStyle StyleForLevel(const Theme &theme, LogLevel level, bool useHighContrast);
 
 /// Parse a theme from JSON. Throws `std::runtime_error` on any
