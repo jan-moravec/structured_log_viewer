@@ -12577,7 +12577,7 @@ private slots:
         const QAction *ascCategory = nullptr;
         const QAction *descCategory = nullptr;
         int totalChecked = 0;
-        for (QAction *act : entries)
+        for (const QAction *act : entries)
         {
             if (act == nullptr || act->isSeparator() || act->objectName() == QStringLiteral("actionClearSort"))
             {
@@ -12936,7 +12936,7 @@ private slots:
 
         const QAction *asc = nullptr;
         const QAction *desc = nullptr;
-        for (QAction *act : built.menu->actions())
+        for (const QAction *act : built.menu->actions())
         {
             if (act == nullptr || act->isSeparator())
             {
@@ -12972,7 +12972,7 @@ private slots:
 
         const QAction *controlAsc = nullptr;
         const QAction *controlDesc = nullptr;
-        for (QAction *act : controlBuilt.menu->actions())
+        for (const QAction *act : controlBuilt.menu->actions())
         {
             if (act == nullptr || act->isSeparator())
             {
