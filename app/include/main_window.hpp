@@ -886,18 +886,20 @@ private:
     void RebuildAddFilterMenu(QMenu *menu);
 
     /// Repopulate the top-level Sort menu (`menuSort`). Keeps
-    /// `actionClearSort` + a separator on top, then adds one
-    /// submenu per visible column (titled `"<col>"`) carrying
-    /// three radio-checkable rows -- `Ascending`, `Descending`,
-    /// `None` -- whose check state mirrors
-    /// `LogFilterModel::SortColumn() / SortOrder()`. Connected to
-    /// `menuSort->aboutToShow` so the listing always reflects the
-    /// current configuration without invalidation hooks at every
-    /// column-mutation site (same idiom as `RebuildAddFilterMenu`).
+    /// `actionClearSort` + a separator on top, then adds two
+    /// flat checkable rows per visible column
+    /// (`▲ "<col>"` / `▼ "<col>"`) whose check state mirrors
+    /// `LogFilterModel::SortColumn() / SortOrder()`.
+    /// Sort is single-column / single-direction, so at most one
+    /// row across the menu is ever checked at a time. Connected
+    /// to `menuSort->aboutToShow` so the listing always reflects
+    /// the current configuration without invalidation hooks at
+    /// every column-mutation site (same idiom as
+    /// `RebuildAddFilterMenu`).
     void RebuildSortMenu();
 
     /// Repopulate the Sort split-button dropdown with the same
-    /// per-column submenus `RebuildSortMenu` produces, but
+    /// per-column flat rows `RebuildSortMenu` produces, but
     /// without the leading `actionClearSort` row (the toolbar has
     /// a dedicated plain Clear-Sort button next to the split
     /// button, so a duplicate dropdown entry would be redundant).
@@ -905,21 +907,21 @@ private:
     /// menu and Add-filter dropdown.
     void RebuildSortByMenu(QMenu *menu);
 
-    /// Append one submenu per visible column to @p menu, each
-    /// carrying three radio-checkable rows (`Ascending`,
-    /// `Descending`, `None`) whose check state mirrors
-    /// `LogFilterModel::SortColumn() / SortOrder()`. The `None`
-    /// row routes through `actionClearSort` when the column is
-    /// the live sort column, otherwise it is a structural no-op
-    /// (already the resting radio state for non-sorted columns).
-    /// Asc / Desc are disabled when the model has no rows or
-    /// when the column's data does not match its configured type
+    /// Append two flat checkable rows per visible column to
+    /// @p menu (`▲ "<col>"` / `▼ "<col>"`) whose check state
+    /// mirrors `LogFilterModel::SortColumn() / SortOrder()`. The
+    /// leading triangle is the same glyph `QHeaderView` uses for
+    /// its sort indicator, so the menu entry visually mirrors
+    /// what the table will show once the sort is active. Rows are
+    /// disabled when the model has no rows or when the column's
+    /// data does not match its configured type
     /// (`ColumnHealth::presentSlots > matchingSlots`); a tooltip
     /// on each disabled row points the user at Configuration
-    /// Diagnostics. Shared core for `RebuildSortMenu` and
-    /// `RebuildSortByMenu`; returns true iff at least one submenu
-    /// was added (lets the caller surface a placeholder when
-    /// every column is hidden).
+    /// Diagnostics, and the host menu opts into per-action
+    /// tooltips so the explanation surfaces on hover. Shared core
+    /// for `RebuildSortMenu` and `RebuildSortByMenu`; returns
+    /// true iff at least one row was added (lets the caller
+    /// surface a placeholder when every column is hidden).
     bool AppendSortByEntries(QMenu *menu);
 
     /// Refresh the enable state of `actionClearSort` and the

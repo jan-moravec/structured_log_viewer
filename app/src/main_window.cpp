@@ -33,7 +33,6 @@
 #include <loglib/udp_server_producer.hpp>
 
 #include <QAbstractProxyModel>
-#include <QActionGroup>
 #include <QApplication>
 #include <QCheckBox>
 #include <QCloseEvent>
@@ -3621,23 +3620,6 @@ bool MainWindow::AppendSortByEntries(QMenu *menu)
         // column. Same pattern the Add-filter dropdown uses.
         const auto &keys = columns[i].keys;
 
-        // Per-column submenu carrying three radio-checkable
-        // entries (Ascending / Descending / None). The submenu
-        // title is the disambiguated column label wrapped in
-        // quotes for parity with the previous flat-action wording
-        // ("Sort by \"<col>\" ascending").
-        QMenu *colMenu = menu->addMenu(QStringLiteral("\"%1\"").arg(label));
-        // QMenu hides per-action tooltips by default. Enable them
-        // so the type-mismatch explanation surfaces when the user
-        // hovers over a disabled Asc / Desc row.
-        colMenu->setToolTipsVisible(true);
-
-        // Exclusive group so exactly one of the three rows is
-        // checked at all times -- this is the "radio" semantic
-        // the user expects for Asc/Desc/None.
-        auto *group = new QActionGroup(colMenu);
-        group->setExclusive(true);
-
         const bool isActiveSortColumn = (currentColumn == columnIdx);
 
         // Disable Asc/Desc when the column's data does not match
@@ -3655,7 +3637,20 @@ bool MainWindow::AppendSortByEntries(QMenu *menu)
             tr("This column's data does not match its configured type, so sorting is disabled. "
                "Open Configuration Diagnostics to inspect or change the type.");
 
-        QAction *ascAct = colMenu->addAction(tr("Ascending"));
+        // Two flat checkable rows per column. The leading glyph
+        // is the same triangle Qt's `QHeaderView` uses for its
+        // sort indicator, so the menu entry visually mirrors what
+        // the table will show once the sort is active. Sort is
+        // single-column / single-direction, so at most one row in
+        // the entire menu is ever checked at a time. The text is
+        // just the disambiguated column label in quotes -- the
+        // host menu's title ("Sort") and the glyph carry the
+        // verb / direction, so adding "Sort by" prefix would
+        // double up the obvious.
+        const QString ascText = tr("\u25B2 \"%1\"").arg(label);
+        const QString descText = tr("\u25BC \"%1\"").arg(label);
+
+        QAction *ascAct = menu->addAction(ascText);
         ascAct->setCheckable(true);
         ascAct->setChecked(isActiveSortColumn && currentOrder == Qt::AscendingOrder);
         ascAct->setEnabled(ascDescEnabled);
@@ -3663,7 +3658,6 @@ bool MainWindow::AppendSortByEntries(QMenu *menu)
         {
             ascAct->setToolTip(mismatchTooltip);
         }
-        group->addAction(ascAct);
         connect(ascAct, &QAction::triggered, this, [this, keys]() {
             const int idx = FindColumnIndexByKeys(keys);
             if (idx < 0 || mTableView == nullptr)
@@ -3673,7 +3667,7 @@ bool MainWindow::AppendSortByEntries(QMenu *menu)
             mTableView->sortByColumn(idx, Qt::AscendingOrder);
         });
 
-        QAction *descAct = colMenu->addAction(tr("Descending"));
+        QAction *descAct = menu->addAction(descText);
         descAct->setCheckable(true);
         descAct->setChecked(isActiveSortColumn && currentOrder == Qt::DescendingOrder);
         descAct->setEnabled(ascDescEnabled);
@@ -3681,7 +3675,6 @@ bool MainWindow::AppendSortByEntries(QMenu *menu)
         {
             descAct->setToolTip(mismatchTooltip);
         }
-        group->addAction(descAct);
         connect(descAct, &QAction::triggered, this, [this, keys]() {
             const int idx = FindColumnIndexByKeys(keys);
             if (idx < 0 || mTableView == nullptr)
@@ -3691,38 +3684,16 @@ bool MainWindow::AppendSortByEntries(QMenu *menu)
             mTableView->sortByColumn(idx, Qt::DescendingOrder);
         });
 
-        QAction *noneAct = colMenu->addAction(tr("None"));
-        noneAct->setCheckable(true);
-        // Checked when this column is *not* the active sort
-        // column: the column carries no sort, so "None" is the
-        // resting radio state. On the active sort column, "None"
-        // sits unchecked and a click clears the sort.
-        noneAct->setChecked(!isActiveSortColumn);
-        group->addAction(noneAct);
-        connect(noneAct, &QAction::triggered, this, [this, keys]() {
-            // Route through `actionClearSort` when this column is
-            // the live sort column so the toolbar plain button,
-            // top-of-menu Clear Sort, status-bar indicator and
-            // header right-click all share one enable-state /
-            // trigger source (`UpdateSortStatus`). On any other
-            // column, "None" is already the resting radio state
-            // so the click is a structural no-op.
-            if (mSortFilterProxyModel == nullptr || ui == nullptr || ui->actionClearSort == nullptr)
-            {
-                return;
-            }
-            const int idx = FindColumnIndexByKeys(keys);
-            if (idx < 0)
-            {
-                return;
-            }
-            if (mSortFilterProxyModel->SortColumn() == idx)
-            {
-                ui->actionClearSort->trigger();
-            }
-        });
-
         addedAny = true;
+    }
+
+    if (addedAny)
+    {
+        // QMenu hides per-action tooltips by default. Enable them
+        // on the host menu so the type-mismatch explanation
+        // surfaces when the user hovers over a disabled row.
+        // Idempotent: harmless to re-set on repeat builds.
+        menu->setToolTipsVisible(true);
     }
 
     return addedAny;
