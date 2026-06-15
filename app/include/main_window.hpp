@@ -250,6 +250,19 @@ public:
     /// run after a load or reorder.
     void ApplyColumnVisibility();
 
+    /// Install (or detach) the icon-pill delegate on the current
+    /// first `Type::Level` column. Idempotent; detaches from the
+    /// previous column when the level column has moved, and
+    /// detaches entirely when no level column exists. Safe on the
+    /// streaming hot path (at most two `setItemDelegateForColumn`
+    /// calls).
+    ///
+    /// View column index == source column index here because both
+    /// proxies (`LogFilterModel`, `RowOrderProxyModel`) pass
+    /// `columnCount` through 1:1. A future column-reordering proxy
+    /// would have to remap.
+    void ApplyLevelCellDelegate();
+
     /// Restore the header so visual == logical for every section.
     /// Suppresses re-entry into `OnHeaderSectionMoved` while doing
     /// so. Idempotent.
@@ -758,6 +771,19 @@ private:
     /// `enumColumnsChanged` tick triggers a filter-rule rebuild.
     [[nodiscard]] bool EnumFilterFullyResolved(const loglib::LogConfiguration::LogFilter &filter) const;
 
+    /// Apply the saved sort from `mPendingApplySortFromConfig` to
+    /// the view, then clear the latch. No-op when the latch is
+    /// clear, when the user sorted mid-stream
+    /// (`SortColumn() >= 0`), or when the saved column is
+    /// out-of-range.
+    ///
+    /// Called from `OnStreamingFinished` and from
+    /// `StreamFromCurrentSourceOrSkip`'s early-return paths. The
+    /// deferral lets streaming use the fast bulk-insert branch and
+    /// then sorts once over the full row set instead of paying
+    /// O(N^2) per-row inserts under an active sort.
+    void ApplyDeferredSortFromConfig();
+
     void SetConfigurationUiEnabled(bool enabled);
     void UpdateStreamingStatus();
 
@@ -941,6 +967,15 @@ private:
     LogFilterModel *mSortFilterProxyModel;
     LogTableView *mTableView;
     LogModel *mModel;
+    /// Icon-pill delegate for the level column. Owned via Qt
+    /// parentage; `nullptr` in the no-theme test fixture path
+    /// (icon mode is skipped there).
+    class LevelCellDelegate *mLevelCellDelegate = nullptr;
+
+    /// Column the level delegate is currently installed on, or
+    /// `-1` when detached. Stored so the next reapply can detach
+    /// the old column before attaching the new one.
+    int mInstalledLevelDelegateColumn = -1;
     /// Dockable find bar (owned via `QMainWindow` parentage).
     /// `mFindRecord` is the hosted widget. `QPointer` on both so
     /// model / proxy signals that fire during shutdown find them
@@ -1235,6 +1270,20 @@ private:
     /// signal against half-updated state. The outer call finishes
     /// its rebuild and the queued re-entry becomes a no-op.
     bool mApplyingEnumRebuild = false;
+
+    /// Latch: a loaded session's sort is pending, to be applied
+    /// once streaming finishes. Avoids the O(N^2) per-row insert
+    /// path that `LogFilterModel::OnSourceRowsInserted` falls into
+    /// under an active sort (a 1 GB restore "never finishes"
+    /// otherwise; pinned by
+    /// `TestRestoreLastSessionDefersSortUntilStreamingFinishes`).
+    ///
+    /// Consumed by `OnStreamingFinished` (or by
+    /// `StreamFromCurrentSourceOrSkip`'s early-return paths).
+    /// `MirrorSessionStateToConfiguration` reads it so an
+    /// auto-save mid-stream preserves the loaded sort instead of
+    /// overwriting it with the proxy's transient `-1`.
+    bool mPendingApplySortFromConfig = false;
 
     /// Latch held by the `SessionSwitchScope` RAII helper across a
     /// destructive `mModel->Reset()`. `OnStreamingFinished` short-

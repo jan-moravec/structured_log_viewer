@@ -81,7 +81,18 @@ void GenerateSelfSignedCert(const std::filesystem::path &certPath, const std::fi
     X509_gmtime_adj(X509_getm_notAfter(x509), 60L * 60L * 24L * 365L);
     X509_set_pubkey(x509, pkey);
 
-    X509_NAME *name = X509_get_subject_name(x509);
+    // OpenSSL 4.0 made `X509_get_subject_name` return `const X509_NAME *`,
+    // so build the name in a separate `X509_NAME_new()` allocation and
+    // copy it onto both the subject and issuer slots via `X509_set_*_name`
+    // (each makes its own internal copy). Compiles cleanly on OpenSSL
+    // 3.x (macOS brew `openssl@3`) and 4.x (Windows choco SLP build).
+    X509_NAME *name = X509_NAME_new();
+    if (!name)
+    {
+        X509_free(x509);
+        EVP_PKEY_free(pkey);
+        throw std::runtime_error("X509_NAME_new failed");
+    }
     X509_NAME_add_entry_by_txt(name, "C", MBSTRING_ASC, reinterpret_cast<const unsigned char *>("US"), -1, -1, 0);
     X509_NAME_add_entry_by_txt(
         name, "O", MBSTRING_ASC, reinterpret_cast<const unsigned char *>("loglib-test"), -1, -1, 0
@@ -89,7 +100,9 @@ void GenerateSelfSignedCert(const std::filesystem::path &certPath, const std::fi
     X509_NAME_add_entry_by_txt(
         name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char *>("localhost"), -1, -1, 0
     );
+    X509_set_subject_name(x509, name);
     X509_set_issuer_name(x509, name);
+    X509_NAME_free(name);
 
     if (!X509_sign(x509, pkey, EVP_sha256()))
     {

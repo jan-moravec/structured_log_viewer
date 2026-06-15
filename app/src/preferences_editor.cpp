@@ -15,6 +15,7 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSettings>
 #include <QSignalBlocker>
 #include <QStringList>
 #include <QVBoxLayout>
@@ -28,6 +29,14 @@ namespace
 constexpr int PREFERENCES_MIN_WIDTH_PX = 300;
 constexpr int RETENTION_LINES_SPIN_SINGLE_STEP = 1000;
 constexpr int THEME_STATUS_CLEAR_MS = 5000;
+
+/// `QSettings` key for "Show level icons". Mirror of the startup
+/// read in `MainWindow::MainWindow`.
+constexpr char SETTINGS_SHOW_LEVEL_ICONS[] = "ui/showLevelIcons";
+
+/// `QSettings` key for "High contrast levels". Default false
+/// (subtle row colours).
+constexpr char SETTINGS_HIGH_CONTRAST_LEVELS[] = "ui/highContrastLevels";
 
 /// Label for the synthetic "Auto" combo entry. The entry's user
 /// data carries `ThemeControl::AUTO_TOKEN` (an empty string) so a
@@ -173,12 +182,40 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
         connect(mTheme, &ThemeControl::themeChanged, this, [this]() {
             RepopulateThemeCombo();
             RefreshThemePreview();
+            RefreshLevelIconsCheckboxAvailability();
+            RefreshHighContrastCheckboxAvailability();
         });
     }
 
     mStreamRetentionSpinBox = new QSpinBox(this);
     mStreamNewestFirstCheckBox = new QCheckBox("Show newest lines first", this);
     mStaticNewestFirstCheckBox = new QCheckBox("Show newest lines first", this);
+    mShowLevelIconsCheckBox = new QCheckBox("Show level icons", this);
+    // Default tooltip; `RefreshLevelIconsCheckboxAvailability`
+    // swaps in a disabled-state explanation when the theme has no
+    // `levelColumnOverride`.
+    mShowLevelIconsCheckBox->setToolTip(
+        "When enabled, the level column renders themed glyphs inside a coloured pill instead of "
+        "the plain level text. Themes opt in by shipping a `levelColumnOverride` block; every "
+        "built-in theme does. The raw level text is still available for copy and Find searches."
+    );
+    // Live preview: every toggle fires the signal so `MainWindow`
+    // updates immediately. `UpdateFields` blocks signals while
+    // seeding the initial state.
+    connect(mShowLevelIconsCheckBox, &QCheckBox::toggled, this, [this](bool on) { emit showLevelIconsChanged(on); });
+
+    mHighContrastLevelsCheckBox = new QCheckBox("High contrast levels", this);
+    // Default tooltip; `RefreshHighContrastCheckboxAvailability`
+    // swaps in the disabled-state variant when the theme has no
+    // `levelsHighContrast` block.
+    mHighContrastLevelsCheckBox->setToolTip(
+        "When enabled, the level row backgrounds use the theme's loud `levelsHighContrast` colours "
+        "instead of the subtle defaults. Useful for triage screens where Warn/Error/Fatal rows need "
+        "to jump out. Themes opt in by shipping a `levelsHighContrast` block; every built-in does."
+    );
+    connect(mHighContrastLevelsCheckBox, &QCheckBox::toggled, this, [this](bool on) {
+        emit highContrastLevelsChanged(on);
+    });
     mRestoreLastSessionCheckBox = new QCheckBox("Restore last session on launch", this);
     mRestoreLastSessionCheckBox->setToolTip(
         "When enabled, the most recent auto-saved session is reopened automatically on startup. "
@@ -228,6 +265,8 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
     themeButtonLayout->addWidget(duplicateThemeButton);
     themeButtonLayout->addWidget(reloadThemesButton);
     appearanceLayout->addLayout(themeButtonLayout);
+    appearanceLayout->addWidget(mShowLevelIconsCheckBox);
+    appearanceLayout->addWidget(mHighContrastLevelsCheckBox);
     appearanceLayout->addWidget(mThemeStatusLabel);
 
     auto *streamingGroup = new QGroupBox("Streaming", this);
@@ -276,6 +315,25 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
         StreamingControl::SaveConfiguration();
         SessionHistoryManager::SetRestoreLastSessionOnLaunch(mRestoreLastSessionCheckBox->isChecked());
         SessionHistoryManager::SetMaxEntries(mRecentSessionsMaxSpinBox->value());
+        // Persist the level-icon + high-contrast toggles. Live
+        // preview already fired the change signal; Ok only writes
+        // `QSettings` when the value actually changed.
+        {
+            QSettings settings;
+            const bool showLevelIcons = mShowLevelIconsCheckBox->isChecked();
+            if (showLevelIcons != mInitialShowLevelIcons)
+            {
+                settings.setValue(QString::fromLatin1(SETTINGS_SHOW_LEVEL_ICONS), showLevelIcons);
+            }
+        }
+        {
+            QSettings settings;
+            const bool highContrast = mHighContrastLevelsCheckBox->isChecked();
+            if (highContrast != mInitialHighContrastLevels)
+            {
+                settings.setValue(QString::fromLatin1(SETTINGS_HIGH_CONTRAST_LEVELS), highContrast);
+            }
+        }
         emit streamingRetentionChanged(static_cast<qulonglong>(StreamingControl::RetentionLines()));
         // Only emit on a real toggle so the re-sort chain does not run
         // on every Ok click.
@@ -297,6 +355,17 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
         {
             mTheme->SetActiveSelection(mTheme->PersistedSelection());
         }
+        // Revert the live previews to the captured initial state.
+        // Underlying setters are idempotent so a no-change Cancel
+        // is free.
+        if (mShowLevelIconsCheckBox->isChecked() != mInitialShowLevelIcons)
+        {
+            emit showLevelIconsChanged(mInitialShowLevelIcons);
+        }
+        if (mHighContrastLevelsCheckBox->isChecked() != mInitialHighContrastLevels)
+        {
+            emit highContrastLevelsChanged(mInitialHighContrastLevels);
+        }
         // Revert spinbox-edited values to persisted; on-disk unchanged.
         StreamingControl::LoadConfiguration();
         // Bypass `closeEvent`'s revert: Cancel already reverted.
@@ -312,6 +381,24 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
 
     RepopulateThemeCombo();
     RefreshThemePreview();
+
+    // Seed `mInitial*` + checkbox state from `QSettings` at ctor
+    // time so the revert-on-close path works even when a caller
+    // skips `UpdateFields()` (most tests do). `QSignalBlocker`
+    // suppresses the live-preview slot during seeding.
+    {
+        const QSettings settings;
+        mInitialShowLevelIcons = settings.value(QString::fromLatin1(SETTINGS_SHOW_LEVEL_ICONS), true).toBool();
+        mInitialHighContrastLevels = settings.value(QString::fromLatin1(SETTINGS_HIGH_CONTRAST_LEVELS), false).toBool();
+        {
+            const QSignalBlocker blocker(mShowLevelIconsCheckBox);
+            mShowLevelIconsCheckBox->setChecked(mInitialShowLevelIcons);
+        }
+        {
+            const QSignalBlocker blocker(mHighContrastLevelsCheckBox);
+            mHighContrastLevelsCheckBox->setChecked(mInitialHighContrastLevels);
+        }
+    }
 }
 
 void PreferencesEditor::UpdateFields()
@@ -321,10 +408,77 @@ void PreferencesEditor::UpdateFields()
     mStaticNewestFirstCheckBox->setChecked(StreamingControl::IsStaticNewestFirst());
     mRestoreLastSessionCheckBox->setChecked(SessionHistoryManager::RestoreLastSessionOnLaunch());
     mRecentSessionsMaxSpinBox->setValue(SessionHistoryManager::MaxEntries());
+    // Refresh `mInitial*` + checkbox state from `QSettings`.
+    // `QSignalBlocker` keeps the live-preview slot quiet during
+    // the load.
+    {
+        const QSettings settings;
+        mInitialShowLevelIcons = settings.value(QString::fromLatin1(SETTINGS_SHOW_LEVEL_ICONS), true).toBool();
+        mInitialHighContrastLevels = settings.value(QString::fromLatin1(SETTINGS_HIGH_CONTRAST_LEVELS), false).toBool();
+        {
+            const QSignalBlocker blocker(mShowLevelIconsCheckBox);
+            mShowLevelIconsCheckBox->setChecked(mInitialShowLevelIcons);
+        }
+        {
+            const QSignalBlocker blocker(mHighContrastLevelsCheckBox);
+            mHighContrastLevelsCheckBox->setChecked(mInitialHighContrastLevels);
+        }
+    }
     RepopulateThemeCombo();
     RefreshThemePreview();
-    // Wipe any leftover status message from a previous open.
+    RefreshLevelIconsCheckboxAvailability();
+    RefreshHighContrastCheckboxAvailability();
     ShowThemeStatus(QString());
+}
+
+void PreferencesEditor::RefreshLevelIconsCheckboxAvailability()
+{
+    // Disable + retooltip when the theme has no
+    // `levelColumnOverride`, so the user can tell a no-op toggle
+    // apart from a stuck checkbox. `nullptr` (no-theme test
+    // fixture) is treated as "no override".
+    const bool hasOverride = (mTheme != nullptr) && mTheme->HasLevelColumnOverride();
+    mShowLevelIconsCheckBox->setEnabled(hasOverride);
+    if (hasOverride)
+    {
+        mShowLevelIconsCheckBox->setToolTip(
+            "When enabled, the level column renders themed glyphs inside a coloured pill instead of "
+            "the plain level text. Themes opt in by shipping a `levelColumnOverride` block; every "
+            "built-in theme does. The raw level text is still available for copy and Find searches."
+        );
+    }
+    else
+    {
+        mShowLevelIconsCheckBox->setToolTip(
+            "The active theme does not ship a `levelColumnOverride` block, so there are no icons "
+            "to render for the level column. Pick a theme that supplies the block (every built-in "
+            "theme does) to enable this toggle."
+        );
+    }
+}
+
+void PreferencesEditor::RefreshHighContrastCheckboxAvailability()
+{
+    // Same pattern as `RefreshLevelIconsCheckboxAvailability`,
+    // gated on a non-empty `levelsHighContrast` block.
+    const bool hasOverride = (mTheme != nullptr) && mTheme->HasLevelsHighContrast();
+    mHighContrastLevelsCheckBox->setEnabled(hasOverride);
+    if (hasOverride)
+    {
+        mHighContrastLevelsCheckBox->setToolTip(
+            "When enabled, the level row backgrounds use the theme's loud `levelsHighContrast` colours "
+            "instead of the subtle defaults. Useful for triage screens where Warn/Error/Fatal rows need "
+            "to jump out. Themes opt in by shipping a `levelsHighContrast` block; every built-in does."
+        );
+    }
+    else
+    {
+        mHighContrastLevelsCheckBox->setToolTip(
+            "The active theme does not ship a `levelsHighContrast` block, so the boosted colours "
+            "have nothing to swap in. Pick a theme that supplies the block (every built-in theme "
+            "does) to enable this toggle."
+        );
+    }
 }
 
 void PreferencesEditor::RepopulateThemeCombo()
@@ -422,6 +576,16 @@ void PreferencesEditor::closeEvent(QCloseEvent *event)
     if (mTheme != nullptr)
     {
         mTheme->SetActiveSelection(mTheme->PersistedSelection());
+    }
+    // Mirror the Cancel slot so X/Alt+F4 also rolls back any
+    // live preview to the captured initial state.
+    if (mShowLevelIconsCheckBox->isChecked() != mInitialShowLevelIcons)
+    {
+        emit showLevelIconsChanged(mInitialShowLevelIcons);
+    }
+    if (mHighContrastLevelsCheckBox->isChecked() != mInitialHighContrastLevels)
+    {
+        emit highContrastLevelsChanged(mInitialHighContrastLevels);
     }
     StreamingControl::LoadConfiguration();
     QWidget::closeEvent(event);

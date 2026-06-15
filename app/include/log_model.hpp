@@ -273,10 +273,9 @@ public:
     void RefreshAllRowStyles();
 
     /// True iff @p roles is non-empty AND every entry is purely
-    /// decorative (Background / Foreground / Font / Decoration).
-    /// Listeners that only care about value-affecting changes
-    /// (find cache, record-detail pane) use this to filter out
-    /// theme-refresh emits from `RefreshAllRowStyles`.
+    /// decorative (Background / Foreground / Font / Decoration /
+    /// ToolTip). Value-only listeners (find cache, record-detail)
+    /// use this to skip theme-refresh and icon-mode emits.
     ///
     /// Empty `roles` is Qt's "I don't know what changed" sentinel;
     /// this helper reports `false` so callers conservatively refresh.
@@ -284,6 +283,23 @@ public:
     /// Emitter contract: any `dataChanged` listing only these roles
     /// MUST NOT mutate value-bearing roles for the emitted range.
     [[nodiscard]] static bool IsStyleOnlyRoleChange(const QList<int> &roles) noexcept;
+
+    /// Cached first-`Type::Level` column index (`-1` when none).
+    /// Public so `MainWindow::ApplyLevelCellDelegate` and the
+    /// `data()`/`headerData()` icon-mode branches share one scan.
+    [[nodiscard]] int FirstLevelColumnIndex() const noexcept;
+
+    /// Toggle the "Show level icons" user preference. When on (and
+    /// the theme supplies a `levelColumnOverride`), the level
+    /// column renders as an icon pill. Emits scoped `headerDataChanged`
+    /// + per-cell `dataChanged` on the level column so any header
+    /// override pops in/out without a full reset.
+    void SetShowLevelIcons(bool show);
+
+    /// `mShowLevelIcons && mTheme && mTheme->HasLevelColumnOverride()`.
+    /// Single source of truth for "is the level column in icon-pill
+    /// mode?" -- consulted by `data()` and the delegate's self-gate.
+    [[nodiscard]] bool IsLevelIconModeActive() const noexcept;
 
 signals:
     /// Cumulative error count, emitted when a batch carries errors.
@@ -329,6 +345,12 @@ private:
     /// row has no resolvable level. Drives the Background /
     /// Foreground / Font role branches in `data()`.
     [[nodiscard]] std::optional<loglib::LogLevel> LevelForRow(int row) const noexcept;
+
+    /// Like `LevelForRow` but returns `LogLevel::Unknown` for
+    /// unmapped values so the icon-mode paint paths can render the
+    /// generic "unknown" glyph. `nullopt` still means "no value at
+    /// all", which keeps blank cells blank.
+    [[nodiscard]] std::optional<loglib::LogLevel> DisplayLevelForRow(int row) const noexcept;
 
     /// Linear scan for the first `Type::Level` column. Returns
     /// `LEVEL_COLUMN_NONE` when none match.
@@ -394,6 +416,11 @@ private:
     /// when no level column exists. Invalidated by every structural
     /// mutator.
     mutable int mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
+
+    /// "Show level icons" pref (persisted by `MainWindow` as
+    /// `ui/showLevelIcons`). Defaults true so fresh installs see
+    /// the icon-mode visual on themes that ship the override.
+    bool mShowLevelIcons = true;
 
     /// Non-owning theme controller pointer. May be null when the
     /// model is constructed via the legacy default ctor (test

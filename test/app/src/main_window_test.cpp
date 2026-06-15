@@ -7,6 +7,7 @@
 #include "filter_editor.hpp"
 #include "find_dock.hpp"
 #include "find_record_widget.hpp"
+#include "level_cell_delegate.hpp"
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
 #include "log_table_view.hpp"
@@ -75,7 +76,9 @@
 #include <QLockFile>
 #include <QMenu>
 #include <QMenuBar>
+#include <QPainter>
 #include <QPalette>
+#include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -92,6 +95,7 @@
 #include <QStatusBar>
 #include <QString>
 #include <QStringList>
+#include <QStyleOptionViewItem>
 #include <QTableView>
 #include <QTableWidget>
 #include <QTemporaryDir>
@@ -387,15 +391,18 @@ bool WaitForLineCount(LogModel &model, qsizetype target, std::chrono::millisecon
     return true;
 }
 
-// Returns the column index whose header equals @p header, or -1 if none.
+// Column index whose configured `Column::header` equals @p header,
+// or -1. Reads the configuration directly (not `DisplayRole`) so
+// it survives theme overrides that suppress the header text.
 int ColumnByHeader(const LogModel &model, const QString &header)
 {
-    const int columnCount = model.columnCount();
-    for (int col = 0; col < columnCount; ++col)
+    const std::string needle = header.toStdString();
+    const auto &columns = model.Configuration().columns;
+    for (size_t col = 0; col < columns.size(); ++col)
     {
-        if (model.headerData(col, Qt::Horizontal, Qt::DisplayRole).toString() == header)
+        if (columns[col].header == needle)
         {
-            return col;
+            return static_cast<int>(col);
         }
     }
     return -1;
@@ -4221,6 +4228,138 @@ private slots:
         QCOMPARE(run.model->Table().GetLevelForRow(5, col).value(), loglib::LogLevel::Fatal);
     }
 
+    /// Regression: an auto-promoted `Type::Level` column with
+    /// non-canonical columns ahead of it must bubble to
+    /// `CANONICAL_LEVEL_COLUMN_INDEX` via `columnsMoved`. The
+    /// pre-fix code rotated silently inside `mLogTable.AppendBatch`,
+    /// leaving Qt's column-keyed view state on the wrong section.
+    void TestStreamingLevelBubbleEmitsColumnsMoved()
+    {
+        // Fixture: `body, scope, level`. Once `level` promotes,
+        // it bubbles to index 1, pushing `scope` to index 2.
+        const QStringList levels{
+            QStringLiteral("info"),
+            QStringLiteral("warn"),
+            QStringLiteral("error"),
+        };
+        QStringList lines;
+        lines.reserve(200);
+        for (int i = 0; i < 200; ++i)
+        {
+            lines.append(QStringLiteral(R"({"body": "msg %1", "scope": "core", "level": "%2"})")
+                             .arg(i)
+                             .arg(levels[i % levels.size()]));
+        }
+        const TempJsonFile fixture(lines);
+
+        auto model = std::make_unique<LogModel>(nullptr, nullptr);
+        QSignalSpy columnsMovedSpy(model.get(), &QAbstractItemModel::columnsMoved);
+        const QSignalSpy columnsInsertedSpy(model.get(), &QAbstractItemModel::columnsInserted);
+        QSignalSpy finishedSpy(model.get(), &LogModel::streamingFinished);
+        QVERIFY(columnsMovedSpy.isValid());
+        QVERIFY(columnsInsertedSpy.isValid());
+        QVERIFY(finishedSpy.isValid());
+
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+        {
+            loglib::ParserOptions options;
+            options.stopToken = stopToken;
+            loglib::internal::AdvancedParserOptions advanced;
+            advanced.threads = 1;
+            const loglib::JsonParser parser;
+            loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        }
+        if (finishedSpy.count() == 0)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "streamingFinished must arrive");
+        }
+
+        // Post-bubble column layout: `body, level, scope`.
+        const int levelCol = ColumnByHeader(*model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        QCOMPARE(levelCol, static_cast<int>(loglib::CANONICAL_LEVEL_COLUMN_INDEX));
+        const auto &columns = model->Configuration().columns;
+        QCOMPARE(columns.size(), static_cast<size_t>(3));
+        QCOMPARE(columns[0].header, std::string{"body"});
+        QCOMPARE(columns[1].header, std::string{"level"});
+        QCOMPARE(columns[1].type, loglib::LogConfiguration::Type::Level);
+        QCOMPARE(columns[2].header, std::string{"scope"});
+
+        // Match any single-column `columnsMoved` whose destination
+        // is canonical. We don't pin the last emit because a Time
+        // fixture would interleave its own bubble. Qt's
+        // `destinationColumn` equals the final index for leftward
+        // moves. Param `signalArgs` because `emit` is a Qt macro.
+        const auto matchesLevelBubble = [](const QList<QVariant> &signalArgs) {
+            const int first = signalArgs.value(1).toInt();
+            const int last = signalArgs.value(2).toInt();
+            const int destColumn = signalArgs.value(4).toInt();
+            return first == last && first >= 0 && std::cmp_equal(destColumn, loglib::CANONICAL_LEVEL_COLUMN_INDEX);
+        };
+        const bool sawLevelBubble = std::any_of(columnsMovedSpy.begin(), columnsMovedSpy.end(), matchesLevelBubble);
+        QVERIFY2(
+            sawLevelBubble,
+            qPrintable(QStringLiteral("expected a columnsMoved emit with destination=%1; got %2 emit(s)")
+                           .arg(static_cast<int>(loglib::CANONICAL_LEVEL_COLUMN_INDEX))
+                           .arg(columnsMovedSpy.count()))
+        );
+
+        // Sanity: rank cache survived the bubble.
+        QCOMPARE(model->Table().GetLevelForRow(0, static_cast<size_t>(levelCol)).value(), loglib::LogLevel::Info);
+
+        model->EndStreaming(false);
+    }
+
+    /// Regression: a single batch carrying both `Level` and
+    /// `Time` columns must end up with `[time, level, ...]`. The
+    /// Time bubble shifts the just-promoted Level out of place,
+    /// and the Level bubble's re-check rebalances it.
+    ///
+    /// Pre-fix bug: `[time, body, level]` -- level stranded.
+    /// Post-fix:    `[time, level, body]`.
+    void TestStreamingLevelBubblesAfterTimeBubbleSameBatch()
+    {
+        // Fixture order matters: `body, level, time` so level
+        // transiently lands at canonical (index 1) before the
+        // Time bubble shifts it out.
+        QStringList lines;
+        lines.reserve(200);
+        const QStringList levels{
+            QStringLiteral("info"),
+            QStringLiteral("warn"),
+            QStringLiteral("error"),
+        };
+        for (int i = 0; i < 200; ++i)
+        {
+            lines.append(QStringLiteral(R"({"body": "msg %1", "level": "%2", "time": "2025-01-15T12:34:%3Z"})")
+                             .arg(i)
+                             .arg(levels[i % levels.size()])
+                             .arg(i % 60, 2, 10, QLatin1Char('0')));
+        }
+        const TempJsonFile fixture(lines);
+
+        const StreamingRun run = RunStreaming(fixture.Path());
+        QCOMPARE(run.finishedCount, 1);
+        QCOMPARE(run.cancelled, false);
+
+        const auto &columns = run.model->Configuration().columns;
+        QCOMPARE(columns.size(), static_cast<size_t>(3));
+        QCOMPARE(columns[0].header, std::string{"time"});
+        QCOMPARE(columns[0].type, loglib::LogConfiguration::Type::Time);
+        // Level rejoined canonical index 1 after the Time bubble.
+        QCOMPARE(columns[1].header, std::string{"level"});
+        QCOMPARE(columns[1].type, loglib::LogConfiguration::Type::Level);
+        QCOMPARE(columns[2].header, std::string{"body"});
+
+        const int levelCol = ColumnByHeader(*run.model, QStringLiteral("level"));
+        QCOMPARE(levelCol, static_cast<int>(loglib::CANONICAL_LEVEL_COLUMN_INDEX));
+        // Sanity: rank cache survived both bubbles.
+        QCOMPARE(run.model->Table().GetLevelForRow(0, static_cast<size_t>(levelCol)).value(), loglib::LogLevel::Info);
+    }
+
     /// Integration: a streamed `Type::Level` column makes
     /// `LogModel::data(Qt::BackgroundRole)` return the cached
     /// theme brush for styled levels and an empty QVariant for
@@ -4277,6 +4416,247 @@ private slots:
         const QVariant fatalFont = run.model->data(fatalIndex, Qt::FontRole);
         QVERIFY2(fatalFont.isValid(), "Fatal row must carry a bold font (theme sets bold=true)");
         QVERIFY(qvariant_cast<QFont>(fatalFont).bold());
+    }
+
+    // Regression: a theme that ships only a `headerIcon` (no
+    // explicit `header` override) must paint the icon alone so
+    // the header doesn't read "<gauge> level". Funnel / warning
+    // priority and the tooltip are unchanged.
+    void TestLevelHeaderIconSuppressesDisplayText()
+    {
+        QVERIFY(mTheme != nullptr);
+        mTheme->SetActiveSelection(QStringLiteral("Light"));
+        QVERIFY2(mTheme->HasLevelColumnOverride(), "shipped Light theme must opt into icon mode");
+        QVERIFY2(!mTheme->LevelColumnHeaderIcon().isNull(), "shipped Light theme must ship a `headerIcon`");
+        QVERIFY2(
+            !mTheme->LevelColumnHeaderTextOverride().has_value(),
+            "shipped Light theme must not set an explicit `header` -- this test pins the implicit-blank rule"
+        );
+
+        const QStringList lines{
+            QStringLiteral(R"({"level": "info"})"),
+            QStringLiteral(R"({"level": "warn"})"),
+        };
+        const TempJsonFile fixture(lines);
+        const StreamingRun run = RunStreaming(fixture.Path(), mTheme.data());
+        QCOMPARE(run.cancelled, false);
+        QVERIFY(run.model != nullptr);
+
+        const int levelCol = ColumnByHeader(*run.model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "level column must resolve via configured Column::header");
+
+        const QString displayed = run.model->headerData(levelCol, Qt::Horizontal, Qt::DisplayRole).toString();
+        QVERIFY2(
+            displayed.isEmpty(),
+            qPrintable(
+                QStringLiteral("level header must render blank text when an icon is present, got '%1'").arg(displayed)
+            )
+        );
+
+        // Header icon centres so it lines up with the centred
+        // pills below.
+        const QVariant alignment = run.model->headerData(levelCol, Qt::Horizontal, Qt::TextAlignmentRole);
+        QVERIFY2(alignment.isValid(), "icon-only level header must report an explicit Qt::TextAlignmentRole");
+        QCOMPARE(alignment.toInt(), static_cast<int>(Qt::AlignCenter));
+
+        // Sibling text columns keep the default alignment.
+        for (int col = 0; col < run.model->columnCount(); ++col)
+        {
+            if (col == levelCol)
+            {
+                continue;
+            }
+            const QVariant siblingAlignment = run.model->headerData(col, Qt::Horizontal, Qt::TextAlignmentRole);
+            QVERIFY2(
+                !siblingAlignment.isValid(),
+                qPrintable(QStringLiteral("text column %1 must inherit the default header alignment").arg(col))
+            );
+        }
+
+        // Tooltip still names the column.
+        const QString tooltip = run.model->headerData(levelCol, Qt::Horizontal, Qt::ToolTipRole).toString();
+        QVERIFY2(
+            tooltip.contains(QStringLiteral("level")),
+            qPrintable(QStringLiteral("tooltip must keep naming the column, got '%1'").arg(tooltip))
+        );
+
+        // Toggling icon mode off restores the configured header
+        // text and the default alignment.
+        run.model->SetShowLevelIcons(false);
+        const QString restored = run.model->headerData(levelCol, Qt::Horizontal, Qt::DisplayRole).toString();
+        QCOMPARE(restored, QStringLiteral("level"));
+        const QVariant restoredAlignment = run.model->headerData(levelCol, Qt::Horizontal, Qt::TextAlignmentRole);
+        QVERIFY2(!restoredAlignment.isValid(), "level header must drop the centre alignment when icon mode is off");
+    }
+
+    // Regression: `LevelCellDelegate::paint` must (1) actually
+    // render the pill, (2) hard-clip to `option.rect` so a narrow
+    // column can't bleed into the neighbour, and (3) fall back to
+    // the base delegate when icon mode is off. The pixmap probe
+    // pins the visual contract -- a change to the insets, clip,
+    // gate, or pill-brush resolution surfaces as a pixel diff.
+    void TestLevelCellDelegatePaintsPillAndClipsToRect()
+    {
+        QVERIFY(mTheme != nullptr);
+        // Dark ships a concrete Info pill (`#1E3A5F`) to assert
+        // against; pinning to a fixed theme keeps the test stable.
+        mTheme->SetActiveSelection(QStringLiteral("Dark"));
+        QVERIFY(mTheme->HasLevelColumnOverride());
+        const QBrush expectedPill = mTheme->PillBackgroundFor(loglib::LogLevel::Info);
+        QVERIFY2(expectedPill.style() != Qt::NoBrush, "Dark theme must define an Info pill background");
+        const QColor expectedPillColor = expectedPill.color();
+        QVERIFY(expectedPillColor.isValid());
+
+        // Minimal fixture so the rank cache resolves `info`.
+        const QStringList lines{
+            QStringLiteral(R"({"level": "info"})"),
+            QStringLiteral(R"({"level": "info"})"),
+        };
+        const TempJsonFile fixture(lines);
+        const StreamingRun run = RunStreaming(fixture.Path(), mTheme.data());
+        QCOMPARE(run.cancelled, false);
+        QVERIFY(run.model != nullptr);
+        run.model->SetShowLevelIcons(true);
+        QVERIFY(run.model->IsLevelIconModeActive());
+
+        const int levelCol = ColumnByHeader(*run.model, QStringLiteral("level"));
+        QVERIFY2(levelCol >= 0, "fixture must resolve a level column");
+        const QModelIndex cell = run.model->index(0, levelCol);
+        QVERIFY(cell.isValid());
+
+        const LevelCellDelegate delegate(mTheme.data());
+
+        // Pixmap > cell rect, filled with a sentinel colour. Any
+        // sentinel pixel changing after `paint` means the clip
+        // leaked.
+        constexpr int CELL_WIDTH = 64;
+        constexpr int CELL_HEIGHT = 24;
+        constexpr int OUTSIDE_MARGIN = 8;
+        constexpr int PIXMAP_WIDTH = CELL_WIDTH + (2 * OUTSIDE_MARGIN);
+        constexpr int PIXMAP_HEIGHT = CELL_HEIGHT + (2 * OUTSIDE_MARGIN);
+        const QColor sentinel(0xFF, 0x00, 0xFF); // magenta -- not used by Dark theme.
+
+        QPixmap pix(PIXMAP_WIDTH, PIXMAP_HEIGHT);
+        pix.fill(sentinel);
+
+        QStyleOptionViewItem option;
+        option.rect = QRect(OUTSIDE_MARGIN, OUTSIDE_MARGIN, CELL_WIDTH, CELL_HEIGHT);
+        option.state = QStyle::State_Enabled;
+        option.widget = nullptr;
+
+        {
+            QPainter painter(&pix);
+            delegate.paint(&painter, option, cell);
+        }
+        const QImage image = pix.toImage();
+
+        // (1) Pill paint ran: at least one sampled pixel inside
+        // the inset matches the theme's pill colour. Sampling a
+        // ring avoids false negatives from AA edges and DPR
+        // rounding.
+        constexpr int PILL_PROBE_INSET = 6;
+        const QPoint sampleCentre = option.rect.center();
+        const std::array<QPoint, 5> samples = {
+            sampleCentre,
+            QPoint(option.rect.left() + PILL_PROBE_INSET, sampleCentre.y()),
+            QPoint(option.rect.right() - PILL_PROBE_INSET, sampleCentre.y()),
+            QPoint(sampleCentre.x(), option.rect.top() + PILL_PROBE_INSET),
+            QPoint(sampleCentre.x(), option.rect.bottom() - PILL_PROBE_INSET)
+        };
+        const auto colorsMatch = [](QRgb actual, const QColor &expected) {
+            // Per-channel tolerance covers AA edges + a swapped
+            // compositing mode in any installed stylesheet.
+            constexpr int CHANNEL_TOLERANCE = 3;
+            return std::abs(qRed(actual) - expected.red()) <= CHANNEL_TOLERANCE &&
+                   std::abs(qGreen(actual) - expected.green()) <= CHANNEL_TOLERANCE &&
+                   std::abs(qBlue(actual) - expected.blue()) <= CHANNEL_TOLERANCE;
+        };
+        const bool pillVisible = std::ranges::any_of(samples, [&](const QPoint &pt) {
+            return colorsMatch(image.pixel(pt), expectedPillColor);
+        });
+        QVERIFY2(pillVisible, "expected at least one pixel inside the cell to match the Dark Info pill brush");
+
+        // (2) Clip held: every pixel outside the cell rect is
+        // still the sentinel.
+        for (int y = 0; y < PIXMAP_HEIGHT; ++y)
+        {
+            for (int x = 0; x < PIXMAP_WIDTH; ++x)
+            {
+                if (option.rect.contains(x, y))
+                {
+                    continue;
+                }
+                const QRgb actual = image.pixel(x, y);
+                QVERIFY2(
+                    qRed(actual) == 0xFF && qGreen(actual) == 0x00 && qBlue(actual) == 0xFF,
+                    qPrintable(QStringLiteral("delegate painted outside option.rect at (%1, %2); RGBA=#%3")
+                                   .arg(x)
+                                   .arg(y)
+                                   .arg(QString::number(actual, 16)))
+                );
+            }
+        }
+
+        // (3) Icon mode off: the delegate forwards to the base
+        // class. Observed as "pill colour no longer at the
+        // centre sample"; the exact fallback colour is palette-
+        // dependent so we don't pin it.
+        run.model->SetShowLevelIcons(false);
+        QVERIFY(!run.model->IsLevelIconModeActive());
+        pix.fill(sentinel);
+        {
+            QPainter painter(&pix);
+            delegate.paint(&painter, option, cell);
+        }
+        const QImage offModeImage = pix.toImage();
+        QVERIFY2(
+            !colorsMatch(offModeImage.pixel(sampleCentre), expectedPillColor),
+            "with icon mode disabled the delegate must not paint the pill"
+        );
+    }
+
+    // Regression: `LogTableView` installs `LogHeaderView`, and
+    // its icon-centering rule centres icon-only sections. The
+    // model-side `TextAlignmentRole` alone can't fix this because
+    // text alignment doesn't move the icon. Exercises the rule
+    // via the public static helper to avoid needing a model.
+    void TestLogHeaderViewCentersIconOnlySections()
+    {
+        // Reach through the production wiring rather than building
+        // a detached view, so the install path is exercised too.
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        QVERIFY2(tableView != nullptr, "MainWindow must own a LogTableView");
+
+        auto *headerView = dynamic_cast<LogHeaderView *>(tableView->horizontalHeader());
+        QVERIFY2(headerView != nullptr, "LogTableView must install LogHeaderView as its horizontal header");
+
+        // Empty text + non-null icon -> centred icon.
+        QStyleOptionHeader iconOnly;
+        iconOnly.text = QString{};
+        iconOnly.icon = QApplication::style()->standardIcon(QStyle::SP_MessageBoxInformation);
+        iconOnly.iconAlignment = Qt::AlignVCenter; // QHeaderView's default
+        LogHeaderView::CenterIconAlignmentForIconOnlySection(&iconOnly);
+        QCOMPARE(static_cast<int>(iconOnly.iconAlignment), static_cast<int>(Qt::AlignCenter));
+
+        // Icon + text -> default (icon left of text); matches the
+        // funnel / warning case.
+        QStyleOptionHeader textAndIcon;
+        textAndIcon.text = QStringLiteral("level");
+        textAndIcon.icon = QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning);
+        textAndIcon.iconAlignment = Qt::AlignVCenter;
+        LogHeaderView::CenterIconAlignmentForIconOnlySection(&textAndIcon);
+        QCOMPARE(static_cast<int>(textAndIcon.iconAlignment), static_cast<int>(Qt::AlignVCenter));
+
+        // No icon -> no-op, even with empty text.
+        QStyleOptionHeader emptyBoth;
+        emptyBoth.text = QString{};
+        emptyBoth.icon = QIcon{};
+        emptyBoth.iconAlignment = Qt::AlignVCenter;
+        LogHeaderView::CenterIconAlignmentForIconOnlySection(&emptyBoth);
+        QCOMPARE(static_cast<int>(emptyBoth.iconAlignment), static_cast<int>(Qt::AlignVCenter));
+
+        // Defensive: nullptr is a no-op (must not crash).
+        LogHeaderView::CenterIconAlignmentForIconOnlySection(nullptr);
     }
 
     // Regression: a theme switch must repaint the visible rows.
@@ -8791,6 +9171,138 @@ private slots:
         QCOMPARE(mTheme->PersistedSelection(), QStringLiteral("Light"));
     }
 
+    // Live preview + rollback: toggling Preferences checkboxes
+    // updates the model + theme immediately, and Cancel/X-close
+    // rewinds to the pre-dialog state.
+    void TestPreferencesEditorLevelIconsLivePreviewAndRevert()
+    {
+        QVERIFY(mTheme != nullptr);
+
+        // Baseline showLevelIcons=true so toggling off is a real
+        // change. Built-in themes ship `levelColumnOverride`.
+        {
+            QSettings settings;
+            settings.setValue(QStringLiteral("ui/showLevelIcons"), true);
+        }
+        mTheme->SetActiveSelection(QStringLiteral("Dark"));
+        QCoreApplication::processEvents();
+        QVERIFY(mTheme->HasLevelColumnOverride());
+        // Drive the model into icon mode so we can observe the
+        // live-preview flip back to text mode.
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+        model->SetShowLevelIcons(true);
+        QVERIFY(model->IsLevelIconModeActive());
+
+        auto *editor = mWindow->findChild<PreferencesEditor *>();
+        QVERIFY2(editor != nullptr, "MainWindow must own a PreferencesEditor");
+        // `UpdateFields` seeds `mInitial*` from QSettings.
+        editor->UpdateFields();
+        // Find the checkbox by its label rather than `objectName`
+        // so the test doesn't need production-only metadata.
+        QCheckBox *checkbox = nullptr;
+        for (auto *cb : editor->findChildren<QCheckBox *>())
+        {
+            if (cb->text() == QStringLiteral("Show level icons"))
+            {
+                checkbox = cb;
+                break;
+            }
+        }
+        QVERIFY2(checkbox != nullptr, "Preferences must expose a `Show level icons` checkbox");
+        // Explicit null-check for clang-analyzer (it doesn't model
+        // QVERIFY2's early return).
+        if (checkbox == nullptr)
+        {
+            return;
+        }
+        QVERIFY(checkbox->isChecked());
+
+        // Live preview: untoggle -> icon mode flips off
+        // synchronously via `MainWindow`'s handler.
+        checkbox->setChecked(false);
+        QCoreApplication::processEvents();
+        QVERIFY2(!model->IsLevelIconModeActive(), "Untoggling the checkbox must live-preview icon mode OFF");
+
+        // QSettings is untouched until Ok.
+        {
+            const QSettings settings;
+            QVERIFY(settings.value(QStringLiteral("ui/showLevelIcons")).toBool());
+        }
+
+        // X-close triggers `closeEvent` revert.
+        editor->close();
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            model->IsLevelIconModeActive(),
+            "Closing the dialog without Ok must revert the level-icons live preview to the initial state"
+        );
+        {
+            const QSettings settings;
+            QVERIFY(settings.value(QStringLiteral("ui/showLevelIcons")).toBool());
+        }
+    }
+
+    // Mirror of the level-icons test for the high-contrast toggle.
+    // Observed on `ThemeControl::IsHighContrast` because the live
+    // preview goes through `SetHighContrast`.
+    void TestPreferencesEditorHighContrastLivePreviewAndRevert()
+    {
+        QVERIFY(mTheme != nullptr);
+
+        // Baseline highContrast=false on a theme with a
+        // `levelsHighContrast` block so the checkbox is enabled.
+        {
+            QSettings settings;
+            settings.setValue(QStringLiteral("ui/highContrastLevels"), false);
+        }
+        mTheme->SetActiveSelection(QStringLiteral("Dark"));
+        QCoreApplication::processEvents();
+        QVERIFY(mTheme->HasLevelsHighContrast());
+        mTheme->SetHighContrast(false);
+        QVERIFY(!mTheme->IsHighContrast());
+
+        auto *editor = mWindow->findChild<PreferencesEditor *>();
+        QVERIFY2(editor != nullptr, "MainWindow must own a PreferencesEditor");
+        editor->UpdateFields();
+
+        QCheckBox *checkbox = nullptr;
+        for (auto *cb : editor->findChildren<QCheckBox *>())
+        {
+            if (cb->text() == QStringLiteral("High contrast levels"))
+            {
+                checkbox = cb;
+                break;
+            }
+        }
+        QVERIFY2(checkbox != nullptr, "Preferences must expose a `High contrast levels` checkbox");
+        // Explicit null-check for clang-analyzer (see sibling test).
+        if (checkbox == nullptr)
+        {
+            return;
+        }
+        QVERIFY(!checkbox->isChecked());
+
+        // Live preview: toggle on -> controller flag flips
+        // immediately, `themeChanged` fires via existing wiring.
+        checkbox->setChecked(true);
+        QCoreApplication::processEvents();
+        QVERIFY2(mTheme->IsHighContrast(), "Toggling the checkbox must live-preview high contrast ON");
+
+        // QSettings still false until Ok.
+        {
+            const QSettings settings;
+            QVERIFY(!settings.value(QStringLiteral("ui/highContrastLevels")).toBool());
+        }
+
+        // X-close reverts via `closeEvent`.
+        editor->close();
+        QCoreApplication::processEvents();
+
+        QVERIFY2(!mTheme->IsHighContrast(), "Closing the dialog without Ok must revert the high-contrast live preview");
+    }
+
     // The Column Editor writes back every user-controllable Column
     // field on Apply: header, type, autoDetect, visible. Verify each
     // surface lands in the live configuration and the health cache
@@ -12288,12 +12800,21 @@ private slots:
         QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::ForegroundRole}));
         QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::FontRole}));
         QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::DecorationRole}));
+        QVERIFY2(
+            LogModel::IsStyleOnlyRoleChange({Qt::ToolTipRole}),
+            "ToolTipRole flips with `SetShowLevelIcons`; receivers must skip it"
+        );
         QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::BackgroundRole, Qt::ForegroundRole, Qt::FontRole}));
+        QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::DecorationRole, Qt::ToolTipRole}));
         QVERIFY2(!LogModel::IsStyleOnlyRoleChange({Qt::DisplayRole}), "DisplayRole change must trigger a refresh");
         QVERIFY2(!LogModel::IsStyleOnlyRoleChange({Qt::EditRole}), "EditRole change must trigger a refresh");
         QVERIFY2(
             !LogModel::IsStyleOnlyRoleChange({Qt::BackgroundRole, Qt::DisplayRole}),
             "mixed list with at least one value-role must trigger a refresh"
+        );
+        QVERIFY2(
+            !LogModel::IsStyleOnlyRoleChange({Qt::ToolTipRole, Qt::DisplayRole}),
+            "tooltip + display still has a value-role; must refresh"
         );
     }
 
@@ -15575,6 +16096,80 @@ private slots:
         QCOMPARE(restored->Model()->rowCount(), fixtureLines.size());
     }
 
+    // Regression: a saved sort must be deferred until streaming
+    // finishes. Avoids the O(N^2) per-row insert path
+    // `LogFilterModel::OnSourceRowsInserted` takes under an
+    // active sort (a 1 GB restore "never finishes" otherwise).
+    // Asserts both halves: proxy is unsorted while streaming, and
+    // the saved sort is applied exactly once at the end.
+    void TestRestoreLastSessionDefersSortUntilStreamingFinishes()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        // Seed: stream, engage a sort, save the session via the
+        // close-event autosave so the saved JSON carries the sort.
+        auto seeder = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
+        const QStringList fixtureLines{
+            QStringLiteral(R"({"category": "info", "msg": "alpha"})"),
+            QStringLiteral(R"({"category": "warn", "msg": "beta"})"),
+        };
+        const TempJsonFile fixture(fixtureLines);
+
+        QSignalSpy seederFinishedSpy(seeder->Model(), &LogModel::streamingFinished);
+        seeder->OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY(seederFinishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        const int categoryCol = ColumnByHeader(*seeder->Model(), QStringLiteral("category"));
+        QVERIFY2(categoryCol >= 0, "category column must exist after streaming");
+        auto *seederTable = seeder->findChild<LogTableView *>();
+        QVERIFY(seederTable != nullptr);
+        seederTable->sortByColumn(categoryCol, Qt::DescendingOrder);
+        QCoreApplication::processEvents();
+
+        // closeEvent autosave captures the manual sort engaged
+        // after `streamingFinished` -- the earlier streaming
+        // autosave saw the proxy before the sort.
+        seeder->close();
+        QCoreApplication::processEvents();
+        seeder.reset();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QCoreApplication::processEvents();
+
+        const auto lastPath = manager.LastSessionPath();
+        QVERIFY(lastPath.has_value());
+
+        // Sanity: the saved JSON carries the sort.
+        {
+            loglib::LogConfigurationManager probe;
+            probe.Load(lastPath->toStdString());
+            QCOMPARE(probe.Configuration().sort.columnIndex, categoryCol);
+            QVERIFY(probe.Configuration().sort.descending);
+        }
+
+        // Fresh window restores the snapshot.
+        auto restored = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
+        auto *restoredFilter = restored->FilterModel();
+        QVERIFY2(restoredFilter != nullptr, "restored window must own a LogFilterModel");
+
+        QSignalSpy restoredFinishedSpy(restored->Model(), &LogModel::streamingFinished);
+        restored->RestoreLastSessionFromPath(*lastPath);
+        // Sort still deferred immediately after the call returns:
+        // no batches have been processed yet.
+        QCOMPARE(restoredFilter->SortColumn(), -1);
+
+        QVERIFY(restoredFinishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        // `ApplyDeferredSortFromConfig` applies the sort once
+        // when streaming finishes.
+        QCOMPARE(restoredFilter->SortColumn(), categoryCol);
+        QCOMPARE(restoredFilter->SortOrder(), Qt::DescendingOrder);
+        QCOMPARE(restored->Model()->rowCount(), fixtureLines.size());
+    }
+
     // Recent Sessions submenu rebuild on `aboutToShow`. Asserts:
     // entries + separator + Clear are present, clicking an entry
     // reopens the configuration, and `mAutoSaveUuid` is pinned so
@@ -17128,9 +17723,11 @@ private slots:
         QCOMPARE(wired->Model()->rowCount(), 2);
     }
 
-    // Empty `{}` must be classified as a log (parsing fails), not
-    // as a configuration. Otherwise it would wipe columns or
-    // trigger a multi-config modal.
+    // `{}` must classify as a log (no `"columns"` key), not a
+    // configuration -- otherwise it would wipe columns. JsonParser
+    // is permissive: `{}` parses as a 0-field record, so both
+    // files stream successfully (total rowCount = 2). We wait for
+    // both finish emits to avoid racing `StreamNextPendingFile`.
     void TestDispatchMixedRejectsEmptyJsonObjectAsConfig()
     {
         const QTemporaryDir sessionsDir;
@@ -17150,18 +17747,18 @@ private slots:
         const TempJsonFile log({QStringLiteral(R"({"msg": "real"})")});
 
         wired->SetSuppressDialogsForTest(true);
-        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        const QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
         const MainWindow::MixedInputDispatch result =
             wired->OpenMixedFilesForTest({emptyPath, log.Path()}, MainWindow::OpenMode::Append);
         QCOMPARE(result, MainWindow::MixedInputDispatch::QueuedLogsOnly);
-        QVERIFY(finishedSpy.wait(5000));
+        // Two emits: file 1 chains to file 2 via
+        // `OnStreamingFinished -> StreamNextPendingFile`.
+        QTRY_VERIFY_WITH_TIMEOUT(finishedSpy.count() >= 2, 5000);
         QCoreApplication::processEvents();
 
-        // Real log row survives; the `{}` parse error lands in
-        // `ShowParseErrors` (not asserted here).
-        QCOMPARE(wired->Model()->rowCount(), 1);
+        QCOMPARE(wired->Model()->rowCount(), 2);
     }
 
     // CLI variant: `app cfg.json log.json` applies the cfg first
