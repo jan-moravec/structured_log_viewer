@@ -12430,6 +12430,334 @@ private slots:
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
     }
 
+    // Shape contract for the Sort split button: `MenuButtonPopup`
+    // `QToolButton` whose default action is the bare `actionSortBy`
+    // (a face click programmatically pops the dropdown -- sort has
+    // no generic editor like filters do) and whose dropdown menu
+    // carries the `sortBySplitMenu` objectName. Mirrors
+    // `TestAddFilterSplitButtonShape`.
+    void TestSortBySplitButtonShape()
+    {
+        auto *button = mWindow->findChild<QToolButton *>(QStringLiteral("sortBySplitButton"));
+        QVERIFY2(button != nullptr, "primary toolbar must host the sort split button");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QCOMPARE(button->popupMode(), QToolButton::MenuButtonPopup);
+
+        const QAction *defaultAction = button->defaultAction();
+        QVERIFY2(defaultAction != nullptr, "split button must have a default action");
+        QCOMPARE(defaultAction->objectName(), QStringLiteral("actionSortBy"));
+
+        const QMenu *menu = button->menu();
+        QVERIFY2(menu != nullptr, "split button must have a popup menu");
+        QCOMPARE(menu->objectName(), QStringLiteral("sortBySplitMenu"));
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // The Sort dropdown lists every *visible* column with two
+    // entries (`Sort by "<col>" ascending` and `... descending`).
+    // Verifies the population, the per-column doubling, and the
+    // hidden-column filter (toggling a column hidden must drop
+    // its entries on the next open, mirroring the Add-filter
+    // dropdown).
+    void TestSortByDropdownListsVisibleColumns()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "fixture must produce columns");
+
+        auto *menu = mWindow->findChild<QMenu *>(QStringLiteral("sortBySplitMenu"));
+        QVERIFY2(menu != nullptr, "sort dropdown must exist");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        emit menu->aboutToShow();
+
+        QStringList entryTexts;
+        for (const QAction *act : menu->actions())
+        {
+            entryTexts.append(act != nullptr ? act->text() : QStringLiteral("<null>"));
+        }
+        QVERIFY2(!entryTexts.isEmpty(), "dropdown must list at least one column after streaming a fixture");
+        int ascCount = 0;
+        int descCount = 0;
+        for (const QString &text : entryTexts)
+        {
+            QVERIFY2(
+                text.startsWith(QStringLiteral("Sort by ")),
+                "every dropdown entry must follow the `Sort by \"<col>\" ...` shape"
+            );
+            if (text.endsWith(QStringLiteral("ascending")))
+            {
+                ++ascCount;
+            }
+            else if (text.endsWith(QStringLiteral("descending")))
+            {
+                ++descCount;
+            }
+        }
+        QVERIFY2(ascCount > 0 && ascCount == descCount, "every column must contribute both an Asc and a Desc entry");
+
+        // Hide the `msg` column and re-open: its entries must
+        // drop. Cross-checks the visible-only filter shared with
+        // the Add-filter dropdown.
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "fixture must expose `msg` column");
+        mWindow->SetColumnVisible(msgCol, false);
+        emit menu->aboutToShow();
+
+        for (const QAction *act : menu->actions())
+        {
+            QVERIFY2(
+                !act->text().contains(QStringLiteral("\"msg\"")),
+                "hidden column must not surface in the dropdown after hide"
+            );
+        }
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Triggering a `Sort by "<col>" ascending|descending` dropdown
+    // entry installs the matching sort on the proxy. Pinned so a
+    // refactor that changes the `sortByColumn` plumbing would trip
+    // here, replicating the `TestAddFilterDropdownTriggerPreselectsColumn`
+    // contract for the sort entry point.
+    void TestSortByDropdownTriggerSortsByColumn()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "fixture must produce columns");
+        auto *model = mWindow->Model();
+        const int categoryCol = ColumnByHeader(*model, QStringLiteral("category"));
+        QVERIFY2(categoryCol >= 0, "fixture must expose `category` column");
+
+        auto *menu = mWindow->findChild<QMenu *>(QStringLiteral("sortBySplitMenu"));
+        QVERIFY2(menu != nullptr, "sort dropdown must exist");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        emit menu->aboutToShow();
+
+        QAction *categoryDesc = nullptr;
+        for (QAction *act : menu->actions())
+        {
+            if (act != nullptr && act->text().contains(QStringLiteral("\"category\"")) &&
+                act->text().endsWith(QStringLiteral("descending")))
+            {
+                categoryDesc = act;
+                break;
+            }
+        }
+        QVERIFY2(categoryDesc != nullptr, "dropdown must offer a descending entry for the `category` column");
+
+        categoryDesc->trigger();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(mWindow->FilterModel()->SortColumn(), categoryCol);
+        QCOMPARE(mWindow->FilterModel()->SortOrder(), Qt::DescendingOrder);
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // `RebuildSortMenu` is hooked to `menuSort->aboutToShow`. The
+    // top of the menu must always carry `actionClearSort` followed
+    // by a separator, then per-column Asc/Desc entries. Active
+    // sort is reflected via checkable check state.
+    void TestSortMenuShapeAndCheckmarks()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "fixture must produce columns");
+        auto *model = mWindow->Model();
+        const int categoryCol = ColumnByHeader(*model, QStringLiteral("category"));
+        QVERIFY2(categoryCol >= 0, "fixture must expose `category` column");
+
+        auto *menu = mWindow->findChild<QMenu *>(QStringLiteral("menuSort"));
+        QVERIFY2(menu != nullptr, "Sort menu must exist");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+
+        // Sort the proxy so a checked entry exists; Asc on
+        // `category`. The aboutToShow rebuild reads the live
+        // proxy state.
+        mWindow->findChild<LogTableView *>()->sortByColumn(categoryCol, Qt::AscendingOrder);
+        QCoreApplication::processEvents();
+
+        emit menu->aboutToShow();
+        const QList<QAction *> entries = menu->actions();
+        QVERIFY2(entries.size() >= 3, "Sort menu must have Clear + separator + at least one column entry");
+        QCOMPARE(entries[0]->objectName(), QStringLiteral("actionClearSort"));
+        QVERIFY2(entries[1]->isSeparator(), "second slot must be the separator");
+        QVERIFY2(entries[0]->isEnabled(), "actionClearSort must be enabled while a sort is active");
+
+        // Walk the per-column rows and find the `category` Asc/Desc
+        // pair. Asc must be checked, Desc unchecked.
+        QAction *ascCategory = nullptr;
+        QAction *descCategory = nullptr;
+        for (QAction *act : entries)
+        {
+            if (act == nullptr || act->isSeparator())
+            {
+                continue;
+            }
+            if (act->text().contains(QStringLiteral("\"category\"")))
+            {
+                if (act->text().endsWith(QStringLiteral("ascending")))
+                {
+                    ascCategory = act;
+                }
+                else if (act->text().endsWith(QStringLiteral("descending")))
+                {
+                    descCategory = act;
+                }
+            }
+        }
+        QVERIFY2(ascCategory != nullptr && descCategory != nullptr, "menu must carry both `category` entries");
+        QVERIFY2(ascCategory->isChecked(), "active asc-sort entry must be checked");
+        QVERIFY2(!descCategory->isChecked(), "non-active desc-sort entry must be unchecked");
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Header right-click menu on a sorted column must mark the
+    // matching `Sort ascending|descending by "<col>"` entry checked,
+    // and `Clear sort` must be enabled. Mirrors the Sort menu
+    // shape, contextualised to the right-clicked column.
+    void TestHeaderContextMenuSortEntries()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "fixture must produce columns");
+        auto *model = mWindow->Model();
+        const int categoryCol = ColumnByHeader(*model, QStringLiteral("category"));
+        QVERIFY2(categoryCol >= 0, "fixture must expose `category` column");
+
+        // Without a sort, Clear sort is disabled and neither
+        // direction is checked.
+        auto built = mWindow->BuildHeaderContextMenu(categoryCol, nullptr);
+        QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QScopeGuard freeMenu1([&built]() { built.menu->deleteLater(); });
+
+        QAction *clearSortNoSort = nullptr;
+        QAction *ascNoSort = nullptr;
+        QAction *descNoSort = nullptr;
+        for (QAction *act : built.menu->actions())
+        {
+            if (act == nullptr || act->isSeparator())
+            {
+                continue;
+            }
+            if (act->text() == QStringLiteral("Clear sort"))
+            {
+                clearSortNoSort = act;
+            }
+            else if (act->text().startsWith(QStringLiteral("Sort ascending")))
+            {
+                ascNoSort = act;
+            }
+            else if (act->text().startsWith(QStringLiteral("Sort descending")))
+            {
+                descNoSort = act;
+            }
+        }
+        QVERIFY2(
+            clearSortNoSort != nullptr && ascNoSort != nullptr && descNoSort != nullptr,
+            "header menu must always include the Sort block"
+        );
+        QVERIFY2(!clearSortNoSort->isEnabled(), "Clear sort must be disabled when no sort is active");
+        QVERIFY2(!ascNoSort->isChecked() && !descNoSort->isChecked(), "neither direction is checked without a sort");
+        freeMenu1.dismiss();
+        built.menu->deleteLater();
+
+        // With a desc sort on `category`, the matching entry is
+        // checked and Clear sort is enabled.
+        mWindow->findChild<LogTableView *>()->sortByColumn(categoryCol, Qt::DescendingOrder);
+        QCoreApplication::processEvents();
+        auto built2 = mWindow->BuildHeaderContextMenu(categoryCol, nullptr);
+        QVERIFY2(built2.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        QScopeGuard freeMenu2([&built2]() { built2.menu->deleteLater(); });
+
+        QAction *clearSortActive = nullptr;
+        QAction *ascActive = nullptr;
+        QAction *descActive = nullptr;
+        for (QAction *act : built2.menu->actions())
+        {
+            if (act == nullptr || act->isSeparator())
+            {
+                continue;
+            }
+            if (act->text() == QStringLiteral("Clear sort"))
+            {
+                clearSortActive = act;
+            }
+            else if (act->text().startsWith(QStringLiteral("Sort ascending")))
+            {
+                ascActive = act;
+            }
+            else if (act->text().startsWith(QStringLiteral("Sort descending")))
+            {
+                descActive = act;
+            }
+        }
+        QVERIFY2(
+            clearSortActive != nullptr && ascActive != nullptr && descActive != nullptr,
+            "header menu must always include the Sort block"
+        );
+        QVERIFY2(clearSortActive->isEnabled(), "Clear sort must be enabled when a sort is active");
+        QVERIFY2(!ascActive->isChecked(), "non-active asc entry must be unchecked under a desc sort");
+        QVERIFY2(descActive->isChecked(), "active desc entry must be checked");
+
+        // Triggering Clear sort must drop the proxy's sort.
+        clearSortActive->trigger();
+        QCoreApplication::processEvents();
+        QCOMPARE(mWindow->FilterModel()->SortColumn(), -1);
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // Status-bar Clear-sort indicator must be hidden by default,
+    // surface when a sort is installed, and hide again when the
+    // sort is dropped. Mirrors the existing Clear-filters
+    // status-button behaviour.
+    void TestClearSortStatusButtonVisibilityFollowsSort()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "fixture must produce columns");
+        auto *model = mWindow->Model();
+        const int categoryCol = ColumnByHeader(*model, QStringLiteral("category"));
+        QVERIFY2(categoryCol >= 0, "fixture must expose `category` column");
+
+        auto *button = mWindow->findChild<QPushButton *>(QStringLiteral("clearSortStatusButton"));
+        QVERIFY2(button != nullptr, "status bar must host the clear-sort indicator");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QVERIFY2(button->isHidden(), "indicator must be hidden when no sort is active");
+
+        mWindow->findChild<LogTableView *>()->sortByColumn(categoryCol, Qt::AscendingOrder);
+        QCoreApplication::processEvents();
+        QVERIFY2(!button->isHidden(), "indicator must surface when a sort becomes active");
+
+        // Click the button -- it triggers `actionClearSort` and
+        // the next `layoutChanged` must hide it again.
+        button->click();
+        QCoreApplication::processEvents();
+        QCOMPARE(mWindow->FilterModel()->SortColumn(), -1);
+        QVERIFY2(button->isHidden(), "indicator must hide again after a clear");
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // `actionClearSort` enable state must follow the proxy's sort
+    // column. Mirrors `actionClearAllFilters`'s gating.
+    void TestActionClearSortEnableStateFollowsSort()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "fixture must produce columns");
+        auto *model = mWindow->Model();
+        const int categoryCol = ColumnByHeader(*model, QStringLiteral("category"));
+        QVERIFY2(categoryCol >= 0, "fixture must expose `category` column");
+
+        auto *action = mWindow->findChild<QAction *>(QStringLiteral("actionClearSort"));
+        QVERIFY2(action != nullptr, "actionClearSort must exist");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QVERIFY2(!action->isEnabled(), "actionClearSort must start disabled");
+
+        mWindow->findChild<LogTableView *>()->sortByColumn(categoryCol, Qt::DescendingOrder);
+        QCoreApplication::processEvents();
+        QVERIFY2(action->isEnabled(), "actionClearSort must enable while a sort is active");
+
+        mWindow->findChild<LogTableView *>()->sortByColumn(-1, Qt::AscendingOrder);
+        QCoreApplication::processEvents();
+        QVERIFY2(!action->isEnabled(), "actionClearSort must disable again after a clear");
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
     // Item 1: `RebuildViewMenu` re-adds the primary toolbar's
     // `toggleViewAction` on every menu open. Without this the user
     // who hid the toolbar would have no discoverable way to bring
