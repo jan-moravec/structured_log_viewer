@@ -33,6 +33,7 @@
 #include <loglib/udp_server_producer.hpp>
 
 #include <QAbstractProxyModel>
+#include <QActionGroup>
 #include <QApplication>
 #include <QCheckBox>
 #include <QCloseEvent>
@@ -3620,10 +3621,49 @@ bool MainWindow::AppendSortByEntries(QMenu *menu)
         // column. Same pattern the Add-filter dropdown uses.
         const auto &keys = columns[i].keys;
 
-        QAction *ascAct = menu->addAction(tr("Sort by \"%1\" ascending").arg(label));
+        // Per-column submenu carrying three radio-checkable
+        // entries (Ascending / Descending / None). The submenu
+        // title is the disambiguated column label wrapped in
+        // quotes for parity with the previous flat-action wording
+        // ("Sort by \"<col>\" ascending").
+        QMenu *colMenu = menu->addMenu(QStringLiteral("\"%1\"").arg(label));
+        // QMenu hides per-action tooltips by default. Enable them
+        // so the type-mismatch explanation surfaces when the user
+        // hovers over a disabled Asc / Desc row.
+        colMenu->setToolTipsVisible(true);
+
+        // Exclusive group so exactly one of the three rows is
+        // checked at all times -- this is the "radio" semantic
+        // the user expects for Asc/Desc/None.
+        auto *group = new QActionGroup(colMenu);
+        group->setExclusive(true);
+
+        const bool isActiveSortColumn = (currentColumn == columnIdx);
+
+        // Disable Asc/Desc when the column's data does not match
+        // its configured `Type` (`presentSlots > matchingSlots`).
+        // The sort comparator dispatches on the configured type,
+        // so a mismatched column produces an order that does not
+        // reflect the on-screen values -- we'd rather refuse than
+        // mislead. Tooltip explains the cause and points at the
+        // diagnostics dialog (the canonical fix for the pin).
+        const auto health = mModel->ColumnHealth(columnIdx);
+        const bool typeMismatch =
+            health.has_value() && health->presentSlots > health->matchingSlots;
+        const bool ascDescEnabled = modelHasRows && !typeMismatch;
+        const QString mismatchTooltip =
+            tr("This column's data does not match its configured type, so sorting is disabled. "
+               "Open Configuration Diagnostics to inspect or change the type.");
+
+        QAction *ascAct = colMenu->addAction(tr("Ascending"));
         ascAct->setCheckable(true);
-        ascAct->setChecked(currentColumn == columnIdx && currentOrder == Qt::AscendingOrder);
-        ascAct->setEnabled(modelHasRows);
+        ascAct->setChecked(isActiveSortColumn && currentOrder == Qt::AscendingOrder);
+        ascAct->setEnabled(ascDescEnabled);
+        if (typeMismatch)
+        {
+            ascAct->setToolTip(mismatchTooltip);
+        }
+        group->addAction(ascAct);
         connect(ascAct, &QAction::triggered, this, [this, keys]() {
             const int idx = FindColumnIndexByKeys(keys);
             if (idx < 0 || mTableView == nullptr)
@@ -3633,10 +3673,15 @@ bool MainWindow::AppendSortByEntries(QMenu *menu)
             mTableView->sortByColumn(idx, Qt::AscendingOrder);
         });
 
-        QAction *descAct = menu->addAction(tr("Sort by \"%1\" descending").arg(label));
+        QAction *descAct = colMenu->addAction(tr("Descending"));
         descAct->setCheckable(true);
-        descAct->setChecked(currentColumn == columnIdx && currentOrder == Qt::DescendingOrder);
-        descAct->setEnabled(modelHasRows);
+        descAct->setChecked(isActiveSortColumn && currentOrder == Qt::DescendingOrder);
+        descAct->setEnabled(ascDescEnabled);
+        if (typeMismatch)
+        {
+            descAct->setToolTip(mismatchTooltip);
+        }
+        group->addAction(descAct);
         connect(descAct, &QAction::triggered, this, [this, keys]() {
             const int idx = FindColumnIndexByKeys(keys);
             if (idx < 0 || mTableView == nullptr)
@@ -3644,6 +3689,37 @@ bool MainWindow::AppendSortByEntries(QMenu *menu)
                 return;
             }
             mTableView->sortByColumn(idx, Qt::DescendingOrder);
+        });
+
+        QAction *noneAct = colMenu->addAction(tr("None"));
+        noneAct->setCheckable(true);
+        // Checked when this column is *not* the active sort
+        // column: the column carries no sort, so "None" is the
+        // resting radio state. On the active sort column, "None"
+        // sits unchecked and a click clears the sort.
+        noneAct->setChecked(!isActiveSortColumn);
+        group->addAction(noneAct);
+        connect(noneAct, &QAction::triggered, this, [this, keys]() {
+            // Route through `actionClearSort` when this column is
+            // the live sort column so the toolbar plain button,
+            // top-of-menu Clear Sort, status-bar indicator and
+            // header right-click all share one enable-state /
+            // trigger source (`UpdateSortStatus`). On any other
+            // column, "None" is already the resting radio state
+            // so the click is a structural no-op.
+            if (mSortFilterProxyModel == nullptr || ui == nullptr || ui->actionClearSort == nullptr)
+            {
+                return;
+            }
+            const int idx = FindColumnIndexByKeys(keys);
+            if (idx < 0)
+            {
+                return;
+            }
+            if (mSortFilterProxyModel->SortColumn() == idx)
+            {
+                ui->actionClearSort->trigger();
+            }
         });
 
         addedAny = true;
@@ -6527,10 +6603,32 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
         const Qt::SortOrder currentSortOrder =
             (mSortFilterProxyModel != nullptr) ? mSortFilterProxyModel->SortOrder() : Qt::AscendingOrder;
 
+        // Same type-mismatch gate the Sort menu submenus apply --
+        // a column whose data does not match its configured type
+        // sorts via the wrong comparator and produces an order
+        // that does not reflect the on-screen values, so refuse
+        // up-front rather than mislead. `BuildHeaderTooltip`
+        // already exposes the diagnostic on the header itself.
+        const auto sortHealth = mModel->ColumnHealth(logicalColumn);
+        const bool sortTypeMismatch =
+            sortHealth.has_value() && sortHealth->presentSlots > sortHealth->matchingSlots;
+        const bool sortAscDescEnabled = modelHasRows && !sortTypeMismatch;
+        const QString sortMismatchTooltip =
+            tr("This column's data does not match its configured type, so sorting is disabled. "
+               "Open Configuration Diagnostics to inspect or change the type.");
+        // QMenu hides per-action tooltips by default. Enable them
+        // so the type-mismatch explanation surfaces when the user
+        // hovers over a disabled Asc / Desc row.
+        menu->setToolTipsVisible(true);
+
         QAction *sortAscAction = menu->addAction(tr("Sort ascending by \"%1\"").arg(thisLabel));
         sortAscAction->setCheckable(true);
         sortAscAction->setChecked(currentSortColumn == logicalColumn && currentSortOrder == Qt::AscendingOrder);
-        sortAscAction->setEnabled(modelHasRows);
+        sortAscAction->setEnabled(sortAscDescEnabled);
+        if (sortTypeMismatch)
+        {
+            sortAscAction->setToolTip(sortMismatchTooltip);
+        }
         connect(sortAscAction, &QAction::triggered, this, [this, keys = thisKeys]() {
             const int idx = FindColumnIndexByKeys(keys);
             if (idx < 0 || mTableView == nullptr)
@@ -6543,7 +6641,11 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
         QAction *sortDescAction = menu->addAction(tr("Sort descending by \"%1\"").arg(thisLabel));
         sortDescAction->setCheckable(true);
         sortDescAction->setChecked(currentSortColumn == logicalColumn && currentSortOrder == Qt::DescendingOrder);
-        sortDescAction->setEnabled(modelHasRows);
+        sortDescAction->setEnabled(sortAscDescEnabled);
+        if (sortTypeMismatch)
+        {
+            sortDescAction->setToolTip(sortMismatchTooltip);
+        }
         connect(sortDescAction, &QAction::triggered, this, [this, keys = thisKeys]() {
             const int idx = FindColumnIndexByKeys(keys);
             if (idx < 0 || mTableView == nullptr)

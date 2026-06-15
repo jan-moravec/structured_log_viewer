@@ -12456,11 +12456,12 @@ private slots:
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
     }
 
-    // The Sort dropdown lists every *visible* column with two
-    // entries (`Sort by "<col>" ascending` and `... descending`).
-    // Verifies the population, the per-column doubling, and the
+    // The Sort dropdown lists every *visible* column as a
+    // per-column submenu (titled `"<col>"`) carrying three
+    // radio-checkable entries: `Ascending`, `Descending`, `None`.
+    // Verifies the population, the per-column triple, and the
     // hidden-column filter (toggling a column hidden must drop
-    // its entries on the next open, mirroring the Add-filter
+    // its submenu on the next open, mirroring the Add-filter
     // dropdown).
     void TestSortByDropdownListsVisibleColumns()
     {
@@ -12475,32 +12476,35 @@ private slots:
         // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
         emit menu->aboutToShow();
 
-        QStringList entryTexts;
-        for (const QAction *act : menu->actions())
+        const QList<QAction *> entries = menu->actions();
+        QVERIFY2(!entries.isEmpty(), "dropdown must list at least one column after streaming a fixture");
+        int submenuCount = 0;
+        for (const QAction *act : entries)
         {
-            entryTexts.append(act != nullptr ? act->text() : QStringLiteral("<null>"));
-        }
-        QVERIFY2(!entryTexts.isEmpty(), "dropdown must list at least one column after streaming a fixture");
-        int ascCount = 0;
-        int descCount = 0;
-        for (const QString &text : entryTexts)
-        {
+            QVERIFY2(act != nullptr, "dropdown entry must not be null");
+            const QMenu *colMenu = act->menu();
             QVERIFY2(
-                text.startsWith(QStringLiteral("Sort by ")),
-                "every dropdown entry must follow the `Sort by \"<col>\" ...` shape"
+                colMenu != nullptr,
+                "every dropdown entry must be a per-column submenu"
             );
-            if (text.endsWith(QStringLiteral("ascending")))
+            QVERIFY2(
+                act->text().startsWith(QStringLiteral("\"")) && act->text().endsWith(QStringLiteral("\"")),
+                "submenu title must be the column label wrapped in quotes"
+            );
+            const QList<QAction *> colActions = colMenu->actions();
+            QCOMPARE(colActions.size(), 3);
+            QCOMPARE(colActions[0]->text(), QStringLiteral("Ascending"));
+            QCOMPARE(colActions[1]->text(), QStringLiteral("Descending"));
+            QCOMPARE(colActions[2]->text(), QStringLiteral("None"));
+            for (const QAction *sub : colActions)
             {
-                ++ascCount;
+                QVERIFY2(sub->isCheckable(), "Asc / Desc / None entries must be checkable for the radio shape");
             }
-            else if (text.endsWith(QStringLiteral("descending")))
-            {
-                ++descCount;
-            }
+            ++submenuCount;
         }
-        QVERIFY2(ascCount > 0 && ascCount == descCount, "every column must contribute both an Asc and a Desc entry");
+        QVERIFY2(submenuCount > 0, "fixture must yield at least one column submenu");
 
-        // Hide the `msg` column and re-open: its entries must
+        // Hide the `msg` column and re-open: its submenu must
         // drop. Cross-checks the visible-only filter shared with
         // the Add-filter dropdown.
         auto *model = mWindow->Model();
@@ -12519,8 +12523,8 @@ private slots:
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
     }
 
-    // Triggering a `Sort by "<col>" ascending|descending` dropdown
-    // entry installs the matching sort on the proxy. Pinned so a
+    // Triggering the `Descending` row in a column's submenu
+    // installs the matching sort on the proxy. Pinned so a
     // refactor that changes the `sortByColumn` plumbing would trip
     // here, replicating the `TestAddFilterDropdownTriggerPreselectsColumn`
     // contract for the sort entry point.
@@ -12534,17 +12538,27 @@ private slots:
         // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
         emit menu->aboutToShow();
 
-        QAction *categoryDesc = nullptr;
+        QMenu *categoryMenu = nullptr;
         for (QAction *act : menu->actions())
         {
-            if (act != nullptr && act->text().contains(QStringLiteral("\"category\"")) &&
-                act->text().endsWith(QStringLiteral("descending")))
+            if (act != nullptr && act->text().contains(QStringLiteral("\"category\"")) && act->menu() != nullptr)
             {
-                categoryDesc = act;
+                categoryMenu = act->menu();
                 break;
             }
         }
-        QVERIFY2(categoryDesc != nullptr, "dropdown must offer a descending entry for the `category` column");
+        QVERIFY2(categoryMenu != nullptr, "dropdown must offer a submenu for the `category` column");
+
+        QAction *categoryDesc = nullptr;
+        for (QAction *sub : categoryMenu->actions())
+        {
+            if (sub != nullptr && sub->text() == QStringLiteral("Descending"))
+            {
+                categoryDesc = sub;
+                break;
+            }
+        }
+        QVERIFY2(categoryDesc != nullptr, "category submenu must offer a Descending entry");
 
         categoryDesc->trigger();
         QCoreApplication::processEvents();
@@ -12556,8 +12570,11 @@ private slots:
 
     // `RebuildSortMenu` is hooked to `menuSort->aboutToShow`. The
     // top of the menu must always carry `actionClearSort` followed
-    // by a separator, then per-column Asc/Desc entries. Active
-    // sort is reflected via checkable check state.
+    // by a separator, then one per-column submenu (titled
+    // `"<col>"`) with three radio-checkable entries (Ascending /
+    // Descending / None). Active sort is reflected via the radio
+    // check state inside the matching column's submenu; columns
+    // not carrying the sort show `None` checked.
     void TestSortMenuShapeAndCheckmarks()
     {
         const int categoryCol = StreamFixtureForColumnTests();
@@ -12575,36 +12592,78 @@ private slots:
 
         emit menu->aboutToShow();
         const QList<QAction *> entries = menu->actions();
-        QVERIFY2(entries.size() >= 3, "Sort menu must have Clear + separator + at least one column entry");
+        QVERIFY2(entries.size() >= 3, "Sort menu must have Clear + separator + at least one column submenu");
         QCOMPARE(entries[0]->objectName(), QStringLiteral("actionClearSort"));
         QVERIFY2(entries[1]->isSeparator(), "second slot must be the separator");
         QVERIFY2(entries[0]->isEnabled(), "actionClearSort must be enabled while a sort is active");
 
-        // Walk the per-column rows and find the `category` Asc/Desc
-        // pair. Asc must be checked, Desc unchecked.
-        QAction *ascCategory = nullptr;
-        QAction *descCategory = nullptr;
+        // Walk the per-column submenus and find the `category`
+        // submenu. Asc must be checked; Desc and None unchecked.
+        QMenu *categoryMenu = nullptr;
+        QMenu *otherMenu = nullptr;
         for (QAction *act : entries)
         {
-            if (act == nullptr || act->isSeparator())
+            if (act == nullptr || act->isSeparator() || act->menu() == nullptr)
             {
                 continue;
             }
             if (act->text().contains(QStringLiteral("\"category\"")))
             {
-                if (act->text().endsWith(QStringLiteral("ascending")))
-                {
-                    ascCategory = act;
-                }
-                else if (act->text().endsWith(QStringLiteral("descending")))
-                {
-                    descCategory = act;
-                }
+                categoryMenu = act->menu();
+            }
+            else if (otherMenu == nullptr)
+            {
+                otherMenu = act->menu();
             }
         }
-        QVERIFY2(ascCategory != nullptr && descCategory != nullptr, "menu must carry both `category` entries");
+        QVERIFY2(categoryMenu != nullptr, "menu must carry a `category` submenu");
+
+        QAction *ascCategory = nullptr;
+        QAction *descCategory = nullptr;
+        QAction *noneCategory = nullptr;
+        for (QAction *sub : categoryMenu->actions())
+        {
+            if (sub == nullptr)
+            {
+                continue;
+            }
+            if (sub->text() == QStringLiteral("Ascending"))
+            {
+                ascCategory = sub;
+            }
+            else if (sub->text() == QStringLiteral("Descending"))
+            {
+                descCategory = sub;
+            }
+            else if (sub->text() == QStringLiteral("None"))
+            {
+                noneCategory = sub;
+            }
+        }
+        QVERIFY2(
+            ascCategory != nullptr && descCategory != nullptr && noneCategory != nullptr,
+            "category submenu must carry Ascending, Descending, and None entries"
+        );
         QVERIFY2(ascCategory->isChecked(), "active asc-sort entry must be checked");
         QVERIFY2(!descCategory->isChecked(), "non-active desc-sort entry must be unchecked");
+        QVERIFY2(!noneCategory->isChecked(), "None must be unchecked on the active sort column");
+
+        // Non-active columns show `None` as the resting radio
+        // check, so the radio shape is honest end-to-end.
+        if (otherMenu != nullptr)
+        {
+            QAction *otherNone = nullptr;
+            for (QAction *sub : otherMenu->actions())
+            {
+                if (sub != nullptr && sub->text() == QStringLiteral("None"))
+                {
+                    otherNone = sub;
+                    break;
+                }
+            }
+            QVERIFY2(otherNone != nullptr, "every column submenu must carry a None entry");
+            QVERIFY2(otherNone->isChecked(), "None must be checked on columns that are not the active sort");
+        }
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
     }
 
@@ -12800,6 +12859,228 @@ private slots:
             sortActions[2]->text().contains(QStringLiteral("every column is hidden")),
             "placeholder must explain why the menu has no per-column entries"
         );
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // A column whose data does not match its configured `Type`
+    // (`presentSlots > matchingSlots`) sorts via the wrong
+    // comparator and produces an order that does not reflect
+    // the on-screen values. The Sort submenus must therefore
+    // disable Asc / Desc on such columns; `None` stays enabled
+    // (it is a no-op for non-sorted columns and a clear for the
+    // active one). A tooltip on each disabled row points the
+    // user at Configuration Diagnostics so the cause is
+    // discoverable. Type-clean columns must keep both rows
+    // enabled in the same menu so the test pins both sides of
+    // the gate.
+    void TestSortSubmenuDisablesAscDescOnTypeMismatch()
+    {
+        const int categoryCol = StreamFixtureForColumnTests();
+        QVERIFY2(categoryCol >= 0, "fixture must expose `category` column");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "fixture must expose `msg` column");
+
+        // Pin `msg` (string-only) to `Integer` to force a
+        // type mismatch and re-snapshot health. Same pattern as
+        // `TestColumnHealthFlagsMismatchedType`.
+        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
+        model->ConfigurationManager().SetColumnType(
+            static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer
+        );
+        model->RefreshColumnHealth();
+        QCoreApplication::processEvents();
+
+        const auto msgHealth = model->ColumnHealth(msgCol);
+        QVERIFY2(msgHealth.has_value(), "ColumnHealth must yield a snapshot after Refresh");
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access): asserted above.
+        QVERIFY2(
+            msgHealth->presentSlots > msgHealth->matchingSlots,
+            "fixture precondition: msg column must report a type mismatch after the Integer pin"
+        );
+
+        auto *splitMenu = mWindow->findChild<QMenu *>(QStringLiteral("sortBySplitMenu"));
+        QVERIFY2(splitMenu != nullptr, "sort split menu must exist");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        emit splitMenu->aboutToShow();
+
+        QMenu *msgSubmenu = nullptr;
+        QMenu *categorySubmenu = nullptr;
+        for (QAction *act : splitMenu->actions())
+        {
+            if (act == nullptr || act->menu() == nullptr)
+            {
+                continue;
+            }
+            if (act->text().contains(QStringLiteral("\"msg\"")))
+            {
+                msgSubmenu = act->menu();
+            }
+            else if (act->text().contains(QStringLiteral("\"category\"")))
+            {
+                categorySubmenu = act->menu();
+            }
+        }
+        QVERIFY2(msgSubmenu != nullptr, "sort dropdown must carry a submenu for the mismatched `msg` column");
+        QVERIFY2(
+            categorySubmenu != nullptr,
+            "sort dropdown must carry a submenu for the type-clean `category` column (control)"
+        );
+
+        const auto findSubAction = [](QMenu *m, const QString &text) -> QAction * {
+            for (QAction *sub : m->actions())
+            {
+                if (sub != nullptr && sub->text() == text)
+                {
+                    return sub;
+                }
+            }
+            return nullptr;
+        };
+
+        QAction *msgAsc = findSubAction(msgSubmenu, QStringLiteral("Ascending"));
+        QAction *msgDesc = findSubAction(msgSubmenu, QStringLiteral("Descending"));
+        QAction *msgNone = findSubAction(msgSubmenu, QStringLiteral("None"));
+        QVERIFY2(
+            msgAsc != nullptr && msgDesc != nullptr && msgNone != nullptr,
+            "msg submenu must carry Ascending / Descending / None"
+        );
+        QVERIFY2(!msgAsc->isEnabled(), "Ascending must be disabled on a type-mismatched column");
+        QVERIFY2(!msgDesc->isEnabled(), "Descending must be disabled on a type-mismatched column");
+        QVERIFY2(msgNone->isEnabled(), "None must stay enabled on a type-mismatched column");
+        QVERIFY2(
+            msgAsc->toolTip().contains(QStringLiteral("does not match")),
+            "disabled Ascending row must explain the type-mismatch cause via tooltip"
+        );
+        QVERIFY2(
+            msgDesc->toolTip().contains(QStringLiteral("does not match")),
+            "disabled Descending row must explain the type-mismatch cause via tooltip"
+        );
+        QVERIFY2(msgSubmenu->toolTipsVisible(), "submenu must opt into per-action tooltips");
+
+        QAction *categoryAsc = findSubAction(categorySubmenu, QStringLiteral("Ascending"));
+        QAction *categoryDesc = findSubAction(categorySubmenu, QStringLiteral("Descending"));
+        QVERIFY2(
+            categoryAsc != nullptr && categoryDesc != nullptr,
+            "category submenu must carry Asc / Desc (control)"
+        );
+        QVERIFY2(categoryAsc->isEnabled(), "Asc must remain enabled on a type-clean column");
+        QVERIFY2(categoryDesc->isEnabled(), "Desc must remain enabled on a type-clean column");
+
+        // Top-level Sort menu must carry the same gate. The
+        // shared `AppendSortByEntries` core feeds both surfaces,
+        // but pinning here protects against a future split.
+        auto *sortMenu = mWindow->findChild<QMenu *>(QStringLiteral("menuSort"));
+        QVERIFY2(sortMenu != nullptr, "Sort menu must exist");
+        emit sortMenu->aboutToShow();
+        QMenu *sortMsgSubmenu = nullptr;
+        for (QAction *act : sortMenu->actions())
+        {
+            if (act != nullptr && act->menu() != nullptr && act->text().contains(QStringLiteral("\"msg\"")))
+            {
+                sortMsgSubmenu = act->menu();
+                break;
+            }
+        }
+        QVERIFY2(sortMsgSubmenu != nullptr, "top-level Sort menu must also carry the msg submenu");
+        QAction *sortMsgAsc = findSubAction(sortMsgSubmenu, QStringLiteral("Ascending"));
+        QAction *sortMsgDesc = findSubAction(sortMsgSubmenu, QStringLiteral("Descending"));
+        QVERIFY2(
+            sortMsgAsc != nullptr && sortMsgDesc != nullptr,
+            "top-level Sort menu msg submenu must carry Asc / Desc"
+        );
+        QVERIFY2(!sortMsgAsc->isEnabled(), "top-level Sort menu Asc must be disabled on mismatch");
+        QVERIFY2(!sortMsgDesc->isEnabled(), "top-level Sort menu Desc must be disabled on mismatch");
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // The header right-click menu's Sort block mirrors the same
+    // type-mismatch gate the Sort submenus apply, so a user who
+    // right-clicks a flagged column header sees Asc / Desc
+    // disabled with the same diagnostic tooltip. Pinned because
+    // the right-click sort block has its own action-creation
+    // path (not shared with `AppendSortByEntries`), so a future
+    // refactor that converges them must not silently drop the
+    // gate on either side.
+    void TestHeaderContextMenuDisablesSortOnTypeMismatch()
+    {
+        const int categoryCol = StreamFixtureForColumnTests();
+        QVERIFY2(categoryCol >= 0, "fixture must expose `category` column");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "fixture must expose `msg` column");
+
+        model->ConfigurationManager().SetColumnAutoDetect(static_cast<size_t>(msgCol), false);
+        model->ConfigurationManager().SetColumnType(
+            static_cast<size_t>(msgCol), loglib::LogConfiguration::Type::Integer
+        );
+        model->RefreshColumnHealth();
+        QCoreApplication::processEvents();
+
+        auto built = mWindow->BuildHeaderContextMenu(msgCol, nullptr);
+        QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        QScopeGuard freeMenu([&built]() { built.menu->deleteLater(); });
+
+        QAction *asc = nullptr;
+        QAction *desc = nullptr;
+        for (QAction *act : built.menu->actions())
+        {
+            if (act == nullptr || act->isSeparator())
+            {
+                continue;
+            }
+            if (act->text().startsWith(QStringLiteral("Sort ascending")))
+            {
+                asc = act;
+            }
+            else if (act->text().startsWith(QStringLiteral("Sort descending")))
+            {
+                desc = act;
+            }
+        }
+        QVERIFY2(asc != nullptr && desc != nullptr, "header menu must include Sort asc/desc entries");
+        QVERIFY2(!asc->isEnabled(), "header right-click Sort ascending must be disabled on a type-mismatched column");
+        QVERIFY2(!desc->isEnabled(), "header right-click Sort descending must be disabled on a type-mismatched column");
+        QVERIFY2(
+            asc->toolTip().contains(QStringLiteral("does not match")),
+            "disabled header Sort ascending must explain the type-mismatch cause via tooltip"
+        );
+        QVERIFY2(
+            desc->toolTip().contains(QStringLiteral("does not match")),
+            "disabled header Sort descending must explain the type-mismatch cause via tooltip"
+        );
+        QVERIFY2(built.menu->toolTipsVisible(), "header menu must opt into per-action tooltips");
+
+        // Control: a type-clean column keeps Asc / Desc enabled
+        // on the same right-click path.
+        auto controlBuilt = mWindow->BuildHeaderContextMenu(categoryCol, nullptr);
+        QVERIFY2(controlBuilt.menu != nullptr, "BuildHeaderContextMenu must return a menu");
+        QScopeGuard freeControl([&controlBuilt]() { controlBuilt.menu->deleteLater(); });
+
+        QAction *controlAsc = nullptr;
+        QAction *controlDesc = nullptr;
+        for (QAction *act : controlBuilt.menu->actions())
+        {
+            if (act == nullptr || act->isSeparator())
+            {
+                continue;
+            }
+            if (act->text().startsWith(QStringLiteral("Sort ascending")))
+            {
+                controlAsc = act;
+            }
+            else if (act->text().startsWith(QStringLiteral("Sort descending")))
+            {
+                controlDesc = act;
+            }
+        }
+        QVERIFY2(
+            controlAsc != nullptr && controlDesc != nullptr,
+            "header menu on a type-clean column must include Sort asc/desc entries"
+        );
+        QVERIFY2(controlAsc->isEnabled(), "Sort ascending must stay enabled on a type-clean column");
+        QVERIFY2(controlDesc->isEnabled(), "Sort descending must stay enabled on a type-clean column");
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
     }
 
