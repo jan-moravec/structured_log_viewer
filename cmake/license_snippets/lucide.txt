@@ -1,12 +1,13 @@
 Lucide icons -- https://lucide.dev
 ==================================
 
-The 22 SVG files under `resources/icons/` (registered through
+The 24 SVG files under `resources/icons/` (registered through
 `resources/resources.qrc` and rendered by `app/src/icon_loader.cpp`)
 are taken verbatim from the Lucide project's icon set:
 
-    arrow-down-to-line, bookmark, file-clock, folder-open, funnel,
-    funnel-plus, funnel-x, panel-right-open, pause, radio-tower,
+    arrow-down-to-line, arrow-down-up, bookmark, circle-x,
+    file-clock, folder-open, funnel, funnel-plus, funnel-x,
+    panel-right-open, pause, radio-tower,
     search, settings-2, square-play, square,
     gauge (level-column header indicator),
     level-trace (chevron-right), level-debug (bug),

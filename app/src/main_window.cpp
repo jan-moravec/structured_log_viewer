@@ -637,6 +637,19 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     connect(ui->actionClearAllFilters, &QAction::triggered, this, &MainWindow::ClearAllFilters);
     ui->actionClearAllFilters->setDisabled(true);
 
+    // Sort actions. `actionSortBy` is the split-button face;
+    // it just opens the per-column dropdown (sort has no
+    // generic editor). `actionClearSort` is the single slot
+    // shared across the Sort menu, toolbar, status-bar
+    // indicator, and header right-click.
+    connect(ui->actionClearSort, &QAction::triggered, this, &MainWindow::ClearSort);
+    ui->actionClearSort->setDisabled(true);
+    // Rebuild per-column entries on every open.
+    if (ui->menuSort != nullptr)
+    {
+        connect(ui->menuSort, &QMenu::aboutToShow, this, &MainWindow::RebuildSortMenu);
+    }
+
     // Stream toolbar; hidden until a live-tail stream is opened. The
     // same actions are also in the Stream menu.
     mStreamToolbar = addToolBar(tr("Stream"));
@@ -733,6 +746,41 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     connect(mSortFilterProxyModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::UpdateRowsShownStatus);
     connect(mSortFilterProxyModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateRowsShownStatus);
     connect(mSortFilterProxyModel, &QAbstractItemModel::layoutChanged, this, &MainWindow::UpdateRowsShownStatus);
+
+    // Sort indicator: keep `actionClearSort` and the status-bar
+    // button in sync with the proxy's sort. `layoutChanged`
+    // covers every sort permutation (header click, menu,
+    // dropdown, programmatic clear, and the deferred-restore
+    // path). Source row signals hide the indicator when the
+    // model goes empty.
+    connect(mSortFilterProxyModel, &QAbstractItemModel::layoutChanged, this, &MainWindow::UpdateSortStatus);
+    connect(mSortFilterProxyModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateSortStatus);
+    connect(mModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::UpdateSortStatus);
+    connect(mModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::UpdateSortStatus);
+    connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateSortStatus);
+    // Column rename emits `headerDataChanged` but no
+    // `layoutChanged`, so without this hook the status-bar
+    // tooltip would freeze on the old label. Only refresh when
+    // the rename touches the sorted column - `UpdateSortStatus`
+    // rebuilds all column labels and that's wasted work
+    // otherwise.
+    connect(
+        mModel,
+        &QAbstractItemModel::headerDataChanged,
+        this,
+        [this](Qt::Orientation orientation, int first, int last) {
+            if (orientation != Qt::Horizontal || mSortFilterProxyModel == nullptr)
+            {
+                return;
+            }
+            const int sortColumn = mSortFilterProxyModel->SortColumn();
+            if (sortColumn < 0 || sortColumn < first || sortColumn > last)
+            {
+                return;
+            }
+            UpdateSortStatus();
+        }
+    );
 
     mActionToggleFind = new QAction(tr("Find Bar"), this);
     mActionToggleFind->setObjectName(QStringLiteral("actionToggleFind"));
@@ -955,6 +1003,24 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     // toolbar (when it lands), and this button all stay in lock-
     // step.
     connect(mClearFiltersStatusButton, &QPushButton::clicked, ui->actionClearAllFilters, &QAction::trigger);
+
+    // Status-bar Clear-sort indicator. Mirrors the
+    // Clear-filters button: hidden by default, surfaced by
+    // `UpdateSortStatus` while a sort is active, click-routes
+    // through `actionClearSort`.
+    mClearSortStatusButton = new QPushButton(this);
+    mClearSortStatusButton->setObjectName(QStringLiteral("clearSortStatusButton"));
+    mClearSortStatusButton->setIcon(QApplication::style()->standardIcon(QStyle::SP_LineEditClearButton));
+    mClearSortStatusButton->setText(tr("Clear sort"));
+    mClearSortStatusButton->setAccessibleName(tr("Clear column sort"));
+    // Fallback tooltip until `UpdateSortStatus` writes the
+    // column-aware variant.
+    mClearSortStatusButton->setToolTip(tr("Clear the active column sort."));
+    mClearSortStatusButton->setFlat(true);
+    mClearSortStatusButton->setCursor(Qt::PointingHandCursor);
+    mClearSortStatusButton->hide();
+    statusBar()->addPermanentWidget(mClearSortStatusButton);
+    connect(mClearSortStatusButton, &QPushButton::clicked, ui->actionClearSort, &QAction::trigger);
 
     // 1 Hz tick that refreshes the live-tail elapsed time and the title's
     // running line count, so neither has to be rewritten per batch.
@@ -1211,6 +1277,11 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     // Run after every dock/toolbar has its `objectName` so `restoreState`
     // can resolve them. No-op on first launch.
     RestoreWindowChrome();
+
+    // Settle the sort indicator's initial state. Earlier signal
+    // hooks fired before the status-bar button existed, so sync
+    // once now that both ends are wired.
+    UpdateSortStatus();
 
     // Timezone database initialisation lives in
     // `MainWindow::InitializeTimezoneDatabase`, called synchronously
@@ -3074,6 +3145,8 @@ void MainWindow::BuildMainToolbar()
     tag(ui->actionOpenNetworkStream, mMainToolbar, QStringLiteral(":/icons/radio-tower.svg"));
     tag(ui->actionAddFilter, mMainToolbar, QStringLiteral(":/icons/funnel-plus.svg"));
     tag(ui->actionClearAllFilters, mMainToolbar, QStringLiteral(":/icons/funnel-x.svg"));
+    tag(ui->actionSortBy, mMainToolbar, QStringLiteral(":/icons/arrow-down-up.svg"));
+    tag(ui->actionClearSort, mMainToolbar, QStringLiteral(":/icons/circle-x.svg"));
     tag(mActionToggleFind, mMainToolbar, QStringLiteral(":/icons/search.svg"));
     tag(ui->actionToggleRecordDetails, mMainToolbar, QStringLiteral(":/icons/panel-right-open.svg"));
     tag(mActionToggleAnchors, mMainToolbar, QStringLiteral(":/icons/bookmark.svg"));
@@ -3183,6 +3256,29 @@ void MainWindow::BuildMainToolbar()
         RebuildClearFiltersMenu(clearFiltersMenu);
     });
     mMainToolbar->addWidget(clearFiltersButton);
+
+    // Sort dropdown button. The whole face opens the per-column
+    // menu (`InstantPopup`); sort has no generic editor, so a
+    // click-vs-arrow split would be redundant. The menu carries
+    // the same per-column rows as the Sort menu, minus the
+    // Clear-sort row (that lives in the dedicated button next
+    // to this one).
+    auto *sortByButton = new QToolButton(mMainToolbar);
+    sortByButton->setObjectName(QStringLiteral("sortBySplitButton"));
+    sortByButton->setDefaultAction(ui->actionSortBy);
+    sortByButton->setPopupMode(QToolButton::InstantPopup);
+    sortByButton->setIconSize(toolbarIconSize);
+    sortByButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    auto *sortByMenu = new QMenu(sortByButton);
+    sortByMenu->setObjectName(QStringLiteral("sortBySplitMenu"));
+    sortByButton->setMenu(sortByMenu);
+    connect(sortByMenu, &QMenu::aboutToShow, this, [this, sortByMenu]() { RebuildSortByMenu(sortByMenu); });
+    mMainToolbar->addWidget(sortByButton);
+
+    // Clear-sort plain button. Sort is single-column, so a
+    // per-X dropdown would always hold one entry. Enable state
+    // is driven by `UpdateSortStatus`.
+    mMainToolbar->addAction(ui->actionClearSort);
 
     mMainToolbar->addSeparator();
     if (mActionToggleFind != nullptr)
@@ -3445,6 +3541,220 @@ void MainWindow::RebuildClearFiltersMenu(QMenu *menu)
         act->setObjectName(filterId);
         connect(act, &QAction::triggered, this, [this, filterId]() { ClearFilter(filterId); });
     }
+}
+
+void MainWindow::ClearSort()
+{
+    if (mTableView == nullptr)
+    {
+        return;
+    }
+    // Same call shape `SetColumnVisible` and post-load rebuild
+    // paths use, so proxy / header / config stay in lockstep
+    // through one well-trodden path. No-op safe when no sort
+    // is active. All UI surfaces already gate on
+    // `actionClearSort`'s enabled state; the guard is for the
+    // test seam and any future programmatic caller.
+    mTableView->sortByColumn(-1, Qt::AscendingOrder);
+}
+
+bool MainWindow::AppendSortByEntries(QMenu *menu)
+{
+    if (menu == nullptr || mModel == nullptr || mSortFilterProxyModel == nullptr)
+    {
+        return false;
+    }
+
+    const auto &columns = mModel->Configuration().columns;
+    if (columns.empty())
+    {
+        return false;
+    }
+
+    // Kept out of `tr()` so a translator can't alter the
+    // glyphs - they must match `QHeaderView`'s sort-indicator
+    // triangles. Tests pin these code points.
+    static constexpr QChar SORT_ASC_GLYPH(u'\u25B2');  // ▲
+    static constexpr QChar SORT_DESC_GLYPH(u'\u25BC'); // ▼
+
+    // Disable rows when the model has no rows: a sort would be
+    // a structural no-op but the action would still appear
+    // available. Mirrors Add-filter's "model has rows" gate.
+    const bool modelHasRows = mModel->rowCount() > 0;
+    const int currentColumn = mSortFilterProxyModel->SortColumn();
+    const Qt::SortOrder currentOrder = mSortFilterProxyModel->SortOrder();
+
+    // Header-disambiguated labels (`name` vs `name [user|id]`),
+    // same helper the View / Add-filter / Clear-filters menus
+    // use.
+    const std::vector<QString> labels = BuildAllColumnMenuLabels();
+
+    bool addedAny = false;
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        // Skip hidden columns - re-show is delegated to the
+        // View menu (same as the filter menus).
+        if (!columns[i].visible)
+        {
+            continue;
+        }
+        const QString &label = labels[i];
+        const int columnIdx = static_cast<int>(i);
+
+        // Capture stable `keys` so a column reorder between
+        // menu build and click still hits the right column.
+        const auto &keys = columns[i].keys;
+
+        const bool isActiveSortColumn = (currentColumn == columnIdx);
+
+        // Disable Asc/Desc when the column's data doesn't
+        // match its configured type: the sort would use the
+        // wrong comparator and produce a misleading order.
+        // The tooltip points at Configuration Diagnostics.
+        const auto health = mModel->ColumnHealth(columnIdx);
+        const bool typeMismatch = health.has_value() && health->presentSlots > health->matchingSlots;
+        const bool ascDescEnabled = modelHasRows && !typeMismatch;
+        const QString mismatchTooltip =
+            tr("This column's data does not match its configured type, so sorting is disabled. "
+               "Open Configuration Diagnostics to inspect or change the type.");
+
+        // Two checkable rows per column: glyph + quoted column
+        // label. The host menu's title and the triangle carry
+        // the verb and direction; no "Sort by" prefix needed.
+        // Only the label is translated; the glyph stays a
+        // literal code-point.
+        const QString quotedLabel = tr("\"%1\"").arg(label);
+        const QString ascText = QString(SORT_ASC_GLYPH) + QLatin1Char(' ') + quotedLabel;
+        const QString descText = QString(SORT_DESC_GLYPH) + QLatin1Char(' ') + quotedLabel;
+
+        QAction *ascAct = menu->addAction(ascText);
+        ascAct->setCheckable(true);
+        ascAct->setChecked(isActiveSortColumn && currentOrder == Qt::AscendingOrder);
+        ascAct->setEnabled(ascDescEnabled);
+        if (typeMismatch)
+        {
+            ascAct->setToolTip(mismatchTooltip);
+        }
+        connect(ascAct, &QAction::triggered, this, [this, keys]() {
+            const int idx = FindColumnIndexByKeys(keys);
+            if (idx < 0 || mTableView == nullptr)
+            {
+                return;
+            }
+            mTableView->sortByColumn(idx, Qt::AscendingOrder);
+        });
+
+        QAction *descAct = menu->addAction(descText);
+        descAct->setCheckable(true);
+        descAct->setChecked(isActiveSortColumn && currentOrder == Qt::DescendingOrder);
+        descAct->setEnabled(ascDescEnabled);
+        if (typeMismatch)
+        {
+            descAct->setToolTip(mismatchTooltip);
+        }
+        connect(descAct, &QAction::triggered, this, [this, keys]() {
+            const int idx = FindColumnIndexByKeys(keys);
+            if (idx < 0 || mTableView == nullptr)
+            {
+                return;
+            }
+            mTableView->sortByColumn(idx, Qt::DescendingOrder);
+        });
+
+        addedAny = true;
+    }
+
+    if (addedAny)
+    {
+        // Enable per-action tooltips so the type-mismatch
+        // explanation surfaces on hover (QMenu hides them by
+        // default).
+        menu->setToolTipsVisible(true);
+    }
+
+    return addedAny;
+}
+
+void MainWindow::AppendSortEntriesOrPlaceholder(QMenu *menu)
+{
+    if (menu == nullptr)
+    {
+        return;
+    }
+    if (mModel == nullptr || mModel->Configuration().columns.empty())
+    {
+        QAction *placeholder = menu->addAction(tr("(no columns yet)"));
+        placeholder->setEnabled(false);
+        return;
+    }
+    if (!AppendSortByEntries(menu))
+    {
+        // Every column hidden - surface a placeholder pointing
+        // at the View menu. Same wording as
+        // `RebuildAddFilterMenu`.
+        QAction *placeholder = menu->addAction(tr("(every column is hidden – use View menu to show one)"));
+        placeholder->setEnabled(false);
+    }
+}
+
+void MainWindow::RebuildSortMenu()
+{
+    QMenu *menu = ui->menuSort;
+    if (menu == nullptr)
+    {
+        return;
+    }
+    menu->clear();
+    // Re-attach `actionClearSort` (the `clear()` above
+    // detached it without destroying the action). Its enabled
+    // state is already driven by `UpdateSortStatus`, so no
+    // resync is needed here.
+    menu->addAction(ui->actionClearSort);
+    menu->addSeparator();
+    AppendSortEntriesOrPlaceholder(menu);
+}
+
+void MainWindow::RebuildSortByMenu(QMenu *menu)
+{
+    if (menu == nullptr)
+    {
+        return;
+    }
+    menu->clear();
+    AppendSortEntriesOrPlaceholder(menu);
+}
+
+void MainWindow::UpdateSortStatus()
+{
+    const int sortColumn = (mSortFilterProxyModel != nullptr) ? mSortFilterProxyModel->SortColumn() : -1;
+    const int sourceRows = (mModel != nullptr) ? mModel->rowCount() : 0;
+    const bool sortActive = sortColumn >= 0;
+
+    if (ui != nullptr && ui->actionClearSort != nullptr)
+    {
+        ui->actionClearSort->setEnabled(sortActive);
+    }
+
+    if (mClearSortStatusButton == nullptr)
+    {
+        return;
+    }
+    if (sourceRows <= 0 || !sortActive)
+    {
+        mClearSortStatusButton->hide();
+        return;
+    }
+
+    // Name the live column in the tooltip so renames and
+    // reorders show through. Labels are disambiguated by
+    // `[keys]` for duplicate headers.
+    const std::vector<QString> labels = BuildAllColumnMenuLabels();
+    const QString columnLabel =
+        std::cmp_less(sortColumn, labels.size()) ? labels[static_cast<size_t>(sortColumn)] : tr("(unknown column)");
+    const QString directionWord =
+        (mSortFilterProxyModel->SortOrder() == Qt::DescendingOrder) ? tr("descending") : tr("ascending");
+    mClearSortStatusButton->setToolTip(tr("Sorted by \"%1\" (%2) - click to clear.").arg(columnLabel, directionWord));
+    mClearSortStatusButton->show();
 }
 
 void MainWindow::changeEvent(QEvent *event)
@@ -6203,6 +6513,80 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
         });
         const QAction *removeAction = filterSubMenu->addAction(tr("Remove"));
         connect(removeAction, &QAction::triggered, this, [this, filterId]() { ClearFilter(filterId); });
+    }
+
+    // Sort block: `Sort ascending|descending by "<col>"` and
+    // `Clear sort`, contextualised to the clicked column.
+    // Hidden columns are skipped (production right-clicks
+    // always hit a visible section).
+    if (thisColumn.visible)
+    {
+        if (!menu->isEmpty())
+        {
+            menu->addSeparator();
+        }
+        const int currentSortColumn = (mSortFilterProxyModel != nullptr) ? mSortFilterProxyModel->SortColumn() : -1;
+        const Qt::SortOrder currentSortOrder =
+            (mSortFilterProxyModel != nullptr) ? mSortFilterProxyModel->SortOrder() : Qt::AscendingOrder;
+
+        // Same type-mismatch gate as the Sort menu - a
+        // mismatched column would sort via the wrong comparator
+        // and mislead. The header tooltip already exposes the
+        // diagnostic.
+        const auto sortHealth = mModel->ColumnHealth(logicalColumn);
+        const bool sortTypeMismatch = sortHealth.has_value() && sortHealth->presentSlots > sortHealth->matchingSlots;
+        const bool sortAscDescEnabled = modelHasRows && !sortTypeMismatch;
+        const QString sortMismatchTooltip =
+            tr("This column's data does not match its configured type, so sorting is disabled. "
+               "Open Configuration Diagnostics to inspect or change the type.");
+        // Enable per-action tooltips so the type-mismatch
+        // explanation surfaces on hover.
+        menu->setToolTipsVisible(true);
+
+        QAction *sortAscAction = menu->addAction(tr("Sort ascending by \"%1\"").arg(thisLabel));
+        sortAscAction->setCheckable(true);
+        sortAscAction->setChecked(currentSortColumn == logicalColumn && currentSortOrder == Qt::AscendingOrder);
+        sortAscAction->setEnabled(sortAscDescEnabled);
+        if (sortTypeMismatch)
+        {
+            sortAscAction->setToolTip(sortMismatchTooltip);
+        }
+        connect(sortAscAction, &QAction::triggered, this, [this, keys = thisKeys]() {
+            const int idx = FindColumnIndexByKeys(keys);
+            if (idx < 0 || mTableView == nullptr)
+            {
+                return;
+            }
+            mTableView->sortByColumn(idx, Qt::AscendingOrder);
+        });
+
+        QAction *sortDescAction = menu->addAction(tr("Sort descending by \"%1\"").arg(thisLabel));
+        sortDescAction->setCheckable(true);
+        sortDescAction->setChecked(currentSortColumn == logicalColumn && currentSortOrder == Qt::DescendingOrder);
+        sortDescAction->setEnabled(sortAscDescEnabled);
+        if (sortTypeMismatch)
+        {
+            sortDescAction->setToolTip(sortMismatchTooltip);
+        }
+        connect(sortDescAction, &QAction::triggered, this, [this, keys = thisKeys]() {
+            const int idx = FindColumnIndexByKeys(keys);
+            if (idx < 0 || mTableView == nullptr)
+            {
+                return;
+            }
+            mTableView->sortByColumn(idx, Qt::DescendingOrder);
+        });
+
+        // Re-attach the shared `actionClearSort` so the header
+        // menu inherits its text, enabled state, tooltip, and
+        // any future shortcut / icon - one source of truth
+        // across every Sort surface. The host menu is built
+        // fresh per right-click and `deleteLater`d on dismiss,
+        // so re-attaching is safe.
+        if (ui->actionClearSort != nullptr)
+        {
+            menu->addAction(ui->actionClearSort);
+        }
     }
 
     // Re-showing hidden columns is intentionally not offered here:

@@ -68,6 +68,13 @@
     <addaction name="actionClearAllFilters"/>
     <addaction name="separator"/>
    </widget>
+   <widget class="QMenu" name="menuSort">
+    <property name="title">
+     <string>Sort</string>
+    </property>
+    <addaction name="actionClearSort"/>
+    <addaction name="separator"/>
+   </widget>
    <widget class="QMenu" name="menuStream">
     <property name="title">
      <string>Stream</string>
@@ -86,6 +93,7 @@
    <addaction name="menuEdit"/>
    <addaction name="menuView"/>
    <addaction name="menuFilters"/>
+   <addaction name="menuSort"/>
    <addaction name="menuStream"/>
    <addaction name="menuSettings"/>
   </widget>
@@ -199,6 +207,28 @@
    </property>
    <property name="toolTip">
     <string>Remove every active filter rule and show every row. Click the arrow to remove a single filter.</string>
+   </property>
+  </action>
+  <action name="actionSortBy">
+   <property name="text">
+    <string>Sort By</string>
+   </property>
+   <property name="iconText">
+    <string>Sort</string>
+   </property>
+   <property name="toolTip">
+    <string>Open the per-column sort menu (ascending or descending by any visible column).</string>
+   </property>
+  </action>
+  <action name="actionClearSort">
+   <property name="text">
+    <string>Clear Sort</string>
+   </property>
+   <property name="iconText">
+    <string>Clear Sort</string>
+   </property>
+   <property name="toolTip">
+    <string>Drop the active column sort and return rows to file order.</string>
    </property>
   </action>
   <action name="actionPreferences">
