@@ -989,6 +989,22 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     // step.
     connect(mClearFiltersStatusButton, &QPushButton::clicked, ui->actionClearAllFilters, &QAction::trigger);
 
+    // Status-bar Clear-sort indicator. Mirrors the Clear-filters
+    // button: hidden by default, surfaced by `UpdateSortStatus`
+    // whenever a column sort is active and the source has rows,
+    // routes a click through `actionClearSort` so the menu / the
+    // toolbar / this button all share one slot.
+    mClearSortStatusButton = new QPushButton(this);
+    mClearSortStatusButton->setObjectName(QStringLiteral("clearSortStatusButton"));
+    mClearSortStatusButton->setIcon(QApplication::style()->standardIcon(QStyle::SP_LineEditClearButton));
+    mClearSortStatusButton->setText(tr("Clear sort"));
+    mClearSortStatusButton->setAccessibleName(tr("Clear column sort"));
+    mClearSortStatusButton->setFlat(true);
+    mClearSortStatusButton->setCursor(Qt::PointingHandCursor);
+    mClearSortStatusButton->hide();
+    statusBar()->addPermanentWidget(mClearSortStatusButton);
+    connect(mClearSortStatusButton, &QPushButton::clicked, ui->actionClearSort, &QAction::trigger);
+
     // 1 Hz tick that refreshes the live-tail elapsed time and the title's
     // running line count, so neither has to be rewritten per batch.
     constexpr int LIVE_TAIL_TICK_INTERVAL_MS = 1000;
@@ -1244,6 +1260,13 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     // Run after every dock/toolbar has its `objectName` so `restoreState`
     // can resolve them. No-op on first launch.
     RestoreWindowChrome();
+
+    // Settle the sort indicator's initial state. Constructor-time
+    // signal hooks fire before the status-bar button exists; this
+    // single sync after both ends are wired ensures `actionClearSort`
+    // and the status-bar button start with consistent enable /
+    // visibility state matching the (idle) proxy.
+    UpdateSortStatus();
 
     // Timezone database initialisation lives in
     // `MainWindow::InitializeTimezoneDatabase`, called synchronously
