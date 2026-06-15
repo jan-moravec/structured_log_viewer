@@ -6250,16 +6250,22 @@ private slots:
         const QScopeGuard menuDeleter([&built]() { built.menu->deleteLater(); });
 
         const QList<QAction *> topActions = built.menu->actions();
-        QCOMPARE(topActions.size(), 5);
+        QCOMPARE(topActions.size(), 9);
 
-        // Hide → Edit column → separator → Add filter on ... → filter submenu.
+        // Hide -> Edit column -> separator -> Add filter on ... ->
+        // filter submenu -> separator -> Sort asc -> Sort desc ->
+        // Clear sort. The trailing sort block sits after the
+        // filter block so the column-mutation actions group above
+        // the row-projection actions.
         QVERIFY2(topActions[0]->text().startsWith("Hide"), "first action must be Hide");
         QVERIFY2(topActions[1]->text().startsWith("Edit column"), "second action must be Edit column ...");
         QVERIFY2(topActions[2]->isSeparator(), "third action must be a separator");
         QVERIFY2(topActions[3]->text().startsWith("Add filter on"), "fourth action must be Add filter on ...");
-        // Last non-separator is the filter submenu; its title is the
-        // filter's display value, not a fixed string.
         QVERIFY2(!topActions[4]->isSeparator(), "fifth action must be the filter submenu");
+        QVERIFY2(topActions[5]->isSeparator(), "sixth action must be the sort-block separator");
+        QVERIFY2(topActions[6]->text().startsWith("Sort ascending"), "seventh action must be Sort ascending");
+        QVERIFY2(topActions[7]->text().startsWith("Sort descending"), "eighth action must be Sort descending");
+        QCOMPARE(topActions[8]->text(), QStringLiteral("Clear sort"));
     }
 
     // With zero rows, Add-filter and per-filter Edit must be
@@ -11917,6 +11923,8 @@ private slots:
             QStringLiteral("__sep"),
             QStringLiteral("__widget"), // addFilterSplitButton
             QStringLiteral("__widget"), // clearFiltersSplitButton
+            QStringLiteral("__widget"), // sortBySplitButton
+            QStringLiteral("actionClearSort"),
             QStringLiteral("__sep"),
             QStringLiteral("actionToggleFind"),
             QStringLiteral("actionToggleRecordDetails"),

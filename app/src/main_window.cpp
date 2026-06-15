@@ -3107,6 +3107,8 @@ void MainWindow::BuildMainToolbar()
     tag(ui->actionOpenNetworkStream, mMainToolbar, QStringLiteral(":/icons/radio-tower.svg"));
     tag(ui->actionAddFilter, mMainToolbar, QStringLiteral(":/icons/funnel-plus.svg"));
     tag(ui->actionClearAllFilters, mMainToolbar, QStringLiteral(":/icons/funnel-x.svg"));
+    tag(ui->actionSortBy, mMainToolbar, QStringLiteral(":/icons/arrow-down-up.svg"));
+    tag(ui->actionClearSort, mMainToolbar, QStringLiteral(":/icons/circle-x.svg"));
     tag(mActionToggleFind, mMainToolbar, QStringLiteral(":/icons/search.svg"));
     tag(ui->actionToggleRecordDetails, mMainToolbar, QStringLiteral(":/icons/panel-right-open.svg"));
     tag(mActionToggleAnchors, mMainToolbar, QStringLiteral(":/icons/bookmark.svg"));
@@ -3216,6 +3218,43 @@ void MainWindow::BuildMainToolbar()
         RebuildClearFiltersMenu(clearFiltersMenu);
     });
     mMainToolbar->addWidget(clearFiltersButton);
+
+    // Sort split button. Face = `actionSortBy`; the action's slot
+    // pops the dropdown so a click on the face surfaces the
+    // per-column shortcut instead of opening a (non-existent)
+    // generic sort editor. Dropdown = the same `Sort by "<col>"
+    // ascending` / `... descending` checkable rows the top-level
+    // Sort menu produces, minus the leading Clear-sort row (the
+    // toolbar has a dedicated plain Clear-sort button next to
+    // this split button, so a duplicate would be redundant).
+    //
+    // `MenuButtonPopup` (matching the Add-filter button) keeps
+    // the arrow visible as a discoverable affordance; the click
+    // on the face triggers `actionSortBy`, which our slot reroutes
+    // into `showMenu()` to open the dropdown.
+    auto *sortByButton = new QToolButton(mMainToolbar);
+    sortByButton->setObjectName(QStringLiteral("sortBySplitButton"));
+    sortByButton->setDefaultAction(ui->actionSortBy);
+    sortByButton->setPopupMode(QToolButton::MenuButtonPopup);
+    sortByButton->setIconSize(toolbarIconSize);
+    sortByButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    auto *sortByMenu = new QMenu(sortByButton);
+    sortByMenu->setObjectName(QStringLiteral("sortBySplitMenu"));
+    sortByButton->setMenu(sortByMenu);
+    connect(sortByMenu, &QMenu::aboutToShow, this, [this, sortByMenu]() { RebuildSortByMenu(sortByMenu); });
+    // Route the face's `actionSortBy` trigger into `showMenu()` so
+    // a face click opens the per-column dropdown. Connect on the
+    // button (not the action) so the menu pops at the button's
+    // position; triggering the action programmatically would not
+    // anchor the popup.
+    connect(ui->actionSortBy, &QAction::triggered, sortByButton, [sortByButton]() { sortByButton->showMenu(); });
+    mMainToolbar->addWidget(sortByButton);
+
+    // Clear-sort plain action. Sort is single-column, so a per-X
+    // dropdown would only ever hold one entry -- a plain button
+    // is the honest shape here. Enable state is driven by
+    // `UpdateSortStatus` in lockstep with `LogFilterModel::SortColumn()`.
+    mMainToolbar->addAction(ui->actionClearSort);
 
     mMainToolbar->addSeparator();
     if (mActionToggleFind != nullptr)
