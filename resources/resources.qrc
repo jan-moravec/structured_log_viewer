@@ -10,6 +10,13 @@
         <file>themes/material_light.json</file>
         <file>themes/monokai_dark.json</file>
         <file>themes/monokai_light.json</file>
+        <file>themes/solarized_dark.json</file>
+        <file>themes/solarized_light.json</file>
+        <file>themes/nord.json</file>
+        <file>themes/dracula.json</file>
+        <file>themes/tokyo_night.json</file>
+        <file>themes/catppuccin_mocha.json</file>
+        <file>themes/paper_light.json</file>
         <!-- Lucide icons (ISC) for the primary toolbar; tinted at
              load-time by `icon_loader::MakeThemedIcon` so a single
              asset works for Light and Dark themes. -->
@@ -27,5 +34,18 @@
         <file>icons/settings-2.svg</file>
         <file>icons/square-play.svg</file>
         <file>icons/square.svg</file>
+        <!-- Per-level glyphs for `Theme::levelColumnOverride` (icon-mode
+             rendering of the level column). Same tinting story as the
+             toolbar icons above. `gauge` is the column-header icon
+             (Lucide speedometer): a generic level-column indicator
+             distinct from every per-level glyph below. -->
+        <file>icons/gauge.svg</file>
+        <file>icons/level-trace.svg</file>
+        <file>icons/level-debug.svg</file>
+        <file>icons/level-info.svg</file>
+        <file>icons/level-warn.svg</file>
+        <file>icons/level-error.svg</file>
+        <file>icons/level-fatal.svg</file>
+        <file>icons/level-unknown.svg</file>
     </qresource>
 </RCC>

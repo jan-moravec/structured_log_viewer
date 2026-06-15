@@ -1,0 +1,58 @@
+{
+    "name": "Paper Light",
+    "kind": "light",
+    "levels": {
+        "Trace": { "foreground": "#8A8576", "background": "#EEE9D7" },
+        "Debug": { "foreground": "#4A6F8A", "background": "#E8EAE0" },
+        "Info":  {},
+        "Warn":  { "foreground": "#A06B00", "background": "#F3EFD3" },
+        "Error": { "foreground": "#A33232", "background": "#F0DACF" },
+        "Fatal": { "foreground": "#6E1A1A", "background": "#E5B5AE", "bold": true }
+    },
+    "levelsHighContrast": {
+        "Warn":  { "foreground": "#A06B00", "background": "#F4E6B5" },
+        "Error": { "foreground": "#A33232", "background": "#EDA89E" },
+        "Fatal": { "foreground": "#6E1A1A", "background": "#D17068", "bold": true }
+    },
+    "table": {
+        "background": "#F2EEDE",
+        "alternateRowBackground": "#EAE5D2",
+        "selectionBackground": "#D9D2B6",
+        "selectionForeground": "#3A3A3A"
+    },
+    "anchorPalette": [
+        "#A33232",
+        "#B86A2A",
+        "#A06B00",
+        "#3E7A3E",
+        "#3E7A78",
+        "#3E5E8C",
+        "#7A4FA3",
+        "#A33A82"
+    ],
+    "chrome": {
+        "window": "#EAE5D2",
+        "windowText": "#3A3A3A",
+        "text": "#3A3A3A",
+        "button": "#E0DBC4",
+        "buttonText": "#3A3A3A",
+        "placeholderText": "#8A8576",
+        "toolTipBase": "#EAE5D2",
+        "toolTipText": "#3A3A3A"
+    },
+    "app": {
+        "qtStyle": "fusion"
+    },
+    "levelColumnOverride": {
+        "headerIcon": ":/icons/gauge.svg",
+        "levels": {
+            "Trace":   { "icon": ":/icons/level-trace.svg" },
+            "Debug":   { "icon": ":/icons/level-debug.svg" },
+            "Info":    { "icon": ":/icons/level-info.svg",    "pillBackground": "#DBE6ED" },
+            "Warn":    { "icon": ":/icons/level-warn.svg",    "pillBackground": "#EBD68A" },
+            "Error":   { "icon": ":/icons/level-error.svg",   "pillBackground": "#E8AAA5" },
+            "Fatal":   { "icon": ":/icons/level-fatal.svg",   "pillBackground": "#E29D98", "pillForeground": "#6E1A1A" },
+            "Unknown": { "icon": ":/icons/level-unknown.svg" }
+        }
+    }
+}

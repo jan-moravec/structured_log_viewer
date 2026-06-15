@@ -1,13 +1,18 @@
 Lucide icons -- https://lucide.dev
 ==================================
 
-The 14 SVG files under `resources/icons/` (registered through
+The 22 SVG files under `resources/icons/` (registered through
 `resources/resources.qrc` and rendered by `app/src/icon_loader.cpp`)
 are taken verbatim from the Lucide project's icon set:
 
     arrow-down-to-line, bookmark, file-clock, folder-open, funnel,
     funnel-plus, funnel-x, panel-right-open, pause, radio-tower,
-    search, settings-2, square-play, square
+    search, settings-2, square-play, square,
+    gauge (level-column header indicator),
+    level-trace (chevron-right), level-debug (bug),
+    level-info (info), level-warn (triangle-alert),
+    level-error (circle-x), level-fatal (octagon-alert),
+    level-unknown (circle-help)
 
 `search` and `square` are derived from the Feather project and
 fall under Feather's MIT license (included below); the remaining

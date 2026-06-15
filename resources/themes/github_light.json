@@ -2,12 +2,17 @@
     "name": "GitHub Light",
     "kind": "light",
     "levels": {
-        "Trace": { "foreground": "#6E7781", "background": "#F6F8FA" },
-        "Debug": { "foreground": "#0969DA", "background": "#DDF4FF" },
+        "Trace": { "foreground": "#6E7781", "background": "#FAFBFC" },
+        "Debug": { "foreground": "#0969DA", "background": "#ECF7FB" },
         "Info":  {},
+        "Warn":  { "foreground": "#9A6700", "background": "#FFFCE3" },
+        "Error": { "foreground": "#CF222E", "background": "#FFF3F2" },
+        "Fatal": { "foreground": "#82071E", "background": "#FFE2E1", "bold": true }
+    },
+    "levelsHighContrast": {
         "Warn":  { "foreground": "#9A6700", "background": "#FFF8C5" },
-        "Error": { "foreground": "#CF222E", "background": "#FFEBE9" },
-        "Fatal": { "foreground": "#82071E", "background": "#FFCECB", "bold": true }
+        "Error": { "foreground": "#CF222E", "background": "#FFC9C5" },
+        "Fatal": { "foreground": "#82071E", "background": "#FFAEAA", "bold": true }
     },
     "table": {
         "background": "#FFFFFF",
@@ -37,5 +42,17 @@
     },
     "app": {
         "qtStyle": "fusion"
+    },
+    "levelColumnOverride": {
+        "headerIcon": ":/icons/gauge.svg",
+        "levels": {
+            "Trace":   { "icon": ":/icons/level-trace.svg" },
+            "Debug":   { "icon": ":/icons/level-debug.svg" },
+            "Info":    { "icon": ":/icons/level-info.svg",    "pillBackground": "#DDF4FF" },
+            "Warn":    { "icon": ":/icons/level-warn.svg",    "pillBackground": "#FFEFC2" },
+            "Error":   { "icon": ":/icons/level-error.svg",   "pillBackground": "#FFDFDA" },
+            "Fatal":   { "icon": ":/icons/level-fatal.svg",   "pillBackground": "#FFCECB", "pillForeground": "#82071E" },
+            "Unknown": { "icon": ":/icons/level-unknown.svg" }
+        }
     }
 }

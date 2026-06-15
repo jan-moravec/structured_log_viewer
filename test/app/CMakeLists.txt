@@ -1,7 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
 
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Network Svg)
-
 # `Network` / `Svg` are required at this scope because logapp now
 # PUBLIC-links both: `QHostAddress` validates the network-stream
 # dialog's bind-address, and `QSvgRenderer` powers the themed-icon
@@ -9,7 +7,7 @@ find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Network Svg)
 # walks transitive dependencies and warns on missing targets
 # otherwise; pulling the find_package up here keeps the warning
 # silent without bloating the tests' own dependency surface.
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Test Widgets Network Svg)
+find_package(Qt6 6.1 REQUIRED COMPONENTS Test Widgets Network Svg)
 
 set(CMAKE_AUTOMOC ON)
 
@@ -22,7 +20,7 @@ qt_add_executable(apptest src/main_window_test.cpp ${RESOURCES})
 # `test_common` provides Tcp/UdpLogClient used by the network-stream
 # open-path tests. Qt::Test stays first so generated MOC integrates
 # normally; logapp pulls in the GUI under test.
-target_link_libraries(apptest PRIVATE Qt${QT_VERSION_MAJOR}::Test logapp test_common)
+target_link_libraries(apptest PRIVATE Qt6::Test logapp test_common)
 
 target_include_directories(apptest PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
 
@@ -51,7 +49,7 @@ add_test(NAME apptest COMMAND apptest WORKING_DIRECTORY $<TARGET_FILE_DIR:apptes
 # `ctest -LE benchmark` to skip it.
 qt_add_executable(apptest_bench src/benchmark_main_window.cpp)
 
-target_link_libraries(apptest_bench PRIVATE Qt${QT_VERSION_MAJOR}::Test logapp test_common)
+target_link_libraries(apptest_bench PRIVATE Qt6::Test logapp test_common)
 
 target_include_directories(apptest_bench PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
 
@@ -63,7 +61,7 @@ set_tests_properties(apptest_bench PROPERTIES LABELS "benchmark")
 # not pull in the GUI fixture loader.
 qt_add_executable(apptest_queue src/test_bounded_batch_queue.cpp)
 
-target_link_libraries(apptest_queue PRIVATE Qt${QT_VERSION_MAJOR}::Test logapp)
+target_link_libraries(apptest_queue PRIVATE Qt6::Test logapp)
 
 target_include_directories(apptest_queue PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
 
@@ -75,7 +73,7 @@ add_test(NAME apptest_queue COMMAND apptest_queue WORKING_DIRECTORY $<TARGET_FIL
 qt_add_resources(THEME_RESOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../../resources/resources.qrc)
 qt_add_executable(apptest_theme src/test_theme_control.cpp ${THEME_RESOURCES})
 
-target_link_libraries(apptest_theme PRIVATE Qt${QT_VERSION_MAJOR}::Test Qt${QT_VERSION_MAJOR}::Widgets logapp)
+target_link_libraries(apptest_theme PRIVATE Qt6::Test Qt6::Widgets logapp)
 
 target_include_directories(apptest_theme PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
 

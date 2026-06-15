@@ -89,6 +89,49 @@ struct AppStyle
     friend bool operator==(const AppStyle &, const AppStyle &) = default;
 };
 
+/// Per-level icon + pill spec. All fields optional so a level can
+/// be left at the defaults. Colours are `#RRGGBB` / `#AARRGGBB`
+/// strings (kept Qt-free like `LevelStyle`).
+struct LevelDisplayOverride
+{
+    /// `:/...` qrc path or relative-to-theme-dir. Absent = no icon.
+    std::optional<std::string> icon;
+
+    /// Rounded-rect pill background. Absent = no pill (icon
+    /// paints over the row's `BackgroundRole`).
+    std::optional<std::string> pillBackground;
+
+    /// Tint for the icon glyph. Absent = fall back to
+    /// `LevelStyle::foreground` then to palette `WindowText`.
+    std::optional<std::string> pillForeground;
+
+    friend bool operator==(const LevelDisplayOverride &, const LevelDisplayOverride &) = default;
+};
+
+/// Opts a theme into icon-rendering for the level column.
+/// `Theme::levelColumnOverride.has_value()` is the single switch
+/// every consumer reads. All fields are additive: absent fields
+/// fall back to today's `Column::header` / warning > funnel
+/// header priority.
+struct LevelColumnOverride
+{
+    /// Header text override. Set = use it (`""` = blank text).
+    /// Absent = fall back to `Column::header`.
+    std::optional<std::string> header;
+
+    /// Header identity icon (qrc or relative-to-theme-dir).
+    /// Warning + funnel still take precedence when firing.
+    std::optional<std::string> headerIcon;
+
+    /// Per-level icon + pill specs, keyed by canonical level name
+    /// (`"Trace"`..`"Fatal"`, or `"Unknown"`). Missing keys = no
+    /// icon for that level (cell shows blank). Non-canonical
+    /// keys warn via `WarnOnUnknownLevelKeys`.
+    std::map<std::string, LevelDisplayOverride> levels;
+
+    friend bool operator==(const LevelColumnOverride &, const LevelColumnOverride &) = default;
+};
+
 /// Self-contained theme bundle. JSON keys mirror the field names
 /// (lowerCamelCase). `levels` keys must be canonical level names
 /// (`Trace`..`Fatal`, or `Unknown`); other keys are ignored.
@@ -102,9 +145,16 @@ struct Theme
     /// knows which slot they belong to.
     ThemeKind kind = ThemeKind::Light;
 
-    /// Per-level row styles, keyed by canonical level name
-    /// (`Trace`..`Fatal`) or `"Unknown"`. Other keys are ignored.
+    /// Per-level row styles (subtle defaults). Keyed by canonical
+    /// level name. Used when `ui/highContrastLevels` is off (the
+    /// default); when on, `levelsHighContrast` overrides per-level.
     std::map<std::string, LevelStyle> levels;
+
+    /// Loud overrides applied on top of `levels` when
+    /// `ui/highContrastLevels` is on. Sparse: missing keys fall
+    /// back to `levels[key]`. An empty map opts the theme out of
+    /// the toggle (the Preferences checkbox greys out).
+    std::map<std::string, LevelStyle> levelsHighContrast;
 
     TableStyle table;
     ChromeStyle chrome;
@@ -114,6 +164,11 @@ struct Theme
     /// rows. Missing slots fall back to the app's built-in palette
     /// in `ThemeControl::AnchorBrushFor`.
     std::vector<std::string> anchorPalette;
+
+    /// nullopt = plain-text level column. Set = icon mode (also
+    /// gated on the `ui/showLevelIcons` user pref). Cell + header
+    /// resolution rules live in `LogModel::data`/`headerData`.
+    std::optional<LevelColumnOverride> levelColumnOverride;
 
     friend bool operator==(const Theme &, const Theme &) = default;
 };
@@ -125,6 +180,13 @@ inline constexpr std::size_t ANCHOR_PALETTE_SIZE = 8;
 /// Returns the style for @p level, or a default-constructed
 /// `LevelStyle` when the theme has no entry for it.
 [[nodiscard]] LevelStyle StyleForLevel(const Theme &theme, LogLevel level);
+
+/// When @p useHighContrast is true, look up @p level in
+/// `theme.levelsHighContrast` first and fall back to
+/// `theme.levels` if absent. Override is whole-`LevelStyle`
+/// granular (fg, bg, bold, italic replace as a set) to avoid
+/// surprising blends.
+[[nodiscard]] LevelStyle StyleForLevel(const Theme &theme, LogLevel level, bool useHighContrast);
 
 /// Parse a theme from JSON. Throws `std::runtime_error` on any
 /// parse error. `kind` must be `"light"` or `"dark"`.

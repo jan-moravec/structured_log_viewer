@@ -2,14 +2,35 @@
 
 #include "anchor_manager.hpp"
 
+#include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QList>
 #include <QMetaObject>
 #include <QPersistentModelIndex>
+#include <QStyleOptionHeader>
 #include <QTableView>
 
 #include <cstdint>
 #include <vector>
+
+/// Horizontal header that centres the icon in icon-only sections
+/// (e.g. the level column in icon mode), so the header glyph lines
+/// up with the centred pills painted below. Qt's default
+/// `iconAlignment` is left-aligned, which would leave the icon
+/// hugging the section's left edge.
+class LogHeaderView : public QHeaderView
+{
+public:
+    using QHeaderView::QHeaderView;
+
+    /// If @p option has an icon and no text, flip `iconAlignment`
+    /// to `Qt::AlignCenter`. Exposed as a static pure transform so
+    /// tests can exercise the rule without a model.
+    static void CenterIconAlignmentForIconOnlySection(QStyleOptionHeader *option);
+
+protected:
+    void initStyleOptionForIndex(QStyleOptionHeader *option, int logicalIndex) const override;
+};
 
 class LogTableView : public QTableView
 {
