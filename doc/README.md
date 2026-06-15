@@ -215,7 +215,11 @@ You can persist a customized column layout and filter set via [configurations](#
 
 ## Navigating the Table
 
-- **Sorting**: click a column header to sort ascending/descending. Click again to toggle direction. The initial load is unsorted (records appear in file order).
+- **Sorting**: click a column header to sort ascending/descending. Click again to toggle direction; click a third time to clear the sort. The initial load is unsorted (records appear in file order). The same sort can also be installed and cleared from four other surfaces, all of which stay in lock-step:
+  - The top-level **Sort** menu lists every visible column twice (`Sort by "<col>" ascending` / `... descending`); the active sort is shown as a checked entry. The first row is **Clear Sort**, enabled only while a sort is active.
+  - The main toolbar carries a **Sort** split button (the dropdown mirrors the menu's per-column entries) and a plain **Clear Sort** button next to it.
+  - **Right-clicking a column header** offers `Sort ascending by "<col>"`, `Sort descending by "<col>"`, and `Clear sort` (gated on whether a sort is active) alongside the existing Hide / Edit column / Add filter entries.
+  - The status bar shows a **Clear sort** indicator while a sort is active; clicking it has the same effect as the menu / toolbar entry.
 - **Column resizing**: drag the column header dividers. The last column stretches automatically to fill remaining space.
 - **Smooth scrolling** is enabled by default (per-pixel) both vertically and horizontally.
 - **Alternating row colors** improve readability on dense logs. The table respects the application's light/dark palette.
