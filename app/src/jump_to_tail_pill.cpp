@@ -11,6 +11,7 @@
 #include <QPalette>
 #include <QPixmap>
 #include <QPropertyAnimation>
+#include <QScopeGuard>
 #include <QSize>
 #include <QString>
 #include <QStringLiteral>
@@ -140,13 +141,25 @@ void JumpToTailPill::changeEvent(QEvent *event)
     switch (event->type())
     {
     case QEvent::PaletteChange:
-    case QEvent::StyleChange:
     case QEvent::ApplicationPaletteChange:
-        // Re-apply both: the QSS reads palette role names but Qt
-        // caches the resolved stylesheet, and the icon was tinted
-        // against the previous palette colour.
-        ApplyStyleSheet();
-        RefreshIcon();
+        // Theme switches reach us via palette swaps (Light <->
+        // Dark, custom themes). The QSS literal hex strings are
+        // resolved against the *previous* palette, so re-apply
+        // and re-tint the glyph.
+        //
+        // The `mApplyingPalette` guard breaks the implicit
+        // recursion: `setStyleSheet` synchronously emits
+        // `PaletteChange` / `StyleChange` on the widget on Qt 6
+        // (the QSS resolver re-binds palette roles), and routing
+        // those back into `ApplyStyleSheet` recurses forever
+        // (stack overflow). A genuine external theme switch
+        // arrives outside our `setStyleSheet` call, so the
+        // guard is clear and the refresh runs.
+        if (!mApplyingPalette)
+        {
+            ApplyStyleSheet();
+            RefreshIcon();
+        }
         break;
     default:
         break;
@@ -209,6 +222,15 @@ void JumpToTailPill::RefreshIcon()
 
 void JumpToTailPill::ApplyStyleSheet()
 {
+    if (mApplyingPalette)
+    {
+        // Defensive: caller already holds the guard. Skip rather
+        // than thrash the QSS twice.
+        return;
+    }
+    mApplyingPalette = true;
+    const auto guardRelease = qScopeGuard([this]() { mApplyingPalette = false; });
+
     // Pill height is driven by the QSS padding plus the icon /
     // font metric; computing `border-radius` from a measured
     // height would require a sizeHint round-trip after every

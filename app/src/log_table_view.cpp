@@ -110,7 +110,6 @@ LogTableView::LogTableView(QWidget *parent)
     // event filter on the viewport drives the reposition without
     // requiring a custom viewport subclass.
     viewport()->installEventFilter(this);
-    PositionTailPill();
 }
 
 void LogTableView::SetTailEdge(TailEdge edge)

@@ -102,4 +102,16 @@ private:
     QPropertyAnimation *mFade = nullptr;
     int mCount = 0;
     ArrowDirection mDirection = ArrowDirection::Down;
+
+    /// Re-entrancy guard for `ApplyStyleSheet` / `RefreshIcon`.
+    /// `setStyleSheet` synchronously emits both `StyleChange` and
+    /// `PaletteChange` on the widget on Qt 6 (the QSS system
+    /// re-resolves palette roles), so a `changeEvent` that
+    /// dispatches to `ApplyStyleSheet` from either branch would
+    /// recurse forever -- this crashed the test suite with a
+    /// stack overflow during construction. The flag short-circuits
+    /// the recursive call without dropping the *external*
+    /// theme-switch refresh path (which arrives outside any
+    /// `setStyleSheet` of ours).
+    bool mApplyingPalette = false;
 };
