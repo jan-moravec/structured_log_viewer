@@ -766,6 +766,17 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     connect(mModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::UpdateSortStatus);
     connect(mModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::UpdateSortStatus);
     connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateSortStatus);
+    // Column rename (via Edit Column...) emits `headerDataChanged`
+    // but no `layoutChanged`, so without this hook the status-bar
+    // tooltip would freeze on the previous label until the next
+    // sort/filter event. Filter on `Qt::Horizontal` so vertical
+    // header pings don't waste a refresh.
+    connect(mModel, &QAbstractItemModel::headerDataChanged, this, [this](Qt::Orientation orientation) {
+        if (orientation == Qt::Horizontal)
+        {
+            UpdateSortStatus();
+        }
+    });
 
     mActionToggleFind = new QAction(tr("Find Bar"), this);
     mActionToggleFind->setObjectName(QStringLiteral("actionToggleFind"));
@@ -999,6 +1010,11 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     mClearSortStatusButton->setIcon(QApplication::style()->standardIcon(QStyle::SP_LineEditClearButton));
     mClearSortStatusButton->setText(tr("Clear sort"));
     mClearSortStatusButton->setAccessibleName(tr("Clear column sort"));
+    // Static fallback tooltip so the button advertises its action
+    // even before the first `UpdateSortStatus` populates the
+    // column-aware variant. The dynamic tooltip overrides this
+    // whenever a sort is active.
+    mClearSortStatusButton->setToolTip(tr("Clear the active column sort."));
     mClearSortStatusButton->setFlat(true);
     mClearSortStatusButton->setCursor(Qt::PointingHandCursor);
     mClearSortStatusButton->hide();
@@ -3242,35 +3258,31 @@ void MainWindow::BuildMainToolbar()
     });
     mMainToolbar->addWidget(clearFiltersButton);
 
-    // Sort split button. Face = `actionSortBy`; the action's slot
-    // pops the dropdown so a click on the face surfaces the
-    // per-column shortcut instead of opening a (non-existent)
-    // generic sort editor. Dropdown = the same `Sort by "<col>"
-    // ascending` / `... descending` checkable rows the top-level
-    // Sort menu produces, minus the leading Clear-sort row (the
-    // toolbar has a dedicated plain Clear-sort button next to
-    // this split button, so a duplicate would be redundant).
+    // Sort dropdown button. Sort has no useful generic editor
+    // like filters do (the per-column choice *is* the action),
+    // so the entire button face opens the per-column dropdown
+    // rather than splitting click-vs-arrow as the Add-filter
+    // button does. `InstantPopup` makes the whole button surface
+    // open the menu and suppresses default-action triggering, so
+    // we don't need a face-click → `showMenu()` lambda (which
+    // would otherwise capture a raw `QToolButton*` and dangle if
+    // `BuildMainToolbar` ever ran twice).
     //
-    // `MenuButtonPopup` (matching the Add-filter button) keeps
-    // the arrow visible as a discoverable affordance; the click
-    // on the face triggers `actionSortBy`, which our slot reroutes
-    // into `showMenu()` to open the dropdown.
+    // The menu carries the same `Sort by "<col>" ascending` /
+    // `... descending` checkable rows the top-level Sort menu
+    // produces, minus the leading Clear-sort row -- the toolbar
+    // has a dedicated plain Clear-sort button next to this one,
+    // so a duplicate dropdown entry would be redundant.
     auto *sortByButton = new QToolButton(mMainToolbar);
     sortByButton->setObjectName(QStringLiteral("sortBySplitButton"));
     sortByButton->setDefaultAction(ui->actionSortBy);
-    sortByButton->setPopupMode(QToolButton::MenuButtonPopup);
+    sortByButton->setPopupMode(QToolButton::InstantPopup);
     sortByButton->setIconSize(toolbarIconSize);
     sortByButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
     auto *sortByMenu = new QMenu(sortByButton);
     sortByMenu->setObjectName(QStringLiteral("sortBySplitMenu"));
     sortByButton->setMenu(sortByMenu);
     connect(sortByMenu, &QMenu::aboutToShow, this, [this, sortByMenu]() { RebuildSortByMenu(sortByMenu); });
-    // Route the face's `actionSortBy` trigger into `showMenu()` so
-    // a face click opens the per-column dropdown. Connect on the
-    // button (not the action) so the menu pops at the button's
-    // position; triggering the action programmatically would not
-    // anchor the popup.
-    connect(ui->actionSortBy, &QAction::triggered, sortByButton, [sortByButton]() { sortByButton->showMenu(); });
     mMainToolbar->addWidget(sortByButton);
 
     // Clear-sort plain action. Sort is single-column, so a per-X
@@ -3552,6 +3564,15 @@ void MainWindow::ClearSort()
     // hides the sorted column) and the post-load rebuild paths,
     // so the proxy / header / configuration stay in lockstep
     // through one well-trodden code path.
+    //
+    // No-op safe: `LogFilterModel::sort(-1, ...)` short-circuits
+    // when no sort is active, so a stray call never emits
+    // `layoutChanged` (and `UpdateSortStatus` is therefore not
+    // re-fired). All five surfaces gate on `actionClearSort`'s
+    // enabled state, which `UpdateSortStatus` ties to the live
+    // sort, so this branch is unreachable in production -- the
+    // guard exists for the test seam and any future programmatic
+    // caller.
     mTableView->sortByColumn(-1, Qt::AscendingOrder);
 }
 
@@ -6532,9 +6553,15 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
             mTableView->sortByColumn(idx, Qt::DescendingOrder);
         });
 
+        // Route through `actionClearSort` so the header menu, the
+        // top-level Sort menu, the toolbar plain button, and the
+        // status-bar indicator all share one enable-state source
+        // (`UpdateSortStatus`). Re-using the action here also
+        // means a future shortcut / icon assignment shows up on
+        // this entry without extra wiring.
         QAction *clearSortAction = menu->addAction(tr("Clear sort"));
-        clearSortAction->setEnabled(currentSortColumn >= 0);
-        connect(clearSortAction, &QAction::triggered, this, &MainWindow::ClearSort);
+        clearSortAction->setEnabled(ui->actionClearSort != nullptr && ui->actionClearSort->isEnabled());
+        connect(clearSortAction, &QAction::triggered, ui->actionClearSort, &QAction::trigger);
     }
 
     // Re-showing hidden columns is intentionally not offered here:

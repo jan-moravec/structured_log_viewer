@@ -918,7 +918,12 @@ private:
     /// Mirrors `UpdateRowsShownStatus`'s shape: hidden when the
     /// model is empty, visible whenever a sort is active. Called
     /// from `LogFilterModel::layoutChanged`, source row signals,
-    /// and `ApplyDeferredSortFromConfig`.
+    /// the source's horizontal `headerDataChanged` (so a column
+    /// rename refreshes the tooltip without waiting for the next
+    /// sort/filter event), and once at the end of construction so
+    /// the initial idle state matches before any signal fires.
+    /// `ApplyDeferredSortFromConfig` reaches it transitively via
+    /// the `sortByColumn` it issues.
     void UpdateSortStatus();
 
     /// Repopulate the Clear-filters split-button dropdown with

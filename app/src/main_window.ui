@@ -211,13 +211,13 @@
   </action>
   <action name="actionSortBy">
    <property name="text">
-    <string>Sort By...</string>
+    <string>Sort By</string>
    </property>
    <property name="iconText">
     <string>Sort</string>
    </property>
    <property name="toolTip">
-    <string>Pick a column and direction to sort by. Click the arrow for the per-column shortcut menu.</string>
+    <string>Open the per-column sort menu (ascending or descending by any visible column).</string>
    </property>
   </action>
   <action name="actionClearSort">
