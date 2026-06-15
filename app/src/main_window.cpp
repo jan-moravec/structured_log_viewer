@@ -688,6 +688,32 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
         }
     });
 
+    // Floating "jump to newest" pill: the view surfaces the
+    // click as `jumpToTailRequested`; this slot performs the
+    // proxy-aware scroll and (in live-tail) re-engages Follow
+    // newest. The view stays ignorant of proxies and of the
+    // Follow action -- single source of truth for the policy
+    // sits here, alongside the rest of the scroll-edge wiring.
+    connect(mTableView, &LogTableView::jumpToTailRequested, this, [this]() {
+        // `JumpToNewestRow` issues a programmatic `scrollTo`,
+        // which lands the viewport at the tail edge. The view's
+        // `OnVerticalScrollValueChanged` zeroes the pending-new-
+        // rows counter on that transition (even for programmatic
+        // scrolls), so the pill fades out without a separate
+        // reset call here.
+        JumpToNewestRow();
+        // Live-tail sessions auto-disengage Follow newest when
+        // the user manually scrolls away; the pill click is the
+        // user's explicit "catch me up" command, so re-engage
+        // unconditionally on the same gate the scroll-back path
+        // uses. Outside live-tail there is no Follow notion, so
+        // the action is left alone.
+        if (IsLiveTailSession() && !ui->actionFollowTail->isChecked())
+        {
+            ui->actionFollowTail->setChecked(true);
+        }
+    });
+
     // Find bar lives in a dockable host so the user can float / dock
     // it and the layout round-trips through `saveState`. The hosted
     // `FindRecordWidget` keeps the same slots, so existing wiring
@@ -3809,6 +3835,16 @@ void MainWindow::ScrollToNewestRowIfFollowing()
         return;
     }
     if (!ui->actionFollowTail->isChecked())
+    {
+        return;
+    }
+    JumpToNewestRow();
+}
+
+void MainWindow::JumpToNewestRow()
+{
+    if (mModel == nullptr || mRowOrderProxyModel == nullptr || mSortFilterProxyModel == nullptr ||
+        mTableView == nullptr)
     {
         return;
     }

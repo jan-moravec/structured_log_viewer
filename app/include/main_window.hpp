@@ -960,7 +960,16 @@ private:
 
     /// Scroll to the newest row when Follow tail is on; mapped through
     /// the proxy chain so the scroll lands correctly under a sort.
+    /// Thin gate that defers the actual scroll to `JumpToNewestRow`.
     void ScrollToNewestRowIfFollowing();
+
+    /// Unconditional version of the above: scroll to the newest
+    /// row through the proxy chain, regardless of session mode or
+    /// `actionFollowTail`. Used by the "jump to newest" pill,
+    /// which is a user-driven "catch me up" command rather than
+    /// part of the streaming-policy state machine. Safe to call
+    /// with no rows / no source attached (early-returns).
+    void JumpToNewestRow();
 
     /// Re-apply the persisted retention cap to the model.
     void ApplyStreamingRetention();
