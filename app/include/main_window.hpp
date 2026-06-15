@@ -507,6 +507,12 @@ private slots:
         int initialColumn = -1
     );
     void ClearAllFilters();
+    /// Drop the active column sort. Routes through
+    /// `mTableView->sortByColumn(-1, ...)` so the proxy, header
+    /// indicator, and persisted configuration all stay in lockstep.
+    /// Bound to `actionClearSort` (toolbar plain button + Sort menu
+    /// + status-bar indicator).
+    void ClearSort();
     /// Remove a single filter rule. Pass `deferSync = true` when the
     /// caller (e.g. a submit slot) immediately re-adds the filter
     /// so the mirror + rule rebuild only run once.
@@ -879,6 +885,42 @@ private:
     /// silently empty.
     void RebuildAddFilterMenu(QMenu *menu);
 
+    /// Repopulate the top-level Sort menu (`menuSort`). Keeps
+    /// `actionClearSort` + a separator on top, then adds two
+    /// checkable entries per visible column (`Sort by "<col>"
+    /// ascending` / `... descending`) whose check state mirrors
+    /// `LogFilterModel::SortColumn() / SortOrder()`. Connected to
+    /// `menuSort->aboutToShow` so the listing always reflects the
+    /// current configuration without invalidation hooks at every
+    /// column-mutation site (same idiom as `RebuildAddFilterMenu`).
+    void RebuildSortMenu();
+
+    /// Repopulate the Sort split-button dropdown with the same
+    /// per-column Asc/Desc entries `RebuildSortMenu` produces, but
+    /// without the leading `actionClearSort` row (the toolbar has
+    /// a dedicated plain Clear-Sort button next to the split
+    /// button, so a duplicate dropdown entry would be redundant).
+    /// Hidden columns are skipped to mirror the header context
+    /// menu and Add-filter dropdown.
+    void RebuildSortByMenu(QMenu *menu);
+
+    /// Append two checkable per-column entries (`Sort by "<col>"
+    /// ascending` / `... descending`) for every visible column to
+    /// @p menu. Shared core for `RebuildSortMenu` and
+    /// `RebuildSortByMenu`; returns true iff at least one entry
+    /// was added (lets the caller surface a placeholder when every
+    /// column is hidden).
+    bool AppendSortByEntries(QMenu *menu);
+
+    /// Refresh the enable state of `actionClearSort` and the
+    /// visibility of `mClearSortStatusButton` against the live
+    /// `LogFilterModel::SortColumn()` and the source row count.
+    /// Mirrors `UpdateRowsShownStatus`'s shape: hidden when the
+    /// model is empty, visible whenever a sort is active. Called
+    /// from `LogFilterModel::layoutChanged`, source row signals,
+    /// and `ApplyDeferredSortFromConfig`.
+    void UpdateSortStatus();
+
     /// Repopulate the Clear-filters split-button dropdown with
     /// one `Remove "<col>": <title>` entry per active filter,
     /// grouped by column index then sorted by display title.
@@ -1057,6 +1099,12 @@ private:
     /// source model has rows. Mirrors the UX of
     /// `mDiagnosticsButton` / `mParseErrorsStatusButton`.
     QPushButton *mClearFiltersStatusButton = nullptr;
+
+    /// Status-bar button that triggers `actionClearSort`. Visible
+    /// only when a column sort is active (`SortColumn() >= 0`)
+    /// and the source model has rows. Same flat / clickable
+    /// styling as `mClearFiltersStatusButton`.
+    QPushButton *mClearSortStatusButton = nullptr;
 
     /// Status-bar button showing the per-column type-mismatch
     /// summary. Hidden when zero columns are mismatched; opens the

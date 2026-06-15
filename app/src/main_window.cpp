@@ -637,6 +637,23 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     connect(ui->actionClearAllFilters, &QAction::triggered, this, &MainWindow::ClearAllFilters);
     ui->actionClearAllFilters->setDisabled(true);
 
+    // Sort affordances. The bare `actionSortBy` is the split
+    // button's face -- triggering it programmatically opens the
+    // toolbar dropdown (sort has no useful generic editor like
+    // filters do, so the face routes straight to the per-column
+    // menu). `actionClearSort` is shared by the top-level Sort
+    // menu, the toolbar plain button, and the status-bar
+    // indicator; all three trigger the same slot through the
+    // single-source-of-truth action.
+    connect(ui->actionClearSort, &QAction::triggered, this, &MainWindow::ClearSort);
+    ui->actionClearSort->setDisabled(true);
+    // `menuSort->aboutToShow` rebuilds the per-column entries on
+    // every open, same idiom as `menuView` / the filter dropdowns.
+    if (ui->menuSort != nullptr)
+    {
+        connect(ui->menuSort, &QMenu::aboutToShow, this, &MainWindow::RebuildSortMenu);
+    }
+
     // Stream toolbar; hidden until a live-tail stream is opened. The
     // same actions are also in the Stream menu.
     mStreamToolbar = addToolBar(tr("Stream"));
@@ -733,6 +750,22 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     connect(mSortFilterProxyModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::UpdateRowsShownStatus);
     connect(mSortFilterProxyModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateRowsShownStatus);
     connect(mSortFilterProxyModel, &QAbstractItemModel::layoutChanged, this, &MainWindow::UpdateRowsShownStatus);
+
+    // Sort indicator: keep `actionClearSort` enabled state and the
+    // status-bar Clear-sort button in lockstep with the proxy's
+    // sort. `layoutChanged` fires on every sort permutation, so a
+    // single hook covers user-driven `sortByColumn` calls
+    // (header click, menu, dropdown, programmatic `ClearSort`)
+    // and the deferred-restore path (`ApplyDeferredSortFromConfig`
+    // calls `sortByColumn` which emits the same signal). Source
+    // row signals trigger the same slot so the indicator hides
+    // when the model goes empty -- mirroring the rows-shown
+    // status logic.
+    connect(mSortFilterProxyModel, &QAbstractItemModel::layoutChanged, this, &MainWindow::UpdateSortStatus);
+    connect(mSortFilterProxyModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateSortStatus);
+    connect(mModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::UpdateSortStatus);
+    connect(mModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::UpdateSortStatus);
+    connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateSortStatus);
 
     mActionToggleFind = new QAction(tr("Find Bar"), this);
     mActionToggleFind->setObjectName(QStringLiteral("actionToggleFind"));
@@ -3445,6 +3478,195 @@ void MainWindow::RebuildClearFiltersMenu(QMenu *menu)
         act->setObjectName(filterId);
         connect(act, &QAction::triggered, this, [this, filterId]() { ClearFilter(filterId); });
     }
+}
+
+void MainWindow::ClearSort()
+{
+    if (mTableView == nullptr)
+    {
+        return;
+    }
+    // Same call shape used by `SetColumnVisible` (when the user
+    // hides the sorted column) and the post-load rebuild paths,
+    // so the proxy / header / configuration stay in lockstep
+    // through one well-trodden code path.
+    mTableView->sortByColumn(-1, Qt::AscendingOrder);
+}
+
+bool MainWindow::AppendSortByEntries(QMenu *menu)
+{
+    if (menu == nullptr || mModel == nullptr || mSortFilterProxyModel == nullptr)
+    {
+        return false;
+    }
+
+    const auto &columns = mModel->Configuration().columns;
+    if (columns.empty())
+    {
+        return false;
+    }
+
+    // `sortByColumn` would be a structural no-op when the model
+    // has no rows -- the proxy still updates its sort column /
+    // order, but no permutation is visible. Disable the entries
+    // up-front to mirror Add-filter's "model has rows" gate; the
+    // header click already short-circuits in this state.
+    const bool modelHasRows = mModel->rowCount() > 0;
+    const int currentColumn = mSortFilterProxyModel->SortColumn();
+    const Qt::SortOrder currentOrder = mSortFilterProxyModel->SortOrder();
+
+    // Header-disambiguated labels (`name` vs `name [user|id]`),
+    // same helper the View / Add-filter / Clear-filters menus use.
+    const std::vector<QString> labels = BuildAllColumnMenuLabels();
+
+    bool addedAny = false;
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        // Hidden columns are skipped to mirror Add-filter and the
+        // header right-click. Re-show is delegated to the View
+        // menu, same as for filtering.
+        if (!columns[i].visible)
+        {
+            continue;
+        }
+        const QString &label = labels[i];
+        const int columnIdx = static_cast<int>(i);
+
+        // Capture stable `keys` so a column reorder landing
+        // between menu build and click still hits the right
+        // column. Same pattern the Add-filter dropdown uses.
+        const auto &keys = columns[i].keys;
+
+        QAction *ascAct = menu->addAction(tr("Sort by \"%1\" ascending").arg(label));
+        ascAct->setCheckable(true);
+        ascAct->setChecked(currentColumn == columnIdx && currentOrder == Qt::AscendingOrder);
+        ascAct->setEnabled(modelHasRows);
+        connect(ascAct, &QAction::triggered, this, [this, keys]() {
+            const int idx = FindColumnIndexByKeys(keys);
+            if (idx < 0 || mTableView == nullptr)
+            {
+                return;
+            }
+            mTableView->sortByColumn(idx, Qt::AscendingOrder);
+        });
+
+        QAction *descAct = menu->addAction(tr("Sort by \"%1\" descending").arg(label));
+        descAct->setCheckable(true);
+        descAct->setChecked(currentColumn == columnIdx && currentOrder == Qt::DescendingOrder);
+        descAct->setEnabled(modelHasRows);
+        connect(descAct, &QAction::triggered, this, [this, keys]() {
+            const int idx = FindColumnIndexByKeys(keys);
+            if (idx < 0 || mTableView == nullptr)
+            {
+                return;
+            }
+            mTableView->sortByColumn(idx, Qt::DescendingOrder);
+        });
+
+        addedAny = true;
+    }
+
+    return addedAny;
+}
+
+void MainWindow::RebuildSortMenu()
+{
+    QMenu *menu = ui->menuSort;
+    if (menu == nullptr)
+    {
+        return;
+    }
+    // Refresh the action's enable state up-front so the entry
+    // looks right whether the rebuild produces per-column rows
+    // or not. `UpdateSortStatus` is the same wiring that drives
+    // the toolbar plain button + status-bar indicator.
+    UpdateSortStatus();
+
+    menu->clear();
+    // `actionClearSort` is the .ui-declared first child of
+    // `menuSort`; re-add it (the `clear()` above strips action
+    // attachments without destroying the action itself) so the
+    // top-of-menu Clear entry survives the rebuild.
+    menu->addAction(ui->actionClearSort);
+    menu->addSeparator();
+
+    if (mModel == nullptr || mModel->Configuration().columns.empty())
+    {
+        QAction *placeholder = menu->addAction(tr("(no columns yet)"));
+        placeholder->setEnabled(false);
+        return;
+    }
+
+    if (!AppendSortByEntries(menu))
+    {
+        // Every column hidden -- legal end state. Surface the
+        // condition explicitly so the user understands why the
+        // menu is otherwise empty (and where to re-show columns).
+        // Same wording as `RebuildAddFilterMenu`.
+        QAction *placeholder = menu->addAction(tr("(every column is hidden – use View menu to show one)"));
+        placeholder->setEnabled(false);
+    }
+}
+
+void MainWindow::RebuildSortByMenu(QMenu *menu)
+{
+    if (menu == nullptr)
+    {
+        return;
+    }
+    menu->clear();
+
+    if (mModel == nullptr || mModel->Configuration().columns.empty())
+    {
+        QAction *placeholder = menu->addAction(tr("(no columns yet)"));
+        placeholder->setEnabled(false);
+        return;
+    }
+
+    if (!AppendSortByEntries(menu))
+    {
+        QAction *placeholder = menu->addAction(tr("(every column is hidden – use View menu to show one)"));
+        placeholder->setEnabled(false);
+    }
+}
+
+void MainWindow::UpdateSortStatus()
+{
+    const int sortColumn =
+        (mSortFilterProxyModel != nullptr) ? mSortFilterProxyModel->SortColumn() : -1;
+    const int sourceRows = (mModel != nullptr) ? mModel->rowCount() : 0;
+    const bool sortActive = sortColumn >= 0;
+
+    if (ui != nullptr && ui->actionClearSort != nullptr)
+    {
+        ui->actionClearSort->setEnabled(sortActive);
+    }
+
+    if (mClearSortStatusButton == nullptr)
+    {
+        return;
+    }
+    if (sourceRows <= 0 || !sortActive)
+    {
+        mClearSortStatusButton->hide();
+        return;
+    }
+
+    // Tooltip names the live column so a rename / reorder shows
+    // through. `BuildAllColumnMenuLabels` disambiguates duplicate
+    // headers via `[keys]` so the tooltip is unambiguous even on
+    // configurations with header collisions.
+    const std::vector<QString> labels = BuildAllColumnMenuLabels();
+    QString columnLabel = (sortColumn < static_cast<int>(labels.size()))
+                              ? labels[static_cast<size_t>(sortColumn)]
+                              : tr("(unknown column)");
+    const QString directionWord = (mSortFilterProxyModel->SortOrder() == Qt::DescendingOrder)
+                                      ? tr("descending")
+                                      : tr("ascending");
+    mClearSortStatusButton->setToolTip(
+        tr("Sorted by \"%1\" (%2) - click to clear.").arg(columnLabel, directionWord)
+    );
+    mClearSortStatusButton->show();
 }
 
 void MainWindow::changeEvent(QEvent *event)
