@@ -1,12 +1,14 @@
 #pragma once
 
 #include "anchor_manager.hpp"
+#include "jump_to_tail_pill.hpp"
 
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QList>
 #include <QMetaObject>
 #include <QPersistentModelIndex>
+#include <QPointer>
 #include <QStyleOptionHeader>
 #include <QTableView>
 
@@ -107,12 +109,24 @@ signals:
     /// filter as `userScrolledAwayFromTail`.
     void userScrolledToTail();
 
+    /// User clicked the floating "jump to newest" pill. Forwarded
+    /// to `MainWindow`, which performs the proxy-aware scroll and
+    /// (in live-tail sessions) re-engages Follow newest. The view
+    /// itself stays ignorant of proxies and the Follow action.
+    void jumpToTailRequested();
+
 protected:
     /// Draws the empty-state shortcuts card when the model has no rows.
     void paintEvent(QPaintEvent *event) override;
 
     /// Mark the next `valueChanged` as user-initiated.
     void wheelEvent(QWheelEvent *event) override;
+
+    /// Filters viewport resize events so the floating pill stays
+    /// glued to the tail-side edge of the visible area without the
+    /// view having to subclass the viewport. Installed in
+    /// `LogTableView::LogTableView`.
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     void OnVerticalScrollValueChanged(int value);
@@ -132,6 +146,19 @@ private:
 
     void SaveAnchorIfShouldPreserve();
     void RestoreAnchorIfSaved();
+
+    /// Re-place `mTailPill` at the tail-side edge of the
+    /// viewport, centred horizontally. Called from the viewport
+    /// resize hook and from `SetTailEdge` (when the edge flips).
+    /// No-op when the pill is absent.
+    void PositionTailPill();
+
+    /// Centralised reset: zero the pending-new-rows counter and
+    /// fade the pill out. Called when the user / a programmatic
+    /// edge change lands the viewport back at the tail, when a
+    /// new model is attached, on `modelReset`, and on session
+    /// boundaries that drop the table contents.
+    void ResetPendingNewRows();
 
     TailEdge mTailEdge = TailEdge::Bottom;
 
@@ -164,4 +191,30 @@ private:
     /// Non-owning. Wired by `MainWindow`; null on standalone test
     /// fixtures. Anchor slots null-check before dereferencing.
     AnchorManager *mAnchors = nullptr;
+
+    /// Floating "* N new lines" pill parented to the viewport.
+    /// `QPointer` so a viewport teardown (Qt destroys the
+    /// viewport when the view is destroyed) zeroes the pointer
+    /// before our own destructor runs, sparing the slot wiring a
+    /// dangling deref. Visibility / count are driven by
+    /// `OnRowsInserted`, `OnVerticalScrollValueChanged`, and the
+    /// `modelReset` hook.
+    QPointer<JumpToTailPill> mTailPill;
+
+    /// Running count of rows appended while the user was scrolled
+    /// away from the tail edge. Reset to 0 whenever the viewport
+    /// returns to the tail edge or the model is wiped.
+    int mPendingNewRows = 0;
+
+#ifdef LOGAPP_BUILD_TESTING
+public:
+    [[nodiscard]] JumpToTailPill *TailPillForTest() const noexcept
+    {
+        return mTailPill;
+    }
+    [[nodiscard]] int PendingNewRowsForTest() const noexcept
+    {
+        return mPendingNewRows;
+    }
+#endif
 };
