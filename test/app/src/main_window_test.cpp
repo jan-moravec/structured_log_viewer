@@ -6265,7 +6265,10 @@ private slots:
         QVERIFY2(topActions[5]->isSeparator(), "sixth action must be the sort-block separator");
         QVERIFY2(topActions[6]->text().startsWith("Sort ascending"), "seventh action must be Sort ascending");
         QVERIFY2(topActions[7]->text().startsWith("Sort descending"), "eighth action must be Sort descending");
-        QCOMPARE(topActions[8]->text(), QStringLiteral("Clear sort"));
+        // The trailing Clear-sort entry is the shared
+        // `actionClearSort` re-attached; pin by `objectName` so the
+        // entry's text can evolve in the .ui without a test edit.
+        QCOMPARE(topActions[8]->objectName(), QStringLiteral("actionClearSort"));
     }
 
     // With zero rows, Add-filter and per-filter Edit must be
@@ -12628,15 +12631,19 @@ private slots:
 
     // Header right-click menu on a sorted column must mark the
     // matching `Sort ascending|descending by "<col>"` entry checked,
-    // and `Clear sort` must be enabled. Mirrors the Sort menu
-    // shape, contextualised to the right-clicked column.
+    // and the shared `actionClearSort` re-attached at the tail
+    // must follow its global enabled state (driven by
+    // `UpdateSortStatus`). Mirrors the Sort menu shape,
+    // contextualised to the right-clicked column.
     void TestHeaderContextMenuSortEntries()
     {
         const int categoryCol = StreamFixtureForColumnTests();
         QVERIFY2(categoryCol >= 0, "fixture must expose `category` column");
 
-        // Without a sort, Clear sort is disabled and neither
-        // direction is checked.
+        // Without a sort, the shared `actionClearSort` is disabled
+        // and neither direction is checked. Identify the Clear
+        // entry by `objectName` so a future label tweak doesn't
+        // need a test edit.
         auto built = mWindow->BuildHeaderContextMenu(categoryCol, nullptr);
         QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
         // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
@@ -12645,74 +12652,67 @@ private slots:
         // build a second menu so we don't double-delete.
         QScopeGuard freeMenu1([&built]() { built.menu->deleteLater(); });
 
-        QAction *clearSortNoSort = nullptr;
-        QAction *ascNoSort = nullptr;
-        QAction *descNoSort = nullptr;
-        for (QAction *act : built.menu->actions())
-        {
-            if (act == nullptr || act->isSeparator())
+        const auto findSortBlock =
+            [](QMenu *menu) -> std::tuple<QAction *, QAction *, QAction *> {
+            QAction *clearSort = nullptr;
+            QAction *asc = nullptr;
+            QAction *desc = nullptr;
+            for (QAction *act : menu->actions())
             {
-                continue;
+                if (act == nullptr || act->isSeparator())
+                {
+                    continue;
+                }
+                if (act->objectName() == QStringLiteral("actionClearSort"))
+                {
+                    clearSort = act;
+                }
+                else if (act->text().startsWith(QStringLiteral("Sort ascending")))
+                {
+                    asc = act;
+                }
+                else if (act->text().startsWith(QStringLiteral("Sort descending")))
+                {
+                    desc = act;
+                }
             }
-            if (act->text() == QStringLiteral("Clear sort"))
-            {
-                clearSortNoSort = act;
-            }
-            else if (act->text().startsWith(QStringLiteral("Sort ascending")))
-            {
-                ascNoSort = act;
-            }
-            else if (act->text().startsWith(QStringLiteral("Sort descending")))
-            {
-                descNoSort = act;
-            }
-        }
+            return {clearSort, asc, desc};
+        };
+
+        auto [clearSortNoSort, ascNoSort, descNoSort] = findSortBlock(built.menu);
         QVERIFY2(
             clearSortNoSort != nullptr && ascNoSort != nullptr && descNoSort != nullptr,
             "header menu must always include the Sort block"
         );
-        QVERIFY2(!clearSortNoSort->isEnabled(), "Clear sort must be disabled when no sort is active");
+        QVERIFY2(
+            !clearSortNoSort->isEnabled(), "shared actionClearSort must be disabled when no sort is active"
+        );
         QVERIFY2(!ascNoSort->isChecked() && !descNoSort->isChecked(), "neither direction is checked without a sort");
 
         // With a desc sort on `category`, the matching entry is
-        // checked and Clear sort is enabled.
+        // checked and the shared `actionClearSort` is enabled.
         mWindow->findChild<LogTableView *>()->sortByColumn(categoryCol, Qt::DescendingOrder);
         QCoreApplication::processEvents();
         auto built2 = mWindow->BuildHeaderContextMenu(categoryCol, nullptr);
         QVERIFY2(built2.menu != nullptr, "BuildHeaderContextMenu must return a menu");
         QScopeGuard freeMenu2([&built2]() { built2.menu->deleteLater(); });
 
-        QAction *clearSortActive = nullptr;
-        QAction *ascActive = nullptr;
-        QAction *descActive = nullptr;
-        for (QAction *act : built2.menu->actions())
-        {
-            if (act == nullptr || act->isSeparator())
-            {
-                continue;
-            }
-            if (act->text() == QStringLiteral("Clear sort"))
-            {
-                clearSortActive = act;
-            }
-            else if (act->text().startsWith(QStringLiteral("Sort ascending")))
-            {
-                ascActive = act;
-            }
-            else if (act->text().startsWith(QStringLiteral("Sort descending")))
-            {
-                descActive = act;
-            }
-        }
+        auto [clearSortActive, ascActive, descActive] = findSortBlock(built2.menu);
         QVERIFY2(
             clearSortActive != nullptr && ascActive != nullptr && descActive != nullptr,
             "header menu must always include the Sort block"
         );
-        QVERIFY2(clearSortActive->isEnabled(), "Clear sort must be enabled when a sort is active");
+        QVERIFY2(clearSortActive->isEnabled(), "shared actionClearSort must be enabled when a sort is active");
         QVERIFY2(!ascActive->isChecked(), "non-active asc entry must be unchecked under a desc sort");
         QVERIFY2(descActive->isChecked(), "active desc entry must be checked");
 
-        // Triggering Clear sort must drop the proxy's sort.
+        // The same `actionClearSort` instance is reused across
+        // every Sort surface; verify pointer identity so a future
+        // accidental clone trips the test.
+        auto *globalClearSort = mWindow->findChild<QAction *>(QStringLiteral("actionClearSort"));
+        QCOMPARE(clearSortActive, globalClearSort);
+
+        // Triggering the entry drops the proxy's sort.
         clearSortActive->trigger();
         QCoreApplication::processEvents();
         QCOMPARE(mWindow->FilterModel()->SortColumn(), -1);
@@ -12765,6 +12765,45 @@ private slots:
         mWindow->findChild<LogTableView *>()->sortByColumn(-1, Qt::AscendingOrder);
         QCoreApplication::processEvents();
         QVERIFY2(!action->isEnabled(), "actionClearSort must disable again after a clear");
+        // NOLINTEND(clang-analyzer-core.CallAndMessage)
+    }
+
+    // The toolbar's plain Clear-Sort button is the
+    // auto-generated `QToolButton` `QToolBar::addAction(...)`
+    // emits for `actionClearSort`. It has no `objectName` of its
+    // own, so resolve it via `widgetForAction` and pin its
+    // enable + click contract. This is the fifth Clear-sort
+    // surface (alongside menu / split-menu / right-click /
+    // status-bar) and was previously the only one without
+    // direct coverage -- without this test a refactor that
+    // accidentally dropped `addAction(actionClearSort)` from the
+    // toolbar would only trip the toolbar-layout test.
+    void TestToolbarClearSortButtonTriggersClear()
+    {
+        const int categoryCol = StreamFixtureForColumnTests();
+        QVERIFY2(categoryCol >= 0, "fixture must expose `category` column");
+
+        auto *toolbar = mWindow->findChild<QToolBar *>(QStringLiteral("mainToolbar"));
+        QVERIFY2(toolbar != nullptr, "main toolbar must exist");
+        // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        auto *action = mWindow->findChild<QAction *>(QStringLiteral("actionClearSort"));
+        QVERIFY2(action != nullptr, "actionClearSort must exist");
+        auto *button = qobject_cast<QToolButton *>(toolbar->widgetForAction(action));
+        QVERIFY2(button != nullptr, "toolbar must host a plain Clear-Sort button for actionClearSort");
+
+        // Idle: action disabled -> button disabled.
+        QVERIFY2(!button->isEnabled(), "toolbar Clear-Sort button must follow the action's disabled state");
+
+        // Install a sort; the button must enable.
+        mWindow->findChild<LogTableView *>()->sortByColumn(categoryCol, Qt::AscendingOrder);
+        QCoreApplication::processEvents();
+        QVERIFY2(button->isEnabled(), "toolbar Clear-Sort button must enable while a sort is active");
+
+        // Click drops the proxy sort and re-disables the button.
+        button->click();
+        QCoreApplication::processEvents();
+        QCOMPARE(mWindow->FilterModel()->SortColumn(), -1);
+        QVERIFY2(!button->isEnabled(), "toolbar Clear-Sort button must re-disable after the sort is cleared");
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
     }
 

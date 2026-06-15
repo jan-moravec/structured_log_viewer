@@ -769,14 +769,24 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     // Column rename (via Edit Column...) emits `headerDataChanged`
     // but no `layoutChanged`, so without this hook the status-bar
     // tooltip would freeze on the previous label until the next
-    // sort/filter event. Filter on `Qt::Horizontal` so vertical
-    // header pings don't waste a refresh.
-    connect(mModel, &QAbstractItemModel::headerDataChanged, this, [this](Qt::Orientation orientation) {
-        if (orientation == Qt::Horizontal)
-        {
-            UpdateSortStatus();
-        }
-    });
+    // sort/filter event. Filter to horizontal pings that actually
+    // touch the sorted column -- `UpdateSortStatus` rebuilds the
+    // full disambiguated-label vector on every call, so renames on
+    // unrelated columns would waste an O(N) pass while the
+    // visible tooltip can't possibly change.
+    connect(mModel, &QAbstractItemModel::headerDataChanged, this,
+            [this](Qt::Orientation orientation, int first, int last) {
+                if (orientation != Qt::Horizontal || mSortFilterProxyModel == nullptr)
+                {
+                    return;
+                }
+                const int sortColumn = mSortFilterProxyModel->SortColumn();
+                if (sortColumn < 0 || sortColumn < first || sortColumn > last)
+                {
+                    return;
+                }
+                UpdateSortStatus();
+            });
 
     mActionToggleFind = new QAction(tr("Find Bar"), this);
     mActionToggleFind->setObjectName(QStringLiteral("actionToggleFind"));
@@ -3589,6 +3599,15 @@ bool MainWindow::AppendSortByEntries(QMenu *menu)
         return false;
     }
 
+    // Hoisted out of `tr()` so a future translator can't strip or
+    // alter the glyph: it must match `QHeaderView`'s asc/desc
+    // sort-indicator triangles for the menu entry to mirror what
+    // the table shows once the sort is active. Tests pin the
+    // prefix on the same code-points, so a stray retranslation
+    // would silently break two contracts.
+    static constexpr QChar kSortAscGlyph(u'\u25B2');  // ▲
+    static constexpr QChar kSortDescGlyph(u'\u25BC'); // ▼
+
     // `sortByColumn` would be a structural no-op when the model
     // has no rows -- the proxy still updates its sort column /
     // order, but no permutation is visible. Disable the entries
@@ -3646,9 +3665,11 @@ bool MainWindow::AppendSortByEntries(QMenu *menu)
         // just the disambiguated column label in quotes -- the
         // host menu's title ("Sort") and the glyph carry the
         // verb / direction, so adding "Sort by" prefix would
-        // double up the obvious.
-        const QString ascText = tr("\u25B2 \"%1\"").arg(label);
-        const QString descText = tr("\u25BC \"%1\"").arg(label);
+        // double up the obvious. Only the quoted-label portion is
+        // wrapped in `tr()`; the glyph stays a code-point literal.
+        const QString quotedLabel = tr("\"%1\"").arg(label);
+        const QString ascText = QString(kSortAscGlyph) + QLatin1Char(' ') + quotedLabel;
+        const QString descText = QString(kSortDescGlyph) + QLatin1Char(' ') + quotedLabel;
 
         QAction *ascAct = menu->addAction(ascText);
         ascAct->setCheckable(true);
@@ -3699,34 +3720,18 @@ bool MainWindow::AppendSortByEntries(QMenu *menu)
     return addedAny;
 }
 
-void MainWindow::RebuildSortMenu()
+void MainWindow::AppendSortEntriesOrPlaceholder(QMenu *menu)
 {
-    QMenu *menu = ui->menuSort;
     if (menu == nullptr)
     {
         return;
     }
-    // Refresh the action's enable state up-front so the entry
-    // looks right whether the rebuild produces per-column rows
-    // or not. `UpdateSortStatus` is the same wiring that drives
-    // the toolbar plain button + status-bar indicator.
-    UpdateSortStatus();
-
-    menu->clear();
-    // `actionClearSort` is the .ui-declared first child of
-    // `menuSort`; re-add it (the `clear()` above strips action
-    // attachments without destroying the action itself) so the
-    // top-of-menu Clear entry survives the rebuild.
-    menu->addAction(ui->actionClearSort);
-    menu->addSeparator();
-
     if (mModel == nullptr || mModel->Configuration().columns.empty())
     {
         QAction *placeholder = menu->addAction(tr("(no columns yet)"));
         placeholder->setEnabled(false);
         return;
     }
-
     if (!AppendSortByEntries(menu))
     {
         // Every column hidden -- legal end state. Surface the
@@ -3738,6 +3743,25 @@ void MainWindow::RebuildSortMenu()
     }
 }
 
+void MainWindow::RebuildSortMenu()
+{
+    QMenu *menu = ui->menuSort;
+    if (menu == nullptr)
+    {
+        return;
+    }
+    menu->clear();
+    // `actionClearSort` is the .ui-declared first child of
+    // `menuSort`; re-add it (the `clear()` above strips action
+    // attachments without destroying the action itself) so the
+    // top-of-menu Clear entry survives the rebuild. Its enabled
+    // state is driven by `UpdateSortStatus` against every signal
+    // that can move the sort, so we don't need to re-sync it here.
+    menu->addAction(ui->actionClearSort);
+    menu->addSeparator();
+    AppendSortEntriesOrPlaceholder(menu);
+}
+
 void MainWindow::RebuildSortByMenu(QMenu *menu)
 {
     if (menu == nullptr)
@@ -3745,19 +3769,7 @@ void MainWindow::RebuildSortByMenu(QMenu *menu)
         return;
     }
     menu->clear();
-
-    if (mModel == nullptr || mModel->Configuration().columns.empty())
-    {
-        QAction *placeholder = menu->addAction(tr("(no columns yet)"));
-        placeholder->setEnabled(false);
-        return;
-    }
-
-    if (!AppendSortByEntries(menu))
-    {
-        QAction *placeholder = menu->addAction(tr("(every column is hidden – use View menu to show one)"));
-        placeholder->setEnabled(false);
-    }
+    AppendSortEntriesOrPlaceholder(menu);
 }
 
 void MainWindow::UpdateSortStatus()
@@ -6626,15 +6638,19 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
             mTableView->sortByColumn(idx, Qt::DescendingOrder);
         });
 
-        // Route through `actionClearSort` so the header menu, the
-        // top-level Sort menu, the toolbar plain button, and the
-        // status-bar indicator all share one enable-state source
-        // (`UpdateSortStatus`). Re-using the action here also
-        // means a future shortcut / icon assignment shows up on
-        // this entry without extra wiring.
-        QAction *clearSortAction = menu->addAction(tr("Clear sort"));
-        clearSortAction->setEnabled(ui->actionClearSort != nullptr && ui->actionClearSort->isEnabled());
-        connect(clearSortAction, &QAction::triggered, ui->actionClearSort, &QAction::trigger);
+        // Re-add `actionClearSort` directly so the header menu
+        // shares the action's text, enabled state (driven by
+        // `UpdateSortStatus`), tooltip, and any future shortcut /
+        // icon assignment with the top-level Sort menu, the
+        // toolbar plain button, and the status-bar indicator --
+        // single source of truth across all five surfaces. The
+        // host menu is built fresh per right-click and destroyed
+        // via `deleteLater` when dismissed, so re-attaching the
+        // global action is safe (no double-parent / dangling).
+        if (ui->actionClearSort != nullptr)
+        {
+            menu->addAction(ui->actionClearSort);
+        }
     }
 
     // Re-showing hidden columns is intentionally not offered here:

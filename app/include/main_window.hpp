@@ -924,6 +924,14 @@ private:
     /// surface a placeholder when every column is hidden).
     bool AppendSortByEntries(QMenu *menu);
 
+    /// Wrap `AppendSortByEntries` with the two disabled-placeholder
+    /// branches both Sort surfaces share: `(no columns yet)` when
+    /// the configuration is empty, and `(every column is hidden ...)`
+    /// when nothing visible remains to sort by. Single point of
+    /// truth for the placeholder wording, used by `RebuildSortMenu`
+    /// and `RebuildSortByMenu`.
+    void AppendSortEntriesOrPlaceholder(QMenu *menu);
+
     /// Refresh the enable state of `actionClearSort` and the
     /// visibility of `mClearSortStatusButton` against the live
     /// `LogFilterModel::SortColumn()` and the source row count.
