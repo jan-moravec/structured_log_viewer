@@ -12489,10 +12489,7 @@ private slots:
             QVERIFY2(act->menu() == nullptr, "flat entries must not carry submenus");
             QVERIFY2(act->isCheckable(), "every dropdown row must be checkable");
             const QString text = act->text();
-            QVERIFY2(
-                text.contains(QStringLiteral("\"")),
-                "every dropdown row must carry the column label in quotes"
-            );
+            QVERIFY2(text.contains(QStringLiteral("\"")), "every dropdown row must carry the column label in quotes");
             QVERIFY2(
                 !text.contains(QStringLiteral("Sort by")),
                 "row text is just glyph + quoted column name; the host menu carries the verb"
@@ -12652,8 +12649,7 @@ private slots:
         // build a second menu so we don't double-delete.
         QScopeGuard freeMenu1([&built]() { built.menu->deleteLater(); });
 
-        const auto findSortBlock =
-            [](QMenu *menu) -> std::tuple<QAction *, QAction *, QAction *> {
+        const auto findSortBlock = [](QMenu *menu) -> std::tuple<QAction *, QAction *, QAction *> {
             QAction *clearSort = nullptr;
             QAction *asc = nullptr;
             QAction *desc = nullptr;
@@ -12684,9 +12680,7 @@ private slots:
             clearSortNoSort != nullptr && ascNoSort != nullptr && descNoSort != nullptr,
             "header menu must always include the Sort block"
         );
-        QVERIFY2(
-            !clearSortNoSort->isEnabled(), "shared actionClearSort must be disabled when no sort is active"
-        );
+        QVERIFY2(!clearSortNoSort->isEnabled(), "shared actionClearSort must be disabled when no sort is active");
         QVERIFY2(!ascNoSort->isChecked() && !descNoSort->isChecked(), "neither direction is checked without a sort");
 
         // With a desc sort on `category`, the matching entry is
@@ -12946,8 +12940,7 @@ private slots:
         QAction *sortMsgAsc = findRow(sortMenu, QStringLiteral("\"msg\""), ascGlyph);
         QAction *sortMsgDesc = findRow(sortMenu, QStringLiteral("\"msg\""), descGlyph);
         QVERIFY2(
-            sortMsgAsc != nullptr && sortMsgDesc != nullptr,
-            "top-level Sort menu must also carry the msg asc/desc rows"
+            sortMsgAsc != nullptr && sortMsgDesc != nullptr, "top-level Sort menu must also carry the msg asc/desc rows"
         );
         QVERIFY2(!sortMsgAsc->isEnabled(), "top-level Sort menu asc must be disabled on mismatch");
         QVERIFY2(!sortMsgDesc->isEnabled(), "top-level Sort menu desc must be disabled on mismatch");
@@ -13064,8 +13057,7 @@ private slots:
         // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
         QVERIFY2(!button->isHidden(), "indicator must surface while a sort is active");
         QVERIFY2(
-            button->toolTip().contains(QStringLiteral("\"category\"")),
-            "initial tooltip must name the sorted column"
+            button->toolTip().contains(QStringLiteral("\"category\"")), "initial tooltip must name the sorted column"
         );
 
         // Rename the column header and emit the same
@@ -16847,8 +16839,7 @@ private slots:
         QVERIFY2(restoredClearSortAction != nullptr, "restored window must own actionClearSort");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
         QVERIFY2(restoredClearSortAction->isEnabled(), "actionClearSort must be enabled after deferred restore");
-        auto *restoredClearSortButton =
-            restored->findChild<QPushButton *>(QStringLiteral("clearSortStatusButton"));
+        auto *restoredClearSortButton = restored->findChild<QPushButton *>(QStringLiteral("clearSortStatusButton"));
         QVERIFY2(restoredClearSortButton != nullptr, "restored window must own clearSortStatusButton");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
         QVERIFY2(!restoredClearSortButton->isHidden(), "status-bar Clear-sort indicator must surface after restore");

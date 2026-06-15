@@ -774,19 +774,23 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
     // full disambiguated-label vector on every call, so renames on
     // unrelated columns would waste an O(N) pass while the
     // visible tooltip can't possibly change.
-    connect(mModel, &QAbstractItemModel::headerDataChanged, this,
-            [this](Qt::Orientation orientation, int first, int last) {
-                if (orientation != Qt::Horizontal || mSortFilterProxyModel == nullptr)
-                {
-                    return;
-                }
-                const int sortColumn = mSortFilterProxyModel->SortColumn();
-                if (sortColumn < 0 || sortColumn < first || sortColumn > last)
-                {
-                    return;
-                }
-                UpdateSortStatus();
-            });
+    connect(
+        mModel,
+        &QAbstractItemModel::headerDataChanged,
+        this,
+        [this](Qt::Orientation orientation, int first, int last) {
+            if (orientation != Qt::Horizontal || mSortFilterProxyModel == nullptr)
+            {
+                return;
+            }
+            const int sortColumn = mSortFilterProxyModel->SortColumn();
+            if (sortColumn < 0 || sortColumn < first || sortColumn > last)
+            {
+                return;
+            }
+            UpdateSortStatus();
+        }
+    );
 
     mActionToggleFind = new QAction(tr("Find Bar"), this);
     mActionToggleFind->setObjectName(QStringLiteral("actionToggleFind"));
@@ -3649,8 +3653,7 @@ bool MainWindow::AppendSortByEntries(QMenu *menu)
         // mislead. Tooltip explains the cause and points at the
         // diagnostics dialog (the canonical fix for the pin).
         const auto health = mModel->ColumnHealth(columnIdx);
-        const bool typeMismatch =
-            health.has_value() && health->presentSlots > health->matchingSlots;
+        const bool typeMismatch = health.has_value() && health->presentSlots > health->matchingSlots;
         const bool ascDescEnabled = modelHasRows && !typeMismatch;
         const QString mismatchTooltip =
             tr("This column's data does not match its configured type, so sorting is disabled. "
@@ -3774,8 +3777,7 @@ void MainWindow::RebuildSortByMenu(QMenu *menu)
 
 void MainWindow::UpdateSortStatus()
 {
-    const int sortColumn =
-        (mSortFilterProxyModel != nullptr) ? mSortFilterProxyModel->SortColumn() : -1;
+    const int sortColumn = (mSortFilterProxyModel != nullptr) ? mSortFilterProxyModel->SortColumn() : -1;
     const int sourceRows = (mModel != nullptr) ? mModel->rowCount() : 0;
     const bool sortActive = sortColumn >= 0;
 
@@ -3799,15 +3801,11 @@ void MainWindow::UpdateSortStatus()
     // headers via `[keys]` so the tooltip is unambiguous even on
     // configurations with header collisions.
     const std::vector<QString> labels = BuildAllColumnMenuLabels();
-    QString columnLabel = (sortColumn < static_cast<int>(labels.size()))
-                              ? labels[static_cast<size_t>(sortColumn)]
-                              : tr("(unknown column)");
-    const QString directionWord = (mSortFilterProxyModel->SortOrder() == Qt::DescendingOrder)
-                                      ? tr("descending")
-                                      : tr("ascending");
-    mClearSortStatusButton->setToolTip(
-        tr("Sorted by \"%1\" (%2) - click to clear.").arg(columnLabel, directionWord)
-    );
+    QString columnLabel = (sortColumn < static_cast<int>(labels.size())) ? labels[static_cast<size_t>(sortColumn)]
+                                                                         : tr("(unknown column)");
+    const QString directionWord =
+        (mSortFilterProxyModel->SortOrder() == Qt::DescendingOrder) ? tr("descending") : tr("ascending");
+    mClearSortStatusButton->setToolTip(tr("Sorted by \"%1\" (%2) - click to clear.").arg(columnLabel, directionWord));
     mClearSortStatusButton->show();
 }
 
@@ -6581,8 +6579,7 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
         {
             menu->addSeparator();
         }
-        const int currentSortColumn =
-            (mSortFilterProxyModel != nullptr) ? mSortFilterProxyModel->SortColumn() : -1;
+        const int currentSortColumn = (mSortFilterProxyModel != nullptr) ? mSortFilterProxyModel->SortColumn() : -1;
         const Qt::SortOrder currentSortOrder =
             (mSortFilterProxyModel != nullptr) ? mSortFilterProxyModel->SortOrder() : Qt::AscendingOrder;
 
@@ -6593,8 +6590,7 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
         // up-front rather than mislead. `BuildHeaderTooltip`
         // already exposes the diagnostic on the header itself.
         const auto sortHealth = mModel->ColumnHealth(logicalColumn);
-        const bool sortTypeMismatch =
-            sortHealth.has_value() && sortHealth->presentSlots > sortHealth->matchingSlots;
+        const bool sortTypeMismatch = sortHealth.has_value() && sortHealth->presentSlots > sortHealth->matchingSlots;
         const bool sortAscDescEnabled = modelHasRows && !sortTypeMismatch;
         const QString sortMismatchTooltip =
             tr("This column's data does not match its configured type, so sorting is disabled. "
