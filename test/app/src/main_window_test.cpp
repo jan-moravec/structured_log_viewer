@@ -6252,11 +6252,10 @@ private slots:
         const QList<QAction *> topActions = built.menu->actions();
         QCOMPARE(topActions.size(), 9);
 
-        // Hide -> Edit column -> separator -> Add filter on ... ->
-        // filter submenu -> separator -> Sort asc -> Sort desc ->
-        // Clear sort. The trailing sort block sits after the
-        // filter block so the column-mutation actions group above
-        // the row-projection actions.
+        // Order: Hide, Edit column, separator, Add filter on,
+        // filter submenu, separator, Sort asc, Sort desc,
+        // Clear sort. Sort sits after filter so column-
+        // mutation actions group above row-projection ones.
         QVERIFY2(topActions[0]->text().startsWith("Hide"), "first action must be Hide");
         QVERIFY2(topActions[1]->text().startsWith("Edit column"), "second action must be Edit column ...");
         QVERIFY2(topActions[2]->isSeparator(), "third action must be a separator");
@@ -12433,15 +12432,9 @@ private slots:
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
     }
 
-    // Shape contract for the Sort dropdown button: `InstantPopup`
-    // `QToolButton` whose entire face opens the per-column menu
-    // (sort has no useful generic editor, so the click-vs-arrow
-    // split the Add-filter button uses would be redundant), with
-    // `actionSortBy` as its default action for icon/tooltip
-    // propagation, and whose popup menu carries the
-    // `sortBySplitMenu` objectName. Mirrors
-    // `TestAddFilterSplitButtonShape` but pins the simpler
-    // single-target popup mode.
+    // Shape of the Sort dropdown button: `InstantPopup`
+    // `QToolButton` with `actionSortBy` as its default action
+    // and a popup menu named `sortBySplitMenu`.
     void TestSortBySplitButtonShape()
     {
         auto *button = mWindow->findChild<QToolButton *>(QStringLiteral("sortBySplitButton"));
@@ -12459,18 +12452,14 @@ private slots:
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
     }
 
-    // The Sort dropdown lists every *visible* column as two flat
-    // checkable rows: an asc row prefixed with the U+25B2 (▲)
-    // glyph and a desc row prefixed with U+25BC (▼), followed by
-    // the disambiguated column label in quotes. Verifies the
-    // population, the per-column doubling, and the hidden-column
-    // filter (toggling a column hidden must drop its rows on the
-    // next open, mirroring the Add-filter dropdown).
+    // The Sort dropdown lists every visible column as two
+    // checkable rows: ▲ asc and ▼ desc, each followed by the
+    // disambiguated column label in quotes. Hiding a column
+    // drops its rows on the next open.
     void TestSortByDropdownListsVisibleColumns()
     {
-        // `StreamFixtureForColumnTests` returns the `category`
-        // column index despite its historical name; bind to the
-        // honest variable name to keep the test self-documenting.
+        // The fixture helper returns the `category` column
+        // index; bind to a clearer name.
         const int categoryCol = StreamFixtureForColumnTests();
         QVERIFY2(categoryCol >= 0, "fixture must produce columns");
 
@@ -12509,9 +12498,7 @@ private slots:
         }
         QVERIFY2(ascCount > 0 && ascCount == descCount, "every column must contribute both an Asc and a Desc row");
 
-        // Hide the `msg` column and re-open: its rows must drop.
-        // Cross-checks the visible-only filter shared with the
-        // Add-filter dropdown.
+        // Hide `msg` and re-open: its rows must drop.
         auto *model = mWindow->Model();
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "fixture must expose `msg` column");
@@ -12529,10 +12516,7 @@ private slots:
     }
 
     // Triggering a desc row installs the matching sort on the
-    // proxy. Pinned so a refactor that changes the
-    // `sortByColumn` plumbing would trip here, replicating the
-    // `TestAddFilterDropdownTriggerPreselectsColumn` contract
-    // for the sort entry point.
+    // proxy.
     void TestSortByDropdownTriggerSortsByColumn()
     {
         const int categoryCol = StreamFixtureForColumnTests();
@@ -12563,12 +12547,10 @@ private slots:
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
     }
 
-    // `RebuildSortMenu` is hooked to `menuSort->aboutToShow`. The
-    // top of the menu must always carry `actionClearSort` followed
-    // by a separator, then two flat checkable rows per visible
-    // column (▲ asc, ▼ desc). Sort is single-column /
-    // single-direction, so at most one row across the menu is
-    // ever checked at a time.
+    // The Sort menu must lead with `actionClearSort` + a
+    // separator, then two checkable rows (▲ asc, ▼ desc) per
+    // visible column. Sort is single-column / single-direction,
+    // so at most one row is ever checked.
     void TestSortMenuShapeAndCheckmarks()
     {
         const int categoryCol = StreamFixtureForColumnTests();
@@ -12578,9 +12560,8 @@ private slots:
         QVERIFY2(menu != nullptr, "Sort menu must exist");
         // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
 
-        // Sort the proxy so a checked entry exists; Asc on
-        // `category`. The aboutToShow rebuild reads the live
-        // proxy state.
+        // Asc-sort `category` so the rebuild has a checked
+        // entry to mark.
         mWindow->findChild<LogTableView *>()->sortByColumn(categoryCol, Qt::AscendingOrder);
         QCoreApplication::processEvents();
 
@@ -12626,27 +12607,23 @@ private slots:
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
     }
 
-    // Header right-click menu on a sorted column must mark the
-    // matching `Sort ascending|descending by "<col>"` entry checked,
-    // and the shared `actionClearSort` re-attached at the tail
-    // must follow its global enabled state (driven by
-    // `UpdateSortStatus`). Mirrors the Sort menu shape,
-    // contextualised to the right-clicked column.
+    // Header right-click on a sorted column must mark the
+    // matching Sort asc/desc entry as checked, and the shared
+    // `actionClearSort` must reflect its global enabled state.
     void TestHeaderContextMenuSortEntries()
     {
         const int categoryCol = StreamFixtureForColumnTests();
         QVERIFY2(categoryCol >= 0, "fixture must expose `category` column");
 
-        // Without a sort, the shared `actionClearSort` is disabled
-        // and neither direction is checked. Identify the Clear
-        // entry by `objectName` so a future label tweak doesn't
-        // need a test edit.
+        // Without a sort, the shared `actionClearSort` is
+        // disabled and neither direction is checked. Identify
+        // the Clear entry by `objectName` so a future label
+        // tweak doesn't need a test edit.
         auto built = mWindow->BuildHeaderContextMenu(categoryCol, nullptr);
         QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
         // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
-        // `QScopeGuard` covers both the happy path and any
-        // QVERIFY2-driven early return; reset it once we want to
-        // build a second menu so we don't double-delete.
+        // `QScopeGuard` covers any QVERIFY2-driven early
+        // return; reset before building a second menu.
         QScopeGuard freeMenu1([&built]() { built.menu->deleteLater(); });
 
         const auto findSortBlock = [](QMenu *menu) -> std::tuple<QAction *, QAction *, QAction *> {
@@ -12701,8 +12678,8 @@ private slots:
         QVERIFY2(descActive->isChecked(), "active desc entry must be checked");
 
         // The same `actionClearSort` instance is reused across
-        // every Sort surface; verify pointer identity so a future
-        // accidental clone trips the test.
+        // every Sort surface; verify pointer identity so an
+        // accidental clone would trip the test.
         auto *globalClearSort = mWindow->findChild<QAction *>(QStringLiteral("actionClearSort"));
         QCOMPARE(clearSortActive, globalClearSort);
 
@@ -12731,8 +12708,8 @@ private slots:
         QCoreApplication::processEvents();
         QVERIFY2(!button->isHidden(), "indicator must surface when a sort becomes active");
 
-        // Click the button -- it triggers `actionClearSort` and
-        // the next `layoutChanged` must hide it again.
+        // Clicking triggers `actionClearSort`; the next
+        // `layoutChanged` must hide the indicator again.
         button->click();
         QCoreApplication::processEvents();
         QCOMPARE(mWindow->FilterModel()->SortColumn(), -1);
@@ -12762,16 +12739,12 @@ private slots:
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
     }
 
-    // The toolbar's plain Clear-Sort button is the
-    // auto-generated `QToolButton` `QToolBar::addAction(...)`
-    // emits for `actionClearSort`. It has no `objectName` of its
-    // own, so resolve it via `widgetForAction` and pin its
-    // enable + click contract. This is the fifth Clear-sort
-    // surface (alongside menu / split-menu / right-click /
-    // status-bar) and was previously the only one without
-    // direct coverage -- without this test a refactor that
-    // accidentally dropped `addAction(actionClearSort)` from the
-    // toolbar would only trip the toolbar-layout test.
+    // The toolbar's plain Clear-Sort button is the auto-
+    // generated `QToolButton` from `addAction`. Resolve it via
+    // `widgetForAction` and pin its enable + click contract -
+    // without this test a refactor dropping
+    // `addAction(actionClearSort)` would only trip the
+    // toolbar-layout test.
     void TestToolbarClearSortButtonTriggersClear()
     {
         const int categoryCol = StreamFixtureForColumnTests();
@@ -12801,13 +12774,9 @@ private slots:
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
     }
 
-    // Hiding every visible column must surface the
-    // `(every column is hidden ...)` placeholder in both the
-    // top-level Sort menu (after the Clear-sort entry +
-    // separator) and the toolbar dropdown. Pins the
-    // `AppendSortByEntries == false` branch so a future change
-    // to the visibility-filter doesn't silently leave the menus
-    // empty.
+    // When every column is hidden both Sort surfaces must
+    // surface the `(every column is hidden ...)` placeholder,
+    // not leave the menu empty.
     void TestSortDropdownPlaceholderWhenAllColumnsHidden()
     {
         const int categoryCol = StreamFixtureForColumnTests();
@@ -12816,9 +12785,8 @@ private slots:
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "fixture must expose `msg` column");
 
-        // Hide every visible column. `SetColumnVisible` clears
-        // the active sort if the hidden column was the sorted
-        // one, so `actionClearSort` need not be enabled here.
+        // Hide every visible column. `SetColumnVisible`
+        // clears the sort if the sorted column gets hidden.
         mWindow->SetColumnVisible(categoryCol, false);
         mWindow->SetColumnVisible(msgCol, false);
         QCoreApplication::processEvents();
@@ -12854,15 +12822,11 @@ private slots:
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
     }
 
-    // A column whose data does not match its configured `Type`
-    // (`presentSlots > matchingSlots`) sorts via the wrong
-    // comparator and produces an order that does not reflect
-    // the on-screen values. The Sort menu must therefore
-    // disable both Asc and Desc rows on such columns. A tooltip
-    // on each disabled row points the user at Configuration
-    // Diagnostics so the cause is discoverable. Type-clean
-    // columns must keep both rows enabled in the same menu so
-    // the test pins both sides of the gate.
+    // Columns whose data doesn't match their configured type
+    // sort via the wrong comparator, so the Sort menu must
+    // disable both Asc and Desc on them and surface a tooltip
+    // pointing at Configuration Diagnostics. Type-clean
+    // columns stay enabled (control).
     void TestSortMenuDisablesAscDescOnTypeMismatch()
     {
         const int categoryCol = StreamFixtureForColumnTests();
@@ -12931,9 +12895,9 @@ private slots:
         QVERIFY2(categoryAsc->isEnabled(), "asc must remain enabled on a type-clean column");
         QVERIFY2(categoryDesc->isEnabled(), "desc must remain enabled on a type-clean column");
 
-        // Top-level Sort menu must carry the same gate. The
-        // shared `AppendSortByEntries` core feeds both surfaces,
-        // but pinning here protects against a future split.
+        // Top-level Sort menu carries the same gate (shared
+        // core, but pin both surfaces in case of a future
+        // split).
         auto *sortMenu = mWindow->findChild<QMenu *>(QStringLiteral("menuSort"));
         QVERIFY2(sortMenu != nullptr, "Sort menu must exist");
         emit sortMenu->aboutToShow();
@@ -12947,14 +12911,9 @@ private slots:
         // NOLINTEND(clang-analyzer-core.CallAndMessage)
     }
 
-    // The header right-click menu's Sort block mirrors the same
-    // type-mismatch gate the Sort menu applies, so a user who
-    // right-clicks a flagged column header sees Asc / Desc
-    // disabled with the same diagnostic tooltip. Pinned because
-    // the right-click sort block has its own action-creation
-    // path (not shared with `AppendSortByEntries`), so a future
-    // refactor that converges them must not silently drop the
-    // gate on either side.
+    // Header right-click must apply the same type-mismatch
+    // gate as the Sort menu. The right-click path doesn't
+    // share `AppendSortByEntries`, so pin it independently.
     void TestHeaderContextMenuDisablesSortOnTypeMismatch()
     {
         const int categoryCol = StreamFixtureForColumnTests();
@@ -13038,10 +12997,10 @@ private slots:
     }
 
     // The status-bar tooltip must rebuild when the sorted
-    // column's header is renamed via `NotifyColumnEdited` -- a
-    // path that emits `headerDataChanged` but no `layoutChanged`,
-    // so without the dedicated hook the tooltip would freeze on
-    // the previous label until the next sort / filter event.
+    // column is renamed - `NotifyColumnEdited` emits only
+    // `headerDataChanged`, so without the dedicated hook the
+    // tooltip would freeze on the old label until the next
+    // sort / filter event.
     void TestSortStatusTooltipUpdatesOnColumnRename()
     {
         const int categoryCol = StreamFixtureForColumnTests();
@@ -13060,11 +13019,10 @@ private slots:
             button->toolTip().contains(QStringLiteral("\"category\"")), "initial tooltip must name the sorted column"
         );
 
-        // Rename the column header and emit the same
+        // Rename the column and emit the same
         // `NotifyColumnEdited` the column editor would fire.
-        // The tooltip refresh hangs off `headerDataChanged`, so
-        // the status-bar text must catch the new label without
-        // any sort / filter event in between.
+        // The tooltip must catch the new label without any
+        // sort / filter event in between.
         auto *model = mWindow->Model();
         model->ConfigurationManager().SetColumnHeader(static_cast<size_t>(categoryCol), std::string("renamed-cat"));
         model->NotifyColumnEdited(categoryCol);
@@ -16828,13 +16786,10 @@ private slots:
         QCOMPARE(restoredFilter->SortOrder(), Qt::DescendingOrder);
         QCOMPARE(restored->Model()->rowCount(), fixtureLines.size());
 
-        // The deferred sort reaches `UpdateSortStatus` indirectly
-        // via the `layoutChanged` it issues, so the status-bar
-        // indicator and `actionClearSort` must mirror the
-        // restored sort once streaming settles. Pinned so a future
-        // refactor of the deferred-restore plumbing can't silently
-        // strand the status-bar / menu state out of sync with the
-        // proxy.
+        // The deferred sort reaches `UpdateSortStatus` via
+        // the `layoutChanged` it issues. Pin the status-bar
+        // indicator and `actionClearSort` to mirror the
+        // restored sort once streaming settles.
         auto *restoredClearSortAction = restored->findChild<QAction *>(QStringLiteral("actionClearSort"));
         QVERIFY2(restoredClearSortAction != nullptr, "restored window must own actionClearSort");
         // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
