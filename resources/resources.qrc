@@ -21,7 +21,9 @@
              load-time by `icon_loader::MakeThemedIcon` so a single
              asset works for Light and Dark themes. -->
         <file>icons/arrow-down-to-line.svg</file>
+        <file>icons/arrow-down-up.svg</file>
         <file>icons/bookmark.svg</file>
+        <file>icons/circle-x.svg</file>
         <file>icons/file-clock.svg</file>
         <file>icons/folder-open.svg</file>
         <file>icons/funnel.svg</file>
