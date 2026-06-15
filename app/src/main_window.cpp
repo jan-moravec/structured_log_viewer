@@ -6427,6 +6427,54 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
         connect(removeAction, &QAction::triggered, this, [this, filterId]() { ClearFilter(filterId); });
     }
 
+    // Sort block: `Sort ascending by "<col>"`, `Sort descending by
+    // "<col>"`, and `Clear sort`. Mirrors the Sort menu entries but
+    // contextualised to the clicked column. Hidden columns are
+    // skipped (production right-clicks always hit a visible
+    // section; the test seam may pass a hidden index, where the
+    // sort indicator wouldn't render anyway).
+    if (thisColumn.visible)
+    {
+        if (!menu->isEmpty())
+        {
+            menu->addSeparator();
+        }
+        const int currentSortColumn =
+            (mSortFilterProxyModel != nullptr) ? mSortFilterProxyModel->SortColumn() : -1;
+        const Qt::SortOrder currentSortOrder =
+            (mSortFilterProxyModel != nullptr) ? mSortFilterProxyModel->SortOrder() : Qt::AscendingOrder;
+
+        QAction *sortAscAction = menu->addAction(tr("Sort ascending by \"%1\"").arg(thisLabel));
+        sortAscAction->setCheckable(true);
+        sortAscAction->setChecked(currentSortColumn == logicalColumn && currentSortOrder == Qt::AscendingOrder);
+        sortAscAction->setEnabled(modelHasRows);
+        connect(sortAscAction, &QAction::triggered, this, [this, keys = thisKeys]() {
+            const int idx = FindColumnIndexByKeys(keys);
+            if (idx < 0 || mTableView == nullptr)
+            {
+                return;
+            }
+            mTableView->sortByColumn(idx, Qt::AscendingOrder);
+        });
+
+        QAction *sortDescAction = menu->addAction(tr("Sort descending by \"%1\"").arg(thisLabel));
+        sortDescAction->setCheckable(true);
+        sortDescAction->setChecked(currentSortColumn == logicalColumn && currentSortOrder == Qt::DescendingOrder);
+        sortDescAction->setEnabled(modelHasRows);
+        connect(sortDescAction, &QAction::triggered, this, [this, keys = thisKeys]() {
+            const int idx = FindColumnIndexByKeys(keys);
+            if (idx < 0 || mTableView == nullptr)
+            {
+                return;
+            }
+            mTableView->sortByColumn(idx, Qt::DescendingOrder);
+        });
+
+        QAction *clearSortAction = menu->addAction(tr("Clear sort"));
+        clearSortAction->setEnabled(currentSortColumn >= 0);
+        connect(clearSortAction, &QAction::triggered, this, &MainWindow::ClearSort);
+    }
+
     // Re-showing hidden columns is intentionally not offered here:
     // the `View` menu already covers it (and is the only escape
     // hatch when *every* column is hidden, since no header section
