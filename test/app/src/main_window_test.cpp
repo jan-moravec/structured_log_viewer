@@ -12574,8 +12574,8 @@ private slots:
 
         // Walk the per-column rows and find the `category` Asc /
         // Desc pair. Asc must be checked, Desc unchecked.
-        QAction *ascCategory = nullptr;
-        QAction *descCategory = nullptr;
+        const QAction *ascCategory = nullptr;
+        const QAction *descCategory = nullptr;
         int totalChecked = 0;
         for (QAction *act : entries)
         {
@@ -12624,7 +12624,7 @@ private slots:
         // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
         // `QScopeGuard` covers any QVERIFY2-driven early
         // return; reset before building a second menu.
-        QScopeGuard freeMenu1([&built]() { built.menu->deleteLater(); });
+        const QScopeGuard freeMenu1([&built]() { built.menu->deleteLater(); });
 
         const auto findSortBlock = [](QMenu *menu) -> std::tuple<QAction *, QAction *, QAction *> {
             QAction *clearSort = nullptr;
@@ -12666,7 +12666,7 @@ private slots:
         QCoreApplication::processEvents();
         auto built2 = mWindow->BuildHeaderContextMenu(categoryCol, nullptr);
         QVERIFY2(built2.menu != nullptr, "BuildHeaderContextMenu must return a menu");
-        QScopeGuard freeMenu2([&built2]() { built2.menu->deleteLater(); });
+        const QScopeGuard freeMenu2([&built2]() { built2.menu->deleteLater(); });
 
         auto [clearSortActive, ascActive, descActive] = findSortBlock(built2.menu);
         QVERIFY2(
@@ -12871,8 +12871,8 @@ private slots:
         // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
         emit splitMenu->aboutToShow();
 
-        QAction *msgAsc = findRow(splitMenu, QStringLiteral("\"msg\""), ascGlyph);
-        QAction *msgDesc = findRow(splitMenu, QStringLiteral("\"msg\""), descGlyph);
+        const QAction *msgAsc = findRow(splitMenu, QStringLiteral("\"msg\""), ascGlyph);
+        const QAction *msgDesc = findRow(splitMenu, QStringLiteral("\"msg\""), descGlyph);
         QVERIFY2(msgAsc != nullptr && msgDesc != nullptr, "sort dropdown must carry msg asc/desc rows");
         QVERIFY2(!msgAsc->isEnabled(), "asc row must be disabled on a type-mismatched column");
         QVERIFY2(!msgDesc->isEnabled(), "desc row must be disabled on a type-mismatched column");
@@ -12886,8 +12886,8 @@ private slots:
         );
         QVERIFY2(splitMenu->toolTipsVisible(), "sort dropdown must opt into per-action tooltips");
 
-        QAction *categoryAsc = findRow(splitMenu, QStringLiteral("\"category\""), ascGlyph);
-        QAction *categoryDesc = findRow(splitMenu, QStringLiteral("\"category\""), descGlyph);
+        const QAction *categoryAsc = findRow(splitMenu, QStringLiteral("\"category\""), ascGlyph);
+        const QAction *categoryDesc = findRow(splitMenu, QStringLiteral("\"category\""), descGlyph);
         QVERIFY2(
             categoryAsc != nullptr && categoryDesc != nullptr,
             "sort dropdown must carry category asc/desc rows (control)"
@@ -12901,8 +12901,8 @@ private slots:
         auto *sortMenu = mWindow->findChild<QMenu *>(QStringLiteral("menuSort"));
         QVERIFY2(sortMenu != nullptr, "Sort menu must exist");
         emit sortMenu->aboutToShow();
-        QAction *sortMsgAsc = findRow(sortMenu, QStringLiteral("\"msg\""), ascGlyph);
-        QAction *sortMsgDesc = findRow(sortMenu, QStringLiteral("\"msg\""), descGlyph);
+        const QAction *sortMsgAsc = findRow(sortMenu, QStringLiteral("\"msg\""), ascGlyph);
+        const QAction *sortMsgDesc = findRow(sortMenu, QStringLiteral("\"msg\""), descGlyph);
         QVERIFY2(
             sortMsgAsc != nullptr && sortMsgDesc != nullptr, "top-level Sort menu must also carry the msg asc/desc rows"
         );
@@ -12932,10 +12932,10 @@ private slots:
         auto built = mWindow->BuildHeaderContextMenu(msgCol, nullptr);
         QVERIFY2(built.menu != nullptr, "BuildHeaderContextMenu must return a menu");
         // NOLINTBEGIN(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
-        QScopeGuard freeMenu([&built]() { built.menu->deleteLater(); });
+        const QScopeGuard freeMenu([&built]() { built.menu->deleteLater(); });
 
-        QAction *asc = nullptr;
-        QAction *desc = nullptr;
+        const QAction *asc = nullptr;
+        const QAction *desc = nullptr;
         for (QAction *act : built.menu->actions())
         {
             if (act == nullptr || act->isSeparator())
@@ -12968,10 +12968,10 @@ private slots:
         // on the same right-click path.
         auto controlBuilt = mWindow->BuildHeaderContextMenu(categoryCol, nullptr);
         QVERIFY2(controlBuilt.menu != nullptr, "BuildHeaderContextMenu must return a menu");
-        QScopeGuard freeControl([&controlBuilt]() { controlBuilt.menu->deleteLater(); });
+        const QScopeGuard freeControl([&controlBuilt]() { controlBuilt.menu->deleteLater(); });
 
-        QAction *controlAsc = nullptr;
-        QAction *controlDesc = nullptr;
+        const QAction *controlAsc = nullptr;
+        const QAction *controlDesc = nullptr;
         for (QAction *act : controlBuilt.menu->actions())
         {
             if (act == nullptr || act->isSeparator())

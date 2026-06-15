@@ -3574,8 +3574,8 @@ bool MainWindow::AppendSortByEntries(QMenu *menu)
     // Kept out of `tr()` so a translator can't alter the
     // glyphs - they must match `QHeaderView`'s sort-indicator
     // triangles. Tests pin these code points.
-    static constexpr QChar kSortAscGlyph(u'\u25B2');  // ▲
-    static constexpr QChar kSortDescGlyph(u'\u25BC'); // ▼
+    static constexpr QChar SORT_ASC_GLYPH(u'\u25B2');  // ▲
+    static constexpr QChar SORT_DESC_GLYPH(u'\u25BC'); // ▼
 
     // Disable rows when the model has no rows: a sort would be
     // a structural no-op but the action would still appear
@@ -3624,8 +3624,8 @@ bool MainWindow::AppendSortByEntries(QMenu *menu)
         // Only the label is translated; the glyph stays a
         // literal code-point.
         const QString quotedLabel = tr("\"%1\"").arg(label);
-        const QString ascText = QString(kSortAscGlyph) + QLatin1Char(' ') + quotedLabel;
-        const QString descText = QString(kSortDescGlyph) + QLatin1Char(' ') + quotedLabel;
+        const QString ascText = QString(SORT_ASC_GLYPH) + QLatin1Char(' ') + quotedLabel;
+        const QString descText = QString(SORT_DESC_GLYPH) + QLatin1Char(' ') + quotedLabel;
 
         QAction *ascAct = menu->addAction(ascText);
         ascAct->setCheckable(true);
@@ -3749,8 +3749,8 @@ void MainWindow::UpdateSortStatus()
     // reorders show through. Labels are disambiguated by
     // `[keys]` for duplicate headers.
     const std::vector<QString> labels = BuildAllColumnMenuLabels();
-    QString columnLabel = (sortColumn < static_cast<int>(labels.size())) ? labels[static_cast<size_t>(sortColumn)]
-                                                                         : tr("(unknown column)");
+    const QString columnLabel =
+        std::cmp_less(sortColumn, labels.size()) ? labels[static_cast<size_t>(sortColumn)] : tr("(unknown column)");
     const QString directionWord =
         (mSortFilterProxyModel->SortOrder() == Qt::DescendingOrder) ? tr("descending") : tr("ascending");
     mClearSortStatusButton->setToolTip(tr("Sorted by \"%1\" (%2) - click to clear.").arg(columnLabel, directionWord));
