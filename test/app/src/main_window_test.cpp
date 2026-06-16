@@ -7,6 +7,7 @@
 #include "filter_editor.hpp"
 #include "find_dock.hpp"
 #include "find_record_widget.hpp"
+#include "jump_to_tail_pill.hpp"
 #include "level_cell_delegate.hpp"
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
@@ -2709,6 +2710,773 @@ private slots:
                            .arg(valueBefore)
                            .arg(valueAfter))
         );
+
+        model->EndStreaming(false);
+    }
+
+    // Pill is hidden on a fresh idle window: no rows, no
+    // scroll-away, nothing to announce. Pins the resting state
+    // so a future change to the construction order is caught.
+    //
+    // Note: this group uses `isHidden()` instead of `!isVisible()`
+    // because under the offscreen QPA the test window is never
+    // mapped, so `isVisible()` is always false. `isHidden()`
+    // reflects the explicit `setVisible(false)` the pill ctor
+    // issues -- the production "would show if mapped" property.
+    void TestJumpToTailPillHiddenOnIdle()
+    {
+        const auto *tableView = mWindow->findChild<LogTableView *>();
+        QVERIFY(tableView != nullptr);
+        const JumpToTailPill *pill = tableView->TailPillForTest();
+        QVERIFY2(pill != nullptr, "log table view must construct the jump-to-tail pill");
+        QVERIFY2(pill->isHidden(), "pill must be hidden on a fresh idle window");
+        QCOMPARE(pill->Count(), 0);
+        QCOMPARE(tableView->PendingNewRowsForTest(), 0);
+    }
+
+    // While the user is at the tail edge, inserted rows must not
+    // raise the pill -- they're already current.
+    void TestJumpToTailPillStaysHiddenAtTail()
+    {
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY(tableView != nullptr);
+        QVERIFY(model != nullptr);
+        const JumpToTailPill *pill = tableView->TailPillForTest();
+        QVERIFY(pill != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        // Default `TailEdge::Bottom` + empty scrollbar starts us
+        // at the tail edge.
+        QVERIFY(tableView->verticalScrollBar()->value() >= tableView->verticalScrollBar()->maximum());
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 10, /*declareNewKey=*/true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 10);
+
+        QCOMPARE(tableView->PendingNewRowsForTest(), 0);
+        QCOMPARE(pill->Count(), 0);
+        QVERIFY2(pill->isHidden(), "pill must stay hidden while the user sits at the tail edge");
+
+        model->EndStreaming(false);
+    }
+
+    // After a user scroll-away from the tail, the next batch
+    // raises the pill with a matching count. Uses
+    // `triggerAction(SliderToMinimum)` so the scroll-edge state
+    // machine sees a user-flagged change; a plain `setValue`
+    // would be filtered out as programmatic.
+    void TestJumpToTailPillSurfacesAfterScrollAway()
+    {
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY(tableView != nullptr);
+        QVERIFY(model != nullptr);
+        const JumpToTailPill *pill = tableView->TailPillForTest();
+        QVERIFY(pill != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        // Seed scrollable rows, then simulate a user Home press
+        // to scroll away from the bottom tail.
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 30, /*declareNewKey=*/true));
+        QCoreApplication::processEvents();
+
+        QScrollBar *vbar = tableView->verticalScrollBar();
+        vbar->setRange(0, 1000);
+        vbar->setValue(vbar->maximum());
+        // Re-seed the at-tail flag: the prior programmatic
+        // `setValue` may have transitioned it silently. Production
+        // reaches the same state via `SetTailEdge` in
+        // `ApplyDisplayOrder`.
+        tableView->SetTailEdge(LogTableView::TailEdge::Bottom);
+        vbar->triggerAction(QAbstractSlider::SliderToMinimum);
+        QCoreApplication::processEvents();
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 31, 7, /*declareNewKey=*/false));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(tableView->PendingNewRowsForTest(), 7);
+        QCOMPARE(pill->Count(), 7);
+        QVERIFY2(!pill->isHidden(), "pill must be un-hidden after a scroll-away + batch");
+
+        model->EndStreaming(false);
+    }
+
+    // The pill count accumulates across batches: it tracks "rows
+    // since you scrolled away", not "rows in the last batch".
+    void TestJumpToTailPillAccumulatesAcrossBatches()
+    {
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY(tableView != nullptr);
+        QVERIFY(model != nullptr);
+        const JumpToTailPill *pill = tableView->TailPillForTest();
+        QVERIFY(pill != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 20, /*declareNewKey=*/true));
+        QCoreApplication::processEvents();
+
+        QScrollBar *vbar = tableView->verticalScrollBar();
+        vbar->setRange(0, 1000);
+        vbar->setValue(vbar->maximum());
+        tableView->SetTailEdge(LogTableView::TailEdge::Bottom);
+        vbar->triggerAction(QAbstractSlider::SliderToMinimum);
+        QCoreApplication::processEvents();
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 21, 3, /*declareNewKey=*/false));
+        QCoreApplication::processEvents();
+        QCOMPARE(tableView->PendingNewRowsForTest(), 3);
+        QCOMPARE(pill->Count(), 3);
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 24, 5, /*declareNewKey=*/false));
+        QCoreApplication::processEvents();
+        QCOMPARE(tableView->PendingNewRowsForTest(), 8);
+        QCOMPARE(pill->Count(), 8);
+
+        model->EndStreaming(false);
+    }
+
+    // Returning to the tail edge zeroes the counter and hides
+    // the pill: a single user scroll back catches them up.
+    void TestJumpToTailPillResetsOnTailReturn()
+    {
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY(tableView != nullptr);
+        QVERIFY(model != nullptr);
+        const JumpToTailPill *pill = tableView->TailPillForTest();
+        QVERIFY(pill != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 25, /*declareNewKey=*/true));
+        QCoreApplication::processEvents();
+
+        QScrollBar *vbar = tableView->verticalScrollBar();
+        vbar->setRange(0, 1000);
+        vbar->setValue(vbar->maximum());
+        tableView->SetTailEdge(LogTableView::TailEdge::Bottom);
+        vbar->triggerAction(QAbstractSlider::SliderToMinimum);
+        QCoreApplication::processEvents();
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 26, 4, /*declareNewKey=*/false));
+        QCoreApplication::processEvents();
+        QCOMPARE(pill->Count(), 4);
+
+        // User returns to the tail. `triggerAction` flags the
+        // change as user-initiated, so `OnVerticalScrollValueChanged`
+        // emits `userScrolledToTail` and drops the pending count.
+        vbar->triggerAction(QAbstractSlider::SliderToMaximum);
+        QCoreApplication::processEvents();
+
+        QCOMPARE(tableView->PendingNewRowsForTest(), 0);
+        QCOMPARE(pill->Count(), 0);
+
+        model->EndStreaming(false);
+    }
+
+    // Clicking the pill emits `jumpToTailRequested`, which the
+    // host turns into a scroll back to tail (zeroing the counter)
+    // and a Follow-newest re-engage. Without the re-engage the
+    // next batch would push the user behind the tail again.
+    void TestJumpToTailPillClickJumpsAndResets()
+    {
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        auto *model = mWindow->findChild<LogModel *>();
+        QAction *followAction = FindActionByObjectName(mWindow, QStringLiteral("actionFollowTail"));
+        QVERIFY(tableView != nullptr);
+        QVERIFY(model != nullptr);
+        QVERIFY(followAction != nullptr);
+        JumpToTailPill *pill = tableView->TailPillForTest();
+        QVERIFY(pill != nullptr);
+
+        // The host slot gates the Follow re-engage on
+        // `IsLiveTailSession()`; production sets the mode in
+        // `OpenLogStream`, so tests must opt in explicitly.
+        auto restore = qScopeGuard([this]() { mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::Idle); });
+        mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 40, /*declareNewKey=*/true));
+        QCoreApplication::processEvents();
+
+        // Pin Follow on so the scroll-away assertion below is
+        // meaningful (Follow already off would mask a missing
+        // re-engage).
+        followAction->setEnabled(true);
+        followAction->setChecked(true);
+
+        QScrollBar *vbar = tableView->verticalScrollBar();
+        vbar->setRange(0, 1000);
+        vbar->setValue(vbar->maximum());
+        tableView->SetTailEdge(LogTableView::TailEdge::Bottom);
+        vbar->triggerAction(QAbstractSlider::SliderToMinimum);
+        QCoreApplication::processEvents();
+
+        // Sanity-check the scroll-away disengaged Follow before
+        // we exercise the re-engage path.
+        QVERIFY2(
+            !followAction->isChecked(),
+            "scroll-away must disengage Follow newest before the click test exercises re-engage"
+        );
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 41, 6, /*declareNewKey=*/false));
+        QCoreApplication::processEvents();
+        QCOMPARE(pill->Count(), 6);
+
+        const QSignalSpy jumpSpy(tableView, &LogTableView::jumpToTailRequested);
+        QVERIFY(jumpSpy.isValid());
+
+        pill->click();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(jumpSpy.count(), 1);
+        // `JumpToNewestRow` scrolls back to the bottom; the
+        // at-tail transition fires `ResetPendingNewRows`.
+        QCOMPARE(tableView->PendingNewRowsForTest(), 0);
+        QCOMPARE(pill->Count(), 0);
+        // Follow newest must be re-engaged: the pill click is
+        // "catch me up", not "show the tail once and then fall
+        // behind again".
+        QVERIFY2(followAction->isChecked(), "pill click must re-engage Follow newest in a live-tail session");
+
+        model->EndStreaming(false);
+    }
+
+    // `SetTailEdge(Top)` must flip the pill arrow to Up so the
+    // glyph reads correctly in newest-first mode.
+    void TestJumpToTailPillArrowFollowsTailEdge()
+    {
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        QVERIFY(tableView != nullptr);
+        const JumpToTailPill *pill = tableView->TailPillForTest();
+        QVERIFY(pill != nullptr);
+
+        QCOMPARE(tableView->GetTailEdge(), LogTableView::TailEdge::Bottom);
+        QCOMPARE(pill->Direction(), JumpToTailPill::ArrowDirection::Down);
+
+        tableView->SetTailEdge(LogTableView::TailEdge::Top);
+        QCOMPARE(pill->Direction(), JumpToTailPill::ArrowDirection::Up);
+
+        tableView->SetTailEdge(LogTableView::TailEdge::Bottom);
+        QCOMPARE(pill->Direction(), JumpToTailPill::ArrowDirection::Down);
+    }
+
+    // Regression: a tail-edge flip while the user was mid-scroll
+    // used to leave the pill showing the old direction's tally
+    // under the new arrow ("5 rows below" becoming "5 rows
+    // above"). The fix gates the reset on the orientation flip
+    // itself, not just on `mAtTailEdge`.
+    void TestJumpToTailPillResetsOnEdgeFlipMidScroll()
+    {
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY(tableView != nullptr);
+        QVERIFY(model != nullptr);
+        const JumpToTailPill *pill = tableView->TailPillForTest();
+        QVERIFY(pill != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 30, /*declareNewKey=*/true));
+        QCoreApplication::processEvents();
+
+        // Park at the (Bottom) tail, scroll away, then take a
+        // batch so the pill ends up with a non-zero count under
+        // Bottom orientation.
+        QScrollBar *vbar = tableView->verticalScrollBar();
+        vbar->setRange(0, 1000);
+        vbar->setValue(vbar->maximum());
+        tableView->SetTailEdge(LogTableView::TailEdge::Bottom);
+        vbar->triggerAction(QAbstractSlider::SliderToMinimum);
+        QCoreApplication::processEvents();
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 31, 5, /*declareNewKey=*/false));
+        QCoreApplication::processEvents();
+        QCOMPARE(tableView->PendingNewRowsForTest(), 5);
+        QCOMPARE(pill->Count(), 5);
+
+        // Park the scrollbar in the middle so neither tail edge
+        // computes as true -- the exact mid-scroll condition
+        // where the old `if (mAtTailEdge)` gate would skip the
+        // reset. `setRange` is needed because `SliderToMinimum`
+        // clamped the range to Qt's computed layout.
+        vbar->setRange(0, 1000);
+        vbar->setValue(500);
+        QVERIFY2(
+            !tableView->AtTailEdgeForTest(),
+            "precondition: mid-scroll viewport must not be at the Bottom tail edge before the flip"
+        );
+
+        tableView->SetTailEdge(LogTableView::TailEdge::Top);
+
+        QCOMPARE(pill->Direction(), JumpToTailPill::ArrowDirection::Up);
+        QVERIFY2(
+            !tableView->AtTailEdgeForTest(),
+            "sanity: mid-scroll viewport must not be at the Top tail edge either, so the at-tail "
+            "branch of the reset gate cannot mask a missing edge-flip branch"
+        );
+        QCOMPARE(tableView->PendingNewRowsForTest(), 0);
+        QCOMPARE(pill->Count(), 0);
+
+        model->EndStreaming(false);
+    }
+
+    // `JumpToNewestRow` used to bail (and the pill click do
+    // nothing) when the source's newest row was filtered out --
+    // a common live-tail + level filter case. The fallback now
+    // walks back to the first visible source row and ultimately
+    // snaps to the proxy's visual tail, so the click always
+    // moves the viewport.
+    //
+    // Setup: push values 1..30, exclude `value >= 26`, scroll
+    // off tail, and check that `JumpToNewestRow` advances the
+    // scrollbar (vs. the pre-fix early-return that left it put).
+    void TestJumpToNewestRowFallbackToVisualTailWhenFiltered()
+    {
+        auto *model = mWindow->findChild<LogModel *>();
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        LogFilterModel *filterModel = mWindow->FilterModel();
+        QVERIFY(model != nullptr);
+        QVERIFY(tableView != nullptr);
+        QVERIFY(filterModel != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 30, /*declareNewKey=*/true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 30);
+
+        const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
+        QVERIFY2(valueCol >= 0, "MakeSyntheticBatch must produce a 'value' column for the filter to target");
+
+        // Exclude `value >= 26` so the source-newest row
+        // (value=30) is filtered out -- the bug condition.
+        {
+            std::vector<loglib::RowPredicate> rules;
+            rules.emplace_back(
+                std::in_place_type<loglib::NumericRangeRowPredicate>,
+                static_cast<size_t>(valueCol),
+                std::optional<double>{},
+                std::optional<double>{25.5}
+            );
+            filterModel->SetFilterRules(std::move(rules));
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 30);
+        QCOMPARE(filterModel->rowCount(), 25);
+
+        // Park the scrollbar off tail; this test exercises
+        // `JumpToNewestRow`'s mapping path, not the scroll-edge
+        // state machine, so a plain `setRange` + `setValue` is
+        // enough.
+        QScrollBar *vbar = tableView->verticalScrollBar();
+        vbar->setRange(0, 1000);
+        vbar->setValue(0);
+        const int valueBefore = vbar->value();
+        QCOMPARE(valueBefore, 0);
+
+        mWindow->JumpToNewestRowForTest();
+        QCoreApplication::processEvents();
+
+        // Pre-fix: stays at 0 (source-newest mapping was
+        // invalid). With the fallback we land near the proxy's
+        // visual tail.
+        QVERIFY2(
+            vbar->value() > valueBefore,
+            qPrintable(QStringLiteral("scrollbar must move toward the visual tail when the newest source row is "
+                                      "filtered out; value stayed at %1")
+                           .arg(vbar->value()))
+        );
+
+        model->EndStreaming(false);
+    }
+
+    // A row insert that grows `maximum` without moving `value`
+    // used to leave `mAtTailEdge` stale (`OnVerticalScrollValueChanged`
+    // only fires when `value` changes), so a user at the previous
+    // tail would silently drift behind. The `rangeChanged`
+    // listener refreshes the flag without emitting user-scroll
+    // signals (a layout change must not toggle Follow newest).
+    //
+    // Drives `setRange` directly and observes via
+    // `AtTailEdgeForTest()`: a row insert under the offscreen QPA
+    // can re-call `setRange(0, 0)` during geometry and mask the
+    // bug; the seam pins the moment the listener fires.
+    void TestRangeChangeFreshensAtTailFlag()
+    {
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        QVERIFY(tableView != nullptr);
+
+        QScrollBar *vbar = tableView->verticalScrollBar();
+        vbar->setRange(0, 0);
+        vbar->setValue(0);
+        tableView->SetTailEdge(LogTableView::TailEdge::Bottom);
+        QVERIFY2(tableView->AtTailEdgeForTest(), "empty range + value 0 must be at-tail after re-seed");
+
+        const QSignalSpy awaySpy(tableView, &LogTableView::userScrolledAwayFromTail);
+        const QSignalSpy toSpy(tableView, &LogTableView::userScrolledToTail);
+        QVERIFY(awaySpy.isValid());
+        QVERIFY(toSpy.isValid());
+
+        // Grow the range without moving `value` -- the bug
+        // condition. The listener must flip the flag to false.
+        vbar->setRange(0, 500);
+        QVERIFY2(
+            !tableView->AtTailEdgeForTest(),
+            "rangeChanged growing max must flip mAtTailEdge to false when value < newMax"
+        );
+
+        // Shrinking the range back so `value >= max` must restore
+        // the flag (the rare "rows removed past value" branch).
+        vbar->setRange(0, 0);
+        QVERIFY2(tableView->AtTailEdgeForTest(), "rangeChanged shrinking max back below value must restore at-tail");
+
+        // Neither transition is a user scroll, so no
+        // `userScrolled*` signal must fire (a stray emission
+        // would auto-toggle Follow newest).
+        QCOMPARE(awaySpy.count(), 0);
+        QCOMPARE(toSpy.count(), 0);
+    }
+
+    // Regression: under live-tail with Follow newest engaged,
+    // signal ordering during a row insert (`rangeChanged` ->
+    // `mAtTailEdge` to false -> our `OnRowsInserted` increments
+    // -> `lineCountChanged` -> scroll-back -> reset) used to
+    // briefly leak a count between steps 3 and 5. The fix
+    // mirrors `actionFollowTail` into `mPendingNewRowsSuppressed`
+    // so the increment short-circuits.
+    //
+    // Pin: with Follow engaged, no batch may push the pill above
+    // zero regardless of signal ordering.
+    void TestJumpToTailPillStaysZeroUnderFollowNewest()
+    {
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        auto *model = mWindow->findChild<LogModel *>();
+        QAction *followAction = FindActionByObjectName(mWindow, QStringLiteral("actionFollowTail"));
+        QVERIFY(tableView != nullptr);
+        QVERIFY(model != nullptr);
+        QVERIFY(followAction != nullptr);
+        const JumpToTailPill *pill = tableView->TailPillForTest();
+        QVERIFY(pill != nullptr);
+
+        auto restore = qScopeGuard([this]() { mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::Idle); });
+        mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        // Engage Follow newest and verify the suppression flag
+        // followed. Suppression must be active *before* the
+        // batch arrives or the window we're closing would still
+        // leak a count.
+        followAction->setEnabled(true);
+        followAction->setChecked(true);
+        QVERIFY2(
+            tableView->PendingNewRowsSuppressedForTest(),
+            "Follow newest engaging must mirror into the view's pending-new-rows suppression flag"
+        );
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 25, /*declareNewKey=*/true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 25);
+
+        QCOMPARE(tableView->PendingNewRowsForTest(), 0);
+        QCOMPARE(pill->Count(), 0);
+        QVERIFY2(pill->isHidden(), "pill must stay hidden across a batch in the live-tail Follow-newest steady state");
+
+        // A second batch must also stay silent -- the
+        // suppression flag is sticky, not one-shot.
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 26, 13, /*declareNewKey=*/false));
+        QCoreApplication::processEvents();
+        QCOMPARE(tableView->PendingNewRowsForTest(), 0);
+        QCOMPARE(pill->Count(), 0);
+
+        model->EndStreaming(false);
+    }
+
+    // Toggling Follow newest back on while scrolled away with a
+    // pending tally must drain the count -- engaging suppression
+    // implies the user has acknowledged the announcement.
+    void TestFollowNewestEngagingClearsPendingTally()
+    {
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        auto *model = mWindow->findChild<LogModel *>();
+        QAction *followAction = FindActionByObjectName(mWindow, QStringLiteral("actionFollowTail"));
+        QVERIFY(tableView != nullptr);
+        QVERIFY(model != nullptr);
+        QVERIFY(followAction != nullptr);
+        const JumpToTailPill *pill = tableView->TailPillForTest();
+        QVERIFY(pill != nullptr);
+
+        auto restore = qScopeGuard([this]() { mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::Idle); });
+        mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        // Start with Follow off so the scroll-away + batch path
+        // accumulates a tally (same path as
+        // `TestJumpToTailPillSurfaces*`, just under live-tail).
+        followAction->setEnabled(true);
+        followAction->setChecked(false);
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 30, /*declareNewKey=*/true));
+        QCoreApplication::processEvents();
+
+        QScrollBar *vbar = tableView->verticalScrollBar();
+        vbar->setRange(0, 1000);
+        vbar->setValue(vbar->maximum());
+        tableView->SetTailEdge(LogTableView::TailEdge::Bottom);
+        vbar->triggerAction(QAbstractSlider::SliderToMinimum);
+        QCoreApplication::processEvents();
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 31, 4, /*declareNewKey=*/false));
+        QCoreApplication::processEvents();
+        QCOMPARE(tableView->PendingNewRowsForTest(), 4);
+        QCOMPARE(pill->Count(), 4);
+
+        // Toggle Follow back on. Engaging suppression must drain
+        // the tally: "I trust auto-follow more than the catch-up
+        // affordance".
+        followAction->setChecked(true);
+
+        QVERIFY2(
+            tableView->PendingNewRowsSuppressedForTest(),
+            "engaging Follow newest must mirror into the view's pending-new-rows suppression flag"
+        );
+        QCOMPARE(tableView->PendingNewRowsForTest(), 0);
+        QCOMPARE(pill->Count(), 0);
+
+        model->EndStreaming(false);
+    }
+
+    // Regression: under a custom sort the pill-click scroll can
+    // land short of the visual tail (the source-newest row sits
+    // in the middle of the proxy), so `mAtTailEdge` never
+    // transitions and `ResetPendingNewRows` would not fire. The
+    // host's `jumpToTailRequested` handler now acknowledges
+    // up-front so the count clears regardless of where the
+    // scroll lands.
+    void TestJumpToTailPillClickAcknowledgesUnderCustomSort()
+    {
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        auto *model = mWindow->findChild<LogModel *>();
+        const QAction *followAction = FindActionByObjectName(mWindow, QStringLiteral("actionFollowTail"));
+        QVERIFY(tableView != nullptr);
+        QVERIFY(model != nullptr);
+        QVERIFY(followAction != nullptr);
+        JumpToTailPill *pill = tableView->TailPillForTest();
+        QVERIFY(pill != nullptr);
+
+        // Static session keeps Follow newest out of the picture:
+        // live-tail's auto re-engage would drain the tally as a
+        // side effect and mask the regression.
+        auto restore = qScopeGuard([this]() { mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::Idle); });
+        mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::Static);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStaticSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 30, /*declareNewKey=*/true));
+        QCoreApplication::processEvents();
+
+        // Sort descending so source-newest (value=30) lands at
+        // proxy row 0 -- the visual top under Bottom orientation.
+        // `JumpToNewestRow`'s `scrollTo(PositionAtBottom)` then
+        // can't move that row to the visual bottom, leaving the
+        // scrollbar short of `maximum()`.
+        const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
+        QVERIFY2(valueCol >= 0, "MakeSyntheticBatch must produce a 'value' column for the sort to target");
+        tableView->sortByColumn(valueCol, Qt::DescendingOrder);
+        QCoreApplication::processEvents();
+
+        // Park scrolled away and seed a pending tally via a
+        // second batch. The count tracks "rows since I scrolled
+        // away" regardless of where they land visually.
+        QScrollBar *vbar = tableView->verticalScrollBar();
+        vbar->setRange(0, 1000);
+        vbar->setValue(vbar->maximum());
+        tableView->SetTailEdge(LogTableView::TailEdge::Bottom);
+        vbar->triggerAction(QAbstractSlider::SliderToMinimum);
+        QCoreApplication::processEvents();
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 31, 8, /*declareNewKey=*/false));
+        QCoreApplication::processEvents();
+        QVERIFY2(
+            tableView->PendingNewRowsForTest() > 0,
+            qPrintable(QStringLiteral("precondition: pill must have non-zero tally before the click; got %1")
+                           .arg(tableView->PendingNewRowsForTest()))
+        );
+
+        // Click the pill. The host handler calls
+        // `AcknowledgePendingNewRows` up-front, so the count
+        // clears regardless of where the scroll lands.
+        pill->click();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(tableView->PendingNewRowsForTest(), 0);
+        QCOMPARE(pill->Count(), 0);
+
+        model->EndStreaming(false);
+    }
+
+    // Accessibility contract: the pill must be keyboard-reachable
+    // (`Qt::TabFocus`) and its `accessibleName` must include the
+    // running count so AT users hear updates (Qt's bridge prefers
+    // `accessibleName` over the visible `text`). Substring match
+    // on the digit keeps the assertion robust to locale wording.
+    void TestJumpToTailPillAccessibilityContract()
+    {
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY(tableView != nullptr);
+        QVERIFY(model != nullptr);
+        const JumpToTailPill *pill = tableView->TailPillForTest();
+        QVERIFY(pill != nullptr);
+
+        QCOMPARE(pill->focusPolicy(), Qt::TabFocus);
+        QVERIFY2(
+            pill->accessibleName().contains(QStringLiteral("Jump to newest row")),
+            "pill accessibleName must reference the action while the count is zero"
+        );
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 30, /*declareNewKey=*/true));
+        QCoreApplication::processEvents();
+
+        QScrollBar *vbar = tableView->verticalScrollBar();
+        vbar->setRange(0, 1000);
+        vbar->setValue(vbar->maximum());
+        tableView->SetTailEdge(LogTableView::TailEdge::Bottom);
+        vbar->triggerAction(QAbstractSlider::SliderToMinimum);
+        QCoreApplication::processEvents();
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 31, 7, /*declareNewKey=*/false));
+        QCoreApplication::processEvents();
+        QCOMPARE(pill->Count(), 7);
+
+        // Live-update path: with a non-zero count, the
+        // accessible name must include the count so screen
+        // readers convey *how many* rows are pending.
+        // Substring match: locales rephrase the sentence (and
+        // some embed `7` differently), the contract is that
+        // the digit is present in the announced name.
+        QVERIFY2(
+            pill->accessibleName().contains(QStringLiteral("7")),
+            qPrintable(QStringLiteral("pill accessibleName must include the running count for AT users; got: %1")
+                           .arg(pill->accessibleName()))
+        );
+
+        model->EndStreaming(false);
+    }
+
+    // When every row is filtered out, `JumpToNewestRow` has
+    // nothing to scroll to and used to leave the pill stranded.
+    // The empty-proxy branch now acknowledges so a pending tally
+    // doesn't linger across the swallow.
+    void TestJumpToNewestRowAcknowledgesWhenProxyEmpty()
+    {
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        auto *model = mWindow->findChild<LogModel *>();
+        LogFilterModel *filterModel = mWindow->FilterModel();
+        QVERIFY(tableView != nullptr);
+        QVERIFY(model != nullptr);
+        QVERIFY(filterModel != nullptr);
+        const JumpToTailPill *pill = tableView->TailPillForTest();
+        QVERIFY(pill != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 30, /*declareNewKey=*/true));
+        QCoreApplication::processEvents();
+
+        // Park scrolled away and accumulate a pending count.
+        QScrollBar *vbar = tableView->verticalScrollBar();
+        vbar->setRange(0, 1000);
+        vbar->setValue(vbar->maximum());
+        tableView->SetTailEdge(LogTableView::TailEdge::Bottom);
+        vbar->triggerAction(QAbstractSlider::SliderToMinimum);
+        QCoreApplication::processEvents();
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 31, 4, /*declareNewKey=*/false));
+        QCoreApplication::processEvents();
+        QCOMPARE(pill->Count(), 4);
+
+        // Tighten the filter to swallow every row. Pre-fix the
+        // empty-proxy branch left the pill alone.
+        const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
+        QVERIFY2(valueCol >= 0, "MakeSyntheticBatch must produce a 'value' column");
+        {
+            std::vector<loglib::RowPredicate> rules;
+            // Range that excludes every value (max < min).
+            rules.emplace_back(
+                std::in_place_type<loglib::NumericRangeRowPredicate>,
+                static_cast<size_t>(valueCol),
+                std::optional<double>{1000.0},
+                std::optional<double>{0.0}
+            );
+            filterModel->SetFilterRules(std::move(rules));
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(filterModel->rowCount(), 0);
+
+        mWindow->JumpToNewestRowForTest();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(tableView->PendingNewRowsForTest(), 0);
+        QCOMPARE(pill->Count(), 0);
 
         model->EndStreaming(false);
     }

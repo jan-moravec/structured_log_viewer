@@ -394,6 +394,14 @@ public:
     {
         OpenRecentSession(uuid);
     }
+
+    /// Test seam for the `JumpToNewestRow` private helper; lets
+    /// the filtered-newest-row fallback be exercised without
+    /// synthesising a real pill click.
+    void JumpToNewestRowForTest()
+    {
+        JumpToNewestRow();
+    }
 #endif
 
 protected:
@@ -958,9 +966,26 @@ private:
     /// session mode.
     void UpdateStreamToolbarVisibility();
 
-    /// Scroll to the newest row when Follow tail is on; mapped through
-    /// the proxy chain so the scroll lands correctly under a sort.
+    /// Scroll to the newest row when Follow newest is on. Thin
+    /// gate that forwards to `JumpToNewestRow`, which is what
+    /// actually handles the proxy chain and the filtered fallback.
     void ScrollToNewestRowIfFollowing();
+
+    /// Scroll to the newest row through the proxy chain, ignoring
+    /// session mode / `actionFollowTail`. Used by the pill click
+    /// ("catch me up") rather than the streaming-policy state
+    /// machine. Safe to call with no rows.
+    ///
+    /// Target resolution:
+    ///   1. Map the source-newest row through the proxy chain.
+    ///      Correct under custom column sorts.
+    ///   2. If filtered out, walk source rows backwards up to
+    ///      `JUMP_FALLBACK_WALK_LIMIT` and take the first that
+    ///      survives the proxy.
+    ///   3. If nothing visible, snap to the proxy's visual tail
+    ///      (`LogTableView::GetTailEdge()`) so the click always
+    ///      moves the viewport.
+    void JumpToNewestRow();
 
     /// Re-apply the persisted retention cap to the model.
     void ApplyStreamingRetention();

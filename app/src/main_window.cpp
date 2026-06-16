@@ -688,6 +688,51 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
         }
     });
 
+    // Mirror Follow-newest into the view's pill-suppression flag.
+    // Without this, Qt's signal ordering during a row insert can
+    // briefly drop `mAtTailEdge` between the geometry pass and the
+    // follow-up scroll-back, flashing the pill in the most common
+    // live-tail steady state. `toggled` (not `triggered`) so a
+    // programmatic `setChecked` from the pill-click handler below
+    // takes the same path as a user toolbar click.
+    connect(ui->actionFollowTail, &QAction::toggled, this, [this](bool checked) {
+        if (mTableView != nullptr)
+        {
+            mTableView->SetPendingNewRowsSuppressed(checked);
+        }
+    });
+    // Seed from the action's initial checked state: the `.ui`
+    // declares Follow on by default but `toggled` only fires on
+    // changes, so without this one-shot the view would start
+    // un-suppressed.
+    if (mTableView != nullptr)
+    {
+        mTableView->SetPendingNewRowsSuppressed(ui->actionFollowTail->isChecked());
+    }
+
+    // Pill click: acknowledge, scroll, and re-engage Follow newest
+    // in live-tail. Keeping the policy here means the view stays
+    // ignorant of proxies and the Follow action.
+    connect(mTableView, &LogTableView::jumpToTailRequested, this, [this]() {
+        // Acknowledge up-front so the count clears even when the
+        // scroll below lands short of the visual tail (custom
+        // sort placing source-newest in the middle of the proxy,
+        // or the bounded-walk fallback snapping to the proxy tail
+        // without crossing `maximum`).
+        if (mTableView != nullptr)
+        {
+            mTableView->AcknowledgePendingNewRows();
+        }
+        JumpToNewestRow();
+        // The pill click is an explicit "catch me up" command, so
+        // unconditionally re-engage Follow in live tail (a manual
+        // scroll-away would otherwise have disengaged it).
+        if (IsLiveTailSession() && !ui->actionFollowTail->isChecked())
+        {
+            ui->actionFollowTail->setChecked(true);
+        }
+    });
+
     // Find bar lives in a dockable host so the user can float / dock
     // it and the layout round-trips through `saveState`. The hosted
     // `FindRecordWidget` keeps the same slots, so existing wiring
@@ -3635,6 +3680,7 @@ bool MainWindow::AppendSortByEntries(QMenu *menu)
         {
             ascAct->setToolTip(mismatchTooltip);
         }
+        // NOLINTNEXTLINE(bugprone-exception-escape) - vector<string> capture copy can technically throw bad_alloc.
         connect(ascAct, &QAction::triggered, this, [this, keys]() {
             const int idx = FindColumnIndexByKeys(keys);
             if (idx < 0 || mTableView == nullptr)
@@ -3652,6 +3698,7 @@ bool MainWindow::AppendSortByEntries(QMenu *menu)
         {
             descAct->setToolTip(mismatchTooltip);
         }
+        // NOLINTNEXTLINE(bugprone-exception-escape) - vector<string> capture copy can technically throw bad_alloc.
         connect(descAct, &QAction::triggered, this, [this, keys]() {
             const int idx = FindColumnIndexByKeys(keys);
             if (idx < 0 || mTableView == nullptr)
@@ -3812,24 +3859,80 @@ void MainWindow::ScrollToNewestRowIfFollowing()
     {
         return;
     }
+    JumpToNewestRow();
+}
+
+void MainWindow::JumpToNewestRow()
+{
+    if (mModel == nullptr || mRowOrderProxyModel == nullptr || mSortFilterProxyModel == nullptr ||
+        mTableView == nullptr)
+    {
+        return;
+    }
     const int sourceRowCount = mModel->rowCount();
     if (sourceRowCount <= 0)
     {
         return;
     }
-    // Map through both proxy layers so the scroll lands on the correct
-    // visual row under sort / filter / reverse-order.
+
+    // Use the view's tail edge as the single source of truth.
+    // `RowOrderProxyModel::IsReversed()` is kept in lockstep with
+    // it, but the view is what the user actually sees.
+    const bool tailIsTop = (mTableView->GetTailEdge() == LogTableView::TailEdge::Top);
+
+    // Stage 1: map source-newest through the proxy chain. Lands
+    // on the absolute newest line under sort + filter when it
+    // survives the filter.
     const QModelIndex sourceIndex = mModel->index(sourceRowCount - 1, 0);
     const QModelIndex midIndex = mRowOrderProxyModel->mapFromSource(sourceIndex);
-    const QModelIndex proxyIndex = mSortFilterProxyModel->mapFromSource(midIndex);
+    QModelIndex proxyIndex = mSortFilterProxyModel->mapFromSource(midIndex);
+
+    // Stage 2: source-newest is filtered out (common under live
+    // tail with a level/error filter). Walk backwards from newest
+    // and take the first source row that survives the proxy. The
+    // walk is bounded so a filter excluding the entire tail can't
+    // turn an O(1) jump into an O(N) GUI-thread scan.
     if (!proxyIndex.isValid())
     {
-        return;
+        constexpr int JUMP_FALLBACK_WALK_LIMIT = 256;
+        const int maxOffset = std::min(sourceRowCount - 1, JUMP_FALLBACK_WALK_LIMIT);
+        for (int offset = 1; offset <= maxOffset; ++offset)
+        {
+            const QModelIndex candidateSource = mModel->index(sourceRowCount - 1 - offset, 0);
+            const QModelIndex candidateMid = mRowOrderProxyModel->mapFromSource(candidateSource);
+            const QModelIndex candidateProxy = mSortFilterProxyModel->mapFromSource(candidateMid);
+            if (candidateProxy.isValid())
+            {
+                proxyIndex = candidateProxy;
+                break;
+            }
+        }
     }
-    // Newest-first puts the latest row at proxy row 0; tail edge is
-    // owned by `ApplyDisplayOrder`.
-    const auto position =
-        mRowOrderProxyModel->IsReversed() ? QAbstractItemView::PositionAtTop : QAbstractItemView::PositionAtBottom;
+
+    // Stage 3: snap to the proxy's visual tail so the pill click
+    // always moves the viewport instead of silently doing nothing.
+    if (!proxyIndex.isValid())
+    {
+        const int proxyRowCount = mSortFilterProxyModel->rowCount();
+        if (proxyRowCount <= 0)
+        {
+            // Nothing visible to scroll to. Clear the pending
+            // announcement -- it can't refer to any row.
+            if (mTableView != nullptr)
+            {
+                mTableView->AcknowledgePendingNewRows();
+            }
+            return;
+        }
+        const int targetRow = tailIsTop ? 0 : (proxyRowCount - 1);
+        proxyIndex = mSortFilterProxyModel->index(targetRow, 0);
+        if (!proxyIndex.isValid())
+        {
+            return;
+        }
+    }
+
+    const auto position = tailIsTop ? QAbstractItemView::PositionAtTop : QAbstractItemView::PositionAtBottom;
     mTableView->scrollTo(proxyIndex, position);
 }
 
