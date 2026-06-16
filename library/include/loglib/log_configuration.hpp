@@ -157,7 +157,21 @@ struct LogConfiguration
             File,
             NetworkStream
         };
+
+        /// On-disk identity of the parser the source was opened with.
+        /// Network-stream sessions have no file to sniff at restore
+        /// time, and live-tail file sessions commit to a parser before
+        /// the first byte arrives, so the format must be persisted
+        /// explicitly. Defaults to `Json` so legacy session JSON that
+        /// pre-dates this field still round-trips.
+        enum class Format
+        {
+            Json,
+            Logfmt
+        };
+
         Kind kind = Kind::File;
+        Format format = Format::Json;
         std::vector<std::string> locators;
         std::vector<std::string> locatorDedupKeys;
     };

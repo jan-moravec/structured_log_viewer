@@ -48,15 +48,28 @@ template <> struct glz::meta<loglib::LogConfiguration::Source::Kind>
     static constexpr std::array value{File, NetworkStream};
 };
 
+template <> struct glz::meta<loglib::LogConfiguration::Source::Format>
+{
+    using enum loglib::LogConfiguration::Source::Format;
+    static constexpr std::array keys{"json", "logfmt"};
+    static constexpr std::array value{Json, Logfmt};
+};
+
 // Pinned wire schemas for nested types. Explicit names turn a field
 // rename into a compile-time conflict instead of a silent breaking
 // schema change. The names match the current implicit reflection,
 // so adopting these meta declarations is a no-op for on-disk JSON.
+//
+// `format` is appended so legacy sessions saved before the field
+// existed still load (the shared `error_on_unknown_keys = false`
+// option in `log_configuration_glaze_opts.hpp` covers the reverse
+// direction: the default `Format::Json` is what they get).
 template <> struct glz::meta<loglib::LogConfiguration::Source>
 {
     using T = loglib::LogConfiguration::Source;
-    static constexpr auto value =
-        object("kind", &T::kind, "locators", &T::locators, "locatorDedupKeys", &T::locatorDedupKeys);
+    static constexpr auto value = object(
+        "kind", &T::kind, "format", &T::format, "locators", &T::locators, "locatorDedupKeys", &T::locatorDedupKeys
+    );
 };
 
 template <> struct glz::meta<loglib::LogConfiguration::Column>
