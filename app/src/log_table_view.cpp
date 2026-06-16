@@ -612,7 +612,7 @@ void LogTableView::PositionTailPill()
     {
         return;
     }
-    QWidget *vp = viewport();
+    const QWidget *vp = viewport();
     if (vp == nullptr)
     {
         return;

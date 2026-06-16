@@ -2750,7 +2750,7 @@ private slots:
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(tableView != nullptr);
         QVERIFY(model != nullptr);
-        JumpToTailPill *pill = tableView->TailPillForTest();
+        const JumpToTailPill *pill = tableView->TailPillForTest();
         QVERIFY(pill != nullptr);
 
         loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
@@ -2788,7 +2788,7 @@ private slots:
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(tableView != nullptr);
         QVERIFY(model != nullptr);
-        JumpToTailPill *pill = tableView->TailPillForTest();
+        const JumpToTailPill *pill = tableView->TailPillForTest();
         QVERIFY(pill != nullptr);
 
         loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
@@ -2842,7 +2842,7 @@ private slots:
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(tableView != nullptr);
         QVERIFY(model != nullptr);
-        JumpToTailPill *pill = tableView->TailPillForTest();
+        const JumpToTailPill *pill = tableView->TailPillForTest();
         QVERIFY(pill != nullptr);
 
         loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
@@ -2885,7 +2885,7 @@ private slots:
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(tableView != nullptr);
         QVERIFY(model != nullptr);
-        JumpToTailPill *pill = tableView->TailPillForTest();
+        const JumpToTailPill *pill = tableView->TailPillForTest();
         QVERIFY(pill != nullptr);
 
         loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
@@ -2984,7 +2984,7 @@ private slots:
         QCOMPARE(pill->Count(), 6);
 
         // Subscribe before triggering so the spy can see the emit.
-        QSignalSpy jumpSpy(tableView, &LogTableView::jumpToTailRequested);
+        const QSignalSpy jumpSpy(tableView, &LogTableView::jumpToTailRequested);
         QVERIFY(jumpSpy.isValid());
 
         // `QToolButton::click` triggers the same `clicked` signal a
@@ -3017,7 +3017,7 @@ private slots:
     {
         auto *tableView = mWindow->findChild<LogTableView *>();
         QVERIFY(tableView != nullptr);
-        JumpToTailPill *pill = tableView->TailPillForTest();
+        const JumpToTailPill *pill = tableView->TailPillForTest();
         QVERIFY(pill != nullptr);
 
         QCOMPARE(tableView->GetTailEdge(), LogTableView::TailEdge::Bottom);
@@ -3051,7 +3051,7 @@ private slots:
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(tableView != nullptr);
         QVERIFY(model != nullptr);
-        JumpToTailPill *pill = tableView->TailPillForTest();
+        const JumpToTailPill *pill = tableView->TailPillForTest();
         QVERIFY(pill != nullptr);
 
         loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
@@ -3295,7 +3295,7 @@ private slots:
         QVERIFY(tableView != nullptr);
         QVERIFY(model != nullptr);
         QVERIFY(followAction != nullptr);
-        JumpToTailPill *pill = tableView->TailPillForTest();
+        const JumpToTailPill *pill = tableView->TailPillForTest();
         QVERIFY(pill != nullptr);
 
         auto restore = qScopeGuard([this]() { mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::Idle); });
@@ -3354,7 +3354,7 @@ private slots:
         QVERIFY(tableView != nullptr);
         QVERIFY(model != nullptr);
         QVERIFY(followAction != nullptr);
-        JumpToTailPill *pill = tableView->TailPillForTest();
+        const JumpToTailPill *pill = tableView->TailPillForTest();
         QVERIFY(pill != nullptr);
 
         auto restore = qScopeGuard([this]() { mWindow->SetSessionModeForTest(MainWindow::TestSessionMode::Idle); });
@@ -3432,7 +3432,7 @@ private slots:
     {
         auto *tableView = mWindow->findChild<LogTableView *>();
         auto *model = mWindow->findChild<LogModel *>();
-        QAction *followAction = FindActionByObjectName(mWindow, QStringLiteral("actionFollowTail"));
+        const QAction *followAction = FindActionByObjectName(mWindow, QStringLiteral("actionFollowTail"));
         QVERIFY(tableView != nullptr);
         QVERIFY(model != nullptr);
         QVERIFY(followAction != nullptr);
@@ -3527,7 +3527,7 @@ private slots:
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(tableView != nullptr);
         QVERIFY(model != nullptr);
-        JumpToTailPill *pill = tableView->TailPillForTest();
+        const JumpToTailPill *pill = tableView->TailPillForTest();
         QVERIFY(pill != nullptr);
 
         QCOMPARE(pill->focusPolicy(), Qt::TabFocus);
@@ -3586,7 +3586,7 @@ private slots:
         QVERIFY(tableView != nullptr);
         QVERIFY(model != nullptr);
         QVERIFY(filterModel != nullptr);
-        JumpToTailPill *pill = tableView->TailPillForTest();
+        const JumpToTailPill *pill = tableView->TailPillForTest();
         QVERIFY(pill != nullptr);
 
         loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);

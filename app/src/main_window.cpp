@@ -3708,6 +3708,7 @@ bool MainWindow::AppendSortByEntries(QMenu *menu)
         {
             ascAct->setToolTip(mismatchTooltip);
         }
+        // NOLINTNEXTLINE(bugprone-exception-escape) - vector<string> capture copy can technically throw bad_alloc.
         connect(ascAct, &QAction::triggered, this, [this, keys]() {
             const int idx = FindColumnIndexByKeys(keys);
             if (idx < 0 || mTableView == nullptr)
@@ -3725,6 +3726,7 @@ bool MainWindow::AppendSortByEntries(QMenu *menu)
         {
             descAct->setToolTip(mismatchTooltip);
         }
+        // NOLINTNEXTLINE(bugprone-exception-escape) - vector<string> capture copy can technically throw bad_alloc.
         connect(descAct, &QAction::triggered, this, [this, keys]() {
             const int idx = FindColumnIndexByKeys(keys);
             if (idx < 0 || mTableView == nullptr)
