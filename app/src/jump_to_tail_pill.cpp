@@ -175,8 +175,13 @@ void JumpToTailPill::RebuildText()
         (mDirection == ArrowDirection::Down) ? QStringLiteral("\u2193") : QStringLiteral("\u2191");
 
     const int shown = mCount > DISPLAYED_COUNT_CAP ? DISPLAYED_COUNT_CAP : mCount;
+    // `QStringLiteral` rather than `tr()`: the "+" cap suffix is not
+    // localisable (it is a math/notation symbol used identically
+    // across languages), and a separate `tr("%1+")` entry would
+    // clutter every `.ts` catalog with a single-character
+    // pseudo-string for translators to puzzle over.
     const QString countStr =
-        mCount > DISPLAYED_COUNT_CAP ? tr("%1+").arg(shown) : QString::number(shown);
+        mCount > DISPLAYED_COUNT_CAP ? QStringLiteral("%1+").arg(shown) : QString::number(shown);
 
     // Always use the plural form. The pill is only visible for
     // counts >= 1; a literal "1 new line" would technically be

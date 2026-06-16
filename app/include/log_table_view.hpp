@@ -57,8 +57,14 @@ public:
     /// preservation path -- see `userScrolledAwayFromTail`).
     void setModel(QAbstractItemModel *model) override;
 
-    /// Switch which scrollbar edge is treated as the tail. Idempotent;
-    /// re-evaluates `mAtTailEdge` against the current position.
+    /// Switch which scrollbar edge is treated as the tail.
+    /// **Always** re-evaluates `mAtTailEdge` against the current
+    /// scrollbar position, even when `edge == mTailEdge` -- callers
+    /// (and tests) rely on the re-seed side effect to recover from a
+    /// preceding programmatic scrollbar mutation that the
+    /// `valueChanged`-driven state machine silently absorbed. Do not
+    /// short-circuit on `edge == mTailEdge` without also providing a
+    /// separate re-seed seam.
     void SetTailEdge(TailEdge edge);
 
     [[nodiscard]] TailEdge GetTailEdge() const noexcept;
@@ -130,6 +136,17 @@ protected:
 
 private:
     void OnVerticalScrollValueChanged(int value);
+
+    /// Re-evaluate `mAtTailEdge` when the scrollbar's range changes
+    /// (typically because new rows grew `maximum`). Without this, a
+    /// user sitting at the previous tail can drift below it silently:
+    /// `valueChanged` never fires (the value didn't move), but
+    /// `value < newMax` now -- so `mAtTailEdge` would stay stuck at
+    /// `true` and `OnRowsInserted` would keep skipping the count.
+    /// Transitions are flag-only here: a range change is not a user
+    /// scroll, so the `userScrolled*` signals stay silent (Follow
+    /// newest must not be toggled by a layout event).
+    void OnVerticalScrollRangeChanged(int min, int max);
 
     /// Reading-position preservation hooks (chat-app pattern). Around
     /// each structural change we snapshot the topmost visible row and
@@ -215,6 +232,17 @@ public:
     [[nodiscard]] int PendingNewRowsForTest() const noexcept
     {
         return mPendingNewRows;
+    }
+    /// `mAtTailEdge` is the at-tail-edge flag the scroll-edge state
+    /// machine maintains. The `OnVerticalScrollRangeChanged` listener
+    /// refreshes it when row inserts grow the range without moving
+    /// the value; this seam lets the corresponding regression test
+    /// observe the transition without round-tripping through
+    /// `OnRowsInserted` (which Qt's view machinery can re-reset
+    /// before the test gets a chance to read it).
+    [[nodiscard]] bool AtTailEdgeForTest() const noexcept
+    {
+        return mAtTailEdge;
     }
 #endif
 };

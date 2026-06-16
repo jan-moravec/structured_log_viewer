@@ -394,6 +394,14 @@ public:
     {
         OpenRecentSession(uuid);
     }
+
+    /// Test-only forwarder to the `JumpToNewestRow` private helper
+    /// so the filtered-newest-row fallback can be exercised without
+    /// synthesising a real pill click.
+    void JumpToNewestRowForTest()
+    {
+        JumpToNewestRow();
+    }
 #endif
 
 protected:

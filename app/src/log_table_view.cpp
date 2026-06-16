@@ -78,6 +78,12 @@ LogTableView::LogTableView(QWidget *parent)
     // clamping, our anchor restore) cannot disengage Follow newest.
     connect(vbar, &QAbstractSlider::valueChanged, this, &LogTableView::OnVerticalScrollValueChanged);
 
+    // Range changes fire when row inserts grow `maximum` without
+    // moving `value`. `OnVerticalScrollRangeChanged` keeps the
+    // at-tail flag fresh in that path so a user who is at the tail
+    // with Follow off does not silently drift behind the newest row.
+    connect(vbar, &QAbstractSlider::rangeChanged, this, &LogTableView::OnVerticalScrollRangeChanged);
+
     // `actionTriggered` covers every user-initiated scrollbar action
     // (arrow / track clicks, Page Up / Down, Home / End, drag, wheel
     // on the scrollbar) and fires synchronously before the resulting
@@ -115,8 +121,11 @@ LogTableView::LogTableView(QWidget *parent)
 void LogTableView::SetTailEdge(TailEdge edge)
 {
     mTailEdge = edge;
-    // Re-seed against the current scroll position so a flip from one
-    // edge to the other does not register as a user transition.
+    // Re-seed against the current scroll position. Runs even when
+    // `edge == mTailEdge` (no flip): production callers and tests
+    // rely on this to absorb a preceding programmatic scrollbar
+    // mutation that `OnVerticalScrollValueChanged` silently
+    // transitioned -- see the header doc on `SetTailEdge`.
     mAtTailEdge = ComputeAtTailEdge(verticalScrollBar()->value());
 
     // Mirror the edge on the pill: arrow direction follows the
@@ -415,6 +424,38 @@ void LogTableView::OnVerticalScrollValueChanged(int value)
     }
 }
 
+void LogTableView::OnVerticalScrollRangeChanged(int /*min*/, int /*max*/)
+{
+    // A row insert that grew `maximum` triggers this without a
+    // corresponding `valueChanged` (the value didn't move). Without
+    // re-evaluating the at-tail flag, a user sitting at the previous
+    // tail would silently fall behind: `mAtTailEdge` would stay
+    // stuck at `true` and `OnRowsInserted` would keep skipping the
+    // count for every subsequent batch. Resolve only the flag here;
+    // the `userScrolled*` signals stay silent because a layout
+    // change is not a user scroll (and we must not toggle Follow
+    // newest off as a side effect of new rows arriving).
+    const int value = verticalScrollBar()->value();
+    const bool atTailEdge = ComputeAtTailEdge(value);
+    if (atTailEdge == mAtTailEdge)
+    {
+        return;
+    }
+    mAtTailEdge = atTailEdge;
+    if (atTailEdge)
+    {
+        // Drifted *into* the tail by a layout change (rare: rows
+        // removed shrinking the range past `value`). Clear any
+        // pending tally so the pill matches the new state.
+        ResetPendingNewRows();
+    }
+    // Transition *off* tail: do not reset, do not emit. The next
+    // `rowsInserted` will increment from zero -- we accept losing
+    // the count for the in-flight batch (whose insert is what grew
+    // the range) because we have no reliable way to attribute its
+    // rows after the fact.
+}
+
 void LogTableView::OnRowsAboutToBeInserted(const QModelIndex &parent, int /*first*/, int /*last*/)
 {
     if (parent.isValid())
@@ -563,7 +604,15 @@ void LogTableView::PositionTailPill()
 
 void LogTableView::ResetPendingNewRows()
 {
-    if (mPendingNewRows == 0 && (mTailPill == nullptr || !mTailPill->isVisible()))
+    // `isHidden()` reflects the explicit `setVisible(false)` the pill
+    // ctor / fade-out lambda issue; `isVisible()` would additionally
+    // require every ancestor to be mapped, which is false under the
+    // offscreen QPA used in CI tests even for a logically-shown pill.
+    // The early-return is a redundant-work guard, not a behaviour
+    // gate: `SetCount(0)` is itself idempotent, so dropping it would
+    // not regress -- but the explicit `isHidden()` check keeps the
+    // intent honest under both production and offscreen runs.
+    if (mPendingNewRows == 0 && (mTailPill == nullptr || mTailPill->isHidden()))
     {
         return;
     }

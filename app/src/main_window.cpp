@@ -3853,15 +3853,36 @@ void MainWindow::JumpToNewestRow()
     {
         return;
     }
-    // Map through both proxy layers so the scroll lands on the correct
-    // visual row under sort / filter / reverse-order.
+    // First attempt: map the source's newest row through the proxy
+    // chain. Under a custom column sort this still lands on the
+    // *actually* newest line (by line id), not just the visual
+    // bottom -- which is the desirable Follow-newest behaviour.
     const QModelIndex sourceIndex = mModel->index(sourceRowCount - 1, 0);
     const QModelIndex midIndex = mRowOrderProxyModel->mapFromSource(sourceIndex);
-    const QModelIndex proxyIndex = mSortFilterProxyModel->mapFromSource(midIndex);
+    QModelIndex proxyIndex = mSortFilterProxyModel->mapFromSource(midIndex);
+
+    // Fallback: when the source's newest row is hidden by an active
+    // filter (very common with live tail + error/level filters), the
+    // mapping above returns an invalid index. A "jump to newest" that
+    // silently does nothing reads as a broken pill, so fall back to
+    // the visible tail -- proxy row 0 in newest-first, last proxy row
+    // otherwise. The user's intent is "catch me up on visible rows",
+    // which this satisfies.
     if (!proxyIndex.isValid())
     {
-        return;
+        const int proxyRowCount = mSortFilterProxyModel->rowCount();
+        if (proxyRowCount <= 0)
+        {
+            return;
+        }
+        const int targetRow = mRowOrderProxyModel->IsReversed() ? 0 : (proxyRowCount - 1);
+        proxyIndex = mSortFilterProxyModel->index(targetRow, 0);
+        if (!proxyIndex.isValid())
+        {
+            return;
+        }
     }
+
     // Newest-first puts the latest row at proxy row 0; tail edge is
     // owned by `ApplyDisplayOrder`.
     const auto position =
