@@ -21,6 +21,7 @@
 #include <loglib/file_line_source.hpp>
 #include <loglib/internal/ascii_case.hpp>
 #include <loglib/log_configuration.hpp>
+#include <loglib/log_factory.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_level.hpp>
 #include <loglib/log_processing.hpp>
@@ -455,6 +456,34 @@ std::unique_ptr<loglib::LogParser> MakeParserForFormat(loglib::LogConfiguration:
         return std::make_unique<loglib::JsonParser>();
     }
     return std::make_unique<loglib::JsonParser>();
+}
+
+/// Probe @p file via every registered `LogFactory` parser and return
+/// the first that accepts it. Mirrors the auto-detect ordering of
+/// `loglib::ParseFile(path)` (JSON first, then logfmt) so the GUI
+/// open-paths classify a file the same way the lib does. Falls back
+/// to `Json` when no parser claims the file: the subsequent parse
+/// will surface the bytes as parse errors, which is the desired
+/// "first row tells the user what's wrong" UX.
+loglib::LogConfiguration::Source::Format DetectFormatForPath(const std::filesystem::path &file)
+{
+    for (int i = 0; i < static_cast<int>(loglib::LogFactory::Parser::Count); ++i)
+    {
+        const auto parserType = static_cast<loglib::LogFactory::Parser>(i);
+        const std::unique_ptr<loglib::LogParser> probe = loglib::LogFactory::Create(parserType);
+        if (probe->IsValid(file))
+        {
+            switch (parserType)
+            {
+            case loglib::LogFactory::Parser::Logfmt:
+                return loglib::LogConfiguration::Source::Format::Logfmt;
+            case loglib::LogFactory::Parser::Json:
+            case loglib::LogFactory::Parser::Count:
+                return loglib::LogConfiguration::Source::Format::Json;
+            }
+        }
+    }
+    return loglib::LogConfiguration::Source::Format::Json;
 }
 
 } // namespace
@@ -1944,8 +1973,12 @@ void MainWindow::OpenFiles()
     // what the user held on menu activation.
     const bool forceReplace = QGuiApplication::keyboardModifiers().testFlag(Qt::ShiftModifier);
 
-    const QStringList files =
-        QFileDialog::getOpenFileNames(this, tr("Select Log Files"), DefaultOpenDir(), tr("All Files (*.*)"));
+    const QStringList files = QFileDialog::getOpenFileNames(
+        this,
+        tr("Select Log Files"),
+        DefaultOpenDir(),
+        tr("Structured Logs (*.json *.jsonl *.ndjson *.logfmt);;All Files (*.*)")
+    );
     if (files.isEmpty())
     {
         return;
@@ -2363,6 +2396,7 @@ void MainWindow::StreamNextPendingFile()
         {
             mCurrentSource = loglib::LogConfiguration::Source{
                 .kind = loglib::LogConfiguration::Source::Kind::File,
+                .format = DetectFormatForPath(std::filesystem::path(file.toStdString())),
                 .locators = {displayPath},
                 .locatorDedupKeys = {dedupKey}
             };
@@ -2445,8 +2479,12 @@ void MainWindow::StreamNextPendingFile()
 
 void MainWindow::OpenLogStream()
 {
-    const QString file =
-        QFileDialog::getOpenFileName(this, tr("Open Log Stream..."), DefaultOpenDir(), tr("All Files (*.*)"));
+    const QString file = QFileDialog::getOpenFileName(
+        this,
+        tr("Open Log Stream..."),
+        DefaultOpenDir(),
+        tr("Structured Logs (*.json *.jsonl *.ndjson *.logfmt);;All Files (*.*)")
+    );
     if (file.isEmpty())
     {
         return;
@@ -2537,6 +2575,7 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
         const std::string dedupKey = logapp::CanonicalLocator(file).toStdString();
         mCurrentSource = loglib::LogConfiguration::Source{
             .kind = loglib::LogConfiguration::Source::Kind::File,
+            .format = DetectFormatForPath(std::filesystem::path(file.toStdString())),
             .locators = {displayPath},
             .locatorDedupKeys = {dedupKey}
         };
@@ -2658,8 +2697,12 @@ void MainWindow::OpenNetworkStream()
     // Network-stream locator is a producer URI, not a filesystem
     // path -- no canonicalisation applies, so dedup key == display.
     // Both arrays populated so the parallel-array invariant holds.
+    const loglib::LogConfiguration::Source::Format dialogFormat = (cfg.format == NetworkStreamDialog::Format::Logfmt)
+                                                                      ? loglib::LogConfiguration::Source::Format::Logfmt
+                                                                      : loglib::LogConfiguration::Source::Format::Json;
     mCurrentSource = loglib::LogConfiguration::Source{
         .kind = loglib::LogConfiguration::Source::Kind::NetworkStream,
+        .format = dialogFormat,
         .locators = {displayName},
         .locatorDedupKeys = {displayName}
     };
