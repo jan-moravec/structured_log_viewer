@@ -19,10 +19,10 @@ Thanks for your interest in contributing! This document is the developer referen
   - [Windows](#windows)
   - [Machine-specific overrides (`CMakeUserPresets.json`)](#machine-specific-overrides-cmakeuserpresetsjson)
   - [Enabling system packages](#enabling-system-packages)
+  - [Sanitizers and coverage](#sanitizers-and-coverage)
   - [IDE integration](#ide-integration)
 - [Running tests](#running-tests)
   - [Targets](#targets)
-  - [Network smoke recipes](#network-smoke-recipes)
   - [Common pitfalls](#common-pitfalls)
 - [Benchmarking](#benchmarking)
   - [Fixture inventory](#fixture-inventory)
@@ -170,7 +170,7 @@ The Qt-side classes that wrap `loglib` are:
 
 - `StreamingControl` (`app/include/streaming_control.hpp`) — `QSettings`-backed transactional store for the **Streaming** and **Static (file mode)** groups of `PreferencesEditor` (retention cap, stream-mode newest-first flag, static-mode newest-first flag). Ok / Cancel transactional pattern: in-memory mutation, `SaveConfiguration` commits to `QSettings`, `LoadConfiguration` reverts the in-memory state to the persisted values.
 
-- `PreferencesEditor` (`app/include/preferences_editor.hpp`) — Qt widget hosting the **Theme**, **Streaming**, **Static (file mode)**, and **Session History** groups; emits `streamingRetentionChanged` / `streamingDisplayOrderChanged` / `staticDisplayOrderChanged` on Ok so `MainWindow::ApplyDisplayOrder` can re-apply them live with mode-aware dispatch. The Theme group lives next to `ThemeControl` (see the theme-system section below) and applies its selection live on combo `activated` so users see previews before committing.
+- `PreferencesEditor` (`app/include/preferences_editor.hpp`) — Qt widget hosting the **Theme**, **Streaming**, **Static (file mode)**, and **Session History** groups; emits `streamingRetentionChanged` / `streamingDisplayOrderChanged` / `staticDisplayOrderChanged` / `showLevelIconsChanged` / `highContrastLevelsChanged` on Ok so `MainWindow::ApplyDisplayOrder` and the theme/level-icon hooks can re-apply them live with mode-aware dispatch. The Theme group is wired through `ThemeControl` (`app/include/theme_control.hpp`) — single owner of the active theme, the per-`LogLevel` brush / font / icon cache, and the Auto-mode `colorSchemeChanged` listener that re-resolves Light \<-> Dark on OS palette flips. User themes live under `<AppDataLocation>/themes/*.json` and shadow built-ins by `name`; built-ins ship under `resources/themes/*.json`.
 
 - `MainWindow` (`app/include/main_window.hpp`) — orchestrates everything: open dialogs, drag & drop, the find bar, the filter editor, the preferences editor, the sequential file-queue open flow (`StartStreamingOpenQueue` / `StreamNextPendingFile`) that drives `LogModel::BeginStreaming` for the first file and `LogModel::AppendStreaming` for the rest, and the Stream Mode entry point (`OpenLogStream` → `LogModel::BeginStreaming(StreamLineSource, ...)`) plus the toolbar wiring (`TogglePauseStream` / `StopStream`) and the status-bar state machine (`UpdateStreamingStatus` covers the `Streaming` / `Paused` / `Source unavailable` / `— rotated` / `dropped while paused` variants).
 

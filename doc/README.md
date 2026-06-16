@@ -22,7 +22,7 @@ Structured Log Viewer ingests logs through three distinct paths. Pick the one th
 | Aspect                 | Static mode                                                          | Stream Mode (live tail)                                                                               | Network Stream Mode (TCP / UDP)                                                                  |
 | ---------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | **When to use**        | Post-mortem analysis of one or more *finished* log files.            | Watching a service's log file *as it is being written* — reproducing a bug, smoke-testing a release.  | Receiving JSON Lines pushed over the network — distributed services, dev loopback firehose.      |
-| **How to open**        | `File → Open…` (`Ctrl+O`), `File → Open JSON Logs…`, or drag & drop. | `File → Open Log Stream…` (`Ctrl+Shift+O`). Drag & drop always uses static mode.                      | `File → Open Network Stream…` (`Ctrl+Shift+N`).                                                  |
+| **How to open**        | `File → Open…` (`Ctrl+O`), `File → Open JSON Logs…`, or drag & drop. | `File → Open Log Stream…` (`Ctrl+Shift+O`). Drag & drop always uses static mode.                      | `File → Open Network Stream…` (`Ctrl+Shift+L`).                                                  |
 | **Source per session** | One or many files; multi-file opens are **merged** into one table.   | Exactly one file.                                                                                     | One TCP listener (multiple concurrent clients allowed) or one UDP listener.                      |
 | **Reads bytes via**    | Memory-mapped; parsed in parallel through the TBB pipeline.          | Buffered tail-reader; parsed line-by-line in a single worker.                                         | Asio TCP accept loop (with optional TLS) or Asio UDP receive loop; same line-by-line worker.     |
 | **Memory**             | Whole file is parsed and held; row count grows with the file.        | Bounded by a configurable **retention cap** (default 10 000 lines, FIFO-evicted).                     | Same retention cap as Stream Mode; back-pressure also drops oldest *bytes* if the parser stalls. |
@@ -90,6 +90,10 @@ By default new lines are appended to the *bottom* of the table, which matches ho
 
 > Alternating row colours are disabled in newest-first mode because Qt's CSS-based striping is keyed off the visual row index, which would flicker every time a new line shifts the rows down.
 
+### Jump-to-tail pill
+
+When **Follow newest** is off and you have scrolled away from the tail edge, a floating "↓ N new lines" pill (or "↑ N new lines" in newest-first mode) appears in the corner of the table whenever new lines arrive. Click it to jump to the newest row and re-engage **Follow newest**. The pill fades out automatically once you reach the tail edge or follow is re-engaged from any other surface.
+
 ### File rotation
 
 Stream Mode tolerates the common log-rotation patterns:
@@ -122,7 +126,7 @@ Network Stream Mode listens on a local TCP or UDP port and ingests JSON Lines pu
 
 ### Opening a network stream
 
-Use **File → Open Network Stream…** (`Ctrl+Shift+N`). The dialog asks for:
+Use **File → Open Network Stream…** (`Ctrl+Shift+L`). The dialog asks for:
 
 - **Protocol** — TCP or UDP.
 - **Bind address** — `0.0.0.0` (IPv4 any), `::` (IPv6 dual-stack), `127.0.0.1` / `::1` (loopback only), or a specific interface IP.
@@ -355,6 +359,8 @@ Each filter entry in the Filters menu has **Edit** and **Remove** sub-actions:
 
 You can also right-click a column header for the same actions scoped to that column: **Add filter on "\<col>"…** opens the Filter Editor preselected to the clicked column, and every existing filter targeting the column appears with its own **Edit** / **Remove** sub-menu.
 
+Columns with one or more active filters carry a small funnel icon in their header; hovering shows a tooltip listing the filter values. The status bar also displays a **Clear filters** button while any filter is active.
+
 Filters are live: the table updates immediately when a filter is added, edited, or removed.
 
 ## Configurations
@@ -362,21 +368,57 @@ Filters are live: the table updates immediately when a filter is added, edited, 
 A *configuration* captures the current column layout — headers, keys, print format, timestamp parse formats, column type (`time` / `enumeration` / `level` / …), per-column log-level alias overrides (`levelMapping`), **column order**, **per-column visibility** — the **active filter set**, and the current [anchors](#anchors). Configurations are saved as JSON files and can be loaded into future sessions to skip auto-detection and to enforce a consistent layout across teammates.
 
 - **File → Save Configuration…** (`Ctrl+S`) — writes the current layout and filters to a `.json` file.
-- **File → Load Configuration…** — loads a configuration file and clears any open logs. Open logs again afterwards to apply the layout.
+- **File → Load Configuration or Session…** — loads a configuration (or [session](#sessions-and-recent-sessions)) file and clears any open logs. Open logs again afterwards to apply the layout.
 
 Because `Open…` auto-detects configurations, double-clicking a saved configuration file also works (it loads the layout without opening any logs).
 
 > Saved filters are validated against the loaded column set on every Load. Filters that no longer match a column (e.g. the key was renamed, or the column type changed in an incompatible way) are dropped and reported in a summary dialog so you can re-create them; the rest are restored as live entries in the **Filters** menu.
 
+## Sessions and Recent Sessions
+
+A *session* is a saved configuration **plus the source** (file path(s) for static mode, tailed file for stream mode, listener URL for network stream mode) and the active sort. Loading a session re-opens the source automatically and re-applies the full view state — column layout, filters, sort, anchors — in one step.
+
+- **File → Save Session…** (`Ctrl+Shift+S`) writes the current view state, source, and sort to a `.json` file.
+- **File → Load Configuration or Session…** auto-detects whether the picked file is a configuration or a session and dispatches accordingly. Sessions re-open their source; configurations leave the table empty so you can open logs after loading.
+- **File → Recent Sessions** lists the most recently auto-saved sessions. Click an entry to re-open it. The list is bounded by **Settings → Preferences… → Session History → Maximum Recent Sessions entries** (default 20); **Clear Recent Sessions** at the bottom of the submenu drops every entry.
+
+Auto-saved sessions are written silently in the background as you work, so closing and re-launching the app puts you back where you were when **Settings → Preferences… → Session History → Restore last session on launch** is enabled (default). Live-tail and network-stream sessions are auto-saved as well, but only the source identity is restored — the tail position is not.
+
+### New Window vs New Session
+
+- **File → New Window** (`Ctrl+Shift+N`) opens a second top-level window with an empty session. The two windows share the same Recent Sessions list and global preferences but each holds its own logs, filters, anchors, and panels. Useful for side-by-side comparison of two sources.
+- **File → New Session** (`Ctrl+N`) discards the current window's session (rows, filters, sort, source) and returns it to an empty view. Holding `Shift` while dragging or opening a file is the in-place equivalent for static sessions.
+
+## Themes
+
+Structured Log Viewer ships a built-in theme catalogue covering both Light and Dark variants, plus high-contrast triage skins. The active theme drives the palette, optional Qt style override, fonts, level row tints (subtle by default; loud when **High contrast levels** is on), the level column icon-pill (when **Show level icons** is on), and the eight [anchor](#anchors) swatches.
+
+Switch themes via **Settings → Preferences…** → **Theme → Active theme**:
+
+- **Auto (follow system)** — picks a Light or Dark theme to match the OS palette and re-resolves on the fly when the OS flips. This is the default.
+- Any built-in theme by name — pins the theme regardless of OS scheme.
+- Any user theme — `*.json` files dropped into `<AppData>/themes/` (button **Open themes folder** reveals the directory in your OS file manager). User files **shadow built-ins of the same name**, so you can override a built-in by saving a file with a matching `name` field.
+
+Three buttons next to the combo manage user themes:
+
+- **Open themes folder** opens `<AppData>/themes/` so you can edit JSON files directly.
+- **Duplicate active theme…** copies the currently resolved theme into `<AppData>/themes/<name>-copy.json` and opens the folder so you can edit it.
+- **Reload themes from disk** re-scans the built-in catalogue and the user folder, then re-applies the active selection. Use after editing a JSON file outside the app.
+
+Two adjacent toggles tune how the active theme is rendered:
+
+- **Show level icons** — when on (default) the [level column](#automatic-column-detection) renders a themed glyph inside a coloured pill instead of the raw level text. The raw text is preserved for **Copy** and **Find** searches. Disabled if the active theme omits the optional `levelColumnOverride` block; every built-in supplies it.
+- **High contrast levels** — swaps the subtle per-level row colours for the theme's loud `levelsHighContrast` palette. Useful for triage screens where Warn / Error / Fatal rows need to jump out. Disabled if the active theme omits the `levelsHighContrast` block; every built-in supplies it.
+
 ## Preferences
 
-Open **Settings → Preferences…** to change application-wide settings. The dialog is split into three groups:
+Open **Settings → Preferences…** to change application-wide settings. The dialog is split into four groups:
 
-**Appearance** — previewed live; reverted on Cancel.
+**Theme** — previewed live; reverted on Cancel.
 
-- **Style** — the Qt widget style (e.g. `fusion`, `windows11`, `macOS`). Styles available depend on your platform.
-- **Font** — the application-wide UI font family.
-- **Font size** — 6 to 72 pt.
+- **Active theme** — see [Themes](#themes) above.
+- **Show level icons** — render themed glyphs in the level column instead of the raw level text.
+- **High contrast levels** — use the theme's loud row tints for Warn / Error / Fatal.
 
 **Streaming** — applied transactionally on **Ok**.
 
@@ -386,6 +428,11 @@ Open **Settings → Preferences…** to change application-wide settings. The di
 **Static (file mode)** — applied transactionally on **Ok**.
 
 - **Show newest lines first** — display files opened in static mode (`File → Open…`, drag & drop) with the last line at the top and the first line at the bottom. The flag is independent of the Streaming group's setting, so you can keep static files oldest-first while streaming sessions are newest-first (or the other way around). Alternating row colours are disabled while this is enabled, for the same reason as in Stream Mode.
+
+**Session History** — applied transactionally on **Ok**.
+
+- **Restore last session on launch** — when on, the most recent auto-saved [session](#sessions-and-recent-sessions) is reopened automatically on startup. Only applies to the primary instance on a launch with no command-line files.
+- **Maximum Recent Sessions entries** — cap on how many entries appear in **File → Recent Sessions**. Older entries are evicted as new sessions are saved.
 
 Click **Ok** to persist (stored via `QSettings` under the organization `jan-moravec` / application `StructuredLogViewer`), or **Cancel** to revert to the last saved values. The previous configuration is automatically restored the next time you launch the application.
 
@@ -414,6 +461,7 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 | Pause / Resume stream          | `Ctrl+Shift+P`      |
 | Toggle Follow newest           | `Ctrl+Shift+T`      |
 | Stop stream                    | `Ctrl+Shift+X`      |
+| Show keyboard shortcuts        | `Ctrl+/`            |
 
 ## Troubleshooting
 
