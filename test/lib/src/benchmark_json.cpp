@@ -730,8 +730,8 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
     REQUIRE(mmapSliceValues > 0);
 }
 
-// Enum auto-detection benchmark: 4 distinct `level` values across many
-// rows. Reports DictRef fraction and dictionary heap bytes.
+// Enum auto-detection benchmark: a handful of distinct `level` values
+// across many rows. Reports DictRef fraction and dictionary heap bytes.
 TEST_CASE("Stream JSON log to LogTable (enum auto-detection)", "[.][benchmark][json_parser][enum]")
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();

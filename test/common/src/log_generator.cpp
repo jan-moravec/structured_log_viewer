@@ -38,12 +38,8 @@ std::uint32_t MakeRandomSeed()
 
 JsonLogLine GenerateRandomJsonLogLine(std::mt19937 &rng, std::size_t lineIndex)
 {
-    // Distribution ranges intentionally match the previous in-file
-    // `GenerateRandomJsonLogs` helper (level 0-3, component 0-4) so the
-    // `[large]` / `[wide]` benchmark fixture characteristics don't drift
-    // across this refactor.
-    std::uniform_int_distribution<int> levelDist(0, 3);
-    std::uniform_int_distribution<int> componentDist(0, 4);
+    std::uniform_int_distribution<int> levelDist(0, static_cast<int>(LEVELS.size()) - 1);
+    std::uniform_int_distribution<int> componentDist(0, static_cast<int>(COMPONENTS.size()) - 1);
     std::uniform_int_distribution<int> wordDist(0, static_cast<int>(WORDS.size()) - 1);
     std::uniform_int_distribution<int> wordsCountDist(5, 20);
 
