@@ -31,6 +31,7 @@ add_library(
     src/log_processing.cpp
     src/log_table.cpp
     src/parsers/json_parser.cpp
+    src/parsers/logfmt_parser.cpp
     src/theme.cpp
     src/clang_tidy_stubs/theme_glaze_meta.cpp
 )

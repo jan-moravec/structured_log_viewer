@@ -13,6 +13,7 @@ public:
     enum class Parser
     {
         Json,
+        Logfmt,
         Count
     };
 
