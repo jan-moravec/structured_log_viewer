@@ -3030,6 +3030,87 @@ private slots:
         QCOMPARE(pill->Direction(), JumpToTailPill::ArrowDirection::Down);
     }
 
+    // Regression: flipping the tail edge while the user is
+    // mid-scroll (not at either edge) used to leave the pill
+    // stranded with a stale count under the new arrow glyph.
+    // `SetTailEdge` gated the reset on `mAtTailEdge` -- which is
+    // false for a mid-scroll viewport in both orientations -- so
+    // a tally accumulated under `Bottom` (e.g. "↓ 5 new lines",
+    // 5 rows arrived below) would survive a flip to `Top` and
+    // render as "↑ 5 new lines" against the new orientation,
+    // misattributing both direction *and* batch boundary.
+    //
+    // The fix gates the reset on the *orientation flip* itself
+    // (`edge != mTailEdge`) in addition to the `mAtTailEdge`
+    // re-seed case. This test pins the flip-resets-tally contract
+    // by driving the exact mid-scroll-flip scenario and asserting
+    // the pending counter is zero afterwards.
+    void TestJumpToTailPillResetsOnEdgeFlipMidScroll()
+    {
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY(tableView != nullptr);
+        QVERIFY(model != nullptr);
+        JumpToTailPill *pill = tableView->TailPillForTest();
+        QVERIFY(pill != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 30, /*declareNewKey=*/true));
+        QCoreApplication::processEvents();
+
+        // Park at the (Bottom) tail, scroll away to flip
+        // `mAtTailEdge` to false, then take a batch so the pill
+        // accumulates a count. After this dance the pill is
+        // showing a non-zero count under `Bottom` orientation.
+        QScrollBar *vbar = tableView->verticalScrollBar();
+        vbar->setRange(0, 1000);
+        vbar->setValue(vbar->maximum());
+        tableView->SetTailEdge(LogTableView::TailEdge::Bottom);
+        vbar->triggerAction(QAbstractSlider::SliderToMinimum);
+        QCoreApplication::processEvents();
+
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 31, 5, /*declareNewKey=*/false));
+        QCoreApplication::processEvents();
+        QCOMPARE(tableView->PendingNewRowsForTest(), 5);
+        QCOMPARE(pill->Count(), 5);
+
+        // Park the scrollbar in the middle so neither
+        // `ComputeAtTailEdge(Bottom)` nor `ComputeAtTailEdge(Top)`
+        // returns true -- this is the *exact* condition where the
+        // old gate (`if (mAtTailEdge)`) would skip the reset.
+        // `setRange` is needed because `SliderToMinimum` clamped
+        // the range to whatever Qt's view layout computed; pin it
+        // back so the mid-position math is well-defined.
+        vbar->setRange(0, 1000);
+        vbar->setValue(500);
+        QVERIFY2(
+            !tableView->AtTailEdgeForTest(),
+            "precondition: mid-scroll viewport must not be at the Bottom tail edge before the flip"
+        );
+
+        // The flip. Under the old gate the pending counter
+        // survived this call ("↑ 5 new lines" with 5 counted at
+        // the bottom). Under the fix the orientation flip itself
+        // triggers `ResetPendingNewRows`.
+        tableView->SetTailEdge(LogTableView::TailEdge::Top);
+
+        QCOMPARE(pill->Direction(), JumpToTailPill::ArrowDirection::Up);
+        QVERIFY2(
+            !tableView->AtTailEdgeForTest(),
+            "sanity: mid-scroll viewport must not be at the Top tail edge either, so the at-tail "
+            "branch of the reset gate cannot mask a missing edge-flip branch"
+        );
+        QCOMPARE(tableView->PendingNewRowsForTest(), 0);
+        QCOMPARE(pill->Count(), 0);
+
+        model->EndStreaming(false);
+    }
+
     // `JumpToNewestRow` used to bail when the source's newest row
     // was filtered out: it mapped `source[rowCount - 1]` through the
     // proxy chain, got an invalid index, and returned without

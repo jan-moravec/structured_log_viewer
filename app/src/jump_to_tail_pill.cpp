@@ -174,23 +174,41 @@ void JumpToTailPill::RebuildText()
     const QString arrow =
         (mDirection == ArrowDirection::Down) ? QStringLiteral("\u2193") : QStringLiteral("\u2191");
 
-    const int shown = mCount > DISPLAYED_COUNT_CAP ? DISPLAYED_COUNT_CAP : mCount;
-    // `QStringLiteral` rather than `tr()`: the "+" cap suffix is not
-    // localisable (it is a math/notation symbol used identically
-    // across languages), and a separate `tr("%1+")` entry would
-    // clutter every `.ts` catalog with a single-character
-    // pseudo-string for translators to puzzle over.
-    const QString countStr =
-        mCount > DISPLAYED_COUNT_CAP ? QStringLiteral("%1+").arg(shown) : QString::number(shown);
-
-    // Always use the plural form. The pill is only visible for
-    // counts >= 1; a literal "1 new line" would technically be
-    // more correct but the singular flashes for one frame on every
-    // batch boundary and reads as noise. The translator can still
-    // override via `%Ln` if a target language needs different
-    // pluralisation.
-    const QString text = tr("%1 %2 new lines").arg(arrow, countStr);
-    setText(text);
+    // Two branches:
+    //
+    //   * Past the display cap we render `"%1+ new lines"` -- a
+    //     bounded literal whose `+` suffix is a math/notation
+    //     glyph used identically across locales. The catalog
+    //     entry is a separate string (one `%1`, plural-agnostic)
+    //     so translators don't have to puzzle over what `%n`
+    //     means against a capped-and-bounded number.
+    //   * Below the cap we use `tr("%n new lines", ..., mCount)`.
+    //     `%n` opts the source string into Qt's plural-aware
+    //     translation: `lupdate` emits both singular and plural
+    //     slots so locales with multiple plural forms (Polish,
+    //     Russian, Arabic, ...) can pick the right one. The
+    //     English source still reads "new lines" in the singular
+    //     slot too -- intentional: the 150 ms fade-in would
+    //     flicker between "1 new line" and "2 new lines" on
+    //     every batch boundary and that visual jitter is more
+    //     distracting than the technically-incorrect plural for
+    //     count == 1. Locales that need a true singular form can
+    //     override in the catalog without us touching the
+    //     code.
+    //
+    // Arrow glyph is prepended outside `tr` so translators get
+    // a clean message string and don't have to babysit the
+    // direction marker.
+    QString message;
+    if (mCount > DISPLAYED_COUNT_CAP)
+    {
+        message = tr("%1+ new lines").arg(DISPLAYED_COUNT_CAP);
+    }
+    else
+    {
+        message = tr("%n new lines", "jump-to-tail pill running count", mCount);
+    }
+    setText(QStringLiteral("%1 %2").arg(arrow, message));
 }
 
 void JumpToTailPill::RefreshIcon()
@@ -227,10 +245,22 @@ void JumpToTailPill::RefreshIcon()
 
 void JumpToTailPill::ApplyStyleSheet()
 {
+    // The only caller that could re-enter is `changeEvent`, and
+    // it already gates on `!mApplyingPalette`, so reaching this
+    // branch means a future caller forgot the gate. Assert in
+    // debug builds (a noisy failure beats a silent skip masking
+    // the wiring bug) but keep the early-return in release as a
+    // stack-overflow firewall: the synchronous `PaletteChange`
+    // that Qt 6 emits inside `setStyleSheet` would otherwise
+    // recurse without bound -- see the header doc on
+    // `mApplyingPalette`.
+    Q_ASSERT_X(
+        !mApplyingPalette,
+        "JumpToTailPill::ApplyStyleSheet",
+        "re-entered while the QSS apply is in flight; recursive caller must gate on mApplyingPalette"
+    );
     if (mApplyingPalette)
     {
-        // Defensive: caller already holds the guard. Skip rather
-        // than thrash the QSS twice.
         return;
     }
     mApplyingPalette = true;

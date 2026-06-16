@@ -3853,21 +3853,63 @@ void MainWindow::JumpToNewestRow()
     {
         return;
     }
-    // First attempt: map the source's newest row through the proxy
-    // chain. Under a custom column sort this still lands on the
-    // *actually* newest line (by line id), not just the visual
-    // bottom -- which is the desirable Follow-newest behaviour.
+
+    // Single source of truth for "which visual edge is the tail".
+    // `RowOrderProxyModel::IsReversed()` and
+    // `LogTableView::GetTailEdge()` are both kept in lockstep by
+    // `ApplyDisplayOrder`, but the *view* is what the user sees --
+    // if the two ever drift, we prefer the view's answer so the
+    // scroll lands at the visual edge the user is staring at.
+    const bool tailIsTop = (mTableView->GetTailEdge() == LogTableView::TailEdge::Top);
+
+    // First attempt: map the source's newest row (by line id)
+    // through the proxy chain. Under a custom column sort this
+    // still lands on the *actually* newest line, not just the
+    // visual top/bottom -- the desirable Follow-newest behaviour.
     const QModelIndex sourceIndex = mModel->index(sourceRowCount - 1, 0);
     const QModelIndex midIndex = mRowOrderProxyModel->mapFromSource(sourceIndex);
     QModelIndex proxyIndex = mSortFilterProxyModel->mapFromSource(midIndex);
 
-    // Fallback: when the source's newest row is hidden by an active
-    // filter (very common with live tail + error/level filters), the
-    // mapping above returns an invalid index. A "jump to newest" that
-    // silently does nothing reads as a broken pill, so fall back to
-    // the visible tail -- proxy row 0 in newest-first, last proxy row
-    // otherwise. The user's intent is "catch me up on visible rows",
-    // which this satisfies.
+    // Fallback: when the source's newest row is hidden by an
+    // active filter (very common with live tail + error/level
+    // filters), the mapping above returns an invalid index.
+    //
+    // Walk source rows backwards from newest until we find one
+    // that survives the proxy chain (or run out). This preserves
+    // the "newest-by-line-id" semantics even under a *combined*
+    // sort + filter, where the proxy's visual top/bottom is
+    // sorted-by-column rather than by recency and would not be
+    // the "newest visible line".
+    //
+    // The walk is bounded by `JUMP_FALLBACK_WALK_LIMIT` so a
+    // pathological filter that excludes the entire tail does not
+    // turn an O(1) jump into an O(N) scan on the GUI thread. Past
+    // the limit we accept the visual tail as a best-effort target
+    // -- the user's intent at that point is "show me *some*
+    // visible row near the end", and a 256-row walk has already
+    // covered the typical "level filter eats the latest INFO
+    // burst" cases without breaking a sweat.
+    if (!proxyIndex.isValid())
+    {
+        constexpr int JUMP_FALLBACK_WALK_LIMIT = 256;
+        const int walkLimit = std::min(sourceRowCount, JUMP_FALLBACK_WALK_LIMIT);
+        for (int offset = 1; offset < walkLimit; ++offset)
+        {
+            const QModelIndex candidateSource = mModel->index(sourceRowCount - 1 - offset, 0);
+            const QModelIndex candidateMid = mRowOrderProxyModel->mapFromSource(candidateSource);
+            const QModelIndex candidateProxy = mSortFilterProxyModel->mapFromSource(candidateMid);
+            if (candidateProxy.isValid())
+            {
+                proxyIndex = candidateProxy;
+                break;
+            }
+        }
+    }
+
+    // Final fallback: the bounded walk found nothing visible (or
+    // the source has fewer rows than we walked). Snap to the
+    // proxy's visual tail so the pill click still moves the
+    // viewport rather than silently doing nothing.
     if (!proxyIndex.isValid())
     {
         const int proxyRowCount = mSortFilterProxyModel->rowCount();
@@ -3875,7 +3917,7 @@ void MainWindow::JumpToNewestRow()
         {
             return;
         }
-        const int targetRow = mRowOrderProxyModel->IsReversed() ? 0 : (proxyRowCount - 1);
+        const int targetRow = tailIsTop ? 0 : (proxyRowCount - 1);
         proxyIndex = mSortFilterProxyModel->index(targetRow, 0);
         if (!proxyIndex.isValid())
         {
@@ -3883,10 +3925,7 @@ void MainWindow::JumpToNewestRow()
         }
     }
 
-    // Newest-first puts the latest row at proxy row 0; tail edge is
-    // owned by `ApplyDisplayOrder`.
-    const auto position =
-        mRowOrderProxyModel->IsReversed() ? QAbstractItemView::PositionAtTop : QAbstractItemView::PositionAtBottom;
+    const auto position = tailIsTop ? QAbstractItemView::PositionAtTop : QAbstractItemView::PositionAtBottom;
     mTableView->scrollTo(proxyIndex, position);
 }
 

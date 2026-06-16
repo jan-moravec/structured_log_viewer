@@ -966,9 +966,14 @@ private:
     /// session mode.
     void UpdateStreamToolbarVisibility();
 
-    /// Scroll to the newest row when Follow tail is on; mapped through
-    /// the proxy chain so the scroll lands correctly under a sort.
-    /// Thin gate that defers the actual scroll to `JumpToNewestRow`.
+    /// Scroll to the newest row when Follow tail is on; mapped
+    /// through the proxy chain so the scroll lands correctly
+    /// under a sort. Thin gate that defers the actual scroll to
+    /// `JumpToNewestRow` -- which also applies the
+    /// filtered-newest fallback below, so under live-tail +
+    /// Follow with a filter excluding the source-newest line we
+    /// now scroll to the *visible* newest line instead of
+    /// silently doing nothing.
     void ScrollToNewestRowIfFollowing();
 
     /// Unconditional version of the above: scroll to the newest
@@ -977,6 +982,23 @@ private:
     /// which is a user-driven "catch me up" command rather than
     /// part of the streaming-policy state machine. Safe to call
     /// with no rows / no source attached (early-returns).
+    ///
+    /// Three-stage target resolution:
+    ///   1. Map the source-newest row (by line id) through the
+    ///      proxy chain. Lands on the absolute newest line when
+    ///      it survives any active filter; correct under custom
+    ///      column sorts too.
+    ///   2. If stage 1 returns an invalid index (source-newest
+    ///      is filtered out), walk source rows backwards up to
+    ///      `JUMP_FALLBACK_WALK_LIMIT` and pick the first one
+    ///      that maps through. Preserves "newest by line id"
+    ///      under combined sort + filter where the proxy's
+    ///      visual top/bottom is not the newest line.
+    ///   3. If the walk also yields nothing, snap to the proxy's
+    ///      visual tail so the pill click always moves the
+    ///      viewport. Tail edge picked from
+    ///      `LogTableView::GetTailEdge()` (the single source of
+    ///      truth for the view's orientation).
     void JumpToNewestRow();
 
     /// Re-apply the persisted retention cap to the model.

@@ -120,6 +120,10 @@ LogTableView::LogTableView(QWidget *parent)
 
 void LogTableView::SetTailEdge(TailEdge edge)
 {
+    // Snapshot the previous edge *before* overwriting so the
+    // "did the orientation actually flip?" question is answerable
+    // below -- the pill-reset gate depends on it.
+    const bool edgeFlipped = (edge != mTailEdge);
     mTailEdge = edge;
     // Re-seed against the current scroll position. Runs even when
     // `edge == mTailEdge` (no flip): production callers and tests
@@ -140,11 +144,20 @@ void LogTableView::SetTailEdge(TailEdge edge)
         PositionTailPill();
     }
 
-    // A tail-edge flip while the pending counter is non-zero
-    // would leave the pill stranded showing a tally that no
-    // longer relates to where the user is reading. Clear it; the
-    // next batch refills the count under the new edge.
-    if (mAtTailEdge)
+    // Clear the pending tally in two cases:
+    //
+    //   * `edgeFlipped`: rows counted against the previous
+    //     orientation (e.g. "↓ 5 new lines" tallied at the bottom)
+    //     no longer relate to where the user is reading after the
+    //     flip ("↑ 5" would mislead about both direction *and*
+    //     batch boundary). A mid-scroll flip is the exact scenario
+    //     this branch catches -- gating on `mAtTailEdge` alone
+    //     would skip it (user isn't at either edge), leaving the
+    //     pill stranded with a stale count under the new arrow.
+    //   * `mAtTailEdge`: the re-seed lands the viewport at the
+    //     new tail (no flip, or flip that happened to put us at
+    //     the new edge). User is current; the pill should match.
+    if (edgeFlipped || mAtTailEdge)
     {
         ResetPendingNewRows();
     }
