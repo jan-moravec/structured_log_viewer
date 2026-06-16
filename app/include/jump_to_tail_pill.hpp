@@ -6,113 +6,74 @@ class QEvent;
 class QGraphicsOpacityEffect;
 class QPropertyAnimation;
 
-/// Floating "* N new lines" pill rendered on top of the log table
-/// viewport. Surfaces the reading-position preservation that
-/// `LogTableView::SaveAnchorIfShouldPreserve` /
-/// `RestoreAnchorIfSaved` already perform: when the user has
-/// scrolled away from the tail edge and new rows arrive, the pill
-/// fades in with a running count; a click jumps to the newest row
-/// and (in live-tail sessions) re-engages Follow newest.
+/// Floating "N new lines" pill (Slack / YouTube pattern) shown on
+/// the log table viewport. When the user has scrolled away from
+/// the tail and new rows arrive, the pill fades in with a running
+/// count; clicking it jumps to the newest row.
 ///
-/// Owned by `LogTableView` and parented to its viewport so it
-/// floats over the rows without being clipped by the grid. The
-/// arrow direction follows the configured `TailEdge` -- "down"
-/// for `Bottom` (default append-at-bottom), "up" for `Top`
-/// (newest-first) -- and the host repositions the pill near the
-/// matching viewport edge.
-///
-/// Pattern: YouTube comments / Slack "* N new messages" pill.
+/// Owned by `LogTableView` and parented to its viewport. The arrow
+/// direction tracks the configured `TailEdge` (Down for Bottom, Up
+/// for Top); the host repositions the pill near that edge.
 class JumpToTailPill : public QToolButton
 {
     Q_OBJECT
 
 public:
-    /// Which way the arrow glyph points. `Down` matches
-    /// `LogTableView::TailEdge::Bottom`; `Up` matches `Top`.
     enum class ArrowDirection
     {
-        Down,
-        Up,
+        Down, ///< matches `LogTableView::TailEdge::Bottom`
+        Up,   ///< matches `LogTableView::TailEdge::Top`
     };
 
     explicit JumpToTailPill(QWidget *parent);
 
-    /// Update the displayed count and drive the fade animation.
-    /// `count <= 0` fades the pill out (and hides it once the
-    /// animation finishes); a positive count fades it in. The
-    /// host (`LogTableView`) feeds the running tally; this widget
-    /// is purely a renderer and emits `clicked` on press.
-    ///
-    /// Displayed text caps at "999+" so a runaway live tail does
-    /// not stretch the pill across the viewport. The cap is purely
-    /// cosmetic; callers may pass any non-negative count.
-    ///
-    /// Emits `contentSizeChanged` after every text update -- the
-    /// rebuilt label changes the pill's `sizeHint`, and the host
-    /// has to re-anchor the pill to the viewport edge whether the
-    /// count grew or shrank. Without that signal a count that
-    /// crosses the "999+" boundary the wrong way (e.g. user clears
-    /// some rows and we drop back below the cap) would leave the
-    /// pill drifting off-centre until the next viewport resize.
+    /// Set the displayed count and fade in / out. Positive counts
+    /// fade in; `<= 0` fades out and hides. Text caps at "999+" to
+    /// bound the pill width. Emits `contentSizeChanged` so the
+    /// host can re-anchor when `sizeHint` shifts (count growth,
+    /// shrink, or crossing the cap).
     void SetCount(int count);
 
-    /// Update which way the arrow points. Idempotent. The icon is
-    /// re-tinted from the *button's* palette (not the parent's),
-    /// so a theme switch reaching the pill via `changeEvent`
-    /// refreshes the glyph correctly.
+    /// Set the arrow direction. Idempotent. The icon is re-tinted
+    /// from this widget's palette so theme changes refresh it.
     void SetArrowDirection(ArrowDirection direction);
 
-    /// Current rendered direction (read by tests and by
-    /// `LogTableView::PositionTailPill` for edge selection).
     [[nodiscard]] ArrowDirection Direction() const noexcept
     {
         return mDirection;
     }
 
-    /// Current count last fed to `SetCount`. Read by tests.
     [[nodiscard]] int Count() const noexcept
     {
         return mCount;
     }
 
 signals:
-    /// The pill's `sizeHint` may have changed because the rendered
-    /// text was rebuilt (count grew, shrank, or crossed the
-    /// `999+` cap boundary). The host (`LogTableView`) listens
-    /// and re-runs `PositionTailPill` so the pill stays centred
-    /// against the viewport edge regardless of which direction
-    /// the size moved.
+    /// Rendered text changed and the pill's `sizeHint` may have
+    /// moved (in either direction). The host re-runs
+    /// `PositionTailPill` so the pill stays centred at the edge.
     void contentSizeChanged();
 
 protected:
-    /// Re-tint the arrow icon and re-apply the rounded-pill QSS
-    /// whenever the palette / style flips so the pill tracks
-    /// Light <-> Dark theme switches without restart.
+    /// Re-tint the icon and re-apply the QSS on palette / style
+    /// changes so the pill tracks theme switches without restart.
     void changeEvent(QEvent *event) override;
 
 private:
-    /// Rebuild the displayed text from `mCount` (e.g. "↓ 3 new
-    /// lines" / "↑ 1 new line" / "↓ 999+ new lines"). Pure
-    /// formatter; no side effects beyond `setText`.
+    /// Rebuild the visible text and accessible name from `mCount`.
     void RebuildText();
 
-    /// Re-rasterise the arrow icon at the current palette's
-    /// `HighlightedText` colour so the glyph reads as foreground
-    /// on the pill's `Highlight` background. Called from
-    /// `SetArrowDirection`, `changeEvent`, and after the first
-    /// `show()` so the device-pixel-ratio matches.
+    /// Re-rasterise the arrow icon in the current `HighlightedText`
+    /// colour at the current device pixel ratio.
     void RefreshIcon();
 
-    /// Apply the rounded-pill QSS (background = `Highlight`,
-    /// foreground = `HighlightedText`, `border-radius = h/2`).
-    /// Pulled out so `changeEvent(PaletteChange)` can re-run it.
+    /// Apply the rounded-pill QSS resolved against the current
+    /// palette. Pulled out so `changeEvent` can re-run it.
     void ApplyStyleSheet();
 
-    /// Run the fade-in / fade-out animation. Sets `setVisible`
-    /// at the appropriate ends so the hidden pill doesn't intercept
-    /// hover events. Idempotent; re-targeting an in-flight
-    /// animation just retargets the QPropertyAnimation's end
-    /// value rather than chaining a new one.
+    /// Run the fade animation, retargeting any in-flight run so a
+    /// fade-in interrupted by a fade-out (or vice versa) stays
+    /// smooth.
     void FadeTo(qreal endOpacity);
 
     QGraphicsOpacityEffect *mOpacity = nullptr;
@@ -120,15 +81,11 @@ private:
     int mCount = 0;
     ArrowDirection mDirection = ArrowDirection::Down;
 
-    /// Re-entrancy guard for `ApplyStyleSheet` / `RefreshIcon`.
-    /// `setStyleSheet` synchronously emits both `StyleChange` and
-    /// `PaletteChange` on the widget on Qt 6 (the QSS system
-    /// re-resolves palette roles), so a `changeEvent` that
-    /// dispatches to `ApplyStyleSheet` from either branch would
-    /// recurse forever -- this crashed the test suite with a
-    /// stack overflow during construction. The flag short-circuits
-    /// the recursive call without dropping the *external*
-    /// theme-switch refresh path (which arrives outside any
-    /// `setStyleSheet` of ours).
+    /// Re-entrancy guard. On Qt 6, `setStyleSheet` synchronously
+    /// emits `StyleChange` / `PaletteChange`, which would route
+    /// back into `ApplyStyleSheet` and recurse forever (this
+    /// crashed the test suite during construction). External
+    /// theme switches arrive outside our `setStyleSheet`, so the
+    /// guard is clear and the refresh still runs.
     bool mApplyingPalette = false;
 };

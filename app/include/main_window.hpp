@@ -395,8 +395,8 @@ public:
         OpenRecentSession(uuid);
     }
 
-    /// Test-only forwarder to the `JumpToNewestRow` private helper
-    /// so the filtered-newest-row fallback can be exercised without
+    /// Test seam for the `JumpToNewestRow` private helper; lets
+    /// the filtered-newest-row fallback be exercised without
     /// synthesising a real pill click.
     void JumpToNewestRowForTest()
     {
@@ -966,39 +966,25 @@ private:
     /// session mode.
     void UpdateStreamToolbarVisibility();
 
-    /// Scroll to the newest row when Follow tail is on; mapped
-    /// through the proxy chain so the scroll lands correctly
-    /// under a sort. Thin gate that defers the actual scroll to
-    /// `JumpToNewestRow` -- which also applies the
-    /// filtered-newest fallback below, so under live-tail +
-    /// Follow with a filter excluding the source-newest line we
-    /// now scroll to the *visible* newest line instead of
-    /// silently doing nothing.
+    /// Scroll to the newest row when Follow newest is on. Thin
+    /// gate that forwards to `JumpToNewestRow`, which is what
+    /// actually handles the proxy chain and the filtered fallback.
     void ScrollToNewestRowIfFollowing();
 
-    /// Unconditional version of the above: scroll to the newest
-    /// row through the proxy chain, regardless of session mode or
-    /// `actionFollowTail`. Used by the "jump to newest" pill,
-    /// which is a user-driven "catch me up" command rather than
-    /// part of the streaming-policy state machine. Safe to call
-    /// with no rows / no source attached (early-returns).
+    /// Scroll to the newest row through the proxy chain, ignoring
+    /// session mode / `actionFollowTail`. Used by the pill click
+    /// ("catch me up") rather than the streaming-policy state
+    /// machine. Safe to call with no rows.
     ///
-    /// Three-stage target resolution:
-    ///   1. Map the source-newest row (by line id) through the
-    ///      proxy chain. Lands on the absolute newest line when
-    ///      it survives any active filter; correct under custom
-    ///      column sorts too.
-    ///   2. If stage 1 returns an invalid index (source-newest
-    ///      is filtered out), walk source rows backwards up to
-    ///      `JUMP_FALLBACK_WALK_LIMIT` and pick the first one
-    ///      that maps through. Preserves "newest by line id"
-    ///      under combined sort + filter where the proxy's
-    ///      visual top/bottom is not the newest line.
-    ///   3. If the walk also yields nothing, snap to the proxy's
-    ///      visual tail so the pill click always moves the
-    ///      viewport. Tail edge picked from
-    ///      `LogTableView::GetTailEdge()` (the single source of
-    ///      truth for the view's orientation).
+    /// Target resolution:
+    ///   1. Map the source-newest row through the proxy chain.
+    ///      Correct under custom column sorts.
+    ///   2. If filtered out, walk source rows backwards up to
+    ///      `JUMP_FALLBACK_WALK_LIMIT` and take the first that
+    ///      survives the proxy.
+    ///   3. If nothing visible, snap to the proxy's visual tail
+    ///      (`LogTableView::GetTailEdge()`) so the click always
+    ///      moves the viewport.
     void JumpToNewestRow();
 
     /// Re-apply the persisted retention cap to the model.

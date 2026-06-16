@@ -57,14 +57,11 @@ public:
     /// preservation path -- see `userScrolledAwayFromTail`).
     void setModel(QAbstractItemModel *model) override;
 
-    /// Switch which scrollbar edge is treated as the tail.
-    /// **Always** re-evaluates `mAtTailEdge` against the current
-    /// scrollbar position, even when `edge == mTailEdge` -- callers
-    /// (and tests) rely on the re-seed side effect to recover from a
-    /// preceding programmatic scrollbar mutation that the
-    /// `valueChanged`-driven state machine silently absorbed. Do not
-    /// short-circuit on `edge == mTailEdge` without also providing a
-    /// separate re-seed seam.
+    /// Switch which scrollbar edge is treated as the tail. Always
+    /// re-evaluates `mAtTailEdge` against the current scrollbar
+    /// position, even when `edge == mTailEdge`: callers rely on the
+    /// re-seed to recover from preceding programmatic scrollbar
+    /// mutations that the `valueChanged` state machine ignored.
     void SetTailEdge(TailEdge edge);
 
     [[nodiscard]] TailEdge GetTailEdge() const noexcept;
@@ -78,28 +75,20 @@ public:
     /// chain down to `LogModel`; empty when no `LogModel` is reachable.
     [[nodiscard]] std::vector<AnchorManager::Key> AnchorKeysForSelection() const;
 
-    /// Suppress `mPendingNewRows` accumulation. While suppressed,
-    /// `OnRowsInserted` skips the count update and the pill stays
-    /// hidden, regardless of `mAtTailEdge`. `MainWindow` toggles
-    /// this on / off in lockstep with `actionFollowTail` so the
-    /// pill never flashes during the at-tail-with-Follow-engaged
-    /// steady state where Qt's signal ordering can briefly drop
-    /// `mAtTailEdge` between the layout update and the
-    /// `JumpToNewestRow` scroll-back. Clearing the suppression
-    /// also resets any tally accumulated while suppression was
-    /// off, so a transient un-suppress + re-suppress can't leak
-    /// a stale count once the steady-state path resumes.
+    /// Suppress pending-new-rows counting. `MainWindow` mirrors
+    /// `actionFollowTail` into this flag so the pill never flashes
+    /// during the at-tail-with-Follow-engaged steady state, where
+    /// Qt's signal ordering can briefly drop `mAtTailEdge` between
+    /// the row insert and the follow-up scroll-back. Engaging
+    /// suppression also clears any pending tally.
     void SetPendingNewRowsSuppressed(bool suppressed);
 
-    /// Acknowledge any "* N new lines" announcement: zero the
-    /// running counter and fade the pill out. Called by
-    /// `MainWindow`'s pill-click handler so a click whose scroll
-    /// happens to land short of the visual tail (custom sort
-    /// where the source-newest row is in the middle of the
-    /// proxy, or filtered-newest fallback that snaps to the
-    /// proxy tail without crossing `maximum`) still clears the
-    /// announcement -- the user explicitly asked to be caught
-    /// up.
+    /// Zero the running counter and fade the pill out. Called from
+    /// the pill-click handler so the announcement clears even when
+    /// the resulting scroll lands short of the visual tail (custom
+    /// sort placing source-newest in the middle of the proxy, or
+    /// the filtered fallback snapping to the proxy tail without
+    /// crossing `maximum`).
     void AcknowledgePendingNewRows();
 
 public slots:
@@ -140,9 +129,8 @@ signals:
     void userScrolledToTail();
 
     /// User clicked the floating "jump to newest" pill. Forwarded
-    /// to `MainWindow`, which performs the proxy-aware scroll and
-    /// (in live-tail sessions) re-engages Follow newest. The view
-    /// itself stays ignorant of proxies and the Follow action.
+    /// to `MainWindow`, which owns the proxy-aware scroll and the
+    /// Follow re-engage; the view stays ignorant of both.
     void jumpToTailRequested();
 
 protected:
@@ -152,24 +140,20 @@ protected:
     /// Mark the next `valueChanged` as user-initiated.
     void wheelEvent(QWheelEvent *event) override;
 
-    /// Filters viewport resize events so the floating pill stays
-    /// glued to the tail-side edge of the visible area without the
-    /// view having to subclass the viewport. Installed in
-    /// `LogTableView::LogTableView`.
+    /// Watches the viewport for resize events so the floating pill
+    /// stays glued to the tail-side edge without subclassing the
+    /// viewport.
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     void OnVerticalScrollValueChanged(int value);
 
-    /// Re-evaluate `mAtTailEdge` when the scrollbar's range changes
-    /// (typically because new rows grew `maximum`). Without this, a
-    /// user sitting at the previous tail can drift below it silently:
-    /// `valueChanged` never fires (the value didn't move), but
-    /// `value < newMax` now -- so `mAtTailEdge` would stay stuck at
-    /// `true` and `OnRowsInserted` would keep skipping the count.
-    /// Transitions are flag-only here: a range change is not a user
-    /// scroll, so the `userScrolled*` signals stay silent (Follow
-    /// newest must not be toggled by a layout event).
+    /// Refresh `mAtTailEdge` when the scrollbar range changes
+    /// (typically a row insert growing `maximum` without moving
+    /// `value`). Without this, a user at the previous tail would
+    /// silently drift below it and the pill counter would never
+    /// arm. Flag-only: a range change is not a user scroll, so the
+    /// `userScrolled*` signals must stay silent.
     void OnVerticalScrollRangeChanged(int min, int max);
 
     /// Reading-position preservation hooks (chat-app pattern). Around
@@ -188,17 +172,13 @@ private:
     void SaveAnchorIfShouldPreserve();
     void RestoreAnchorIfSaved();
 
-    /// Re-place `mTailPill` at the tail-side edge of the
-    /// viewport, centred horizontally. Called from the viewport
-    /// resize hook and from `SetTailEdge` (when the edge flips).
-    /// No-op when the pill is absent.
+    /// Re-place `mTailPill` against the tail-side viewport edge,
+    /// centred horizontally. No-op when the pill is absent.
     void PositionTailPill();
 
-    /// Centralised reset: zero the pending-new-rows counter and
-    /// fade the pill out. Called when the user / a programmatic
-    /// edge change lands the viewport back at the tail, when a
-    /// new model is attached, on `modelReset`, and on session
-    /// boundaries that drop the table contents.
+    /// Zero the pending-new-rows counter and fade the pill out.
+    /// Called on tail-edge landings, `setModel`, `modelReset`, and
+    /// suppression engagement.
     void ResetPendingNewRows();
 
     TailEdge mTailEdge = TailEdge::Bottom;
@@ -233,34 +213,22 @@ private:
     /// fixtures. Anchor slots null-check before dereferencing.
     AnchorManager *mAnchors = nullptr;
 
-    /// Floating "* N new lines" pill parented to the viewport.
-    /// `QPointer` so a viewport teardown (Qt destroys the
-    /// viewport when the view is destroyed) zeroes the pointer
-    /// before our own destructor runs, sparing the slot wiring a
-    /// dangling deref. Visibility / count are driven by
-    /// `OnRowsInserted`, `OnVerticalScrollValueChanged`, and the
-    /// `modelReset` hook.
+    /// Floating "N new lines" pill parented to the viewport.
+    /// `QPointer` so a viewport teardown zeroes the pointer before
+    /// our destructor runs.
     QPointer<JumpToTailPill> mTailPill;
 
-    /// Running count of *visible* (post-filter) rows that
-    /// arrived while the user was scrolled away from the tail
-    /// edge. Reset to 0 whenever the viewport returns to the
-    /// tail edge, the model is wiped, or `MainWindow` flips
-    /// suppression on for the Follow-newest steady state.
-    /// Counts proxy rows, not source rows, because that's what
-    /// the user sees and what the pill click navigates to.
+    /// Running count of *visible* (post-filter) rows that arrived
+    /// while the user was scrolled away from the tail. Reset on
+    /// any tail-edge landing, on model swap, or when suppression
+    /// engages.
     int mPendingNewRows = 0;
 
-    /// True while `MainWindow` has Follow newest engaged. The
-    /// view-side flag suppresses `mPendingNewRows` accumulation
-    /// outright -- it doesn't simulate "user is at tail" because
-    /// `mAtTailEdge` is also consumed by the anchor / signal
-    /// state machines that have their own correctness depending
-    /// on the scrollbar's actual position. Belt-and-braces: even
-    /// if Qt's signal ordering briefly drops `mAtTailEdge` to
-    /// false between a row insert's geometry update and the
-    /// `JumpToNewestRow` scroll-back, the suppression flag keeps
-    /// `OnRowsInserted` from incrementing the tally.
+    /// Mirror of `actionFollowTail`. While set, `OnRowsInserted`
+    /// short-circuits even if `mAtTailEdge` momentarily drops to
+    /// false between an insert's geometry pass and the follow-up
+    /// scroll-back. Kept separate from `mAtTailEdge` because that
+    /// flag also feeds the anchor / signal state machines.
     bool mPendingNewRowsSuppressed = false;
 
 #ifdef LOGAPP_BUILD_TESTING
@@ -277,13 +245,10 @@ public:
     {
         return mPendingNewRowsSuppressed;
     }
-    /// `mAtTailEdge` is the at-tail-edge flag the scroll-edge state
-    /// machine maintains. The `OnVerticalScrollRangeChanged` listener
-    /// refreshes it when row inserts grow the range without moving
-    /// the value; this seam lets the corresponding regression test
-    /// observe the transition without round-tripping through
-    /// `OnRowsInserted` (which Qt's view machinery can re-reset
-    /// before the test gets a chance to read it).
+    /// Direct seam over `mAtTailEdge` so the `rangeChanged`
+    /// regression test can observe the transition without
+    /// round-tripping through `OnRowsInserted` (which the view
+    /// machinery can re-reset before the test reads it).
     [[nodiscard]] bool AtTailEdgeForTest() const noexcept
     {
         return mAtTailEdge;
