@@ -46,6 +46,14 @@ public:
     /// Displayed text caps at "999+" so a runaway live tail does
     /// not stretch the pill across the viewport. The cap is purely
     /// cosmetic; callers may pass any non-negative count.
+    ///
+    /// Emits `contentSizeChanged` after every text update -- the
+    /// rebuilt label changes the pill's `sizeHint`, and the host
+    /// has to re-anchor the pill to the viewport edge whether the
+    /// count grew or shrank. Without that signal a count that
+    /// crosses the "999+" boundary the wrong way (e.g. user clears
+    /// some rows and we drop back below the cap) would leave the
+    /// pill drifting off-centre until the next viewport resize.
     void SetCount(int count);
 
     /// Update which way the arrow points. Idempotent. The icon is
@@ -66,6 +74,15 @@ public:
     {
         return mCount;
     }
+
+signals:
+    /// The pill's `sizeHint` may have changed because the rendered
+    /// text was rebuilt (count grew, shrank, or crossed the
+    /// `999+` cap boundary). The host (`LogTableView`) listens
+    /// and re-runs `PositionTailPill` so the pill stays centred
+    /// against the viewport edge regardless of which direction
+    /// the size moved.
+    void contentSizeChanged();
 
 protected:
     /// Re-tint the arrow icon and re-apply the rounded-pill QSS

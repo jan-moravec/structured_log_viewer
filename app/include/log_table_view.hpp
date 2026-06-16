@@ -78,6 +78,30 @@ public:
     /// chain down to `LogModel`; empty when no `LogModel` is reachable.
     [[nodiscard]] std::vector<AnchorManager::Key> AnchorKeysForSelection() const;
 
+    /// Suppress `mPendingNewRows` accumulation. While suppressed,
+    /// `OnRowsInserted` skips the count update and the pill stays
+    /// hidden, regardless of `mAtTailEdge`. `MainWindow` toggles
+    /// this on / off in lockstep with `actionFollowTail` so the
+    /// pill never flashes during the at-tail-with-Follow-engaged
+    /// steady state where Qt's signal ordering can briefly drop
+    /// `mAtTailEdge` between the layout update and the
+    /// `JumpToNewestRow` scroll-back. Clearing the suppression
+    /// also resets any tally accumulated while suppression was
+    /// off, so a transient un-suppress + re-suppress can't leak
+    /// a stale count once the steady-state path resumes.
+    void SetPendingNewRowsSuppressed(bool suppressed);
+
+    /// Acknowledge any "* N new lines" announcement: zero the
+    /// running counter and fade the pill out. Called by
+    /// `MainWindow`'s pill-click handler so a click whose scroll
+    /// happens to land short of the visual tail (custom sort
+    /// where the source-newest row is in the middle of the
+    /// proxy, or filtered-newest fallback that snaps to the
+    /// proxy tail without crossing `maximum`) still clears the
+    /// announcement -- the user explicitly asked to be caught
+    /// up.
+    void AcknowledgePendingNewRows();
+
 public slots:
     void CopySelectedRowsToClipboard();
 
@@ -218,10 +242,26 @@ private:
     /// `modelReset` hook.
     QPointer<JumpToTailPill> mTailPill;
 
-    /// Running count of rows appended while the user was scrolled
-    /// away from the tail edge. Reset to 0 whenever the viewport
-    /// returns to the tail edge or the model is wiped.
+    /// Running count of *visible* (post-filter) rows that
+    /// arrived while the user was scrolled away from the tail
+    /// edge. Reset to 0 whenever the viewport returns to the
+    /// tail edge, the model is wiped, or `MainWindow` flips
+    /// suppression on for the Follow-newest steady state.
+    /// Counts proxy rows, not source rows, because that's what
+    /// the user sees and what the pill click navigates to.
     int mPendingNewRows = 0;
+
+    /// True while `MainWindow` has Follow newest engaged. The
+    /// view-side flag suppresses `mPendingNewRows` accumulation
+    /// outright -- it doesn't simulate "user is at tail" because
+    /// `mAtTailEdge` is also consumed by the anchor / signal
+    /// state machines that have their own correctness depending
+    /// on the scrollbar's actual position. Belt-and-braces: even
+    /// if Qt's signal ordering briefly drops `mAtTailEdge` to
+    /// false between a row insert's geometry update and the
+    /// `JumpToNewestRow` scroll-back, the suppression flag keeps
+    /// `OnRowsInserted` from incrementing the tally.
+    bool mPendingNewRowsSuppressed = false;
 
 #ifdef LOGAPP_BUILD_TESTING
 public:
@@ -232,6 +272,10 @@ public:
     [[nodiscard]] int PendingNewRowsForTest() const noexcept
     {
         return mPendingNewRows;
+    }
+    [[nodiscard]] bool PendingNewRowsSuppressedForTest() const noexcept
+    {
+        return mPendingNewRowsSuppressed;
     }
     /// `mAtTailEdge` is the at-tail-edge flag the scroll-edge state
     /// machine maintains. The `OnVerticalScrollRangeChanged` listener

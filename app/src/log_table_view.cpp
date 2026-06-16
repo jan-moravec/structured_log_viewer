@@ -103,14 +103,24 @@ LogTableView::LogTableView(QWidget *parent)
         mTailEdge == TailEdge::Top ? JumpToTailPill::ArrowDirection::Up : JumpToTailPill::ArrowDirection::Down
     );
     connect(mTailPill, &QToolButton::clicked, this, [this]() {
-        // The host is responsible for the actual scroll; we only
-        // surface the intent. The reset of `mPendingNewRows` /
-        // pill visibility is driven by the resulting tail-edge
-        // transition inside `OnVerticalScrollValueChanged`, so
-        // the pill correctly stays hidden whether the host
-        // accepts or ignores the request.
+        // The host is responsible for the actual scroll. The
+        // reset of `mPendingNewRows` / pill visibility is driven
+        // by the resulting tail-edge transition inside
+        // `OnVerticalScrollValueChanged` *when* the scroll
+        // actually lands at the tail; `MainWindow`'s click
+        // handler also calls `AcknowledgePendingNewRows` so
+        // clicks whose scroll lands short of the visual tail
+        // (custom sort + filter mapping the source-newest row
+        // into the middle of the proxy) still clear the
+        // announcement.
         emit jumpToTailRequested();
     });
+    // Pill `sizeHint` changes (count growth, shrink, "999+" cap
+    // crossing) require a re-anchor against the viewport edge;
+    // `OnRowsInserted` only handles the growth path. The signal
+    // covers the shrink + cap-crossing paths so the pill never
+    // drifts off-centre.
+    connect(mTailPill, &JumpToTailPill::contentSizeChanged, this, &LogTableView::PositionTailPill);
 
     // The pill is glued to the tail-side edge of the viewport; an
     // event filter on the viewport drives the reposition without
@@ -487,11 +497,27 @@ void LogTableView::OnRowsInserted(const QModelIndex &parent, int first, int last
     RestoreAnchorIfSaved();
 
     // Surface the new arrivals to the user via the floating pill
-    // when they're not currently watching the tail edge. The
-    // pill stays hidden in the at-tail case because the user is
-    // (or, in live-tail, is being auto-scrolled to) the newest
-    // row already.
-    if (mAtTailEdge || mTailPill == nullptr)
+    // when they're *not* currently watching the tail edge AND
+    // Follow newest is disengaged. The pill stays hidden when:
+    //
+    //   * `mAtTailEdge` -- user is already at the visual tail,
+    //     no catch-up affordance needed.
+    //   * `mPendingNewRowsSuppressed` -- live-tail Follow newest
+    //     is engaged. Qt's signal ordering can briefly drop
+    //     `mAtTailEdge` to false between the row insert's
+    //     geometry pass (which grows `maximum`) and the
+    //     subsequent `JumpToNewestRow` scroll-back, which would
+    //     cause a 1-frame pill flash on every batch in the
+    //     steady-state Follow path. The suppression flag keeps
+    //     this hot path silent regardless of signal ordering
+    //     across Qt versions.
+    //
+    // The batch size below counts *visible* rows (the slot is
+    // wired to the outermost proxy in the chain), so a filter
+    // that swallows a source batch produces no count update --
+    // which matches the user's mental model of "rows you missed
+    // since you scrolled away".
+    if (mAtTailEdge || mPendingNewRowsSuppressed || mTailPill == nullptr)
     {
         return;
     }
@@ -502,6 +528,10 @@ void LogTableView::OnRowsInserted(const QModelIndex &parent, int first, int last
     }
     mPendingNewRows += batch;
     mTailPill->SetCount(mPendingNewRows);
+    // Direct call here covers the typical "count grew" case
+    // before the user can perceive the new sizeHint; the
+    // `contentSizeChanged` signal also drives the same helper,
+    // so this is belt-and-braces for the most common path.
     PositionTailPill();
 }
 
@@ -597,7 +627,15 @@ void LogTableView::PositionTailPill()
     mTailPill->adjustSize();
     const QSize pillSize = mTailPill->size();
     const QRect vpRect = vp->rect();
-    const int x = vpRect.left() + ((vpRect.width() - pillSize.width()) / 2);
+    // Centre horizontally, but clamp so a viewport narrower than
+    // the pill doesn't push the pill off the left edge (negative
+    // `x`) or the right edge. The clamp produces "left-aligned"
+    // behaviour in that pathological case rather than a partial
+    // bleed -- still a degraded layout, but at least the click
+    // target is fully inside the viewport.
+    const int rawX = vpRect.left() + ((vpRect.width() - pillSize.width()) / 2);
+    const int maxX = vpRect.right() - pillSize.width() + 1;
+    const int x = std::max(vpRect.left(), std::min(rawX, maxX));
     int y = 0;
     if (mTailEdge == TailEdge::Bottom)
     {
@@ -613,6 +651,31 @@ void LogTableView::PositionTailPill()
     }
     mTailPill->move(x, y);
     mTailPill->raise();
+}
+
+void LogTableView::SetPendingNewRowsSuppressed(bool suppressed)
+{
+    if (suppressed == mPendingNewRowsSuppressed)
+    {
+        return;
+    }
+    mPendingNewRowsSuppressed = suppressed;
+    // Engaging suppression also drops any tally accumulated
+    // before the flip -- otherwise a "user scrolled away, rows
+    // pile up, user re-engages Follow newest" sequence would
+    // freeze the pre-flip count visible until the next at-tail
+    // landing. The pill click and the Follow-on toggle both
+    // imply the user has acknowledged whatever announcement was
+    // showing.
+    if (suppressed)
+    {
+        ResetPendingNewRows();
+    }
+}
+
+void LogTableView::AcknowledgePendingNewRows()
+{
+    ResetPendingNewRows();
 }
 
 void LogTableView::ResetPendingNewRows()

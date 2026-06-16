@@ -688,19 +688,66 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
         }
     });
 
+    // Mirror Follow-newest into the view's pill-suppression flag.
+    // Rationale: in the at-tail-with-Follow-engaged steady state
+    // Qt's signal ordering can briefly drop `mAtTailEdge` to
+    // false between the row-insert geometry pass (which grows
+    // `maximum`) and the subsequent `JumpToNewestRow` scroll-
+    // back. Without suppression the pill would flash on every
+    // batch in the most common live-tail state. The suppression
+    // also resets the running tally, so the user toggling Follow
+    // back on while scrolled away catches them up cleanly --
+    // they explicitly chose the auto-follow policy over the
+    // catch-up affordance.
+    //
+    // `toggled` rather than `triggered` so a programmatic
+    // `setChecked` (e.g. the pill-click handler below, or a
+    // user dragging back to the tail edge) drives the same
+    // suppression update as the user clicking the toolbar
+    // action.
+    connect(ui->actionFollowTail, &QAction::toggled, this, [this](bool checked) {
+        if (mTableView != nullptr)
+        {
+            mTableView->SetPendingNewRowsSuppressed(checked);
+        }
+    });
+    // Seed the suppression flag from the action's initial
+    // checked state. The `.ui` declares `actionFollowTail`
+    // checked by default, but `toggled` only fires on *changes*
+    // -- without this one-shot the view would start out un-
+    // suppressed even though Follow newest is logically engaged
+    // from frame zero, leaking the steady-state flicker we just
+    // wired the connection above to prevent.
+    if (mTableView != nullptr)
+    {
+        mTableView->SetPendingNewRowsSuppressed(ui->actionFollowTail->isChecked());
+    }
+
     // Floating "jump to newest" pill: the view surfaces the
     // click as `jumpToTailRequested`; this slot performs the
-    // proxy-aware scroll and (in live-tail) re-engages Follow
-    // newest. The view stays ignorant of proxies and of the
-    // Follow action -- single source of truth for the policy
-    // sits here, alongside the rest of the scroll-edge wiring.
+    // proxy-aware scroll, acknowledges the announcement, and
+    // (in live-tail) re-engages Follow newest. The view stays
+    // ignorant of proxies and of the Follow action -- single
+    // source of truth for the policy sits here, alongside the
+    // rest of the scroll-edge wiring.
     connect(mTableView, &LogTableView::jumpToTailRequested, this, [this]() {
-        // `JumpToNewestRow` issues a programmatic `scrollTo`,
-        // which lands the viewport at the tail edge. The view's
-        // `OnVerticalScrollValueChanged` zeroes the pending-new-
-        // rows counter on that transition (even for programmatic
-        // scrolls), so the pill fades out without a separate
-        // reset call here.
+        // Acknowledge the announcement *up-front*. The user has
+        // explicitly asked to be caught up; whether the scroll
+        // below lands exactly at the visual tail or slightly
+        // short (custom sort + filter where the source-newest
+        // row is in the middle of the proxy, or the bounded-
+        // walk fallback that snaps to the proxy tail without
+        // crossing `maximum`), the pending tally is stale by
+        // the user's intent. The at-tail-edge path still
+        // re-runs `ResetPendingNewRows`, but it's idempotent.
+        if (mTableView != nullptr)
+        {
+            mTableView->AcknowledgePendingNewRows();
+        }
+        // `JumpToNewestRow` issues a programmatic `scrollTo`
+        // through the proxy chain; the resulting tail-edge
+        // landing is what fades the pill cosmetic-wise (the
+        // count is already zero from the line above).
         JumpToNewestRow();
         // Live-tail sessions auto-disengage Follow newest when
         // the user manually scrolls away; the pill click is the
@@ -3891,9 +3938,15 @@ void MainWindow::JumpToNewestRow()
     // burst" cases without breaking a sweat.
     if (!proxyIndex.isValid())
     {
+        // `JUMP_FALLBACK_WALK_LIMIT` bounds *additional* candidates
+        // inspected after the source-newest first attempt that
+        // already failed above. A 256-row walk covers the typical
+        // "level filter swallows the latest INFO burst" case
+        // without turning the GUI thread into an O(N) scan when
+        // a pathological filter excludes the entire tail.
         constexpr int JUMP_FALLBACK_WALK_LIMIT = 256;
-        const int walkLimit = std::min(sourceRowCount, JUMP_FALLBACK_WALK_LIMIT);
-        for (int offset = 1; offset < walkLimit; ++offset)
+        const int maxOffset = std::min(sourceRowCount - 1, JUMP_FALLBACK_WALK_LIMIT);
+        for (int offset = 1; offset <= maxOffset; ++offset)
         {
             const QModelIndex candidateSource = mModel->index(sourceRowCount - 1 - offset, 0);
             const QModelIndex candidateMid = mRowOrderProxyModel->mapFromSource(candidateSource);
@@ -3915,6 +3968,15 @@ void MainWindow::JumpToNewestRow()
         const int proxyRowCount = mSortFilterProxyModel->rowCount();
         if (proxyRowCount <= 0)
         {
+            // No visible rows at all (every source row filtered
+            // out). There's nothing to scroll to, so clear any
+            // stale pill announcement -- "newest visible row"
+            // is the empty set, the tally is by definition
+            // meaningless until rows reappear.
+            if (mTableView != nullptr)
+            {
+                mTableView->AcknowledgePendingNewRows();
+            }
             return;
         }
         const int targetRow = tailIsTop ? 0 : (proxyRowCount - 1);

@@ -4,7 +4,6 @@
 
 #include <QEasingCurve>
 #include <QEvent>
-#include <QFontMetrics>
 #include <QGraphicsOpacityEffect>
 #include <QIcon>
 #include <QLatin1String>
@@ -43,6 +42,13 @@ constexpr int FADE_DURATION_MS = 150;
 /// auto-positioning helper in the host view doesn't have to
 /// repaint a wider pill mid-stream.
 constexpr int DISPLAYED_COUNT_CAP = 999;
+
+/// HSL lightness threshold that splits "this background needs to
+/// be darkened for hover contrast" from "this background needs
+/// to be lightened". Mid-grey by definition; named so the
+/// theme-branching helper in `ApplyStyleSheet` reads as a policy
+/// rather than a magic number.
+constexpr qreal LIGHTNESS_DARK_THEME_THRESHOLD = 0.5;
 } // namespace
 
 JumpToTailPill::JumpToTailPill(QWidget *parent)
@@ -50,7 +56,12 @@ JumpToTailPill::JumpToTailPill(QWidget *parent)
 {
     setObjectName(QStringLiteral("jumpToTailPill"));
     setCursor(Qt::PointingHandCursor);
-    setFocusPolicy(Qt::NoFocus);
+    // `Qt::TabFocus` so keyboard-only users can land on the pill
+    // and activate it with `Space` / `Enter` (`QAbstractButton`
+    // wires those automatically). `Qt::NoFocus` would have
+    // stranded screen-reader / switch-control users; the click
+    // affordance is otherwise mouse-only.
+    setFocusPolicy(Qt::TabFocus);
     // Icon + text laid out side by side so the arrow visually
     // leads the count. `ToolButtonTextBesideIcon` honours QSS
     // padding consistently across platforms; the
@@ -59,10 +70,13 @@ JumpToTailPill::JumpToTailPill(QWidget *parent)
     // entirely.
     setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     setAutoRaise(false);
-    // Accessible name reads to screen readers without the running
-    // count, which the live text already carries; the description
-    // adds the action so the affordance reads as a verb.
-    setAccessibleName(tr("Jump to newest row"));
+    // Accessible description carries the *action*; the accessible
+    // name is rebuilt with the running count by `RebuildText` so
+    // screen readers announce "Jump to newest row, 5 new lines"
+    // and follow live updates. Without the per-count refresh,
+    // assistive tech would see only "Jump to newest row" with no
+    // running tally -- the visible label's count would never
+    // reach the user.
     setAccessibleDescription(tr("Jump to the newest row and re-engage Follow newest if streaming."));
 
     // Opacity effect on the widget itself; `setVisible(false)` at
@@ -102,6 +116,14 @@ void JumpToTailPill::SetCount(int count)
     }
     mCount = sanitised;
     RebuildText();
+    // Notify the host *after* `RebuildText` has updated the label
+    // so a `PositionTailPill` triggered by this signal sees the
+    // new sizeHint. Two-direction repositioning is critical for
+    // counts that cross the "999+" cap (label width changes by
+    // more than a digit's worth) and for shrinking counts that
+    // would otherwise leave the pill stuck off-centre against the
+    // viewport edge.
+    emit contentSizeChanged();
 
     if (mCount > 0)
     {
@@ -209,6 +231,30 @@ void JumpToTailPill::RebuildText()
         message = tr("%n new lines", "jump-to-tail pill running count", mCount);
     }
     setText(QStringLiteral("%1 %2").arg(arrow, message));
+
+    // Live-update the accessible name so screen readers (NVDA,
+    // VoiceOver, Narrator) announce the current count when focus
+    // lands on the pill or when AT polls for state changes.
+    // Without this refresh the static "Jump to newest row" set
+    // in the ctor would mask every count update -- Qt's
+    // accessibility bridge prefers `accessibleName` over the
+    // visible `text` property, so the running count would never
+    // reach AT users.
+    if (mCount > 0)
+    {
+        // Two-arg `tr` so translators get the count as a plain
+        // `%1` rather than wrestling with `%n` plurality on the
+        // accessible name (the visible label already covers
+        // plural-correctness; AT prosody is more forgiving).
+        setAccessibleName(tr("Jump to newest row, %1 new lines available").arg(mCount));
+    }
+    else
+    {
+        // Idle accessible name for the brief windows when the
+        // pill is technically still in the tree (fade-out in
+        // flight) but conceptually empty.
+        setAccessibleName(tr("Jump to newest row"));
+    }
 }
 
 void JumpToTailPill::RefreshIcon()
@@ -281,11 +327,29 @@ void JumpToTailPill::ApplyStyleSheet()
     // not resolve `palette(...)` references on every role).
     const QColor bg = palette().color(QPalette::Active, QPalette::Highlight);
     const QColor fg = palette().color(QPalette::Active, QPalette::HighlightedText);
-    // Slightly darker hover; `QColor::darker(110)` keeps the hue
-    // and pushes the lightness ~10% down -- works on light AND
-    // dark themes without bespoke per-mode tints.
-    const QColor hoverBg = bg.darker(110);
-    const QColor pressedBg = bg.darker(125);
+
+    // Hover / pressed must visibly contrast against `bg` on every
+    // theme. `QColor::darker(N)` divides HSV `V` -- on a dark
+    // theme that pulls the hover *into* the surrounding black,
+    // making the pill almost vanish on hover. Branch on the
+    // background's perceived lightness so the adjustment goes
+    // toward more contrast in either direction:
+    //   * light theme (typical `Highlight` ~ vivid blue,
+    //     lightness > 0.5) -> darken on hover.
+    //   * dark theme (typical `Highlight` ~ dim blue,
+    //     lightness <= 0.5) -> lighten on hover.
+    // Same factor (~10% / ~25%) on both sides so the feedback
+    // intensity matches across themes.
+    const auto adjustForContrast = [](const QColor &c, int factor) {
+        return c.lightnessF() < LIGHTNESS_DARK_THEME_THRESHOLD ? c.lighter(factor) : c.darker(factor);
+    };
+    const QColor hoverBg = adjustForContrast(bg, 110);
+    const QColor pressedBg = adjustForContrast(bg, 125);
+    // Focus ring: a subtle outline that reads against both the
+    // pill's `bg` and the surrounding viewport. Reusing
+    // `HighlightedText` for the outline keeps the colour in lock-
+    // step with the foreground glyph.
+    const QColor focusRing = fg;
 
     const QString sheet = QStringLiteral(
                               "QToolButton#jumpToTailPill {"
@@ -298,6 +362,7 @@ void JumpToTailPill::ApplyStyleSheet()
                               "}"
                               "QToolButton#jumpToTailPill:hover { background-color: %6; }"
                               "QToolButton#jumpToTailPill:pressed { background-color: %7; }"
+                              "QToolButton#jumpToTailPill:focus { outline: 2px solid %8; }"
     )
                               .arg(bg.name(QColor::HexRgb))
                               .arg(fg.name(QColor::HexRgb))
@@ -305,7 +370,21 @@ void JumpToTailPill::ApplyStyleSheet()
                               .arg(PADDING_VERTICAL_PX)
                               .arg(PADDING_HORIZONTAL_PX)
                               .arg(hoverBg.name(QColor::HexRgb))
-                              .arg(pressedBg.name(QColor::HexRgb));
+                              .arg(pressedBg.name(QColor::HexRgb))
+                              .arg(focusRing.name(QColor::HexRgb));
+    // Idempotent fast-path: identical sheets are common when
+    // `changeEvent(PaletteChange)` fires from a Qt internal that
+    // didn't actually move any of our tracked roles (e.g. a font
+    // metrics change). Skipping the `setStyleSheet` call avoids
+    // a synchronous QSS re-resolve (which would re-emit
+    // `PaletteChange` and `StyleChange` -- the original recursion
+    // we have to guard against). The `mApplyingPalette` guard
+    // remains the firewall; this branch keeps the common case
+    // out of the firewall path entirely.
+    if (sheet == styleSheet())
+    {
+        return;
+    }
     setStyleSheet(sheet);
 }
 
