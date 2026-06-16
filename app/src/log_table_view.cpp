@@ -220,9 +220,7 @@ void LogTableView::setModel(QAbstractItemModel *model)
     // tally is by definition stale. Listening here also covers
     // the `clearAllFilters` -> proxy reset path, which never
     // emits `rowsRemoved`.
-    mModelConnections.append(
-        connect(model, &QAbstractItemModel::modelReset, this, &LogTableView::ResetPendingNewRows)
-    );
+    mModelConnections.append(connect(model, &QAbstractItemModel::modelReset, this, &LogTableView::ResetPendingNewRows));
 }
 
 void LogTableView::keyPressEvent(QKeyEvent *event)

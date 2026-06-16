@@ -3248,9 +3248,7 @@ private slots:
         // listener (covers the rare "rows removed past value"
         // branch of `OnVerticalScrollRangeChanged`).
         vbar->setRange(0, 0);
-        QVERIFY2(
-            tableView->AtTailEdgeForTest(), "rangeChanged shrinking max back below value must restore at-tail"
-        );
+        QVERIFY2(tableView->AtTailEdgeForTest(), "rangeChanged shrinking max back below value must restore at-tail");
 
         // Neither transition is a user scroll -- the Follow-newest
         // wiring would auto-disengage / re-engage on a stray
@@ -3328,9 +3326,7 @@ private slots:
 
         QCOMPARE(tableView->PendingNewRowsForTest(), 0);
         QCOMPARE(pill->Count(), 0);
-        QVERIFY2(
-            pill->isHidden(), "pill must stay hidden across a batch in the live-tail Follow-newest steady state"
-        );
+        QVERIFY2(pill->isHidden(), "pill must stay hidden across a batch in the live-tail Follow-newest steady state");
 
         // A second batch must also stay silent -- the
         // suppression flag is sticky, not one-shot.
