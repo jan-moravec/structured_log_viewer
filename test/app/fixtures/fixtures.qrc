@@ -12,5 +12,8 @@
         <file>invalid_lines.jsonl</file>
         <file>mixed_tz_and_order.jsonl</file>
         <file>parse_errors_panel.jsonl</file>
+        <file>single_line.logfmt</file>
+        <file>value_types.logfmt</file>
+        <file>iso_t_timestamp.logfmt</file>
     </qresource>
 </RCC>
