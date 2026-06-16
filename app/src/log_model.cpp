@@ -342,11 +342,18 @@ loglib::StopToken LogModel::AppendStreaming(
 }
 
 loglib::StopToken LogModel::BeginStreaming(
-    std::unique_ptr<loglib::StreamLineSource> source, loglib::ParserOptions options
+    std::unique_ptr<loglib::StreamLineSource> source, loglib::ParserOptions options, LogParserFactory parserFactory
 )
 {
     Q_ASSERT(source);
     Q_ASSERT(mStreamingWatcher == nullptr || !mStreamingWatcher->isRunning());
+
+    // Empty factory is the legacy contract: spawn a `JsonParser`. Keeps
+    // call sites that haven't been ported yet working unchanged.
+    if (!parserFactory)
+    {
+        parserFactory = []() -> std::unique_ptr<loglib::LogParser> { return std::make_unique<loglib::JsonParser>(); };
+    }
 
     QtStreamingLogSink *sinkForWorker = mSink;
     loglib::StreamLineSource *streamSourcePtr = source.get();
@@ -407,13 +414,16 @@ loglib::StopToken LogModel::BeginStreaming(
         });
     }
 
-    const QFuture<void> future =
-        QtConcurrent::run([sinkForWorker, streamSourcePtr, capturedOptions = std::move(options)]() mutable {
-            RunParserWorkerWithBoundary(sinkForWorker, [&] {
-                const loglib::JsonParser parser;
-                parser.ParseStreaming(*streamSourcePtr, *sinkForWorker, std::move(capturedOptions));
-            });
+    const QFuture<void> future = QtConcurrent::run([sinkForWorker,
+                                                    streamSourcePtr,
+                                                    capturedOptions = std::move(options),
+                                                    capturedFactory = std::move(parserFactory)]() mutable {
+        RunParserWorkerWithBoundary(sinkForWorker, [&] {
+            std::unique_ptr<loglib::LogParser> parser = capturedFactory();
+            Q_ASSERT(parser);
+            parser->ParseStreaming(*streamSourcePtr, *sinkForWorker, std::move(capturedOptions));
         });
+    });
 
     mStreamingWatcher->setFuture(future);
     return stopToken;

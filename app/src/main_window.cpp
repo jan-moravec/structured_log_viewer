@@ -25,6 +25,7 @@
 #include <loglib/log_level.hpp>
 #include <loglib/log_processing.hpp>
 #include <loglib/parsers/json_parser.hpp>
+#include <loglib/parsers/logfmt_parser.hpp>
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
@@ -438,6 +439,22 @@ QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &se
                             "(deployed installs ship one next to the executable; `cmake/FetchDependencies.cmake` "
                             "stages it at `${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tzdata` for local builds).");
     return lines.join(QLatin1Char('\n'));
+}
+
+/// Construct the parser implementation matching @p format. Used by every
+/// `BeginStreaming` / `AppendStreaming` open path so the parser choice
+/// follows from the persisted `Source::format` rather than being
+/// scattered across hard-coded `JsonParser` constructions.
+std::unique_ptr<loglib::LogParser> MakeParserForFormat(loglib::LogConfiguration::Source::Format format)
+{
+    switch (format)
+    {
+    case loglib::LogConfiguration::Source::Format::Logfmt:
+        return std::make_unique<loglib::LogfmtParser>();
+    case loglib::LogConfiguration::Source::Format::Json:
+        return std::make_unique<loglib::JsonParser>();
+    }
+    return std::make_unique<loglib::JsonParser>();
 }
 
 } // namespace
@@ -2387,14 +2404,23 @@ void MainWindow::StreamNextPendingFile()
         loglib::ParserOptions options;
         options.configuration = std::move(cfg);
 
+        // Reads `mCurrentSource->format` once on the GUI thread; the
+        // worker captures the resulting parser by value so a later
+        // session switch on the GUI cannot retarget the in-flight
+        // parse. Defaults to Json when no source descriptor is
+        // present yet (first open of a fresh session).
+        const loglib::LogConfiguration::Source::Format format =
+            mCurrentSource ? mCurrentSource->format : loglib::LogConfiguration::Source::Format::Json;
+        std::shared_ptr<loglib::LogParser> parser = MakeParserForFormat(format);
+
         // False positive: `parseCallable` is moved into the model and invoked;
         // `cfg` is consumed by `options`.
         // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
-        auto parseCallable = [sink, fileSourcePtr, options = std::move(options)](const loglib::StopToken &stopToken
+        auto parseCallable = [sink, fileSourcePtr, options = std::move(options), parser = std::move(parser)](
+                                 const loglib::StopToken &stopToken
                              ) mutable {
             options.stopToken = stopToken;
-            const loglib::JsonParser parser;
-            parser.ParseStreaming(*fileSourcePtr, *sink, options);
+            parser->ParseStreaming(*fileSourcePtr, *sink, options);
         };
 
         if (isFirstFileInSession)
@@ -2534,7 +2560,10 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     // Wrap the producer in a `StreamLineSource` so each `LogLine` can
     // resolve its bytes via `LineSource::RawLine` later.
     auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(source));
-    mModel->BeginStreaming(std::move(streamSource), std::move(options));
+    const loglib::LogConfiguration::Source::Format format =
+        mCurrentSource ? mCurrentSource->format : loglib::LogConfiguration::Source::Format::Json;
+    auto parserFactory = [format]() { return MakeParserForFormat(format); };
+    mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
 }
 
 void MainWindow::OpenLogStreamForTest(const QString &filePath)
@@ -2653,7 +2682,10 @@ void MainWindow::OpenNetworkStream()
     // display string serves as the LineSource's opaque identity.
     auto streamSource =
         std::make_unique<loglib::StreamLineSource>(std::filesystem::path(displayName), std::move(producer));
-    mModel->BeginStreaming(std::move(streamSource), std::move(options));
+    const loglib::LogConfiguration::Source::Format format =
+        mCurrentSource ? mCurrentSource->format : loglib::LogConfiguration::Source::Format::Json;
+    auto parserFactory = [format]() { return MakeParserForFormat(format); };
+    mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
 }
 
 void MainWindow::TogglePauseStream(bool paused)
