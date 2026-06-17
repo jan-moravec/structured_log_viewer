@@ -40,8 +40,8 @@ TEST_CASE("Parse JSON log file via ParseFile auto-detect", "[log_factory]")
 
 TEST_CASE("Parse logfmt log file via ParseFile auto-detect", "[log_factory]")
 {
-    // Reuse `TestJsonLogFile` only as a path-and-cleanup helper; the
-    // body is plain logfmt bytes.
+    // `TestJsonLogFile` is reused only for path/cleanup; the body
+    // is logfmt bytes.
     const TestJsonLogFile holder(std::string{"autodetect.logfmt"});
     {
         std::ofstream file(holder.GetFilePath(), std::ios::trunc);
@@ -59,8 +59,8 @@ TEST_CASE("ParseFile auto-detect rejects nonexistent or invalid file", "[log_fac
 {
     CHECK_THROWS_AS(ParseFile("nonexistent.json"), std::runtime_error);
 
-    // "Invalid log line." has no '=' anywhere, so neither the JSON
-    // probe nor the logfmt probe accepts it.
+    // "Invalid log line." has no '=', so neither the JSON probe
+    // nor the logfmt probe accepts it.
     const TestJsonLogFile testFile(TestJsonLogFile::Line("Invalid log line."));
     CHECK_THROWS_AS(ParseFile(testFile.GetFilePath()), std::runtime_error);
 }

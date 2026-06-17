@@ -288,8 +288,8 @@ StreamingRun RunStreaming(const QString &fixturePath, ThemeControl *theme = null
     return run;
 }
 
-// Logfmt equivalent of `RunStreaming`. Mirrors the same shape so the
-// per-fixture assertions are identical to their JSON counterparts.
+// Logfmt sibling of `RunStreaming` (same shape so assertions can
+// match the JSON counterparts line-for-line).
 StreamingRun RunStreamingLogfmt(const QString &fixturePath, ThemeControl *theme = nullptr)
 {
     StreamingRun run;
@@ -1008,9 +1008,9 @@ private slots:
         QCOMPARE(proxy.mapToSource(proxy.index(2, 0)).row(), 2);
     }
 
-    // Logfmt fixture smoke: a single-line record loads into one row +
-    // two columns ("level", "msg") with the bare value typed as a
-    // string and the quoted value's spaces preserved.
+    // Logfmt smoke: a single-line record loads as one row + two
+    // columns ("level", "msg"), bare value typed as string and the
+    // quoted value's spaces preserved.
     static void TestLogfmtFixtureSingleLine()
     {
         const FixtureFile fixture(":/fixtures/single_line.logfmt");
@@ -1030,8 +1030,8 @@ private slots:
         QVERIFY(run.model->StreamingErrors().empty());
     }
 
-    // Logfmt fixture smoke: bare values get auto-typed (int / uint /
-    // double / bool / null), but quoted values stay strings.
+    // Logfmt smoke: bare values get auto-typed (int / uint / double /
+    // bool / null); quoted values stay strings.
     static void TestLogfmtFixtureValueTypes()
     {
         const FixtureFile fixture(":/fixtures/value_types.logfmt");
@@ -1061,15 +1061,14 @@ private slots:
         QCOMPARE(sortVal(0, colDbl).toDouble(), 3.14);
         QCOMPARE(sortVal(0, colFlag).toBool(), true);
         QVERIFY(!sortVal(0, colNul).isValid());
-        // `quoted="42"` must stay a string -- promoting it to int
-        // would defeat the round-trip the user intended.
+        // `quoted="42"` must stay a string; promoting it to int
+        // would lose the user's intent on round-trip.
         QCOMPARE(sortVal(0, colQuoted).toString(), QStringLiteral("42"));
     }
 
-    // Logfmt fixture: ISO-T timestamps promote to `Type::Time` the same
-    // way the JSON path does. Reuses `AssertTimestampFixture` so the
-    // pinned format-detection contract stays in lockstep with the
-    // JSON sibling.
+    // Logfmt fixture: ISO-T timestamps promote to `Type::Time` like
+    // the JSON path. Reuses `AssertTimestampFixture` so the pinned
+    // format-detection contract stays in lockstep across formats.
     static void TestLogfmtFixtureIsoTTimestamp()
     {
         const FixtureFile fixture(":/fixtures/iso_t_timestamp.logfmt");
@@ -8866,12 +8865,11 @@ private slots:
         );
     }
 
-    // Regression: a single multi-file open must sniff the format of
-    // *each* queued file, not reuse the first file's format for the
-    // whole queue. A JSON Lines file followed by a logfmt file used to
-    // parse the logfmt file with `JsonParser` (the first file's
-    // format), turning every logfmt line into a parse error. Detection
-    // is content-based, so the on-disk extension is irrelevant here.
+    // Regression: a multi-file open must sniff each queued file
+    // independently, not reuse the first file's format for the rest.
+    // Before the fix, a JSON Lines + logfmt queue tried to parse the
+    // logfmt file with `JsonParser`, turning every line into a parse
+    // error. Detection is content-based, so the extension is irrelevant.
     void TestMultiFileOpenSniffsFormatPerFile()
     {
         auto *model = mWindow->Model();
@@ -8881,9 +8879,9 @@ private slots:
             QStringLiteral(R"({"level": "info", "msg": "json-0"})"),
             QStringLiteral(R"({"level": "warn", "msg": "json-1"})"),
         };
-        // logfmt bytes, written through the JSON temp-file helper; the
-        // parser is chosen by content sniffing, not by the `.json`
-        // suffix, which is exactly the path under test.
+        // logfmt bytes written through the JSON temp-file helper.
+        // Detection is content-based, so the `.json` suffix is
+        // exactly what we want the test to defeat.
         const QStringList logfmtLines{
             QStringLiteral(R"(level=info msg="logfmt-0")"),
             QStringLiteral(R"(level=warn msg="logfmt-1")"),
@@ -8895,9 +8893,9 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        // One open, two queued files: the first takes `BeginStreaming`,
-        // the second `AppendStreaming` after the first finishes -> two
-        // `streamingFinished` emits.
+        // One open, two queued files: first uses `BeginStreaming`,
+        // second uses `AppendStreaming` after the first finishes
+        // -> two `streamingFinished` emits.
         mWindow->OpenFilesForTest({jsonFixture.Path(), logfmtFixture.Path()}, MainWindow::OpenMode::Replace);
         while (finishedSpy.count() < 2)
         {

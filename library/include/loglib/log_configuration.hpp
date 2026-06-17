@@ -158,11 +158,10 @@ struct LogConfiguration
             NetworkStream
         };
 
-        /// On-disk identity of the parser the source was opened with.
-        /// Network-stream sessions have no file to sniff at restore
-        /// time, and live-tail file sessions commit to a parser before
-        /// the first byte arrives, so the format must be persisted
-        /// explicitly. `Json` is the default for a fresh `Source`.
+        /// Parser the source was opened with. Persisted because
+        /// network streams have nothing to sniff at restore time and
+        /// live-tail sessions commit to a parser before the first
+        /// byte arrives. Defaults to `Json` for a fresh `Source`.
         enum class Format
         {
             Json,

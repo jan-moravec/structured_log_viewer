@@ -442,10 +442,9 @@ QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &se
     return lines.join(QLatin1Char('\n'));
 }
 
-/// Construct the parser implementation matching @p format. Used by every
-/// `BeginStreaming` / `AppendStreaming` open path so the parser choice
-/// follows from the persisted `Source::format` rather than being
-/// scattered across hard-coded `JsonParser` constructions.
+/// Build the parser matching @p format. All open paths route through
+/// here so the parser tracks the persisted `Source::format` instead
+/// of being hard-coded at the call sites.
 std::unique_ptr<loglib::LogParser> MakeParserForFormat(loglib::LogConfiguration::Source::Format format)
 {
     switch (format)
@@ -458,13 +457,10 @@ std::unique_ptr<loglib::LogParser> MakeParserForFormat(loglib::LogConfiguration:
     return std::make_unique<loglib::JsonParser>();
 }
 
-/// Probe @p file via every registered `LogFactory` parser and return
-/// the first that accepts it. Mirrors the auto-detect ordering of
-/// `loglib::ParseFile(path)` (JSON first, then logfmt) so the GUI
-/// open-paths classify a file the same way the lib does. Falls back
-/// to `Json` when no parser claims the file: the subsequent parse
-/// will surface the bytes as parse errors, which is the desired
-/// "first row tells the user what's wrong" UX.
+/// Sniff @p file and return the first format whose parser accepts it
+/// (JSON before logfmt, matching `loglib::ParseFile(path)`). Falls
+/// back to `Json` when nothing matches so the parse surfaces the
+/// bytes as parse errors rather than silently doing nothing.
 loglib::LogConfiguration::Source::Format DetectFormatForPath(const std::filesystem::path &file)
 {
     for (int i = 0; i < static_cast<int>(loglib::LogFactory::Parser::Count); ++i)
@@ -2438,13 +2434,12 @@ void MainWindow::StreamNextPendingFile()
         loglib::ParserOptions options;
         options.configuration = std::move(cfg);
 
-        // Sniff every queued file independently so a mixed-format
-        // multi-file open (e.g. one JSON Lines file plus one logfmt
-        // file) parses each with the right parser. `mCurrentSource`
-        // only records the *first* file's format for the persisted
-        // session descriptor; it is not the per-file parser selector.
-        // The worker captures the resulting parser by value so a later
-        // session switch on the GUI cannot retarget the in-flight parse.
+        // Sniff each queued file independently so mixed-format opens
+        // (e.g. JSON Lines + logfmt) pick the right parser per file.
+        // `mCurrentSource` records only the first file's format for
+        // the session descriptor; the per-file parser comes from this
+        // sniff. The worker captures it by value so a later GUI
+        // session switch can't retarget the in-flight parse.
         const loglib::LogConfiguration::Source::Format format =
             DetectFormatForPath(std::filesystem::path(file.toStdString()));
         std::shared_ptr<loglib::LogParser> parser = MakeParserForFormat(format);

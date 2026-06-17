@@ -22,9 +22,9 @@
 namespace
 {
 
-/// Tiny RAII helper for raw-text fixture files. `TestJsonLogFile`
-/// always wraps lines in JSON-aware machinery, so logfmt fixtures get
-/// their own minimal helper that just writes the bytes.
+/// RAII helper for raw-text fixture files. `TestJsonLogFile` wraps
+/// lines in JSON-aware machinery, so logfmt fixtures use this minimal
+/// helper that just writes the bytes verbatim.
 class TestLogfmtFile
 {
 public:
@@ -36,8 +36,8 @@ public:
         out << content;
     }
 
-    // `mPath` is a `std::filesystem::path` so the cleanup needs no
-    // string->path conversion (which can throw) inside the destructor.
+    // `mPath` is a `std::filesystem::path` so destructor cleanup
+    // avoids a (throwing) string->path conversion.
     ~TestLogfmtFile() noexcept
     {
         std::error_code ec;
@@ -75,8 +75,8 @@ TEST_CASE("Validate empty file [logfmt]", "[logfmt_parser]")
 
 TEST_CASE("Validate JSON-shaped first line [logfmt]", "[logfmt_parser]")
 {
-    // A line that looks like JSON must be rejected so JSON keeps
-    // priority in the auto-detect loop.
+    // A JSON-shaped first line must be rejected so JSON wins the
+    // auto-detect race.
     const loglib::LogfmtParser parser;
     const TestLogfmtFile file(R"({"key": "value"})"
                               "\n");
@@ -128,7 +128,7 @@ TEST_CASE("Parse typed bare values [logfmt]", "[logfmt_parser]")
 
 TEST_CASE("Quoted values stay strings [logfmt]", "[logfmt_parser]")
 {
-    // `pid="42"` must round-trip as the literal string "42", not int.
+    // `pid="42"` must stay the string "42", not promote to int.
     const loglib::LogfmtParser parser;
     const TestLogfmtFile file("pid=\"42\" msg=\"hello world\"\n");
 
@@ -232,10 +232,9 @@ TEST_CASE("Last line lacks trailing newline [logfmt]", "[logfmt_parser]")
 
 TEST_CASE("Plain text is parsed permissively as null-valued bare keys [logfmt]", "[logfmt_parser]")
 {
-    // kr/logfmt grammar treats every whitespace-separated word as a
-    // (key, null) pair, so a line of plain prose is "valid" logfmt
-    // with N null-valued bare keys. We mirror that behaviour rather
-    // than surfacing it as a parse error.
+    // kr/logfmt treats each whitespace-separated word as a
+    // (key, null) pair, so plain prose is "valid" logfmt with N
+    // null-valued bare keys. We mirror that.
     const loglib::LogfmtParser parser;
     const TestLogfmtFile file("level=info\nplain text line\nlevel=error\n");
 
@@ -248,8 +247,8 @@ TEST_CASE("Plain text is parsed permissively as null-valued bare keys [logfmt]",
 
 TEST_CASE("Line of only '=' / '\"' surfaces as parse error [logfmt]", "[logfmt_parser]")
 {
-    // No emitable key/value pairs: the scanner should report the line
-    // rather than silently produce an empty record.
+    // No emitable key/value pairs: the scanner should report the
+    // line instead of silently producing an empty record.
     const loglib::LogfmtParser parser;
     const TestLogfmtFile file("level=info\n====\nlevel=error\n");
 
@@ -270,7 +269,7 @@ TEST_CASE("ToString round-trips bare and quoted values [logfmt]", "[logfmt_parse
     REQUIRE(result.data.Lines().size() == 1);
 
     const std::string out = parser.ToString(result.data.Lines()[0]);
-    // IndexedValues are KeyId-ordered (insertion order through `KeyIndex`).
+    // IndexedValues are KeyId-ordered (insertion order via `KeyIndex`).
     CHECK(out.contains("level=info"));
     CHECK(out.contains("msg=\"hello world\""));
     CHECK(out.contains("code=42"));

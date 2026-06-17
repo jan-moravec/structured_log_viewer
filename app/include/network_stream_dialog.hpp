@@ -35,11 +35,10 @@ public:
         Udp,
     };
 
-    /// Wire format of the bytes flowing over the socket. Network
-    /// streams have no on-disk preamble to sniff, so the parser
-    /// choice has to come from the UI; the combobox round-trips
-    /// through `QSettings` so the next session defaults to the
-    /// previous pick.
+    /// Wire format on the socket. Network streams have nothing on
+    /// disk to sniff, so the parser must be picked here. The choice
+    /// round-trips through `QSettings` so the next session defaults
+    /// to the previous pick.
     enum class Format
     {
         Json,

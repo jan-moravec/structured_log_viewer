@@ -348,8 +348,7 @@ loglib::StopToken LogModel::BeginStreaming(
     Q_ASSERT(source);
     Q_ASSERT(mStreamingWatcher == nullptr || !mStreamingWatcher->isRunning());
 
-    // Empty factory is the legacy contract: spawn a `JsonParser`. Keeps
-    // call sites that haven't been ported yet working unchanged.
+    // Empty factory = legacy contract: spawn a `JsonParser`.
     if (!parserFactory)
     {
         parserFactory = []() -> std::unique_ptr<loglib::LogParser> { return std::make_unique<loglib::JsonParser>(); };

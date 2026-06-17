@@ -78,17 +78,16 @@ void InsertSorted(
     out.emplace(it, id, value);
 }
 
-/// Promote a string view into a compact value. When @p sv aliases the
-/// mmap (i.e. lies inside `[fileBegin, fileBegin + fileSize)`), the
-/// resulting tag is `MmapSlice` (zero copy). Otherwise the bytes are
-/// appended to @p ownedArena and the tag is `OwnedString`.
+/// Promote @p sv to a compact value. `MmapSlice` (zero copy) when it
+/// points inside `[fileBegin, fileBegin + fileSize)`, otherwise the
+/// bytes are copied into @p ownedArena and tagged `OwnedString`.
 internal::CompactLogValue MakeStringCompact(
     std::string_view sv, const char *fileBegin, size_t fileSize, std::string &ownedArena
 )
 {
-    // The streaming path passes `fileBegin == nullptr`; gate the
-    // mmap-range check on a real base so the pointer comparison stays
-    // well-defined (relational compares across unrelated objects are UB).
+    // Streaming passes `fileBegin == nullptr`; gate the range check
+    // on a real base because relational compares across unrelated
+    // objects are UB.
     if (fileBegin != nullptr && sv.data() >= fileBegin && sv.data() + sv.size() <= fileBegin + fileSize)
     {
         const auto offset = static_cast<uint64_t>(sv.data() - fileBegin);
@@ -99,11 +98,10 @@ internal::CompactLogValue MakeStringCompact(
     return internal::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(sv.size()));
 }
 
-/// One key/value pair extracted from a single record. `valueWasQuoted`
-/// disables typed-value detection (a quoted `"42"` stays a string).
-/// `unescapedFromQuoted`, when true, signals that the value bytes have
-/// been written into the decoder's scratch buffer rather than aliasing
-/// the source line — `MakeStringCompact` must copy them into the arena.
+/// One key/value pair from a single record.
+/// `valueWasQuoted`: disables typed-value detection (`"42"` stays a string).
+/// `unescapedFromQuoted`: value bytes live in the decoder's scratch
+/// buffer (not aliasing the source), so they must be copied into the arena.
 struct LogfmtField
 {
     std::string_view key;
@@ -115,12 +113,10 @@ struct LogfmtField
 
 /// State machine ported from `kr/logfmt`'s `scanner.go`
 /// (https://github.com/kr/logfmt/blob/19f9bcb100e6/scanner.go).
-/// Walks @p line top-to-bottom: skip leading whitespace, read a key,
-/// optionally read a value (bare or double-quoted with C-style escapes),
-/// emit the field via @p emit, then resume scanning. Returns false on
-/// an unterminated quoted value; partial fields up to that point have
-/// already been emitted. @p quotedScratch is reused across calls to
-/// hold unescaped quoted-value bytes.
+/// Walks @p line and emits each `key=value` (or bare-key) field via
+/// @p emit. Returns false on an unterminated quoted value; fields
+/// emitted before that point are kept. @p quotedScratch is reused
+/// across calls to hold unescaped quoted bytes.
 template <class Emit> bool TokenizeLogfmtLine(std::string_view line, std::string &quotedScratch, Emit emit)
 {
     const char *const data = line.data();
@@ -157,8 +153,8 @@ template <class Emit> bool TokenizeLogfmtLine(std::string_view line, std::string
         const std::string_view key(data + keyStart, i - keyStart);
         if (key.empty())
         {
-            // Stray '=' or '"' at the start — skip it and keep going so
-            // a single junk byte cannot stall the scanner.
+            // Stray '=' or '"' at the start — skip it so a single junk
+            // byte cannot stall the scanner.
             ++i;
             continue;
         }
@@ -215,8 +211,8 @@ template <class Emit> bool TokenizeLogfmtLine(std::string_view line, std::string
             }
             if (!terminated)
             {
-                // Surface the unterminated-quote error without emitting
-                // a half-formed field; callers wrap with a line number.
+                // Surface the error without emitting a half-formed
+                // field; callers wrap with a line number.
                 return false;
             }
 
@@ -258,7 +254,7 @@ template <class Emit> bool TokenizeLogfmtLine(std::string_view line, std::string
                             quotedScratch.push_back('\\');
                             break;
                         default:
-                            // Unknown escape: pass both bytes through literally
+                            // Unknown escape: pass both bytes through
                             // (matches Go's `unquoteBytes` fallback).
                             quotedScratch.push_back('\\');
                             quotedScratch.push_back(next);
@@ -279,7 +275,7 @@ template <class Emit> bool TokenizeLogfmtLine(std::string_view line, std::string
         }
 
         // Bare value: printable ASCII excluding '"' / whitespace.
-        // (The kr/logfmt grammar permits '=' inside bare values; we keep that.)
+        // (kr/logfmt permits '=' inside bare values; we keep that.)
         const size_t valueStart = i;
         while (i < end)
         {
@@ -299,7 +295,7 @@ template <class Emit> bool TokenizeLogfmtLine(std::string_view line, std::string
 }
 
 /// Typed-value classifier for bare values. Quoted values bypass this
-/// and stay strings (preserves user intent like `pid="42"`).
+/// and stay strings (so `pid="42"` keeps the user's intent).
 internal::CompactLogValue ClassifyBareValue(
     std::string_view raw, const char *fileBegin, size_t fileSize, std::string &ownedArena
 )
@@ -318,8 +314,8 @@ internal::CompactLogValue ClassifyBareValue(
         return internal::CompactLogValue::MakeBool(false);
     }
 
-    // Probe int / uint / double via std::from_chars; rejects values
-    // with trailing junk so e.g. `42abc` falls through to string.
+    // Probe int / uint / double via std::from_chars. Trailing junk
+    // (e.g. `42abc`) is rejected and falls through to string.
     const char *first = raw.data();
     const char *last = raw.data() + raw.size();
 
@@ -334,7 +330,7 @@ internal::CompactLogValue ClassifyBareValue(
     }
     else if (raw.front() >= '0' && raw.front() <= '9')
     {
-        // Try unsigned first to keep large positive ids exact.
+        // Unsigned first so large positive ids stay exact.
         uint64_t u64 = 0;
         const auto res = std::from_chars(first, last, u64);
         if (res.ec == std::errc{} && res.ptr == last)
@@ -356,9 +352,9 @@ internal::CompactLogValue ClassifyBareValue(
     return MakeStringCompact(raw, fileBegin, fileSize, ownedArena);
 }
 
-/// One-pass parse of a single logfmt record into compact values.
-/// `fileBegin`/`fileSize` describe the mmap slice (or 0/nullptr in
-/// streaming mode); `ownedArena` is the per-batch staging buffer for
+/// Parse one logfmt record into compact values.
+/// `fileBegin`/`fileSize` describe the mmap (or 0/nullptr when
+/// streaming). `ownedArena` is the per-batch buffer for
 /// `OwnedString` payloads. `quotedScratch` is reused across calls.
 void ParseLogfmtLine(
     std::string_view line,
@@ -386,10 +382,10 @@ void ParseLogfmtLine(
 
         if (field.valueWasQuoted)
         {
-            // `unescapedFromQuoted` -> bytes live in `quotedScratch`,
-            // which is reused on the next field; copy into the arena.
-            // Otherwise the view aliases the source line (the mmap or
-            // the streaming carry buffer): `MakeStringCompact` picks
+            // `unescapedFromQuoted` -> bytes are in `quotedScratch`
+            // (which the next field overwrites), so copy into the
+            // arena. Otherwise the view aliases the source (mmap or
+            // streaming carry buffer) and `MakeStringCompact` picks
             // the right tag.
             if (field.unescapedFromQuoted)
             {
@@ -416,15 +412,13 @@ void ParseLogfmtLine(
 
 bool LineLooksLikeLogfmt(std::string_view line)
 {
-    // Reject obviously-JSON content so JSON keeps priority in
-    // `LogFactory`-driven auto-detect.
+    // Reject obvious JSON so JSON wins the auto-detect race.
     if (!line.empty() && (line.front() == '{' || line.front() == '['))
     {
         return false;
     }
 
-    // Find the first '=' that follows at least one non-whitespace,
-    // non-special key byte. That's the cheapest stable signal.
+    // Cheapest stable signal: an '=' after at least one key byte.
     size_t i = 0;
     while (i < line.size() && static_cast<unsigned char>(line[i]) <= ' ')
     {
@@ -496,8 +490,8 @@ void DecodeLogfmtBatch(
             line.remove_suffix(1);
         }
 
-        // `GetLine` subtracts 1 (the '\n'); for an unterminated final
-        // line push `fileSize + 1` so we don't lop off the last char.
+        // `GetLine` subtracts 1 (the '\n'); for an unterminated last
+        // line push `fileSize + 1` so we don't lose the final char.
         const uint64_t nextOffset = static_cast<uint64_t>(cursor - fileBegin) + (newline == nullptr ? 1u : 0u);
         parsed.localLineOffsets.push_back(nextOffset);
 
@@ -532,8 +526,8 @@ void DecodeLogfmtBatch(
             }
             if (values.empty())
             {
-                // No `key=value` found at all -> not a logfmt record;
-                // surface it so the caller can see why the row is empty.
+                // No `key=value` pairs -> not a logfmt record;
+                // surface it so the caller sees why the row is empty.
                 parsed.errors.push_back(
                     internal::ParsedLineError{.relativeLine = relativeLineNumber, .body = "Not a logfmt record."}
                 );
@@ -544,10 +538,10 @@ void DecodeLogfmtBatch(
             LogLine logLine(std::move(values), keys, source, relativeLineNumber - 1);
             parsed.lines.push_back(std::move(logLine));
 
-            // Inline promotion: same shape the JSON parser uses.
+            // Inline promotion: same shape as the JSON parser.
             worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
 
-            // Restore the moved-from vector for reuse.
+            // Reset the moved-from vector for the next line.
             values.clear();
         }
         catch (const std::exception &e)
@@ -564,8 +558,7 @@ void DecodeLogfmtBatch(
 }
 
 /// Logfmt record decoder for `RunStreamingParseLoop`. Owns the
-/// per-line scratch shared by both overloads. Satisfies
-/// `CompactLineDecoder`.
+/// per-line scratch. Satisfies `CompactLineDecoder`.
 class LogfmtLineDecoder
 {
 public:
@@ -590,7 +583,7 @@ public:
         try
         {
             bool unterminated = false;
-            // Streaming path: source bytes do not live in any mmap, so
+            // Streaming bytes aren't in any mmap, so passing
             // `fileBegin/fileSize=0` forces the `OwnedString` arena
             // copy in `MakeStringCompact`.
             ParseLogfmtLine(
@@ -631,8 +624,8 @@ static_assert(
     internal::CompactLineDecoder<LogfmtLineDecoder>, "LogfmtLineDecoder must satisfy the CompactLineDecoder concept"
 );
 
-/// True if @p value can survive serialisation as a bare logfmt value
-/// (no whitespace, no '"', no '=').
+/// True if @p value can serialise as a bare logfmt value
+/// (no whitespace, no '"', no '=', no '\\').
 bool BareValueIsSafe(std::string_view value)
 {
     if (value.empty())
@@ -720,11 +713,10 @@ void AppendValueAsString(std::string &out, const LogValue &value)
             }
             else if constexpr (std::is_same_v<T, double>)
             {
-                // Non-finite doubles (`nan`, `inf`, `-inf`) format as
-                // bare alphabetic tokens that the parser would re-read
-                // as strings, not numbers. Quote them so the value
-                // survives a round-trip as a recognisable string rather
-                // than silently changing kind.
+                // Non-finite doubles (`nan`, `inf`, `-inf`) print as
+                // bare alphabetic tokens, which the parser would re-read
+                // as strings. Quote them so the round-trip preserves a
+                // recognisable string rather than silently changing kind.
                 if (std::isfinite(val))
                 {
                     out.append(fmt::format("{}", val));
@@ -805,7 +797,7 @@ std::string LogfmtParser::ToString(const LogMap &values)
         return {};
     }
 
-    // Stable order for round-trip determinism: lexicographic by key.
+    // Lexicographic by key for round-trip determinism.
     std::vector<const std::pair<const std::string, LogValue> *> sorted;
     sorted.reserve(values.size());
     for (const auto &kv : values)

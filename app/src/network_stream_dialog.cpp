@@ -89,9 +89,9 @@ NetworkStreamDialog::NetworkStreamDialog(QWidget *parent)
 
     connect(mTcpRadio, &QRadioButton::toggled, this, &NetworkStreamDialog::OnProtocolChanged);
 
-    // Format picker. Network streams have no file to sniff, so the
-    // user has to pick the parser up front. Exposed as a combobox
-    // (rather than radios) to keep room for future formats.
+    // Format picker. No file to sniff for a network stream, so the
+    // user picks up front. Combobox (not radios) leaves room for
+    // future formats.
     auto *formatBox = new QGroupBox(tr("Format"), this);
     auto *formatLayout = new QHBoxLayout(formatBox);
     mFormat = new QComboBox(formatBox);
