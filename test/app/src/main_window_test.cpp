@@ -8898,9 +8898,7 @@ private slots:
         // One open, two queued files: the first takes `BeginStreaming`,
         // the second `AppendStreaming` after the first finishes -> two
         // `streamingFinished` emits.
-        mWindow->OpenFilesForTest(
-            {jsonFixture.Path(), logfmtFixture.Path()}, MainWindow::OpenMode::Replace
-        );
+        mWindow->OpenFilesForTest({jsonFixture.Path(), logfmtFixture.Path()}, MainWindow::OpenMode::Replace);
         while (finishedSpy.count() < 2)
         {
             QVERIFY2(finishedSpy.wait(5000), "both queued files must finish parsing");
