@@ -8866,6 +8866,53 @@ private slots:
         );
     }
 
+    // Regression: a single multi-file open must sniff the format of
+    // *each* queued file, not reuse the first file's format for the
+    // whole queue. A JSON Lines file followed by a logfmt file used to
+    // parse the logfmt file with `JsonParser` (the first file's
+    // format), turning every logfmt line into a parse error. Detection
+    // is content-based, so the on-disk extension is irrelevant here.
+    void TestMultiFileOpenSniffsFormatPerFile()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QStringList jsonLines{
+            QStringLiteral(R"({"level": "info", "msg": "json-0"})"),
+            QStringLiteral(R"({"level": "warn", "msg": "json-1"})"),
+        };
+        // logfmt bytes, written through the JSON temp-file helper; the
+        // parser is chosen by content sniffing, not by the `.json`
+        // suffix, which is exactly the path under test.
+        const QStringList logfmtLines{
+            QStringLiteral(R"(level=info msg="logfmt-0")"),
+            QStringLiteral(R"(level=warn msg="logfmt-1")"),
+            QStringLiteral(R"(level=error msg="logfmt-2")"),
+        };
+        const TempJsonFile jsonFixture(jsonLines);
+        const TempJsonFile logfmtFixture(logfmtLines);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        // One open, two queued files: the first takes `BeginStreaming`,
+        // the second `AppendStreaming` after the first finishes -> two
+        // `streamingFinished` emits.
+        mWindow->OpenFilesForTest(
+            {jsonFixture.Path(), logfmtFixture.Path()}, MainWindow::OpenMode::Replace
+        );
+        while (finishedSpy.count() < 2)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "both queued files must finish parsing");
+        }
+        QCoreApplication::processEvents();
+
+        // Without per-file sniffing the logfmt lines would be parse
+        // errors and never become rows.
+        QVERIFY2(model->StreamingErrors().empty(), "mixed-format queue must not produce parse errors");
+        QCOMPARE(model->rowCount(), jsonLines.size() + logfmtLines.size());
+    }
+
     // Regression for the Append-while-streaming crash: Append while
     // a static streaming worker was in flight used to call
     // `AppendStreaming` and assert `!isRunning()`. The fix defers

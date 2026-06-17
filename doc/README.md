@@ -50,7 +50,7 @@ You can open a finished log file in two ways:
 1. **File → Open…** (`Ctrl+O`) — opens a file picker that auto-detects whether the selected file is a log or a [configuration](#configurations) file, *and* whether a log file is JSON Lines or logfmt.
 1. **Drag & drop** one or more files onto the main window.
 
-The file dialog filter accepts `*.json`, `*.jsonl`, `*.ndjson`, and `*.logfmt`; the actual format is decided by content sniffing, not by extension, so an unsuffixed file works too. The detected format is recorded on the active session so reopening a saved session keeps the same parser.
+The file dialog defaults to a filter that lists `*.json`, `*.jsonl`, `*.ndjson`, `*.logfmt`, `*.log`, and `*.txt`; switch it to **All Files (\*.\*)** to pick anything else (including unsuffixed files). The actual format is decided by content sniffing, not by extension, so the extension only affects what the picker shows — not how the file is parsed. The detected format is recorded on the active session so reopening a saved session keeps the same parser.
 
 Opening multiple files at once **merges** their records into a single table; the files are queued and parsed sequentially while sharing one column layout. Mixing formats across the queue is supported — each file is sniffed individually. If parsing errors occur, the first 20 are shown in a dialog when the queue drains; the rest are summarized as "… and N more error(s)". The status bar shows `Parsing <file> — N lines, M errors` while the queue is in flight.
 

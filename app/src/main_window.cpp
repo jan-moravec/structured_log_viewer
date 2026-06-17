@@ -1977,7 +1977,7 @@ void MainWindow::OpenFiles()
         this,
         tr("Select Log Files"),
         DefaultOpenDir(),
-        tr("Structured Logs (*.json *.jsonl *.ndjson *.logfmt);;All Files (*.*)")
+        tr("Structured Logs (*.json *.jsonl *.ndjson *.logfmt *.log *.txt);;All Files (*.*)")
     );
     if (files.isEmpty())
     {
@@ -2438,13 +2438,15 @@ void MainWindow::StreamNextPendingFile()
         loglib::ParserOptions options;
         options.configuration = std::move(cfg);
 
-        // Reads `mCurrentSource->format` once on the GUI thread; the
-        // worker captures the resulting parser by value so a later
-        // session switch on the GUI cannot retarget the in-flight
-        // parse. Defaults to Json when no source descriptor is
-        // present yet (first open of a fresh session).
+        // Sniff every queued file independently so a mixed-format
+        // multi-file open (e.g. one JSON Lines file plus one logfmt
+        // file) parses each with the right parser. `mCurrentSource`
+        // only records the *first* file's format for the persisted
+        // session descriptor; it is not the per-file parser selector.
+        // The worker captures the resulting parser by value so a later
+        // session switch on the GUI cannot retarget the in-flight parse.
         const loglib::LogConfiguration::Source::Format format =
-            mCurrentSource ? mCurrentSource->format : loglib::LogConfiguration::Source::Format::Json;
+            DetectFormatForPath(std::filesystem::path(file.toStdString()));
         std::shared_ptr<loglib::LogParser> parser = MakeParserForFormat(format);
 
         // False positive: `parseCallable` is moved into the model and invoked;
@@ -2483,7 +2485,7 @@ void MainWindow::OpenLogStream()
         this,
         tr("Open Log Stream..."),
         DefaultOpenDir(),
-        tr("Structured Logs (*.json *.jsonl *.ndjson *.logfmt);;All Files (*.*)")
+        tr("Structured Logs (*.json *.jsonl *.ndjson *.logfmt *.log *.txt);;All Files (*.*)")
     );
     if (file.isEmpty())
     {

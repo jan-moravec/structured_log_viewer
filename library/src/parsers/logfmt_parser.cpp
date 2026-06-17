@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -85,7 +86,10 @@ internal::CompactLogValue MakeStringCompact(
     std::string_view sv, const char *fileBegin, size_t fileSize, std::string &ownedArena
 )
 {
-    if (sv.data() >= fileBegin && sv.data() + sv.size() <= fileBegin + fileSize)
+    // The streaming path passes `fileBegin == nullptr`; gate the
+    // mmap-range check on a real base so the pointer comparison stays
+    // well-defined (relational compares across unrelated objects are UB).
+    if (fileBegin != nullptr && sv.data() >= fileBegin && sv.data() + sv.size() <= fileBegin + fileSize)
     {
         const auto offset = static_cast<uint64_t>(sv.data() - fileBegin);
         return internal::CompactLogValue::MakeMmapSlice(offset, static_cast<uint32_t>(sv.size()));
@@ -729,7 +733,19 @@ void AppendValueAsString(std::string &out, const LogValue &value)
             }
             else if constexpr (std::is_same_v<T, double>)
             {
-                out.append(fmt::format("{}", val));
+                // Non-finite doubles (`nan`, `inf`, `-inf`) format as
+                // bare alphabetic tokens that the parser would re-read
+                // as strings, not numbers. Quote them so the value
+                // survives a round-trip as a recognisable string rather
+                // than silently changing kind.
+                if (std::isfinite(val))
+                {
+                    out.append(fmt::format("{}", val));
+                }
+                else
+                {
+                    AppendQuotedString(out, fmt::format("{}", val));
+                }
             }
         },
         value
