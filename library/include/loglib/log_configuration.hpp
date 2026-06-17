@@ -162,8 +162,7 @@ struct LogConfiguration
         /// Network-stream sessions have no file to sniff at restore
         /// time, and live-tail file sessions commit to a parser before
         /// the first byte arrives, so the format must be persisted
-        /// explicitly. Defaults to `Json` so legacy session JSON that
-        /// pre-dates this field still round-trips.
+        /// explicitly. `Json` is the default for a fresh `Source`.
         enum class Format
         {
             Json,

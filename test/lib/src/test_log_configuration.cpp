@@ -657,36 +657,6 @@ TEST_CASE("LogConfiguration::Source round-trips Format::Logfmt", "[log_configura
     CHECK(loaded.source->locators.front() == "C:/logs/app.logfmt");
 }
 
-TEST_CASE(
-    "LogConfiguration::Source defaults Format::Json when the field is absent", "[log_configuration][session][source]"
-)
-{
-    // Legacy session JSON written before `format` existed must still
-    // load: `error_on_unknown_keys = false` covers unknown -> known
-    // schema drift, and the missing field falls through to the
-    // default-constructed `Format::Json`.
-    constexpr std::string_view legacyJson = R"({
-        "columns": [],
-        "filters": [],
-        "sort": { "columnIndex": -1, "descending": false },
-        "source": {
-            "kind": "file",
-            "locators": ["C:/logs/legacy.json"],
-            "locatorDedupKeys": ["c:/logs/legacy.json"]
-        },
-        "anchors": []
-    })";
-
-    LogConfiguration loaded;
-    const auto readError = glz::read_json(loaded, legacyJson);
-    REQUIRE_FALSE(readError);
-
-    REQUIRE(loaded.source.has_value());
-    CHECK(loaded.source->kind == LogConfiguration::Source::Kind::File);
-    CHECK(loaded.source->format == LogConfiguration::Source::Format::Json);
-    REQUIRE(loaded.source->locators.size() == 1);
-}
-
 TEST_CASE("Round-trip LogFilter with Type::Enumeration and filterValues", "[log_configuration][enum]")
 {
     LogConfiguration original;

@@ -28,14 +28,16 @@ namespace
 class TestLogfmtFile
 {
 public:
-    explicit TestLogfmtFile(std::string content, std::string path = "test.logfmt")
-        : mPath(std::move(path))
+    explicit TestLogfmtFile(const std::string &content, const std::string &path = "test.logfmt")
+        : mPath(path)
     {
         std::ofstream out(mPath, std::ios::binary);
         REQUIRE(out.is_open());
         out << content;
     }
 
+    // `mPath` is a `std::filesystem::path` so the cleanup needs no
+    // string->path conversion (which can throw) inside the destructor.
     ~TestLogfmtFile() noexcept
     {
         std::error_code ec;
@@ -47,13 +49,13 @@ public:
     TestLogfmtFile(TestLogfmtFile &&) = delete;
     TestLogfmtFile &operator=(TestLogfmtFile &&) = delete;
 
-    [[nodiscard]] const std::string &Path() const noexcept
+    [[nodiscard]] const std::filesystem::path &Path() const noexcept
     {
         return mPath;
     }
 
 private:
-    std::string mPath;
+    std::filesystem::path mPath;
 };
 
 } // namespace

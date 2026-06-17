@@ -147,7 +147,7 @@ template <class Emit> bool TokenizeLogfmtLine(std::string_view line, std::string
         const size_t keyStart = i;
         while (i < end)
         {
-            const unsigned char c = static_cast<unsigned char>(data[i]);
+            const auto c = static_cast<unsigned char>(data[i]);
             if (c <= ' ' || c == '=' || c == '"')
             {
                 break;
@@ -283,7 +283,7 @@ template <class Emit> bool TokenizeLogfmtLine(std::string_view line, std::string
         const size_t valueStart = i;
         while (i < end)
         {
-            const unsigned char c = static_cast<unsigned char>(data[i]);
+            const auto c = static_cast<unsigned char>(data[i]);
             if (c <= ' ' || c == '"')
             {
                 break;
@@ -433,18 +433,14 @@ bool LineLooksLikeLogfmt(std::string_view line)
     const size_t keyStart = i;
     while (i < line.size())
     {
-        const unsigned char c = static_cast<unsigned char>(line[i]);
+        const auto c = static_cast<unsigned char>(line[i]);
         if (c <= ' ' || c == '=' || c == '"')
         {
             break;
         }
         ++i;
     }
-    if (i == keyStart || i >= line.size() || line[i] != '=')
-    {
-        return false;
-    }
-    return true;
+    return i != keyStart && i < line.size() && line[i] == '=';
 }
 
 /// Logfmt-specific per-worker scratch.
@@ -643,21 +639,16 @@ bool BareValueIsSafe(std::string_view value)
     {
         return false;
     }
-    for (char c : value)
-    {
-        const unsigned char uc = static_cast<unsigned char>(c);
-        if (uc <= ' ' || uc == '"' || uc == '=' || uc == '\\')
-        {
-            return false;
-        }
-    }
-    return true;
+    return std::ranges::all_of(value, [](char c) {
+        const auto uc = static_cast<unsigned char>(c);
+        return uc > ' ' && uc != '"' && uc != '=' && uc != '\\';
+    });
 }
 
 void AppendQuotedString(std::string &out, std::string_view value)
 {
     out.push_back('"');
-    for (char c : value)
+    for (const char c : value)
     {
         switch (c)
         {
@@ -723,11 +714,7 @@ void AppendValueAsString(std::string &out, const LogValue &value)
             {
                 out.append(val ? "true" : "false");
             }
-            else if constexpr (std::is_same_v<T, int64_t>)
-            {
-                out.append(fmt::format("{}", val));
-            }
-            else if constexpr (std::is_same_v<T, uint64_t>)
+            else if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, uint64_t>)
             {
                 out.append(fmt::format("{}", val));
             }
