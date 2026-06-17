@@ -24,6 +24,15 @@
 #include <utility>
 #include <vector>
 
+// libc++ ships without `std::from_chars` for floating-point types as of
+// LLVM 18 (Xcode 16); fall back to a locale-safe `strtod` on a stack
+// buffer there. The extra headers are only pulled in on that branch.
+#if !defined(__cpp_lib_to_chars) || __cpp_lib_to_chars < 201611L || defined(_LIBCPP_VERSION)
+#include <array>
+#include <cerrno>
+#include <cstdlib>
+#endif
+
 namespace loglib
 {
 
@@ -38,6 +47,98 @@ constexpr size_t INSERT_SORTED_LOWER_BOUND_THRESHOLD = 8;
 
 /// Cap on bytes scanned by `IsValid` for the false-positive guard.
 constexpr size_t IS_VALID_PROBE_BYTES = 16 * 1024;
+
+/// Parse @p raw as a finite double. Wraps `std::from_chars` where
+/// available and falls back to a strict-syntax `std::strtod` on a stack
+/// buffer when libc++ lacks the floating-point overload (Xcode 16's
+/// libc++ as of LLVM 18). The fallback first validates that @p raw
+/// matches a strict C floating-point literal (no leading whitespace,
+/// no hex, no `nan` / `inf` tokens) so the locale-driven decimal
+/// separator in `strtod` cannot reinterpret the bytes.
+bool TryParseFiniteDouble(std::string_view raw, double &outValue)
+{
+#if defined(__cpp_lib_to_chars) && __cpp_lib_to_chars >= 201611L && !defined(_LIBCPP_VERSION)
+    const char *first = raw.data();
+    const char *last = raw.data() + raw.size();
+    const auto res = std::from_chars(first, last, outValue);
+    return res.ec == std::errc{} && res.ptr == last && std::isfinite(outValue);
+#else
+    // Stack buffer cap for the strtod fallback. Any IEEE 754 double
+    // round-trips in well under this width including sign / exponent /
+    // padding; longer inputs are rejected rather than allocating.
+    constexpr size_t DOUBLE_PARSE_BUFFER_SIZE = 64;
+
+    if (raw.empty() || raw.size() >= DOUBLE_PARSE_BUFFER_SIZE)
+    {
+        return false;
+    }
+
+    size_t i = 0;
+    if (raw[i] == '+' || raw[i] == '-')
+    {
+        ++i;
+    }
+    bool sawDigit = false;
+    bool sawDot = false;
+    while (i < raw.size())
+    {
+        const char c = raw[i];
+        if (c >= '0' && c <= '9')
+        {
+            sawDigit = true;
+            ++i;
+            continue;
+        }
+        if (c == '.' && !sawDot)
+        {
+            sawDot = true;
+            ++i;
+            continue;
+        }
+        break;
+    }
+    if (!sawDigit)
+    {
+        return false;
+    }
+    if (i < raw.size() && (raw[i] == 'e' || raw[i] == 'E'))
+    {
+        ++i;
+        if (i < raw.size() && (raw[i] == '+' || raw[i] == '-'))
+        {
+            ++i;
+        }
+        bool sawExpDigit = false;
+        while (i < raw.size() && raw[i] >= '0' && raw[i] <= '9')
+        {
+            sawExpDigit = true;
+            ++i;
+        }
+        if (!sawExpDigit)
+        {
+            return false;
+        }
+    }
+    if (i != raw.size())
+    {
+        return false;
+    }
+
+    std::array<char, DOUBLE_PARSE_BUFFER_SIZE> buffer{};
+    std::memcpy(buffer.data(), raw.data(), raw.size());
+    buffer[raw.size()] = '\0';
+
+    errno = 0;
+    char *end = nullptr;
+    const double value = std::strtod(buffer.data(), &end);
+    if (errno == ERANGE || end != buffer.data() + raw.size() || !std::isfinite(value))
+    {
+        return false;
+    }
+    outValue = value;
+    return true;
+#endif
+}
 
 void InsertSorted(
     std::vector<std::pair<KeyId, internal::CompactLogValue>> &out, KeyId id, internal::CompactLogValue value
@@ -342,8 +443,7 @@ internal::CompactLogValue ClassifyBareValue(
     if (raw.front() == '-' || raw.front() == '+' || raw.front() == '.' || (raw.front() >= '0' && raw.front() <= '9'))
     {
         double d = 0.0;
-        const auto res = std::from_chars(first, last, d);
-        if (res.ec == std::errc{} && res.ptr == last)
+        if (TryParseFiniteDouble(raw, d))
         {
             return internal::CompactLogValue::MakeDouble(d);
         }
