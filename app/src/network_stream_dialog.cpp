@@ -1,6 +1,7 @@
 #include "network_stream_dialog.hpp"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -21,6 +22,7 @@ namespace
 {
 constexpr auto SETTINGS_GROUP = "networkStream";
 constexpr auto KEY_PROTOCOL = "protocol";
+constexpr auto KEY_FORMAT = "format";
 constexpr auto KEY_BIND = "bindAddress";
 constexpr auto KEY_PORT = "port";
 constexpr auto KEY_MAX_CLIENTS = "maxConcurrentClients";
@@ -86,6 +88,20 @@ NetworkStreamDialog::NetworkStreamDialog(QWidget *parent)
     outerLayout->addWidget(protoBox);
 
     connect(mTcpRadio, &QRadioButton::toggled, this, &NetworkStreamDialog::OnProtocolChanged);
+
+    // Format picker. No file to sniff for a network stream, so the
+    // user picks up front. Combobox (not radios) leaves room for
+    // future formats.
+    auto *formatBox = new QGroupBox(tr("Format"), this);
+    auto *formatLayout = new QHBoxLayout(formatBox);
+    mFormat = new QComboBox(formatBox);
+    mFormat->addItem(tr("JSON Lines"), QVariant::fromValue(static_cast<int>(Format::Json)));
+    mFormat->addItem(tr("logfmt"), QVariant::fromValue(static_cast<int>(Format::Logfmt)));
+    mFormat->setToolTip(tr("Wire format of the bytes flowing over the socket."));
+    mFormat->setAccessibleName(tr("Wire format"));
+    formatLayout->addWidget(mFormat);
+    formatLayout->addStretch(1);
+    outerLayout->addWidget(formatBox);
 
     // Common bind / port / max-clients form.
     auto *bindBox = new QGroupBox(tr("Bind"), this);
@@ -336,6 +352,16 @@ void NetworkStreamDialog::LoadFromSettings()
     {
         mTcpRadio->setChecked(true);
     }
+    const QString formatName = settings.value(KEY_FORMAT, "json").toString();
+    if (formatName.compare("logfmt", Qt::CaseInsensitive) == 0)
+    {
+        mFormat->setCurrentIndex(mFormat->findData(static_cast<int>(Format::Logfmt)));
+    }
+    else
+    {
+        mFormat->setCurrentIndex(mFormat->findData(static_cast<int>(Format::Json)));
+    }
+
     mBindAddress->setText(settings.value(KEY_BIND, mBindAddress->text()).toString());
     mPort->setValue(settings.value(KEY_PORT, mPort->value()).toInt());
     mMaxConcurrentClients->setValue(settings.value(KEY_MAX_CLIENTS, mMaxConcurrentClients->value()).toInt());
@@ -353,6 +379,10 @@ void NetworkStreamDialog::SaveToSettings() const
     QSettings settings;
     settings.beginGroup(SETTINGS_GROUP);
     settings.setValue(KEY_PROTOCOL, mTcpRadio->isChecked() ? "tcp" : "udp");
+    {
+        const auto formatValue = mFormat->currentData().toInt();
+        settings.setValue(KEY_FORMAT, formatValue == static_cast<int>(Format::Logfmt) ? "logfmt" : "json");
+    }
     settings.setValue(KEY_BIND, mBindAddress->text());
     settings.setValue(KEY_PORT, mPort->value());
     settings.setValue(KEY_MAX_CLIENTS, mMaxConcurrentClients->value());
@@ -372,6 +402,7 @@ NetworkStreamDialog::Config NetworkStreamDialog::Configuration() const
 {
     Config out;
     out.protocol = mTcpRadio->isChecked() ? Protocol::Tcp : Protocol::Udp;
+    out.format = (mFormat->currentData().toInt() == static_cast<int>(Format::Logfmt)) ? Format::Logfmt : Format::Json;
     out.bindAddress = mBindAddress->text();
     out.port = static_cast<uint16_t>(mPort->value());
     out.maxConcurrentClients = static_cast<size_t>(mMaxConcurrentClients->value());

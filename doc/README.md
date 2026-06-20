@@ -2,45 +2,57 @@
 
 ## Overview
 
-Structured Log Viewer is a Qt 6 desktop application for inspecting JSON Lines log files. It displays each record as a row in a sortable, filterable table, auto-detects timestamp columns, and lets you search records using plain text, wildcards, or regular expressions.
+Structured Log Viewer is a Qt 6 desktop application for inspecting structured log files. It displays each record as a row in a sortable, filterable table, auto-detects timestamp columns, and lets you search records using plain text, wildcards, or regular expressions.
 
-## Supported Input Format
+## Supported Input Formats
 
-The application currently reads **JSON Lines** (also known as NDJSON): one JSON object per line, for example:
+The application reads two structured-log formats out of the box. The format is auto-detected on `File → Open` and persisted with the session, so reopening a saved session reuses the same parser without re-prompting.
+
+**JSON Lines** (also known as NDJSON / JSOND): one JSON object per line.
 
 ```json
 {"timestamp":"2025-01-15T12:34:56.789Z","level":"info","component":"app","message":"started"}
 {"timestamp":"2025-01-15T12:34:57.000Z","level":"error","component":"db","message":"connection refused"}
 ```
 
-Empty lines are skipped. Lines that fail to parse are reported as errors but do not abort loading — valid records are still shown. Nested objects and arrays are preserved as their compact JSON string.
+**logfmt** (the Heroku / `kr/logfmt` flavour): one record per line, whitespace-separated `key=value` pairs, optionally double-quoted values with C-style escapes (`\"`, `\\`, `\n`, `\r`, `\t`).
+
+```logfmt
+timestamp=2025-01-15T12:34:56.789Z level=info component=app msg="started"
+timestamp=2025-01-15T12:34:57.000Z level=error component=db msg="connection refused" code=42
+```
+
+Bare values are typed: empty (`key=`) becomes null, `true` / `false` become booleans, decimal integers become int / uint, decimals with point or exponent become double, otherwise the value stays a string. Quoted values **stay strings even if the contents look numeric** (so `pid="42"` does not promote to a number). Repeated keys within one record are last-write-wins.
+
+Empty lines are skipped. Lines that fail to parse are reported as errors but do not abort loading — valid records are still shown. Nested JSON objects and arrays are preserved as their compact JSON string; logfmt has no nesting.
 
 ## Ingestion modes
 
 Structured Log Viewer ingests logs through three distinct paths. Pick the one that matches what you are looking at:
 
-| Aspect                 | Static mode                                                          | Stream Mode (live tail)                                                                               | Network Stream Mode (TCP / UDP)                                                                  |
-| ---------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| **When to use**        | Post-mortem analysis of one or more *finished* log files.            | Watching a service's log file *as it is being written* — reproducing a bug, smoke-testing a release.  | Receiving JSON Lines pushed over the network — distributed services, dev loopback firehose.      |
-| **How to open**        | `File → Open…` (`Ctrl+O`), `File → Open JSON Logs…`, or drag & drop. | `File → Open Log Stream…` (`Ctrl+Shift+O`). Drag & drop always uses static mode.                      | `File → Open Network Stream…` (`Ctrl+Shift+L`).                                                  |
-| **Source per session** | One or many files; multi-file opens are **merged** into one table.   | Exactly one file.                                                                                     | One TCP listener (multiple concurrent clients allowed) or one UDP listener.                      |
-| **Reads bytes via**    | Memory-mapped; parsed in parallel through the TBB pipeline.          | Buffered tail-reader; parsed line-by-line in a single worker.                                         | Asio TCP accept loop (with optional TLS) or Asio UDP receive loop; same line-by-line worker.     |
-| **Memory**             | Whole file is parsed and held; row count grows with the file.        | Bounded by a configurable **retention cap** (default 10 000 lines, FIFO-evicted).                     | Same retention cap as Stream Mode; back-pressure also drops oldest *bytes* if the parser stalls. |
-| **Reacts to new data** | No. The on-screen rows are a snapshot of the file at open time.      | Yes. New lines appear within ~250 ms of being written; survives `logrotate` and in-place truncations. | Yes. Each `\n`-terminated record lands as a new row as soon as it is received.                   |
-| **Stream toolbar**     | Hidden.                                                              | Pause / Follow newest / Stop visible while a session is active.                                       | Same toolbar as Stream Mode.                                                                     |
-| **Configuration menu** | Available between opens; disabled while a parse is in flight.        | Disabled for the lifetime of the session (the parser holds an immutable configuration snapshot).      | Same — disabled for the lifetime of the session.                                                 |
+| Aspect                 | Static mode                                                            | Stream Mode (live tail)                                                                               | Network Stream Mode (TCP / UDP)                                                                  |
+| ---------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| **When to use**        | Post-mortem analysis of one or more *finished* log files.              | Watching a service's log file *as it is being written* — reproducing a bug, smoke-testing a release.  | Receiving structured logs pushed over the network — distributed services, dev loopback firehose. |
+| **How to open**        | `File → Open…` (`Ctrl+O`) or drag & drop. The format is auto-detected. | `File → Open Log Stream…` (`Ctrl+Shift+O`). Drag & drop always uses static mode.                      | `File → Open Network Stream…` (`Ctrl+Shift+L`); pick the format in the dialog.                   |
+| **Source per session** | One or many files; multi-file opens are **merged** into one table.     | Exactly one file.                                                                                     | One TCP listener (multiple concurrent clients allowed) or one UDP listener.                      |
+| **Reads bytes via**    | Memory-mapped; parsed in parallel through the TBB pipeline.            | Buffered tail-reader; parsed line-by-line in a single worker.                                         | Asio TCP accept loop (with optional TLS) or Asio UDP receive loop; same line-by-line worker.     |
+| **Memory**             | Whole file is parsed and held; row count grows with the file.          | Bounded by a configurable **retention cap** (default 10 000 lines, FIFO-evicted).                     | Same retention cap as Stream Mode; back-pressure also drops oldest *bytes* if the parser stalls. |
+| **Reacts to new data** | No. The on-screen rows are a snapshot of the file at open time.        | Yes. New lines appear within ~250 ms of being written; survives `logrotate` and in-place truncations. | Yes. Each `\n`-terminated record lands as a new row as soon as it is received.                   |
+| **Stream toolbar**     | Hidden.                                                                | Pause / Follow newest / Stop visible while a session is active.                                       | Same toolbar as Stream Mode.                                                                     |
+| **Configuration menu** | Available between opens; disabled while a parse is in flight.          | Disabled for the lifetime of the session (the parser holds an immutable configuration snapshot).      | Same — disabled for the lifetime of the session.                                                 |
 
 In Stream Mode and Network Stream Mode, **Stop** ends the session but keeps the visible rows around as a static snapshot you can keep filtering, sorting, and copying — handy when you only realised mid-tail that the bug already happened. Opening a new source (in any mode) clears the table first.
 
 ## Static Mode (Open files)
 
-You can open a finished log file in three ways:
+You can open a finished log file in two ways:
 
-1. **File → Open…** (`Ctrl+O`) — opens a file picker that auto-detects whether the selected file is a log or a [configuration](#configurations) file.
-1. **File → Open JSON Logs…** — forces the JSON parser regardless of content. Use this if auto-detection mistakenly treats a log as a configuration.
+1. **File → Open…** (`Ctrl+O`) — opens a file picker that auto-detects whether the selected file is a log or a [configuration](#configurations) file, *and* whether a log file is JSON Lines or logfmt.
 1. **Drag & drop** one or more files onto the main window.
 
-Opening multiple files at once **merges** their records into a single table; the files are queued and parsed sequentially while sharing one column layout. If parsing errors occur, the first 20 are shown in a dialog when the queue drains; the rest are summarized as "… and N more error(s)". The status bar shows `Parsing <file> — N lines, M errors` while the queue is in flight.
+The file dialog defaults to a filter that lists `*.json`, `*.jsonl`, `*.ndjson`, `*.logfmt`, `*.log`, and `*.txt`; switch it to **All Files (\*.\*)** to pick anything else (including unsuffixed files). The actual format is decided by content sniffing, not by extension, so the extension only affects what the picker shows — not how the file is parsed. The detected format is recorded on the active session so reopening a saved session keeps the same parser.
+
+Opening multiple files at once **merges** their records into a single table; the files are queued and parsed sequentially while sharing one column layout. Mixing formats across the queue is supported — each file is sniffed individually. If parsing errors occur, the first 20 are shown in a dialog when the queue drains; the rest are summarized as "… and N more error(s)". The status bar shows `Parsing <file> — N lines, M errors` while the queue is in flight.
 
 For a file that is **still being written**, use [Stream Mode](#stream-mode-live-tail) instead — static mode parses the bytes that exist when you opened the file and stops there.
 
@@ -118,17 +130,18 @@ The following are **out of scope** for the current Stream Mode implementation:
 - **stdin / named-pipe sources** — only file tailing is wired up; for network ingestion see [Network Stream Mode](#network-stream-mode-tcp--udp).
 - **Auto-detect "this file is being actively written → open in Stream Mode"** — Stream Mode is always an explicit `File → Open Log Stream…` action.
 - **Per-file or per-session retention overrides** — the retention cap is a single application-wide setting.
-- **Streaming for non-JSON formats** — currently only JSON Lines streams. The seam in `loglib` is format-agnostic so a future CSV / logfmt parser inherits the feature for free.
+- **Streaming for arbitrary formats** — JSON Lines and logfmt are first-class; other formats (CSV, ad-hoc text) are not yet supported but the seam in `loglib` is format-agnostic so future parsers inherit live tail and network ingestion for free.
 
 ## Network Stream Mode (TCP / UDP)
 
-Network Stream Mode listens on a local TCP or UDP port and ingests JSON Lines pushed to it by your application. It is intended for distributed services that cannot redirect their stdout/stderr to a file you can tail, and for "firehose into the GUI" loops during development. Each `\n`-terminated record becomes a row exactly the same way Stream Mode does, so the toolbar, retention cap, Pause / Follow newest / Stop, search, filters, and configurations all behave identically once the session is open.
+Network Stream Mode listens on a local TCP or UDP port and ingests structured logs pushed to it by your application. It is intended for distributed services that cannot redirect their stdout/stderr to a file you can tail, and for "firehose into the GUI" loops during development. Each `\n`-terminated record becomes a row exactly the same way Stream Mode does, so the toolbar, retention cap, Pause / Follow newest / Stop, search, filters, and configurations all behave identically once the session is open.
 
 ### Opening a network stream
 
 Use **File → Open Network Stream…** (`Ctrl+Shift+L`). The dialog asks for:
 
 - **Protocol** — TCP or UDP.
+- **Format** — JSON Lines or logfmt. Network ingestion has no file to sniff, so the parser is selected explicitly here. The choice is persisted with the session.
 - **Bind address** — `0.0.0.0` (IPv4 any), `::` (IPv6 dual-stack), `127.0.0.1` / `::1` (loopback only), or a specific interface IP.
 - **Port** — the listening port. `0` requests an OS-assigned ephemeral port (handy for ad-hoc local testing).
 - **Max concurrent clients (TCP)** — hard cap on simultaneous accepted connections (default 16). New connections beyond this are accepted-and-immediately-closed.
@@ -465,9 +478,9 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 
 ## Troubleshooting
 
-### "Failed to parse …" or "No valid JSON data found"
+### "Failed to parse …" or "No valid log data found"
 
-The selected file is not valid JSON Lines, or every line failed to parse. Check the error dialog for the first few offending line numbers.
+The selected file is not valid JSON Lines or logfmt, or every line failed to parse. Check the error dialog for the first few offending line numbers. If a file looks like logfmt but is being opened as JSON Lines (or vice versa), make sure the first non-empty line is unambiguously one format — auto-detection requires JSON Lines to start with `{` and logfmt to contain at least one bare `key=` token.
 
 ### Timestamps show as raw strings
 

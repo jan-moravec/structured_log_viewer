@@ -48,6 +48,13 @@ template <> struct glz::meta<loglib::LogConfiguration::Source::Kind>
     static constexpr std::array value{File, NetworkStream};
 };
 
+template <> struct glz::meta<loglib::LogConfiguration::Source::Format>
+{
+    using enum loglib::LogConfiguration::Source::Format;
+    static constexpr std::array keys{"json", "logfmt"};
+    static constexpr std::array value{Json, Logfmt};
+};
+
 // Pinned wire schemas for nested types. Explicit names turn a field
 // rename into a compile-time conflict instead of a silent breaking
 // schema change. The names match the current implicit reflection,
@@ -55,8 +62,9 @@ template <> struct glz::meta<loglib::LogConfiguration::Source::Kind>
 template <> struct glz::meta<loglib::LogConfiguration::Source>
 {
     using T = loglib::LogConfiguration::Source;
-    static constexpr auto value =
-        object("kind", &T::kind, "locators", &T::locators, "locatorDedupKeys", &T::locatorDedupKeys);
+    static constexpr auto value = object(
+        "kind", &T::kind, "format", &T::format, "locators", &T::locators, "locatorDedupKeys", &T::locatorDedupKeys
+    );
 };
 
 template <> struct glz::meta<loglib::LogConfiguration::Column>

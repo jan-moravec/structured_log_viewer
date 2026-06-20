@@ -157,7 +157,19 @@ struct LogConfiguration
             File,
             NetworkStream
         };
+
+        /// Parser the source was opened with. Persisted because
+        /// network streams have nothing to sniff at restore time and
+        /// live-tail sessions commit to a parser before the first
+        /// byte arrives. Defaults to `Json` for a fresh `Source`.
+        enum class Format
+        {
+            Json,
+            Logfmt
+        };
+
         Kind kind = Kind::File;
+        Format format = Format::Json;
         std::vector<std::string> locators;
         std::vector<std::string> locatorDedupKeys;
     };

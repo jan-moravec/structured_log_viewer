@@ -632,6 +632,31 @@ TEST_CASE("LogConfiguration::Source round-trips a multi-file `File` descriptor",
     CHECK(loaded.source->locators[2] == "C:/logs/third.json");
 }
 
+TEST_CASE("LogConfiguration::Source round-trips Format::Logfmt", "[log_configuration][session][source]")
+{
+    LogConfiguration original;
+    original.source = LogConfiguration::Source{
+        .kind = LogConfiguration::Source::Kind::File,
+        .format = LogConfiguration::Source::Format::Logfmt,
+        .locators = {"C:/logs/app.logfmt"}
+    };
+
+    std::string json;
+    const auto writeError = glz::write_json(original, json);
+    REQUIRE_FALSE(writeError);
+    CHECK(json.contains("\"logfmt\""));
+
+    LogConfiguration loaded;
+    const auto readError = glz::read_json(loaded, json);
+    REQUIRE_FALSE(readError);
+
+    REQUIRE(loaded.source.has_value());
+    CHECK(loaded.source->kind == LogConfiguration::Source::Kind::File);
+    CHECK(loaded.source->format == LogConfiguration::Source::Format::Logfmt);
+    REQUIRE(loaded.source->locators.size() == 1);
+    CHECK(loaded.source->locators.front() == "C:/logs/app.logfmt");
+}
+
 TEST_CASE("Round-trip LogFilter with Type::Enumeration and filterValues", "[log_configuration][enum]")
 {
     LogConfiguration original;

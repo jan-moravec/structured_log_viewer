@@ -41,6 +41,7 @@
 #include <loglib/log_value.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/parsers/json_parser.hpp>
+#include <loglib/parsers/logfmt_parser.hpp>
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
@@ -272,6 +273,41 @@ StreamingRun RunStreaming(const QString &fixturePath, ThemeControl *theme = null
 
         const loglib::JsonParser parser;
         loglib::JsonParser::ParseStreaming(*fileSourcePtr, *run.model->Sink(), options, advanced);
+    }
+
+    if (finishedSpy.count() == 0)
+    {
+        finishedSpy.wait(5000);
+    }
+    run.finishedCount = finishedSpy.count();
+    if (run.finishedCount > 0)
+    {
+        const auto result = finishedSpy.takeFirst().value(0).value<StreamingResult>();
+        run.cancelled = (result == StreamingResult::Cancelled);
+    }
+    return run;
+}
+
+// Logfmt sibling of `RunStreaming` (same shape so assertions can
+// match the JSON counterparts line-for-line).
+StreamingRun RunStreamingLogfmt(const QString &fixturePath, ThemeControl *theme = nullptr)
+{
+    StreamingRun run;
+    run.model = std::make_unique<LogModel>(nullptr, theme);
+    QSignalSpy finishedSpy(run.model.get(), &LogModel::streamingFinished);
+
+    auto file = std::make_unique<loglib::LogFile>(fixturePath.toStdString());
+    auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+    loglib::FileLineSource *fileSourcePtr = fileSource.get();
+    const loglib::StopToken stopToken = run.model->BeginStreamingForSyncTest(std::move(fileSource));
+
+    {
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+
+        loglib::LogfmtParser::ParseStreaming(*fileSourcePtr, *run.model->Sink(), options, advanced);
     }
 
     if (finishedSpy.count() == 0)
@@ -970,6 +1006,75 @@ private slots:
         QCOMPARE(proxy.mapToSource(proxy.index(0, 0)).row(), 1);
         QCOMPARE(proxy.mapToSource(proxy.index(1, 0)).row(), 0);
         QCOMPARE(proxy.mapToSource(proxy.index(2, 0)).row(), 2);
+    }
+
+    // Logfmt smoke: a single-line record loads as one row + two
+    // columns ("level", "msg"), bare value typed as string and the
+    // quoted value's spaces preserved.
+    static void TestLogfmtFixtureSingleLine()
+    {
+        const FixtureFile fixture(":/fixtures/single_line.logfmt");
+        const StreamingRun run = RunStreamingLogfmt(fixture.Path());
+        QCOMPARE(run.finishedCount, 1);
+        QCOMPARE(run.cancelled, false);
+        QCOMPARE(run.model->rowCount(), 1);
+        QCOMPARE(run.model->columnCount(), 2);
+
+        const int colLevel = ColumnByHeader(*run.model, QStringLiteral("level"));
+        const int colMsg = ColumnByHeader(*run.model, QStringLiteral("msg"));
+        QVERIFY(colLevel >= 0 && colMsg >= 0);
+        QCOMPARE(run.model->data(run.model->index(0, colLevel), Qt::DisplayRole).toString(), QStringLiteral("info"));
+        QCOMPARE(
+            run.model->data(run.model->index(0, colMsg), Qt::DisplayRole).toString(), QStringLiteral("hello world")
+        );
+        QVERIFY(run.model->StreamingErrors().empty());
+    }
+
+    // Logfmt smoke: bare values get auto-typed (int / uint / double /
+    // bool / null); quoted values stay strings.
+    static void TestLogfmtFixtureValueTypes()
+    {
+        const FixtureFile fixture(":/fixtures/value_types.logfmt");
+        const StreamingRun run = RunStreamingLogfmt(fixture.Path());
+        QCOMPARE(run.finishedCount, 1);
+        QCOMPARE(run.cancelled, false);
+        QCOMPARE(run.model->rowCount(), 3);
+        QVERIFY(run.model->StreamingErrors().empty());
+
+        const int colStr = ColumnByHeader(*run.model, QStringLiteral("str"));
+        const int colInt = ColumnByHeader(*run.model, QStringLiteral("int"));
+        const int colUint = ColumnByHeader(*run.model, QStringLiteral("uint"));
+        const int colDbl = ColumnByHeader(*run.model, QStringLiteral("dbl"));
+        const int colFlag = ColumnByHeader(*run.model, QStringLiteral("flag"));
+        const int colNul = ColumnByHeader(*run.model, QStringLiteral("nul"));
+        const int colQuoted = ColumnByHeader(*run.model, QStringLiteral("quoted"));
+        QVERIFY(colStr >= 0 && colInt >= 0 && colUint >= 0 && colDbl >= 0);
+        QVERIFY(colFlag >= 0 && colNul >= 0 && colQuoted >= 0);
+
+        const auto sortVal = [&](int row, int col) {
+            return run.model->data(run.model->index(row, col), LogModelItemDataRole::SortRole);
+        };
+
+        QCOMPARE(sortVal(0, colStr).toString(), QStringLiteral("alpha"));
+        QCOMPARE(sortVal(0, colInt).toLongLong(), qint64(-7));
+        QCOMPARE(sortVal(0, colUint).toULongLong(), 18446744073709551610ULL);
+        QCOMPARE(sortVal(0, colDbl).toDouble(), 3.14);
+        QCOMPARE(sortVal(0, colFlag).toBool(), true);
+        QVERIFY(!sortVal(0, colNul).isValid());
+        // `quoted="42"` must stay a string; promoting it to int
+        // would lose the user's intent on round-trip.
+        QCOMPARE(sortVal(0, colQuoted).toString(), QStringLiteral("42"));
+    }
+
+    // Logfmt fixture: ISO-T timestamps promote to `Type::Time` like
+    // the JSON path. Reuses `AssertTimestampFixture` so the pinned
+    // format-detection contract stays in lockstep across formats.
+    static void TestLogfmtFixtureIsoTTimestamp()
+    {
+        const FixtureFile fixture(":/fixtures/iso_t_timestamp.logfmt");
+        StreamingRun run = RunStreamingLogfmt(fixture.Path());
+        // 2024-04-28T07:14:30 UTC -> 1714288470 seconds since epoch.
+        AssertTimestampFixture(run, static_cast<qint64>(1714288470000000), 3);
     }
 
     // Regression: `LogModel::AppendBatch` must fire `beginInsertRows` /
@@ -8758,6 +8863,50 @@ private slots:
             QString::fromStdString(probe.Configuration().source->locatorDedupKeys[1]),
             logapp::CanonicalLocator(fixtureB.Path())
         );
+    }
+
+    // Regression: a multi-file open must sniff each queued file
+    // independently, not reuse the first file's format for the rest.
+    // Before the fix, a JSON Lines + logfmt queue tried to parse the
+    // logfmt file with `JsonParser`, turning every line into a parse
+    // error. Detection is content-based, so the extension is irrelevant.
+    void TestMultiFileOpenSniffsFormatPerFile()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QStringList jsonLines{
+            QStringLiteral(R"({"level": "info", "msg": "json-0"})"),
+            QStringLiteral(R"({"level": "warn", "msg": "json-1"})"),
+        };
+        // logfmt bytes written through the JSON temp-file helper.
+        // Detection is content-based, so the `.json` suffix is
+        // exactly what we want the test to defeat.
+        const QStringList logfmtLines{
+            QStringLiteral(R"(level=info msg="logfmt-0")"),
+            QStringLiteral(R"(level=warn msg="logfmt-1")"),
+            QStringLiteral(R"(level=error msg="logfmt-2")"),
+        };
+        const TempJsonFile jsonFixture(jsonLines);
+        const TempJsonFile logfmtFixture(logfmtLines);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        // One open, two queued files: first uses `BeginStreaming`,
+        // second uses `AppendStreaming` after the first finishes
+        // -> two `streamingFinished` emits.
+        mWindow->OpenFilesForTest({jsonFixture.Path(), logfmtFixture.Path()}, MainWindow::OpenMode::Replace);
+        while (finishedSpy.count() < 2)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "both queued files must finish parsing");
+        }
+        QCoreApplication::processEvents();
+
+        // Without per-file sniffing the logfmt lines would be parse
+        // errors and never become rows.
+        QVERIFY2(model->StreamingErrors().empty(), "mixed-format queue must not produce parse errors");
+        QCOMPARE(model->rowCount(), jsonLines.size() + logfmtLines.size());
     }
 
     // Regression for the Append-while-streaming crash: Append while

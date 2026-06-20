@@ -6,6 +6,7 @@
 #include <loglib/log_data.hpp>
 #include <loglib/log_level.hpp>
 #include <loglib/log_parse_sink.hpp>
+#include <loglib/log_parser.hpp>
 #include <loglib/log_table.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/stop_token.hpp>
@@ -127,13 +128,23 @@ public:
         std::unique_ptr<loglib::FileLineSource> source, std::function<void(loglib::StopToken)> parseCallable
     );
 
-    /// Live-tail entry point. Takes ownership of @p source, arms the sink,
-    /// and spawns a `JsonParser::ParseStreaming` worker. Teardown order:
-    /// producer Stop → parser stop token → worker join → sink drain. Both
-    /// stop signals are required; the parser token alone cannot unblock a
-    /// worker parked on I/O. `options.stopToken` is overwritten with the
+    /// Builds the parser the live-tail worker drives. Called on the
+    /// worker thread before any bytes are read. An empty factory
+    /// defaults to `JsonParser` for back-compat with unported callers.
+    using LogParserFactory = std::function<std::unique_ptr<loglib::LogParser>()>;
+
+    /// Live-tail entry point. Takes ownership of @p source, arms the
+    /// sink, and spawns a parser worker from @p parserFactory (empty
+    /// = `JsonParser`). Teardown order: producer Stop → parser stop
+    /// token → worker join → sink drain. Both stop signals are
+    /// required — the parser token alone cannot unblock a worker
+    /// parked on I/O. `options.stopToken` is overwritten with the
     /// sink's token before the worker captures it.
-    loglib::StopToken BeginStreaming(std::unique_ptr<loglib::StreamLineSource> source, loglib::ParserOptions options);
+    loglib::StopToken BeginStreaming(
+        std::unique_ptr<loglib::StreamLineSource> source,
+        loglib::ParserOptions options,
+        LogParserFactory parserFactory = {}
+    );
 
     /// Test-only: install @p source and arm the sink without spawning a
     /// worker. Pair with `EndStreaming(...)` or `Reset()`.

@@ -7,6 +7,7 @@
 #include <optional>
 
 class QCheckBox;
+class QComboBox;
 class QLineEdit;
 class QRadioButton;
 class QSpinBox;
@@ -34,11 +35,22 @@ public:
         Udp,
     };
 
+    /// Wire format on the socket. Network streams have nothing on
+    /// disk to sniff, so the parser must be picked here. The choice
+    /// round-trips through `QSettings` so the next session defaults
+    /// to the previous pick.
+    enum class Format
+    {
+        Json,
+        Logfmt,
+    };
+
     /// Resolved configuration; populated only after the dialog is
     /// `accept()`ed. Inspect via the public getters below.
     struct Config
     {
         Protocol protocol = Protocol::Tcp;
+        Format format = Format::Json;
         QString bindAddress;
         uint16_t port = 0;
         size_t maxConcurrentClients = 16; // TCP-only
@@ -70,6 +82,7 @@ private:
 
     QRadioButton *mTcpRadio = nullptr;
     QRadioButton *mUdpRadio = nullptr;
+    QComboBox *mFormat = nullptr;
     QLineEdit *mBindAddress = nullptr;
     QSpinBox *mPort = nullptr;
     QSpinBox *mMaxConcurrentClients = nullptr;
