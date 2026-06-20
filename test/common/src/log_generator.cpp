@@ -36,7 +36,7 @@ std::uint32_t MakeRandomSeed()
     return rd();
 }
 
-JsonLogLine GenerateRandomJsonLogLine(std::mt19937 &rng, std::size_t lineIndex)
+LogRecord GenerateRandomLogRecord(std::mt19937 &rng, std::size_t lineIndex)
 {
     std::uniform_int_distribution<int> levelDist(0, static_cast<int>(LEVELS.size()) - 1);
     std::uniform_int_distribution<int> componentDist(0, static_cast<int>(COMPONENTS.size()) - 1);
@@ -54,30 +54,30 @@ JsonLogLine GenerateRandomJsonLogLine(std::mt19937 &rng, std::size_t lineIndex)
         message += WORDS[static_cast<std::size_t>(wordDist(rng))];
     }
 
-    glz::generic_sorted_u64 json;
-    json["timestamp"] = FormatNow();
-    json["level"] = std::string(LEVELS[static_cast<std::size_t>(levelDist(rng))]);
-    json["message"] = message;
-    json["thread_id"] = static_cast<std::int64_t>(lineIndex % 16);
-    json["component"] = std::string(COMPONENTS[static_cast<std::size_t>(componentDist(rng))]);
-    return {std::move(json)};
+    LogRecord record;
+    record["timestamp"] = FormatNow();
+    record["level"] = std::string(LEVELS[static_cast<std::size_t>(levelDist(rng))]);
+    record["message"] = message;
+    record["thread_id"] = static_cast<std::int64_t>(lineIndex % 16);
+    record["component"] = std::string(COMPONENTS[static_cast<std::size_t>(componentDist(rng))]);
+    return record;
 }
 
-std::vector<JsonLogLine> GenerateRandomJsonLogs(std::size_t count, std::uint32_t seed)
+std::vector<LogRecord> GenerateRandomLogRecords(std::size_t count, std::uint32_t seed)
 {
-    std::vector<JsonLogLine> logs;
-    logs.reserve(count);
+    std::vector<LogRecord> records;
+    records.reserve(count);
     std::mt19937 rng(seed);
     for (std::size_t i = 0; i < count; ++i)
     {
-        logs.emplace_back(GenerateRandomJsonLogLine(rng, i));
+        records.emplace_back(GenerateRandomLogRecord(rng, i));
     }
-    return logs;
+    return records;
 }
 
-std::vector<JsonLogLine> GenerateRandomJsonLogs(std::size_t count)
+std::vector<LogRecord> GenerateRandomLogRecords(std::size_t count)
 {
-    return GenerateRandomJsonLogs(count, MakeRandomSeed());
+    return GenerateRandomLogRecords(count, MakeRandomSeed());
 }
 
 namespace
@@ -183,12 +183,12 @@ std::vector<std::pair<std::string, Family>> BuildWideKeyList(std::size_t columnC
 
 } // namespace
 
-std::vector<JsonLogLine> GenerateWideJsonLogs(std::size_t count, std::size_t columnCount, std::uint32_t seed)
+std::vector<LogRecord> GenerateWideLogRecords(std::size_t count, std::size_t columnCount, std::uint32_t seed)
 {
     const auto keys = BuildWideKeyList(columnCount);
 
-    std::vector<JsonLogLine> logs;
-    logs.reserve(count);
+    std::vector<LogRecord> records;
+    records.reserve(count);
 
     std::mt19937 rng(seed);
     std::uniform_int_distribution<int> levelDist(0, static_cast<int>(LEVELS.size()) - 1);
@@ -200,7 +200,7 @@ std::vector<JsonLogLine> GenerateWideJsonLogs(std::size_t count, std::size_t col
 
     for (std::size_t i = 0; i < count; ++i)
     {
-        glz::generic_sorted_u64 json;
+        LogRecord json;
         for (std::size_t k = 0; k < keys.size(); ++k)
         {
             const std::string &keyName = keys[k].first;
@@ -281,15 +281,15 @@ std::vector<JsonLogLine> GenerateWideJsonLogs(std::size_t count, std::size_t col
             }
             }
         }
-        logs.emplace_back(std::move(json));
+        records.emplace_back(std::move(json));
     }
 
-    return logs;
+    return records;
 }
 
-std::vector<JsonLogLine> GenerateWideJsonLogs(std::size_t count, std::size_t columnCount)
+std::vector<LogRecord> GenerateWideLogRecords(std::size_t count, std::size_t columnCount)
 {
-    return GenerateWideJsonLogs(count, columnCount, MakeRandomSeed());
+    return GenerateWideLogRecords(count, columnCount, MakeRandomSeed());
 }
 
 } // namespace test_common

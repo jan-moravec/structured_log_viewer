@@ -1,39 +1,59 @@
 #include <loglib/file_line_source.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_line.hpp>
-#include <loglib/parsers/json_parser.hpp>
 
-#include <test_common/json_log_line.hpp>
+#include <test_common/log_format.hpp>
+#include <test_common/log_generator.hpp>
+#include <test_common/log_record.hpp>
 
-#include <glaze/glaze.hpp>
-
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <string>
 #include <vector>
 
-class TestJsonLogFile
+// Streaming-fixture spec: generate and write `count` random records on the
+// fly (no in-memory record vector), seeded for reproducibility. Used by the
+// large benchmark to avoid materializing millions of `LogRecord`s.
+struct StreamedRecords
+{
+    std::size_t count;
+    std::uint32_t seed = test_common::MakeRandomSeed();
+};
+
+// RAII fixture that serializes `LogRecord`s to disk through a `LogFormat`,
+// cleaning the file up on destruction. Two construction paths:
+//   * materialized — keeps the records so tests can assert on them;
+//   * streaming    — generates records on the fly, keeping only the count.
+class TestStructuredLogFile
 {
 public:
-    using Line = test_common::JsonLogLine;
-
-    TestJsonLogFile(std::string filePath = FILE_PATH);
-    TestJsonLogFile(Line line, std::string filePath = FILE_PATH);
-    TestJsonLogFile(std::vector<Line> lines, std::string filePath = FILE_PATH);
-    ~TestJsonLogFile() noexcept;
+    TestStructuredLogFile(
+        std::vector<test_common::LogRecord> records,
+        test_common::LogFormat format,
+        test_common::RecordSchema schema = {},
+        std::string filePath = FILE_PATH
+    );
+    TestStructuredLogFile(
+        StreamedRecords streamed,
+        test_common::LogFormat format,
+        test_common::RecordSchema schema = {},
+        std::string filePath = FILE_PATH
+    );
+    ~TestStructuredLogFile() noexcept;
 
     const std::string &GetFilePath() const;
-    void WriteToFile(std::vector<Line> lines);
-    const std::vector<Line> &Lines() const;
-    const std::vector<std::string> &StringLines() const;
-    const std::vector<glz::generic_sorted_u64> &JsonLines() const;
+    std::size_t RecordCount() const;
+    // Only populated on the materialized path; empty for streaming fixtures.
+    const std::vector<test_common::LogRecord> &Records() const;
 
 private:
-    static constexpr char FILE_PATH[] = "test.json";
+    static constexpr char FILE_PATH[] = "test.log";
     std::string mFilePath;
     std::filesystem::path mFsPath;
-    std::vector<Line> mLines;
-    std::vector<std::string> mStringLines;
-    std::vector<glz::generic_sorted_u64> mJsonLines;
+    std::vector<test_common::LogRecord> mRecords;
+    std::size_t mRecordCount = 0;
 };
 
 class TestLogConfiguration

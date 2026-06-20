@@ -47,8 +47,8 @@
 #endif
 
 using namespace loglib;
-using test_common::GenerateRandomJsonLogs;
-using test_common::GenerateWideJsonLogs;
+using test_common::GenerateRandomLogRecords;
+using test_common::GenerateWideLogRecords;
 
 namespace
 {
@@ -453,8 +453,7 @@ TEST_CASE("Parse and load JSON log (sync)", "[.][benchmark][json_parser][parse_s
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    auto logs = GenerateRandomJsonLogs(10'000);
-    const TestJsonLogFile testFile(logs);
+    const TestStructuredLogFile testFile(GenerateRandomLogRecords(10'000), test_common::JsonLines());
     const JsonParser parser;
     const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
 
@@ -462,15 +461,15 @@ TEST_CASE("Parse and load JSON log (sync)", "[.][benchmark][json_parser][parse_s
         const auto start = std::chrono::steady_clock::now();
         ParseResult warmup = ParseFile(parser, testFile.GetFilePath());
         const auto elapsed = std::chrono::steady_clock::now() - start;
-        REQUIRE(warmup.data.Lines().size() == logs.size());
+        REQUIRE(warmup.data.Lines().size() == testFile.RecordCount());
         REQUIRE(warmup.errors.empty());
-        ReportThroughput("Parse 10'000 (sync) warm-up", elapsed, bytes, logs.size());
+        ReportThroughput("Parse 10'000 (sync) warm-up", elapsed, bytes, testFile.RecordCount());
     }
 
-    RunTimedSamples("Parse 10'000 JSON log entries (sync)", 5, {.bytes = bytes, .lines = logs.size()}, [&]() {
+    RunTimedSamples("Parse 10'000 JSON log entries (sync)", 5, {.bytes = bytes, .lines = testFile.RecordCount()}, [&]() {
         LogTable table;
         ParseResult result = ParseFile(parser, testFile.GetFilePath());
-        REQUIRE(result.data.Lines().size() == testFile.Lines().size());
+        REQUIRE(result.data.Lines().size() == testFile.RecordCount());
         REQUIRE(result.errors.empty());
         table.Update(std::move(result.data));
     });
@@ -484,8 +483,7 @@ TEST_CASE("Stream JSON log to LogTable (1'000'000 lines)", "[.][benchmark][json_
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    auto logs = GenerateRandomJsonLogs(1'000'000);
-    const TestJsonLogFile testFile(logs);
+    const TestStructuredLogFile testFile(StreamedRecords{.count = 1'000'000}, test_common::JsonLines());
     const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
 
     InitializeTimezoneData();
@@ -499,7 +497,7 @@ TEST_CASE("Stream JSON log to LogTable (1'000'000 lines)", "[.][benchmark][json_
         configFile.GetFilePath(),
         testFile.GetFilePath(),
         configuration,
-        logs.size(),
+        testFile.RecordCount(),
         bytes,
         4
     );
@@ -514,8 +512,7 @@ TEST_CASE("Stream JSON log to LogTable (wide, 200'000 lines)", "[.][benchmark][j
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    auto logs = GenerateWideJsonLogs(200'000);
-    const TestJsonLogFile testFile(logs);
+    const TestStructuredLogFile testFile(GenerateWideLogRecords(200'000), test_common::JsonLines());
     // False positive inside MSVC's `<filesystem>`; the `_BITMASK_OPS` `operator|` casts an OR of
     // bitmask members to the same enum type and tripped the analyzer on MSVC STL headers (out of
     // our control).
@@ -533,7 +530,7 @@ TEST_CASE("Stream JSON log to LogTable (wide, 200'000 lines)", "[.][benchmark][j
         configFile.GetFilePath(),
         testFile.GetFilePath(),
         configuration,
-        logs.size(),
+        testFile.RecordCount(),
         bytes,
         4
     );
@@ -546,8 +543,7 @@ TEST_CASE("LogLine::GetValue micro-benchmark", "[.][benchmark][log_line][get_val
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    auto logs = GenerateRandomJsonLogs(10'000);
-    const TestJsonLogFile testFile(logs);
+    const TestStructuredLogFile testFile(GenerateRandomLogRecords(10'000), test_common::JsonLines());
     const JsonParser parser;
 
     ParseResult result = ParseFile(parser, testFile.GetFilePath());
@@ -660,13 +656,12 @@ TEST_CASE("Allocation footprint and string_view fast-path fraction", "[.][benchm
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    auto logs = GenerateRandomJsonLogs(1'000);
-    const TestJsonLogFile testFile(logs);
+    const TestStructuredLogFile testFile(GenerateRandomLogRecords(1'000), test_common::JsonLines());
     const JsonParser parser;
 
     ParseResult result = ParseFile(parser, testFile.GetFilePath());
     REQUIRE(result.errors.empty());
-    REQUIRE(result.data.Lines().size() == logs.size());
+    REQUIRE(result.data.Lines().size() == testFile.RecordCount());
 
     // Phase 1 changed the per-field representation from a 48 B
     // `std::variant` to a 16 B `CompactLogValue` whose tags are the new
@@ -736,8 +731,7 @@ TEST_CASE("Stream JSON log to LogTable (enum auto-detection)", "[.][benchmark][j
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    auto logs = GenerateRandomJsonLogs(20'000);
-    const TestJsonLogFile testFile(logs);
+    const TestStructuredLogFile testFile(GenerateRandomLogRecords(20'000), test_common::JsonLines());
 
     InitializeTimezoneData();
     auto configuration = MakeTimestampConfiguration();
@@ -760,7 +754,7 @@ TEST_CASE("Stream JSON log to LogTable (enum auto-detection)", "[.][benchmark][j
 
     JsonParser::ParseStreaming(*parseSource, sink, opts, internal::AdvancedParserOptions{});
 
-    REQUIRE(table.RowCount() == logs.size());
+    REQUIRE(table.RowCount() == testFile.RecordCount());
 
     const KeyId levelKey = table.Keys().Find("level");
     REQUIRE(levelKey != INVALID_KEY_ID);
@@ -808,8 +802,7 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    auto logs = GenerateRandomJsonLogs(1'000'000);
-    const TestJsonLogFile testFile(logs);
+    const TestStructuredLogFile testFile(StreamedRecords{.count = 1'000'000}, test_common::JsonLines());
     const JsonParser parser;
 
     struct LatencySink : LogParseSink

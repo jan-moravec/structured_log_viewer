@@ -1,9 +1,10 @@
-// Standalone JSONL log generator. Drives `test_common::GenerateRandomJsonLogLine`
-// in a loop, writing one record per output line until either a target byte
-// count or a target line count is reached. Supports streaming throttling via
-// `--timeout` and in-flight file rotation (`rename` / `copytruncate` /
-// `truncate`) via the `--roll-*` flags so it can drive `TailingBytesProducer`
-// rotation tests and the GUI's Stream Mode smoke tests end-to-end.
+// Standalone structured log generator. Drives `test_common::GenerateRandomLogRecord`
+// in a loop, serializing one record per output line through the `--format`
+// serializer (`json` lines or `logfmt`) until either a target byte count or a
+// target line count is reached. Supports streaming throttling via `--timeout`
+// and in-flight file rotation (`rename` / `copytruncate` / `truncate`) via the
+// `--roll-*` flags so it can drive `TailingBytesProducer` rotation tests and
+// the GUI's Stream Mode smoke tests end-to-end.
 //
 // File output is the default (`--target file://...` or the legacy
 // `--output <path>`). Network output is selected by a URL-style
@@ -25,13 +26,12 @@
 // producer's `write()`, the rotation handler, the `TailingBytesProducer`
 // partial-line buffer, and the GUI thread queue).
 
-#include <test_common/json_log_line.hpp>
+#include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>
+#include <test_common/log_record.hpp>
 #include <test_common/network_log_client.hpp>
 
 #include <argparse/argparse.hpp>
-
-#include <glaze/glaze.hpp>
 
 #include <cctype>
 #include <chrono>
@@ -47,7 +47,6 @@
 #include <string>
 #include <system_error>
 #include <thread>
-#include <variant>
 
 namespace
 {
@@ -468,7 +467,13 @@ int main(int argc, char *argv[])
 
     program.add_argument("-o", "--output")
         .default_value(std::string{"generated.jsonl"})
-        .help("Output file path (overwritten if it already exists, unless --append).");
+        .help("Output file path (overwritten if it already exists, unless --append). When --output is "
+              "omitted the default base name takes the format's extension (e.g. generated.logfmt).");
+
+    program.add_argument("-f", "--format")
+        .default_value(std::string{"json"})
+        .choices("json", "logfmt")
+        .help("Record serialization format: 'json' (one JSON object per line) or 'logfmt'.");
 
     program.add_argument("-t", "--timeout")
         .default_value(0)
@@ -538,7 +543,17 @@ int main(int argc, char *argv[])
 
     const auto sizeText = program.get<std::string>("--size");
     const auto linesText = program.get<std::string>("--lines");
-    const auto outputPath = std::filesystem::path(program.get<std::string>("--output"));
+    const auto formatName = program.get<std::string>("--format");
+    const test_common::LogFormat format =
+        formatName == "logfmt" ? test_common::Logfmt() : test_common::JsonLines();
+    // Default the output base name to the format's extension unless the user
+    // pinned an explicit --output.
+    std::string outputArg = program.get<std::string>("--output");
+    if (!program.is_used("--output") && formatName != "json")
+    {
+        outputArg = "generated" + std::string(format.suggestedExtension);
+    }
+    const auto outputPath = std::filesystem::path(outputArg);
     const auto timeoutMs = program.get<int>("--timeout");
     const auto append = program.get<bool>("--append");
     const auto rollSizeText = program.get<std::string>("--roll-size");
@@ -695,7 +710,7 @@ int main(int argc, char *argv[])
               << " up to "
               << (targetBytes == 0 ? std::string{"unbounded bytes"} : std::to_string(targetBytes) + " bytes") << ", "
               << (targetLines == 0 ? std::string{"unbounded lines"} : std::to_string(targetLines) + " lines") << " to "
-              << targetDescription << " (timeout=" << timeoutMs << "ms, seed=" << seed
+              << targetDescription << " (format=" << formatName << ", timeout=" << timeoutMs << "ms, seed=" << seed
               << ", append=" << (append ? "true" : "false");
     if (rollingEnabled)
     {
@@ -747,16 +762,11 @@ int main(int argc, char *argv[])
 
     while (!reachedTotal())
     {
-        auto line = test_common::GenerateRandomJsonLogLine(rng, totalLines);
-        // Stamp the JSON object with the session-global line index so a
-        // tailing consumer can detect dropped rows by observing gaps in
-        // the sequence. `GenerateRandomJsonLogLine` always returns the
-        // `glz::generic_sorted_u64` variant; the `get_if` is defensive.
-        if (auto *json = std::get_if<glz::generic_sorted_u64>(&line.data))
-        {
-            (*json)["line_number"] = static_cast<std::int64_t>(totalLines);
-        }
-        const std::string serialized = line.ToString();
+        test_common::LogRecord record = test_common::GenerateRandomLogRecord(rng, totalLines);
+        // Stamp the record with the session-global line index so a tailing
+        // consumer can detect dropped rows by observing gaps in the sequence.
+        record["line_number"] = static_cast<std::int64_t>(totalLines);
+        const std::string serialized = format.writeLine(record);
 
         if (target.kind == TargetKind::File)
         {
