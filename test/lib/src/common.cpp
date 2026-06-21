@@ -36,13 +36,28 @@ std::ofstream OpenStructuredFile(const std::filesystem::path &fsPath, const test
     return file;
 }
 
+// Resolve the on-disk fixture name. An explicit `filePath` wins; otherwise
+// derive `test<extension>` from the format (so a JSON fixture and a logfmt
+// fixture instantiated side-by-side land on different files).
+std::string ResolveStructuredFilePath(std::string filePath, const test_common::LogFormat &format)
+{
+    if (!filePath.empty())
+    {
+        return filePath;
+    }
+    std::string derived = "test";
+    derived.append(format.suggestedExtension);
+    return derived;
+}
+
 } // namespace
 
 TestStructuredLogFile::TestStructuredLogFile(
-    std::vector<test_common::LogRecord> records, test_common::LogFormat format, test_common::RecordSchema schema,
-    std::string filePath
+    std::vector<test_common::LogRecord> records, const test_common::LogFormat &format,
+    const test_common::RecordSchema &schema, std::string filePath
 )
-    : mFilePath(std::move(filePath)), mFsPath(mFilePath), mRecords(std::move(records)), mRecordCount(mRecords.size())
+    : mFilePath(ResolveStructuredFilePath(std::move(filePath), format)), mFsPath(mFilePath),
+      mRecords(std::move(records)), mRecordCount(mRecords.size())
 {
     std::ofstream file = OpenStructuredFile(mFsPath, format, schema);
     for (const auto &record : mRecords)
@@ -56,9 +71,11 @@ TestStructuredLogFile::TestStructuredLogFile(
 }
 
 TestStructuredLogFile::TestStructuredLogFile(
-    StreamedRecords streamed, test_common::LogFormat format, test_common::RecordSchema schema, std::string filePath
+    StreamedRecords streamed, const test_common::LogFormat &format, const test_common::RecordSchema &schema,
+    std::string filePath
 )
-    : mFilePath(std::move(filePath)), mFsPath(mFilePath), mRecordCount(streamed.count)
+    : mFilePath(ResolveStructuredFilePath(std::move(filePath), format)), mFsPath(mFilePath),
+      mRecordCount(streamed.count)
 {
     std::ofstream file = OpenStructuredFile(mFsPath, format, schema);
     std::mt19937 rng(streamed.seed);

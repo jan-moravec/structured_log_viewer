@@ -9,11 +9,18 @@
 #include <loglib/parser_options.hpp>
 #include <loglib/parsers/logfmt_parser.hpp>
 
+#include <test_common/log_format.hpp>
+#include <test_common/log_generator.hpp>
+#include <test_common/log_record.hpp>
+
 #include <catch2/catch_all.hpp>
+#include <glaze/glaze.hpp>
 
 #include <cstddef>
 #include <cstdint>
+#include <random>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -276,4 +283,128 @@ TEST_CASE("Parse file via FactoryParser auto-detect [logfmt]", "[logfmt_parser]"
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
     CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("msg")) == std::string_view{"hello"});
+}
+
+// The `test_common::Logfmt()` writer in `test/common/src/log_format.cpp`
+// duplicates `loglib::BareValueIsSafe` and `loglib::AppendQuotedString`
+// (deliberately, so `test_common` stays loglib-free). Drift between the two
+// would silently invalidate every `[logfmt_parser]` benchmark fixture, since
+// nothing else exercises both sides. The two cases below pin that contract
+// by writing a record through the test serializer and asserting every value
+// family parses back through `loglib::LogfmtParser`.
+TEST_CASE(
+    "test_common::Logfmt() writes round-trip through LogfmtParser (all value families) [logfmt]",
+    "[logfmt_parser][round_trip]"
+)
+{
+    using namespace loglib;
+
+    // Each field exercises one branch of `AppendLogfmtValue` / a parser
+    // typed-bare-value path:
+    //   bare     -> bare-safe string (no quoting on either side)
+    //   spaced   -> string with whitespace -> AppendQuotedString
+    //   dquote   -> string with '"'        -> escape via \"
+    //   bslash   -> string with '\\'       -> escape via \\
+    //   newline  -> string with '\n'       -> escape via \n
+    //   creturn  -> string with '\r'       -> escape via \r
+    //   tab      -> string with '\t'       -> escape via \t
+    //   ineg     -> negative int64_t       -> bare negative -> int64_t
+    //   upos     -> uint64_t > INT64_MAX   -> bare unsigned -> uint64_t
+    //   dbl      -> double                 -> bare numeric  -> double
+    //   btrue    -> true                   -> bare true     -> bool
+    //   bfalse   -> false                  -> bare false    -> bool
+    //   nullv    -> null                   -> empty value   -> monostate
+    test_common::LogRecord record;
+    record["bare"] = std::string("info");
+    record["spaced"] = std::string("hello world");
+    record["dquote"] = std::string("a\"b");
+    record["bslash"] = std::string("a\\b");
+    record["newline"] = std::string("line1\nline2");
+    record["creturn"] = std::string("line1\rline2");
+    record["tab"] = std::string("col1\tcol2");
+    record["ineg"] = static_cast<std::int64_t>(-42);
+    record["upos"] = static_cast<std::uint64_t>(10000000000000000000ULL);
+    record["dbl"] = 3.14;
+    record["btrue"] = true;
+    record["bfalse"] = false;
+    record["nullv"] = nullptr;
+
+    const test_common::LogFormat format = test_common::Logfmt();
+    const std::string serialized = format.writeLine(record);
+
+    const TestLogFile file;
+    file.Write(serialized + "\n");
+
+    const LogfmtParser parser;
+    const ParseResult result = ParseFile(parser, file.GetFilePath());
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.data.Lines().size() == 1);
+
+    const auto values = result.data.Lines()[0].Values();
+    CHECK(AsStringView(values.at("bare")) == std::string_view{"info"});
+    CHECK(AsStringView(values.at("spaced")) == std::string_view{"hello world"});
+    CHECK(AsStringView(values.at("dquote")) == std::string_view{"a\"b"});
+    CHECK(AsStringView(values.at("bslash")) == std::string_view{"a\\b"});
+    CHECK(AsStringView(values.at("newline")) == std::string_view{"line1\nline2"});
+    CHECK(AsStringView(values.at("creturn")) == std::string_view{"line1\rline2"});
+    CHECK(AsStringView(values.at("tab")) == std::string_view{"col1\tcol2"});
+    CHECK(std::get<std::int64_t>(values.at("ineg")) == -42);
+    CHECK(std::get<std::uint64_t>(values.at("upos")) == 10000000000000000000ULL);
+    CHECK(std::get<double>(values.at("dbl")) == Catch::Approx(3.14));
+    CHECK(std::get<bool>(values.at("btrue")) == true);
+    CHECK(std::get<bool>(values.at("bfalse")) == false);
+    CHECK(std::holds_alternative<std::monostate>(values.at("nullv")));
+}
+
+TEST_CASE(
+    "test_common::Logfmt() round-trips the generator's record shape end-to-end [logfmt]",
+    "[logfmt_parser][round_trip]"
+)
+{
+    // Drive the actual benchmark fixture through write+parse so a future
+    // tweak to `GenerateRandomLogRecord` (e.g. adding a field that contains
+    // an unescapable byte) lands here rather than as a silent benchmark
+    // skew.
+    using namespace loglib;
+
+    constexpr std::size_t LINE_COUNT = 32;
+    constexpr std::uint32_t SEED = 0xBA0BABu;
+
+    // Constant seed is intentional: the test asserts byte-equal round-trips
+    // against the exact records the generator produces.
+    // NOLINTNEXTLINE(cert-msc32-c,cert-msc51-cpp)
+    std::mt19937 rng(SEED);
+    std::vector<test_common::LogRecord> records;
+    records.reserve(LINE_COUNT);
+    for (std::size_t i = 0; i < LINE_COUNT; ++i)
+    {
+        records.emplace_back(test_common::GenerateRandomLogRecord(rng, i));
+    }
+
+    const TestStructuredLogFile fixture(records, test_common::Logfmt());
+
+    const LogfmtParser parser;
+    const ParseResult result = ParseFile(parser, fixture.GetFilePath());
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.data.Lines().size() == LINE_COUNT);
+
+    for (std::size_t i = 0; i < LINE_COUNT; ++i)
+    {
+        INFO("row " << i);
+        const auto values = result.data.Lines()[i].Values();
+        auto &record = records[i];
+        REQUIRE(record.is_object());
+
+        // Every key the generator emits must round-trip. String fields
+        // (timestamp/level/message/component) compare via `AsStringView`;
+        // `thread_id` is non-negative so the parser bare-value rule maps
+        // it to `uint64_t`.
+        CHECK(AsStringView(values.at("timestamp")) == std::string_view{record["timestamp"].get_string()});
+        CHECK(AsStringView(values.at("level")) == std::string_view{record["level"].get_string()});
+        CHECK(AsStringView(values.at("message")) == std::string_view{record["message"].get_string()});
+        CHECK(AsStringView(values.at("component")) == std::string_view{record["component"].get_string()});
+
+        const std::uint64_t expectedThreadId = static_cast<std::uint64_t>(i % 16);
+        CHECK(std::get<std::uint64_t>(values.at("thread_id")) == expectedThreadId);
+    }
 }

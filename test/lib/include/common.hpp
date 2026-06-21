@@ -18,7 +18,7 @@
 // large benchmark to avoid materializing millions of `LogRecord`s.
 struct StreamedRecords
 {
-    std::size_t count;
+    std::size_t count = 0;
     std::uint32_t seed = test_common::MakeRandomSeed();
 };
 
@@ -26,20 +26,25 @@ struct StreamedRecords
 // cleaning the file up on destruction. Two construction paths:
 //   * materialized — keeps the records so tests can assert on them;
 //   * streaming    — generates records on the fly, keeping only the count.
+//
+// When `filePath` is left empty (the default), the on-disk name is derived
+// from the format's `suggestedExtension` (`test.jsonl`, `test.logfmt`, …)
+// so simultaneous fixtures of different formats do not collide on a single
+// shared file name.
 class TestStructuredLogFile
 {
 public:
     TestStructuredLogFile(
         std::vector<test_common::LogRecord> records,
-        test_common::LogFormat format,
-        test_common::RecordSchema schema = {},
-        std::string filePath = FILE_PATH
+        const test_common::LogFormat &format,
+        const test_common::RecordSchema &schema = {},
+        std::string filePath = {}
     );
     TestStructuredLogFile(
         StreamedRecords streamed,
-        test_common::LogFormat format,
-        test_common::RecordSchema schema = {},
-        std::string filePath = FILE_PATH
+        const test_common::LogFormat &format,
+        const test_common::RecordSchema &schema = {},
+        std::string filePath = {}
     );
     ~TestStructuredLogFile() noexcept;
 
@@ -49,7 +54,6 @@ public:
     const std::vector<test_common::LogRecord> &Records() const;
 
 private:
-    static constexpr char FILE_PATH[] = "test.log";
     std::string mFilePath;
     std::filesystem::path mFsPath;
     std::vector<test_common::LogRecord> mRecords;

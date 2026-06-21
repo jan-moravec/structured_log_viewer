@@ -23,6 +23,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -44,6 +45,21 @@
 
 namespace bench
 {
+
+/// Fixed RNG seed for cross-format benchmark fixtures. Pinning it means
+/// `[json_parser][large]` and `[logfmt_parser][large]` (and any future
+/// `[<fmt>_parser][large]` sibling) consume byte-identical `LogRecord`
+/// sequences, so lines/s comparisons across formats are apples-to-apples
+/// rather than relying on the law of large numbers over a random draw.
+/// Also gives benchmark runs deterministic per-machine numbers across
+/// repeated CI invocations.
+inline constexpr std::uint32_t LARGE_FIXTURE_SEED = 0xC0FFEEu;
+
+/// Fixed RNG seed for the wide-row cross-format benchmark fixtures (see
+/// `[json_parser][wide]` / `[logfmt_parser][wide]`). Distinct from
+/// `LARGE_FIXTURE_SEED` so the two fixture shapes do not accidentally share
+/// any value-generation state if both are loaded in the same run.
+inline constexpr std::uint32_t WIDE_FIXTURE_SEED = 0xDEC0DEu;
 
 /// Skip the current `TEST_CASE` when running under a Debug build. Debug
 /// disables IPO/LTO and leaves assertions enabled, so the numbers are not
@@ -304,8 +320,9 @@ using ParserStreamFn = std::function<void(
 )>;
 
 /// One end-to-end streaming run inside the `start`/`elapsed` window:
-/// `LogConfigurationManager::Load` + `LogTable` construction + two mmap
-/// opens + `BeginStreaming` + `ParseStreaming` + `~LogTable` (frees all
+/// `LogConfigurationManager::Load` + `LogTable` construction + one
+/// `LogFile` mmap (shared between the table and the parser via
+/// `BeginStreaming`) + `ParseStreaming` + `~LogTable` (frees all
 /// `LogLine`s). Sink stats and row count are copied out before the inner
 /// block closes so the caller can inspect them after the timer stops.
 struct StreamingRunResult

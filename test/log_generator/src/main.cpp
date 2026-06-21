@@ -448,12 +448,14 @@ void Rotate(std::ofstream &out, const std::filesystem::path &basePath, RollStrat
 // NOLINTNEXTLINE(bugprone-exception-escape)
 int main(int argc, char *argv[])
 {
-    argparse::ArgumentParser program("log_generator", "0.2.0");
-    program.add_description("Generate a JSONL log file with synthetic timestamp/level/message records. "
-                            "Lines are produced until --size or --lines is reached (whichever comes first; "
-                            "0 means unbounded on that axis). Pass --timeout to throttle writes and simulate "
-                            "a streaming feed; pass --roll-size and/or --roll-lines to rotate the active file "
-                            "in-flight (--roll-strategy controls how).");
+    argparse::ArgumentParser program("log_generator", "0.3.0");
+    program.add_description("Generate a structured log file with synthetic timestamp/level/message records. "
+                            "Pick the wire format with --format (json|logfmt). Lines are produced until --size "
+                            "or --lines is reached (whichever comes first; 0 means unbounded on that axis). "
+                            "Pass --timeout to throttle writes and simulate a streaming feed; pass --roll-size "
+                            "and/or --roll-lines to rotate the active file in-flight (--roll-strategy controls "
+                            "how). When --output is omitted the default base name takes the format's extension "
+                            "(generated.jsonl for json, generated.logfmt for logfmt).");
 
     program.add_argument("-s", "--size")
         .default_value(std::string{"10MB"})
@@ -466,9 +468,10 @@ int main(int argc, char *argv[])
               "unbounded.");
 
     program.add_argument("-o", "--output")
-        .default_value(std::string{"generated.jsonl"})
+        .default_value(std::string{})
         .help("Output file path (overwritten if it already exists, unless --append). When --output is "
-              "omitted the default base name takes the format's extension (e.g. generated.logfmt).");
+              "omitted the default base name is `generated` plus the format's extension "
+              "(generated.jsonl for --format json, generated.logfmt for --format logfmt).");
 
     program.add_argument("-f", "--format")
         .default_value(std::string{"json"})
@@ -547,9 +550,11 @@ int main(int argc, char *argv[])
     const test_common::LogFormat format =
         formatName == "logfmt" ? test_common::Logfmt() : test_common::JsonLines();
     // Default the output base name to the format's extension unless the user
-    // pinned an explicit --output.
+    // pinned an explicit --output. The argparse default is the empty string
+    // (so `--help` doesn't show a JSON-only default), so an empty value here
+    // means "derive from the format".
     std::string outputArg = program.get<std::string>("--output");
-    if (!program.is_used("--output") && formatName != "json")
+    if (outputArg.empty())
     {
         outputArg = "generated" + std::string(format.suggestedExtension);
     }

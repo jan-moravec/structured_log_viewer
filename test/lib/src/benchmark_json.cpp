@@ -88,7 +88,11 @@ TEST_CASE("Stream JSON log to LogTable (1'000'000 lines)", "[.][benchmark][json_
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    const TestStructuredLogFile testFile(StreamedRecords{.count = 1'000'000}, test_common::JsonLines());
+    // Pinned seed (shared with `[logfmt_parser][large]` via `LARGE_FIXTURE_SEED`)
+    // so lines/s is directly comparable across formats and stable across runs.
+    const TestStructuredLogFile testFile(
+        StreamedRecords{.count = 1'000'000, .seed = LARGE_FIXTURE_SEED}, test_common::JsonLines()
+    );
     const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
 
     InitializeTimezoneData();
@@ -118,7 +122,11 @@ TEST_CASE("Stream JSON log to LogTable (wide, 200'000 lines)", "[.][benchmark][j
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    const TestStructuredLogFile testFile(GenerateWideLogRecords(200'000), test_common::JsonLines());
+    // Pinned seed (shared with `[logfmt_parser][wide]` via `WIDE_FIXTURE_SEED`)
+    // so the two formats consume byte-identical record sequences.
+    const TestStructuredLogFile testFile(
+        GenerateWideLogRecords(200'000, /*columnCount=*/30, WIDE_FIXTURE_SEED), test_common::JsonLines()
+    );
     // False positive inside MSVC's `<filesystem>`; the `_BITMASK_OPS` `operator|` casts an OR of
     // bitmask members to the same enum type and tripped the analyzer on MSVC STL headers (out of
     // our control).
@@ -409,7 +417,11 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    const TestStructuredLogFile testFile(StreamedRecords{.count = 1'000'000}, test_common::JsonLines());
+    // Pinned seed for reproducibility across CI runs (content variation
+    // isn't relevant to the cancellation-latency measurement).
+    const TestStructuredLogFile testFile(
+        StreamedRecords{.count = 1'000'000, .seed = LARGE_FIXTURE_SEED}, test_common::JsonLines()
+    );
     const JsonParser parser;
 
     struct LatencySink : LogParseSink

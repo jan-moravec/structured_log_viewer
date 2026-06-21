@@ -3,6 +3,7 @@
 #include <glaze/glaze.hpp>
 
 #include <algorithm>
+#include <cassert>
 #include <string>
 #include <string_view>
 
@@ -14,8 +15,11 @@ namespace
 
 // A value is bare-safe in logfmt when it contains no byte that would end the
 // token or need escaping. Mirrors `loglib::BareValueIsSafe` in
-// `library/src/parsers/logfmt_parser.cpp` (kept in sync by the round-trip
-// test); duplicated here so `test_common` stays loglib-free.
+// `library/src/parsers/logfmt_parser.cpp`; duplicated here so `test_common`
+// stays loglib-free. Drift between the two is caught by the
+// `[logfmt_parser][round_trip]` test cases in `test_logfmt_parser.cpp`,
+// which feed `Logfmt().writeLine(...)` output through `LogfmtParser` and
+// assert every value family round-trips byte-for-byte.
 bool BareValueIsSafe(std::string_view value)
 {
     if (value.empty())
@@ -134,6 +138,12 @@ LogFormat Logfmt()
                         out.push_back(' ');
                     }
                     first = false;
+                    // logfmt keys must be bare-safe (no whitespace / '=' / '"' /
+                    // '\\') because the format has no key-quoting syntax. The
+                    // built-in generators only ever produce safe keys; this
+                    // assert catches hand-crafted records that would emit
+                    // unparseable text in debug builds.
+                    assert(BareValueIsSafe(key) && "logfmt keys must be bare-safe");
                     out.append(key);
                     out.push_back('=');
                     AppendLogfmtValue(out, value);

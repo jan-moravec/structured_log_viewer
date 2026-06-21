@@ -31,7 +31,12 @@ LogFormat JsonLines();
 // pairs. Fields are emitted in the record's lexicographic key order; values
 // are quoted only when they are not bare-safe. Nested arrays / objects are
 // serialized as compact JSON inside a single quoted logfmt string so the
-// field count stays identical across formats.
+// field count stays identical across formats (note: such fields do *not*
+// round-trip through `loglib::LogfmtParser` as structured values — the
+// parser sees the literal JSON text as an opaque string).
+//
+// Keys must be bare-safe (no whitespace, '=', '"', or '\\'); the writer
+// asserts on this in debug builds because logfmt has no key-quoting syntax.
 LogFormat Logfmt();
 
 } // namespace test_common
