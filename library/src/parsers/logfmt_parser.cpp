@@ -2,6 +2,7 @@
 
 #include "loglib/file_line_source.hpp"
 #include "loglib/internal/advanced_parser_options.hpp"
+#include "loglib/internal/classify_bare_scalar.hpp"
 #include "loglib/internal/compact_log_value.hpp"
 #include "loglib/internal/line_decoder.hpp"
 #include "loglib/internal/static_parser_pipeline.hpp"
@@ -14,7 +15,6 @@
 #include <fmt/format.h>
 
 #include <algorithm>
-#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -23,15 +23,6 @@
 #include <string_view>
 #include <utility>
 #include <vector>
-
-// libc++ ships without `std::from_chars` for floating-point types as of
-// LLVM 18 (Xcode 16); fall back to a locale-safe `strtod` on a stack
-// buffer there. The extra headers are only pulled in on that branch.
-#if !defined(__cpp_lib_to_chars) || __cpp_lib_to_chars < 201611L || defined(_LIBCPP_VERSION)
-#include <array>
-#include <cerrno>
-#include <cstdlib>
-#endif
 
 namespace loglib
 {
@@ -47,98 +38,6 @@ constexpr size_t INSERT_SORTED_LOWER_BOUND_THRESHOLD = 8;
 
 /// Cap on bytes scanned by `IsValid` for the false-positive guard.
 constexpr size_t IS_VALID_PROBE_BYTES = 16 * 1024;
-
-/// Parse @p raw as a finite double. Wraps `std::from_chars` where
-/// available and falls back to a strict-syntax `std::strtod` on a stack
-/// buffer when libc++ lacks the floating-point overload (Xcode 16's
-/// libc++ as of LLVM 18). The fallback first validates that @p raw
-/// matches a strict C floating-point literal (no leading whitespace,
-/// no hex, no `nan` / `inf` tokens) so the locale-driven decimal
-/// separator in `strtod` cannot reinterpret the bytes.
-bool TryParseFiniteDouble(std::string_view raw, double &outValue)
-{
-#if defined(__cpp_lib_to_chars) && __cpp_lib_to_chars >= 201611L && !defined(_LIBCPP_VERSION)
-    const char *first = raw.data();
-    const char *last = raw.data() + raw.size();
-    const auto res = std::from_chars(first, last, outValue);
-    return res.ec == std::errc{} && res.ptr == last && std::isfinite(outValue);
-#else
-    // Stack buffer cap for the strtod fallback. Any IEEE 754 double
-    // round-trips in well under this width including sign / exponent /
-    // padding; longer inputs are rejected rather than allocating.
-    constexpr size_t DOUBLE_PARSE_BUFFER_SIZE = 64;
-
-    if (raw.empty() || raw.size() >= DOUBLE_PARSE_BUFFER_SIZE)
-    {
-        return false;
-    }
-
-    size_t i = 0;
-    if (raw[i] == '+' || raw[i] == '-')
-    {
-        ++i;
-    }
-    bool sawDigit = false;
-    bool sawDot = false;
-    while (i < raw.size())
-    {
-        const char c = raw[i];
-        if (c >= '0' && c <= '9')
-        {
-            sawDigit = true;
-            ++i;
-            continue;
-        }
-        if (c == '.' && !sawDot)
-        {
-            sawDot = true;
-            ++i;
-            continue;
-        }
-        break;
-    }
-    if (!sawDigit)
-    {
-        return false;
-    }
-    if (i < raw.size() && (raw[i] == 'e' || raw[i] == 'E'))
-    {
-        ++i;
-        if (i < raw.size() && (raw[i] == '+' || raw[i] == '-'))
-        {
-            ++i;
-        }
-        bool sawExpDigit = false;
-        while (i < raw.size() && raw[i] >= '0' && raw[i] <= '9')
-        {
-            sawExpDigit = true;
-            ++i;
-        }
-        if (!sawExpDigit)
-        {
-            return false;
-        }
-    }
-    if (i != raw.size())
-    {
-        return false;
-    }
-
-    std::array<char, DOUBLE_PARSE_BUFFER_SIZE> buffer{};
-    std::memcpy(buffer.data(), raw.data(), raw.size());
-    buffer[raw.size()] = '\0';
-
-    errno = 0;
-    char *end = nullptr;
-    const double value = std::strtod(buffer.data(), &end);
-    if (errno == ERANGE || end != buffer.data() + raw.size() || !std::isfinite(value))
-    {
-        return false;
-    }
-    outValue = value;
-    return true;
-#endif
-}
 
 void InsertSorted(
     std::vector<std::pair<KeyId, internal::CompactLogValue>> &out, KeyId id, internal::CompactLogValue value
@@ -177,26 +76,6 @@ void InsertSorted(
         return;
     }
     out.emplace(it, id, value);
-}
-
-/// Promote @p sv to a compact value. `MmapSlice` (zero copy) when it
-/// points inside `[fileBegin, fileBegin + fileSize)`, otherwise the
-/// bytes are copied into @p ownedArena and tagged `OwnedString`.
-internal::CompactLogValue MakeStringCompact(
-    std::string_view sv, const char *fileBegin, size_t fileSize, std::string &ownedArena
-)
-{
-    // Streaming passes `fileBegin == nullptr`; gate the range check
-    // on a real base because relational compares across unrelated
-    // objects are UB.
-    if (fileBegin != nullptr && sv.data() >= fileBegin && sv.data() + sv.size() <= fileBegin + fileSize)
-    {
-        const auto offset = static_cast<uint64_t>(sv.data() - fileBegin);
-        return internal::CompactLogValue::MakeMmapSlice(offset, static_cast<uint32_t>(sv.size()));
-    }
-    const uint64_t offset = ownedArena.size();
-    ownedArena.append(sv.data(), sv.size());
-    return internal::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(sv.size()));
 }
 
 /// One key/value pair from a single record.
@@ -395,63 +274,6 @@ template <class Emit> bool TokenizeLogfmtLine(std::string_view line, std::string
     return true;
 }
 
-/// Typed-value classifier for bare values. Quoted values bypass this
-/// and stay strings (so `pid="42"` keeps the user's intent).
-internal::CompactLogValue ClassifyBareValue(
-    std::string_view raw, const char *fileBegin, size_t fileSize, std::string &ownedArena
-)
-{
-    if (raw.empty())
-    {
-        return internal::CompactLogValue::MakeMonostate();
-    }
-
-    if (raw == "true")
-    {
-        return internal::CompactLogValue::MakeBool(true);
-    }
-    if (raw == "false")
-    {
-        return internal::CompactLogValue::MakeBool(false);
-    }
-
-    // Probe int / uint / double via std::from_chars. Trailing junk
-    // (e.g. `42abc`) is rejected and falls through to string.
-    const char *first = raw.data();
-    const char *last = raw.data() + raw.size();
-
-    if (raw.front() == '-')
-    {
-        int64_t i64 = 0;
-        const auto res = std::from_chars(first, last, i64);
-        if (res.ec == std::errc{} && res.ptr == last)
-        {
-            return internal::CompactLogValue::MakeInt64(i64);
-        }
-    }
-    else if (raw.front() >= '0' && raw.front() <= '9')
-    {
-        // Unsigned first so large positive ids stay exact.
-        uint64_t u64 = 0;
-        const auto res = std::from_chars(first, last, u64);
-        if (res.ec == std::errc{} && res.ptr == last)
-        {
-            return internal::CompactLogValue::MakeUint64(u64);
-        }
-    }
-
-    if (raw.front() == '-' || raw.front() == '+' || raw.front() == '.' || (raw.front() >= '0' && raw.front() <= '9'))
-    {
-        double d = 0.0;
-        if (TryParseFiniteDouble(raw, d))
-        {
-            return internal::CompactLogValue::MakeDouble(d);
-        }
-    }
-
-    return MakeStringCompact(raw, fileBegin, fileSize, ownedArena);
-}
-
 /// Parse one logfmt record into compact values.
 /// `fileBegin`/`fileSize` describe the mmap (or 0/nullptr when
 /// streaming). `ownedArena` is the per-batch buffer for
@@ -499,12 +321,12 @@ void ParseLogfmtLine(
             }
             else
             {
-                InsertSorted(out, keyId, MakeStringCompact(field.value, fileBegin, fileSize, ownedArena));
+                InsertSorted(out, keyId, internal::MakeStringCompact(field.value, fileBegin, fileSize, ownedArena));
             }
             return;
         }
 
-        InsertSorted(out, keyId, ClassifyBareValue(field.value, fileBegin, fileSize, ownedArena));
+        InsertSorted(out, keyId, internal::ClassifyBareScalar(field.value, fileBegin, fileSize, ownedArena));
     };
 
     outUnterminated = !TokenizeLogfmtLine(line, quotedScratch, emit);
@@ -664,7 +486,7 @@ class LogfmtLineDecoder
 public:
     LogfmtLineDecoder() = default;
 
-    bool DecodeCompact(
+    internal::LineDecodeResult DecodeCompact(
         std::string_view line,
         KeyIndex &keys,
         internal::PerWorkerKeyCache *keyCache,
@@ -677,7 +499,7 @@ public:
         outOwnedArena.clear();
         if (line.empty())
         {
-            return true;
+            return internal::LineDecodeResult::Emit;
         }
 
         try
@@ -700,19 +522,19 @@ public:
             if (unterminated)
             {
                 errorOut = "Unterminated quoted value.";
-                return false;
+                return internal::LineDecodeResult::Error;
             }
             if (out.empty())
             {
                 errorOut = "Not a logfmt record.";
-                return false;
+                return internal::LineDecodeResult::Error;
             }
-            return true;
+            return internal::LineDecodeResult::Emit;
         }
         catch (const std::exception &e)
         {
             errorOut = std::string(e.what());
-            return false;
+            return internal::LineDecodeResult::Error;
         }
     }
 

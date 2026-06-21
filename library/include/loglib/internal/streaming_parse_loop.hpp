@@ -3,6 +3,7 @@
 #include "loglib/bytes_producer.hpp"
 #include "loglib/internal/batch_coalescer.hpp"
 #include "loglib/internal/compact_log_value.hpp"
+#include "loglib/internal/line_decoder.hpp"
 #include "loglib/internal/parse_runtime.hpp"
 #include "loglib/internal/timestamp_promotion.hpp"
 #include "loglib/key_index.hpp"
@@ -94,13 +95,22 @@ void RunStreamingParseLoop(StreamLineSource &source, Decoder &decoder, LogParseS
             return;
         }
 
-        const bool ok =
+        const LineDecodeResult result =
             decoder.DecodeCompact(trimmed, keys, &promoteScratch.keyCache, compactValues, ownedArena, lineError);
-        if (!ok)
+        if (result == LineDecodeResult::Error)
         {
             coalescer.Pending().errors.emplace_back(
                 fmt::format("Error on line {}: {}", lineNumber, std::move(lineError))
             );
+            return;
+        }
+        if (result == LineDecodeResult::Skip)
+        {
+            // Swallow the line: no row, no error. The line-number
+            // cursor (`nextLineNumber`) was already advanced above so
+            // subsequent error messages stay aligned with the byte
+            // stream. Used by parsers with a header prelude (CSV) to
+            // consume the schema row.
             return;
         }
 
