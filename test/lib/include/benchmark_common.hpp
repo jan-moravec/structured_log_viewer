@@ -249,11 +249,16 @@ inline std::size_t SamplePeakWorkingSetBytes()
     rusage usage{};
     if (::getrusage(RUSAGE_SELF, &usage) == 0)
     {
-#if defined(__APPLE__)
-        // Darwin reports `ru_maxrss` in bytes.
+#ifdef __APPLE__
+        // Darwin reports `ru_maxrss` in bytes. The system `rusage` layout
+        // wraps the field through a glibc-style union on some platforms,
+        // so the union-access lint is unavoidable here.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
         return static_cast<std::size_t>(usage.ru_maxrss);
 #else
-        // Linux/BSDs report `ru_maxrss` in kilobytes.
+        // Linux/BSDs report `ru_maxrss` in kilobytes; see the macOS
+        // branch above for the union-access NOLINT rationale.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
         return static_cast<std::size_t>(usage.ru_maxrss) * 1024U;
 #endif
     }
