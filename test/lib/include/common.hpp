@@ -14,13 +14,10 @@
 #include <vector>
 
 // Streaming-fixture spec: generate and write `count` random records on the
-// fly (no in-memory record vector), seeded for reproducibility. Used by the
-// large benchmark to avoid materializing millions of `LogRecord`s.
-//
-// `timestamps` controls how the `timestamp` field is stamped on each record;
-// see `test_common::TimestampPolicy`. Default = wall clock per record. Pass
-// a fixed `baseTime` (e.g. via `bench::DeterministicBenchmarkTimestamps()`)
-// to make fixtures byte-identical across runs and across formats.
+// fly, seeded for reproducibility. Used by the large benchmark so we don't
+// materialize millions of `LogRecord`s in RAM. Pass a fixed `baseTime` via
+// `bench::DeterministicBenchmarkTimestamps()` for byte-identical fixtures
+// across runs and formats.
 struct StreamedRecords
 {
     std::size_t count = 0;
@@ -28,15 +25,14 @@ struct StreamedRecords
     test_common::TimestampPolicy timestamps{};
 };
 
-// RAII fixture that serializes `LogRecord`s to disk through a `LogFormat`,
-// cleaning the file up on destruction. Two construction paths:
-//   * materialized — keeps the records so tests can assert on them;
-//   * streaming    — generates records on the fly, keeping only the count.
+// RAII fixture that serializes `LogRecord`s through a `LogFormat` to disk
+// and removes the file on destruction.
+//   * materialized ctor: keeps the records so tests can assert on them;
+//   * streaming ctor:    generates records on the fly, keeping only count.
 //
-// When `filePath` is left empty (the default), the on-disk name is derived
-// from the format's `suggestedExtension` (`test.jsonl`, `test.logfmt`, …)
-// so simultaneous fixtures of different formats do not collide on a single
-// shared file name.
+// When `filePath` is empty, the on-disk name is `test<extension>` derived
+// from the format, so simultaneous fixtures of different formats don't
+// collide.
 class TestStructuredLogFile
 {
 public:
@@ -56,7 +52,7 @@ public:
 
     const std::string &GetFilePath() const;
     std::size_t RecordCount() const;
-    // Only populated on the materialized path; empty for streaming fixtures.
+    // Populated only on the materialized path; empty for streaming fixtures.
     const std::vector<test_common::LogRecord> &Records() const;
 
 private:

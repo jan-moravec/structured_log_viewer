@@ -1,37 +1,25 @@
-// Standalone structured log generator. Drives `test_common::GenerateRandomLogRecord`
-// in a loop, serializing one record per output line through the `--format`
-// serializer (`json` lines or `logfmt`) until either a target byte count or a
-// target line count is reached. Supports streaming throttling via `--timeout`
-// and in-flight file rotation (`rename` / `copytruncate` / `truncate`) via the
-// `--roll-*` flags so it can drive `TailingBytesProducer` rotation tests and
-// the GUI's Stream Mode smoke tests end-to-end.
+// Standalone log generator. Loops `test_common::GenerateRandomLogRecord`,
+// serializes each record through `--format` (`json` / `logfmt`), and stops
+// at `--size` or `--lines`. Supports `--timeout` throttling and in-flight
+// rotation (`--roll-*`) for `TailingBytesProducer` and Stream Mode smoke
+// tests.
 //
-// The selected `LogFormat`'s `writeHeader` is invoked on the initial file
-// open (skipped in `--append` mode, since the existing file is assumed to
-// already have one) and after every rotation, so a future schema-bearing
-// format (CSV-like) Just Works in `log_generator` without re-plumbing the
-// file lifecycle. The two formats shipped today (JSON / logfmt) are
-// self-describing and return an empty header, so this is a no-op for them.
+// The format's `writeHeader` is emitted on initial open (skipped in
+// `--append`) and after every rotation, so a future schema-bearing format
+// drops in without re-plumbing. JSON / logfmt return an empty header.
 //
-// File output is the default (`--target file://...` or the legacy
-// `--output <path>`). Network output is selected by a URL-style
-// `--target` argument:
+// Default output is file (`--target file://...` or legacy `--output`).
+// Network targets:
 //
-//   * `tcp://host:port`     plaintext TCP, drives `TcpServerProducer`
-//   * `tcp+tls://host:port` TLS-on-TCP, drives `TcpServerProducer` with
-//                           `tls.has_value()`. Use `--tls-ca` to verify
-//                           the server cert; `--tls-skip-verify` for a
-//                           self-signed dev cert; `--tls-cert` /
-//                           `--tls-key` for mutual-TLS.
-//   * `udp://host:port`     UDP datagram per line, drives
-//                           `UdpServerProducer`.
+//   * `tcp://host:port`     plaintext TCP -> `TcpServerProducer`
+//   * `tcp+tls://host:port` TLS-on-TCP; use `--tls-ca` (verify), or
+//                           `--tls-skip-verify` (self-signed dev), or
+//                           `--tls-cert` / `--tls-key` (mTLS).
+//   * `udp://host:port`     UDP datagram per line -> `UdpServerProducer`.
 //
-// Each emitted record is stamped with a monotonic, session-global,
-// 0-based line index under the `line_number` field. The counter is
-// unaffected by rotation, so a consumer that observes a gap in the
-// sequence can conclude that a line was dropped end-to-end (across the
-// producer's `write()`, the rotation handler, the `TailingBytesProducer`
-// partial-line buffer, and the GUI thread queue).
+// Every record carries a `line_number` field (0-based, monotonic,
+// rotation-agnostic); gaps in the sequence at the consumer indicate
+// end-to-end drops.
 
 #include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>
@@ -58,10 +46,8 @@
 namespace
 {
 
-// Parse a size literal that accepts a plain byte count (`10485760`) or one of
-// the common suffixes `B`, `KB`, `MB`, `GB` (case-insensitive, base 1024).
-// We deliberately keep this in one TU rather than pulling in fmt/std::regex
-// because the `log_generator` binary should stay tiny.
+// Parse a byte-count literal: plain integer or with `B`/`KB`/`MB`/`GB`
+// suffix (case-insensitive, base 1024).
 std::uint64_t ParseSize(const std::string &text)
 {
     if (text.empty())
@@ -121,9 +107,8 @@ std::uint64_t ParseSize(const std::string &text)
     return value * multiplier;
 }
 
-// Parse a line-count literal: plain integer or with `K` / `M` / `G` suffix
-// (base 1000, case-insensitive). Distinct from `ParseSize` because line
-// counts conventionally use SI multipliers (`100K` = 100'000, not 102'400).
+// Parse a line-count literal: plain integer or with `K`/`M`/`G` suffix
+// (case-insensitive, base 1000 — line counts use SI multipliers).
 std::uint64_t ParseCount(const std::string &text)
 {
     if (text.empty())
@@ -181,17 +166,14 @@ std::uint64_t ParseCount(const std::string &text)
 enum class RollStrategy
 {
     /// `mv path -> path.1`, then create a fresh `path`. Triggers
-    /// `TailingBytesProducer` rotation branch (i) -- identity change.
-    /// The default and the most realistic logrotate emulation.
+    /// `TailingBytesProducer` branch (i) — identity change. Default;
+    /// most realistic logrotate emulation.
     Rename,
     /// `cp path -> path.1`, then truncate `path` in place. Triggers
-    /// rotation branch (iii) — size shrunk. Models the
-    /// `copytruncate` logrotate option used when the producer cannot be
-    /// signalled to reopen.
+    /// branch (iii) — size shrunk. Models logrotate's `copytruncate`.
     CopyTruncate,
-    /// Truncate `path` in place with no backup. Also triggers branch
-    /// (iii); useful for stress-testing the partial-line-buffer discard
-    /// path on rotation.
+    /// In-place truncate, no backup. Also triggers branch (iii);
+    /// useful for the partial-line-buffer discard path.
     Truncate,
 };
 
@@ -228,16 +210,14 @@ struct ParsedTarget
     std::uint16_t port = 0; // valid for Tcp/TcpTls/Udp
 };
 
-// Parse a URL-style target. Accepts the four schemes documented above
-// plus the bare/`file://` form. Throws on a malformed network URL so
-// the user gets a clear error instead of a silent fallback to file.
+// Parse a URL-style target. Throws on malformed network URLs rather than
+// silently falling back to file mode.
 ParsedTarget ParseTarget(const std::string &target)
 {
     auto schemeAt = target.find("://");
     if (schemeAt == std::string::npos)
     {
-        // No scheme -> treat the whole string as a file path. Lets
-        // the user keep passing `--target generated.jsonl` as before.
+        // No scheme -> treat as a bare file path.
         ParsedTarget out;
         out.kind = TargetKind::File;
         out.filePath = target;
@@ -249,8 +229,7 @@ ParsedTarget ParseTarget(const std::string &target)
 
     if (scheme == "file")
     {
-        // Strip a leading slash on Windows (`file:///C:/foo`); Asio
-        // doesn't matter here since this branch is filesystem only.
+        // Strip the leading slash from Windows-style `file:///C:/foo`.
         ParsedTarget out;
         out.kind = TargetKind::File;
         if (!rest.empty() && rest.front() == '/' && rest.size() >= 3 &&
@@ -285,12 +264,11 @@ ParsedTarget ParseTarget(const std::string &target)
         );
     }
 
-    // Strip any path component after host:port; the network targets
-    // ignore it.
+    // Strip any path component after host:port (network targets ignore it).
     auto pathAt = rest.find('/');
     const std::string hostPort = (pathAt == std::string::npos) ? rest : rest.substr(0, pathAt);
 
-    // Split host:port. IPv6 literal in brackets `[::1]:5141` supported.
+    // Split host:port; bracketed IPv6 literals like `[::1]:5141` are supported.
     std::string hostText;
     std::string portText;
     if (!hostPort.empty() && hostPort.front() == '[')
@@ -343,9 +321,7 @@ ParsedTarget ParseTarget(const std::string &target)
     return out;
 }
 
-// `<base>.<n>` — same naming convention as logrotate (`app.log.1`,
-// `app.log.2`, ...). Kept as a free function so both the shift and the
-// rotation routines can use it without a shared state object.
+// `<base>.<n>` — logrotate naming convention (`app.log.1`, `app.log.2`, …).
 std::filesystem::path NumberedBackup(const std::filesystem::path &basePath, std::size_t n)
 {
     std::filesystem::path p = basePath;
@@ -353,11 +329,10 @@ std::filesystem::path NumberedBackup(const std::filesystem::path &basePath, std:
     return p;
 }
 
-// Shift the existing backups one slot up: `path.{N-1}` -> `path.N`,
-// `path.{N-2}` -> `path.{N-1}`, ..., freeing slot `path.1` for the next
-// rotation. The oldest backup (`path.N`) is unlinked. Errors are
-// swallowed via `std::error_code` because rotation must not fail just
-// because a backup slot did not exist on the previous run.
+// Shift backups up one slot (`path.{N-1}` -> `path.N`, …), freeing
+// `path.1` for the next rotation. The oldest (`path.N`) is unlinked.
+// Errors are swallowed because rotation must not fail just because a
+// backup slot was missing.
 void ShiftBackups(const std::filesystem::path &basePath, std::size_t keepRolled)
 {
     if (keepRolled == 0)
@@ -379,12 +354,9 @@ void ShiftBackups(const std::filesystem::path &basePath, std::size_t keepRolled)
     }
 }
 
-// Emit the (optional) format header to a freshly opened `out` stream. For
-// self-describing formats (JSON lines, logfmt) `writeHeader` returns an empty
-// string and this is a no-op; for schema-bearing formats (CSV-like) the
-// header must precede every fresh file (initial open, post-rotation re-open,
-// and copytruncate's in-place truncate). Bytes written are returned so the
-// caller can update its per-file byte counter.
+// Emit the format header to a freshly opened `out` and return the bytes
+// written (0 for self-describing formats). Must run on every fresh file
+// (initial open, post-rotation re-open, copytruncate).
 std::uint64_t WriteFormatHeader(
     std::ofstream &out, const test_common::LogFormat &format, const test_common::RecordSchema &schema
 )
@@ -398,16 +370,11 @@ std::uint64_t WriteFormatHeader(
     return static_cast<std::uint64_t>(header.size()) + 1U;
 }
 
-// Rotate the active output, leaving `out` open at offset 0 of a freshly
-// (re-)created `basePath` (with the format header re-emitted when applicable;
-// see `WriteFormatHeader`). The caller is expected to reset its per-file
-// byte / line counters after this returns and add the returned header byte
-// count back in so `--roll-size` accounting stays accurate.
-//
-// Failure modes: a closed `out` after this call signals that the
-// re-open step failed; the caller should log and exit. We deliberately
-// use exceptions for the filesystem step so the `Rotate` caller can
-// bail cleanly rather than silently producing garbled output.
+// Rotate the active output: leave `out` open at offset 0 of a freshly
+// (re-)created `basePath` with the format header re-emitted. Returns the
+// header byte count so the caller can reseed its per-file accounting.
+// A closed `out` on return signals the re-open failed. Filesystem errors
+// surface as exceptions so the caller can bail cleanly.
 std::uint64_t Rotate(
     std::ofstream &out, const std::filesystem::path &basePath, RollStrategy strategy, std::size_t keepRolled,
     const test_common::LogFormat &format, const test_common::RecordSchema &schema
@@ -423,16 +390,14 @@ std::uint64_t Rotate(
         if (keepRolled > 0)
         {
             ShiftBackups(basePath, keepRolled);
-            // `rename` may fail on Windows if `path.1` still exists
-            // (rare, since we just shifted it away); use the error_code
-            // overload to decide whether to fall back to copy+remove.
+            // Use the error_code overload so we can fall back to
+            // copy+remove if `rename` fails (e.g. Windows in-use file).
             std::error_code ec;
             std::filesystem::rename(basePath, NumberedBackup(basePath, 1), ec);
             if (ec)
             {
-                // Best-effort fallback: copy the active file to slot .1
-                // and unlink the original. Keeps tests deterministic
-                // even on filesystems that block in-use renames.
+                // Copy-and-unlink fallback so tests stay deterministic
+                // on filesystems that block in-use renames.
                 std::filesystem::copy_file(
                     basePath, NumberedBackup(basePath, 1), std::filesystem::copy_options::overwrite_existing
                 );
@@ -456,12 +421,10 @@ std::uint64_t Rotate(
             std::filesystem::copy_file(
                 basePath, NumberedBackup(basePath, 1), std::filesystem::copy_options::overwrite_existing, ec
             );
-            // A failure here is non-fatal: the backup is best-effort,
-            // but the in-place truncate still has to happen so the
-            // tailing consumer observes the size-shrunk signal.
+            // Backup failure is non-fatal; the truncate below still has
+            // to happen so the tailing consumer sees the size-shrunk signal.
         }
-        // In-place truncate via re-open with `trunc`: the dropped
-        // content is what triggers `TailingBytesProducer` branch (iii).
+        // In-place truncate -> triggers `TailingBytesProducer` branch (iii).
         out.open(basePath, std::ios::binary | std::ios::trunc);
         break;
     }
@@ -584,10 +547,8 @@ int main(int argc, char *argv[])
     const auto sizeText = program.get<std::string>("--size");
     const auto linesText = program.get<std::string>("--lines");
     const auto formatName = program.get<std::string>("--format");
-    // argparse `.choices()` already rejects unknown values, but treat the
-    // dispatch table as the source of truth so adding a third format that
-    // forgets to update both sites fails loudly here rather than silently
-    // falling through to JSON.
+    // The dispatch table is the source of truth — adding a new `--format`
+    // choice without updating it must fail loudly here, not fall through.
     test_common::LogFormat format;
     if (formatName == "json")
     {
@@ -602,15 +563,12 @@ int main(int argc, char *argv[])
         std::cerr << "Unknown --format value: " << formatName << " (expected one of: json, logfmt)\n";
         return 1;
     }
-    // No schema-bearing format ships today (JSON / logfmt are self-describing
-    // and write an empty header), but pass an empty `RecordSchema` so a
-    // future CSV-like format only has to extend the dispatch table above and
-    // populate this `schema` rather than re-plumb the open/rotate paths.
+    // No schema-bearing format ships today; the empty schema is a hook so
+    // a future CSV-like format only needs to extend the dispatch table.
     const test_common::RecordSchema schema;
-    // Default the output base name to the format's extension unless the user
-    // pinned an explicit --output. The argparse default is the empty string
-    // (so `--help` doesn't show a JSON-only default), so an empty value here
-    // means "derive from the format".
+    // Empty `--output` means "derive from the format" (`generated.jsonl` /
+    // `generated.logfmt`); the argparse default is empty so `--help` doesn't
+    // bias toward JSON.
     auto outputArg = program.get<std::string>("--output");
     if (outputArg.empty())
     {
@@ -684,15 +642,13 @@ int main(int argc, char *argv[])
     std::unique_ptr<test_common::TcpLogClient> tcpClient;
     std::unique_ptr<test_common::UdpLogClient> udpClient;
 
-    // File sink. Populated only in file mode; kept out of the
-    // network branches so the open-on-startup path stays clean.
+    // File sink. Populated only in file mode.
     std::ofstream out;
     std::filesystem::path filePath;
 
     std::string targetDescription;
-    // Bytes written by the initial format header (0 for self-describing
-    // formats). Added to `bytesInFile` below so `--roll-size` accounting
-    // counts the header just like every other byte we write.
+    // Header bytes (0 for self-describing formats), folded into `bytesInFile`
+    // so `--roll-size` counts the header like any other byte.
     std::uint64_t headerBytes = 0;
     if (target.kind == TargetKind::File)
     {
@@ -704,9 +660,8 @@ int main(int argc, char *argv[])
             std::cerr << "Failed to open output file: " << filePath << '\n';
             return 1;
         }
-        // Emit the format header on fresh files only. In --append mode the
-        // existing file is assumed to already have a header (if the format
-        // requires one); re-emitting it mid-stream would corrupt the file.
+        // Skip the header in --append mode; the existing file is assumed
+        // to already have one and re-emitting it would corrupt the file.
         if (!append)
         {
             headerBytes = WriteFormatHeader(out, format, schema);
@@ -763,12 +718,10 @@ int main(int argc, char *argv[])
                             std::to_string(target.port);
     }
 
-    // Seed `bytesInFile` from the existing on-disk size when --append
-    // is in effect so a subsequent --roll-size trigger considers what
-    // is already on disk. Line count cannot be cheaply derived without
-    // re-reading the file, so we leave it at 0 — `--roll-lines` after
-    // `--append` is therefore measured from the appended-only segment;
-    // call it a documented quirk rather than a bug.
+    // Seed `bytesInFile` from the existing file size on --append so
+    // --roll-size considers what's already on disk. Line count can't be
+    // cheaply recovered, so --roll-lines after --append measures only the
+    // appended segment (documented quirk).
     std::uint64_t bytesInFile = 0;
     if (append && target.kind == TargetKind::File)
     {
@@ -838,8 +791,8 @@ int main(int argc, char *argv[])
     while (!reachedTotal())
     {
         test_common::LogRecord record = test_common::GenerateRandomLogRecord(rng, totalLines);
-        // Stamp the record with the session-global line index so a tailing
-        // consumer can detect dropped rows by observing gaps in the sequence.
+        // Session-global, rotation-agnostic counter so a tailing consumer
+        // can detect drops by spotting gaps in the sequence.
         record["line_number"] = static_cast<std::int64_t>(totalLines);
         const std::string serialized = format.writeLine(record);
 
@@ -885,10 +838,8 @@ int main(int argc, char *argv[])
 
         if (timeoutMs > 0)
         {
-            // Flush so the consumer can see incremental progress while we sleep;
-            // without this the stdlib buffer would hide everything until close.
-            // Network clients write synchronously per call so they need no
-            // extra flush.
+            // Flush so consumers see incremental progress during the sleep.
+            // Network clients write synchronously and need no extra flush.
             if (target.kind == TargetKind::File)
             {
                 out.flush();
@@ -914,12 +865,9 @@ int main(int argc, char *argv[])
                 return 1;
             }
             ++rotationCount;
-            // Reset per-file counters, then carry the rewritten format header
-            // (if any) into the new file's accounting so a header-bearing
-            // format doesn't under-count toward `--roll-size`. `totalBytes`
-            // intentionally does NOT include the header — it tracks bytes
-            // generated by the random-record loop, which is what users care
-            // about when interpreting the final wrote-N-bytes summary.
+            // Reset per-file counters. `bytesInFile` includes the rewritten
+            // header so `--roll-size` still accounts for it; `totalBytes`
+            // intentionally tracks only random-record bytes for the summary.
             bytesInFile = headerBytesAfterRotate;
             linesInFile = 0;
             std::cout << "log_generator: rotated #" << rotationCount << " (" << rollStrategyText

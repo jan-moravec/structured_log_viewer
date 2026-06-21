@@ -1,10 +1,9 @@
 #pragma once
 
-// Shared scaffolding for the parser streaming benchmarks (`benchmark_json.cpp`,
-// `benchmark_logfmt.cpp`). The streaming flow is parser-agnostic: callers pass
-// a `ParserStreamFn` so the same timing / memory / throughput harness drives
+// Shared scaffolding for the parser streaming benchmarks. Callers pass a
+// `ParserStreamFn` so the same timing / memory / throughput harness drives
 // any parser's static `ParseStreaming` overload. See CONTRIBUTING.md
-// `## Benchmarking` for the PR-process docs.
+// `## Benchmarking` for PR-process docs.
 
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
@@ -48,34 +47,23 @@
 namespace bench
 {
 
-/// Fixed RNG seed for cross-format benchmark fixtures. Combined with
-/// `DeterministicBenchmarkTimestamps()` (always passed in from the same
-/// fixed `baseTime` / `interval`), it means `[json_parser][large]` and
-/// `[logfmt_parser][large]` (and any future `[<fmt>_parser][large]` sibling)
-/// consume byte-identical `LogRecord` sequences, so lines/s comparisons
-/// across formats are apples-to-apples rather than relying on the law of
-/// large numbers over a random draw. Also gives benchmark runs deterministic
-/// per-machine numbers across repeated CI invocations.
-///
-/// NOTE: the seed alone is not enough — the historical default of stamping
-/// `system_clock::now()` per record made fixtures drift across runs by a few
-/// bytes per timestamp. Always pair the seed with
-/// `DeterministicBenchmarkTimestamps()`.
+/// Pinned RNG seed for the large cross-format fixture (`[json_parser][large]`,
+/// `[logfmt_parser][large]`, …). Combined with `DeterministicBenchmarkTimestamps()`,
+/// it makes every format consume byte-identical records so cross-format
+/// lines/s is directly comparable. Always pair the two — without pinned
+/// timestamps, per-record `system_clock::now()` drifts fixtures by a few
+/// bytes per run.
 inline constexpr std::uint32_t LARGE_FIXTURE_SEED = 0xC0FFEEu;
 
-/// Fixed RNG seed for the wide-row cross-format benchmark fixtures (see
-/// `[json_parser][wide]` / `[logfmt_parser][wide]`). Distinct from
-/// `LARGE_FIXTURE_SEED` so the two fixture shapes do not accidentally share
-/// any value-generation state if both are loaded in the same run. Same
-/// determinism caveat: pair with `DeterministicBenchmarkTimestamps()`.
+/// Pinned RNG seed for the wide-row fixture (`[json_parser][wide]`,
+/// `[logfmt_parser][wide]`). Distinct from `LARGE_FIXTURE_SEED` to avoid
+/// state collisions if both shapes load in one run. Same pairing
+/// requirement with `DeterministicBenchmarkTimestamps()`.
 inline constexpr std::uint32_t WIDE_FIXTURE_SEED = 0xDEC0DEu;
 
-/// Pinned `TimestampPolicy` for benchmark fixtures. `baseTime` is 2026-01-01
-/// 00:00:00 UTC expressed as a Unix-epoch offset (C++20 fixes
-/// `system_clock`'s epoch to the Unix epoch); the 1 ms `interval` keeps
-/// successive records monotonically increasing without crossing a second
-/// boundary too often, so the formatted-string length is constant across
-/// the whole fixture.
+/// Pinned `TimestampPolicy` for benchmark fixtures: 2026-01-01 00:00:00 UTC
+/// + 1 ms per record. The 1 ms step keeps the formatted-string length
+/// constant across the whole fixture.
 inline test_common::TimestampPolicy DeterministicBenchmarkTimestamps()
 {
     // 2026-01-01T00:00:00Z = 1767225600 seconds since the Unix epoch.
@@ -86,12 +74,8 @@ inline test_common::TimestampPolicy DeterministicBenchmarkTimestamps()
     };
 }
 
-/// Skip the current `TEST_CASE` when running under a Debug build. Debug
-/// disables IPO/LTO and leaves assertions enabled, so the numbers are not
-/// comparable to a release-config measurement and would mislead a
-/// regression-gate reviewer. `NDEBUG` is the right gate: it is defined for
-/// `Release` and `RelWithDebInfo` (both have IPO/LTO enabled in this
-/// project's top-level `CMakeLists.txt`) and undefined for `Debug`.
+/// Skip the current `TEST_CASE` under Debug. Debug disables IPO/LTO and
+/// leaves assertions on, so numbers are not comparable to release.
 inline void RequireReleaseBuildForBenchmarks()
 {
 #ifndef NDEBUG
@@ -101,7 +85,7 @@ inline void RequireReleaseBuildForBenchmarks()
 #endif
 }
 
-/// Emit a single-run throughput line. `WARN` is used so it prints on success.
+/// Emit a single-run throughput line (uses `WARN` so it prints on success).
 inline void ReportThroughput(const char *label, std::chrono::nanoseconds elapsed, std::size_t bytes, std::size_t lines)
 {
     if (elapsed.count() == 0)
@@ -131,11 +115,9 @@ struct SampleStats
     double stddevNs;
 };
 
-/// Manual replacement for Catch2's `BENCHMARK_ADVANCED`: just runs `fn`
-/// `samples` times and computes mean / low / high / stddev of the wall-
-/// clock. Avoids the Catch2 iteration-estimation pass and 100-resample
-/// bootstrap, which together added 3-5x wall-time on multi-second-per-
-/// sample fixtures and timed the 1M-line streaming case out at 30 min.
+/// Run `fn` `samples` times and compute mean/low/high/stddev. Used instead
+/// of `BENCHMARK_ADVANCED` because Catch2's iteration estimator + 100-sample
+/// bootstrap added 3-5x wall-time on the multi-second-per-sample fixtures.
 template <typename Fn> SampleStats CollectSamples(std::size_t samples, Fn fn)
 {
     REQUIRE(samples > 0);
@@ -175,11 +157,9 @@ template <typename Fn> void RunTimedSamples(const char *label, std::size_t sampl
     );
 }
 
-/// Throughput overload. Reports steady-state MB/s (mean / low / high /
-/// stddev) and lines/s on the same WARN line — that mean-MB/s is the
-/// canonical regression-gate input. `low`/`high` MB/s are derived from
-/// the matching `high`/`low` elapsed; the MB/s stddev uses a first-order
-/// Taylor approximation around the mean.
+/// Throughput overload. Reports MB/s (mean/low/high/stddev) and lines/s on
+/// one `WARN` line; mean MB/s is the regression-gate input. The MB/s
+/// stddev is a first-order Taylor approximation around the mean.
 template <typename Fn>
 void RunTimedSamples(const char *label, std::size_t samples, ThroughputInputs throughput, Fn &&fn)
 {
@@ -207,10 +187,7 @@ void RunTimedSamples(const char *label, std::size_t samples, ThroughputInputs th
     );
 }
 
-/// Breakdown of structural bytes owned by a parsed `LogTable`. Each member
-/// counts heap bytes attributable to `loglib`'s internal data structures —
-/// the mmap'd file content is excluded because the OS shares it with the
-/// page cache.
+/// Heap bytes owned by a parsed `LogTable` (mmap'd file content excluded).
 struct StructuralBytes
 {
     std::size_t lines = 0;
@@ -256,10 +233,8 @@ inline StructuralBytesWithEnums ComputeStructuralBytesWithEnums(const loglib::Lo
     return result;
 }
 
-/// Returns the process's peak working set (Windows) / max resident set
-/// size (POSIX), in bytes. Used to give an OS-level cross-check against
-/// the structural-bytes sum; varies more across runs than the structural
-/// number, hence "informational".
+/// Process peak working set (Windows) / max RSS (POSIX), in bytes.
+/// OS-level cross-check against `StructuralBytes`; noisier across runs.
 inline std::size_t SamplePeakWorkingSetBytes()
 {
 #ifdef _WIN32
@@ -288,8 +263,8 @@ inline std::size_t SamplePeakWorkingSetBytes()
 #endif
 }
 
-/// Sink that mirrors `LogModel::OnBatch`: every batch is forwarded to
-/// `LogTable::AppendBatch`, which runs the GUI-thread back-fill loop.
+/// Sink mirroring `LogModel::OnBatch`: forwards every batch to
+/// `LogTable::AppendBatch` (the GUI-thread back-fill loop).
 struct StreamSink : loglib::LogParseSink
 {
     loglib::LogTable *table = nullptr;
@@ -318,9 +293,8 @@ struct StreamSink : loglib::LogParseSink
     }
 };
 
-/// Build a `LogConfiguration` with one `Type::Time` column for `timestamp`,
-/// matching the GUI's typical column shape so the parser has real inline
-/// timestamp-promotion work to do.
+/// `LogConfiguration` with one `Type::Time` column for `timestamp`, so the
+/// parser does real inline timestamp promotion (the GUI's typical shape).
 inline std::shared_ptr<const loglib::LogConfiguration> MakeTimestampConfiguration()
 {
     loglib::LogConfiguration baseConfig;
@@ -334,22 +308,18 @@ inline std::shared_ptr<const loglib::LogConfiguration> MakeTimestampConfiguratio
     return std::make_shared<loglib::LogConfiguration>(std::move(baseConfig));
 }
 
-/// Parser-agnostic streaming entry point. Matches the static
-/// `ParseStreaming(FileLineSource&, LogParseSink&, const ParserOptions&,
-/// internal::AdvancedParserOptions)` overload shared by every parser, so a
-/// benchmark can plug in `JsonParser::ParseStreaming`,
-/// `LogfmtParser::ParseStreaming`, etc.
+/// Parser-agnostic streaming entry point: matches the static
+/// `ParseStreaming` overload shared by every parser, so benchmarks can plug
+/// in `JsonParser::ParseStreaming`, `LogfmtParser::ParseStreaming`, etc.
 using ParserStreamFn = std::function<void(
     loglib::FileLineSource &, loglib::LogParseSink &, const loglib::ParserOptions &,
     loglib::internal::AdvancedParserOptions
 )>;
 
-/// One end-to-end streaming run inside the `start`/`elapsed` window:
-/// `LogConfigurationManager::Load` + `LogTable` construction + one
-/// `LogFile` mmap (shared between the table and the parser via
-/// `BeginStreaming`) + `ParseStreaming` + `~LogTable` (frees all
-/// `LogLine`s). Sink stats and row count are copied out before the inner
-/// block closes so the caller can inspect them after the timer stops.
+/// Results of one end-to-end streaming run. The timed window covers
+/// configuration load + `LogTable` construction + mmap + `ParseStreaming`
+/// + `~LogTable`. Sink stats and row count are copied out before the inner
+/// scope closes so the caller can inspect them after the timer stops.
 struct StreamingRunResult
 {
     std::chrono::steady_clock::duration elapsed{};
@@ -357,9 +327,8 @@ struct StreamingRunResult
     std::size_t appendBatches = 0;
     std::size_t appendLines = 0;
     std::size_t rowCount = 0;
-    /// Populated only when the caller passes `captureMemory = true`. The
-    /// sample is taken with the `LogTable` still alive so the structural
-    /// byte counters reflect the steady-state post-parse layout.
+    /// Populated only when `captureMemory == true`. Sampled while the
+    /// `LogTable` is still alive so the counters reflect steady state.
     bool memoryCaptured = false;
     StructuralBytes structuralBytes{};
     std::size_t peakWorkingSetBytes = 0;
@@ -385,13 +354,11 @@ inline StreamingRunResult RunStreamingFlow(
         configManager.Load(configPath.string());
         loglib::LogTable table(loglib::LogData{}, std::move(configManager));
 
-        // Mirror `MainWindow::OpenJsonStreaming`: one `FileLineSource`
-        // (wrapping a `LogFile`) owned by the table, with the same source
-        // borrowed by the parser. Sharing ensures Stage C's per-line
-        // offsets and the owned-string arena both land in the same
-        // `LogFile` the table will look at when accessing values
-        // (otherwise structural-bytes would under-count and `LogValue`
-        // materialisation would dangle).
+        // Mirror `MainWindow::OpenJsonStreaming`: the parser borrows the
+        // same `FileLineSource` the table owns, so Stage C's offsets and
+        // owned-string arena land in the `LogFile` value accesses read
+        // from. Splitting them would dangle `LogValue`s and under-count
+        // structural bytes.
         auto sourceForTable = std::make_unique<loglib::FileLineSource>(std::make_unique<loglib::LogFile>(logPath));
         loglib::FileLineSource *parseSource = sourceForTable.get();
         table.BeginStreaming(std::move(sourceForTable));
@@ -411,9 +378,8 @@ inline StreamingRunResult RunStreamingFlow(
 
         if (captureMemory)
         {
-            // Sample inside the `LogTable` scope so the live data structures
-            // are still owned. `~LogTable` below frees them and would skew
-            // the working-set delta if we sampled afterwards.
+            // Sample inside the `LogTable` scope; sampling after `~LogTable`
+            // would skew the working-set delta.
             result.structuralBytes = ComputeStructuralBytes(table);
             const std::size_t peakAfter = SamplePeakWorkingSetBytes();
             result.peakWorkingSetBytes = peakAfter;
@@ -425,10 +391,9 @@ inline StreamingRunResult RunStreamingFlow(
     return result;
 }
 
-/// Drive one streaming benchmark fixture: an untimed warm-up that emits the
-/// per-batch `LogTable::AppendBatch` wall-time line plus the structural-
-/// memory footprint, then `samples` timed end-to-end runs through
-/// `RunTimedSamples`'s throughput overload.
+/// Run one streaming benchmark: an untimed warm-up that reports
+/// `AppendBatch` wall-time and structural memory, then `samples` timed
+/// end-to-end runs through the throughput overload.
 inline void RunStreamingBenchmark(
     const char *label,
     const std::filesystem::path &configPath,
@@ -441,10 +406,9 @@ inline void RunStreamingBenchmark(
 )
 {
     {
-        // Capture memory on the warm-up run only: the structural-bytes
-        // signal is deterministic across runs, so a single sample suffices,
-        // and we avoid paying for the introspection walk on every timed
-        // sample.
+        // Memory introspection runs on the warm-up only: structural bytes
+        // are deterministic across runs, so one sample suffices and timed
+        // samples don't pay for the walk.
         const StreamingRunResult warmup =
             RunStreamingFlow(configPath, logPath, configuration, parserStream, /*captureMemory=*/true);
         REQUIRE(warmup.rowCount == expectedRows);

@@ -13,13 +13,9 @@ namespace test_common
 namespace
 {
 
-// A value is bare-safe in logfmt when it contains no byte that would end the
-// token or need escaping. Mirrors `loglib::BareValueIsSafe` in
-// `library/src/parsers/logfmt_parser.cpp`; duplicated here so `test_common`
-// stays loglib-free. Drift between the two is caught by the
-// `[logfmt_parser][round_trip]` test cases in `test_logfmt_parser.cpp`,
-// which feed `Logfmt().writeLine(...)` output through `LogfmtParser` and
-// assert every value family round-trips byte-for-byte.
+// True when @p value has no byte that would end a logfmt token or need
+// escaping. Mirrors `loglib::BareValueIsSafe`; the `[logfmt_parser][round_trip]`
+// tests guard against drift between the two copies.
 bool BareValueIsSafe(std::string_view value)
 {
     if (value.empty())
@@ -33,7 +29,7 @@ bool BareValueIsSafe(std::string_view value)
 }
 
 // Append @p value as a double-quoted logfmt string with C-style escapes.
-// Mirrors `loglib::AppendQuotedString` in the logfmt parser.
+// Mirrors `loglib::AppendQuotedString`.
 void AppendQuotedString(std::string &out, std::string_view value)
 {
     out.push_back('"');
@@ -73,7 +69,7 @@ void AppendLogfmtValue(std::string &out, const LogRecord &value)
 {
     if (value.is_null())
     {
-        // Null round-trips through logfmt as an empty value (`key=`).
+        // Null serializes as `key=` (empty value).
         return;
     }
     if (value.is_string())
@@ -96,12 +92,12 @@ void AppendLogfmtValue(std::string &out, const LogRecord &value)
     }
     if (value.is_number())
     {
-        // Numbers serialize to the same bare token in JSON and logfmt.
+        // Numbers share the bare JSON token form.
         out.append(CompactJson(value));
         return;
     }
-    // Array or object: embed compact JSON as a single quoted logfmt string so
-    // the wide-row field count matches the JSON serialization.
+    // Array/object: embed compact JSON as a single quoted string so the
+    // per-line field count still matches the JSON serialization.
     AppendQuotedString(out, CompactJson(value));
 }
 
@@ -125,8 +121,7 @@ LogFormat Logfmt()
             [](const LogRecord &record) {
                 if (!record.is_object())
                 {
-                    // Non-object records have no key=value structure; fall back
-                    // to compact JSON (the generators only ever emit objects).
+                    // No key=value structure; fall back to compact JSON.
                     return CompactJson(record);
                 }
                 std::string out;
@@ -138,11 +133,8 @@ LogFormat Logfmt()
                         out.push_back(' ');
                     }
                     first = false;
-                    // logfmt keys must be bare-safe (no whitespace / '=' / '"' /
-                    // '\\') because the format has no key-quoting syntax. The
-                    // built-in generators only ever produce safe keys; this
-                    // assert catches hand-crafted records that would emit
-                    // unparseable text in debug builds.
+                    // logfmt has no key-quoting syntax, so keys must be
+                    // bare-safe. Catches hand-crafted records in debug builds.
                     assert(BareValueIsSafe(key) && "logfmt keys must be bare-safe");
                     out.append(key);
                     out.push_back('=');

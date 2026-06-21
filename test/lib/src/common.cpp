@@ -23,9 +23,8 @@ using namespace loglib;
 namespace
 {
 
-// Open @p fsPath for binary writing (so '\n' isn't translated and the byte
-// offsets match `LogFile`), emit the format header when non-empty, and return
-// the open stream ready for per-record writes.
+// Open @p fsPath for binary writing (no '\n' translation, so offsets match
+// `LogFile`), emit the format header if non-empty, and return the stream.
 std::ofstream OpenStructuredFile(const std::filesystem::path &fsPath, const test_common::LogFormat &format,
                                  const test_common::RecordSchema &schema)
 {
@@ -39,9 +38,8 @@ std::ofstream OpenStructuredFile(const std::filesystem::path &fsPath, const test
     return file;
 }
 
-// Resolve the on-disk fixture name. An explicit `filePath` wins; otherwise
-// derive `test<extension>` from the format (so a JSON fixture and a logfmt
-// fixture instantiated side-by-side land on different files).
+// Resolve the on-disk fixture name: explicit `filePath` wins, otherwise
+// `test<format-extension>` (so different-format fixtures don't collide).
 std::string ResolveStructuredFilePath(std::string filePath, const test_common::LogFormat &format)
 {
     if (!filePath.empty())
@@ -66,16 +64,13 @@ TestStructuredLogFile::TestStructuredLogFile(
     for (const auto &record : mRecords)
     {
         const std::string line = format.writeLine(record);
-        // See `LogFormat::writeLine` contract; cf. the streaming ctor below
-        // for the rationale on guarding this in debug builds.
         assert((line.empty() || line.back() != '\n') && "LogFormat::writeLine must not include trailing newline");
         file << line << '\n';
     }
     if (!file.good())
     {
-        // Clean up the (possibly partially-written) file before throwing so
-        // a failed ctor doesn't leak orphaned bytes onto disk — the dtor
-        // never runs when the ctor exits via exception.
+        // Remove the partial file before throwing — the dtor doesn't run
+        // when the ctor exits via exception.
         std::error_code ec;
         std::filesystem::remove(mFsPath, ec);
         throw std::runtime_error("Failed to write structured log file: " + mFilePath);
@@ -95,12 +90,8 @@ TestStructuredLogFile::TestStructuredLogFile(
     {
         const test_common::LogRecord record = test_common::GenerateRandomLogRecord(rng, i, streamed.timestamps);
         const std::string line = format.writeLine(record);
-        // Per the `LogFormat` contract, `writeLine` must not emit a trailing
-        // newline (the caller is responsible for line termination). A
-        // violation would silently produce double-newline / blank-line files
-        // that all the parsers happily skip past — exactly the kind of mistake
-        // that's invisible to fixture-construction call sites and only shows
-        // up as a confused benchmark reviewer.
+        // `writeLine` must not include a trailing newline; otherwise we'd
+        // emit blank-line records that every parser silently skips.
         assert((line.empty() || line.back() != '\n') && "LogFormat::writeLine must not include trailing newline");
         file << line << '\n';
     }

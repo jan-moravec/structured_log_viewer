@@ -42,12 +42,10 @@ using test_common::GenerateWideLogRecords;
 namespace
 {
 
-// JSON parser plugged into the shared `RunStreamingBenchmark` harness. Kept
-// as a free function rather than a `const bench::ParserStreamFn` global so
-// the `std::function` wrapper is materialized at the call site (stack
-// storage, function-pointer SBO) instead of during static initialization;
-// the latter trips `bugprone-throwing-static-initialization` because
-// `std::function`'s constructor is not `noexcept`.
+// `JsonParser::ParseStreaming` adapter for `bench::RunStreamingBenchmark`.
+// A free function rather than a `bench::ParserStreamFn` global to avoid
+// `bugprone-throwing-static-initialization` (the `std::function` ctor is
+// not `noexcept`).
 void JsonStream(
     FileLineSource &source, LogParseSink &sink, const ParserOptions &options,
     internal::AdvancedParserOptions advanced
@@ -97,11 +95,8 @@ TEST_CASE("Stream JSON log to LogTable (1'000'000 lines)", "[.][benchmark][json_
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    // Pinned seed + pinned timestamp policy (shared with `[logfmt_parser][large]`
-    // via `LARGE_FIXTURE_SEED` / `DeterministicBenchmarkTimestamps()`) so the
-    // record bytes are identical across runs and across formats. Without the
-    // pinned timestamps, each per-record `system_clock::now()` would drift the
-    // fixture by a few bytes per run and between the JSON / logfmt cases.
+    // Pinned seed + timestamps so the record bytes are identical across
+    // runs and identical to `[logfmt_parser][large]`.
     const TestStructuredLogFile testFile(
         StreamedRecords{
             .count = 1'000'000, .seed = LARGE_FIXTURE_SEED, .timestamps = DeterministicBenchmarkTimestamps()
@@ -137,18 +132,14 @@ TEST_CASE("Stream JSON log to LogTable (wide, 200'000 lines)", "[.][benchmark][j
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    // Pinned seed + pinned timestamp policy (shared with `[logfmt_parser][wide]`
-    // via `WIDE_FIXTURE_SEED` / `DeterministicBenchmarkTimestamps()`) so the
-    // two formats consume byte-identical record sequences across runs.
+    // Pinned seed + timestamps so JSON and logfmt see byte-identical records.
     const TestStructuredLogFile testFile(
         GenerateWideLogRecords(
             200'000, /*columnCount=*/30, WIDE_FIXTURE_SEED, DeterministicBenchmarkTimestamps()
         ),
         test_common::JsonLines()
     );
-    // False positive inside MSVC's `<filesystem>`; the `_BITMASK_OPS` `operator|` casts an OR of
-    // bitmask members to the same enum type and tripped the analyzer on MSVC STL headers (out of
-    // our control).
+    // False positive inside MSVC's `<filesystem>` (`_BITMASK_OPS::operator|`).
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
 
@@ -436,9 +427,8 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    // Pinned seed + pinned timestamp policy for reproducibility across CI
-    // runs (content variation isn't relevant to the cancellation-latency
-    // measurement, but stable byte counts are nice for the WARN line).
+    // Pinned seed + timestamps for reproducible byte counts (the
+    // measurement itself is independent of content variation).
     const TestStructuredLogFile testFile(
         StreamedRecords{
             .count = 1'000'000, .seed = LARGE_FIXTURE_SEED, .timestamps = DeterministicBenchmarkTimestamps()

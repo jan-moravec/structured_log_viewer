@@ -85,8 +85,7 @@ void StageTimezoneData()
                   "folder (typically build/<preset>/bin/<config>/).";
 }
 
-// Generate `count` random log records and write them as JSONL into
-// `path`. Returns the byte count of the written file.
+// Write `count` random records to `path` as JSONL; returns the file size.
 std::size_t WriteJsonlFixture(const std::filesystem::path &path, std::size_t count)
 {
     const auto records = test_common::GenerateRandomLogRecords(count);

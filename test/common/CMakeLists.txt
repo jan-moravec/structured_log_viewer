@@ -1,10 +1,9 @@
 cmake_minimum_required(VERSION 3.28)
 
-# Shared helpers for test-tree binaries: the format-agnostic log record +
-# pluggable format serializers, the random/wide log generators, and the
-# Asio-based network log clients. Intentionally Catch2-free so the standalone
-# `log_generator` console app can link it without pulling in the unit-test
-# framework.
+# Shared helpers for test-tree binaries: format-agnostic `LogRecord` +
+# pluggable `LogFormat` serializers, the random/wide log generators, and the
+# Asio-based network log clients. Catch2-free so the standalone
+# `log_generator` console app can link it.
 add_library(test_common STATIC src/log_format.cpp src/log_generator.cpp src/network_log_client.cpp)
 
 target_include_directories(test_common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

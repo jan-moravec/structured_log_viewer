@@ -131,13 +131,11 @@
 namespace
 {
 
-// Tiny RAII helper that writes a JSONL fixture into a QTemporaryDir and
-// removes it on destruction. Kept inside this TU to avoid pulling in the
-// library tests' TestStructuredLogFile helper (which lives in test/lib and
-// would add a build-graph dependency from apptest onto loglib's catch2
-// fixtures).
-// In-memory storage backend for `SessionHistoryManager` tests so
-// each case stays isolated from `QSettings` and the user's profile.
+// Tiny RAII helper that writes a JSONL fixture into a QTemporaryDir.
+// Kept in-TU to avoid pulling library-test fixtures (and their Catch2
+// dependency) into `apptest`.
+// In-memory storage backend for `SessionHistoryManager` tests so each
+// case stays isolated from `QSettings` and the user's profile.
 class InMemoryRecentsIndexStorage final : public IRecentsIndexStorage
 {
 public:
