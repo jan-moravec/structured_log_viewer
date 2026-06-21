@@ -9,6 +9,7 @@ add_executable(
     "src/benchmark_log_filter.cpp"
     "src/benchmark_stream.cpp"
     "src/common.cpp"
+    "src/test_csv_parser.cpp"
     "src/test_enum_dictionary.cpp"
     "src/test_file_line_source.cpp"
     "src/test_json_parser.cpp"
