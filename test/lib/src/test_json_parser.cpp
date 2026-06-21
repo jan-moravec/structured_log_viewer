@@ -392,15 +392,16 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
 TEST_CASE("Parse file with single JSON object containing all possible JSON elements", "[json_parser]")
 {
     const loglib::JsonParser parser;
-    std::vector<test_common::LogRecord> records;
-    records.push_back(glz::generic_sorted_u64{
-        {"null", nullptr},
-        {"string", "value"},
-        {"uinteger", LARGE_UINT},
-        {"integer", -12},
-        {"double", 3.14},
-        {"boolean", true}
-    });
+    std::vector<test_common::LogRecord> records = {
+        glz::generic_sorted_u64{
+            {"null", nullptr},
+            {"string", "value"},
+            {"uinteger", LARGE_UINT},
+            {"integer", -12},
+            {"double", 3.14},
+            {"boolean", true}
+        },
+    };
     const TestStructuredLogFile testFile(std::move(records), test_common::JsonLines());
 
     auto result = ParseFile(parser, testFile.GetFilePath());

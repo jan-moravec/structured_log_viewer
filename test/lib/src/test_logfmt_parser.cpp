@@ -372,7 +372,7 @@ TEST_CASE(
 
     // Constant seed is intentional: the test asserts byte-equal round-trips
     // against the exact records the generator produces.
-    // NOLINTNEXTLINE(cert-msc32-c,cert-msc51-cpp)
+    // NOLINTNEXTLINE(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
     std::mt19937 rng(SEED);
     std::vector<test_common::LogRecord> records;
     records.reserve(LINE_COUNT);
@@ -408,7 +408,7 @@ TEST_CASE(
         CHECK(AsStringView(values.at("message")) == std::string_view{record["message"].get_string()});
         CHECK(AsStringView(values.at("component")) == std::string_view{record["component"].get_string()});
 
-        const std::uint64_t expectedThreadId = static_cast<std::uint64_t>(i % 16);
+        const auto expectedThreadId = static_cast<std::uint64_t>(i % 16);
         CHECK(std::get<std::uint64_t>(values.at("thread_id")) == expectedThreadId);
     }
 }

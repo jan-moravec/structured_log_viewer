@@ -611,7 +611,7 @@ int main(int argc, char *argv[])
     // pinned an explicit --output. The argparse default is the empty string
     // (so `--help` doesn't show a JSON-only default), so an empty value here
     // means "derive from the format".
-    std::string outputArg = program.get<std::string>("--output");
+    auto outputArg = program.get<std::string>("--output");
     if (outputArg.empty())
     {
         outputArg = "generated" + std::string(format.suggestedExtension);

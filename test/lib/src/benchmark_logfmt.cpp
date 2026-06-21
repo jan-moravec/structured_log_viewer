@@ -30,9 +30,18 @@ namespace
 {
 
 // logfmt parser plugged into the shared `RunStreamingBenchmark` harness.
-const bench::ParserStreamFn kLogfmtStream =
-    [](FileLineSource &source, LogParseSink &sink, const ParserOptions &options,
-       internal::AdvancedParserOptions advanced) { LogfmtParser::ParseStreaming(source, sink, options, advanced); };
+// Kept as a free function rather than a `const bench::ParserStreamFn`
+// global so the `std::function` wrapper is materialized at the call site
+// (stack storage, function-pointer SBO) instead of during static
+// initialization; the latter trips `bugprone-throwing-static-initialization`
+// because `std::function`'s constructor is not `noexcept`.
+void LogfmtStream(
+    FileLineSource &source, LogParseSink &sink, const ParserOptions &options,
+    internal::AdvancedParserOptions advanced
+)
+{
+    LogfmtParser::ParseStreaming(source, sink, options, advanced);
+}
 
 } // namespace
 
@@ -68,7 +77,7 @@ TEST_CASE("Stream logfmt log to LogTable (1'000'000 lines)", "[.][benchmark][log
         configFile.GetFilePath(),
         testFile.GetFilePath(),
         configuration,
-        kLogfmtStream,
+        LogfmtStream,
         testFile.RecordCount(),
         bytes,
         4
@@ -112,7 +121,7 @@ TEST_CASE("Stream logfmt log to LogTable (wide, 200'000 lines)", "[.][benchmark]
         configFile.GetFilePath(),
         testFile.GetFilePath(),
         configuration,
-        kLogfmtStream,
+        LogfmtStream,
         testFile.RecordCount(),
         bytes,
         4

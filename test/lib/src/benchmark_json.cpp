@@ -42,10 +42,19 @@ using test_common::GenerateWideLogRecords;
 namespace
 {
 
-// JSON parser plugged into the shared `RunStreamingBenchmark` harness.
-const bench::ParserStreamFn kJsonStream =
-    [](FileLineSource &source, LogParseSink &sink, const ParserOptions &options,
-       internal::AdvancedParserOptions advanced) { JsonParser::ParseStreaming(source, sink, options, advanced); };
+// JSON parser plugged into the shared `RunStreamingBenchmark` harness. Kept
+// as a free function rather than a `const bench::ParserStreamFn` global so
+// the `std::function` wrapper is materialized at the call site (stack
+// storage, function-pointer SBO) instead of during static initialization;
+// the latter trips `bugprone-throwing-static-initialization` because
+// `std::function`'s constructor is not `noexcept`.
+void JsonStream(
+    FileLineSource &source, LogParseSink &sink, const ParserOptions &options,
+    internal::AdvancedParserOptions advanced
+)
+{
+    JsonParser::ParseStreaming(source, sink, options, advanced);
+}
 
 } // namespace
 
@@ -112,7 +121,7 @@ TEST_CASE("Stream JSON log to LogTable (1'000'000 lines)", "[.][benchmark][json_
         configFile.GetFilePath(),
         testFile.GetFilePath(),
         configuration,
-        kJsonStream,
+        JsonStream,
         testFile.RecordCount(),
         bytes,
         4
@@ -154,7 +163,7 @@ TEST_CASE("Stream JSON log to LogTable (wide, 200'000 lines)", "[.][benchmark][j
         configFile.GetFilePath(),
         testFile.GetFilePath(),
         configuration,
-        kJsonStream,
+        JsonStream,
         testFile.RecordCount(),
         bytes,
         4

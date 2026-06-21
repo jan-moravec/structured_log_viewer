@@ -32,8 +32,9 @@ TEST_CASE("Create non-existent parser", "[log_factory]")
 
 TEST_CASE("Parse JSON log file via ParseFile auto-detect", "[log_factory]")
 {
-    std::vector<test_common::LogRecord> records;
-    records.push_back(glz::generic_sorted_u64{{"key", "value"}});
+    std::vector<test_common::LogRecord> records = {
+        glz::generic_sorted_u64{{"key", "value"}},
+    };
     const TestStructuredLogFile testFile(std::move(records), test_common::JsonLines());
 
     ParseResult result = ParseFile(testFile.GetFilePath());
