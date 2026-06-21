@@ -19,9 +19,9 @@ Three ingestion modes are available:
 
 - **Static mode** (`File → Open…`, drag & drop) opens one or more finished log files and parses them in parallel with the TBB pipeline. Use this for post-mortem analysis of complete logs.
 - **Stream Mode** (`File → Open Log Stream…`) tails a single file that is still being written, pre-fills the last *N* complete lines, then appends every new line as it arrives. It survives `logrotate` rotations, supports Pause / Follow newest / Stop, and bounds memory via a configurable retention cap. Use this when watching a live service.
-- **Network Stream Mode** (`File → Open Network Stream…`, `Ctrl+Shift+L`) listens on a TCP or UDP port and ingests JSON Lines pushed by your application. TCP supports many concurrent clients with line-granular interleaving and (when the binary is built with `LOGLIB_NETWORK_TLS=ON`) optional TLS via `asio::ssl`; UDP is one record per datagram and plaintext-only. Use this for distributed systems where redirecting stdout/stderr to a log file is not practical, or when you want a quick local-loopback firehose during development.
+- **Network Stream Mode** (`File → Open Network Stream…`, `Ctrl+Shift+L`) listens on a TCP or UDP port and ingests structured logs pushed by your application. TCP supports many concurrent clients with line-granular interleaving and (when the binary is built with `LOGLIB_NETWORK_TLS=ON`) optional TLS via `asio::ssl`; UDP is one record per datagram and plaintext-only. Use this for distributed systems where redirecting stdout/stderr to a log file is not practical, or when you want a quick local-loopback firehose during development.
 
-Currently, only JSON Lines (one JSON object per line) logs are supported in all three modes.
+Two structured-log formats ship out of the box: **JSON Lines / NDJSON** (one JSON object per line) and **logfmt** (the Heroku / `kr/logfmt` flavour: whitespace-separated `key=value` pairs, optionally double-quoted values). The format is auto-detected per file on `File → Open…` and per session for live tail; the Network Stream dialog has an explicit Format picker (no on-disk content to sniff).
 
 ## Application
 
