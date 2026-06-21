@@ -25,8 +25,9 @@ namespace
 
 // Open @p fsPath for binary writing (no '\n' translation, so offsets match
 // `LogFile`), emit the format header if non-empty, and return the stream.
-std::ofstream OpenStructuredFile(const std::filesystem::path &fsPath, const test_common::LogFormat &format,
-                                 const test_common::RecordSchema &schema)
+std::ofstream OpenStructuredFile(
+    const std::filesystem::path &fsPath, const test_common::LogFormat &format, const test_common::RecordSchema &schema
+)
 {
     std::ofstream file(fsPath, std::ios::binary | std::ios::trunc);
     REQUIRE(file.is_open());
@@ -54,11 +55,15 @@ std::string ResolveStructuredFilePath(std::string filePath, const test_common::L
 } // namespace
 
 TestStructuredLogFile::TestStructuredLogFile(
-    std::vector<test_common::LogRecord> records, const test_common::LogFormat &format,
-    const test_common::RecordSchema &schema, std::string filePath
+    std::vector<test_common::LogRecord> records,
+    const test_common::LogFormat &format,
+    const test_common::RecordSchema &schema,
+    std::string filePath
 )
-    : mFilePath(ResolveStructuredFilePath(std::move(filePath), format)), mFsPath(mFilePath),
-      mRecords(std::move(records)), mRecordCount(mRecords.size())
+    : mFilePath(ResolveStructuredFilePath(std::move(filePath), format)),
+      mFsPath(mFilePath),
+      mRecords(std::move(records)),
+      mRecordCount(mRecords.size())
 {
     std::ofstream file = OpenStructuredFile(mFsPath, format, schema);
     for (const auto &record : mRecords)
@@ -78,10 +83,13 @@ TestStructuredLogFile::TestStructuredLogFile(
 }
 
 TestStructuredLogFile::TestStructuredLogFile(
-    StreamedRecords streamed, const test_common::LogFormat &format, const test_common::RecordSchema &schema,
+    StreamedRecords streamed,
+    const test_common::LogFormat &format,
+    const test_common::RecordSchema &schema,
     std::string filePath
 )
-    : mFilePath(ResolveStructuredFilePath(std::move(filePath), format)), mFsPath(mFilePath),
+    : mFilePath(ResolveStructuredFilePath(std::move(filePath), format)),
+      mFsPath(mFilePath),
       mRecordCount(streamed.count)
 {
     std::ofstream file = OpenStructuredFile(mFsPath, format, schema);

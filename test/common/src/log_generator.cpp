@@ -72,8 +72,9 @@ LogRecord GenerateRandomLogRecord(std::mt19937 &rng, std::size_t lineIndex, cons
     return record;
 }
 
-std::vector<LogRecord>
-GenerateRandomLogRecords(std::size_t count, std::uint32_t seed, const TimestampPolicy &timestamps)
+std::vector<LogRecord> GenerateRandomLogRecords(
+    std::size_t count, std::uint32_t seed, const TimestampPolicy &timestamps
+)
 {
     std::vector<LogRecord> records;
     records.reserve(count);
@@ -193,8 +194,9 @@ std::vector<std::pair<std::string, Family>> BuildWideKeyList(std::size_t columnC
 
 } // namespace
 
-std::vector<LogRecord>
-GenerateWideLogRecords(std::size_t count, std::size_t columnCount, std::uint32_t seed, const TimestampPolicy &timestamps)
+std::vector<LogRecord> GenerateWideLogRecords(
+    std::size_t count, std::size_t columnCount, std::uint32_t seed, const TimestampPolicy &timestamps
+)
 {
     const auto keys = BuildWideKeyList(columnCount);
 

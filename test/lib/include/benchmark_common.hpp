@@ -312,7 +312,9 @@ inline std::shared_ptr<const loglib::LogConfiguration> MakeTimestampConfiguratio
 /// `ParseStreaming` overload shared by every parser, so benchmarks can plug
 /// in `JsonParser::ParseStreaming`, `LogfmtParser::ParseStreaming`, etc.
 using ParserStreamFn = std::function<void(
-    loglib::FileLineSource &, loglib::LogParseSink &, const loglib::ParserOptions &,
+    loglib::FileLineSource &,
+    loglib::LogParseSink &,
+    const loglib::ParserOptions &,
     loglib::internal::AdvancedParserOptions
 )>;
 

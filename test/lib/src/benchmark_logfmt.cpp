@@ -32,8 +32,7 @@ namespace
 // Free function (rather than a `bench::ParserStreamFn` global) to avoid
 // `bugprone-throwing-static-initialization` from `std::function`'s ctor.
 void LogfmtStream(
-    FileLineSource &source, LogParseSink &sink, const ParserOptions &options,
-    internal::AdvancedParserOptions advanced
+    FileLineSource &source, LogParseSink &sink, const ParserOptions &options, internal::AdvancedParserOptions advanced
 )
 {
     LogfmtParser::ParseStreaming(source, sink, options, advanced);
@@ -85,9 +84,7 @@ TEST_CASE("Stream logfmt log to LogTable (wide, 200'000 lines)", "[.][benchmark]
 
     // Pinned seed + timestamps so the bytes match `[json_parser][wide]`.
     const TestStructuredLogFile testFile(
-        GenerateWideLogRecords(
-            200'000, /*columnCount=*/30, WIDE_FIXTURE_SEED, DeterministicBenchmarkTimestamps()
-        ),
+        GenerateWideLogRecords(200'000, /*columnCount=*/30, WIDE_FIXTURE_SEED, DeterministicBenchmarkTimestamps()),
         test_common::Logfmt()
     );
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)

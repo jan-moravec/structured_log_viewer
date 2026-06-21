@@ -101,7 +101,8 @@ TEST_CASE("Validate file with leading blank line", "[json_parser]")
     // Leading blank lines are tolerated: the first non-empty line is what determines validity.
     const loglib::JsonParser parser;
     const TestLogFile testFile;
-    testFile.Write("\n" R"({"key": "value"})"
+    testFile.Write("\n"
+                   R"({"key": "value"})"
                    "\n");
     CHECK(parser.IsValid(testFile.GetFilePath()));
 }
@@ -172,7 +173,8 @@ TEST_CASE("Parse file with invalid and valid line", "[json_parser]")
 {
     const loglib::JsonParser parser;
     const TestLogFile testFile;
-    testFile.Write("invalid json\n" R"({"key": "value"})"
+    testFile.Write("invalid json\n"
+                   R"({"key": "value"})"
                    "\n");
     auto result = ParseFile(parser, testFile.GetFilePath());
     CHECK(result.errors.size() == 1);
@@ -436,8 +438,12 @@ TEST_CASE("Parse different key types on different lines", "[json_parser]")
     // This test should validate caching
     const loglib::JsonParser parser;
     std::vector<test_common::LogRecord> records = {
-        glz::generic_sorted_u64{{"1", nullptr}, {"2", "value"}, {"3", LARGE_UINT}, {"4", -12}, {"5", 3.14}, {"6", true}},
-        glz::generic_sorted_u64{{"6", nullptr}, {"1", "value"}, {"2", LARGE_UINT}, {"3", -12}, {"4", 3.14}, {"5", true}},
+        glz::generic_sorted_u64{
+            {"1", nullptr}, {"2", "value"}, {"3", LARGE_UINT}, {"4", -12}, {"5", 3.14}, {"6", true}
+        },
+        glz::generic_sorted_u64{
+            {"6", nullptr}, {"1", "value"}, {"2", LARGE_UINT}, {"3", -12}, {"4", 3.14}, {"5", true}
+        },
         glz::generic_sorted_u64{{"5", nullptr}, {"6", "value"}, {"1", LARGE_UINT}, {"2", -12}, {"3", 3.14}, {"4", true}}
     };
     const TestStructuredLogFile testFile(std::move(records), test_common::JsonLines());
@@ -539,7 +545,8 @@ TEST_CASE("Parse file with multiple JSON objects and one invalid line", "[json_p
     const TestLogFile testFile;
     testFile.Write(R"({"key1":"value1"})"
                    "\n"
-                   "invalid json\n" R"({"key2":"value2"})"
+                   "invalid json\n"
+                   R"({"key2":"value2"})"
                    "\n");
 
     auto result = ParseFile(parser, testFile.GetFilePath());
@@ -566,7 +573,8 @@ TEST_CASE("Parse file with multiple JSON objects and multiple invalid lines", "[
     const TestLogFile testFile;
     testFile.Write(R"({"key1":"value1"})"
                    "\n"
-                   "invalid json 1\n" R"({"key2":"value2"})"
+                   "invalid json 1\n"
+                   R"({"key2":"value2"})"
                    "\n"
                    "invalid json 2\n");
 
@@ -994,10 +1002,14 @@ TEST_CASE(
 
     const TestLogFile testFile;
     testFile.Write(R"({"timestamp": "2024-01-01T12:00:00", "msg": "ok-1"})"
-                   "\n" R"({"timestamp": "not-a-timestamp", "msg": "bad-1"})"
-                   "\n" R"({"timestamp": "2024-01-02T12:00:00", "msg": "ok-2"})"
-                   "\n" R"({"timestamp": "", "msg": "empty"})"
-                   "\n" R"({"timestamp": "2024-01-03T12:00:00", "msg": "ok-3"})"
+                   "\n"
+                   R"({"timestamp": "not-a-timestamp", "msg": "bad-1"})"
+                   "\n"
+                   R"({"timestamp": "2024-01-02T12:00:00", "msg": "ok-2"})"
+                   "\n"
+                   R"({"timestamp": "", "msg": "empty"})"
+                   "\n"
+                   R"({"timestamp": "2024-01-03T12:00:00", "msg": "ok-3"})"
                    "\n");
 
     auto configuration = std::make_shared<LogConfiguration>();
@@ -1126,9 +1138,12 @@ TEST_CASE("ExtractFieldKey round-trips quoted, escaped, and Unicode-escape keys"
 
     const TestLogFile testFile;
     testFile.Write(R"({"plain": "v-plain"})"
-                   "\n" R"({"with\"quote": "v-quote"})"     // (a) fast path; (b) escaped quote
-                   "\n" R"({"back\\slash": "v-backslash"})" // (c) escaped backslash
-                   "\n" R"({"\u0041BC": "v-unicode"})"      // (d) Unicode escape
+                   "\n"
+                   R"({"with\"quote": "v-quote"})" // (a) fast path; (b) escaped quote
+                   "\n"
+                   R"({"back\\slash": "v-backslash"})" // (c) escaped backslash
+                   "\n"
+                   R"({"\u0041BC": "v-unicode"})" // (d) Unicode escape
                    "\n");
 
     const JsonParser parser;
@@ -1163,9 +1178,11 @@ TEST_CASE("Padded-tail slow path parses lines within SIMDJSON_PADDING bytes of E
     using namespace loglib;
 
     const TestLogFile testFile;
-    testFile.Write(R"({"k":"a"})"                                    // shortest
-                   "\n" R"({"k":"abcdefghijklmnopqrstuvwx"})"             // longer
-                   "\n" R"({"k":"abcdefghijklmnopqrstuvwxyz0123456789"})" // longest
+    testFile.Write(R"({"k":"a"})" // shortest
+                   "\n"
+                   R"({"k":"abcdefghijklmnopqrstuvwx"})" // longer
+                   "\n"
+                   R"({"k":"abcdefghijklmnopqrstuvwxyz0123456789"})" // longest
                    "\n");
 
     const JsonParser parser;
@@ -1210,7 +1227,8 @@ TEST_CASE(
     //     yield the same "last write wins" outcome.
     const TestLogFile testFile;
     testFile.Write(R"({"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"dup":"first","j":11,"dup":"second"})"
-                   "\n" R"({"a":1,"dup":"first","b":2,"dup":"second"})"
+                   "\n"
+                   R"({"a":1,"dup":"first","b":2,"dup":"second"})"
                    "\n");
 
     const JsonParser parser;

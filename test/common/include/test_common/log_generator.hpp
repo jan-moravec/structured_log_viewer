@@ -30,8 +30,9 @@ struct TimestampPolicy
 
 // `count` random records (timestamp/level/message/component shape).
 std::vector<LogRecord> GenerateRandomLogRecords(std::size_t count);
-std::vector<LogRecord>
-GenerateRandomLogRecords(std::size_t count, std::uint32_t seed, const TimestampPolicy &timestamps = {});
+std::vector<LogRecord> GenerateRandomLogRecords(
+    std::size_t count, std::uint32_t seed, const TimestampPolicy &timestamps = {}
+);
 
 // Wide-row variant (many columns of mixed value families).
 std::vector<LogRecord> GenerateWideLogRecords(std::size_t count, std::size_t columnCount = 30);

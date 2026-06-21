@@ -343,8 +343,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "test_common::Logfmt() round-trips the generator's record shape end-to-end [logfmt]",
-    "[logfmt_parser][round_trip]"
+    "test_common::Logfmt() round-trips the generator's record shape end-to-end [logfmt]", "[logfmt_parser][round_trip]"
 )
 {
     // Drive the actual benchmark fixture through write+parse so a future

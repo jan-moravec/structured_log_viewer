@@ -47,8 +47,7 @@ namespace
 // `bugprone-throwing-static-initialization` (the `std::function` ctor is
 // not `noexcept`).
 void JsonStream(
-    FileLineSource &source, LogParseSink &sink, const ParserOptions &options,
-    internal::AdvancedParserOptions advanced
+    FileLineSource &source, LogParseSink &sink, const ParserOptions &options, internal::AdvancedParserOptions advanced
 )
 {
     JsonParser::ParseStreaming(source, sink, options, advanced);
@@ -78,13 +77,18 @@ TEST_CASE("Parse and load JSON log (sync)", "[.][benchmark][json_parser][parse_s
         ReportThroughput("Parse 10'000 (sync) warm-up", elapsed, bytes, testFile.RecordCount());
     }
 
-    RunTimedSamples("Parse 10'000 JSON log entries (sync)", 5, {.bytes = bytes, .lines = testFile.RecordCount()}, [&]() {
-        LogTable table;
-        ParseResult result = ParseFile(parser, testFile.GetFilePath());
-        REQUIRE(result.data.Lines().size() == testFile.RecordCount());
-        REQUIRE(result.errors.empty());
-        table.Update(std::move(result.data));
-    });
+    RunTimedSamples(
+        "Parse 10'000 JSON log entries (sync)",
+        5,
+        {.bytes = bytes, .lines = testFile.RecordCount()},
+        [&]() {
+            LogTable table;
+            ParseResult result = ParseFile(parser, testFile.GetFilePath());
+            REQUIRE(result.data.Lines().size() == testFile.RecordCount());
+            REQUIRE(result.errors.empty());
+            table.Update(std::move(result.data));
+        }
+    );
 }
 
 // Large-file streaming benchmark (1'000'000 lines, ~170 MB). End-to-end
@@ -134,9 +138,7 @@ TEST_CASE("Stream JSON log to LogTable (wide, 200'000 lines)", "[.][benchmark][j
 
     // Pinned seed + timestamps so JSON and logfmt see byte-identical records.
     const TestStructuredLogFile testFile(
-        GenerateWideLogRecords(
-            200'000, /*columnCount=*/30, WIDE_FIXTURE_SEED, DeterministicBenchmarkTimestamps()
-        ),
+        GenerateWideLogRecords(200'000, /*columnCount=*/30, WIDE_FIXTURE_SEED, DeterministicBenchmarkTimestamps()),
         test_common::JsonLines()
     );
     // False positive inside MSVC's `<filesystem>` (`_BITMASK_OPS::operator|`).

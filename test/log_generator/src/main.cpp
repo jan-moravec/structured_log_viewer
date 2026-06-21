@@ -376,8 +376,12 @@ std::uint64_t WriteFormatHeader(
 // A closed `out` on return signals the re-open failed. Filesystem errors
 // surface as exceptions so the caller can bail cleanly.
 std::uint64_t Rotate(
-    std::ofstream &out, const std::filesystem::path &basePath, RollStrategy strategy, std::size_t keepRolled,
-    const test_common::LogFormat &format, const test_common::RecordSchema &schema
+    std::ofstream &out,
+    const std::filesystem::path &basePath,
+    RollStrategy strategy,
+    std::size_t keepRolled,
+    const test_common::LogFormat &format,
+    const test_common::RecordSchema &schema
 )
 {
     out.flush();
