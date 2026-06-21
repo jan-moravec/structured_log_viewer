@@ -381,18 +381,22 @@ TEST_CASE(
         records.emplace_back(test_common::GenerateRandomLogRecord(rng, i));
     }
 
-    const TestStructuredLogFile fixture(records, test_common::Logfmt());
+    // Move the records into the fixture and read them back through
+    // `Records()` so we don't keep two copies of the generated vector alive.
+    const TestStructuredLogFile fixture(std::move(records), test_common::Logfmt());
 
     const LogfmtParser parser;
     const ParseResult result = ParseFile(parser, fixture.GetFilePath());
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == LINE_COUNT);
 
+    const auto &fixtureRecords = fixture.Records();
+    REQUIRE(fixtureRecords.size() == LINE_COUNT);
     for (std::size_t i = 0; i < LINE_COUNT; ++i)
     {
         INFO("row " << i);
         const auto values = result.data.Lines()[i].Values();
-        auto &record = records[i];
+        const auto &record = fixtureRecords[i];
         REQUIRE(record.is_object());
 
         // Every key the generator emits must round-trip. String fields

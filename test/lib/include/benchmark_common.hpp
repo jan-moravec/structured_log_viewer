@@ -17,6 +17,8 @@
 #include <loglib/log_table.hpp>
 #include <loglib/parser_options.hpp>
 
+#include <test_common/log_generator.hpp>
+
 #include <catch2/catch_all.hpp>
 
 #include <algorithm>
@@ -46,20 +48,43 @@
 namespace bench
 {
 
-/// Fixed RNG seed for cross-format benchmark fixtures. Pinning it means
-/// `[json_parser][large]` and `[logfmt_parser][large]` (and any future
-/// `[<fmt>_parser][large]` sibling) consume byte-identical `LogRecord`
-/// sequences, so lines/s comparisons across formats are apples-to-apples
-/// rather than relying on the law of large numbers over a random draw.
-/// Also gives benchmark runs deterministic per-machine numbers across
-/// repeated CI invocations.
+/// Fixed RNG seed for cross-format benchmark fixtures. Combined with
+/// `DeterministicBenchmarkTimestamps()` (always passed in from the same
+/// fixed `baseTime` / `interval`), it means `[json_parser][large]` and
+/// `[logfmt_parser][large]` (and any future `[<fmt>_parser][large]` sibling)
+/// consume byte-identical `LogRecord` sequences, so lines/s comparisons
+/// across formats are apples-to-apples rather than relying on the law of
+/// large numbers over a random draw. Also gives benchmark runs deterministic
+/// per-machine numbers across repeated CI invocations.
+///
+/// NOTE: the seed alone is not enough — the historical default of stamping
+/// `system_clock::now()` per record made fixtures drift across runs by a few
+/// bytes per timestamp. Always pair the seed with
+/// `DeterministicBenchmarkTimestamps()`.
 inline constexpr std::uint32_t LARGE_FIXTURE_SEED = 0xC0FFEEu;
 
 /// Fixed RNG seed for the wide-row cross-format benchmark fixtures (see
 /// `[json_parser][wide]` / `[logfmt_parser][wide]`). Distinct from
 /// `LARGE_FIXTURE_SEED` so the two fixture shapes do not accidentally share
-/// any value-generation state if both are loaded in the same run.
+/// any value-generation state if both are loaded in the same run. Same
+/// determinism caveat: pair with `DeterministicBenchmarkTimestamps()`.
 inline constexpr std::uint32_t WIDE_FIXTURE_SEED = 0xDEC0DEu;
+
+/// Pinned `TimestampPolicy` for benchmark fixtures. `baseTime` is 2026-01-01
+/// 00:00:00 UTC expressed as a Unix-epoch offset (C++20 fixes
+/// `system_clock`'s epoch to the Unix epoch); the 1 ms `interval` keeps
+/// successive records monotonically increasing without crossing a second
+/// boundary too often, so the formatted-string length is constant across
+/// the whole fixture.
+inline test_common::TimestampPolicy DeterministicBenchmarkTimestamps()
+{
+    // 2026-01-01T00:00:00Z = 1767225600 seconds since the Unix epoch.
+    constexpr std::chrono::seconds BENCHMARK_BASE_TIME_EPOCH{1767225600};
+    return {
+        .baseTime = std::chrono::system_clock::time_point{BENCHMARK_BASE_TIME_EPOCH},
+        .interval = std::chrono::milliseconds{1},
+    };
+}
 
 /// Skip the current `TEST_CASE` when running under a Debug build. Debug
 /// disables IPO/LTO and leaves assertions enabled, so the numbers are not

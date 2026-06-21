@@ -23,9 +23,18 @@ constexpr std::array<std::string_view, 20> WORDS = {"lorem",       "ipsum",     
                                                     "eiusmod",     "tempor",     "incididunt", "ut",     "labore",
                                                     "et",          "dolore",     "magna",      "aliqua", "ut"};
 
-std::string FormatNow()
+std::string FormatTimestamp(std::chrono::system_clock::time_point tp)
 {
-    return date::format("%FT%T", date::floor<std::chrono::milliseconds>(std::chrono::system_clock::now()));
+    return date::format("%FT%T", date::floor<std::chrono::milliseconds>(tp));
+}
+
+std::string StampTimestamp(const TimestampPolicy &policy, std::size_t lineIndex)
+{
+    if (policy.baseTime)
+    {
+        return FormatTimestamp(*policy.baseTime + policy.interval * static_cast<std::int64_t>(lineIndex));
+    }
+    return FormatTimestamp(std::chrono::system_clock::now());
 }
 
 } // namespace
@@ -36,7 +45,7 @@ std::uint32_t MakeRandomSeed()
     return rd();
 }
 
-LogRecord GenerateRandomLogRecord(std::mt19937 &rng, std::size_t lineIndex)
+LogRecord GenerateRandomLogRecord(std::mt19937 &rng, std::size_t lineIndex, const TimestampPolicy &timestamps)
 {
     std::uniform_int_distribution<int> levelDist(0, static_cast<int>(LEVELS.size()) - 1);
     std::uniform_int_distribution<int> componentDist(0, static_cast<int>(COMPONENTS.size()) - 1);
@@ -55,7 +64,7 @@ LogRecord GenerateRandomLogRecord(std::mt19937 &rng, std::size_t lineIndex)
     }
 
     LogRecord record;
-    record["timestamp"] = FormatNow();
+    record["timestamp"] = StampTimestamp(timestamps, lineIndex);
     record["level"] = std::string(LEVELS[static_cast<std::size_t>(levelDist(rng))]);
     record["message"] = message;
     record["thread_id"] = static_cast<std::int64_t>(lineIndex % 16);
@@ -63,14 +72,15 @@ LogRecord GenerateRandomLogRecord(std::mt19937 &rng, std::size_t lineIndex)
     return record;
 }
 
-std::vector<LogRecord> GenerateRandomLogRecords(std::size_t count, std::uint32_t seed)
+std::vector<LogRecord>
+GenerateRandomLogRecords(std::size_t count, std::uint32_t seed, const TimestampPolicy &timestamps)
 {
     std::vector<LogRecord> records;
     records.reserve(count);
     std::mt19937 rng(seed);
     for (std::size_t i = 0; i < count; ++i)
     {
-        records.emplace_back(GenerateRandomLogRecord(rng, i));
+        records.emplace_back(GenerateRandomLogRecord(rng, i, timestamps));
     }
     return records;
 }
@@ -183,7 +193,8 @@ std::vector<std::pair<std::string, Family>> BuildWideKeyList(std::size_t columnC
 
 } // namespace
 
-std::vector<LogRecord> GenerateWideLogRecords(std::size_t count, std::size_t columnCount, std::uint32_t seed)
+std::vector<LogRecord>
+GenerateWideLogRecords(std::size_t count, std::size_t columnCount, std::uint32_t seed, const TimestampPolicy &timestamps)
 {
     const auto keys = BuildWideKeyList(columnCount);
 
@@ -210,7 +221,7 @@ std::vector<LogRecord> GenerateWideLogRecords(std::size_t count, std::size_t col
             {
                 if (keyName.starts_with("timestamp"))
                 {
-                    json[keyName] = FormatNow();
+                    json[keyName] = StampTimestamp(timestamps, i);
                 }
                 else if (keyName.starts_with("level"))
                 {

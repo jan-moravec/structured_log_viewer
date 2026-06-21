@@ -16,10 +16,16 @@
 // Streaming-fixture spec: generate and write `count` random records on the
 // fly (no in-memory record vector), seeded for reproducibility. Used by the
 // large benchmark to avoid materializing millions of `LogRecord`s.
+//
+// `timestamps` controls how the `timestamp` field is stamped on each record;
+// see `test_common::TimestampPolicy`. Default = wall clock per record. Pass
+// a fixed `baseTime` (e.g. via `bench::DeterministicBenchmarkTimestamps()`)
+// to make fixtures byte-identical across runs and across formats.
 struct StreamedRecords
 {
     std::size_t count = 0;
     std::uint32_t seed = test_common::MakeRandomSeed();
+    test_common::TimestampPolicy timestamps{};
 };
 
 // RAII fixture that serializes `LogRecord`s to disk through a `LogFormat`,

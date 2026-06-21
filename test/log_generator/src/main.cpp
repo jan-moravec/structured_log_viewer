@@ -6,6 +6,13 @@
 // `--roll-*` flags so it can drive `TailingBytesProducer` rotation tests and
 // the GUI's Stream Mode smoke tests end-to-end.
 //
+// The selected `LogFormat`'s `writeHeader` is invoked on the initial file
+// open (skipped in `--append` mode, since the existing file is assumed to
+// already have one) and after every rotation, so a future schema-bearing
+// format (CSV-like) Just Works in `log_generator` without re-plumbing the
+// file lifecycle. The two formats shipped today (JSON / logfmt) are
+// self-describing and return an empty header, so this is a no-op for them.
+//
 // File output is the default (`--target file://...` or the legacy
 // `--output <path>`). Network output is selected by a URL-style
 // `--target` argument:
@@ -372,15 +379,39 @@ void ShiftBackups(const std::filesystem::path &basePath, std::size_t keepRolled)
     }
 }
 
+// Emit the (optional) format header to a freshly opened `out` stream. For
+// self-describing formats (JSON lines, logfmt) `writeHeader` returns an empty
+// string and this is a no-op; for schema-bearing formats (CSV-like) the
+// header must precede every fresh file (initial open, post-rotation re-open,
+// and copytruncate's in-place truncate). Bytes written are returned so the
+// caller can update its per-file byte counter.
+std::uint64_t WriteFormatHeader(
+    std::ofstream &out, const test_common::LogFormat &format, const test_common::RecordSchema &schema
+)
+{
+    const std::string header = format.writeHeader(schema);
+    if (header.empty())
+    {
+        return 0;
+    }
+    out << header << '\n';
+    return static_cast<std::uint64_t>(header.size()) + 1U;
+}
+
 // Rotate the active output, leaving `out` open at offset 0 of a freshly
-// (re-)created `basePath`. The caller is expected to reset its
-// per-file byte / line counters after this returns.
+// (re-)created `basePath` (with the format header re-emitted when applicable;
+// see `WriteFormatHeader`). The caller is expected to reset its per-file
+// byte / line counters after this returns and add the returned header byte
+// count back in so `--roll-size` accounting stays accurate.
 //
 // Failure modes: a closed `out` after this call signals that the
 // re-open step failed; the caller should log and exit. We deliberately
 // use exceptions for the filesystem step so the `Rotate` caller can
 // bail cleanly rather than silently producing garbled output.
-void Rotate(std::ofstream &out, const std::filesystem::path &basePath, RollStrategy strategy, std::size_t keepRolled)
+std::uint64_t Rotate(
+    std::ofstream &out, const std::filesystem::path &basePath, RollStrategy strategy, std::size_t keepRolled,
+    const test_common::LogFormat &format, const test_common::RecordSchema &schema
+)
 {
     out.flush();
     out.close();
@@ -440,6 +471,12 @@ void Rotate(std::ofstream &out, const std::filesystem::path &basePath, RollStrat
         break;
     }
     }
+
+    if (!out.is_open())
+    {
+        return 0;
+    }
+    return WriteFormatHeader(out, format, schema);
 }
 
 } // namespace
@@ -547,8 +584,29 @@ int main(int argc, char *argv[])
     const auto sizeText = program.get<std::string>("--size");
     const auto linesText = program.get<std::string>("--lines");
     const auto formatName = program.get<std::string>("--format");
-    const test_common::LogFormat format =
-        formatName == "logfmt" ? test_common::Logfmt() : test_common::JsonLines();
+    // argparse `.choices()` already rejects unknown values, but treat the
+    // dispatch table as the source of truth so adding a third format that
+    // forgets to update both sites fails loudly here rather than silently
+    // falling through to JSON.
+    test_common::LogFormat format;
+    if (formatName == "json")
+    {
+        format = test_common::JsonLines();
+    }
+    else if (formatName == "logfmt")
+    {
+        format = test_common::Logfmt();
+    }
+    else
+    {
+        std::cerr << "Unknown --format value: " << formatName << " (expected one of: json, logfmt)\n";
+        return 1;
+    }
+    // No schema-bearing format ships today (JSON / logfmt are self-describing
+    // and write an empty header), but pass an empty `RecordSchema` so a
+    // future CSV-like format only has to extend the dispatch table above and
+    // populate this `schema` rather than re-plumb the open/rotate paths.
+    const test_common::RecordSchema schema;
     // Default the output base name to the format's extension unless the user
     // pinned an explicit --output. The argparse default is the empty string
     // (so `--help` doesn't show a JSON-only default), so an empty value here
@@ -632,6 +690,10 @@ int main(int argc, char *argv[])
     std::filesystem::path filePath;
 
     std::string targetDescription;
+    // Bytes written by the initial format header (0 for self-describing
+    // formats). Added to `bytesInFile` below so `--roll-size` accounting
+    // counts the header just like every other byte we write.
+    std::uint64_t headerBytes = 0;
     if (target.kind == TargetKind::File)
     {
         filePath = std::filesystem::path(target.filePath);
@@ -641,6 +703,13 @@ int main(int argc, char *argv[])
         {
             std::cerr << "Failed to open output file: " << filePath << '\n';
             return 1;
+        }
+        // Emit the format header on fresh files only. In --append mode the
+        // existing file is assumed to already have a header (if the format
+        // requires one); re-emitting it mid-stream would corrupt the file.
+        if (!append)
+        {
+            headerBytes = WriteFormatHeader(out, format, schema);
         }
         targetDescription = "file://" + filePath.string();
     }
@@ -710,6 +779,7 @@ int main(int argc, char *argv[])
             bytesInFile = static_cast<std::uint64_t>(existingSize);
         }
     }
+    bytesInFile += headerBytes;
 
     std::cout << "log_generator: writing"
               << " up to "
@@ -828,9 +898,10 @@ int main(int argc, char *argv[])
 
         if (shouldRoll() && !reachedTotal())
         {
+            std::uint64_t headerBytesAfterRotate = 0;
             try
             {
-                Rotate(out, filePath, strategy, keepRolled);
+                headerBytesAfterRotate = Rotate(out, filePath, strategy, keepRolled, format, schema);
             }
             catch (const std::exception &err)
             {
@@ -843,7 +914,13 @@ int main(int argc, char *argv[])
                 return 1;
             }
             ++rotationCount;
-            bytesInFile = 0;
+            // Reset per-file counters, then carry the rewritten format header
+            // (if any) into the new file's accounting so a header-bearing
+            // format doesn't under-count toward `--roll-size`. `totalBytes`
+            // intentionally does NOT include the header — it tracks bytes
+            // generated by the random-record loop, which is what users care
+            // about when interpreting the final wrote-N-bytes summary.
+            bytesInFile = headerBytesAfterRotate;
             linesInFile = 0;
             std::cout << "log_generator: rotated #" << rotationCount << " (" << rollStrategyText
                       << "), continuing into " << filePath << " (total so far: " << totalLines << " lines, "

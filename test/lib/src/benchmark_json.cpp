@@ -88,10 +88,16 @@ TEST_CASE("Stream JSON log to LogTable (1'000'000 lines)", "[.][benchmark][json_
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    // Pinned seed (shared with `[logfmt_parser][large]` via `LARGE_FIXTURE_SEED`)
-    // so lines/s is directly comparable across formats and stable across runs.
+    // Pinned seed + pinned timestamp policy (shared with `[logfmt_parser][large]`
+    // via `LARGE_FIXTURE_SEED` / `DeterministicBenchmarkTimestamps()`) so the
+    // record bytes are identical across runs and across formats. Without the
+    // pinned timestamps, each per-record `system_clock::now()` would drift the
+    // fixture by a few bytes per run and between the JSON / logfmt cases.
     const TestStructuredLogFile testFile(
-        StreamedRecords{.count = 1'000'000, .seed = LARGE_FIXTURE_SEED}, test_common::JsonLines()
+        StreamedRecords{
+            .count = 1'000'000, .seed = LARGE_FIXTURE_SEED, .timestamps = DeterministicBenchmarkTimestamps()
+        },
+        test_common::JsonLines()
     );
     const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
 
@@ -122,10 +128,14 @@ TEST_CASE("Stream JSON log to LogTable (wide, 200'000 lines)", "[.][benchmark][j
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    // Pinned seed (shared with `[logfmt_parser][wide]` via `WIDE_FIXTURE_SEED`)
-    // so the two formats consume byte-identical record sequences.
+    // Pinned seed + pinned timestamp policy (shared with `[logfmt_parser][wide]`
+    // via `WIDE_FIXTURE_SEED` / `DeterministicBenchmarkTimestamps()`) so the
+    // two formats consume byte-identical record sequences across runs.
     const TestStructuredLogFile testFile(
-        GenerateWideLogRecords(200'000, /*columnCount=*/30, WIDE_FIXTURE_SEED), test_common::JsonLines()
+        GenerateWideLogRecords(
+            200'000, /*columnCount=*/30, WIDE_FIXTURE_SEED, DeterministicBenchmarkTimestamps()
+        ),
+        test_common::JsonLines()
     );
     // False positive inside MSVC's `<filesystem>`; the `_BITMASK_OPS` `operator|` casts an OR of
     // bitmask members to the same enum type and tripped the analyzer on MSVC STL headers (out of
@@ -417,10 +427,14 @@ TEST_CASE("Cancellation latency", "[.][benchmark][json_parser][cancellation]")
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    // Pinned seed for reproducibility across CI runs (content variation
-    // isn't relevant to the cancellation-latency measurement).
+    // Pinned seed + pinned timestamp policy for reproducibility across CI
+    // runs (content variation isn't relevant to the cancellation-latency
+    // measurement, but stable byte counts are nice for the WARN line).
     const TestStructuredLogFile testFile(
-        StreamedRecords{.count = 1'000'000, .seed = LARGE_FIXTURE_SEED}, test_common::JsonLines()
+        StreamedRecords{
+            .count = 1'000'000, .seed = LARGE_FIXTURE_SEED, .timestamps = DeterministicBenchmarkTimestamps()
+        },
+        test_common::JsonLines()
     );
     const JsonParser parser;
 

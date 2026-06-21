@@ -232,6 +232,19 @@ const date::time_zone *CurrentZone()
 
 void Initialize(const std::filesystem::path &tzdata)
 {
+    // Validate the path up front: `date::set_install` accepts any string and
+    // only fails lazily on the first tzdb access, but `date::current_zone()`
+    // memoizes its result the first time it succeeds. That memoization means
+    // a later `Initialize(bad_path)` from a process that already initialized
+    // tzdata won't surface the bad path, which (a) defeats the precondition
+    // check this function is supposed to enforce and (b) leaves
+    // `test_log_processing.cpp`'s "Initialize ... invalid path" assertion
+    // order-dependent on whatever tests ran before it. Checking the path
+    // directly here makes the contract independent of date's internal cache.
+    if (!std::filesystem::exists(tzdata) || !std::filesystem::is_directory(tzdata))
+    {
+        throw std::runtime_error("tzdata directory does not exist: " + tzdata.string());
+    }
     date::set_install(tzdata.string());
     static_cast<void>(date::current_zone());
 }

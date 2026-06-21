@@ -9,10 +9,13 @@
 #include <catch2/catch_all.hpp>
 #include <date/tz.h>
 
+#include <cassert>
 #include <filesystem>
 #include <fstream>
 #include <random>
 #include <stdexcept>
+#include <string>
+#include <system_error>
 #include <utility>
 
 using namespace loglib;
@@ -62,10 +65,19 @@ TestStructuredLogFile::TestStructuredLogFile(
     std::ofstream file = OpenStructuredFile(mFsPath, format, schema);
     for (const auto &record : mRecords)
     {
-        file << format.writeLine(record) << '\n';
+        const std::string line = format.writeLine(record);
+        // See `LogFormat::writeLine` contract; cf. the streaming ctor below
+        // for the rationale on guarding this in debug builds.
+        assert((line.empty() || line.back() != '\n') && "LogFormat::writeLine must not include trailing newline");
+        file << line << '\n';
     }
     if (!file.good())
     {
+        // Clean up the (possibly partially-written) file before throwing so
+        // a failed ctor doesn't leak orphaned bytes onto disk — the dtor
+        // never runs when the ctor exits via exception.
+        std::error_code ec;
+        std::filesystem::remove(mFsPath, ec);
         throw std::runtime_error("Failed to write structured log file: " + mFilePath);
     }
 }
@@ -81,11 +93,21 @@ TestStructuredLogFile::TestStructuredLogFile(
     std::mt19937 rng(streamed.seed);
     for (std::size_t i = 0; i < streamed.count; ++i)
     {
-        const test_common::LogRecord record = test_common::GenerateRandomLogRecord(rng, i);
-        file << format.writeLine(record) << '\n';
+        const test_common::LogRecord record = test_common::GenerateRandomLogRecord(rng, i, streamed.timestamps);
+        const std::string line = format.writeLine(record);
+        // Per the `LogFormat` contract, `writeLine` must not emit a trailing
+        // newline (the caller is responsible for line termination). A
+        // violation would silently produce double-newline / blank-line files
+        // that all the parsers happily skip past — exactly the kind of mistake
+        // that's invisible to fixture-construction call sites and only shows
+        // up as a confused benchmark reviewer.
+        assert((line.empty() || line.back() != '\n') && "LogFormat::writeLine must not include trailing newline");
+        file << line << '\n';
     }
     if (!file.good())
     {
+        std::error_code ec;
+        std::filesystem::remove(mFsPath, ec);
         throw std::runtime_error("Failed to write structured log file: " + mFilePath);
     }
 }

@@ -46,10 +46,14 @@ TEST_CASE("Stream logfmt log to LogTable (1'000'000 lines)", "[.][benchmark][log
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    // Pinned seed (shared with `[json_parser][large]` via `LARGE_FIXTURE_SEED`)
-    // so lines/s is directly comparable across formats and stable across runs.
+    // Pinned seed + pinned timestamp policy (shared with `[json_parser][large]`
+    // via `LARGE_FIXTURE_SEED` / `DeterministicBenchmarkTimestamps()`) so the
+    // record bytes are identical across runs and across formats.
     const TestStructuredLogFile testFile(
-        StreamedRecords{.count = 1'000'000, .seed = LARGE_FIXTURE_SEED}, test_common::Logfmt()
+        StreamedRecords{
+            .count = 1'000'000, .seed = LARGE_FIXTURE_SEED, .timestamps = DeterministicBenchmarkTimestamps()
+        },
+        test_common::Logfmt()
     );
     const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
 
@@ -85,10 +89,14 @@ TEST_CASE("Stream logfmt log to LogTable (wide, 200'000 lines)", "[.][benchmark]
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    // Pinned seed (shared with `[json_parser][wide]` via `WIDE_FIXTURE_SEED`)
-    // so the two formats consume byte-identical record sequences.
+    // Pinned seed + pinned timestamp policy (shared with `[json_parser][wide]`
+    // via `WIDE_FIXTURE_SEED` / `DeterministicBenchmarkTimestamps()`) so the
+    // two formats consume byte-identical record sequences across runs.
     const TestStructuredLogFile testFile(
-        GenerateWideLogRecords(200'000, /*columnCount=*/30, WIDE_FIXTURE_SEED), test_common::Logfmt()
+        GenerateWideLogRecords(
+            200'000, /*columnCount=*/30, WIDE_FIXTURE_SEED, DeterministicBenchmarkTimestamps()
+        ),
+        test_common::Logfmt()
     );
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
