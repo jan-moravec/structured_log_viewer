@@ -4,9 +4,10 @@ cmake_minimum_required(VERSION 3.28)
 # CTest label (see `catch_discover_tests` below).
 add_executable(
     tests
+    "src/benchmark_csv.cpp"
     "src/benchmark_json.cpp"
-    "src/benchmark_logfmt.cpp"
     "src/benchmark_log_filter.cpp"
+    "src/benchmark_logfmt.cpp"
     "src/benchmark_stream.cpp"
     "src/common.cpp"
     "src/test_csv_parser.cpp"
