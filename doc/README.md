@@ -6,7 +6,7 @@ Structured Log Viewer is a Qt 6 desktop application for inspecting structured lo
 
 ## Supported Input Formats
 
-The application reads two structured-log formats out of the box. The format is auto-detected on `File → Open` and persisted with the session, so reopening a saved session reuses the same parser without re-prompting.
+The application reads three structured-log formats out of the box. The format is auto-detected on `File → Open` and persisted with the session, so reopening a saved session reuses the same parser without re-prompting.
 
 **JSON Lines** (also known as NDJSON / JSOND): one JSON object per line.
 
@@ -22,9 +22,19 @@ timestamp=2025-01-15T12:34:56.789Z level=info component=app msg="started"
 timestamp=2025-01-15T12:34:57.000Z level=error component=db msg="connection refused" code=42
 ```
 
-Bare values are typed: empty (`key=`) becomes null, `true` / `false` become booleans, decimal integers become int / uint, decimals with point or exponent become double, otherwise the value stays a string. Quoted values **stay strings even if the contents look numeric** (so `pid="42"` does not promote to a number). Repeated keys within one record are last-write-wins.
+**CSV** (RFC 4180 strict, comma-only): one record per line, comma-separated cells, with the **first non-blank line treated as a header** that names the columns. Quoted cells (`"..."`) support `""` as the escape for a literal quote and may embed commas verbatim; multi-line quoted cells are not supported in v1 — a quoted cell must end on the same line it opens. CRLF and bare LF are both accepted as line terminators; a leading UTF-8 BOM on the header is stripped.
 
-Empty lines are skipped. Lines that fail to parse are reported as errors but do not abort loading — valid records are still shown. Nested JSON objects and arrays are preserved as their compact JSON string; logfmt has no nesting.
+```csv
+timestamp,level,component,message
+2025-01-15T12:34:56.789Z,info,app,started
+2025-01-15T12:34:57.000Z,error,db,"connection refused"
+```
+
+Bare values are typed: empty becomes null, `true` / `false` become booleans, decimal integers become int / uint, decimals with point or exponent become double, otherwise the value stays a string. Quoted values **stay strings even if the contents look numeric** (so `"42"` does not promote to a number). Repeated keys within one record are last-write-wins.
+
+Empty CSV cells (`a,,c` or trailing missing cells) are omitted from the record rather than stored as null — looking up a missing column still returns null, but the in-memory footprint stays small on wide rows.
+
+Empty lines are skipped. Lines that fail to parse are reported as errors but do not abort loading — valid records are still shown. Nested JSON objects and arrays are preserved as their compact JSON string in logfmt and CSV; only JSON Lines preserves nesting natively.
 
 ## Ingestion modes
 
@@ -47,10 +57,10 @@ In Stream Mode and Network Stream Mode, **Stop** ends the session but keeps the 
 
 You can open a finished log file in two ways:
 
-1. **File → Open…** (`Ctrl+O`) — opens a file picker that auto-detects whether the selected file is a log or a [configuration](#configurations) file, *and* whether a log file is JSON Lines or logfmt.
+1. **File → Open…** (`Ctrl+O`) — opens a file picker that auto-detects whether the selected file is a log or a [configuration](#configurations) file, *and* whether a log file is JSON Lines, logfmt, or CSV.
 1. **Drag & drop** one or more files onto the main window.
 
-The file dialog defaults to a filter that lists `*.json`, `*.jsonl`, `*.ndjson`, `*.logfmt`, `*.log`, and `*.txt`; switch it to **All Files (\*.\*)** to pick anything else (including unsuffixed files). The actual format is decided by content sniffing, not by extension, so the extension only affects what the picker shows — not how the file is parsed. The detected format is recorded on the active session so reopening a saved session keeps the same parser.
+The file dialog defaults to a filter that lists `*.json`, `*.jsonl`, `*.ndjson`, `*.logfmt`, `*.csv`, `*.log`, and `*.txt`; switch it to **All Files (\*.\*)** to pick anything else (including unsuffixed files). The actual format is decided by content sniffing, not by extension, so the extension only affects what the picker shows — not how the file is parsed. The detected format is recorded on the active session so reopening a saved session keeps the same parser.
 
 Opening multiple files at once **merges** their records into a single table; the files are queued and parsed sequentially while sharing one column layout. Mixing formats across the queue is supported — each file is sniffed individually. If parsing errors occur, the first 20 are shown in a dialog when the queue drains; the rest are summarized as "… and N more error(s)". The status bar shows `Parsing <file> — N lines, M errors` while the queue is in flight.
 
@@ -130,7 +140,7 @@ The following are **out of scope** for the current Stream Mode implementation:
 - **stdin / named-pipe sources** — only file tailing is wired up; for network ingestion see [Network Stream Mode](#network-stream-mode-tcp--udp).
 - **Auto-detect "this file is being actively written → open in Stream Mode"** — Stream Mode is always an explicit `File → Open Log Stream…` action.
 - **Per-file or per-session retention overrides** — the retention cap is a single application-wide setting.
-- **Streaming for arbitrary formats** — JSON Lines and logfmt are first-class; other formats (CSV, ad-hoc text) are not yet supported but the seam in `loglib` is format-agnostic so future parsers inherit live tail and network ingestion for free.
+- **Streaming for arbitrary formats** — JSON Lines, logfmt, and CSV are first-class; other formats (ad-hoc text, multi-line records, alternative delimiters) are not yet supported but the seam in `loglib` is format-agnostic so future parsers inherit live tail and network ingestion for free.
 
 ## Network Stream Mode (TCP / UDP)
 
@@ -141,7 +151,7 @@ Network Stream Mode listens on a local TCP or UDP port and ingests structured lo
 Use **File → Open Network Stream…** (`Ctrl+Shift+L`). The dialog asks for:
 
 - **Protocol** — TCP or UDP.
-- **Format** — JSON Lines or logfmt. Network ingestion has no file to sniff, so the parser is selected explicitly here. The choice is persisted with the session.
+- **Format** — JSON Lines, logfmt, or CSV. Network ingestion has no file to sniff, so the parser is selected explicitly here. The choice is persisted with the session. **CSV caveat:** the first inbound line is treated as the schema header. With multiple concurrent TCP clients, whichever client's first line arrives first sets the schema for *every* connected client — coordinate the header across producers (same column order, same names) or restrict CSV mode to a single producer.
 - **Bind address** — `0.0.0.0` (IPv4 any), `::` (IPv6 dual-stack), `127.0.0.1` / `::1` (loopback only), or a specific interface IP.
 - **Port** — the listening port. `0` requests an OS-assigned ephemeral port (handy for ad-hoc local testing).
 - **Max concurrent clients (TCP)** — hard cap on simultaneous accepted connections (default 16). New connections beyond this are accepted-and-immediately-closed.
@@ -480,7 +490,7 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 
 ### "Failed to parse …" or "No valid log data found"
 
-The selected file is not valid JSON Lines or logfmt, or every line failed to parse. Check the error dialog for the first few offending line numbers. If a file looks like logfmt but is being opened as JSON Lines (or vice versa), make sure the first non-empty line is unambiguously one format — auto-detection requires JSON Lines to start with `{` and logfmt to contain at least one bare `key=` token.
+The selected file is not valid JSON Lines, logfmt, or CSV, or every line failed to parse. Check the error dialog for the first few offending line numbers. If a file is being opened with the wrong parser, make sure the first non-empty line is unambiguously one format — auto-detection requires JSON Lines to start with `{`, logfmt to contain at least one bare `key=` token, and CSV to have a header row with two or more comma-separated cells followed by a data row of the same cell count.
 
 ### Timestamps show as raw strings
 
