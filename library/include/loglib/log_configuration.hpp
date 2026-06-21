@@ -162,10 +162,16 @@ struct LogConfiguration
         /// network streams have nothing to sniff at restore time and
         /// live-tail sessions commit to a parser before the first
         /// byte arrives. Defaults to `Json` for a fresh `Source`.
+        ///
+        /// The serialised JSON keys are stable strings (`"json"`,
+        /// `"logfmt"`, `"csv"`, ...) defined in
+        /// `loglib/internal/log_configuration_glaze_meta.hpp`; append
+        /// new values at the end, never reorder existing ones.
         enum class Format
         {
             Json,
-            Logfmt
+            Logfmt,
+            Csv
         };
 
         Kind kind = Kind::File;

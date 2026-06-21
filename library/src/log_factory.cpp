@@ -1,5 +1,6 @@
 #include "loglib/log_factory.hpp"
 
+#include "loglib/parsers/csv_parser.hpp"
 #include "loglib/parsers/json_parser.hpp"
 #include "loglib/parsers/logfmt_parser.hpp"
 
@@ -16,6 +17,8 @@ std::unique_ptr<LogParser> LogFactory::Create(Parser parser)
         return std::make_unique<JsonParser>();
     case Parser::Logfmt:
         return std::make_unique<LogfmtParser>();
+    case Parser::Csv:
+        return std::make_unique<CsvParser>();
     default:
         throw std::runtime_error("Invalid parser " + std::to_string(static_cast<int>(parser)));
     }

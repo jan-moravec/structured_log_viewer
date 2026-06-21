@@ -51,8 +51,8 @@ template <> struct glz::meta<loglib::LogConfiguration::Source::Kind>
 template <> struct glz::meta<loglib::LogConfiguration::Source::Format>
 {
     using enum loglib::LogConfiguration::Source::Format;
-    static constexpr std::array keys{"json", "logfmt"};
-    static constexpr std::array value{Json, Logfmt};
+    static constexpr std::array keys{"json", "logfmt", "csv"};
+    static constexpr std::array value{Json, Logfmt, Csv};
 };
 
 // Pinned wire schemas for nested types. Explicit names turn a field
