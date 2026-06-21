@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -73,6 +74,12 @@ ResolvedPipelineSettings ResolvePipelineSettings(const AdvancedParserOptions &ad
 /// arena, coalesces, diffs new keys, runs inline timestamp promotion,
 /// and honours `stop_token`. Stage B stamps each emitted `LogLine` with
 /// `&source` and its absolute `lineId`.
+///
+/// @p newKeyBaseline forwards to `BatchCoalescer`: parsers that intern
+/// their schema before the pipeline runs (e.g. `CsvParser` parses its
+/// header up front so every Stage B worker shares one `column -> KeyId`
+/// table) pass the pre-intern key count so those columns still surface
+/// as `newKeys`. Defaults to the index's current size.
 template <class Token, class UserState, class StageADriver, class StageBDecoder>
 void RunStaticParserPipeline(
     FileLineSource &source,
@@ -80,7 +87,8 @@ void RunStaticParserPipeline(
     const ParserOptions &options,
     const AdvancedParserOptions &advanced,
     StageADriver &&stageADriver,
-    StageBDecoder &&stageBDecoder
+    StageBDecoder &&stageBDecoder,
+    std::optional<size_t> newKeyBaseline = std::nullopt
 )
 {
     LogFile &file = source.File();
@@ -88,7 +96,7 @@ void RunStaticParserPipeline(
     sink.OnStarted();
 
     KeyIndex &keys = sink.Keys();
-    BatchCoalescer coalescer(sink, keys, STATIC_BATCH_FLUSH_LINES, STATIC_BATCH_FLUSH_INTERVAL);
+    BatchCoalescer coalescer(sink, keys, STATIC_BATCH_FLUSH_LINES, STATIC_BATCH_FLUSH_INTERVAL, newKeyBaseline);
 
     // Sink contract: at least one `OnBatch` before `OnFinished` on
     // every early-exit path.

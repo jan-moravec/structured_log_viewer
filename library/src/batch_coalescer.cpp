@@ -9,11 +9,15 @@ namespace loglib::internal
 {
 
 BatchCoalescer::BatchCoalescer(
-    LogParseSink &sink, KeyIndex &keys, size_t flushLines, std::chrono::milliseconds flushInterval
+    LogParseSink &sink,
+    KeyIndex &keys,
+    size_t flushLines,
+    std::chrono::milliseconds flushInterval,
+    std::optional<size_t> newKeyBaseline
 ) noexcept
     : mSink(sink),
       mKeys(keys),
-      mPrevKeyCount(keys.Size()),
+      mPrevKeyCount(newKeyBaseline.value_or(keys.Size())),
       mFlushLines(flushLines),
       mFlushInterval(flushInterval),
       mLastFlush(std::chrono::steady_clock::now())

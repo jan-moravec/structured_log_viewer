@@ -165,15 +165,21 @@ template <class Emit> bool TokenizeCsvLine(std::string_view line, std::string &q
             {
                 ++i;
             }
-            if (i < end)
+            if (i >= end)
             {
-                ++i;
-                if (i >= end)
-                {
-                    CsvCell empty;
-                    emit(empty);
-                    return true;
-                }
+                // Garbage ran to end-of-line (e.g. `"a"x`): the quoted
+                // cell is the last one. Don't fall through to the
+                // unquoted branch, which would emit a spurious empty
+                // trailing cell.
+                return true;
+            }
+            ++i; // consume the ','
+            if (i >= end)
+            {
+                // Trailing comma after the garbage -> one empty cell.
+                CsvCell empty;
+                emit(empty);
+                return true;
             }
             continue;
         }
@@ -875,6 +881,13 @@ void CsvParser::ParseStreaming(
     const size_t fileSize = file.Size();
     const char *fileEnd = (fileBegin != nullptr) ? fileBegin + fileSize : nullptr;
 
+    // Snapshot the key count *before* the eager header parse so the
+    // coalescer reports the header columns as `newKeys` even though we
+    // intern them before the pipeline (and thus before the coalescer's
+    // own default snapshot). Without this the static path would emit
+    // zero `newKeys` and the `LogTable` would never build any columns.
+    const size_t newKeyBaseline = sink.Keys().Size();
+
     // Eagerly parse the header off the mmap so every Stage B worker
     // sees the same read-only `column index -> KeyId` table. This is
     // schema-only -- the byte cursor stays at `fileBegin` (offset 0)
@@ -956,7 +969,9 @@ void CsvParser::ParseStreaming(
                       internal::ParsedPipelineBatch &parsed
                   ) { DecodeCsvBatch(token, worker, keys, *sourcePtr, timeColumns, parsed, columnKeys); };
 
-    internal::RunStaticParserPipeline<CsvByteRange, CsvWorkerState>(source, sink, options, advanced, stageA, stageB);
+    internal::RunStaticParserPipeline<CsvByteRange, CsvWorkerState>(
+        source, sink, options, advanced, stageA, stageB, newKeyBaseline
+    );
 }
 
 } // namespace loglib

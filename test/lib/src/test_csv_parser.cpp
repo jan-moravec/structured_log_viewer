@@ -1,9 +1,13 @@
 #include "common.hpp"
 
+#include <loglib/internal/advanced_parser_options.hpp>
 #include <loglib/line_source.hpp>
+#include <loglib/log_configuration.hpp>
 #include <loglib/log_data.hpp>
 #include <loglib/log_file.hpp>
+#include <loglib/log_parse_sink.hpp>
 #include <loglib/log_parser.hpp>
+#include <loglib/log_table.hpp>
 #include <loglib/parse_file.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/parsers/csv_parser.hpp>
@@ -83,6 +87,58 @@ TEST_CASE("Validate file with mismatched cell count [csv]", "[csv_parser]")
     const TestLogFile file;
     file.Write("level,message,extra\ninfo,hello\n");
     CHECK_FALSE(parser.IsValid(file.GetFilePath()));
+}
+
+namespace
+{
+// Minimal `LogParseSink` that forwards batches straight into a
+// `LogTable`, mirroring the GUI's `QtStreamingLogSink` -> `LogModel`
+// path. Used to exercise column creation (which only happens via
+// `StreamedBatch::newKeys`), unlike the value-only `BufferingSink`
+// that `ParseFile` uses.
+struct TableSink : loglib::LogParseSink
+{
+    loglib::LogTable *table = nullptr;
+    loglib::KeyIndex &Keys() override
+    {
+        return table->Keys();
+    }
+    void OnStarted() override
+    {
+    }
+    void OnBatch(loglib::StreamedBatch batch) override
+    {
+        table->AppendBatch(std::move(batch));
+    }
+    void OnFinished(bool /*cancelled*/) override
+    {
+    }
+};
+} // namespace
+
+TEST_CASE("Static parse builds LogTable columns from the CSV header [csv]", "[csv_parser]")
+{
+    // Regression guard: the static (`File -> Open...`) pipeline interns
+    // the header columns *before* the pipeline's `BatchCoalescer`
+    // snapshots its new-key baseline, so without the explicit baseline
+    // hand-off the coalescer would emit zero `newKeys` and the
+    // `LogTable` would show rows with no columns at all.
+    const TestLogFile file("static_columns.csv");
+    file.Write("level,message\ninfo,hello\nerror,boom\n");
+
+    loglib::LogTable table{loglib::LogData{}, loglib::LogConfigurationManager{}};
+    auto source = file.CreateFileLineSource();
+    loglib::FileLineSource *sourceRaw = source.get();
+    table.BeginStreaming(std::move(source));
+
+    TableSink sink;
+    sink.table = &table;
+    loglib::CsvParser::ParseStreaming(
+        *sourceRaw, sink, loglib::ParserOptions{}, loglib::internal::AdvancedParserOptions{}
+    );
+
+    CHECK(table.RowCount() == 2);
+    CHECK(table.ColumnCount() == 2);
 }
 
 TEST_CASE("Parse minimal CSV [csv]", "[csv_parser]")

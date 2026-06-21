@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <optional>
 
 namespace loglib
 {
@@ -23,8 +24,19 @@ namespace loglib::internal
 class BatchCoalescer
 {
 public:
+    /// @p newKeyBaseline overrides the starting `KeyIndex` cursor used
+    /// for the per-batch new-key diff. Defaults to the index's current
+    /// size (so only keys interned *after* construction surface as
+    /// `newKeys`). Parsers that intern their schema before the pipeline
+    /// starts — e.g. `CsvParser`, which parses its header row up front
+    /// so every Stage B worker shares one `column -> KeyId` table — pass
+    /// the pre-intern count here so those columns still reach the sink.
     BatchCoalescer(
-        LogParseSink &sink, KeyIndex &keys, size_t flushLines, std::chrono::milliseconds flushInterval
+        LogParseSink &sink,
+        KeyIndex &keys,
+        size_t flushLines,
+        std::chrono::milliseconds flushInterval,
+        std::optional<size_t> newKeyBaseline = std::nullopt
     ) noexcept;
 
     BatchCoalescer(const BatchCoalescer &) = delete;
