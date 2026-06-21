@@ -145,4 +145,186 @@ LogFormat Logfmt()
     };
 }
 
+namespace
+{
+
+// A CSV cell is bare-safe when it contains no byte that would end the cell
+// or trigger RFC-4180 quoting. Mirrors `loglib::BareCellIsSafe` in
+// `library/src/parsers/csv_parser.cpp`; duplicated here so `test_common`
+// stays loglib-free. Drift is caught by `[csv_parser][round_trip]` tests.
+bool CsvCellIsBareSafe(std::string_view value) noexcept
+{
+    return std::ranges::all_of(value, [](char c) { return c != ',' && c != '"' && c != '\r' && c != '\n'; });
+}
+
+void AppendCsvQuoted(std::string &out, std::string_view value)
+{
+    out.push_back('"');
+    for (const char c : value)
+    {
+        if (c == '"')
+        {
+            out.append("\"\"");
+        }
+        else
+        {
+            out.push_back(c);
+        }
+    }
+    out.push_back('"');
+}
+
+void AppendCsvCell(std::string &out, std::string_view value)
+{
+    if (CsvCellIsBareSafe(value))
+    {
+        out.append(value.data(), value.size());
+    }
+    else
+    {
+        AppendCsvQuoted(out, value);
+    }
+}
+
+void AppendCsvValue(std::string &out, const LogRecord &value)
+{
+    if (value.is_null())
+    {
+        // Null renders as the empty cell -- `CsvParser` omits empty
+        // cells from the row, matching its "absent key == monostate"
+        // contract.
+        return;
+    }
+    if (value.is_string())
+    {
+        AppendCsvCell(out, value.get_string());
+        return;
+    }
+    if (value.is_boolean())
+    {
+        out.append(value.get_boolean() ? "true" : "false");
+        return;
+    }
+    if (value.is_number())
+    {
+        // Numbers serialise to the same bare token in JSON and CSV.
+        out.append(CompactJson(value));
+        return;
+    }
+    // Array or object: embed compact JSON as a single quoted CSV cell so
+    // the wide-row column count matches the JSON serialisation. The
+    // parser sees this as an opaque string (lossy escape hatch, mirrors
+    // logfmt's treatment of nesting).
+    AppendCsvQuoted(out, CompactJson(value));
+}
+
+// Find @p key inside @p record (which must be an object). Returns a
+// pointer to the value, or nullptr when the key is absent.
+const LogRecord *FindObjectField(const LogRecord &record, const std::string &key)
+{
+    if (!record.is_object())
+    {
+        return nullptr;
+    }
+    for (const auto &[k, v] : record.get_object())
+    {
+        if (k == key)
+        {
+            return &v;
+        }
+    }
+    return nullptr;
+}
+
+} // namespace
+
+LogFormat Csv(RecordSchema schema)
+{
+    return LogFormat{
+        .suggestedExtension = ".csv",
+        .writeHeader =
+            [capturedSchema = schema](const RecordSchema &paramSchema) {
+                // Prefer the explicit `paramSchema` arg so callers that
+                // pass `Csv()` (no captured schema) + a schema to
+                // `TestStructuredLogFile` still get a header. Fall back
+                // to the captured one for callers that wired the schema
+                // into the factory.
+                const RecordSchema &effective = paramSchema.empty() ? capturedSchema : paramSchema;
+                if (effective.empty())
+                {
+                    return std::string{};
+                }
+                std::string out;
+                bool first = true;
+                for (const auto &name : effective)
+                {
+                    if (!first)
+                    {
+                        out.push_back(',');
+                    }
+                    first = false;
+                    AppendCsvCell(out, name);
+                }
+                return out;
+            },
+        .writeLine =
+            [capturedSchema = std::move(schema)](const LogRecord &record) {
+                if (capturedSchema.empty())
+                {
+                    // Headerless mode: walk the record's lex order.
+                    // Produces CSV-shaped rows but no header line, so
+                    // `loglib::CsvParser::IsValid` rejects the result.
+                    // Real fixtures should pass a non-empty schema.
+                    if (!record.is_object())
+                    {
+                        return CompactJson(record);
+                    }
+                    std::string out;
+                    bool first = true;
+                    for (const auto &[_key, value] : record.get_object())
+                    {
+                        if (!first)
+                        {
+                            out.push_back(',');
+                        }
+                        first = false;
+                        AppendCsvValue(out, value);
+                    }
+                    return out;
+                }
+                std::string out;
+                bool first = true;
+                for (const auto &name : capturedSchema)
+                {
+                    if (!first)
+                    {
+                        out.push_back(',');
+                    }
+                    first = false;
+                    if (const auto *value = FindObjectField(record, name); value != nullptr)
+                    {
+                        AppendCsvValue(out, *value);
+                    }
+                    // Missing key -> empty cell (handled by the comma
+                    // delimiter logic above).
+                }
+                return out;
+            },
+    };
+}
+
+RecordSchema DeriveSchemaFromRecord(const LogRecord &record)
+{
+    RecordSchema schema;
+    if (!record.is_object())
+    {
+        return schema;
+    }
+    for (const auto &[key, _value] : record.get_object())
+    {
+        schema.emplace_back(key);
+    }
+    return schema;
+}
+
 } // namespace test_common

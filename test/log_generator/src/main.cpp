@@ -479,8 +479,9 @@ int main(int argc, char *argv[])
 
     program.add_argument("-f", "--format")
         .default_value(std::string{"json"})
-        .choices("json", "logfmt")
-        .help("Record serialization format: 'json' (one JSON object per line) or 'logfmt'.");
+        .choices("json", "logfmt", "csv")
+        .help("Record serialization format: 'json' (one JSON object per line), 'logfmt', or 'csv' "
+              "(RFC 4180 strict, comma-only, header derived from the first generated record).");
 
     program.add_argument("-t", "--timeout")
         .default_value(0)
@@ -551,9 +552,16 @@ int main(int argc, char *argv[])
     const auto sizeText = program.get<std::string>("--size");
     const auto linesText = program.get<std::string>("--lines");
     const auto formatName = program.get<std::string>("--format");
+    // Resolve the seed before the format dispatch so the CSV branch can
+    // probe a sample record (and discard one RNG draw) to derive the
+    // header schema. The probe RNG is a fresh `std::mt19937(seed)` so
+    // the real generator below still consumes the same first draw.
+    const std::uint32_t seed = program.is_used("--seed") ? static_cast<std::uint32_t>(program.get<int>("--seed"))
+                                                         : test_common::MakeRandomSeed();
     // The dispatch table is the source of truth — adding a new `--format`
     // choice without updating it must fail loudly here, not fall through.
     test_common::LogFormat format;
+    test_common::RecordSchema schema;
     if (formatName == "json")
     {
         format = test_common::JsonLines();
@@ -562,14 +570,25 @@ int main(int argc, char *argv[])
     {
         format = test_common::Logfmt();
     }
+    else if (formatName == "csv")
+    {
+        // Probe one record to derive the column schema -- the generator
+        // always emits the same key set (plus the `line_number` injected
+        // below), so a single probe at construction time pins the header.
+        // The probe consumes one RNG draw; that's fine for a generator
+        // that prioritises shape consistency over byte-exact reproduction
+        // of the legacy JSON output for a given seed.
+        std::mt19937 probeRng(seed);
+        test_common::LogRecord probe = test_common::GenerateRandomLogRecord(probeRng, 0);
+        probe["line_number"] = static_cast<std::int64_t>(0);
+        schema = test_common::DeriveSchemaFromRecord(probe);
+        format = test_common::Csv(schema);
+    }
     else
     {
-        std::cerr << "Unknown --format value: " << formatName << " (expected one of: json, logfmt)\n";
+        std::cerr << "Unknown --format value: " << formatName << " (expected one of: json, logfmt, csv)\n";
         return 1;
     }
-    // No schema-bearing format ships today; the empty schema is a hook so
-    // a future CSV-like format only needs to extend the dispatch table.
-    const test_common::RecordSchema schema;
     // Empty `--output` means "derive from the format" (`generated.jsonl` /
     // `generated.logfmt`); the argparse default is empty so `--help` doesn't
     // bias toward JSON.
@@ -585,8 +604,6 @@ int main(int argc, char *argv[])
     const auto rollLinesText = program.get<std::string>("--roll-lines");
     const auto rollStrategyText = program.get<std::string>("--roll-strategy");
     const auto keepRolledInt = program.get<int>("--keep-rolled");
-    const std::uint32_t seed = program.is_used("--seed") ? static_cast<std::uint32_t>(program.get<int>("--seed"))
-                                                         : test_common::MakeRandomSeed();
 
     std::uint64_t targetBytes = 0;
     std::uint64_t targetLines = 0;
