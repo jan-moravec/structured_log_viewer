@@ -97,7 +97,11 @@ NetworkStreamDialog::NetworkStreamDialog(QWidget *parent)
     mFormat = new QComboBox(formatBox);
     mFormat->addItem(tr("JSON Lines"), QVariant::fromValue(static_cast<int>(Format::Json)));
     mFormat->addItem(tr("logfmt"), QVariant::fromValue(static_cast<int>(Format::Logfmt)));
-    mFormat->setToolTip(tr("Wire format of the bytes flowing over the socket."));
+    mFormat->addItem(tr("CSV"), QVariant::fromValue(static_cast<int>(Format::Csv)));
+    mFormat->setToolTip(tr("Wire format of the bytes flowing over the socket. "
+                           "For CSV, the first inbound line is treated as the header; if multiple TCP clients "
+                           "connect, the first arriving line sets the column schema for every client \u2014 "
+                           "coordinate the header across producers or restrict CSV to a single producer."));
     mFormat->setAccessibleName(tr("Wire format"));
     formatLayout->addWidget(mFormat);
     formatLayout->addStretch(1);
@@ -357,6 +361,10 @@ void NetworkStreamDialog::LoadFromSettings()
     {
         mFormat->setCurrentIndex(mFormat->findData(static_cast<int>(Format::Logfmt)));
     }
+    else if (formatName.compare("csv", Qt::CaseInsensitive) == 0)
+    {
+        mFormat->setCurrentIndex(mFormat->findData(static_cast<int>(Format::Csv)));
+    }
     else
     {
         mFormat->setCurrentIndex(mFormat->findData(static_cast<int>(Format::Json)));
@@ -381,7 +389,16 @@ void NetworkStreamDialog::SaveToSettings() const
     settings.setValue(KEY_PROTOCOL, mTcpRadio->isChecked() ? "tcp" : "udp");
     {
         const auto formatValue = mFormat->currentData().toInt();
-        settings.setValue(KEY_FORMAT, formatValue == static_cast<int>(Format::Logfmt) ? "logfmt" : "json");
+        const char *formatName = "json";
+        if (formatValue == static_cast<int>(Format::Logfmt))
+        {
+            formatName = "logfmt";
+        }
+        else if (formatValue == static_cast<int>(Format::Csv))
+        {
+            formatName = "csv";
+        }
+        settings.setValue(KEY_FORMAT, formatName);
     }
     settings.setValue(KEY_BIND, mBindAddress->text());
     settings.setValue(KEY_PORT, mPort->value());
@@ -402,7 +419,21 @@ NetworkStreamDialog::Config NetworkStreamDialog::Configuration() const
 {
     Config out;
     out.protocol = mTcpRadio->isChecked() ? Protocol::Tcp : Protocol::Udp;
-    out.format = (mFormat->currentData().toInt() == static_cast<int>(Format::Logfmt)) ? Format::Logfmt : Format::Json;
+    {
+        const auto formatValue = mFormat->currentData().toInt();
+        if (formatValue == static_cast<int>(Format::Logfmt))
+        {
+            out.format = Format::Logfmt;
+        }
+        else if (formatValue == static_cast<int>(Format::Csv))
+        {
+            out.format = Format::Csv;
+        }
+        else
+        {
+            out.format = Format::Json;
+        }
+    }
     out.bindAddress = mBindAddress->text();
     out.port = static_cast<uint16_t>(mPort->value());
     out.maxConcurrentClients = static_cast<size_t>(mMaxConcurrentClients->value());
