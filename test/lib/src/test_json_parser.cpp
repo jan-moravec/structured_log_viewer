@@ -84,14 +84,15 @@ TEST_CASE("Validate non-existent file", "[json_parser]")
 TEST_CASE("Validate empty file", "[json_parser]")
 {
     const loglib::JsonParser parser;
-    const TestJsonLogFile testFile;
+    const TestLogFile testFile;
     CHECK_FALSE(parser.IsValid(testFile.GetFilePath()));
 }
 
 TEST_CASE("Validate file with empty lines", "[json_parser]")
 {
     const loglib::JsonParser parser;
-    const TestJsonLogFile testFile(TestJsonLogFile::Line("\n\n\n"));
+    const TestLogFile testFile;
+    testFile.Write("\n\n\n");
     CHECK_FALSE(parser.IsValid(testFile.GetFilePath()));
 }
 
@@ -99,28 +100,35 @@ TEST_CASE("Validate file with leading blank line", "[json_parser]")
 {
     // Leading blank lines are tolerated: the first non-empty line is what determines validity.
     const loglib::JsonParser parser;
-    const TestJsonLogFile testFile(std::vector<TestJsonLogFile::Line>{"\n", R"({"key": "value"})"});
+    const TestLogFile testFile;
+    testFile.Write("\n"
+                   R"({"key": "value"})"
+                   "\n");
     CHECK(parser.IsValid(testFile.GetFilePath()));
 }
 
 TEST_CASE("Validate file with invalid line", "[json_parser]")
 {
     const loglib::JsonParser parser;
-    const TestJsonLogFile testFile(TestJsonLogFile::Line("invalid json"));
+    const TestLogFile testFile;
+    testFile.Write("invalid json\n");
     CHECK_FALSE(parser.IsValid(testFile.GetFilePath()));
 }
 
 TEST_CASE("Validate file with empty JSON object", "[json_parser]")
 {
     const loglib::JsonParser parser;
-    const TestJsonLogFile testFile(TestJsonLogFile::Line(R"({})"));
+    const TestLogFile testFile;
+    testFile.Write("{}\n");
     CHECK(parser.IsValid(testFile.GetFilePath()));
 }
 
 TEST_CASE("Validate file with JSON line", "[json_parser]")
 {
     const loglib::JsonParser parser;
-    const TestJsonLogFile testFile(TestJsonLogFile::Line(R"({"key": "value"})"));
+    const TestLogFile testFile;
+    testFile.Write(R"({"key": "value"})"
+                   "\n");
     CHECK(parser.IsValid(testFile.GetFilePath()));
 }
 
@@ -133,7 +141,7 @@ TEST_CASE("Parse non-existent file", "[json_parser]")
 TEST_CASE("Parse empty file", "[json_parser]")
 {
     const loglib::JsonParser parser;
-    const TestJsonLogFile testFile;
+    const TestLogFile testFile;
     CHECK_THROWS_AS(ParseFile(parser, testFile.GetFilePath()), std::runtime_error);
 }
 
@@ -142,7 +150,8 @@ TEST_CASE("Parse file with empty lines", "[json_parser]")
     // Blank lines are not errors, just content-free input. Parse should succeed with no data
     // and no errors so callers can distinguish this from parse failures.
     const loglib::JsonParser parser;
-    const TestJsonLogFile testFile(TestJsonLogFile::Line("\n\n\n"));
+    const TestLogFile testFile;
+    testFile.Write("\n\n\n");
     auto result = ParseFile(parser, testFile.GetFilePath());
     CHECK(result.data.Lines().empty());
     CHECK(result.errors.empty());
@@ -153,7 +162,8 @@ TEST_CASE("Parse file with invalid line", "[json_parser]")
     // A file containing only invalid lines produces an empty LogData but reports each failure
     // through `errors` so the caller can surface them.
     const loglib::JsonParser parser;
-    const TestJsonLogFile testFile(TestJsonLogFile::Line("invalid json"));
+    const TestLogFile testFile;
+    testFile.Write("invalid json\n");
     auto result = ParseFile(parser, testFile.GetFilePath());
     CHECK(result.data.Lines().empty());
     CHECK(result.errors.size() == 1);
@@ -162,7 +172,10 @@ TEST_CASE("Parse file with invalid line", "[json_parser]")
 TEST_CASE("Parse file with invalid and valid line", "[json_parser]")
 {
     const loglib::JsonParser parser;
-    const TestJsonLogFile testFile(std::vector<TestJsonLogFile::Line>({"invalid json", R"({"key": "value"})"}));
+    const TestLogFile testFile;
+    testFile.Write("invalid json\n"
+                   R"({"key": "value"})"
+                   "\n");
     auto result = ParseFile(parser, testFile.GetFilePath());
     CHECK(result.errors.size() == 1);
     CHECK(result.data.Lines().size() == 1);
@@ -171,7 +184,8 @@ TEST_CASE("Parse file with invalid and valid line", "[json_parser]")
 TEST_CASE("Parse file with multiple invalid lines", "[json_parser]")
 {
     const loglib::JsonParser parser;
-    const TestJsonLogFile testFile(std::vector<TestJsonLogFile::Line>{"invalid json 1", "invalid json 2"});
+    const TestLogFile testFile;
+    testFile.Write("invalid json 1\ninvalid json 2\n");
     auto result = ParseFile(parser, testFile.GetFilePath());
     CHECK(result.data.Lines().empty());
     CHECK(result.errors.size() == 2);
@@ -194,44 +208,33 @@ TEST_CASE("Parse file with invalid lines spanning multiple pipeline batches", "[
 
     // Build a file with valid JSON sandwiching two malformed lines at known
     // absolute line numbers, well past the first pipeline batch boundary.
-    // `JsonLogLine` only has a `const char *` (and a parsed-JSON) constructor,
-    // so we materialise each line as `std::string` first and pass `.c_str()`
-    // explicitly — passing a `std::string&&` would otherwise silently bind to
-    // the parsed-JSON constructor and wrap each entire line as a JSON string
-    // scalar, producing "not a JSON object" errors for every row.
-    std::vector<std::string> lineTexts;
-    lineTexts.reserve(INVALID_LINE_NUMBER_B);
-    // Note: the `std::string&`+append pattern is deliberate over
-    // `operator+` chains. GCC 13 on the Linux CI runner emits a
-    // false-positive `-Wstringop-overread` / `-Wstringop-overflow`
-    // on `std::string("prefix ") + std::to_string(i)` when the
-    // resulting string leaves the SSO buffer (libstdc++ SSO cap is
-    // 15 bytes for char strings); the separate `.append()` calls
-    // avoid the temporary that the heuristic misanalyses.
+    //
+    // Note: the `.append()` pattern is deliberate over `operator+` chains.
+    // GCC 13 on the Linux CI runner emits a false-positive
+    // `-Wstringop-overread` / `-Wstringop-overflow` on
+    // `std::string("prefix ") + std::to_string(i)` when the resulting string
+    // leaves the SSO buffer (libstdc++ SSO cap is 15 bytes for char strings);
+    // the separate `.append()` calls avoid the temporary that the heuristic
+    // misanalyses.
+    std::string body;
     for (size_t i = 1; i <= INVALID_LINE_NUMBER_B; ++i)
     {
-        std::string line;
         if (i == INVALID_LINE_NUMBER_A || i == INVALID_LINE_NUMBER_B)
         {
-            line = "not json line ";
-            line.append(std::to_string(i));
+            body.append("not json line ");
+            body.append(std::to_string(i));
         }
         else
         {
-            line = R"({"index": )";
-            line.append(std::to_string(i));
-            line.append("}");
+            body.append(R"({"index": )");
+            body.append(std::to_string(i));
+            body.append("}");
         }
-        lineTexts.push_back(std::move(line));
-    }
-    std::vector<TestJsonLogFile::Line> lines;
-    lines.reserve(lineTexts.size());
-    for (const std::string &text : lineTexts)
-    {
-        lines.emplace_back(text.c_str());
+        body.push_back('\n');
     }
     static_cast<void>(VALID_LINES);
-    const TestJsonLogFile testFile(std::move(lines));
+    const TestLogFile testFile;
+    testFile.Write(body);
 
     // Force several Stage A batches by capping `batchSizeBytes` well below
     // the file size; the INVALID_LINE_NUMBER_A line therefore lands in batch 2+.
@@ -252,11 +255,12 @@ TEST_CASE("Parse file with invalid lines spanning multiple pipeline batches", "[
 TEST_CASE("Parse file with empty JSON object", "[json_parser]")
 {
     const loglib::JsonParser parser;
-    const TestJsonLogFile testFile(TestJsonLogFile::Line(R"({})"));
+    const TestLogFile testFile;
+    testFile.Write("{}\n");
 
     auto result = ParseFile(parser, testFile.GetFilePath());
     CHECK(result.errors.empty());
-    REQUIRE(result.data.Lines().size() == testFile.JsonLines().size());
+    REQUIRE(result.data.Lines().size() == 1);
     CHECK(result.data.Lines()[0].IndexedValues().empty());
     CHECK(result.data.Keys().Size() == 0);
     REQUIRE(result.data.Sources().size() == 1);
@@ -267,11 +271,12 @@ TEST_CASE("Parse file with empty JSON object", "[json_parser]")
 TEST_CASE("Parse file with multiple empty JSON objects", "[json_parser]")
 {
     const loglib::JsonParser parser;
-    const TestJsonLogFile testFile(std::vector<TestJsonLogFile::Line>{R"({})", R"({})"});
+    const TestLogFile testFile;
+    testFile.Write("{}\n{}\n");
 
     auto result = ParseFile(parser, testFile.GetFilePath());
     CHECK(result.errors.empty());
-    REQUIRE(result.data.Lines().size() == testFile.JsonLines().size());
+    REQUIRE(result.data.Lines().size() == 2);
     CHECK(result.data.Keys().Size() == 0);
     REQUIRE(result.data.Sources().size() == 1);
     CHECK(result.data.FrontFileSource()->File().GetPath() == testFile.GetFilePath());
@@ -288,10 +293,12 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
 
     SECTION("Null")
     {
-        const TestJsonLogFile testFile(TestJsonLogFile::Line(R"({"key": null})"));
+        const TestLogFile testFile;
+        testFile.Write(R"({"key":null})"
+                       "\n");
         auto result = ParseFile(parser, testFile.GetFilePath());
         CHECK(result.errors.empty());
-        REQUIRE(result.data.Lines().size() == testFile.JsonLines().size());
+        REQUIRE(result.data.Lines().size() == 1);
         CHECK(std::holds_alternative<std::monostate>(result.data.Lines()[0].GetValue("key")));
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
@@ -305,10 +312,12 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         // Unescaped string values are emitted as `std::string_view` into the mmap;
         // use `AsStringView` so the test is agnostic to which alternative the parser
         // picks per the fast/slow path heuristic.
-        const TestJsonLogFile testFile(TestJsonLogFile::Line(R"({"key": "value"})"));
+        const TestLogFile testFile;
+        testFile.Write(R"({"key":"value"})"
+                       "\n");
         auto result = ParseFile(parser, testFile.GetFilePath());
         CHECK(result.errors.empty());
-        REQUIRE(result.data.Lines().size() == testFile.JsonLines().size());
+        REQUIRE(result.data.Lines().size() == 1);
         CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("key")) == std::string_view{"value"});
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
@@ -319,10 +328,12 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
 
     SECTION("Unsigned integer")
     {
-        const TestJsonLogFile testFile(TestJsonLogFile::Line(R"({"key": 10000000000000000000})"));
+        const TestLogFile testFile;
+        testFile.Write(R"({"key":10000000000000000000})"
+                       "\n");
         auto result = ParseFile(parser, testFile.GetFilePath());
         CHECK(result.errors.empty());
-        REQUIRE(result.data.Lines().size() == testFile.JsonLines().size());
+        REQUIRE(result.data.Lines().size() == 1);
         CHECK(std::get<uint64_t>(result.data.Lines()[0].GetValue("key")) == LARGE_UINT);
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
@@ -333,10 +344,12 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
 
     SECTION("Integer")
     {
-        const TestJsonLogFile testFile(TestJsonLogFile::Line(R"({"key": -12})"));
+        const TestLogFile testFile;
+        testFile.Write(R"({"key":-12})"
+                       "\n");
         auto result = ParseFile(parser, testFile.GetFilePath());
         CHECK(result.errors.empty());
-        REQUIRE(result.data.Lines().size() == testFile.JsonLines().size());
+        REQUIRE(result.data.Lines().size() == 1);
         CHECK(std::get<int64_t>(result.data.Lines()[0].GetValue("key")) == -12);
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
@@ -347,10 +360,12 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
 
     SECTION("Double")
     {
-        const TestJsonLogFile testFile(TestJsonLogFile::Line(R"({"key": 3.14})"));
+        const TestLogFile testFile;
+        testFile.Write(R"({"key":3.14})"
+                       "\n");
         auto result = ParseFile(parser, testFile.GetFilePath());
         CHECK(result.errors.empty());
-        REQUIRE(result.data.Lines().size() == testFile.JsonLines().size());
+        REQUIRE(result.data.Lines().size() == 1);
         CHECK(std::get<double>(result.data.Lines()[0].GetValue("key")) == Catch::Approx(3.14));
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
@@ -361,10 +376,12 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
 
     SECTION("Boolean")
     {
-        const TestJsonLogFile testFile(TestJsonLogFile::Line(R"({"key": true})"));
+        const TestLogFile testFile;
+        testFile.Write(R"({"key":true})"
+                       "\n");
         auto result = ParseFile(parser, testFile.GetFilePath());
         REQUIRE(result.errors.empty());
-        CHECK(result.data.Lines().size() == testFile.JsonLines().size());
+        CHECK(result.data.Lines().size() == 1);
         CHECK(std::get<bool>(result.data.Lines()[0].GetValue("key")) == true);
         REQUIRE(result.data.SortedKeys().size() == 1);
         CHECK(result.data.SortedKeys()[0] == "key");
@@ -377,18 +394,21 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
 TEST_CASE("Parse file with single JSON object containing all possible JSON elements", "[json_parser]")
 {
     const loglib::JsonParser parser;
-    const TestJsonLogFile testFile(glz::generic_sorted_u64{
-        {"null", nullptr},
-        {"string", "value"},
-        {"uinteger", LARGE_UINT},
-        {"integer", -12},
-        {"double", 3.14},
-        {"boolean", true}
-    });
+    std::vector<test_common::LogRecord> records = {
+        glz::generic_sorted_u64{
+            {"null", nullptr},
+            {"string", "value"},
+            {"uinteger", LARGE_UINT},
+            {"integer", -12},
+            {"double", 3.14},
+            {"boolean", true}
+        },
+    };
+    const TestStructuredLogFile testFile(std::move(records), test_common::JsonLines());
 
     auto result = ParseFile(parser, testFile.GetFilePath());
     CHECK(result.errors.empty());
-    REQUIRE(result.data.Lines().size() == testFile.JsonLines().size());
+    REQUIRE(result.data.Lines().size() == testFile.RecordCount());
 
     const auto values = result.data.Lines()[0].Values();
     CHECK(std::holds_alternative<std::monostate>(values.at("null")));
@@ -417,21 +437,20 @@ TEST_CASE("Parse different key types on different lines", "[json_parser]")
 {
     // This test should validate caching
     const loglib::JsonParser parser;
-    const TestJsonLogFile testFile(
-        {glz::generic_sorted_u64{
-             {"1", nullptr}, {"2", "value"}, {"3", LARGE_UINT}, {"4", -12}, {"5", 3.14}, {"6", true}
-         },
-         glz::generic_sorted_u64{
-             {"6", nullptr}, {"1", "value"}, {"2", LARGE_UINT}, {"3", -12}, {"4", 3.14}, {"5", true}
-         },
-         glz::generic_sorted_u64{
-             {"5", nullptr}, {"6", "value"}, {"1", LARGE_UINT}, {"2", -12}, {"3", 3.14}, {"4", true}
-         }}
-    );
+    std::vector<test_common::LogRecord> records = {
+        glz::generic_sorted_u64{
+            {"1", nullptr}, {"2", "value"}, {"3", LARGE_UINT}, {"4", -12}, {"5", 3.14}, {"6", true}
+        },
+        glz::generic_sorted_u64{
+            {"6", nullptr}, {"1", "value"}, {"2", LARGE_UINT}, {"3", -12}, {"4", 3.14}, {"5", true}
+        },
+        glz::generic_sorted_u64{{"5", nullptr}, {"6", "value"}, {"1", LARGE_UINT}, {"2", -12}, {"3", 3.14}, {"4", true}}
+    };
+    const TestStructuredLogFile testFile(std::move(records), test_common::JsonLines());
 
     auto result = ParseFile(parser, testFile.GetFilePath());
     CHECK(result.errors.empty());
-    REQUIRE(result.data.Lines().size() == testFile.JsonLines().size());
+    REQUIRE(result.data.Lines().size() == testFile.RecordCount());
 
     const auto values = result.data.Lines()[0].Values();
     CHECK(std::holds_alternative<std::monostate>(values.at("1")));
@@ -473,13 +492,14 @@ TEST_CASE("Parse different key types on different lines", "[json_parser]")
 TEST_CASE("Parse file with multiple JSON objects", "[json_parser]")
 {
     const loglib::JsonParser parser;
-    const TestJsonLogFile testFile(
-        {glz::generic_sorted_u64{{"key1", "value1"}}, glz::generic_sorted_u64{{"key2", "value2"}}}
-    );
+    std::vector<test_common::LogRecord> records = {
+        glz::generic_sorted_u64{{"key1", "value1"}}, glz::generic_sorted_u64{{"key2", "value2"}}
+    };
+    const TestStructuredLogFile testFile(std::move(records), test_common::JsonLines());
 
     auto result = ParseFile(parser, testFile.GetFilePath());
     CHECK(result.errors.empty());
-    REQUIRE(result.data.Lines().size() == testFile.JsonLines().size());
+    REQUIRE(result.data.Lines().size() == testFile.RecordCount());
     CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("key1")) == std::string_view{"value1"});
     CHECK(loglib::AsStringView(result.data.Lines()[1].GetValue("key2")) == std::string_view{"value2"});
     const auto sortedKeys = result.data.SortedKeys();
@@ -522,9 +542,12 @@ TEST_CASE("Parse file with multiple JSON objects and one invalid line", "[json_p
 {
     // Invalid lines are reported as errors but do not abort the parse.
     const loglib::JsonParser parser;
-    const TestJsonLogFile testFile(
-        {glz::generic_sorted_u64{{"key1", "value1"}}, "invalid json", glz::generic_sorted_u64{{"key2", "value2"}}}
-    );
+    const TestLogFile testFile;
+    testFile.Write(R"({"key1":"value1"})"
+                   "\n"
+                   "invalid json\n"
+                   R"({"key2":"value2"})"
+                   "\n");
 
     auto result = ParseFile(parser, testFile.GetFilePath());
     CHECK(result.errors.size() == 1);
@@ -547,12 +570,13 @@ TEST_CASE("Parse file with multiple JSON objects and multiple invalid lines", "[
 {
     // Invalid lines accumulate as errors; valid ones still land in the result.
     const loglib::JsonParser parser;
-    const TestJsonLogFile testFile(
-        {glz::generic_sorted_u64{{"key1", "value1"}},
-         "invalid json 1",
-         glz::generic_sorted_u64{{"key2", "value2"}},
-         "invalid json 2"}
-    );
+    const TestLogFile testFile;
+    testFile.Write(R"({"key1":"value1"})"
+                   "\n"
+                   "invalid json 1\n"
+                   R"({"key2":"value2"})"
+                   "\n"
+                   "invalid json 2\n");
 
     auto result = ParseFile(parser, testFile.GetFilePath());
     CHECK(result.errors.size() == 2);
@@ -649,8 +673,8 @@ TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
     // Generate a fixture sized to span multiple Stage A batches (1 MiB default) so the
     // multi-threaded run actually exercises more than one worker. ~5'000 lines × ~200 bytes
     // each ≈ 1 MB, large enough to split.
-    std::vector<TestJsonLogFile::Line> logs;
-    logs.reserve(5'000);
+    std::vector<test_common::LogRecord> records;
+    records.reserve(5'000);
     // Deterministic fixture for stable assertions.
     // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
     std::mt19937 rng(0xC0FFEE);
@@ -665,9 +689,9 @@ TEST_CASE("Parallel parse parity vs. single-thread", "[json_parser][parity]")
         json["component"] = std::string("component_") + std::to_string(i % 7);
         json["message"] = std::string("event ") + std::to_string(i) + " — value " + std::to_string(intDist(rng));
         json["counter"] = static_cast<int64_t>(intDist(rng));
-        logs.emplace_back(json);
+        records.emplace_back(std::move(json));
     }
-    const TestJsonLogFile testFile(logs);
+    const TestStructuredLogFile testFile(std::move(records), test_common::JsonLines());
 
     const ParserOptions opts;
     internal::AdvancedParserOptions singleThread;
@@ -723,8 +747,8 @@ TEST_CASE(
 
     // Vary values so lines aren't byte-identical, but lock the key surface
     // to {key1..key5}.
-    std::vector<TestJsonLogFile::Line> lines;
-    lines.reserve(LINE_COUNT);
+    std::vector<test_common::LogRecord> records;
+    records.reserve(LINE_COUNT);
     for (size_t i = 0; i < LINE_COUNT; ++i)
     {
         glz::generic_sorted_u64 json;
@@ -733,9 +757,9 @@ TEST_CASE(
         json["key3"] = static_cast<int64_t>(i * 2);
         json["key4"] = (i % 2 == 0);
         json["key5"] = static_cast<double>(i) * 0.5;
-        lines.emplace_back(json);
+        records.emplace_back(std::move(json));
     }
-    const TestJsonLogFile testFile(lines);
+    const TestStructuredLogFile testFile(std::move(records), test_common::JsonLines());
 
     const JsonParser parser;
     const ParserOptions opts;
@@ -876,7 +900,7 @@ namespace
 {
 
 // Minimal `%FT%T`-style ISO-8601 timestamp generator used by the Stage B promotion test
-// below. The `test_common::GenerateRandomJsonLogs` helper does the same job for the
+// below. The `test_common::GenerateRandomLogRecords` helper does the same job for the
 // benchmarks but lives in a different translation unit, so we re-roll a small variant
 // here to keep the unit-test side independent.
 std::string FormatIsoTimestamp(std::chrono::system_clock::time_point tp)
@@ -907,8 +931,8 @@ TEST_CASE(
     // Mixing fields per line keeps the per-key type cache from short-circuiting in a way
     // that could mask a regression in the promotion path.
     const auto base = std::chrono::system_clock::now();
-    std::vector<TestJsonLogFile::Line> lines;
-    lines.reserve(LINE_COUNT);
+    std::vector<test_common::LogRecord> records;
+    records.reserve(LINE_COUNT);
     for (size_t i = 0; i < LINE_COUNT; ++i)
     {
         glz::generic_sorted_u64 json;
@@ -916,9 +940,9 @@ TEST_CASE(
         json["level"] = std::string("info");
         json["thread_id"] = static_cast<int64_t>(i % 8);
         json["message"] = std::string("hello");
-        lines.emplace_back(json);
+        records.emplace_back(std::move(json));
     }
-    const TestJsonLogFile testFile(lines);
+    const TestStructuredLogFile testFile(std::move(records), test_common::JsonLines());
 
     // Configuration mirrors the production timestamp column shape: one key
     // (`timestamp`) and one parse format (`%FT%T`). Stage B pre-resolves the
@@ -976,13 +1000,17 @@ TEST_CASE(
 
     InitializeTimezoneData();
 
-    std::vector<TestJsonLogFile::Line> lines;
-    lines.emplace_back(R"({"timestamp": "2024-01-01T12:00:00", "msg": "ok-1"})");
-    lines.emplace_back(R"({"timestamp": "not-a-timestamp", "msg": "bad-1"})");
-    lines.emplace_back(R"({"timestamp": "2024-01-02T12:00:00", "msg": "ok-2"})");
-    lines.emplace_back(R"({"timestamp": "", "msg": "empty"})");
-    lines.emplace_back(R"({"timestamp": "2024-01-03T12:00:00", "msg": "ok-3"})");
-    const TestJsonLogFile testFile(lines);
+    const TestLogFile testFile;
+    testFile.Write(R"({"timestamp": "2024-01-01T12:00:00", "msg": "ok-1"})"
+                   "\n"
+                   R"({"timestamp": "not-a-timestamp", "msg": "bad-1"})"
+                   "\n"
+                   R"({"timestamp": "2024-01-02T12:00:00", "msg": "ok-2"})"
+                   "\n"
+                   R"({"timestamp": "", "msg": "empty"})"
+                   "\n"
+                   R"({"timestamp": "2024-01-03T12:00:00", "msg": "ok-3"})"
+                   "\n");
 
     auto configuration = std::make_shared<LogConfiguration>();
     LogConfiguration::Column timestampColumn;
@@ -1049,13 +1077,14 @@ TEST_CASE(
         raw.emplace_back(std::string(R"({"key":"value-)") + std::to_string(i + 6) + R"("})");
     }
 
-    std::vector<TestJsonLogFile::Line> fixtureLines;
-    fixtureLines.reserve(raw.size());
+    std::string body;
     for (const auto &s : raw)
     {
-        fixtureLines.emplace_back(s.c_str());
+        body.append(s);
+        body.push_back('\n');
     }
-    const TestJsonLogFile testFile(fixtureLines);
+    const TestLogFile testFile;
+    testFile.Write(body);
 
     const JsonParser parser;
     const ParseResult result = ParseFile(parser, testFile.GetFilePath());
@@ -1107,17 +1136,20 @@ TEST_CASE("ExtractFieldKey round-trips quoted, escaped, and Unicode-escape keys"
     // cover every observable code path.
     using namespace loglib;
 
-    std::vector<TestJsonLogFile::Line> lines;
-    lines.emplace_back(R"({"plain": "v-plain"})");           // (a) fast path: no backslash
-    lines.emplace_back(R"({"with\"quote": "v-quote"})");     // (b) slow path: escaped quote
-    lines.emplace_back(R"({"back\\slash": "v-backslash"})"); // (c) slow path: escaped backslash
-    lines.emplace_back(R"({"\u0041BC": "v-unicode"})");      // (d) slow path: Unicode escape
-    const TestJsonLogFile testFile(lines);
+    const TestLogFile testFile;
+    testFile.Write(R"({"plain": "v-plain"})"
+                   "\n"
+                   R"({"with\"quote": "v-quote"})" // (a) fast path; (b) escaped quote
+                   "\n"
+                   R"({"back\\slash": "v-backslash"})" // (c) escaped backslash
+                   "\n"
+                   R"({"\u0041BC": "v-unicode"})" // (d) Unicode escape
+                   "\n");
 
     const JsonParser parser;
     const ParseResult result = ParseFile(parser, testFile.GetFilePath());
     REQUIRE(result.errors.empty());
-    REQUIRE(result.data.Lines().size() == lines.size());
+    REQUIRE(result.data.Lines().size() == 4);
 
     // Post-unescape form simdjson produces (e.g. \u0041 collapses to A).
     const std::vector<std::pair<std::string, std::string>> expected = {
@@ -1145,16 +1177,18 @@ TEST_CASE("Padded-tail slow path parses lines within SIMDJSON_PADDING bytes of E
     // memcpy+memset+iterate body, which must match the fast path bit-for-bit.
     using namespace loglib;
 
-    std::vector<TestJsonLogFile::Line> lines;
-    lines.emplace_back(R"({"k":"a"})");                                    // shortest
-    lines.emplace_back(R"({"k":"abcdefghijklmnopqrstuvwx"})");             // longer
-    lines.emplace_back(R"({"k":"abcdefghijklmnopqrstuvwxyz0123456789"})"); // longest
-    const TestJsonLogFile testFile(lines);
+    const TestLogFile testFile;
+    testFile.Write(R"({"k":"a"})" // shortest
+                   "\n"
+                   R"({"k":"abcdefghijklmnopqrstuvwx"})" // longer
+                   "\n"
+                   R"({"k":"abcdefghijklmnopqrstuvwxyz0123456789"})" // longest
+                   "\n");
 
     const JsonParser parser;
     const ParseResult result = ParseFile(parser, testFile.GetFilePath());
     REQUIRE(result.errors.empty());
-    REQUIRE(result.data.Lines().size() == lines.size());
+    REQUIRE(result.data.Lines().size() == 3);
 
     const KeyId keyId = result.data.Keys().Find("k");
     REQUIRE(keyId != INVALID_KEY_ID);
@@ -1191,17 +1225,16 @@ TEST_CASE(
     // (2) Narrow row: 4 fields with `dup` duplicated. `out.size() < 8` for the
     //     entire line, so the linear back-scan branch handles it. Both rows must
     //     yield the same "last write wins" outcome.
-    std::vector<TestJsonLogFile::Line> lines;
-    lines.emplace_back(R"({"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"dup":"first","j":11,"dup":"second"})"
-    );
-    lines.emplace_back(R"({"a":1,"dup":"first","b":2,"dup":"second"})");
-
-    const TestJsonLogFile testFile(lines);
+    const TestLogFile testFile;
+    testFile.Write(R"({"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"dup":"first","j":11,"dup":"second"})"
+                   "\n"
+                   R"({"a":1,"dup":"first","b":2,"dup":"second"})"
+                   "\n");
 
     const JsonParser parser;
     const ParseResult result = ParseFile(parser, testFile.GetFilePath());
     REQUIRE(result.errors.empty());
-    REQUIRE(result.data.Lines().size() == lines.size());
+    REQUIRE(result.data.Lines().size() == 2);
 
     const KeyId dupKey = result.data.Keys().Find("dup");
     REQUIRE(dupKey != INVALID_KEY_ID);

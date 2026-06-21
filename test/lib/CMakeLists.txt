@@ -5,6 +5,7 @@ cmake_minimum_required(VERSION 3.28)
 add_executable(
     tests
     "src/benchmark_json.cpp"
+    "src/benchmark_logfmt.cpp"
     "src/benchmark_log_filter.cpp"
     "src/benchmark_stream.cpp"
     "src/common.cpp"

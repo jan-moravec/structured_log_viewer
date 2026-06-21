@@ -9,56 +9,23 @@
 #include <loglib/parser_options.hpp>
 #include <loglib/parsers/logfmt_parser.hpp>
 
+#include <test_common/log_format.hpp>
+#include <test_common/log_generator.hpp>
+#include <test_common/log_record.hpp>
+
 #include <catch2/catch_all.hpp>
+#include <glaze/glaze.hpp>
 
 #include <cstddef>
 #include <cstdint>
-#include <filesystem>
-#include <fstream>
+#include <random>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
-namespace
-{
-
-/// RAII helper for raw-text fixture files. `TestJsonLogFile` wraps
-/// lines in JSON-aware machinery, so logfmt fixtures use this minimal
-/// helper that just writes the bytes verbatim.
-class TestLogfmtFile
-{
-public:
-    explicit TestLogfmtFile(const std::string &content, const std::string &path = "test.logfmt")
-        : mPath(path)
-    {
-        std::ofstream out(mPath, std::ios::binary);
-        REQUIRE(out.is_open());
-        out << content;
-    }
-
-    // `mPath` is a `std::filesystem::path` so destructor cleanup
-    // avoids a (throwing) string->path conversion.
-    ~TestLogfmtFile() noexcept
-    {
-        std::error_code ec;
-        std::filesystem::remove(mPath, ec);
-    }
-
-    TestLogfmtFile(const TestLogfmtFile &) = delete;
-    TestLogfmtFile &operator=(const TestLogfmtFile &) = delete;
-    TestLogfmtFile(TestLogfmtFile &&) = delete;
-    TestLogfmtFile &operator=(TestLogfmtFile &&) = delete;
-
-    [[nodiscard]] const std::filesystem::path &Path() const noexcept
-    {
-        return mPath;
-    }
-
-private:
-    std::filesystem::path mPath;
-};
-
-} // namespace
+// logfmt fixtures are raw bytes; use `TestLogFile::Write(...)` from
+// common.hpp. Record-driven fixtures go through `TestStructuredLogFile`.
 
 TEST_CASE("Validate non-existent file [logfmt]", "[logfmt_parser]")
 {
@@ -69,8 +36,8 @@ TEST_CASE("Validate non-existent file [logfmt]", "[logfmt_parser]")
 TEST_CASE("Validate empty file [logfmt]", "[logfmt_parser]")
 {
     const loglib::LogfmtParser parser;
-    const TestLogfmtFile file("");
-    CHECK_FALSE(parser.IsValid(file.Path()));
+    const TestLogFile file;
+    CHECK_FALSE(parser.IsValid(file.GetFilePath()));
 }
 
 TEST_CASE("Validate JSON-shaped first line [logfmt]", "[logfmt_parser]")
@@ -78,31 +45,35 @@ TEST_CASE("Validate JSON-shaped first line [logfmt]", "[logfmt_parser]")
     // A JSON-shaped first line must be rejected so JSON wins the
     // auto-detect race.
     const loglib::LogfmtParser parser;
-    const TestLogfmtFile file(R"({"key": "value"})"
-                              "\n");
-    CHECK_FALSE(parser.IsValid(file.Path()));
+    const TestLogFile file;
+    file.Write(R"({"key": "value"})"
+               "\n");
+    CHECK_FALSE(parser.IsValid(file.GetFilePath()));
 }
 
 TEST_CASE("Validate logfmt-shaped first line [logfmt]", "[logfmt_parser]")
 {
     const loglib::LogfmtParser parser;
-    const TestLogfmtFile file("level=info msg=\"hello world\"\n");
-    CHECK(parser.IsValid(file.Path()));
+    const TestLogFile file;
+    file.Write("level=info msg=\"hello world\"\n");
+    CHECK(parser.IsValid(file.GetFilePath()));
 }
 
 TEST_CASE("Validate file with no key=value pair [logfmt]", "[logfmt_parser]")
 {
     const loglib::LogfmtParser parser;
-    const TestLogfmtFile file("just some plain text without equals\n");
-    CHECK_FALSE(parser.IsValid(file.Path()));
+    const TestLogFile file;
+    file.Write("just some plain text without equals\n");
+    CHECK_FALSE(parser.IsValid(file.GetFilePath()));
 }
 
 TEST_CASE("Parse single bare key/value pair [logfmt]", "[logfmt_parser]")
 {
     const loglib::LogfmtParser parser;
-    const TestLogfmtFile file("key=value\n");
+    const TestLogFile file;
+    file.Write("key=value\n");
 
-    auto result = loglib::ParseFile(parser, file.Path());
+    auto result = loglib::ParseFile(parser, file.GetFilePath());
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
     CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("key")) == std::string_view{"value"});
@@ -111,9 +82,10 @@ TEST_CASE("Parse single bare key/value pair [logfmt]", "[logfmt_parser]")
 TEST_CASE("Parse typed bare values [logfmt]", "[logfmt_parser]")
 {
     const loglib::LogfmtParser parser;
-    const TestLogfmtFile file("i=-12 u=10000000000000000000 d=3.14 b=true f=false n=\n");
+    const TestLogFile file;
+    file.Write("i=-12 u=10000000000000000000 d=3.14 b=true f=false n=\n");
 
-    auto result = loglib::ParseFile(parser, file.Path());
+    auto result = loglib::ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
 
@@ -130,9 +102,10 @@ TEST_CASE("Quoted values stay strings [logfmt]", "[logfmt_parser]")
 {
     // `pid="42"` must stay the string "42", not promote to int.
     const loglib::LogfmtParser parser;
-    const TestLogfmtFile file("pid=\"42\" msg=\"hello world\"\n");
+    const TestLogFile file;
+    file.Write("pid=\"42\" msg=\"hello world\"\n");
 
-    auto result = loglib::ParseFile(parser, file.Path());
+    auto result = loglib::ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
 
@@ -144,9 +117,10 @@ TEST_CASE("Quoted values stay strings [logfmt]", "[logfmt_parser]")
 TEST_CASE("Quoted value with C-style escapes [logfmt]", "[logfmt_parser]")
 {
     const loglib::LogfmtParser parser;
-    const TestLogfmtFile file("msg=\"a \\\"quoted\\\" word\\nnew line\\ttab\\\\back\"\n");
+    const TestLogFile file;
+    file.Write("msg=\"a \\\"quoted\\\" word\\nnew line\\ttab\\\\back\"\n");
 
-    auto result = loglib::ParseFile(parser, file.Path());
+    auto result = loglib::ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
 
@@ -158,9 +132,10 @@ TEST_CASE("Quoted value with C-style escapes [logfmt]", "[logfmt_parser]")
 TEST_CASE("Unterminated quoted value reports a parse error [logfmt]", "[logfmt_parser]")
 {
     const loglib::LogfmtParser parser;
-    const TestLogfmtFile file("key=\"unterminated\n");
+    const TestLogFile file;
+    file.Write("key=\"unterminated\n");
 
-    auto result = loglib::ParseFile(parser, file.Path());
+    auto result = loglib::ParseFile(parser, file.GetFilePath());
     CHECK(result.errors.size() == 1);
     CHECK(result.errors[0].contains("Unterminated quoted value"));
 }
@@ -168,9 +143,10 @@ TEST_CASE("Unterminated quoted value reports a parse error [logfmt]", "[logfmt_p
 TEST_CASE("Bare key with no '=' is treated as null [logfmt]", "[logfmt_parser]")
 {
     const loglib::LogfmtParser parser;
-    const TestLogfmtFile file("flag level=info\n");
+    const TestLogFile file;
+    file.Write("flag level=info\n");
 
-    auto result = loglib::ParseFile(parser, file.Path());
+    auto result = loglib::ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
 
@@ -182,9 +158,10 @@ TEST_CASE("Bare key with no '=' is treated as null [logfmt]", "[logfmt_parser]")
 TEST_CASE("Repeated keys: last write wins [logfmt]", "[logfmt_parser]")
 {
     const loglib::LogfmtParser parser;
-    const TestLogfmtFile file("key=first key=second key=third\n");
+    const TestLogFile file;
+    file.Write("key=first key=second key=third\n");
 
-    auto result = loglib::ParseFile(parser, file.Path());
+    auto result = loglib::ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
     CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("key")) == std::string_view{"third"});
@@ -193,11 +170,12 @@ TEST_CASE("Repeated keys: last write wins [logfmt]", "[logfmt_parser]")
 TEST_CASE("Multiple lines parse independently [logfmt]", "[logfmt_parser]")
 {
     const loglib::LogfmtParser parser;
-    const TestLogfmtFile file("level=info msg=\"first line\"\n"
-                              "level=warn msg=\"second line\" code=42\n"
-                              "level=error msg=\"third line\"\n");
+    const TestLogFile file;
+    file.Write("level=info msg=\"first line\"\n"
+               "level=warn msg=\"second line\" code=42\n"
+               "level=error msg=\"third line\"\n");
 
-    auto result = loglib::ParseFile(parser, file.Path());
+    auto result = loglib::ParseFile(parser, file.GetFilePath());
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 3);
 
@@ -210,9 +188,10 @@ TEST_CASE("Multiple lines parse independently [logfmt]", "[logfmt_parser]")
 TEST_CASE("Blank lines are skipped [logfmt]", "[logfmt_parser]")
 {
     const loglib::LogfmtParser parser;
-    const TestLogfmtFile file("\n\nkey=value\n\n");
+    const TestLogFile file;
+    file.Write("\n\nkey=value\n\n");
 
-    auto result = loglib::ParseFile(parser, file.Path());
+    auto result = loglib::ParseFile(parser, file.GetFilePath());
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
     CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("key")) == std::string_view{"value"});
@@ -221,9 +200,10 @@ TEST_CASE("Blank lines are skipped [logfmt]", "[logfmt_parser]")
 TEST_CASE("Last line lacks trailing newline [logfmt]", "[logfmt_parser]")
 {
     const loglib::LogfmtParser parser;
-    const TestLogfmtFile file("a=1\nb=2");
+    const TestLogFile file;
+    file.Write("a=1\nb=2");
 
-    auto result = loglib::ParseFile(parser, file.Path());
+    auto result = loglib::ParseFile(parser, file.GetFilePath());
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
     CHECK(std::get<uint64_t>(result.data.Lines()[0].GetValue("a")) == 1u);
@@ -236,9 +216,10 @@ TEST_CASE("Plain text is parsed permissively as null-valued bare keys [logfmt]",
     // (key, null) pair, so plain prose is "valid" logfmt with N
     // null-valued bare keys. We mirror that.
     const loglib::LogfmtParser parser;
-    const TestLogfmtFile file("level=info\nplain text line\nlevel=error\n");
+    const TestLogFile file;
+    file.Write("level=info\nplain text line\nlevel=error\n");
 
-    auto result = loglib::ParseFile(parser, file.Path());
+    auto result = loglib::ParseFile(parser, file.GetFilePath());
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 3);
     CHECK(std::holds_alternative<std::monostate>(result.data.Lines()[1].GetValue("plain")));
@@ -250,9 +231,10 @@ TEST_CASE("Line of only '=' / '\"' surfaces as parse error [logfmt]", "[logfmt_p
     // No emitable key/value pairs: the scanner should report the
     // line instead of silently producing an empty record.
     const loglib::LogfmtParser parser;
-    const TestLogfmtFile file("level=info\n====\nlevel=error\n");
+    const TestLogFile file;
+    file.Write("level=info\n====\nlevel=error\n");
 
-    auto result = loglib::ParseFile(parser, file.Path());
+    auto result = loglib::ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.size() == 1);
     CHECK(result.errors[0].contains("line 2"));
     CHECK(result.errors[0].contains("Not a logfmt record"));
@@ -262,9 +244,10 @@ TEST_CASE("Line of only '=' / '\"' surfaces as parse error [logfmt]", "[logfmt_p
 TEST_CASE("ToString round-trips bare and quoted values [logfmt]", "[logfmt_parser]")
 {
     const loglib::LogfmtParser parser;
-    const TestLogfmtFile file("level=info msg=\"hello world\" code=42 ratio=3.14\n");
+    const TestLogFile file;
+    file.Write("level=info msg=\"hello world\" code=42 ratio=3.14\n");
 
-    auto result = loglib::ParseFile(parser, file.Path());
+    auto result = loglib::ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
 
@@ -294,9 +277,119 @@ TEST_CASE("ToString quotes values with whitespace and special bytes [logfmt]", "
 
 TEST_CASE("Parse file via FactoryParser auto-detect [logfmt]", "[logfmt_parser]")
 {
-    const TestLogfmtFile file("level=info msg=\"hello\"\n");
-    auto result = loglib::ParseFile(file.Path());
+    const TestLogFile file;
+    file.Write("level=info msg=\"hello\"\n");
+    auto result = loglib::ParseFile(file.GetFilePath());
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 1);
     CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("msg")) == std::string_view{"hello"});
+}
+
+// The `test_common::Logfmt()` writer duplicates `loglib::BareValueIsSafe`
+// and `loglib::AppendQuotedString` (intentional, so `test_common` stays
+// loglib-free). The two round-trip tests below pin that the duplicate
+// stays in sync — otherwise every `[logfmt_parser]` benchmark fixture
+// would silently disagree with the parser.
+TEST_CASE(
+    "test_common::Logfmt() writes round-trip through LogfmtParser (all value families) [logfmt]",
+    "[logfmt_parser][round_trip]"
+)
+{
+    using namespace loglib;
+
+    // Fields cover every branch of `AppendLogfmtValue` / typed-bare path:
+    // bare-safe / quoted with each C-escape, every numeric/bool family,
+    // and null (empty value).
+    test_common::LogRecord record;
+    record["bare"] = std::string("info");
+    record["spaced"] = std::string("hello world");
+    record["dquote"] = std::string("a\"b");
+    record["bslash"] = std::string("a\\b");
+    record["newline"] = std::string("line1\nline2");
+    record["creturn"] = std::string("line1\rline2");
+    record["tab"] = std::string("col1\tcol2");
+    record["ineg"] = static_cast<std::int64_t>(-42);
+    record["upos"] = static_cast<std::uint64_t>(10000000000000000000ULL);
+    record["dbl"] = 3.14;
+    record["btrue"] = true;
+    record["bfalse"] = false;
+    record["nullv"] = nullptr;
+
+    const test_common::LogFormat format = test_common::Logfmt();
+    const std::string serialized = format.writeLine(record);
+
+    const TestLogFile file;
+    file.Write(serialized + "\n");
+
+    const LogfmtParser parser;
+    const ParseResult result = ParseFile(parser, file.GetFilePath());
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.data.Lines().size() == 1);
+
+    const auto values = result.data.Lines()[0].Values();
+    CHECK(AsStringView(values.at("bare")) == std::string_view{"info"});
+    CHECK(AsStringView(values.at("spaced")) == std::string_view{"hello world"});
+    CHECK(AsStringView(values.at("dquote")) == std::string_view{"a\"b"});
+    CHECK(AsStringView(values.at("bslash")) == std::string_view{"a\\b"});
+    CHECK(AsStringView(values.at("newline")) == std::string_view{"line1\nline2"});
+    CHECK(AsStringView(values.at("creturn")) == std::string_view{"line1\rline2"});
+    CHECK(AsStringView(values.at("tab")) == std::string_view{"col1\tcol2"});
+    CHECK(std::get<std::int64_t>(values.at("ineg")) == -42);
+    CHECK(std::get<std::uint64_t>(values.at("upos")) == 10000000000000000000ULL);
+    CHECK(std::get<double>(values.at("dbl")) == Catch::Approx(3.14));
+    CHECK(std::get<bool>(values.at("btrue")) == true);
+    CHECK(std::get<bool>(values.at("bfalse")) == false);
+    CHECK(std::holds_alternative<std::monostate>(values.at("nullv")));
+}
+
+TEST_CASE(
+    "test_common::Logfmt() round-trips the generator's record shape end-to-end [logfmt]", "[logfmt_parser][round_trip]"
+)
+{
+    // Drive the actual benchmark fixture through write+parse so a future
+    // tweak to `GenerateRandomLogRecord` lands here rather than as a silent
+    // benchmark skew.
+    using namespace loglib;
+
+    constexpr std::size_t LINE_COUNT = 32;
+    constexpr std::uint32_t SEED = 0xBA0BABu;
+
+    // Constant seed: the test asserts byte-equal round-trips.
+    // NOLINTNEXTLINE(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
+    std::mt19937 rng(SEED);
+    std::vector<test_common::LogRecord> records;
+    records.reserve(LINE_COUNT);
+    for (std::size_t i = 0; i < LINE_COUNT; ++i)
+    {
+        records.emplace_back(test_common::GenerateRandomLogRecord(rng, i));
+    }
+
+    // Move into the fixture and read back via `Records()` so we don't
+    // keep two copies of the generated vector alive.
+    const TestStructuredLogFile fixture(std::move(records), test_common::Logfmt());
+
+    const LogfmtParser parser;
+    const ParseResult result = ParseFile(parser, fixture.GetFilePath());
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.data.Lines().size() == LINE_COUNT);
+
+    const auto &fixtureRecords = fixture.Records();
+    REQUIRE(fixtureRecords.size() == LINE_COUNT);
+    for (std::size_t i = 0; i < LINE_COUNT; ++i)
+    {
+        INFO("row " << i);
+        const auto values = result.data.Lines()[i].Values();
+        const auto &record = fixtureRecords[i];
+        REQUIRE(record.is_object());
+
+        // Every key round-trips. Strings compare via `AsStringView`;
+        // non-negative `thread_id` maps to `uint64_t` per the bare-value rule.
+        CHECK(AsStringView(values.at("timestamp")) == std::string_view{record["timestamp"].get_string()});
+        CHECK(AsStringView(values.at("level")) == std::string_view{record["level"].get_string()});
+        CHECK(AsStringView(values.at("message")) == std::string_view{record["message"].get_string()});
+        CHECK(AsStringView(values.at("component")) == std::string_view{record["component"].get_string()});
+
+        const auto expectedThreadId = static_cast<std::uint64_t>(i % 16);
+        CHECK(std::get<std::uint64_t>(values.at("thread_id")) == expectedThreadId);
+    }
 }

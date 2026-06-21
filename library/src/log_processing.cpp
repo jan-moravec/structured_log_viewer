@@ -232,6 +232,15 @@ const date::time_zone *CurrentZone()
 
 void Initialize(const std::filesystem::path &tzdata)
 {
+    // Validate the path up front. `date::set_install` only fails lazily,
+    // and `date::current_zone()` memoizes the first successful result, so
+    // a later `Initialize(bad_path)` in a process that already initialized
+    // would silently succeed. Checking here keeps the precondition
+    // independent of date's internal cache.
+    if (!std::filesystem::exists(tzdata) || !std::filesystem::is_directory(tzdata))
+    {
+        throw std::runtime_error("tzdata directory does not exist: " + tzdata.string());
+    }
     date::set_install(tzdata.string());
     static_cast<void>(date::current_zone());
 }

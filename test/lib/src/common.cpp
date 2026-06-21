@@ -4,80 +4,132 @@
 #include <loglib/log_file.hpp>
 #include <loglib/log_processing.hpp>
 
+#include <test_common/log_generator.hpp>
+
 #include <catch2/catch_all.hpp>
 #include <date/tz.h>
 
+#include <cassert>
 #include <filesystem>
 #include <fstream>
+#include <random>
+#include <stdexcept>
+#include <string>
+#include <system_error>
 #include <utility>
 
 using namespace loglib;
 
-TestJsonLogFile::TestJsonLogFile(std::string filePath)
-    : mFilePath(std::move(filePath)), mFsPath(mFilePath)
+namespace
 {
-    const std::ofstream file(mFsPath);
+
+// Open @p fsPath for binary writing (no '\n' translation, so offsets match
+// `LogFile`), emit the format header if non-empty, and return the stream.
+std::ofstream OpenStructuredFile(
+    const std::filesystem::path &fsPath, const test_common::LogFormat &format, const test_common::RecordSchema &schema
+)
+{
+    std::ofstream file(fsPath, std::ios::binary | std::ios::trunc);
     REQUIRE(file.is_open());
+    const std::string header = format.writeHeader(schema);
+    if (!header.empty())
+    {
+        file << header << '\n';
+    }
+    return file;
 }
 
-TestJsonLogFile::TestJsonLogFile(Line line, std::string filePath)
-    : TestJsonLogFile(std::move(filePath))
+// Resolve the on-disk fixture name: explicit `filePath` wins, otherwise
+// `test<format-extension>` (so different-format fixtures don't collide).
+std::string ResolveStructuredFilePath(std::string filePath, const test_common::LogFormat &format)
 {
-    WriteToFile(std::vector<Line>{std::move(line)});
+    if (!filePath.empty())
+    {
+        return filePath;
+    }
+    std::string derived = "test";
+    derived.append(format.suggestedExtension);
+    return derived;
 }
 
-TestJsonLogFile::TestJsonLogFile(std::vector<Line> lines, std::string filePath)
-    : TestJsonLogFile(std::move(filePath))
+} // namespace
+
+TestStructuredLogFile::TestStructuredLogFile(
+    std::vector<test_common::LogRecord> records,
+    const test_common::LogFormat &format,
+    const test_common::RecordSchema &schema,
+    std::string filePath
+)
+    : mFilePath(ResolveStructuredFilePath(std::move(filePath), format)),
+      mFsPath(mFilePath),
+      mRecords(std::move(records)),
+      mRecordCount(mRecords.size())
 {
-    WriteToFile(std::move(lines));
+    std::ofstream file = OpenStructuredFile(mFsPath, format, schema);
+    for (const auto &record : mRecords)
+    {
+        const std::string line = format.writeLine(record);
+        assert((line.empty() || line.back() != '\n') && "LogFormat::writeLine must not include trailing newline");
+        file << line << '\n';
+    }
+    if (!file.good())
+    {
+        // Remove the partial file before throwing — the dtor doesn't run
+        // when the ctor exits via exception.
+        std::error_code ec;
+        std::filesystem::remove(mFsPath, ec);
+        throw std::runtime_error("Failed to write structured log file: " + mFilePath);
+    }
 }
 
-TestJsonLogFile::~TestJsonLogFile() noexcept
+TestStructuredLogFile::TestStructuredLogFile(
+    StreamedRecords streamed,
+    const test_common::LogFormat &format,
+    const test_common::RecordSchema &schema,
+    std::string filePath
+)
+    : mFilePath(ResolveStructuredFilePath(std::move(filePath), format)),
+      mFsPath(mFilePath),
+      mRecordCount(streamed.count)
+{
+    std::ofstream file = OpenStructuredFile(mFsPath, format, schema);
+    std::mt19937 rng(streamed.seed);
+    for (std::size_t i = 0; i < streamed.count; ++i)
+    {
+        const test_common::LogRecord record = test_common::GenerateRandomLogRecord(rng, i, streamed.timestamps);
+        const std::string line = format.writeLine(record);
+        // `writeLine` must not include a trailing newline; otherwise we'd
+        // emit blank-line records that every parser silently skips.
+        assert((line.empty() || line.back() != '\n') && "LogFormat::writeLine must not include trailing newline");
+        file << line << '\n';
+    }
+    if (!file.good())
+    {
+        std::error_code ec;
+        std::filesystem::remove(mFsPath, ec);
+        throw std::runtime_error("Failed to write structured log file: " + mFilePath);
+    }
+}
+
+TestStructuredLogFile::~TestStructuredLogFile() noexcept
 {
     std::error_code ec;
     std::filesystem::remove(mFsPath, ec);
 }
 
-const std::string &TestJsonLogFile::GetFilePath() const
+const std::string &TestStructuredLogFile::GetFilePath() const
 {
     return mFilePath;
 }
 
-void TestJsonLogFile::WriteToFile(std::vector<Line> lines)
+std::size_t TestStructuredLogFile::RecordCount() const
 {
-    mLines.clear();
-    mStringLines.clear();
-    mJsonLines.clear();
-
-    std::ofstream file(mFsPath, std::ios::app);
-    if (file.is_open())
-    {
-        for (const auto &line : lines)
-        {
-            file << line.ToString() << '\n';
-            line.Parse(mStringLines, mJsonLines);
-        }
-        mLines = std::move(lines);
-    }
-    else
-    {
-        throw std::runtime_error("Failed to open test JSON file: " + std::string(GetFilePath()));
-    }
+    return mRecordCount;
 }
 
-const std::vector<TestJsonLogFile::Line> &TestJsonLogFile::Lines() const
+const std::vector<test_common::LogRecord> &TestStructuredLogFile::Records() const
 {
-    return mLines;
-}
-
-const std::vector<std::string> &TestJsonLogFile::StringLines() const
-{
-    return mStringLines;
-}
-
-const std::vector<glz::generic_sorted_u64> &TestJsonLogFile::JsonLines() const
-{
-    return mJsonLines;
+    return mRecords;
 }
 
 TestLogConfiguration::TestLogConfiguration(std::string filePath)

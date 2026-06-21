@@ -15,6 +15,7 @@
 // saved configuration so the path is exercised regardless of how the
 // heuristic might evolve.
 
+#include "benchmark_common.hpp"
 #include "common.hpp"
 
 #include <loglib/enum_dictionary.hpp>
@@ -45,18 +46,10 @@
 #include <vector>
 
 using namespace loglib;
+using bench::RequireReleaseBuildForBenchmarks;
 
 namespace
 {
-
-inline void RequireReleaseBuildForBenchmarks()
-{
-#ifndef NDEBUG
-    SKIP("Benchmarks require a release build (Debug disables IPO/LTO and "
-         "leaves assertions enabled, so numbers are not comparable). "
-         "Rebuild with: cmake --preset release  (or relwithdebinfo).");
-#endif
-}
 
 LogLine MakeLine(KeyIndex &keys, LineSource &source, const std::vector<std::pair<std::string, LogValue>> &fields)
 {

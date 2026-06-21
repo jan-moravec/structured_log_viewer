@@ -32,7 +32,7 @@
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/stop_token.hpp>
 
-#include <test_common/json_log_line.hpp>
+#include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>
 
 #include <QObject>
@@ -85,15 +85,15 @@ void StageTimezoneData()
                   "folder (typically build/<preset>/bin/<config>/).";
 }
 
-// Generate `count` random JSON log lines and write them as JSONL into
-// `path`. Returns the byte count of the written file.
+// Write `count` random records to `path` as JSONL; returns the file size.
 std::size_t WriteJsonlFixture(const std::filesystem::path &path, std::size_t count)
 {
-    auto logs = test_common::GenerateRandomJsonLogs(count);
+    const auto records = test_common::GenerateRandomLogRecords(count);
+    const test_common::LogFormat format = test_common::JsonLines();
     std::ofstream stream(path, std::ios::binary);
-    for (const auto &line : logs)
+    for (const auto &record : records)
     {
-        stream << line.ToString() << '\n';
+        stream << format.writeLine(record) << '\n';
     }
     stream.flush();
     return std::filesystem::file_size(path);

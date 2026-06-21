@@ -7,6 +7,7 @@
 // Tagged `[stream_latency][benchmark]` to land under the `benchmark`
 // CTest label.
 
+#include "benchmark_common.hpp"
 #include "common.hpp"
 
 #include <loglib/key_index.hpp>
@@ -51,15 +52,6 @@ using namespace std::chrono_literals;
 
 namespace
 {
-
-inline void RequireReleaseBuildForBenchmarks()
-{
-#ifndef NDEBUG
-    SKIP("Benchmarks require a release build (Debug disables IPO/LTO and "
-         "leaves assertions enabled, so numbers are not comparable). "
-         "Rebuild with: cmake --preset release  (or relwithdebinfo).");
-#endif
-}
 
 class TempDir
 {
@@ -190,8 +182,6 @@ double Percentile(std::vector<double> sorted, double pct)
 }
 
 } // namespace
-
-#define BENCHMARK_REQUIRES_RELEASE_BUILD() RequireReleaseBuildForBenchmarks()
 
 // Writer-to-row latency. The producer writes `LINE_COUNT` at a steady rate
 // well below saturation; the consumer's parser drains in real time. We
