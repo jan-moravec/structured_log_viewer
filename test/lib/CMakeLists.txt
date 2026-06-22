@@ -26,6 +26,8 @@ add_executable(
     "src/test_log_table.cpp"
     "src/test_logfmt_parser.cpp"
     "src/test_parser_pipeline.cpp"
+    "src/test_regex_parser.cpp"
+    "src/test_regex_templates.cpp"
     "src/test_stream_line_source.cpp"
     "src/test_stream_stop_teardown.cpp"
     "src/test_tailing_bytes_producer.cpp"
