@@ -28,6 +28,8 @@
 #include <loglib/parsers/csv_parser.hpp>
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/parsers/logfmt_parser.hpp>
+#include <loglib/parsers/regex_parser.hpp>
+#include <loglib/regex_templates.hpp>
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
@@ -445,8 +447,12 @@ QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &se
 
 /// Build the parser matching @p format. All open paths route through
 /// here so the parser tracks the persisted `Source::format` instead
-/// of being hard-coded at the call sites.
-std::unique_ptr<loglib::LogParser> MakeParserForFormat(loglib::LogConfiguration::Source::Format format)
+/// of being hard-coded at the call sites. @p regexPattern is only
+/// honoured when @p format is `Regex`; passing an empty string there
+/// yields a probe-only parser that refuses to parse (the parse will
+/// surface a single "empty pattern" error through the sink).
+std::unique_ptr<loglib::LogParser>
+MakeParserForFormat(loglib::LogConfiguration::Source::Format format, std::string_view regexPattern = {})
 {
     switch (format)
     {
@@ -454,37 +460,68 @@ std::unique_ptr<loglib::LogParser> MakeParserForFormat(loglib::LogConfiguration:
         return std::make_unique<loglib::LogfmtParser>();
     case loglib::LogConfiguration::Source::Format::Csv:
         return std::make_unique<loglib::CsvParser>();
+    case loglib::LogConfiguration::Source::Format::Regex:
+        // Pin the pattern onto the parser instance. We do not rely on
+        // `ParserOptions::configuration->source->regexPattern` here —
+        // some callers pass an unrelated configuration snapshot, and
+        // the explicit-pattern constructor short-circuits the lookup.
+        return std::make_unique<loglib::RegexParser>(std::string(regexPattern));
     case loglib::LogConfiguration::Source::Format::Json:
         return std::make_unique<loglib::JsonParser>();
     }
     return std::make_unique<loglib::JsonParser>();
 }
 
+/// Output of `DetectFormatForPath`: the detected format plus, for
+/// `Regex`, the pattern of the matched built-in template. Pattern
+/// is empty for every other format and for files that nothing
+/// claimed. Returned by value (small struct, single call site each).
+struct DetectedFormat
+{
+    loglib::LogConfiguration::Source::Format format = loglib::LogConfiguration::Source::Format::Json;
+    std::string regexPattern;
+};
+
 /// Sniff @p file and return the first format whose parser accepts it
-/// (JSON before logfmt, matching `loglib::ParseFile(path)`). Falls
-/// back to `Json` when nothing matches so the parse surfaces the
-/// bytes as parse errors rather than silently doing nothing.
-loglib::LogConfiguration::Source::Format DetectFormatForPath(const std::filesystem::path &file)
+/// (JSON before logfmt before CSV before Regex, matching
+/// `loglib::ParseFile(path)`). For `Regex`, the matched built-in
+/// template's pattern is carried through so the caller can persist
+/// it on `mCurrentSource->regexPattern`. Falls back to `Json` when
+/// nothing matches so the parse surfaces the bytes as parse errors
+/// rather than silently doing nothing.
+DetectedFormat DetectFormatForPath(const std::filesystem::path &file)
 {
     for (int i = 0; i < static_cast<int>(loglib::LogFactory::Parser::Count); ++i)
     {
         const auto parserType = static_cast<loglib::LogFactory::Parser>(i);
+        if (parserType == loglib::LogFactory::Parser::Regex)
+        {
+            // Same special case as `loglib::ParseFile(path)`: we need
+            // the matched template's pattern, not just a yes/no.
+            if (const loglib::RegexTemplate *tmpl = loglib::DetectRegexTemplate(file))
+            {
+                return {loglib::LogConfiguration::Source::Format::Regex, tmpl->pattern};
+            }
+            continue;
+        }
+
         const std::unique_ptr<loglib::LogParser> probe = loglib::LogFactory::Create(parserType);
         if (probe->IsValid(file))
         {
             switch (parserType)
             {
             case loglib::LogFactory::Parser::Logfmt:
-                return loglib::LogConfiguration::Source::Format::Logfmt;
+                return {loglib::LogConfiguration::Source::Format::Logfmt, std::string{}};
             case loglib::LogFactory::Parser::Csv:
-                return loglib::LogConfiguration::Source::Format::Csv;
+                return {loglib::LogConfiguration::Source::Format::Csv, std::string{}};
             case loglib::LogFactory::Parser::Json:
+            case loglib::LogFactory::Parser::Regex:
             case loglib::LogFactory::Parser::Count:
-                return loglib::LogConfiguration::Source::Format::Json;
+                return {loglib::LogConfiguration::Source::Format::Json, std::string{}};
             }
         }
     }
-    return loglib::LogConfiguration::Source::Format::Json;
+    return {loglib::LogConfiguration::Source::Format::Json, std::string{}};
 }
 
 } // namespace
@@ -2395,11 +2432,13 @@ void MainWindow::StreamNextPendingFile()
         const std::string dedupKey = logapp::CanonicalLocator(file).toStdString();
         if (isFirstFileInSession)
         {
+            DetectedFormat detected = DetectFormatForPath(std::filesystem::path(file.toStdString()));
             mCurrentSource = loglib::LogConfiguration::Source{
                 .kind = loglib::LogConfiguration::Source::Kind::File,
-                .format = DetectFormatForPath(std::filesystem::path(file.toStdString())),
+                .format = detected.format,
                 .locators = {displayPath},
-                .locatorDedupKeys = {dedupKey}
+                .locatorDedupKeys = {dedupKey},
+                .regexPattern = std::move(detected.regexPattern),
             };
         }
         else if (mCurrentSource.has_value() && mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::File)
@@ -2445,9 +2484,9 @@ void MainWindow::StreamNextPendingFile()
         // the session descriptor; the per-file parser comes from this
         // sniff. The worker captures it by value so a later GUI
         // session switch can't retarget the in-flight parse.
-        const loglib::LogConfiguration::Source::Format format =
-            DetectFormatForPath(std::filesystem::path(file.toStdString()));
-        std::shared_ptr<loglib::LogParser> parser = MakeParserForFormat(format);
+        const DetectedFormat detectedPerFile = DetectFormatForPath(std::filesystem::path(file.toStdString()));
+        std::shared_ptr<loglib::LogParser> parser =
+            MakeParserForFormat(detectedPerFile.format, detectedPerFile.regexPattern);
 
         // False positive: `parseCallable` is moved into the model and invoked;
         // `cfg` is consumed by `options`.
@@ -2575,11 +2614,13 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     {
         const std::string displayPath = logapp::CanonicalDisplayPath(file).toStdString();
         const std::string dedupKey = logapp::CanonicalLocator(file).toStdString();
+        DetectedFormat detected = DetectFormatForPath(std::filesystem::path(file.toStdString()));
         mCurrentSource = loglib::LogConfiguration::Source{
             .kind = loglib::LogConfiguration::Source::Kind::File,
-            .format = DetectFormatForPath(std::filesystem::path(file.toStdString())),
+            .format = detected.format,
             .locators = {displayPath},
-            .locatorDedupKeys = {dedupKey}
+            .locatorDedupKeys = {dedupKey},
+            .regexPattern = std::move(detected.regexPattern),
         };
     }
     mSessionMode = SessionMode::LiveTail;
@@ -2603,7 +2644,10 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(source));
     const loglib::LogConfiguration::Source::Format format =
         mCurrentSource ? mCurrentSource->format : loglib::LogConfiguration::Source::Format::Json;
-    auto parserFactory = [format]() { return MakeParserForFormat(format); };
+    std::string regexPattern = mCurrentSource ? mCurrentSource->regexPattern : std::string{};
+    auto parserFactory = [format, regexPattern = std::move(regexPattern)]() {
+        return MakeParserForFormat(format, regexPattern);
+    };
     mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
 }
 
@@ -2706,6 +2750,8 @@ void MainWindow::OpenNetworkStream()
             return loglib::LogConfiguration::Source::Format::Logfmt;
         case NetworkStreamDialog::Format::Csv:
             return loglib::LogConfiguration::Source::Format::Csv;
+        case NetworkStreamDialog::Format::Regex:
+            return loglib::LogConfiguration::Source::Format::Regex;
         case NetworkStreamDialog::Format::Json:
             break;
         }
@@ -2715,7 +2761,8 @@ void MainWindow::OpenNetworkStream()
         .kind = loglib::LogConfiguration::Source::Kind::NetworkStream,
         .format = dialogFormat,
         .locators = {displayName},
-        .locatorDedupKeys = {displayName}
+        .locatorDedupKeys = {displayName},
+        .regexPattern = cfg.regexPattern.toStdString(),
     };
     mSessionMode = SessionMode::LiveTail;
     mStreamingLineCount = 0;
@@ -2738,7 +2785,10 @@ void MainWindow::OpenNetworkStream()
         std::make_unique<loglib::StreamLineSource>(std::filesystem::path(displayName), std::move(producer));
     const loglib::LogConfiguration::Source::Format format =
         mCurrentSource ? mCurrentSource->format : loglib::LogConfiguration::Source::Format::Json;
-    auto parserFactory = [format]() { return MakeParserForFormat(format); };
+    std::string regexPattern = mCurrentSource ? mCurrentSource->regexPattern : std::string{};
+    auto parserFactory = [format, regexPattern = std::move(regexPattern)]() {
+        return MakeParserForFormat(format, regexPattern);
+    };
     mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
 }
 

@@ -44,6 +44,10 @@ public:
         Json,
         Logfmt,
         Csv,
+        /// Regex template (PCRE2). Requires picking a built-in
+        /// template from the registry or providing a custom
+        /// `(?<Name>...)` pattern.
+        Regex,
     };
 
     /// Resolved configuration; populated only after the dialog is
@@ -52,6 +56,10 @@ public:
     {
         Protocol protocol = Protocol::Tcp;
         Format format = Format::Json;
+        /// PCRE2 pattern, only populated when `format == Regex`.
+        /// Either the pattern of the selected built-in template or
+        /// the free-text user-supplied pattern.
+        QString regexPattern;
         QString bindAddress;
         uint16_t port = 0;
         size_t maxConcurrentClients = 16; // TCP-only
@@ -72,6 +80,8 @@ public:
 private slots:
     void OnProtocolChanged();
     void OnTlsToggled();
+    void OnFormatChanged();
+    void OnRegexTemplateChanged();
     void BrowseCertChain();
     void BrowsePrivateKey();
     void BrowseCaBundle();
@@ -84,6 +94,12 @@ private:
     QRadioButton *mTcpRadio = nullptr;
     QRadioButton *mUdpRadio = nullptr;
     QComboBox *mFormat = nullptr;
+    /// Built-in regex template picker; visible only when
+    /// `Format::Regex` is selected. The last entry is "Custom..."
+    /// which enables `mRegexPattern` below.
+    QGroupBox *mRegexGroup = nullptr;
+    QComboBox *mRegexTemplate = nullptr;
+    QLineEdit *mRegexPattern = nullptr;
     QLineEdit *mBindAddress = nullptr;
     QSpinBox *mPort = nullptr;
     QSpinBox *mMaxConcurrentClients = nullptr;
