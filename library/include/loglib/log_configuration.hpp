@@ -170,13 +170,25 @@ struct LogConfiguration
         {
             Json,
             Logfmt,
-            Csv
+            Csv,
+            /// Regex-template parser (PCRE2). The pattern is carried
+            /// in `regexPattern` below — the parser refuses to run
+            /// without one when `format == Regex`.
+            Regex
         };
 
         Kind kind = Kind::File;
         Format format = Format::Json;
         std::vector<std::string> locators;
         std::vector<std::string> locatorDedupKeys;
+        /// PCRE2 pattern with `(?<Name>...)` named capture groups,
+        /// only meaningful when `format == Format::Regex`. Empty for
+        /// every other format and for fresh `Source`s. Persisted so
+        /// reopened sessions / network streams keep parsing under
+        /// the same template; the matching builtin name (if any) is
+        /// looked up via `loglib::FindBuiltinByPattern` at display
+        /// time.
+        std::string regexPattern;
     };
 
     /// A persisted bookmark on one log line.
