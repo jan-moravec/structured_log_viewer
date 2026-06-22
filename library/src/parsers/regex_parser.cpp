@@ -23,6 +23,7 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -110,11 +111,20 @@ std::string FormatPcre2Error(int errcode)
 // CompiledPattern: shared compiled state for one PCRE2 pattern.
 // ---------------------------------------------------------------------
 
-/// Schema of a compiled pattern: every named capture group, in
-/// `pcre2_pattern_info(PCRE2_INFO_NAMETABLE, ...)` order (which is
-/// alphabetical by group name, not by group index). The KeyId at
-/// `[i]` is `kPi.GetOrInsert(groupNames[i])`; the worker indexes
-/// into the ovector at `groupIndices[i] * 2`.
+/// Schema of a compiled pattern: every named capture group, sorted
+/// by `groupIndex` so the schema reads in pattern-source order
+/// rather than the alphabetical order PCRE2 returns from
+/// `pcre2_pattern_info(PCRE2_INFO_NAMETABLE, ...)`. The KeyId at
+/// `[i]` is `keys.GetOrInsert(groupNames[i])`; the worker indexes
+/// into the ovector at `groupIndices[i] * 2`. Pattern-source order
+/// matters for two consumer-visible properties:
+///  - column order in `LogTable` follows KeyId allocation order,
+///    so columns appear left-to-right the way the user wrote them
+///    (e.g. CLF: `clientip ident auth timestamp verb ...`, not
+///    alphabetical `auth bytes clientip ...`).
+///  - `RegexParser::ToString` joins values in pattern-source order
+///    so a regenerated line at least has its fields in the same
+///    slots the original line did.
 struct PatternSchema
 {
     std::vector<std::string> groupNames;
@@ -266,6 +276,30 @@ private:
             mSchema.groupNames.emplace_back(name);
             mSchema.groupIndices.push_back(groupIndex);
         }
+
+        // Re-sort into pattern-source order. PCRE2 hands us the name
+        // table sorted alphabetically by name; sorting by group index
+        // here is what makes columns and `ToString` follow the order
+        // the user wrote in the pattern (see `PatternSchema` doc).
+        // `groupNames` and `groupIndices` are parallel arrays so we
+        // permute them together via an index vector — cheap, runs
+        // once at compile time.
+        std::vector<size_t> order(mSchema.groupIndices.size());
+        std::iota(order.begin(), order.end(), 0U);
+        std::sort(order.begin(), order.end(), [this](size_t lhs, size_t rhs) {
+            return mSchema.groupIndices[lhs] < mSchema.groupIndices[rhs];
+        });
+        std::vector<std::string> sortedNames;
+        std::vector<uint32_t> sortedIndices;
+        sortedNames.reserve(order.size());
+        sortedIndices.reserve(order.size());
+        for (const size_t i : order)
+        {
+            sortedNames.emplace_back(std::move(mSchema.groupNames[i]));
+            sortedIndices.push_back(mSchema.groupIndices[i]);
+        }
+        mSchema.groupNames = std::move(sortedNames);
+        mSchema.groupIndices = std::move(sortedIndices);
     }
 
     Pcre2CodePtr mCode;
@@ -314,10 +348,13 @@ const std::vector<CompiledTemplate> &CompiledBuiltins()
     return CACHE;
 }
 
-/// True iff @p code matches @p line end-to-end (PCRE2_ANCHORED |
-/// PCRE2_ENDANCHORED). Uses a per-call match data because the cache
-/// is shared across the process; allocating one tiny block is cheap
-/// next to the match itself.
+/// True iff @p code matches @p line. The built-in templates are all
+/// explicitly anchored with `^...$` in `regex_templates.cpp`, so a
+/// successful `pcre2_match` already means the pattern consumed the
+/// whole line — we don't need to pass `PCRE2_ANCHORED |
+/// PCRE2_ENDANCHORED` here. A per-call `pcre2_match_data` is used
+/// because the cache is shared across the process; allocating one
+/// tiny block is cheap next to the match itself.
 bool BuiltinMatchesFully(const CompiledPattern &cp, std::string_view line)
 {
     const Pcre2MatchDataPtr md = cp.NewMatchData();
@@ -339,6 +376,13 @@ bool BuiltinMatchesFully(const CompiledPattern &cp, std::string_view line)
     return rc > 0;
 }
 
+/// UTF-8 BOM. Some editors (Notepad, older PowerShell) prepend it to
+/// text files; with the BOM intact the `^date` / `^IP` / `^[` anchors
+/// in the built-in templates can't bind to position 0 and auto-detect
+/// silently refuses every file. Stripped from the first probe line
+/// (only) to keep the rest of the byte stream untouched.
+constexpr std::string_view UTF8_BOM = "\xEF\xBB\xBF";
+
 /// File-level probe shared by `IsValid` and `DetectRegexTemplate`.
 /// Returns the first builtin that matches at least
 /// `IS_VALID_MIN_MATCHES` of the first ~16 KiB worth of non-blank
@@ -355,8 +399,14 @@ const RegexTemplate *ProbeBuiltinTemplates(const std::filesystem::path &file)
     probeLines.reserve(8);
     std::string line;
     size_t bytesScanned = 0;
+    bool firstLine = true;
     while (std::getline(stream, line))
     {
+        if (firstLine && line.size() >= UTF8_BOM.size() && std::string_view(line).substr(0, UTF8_BOM.size()) == UTF8_BOM)
+        {
+            line.erase(0, UTF8_BOM.size());
+        }
+        firstLine = false;
         if (!line.empty() && line.back() == '\r')
         {
             line.pop_back();
@@ -442,6 +492,15 @@ bool MatchLineAndEmit(
     std::string &errorOut
 )
 {
+    // Self-contained contract: callers used to have to clear `out`
+    // and `errorOut` themselves, which made the function brittle if
+    // a future caller forgot to reset on a previous error iteration.
+    // Clearing here keeps the existing fast paths (the static and
+    // streaming callers both already clear on their own hot loop,
+    // so this is a no-op for them) without trusting the call site.
+    out.clear();
+    errorOut.clear();
+
     const int rc = pcre2_match(
         compiled.Code(),
         reinterpret_cast<PCRE2_SPTR>(line.data()),
@@ -543,6 +602,17 @@ std::string_view StripCr(std::string_view s) noexcept
     return s;
 }
 
+/// Strip a leading UTF-8 BOM from @p sv if present. Mirrors CSV's
+/// helper; only valid at the start of the very first line of a file.
+std::string_view StripBom(std::string_view sv) noexcept
+{
+    if (sv.starts_with(UTF8_BOM))
+    {
+        sv.remove_prefix(UTF8_BOM.size());
+    }
+    return sv;
+}
+
 void DecodeRegexBatch(
     const RegexByteRange &batch,
     internal::WorkerScratch<RegexWorkerState> &worker,
@@ -583,6 +653,15 @@ void DecodeRegexBatch(
 
         std::string_view line(lineStart, static_cast<size_t>(lineEnd - lineStart));
         line = StripCr(line);
+        // Strip a leading UTF-8 BOM if and only if this line starts
+        // at file byte 0 — keeps `^...` anchors in user / built-in
+        // patterns binding after a BOM-prefixed editor save. Stage A
+        // emits batches at line boundaries, so only the first line
+        // of batch 0 can ever match this branch.
+        if (lineStart == fileBegin)
+        {
+            line = StripBom(line);
+        }
 
         // Pad by 1 on an unterminated last line so the final byte
         // isn't lost on `LogFile::GetLine` round-trips. Matches the
@@ -648,9 +727,20 @@ public:
         (void)keyCache; // ditto.
         out.clear();
         outOwnedArena.clear();
+        // Strip a leading UTF-8 BOM from the very first line of the
+        // stream. The flag latches once so a literal `\xEF\xBB\xBF`
+        // appearing inside the body of a later line stays intact.
+        if (!mSawFirstLine)
+        {
+            line = StripBom(line);
+            mSawFirstLine = true;
+        }
         if (line.empty())
         {
-            return internal::LineDecodeResult::Emit;
+            // The streaming loop already filters blank lines, so this
+            // branch is defensive; `Skip` (no row, no error) is the
+            // semantically correct return if it is ever reached.
+            return internal::LineDecodeResult::Skip;
         }
         if (!MatchLineAndEmit(
                 *mCompiled, mMatchData.get(), *mColumnKeys, line,
@@ -666,6 +756,7 @@ private:
     const CompiledPattern *mCompiled;
     const std::vector<KeyId> *mColumnKeys;
     Pcre2MatchDataPtr mMatchData;
+    bool mSawFirstLine = false;
 };
 
 static_assert(
@@ -694,14 +785,24 @@ std::string ResolvePattern(const std::optional<std::string> &explicitPattern, co
 
 /// Single-error terminal pass: honour the sink contract (one
 /// `OnBatch` before `OnFinished`) when we can't even start a pipeline
-/// — empty pattern, bad pattern, missing named groups.
-void EmitErrorAndFinish(LogParseSink &sink, std::string_view message, std::optional<size_t> newKeyBaseline)
+/// — empty pattern, bad pattern, missing named groups. @p streaming
+/// picks the flush thresholds that match the surrounding pipeline so
+/// the trailing batch's coalescer settings line up with the rest of
+/// the parse (the constants only affect threshold-driven mid-parse
+/// flushes; for a single-batch error pass both presets behave
+/// identically, but the symmetry keeps the call sites obviously
+/// consistent).
+void EmitErrorAndFinish(
+    LogParseSink &sink, std::string_view message, std::optional<size_t> newKeyBaseline, bool streaming = false
+)
 {
     sink.OnStarted();
     KeyIndex &keys = sink.Keys();
-    internal::BatchCoalescer coalescer(
-        sink, keys, internal::STATIC_BATCH_FLUSH_LINES, internal::STATIC_BATCH_FLUSH_INTERVAL, newKeyBaseline
-    );
+    const size_t flushLines =
+        streaming ? internal::STREAMING_BATCH_FLUSH_LINES : internal::STATIC_BATCH_FLUSH_LINES;
+    const auto flushInterval =
+        streaming ? internal::STREAMING_BATCH_FLUSH_INTERVAL : internal::STATIC_BATCH_FLUSH_INTERVAL;
+    internal::BatchCoalescer coalescer(sink, keys, flushLines, flushInterval, newKeyBaseline);
     coalescer.Pending().errors.emplace_back(std::string(message));
     coalescer.Finish(1, /*wasCancelled=*/false);
 }
@@ -723,10 +824,22 @@ bool RegexParser::IsValid(const std::filesystem::path &file) const
 
 void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
+    // Capture the `KeyIndex` cursor *before* any potential intern.
+    // Forwarded to `EmitErrorAndFinish` on the error paths (so the
+    // sink-side new-key bookkeeping starts at the right place even
+    // on failure) and to `RunStreamingParseLoop` on success so the
+    // pre-interned named-group columns still surface as `newKeys` on
+    // the first emitted batch. Without this baseline,
+    // `BatchCoalescer` would start counting from the post-intern
+    // size and `LogTable::AppendBatch` would never create the
+    // columns -- live tail and network streams would ingest rows
+    // with no visible columns.
+    const size_t newKeyBaseline = sink.Keys().Size();
+
     const std::string pattern = ResolvePattern(mExplicitPattern, options);
     if (pattern.empty())
     {
-        EmitErrorAndFinish(sink, "Regex parser requires a non-empty pattern.", std::nullopt);
+        EmitErrorAndFinish(sink, "Regex parser requires a non-empty pattern.", newKeyBaseline, /*streaming=*/true);
         return;
     }
 
@@ -734,7 +847,7 @@ void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, P
     std::string compileError;
     if (!compiled.Compile(pattern, compileError))
     {
-        EmitErrorAndFinish(sink, compileError, std::nullopt);
+        EmitErrorAndFinish(sink, compileError, newKeyBaseline, /*streaming=*/true);
         return;
     }
     if (!compiled.HasNamedGroups())
@@ -742,19 +855,12 @@ void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, P
         EmitErrorAndFinish(
             sink,
             "Regex pattern has no named capture groups; nothing to put in columns. Use `(?<Name>...)`.",
-            std::nullopt
+            newKeyBaseline,
+            /*streaming=*/true
         );
         return;
     }
 
-    // Snapshot the sink's `KeyIndex` cursor *before* eagerly
-    // interning the pattern's named groups so the streaming
-    // coalescer surfaces them as `newKeys` on the first emitted
-    // batch. Without this baseline, `BatchCoalescer` would start
-    // counting from the post-intern size and `LogTable::AppendBatch`
-    // would never create the columns -- live tail and network
-    // streams would ingest rows with no visible columns.
-    const size_t newKeyBaseline = sink.Keys().Size();
     const std::vector<KeyId> columnKeys = InternSchemaKeys(compiled.Schema(), sink.Keys());
 
     RegexLineDecoder decoder(compiled, columnKeys);
@@ -805,14 +911,18 @@ void RegexParser::ParseStreaming(
 
     // Compile once on the orchestrator thread; the pipeline shares
     // the compiled code read-only across all Stage B workers.
-    auto compiled = std::make_shared<CompiledPattern>();
+    // `RunStaticParserPipeline` runs synchronously (it joins every
+    // TBB worker before returning), so a stack value captured by
+    // reference outlives every concurrent use — no shared_ptr or
+    // heap allocation needed.
+    CompiledPattern compiled;
     std::string compileError;
-    if (!compiled->Compile(pattern, compileError))
+    if (!compiled.Compile(pattern, compileError))
     {
         EmitErrorAndFinish(sink, compileError, newKeyBaseline);
         return;
     }
-    if (!compiled->HasNamedGroups())
+    if (!compiled.HasNamedGroups())
     {
         EmitErrorAndFinish(
             sink,
@@ -822,7 +932,7 @@ void RegexParser::ParseStreaming(
         return;
     }
 
-    const std::vector<KeyId> columnKeys = InternSchemaKeys(compiled->Schema(), sink.Keys());
+    const std::vector<KeyId> columnKeys = InternSchemaKeys(compiled.Schema(), sink.Keys());
 
     const size_t batchSize = advanced.batchSizeBytes != 0 ? advanced.batchSizeBytes
                                                           : internal::AdvancedParserOptions::DEFAULT_BATCH_SIZE_BYTES;
@@ -856,14 +966,14 @@ void RegexParser::ParseStreaming(
     };
 
     FileLineSource *sourcePtr = &source;
-    auto stageB = [sourcePtr, compiled, &columnKeys](
+    auto stageB = [sourcePtr, &compiled, &columnKeys](
                       RegexByteRange token,
                       internal::WorkerScratch<RegexWorkerState> &worker,
                       KeyIndex &keys,
                       std::span<const internal::TimeColumnSpec> timeColumns,
                       internal::ParsedPipelineBatch &parsed
                   ) {
-        DecodeRegexBatch(token, worker, keys, *sourcePtr, timeColumns, parsed, *compiled, columnKeys);
+        DecodeRegexBatch(token, worker, keys, *sourcePtr, timeColumns, parsed, compiled, columnKeys);
     };
 
     internal::RunStaticParserPipeline<RegexByteRange, RegexWorkerState>(

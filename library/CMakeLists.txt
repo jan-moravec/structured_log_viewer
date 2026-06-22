@@ -51,9 +51,9 @@ target_link_libraries(
     # no efsw type appears in any public loglib header, so it stays PRIVATE.
     # asio is used by Tcp/UdpServerProducer; no Asio type leaks through the public
     # loglib headers (pimpl), so it stays PRIVATE.
-    # PCRE2 backs the regex-template parser (RegexParser); its public header forward-
-    # declares an opaque `RegexParserImpl` so no `pcre2_*` type appears in any public
-    # loglib header. PRIVATE link.
+    # PCRE2 backs the regex-template parser (RegexParser). All PCRE2 includes
+    # are confined to `library/src/parsers/regex_parser.cpp`; no `pcre2_*`
+    # type appears in any public loglib header. PRIVATE link.
     PRIVATE TBB::tbb efsw asio::asio PCRE2::pcre2-8
 )
 

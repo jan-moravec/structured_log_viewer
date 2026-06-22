@@ -1,8 +1,11 @@
 #include "common.hpp"
 
 #include <loglib/bytes_producer.hpp>
+#include <loglib/file_line_source.hpp>
+#include <loglib/internal/buffering_sink.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_data.hpp>
+#include <loglib/log_file.hpp>
 #include <loglib/log_parse_sink.hpp>
 #include <loglib/parse_file.hpp>
 #include <loglib/parser_options.hpp>
@@ -244,6 +247,92 @@ TEST_CASE("RegexParser ToString joins values in KeyId order [regex]", "[regex_pa
     const std::string out = parser.ToString(result.data.Lines()[0]);
     CHECK(out.find("info") != std::string::npos);
     CHECK(out.find("hello world") != std::string::npos);
+}
+
+TEST_CASE("RegexParser pinned to empty pattern fails closed on the static path [regex]", "[regex_parser]")
+{
+    // Regression: a parser constructed with `RegexParser("")` must
+    // NOT silently fall back to `options.configuration->source->regexPattern`.
+    // The bug was that the advanced overload treated an empty
+    // `string_view` as "no explicit pattern" and read the config —
+    // which contradicted the streaming overload's fail-closed
+    // behaviour for the same pinned-empty parser. The fix changed
+    // the advanced overload to take `optional<string_view>` so
+    // "pinned to empty" stays distinct from "no pattern pinned".
+    const RegexParser parser{std::string{}};
+    const TestLogFile file("regex_pinned_empty.log");
+    file.Write("info hello\nwarn world\n");
+
+    auto config = std::make_shared<LogConfiguration>();
+    config->source = LogConfiguration::Source{
+        .kind = LogConfiguration::Source::Kind::File,
+        .format = LogConfiguration::Source::Format::Regex,
+        .locators = {file.GetFilePath()},
+        .locatorDedupKeys = {file.GetFilePath()},
+        .regexPattern = R"(^(?<level>\w+)\s+(?<message>.*)$)",
+    };
+
+    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
+    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    FileLineSource *sourcePtr = source.get();
+    internal::BufferingSink sink(std::move(source));
+
+    ParserOptions options;
+    options.configuration = std::shared_ptr<const LogConfiguration>(config);
+    parser.ParseStreaming(*sourcePtr, sink, options);
+
+    LogData data = sink.TakeData();
+    std::vector<std::string> errors = sink.TakeErrors();
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0].find("non-empty pattern") != std::string::npos);
+    CHECK(data.Lines().empty());
+}
+
+TEST_CASE("RegexParser auto-detect and parse handle a UTF-8 BOM [regex]", "[regex_parser]")
+{
+    // Editors (Notepad, older PowerShell) sometimes prepend a UTF-8
+    // BOM to log files. Without the BOM strip the `^date` anchor in
+    // every built-in template fails at byte 0 of the first line and
+    // both auto-detect and the parse silently refuse the file. After
+    // the fix `DetectRegexTemplate` claims the file *and* the first
+    // line emits a row instead of a `did not match` error.
+    const TestLogFile file("regex_bom.log");
+    file.Write("\xEF\xBB\xBF"
+               "Apr 28 04:02:03 host-a systemd: System starting\n"
+               "Apr 28 04:02:04 host-a systemd: another line\n");
+
+    const RegexTemplate *detected = DetectRegexTemplate(file.GetFilePath());
+    REQUIRE(detected != nullptr);
+    CHECK(detected->name == "Syslog (RFC3164)");
+
+    auto result = ParseFile(file.GetFilePath());
+    CHECK(result.errors.empty());
+    REQUIRE(result.data.Lines().size() == 2);
+    CHECK(AsStringView(result.data.Lines()[0].GetValue("hostname")) == std::string_view{"host-a"});
+}
+
+TEST_CASE("RegexParser surfaces columns in pattern-source order [regex]", "[regex_parser]")
+{
+    // PCRE2's name table returns groups alphabetically by name, but
+    // `LogTable`'s column order tracks the `KeyIndex` allocation
+    // order — so we deliberately intern named groups by their
+    // pattern-source index. A pattern with `message` declared before
+    // `level` must produce a `ToString` that reads `<message> <level>`
+    // (matching the original line), not the alphabetical permutation.
+    const RegexParser parser(R"(^(?<message>[^|]*)\|(?<level>\w+)$)");
+    const TestLogFile file("regex_tostring_order.log");
+    file.Write("hello world|info\n");
+
+    auto result = ParseFile(parser, file.GetFilePath());
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.data.Lines().size() == 1);
+
+    const std::string out = parser.ToString(result.data.Lines()[0]);
+    const auto messagePos = out.find("hello world");
+    const auto levelPos = out.find("info");
+    REQUIRE(messagePos != std::string::npos);
+    REQUIRE(levelPos != std::string::npos);
+    CHECK(messagePos < levelPos);
 }
 
 namespace

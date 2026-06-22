@@ -51,10 +51,12 @@ struct AdvancedParserOptions;
 ///   traces) are out of scope; they surface as one parse error per
 ///   line in the trailer.
 /// - The pattern itself is parser configuration, not file content,
-///   so `IsValid` requires the built-in registry to recognise the
-///   format. Files matched by a *custom* user pattern must be opened
-///   with the format pre-selected (see `loglib::DetectRegexTemplate`
-///   for the registry-driven helper).
+///   so `IsValid` only auto-detects files that match a *built-in*
+///   template (see `loglib::DetectRegexTemplate`). Files that need a
+///   custom user pattern are reachable today through
+///   `File → Open Network Stream…` (custom pattern field) or by
+///   restoring a saved session whose `LogConfiguration::Source` is
+///   already pinned to `Regex` + the desired pattern.
 class RegexParser : public LogParser
 {
 public:
@@ -107,9 +109,11 @@ public:
     );
 
     /// Best-effort. Regex is not invertible, so we join the named
-    /// group values (in pattern order) with a single space. `Edit ->
-    /// Copy` uses `RawLine()` for accurate round-trips; this is a
-    /// fallback for callers that already lost the source line.
+    /// group values (in pattern-source order — the order the user
+    /// wrote the `(?<Name>...)` groups, which is also `RegexParser`'s
+    /// `KeyIndex` intern order) with a single space. `Edit -> Copy`
+    /// uses `RawLine()` for accurate round-trips; this is a fallback
+    /// for callers that already lost the source line.
     std::string ToString(const LogLine &line) const override;
 
 private:
@@ -126,9 +130,9 @@ private:
 /// `LogConfiguration::Source`.
 [[nodiscard]] const RegexTemplate *DetectRegexTemplate(const std::filesystem::path &file);
 
-/// Compile-only validation used by GUI surfaces (the Network Stream
-/// dialog, "Open as -> Regex") to front-load pattern errors before
-/// they surface as a single error on the first inbound line. Returns
+/// Compile-only validation used by GUI surfaces (e.g. the Network
+/// Stream dialog) to front-load pattern errors before they surface
+/// as a single error on the first inbound line. Returns
 /// `true` iff @p pattern is non-empty, compiles successfully, *and*
 /// contains at least one `(?<Name>...)` named capture group. On
 /// failure, @p errorOut is populated with a user-facing message

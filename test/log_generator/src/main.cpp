@@ -1,8 +1,8 @@
 // Standalone log generator. Loops `test_common::GenerateRandomLogRecord`,
-// serializes each record through `--format` (`json` / `logfmt`), and stops
-// at `--size` or `--lines`. Supports `--timeout` throttling and in-flight
-// rotation (`--roll-*`) for `TailingBytesProducer` and Stream Mode smoke
-// tests.
+// serializes each record through `--format` (`json` / `logfmt` / `csv` /
+// `regex`), and stops at `--size` or `--lines`. Supports `--timeout`
+// throttling and in-flight rotation (`--roll-*`) for `TailingBytesProducer`
+// and Stream Mode smoke tests.
 //
 // The format's `writeHeader` is emitted on initial open (skipped in
 // `--append`) and after every rotation, so a future schema-bearing format
@@ -477,7 +477,7 @@ int main(int argc, char *argv[])
         .help("Output file path (overwritten if it already exists, unless --append). When --output is "
               "omitted the default base name is `generated` plus the format's extension "
               "(generated.jsonl for --format json, generated.logfmt for --format logfmt, "
-              "generated.csv for --format csv).");
+              "generated.csv for --format csv, generated.log for --format regex).");
 
     program.add_argument("-f", "--format")
         .default_value(std::string{"json"})
