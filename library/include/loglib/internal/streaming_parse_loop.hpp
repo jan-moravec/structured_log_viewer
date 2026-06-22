@@ -123,6 +123,12 @@ void RunStreamingParseLoop(StreamLineSource &source, Decoder &decoder, LogParseS
         ownedArena.clear();
 
         LogLine logLine(std::move(compactValues), keys, source, lineId);
+        // Reset the moved-from vector to a known-empty valid state.
+        // `DecodeCompact` also calls `out.clear()` on entry, but the
+        // analyzer can't see through the template decoder's body, so
+        // this prevents a `clang-analyzer-cplusplus.Move` false positive
+        // when the next iteration calls `compactValues.begin()`.
+        compactValues.clear();
         // Empty arena -> resolution falls through to the line's
         // `LineSource *` (i.e. `StreamLineSource::ResolveOwnedBytes`).
         promoteScratch.PromoteTimestamps(logLine, timeColumnsSpan, std::string_view{});

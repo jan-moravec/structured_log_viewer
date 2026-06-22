@@ -78,13 +78,21 @@ ResolvedPipelineSettings ResolvePipelineSettings(const AdvancedParserOptions &ad
 /// @p newKeyBaseline forwards to `BatchCoalescer` (see its docstring);
 /// parsers that intern their schema before the pipeline pass the
 /// pre-intern key count. Defaults to the index's current size.
+// `stageADriver` / `stageBDecoder` are forwarding refs to keep both
+// lvalue and rvalue callables callable without an explicit `std::move`
+// at the call site, but they are captured by the inner `[&]` lambdas
+// and invoked many times by TBB's pipeline. `std::forward<...>` would
+// be UB on the second invocation when the original argument was an
+// rvalue, so we deliberately do not forward and silence the warnings.
 template <class Token, class UserState, class StageADriver, class StageBDecoder>
 void RunStaticParserPipeline(
     FileLineSource &source,
     LogParseSink &sink,
     const ParserOptions &options,
     const AdvancedParserOptions &advanced,
+    // NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward)
     StageADriver &&stageADriver,
+    // NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward)
     StageBDecoder &&stageBDecoder,
     std::optional<size_t> newKeyBaseline = std::nullopt
 )

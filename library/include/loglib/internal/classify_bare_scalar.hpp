@@ -161,6 +161,7 @@ inline CompactLogValue ClassifyBareScalar(
 
     if (raw.front() == '-')
     {
+        // NOLINTNEXTLINE(misc-const-correctness): mutated through from_chars' out-ref.
         int64_t i64 = 0;
         const auto res = std::from_chars(first, last, i64);
         if (res.ec == std::errc{} && res.ptr == last)
@@ -171,6 +172,7 @@ inline CompactLogValue ClassifyBareScalar(
     else if (raw.front() >= '0' && raw.front() <= '9')
     {
         // Unsigned first so large positive ids round-trip exactly.
+        // NOLINTNEXTLINE(misc-const-correctness): mutated through from_chars' out-ref.
         uint64_t u64 = 0;
         const auto res = std::from_chars(first, last, u64);
         if (res.ec == std::errc{} && res.ptr == last)
