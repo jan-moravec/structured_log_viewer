@@ -454,13 +454,13 @@ int main(int argc, char *argv[])
 {
     argparse::ArgumentParser program("log_generator", "0.3.0");
     program.add_description("Generate a structured log file with synthetic timestamp/level/message records. "
-                            "Pick the wire format with --format (json|logfmt|csv). Lines are produced until "
+                            "Pick the wire format with --format (json|logfmt|csv|regex). Lines are produced until "
                             "--size or --lines is reached (whichever comes first; 0 means unbounded on that "
                             "axis). Pass --timeout to throttle writes and simulate a streaming feed; pass "
                             "--roll-size and/or --roll-lines to rotate the active file in-flight "
                             "(--roll-strategy controls how). When --output is omitted the default base name "
                             "takes the format's extension (generated.jsonl for json, generated.logfmt for "
-                            "logfmt, generated.csv for csv).");
+                            "logfmt, generated.csv for csv, generated.log for regex).");
 
     program.add_argument("-s", "--size")
         .default_value(std::string{"10MB"})
@@ -481,9 +481,11 @@ int main(int argc, char *argv[])
 
     program.add_argument("-f", "--format")
         .default_value(std::string{"json"})
-        .choices("json", "logfmt", "csv")
-        .help("Record serialization format: 'json' (one JSON object per line), 'logfmt', or 'csv' "
-              "(RFC 4180 strict, comma-only, header derived from the first generated record).");
+        .choices("json", "logfmt", "csv", "regex")
+        .help("Record serialization format: 'json' (one JSON object per line), 'logfmt', 'csv' "
+              "(RFC 4180 strict, comma-only, header derived from the first generated record), or "
+              "'regex' (bracketed `[<timestamp>] <level> <component> tid=<n> | <message>` form "
+              "extractable by `loglib::RegexParser` with the bracketed-regex template).");
 
     program.add_argument("-t", "--timeout")
         .default_value(0)
@@ -581,9 +583,19 @@ int main(int argc, char *argv[])
         schema = test_common::DeriveSchemaFromRecord(probe);
         format = test_common::Csv(schema);
     }
+    else if (formatName == "regex")
+    {
+        // Bracketed text shape: lines are extractable by `loglib::RegexParser`
+        // with `test_common::BracketedRegexPattern()`. Schemaless on the
+        // wire (no header), but the parser needs the pattern out-of-band.
+        // Lossy: only the canonical 5 fields survive; `line_number` is
+        // emitted by the generator but dropped at parse time.
+        format = test_common::BracketedRegex();
+    }
     else
     {
-        std::cerr << "Unknown --format value: " << formatName << " (expected one of: json, logfmt, csv)\n";
+        std::cerr << "Unknown --format value: " << formatName
+                  << " (expected one of: json, logfmt, csv, regex)\n";
         return 1;
     }
     // Empty `--output` means "derive from the format" (`generated.jsonl` /

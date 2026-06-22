@@ -300,6 +300,75 @@ LogFormat Csv(RecordSchema schema)
     };
 }
 
+namespace
+{
+
+/// Look up @p key on @p record and append its serialized form to @p out.
+/// Numbers serialize as compact JSON (so `thread_id=3` not `thread_id=3.0`),
+/// strings inline as-is, booleans as `true` / `false`, null/missing as
+/// the empty string. Anything else (nested object / array) is rejected
+/// in debug builds; the bracketed-regex shape is intentionally flat.
+void AppendBracketedField(std::string &out, const LogRecord &record, const std::string &key)
+{
+    const LogRecord *value = FindObjectField(record, key);
+    if (value == nullptr || value->is_null())
+    {
+        return;
+    }
+    if (value->is_string())
+    {
+        out.append(value->get_string());
+        return;
+    }
+    if (value->is_boolean())
+    {
+        out.append(value->get_boolean() ? "true" : "false");
+        return;
+    }
+    if (value->is_number())
+    {
+        out.append(CompactJson(*value));
+        return;
+    }
+    // Arrays / objects don't fit the flat bracketed shape.
+    assert(false && "BracketedRegex fields must be scalar (string/number/bool/null)");
+}
+
+} // namespace
+
+LogFormat BracketedRegex()
+{
+    return LogFormat{
+        .suggestedExtension = ".log",
+        .writeHeader = [](const RecordSchema &) { return std::string{}; },
+        .writeLine =
+            [](const LogRecord &record) {
+                std::string out;
+                // Format mirrors `BracketedRegexPattern()`. Keep the two in lock-step.
+                out.push_back('[');
+                AppendBracketedField(out, record, "timestamp");
+                out.append("] ");
+                AppendBracketedField(out, record, "level");
+                out.push_back(' ');
+                AppendBracketedField(out, record, "component");
+                out.append(" tid=");
+                AppendBracketedField(out, record, "thread_id");
+                out.append(" | ");
+                AppendBracketedField(out, record, "message");
+                return out;
+            },
+    };
+}
+
+std::string_view BracketedRegexPattern()
+{
+    // `timestamp` accepts anything but `]`; `level` / `component` are
+    // bare tokens (non-space, non-`|`); `thread_id` is digits-only;
+    // `message` greedy-matches the rest of the line. The leading `^`
+    // / trailing `$` anchor on the whole line.
+    return R"(^\[(?<timestamp>[^\]]+)\] (?<level>\S+) (?<component>\S+) tid=(?<thread_id>\d+) \| (?<message>.*)$)";
+}
+
 RecordSchema DeriveSchemaFromRecord(const LogRecord &record)
 {
     RecordSchema schema;

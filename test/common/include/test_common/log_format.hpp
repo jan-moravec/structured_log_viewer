@@ -57,6 +57,29 @@ LogFormat Logfmt();
 // in the record's lex order; real fixtures should pass a schema.
 LogFormat Csv(RecordSchema schema = {});
 
+// Bracketed text shape suitable for regex-template extraction. Each
+// record emits one line of the form:
+//   `[<timestamp>] <level> <component> tid=<thread_id> | <message>`
+//
+// Lossy: only the five canonical fields from `GenerateRandomLogRecord`
+// (`timestamp` / `level` / `component` / `thread_id` / `message`)
+// survive; other fields are dropped. Use with `loglib::RegexParser`
+// and `BracketedRegexPattern()` for a directly comparable cross-format
+// benchmark.
+//
+// Field constraints (asserted in debug builds): `level` / `component`
+// must be bare non-space tokens, `thread_id` must serialize to
+// digits-only, `timestamp` must not contain `]`, and `message` must
+// not contain a newline. The fixture generator already satisfies all
+// of these.
+LogFormat BracketedRegex();
+
+// PCRE2 pattern that pairs with `BracketedRegex()`. Five named
+// groups -- `timestamp`, `level`, `component`, `thread_id`,
+// `message` -- map onto the same column names that the other
+// formats produce, so cross-format lines/s comparisons line up.
+std::string_view BracketedRegexPattern();
+
 // Lex-ordered list of @p record's object keys; empty if @p record
 // is not an object. Used to derive a CSV header from a sample record.
 RecordSchema DeriveSchemaFromRecord(const LogRecord &record);

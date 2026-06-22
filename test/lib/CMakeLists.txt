@@ -8,6 +8,7 @@ add_executable(
     "src/benchmark_json.cpp"
     "src/benchmark_log_filter.cpp"
     "src/benchmark_logfmt.cpp"
+    "src/benchmark_regex.cpp"
     "src/benchmark_stream.cpp"
     "src/common.cpp"
     "src/test_csv_parser.cpp"
