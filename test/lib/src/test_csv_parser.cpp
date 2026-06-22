@@ -161,10 +161,8 @@ TEST_CASE("Parse typed bare cells [csv]", "[csv_parser]")
     // Mirrors logfmt: bool / int / uint / double classify; quoted cells stay strings.
     const loglib::CsvParser parser;
     const TestLogFile file;
-    file.Write(
-        "i,u,d,b,f,n,q\n"
-        "-12,10000000000000000000,3.14,true,false,,\"42\"\n"
-    );
+    file.Write("i,u,d,b,f,n,q\n"
+               "-12,10000000000000000000,3.14,true,false,,\"42\"\n");
 
     auto result = loglib::ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.empty());
@@ -189,11 +187,9 @@ TEST_CASE("Quoted cell with embedded comma / quote / newline [csv]", "[csv_parse
     // Embedded newlines (multi-line cells) are unsupported in v1.
     const loglib::CsvParser parser;
     const TestLogFile file;
-    file.Write(
-        "label,text\n"
-        "comma,\"a,b\"\n"
-        "quote,\"a\"\"b\"\n"
-    );
+    file.Write("label,text\n"
+               "comma,\"a,b\"\n"
+               "quote,\"a\"\"b\"\n");
 
     auto result = loglib::ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.empty());
@@ -206,11 +202,9 @@ TEST_CASE("Unterminated quoted cell surfaces as error [csv]", "[csv_parser]")
 {
     const loglib::CsvParser parser;
     const TestLogFile file;
-    file.Write(
-        "a,b\n"
-        "ok,ok\n"
-        "broken,\"unterminated\n"
-    );
+    file.Write("a,b\n"
+               "ok,ok\n"
+               "broken,\"unterminated\n");
 
     auto result = loglib::ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.size() == 1);
@@ -224,11 +218,9 @@ TEST_CASE("Ragged row with extra cells surfaces as error [csv]", "[csv_parser]")
 {
     const loglib::CsvParser parser;
     const TestLogFile file;
-    file.Write(
-        "a,b\n"
-        "1,2\n"
-        "1,2,3\n"
-    );
+    file.Write("a,b\n"
+               "1,2\n"
+               "1,2,3\n");
 
     auto result = loglib::ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.size() == 1);
@@ -243,11 +235,9 @@ TEST_CASE("Empty cells are omitted, missing trailing cells materialise as monost
     // key; both lookups yield monostate.
     const loglib::CsvParser parser;
     const TestLogFile file;
-    file.Write(
-        "a,b,c\n"
-        "1,,3\n"
-        "4,5\n"
-    );
+    file.Write("a,b,c\n"
+               "1,,3\n"
+               "4,5\n");
 
     auto result = loglib::ParseFile(parser, file.GetFilePath());
     CHECK(result.errors.empty());
@@ -355,8 +345,7 @@ TEST_CASE("Parse file via FactoryParser auto-detect [csv]", "[csv_parser]")
 // `test_common::Csv()` duplicates `loglib::BareCellIsSafe` /
 // `AppendQuotedCell`; this round-trip pins the two copies in sync.
 TEST_CASE(
-    "test_common::Csv() writes round-trip through CsvParser (all value families) [csv]",
-    "[csv_parser][round_trip]"
+    "test_common::Csv() writes round-trip through CsvParser (all value families) [csv]", "[csv_parser][round_trip]"
 )
 {
     using namespace loglib;

@@ -42,9 +42,7 @@ void CsvStream(
 // Derive the CSV schema by peeking one streamed record on a throwaway
 // RNG seeded the same way as the real run (so the schema matches what
 // the benchmark will emit, without materialising the full vector).
-test_common::RecordSchema SampleStreamingSchema(
-    std::uint32_t seed, const test_common::TimestampPolicy &timestamps
-)
+test_common::RecordSchema SampleStreamingSchema(std::uint32_t seed, const test_common::TimestampPolicy &timestamps)
 {
     // NOLINTNEXTLINE(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
     std::mt19937 rng(seed);

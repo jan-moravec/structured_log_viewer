@@ -236,10 +236,7 @@ void DeduplicateColumnNames(std::vector<std::string> &names)
 /// header is empty or has an unterminated quoted cell; duplicates are
 /// renamed (see `DeduplicateColumnNames`).
 bool ParseHeaderLine(
-    std::string_view headerLine,
-    KeyIndex &keys,
-    std::string &headerScratch,
-    std::vector<KeyId> &columnKeys
+    std::string_view headerLine, KeyIndex &keys, std::string &headerScratch, std::vector<KeyId> &columnKeys
 )
 {
     columnKeys.clear();
@@ -252,9 +249,8 @@ bool ParseHeaderLine(
     std::vector<std::string> cellNames;
     cellNames.reserve(INITIAL_FIELD_CAPACITY);
 
-    const bool ok = TokenizeCsvLine(headerLine, headerScratch, [&](const CsvCell &cell) {
-        cellNames.emplace_back(cell.value);
-    });
+    const bool ok =
+        TokenizeCsvLine(headerLine, headerScratch, [&](const CsvCell &cell) { cellNames.emplace_back(cell.value); });
     if (!ok)
     {
         return false;
@@ -334,9 +330,7 @@ void ParseCsvLine(
                 // Scratch bytes are reused per cell; copy into the arena.
                 const uint64_t offset = ownedArena.size();
                 ownedArena.append(cell.value.data(), cell.value.size());
-                compact = internal::CompactLogValue::MakeOwnedString(
-                    offset, static_cast<uint32_t>(cell.value.size())
-                );
+                compact = internal::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(cell.value.size()));
             }
             else
             {
@@ -476,9 +470,7 @@ void DecodeCsvBatch(
                 parsed.errors.push_back(internal::ParsedLineError{
                     .relativeLine = relativeLineNumber,
                     .body = fmt::format(
-                        "Row has {} extra cell(s) beyond the {}-column header.",
-                        raggedExtra,
-                        columnKeys.size()
+                        "Row has {} extra cell(s) beyond the {}-column header.", raggedExtra, columnKeys.size()
                     )
                 });
                 relativeLineNumber++;
@@ -488,9 +480,7 @@ void DecodeCsvBatch(
             // matches visible source lines.
 
             // LogLine ctor asserts ascending KeyIds; header order may not be.
-            std::sort(values.begin(), values.end(), [](const auto &a, const auto &b) {
-                return a.first < b.first;
-            });
+            std::sort(values.begin(), values.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
 
             LogLine logLine(std::move(values), keys, source, relativeLineNumber - 1);
             parsed.lines.push_back(std::move(logLine));
@@ -600,9 +590,7 @@ static_assert(
 /// True iff @p value can serialise unquoted (no `,` / `"` / CR / LF).
 bool BareCellIsSafe(std::string_view value) noexcept
 {
-    return std::ranges::all_of(value, [](char c) {
-        return c != ',' && c != '"' && c != '\r' && c != '\n';
-    });
+    return std::ranges::all_of(value, [](char c) { return c != ',' && c != '"' && c != '\r' && c != '\n'; });
 }
 
 /// Append @p value as a `"`-quoted cell with RFC-4180 `""` escapes.
@@ -901,15 +889,9 @@ void CsvParser::ParseStreaming(
         sink.OnStarted();
         KeyIndex &keys = sink.Keys();
         internal::BatchCoalescer coalescer(
-            sink,
-            keys,
-            internal::STATIC_BATCH_FLUSH_LINES,
-            internal::STATIC_BATCH_FLUSH_INTERVAL,
-            newKeyBaseline
+            sink, keys, internal::STATIC_BATCH_FLUSH_LINES, internal::STATIC_BATCH_FLUSH_INTERVAL, newKeyBaseline
         );
-        coalescer.Pending().errors.emplace_back(
-            fmt::format("Error on line {}: Invalid CSV header.", headerLineNumber)
-        );
+        coalescer.Pending().errors.emplace_back(fmt::format("Error on line {}: Invalid CSV header.", headerLineNumber));
         coalescer.Finish(headerLineNumber + 1, /*wasCancelled=*/false);
         return;
     }
