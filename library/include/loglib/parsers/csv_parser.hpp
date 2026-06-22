@@ -19,83 +19,47 @@ namespace internal
 struct AdvancedParserOptions;
 }
 
-/// Newline-delimited CSV parser (RFC 4180 strict, comma-only).
+/// CSV parser, RFC 4180 strict (comma-only, `""` quote escape, CRLF
+/// or LF, UTF-8 BOM stripped on the header).
 ///
-/// One record per line: comma-separated fields, with `"`-quoted
-/// fields supporting `""` as an escape for a literal quote.
-/// CRLF and bare LF are both accepted as line terminators; a
-/// leading UTF-8 BOM on the header is stripped.
+/// The first non-blank line is the header and names the columns;
+/// `IsValid` also requires a second non-blank line with the same
+/// cell count, so headerless files fall through to the next parser.
 ///
-/// The **first non-blank line is the header** and names the
-/// columns. `IsValid` requires it (and a second non-blank line
-/// with a matching tokenised field count), so files without a
-/// header fall through to the next parser. Headerless support is
-/// a clean follow-up if real fixtures need it.
+/// Cell typing (bare cells only) is shared with `LogfmtParser` via
+/// `internal::ClassifyBareScalar`: `true`/`false` -> bool, decimal
+/// -> `int64`/`uint64`, with `.` or exponent -> double, else string.
+/// Quoted cells always stay strings. Empty cells are omitted from
+/// the row (lookup yields monostate anyway, and skipping saves 16 B
+/// per empty cell on wide rows).
 ///
-/// Bare cells are typed via `internal::ClassifyBareScalar`
-/// (shared with `LogfmtParser`): empty -> not stored, `true`/`false`
-/// -> bool, decimal -> `int64`/`uint64`, decimal-with-point /
-/// exponent -> double, else string. Quoted cells stay strings
-/// even if numeric (so `"42"` keeps the author's intent), and
-/// `""`-escaped quoted cells are copied into the per-batch owned
-/// arena. Empty cells (`a,,c` or missing trailing cells) are
-/// **omitted** from the row, not stored as monostate -- an absent
-/// key already materialises as monostate on lookup, and skipping
-/// the slot avoids 16 B per empty cell on wide CSV rows.
+/// Known limits:
+/// - Duplicate header columns are renamed `<name>_2`, `<name>_3`, ...
+///   so both slots remain addressable.
+/// - Multi-line quoted cells (RFC 4180 quotes spanning newlines) are
+///   rejected as `Unterminated quoted value.`.
+/// - Stream Mode latches the schema once; on `logrotate` the new
+///   file's header is parsed as data (Stop + reopen to recover).
+/// - Network Stream with multiple TCP clients: the first arriving
+///   line sets the schema for everyone (coordinate or restrict to a
+///   single producer).
 ///
-/// **Duplicate column names** in the header are silently renamed
-/// to `<name>_2`, `<name>_3`, ... (skipping any suffix that
-/// would clash with another existing column). The data isn't
-/// lost -- both columns appear in the table -- but the user sees
-/// the renamed form rather than the original duplicate.
-///
-/// **Multi-line quoted cells** (an RFC-4180 quoted field that
-/// spans newlines) are **rejected** in v1; they surface as
-/// `Unterminated quoted value.` on the line where the quote
-/// opens. Documented limitation; a follow-up may add real
-/// multi-line support if fixtures justify it.
-///
-/// **Stream-Mode + rotation**: `CsvLineDecoder` latches the
-/// schema on the first non-blank line of the session and never
-/// reseats it. `TailingBytesProducer` continues feeding bytes
-/// past a `logrotate` event, so the post-rotation file's own
-/// header line is parsed as a data row (you'll see one spurious
-/// row whose cell values are the column names, plus column-count
-/// errors if the new schema differs). Workaround: Stop + reopen
-/// the stream after rotation. A real fix would chain a parser
-/// reset onto the producer's rotation callback.
-///
-/// **Network Stream + multiple TCP clients**: the same single
-/// decoder instance is fed by all connected producers (bytes
-/// interleave at line granularity in `TcpServerProducer`). The
-/// first arriving line wins the schema for every client.
-/// Coordinate the header across producers or restrict CSV to a
-/// single producer.
-///
-/// Reuses the same TBB static pipeline (via `DecodeCsvBatch`) and
-/// streaming loop (via `CsvLineDecoder`) as `JsonParser` and
-/// `LogfmtParser`.
+/// Shares the static TBB pipeline (`DecodeCsvBatch`) and streaming
+/// loop (`CsvLineDecoder`) with the other parsers.
 class CsvParser : public LogParser
 {
 public:
     bool IsValid(const std::filesystem::path &file) const override;
 
-    /// Static parse over @p source's mmap. The header (first
-    /// non-blank line) is parsed eagerly to build the
-    /// `column index -> KeyId` map, then the file is fed through
-    /// the standard TBB pipeline; Stage B of batch 0 skips
-    /// emitting a `LogLine` for the header while still pushing
-    /// its line offset so `LogFile::GetLine(lineId)` stays
-    /// aligned. Each emitted `LogLine` carries `&source` and its
-    /// 0-based file-line id (the header is line 0; the first data
-    /// row is line 1, displayed as "line 2" in error messages).
+    /// Static parse: eagerly parses the header to build the
+    /// `column -> KeyId` map, then runs the TBB pipeline; Stage B
+    /// records the header line's offset and skips emitting a row
+    /// for it.
     void ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
-    /// Live-tail parse. The first non-blank inbound line is
-    /// latched as the header (decoded internally with `Skip`, so
-    /// no `LogLine` is emitted); subsequent lines append via
-    /// `AppendLine` and emit `LogLine`s carrying `&source` and
-    /// the new 1-based id.
+    /// Live-tail parse. The first non-blank inbound line latches
+    /// the header (returned as `Skip`, no row emitted); subsequent
+    /// lines append as normal.
     void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
     /// Static overload exposing internal tuning knobs (benchmarks / bisects).
@@ -106,17 +70,14 @@ public:
         internal::AdvancedParserOptions advanced
     );
 
-    /// Renders @p line back to a single CSV record line. v1
-    /// stateless contract: cells are emitted in `KeyId`-sorted
-    /// order (matching `LogfmtParser::ToString(LogLine)`'s
-    /// shape), RFC-4180-quoting any cell that contains
-    /// `,` / `"` / `\r` / `\n`. Header-order round-trip is a
-    /// follow-up tracked in the plan.
+    /// Render @p line as a single CSV record. Cells are emitted in
+    /// `KeyId`-sorted order (matching `LogfmtParser::ToString`)
+    /// and RFC-4180-quoted when they contain `,` / `"` / CR / LF.
+    /// Header-order round-trip is a follow-up.
     std::string ToString(const LogLine &line) const override;
 
     /// `LogMap` convenience overload (tests, debug dumps).
-    /// Lexicographic by key (no schema available here), mirrors
-    /// `LogfmtParser::ToString(LogMap)`.
+    /// Lexicographic by key, mirroring `LogfmtParser::ToString(LogMap)`.
     static std::string ToString(const LogMap &values);
 };
 

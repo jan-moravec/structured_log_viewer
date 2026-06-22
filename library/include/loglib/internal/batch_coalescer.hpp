@@ -24,13 +24,11 @@ namespace loglib::internal
 class BatchCoalescer
 {
 public:
-    /// @p newKeyBaseline overrides the starting `KeyIndex` cursor used
-    /// for the per-batch new-key diff. Defaults to the index's current
-    /// size (so only keys interned *after* construction surface as
-    /// `newKeys`). Parsers that intern their schema before the pipeline
-    /// starts — e.g. `CsvParser`, which parses its header row up front
-    /// so every Stage B worker shares one `column -> KeyId` table — pass
-    /// the pre-intern count here so those columns still reach the sink.
+    /// @p newKeyBaseline overrides the starting `KeyIndex` cursor for
+    /// the per-batch new-key diff. Defaults to the index's current
+    /// size. Parsers that intern keys before the pipeline starts
+    /// (e.g. `CsvParser`, which parses its header up front) pass the
+    /// pre-intern count so those columns still surface as `newKeys`.
     BatchCoalescer(
         LogParseSink &sink,
         KeyIndex &keys,

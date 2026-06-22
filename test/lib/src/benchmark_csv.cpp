@@ -1,9 +1,7 @@
-// CSV parser benchmarks. Mirror of `[json_parser]` / `[logfmt_parser]`
-// `[large]` and `[wide]` cases through the shared `benchmark_common.hpp`
-// harness; lines/s is directly comparable across formats (MB/s differs
-// because CSV's per-cell footprint differs from JSON / logfmt). See
-// CONTRIBUTING.md `## Benchmarking`. Debug builds skip via
-// `BENCHMARK_REQUIRES_RELEASE_BUILD`.
+// CSV parser benchmarks; mirror of `[json_parser]` / `[logfmt_parser]`
+// `[large]` and `[wide]` via the shared `benchmark_common.hpp`. Lines/s
+// is comparable across formats; MB/s is not (per-cell footprints
+// differ). See CONTRIBUTING.md `## Benchmarking`.
 
 #include "benchmark_common.hpp"
 #include "common.hpp"
@@ -32,9 +30,8 @@ using test_common::GenerateWideLogRecords;
 namespace
 {
 
-// `CsvParser::ParseStreaming` adapter for `bench::RunStreamingBenchmark`.
-// Free function (rather than a `bench::ParserStreamFn` global) to avoid
-// `bugprone-throwing-static-initialization` from `std::function`'s ctor.
+// Free-function adapter (a `bench::ParserStreamFn` global would trip
+// `bugprone-throwing-static-initialization` from `std::function`'s ctor).
 void CsvStream(
     FileLineSource &source, LogParseSink &sink, const ParserOptions &options, internal::AdvancedParserOptions advanced
 )
@@ -42,11 +39,9 @@ void CsvStream(
     CsvParser::ParseStreaming(source, sink, options, advanced);
 }
 
-// Peek the first record the streaming generator would emit so we can
-// derive the CSV column schema without materialising the full record
-// vector. The streaming benchmark below then runs against the same
-// `seed + timestamps`, producing identical record bytes; the probe
-// just consumes one draw of a throwaway RNG.
+// Derive the CSV schema by peeking one streamed record on a throwaway
+// RNG seeded the same way as the real run (so the schema matches what
+// the benchmark will emit, without materialising the full vector).
 test_common::RecordSchema SampleStreamingSchema(
     std::uint32_t seed, const test_common::TimestampPolicy &timestamps
 )
@@ -59,9 +54,9 @@ test_common::RecordSchema SampleStreamingSchema(
 
 } // namespace
 
-// Large-file streaming benchmark (1'000'000 lines). Mirrors the JSON /
-// logfmt `[large]` cases. Records are produced by the streaming ctor so
-// the 1M records never materialise as a vector; only the bytes hit disk.
+// Large-file streaming benchmark, mirror of `[json_parser]` /
+// `[logfmt_parser]` `[large]`. Records stream straight to disk -- no
+// 1M-record vector ever materialises.
 TEST_CASE("Stream CSV log to LogTable (1'000'000 lines)", "[.][benchmark][csv_parser][large]")
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
@@ -95,19 +90,15 @@ TEST_CASE("Stream CSV log to LogTable (1'000'000 lines)", "[.][benchmark][csv_pa
 }
 
 // Wide-row streaming benchmark, mirror of `[json_parser][wide]` /
-// `[logfmt_parser][wide]`. Stresses the per-cell hot loop in
-// `CsvLineDecoder`. Nested array/object fields land as quoted
-// compact-JSON cells (see `Csv()`), so the field count matches
-// `[json_parser][wide]` but per-field work differs -- treat cross-format
-// lines/s as broadly comparable, not exactly.
+// `[logfmt_parser][wide]`. Field count matches but per-field work
+// differs (nested values land as quoted compact-JSON cells), so
+// cross-format lines/s is broadly -- not exactly -- comparable.
 TEST_CASE("Stream CSV log to LogTable (wide, 200'000 lines)", "[.][benchmark][csv_parser][wide]")
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
     auto records =
         GenerateWideLogRecords(200'000, /*columnCount=*/30, WIDE_FIXTURE_SEED, DeterministicBenchmarkTimestamps());
-    // Derive the schema from the first record (lex-ordered keys; every
-    // record in the wide vector shares the same key set).
     const test_common::RecordSchema schema = test_common::DeriveSchemaFromRecord(records.front());
 
     const TestStructuredLogFile testFile(std::move(records), test_common::Csv(schema), schema);

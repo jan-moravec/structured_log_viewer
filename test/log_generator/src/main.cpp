@@ -554,14 +554,12 @@ int main(int argc, char *argv[])
     const auto sizeText = program.get<std::string>("--size");
     const auto linesText = program.get<std::string>("--lines");
     const auto formatName = program.get<std::string>("--format");
-    // Resolve the seed before the format dispatch so the CSV branch can
-    // probe a sample record (and discard one RNG draw) to derive the
-    // header schema. The probe RNG is a fresh `std::mt19937(seed)` so
-    // the real generator below still consumes the same first draw.
+    // Resolve the seed first so the CSV branch can derive its schema
+    // from a probe record on a throwaway RNG.
     const std::uint32_t seed = program.is_used("--seed") ? static_cast<std::uint32_t>(program.get<int>("--seed"))
                                                          : test_common::MakeRandomSeed();
-    // The dispatch table is the source of truth — adding a new `--format`
-    // choice without updating it must fail loudly here, not fall through.
+    // Adding a `--format` choice without extending this dispatch
+    // table must fail loudly here, not fall through.
     test_common::LogFormat format;
     test_common::RecordSchema schema;
     if (formatName == "json")
@@ -574,12 +572,9 @@ int main(int argc, char *argv[])
     }
     else if (formatName == "csv")
     {
-        // Probe one record to derive the column schema -- the generator
-        // always emits the same key set (plus the `line_number` injected
-        // below), so a single probe at construction time pins the header.
-        // The probe consumes one RNG draw; that's fine for a generator
-        // that prioritises shape consistency over byte-exact reproduction
-        // of the legacy JSON output for a given seed.
+        // CSV needs a header; probe one record to derive it. The
+        // generator emits the same key set every line (plus
+        // `line_number` injected below).
         std::mt19937 probeRng(seed);
         test_common::LogRecord probe = test_common::GenerateRandomLogRecord(probeRng, 0);
         probe["line_number"] = static_cast<std::int64_t>(0);
@@ -741,13 +736,9 @@ int main(int argc, char *argv[])
                             std::to_string(target.port);
     }
 
-    // Schema-bearing formats (currently CSV) need their header sent
-    // ahead of the first data line on every transport, not just on
-    // disk. `WriteFormatHeader` above only handles the file path; for
-    // network targets we push the same header string through the
-    // corresponding sink so the receiving parser sees `level,message`
-    // (CSV) before the first `info,hello`. JSON / logfmt's
-    // `writeHeader` returns "" and this is a no-op.
+    // Schema-bearing formats (CSV) need their header sent over the
+    // network sink too; `WriteFormatHeader` above only handled the
+    // file path. No-op for JSON / logfmt (empty `writeHeader`).
     if (target.kind != TargetKind::File)
     {
         const std::string header = format.writeHeader(schema);

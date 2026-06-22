@@ -75,11 +75,9 @@ ResolvedPipelineSettings ResolvePipelineSettings(const AdvancedParserOptions &ad
 /// and honours `stop_token`. Stage B stamps each emitted `LogLine` with
 /// `&source` and its absolute `lineId`.
 ///
-/// @p newKeyBaseline forwards to `BatchCoalescer`: parsers that intern
-/// their schema before the pipeline runs (e.g. `CsvParser` parses its
-/// header up front so every Stage B worker shares one `column -> KeyId`
-/// table) pass the pre-intern key count so those columns still surface
-/// as `newKeys`. Defaults to the index's current size.
+/// @p newKeyBaseline forwards to `BatchCoalescer` (see its docstring);
+/// parsers that intern their schema before the pipeline pass the
+/// pre-intern key count. Defaults to the index's current size.
 template <class Token, class UserState, class StageADriver, class StageBDecoder>
 void RunStaticParserPipeline(
     FileLineSource &source,

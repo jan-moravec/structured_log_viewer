@@ -43,8 +43,7 @@ TEST_CASE("Validate empty file [csv]", "[csv_parser]")
 
 TEST_CASE("Validate header-only file [csv]", "[csv_parser]")
 {
-    // Header but no data row -> reject. The false-positive guard
-    // requires a second non-blank line to confirm the cell count.
+    // False-positive guard: requires a second non-blank line.
     const loglib::CsvParser parser;
     const TestLogFile file;
     file.Write("a,b,c\n");
@@ -53,9 +52,7 @@ TEST_CASE("Validate header-only file [csv]", "[csv_parser]")
 
 TEST_CASE("Validate JSON-shaped first line [csv]", "[csv_parser]")
 {
-    // The cell count for a JSON line is typically 1 (no comma), so
-    // `HeaderLineLooksLikeCsv` rejects it. This is what makes JSON
-    // win the auto-detect race for `{"key": "value"}`-shaped input.
+    // No commas -> rejected, so JSON wins the auto-detect race.
     const loglib::CsvParser parser;
     const TestLogFile file;
     file.Write(R"({"key": "value"})"
@@ -67,8 +64,7 @@ TEST_CASE("Validate JSON-shaped first line [csv]", "[csv_parser]")
 
 TEST_CASE("Validate logfmt-shaped first line [csv]", "[csv_parser]")
 {
-    // logfmt lines have no commas in their tokenised cell count, so
-    // CSV's header probe rejects them and logfmt wins the auto-detect.
+    // No commas -> rejected, so logfmt wins the auto-detect race.
     const loglib::CsvParser parser;
     const TestLogFile file;
     file.Write("level=info msg=hello\nlevel=warn msg=world\n");
@@ -93,11 +89,9 @@ TEST_CASE("Validate file with mismatched cell count [csv]", "[csv_parser]")
 
 namespace
 {
-// Minimal `LogParseSink` that forwards batches straight into a
-// `LogTable`, mirroring the GUI's `QtStreamingLogSink` -> `LogModel`
-// path. Used to exercise column creation (which only happens via
-// `StreamedBatch::newKeys`), unlike the value-only `BufferingSink`
-// that `ParseFile` uses.
+// Forwards batches into a `LogTable`, mirroring the GUI sink path.
+// Exercises column creation via `StreamedBatch::newKeys` (which the
+// value-only `BufferingSink` from `ParseFile` does not).
 struct TableSink : loglib::LogParseSink
 {
     loglib::LogTable *table = nullptr;
@@ -120,20 +114,15 @@ struct TableSink : loglib::LogParseSink
 
 TEST_CASE("Static parse builds LogTable columns from the CSV header [csv]", "[csv_parser]")
 {
-    // Regression guard: the static (`File -> Open...`) pipeline interns
-    // the header columns *before* the pipeline's `BatchCoalescer`
-    // snapshots its new-key baseline, so without the explicit baseline
-    // hand-off the coalescer would emit zero `newKeys` and the
-    // `LogTable` would show rows with no columns at all.
+    // Regression guard: header columns are interned before the
+    // coalescer snapshots its baseline, so without the explicit
+    // hand-off no `newKeys` reach the table and rows show no columns.
     //
-    // NOTE: We construct the `FileLineSource` directly from
-    // `std::make_unique<LogFile>(path)` rather than going through
-    // `TestLogFile::CreateFileLineSource()`. That helper eagerly
-    // pre-scans the file and stuffs the resulting offsets into the
-    // `LogFile`; the static pipeline *also* writes its own offsets
-    // back into the same `LogFile`, which collides with the
-    // strictly-increasing assertion in `LogFile::AppendLineOffsets`
-    // (debug builds).
+    // Note: build the `FileLineSource` from `make_unique<LogFile>`
+    // directly. `TestLogFile::CreateFileLineSource()` pre-scans the
+    // file's line offsets; the static pipeline also writes its own,
+    // which trips `LogFile::AppendLineOffsets`'s strict-monotonic
+    // debug assert.
     const TestLogFile file("static_columns.csv");
     file.Write("level,message\ninfo,hello\nerror,boom\n");
 
@@ -169,8 +158,7 @@ TEST_CASE("Parse minimal CSV [csv]", "[csv_parser]")
 
 TEST_CASE("Parse typed bare cells [csv]", "[csv_parser]")
 {
-    // Mirror logfmt's bare-value rules: bools, signed/unsigned ints,
-    // doubles all type-classify; quoted cells stay strings.
+    // Mirrors logfmt: bool / int / uint / double classify; quoted cells stay strings.
     const loglib::CsvParser parser;
     const TestLogFile file;
     file.Write(
@@ -188,20 +176,17 @@ TEST_CASE("Parse typed bare cells [csv]", "[csv_parser]")
     CHECK(std::get<double>(row.GetValue("d")) == Catch::Approx(3.14));
     CHECK(std::get<bool>(row.GetValue("b")) == true);
     CHECK(std::get<bool>(row.GetValue("f")) == false);
-    // `n` is the empty cell -> omitted from the row. `GetValue` of an
-    // absent key returns monostate; `Values()` doesn't contain it at all.
+    // Empty cell `n` -> omitted from the row; lookup yields monostate.
     CHECK(std::holds_alternative<std::monostate>(row.GetValue("n")));
     CHECK_FALSE(row.Values().contains("n"));
-    // `q` was `"42"` -> stays string, doesn't promote to int.
+    // Quoted `"42"` stays a string.
     CHECK(loglib::AsStringView(row.GetValue("q")) == std::string_view{"42"});
 }
 
 TEST_CASE("Quoted cell with embedded comma / quote / newline [csv]", "[csv_parser]")
 {
-    // `""` escapes a literal `"` inside a quoted cell. Embedded
-    // commas pass through unchanged because the quote brackets the
-    // cell. Embedded newlines in a single-line quoted cell are NOT
-    // supported (v1 limitation) -- here we only test `,` and `""`.
+    // `""` decodes to a literal `"`; embedded `,` passes through.
+    // Embedded newlines (multi-line cells) are unsupported in v1.
     const loglib::CsvParser parser;
     const TestLogFile file;
     file.Write(
@@ -229,8 +214,7 @@ TEST_CASE("Unterminated quoted cell surfaces as error [csv]", "[csv_parser]")
 
     auto result = loglib::ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.size() == 1);
-    // Line numbers in errors are 1-based and include the header --
-    // so the first data row is "line 2", second data row "line 3".
+    // Error line numbers are 1-based and include the header row.
     CHECK(result.errors[0].contains("line 3"));
     CHECK(result.errors[0].contains("Unterminated quoted value"));
     CHECK(result.data.Lines().size() == 1);
@@ -255,8 +239,8 @@ TEST_CASE("Ragged row with extra cells surfaces as error [csv]", "[csv_parser]")
 
 TEST_CASE("Empty cells are omitted, missing trailing cells materialise as monostate [csv]", "[csv_parser]")
 {
-    // `a,,c` -> middle cell omitted. `a,b` (one cell short of the
-    // header) -> trailing cell absent; lookup yields monostate.
+    // `a,,c` omits the middle key; `a,b` omits the missing trailing
+    // key; both lookups yield monostate.
     const loglib::CsvParser parser;
     const TestLogFile file;
     file.Write(
@@ -271,7 +255,6 @@ TEST_CASE("Empty cells are omitted, missing trailing cells materialise as monost
 
     const auto &row0 = result.data.Lines()[0];
     CHECK(std::get<std::uint64_t>(row0.GetValue("a")) == 1u);
-    // Empty cell -> key omitted from row entirely.
     CHECK(std::holds_alternative<std::monostate>(row0.GetValue("b")));
     CHECK_FALSE(row0.Values().contains("b"));
     CHECK(std::get<std::uint64_t>(row0.GetValue("c")) == 3u);
@@ -279,7 +262,6 @@ TEST_CASE("Empty cells are omitted, missing trailing cells materialise as monost
     const auto &row1 = result.data.Lines()[1];
     CHECK(std::get<std::uint64_t>(row1.GetValue("a")) == 4u);
     CHECK(std::get<std::uint64_t>(row1.GetValue("b")) == 5u);
-    // Missing trailing cell -> key absent from the row.
     CHECK(std::holds_alternative<std::monostate>(row1.GetValue("c")));
     CHECK_FALSE(row1.Values().contains("c"));
 }
@@ -288,7 +270,6 @@ TEST_CASE("UTF-8 BOM on the header is stripped [csv]", "[csv_parser]")
 {
     const loglib::CsvParser parser;
     const TestLogFile file;
-    // Three bytes EF BB BF before `level`.
     file.Write("\xEF\xBB\xBFlevel,message\ninfo,hello\n");
     REQUIRE(parser.IsValid(file.GetFilePath()));
 
@@ -326,10 +307,8 @@ TEST_CASE("Last data line lacks trailing newline [csv]", "[csv_parser]")
 
 TEST_CASE("LineSource::RawLine alignment skips the header [csv]", "[csv_parser]")
 {
-    // After the header is swallowed, each `LogLine`'s `(Source, LineId)`
-    // pair should resolve back to the data row's on-disk bytes via
-    // `LineSource::RawLine`. The header is line 0 (id 0); the first
-    // data row is id 1, the second is id 2.
+    // `(Source, LineId)` must resolve to the data row's on-disk
+    // bytes even though the header was swallowed; header is line 0.
     const loglib::CsvParser parser;
     const TestLogFile file;
     file.Write("a,b,c\n10,20,30\n40,50,60\n");
@@ -359,10 +338,7 @@ TEST_CASE("ToString emits cells comma-separated, quoting where needed [csv]", "[
         {"f_bool", LogValue{true}}
     });
 
-    // CSV data rows have no inline keys; `ToString(LogMap)` emits the
-    // **values only**, lex-key-ordered. With the keys above (already
-    // in lex order via the `a_` / `b_` / ... prefixes), the emitted
-    // row is exactly the cell sequence below.
+    // Values only, lex-key-ordered (prefixes `a_` / `b_` / ... pin the order).
     CHECK(emitted == "value,\"a,b\",\"a\"\"b\",\"line1\nline2\",-42,true");
 }
 
@@ -376,10 +352,8 @@ TEST_CASE("Parse file via FactoryParser auto-detect [csv]", "[csv_parser]")
     CHECK(loglib::AsStringView(result.data.Lines()[0].GetValue("message")) == std::string_view{"hello"});
 }
 
-// The `test_common::Csv()` writer duplicates `loglib`'s
-// `BareCellIsSafe` / `AppendQuotedCell`. The round-trip test below
-// pins the two copies in sync; otherwise the upcoming benchmark
-// fixtures would silently disagree with the parser.
+// `test_common::Csv()` duplicates `loglib::BareCellIsSafe` /
+// `AppendQuotedCell`; this round-trip pins the two copies in sync.
 TEST_CASE(
     "test_common::Csv() writes round-trip through CsvParser (all value families) [csv]",
     "[csv_parser][round_trip]"
@@ -399,7 +373,6 @@ TEST_CASE(
     record["bfalse"] = false;
     record["nullv"] = nullptr;
 
-    // Schema in lex order (matches `DeriveSchemaFromRecord`).
     const auto schema = test_common::DeriveSchemaFromRecord(record);
     REQUIRE_FALSE(schema.empty());
     const test_common::LogFormat format = test_common::Csv(schema);
@@ -426,18 +399,16 @@ TEST_CASE(
     CHECK(std::get<double>(row.GetValue("dbl")) == Catch::Approx(3.14));
     CHECK(std::get<bool>(row.GetValue("btrue")) == true);
     CHECK(std::get<bool>(row.GetValue("bfalse")) == false);
-    // null serialised to an empty cell -> omitted from the row.
-    // `GetValue` of an absent key returns monostate.
+    // null -> empty cell -> omitted from the row.
     CHECK(std::holds_alternative<std::monostate>(row.GetValue("nullv")));
     CHECK_FALSE(row.Values().contains("nullv"));
 }
 
 TEST_CASE("test_common::Csv() round-trips the generator's record shape end-to-end [csv]", "[csv_parser][round_trip]")
 {
-    // Mirrors the logfmt end-to-end round-trip but for CSV: drives the
-    // benchmark generator through write+parse so a future tweak to
-    // `GenerateRandomLogRecord` lands here rather than as silent skew
-    // in `[csv_parser][large]` numbers.
+    // CSV mirror of the logfmt end-to-end round-trip; pins any future
+    // `GenerateRandomLogRecord` tweak so it fails here rather than as
+    // silent skew in `[csv_parser][large]`.
     using namespace loglib;
 
     constexpr std::size_t LINE_COUNT = 32;
@@ -482,17 +453,14 @@ TEST_CASE("test_common::Csv() round-trips the generator's record shape end-to-en
 
 TEST_CASE("Static parse skips the header even when leading blanks push it past batch 0 [csv]", "[csv_parser]")
 {
-    // Regression guard for the "header treated as a data row" bug: the
-    // old `headerToSkip = (batchIndex == 0)` heuristic only swallowed
-    // the first non-blank line in batch 0. With a small `batchSizeBytes`
-    // (or just enough leading blank lines), the header could land in
-    // batch 1+ and surface as a spurious row whose cell values were the
-    // column names. The fix records the header's byte offset eagerly
-    // and Stage B skips that exact offset regardless of batching.
+    // Regression guard: the old `batchIndex == 0` heuristic could
+    // misidentify the header when leading blanks or a tiny
+    // `batchSizeBytes` pushed it into a later batch. Fixed by
+    // recording the header's byte offset and skipping that exact
+    // offset in Stage B.
     //
-    // Source is built directly from `LogFile` (see the note on
-    // "Static parse builds LogTable columns from the CSV header" for
-    // why this bypasses `TestLogFile::CreateFileLineSource()`).
+    // See the static-columns test for why we bypass
+    // `TestLogFile::CreateFileLineSource()`.
     using namespace loglib;
 
     std::string content;
@@ -515,7 +483,7 @@ TEST_CASE("Static parse skips the header even when leading blanks push it past b
 
     internal::AdvancedParserOptions advanced;
     advanced.threads = 1;
-    advanced.batchSizeBytes = 16; // forces header into a non-zero batch
+    advanced.batchSizeBytes = 16; // forces the header into a later batch
     CsvParser::ParseStreaming(*sourceRaw, sink, ParserOptions{}, advanced);
 
     CHECK(table.RowCount() == 2);
@@ -524,18 +492,14 @@ TEST_CASE("Static parse skips the header even when leading blanks push it past b
 
 TEST_CASE("Malformed CSV header surfaces a single error and zero data rows [csv]", "[csv_parser]")
 {
-    // Regression guard for the silent-malformed-header bug: the eager
-    // header parse used to `(void)` its return value, so an
-    // unterminated-quote header was swallowed and every data row
-    // surfaced one `Row has N extra cell(s) beyond the 0-column header.`
-    // error. The fix short-circuits with a single
-    // `Invalid CSV header.` diagnostic.
+    // Regression guard: a malformed header used to be swallowed and
+    // produce one "extra cell" error per data row. Now it short-circuits
+    // with a single `Invalid CSV header.`.
     using namespace loglib;
 
     const TestLogFile file("malformed_header.csv");
-    // Unterminated quote on the header (`"name` never closes).
-    // `IsValid` rejects this, so we drive the parser directly via
-    // `ParseFile(parser, path)` rather than the auto-detect overload.
+    // Unterminated quote (`"name` never closes); `IsValid` rejects it,
+    // so we drive the parser directly.
     file.Write("\"name,value\ninfo,hello\nerror,boom\n");
 
     const CsvParser parser;
@@ -550,9 +514,8 @@ TEST_CASE("Malformed CSV header surfaces a single error and zero data rows [csv]
 
 TEST_CASE("Malformed CSV header after blank lines reports the right line number [csv]", "[csv_parser]")
 {
-    // The blank-line counter in the eager parse must surface in the
-    // error message: two leading blank lines + a malformed header on
-    // line 3 should say `Error on line 3: Invalid CSV header.`
+    // Two leading blank lines + a malformed header on line 3 should
+    // surface as `Error on line 3: ...`.
     using namespace loglib;
 
     const TestLogFile file("malformed_header_after_blanks.csv");
@@ -568,11 +531,9 @@ TEST_CASE("Malformed CSV header after blank lines reports the right line number 
 
 TEST_CASE("Duplicate CSV column names are silently renamed [csv]", "[csv_parser]")
 {
-    // Regression guard for the duplicate-header bug: without dedupe,
-    // `id,name,id` would intern the same KeyId twice in `columnKeys`,
-    // producing a `LogLine` with two entries for the same key. The
-    // fix renames the second occurrence to `id_2` so both data slots
-    // remain addressable.
+    // Without dedupe, `id,name,id` would emit two `LogLine` slots with
+    // the same KeyId. Renaming the second to `id_2` keeps both
+    // addressable.
     using namespace loglib;
 
     const TestLogFile file("duplicate_headers.csv");
@@ -598,9 +559,8 @@ TEST_CASE("Duplicate CSV column names are silently renamed [csv]", "[csv_parser]
 
 TEST_CASE("Duplicate CSV column names skip already-taken suffixes [csv]", "[csv_parser]")
 {
-    // `id, id_2, id` -- the third occurrence cannot take `id_2`
-    // because column 1 already used it, so dedupe must skip to
-    // `id_3`. Pins the suffix-probe loop in `DeduplicateColumnNames`.
+    // `id, id_2, id`: the third column can't reuse `id_2`, so dedupe
+    // must skip to `id_3`. Pins the suffix-probe loop.
     using namespace loglib;
 
     const TestLogFile file("duplicate_headers_skip.csv");

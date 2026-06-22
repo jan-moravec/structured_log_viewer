@@ -45,29 +45,20 @@ LogFormat JsonLines();
 // asserts this in debug builds since logfmt has no key-quoting syntax.
 LogFormat Logfmt();
 
-// CSV (RFC 4180 strict, comma-only). Schema-bearing: every record
-// emits cells in @p schema order, RFC-4180-quoting any cell that
-// contains `,` / `"` / `\r` / `\n`. The captured @p schema is also
-// what `writeHeader(_)` returns; `TestStructuredLogFile` passes the
-// same schema to both `Csv(schema)` and its own ctor for clarity.
+// CSV (RFC 4180 strict, comma-only). Each record emits cells in
+// @p schema order, RFC-4180-quoting any cell with `,` / `"` / CR / LF.
+// `writeHeader` returns the schema as a CSV header line.
 //
-// Lossy: nested arrays/objects emit as a quoted compact-JSON cell
-// (matching field count, not structure). Booleans / numbers / nulls
-// emit bare so `loglib::CsvParser` re-types them back; null cells
-// render as the empty cell (which `CsvParser` then omits from the
-// row). Missing keys in a record also render as the empty cell.
+// Lossy: nested arrays/objects emit as a quoted compact-JSON cell.
+// Bools / numbers emit bare. Null and missing keys render as the
+// empty cell (which `CsvParser` then omits from the row).
 //
-// When @p schema is empty: `writeHeader` returns the empty string
-// and `writeLine` walks the record's lex order (so calling with no
-// schema produces a headerless CSV-shaped stream of rows). Real
-// fixtures should always pass a non-empty schema.
+// An empty @p schema produces a headerless CSV-shaped stream walked
+// in the record's lex order; real fixtures should pass a schema.
 LogFormat Csv(RecordSchema schema = {});
 
-// Lex-ordered list of object keys from @p record. `LogRecord` is
-// `glz::generic_sorted_u64`, whose object iteration is lex-sorted,
-// so the result is deterministic. Used to derive a CSV header from
-// a sample record. Returns an empty schema if @p record isn't an
-// object.
+// Lex-ordered list of @p record's object keys; empty if @p record
+// is not an object. Used to derive a CSV header from a sample record.
 RecordSchema DeriveSchemaFromRecord(const LogRecord &record);
 
 } // namespace test_common

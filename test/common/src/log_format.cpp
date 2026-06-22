@@ -148,10 +148,8 @@ LogFormat Logfmt()
 namespace
 {
 
-// A CSV cell is bare-safe when it contains no byte that would end the cell
-// or trigger RFC-4180 quoting. Mirrors `loglib::BareCellIsSafe` in
-// `library/src/parsers/csv_parser.cpp`; duplicated here so `test_common`
-// stays loglib-free. Drift is caught by `[csv_parser][round_trip]` tests.
+// Duplicate of `loglib::BareCellIsSafe` so `test_common` stays
+// loglib-free; drift is caught by `[csv_parser][round_trip]` tests.
 bool CsvCellIsBareSafe(std::string_view value) noexcept
 {
     return std::ranges::all_of(value, [](char c) { return c != ',' && c != '"' && c != '\r' && c != '\n'; });
@@ -190,9 +188,7 @@ void AppendCsvValue(std::string &out, const LogRecord &value)
 {
     if (value.is_null())
     {
-        // Null renders as the empty cell -- `CsvParser` omits empty
-        // cells from the row, matching its "absent key == monostate"
-        // contract.
+        // Empty cell -> `CsvParser` omits it from the row.
         return;
     }
     if (value.is_string())
@@ -207,19 +203,16 @@ void AppendCsvValue(std::string &out, const LogRecord &value)
     }
     if (value.is_number())
     {
-        // Numbers serialise to the same bare token in JSON and CSV.
         out.append(CompactJson(value));
         return;
     }
-    // Array or object: embed compact JSON as a single quoted CSV cell so
-    // the wide-row column count matches the JSON serialisation. The
-    // parser sees this as an opaque string (lossy escape hatch, mirrors
-    // logfmt's treatment of nesting).
+    // Array / object: embed compact JSON in one quoted cell so wide-row
+    // column counts match the JSON serialisation (lossy escape hatch).
     AppendCsvQuoted(out, CompactJson(value));
 }
 
-// Find @p key inside @p record (which must be an object). Returns a
-// pointer to the value, or nullptr when the key is absent.
+// Returns a pointer to @p key inside @p record, or nullptr if absent
+// or @p record is not an object.
 const LogRecord *FindObjectField(const LogRecord &record, const std::string &key)
 {
     if (!record.is_object())
@@ -244,11 +237,8 @@ LogFormat Csv(RecordSchema schema)
         .suggestedExtension = ".csv",
         .writeHeader =
             [capturedSchema = schema](const RecordSchema &paramSchema) {
-                // Prefer the explicit `paramSchema` arg so callers that
-                // pass `Csv()` (no captured schema) + a schema to
-                // `TestStructuredLogFile` still get a header. Fall back
-                // to the captured one for callers that wired the schema
-                // into the factory.
+                // Prefer the caller-supplied schema; fall back to the
+                // captured one for factories pre-wired with a schema.
                 const RecordSchema &effective = paramSchema.empty() ? capturedSchema : paramSchema;
                 if (effective.empty())
                 {
@@ -271,10 +261,8 @@ LogFormat Csv(RecordSchema schema)
             [capturedSchema = std::move(schema)](const LogRecord &record) {
                 if (capturedSchema.empty())
                 {
-                    // Headerless mode: walk the record's lex order.
-                    // Produces CSV-shaped rows but no header line, so
-                    // `loglib::CsvParser::IsValid` rejects the result.
-                    // Real fixtures should pass a non-empty schema.
+                    // Headerless: walk the record's lex order. Rejected
+                    // by `CsvParser::IsValid`; real fixtures pass a schema.
                     if (!record.is_object())
                     {
                         return CompactJson(record);
@@ -305,8 +293,7 @@ LogFormat Csv(RecordSchema schema)
                     {
                         AppendCsvValue(out, *value);
                     }
-                    // Missing key -> empty cell (handled by the comma
-                    // delimiter logic above).
+                    // Missing key -> empty cell (delimiter handled above).
                 }
                 return out;
             },

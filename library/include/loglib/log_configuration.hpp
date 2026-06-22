@@ -163,10 +163,9 @@ struct LogConfiguration
         /// live-tail sessions commit to a parser before the first
         /// byte arrives. Defaults to `Json` for a fresh `Source`.
         ///
-        /// The serialised JSON keys are stable strings (`"json"`,
-        /// `"logfmt"`, `"csv"`, ...) defined in
-        /// `loglib/internal/log_configuration_glaze_meta.hpp`; append
-        /// new values at the end, never reorder existing ones.
+        /// Serialised as stable strings (`"json"`, `"logfmt"`, `"csv"`,
+        /// ...) by `log_configuration_glaze_meta.hpp`. Append at the
+        /// end, never reorder existing values.
         enum class Format
         {
             Json,

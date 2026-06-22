@@ -13,20 +13,13 @@
 namespace loglib::internal
 {
 
-/// Outcome of a single-line decode.
-///
-/// `Emit` — produce a `LogLine` from @p outValues (which may be empty,
-/// e.g. a JSON `{}` record). `RunStreamingParseLoop` appends a row and
-/// commits `(rawText, ownedArena)` to the source.
-///
-/// `Skip` — swallow the line silently: no `LogLine`, no error, no
-/// commit to the source. Used by parsers with a header prelude (CSV)
-/// to consume the schema row without surfacing it as a data row. The
-/// loop still advances its line-number cursor so subsequent error
-/// messages stay tied to the byte stream.
-///
-/// `Error` — decode failed. The loop wraps @p errorOut as
-/// "Error on line N: ..." and emits no row.
+/// Outcome of a single-line decode:
+///  - `Emit`: append a `LogLine` from @p outValues (may be empty).
+///  - `Skip`: swallow the line silently (no row, no error). Used by
+///    parsers with a header prelude (CSV) to consume the schema row.
+///    The loop still advances the line-number cursor.
+///  - `Error`: emit no row; the loop wraps @p errorOut as
+///    "Error on line N: ...".
 enum class LineDecodeResult : uint8_t
 {
     Emit,

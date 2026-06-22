@@ -106,11 +106,8 @@ void RunStreamingParseLoop(StreamLineSource &source, Decoder &decoder, LogParseS
         }
         if (result == LineDecodeResult::Skip)
         {
-            // Swallow the line: no row, no error. The line-number
-            // cursor (`nextLineNumber`) was already advanced above so
-            // subsequent error messages stay aligned with the byte
-            // stream. Used by parsers with a header prelude (CSV) to
-            // consume the schema row.
+            // No row, no error. The line-number cursor is already
+            // advanced; used for header preludes (e.g. CSV).
             return;
         }
 

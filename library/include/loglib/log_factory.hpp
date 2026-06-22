@@ -10,12 +10,11 @@ namespace loglib
 class LogFactory
 {
 public:
-    // The numeric value of each `Parser` enumerator is persisted on
-    // disk (via `LogConfiguration::Source::Format` round-trip) and
-    // is also the dispatch order used by `loglib::ParseFile(path)`
-    // and `MainWindow::DetectFormatForPath` when probing parsers.
-    // Append new values **before** `Count`, never reorder existing
-    // ones.
+    // The numeric value of each `Parser` is persisted on disk (via
+    // `LogConfiguration::Source::Format`) and is also the auto-detect
+    // probe order in `loglib::ParseFile(path)` and
+    // `MainWindow::DetectFormatForPath`. Append before `Count`; never
+    // reorder existing values.
     enum class Parser
     {
         Json,
