@@ -454,12 +454,13 @@ int main(int argc, char *argv[])
 {
     argparse::ArgumentParser program("log_generator", "0.3.0");
     program.add_description("Generate a structured log file with synthetic timestamp/level/message records. "
-                            "Pick the wire format with --format (json|logfmt). Lines are produced until --size "
-                            "or --lines is reached (whichever comes first; 0 means unbounded on that axis). "
-                            "Pass --timeout to throttle writes and simulate a streaming feed; pass --roll-size "
-                            "and/or --roll-lines to rotate the active file in-flight (--roll-strategy controls "
-                            "how). When --output is omitted the default base name takes the format's extension "
-                            "(generated.jsonl for json, generated.logfmt for logfmt).");
+                            "Pick the wire format with --format (json|logfmt|csv). Lines are produced until "
+                            "--size or --lines is reached (whichever comes first; 0 means unbounded on that "
+                            "axis). Pass --timeout to throttle writes and simulate a streaming feed; pass "
+                            "--roll-size and/or --roll-lines to rotate the active file in-flight "
+                            "(--roll-strategy controls how). When --output is omitted the default base name "
+                            "takes the format's extension (generated.jsonl for json, generated.logfmt for "
+                            "logfmt, generated.csv for csv).");
 
     program.add_argument("-s", "--size")
         .default_value(std::string{"10MB"})
@@ -475,12 +476,14 @@ int main(int argc, char *argv[])
         .default_value(std::string{})
         .help("Output file path (overwritten if it already exists, unless --append). When --output is "
               "omitted the default base name is `generated` plus the format's extension "
-              "(generated.jsonl for --format json, generated.logfmt for --format logfmt).");
+              "(generated.jsonl for --format json, generated.logfmt for --format logfmt, "
+              "generated.csv for --format csv).");
 
     program.add_argument("-f", "--format")
         .default_value(std::string{"json"})
-        .choices("json", "logfmt")
-        .help("Record serialization format: 'json' (one JSON object per line) or 'logfmt'.");
+        .choices("json", "logfmt", "csv")
+        .help("Record serialization format: 'json' (one JSON object per line), 'logfmt', or 'csv' "
+              "(RFC 4180 strict, comma-only, header derived from the first generated record).");
 
     program.add_argument("-t", "--timeout")
         .default_value(0)
@@ -551,9 +554,14 @@ int main(int argc, char *argv[])
     const auto sizeText = program.get<std::string>("--size");
     const auto linesText = program.get<std::string>("--lines");
     const auto formatName = program.get<std::string>("--format");
-    // The dispatch table is the source of truth — adding a new `--format`
-    // choice without updating it must fail loudly here, not fall through.
+    // Resolve the seed first so the CSV branch can derive its schema
+    // from a probe record on a throwaway RNG.
+    const std::uint32_t seed = program.is_used("--seed") ? static_cast<std::uint32_t>(program.get<int>("--seed"))
+                                                         : test_common::MakeRandomSeed();
+    // Adding a `--format` choice without extending this dispatch
+    // table must fail loudly here, not fall through.
     test_common::LogFormat format;
+    test_common::RecordSchema schema;
     if (formatName == "json")
     {
         format = test_common::JsonLines();
@@ -562,14 +570,22 @@ int main(int argc, char *argv[])
     {
         format = test_common::Logfmt();
     }
+    else if (formatName == "csv")
+    {
+        // CSV needs a header; probe one record to derive it. The
+        // generator emits the same key set every line (plus
+        // `line_number` injected below).
+        std::mt19937 probeRng(seed);
+        test_common::LogRecord probe = test_common::GenerateRandomLogRecord(probeRng, 0);
+        probe["line_number"] = static_cast<std::int64_t>(0);
+        schema = test_common::DeriveSchemaFromRecord(probe);
+        format = test_common::Csv(schema);
+    }
     else
     {
-        std::cerr << "Unknown --format value: " << formatName << " (expected one of: json, logfmt)\n";
+        std::cerr << "Unknown --format value: " << formatName << " (expected one of: json, logfmt, csv)\n";
         return 1;
     }
-    // No schema-bearing format ships today; the empty schema is a hook so
-    // a future CSV-like format only needs to extend the dispatch table.
-    const test_common::RecordSchema schema;
     // Empty `--output` means "derive from the format" (`generated.jsonl` /
     // `generated.logfmt`); the argparse default is empty so `--help` doesn't
     // bias toward JSON.
@@ -585,8 +601,6 @@ int main(int argc, char *argv[])
     const auto rollLinesText = program.get<std::string>("--roll-lines");
     const auto rollStrategyText = program.get<std::string>("--roll-strategy");
     const auto keepRolledInt = program.get<int>("--keep-rolled");
-    const std::uint32_t seed = program.is_used("--seed") ? static_cast<std::uint32_t>(program.get<int>("--seed"))
-                                                         : test_common::MakeRandomSeed();
 
     std::uint64_t targetBytes = 0;
     std::uint64_t targetLines = 0;
@@ -720,6 +734,33 @@ int main(int argc, char *argv[])
         }
         targetDescription = (target.kind == TargetKind::TcpTls ? "tcp+tls://" : "tcp://") + target.host + ":" +
                             std::to_string(target.port);
+    }
+
+    // Schema-bearing formats (CSV) need their header sent over the
+    // network sink too; `WriteFormatHeader` above only handled the
+    // file path. No-op for JSON / logfmt (empty `writeHeader`).
+    if (target.kind != TargetKind::File)
+    {
+        const std::string header = format.writeHeader(schema);
+        if (!header.empty())
+        {
+            try
+            {
+                if (udpClient)
+                {
+                    udpClient->Send(header);
+                }
+                else if (tcpClient)
+                {
+                    tcpClient->Send(header);
+                }
+            }
+            catch (const std::exception &err)
+            {
+                std::cerr << "Header send failed: " << err.what() << '\n';
+                return 1;
+            }
+        }
     }
 
     // Seed `bytesInFile` from the existing file size on --append so

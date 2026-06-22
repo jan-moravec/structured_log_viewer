@@ -13,6 +13,20 @@
 namespace loglib::internal
 {
 
+/// Outcome of a single-line decode:
+///  - `Emit`: append a `LogLine` from @p outValues (may be empty).
+///  - `Skip`: swallow the line silently (no row, no error). Used by
+///    parsers with a header prelude (CSV) to consume the schema row.
+///    The loop still advances the line-number cursor.
+///  - `Error`: emit no row; the loop wraps @p errorOut as
+///    "Error on line N: ...".
+enum class LineDecodeResult : uint8_t
+{
+    Emit,
+    Skip,
+    Error,
+};
+
 /// Format-specific record decoder for the streaming pipeline.
 /// `RunStreamingParseLoop` feeds one record at a time and stays
 /// format-agnostic; per-format code implements this concept.
@@ -23,11 +37,11 @@ namespace loglib::internal
 /// arena is transferred into `StreamLineSource` in a single
 /// `AppendLine` call.
 ///
-/// On parse error: return false and put a human message in @p outError;
-/// the pipeline wraps it with "Error on line N: ...".
+/// On `Error`: put a human message in @p errorOut; the pipeline
+/// wraps it with "Error on line N: ...".
 ///
 /// Implementations may carry per-run scratch state (simdjson parser,
-/// padded buffers, etc.) as member fields.
+/// padded buffers, CSV header latch, etc.) as member fields.
 template <class T>
 concept CompactLineDecoder = requires(
     T &decoder,
@@ -38,7 +52,9 @@ concept CompactLineDecoder = requires(
     std::string &outOwnedArena,
     std::string &outError
 ) {
-    { decoder.DecodeCompact(line, keys, keyCache, outValues, outOwnedArena, outError) } -> std::convertible_to<bool>;
+    {
+        decoder.DecodeCompact(line, keys, keyCache, outValues, outOwnedArena, outError)
+    } -> std::convertible_to<LineDecodeResult>;
 };
 
 } // namespace loglib::internal

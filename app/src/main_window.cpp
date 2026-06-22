@@ -25,6 +25,7 @@
 #include <loglib/log_file.hpp>
 #include <loglib/log_level.hpp>
 #include <loglib/log_processing.hpp>
+#include <loglib/parsers/csv_parser.hpp>
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/parsers/logfmt_parser.hpp>
 #include <loglib/stop_token.hpp>
@@ -451,6 +452,8 @@ std::unique_ptr<loglib::LogParser> MakeParserForFormat(loglib::LogConfiguration:
     {
     case loglib::LogConfiguration::Source::Format::Logfmt:
         return std::make_unique<loglib::LogfmtParser>();
+    case loglib::LogConfiguration::Source::Format::Csv:
+        return std::make_unique<loglib::CsvParser>();
     case loglib::LogConfiguration::Source::Format::Json:
         return std::make_unique<loglib::JsonParser>();
     }
@@ -473,6 +476,8 @@ loglib::LogConfiguration::Source::Format DetectFormatForPath(const std::filesyst
             {
             case loglib::LogFactory::Parser::Logfmt:
                 return loglib::LogConfiguration::Source::Format::Logfmt;
+            case loglib::LogFactory::Parser::Csv:
+                return loglib::LogConfiguration::Source::Format::Csv;
             case loglib::LogFactory::Parser::Json:
             case loglib::LogFactory::Parser::Count:
                 return loglib::LogConfiguration::Source::Format::Json;
@@ -1973,7 +1978,7 @@ void MainWindow::OpenFiles()
         this,
         tr("Select Log Files"),
         DefaultOpenDir(),
-        tr("Structured Logs (*.json *.jsonl *.ndjson *.logfmt *.log *.txt);;All Files (*.*)")
+        tr("Structured Logs (*.json *.jsonl *.ndjson *.logfmt *.csv *.log *.txt);;All Files (*.*)")
     );
     if (files.isEmpty())
     {
@@ -2480,7 +2485,7 @@ void MainWindow::OpenLogStream()
         this,
         tr("Open Log Stream..."),
         DefaultOpenDir(),
-        tr("Structured Logs (*.json *.jsonl *.ndjson *.logfmt *.log *.txt);;All Files (*.*)")
+        tr("Structured Logs (*.json *.jsonl *.ndjson *.logfmt *.csv *.log *.txt);;All Files (*.*)")
     );
     if (file.isEmpty())
     {
@@ -2694,9 +2699,18 @@ void MainWindow::OpenNetworkStream()
     // Network-stream locator is a producer URI, not a filesystem
     // path -- no canonicalisation applies, so dedup key == display.
     // Both arrays populated so the parallel-array invariant holds.
-    const loglib::LogConfiguration::Source::Format dialogFormat = (cfg.format == NetworkStreamDialog::Format::Logfmt)
-                                                                      ? loglib::LogConfiguration::Source::Format::Logfmt
-                                                                      : loglib::LogConfiguration::Source::Format::Json;
+    const loglib::LogConfiguration::Source::Format dialogFormat = [&] {
+        switch (cfg.format)
+        {
+        case NetworkStreamDialog::Format::Logfmt:
+            return loglib::LogConfiguration::Source::Format::Logfmt;
+        case NetworkStreamDialog::Format::Csv:
+            return loglib::LogConfiguration::Source::Format::Csv;
+        case NetworkStreamDialog::Format::Json:
+            break;
+        }
+        return loglib::LogConfiguration::Source::Format::Json;
+    }();
     mCurrentSource = loglib::LogConfiguration::Source{
         .kind = loglib::LogConfiguration::Source::Kind::NetworkStream,
         .format = dialogFormat,

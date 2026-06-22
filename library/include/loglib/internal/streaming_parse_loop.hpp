@@ -3,6 +3,7 @@
 #include "loglib/bytes_producer.hpp"
 #include "loglib/internal/batch_coalescer.hpp"
 #include "loglib/internal/compact_log_value.hpp"
+#include "loglib/internal/line_decoder.hpp"
 #include "loglib/internal/parse_runtime.hpp"
 #include "loglib/internal/timestamp_promotion.hpp"
 #include "loglib/key_index.hpp"
@@ -94,13 +95,19 @@ void RunStreamingParseLoop(StreamLineSource &source, Decoder &decoder, LogParseS
             return;
         }
 
-        const bool ok =
+        const LineDecodeResult result =
             decoder.DecodeCompact(trimmed, keys, &promoteScratch.keyCache, compactValues, ownedArena, lineError);
-        if (!ok)
+        if (result == LineDecodeResult::Error)
         {
             coalescer.Pending().errors.emplace_back(
                 fmt::format("Error on line {}: {}", lineNumber, std::move(lineError))
             );
+            return;
+        }
+        if (result == LineDecodeResult::Skip)
+        {
+            // No row, no error. The line-number cursor is already
+            // advanced; used for header preludes (e.g. CSV).
             return;
         }
 
@@ -116,6 +123,12 @@ void RunStreamingParseLoop(StreamLineSource &source, Decoder &decoder, LogParseS
         ownedArena.clear();
 
         LogLine logLine(std::move(compactValues), keys, source, lineId);
+        // Reset the moved-from vector to a known-empty valid state.
+        // `DecodeCompact` also calls `out.clear()` on entry, but the
+        // analyzer can't see through the template decoder's body, so
+        // this prevents a `clang-analyzer-cplusplus.Move` false positive
+        // when the next iteration calls `compactValues.begin()`.
+        compactValues.clear();
         // Empty arena -> resolution falls through to the line's
         // `LineSource *` (i.e. `StreamLineSource::ResolveOwnedBytes`).
         promoteScratch.PromoteTimestamps(logLine, timeColumnsSpan, std::string_view{});

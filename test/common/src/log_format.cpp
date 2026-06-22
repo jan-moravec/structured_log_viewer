@@ -145,4 +145,173 @@ LogFormat Logfmt()
     };
 }
 
+namespace
+{
+
+// Duplicate of `loglib::BareCellIsSafe` so `test_common` stays
+// loglib-free; drift is caught by `[csv_parser][round_trip]` tests.
+bool CsvCellIsBareSafe(std::string_view value) noexcept
+{
+    return std::ranges::all_of(value, [](char c) { return c != ',' && c != '"' && c != '\r' && c != '\n'; });
+}
+
+void AppendCsvQuoted(std::string &out, std::string_view value)
+{
+    out.push_back('"');
+    for (const char c : value)
+    {
+        if (c == '"')
+        {
+            out.append("\"\"");
+        }
+        else
+        {
+            out.push_back(c);
+        }
+    }
+    out.push_back('"');
+}
+
+void AppendCsvCell(std::string &out, std::string_view value)
+{
+    if (CsvCellIsBareSafe(value))
+    {
+        out.append(value.data(), value.size());
+    }
+    else
+    {
+        AppendCsvQuoted(out, value);
+    }
+}
+
+void AppendCsvValue(std::string &out, const LogRecord &value)
+{
+    if (value.is_null())
+    {
+        // Empty cell -> `CsvParser` omits it from the row.
+        return;
+    }
+    if (value.is_string())
+    {
+        AppendCsvCell(out, value.get_string());
+        return;
+    }
+    if (value.is_boolean())
+    {
+        out.append(value.get_boolean() ? "true" : "false");
+        return;
+    }
+    if (value.is_number())
+    {
+        out.append(CompactJson(value));
+        return;
+    }
+    // Array / object: embed compact JSON in one quoted cell so wide-row
+    // column counts match the JSON serialisation (lossy escape hatch).
+    AppendCsvQuoted(out, CompactJson(value));
+}
+
+// Returns a pointer to @p key inside @p record, or nullptr if absent
+// or @p record is not an object.
+const LogRecord *FindObjectField(const LogRecord &record, const std::string &key)
+{
+    if (!record.is_object())
+    {
+        return nullptr;
+    }
+    for (const auto &[k, v] : record.get_object())
+    {
+        if (k == key)
+        {
+            return &v;
+        }
+    }
+    return nullptr;
+}
+
+} // namespace
+
+LogFormat Csv(RecordSchema schema)
+{
+    return LogFormat{
+        .suggestedExtension = ".csv",
+        .writeHeader =
+            [capturedSchema = schema](const RecordSchema &paramSchema) {
+                // Prefer the caller-supplied schema; fall back to the
+                // captured one for factories pre-wired with a schema.
+                const RecordSchema &effective = paramSchema.empty() ? capturedSchema : paramSchema;
+                if (effective.empty())
+                {
+                    return std::string{};
+                }
+                std::string out;
+                bool first = true;
+                for (const auto &name : effective)
+                {
+                    if (!first)
+                    {
+                        out.push_back(',');
+                    }
+                    first = false;
+                    AppendCsvCell(out, name);
+                }
+                return out;
+            },
+        .writeLine =
+            [capturedSchema = std::move(schema)](const LogRecord &record) {
+                if (capturedSchema.empty())
+                {
+                    // Headerless: walk the record's lex order. Rejected
+                    // by `CsvParser::IsValid`; real fixtures pass a schema.
+                    if (!record.is_object())
+                    {
+                        return CompactJson(record);
+                    }
+                    std::string out;
+                    bool first = true;
+                    for (const auto &[_key, value] : record.get_object())
+                    {
+                        if (!first)
+                        {
+                            out.push_back(',');
+                        }
+                        first = false;
+                        AppendCsvValue(out, value);
+                    }
+                    return out;
+                }
+                std::string out;
+                bool first = true;
+                for (const auto &name : capturedSchema)
+                {
+                    if (!first)
+                    {
+                        out.push_back(',');
+                    }
+                    first = false;
+                    if (const auto *value = FindObjectField(record, name); value != nullptr)
+                    {
+                        AppendCsvValue(out, *value);
+                    }
+                    // Missing key -> empty cell (delimiter handled above).
+                }
+                return out;
+            },
+    };
+}
+
+RecordSchema DeriveSchemaFromRecord(const LogRecord &record)
+{
+    RecordSchema schema;
+    if (!record.is_object())
+    {
+        return schema;
+    }
+    for (const auto &[key, _value] : record.get_object())
+    {
+        schema.emplace_back(key);
+    }
+    return schema;
+}
+
 } // namespace test_common

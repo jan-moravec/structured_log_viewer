@@ -45,4 +45,20 @@ LogFormat JsonLines();
 // asserts this in debug builds since logfmt has no key-quoting syntax.
 LogFormat Logfmt();
 
+// CSV (RFC 4180 strict, comma-only). Each record emits cells in
+// @p schema order, RFC-4180-quoting any cell with `,` / `"` / CR / LF.
+// `writeHeader` returns the schema as a CSV header line.
+//
+// Lossy: nested arrays/objects emit as a quoted compact-JSON cell.
+// Bools / numbers emit bare. Null and missing keys render as the
+// empty cell (which `CsvParser` then omits from the row).
+//
+// An empty @p schema produces a headerless CSV-shaped stream walked
+// in the record's lex order; real fixtures should pass a schema.
+LogFormat Csv(RecordSchema schema = {});
+
+// Lex-ordered list of @p record's object keys; empty if @p record
+// is not an object. Used to derive a CSV header from a sample record.
+RecordSchema DeriveSchemaFromRecord(const LogRecord &record);
+
 } // namespace test_common

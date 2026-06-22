@@ -707,9 +707,11 @@ public:
 
     /// `CompactLineDecoder` entry point. Fills @p out with compact
     /// values whose `OwnedString` payloads index into @p outOwnedArena.
-    /// Returns false on parse error and writes a body message to
-    /// @p errorOut; the pipeline wraps it as "Error on line N: ...".
-    bool DecodeCompact(
+    /// Returns `Emit` on success (an empty `{}` object still emits a
+    /// row with no fields — tested contract), `Error` with a body
+    /// message in @p errorOut on parse failure; never returns `Skip`
+    /// (JSON has no header prelude to swallow).
+    internal::LineDecodeResult DecodeCompact(
         std::string_view line,
         KeyIndex &keys,
         internal::PerWorkerKeyCache *keyCache,
@@ -722,7 +724,7 @@ public:
         outOwnedArena.clear();
         if (line.empty())
         {
-            return true;
+            return internal::LineDecodeResult::Emit;
         }
 
         try
@@ -740,14 +742,14 @@ public:
             if (result.error())
             {
                 errorOut = std::string(simdjson::error_message(result.error()));
-                return false;
+                return internal::LineDecodeResult::Error;
             }
 
             auto object = result.get_object();
             if (object.error())
             {
                 errorOut = "Not a JSON object.";
-                return false;
+                return internal::LineDecodeResult::Error;
             }
 
             auto objectValue = object.value();
@@ -765,12 +767,12 @@ public:
                 /* fileSize = */ 0,
                 outOwnedArena
             );
-            return true;
+            return internal::LineDecodeResult::Emit;
         }
         catch (const std::exception &e)
         {
             errorOut = std::string(e.what());
-            return false;
+            return internal::LineDecodeResult::Error;
         }
     }
 

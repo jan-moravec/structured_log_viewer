@@ -43,6 +43,7 @@ public:
     {
         Json,
         Logfmt,
+        Csv,
     };
 
     /// Resolved configuration; populated only after the dialog is
