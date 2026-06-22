@@ -124,6 +124,11 @@ jobs:
         # Coverage leg only, after the build so AUTOMOC/AUTOUIC/AUTORCC outputs
         # exist (without them clang-tidy fails with "<file>.moc: file not found").
         # style/tidy-checks empty -> defer to pre-commit and .clang-tidy.
+        # extra-args supply the project / FetchContent include roots so that
+        # clang-tidy can resolve `loglib/...`, `<fmt/...>`, `<tsl/...>`, ...
+        # when invoked directly on a header file. Headers are not entries in
+        # compile_commands.json, so without these flags clang-tidy reports
+        # spurious "file not found" frontend errors against changed `.hpp`s.
         # SHA-pinned so a tag re-cut can't change what we run.
         if: matrix.mode == 'coverage'
         id: cpp-linter
@@ -141,6 +146,18 @@ jobs:
           tidy-review: true
           thread-comments: update
           step-summary: true
+          extra-args: >-
+            -Ilibrary/include
+            -Iapp/include
+            -Itest/common/include
+            -Ibuild/clang-coverage/_deps/fmt-src/include
+            -Ibuild/clang-coverage/_deps/robin_map-src/include
+            -Ibuild/clang-coverage/_deps/glaze-src/include
+            -Ibuild/clang-coverage/_deps/mio-src/include
+            -Ibuild/clang-coverage/_deps/date-src/include
+            -Ibuild/clang-coverage/_deps/argparse-src/include
+            -Ibuild/clang-coverage/_deps/tbb-src/include
+            -std=c++20
 
       - name: Run tests
         # Sanitizer + LLVM_PROFILE_FILE env comes from the preset.
