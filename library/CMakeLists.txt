@@ -33,6 +33,7 @@ add_library(
     src/parsers/csv_parser.cpp
     src/parsers/json_parser.cpp
     src/parsers/logfmt_parser.cpp
+    src/parsers/regex_parser.cpp
     src/regex_templates.cpp
     src/theme.cpp
     src/clang_tidy_stubs/theme_glaze_meta.cpp
