@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace loglib
 {
@@ -87,12 +88,22 @@ public:
 
     /// Static overload exposing internal tuning knobs (benchmarks /
     /// bisects). Mirrors the equivalent on the other parsers.
+    ///
+    /// @p explicitPattern: `std::nullopt` means "fall back to
+    /// `options.configuration->source->regexPattern`". A present
+    /// value (even an empty `string_view`) overrides the
+    /// configuration; an empty override fails closed with the same
+    /// "non-empty pattern required" error the `StreamLineSource`
+    /// overload emits. This distinguishes "no pattern pinned" from
+    /// "pinned to an empty pattern" so a parser explicitly
+    /// constructed with `""` cannot silently pick up a value from
+    /// the configuration snapshot.
     static void ParseStreaming(
         FileLineSource &source,
         LogParseSink &sink,
         const ParserOptions &options,
         internal::AdvancedParserOptions advanced,
-        std::string_view explicitPattern = {}
+        std::optional<std::string_view> explicitPattern = std::nullopt
     );
 
     /// Best-effort. Regex is not invertible, so we join the named
@@ -114,5 +125,16 @@ private:
 /// template matched so they can persist its pattern on the
 /// `LogConfiguration::Source`.
 [[nodiscard]] const RegexTemplate *DetectRegexTemplate(const std::filesystem::path &file);
+
+/// Compile-only validation used by GUI surfaces (the Network Stream
+/// dialog, "Open as -> Regex") to front-load pattern errors before
+/// they surface as a single error on the first inbound line. Returns
+/// `true` iff @p pattern is non-empty, compiles successfully, *and*
+/// contains at least one `(?<Name>...)` named capture group. On
+/// failure, @p errorOut is populated with a user-facing message
+/// (mirroring what `ParseStreaming` would emit). The compiled
+/// PCRE2 state is discarded immediately; this is a cheap pre-flight
+/// check, not a parse setup.
+[[nodiscard]] bool ValidateRegexPattern(std::string_view pattern, std::string &errorOut);
 
 } // namespace loglib

@@ -1,20 +1,29 @@
 #include "common.hpp"
 
+#include <loglib/bytes_producer.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_data.hpp>
+#include <loglib/log_parse_sink.hpp>
 #include <loglib/parse_file.hpp>
 #include <loglib/parser_options.hpp>
-#include <loglib/parsers/regex_parser.hpp>
 #include <loglib/parsers/json_parser.hpp>
+#include <loglib/parsers/regex_parser.hpp>
 #include <loglib/regex_templates.hpp>
+#include <loglib/stream_line_source.hpp>
 
 #include <catch2/catch_all.hpp>
 
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
+#include <cstring>
+#include <filesystem>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 using namespace loglib;
 
@@ -235,4 +244,147 @@ TEST_CASE("RegexParser ToString joins values in KeyId order [regex]", "[regex_pa
     const std::string out = parser.ToString(result.data.Lines()[0]);
     CHECK(out.find("info") != std::string::npos);
     CHECK(out.find("hello world") != std::string::npos);
+}
+
+namespace
+{
+
+/// Single-shot in-memory `BytesProducer` for the live-tail regex
+/// streaming test. Yields the test's pre-baked bytes once and reports
+/// terminal EOF so the parser exits its drain loop without parking
+/// on `WaitForBytes`. Mirrors `test_json_parser.cpp`'s helper.
+class StreamingInMemoryProducer final : public loglib::BytesProducer
+{
+public:
+    explicit StreamingInMemoryProducer(std::string bytes)
+        : mBytes(std::move(bytes))
+    {
+    }
+
+    size_t Read(std::span<char> buffer) override
+    {
+        if (mCursor >= mBytes.size())
+        {
+            mClosed = true;
+            return 0;
+        }
+        const size_t available = mBytes.size() - mCursor;
+        const size_t n = std::min(available, buffer.size());
+        std::memcpy(buffer.data(), mBytes.data() + mCursor, n);
+        mCursor += n;
+        if (mCursor >= mBytes.size())
+        {
+            mClosed = true;
+        }
+        return n;
+    }
+
+    void WaitForBytes(std::chrono::milliseconds /*timeout*/) override
+    {
+    }
+
+    void Stop() noexcept override
+    {
+        mClosed = true;
+    }
+
+    [[nodiscard]] bool IsClosed() const noexcept override
+    {
+        return mClosed;
+    }
+
+    [[nodiscard]] std::string DisplayName() const override
+    {
+        return "in-memory";
+    }
+
+private:
+    std::string mBytes;
+    size_t mCursor = 0;
+    bool mClosed = false;
+};
+
+/// `LogParseSink` that records every emitted batch verbatim so the
+/// test can assert on `newKeys`. Owns the `KeyIndex` so the streaming
+/// parser interns into a sink-local index instead of mutating a
+/// shared one.
+struct CollectingStreamSink final : loglib::LogParseSink
+{
+    loglib::KeyIndex keys;
+    std::vector<loglib::StreamedBatch> batches;
+    bool finished = false;
+    bool finishedCancelled = false;
+
+    loglib::KeyIndex &Keys() override
+    {
+        return keys;
+    }
+    void OnStarted() override
+    {
+    }
+    void OnBatch(loglib::StreamedBatch batch) override
+    {
+        batches.push_back(std::move(batch));
+    }
+    void OnFinished(bool cancelled) override
+    {
+        finished = true;
+        finishedCancelled = cancelled;
+    }
+};
+
+} // namespace
+
+// Regression for the live-tail / network-stream regression: the
+// pattern's named capture groups are interned into `KeyIndex` before
+// `RunStreamingParseLoop` starts, but the streaming overload used to
+// drop the pre-intern baseline on the floor. `BatchCoalescer` then
+// started its key cursor at the post-intern size, so every flushed
+// batch reported an empty `newKeys` list and `LogTable::AppendBatch`
+// never created the columns -- streaming regex sessions ingested
+// rows with no visible columns. This test fails on the pre-fix
+// codebase and passes after threading `newKeyBaseline` through.
+TEST_CASE(
+    "RegexParser streaming surfaces named-group columns via newKeys [regex][stream_line_source]",
+    "[regex_parser]"
+)
+{
+    using namespace loglib;
+
+    const RegexParser parser(R"(^(?<level>\w+)\s+(?<message>.*)$)");
+
+    const std::string payload = "info hello\n"
+                                "warn world\n"
+                                "error boom\n";
+
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+
+    CollectingStreamSink sink;
+    parser.ParseStreaming(source, sink, ParserOptions{});
+
+    REQUIRE(sink.finished);
+    CHECK_FALSE(sink.finishedCancelled);
+
+    // The "level" and "message" columns must appear in the union of
+    // `newKeys` across all emitted batches; without the baseline fix
+    // both lists would be empty.
+    std::vector<std::string> announcedKeys;
+    for (const auto &batch : sink.batches)
+    {
+        for (const auto &key : batch.newKeys)
+        {
+            announcedKeys.push_back(key);
+        }
+    }
+    CHECK(std::ranges::find(announcedKeys, "level") != announcedKeys.end());
+    CHECK(std::ranges::find(announcedKeys, "message") != announcedKeys.end());
+
+    // Sanity: the rows themselves carry the captured values, proving
+    // the regression is in the new-key surfacing rather than parsing.
+    size_t totalLines = 0;
+    for (const auto &batch : sink.batches)
+    {
+        totalLines += batch.lines.size();
+    }
+    CHECK(totalLines == 3);
 }

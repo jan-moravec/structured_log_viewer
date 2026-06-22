@@ -9,10 +9,14 @@
 #
 # Background: Qt (LGPLv3), TBB / simdjson / OpenSSL (Apache-2.0),
 # fmt / glaze / mio / robin_map / date / argparse / efsw (MIT or
-# BSD), Asio / Catch2 (BSL-1.0) all require source attribution
-# in redistributed binary form. Prior to this module the project
-# packages shipped no third-party license text at all -- a quiet
-# compliance gap this module closes.
+# BSD), Asio / Catch2 (BSL-1.0), PCRE2 (BSD-3-Clause) all require
+# source attribution in redistributed binary form. lnav (BSD-2-
+# Clause) and logstash-patterns-core (Apache-2.0) are not linked
+# but their regex pattern definitions are adapted into
+# `regex_templates.cpp`, so the same attribution requirement
+# applies. Prior to this module the project packages shipped no
+# third-party license text at all -- a quiet compliance gap this
+# module closes.
 #
 # Usage: include this file from the top-level CMakeLists.txt after
 # all the FetchContent_MakeAvailable / find_package calls so the
@@ -82,6 +86,11 @@ function(bundle_third_party_licenses target_name)
         "efsw:LICENSE:efsw (MIT)"
         "argparse:LICENSE:argparse (MIT)"
         "asio:asio/LICENSE_1_0.txt:Asio (BSL-1.0)"
+        # PCRE2 ships its license as `LICENCE.md` (British spelling) at
+        # the source root; it backs the regex-template log parser via
+        # `library/src/parsers/regex_parser.cpp`. Statically linked
+        # whenever the parser is compiled in, so we always attribute.
+        "pcre2:LICENCE.md:PCRE2 (BSD-3-Clause)"
     )
     foreach(spec IN LISTS FETCHED_DEPS)
         string(REPLACE ":" ";" parts "${spec}")
@@ -123,6 +132,21 @@ function(bundle_third_party_licenses target_name)
     # Feather-derived icons; both texts are in the same snippet).
     _bundle_collect_entry(
         "Lucide icons (ISC + MIT)" "${_BUNDLE_LICENSES_DIR}/license_snippets/lucide.txt" LICENSE_ENTRIES
+    )
+
+    # lnav (BSD-2-Clause) and logstash-patterns-core (Apache-2.0) are
+    # NOT linked into the binary; we only adopt several regex patterns
+    # from their log-format definitions / grok library (see
+    # `library/src/regex_templates.cpp`). Both licenses require
+    # attribution + license text when redistributing derivative
+    # works, so we ship the snippets alongside the linked-library
+    # texts above.
+    _bundle_collect_entry(
+        "lnav patterns (BSD-2-Clause)" "${_BUNDLE_LICENSES_DIR}/license_snippets/lnav.txt" LICENSE_ENTRIES
+    )
+    _bundle_collect_entry(
+        "logstash-patterns-core grok patterns (Apache-2.0)"
+        "${_BUNDLE_LICENSES_DIR}/license_snippets/logstash_patterns_core.txt" LICENSE_ENTRIES
     )
 
     # Compose the aggregated file. Generation runs at configure time

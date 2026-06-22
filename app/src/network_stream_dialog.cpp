@@ -1,5 +1,6 @@
 #include "network_stream_dialog.hpp"
 
+#include <loglib/parsers/regex_parser.hpp>
 #include <loglib/regex_templates.hpp>
 
 #include <QCheckBox>
@@ -352,13 +353,38 @@ void NetworkStreamDialog::Accepted()
     // returns; the dialog stays open so the user can fix the field.
     if (mFormat->currentData().toInt() == static_cast<int>(Format::Regex))
     {
-        if (mRegexPattern->text().trimmed().isEmpty())
+        // Canonicalise the field early so the trimmed value is what
+        // gets persisted, handed to `MainWindow::OpenNetworkStream`,
+        // and -- in the validation below -- compiled by PCRE2. Without
+        // this, leading/trailing whitespace would leak into the saved
+        // pattern (and into the parser at session restore).
+        const QString trimmedPattern = mRegexPattern->text().trimmed();
+        if (trimmedPattern != mRegexPattern->text())
+        {
+            mRegexPattern->setText(trimmedPattern);
+        }
+        if (trimmedPattern.isEmpty())
         {
             QMessageBox::warning(
                 this,
                 tr("Open Network Stream"),
                 tr("A regex pattern is required when the wire format is 'Regex template'. "
                    "Pick a built-in template or write a custom PCRE2 pattern with `(?<Name>...)` groups.")
+            );
+            mRegexPattern->setFocus();
+            return;
+        }
+        // Pre-compile so syntax errors and "no named capture groups"
+        // surface in the dialog rather than as a single error on the
+        // first inbound line (by which point the dialog has already
+        // been dismissed and the bad pattern persisted).
+        std::string regexError;
+        if (!loglib::ValidateRegexPattern(trimmedPattern.toStdString(), regexError))
+        {
+            QMessageBox::warning(
+                this,
+                tr("Open Network Stream"),
+                tr("The regex pattern is not valid:\n\n%1").arg(QString::fromStdString(regexError))
             );
             mRegexPattern->setFocus();
             return;

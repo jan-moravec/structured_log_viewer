@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -46,13 +47,29 @@ constexpr size_t STREAMING_READ_BUFFER_SIZE = 64 * 1024;
 /// overhead is not warranted. `source` is mutated on the parser
 /// thread and read concurrently by the GUI; `StreamLineSource`'s
 /// internal mutex + deque storage make that safe.
+///
+/// @p newKeyBaseline forwards to `BatchCoalescer`: parsers that
+/// pre-intern keys into the sink's `KeyIndex` before calling this
+/// (e.g. `RegexParser`, whose schema is derived from the pattern's
+/// named capture groups at compile time) pass the snapshot taken
+/// *before* the intern step so the eagerly-interned columns still
+/// surface as `newKeys` on the first emitted batch. Parsers that
+/// add keys lazily (JSON, logfmt, CSV) leave this `std::nullopt`.
 template <class Decoder>
-void RunStreamingParseLoop(StreamLineSource &source, Decoder &decoder, LogParseSink &sink, const ParserOptions &options)
+void RunStreamingParseLoop(
+    StreamLineSource &source,
+    Decoder &decoder,
+    LogParseSink &sink,
+    const ParserOptions &options,
+    std::optional<size_t> newKeyBaseline = std::nullopt
+)
 {
     sink.OnStarted();
 
     KeyIndex &keys = sink.Keys();
-    BatchCoalescer coalescer(sink, keys, STREAMING_BATCH_FLUSH_LINES, STREAMING_BATCH_FLUSH_INTERVAL);
+    BatchCoalescer coalescer(
+        sink, keys, STREAMING_BATCH_FLUSH_LINES, STREAMING_BATCH_FLUSH_INTERVAL, newKeyBaseline
+    );
 
     BytesProducer *producer = source.Producer();
     if (producer == nullptr)

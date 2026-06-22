@@ -747,20 +747,35 @@ void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, P
         return;
     }
 
+    // Snapshot the sink's `KeyIndex` cursor *before* eagerly
+    // interning the pattern's named groups so the streaming
+    // coalescer surfaces them as `newKeys` on the first emitted
+    // batch. Without this baseline, `BatchCoalescer` would start
+    // counting from the post-intern size and `LogTable::AppendBatch`
+    // would never create the columns -- live tail and network
+    // streams would ingest rows with no visible columns.
     const size_t newKeyBaseline = sink.Keys().Size();
     const std::vector<KeyId> columnKeys = InternSchemaKeys(compiled.Schema(), sink.Keys());
 
     RegexLineDecoder decoder(compiled, columnKeys);
-    // Streaming loop will call its own `sink.OnStarted()`; the only
-    // observable side effect of pre-interning keys above is that
-    // `newKeys` are surfaced via the coalescer's baseline.
-    internal::RunStreamingParseLoop(source, decoder, sink, options);
-    (void)newKeyBaseline; // Streaming pipeline doesn't take a baseline (its sink baseline is implicit).
+    internal::RunStreamingParseLoop(source, decoder, sink, options, newKeyBaseline);
 }
 
 void RegexParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
-    ParseStreaming(source, sink, options, internal::AdvancedParserOptions{}, mExplicitPattern.value_or(std::string{}));
+    // Forward `mExplicitPattern` as an `optional<string_view>` (not
+    // `string_view`) so the advanced overload can distinguish "no
+    // pattern pinned" (fall back to options) from "pinned to an
+    // empty pattern" (fail closed). Collapsing both to an empty
+    // `string_view` would let a parser explicitly constructed with
+    // `""` silently pick up the configuration's `regexPattern`,
+    // diverging from the `StreamLineSource` overload's behaviour.
+    std::optional<std::string_view> explicitView;
+    if (mExplicitPattern.has_value())
+    {
+        explicitView = std::string_view(*mExplicitPattern);
+    }
+    ParseStreaming(source, sink, options, internal::AdvancedParserOptions{}, explicitView);
 }
 
 void RegexParser::ParseStreaming(
@@ -768,11 +783,11 @@ void RegexParser::ParseStreaming(
     LogParseSink &sink,
     const ParserOptions &options,
     internal::AdvancedParserOptions advanced,
-    std::string_view explicitPattern
+    std::optional<std::string_view> explicitPattern
 )
 {
-    const std::string pattern = !explicitPattern.empty()
-                                    ? std::string(explicitPattern)
+    const std::string pattern = explicitPattern.has_value()
+                                    ? std::string(*explicitPattern)
                                     : ResolvePattern(/*explicitPattern=*/std::nullopt, options);
 
     const LogFile &file = source.File();
@@ -912,6 +927,26 @@ std::string RegexParser::ToString(const LogLine &line) const
 const RegexTemplate *DetectRegexTemplate(const std::filesystem::path &file)
 {
     return ProbeBuiltinTemplates(file);
+}
+
+bool ValidateRegexPattern(std::string_view pattern, std::string &errorOut)
+{
+    if (pattern.empty())
+    {
+        errorOut = "Regex parser requires a non-empty pattern.";
+        return false;
+    }
+    CompiledPattern compiled;
+    if (!compiled.Compile(pattern, errorOut))
+    {
+        return false;
+    }
+    if (!compiled.HasNamedGroups())
+    {
+        errorOut = "Regex pattern has no named capture groups; nothing to put in columns. Use `(?<Name>...)`.";
+        return false;
+    }
+    return true;
 }
 
 } // namespace loglib
