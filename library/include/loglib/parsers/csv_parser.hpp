@@ -43,11 +43,34 @@ struct AdvancedParserOptions;
 /// key already materialises as monostate on lookup, and skipping
 /// the slot avoids 16 B per empty cell on wide CSV rows.
 ///
-/// Multi-line quoted cells (an RFC-4180 quoted field that spans
-/// newlines) are **rejected** in v1; they surface as
+/// **Duplicate column names** in the header are silently renamed
+/// to `<name>_2`, `<name>_3`, ... (skipping any suffix that
+/// would clash with another existing column). The data isn't
+/// lost -- both columns appear in the table -- but the user sees
+/// the renamed form rather than the original duplicate.
+///
+/// **Multi-line quoted cells** (an RFC-4180 quoted field that
+/// spans newlines) are **rejected** in v1; they surface as
 /// `Unterminated quoted value.` on the line where the quote
 /// opens. Documented limitation; a follow-up may add real
 /// multi-line support if fixtures justify it.
+///
+/// **Stream-Mode + rotation**: `CsvLineDecoder` latches the
+/// schema on the first non-blank line of the session and never
+/// reseats it. `TailingBytesProducer` continues feeding bytes
+/// past a `logrotate` event, so the post-rotation file's own
+/// header line is parsed as a data row (you'll see one spurious
+/// row whose cell values are the column names, plus column-count
+/// errors if the new schema differs). Workaround: Stop + reopen
+/// the stream after rotation. A real fix would chain a parser
+/// reset onto the producer's rotation callback.
+///
+/// **Network Stream + multiple TCP clients**: the same single
+/// decoder instance is fed by all connected producers (bytes
+/// interleave at line granularity in `TcpServerProducer`). The
+/// first arriving line wins the schema for every client.
+/// Coordinate the header across producers or restrict CSV to a
+/// single producer.
 ///
 /// Reuses the same TBB static pipeline (via `DecodeCsvBatch`) and
 /// streaming loop (via `CsvLineDecoder`) as `JsonParser` and

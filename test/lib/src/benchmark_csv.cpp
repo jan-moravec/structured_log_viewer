@@ -53,7 +53,7 @@ test_common::RecordSchema SampleStreamingSchema(
 {
     // NOLINTNEXTLINE(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
     std::mt19937 rng(seed);
-    test_common::LogRecord probe = test_common::GenerateRandomLogRecord(rng, 0, timestamps);
+    const test_common::LogRecord probe = test_common::GenerateRandomLogRecord(rng, 0, timestamps);
     return test_common::DeriveSchemaFromRecord(probe);
 }
 
@@ -108,7 +108,7 @@ TEST_CASE("Stream CSV log to LogTable (wide, 200'000 lines)", "[.][benchmark][cs
         GenerateWideLogRecords(200'000, /*columnCount=*/30, WIDE_FIXTURE_SEED, DeterministicBenchmarkTimestamps());
     // Derive the schema from the first record (lex-ordered keys; every
     // record in the wide vector shares the same key set).
-    test_common::RecordSchema schema = test_common::DeriveSchemaFromRecord(records.front());
+    const test_common::RecordSchema schema = test_common::DeriveSchemaFromRecord(records.front());
 
     const TestStructuredLogFile testFile(std::move(records), test_common::Csv(schema), schema);
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)

@@ -19,8 +19,10 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -153,7 +155,7 @@ template <class Emit> bool TokenizeCsvLine(std::string_view line, std::string &q
                 // by letting the loop re-enter.
                 if (i >= end)
                 {
-                    CsvCell empty;
+                    const CsvCell empty;
                     emit(empty);
                     return true;
                 }
@@ -177,7 +179,7 @@ template <class Emit> bool TokenizeCsvLine(std::string_view line, std::string &q
             if (i >= end)
             {
                 // Trailing comma after the garbage -> one empty cell.
-                CsvCell empty;
+                const CsvCell empty;
                 emit(empty);
                 return true;
             }
@@ -202,7 +204,7 @@ template <class Emit> bool TokenizeCsvLine(std::string_view line, std::string &q
         if (i >= end)
         {
             // Trailing `,` -> one more empty cell.
-            CsvCell empty;
+            const CsvCell empty;
             emit(empty);
             return true;
         }
@@ -212,7 +214,7 @@ template <class Emit> bool TokenizeCsvLine(std::string_view line, std::string &q
 /// Strip a leading UTF-8 BOM from @p sv if present.
 std::string_view StripBom(std::string_view sv) noexcept
 {
-    if (sv.size() >= UTF8_BOM.size() && sv.substr(0, UTF8_BOM.size()) == UTF8_BOM)
+    if (sv.starts_with(UTF8_BOM))
     {
         sv.remove_prefix(UTF8_BOM.size());
     }
@@ -229,10 +231,43 @@ std::string_view StripCr(std::string_view sv) noexcept
     return sv;
 }
 
+/// Rename duplicate column names in @p names in place. First occurrence
+/// keeps its name; subsequent ones get `<name>_2`, `<name>_3`, ...,
+/// skipping any suffix that would clash with another column. Real-world
+/// CSVs (database joins, hand-edited exports) sometimes contain
+/// duplicates; silently renaming preserves the data and keeps `LogLine`
+/// downstream sane (its key-id storage assumes unique keys per row, so
+/// two slots with the same KeyId would interact unpredictably).
+void DeduplicateColumnNames(std::vector<std::string> &names)
+{
+    std::unordered_set<std::string> seen;
+    seen.reserve(names.size());
+    for (auto &name : names)
+    {
+        if (seen.insert(name).second)
+        {
+            continue;
+        }
+        // `name` is a duplicate. Probe `<base>_2`, `<base>_3`, ...
+        // until a free slot is found, then rename in place.
+        const std::string base = name;
+        int suffix = 2;
+        std::string candidate = fmt::format("{}_{}", base, suffix);
+        while (!seen.insert(candidate).second)
+        {
+            ++suffix;
+            candidate = fmt::format("{}_{}", base, suffix);
+        }
+        name = std::move(candidate);
+    }
+}
+
 /// Parse a CSV header line into a column key list. Returns false if
-/// the header is empty / has fewer than 2 cells / contains an
-/// unterminated quoted cell. The resulting `columnKeys[i]` is the
-/// `KeyId` for cell `i` in any subsequent data row.
+/// the header is empty or contains an unterminated quoted cell.
+/// Duplicate column names are silently renamed via
+/// `DeduplicateColumnNames` rather than rejected. The resulting
+/// `columnKeys[i]` is the `KeyId` for cell `i` in any subsequent
+/// data row.
 bool ParseHeaderLine(
     std::string_view headerLine,
     KeyIndex &keys,
@@ -248,22 +283,25 @@ bool ParseHeaderLine(
         return false;
     }
 
-    std::vector<std::string> cellStorage;
-    cellStorage.reserve(INITIAL_FIELD_CAPACITY);
+    std::vector<std::string> cellNames;
+    cellNames.reserve(INITIAL_FIELD_CAPACITY);
 
     const bool ok = TokenizeCsvLine(headerLine, headerScratch, [&](const CsvCell &cell) {
-        cellStorage.emplace_back(cell.value);
+        cellNames.emplace_back(cell.value);
     });
     if (!ok)
     {
         return false;
     }
-    if (cellStorage.empty())
+    if (cellNames.empty())
     {
         return false;
     }
-    columnKeys.reserve(cellStorage.size());
-    for (auto &name : cellStorage)
+
+    DeduplicateColumnNames(cellNames);
+
+    columnKeys.reserve(cellNames.size());
+    for (auto &name : cellNames)
     {
         columnKeys.push_back(keys.GetOrInsert(name));
     }
@@ -310,7 +348,11 @@ void ParseCsvLine(
 )
 {
     out.clear();
-    out.reserve(std::min(columnKeys.size(), INITIAL_FIELD_CAPACITY));
+    // Reserve the full column count up front: wide CSV rows would
+    // otherwise regrow the vector mid-loop. `columnKeys.size()` is the
+    // exact upper bound (extras are counted in `outRaggedExtra`, not
+    // pushed into `out`).
+    out.reserve(columnKeys.size());
     outUnterminated = false;
     outRaggedExtra = 0;
 
@@ -409,7 +451,8 @@ void DecodeCsvBatch(
     FileLineSource &source,
     std::span<const internal::TimeColumnSpec> timeColumns,
     internal::ParsedPipelineBatch &parsed,
-    const std::vector<KeyId> &columnKeys
+    const std::vector<KeyId> &columnKeys,
+    std::optional<uint64_t> headerLineOffset
 )
 {
     parsed.batchIndex = batch.batchIndex;
@@ -425,12 +468,6 @@ void DecodeCsvBatch(
     parsed.localLineOffsets.reserve(estimatedLines);
 
     size_t relativeLineNumber = 1;
-
-    // In batch 0, swallow the first non-blank line (it's the header).
-    // The line still registers its offset and bumps `relativeLineNumber`
-    // so `LogFile::GetLine(lineId)` stays aligned for every subsequent
-    // data row (`GetLine(1)` -> first data row, etc.).
-    bool headerToSkip = (batch.batchIndex == 0);
 
     std::vector<std::pair<KeyId, internal::CompactLogValue>> values;
 
@@ -455,13 +492,15 @@ void DecodeCsvBatch(
             continue;
         }
 
-        if (headerToSkip)
+        // Header is identified by its byte offset (recorded by the
+        // eager parse in `CsvParser::ParseStreaming`). This works
+        // regardless of which Stage B batch the header lands in -- a
+        // small `batchSizeBytes` or many leading blank lines could
+        // push the header past batch 0; the offset check still picks
+        // it up. Stage A's "batches end at newline boundaries" rule
+        // guarantees the header line is fully contained in one batch.
+        if (headerLineOffset.has_value() && std::cmp_equal(lineStart - fileBegin, *headerLineOffset))
         {
-            // First non-blank line in batch 0 is the header. Already
-            // parsed eagerly by `CsvParser::ParseStreaming` to build
-            // `columnKeys`; here we just swallow it (no LogLine, no
-            // error) while still consuming its line slot.
-            headerToSkip = false;
             relativeLineNumber++;
             continue;
         }
@@ -679,11 +718,7 @@ void AppendValueAsCell(std::string &out, const LogValue &value)
             {
                 AppendCell(out, TimeStampToDateTimeString(val));
             }
-            else if constexpr (std::is_same_v<T, std::string_view>)
-            {
-                AppendCell(out, val);
-            }
-            else if constexpr (std::is_same_v<T, std::string>)
+            else if constexpr (std::is_same_v<T, std::string_view> || std::is_same_v<T, std::string>)
             {
                 AppendCell(out, val);
             }
@@ -736,12 +771,20 @@ bool CsvParser::IsValid(const std::filesystem::path &file) const
     while (std::getline(stream, line))
     {
         std::string_view sv(line);
+        // CRLF accounting: `std::getline` consumed `line.size() + 1`
+        // bytes from disk when no `\r` was present, and
+        // `line.size() + 2` when we strip a trailing `\r` (the disk
+        // line ended with CRLF; on text-mode platforms `getline` may
+        // already have stripped the `\r`, in which case `hadCr`
+        // stays false and the +1 is correct).
+        bool hadCr = false;
         if (!sv.empty() && sv.back() == '\r')
         {
             sv.remove_suffix(1);
             line.pop_back();
+            hadCr = true;
         }
-        bytesScanned += line.size() + 1;
+        bytesScanned += line.size() + 1 + (hadCr ? 1u : 0u);
         if (sv.empty())
         {
             if (bytesScanned >= IS_VALID_PROBE_BYTES)
@@ -777,11 +820,13 @@ bool CsvParser::IsValid(const std::filesystem::path &file) const
     while (std::getline(stream, line))
     {
         std::string_view sv(line);
+        bool hadCr = false;
         if (!sv.empty() && sv.back() == '\r')
         {
             sv.remove_suffix(1);
+            hadCr = true;
         }
-        bytesScanned += line.size() + 1;
+        bytesScanned += line.size() + 1 + (hadCr ? 1u : 0u);
         if (sv.empty())
         {
             if (bytesScanned >= IS_VALID_PROBE_BYTES)
@@ -888,47 +933,82 @@ void CsvParser::ParseStreaming(
     // zero `newKeys` and the `LogTable` would never build any columns.
     const size_t newKeyBaseline = sink.Keys().Size();
 
-    // Eagerly parse the header off the mmap so every Stage B worker
-    // sees the same read-only `column index -> KeyId` table. This is
-    // schema-only -- the byte cursor stays at `fileBegin` (offset 0)
-    // so the header line still registers its offset slot via the
-    // normal Stage B path and `LogFile::GetLine` stays aligned.
+    // Eagerly walk to the first non-blank line and parse it as the
+    // header. Three outputs:
+    //  * `columnKeys` -- the `column index -> KeyId` table every Stage B
+    //    worker shares (read-only after this point).
+    //  * `headerLineOffset` -- the byte offset of the header line's
+    //    start (including any BOM bytes that share its line). Stage B
+    //    uses this to skip exactly the header line, regardless of
+    //    which batch it ends up in (the old `batchIndex == 0` flag
+    //    silently misidentified the header when leading blanks pushed
+    //    it past batch 0 -- a real bug under small `batchSizeBytes`).
+    //  * `headerParseFailed` -- true when the line was non-blank but
+    //    not parseable as a CSV header (e.g. unterminated quote).
+    //    Surfaced below as a single error; the data-row pipeline is
+    //    short-circuited so users do not get one `Row has N extra ...`
+    //    error per row on top of the real diagnostic.
     std::vector<KeyId> columnKeys;
+    std::optional<uint64_t> headerLineOffset;
+    size_t headerLineNumber = 0;
+    bool headerParseFailed = false;
     {
         std::string headerScratch;
-        if (fileBegin != nullptr && fileSize > 0)
+        const char *cursor = fileBegin;
+        bool firstLine = true;
+        size_t blankLinesBeforeHeader = 0;
+        while (cursor != nullptr && cursor < fileEnd)
         {
-            // Walk to the first non-blank line; strip BOM on the way.
-            const char *cursor = fileBegin;
-            std::string_view stripped(fileBegin, fileSize);
-            stripped = StripBom(stripped);
-            // Adjust cursor for any stripped BOM.
-            cursor = stripped.data();
-            const char *bomEnd = stripped.data() + stripped.size();
-            while (cursor < bomEnd)
+            const char *nl = static_cast<const char *>(memchr(cursor, '\n', static_cast<size_t>(fileEnd - cursor)));
+            const char *lineEnd = (nl != nullptr) ? nl : fileEnd;
+            std::string_view candidate(cursor, static_cast<size_t>(lineEnd - cursor));
+            // The BOM is only valid at the very start of the file, so
+            // strip it only on the first line we see.
+            if (firstLine)
             {
-                const char *nl = static_cast<const char *>(memchr(cursor, '\n', static_cast<size_t>(bomEnd - cursor)));
-                const char *lineEnd = (nl != nullptr) ? nl : bomEnd;
-                std::string_view candidate(cursor, static_cast<size_t>(lineEnd - cursor));
-                candidate = StripCr(candidate);
-                if (!candidate.empty())
-                {
-                    (void)ParseHeaderLine(candidate, sink.Keys(), headerScratch, columnKeys);
-                    break;
-                }
-                if (nl == nullptr)
-                {
-                    break;
-                }
-                cursor = nl + 1;
+                candidate = StripBom(candidate);
+                firstLine = false;
             }
+            candidate = StripCr(candidate);
+            if (!candidate.empty())
+            {
+                headerLineOffset = static_cast<uint64_t>(cursor - fileBegin);
+                headerLineNumber = blankLinesBeforeHeader + 1;
+                headerParseFailed = !ParseHeaderLine(candidate, sink.Keys(), headerScratch, columnKeys);
+                break;
+            }
+            ++blankLinesBeforeHeader;
+            if (nl == nullptr)
+            {
+                break;
+            }
+            cursor = nl + 1;
         }
     }
 
-    // If the header parse failed (empty file, malformed) we still go
-    // through the pipeline; every data row will then be a no-column
-    // error, surfaced as `Row has N extra cell(s) beyond the 0-column
-    // header.` That matches the contract `IsValid` rejected on.
+    // Malformed header: emit exactly one error and skip the data
+    // pipeline. Running it anyway would surface one
+    // `Row has N extra cell(s) beyond the 0-column header.` per row,
+    // burying the real cause. Sink contract is preserved by going
+    // through `BatchCoalescer::Finish` so `OnStarted` /
+    // `OnBatch` / `OnFinished` still fire in order.
+    if (headerParseFailed)
+    {
+        sink.OnStarted();
+        KeyIndex &keys = sink.Keys();
+        internal::BatchCoalescer coalescer(
+            sink,
+            keys,
+            internal::STATIC_BATCH_FLUSH_LINES,
+            internal::STATIC_BATCH_FLUSH_INTERVAL,
+            newKeyBaseline
+        );
+        coalescer.Pending().errors.emplace_back(
+            fmt::format("Error on line {}: Invalid CSV header.", headerLineNumber)
+        );
+        coalescer.Finish(headerLineNumber + 1, /*wasCancelled=*/false);
+        return;
+    }
 
     const char *cursor = fileBegin;
     uint64_t batchIndex = 0;
@@ -961,13 +1041,15 @@ void CsvParser::ParseStreaming(
     };
 
     FileLineSource *sourcePtr = &source;
-    auto stageB = [sourcePtr, &columnKeys](
+    auto stageB = [sourcePtr, &columnKeys, headerLineOffset](
                       CsvByteRange token,
                       internal::WorkerScratch<CsvWorkerState> &worker,
                       KeyIndex &keys,
                       std::span<const internal::TimeColumnSpec> timeColumns,
                       internal::ParsedPipelineBatch &parsed
-                  ) { DecodeCsvBatch(token, worker, keys, *sourcePtr, timeColumns, parsed, columnKeys); };
+                  ) {
+        DecodeCsvBatch(token, worker, keys, *sourcePtr, timeColumns, parsed, columnKeys, headerLineOffset);
+    };
 
     internal::RunStaticParserPipeline<CsvByteRange, CsvWorkerState>(
         source, sink, options, advanced, stageA, stageB, newKeyBaseline

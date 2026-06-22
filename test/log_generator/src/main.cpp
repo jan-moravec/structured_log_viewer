@@ -454,12 +454,13 @@ int main(int argc, char *argv[])
 {
     argparse::ArgumentParser program("log_generator", "0.3.0");
     program.add_description("Generate a structured log file with synthetic timestamp/level/message records. "
-                            "Pick the wire format with --format (json|logfmt). Lines are produced until --size "
-                            "or --lines is reached (whichever comes first; 0 means unbounded on that axis). "
-                            "Pass --timeout to throttle writes and simulate a streaming feed; pass --roll-size "
-                            "and/or --roll-lines to rotate the active file in-flight (--roll-strategy controls "
-                            "how). When --output is omitted the default base name takes the format's extension "
-                            "(generated.jsonl for json, generated.logfmt for logfmt).");
+                            "Pick the wire format with --format (json|logfmt|csv). Lines are produced until "
+                            "--size or --lines is reached (whichever comes first; 0 means unbounded on that "
+                            "axis). Pass --timeout to throttle writes and simulate a streaming feed; pass "
+                            "--roll-size and/or --roll-lines to rotate the active file in-flight "
+                            "(--roll-strategy controls how). When --output is omitted the default base name "
+                            "takes the format's extension (generated.jsonl for json, generated.logfmt for "
+                            "logfmt, generated.csv for csv).");
 
     program.add_argument("-s", "--size")
         .default_value(std::string{"10MB"})
@@ -475,7 +476,8 @@ int main(int argc, char *argv[])
         .default_value(std::string{})
         .help("Output file path (overwritten if it already exists, unless --append). When --output is "
               "omitted the default base name is `generated` plus the format's extension "
-              "(generated.jsonl for --format json, generated.logfmt for --format logfmt).");
+              "(generated.jsonl for --format json, generated.logfmt for --format logfmt, "
+              "generated.csv for --format csv).");
 
     program.add_argument("-f", "--format")
         .default_value(std::string{"json"})
@@ -737,6 +739,37 @@ int main(int argc, char *argv[])
         }
         targetDescription = (target.kind == TargetKind::TcpTls ? "tcp+tls://" : "tcp://") + target.host + ":" +
                             std::to_string(target.port);
+    }
+
+    // Schema-bearing formats (currently CSV) need their header sent
+    // ahead of the first data line on every transport, not just on
+    // disk. `WriteFormatHeader` above only handles the file path; for
+    // network targets we push the same header string through the
+    // corresponding sink so the receiving parser sees `level,message`
+    // (CSV) before the first `info,hello`. JSON / logfmt's
+    // `writeHeader` returns "" and this is a no-op.
+    if (target.kind != TargetKind::File)
+    {
+        const std::string header = format.writeHeader(schema);
+        if (!header.empty())
+        {
+            try
+            {
+                if (udpClient)
+                {
+                    udpClient->Send(header);
+                }
+                else if (tcpClient)
+                {
+                    tcpClient->Send(header);
+                }
+            }
+            catch (const std::exception &err)
+            {
+                std::cerr << "Header send failed: " << err.what() << '\n';
+                return 1;
+            }
+        }
     }
 
     // Seed `bytesInFile` from the existing file size on --append so
