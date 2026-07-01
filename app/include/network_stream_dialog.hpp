@@ -12,6 +12,7 @@ class QLineEdit;
 class QRadioButton;
 class QSpinBox;
 class QGroupBox;
+class RegexTemplateRegistry;
 
 /// Modal dialog for `MainWindow::OpenNetworkStream`. Lets the user
 /// pick a protocol (TCP or UDP), a bind address + port, and (TCP-only,
@@ -71,7 +72,13 @@ public:
         bool tlsRequireClientCertificate = false;
     };
 
-    explicit NetworkStreamDialog(QWidget *parent = nullptr);
+    /// @p registry, if non-null, is the source for the regex
+    /// template picker (built-ins ∪ user templates). The dialog
+    /// snapshots it at construction; subsequent registry changes
+    /// don't update the open dialog. Pass nullptr to fall back to
+    /// the library's built-in catalog only (used by tests and the
+    /// minimal-fixture entry points).
+    explicit NetworkStreamDialog(RegexTemplateRegistry *registry = nullptr, QWidget *parent = nullptr);
 
     /// Snapshot of the user's choices. Only meaningful after `exec()`
     /// returned `Accepted`.
@@ -94,9 +101,14 @@ private:
     QRadioButton *mTcpRadio = nullptr;
     QRadioButton *mUdpRadio = nullptr;
     QComboBox *mFormat = nullptr;
-    /// Built-in regex template picker; visible only when
-    /// `Format::Regex` is selected. The last entry is "Custom..."
-    /// which enables `mRegexPattern` below.
+    /// Regex template picker; visible only when `Format::Regex` is
+    /// selected. Combobox userData carries the template's display
+    /// `name` (stable across rebuilds); the sentinel "Custom..."
+    /// entry uses an empty string to enable `mRegexPattern` below.
+    /// Template lifecycle (create / edit / delete) lives in the
+    /// dedicated `RegexTemplatesEditor` opened from
+    /// `Settings -> Regex templates...`; this dialog only consumes
+    /// the catalog at construction time.
     QGroupBox *mRegexGroup = nullptr;
     QComboBox *mRegexTemplate = nullptr;
     QLineEdit *mRegexPattern = nullptr;
@@ -117,4 +129,10 @@ private:
     /// before forcing the checkbox off for UDP, then reads it back when
     /// returning to TCP.
     bool mTcpTlsEnableRemembered = false;
+
+    /// Owning app's regex template registry (built-ins + user
+    /// templates). May be null in tests; falls back to the library's
+    /// built-in catalog when so. Non-owning; the registry outlives
+    /// the dialog (constructed once in `main()`).
+    RegexTemplateRegistry *mRegistry = nullptr;
 };

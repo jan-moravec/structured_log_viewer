@@ -1,0 +1,13 @@
+{
+    "name": "MySQL / MariaDB error log",
+    "pattern": "^(?<timestamp>\\d{4}-\\d{2}-\\d{2}[T\\s]\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+\\-]\\d{2}:?\\d{2})?)\\s+(?<thread>\\d+)\\s+\\[(?<level>Note|Warning|ERROR|System|InnoDB)\\](?:\\s+\\[(?<subsystem>[^\\]]+)\\])?\\s+(?<message>.*)$",
+    "sampleLines": [
+        "2024-04-28T04:02:03.123456Z 0 [System] [MY-010931] [Server] /usr/sbin/mysqld: ready for connections.",
+        "2024-04-28T04:02:04.456789Z 12 [Warning] [MY-013360] [Server] Plugin sha256_password is deprecated.",
+        "2024-04-28 04:02:05 0 [Note] InnoDB: Buffer pool(s) load completed at 240428  4:02:05",
+        "2024-04-28 04:02:06 12 [ERROR] Access denied for user 'foo'@'localhost' (using password: YES)"
+    ],
+    "autoDetect": true,
+    "priority": 10,
+    "description": "Adapted from lnav src/formats/mysql_log.json (BSD-2-Clause). MariaDB keeps its error log byte-compatible with MySQL's (see MariaDB KB 'Error Log' and MySQL 8.0 'Error Log' chapter), so the same template ships under a combined name. Captures the standard MySQL 8.0 ISO timestamp + thread id + [level] + optional [subsystem] tag introduced in 8.0's structured error log."
+}

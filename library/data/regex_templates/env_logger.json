@@ -1,0 +1,13 @@
+{
+    "name": "Rust env_logger",
+    "pattern": "^\\[(?<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+\\-]\\d{2}:?\\d{2})?)\\s+(?<level>TRACE|DEBUG|INFO|WARN|ERROR)\\s+(?<module>[\\w:]+)\\]\\s+(?<message>.*)$",
+    "sampleLines": [
+        "[2024-04-28T04:02:03Z INFO  myapp::server] listening on 0.0.0.0:8080",
+        "[2024-04-28T04:02:04.123456Z WARN  reqwest::connect] connection reset by peer",
+        "[2024-04-28T04:02:05+02:00 ERROR myapp] failed to load configuration: Permission denied",
+        "[2024-04-28T04:02:06Z TRACE tokio::runtime::scheduler] picking next task"
+    ],
+    "autoDetect": true,
+    "priority": 20,
+    "description": "Adapted from lnav src/formats/env_logger_log.json (BSD-2-Clause). Matches rust-cli/env_logger's default `default_format`: '[timestamp LEVEL module_path] message' (see env_logger crate docs, fmt::Formatter::default_format)."
+}

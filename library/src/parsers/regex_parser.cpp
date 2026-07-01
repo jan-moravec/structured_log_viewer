@@ -5,6 +5,7 @@
 #include "loglib/internal/classify_bare_scalar.hpp"
 #include "loglib/internal/compact_log_value.hpp"
 #include "loglib/internal/line_decoder.hpp"
+#include "loglib/internal/regex_template_probe_list.hpp"
 #include "loglib/internal/static_parser_pipeline.hpp"
 #include "loglib/internal/streaming_parse_loop.hpp"
 #include "loglib/log_file.hpp"
@@ -25,6 +26,7 @@
 #include <memory>
 #include <numeric>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -319,18 +321,75 @@ struct CompiledTemplate
     CompiledPattern compiled;
 };
 
-/// Lazy, thread-safe singleton. Built once at first IsValid /
-/// DetectRegexTemplate call; the compile cost (one
-/// pcre2_compile + pcre2_jit_compile per template) is amortised
-/// across every subsequent file probe.
-const std::vector<CompiledTemplate> &CompiledBuiltins()
+/// Compiled snapshot of the merged regex-template registry,
+/// pinned to a specific generation. Holds the source-side
+/// `RegexTemplate` storage alive (via `source`) so the
+/// `CompiledTemplate::source` pointers stay valid even if a
+/// concurrent `SetExtraRegexTemplates` call rebuilds the
+/// registry — readers using this snapshot keep working until
+/// they release their reference.
+struct CompiledProbeSnapshot
 {
-    static const std::vector<CompiledTemplate> CACHE = [] {
-        std::vector<CompiledTemplate> v;
-        const auto builtins = BuiltinRegexTemplates();
-        v.reserve(builtins.size());
-        for (const RegexTemplate &tmpl : builtins)
+    /// The merged template list (built-ins then extras, each
+    /// stable-sorted by `priority`) this snapshot was compiled
+    /// against. Kept around to anchor `compiled[i].source` for
+    /// the life of the snapshot.
+    std::shared_ptr<const std::vector<RegexTemplate>> source;
+    /// Compiled patterns in probe order. Templates with
+    /// `autoDetect=false` are excluded entirely; the remainder
+    /// retain the source list's ordering (built-ins first by
+    /// priority, then extras by priority).
+    std::vector<CompiledTemplate> compiled;
+    /// `internal::TemplatesGeneration()` value this snapshot was
+    /// built against. The probe re-acquires when the generation
+    /// counter advances.
+    uint64_t generation = 0;
+};
+
+/// Lazy, thread-safe singleton that mirrors the merged template
+/// registry. Built on first `IsValid` / `DetectRegexTemplate`
+/// call and rebuilt whenever `loglib::SetExtraRegexTemplates`
+/// bumps the generation counter; the compile cost (one
+/// `pcre2_compile` + `pcre2_jit_compile` per entry) is amortised
+/// across every probe between rebuilds.
+///
+/// Probe order: `autoDetect=false` templates are excluded
+/// entirely; the remainder are kept in the source list's order,
+/// which `regex_templates.cpp` has already arranged as
+/// (built-ins by priority, then extras by priority). The
+/// `stable_sort` below is defensive — a malformed registry that
+/// somehow violated the ordering invariant would still probe
+/// sensibly here.
+std::shared_ptr<const CompiledProbeSnapshot> CurrentProbeSnapshot()
+{
+    // Read-mostly under steady state: the parser's hot path
+    // re-enters this on every probe, so the fast path is a single
+    // shared_ptr load + atomic counter read.
+    static std::shared_mutex mutex;
+    static std::shared_ptr<const CompiledProbeSnapshot> cached;
+
+    const uint64_t generation = internal::TemplatesGeneration();
+    {
+        std::shared_lock<std::shared_mutex> read(mutex);
+        if (cached && cached->generation == generation)
         {
+            return cached;
+        }
+    }
+
+    auto source = internal::MergedRegexTemplates();
+    auto fresh = std::make_shared<CompiledProbeSnapshot>();
+    fresh->source = source;
+    fresh->generation = generation;
+    if (source)
+    {
+        fresh->compiled.reserve(source->size());
+        for (const RegexTemplate &tmpl : *source)
+        {
+            if (!tmpl.autoDetect)
+            {
+                continue;
+            }
             CompiledTemplate c;
             c.source = &tmpl;
             std::string err;
@@ -340,12 +399,30 @@ const std::vector<CompiledTemplate> &CompiledBuiltins()
             // auto-detect keeps working for the rest of the formats.
             if (c.compiled.IsReady())
             {
-                v.push_back(std::move(c));
+                fresh->compiled.push_back(std::move(c));
             }
         }
-        return v;
-    }();
-    return CACHE;
+        std::stable_sort(
+            fresh->compiled.begin(),
+            fresh->compiled.end(),
+            [](const CompiledTemplate &a, const CompiledTemplate &b) {
+                return a.source->priority < b.source->priority;
+            }
+        );
+    }
+
+    std::unique_lock<std::shared_mutex> write(mutex);
+    // Re-check: another thread may have rebuilt against the same
+    // generation between when we released the read lock and took
+    // the write lock; if so, prefer their snapshot to avoid two
+    // probes seeing different compiled instances of the same
+    // template (cheaper than ours, harmless either way).
+    if (cached && cached->generation == generation)
+    {
+        return cached;
+    }
+    cached = fresh;
+    return cached;
 }
 
 /// True iff @p code matches @p line. The built-in templates are all
@@ -429,7 +506,12 @@ const RegexTemplate *ProbeBuiltinTemplates(const std::filesystem::path &file)
         return nullptr;
     }
 
-    for (const CompiledTemplate &t : CompiledBuiltins())
+    const auto snapshot = CurrentProbeSnapshot();
+    if (!snapshot)
+    {
+        return nullptr;
+    }
+    for (const CompiledTemplate &t : snapshot->compiled)
     {
         size_t hits = 0;
         for (const std::string &l : probeLines)
@@ -1057,6 +1139,39 @@ bool ValidateRegexPattern(std::string_view pattern, std::string &errorOut)
         return false;
     }
     return true;
+}
+
+bool PatternMatchesLine(std::string_view pattern, std::string_view line)
+{
+    if (pattern.empty())
+    {
+        return false;
+    }
+    CompiledPattern compiled;
+    std::string ignoredError;
+    if (!compiled.Compile(pattern, ignoredError))
+    {
+        return false;
+    }
+    Pcre2MatchDataPtr matchData = compiled.NewMatchData();
+    if (!matchData)
+    {
+        return false;
+    }
+    // `PCRE2_ANCHORED | PCRE2_ENDANCHORED` mirrors the probe loop
+    // (see `ProbeBuiltinTemplates`): a partial mid-line match is
+    // not what a `RegexParser` would emit for this line, so it
+    // should fail the self-test too.
+    const int rc = pcre2_match(
+        compiled.Code(),
+        reinterpret_cast<PCRE2_SPTR>(line.data()),
+        line.size(),
+        /*startoffset*/ 0,
+        PCRE2_ANCHORED | PCRE2_ENDANCHORED,
+        matchData.get(),
+        const_cast<pcre2_match_context *>(compiled.Context())
+    );
+    return rc >= 0;
 }
 
 } // namespace loglib

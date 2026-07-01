@@ -13,6 +13,8 @@
 #include "session_history_manager.hpp"
 #include "shortcuts_dialog.hpp"
 #include "streaming_control.hpp"
+#include "regex_template_registry.hpp"
+#include "regex_templates_editor.hpp"
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
@@ -473,9 +475,10 @@ MakeParserForFormat(loglib::LogConfiguration::Source::Format format, std::string
 }
 
 /// Output of `DetectFormatForPath`: the detected format plus, for
-/// `Regex`, the pattern of the matched built-in template. Pattern
-/// is empty for every other format and for files that nothing
-/// claimed. Returned by value (small struct, single call site each).
+/// `Regex`, the pattern of the matched template (built-in or user).
+/// Pattern is empty for every other format and for files that
+/// nothing claimed. Returned by value (small struct, single call
+/// site each).
 struct DetectedFormat
 {
     loglib::LogConfiguration::Source::Format format = loglib::LogConfiguration::Source::Format::Json;
@@ -484,7 +487,9 @@ struct DetectedFormat
 
 /// Sniff @p file and return the first format whose parser accepts it
 /// (JSON before logfmt before CSV before Regex, matching
-/// `loglib::ParseFile(path)`). For `Regex`, the matched built-in
+/// `loglib::ParseFile(path)`). For `Regex`, `loglib::DetectRegexTemplate`
+/// walks the merged catalog (built-ins ∪ user templates injected via
+/// `loglib::SetExtraRegexTemplates`) in priority order; the matched
 /// template's pattern is carried through so the caller can persist
 /// it on `mCurrentSource->regexPattern`. Falls back to `Json` when
 /// nothing matches so the parse surfaces the bytes as parse errors
@@ -527,17 +532,23 @@ DetectedFormat DetectFormatForPath(const std::filesystem::path &file)
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
-    : MainWindow(nullptr, nullptr, parent)
+    : MainWindow(nullptr, nullptr, nullptr, parent)
 {
 }
 
 MainWindow::MainWindow(ThemeControl *theme, QWidget *parent)
-    : MainWindow(theme, nullptr, parent)
+    : MainWindow(theme, nullptr, nullptr, parent)
 {
 }
 
-MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManager, QWidget *parent)
-    : QMainWindow(parent), ui(new Ui::MainWindow), mHistoryManager(historyManager), mTheme(theme)
+MainWindow::MainWindow(
+    ThemeControl *theme,
+    SessionHistoryManager *historyManager,
+    RegexTemplateRegistry *regexTemplateRegistry,
+    QWidget *parent
+)
+    : QMainWindow(parent), ui(new Ui::MainWindow), mHistoryManager(historyManager), mTheme(theme),
+      mRegexTemplateRegistry(regexTemplateRegistry)
 {
     ui->setupUi(this);
     UpdateWindowTitle();
@@ -1016,6 +1027,40 @@ MainWindow::MainWindow(ThemeControl *theme, SessionHistoryManager *historyManage
         mPreferencesEditor->raise();
         mPreferencesEditor->activateWindow();
     });
+
+    // Settings -> Regex templates... opens the dedicated editor.
+    // Constructed lazily so the (modest but non-trivial) widget
+    // tree only materialises if the user actually visits it.
+    // Disabled entirely when no registry was passed in (test
+    // fixtures, ad-hoc instances) -- the editor's whole job is to
+    // mutate the registry, so without one the menu entry would be
+    // a no-op.
+    if (mRegexTemplateRegistry != nullptr)
+    {
+        connect(ui->actionRegexTemplates, &QAction::triggered, this, [this]() {
+            if (mRegexTemplatesEditor == nullptr)
+            {
+                mRegexTemplatesEditor = new RegexTemplatesEditor(mRegexTemplateRegistry, this);
+            }
+            else
+            {
+                // Re-running RefreshList on every menu activation
+                // keeps the picker honest if the registry changed
+                // out-of-band (e.g. a Reload triggered elsewhere).
+                mRegexTemplatesEditor->RefreshList();
+            }
+            mRegexTemplatesEditor->show();
+            mRegexTemplatesEditor->raise();
+            mRegexTemplatesEditor->activateWindow();
+        });
+    }
+    else
+    {
+        ui->actionRegexTemplates->setEnabled(false);
+        ui->actionRegexTemplates->setToolTip(
+            tr("Regex templates editor needs a RegexTemplateRegistry (production-only).")
+        );
+    }
     connect(mPreferencesEditor, &PreferencesEditor::streamingRetentionChanged, this, [this](qulonglong) {
         ApplyStreamingRetention();
     });
@@ -1617,7 +1662,7 @@ void MainWindow::NewWindow()
     }
 
     // Top-level peer with `WA_DeleteOnClose` so Qt owns lifetime.
-    auto *child = new MainWindow(mTheme, mHistoryManager, nullptr);
+    auto *child = new MainWindow(mTheme, mHistoryManager, mRegexTemplateRegistry, nullptr);
     child->setAttribute(Qt::WA_DeleteOnClose);
     child->show();
     child->raise();
@@ -2658,7 +2703,7 @@ void MainWindow::OpenLogStreamForTest(const QString &filePath)
 
 void MainWindow::OpenNetworkStream()
 {
-    NetworkStreamDialog dialog(this);
+    NetworkStreamDialog dialog(mRegexTemplateRegistry, this);
     if (dialog.exec() != QDialog::Accepted)
     {
         return;

@@ -56,8 +56,7 @@ QString DescribeThemeKind(loglib::ThemeKind kind)
 }
 } // namespace
 
-PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
-    : QWidget{parent}, mTheme(theme)
+PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent) : QWidget{parent}, mTheme(theme)
 {
     setWindowFlags(Qt::Window);
     setWindowTitle("Preferences");
@@ -284,6 +283,10 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
     sessionLayout->addWidget(mRestoreLastSessionCheckBox);
     sessionLayout->addWidget(new QLabel("Maximum Recent Sessions entries:"));
     sessionLayout->addWidget(mRecentSessionsMaxSpinBox);
+
+    // Regex template lifecycle (browse / create / edit / delete)
+    // lives in the dedicated `RegexTemplatesEditor` opened from
+    // `Settings -> Regex templates...`, not in Preferences.
 
     layout->addWidget(appearanceGroup);
     layout->addWidget(streamingGroup);

@@ -8,6 +8,7 @@
 #include <catch2/catch_all.hpp>
 
 #include <algorithm>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -119,4 +120,174 @@ TEST_CASE("FindBuiltinByPattern round-trips every registry entry [regex_template
 
     // Unknown pattern (user-supplied custom) returns nullptr.
     CHECK(FindBuiltinByPattern("definitely not a built-in pattern") == nullptr);
+}
+
+TEST_CASE("Built-in regex templates are returned in priority-then-document order [regex_templates]", "[regex_templates]")
+{
+    // The probe loop scans templates in `priority` ascending,
+    // so the curated order is load-bearing. Assert the relative
+    // order of the four Apache-family templates plus the generic
+    // fallback to lock the documented "Combined before Common
+    // before Apache error before Generic" invariant.
+    //
+    // This is a structural assertion against `BuiltinRegexTemplates`
+    // — we don't drive a fixture file because the relative order
+    // is what matters; behavioural coverage of "the right template
+    // wins for an ambiguous file" lives in the existing detect
+    // cases.
+    const auto builtins = BuiltinRegexTemplates();
+    auto indexOf = [&](std::string_view name) -> size_t {
+        for (size_t i = 0; i < builtins.size(); ++i)
+        {
+            if (builtins[i].name == name)
+            {
+                return i;
+            }
+        }
+        return std::numeric_limits<size_t>::max();
+    };
+
+    const size_t combined = indexOf("Apache/nginx Combined Log Format");
+    const size_t common = indexOf("Apache/nginx Common Log Format");
+    const size_t apacheError = indexOf("Apache error log");
+    const size_t generic = indexOf("Generic bracketed level");
+
+    REQUIRE(combined != std::numeric_limits<size_t>::max());
+    REQUIRE(common != std::numeric_limits<size_t>::max());
+    REQUIRE(apacheError != std::numeric_limits<size_t>::max());
+    REQUIRE(generic != std::numeric_limits<size_t>::max());
+
+    INFO("Combined slot=" << combined << ", Common slot=" << common << ", Apache err slot=" << apacheError
+                          << ", Generic slot=" << generic);
+    CHECK(combined < common);
+    CHECK(common <= apacheError);
+    CHECK(apacheError < generic);
+
+    // Built-in priorities must be set (default-constructed user
+    // templates default to 100; a built-in with priority 100 would
+    // mean someone forgot to curate). Built-ins should all be
+    // strictly below the user-template default bucket.
+    for (const RegexTemplate &t : builtins)
+    {
+        INFO("template: " << t.name);
+        CHECK(t.priority < 100);
+    }
+}
+
+TEST_CASE("autoDetect=false templates are excluded from the probe [regex_templates]", "[regex_templates]")
+{
+    // Register a high-priority (priority=1, would beat every
+    // built-in) user template with `autoDetect=false` and a
+    // catch-all pattern; the probe must still pick the matching
+    // built-in instead of the higher-priority extra. Reset the
+    // extras on the way out so other test cases don't inherit
+    // the leftover registration.
+    const RegexTemplate hiddenCatchAll{
+        .name = "Hidden catch-all",
+        .pattern = R"(^(?<line>.*)$)",
+        .sampleLines = {"any line"},
+        .autoDetect = false,
+        .priority = 1,
+        .description = "",
+    };
+    const RegexTemplate extras[] = {hiddenCatchAll};
+    SetExtraRegexTemplates(extras);
+
+    const TestLogFile file{"regex_templates_autodetect_off.log"};
+    file.Write("Apr 28 04:02:03 host-a systemd: System starting\n"
+               "Jun 27 01:47:20 host-b configd[17]: network changed\n");
+    const RegexTemplate *detected = DetectRegexTemplate(file.GetFilePath());
+    REQUIRE(detected != nullptr);
+    CHECK(detected->name == "Syslog (RFC3164)");
+
+    SetExtraRegexTemplates({});
+}
+
+TEST_CASE("User-registered templates with autoDetect=true participate in the probe [regex_templates]", "[regex_templates]")
+{
+    // Symmetric of the autoDetect=false case: an extra with
+    // autoDetect=true and a high priority beats a built-in that
+    // would otherwise win for the same fixture. The pattern is
+    // contrived so neither it nor any built-in could mis-match the
+    // syslog samples used elsewhere.
+    const RegexTemplate userTemplate{
+        .name = "User priority test",
+        .pattern = R"(^FOO\s+(?<id>\d+)\s+(?<msg>.*)$)",
+        .sampleLines = {"FOO 1 hello"},
+        .autoDetect = true,
+        .priority = 5,
+        .description = "",
+    };
+    const RegexTemplate extras[] = {userTemplate};
+    SetExtraRegexTemplates(extras);
+
+    const TestLogFile file{"regex_templates_user_priority.log"};
+    file.Write("FOO 1 hello\n"
+               "FOO 2 world\n");
+    const RegexTemplate *detected = DetectRegexTemplate(file.GetFilePath());
+    REQUIRE(detected != nullptr);
+    CHECK(detected->name == "User priority test");
+
+    SetExtraRegexTemplates({});
+}
+
+TEST_CASE("FindTemplateByPattern round-trips built-in and user templates [regex_templates]", "[regex_templates]")
+{
+    // Persistence layer dependency: saved sessions store the raw
+    // pattern, and `FindTemplateByPattern` is what the UI calls to
+    // re-derive the display name on load. Sweep the built-in
+    // catalog AND a stub user slice so a regression that misses
+    // one of the two storage tiers fails here loudly.
+    for (const RegexTemplate &t : BuiltinRegexTemplates())
+    {
+        INFO("built-in template: " << t.name);
+        const RegexTemplate *found = FindTemplateByPattern(t.pattern);
+        REQUIRE(found != nullptr);
+        CHECK(found->name == t.name);
+    }
+
+    const RegexTemplate userTemplateA{
+        .name = "FindByPattern-A",
+        .pattern = R"(^ALPHA\s+(?<v>\d+)$)",
+        .sampleLines = {"ALPHA 1"},
+        .autoDetect = false,
+        .priority = 100,
+        .description = "",
+    };
+    const RegexTemplate userTemplateB{
+        .name = "FindByPattern-B",
+        .pattern = R"(^BETA\s+(?<v>\w+)$)",
+        .sampleLines = {"BETA hello"},
+        .autoDetect = true,
+        .priority = 100,
+        .description = "",
+    };
+    const RegexTemplate extras[] = {userTemplateA, userTemplateB};
+    SetExtraRegexTemplates(extras);
+
+    const RegexTemplate *foundA = FindTemplateByPattern(userTemplateA.pattern);
+    REQUIRE(foundA != nullptr);
+    CHECK(foundA->name == userTemplateA.name);
+    const RegexTemplate *foundB = FindTemplateByPattern(userTemplateB.pattern);
+    REQUIRE(foundB != nullptr);
+    CHECK(foundB->name == userTemplateB.name);
+
+    CHECK(FindTemplateByPattern("definitely not a built-in or user pattern") == nullptr);
+
+    SetExtraRegexTemplates({});
+}
+
+TEST_CASE("Every shipped JSON declares a description [regex_templates]", "[regex_templates]")
+{
+    // Cheap structural assertion: a built-in without a
+    // description string would slip past the source-of-truth
+    // requirement that every shipped template cite where its
+    // pattern came from (lnav, logstash-patterns-core, vendor
+    // docs, etc.). The exact text is free-form; we only assert
+    // that something is there.
+    for (const RegexTemplate &t : BuiltinRegexTemplates())
+    {
+        INFO("template: " << t.name);
+        CHECK_FALSE(t.description.empty());
+    }
 }

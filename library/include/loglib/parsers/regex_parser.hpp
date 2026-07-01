@@ -141,4 +141,17 @@ private:
 /// check, not a parse setup.
 [[nodiscard]] bool ValidateRegexPattern(std::string_view pattern, std::string &errorOut);
 
+/// True iff @p pattern compiles and matches @p line in full (the
+/// same `PCRE2_ANCHORED | PCRE2_ENDANCHORED` shape the probe loop
+/// uses, so "matches" means "a `RegexParser` would emit a row for
+/// this line"). Used by the regex-templates editor to self-test a
+/// pattern against its `sampleLines` before saving. Discards the
+/// compiled state immediately; intended for one-off interactive
+/// checks, not parse hot paths.
+///
+/// Returns false on compile failure, on no-match, or on PCRE2
+/// limit overruns. Callers needing the compile error text should
+/// call `ValidateRegexPattern` first.
+[[nodiscard]] bool PatternMatchesLine(std::string_view pattern, std::string_view line);
+
 } // namespace loglib

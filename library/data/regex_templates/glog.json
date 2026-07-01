@@ -1,0 +1,13 @@
+{
+    "name": "Google glog",
+    "pattern": "^(?<severity>[IWEF])(?<timestamp>\\d{4}\\s+\\d{2}:\\d{2}:\\d{2}\\.\\d{6})\\s+(?<thread>\\d+)\\s+(?<file>[^:]+):(?<line>\\d+)\\]\\s+(?<message>.*)$",
+    "sampleLines": [
+        "I0517 12:34:56.789012 12345 logging_unittest.cc:67] Hello, world!",
+        "W1231 23:59:59.000001     1 main.cc:1] About to roll over",
+        "E0101 00:00:00.123456  4567 server.cc:1234] Connection refused: 127.0.0.1:8080",
+        "F0701 06:00:00.000000  9999 fatal.cc:42] Process aborted"
+    ],
+    "autoDetect": true,
+    "priority": 10,
+    "description": "Adapted from lnav src/formats/glog_log.json (BSD-2-Clause). The severity letter (I/W/E/F) and microsecond timestamp encode Google glog's INFO/WARNING/ERROR/FATAL header shape (see glog README); we capture thread id, source file:line and message into named groups for the column auto-detect."
+}

@@ -88,6 +88,7 @@
      <string>Settings</string>
     </property>
     <addaction name="actionPreferences"/>
+    <addaction name="actionRegexTemplates"/>
    </widget>
    <addaction name="menuFile"/>
    <addaction name="menuEdit"/>
@@ -237,6 +238,14 @@
    </property>
    <property name="toolTip">
     <string>Open the Preferences dialog (theme, streaming retention, display order).</string>
+   </property>
+  </action>
+  <action name="actionRegexTemplates">
+   <property name="text">
+    <string>Regex templates...</string>
+   </property>
+   <property name="toolTip">
+    <string>Open the regex templates editor: browse the built-in catalog, duplicate built-ins to user templates, and create / edit / delete user templates stored under &lt;AppData&gt;/regex_templates/.</string>
    </property>
   </action>
   <action name="actionToggleRecordDetails">

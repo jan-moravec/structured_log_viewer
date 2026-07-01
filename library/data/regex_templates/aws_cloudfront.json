@@ -1,0 +1,11 @@
+{
+    "name": "AWS CloudFront access log",
+    "pattern": "^(?<date>\\d{4}-\\d{2}-\\d{2})\\t(?<time>\\d{2}:\\d{2}:\\d{2})\\t(?<edge_location>\\S+)\\t(?<bytes>\\d+|-)\\t(?<clientip>\\S+)\\t(?<verb>\\S+)\\t(?<host>\\S+)\\t(?<uri_stem>\\S+)\\t(?<status>\\d{3}|-)\\t(?<referrer>\\S+)\\t(?<agent>\\S+)\\t(?<query_string>\\S+)\\t(?<cookie>\\S+)\\t(?<edge_result_type>\\S+)\\t(?<edge_request_id>\\S+)\\t(?<host_header>\\S+)\\t(?<protocol>\\S+)\\t(?<bytes_received>\\d+|-)\\t(?<time_taken>\\d+(?:\\.\\d+)?|-)\\t(?<forwarded_for>\\S+)\\t(?<ssl_protocol>\\S+)\\t(?<ssl_cipher>\\S+)\\t(?<edge_response_result_type>\\S+)\\t(?<http_version>\\S+)(?:\\t.*)?$",
+    "sampleLines": [
+        "2024-04-28\t04:02:03\tIAD12-C1\t1234\t192.0.2.10\tGET\td111111abcdef8.cloudfront.net\t/index.html\t200\t-\tMozilla/5.0\t-\t-\tHit\tabc123-edge-request-id==\twww.example.com\thttps\t-\t0.001\t-\tTLSv1.3\tTLS_AES_128_GCM_SHA256\tHit\tHTTP/2.0",
+        "2024-04-28\t04:02:04\tFRA50-P1\t-\t2001:db8::1\tGET\tdistribution.example.net\t/api/v1/health\t304\thttp://example.com/\tcurl/8.5.0\tq=1&x=2\t-\tRefreshHit\treqid=xyz\tcdn.example.com\thttps\t512\t0.123\t-\tTLSv1.2\tECDHE-RSA-AES128-GCM-SHA256\tRefreshHit\tHTTP/1.1"
+    ],
+    "autoDetect": true,
+    "priority": 20,
+    "description": "Adapted from logstash-plugins/logstash-patterns-core patterns/ecs-v1/aws (Apache-2.0), entry CLOUDFRONT_ACCESS_LOG. Inlined %{YEAR}, %{MONTHNUM}, %{MONTHDAY}, %{TIME}, %{IP}, %{NUMBER}, %{WORD}, %{NOTSPACE}, %{HOSTNAME} macros to plain PCRE2; the fields after `http_version` (csf_protocol, csf_result_type, csf_cipher, ...) AWS added in 2018+ are accepted as a trailing free-text run."
+}

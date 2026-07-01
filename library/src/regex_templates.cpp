@@ -1,7 +1,24 @@
 #include "loglib/regex_templates.hpp"
 
+#include "loglib/internal/embedded_regex_templates.hpp"
+#include "loglib/internal/log_configuration_glaze_opts.hpp"
+#include "loglib/internal/regex_template_glaze_meta.hpp"
+#include "loglib/internal/regex_template_probe_list.hpp"
+
+#include <glaze/glaze.hpp>
+
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
+#include <memory>
+#include <mutex>
+#include <shared_mutex>
+#include <span>
+#include <stdexcept>
+#include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace loglib
 {
@@ -9,160 +26,258 @@ namespace loglib
 namespace
 {
 
-/// Build the registry once. We intentionally keep the list small (six
-/// formats) — `IsValid` probes them in order against every file the
-/// previous parsers rejected, so each extra entry costs auto-detect
-/// time on unrecognised inputs.
-///
-/// Patterns are PCRE2 (anchored `^...$` for scan speed). Named groups
-/// become column keys. Group names follow lnav / grok conventions
-/// where applicable so a user pivoting from those tools sees familiar
-/// column headers.
-///
-/// Source attribution: patterns are adapted (or, where the format is
-/// trivial, written from scratch) by cross-referencing lnav's
-/// `src/formats/*.json` (BSD-2-Clause) and the logstash core grok
-/// patterns (`logstash-plugins/logstash-patterns-core`, Apache-2.0).
-/// See per-template comments below.
-const std::vector<RegexTemplate> &Registry()
+/// Parse one embedded JSON blob into a `RegexTemplate`. Throws
+/// `std::runtime_error` on parse failure with the source filename
+/// woven into the diagnostic. Caller treats the throw as "drop this
+/// entry but keep going" so one malformed shipped file can't wedge
+/// auto-detection for the rest of the catalog.
+RegexTemplate ParseEmbeddedOrThrow(const internal::EmbeddedRegexTemplate &entry)
 {
-    static const std::vector<RegexTemplate> TEMPLATES = {
-        // Adapted from lnav's `src/formats/syslog_log.json` `std`
-        // pattern (BSD-2-Clause), simplified to the common
-        // `program[pid]: msg` shape.
-        RegexTemplate{
-            .name = "Syslog (RFC3164)",
-            .pattern =
-                R"(^(?<timestamp>[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}))"
-                R"(\s+(?<hostname>\S+))"
-                R"(\s+(?<program>[^\s\[:]+))"
-                R"((?:\[(?<pid>\d+)\])?:\s+(?<message>.*)$)",
-            .sampleLines =
-                {
-                    "Apr 28 04:02:03 host-a systemd: System starting",
-                    "Jun 27 01:47:20 host-b configd[17]: network changed",
-                    "Jan  4 10:23:26 host-c CRON[1234]: (root) CMD (test -e /tmp)",
-                },
-        },
-        // Adapted from lnav's `src/formats/syslog_log.json` `rfc5424`
-        // pattern (BSD-2-Clause). `structured` accepts either `-`
-        // (none) or one `[...]` block with embedded quoted strings.
-        RegexTemplate{
-            .name = "Syslog (RFC5424)",
-            .pattern = R"(^<(?<priority>\d+)>(?<version>\d+))"
-                       R"(\s+(?<timestamp>\S+))"
-                       R"(\s+(?<hostname>\S+))"
-                       R"(\s+(?<appname>\S+))"
-                       R"(\s+(?<procid>\S+))"
-                       R"(\s+(?<msgid>\S+))"
-                       R"(\s+(?<structured>\[(?:[^\]"]|"(?:\\.|[^"])*")*\]|-))"
-                       R"(\s*(?<message>.*)$)",
-            .sampleLines =
-                {
-                    R"(<46>1 2017-04-27T07:50:47.381967+02:00 logserver rsyslogd - - [origin software="rsyslogd"] start)",
-                    "<30>1 2017-04-27T07:59:12+02:00 host dhclient - - - DHCPREQUEST on eth0",
-                    "<78>1 2017-04-27T08:09:01+02:00 host CRON 1472 - - (root) CMD (test)",
-                },
-        },
-        // Adapted from grok `COMMONAPACHELOG` (Apache-2.0); flattened
-        // by inlining `IPORHOST`/`USER`/`NUMBER` macros into plain
-        // PCRE2 character classes. Matches Apache / nginx CLF.
-        RegexTemplate{
-            .name = "Apache/nginx Common Log Format",
-            // Custom raw-string delimiter `x(...)x` because the
-            // PCRE2 source contains `)"` literals (HTTP request line
-            // closer) that would otherwise terminate the default
-            // `R"(...)"` raw string.
-            .pattern = R"x(^(?<clientip>\S+))x"
-                       R"x(\s+(?<ident>\S+))x"
-                       R"x(\s+(?<auth>\S+))x"
-                       R"x(\s+\[(?<timestamp>[^\]]+)\])x"
-                       R"x(\s+"(?:(?<verb>\S+)\s+(?<request>\S+)(?:\s+HTTP/(?<httpversion>\S+))?|-)")x"
-                       R"x(\s+(?<response>\d+))x"
-                       R"x(\s+(?<bytes>\d+|-)$)x",
-            .sampleLines =
-                {
-                    R"(127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /apache_pb.gif HTTP/1.0" 200 2326)",
-                    R"(10.1.10.51 - - [23/Dec/2014:21:20:35 +0000] "POST /api/1/rest/foo HTTP/1.1" 200 -)",
-                    R"(::1 - - [01/Jan/2024:00:00:00 +0000] "HEAD / HTTP/2.0" 304 0)",
-                },
-        },
-        // Adapted from grok `COMBINEDAPACHELOG` (Apache-2.0): common
-        // log format plus the trailing referer + user-agent fields
-        // that nginx and Apache emit by default.
-        RegexTemplate{
-            .name = "Apache/nginx Combined Log Format",
-            // `R"x(...)x"` for the same reason as the common-log
-            // template above.
-            .pattern = R"x(^(?<clientip>\S+))x"
-                       R"x(\s+(?<ident>\S+))x"
-                       R"x(\s+(?<auth>\S+))x"
-                       R"x(\s+\[(?<timestamp>[^\]]+)\])x"
-                       R"x(\s+"(?:(?<verb>\S+)\s+(?<request>\S+)(?:\s+HTTP/(?<httpversion>\S+))?|-)")x"
-                       R"x(\s+(?<response>\d+))x"
-                       R"x(\s+(?<bytes>\d+|-))x"
-                       R"x(\s+"(?<referrer>[^"]*)")x"
-                       R"x(\s+"(?<agent>[^"]*)"$)x",
-            .sampleLines =
-                {
-                    R"(10.112.72.172 - - [11/Feb/2013:06:43:36 +0000] "GET /client/ HTTP/1.1" 200 5778 "-" "Mozilla/5.0")",
-                    R"(1.2.3.4 - bob [10/Feb/2012:16:41:07 -0500] "GET / HTTP/1.0" 200 368 "https://example.com" "curl/8.5.0")",
-                },
-        },
-        // Written from scratch; cross-checked against lnav's
-        // `src/formats/error_log.json` shape. Handles both the legacy
-        // `[time] [level] [client x] msg` and the modern
-        // `[time] [module:level] [pid N] [client x] msg` Apache 2.4
-        // error log formats.
-        RegexTemplate{
-            .name = "Apache error log",
-            .pattern = R"(^\[(?<timestamp>[^\]]+)\])"
-                       R"(\s+\[(?<level>[^\]]+)\])"
-                       R"((?:\s+\[pid\s+(?<pid>\d+)(?::tid\s+\d+)?\])?)"
-                       R"((?:\s+\[client\s+(?<client>[^\]]+)\])?)"
-                       R"(\s+(?<message>.*)$)",
-            .sampleLines =
-                {
-                    "[Wed Oct 11 14:32:52 2000] [error] [client 127.0.0.1] File does not exist: /var/www/html/foo",
-                    "[Tue Apr 19 16:38:38.290122 2011] [ssl:warn] [pid 1234] [client 127.0.0.1:50318] AH02032: log",
-                    "[Mon Jan 01 00:00:00.000000 2024] [core:notice] [pid 9999] AH00094: Command line: 'httpd'",
-                },
-        },
-        // Written from scratch from qlogexplorer's README example
-        // (https://github.com/rafaelfassi/qlogexplorer) of a generic
-        // `[LEVEL] timestamp thread message` log shape, translated to
-        // PCRE2 syntax (originally `(?<name>...)` which PCRE2 also
-        // accepts verbatim). Kept last because its anchor is loose
-        // enough to catch ad-hoc app logs.
-        RegexTemplate{
-            .name = "Generic bracketed level",
-            .pattern = R"(^\[(?<Level>\w+)\])"
-                       R"(\s+(?<Timestamp>\S+))"
-                       R"(\s+(?<Thread>\S+))"
-                       R"(\s+(?<Message>.*)$)",
-            .sampleLines =
-                {
-                    "[INFO] 2022-02-18T15:37:10.354 0xBF32 System starting",
-                    "[WARNING] 2022-02-19T15:37:13.427 0xBF32 Not in UTC timezone",
-                    "[ERROR] 2024-01-01T00:00:00.000 main Connection refused",
-                },
-        },
-    };
-    return TEMPLATES;
+    try
+    {
+        return ParseRegexTemplate(entry.json);
+    }
+    catch (const std::exception &ex)
+    {
+        throw std::runtime_error(
+            std::string("Built-in regex template '") + std::string(entry.source) + "' failed to parse: " + ex.what()
+        );
+    }
+}
+
+/// The merged probe registry: built-ins first (sorted by
+/// `priority`), then user-supplied extras (also sorted by
+/// `priority`). Two-tier order is deliberate so a careless
+/// user-priority can never steal a probe match from a shipped
+/// template; the priority sort *within* each tier matches the
+/// documented "lower probes first" semantics.
+struct MergedRegistry
+{
+    std::vector<RegexTemplate> builtins;
+    std::vector<RegexTemplate> extras;
+    /// Stable, owning flattened view: built-ins then extras, in
+    /// the order the probe loop should see them. A shared_ptr to
+    /// *this* lets readers pin the storage for the duration of an
+    /// iteration even while a concurrent writer prepares a fresh
+    /// `MergedRegistry`.
+    std::vector<RegexTemplate> ordered;
+};
+
+/// Monotonic generation counter bumped on every registry rebuild.
+/// Readers in `parsers/regex_parser.cpp` use this to invalidate
+/// their compiled cache without taking a mutex on the hot path.
+std::atomic<uint64_t> &GenerationCounter()
+{
+    static std::atomic<uint64_t> counter{0};
+    return counter;
+}
+
+std::shared_mutex &RegistryMutex()
+{
+    static std::shared_mutex m;
+    return m;
+}
+
+/// Lazily built once on first read and rebuilt whenever
+/// `SetExtraRegexTemplates` swaps in a new extras set. Protected by
+/// `RegistryMutex()`. Held via `shared_ptr` so a concurrent reader
+/// taking a copy under the read lock is unaffected by a subsequent
+/// rebuild.
+std::shared_ptr<const MergedRegistry> &SharedRegistrySlot()
+{
+    static std::shared_ptr<const MergedRegistry> slot;
+    return slot;
+}
+
+/// Snapshot of extras registered via `SetExtraRegexTemplates`.
+/// Protected by `RegistryMutex()`. Copied into the next
+/// `MergedRegistry` build.
+std::vector<RegexTemplate> &ExtrasSlot()
+{
+    static std::vector<RegexTemplate> v;
+    return v;
+}
+
+/// Build (or rebuild) the merged registry from the embedded
+/// catalog + the current extras. Caller must hold a unique lock on
+/// `RegistryMutex()`.
+std::shared_ptr<const MergedRegistry> RebuildLocked()
+{
+    auto fresh = std::make_shared<MergedRegistry>();
+
+    for (const internal::EmbeddedRegexTemplate &entry : internal::EmbeddedBuiltinRegexTemplates())
+    {
+        try
+        {
+            fresh->builtins.push_back(ParseEmbeddedOrThrow(entry));
+        }
+        catch (const std::exception &)
+        {
+            // Programmer error in the shipped catalog; skip the
+            // entry rather than crashing so auto-detect keeps
+            // working for the rest. The CI sweep in
+            // `test_regex_templates.cpp` would have caught it
+            // before this could ever reach a user.
+        }
+    }
+    std::stable_sort(
+        fresh->builtins.begin(),
+        fresh->builtins.end(),
+        [](const RegexTemplate &a, const RegexTemplate &b) { return a.priority < b.priority; }
+    );
+
+    fresh->extras = ExtrasSlot();
+    std::stable_sort(
+        fresh->extras.begin(),
+        fresh->extras.end(),
+        [](const RegexTemplate &a, const RegexTemplate &b) { return a.priority < b.priority; }
+    );
+
+    fresh->ordered.reserve(fresh->builtins.size() + fresh->extras.size());
+    for (const RegexTemplate &t : fresh->builtins)
+    {
+        fresh->ordered.push_back(t);
+    }
+    for (const RegexTemplate &t : fresh->extras)
+    {
+        fresh->ordered.push_back(t);
+    }
+
+    SharedRegistrySlot() = fresh;
+    // Bump the generation counter *after* the slot is updated so
+    // the parser, if it reads the counter and then the snapshot,
+    // can never see an old snapshot under a new generation.
+    GenerationCounter().fetch_add(1, std::memory_order_release);
+    return fresh;
+}
+
+std::shared_ptr<const MergedRegistry> CurrentRegistry()
+{
+    {
+        std::shared_lock<std::shared_mutex> read(RegistryMutex());
+        if (auto snap = SharedRegistrySlot())
+        {
+            return snap;
+        }
+    }
+    std::unique_lock<std::shared_mutex> write(RegistryMutex());
+    // Re-check under the write lock; another thread may have built
+    // the registry between dropping the read lock and acquiring the
+    // write lock.
+    if (auto snap = SharedRegistrySlot())
+    {
+        return snap;
+    }
+    return RebuildLocked();
 }
 
 } // namespace
 
+RegexTemplate ParseRegexTemplate(std::string_view content)
+{
+    constexpr auto OPTS = loglib::internal::LOG_CONFIG_OPTS;
+
+    RegexTemplate parsed;
+    const auto error = glz::read<OPTS>(parsed, content);
+    if (error)
+    {
+        throw std::runtime_error(
+            "Failed to parse regex template JSON: " + glz::format_error(error, std::string(content))
+        );
+    }
+    return parsed;
+}
+
+std::string SerializeRegexTemplate(const RegexTemplate &tmpl)
+{
+    constexpr auto OPTS = loglib::internal::LOG_CONFIG_OPTS;
+
+    std::string json;
+    const auto error = glz::write<OPTS>(tmpl, json);
+    if (error)
+    {
+        throw std::runtime_error("Failed to serialise regex template JSON: " + glz::format_error(error));
+    }
+    return json;
+}
+
 std::span<const RegexTemplate> BuiltinRegexTemplates() noexcept
 {
-    return Registry();
+    // Pin the registry snapshot for the lifetime of the process so
+    // the returned span stays valid regardless of subsequent
+    // `SetExtraRegexTemplates` calls (which rebuild the merged
+    // registry but never touch the built-in slice the snapshot
+    // captures).
+    static const std::vector<RegexTemplate> *cached = nullptr;
+    static std::once_flag cacheOnce;
+    std::call_once(cacheOnce, []() {
+        auto snap = CurrentRegistry();
+        if (!snap)
+        {
+            return;
+        }
+        // The built-in slice is immutable post-construction; cache
+        // a raw pointer into its storage so subsequent calls don't
+        // re-acquire the mutex. Bumping the snapshot into a
+        // never-destroyed static keeps the underlying vector alive.
+        static std::shared_ptr<const MergedRegistry> pinned = std::move(snap);
+        cached = &pinned->builtins;
+    });
+    return cached != nullptr ? std::span<const RegexTemplate>(*cached) : std::span<const RegexTemplate>{};
+}
+
+void SetExtraRegexTemplates(std::span<const RegexTemplate> extras)
+{
+    std::unique_lock<std::shared_mutex> write(RegistryMutex());
+    ExtrasSlot().assign(extras.begin(), extras.end());
+    // Eagerly rebuild so the next probe sees the fresh extras
+    // without taking the write lock.
+    (void)RebuildLocked();
+}
+
+const RegexTemplate *FindTemplateByPattern(std::string_view pattern) noexcept
+{
+    const auto snap = CurrentRegistry();
+    if (!snap)
+    {
+        return nullptr;
+    }
+    for (const RegexTemplate &t : snap->ordered)
+    {
+        if (t.pattern == pattern)
+        {
+            return &t;
+        }
+    }
+    return nullptr;
 }
 
 const RegexTemplate *FindBuiltinByPattern(std::string_view pattern) noexcept
 {
-    const auto &registry = Registry();
-    const auto it = std::ranges::find_if(registry, [&](const RegexTemplate &t) { return t.pattern == pattern; });
-    return it != registry.end() ? &*it : nullptr;
+    return FindTemplateByPattern(pattern);
 }
+
+namespace internal
+{
+
+std::shared_ptr<const std::vector<RegexTemplate>> MergedRegexTemplates()
+{
+    auto snap = CurrentRegistry();
+    if (!snap)
+    {
+        return nullptr;
+    }
+    // Hand out a `shared_ptr` aliased to the `ordered` vector so
+    // the snapshot's reference count keeps the storage alive for
+    // the caller without exposing the `MergedRegistry` type.
+    return std::shared_ptr<const std::vector<RegexTemplate>>(snap, &snap->ordered);
+}
+
+uint64_t TemplatesGeneration() noexcept
+{
+    return GenerationCounter().load(std::memory_order_acquire);
+}
+
+} // namespace internal
 
 } // namespace loglib

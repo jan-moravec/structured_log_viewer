@@ -1,0 +1,13 @@
+{
+    "name": "spdlog",
+    "pattern": "^\\[(?<timestamp>\\d{4}-\\d{2}-\\d{2}\\s+\\d{2}:\\d{2}:\\d{2}\\.\\d{3})\\]\\s+(?:\\[(?<logger>[^\\]]+)\\]\\s+)?\\[(?<level>trace|debug|info|warning|warn|error|critical|off)\\]\\s+(?<message>.*)$",
+    "sampleLines": [
+        "[2024-04-28 04:02:03.123] [info] Server started on port 8080",
+        "[2024-04-28 04:02:04.456] [console] [warning] Disk usage above 80%",
+        "[2024-04-28 04:02:05.789] [trader] [error] Order rejected by gateway: timeout",
+        "[2024-04-28 04:02:06.000] [critical] Process aborting"
+    ],
+    "autoDetect": true,
+    "priority": 20,
+    "description": "Adapted from lnav src/formats/spdlog_log.json (BSD-2-Clause). Matches gabime/spdlog's default `%+` pattern: '[YYYY-MM-DD HH:MM:SS.fff] [logger] [level] message' with the logger group optional (the sink may omit it; see spdlog wiki 'Custom formatting')."
+}

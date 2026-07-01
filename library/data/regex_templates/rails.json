@@ -1,0 +1,13 @@
+{
+    "name": "Ruby on Rails",
+    "pattern": "^(?<severity>[DIWEFU]),\\s+\\[(?<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+)\\s+#(?<pid>\\d+)\\]\\s+(?<level>DEBUG|INFO|WARN|ERROR|FATAL|UNKNOWN)\\s+--\\s+(?<progname>[^:]*):\\s+(?<message>.*)$",
+    "sampleLines": [
+        "I, [2024-04-28T04:02:03.123456 #12345]  INFO -- : Started GET \"/users\" for 127.0.0.1 at 2024-04-28 04:02:03 +0000",
+        "D, [2024-04-28T04:02:03.234567 #12345] DEBUG -- ActiveRecord: User Load (0.3ms)  SELECT * FROM users",
+        "W, [2024-04-28T04:02:04.345678 #12345]  WARN -- : Deprecation warning: foo will be removed in Rails 7.2",
+        "E, [2024-04-28T04:02:05.456789 #12345] ERROR -- : NoMethodError (undefined method `foo' for nil)"
+    ],
+    "autoDetect": true,
+    "priority": 10,
+    "description": "Adapted from lnav src/formats/rails_log.json (BSD-2-Clause). Matches Ruby's stdlib Logger 'Formatter#call' default output, which Rails uses by default for production / development logs ('SEV, [TIMESTAMP #PID] LEVEL -- PROGNAME: MESSAGE'; see Ruby Logger documentation)."
+}

@@ -1,5 +1,7 @@
 #include "network_stream_dialog.hpp"
 
+#include "regex_template_registry.hpp"
+
 #include <loglib/parsers/regex_parser.hpp>
 #include <loglib/regex_templates.hpp>
 
@@ -14,6 +16,7 @@
 #include <QHostAddress>
 #include <QLabel>
 #include <QLineEdit>
+#include <QList>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QRadioButton>
@@ -36,10 +39,18 @@ constexpr auto KEY_TLS_CA = "tls/caBundle";
 constexpr auto KEY_TLS_REQUIRE_CLIENT = "tls/requireClientCert";
 constexpr auto KEY_REGEX_PATTERN = "regex/pattern";
 
-/// Sentinel value for the regex template combobox indicating "use the
-/// custom-pattern line edit". Built-in templates carry their index in
-/// `BuiltinRegexTemplates()` as the combobox userData.
-constexpr int REGEX_TEMPLATE_CUSTOM = -1;
+/// Build the sentinel value for the regex template combobox
+/// indicating "use the custom-pattern line edit". Real templates
+/// carry their `name` (QString) as the combobox userData; the
+/// sentinel is the empty QString so an "anonymous" template (no
+/// `name` field) can never collide with it — the registry warns
+/// and back-fills a basename in that case. Built as a function so
+/// no QString lives in static storage (clang-tidy
+/// `cert-err58-cpp` flags throwing static init).
+[[nodiscard]] QString RegexTemplateCustomData()
+{
+    return QString{};
+}
 
 // Numeric defaults / bounds for the spin boxes. Pulled into named
 // constants because clang-tidy's `cppcoreguidelines-avoid-magic-numbers`
@@ -77,8 +88,8 @@ QHBoxLayout *PathRow(
 
 } // namespace
 
-NetworkStreamDialog::NetworkStreamDialog(QWidget *parent)
-    : QDialog(parent)
+NetworkStreamDialog::NetworkStreamDialog(RegexTemplateRegistry *registry, QWidget *parent)
+    : QDialog(parent), mRegistry(registry)
 {
     setWindowTitle(tr("Open Network Stream"));
     setModal(true);
@@ -121,23 +132,43 @@ NetworkStreamDialog::NetworkStreamDialog(QWidget *parent)
     connect(mFormat, &QComboBox::currentIndexChanged, this, &NetworkStreamDialog::OnFormatChanged);
 
     // Regex template picker + custom-pattern field. Hidden unless
-    // `Format::Regex` is selected; populated from the built-in
-    // registry (`loglib::BuiltinRegexTemplates()`). The last entry,
-    // "Custom...", enables the line-edit below for a user-supplied
-    // pattern.
+    // `Format::Regex` is selected; populated from the merged
+    // registry (built-ins ∪ user templates) when one was passed in,
+    // otherwise from the library's built-in catalog (test path).
+    // The trailing "Custom..." entry enables the line-edit below
+    // for a user-supplied pattern.
     mRegexGroup = new QGroupBox(tr("Regex template"), this);
     auto *regexLayout = new QFormLayout(mRegexGroup);
     mRegexTemplate = new QComboBox(mRegexGroup);
+    if (mRegistry != nullptr)
     {
-        int idx = 0;
+        const QList<RegexTemplateRegistry::Listing> entries = mRegistry->Available();
+        for (const auto &row : entries)
+        {
+            QString label = row.name;
+            if (row.fromUser)
+            {
+                label = tr("%1 (user)").arg(row.name);
+            }
+            if (!row.autoDetect)
+            {
+                label = tr("%1 (manual only)").arg(label);
+            }
+            mRegexTemplate->addItem(label, QVariant(row.name));
+        }
+    }
+    else
+    {
         for (const loglib::RegexTemplate &t : loglib::BuiltinRegexTemplates())
         {
-            mRegexTemplate->addItem(QString::fromStdString(t.name), QVariant(idx));
-            ++idx;
+            const QString name = QString::fromStdString(t.name);
+            mRegexTemplate->addItem(name, QVariant(name));
         }
-        mRegexTemplate->addItem(tr("Custom..."), QVariant(REGEX_TEMPLATE_CUSTOM));
     }
-    mRegexTemplate->setToolTip(tr("Pick a built-in PCRE2 template or 'Custom...' to write your own."));
+    mRegexTemplate->addItem(tr("Custom..."), QVariant(RegexTemplateCustomData()));
+    mRegexTemplate->setToolTip(tr("Pick a built-in or user PCRE2 template, or 'Custom...' to write your own. "
+                                  "User templates live in <AppData>/regex_templates/*.json and shadow built-ins "
+                                  "with the same name."));
     mRegexTemplate->setAccessibleName(tr("Regex template"));
     regexLayout->addRow(tr("Template:"), mRegexTemplate);
 
@@ -148,6 +179,21 @@ NetworkStreamDialog::NetworkStreamDialog(QWidget *parent)
                                  "the registry)."));
     mRegexPattern->setAccessibleName(tr("Regex pattern"));
     regexLayout->addRow(tr("Pattern:"), mRegexPattern);
+
+    // Hint pointing at the dedicated editor. Template lifecycle
+    // (create / edit / delete) lives behind
+    // `Settings -> Regex templates...`; keeping a tiny visual
+    // signpost here saves the user from hunting through menus the
+    // first time they want to save a tweaked pattern.
+    auto *templatesHint = new QLabel(
+        tr("Manage templates from <b>Settings &rarr; Regex templates...</b>"), mRegexGroup
+    );
+    templatesHint->setToolTip(tr("Use the dedicated editor (Settings menu) to create, edit, validate, or delete "
+                                 "regex templates. This dialog only consumes the catalog."));
+    templatesHint->setTextFormat(Qt::RichText);
+    templatesHint->setWordWrap(true);
+    regexLayout->addRow(QString{}, templatesHint);
+
     outerLayout->addWidget(mRegexGroup);
     connect(mRegexTemplate, &QComboBox::currentIndexChanged, this, &NetworkStreamDialog::OnRegexTemplateChanged);
 
@@ -294,19 +340,38 @@ void NetworkStreamDialog::OnFormatChanged()
 
 void NetworkStreamDialog::OnRegexTemplateChanged()
 {
-    const int templateIdx = mRegexTemplate->currentData().toInt();
-    if (templateIdx == REGEX_TEMPLATE_CUSTOM)
+    const QString templateName = mRegexTemplate->currentData().toString();
+    if (templateName.isEmpty())
     {
-        // Hand the field back to the user; do not clobber whatever
-        // they already typed (a previous custom session might have
-        // persisted text we want to keep visible).
+        // "Custom..." sentinel: hand the field back to the user;
+        // do not clobber whatever they already typed (a previous
+        // custom session might have persisted text we want to keep
+        // visible).
         mRegexPattern->setReadOnly(false);
         return;
     }
-    const auto builtins = loglib::BuiltinRegexTemplates();
-    if (templateIdx >= 0 && static_cast<size_t>(templateIdx) < builtins.size())
+    // Resolve by name. Prefer the merged registry (built-ins ∪
+    // user templates); fall back to the library catalog when the
+    // dialog was constructed without one (tests).
+    if (mRegistry != nullptr)
     {
-        mRegexPattern->setText(QString::fromStdString(builtins[templateIdx].pattern));
+        const auto tmpl = mRegistry->Load(templateName);
+        if (tmpl.has_value())
+        {
+            mRegexPattern->setText(QString::fromStdString(tmpl->pattern));
+        }
+    }
+    else
+    {
+        const std::string stdName = templateName.toStdString();
+        for (const loglib::RegexTemplate &t : loglib::BuiltinRegexTemplates())
+        {
+            if (t.name == stdName)
+            {
+                mRegexPattern->setText(QString::fromStdString(t.pattern));
+                break;
+            }
+        }
     }
     mRegexPattern->setReadOnly(true);
 }
@@ -487,27 +552,35 @@ void NetworkStreamDialog::LoadFromSettings()
         mFormat->setCurrentIndex(mFormat->findData(static_cast<int>(Format::Json)));
     }
 
-    // Restore the prior pattern; resolve template-vs-custom based on
-    // whether the stored pattern matches one of the built-ins. This
+    // Restore the prior pattern; resolve template-vs-custom by
+    // looking up the stored pattern in the merged registry. This
     // means a registry upgrade that touches a pattern automatically
-    // moves the user from "matched builtin" to "custom" without
-    // losing their text — they just lose the named-template tag.
+    // moves the user from "matched template" to "custom" without
+    // losing their text -- they just lose the named-template tag.
+    // `FindTemplateByPattern` consults the same merged catalog the
+    // probe loop uses, so user templates that match are honoured.
     const QString storedPattern = settings.value(KEY_REGEX_PATTERN).toString();
     if (!storedPattern.isEmpty())
     {
         mRegexPattern->setText(storedPattern);
-        const auto builtins = loglib::BuiltinRegexTemplates();
         const std::string storedStdString = storedPattern.toStdString();
-        int matchedIdx = REGEX_TEMPLATE_CUSTOM;
-        for (size_t i = 0; i < builtins.size(); ++i)
+        QVariant pickerData = QVariant(RegexTemplateCustomData());
+        if (const loglib::RegexTemplate *match = loglib::FindTemplateByPattern(storedStdString); match != nullptr)
         {
-            if (builtins[i].pattern == storedStdString)
-            {
-                matchedIdx = static_cast<int>(i);
-                break;
-            }
+            pickerData = QVariant(QString::fromStdString(match->name));
         }
-        mRegexTemplate->setCurrentIndex(mRegexTemplate->findData(matchedIdx));
+        const int comboIdx = mRegexTemplate->findData(pickerData);
+        if (comboIdx >= 0)
+        {
+            mRegexTemplate->setCurrentIndex(comboIdx);
+        }
+        else
+        {
+            // Stored template name has vanished from the catalog
+            // since last launch -- fall back to "Custom..." so the
+            // pattern text remains editable.
+            mRegexTemplate->setCurrentIndex(mRegexTemplate->findData(QVariant(RegexTemplateCustomData())));
+        }
     }
 
     mBindAddress->setText(settings.value(KEY_BIND, mBindAddress->text()).toString());
