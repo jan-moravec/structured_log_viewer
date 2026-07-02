@@ -65,7 +65,7 @@ ParseResult ParseFile(const std::filesystem::path &file)
         {
             if (const std::optional<RegexTemplate> tmpl = DetectRegexTemplate(file); tmpl.has_value())
             {
-                RegexParser parser(tmpl->pattern);
+                const RegexParser parser(tmpl->pattern);
                 return ParseFile(parser, file);
             }
             continue;

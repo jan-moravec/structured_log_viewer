@@ -109,12 +109,15 @@ std::shared_ptr<const MergedRegistry> RebuildLocked()
         {
             fresh->builtins.push_back(ParseEmbeddedOrThrow(entry));
         }
-        catch (const std::exception &)
+        catch (const std::exception &)  // NOLINT(bugprone-empty-catch)
         {
             // Programmer error in the shipped catalog. Skip and
             // keep auto-detect working for the rest; the CI sweep
             // in `test_regex_templates.cpp` catches this before it
-            // can reach a user.
+            // can reach a user. Deliberately silent — the process
+            // has no logging sink at this static-init phase and
+            // the surviving templates are more useful than
+            // aborting the parser catalog altogether.
         }
     }
     std::stable_sort(
@@ -151,13 +154,13 @@ std::shared_ptr<const MergedRegistry> RebuildLocked()
 std::shared_ptr<const MergedRegistry> CurrentRegistry()
 {
     {
-        std::shared_lock<std::shared_mutex> read(RegistryMutex());
+        const std::shared_lock<std::shared_mutex> read(RegistryMutex());
         if (auto snap = SharedRegistrySlot())
         {
             return snap;
         }
     }
-    std::unique_lock<std::shared_mutex> write(RegistryMutex());
+    const std::unique_lock<std::shared_mutex> write(RegistryMutex());
     // Re-check under the write lock; another thread may have
     // built the registry between the read and write locks.
     if (auto snap = SharedRegistrySlot())
@@ -205,25 +208,39 @@ std::span<const RegexTemplate> BuiltinRegexTemplates() noexcept
     // registry but never touch the built-in slice this captures).
     static const std::vector<RegexTemplate> *cached = nullptr;
     static std::once_flag cacheOnce;
-    std::call_once(cacheOnce, []() {
-        auto snap = CurrentRegistry();
-        if (!snap)
-        {
-            return;
-        }
-        // The built-in slice is immutable post-construction, so
-        // cache a raw pointer into its storage to avoid the mutex
-        // on later calls. The never-destroyed static keeps the
-        // underlying vector alive.
-        static std::shared_ptr<const MergedRegistry> pinned = std::move(snap);
-        cached = &pinned->builtins;
-    });
+    // `CurrentRegistry()` can throw on OOM (vector reallocation
+    // inside `RebuildLocked`). The public contract is noexcept —
+    // callers rely on it during static init — so swallow the
+    // (vanishingly unlikely) failure and return an empty span
+    // rather than propagate a `bad_alloc` past the boundary.
+    try
+    {
+        std::call_once(cacheOnce, []() {
+            auto snap = CurrentRegistry();
+            if (!snap)
+            {
+                return;
+            }
+            // The built-in slice is immutable post-construction,
+            // so cache a raw pointer into its storage to avoid
+            // the mutex on later calls. The never-destroyed
+            // static keeps the underlying vector alive.
+            static const std::shared_ptr<const MergedRegistry> PINNED = std::move(snap);
+            cached = &PINNED->builtins;
+        });
+    }
+    catch (...)  // NOLINT(bugprone-empty-catch)
+    {
+        // Empty catch: the noexcept promise means the only
+        // recovery is to hand back an empty span. See comment
+        // above.
+    }
     return cached != nullptr ? std::span<const RegexTemplate>(*cached) : std::span<const RegexTemplate>{};
 }
 
 void SetExtraRegexTemplates(std::span<const RegexTemplate> extras)
 {
-    std::unique_lock<std::shared_mutex> write(RegistryMutex());
+    const std::unique_lock<std::shared_mutex> write(RegistryMutex());
     ExtrasSlot().assign(extras.begin(), extras.end());
     // Eagerly rebuild so the next probe sees the fresh extras
     // without taking the write lock again.
@@ -269,7 +286,7 @@ std::shared_ptr<const std::vector<RegexTemplate>> MergedRegexTemplates()
     // Hand out a `shared_ptr` aliased to the `ordered` vector so
     // the snapshot's refcount keeps storage alive for the caller
     // without exposing the `MergedRegistry` type.
-    return std::shared_ptr<const std::vector<RegexTemplate>>(snap, &snap->ordered);
+    return {snap, &snap->ordered};
 }
 
 uint64_t TemplatesGeneration() noexcept

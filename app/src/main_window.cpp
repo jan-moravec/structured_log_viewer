@@ -506,7 +506,7 @@ DetectedFormat DetectFormatForPath(const std::filesystem::path &file)
             if (const std::optional<loglib::RegexTemplate> tmpl = loglib::DetectRegexTemplate(file);
                 tmpl.has_value())
             {
-                return {loglib::LogConfiguration::Source::Format::Regex, tmpl->pattern};
+                return {.format = loglib::LogConfiguration::Source::Format::Regex, .regexPattern = tmpl->pattern};
             }
             continue;
         }
@@ -517,17 +517,17 @@ DetectedFormat DetectFormatForPath(const std::filesystem::path &file)
             switch (parserType)
             {
             case loglib::LogFactory::Parser::Logfmt:
-                return {loglib::LogConfiguration::Source::Format::Logfmt, std::string{}};
+                return {.format = loglib::LogConfiguration::Source::Format::Logfmt, .regexPattern = std::string{}};
             case loglib::LogFactory::Parser::Csv:
-                return {loglib::LogConfiguration::Source::Format::Csv, std::string{}};
+                return {.format = loglib::LogConfiguration::Source::Format::Csv, .regexPattern = std::string{}};
             case loglib::LogFactory::Parser::Json:
             case loglib::LogFactory::Parser::Regex:
             case loglib::LogFactory::Parser::Count:
-                return {loglib::LogConfiguration::Source::Format::Json, std::string{}};
+                return {.format = loglib::LogConfiguration::Source::Format::Json, .regexPattern = std::string{}};
             }
         }
     }
-    return {loglib::LogConfiguration::Source::Format::Json, std::string{}};
+    return {.format = loglib::LogConfiguration::Source::Format::Json, .regexPattern = std::string{}};
 }
 
 } // namespace

@@ -79,7 +79,7 @@ TEST_CASE("RegexParser default-constructed parse without pattern surfaces error 
 
     auto result = ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.size() == 1);
-    CHECK(result.errors[0].find("non-empty pattern") != std::string::npos);
+    CHECK(result.errors[0].contains("non-empty pattern"));
     CHECK(result.data.Lines().empty());
 }
 
@@ -91,7 +91,7 @@ TEST_CASE("RegexParser unparseable pattern surfaces error [regex]", "[regex_pars
 
     auto result = ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.size() == 1);
-    CHECK(result.errors[0].find("Pattern compile failed") != std::string::npos);
+    CHECK(result.errors[0].contains("Pattern compile failed"));
     CHECK(result.data.Lines().empty());
 }
 
@@ -105,7 +105,7 @@ TEST_CASE("RegexParser pattern without named groups surfaces error [regex]", "[r
 
     auto result = ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.size() == 1);
-    CHECK(result.errors[0].find("named capture groups") != std::string::npos);
+    CHECK(result.errors[0].contains("named capture groups"));
     CHECK(result.data.Lines().empty());
 }
 
@@ -161,8 +161,8 @@ TEST_CASE("RegexParser non-matching lines surface as errors [regex]", "[regex_pa
     auto result = ParseFile(parser, file.GetFilePath());
     REQUIRE(result.data.Lines().size() == 2);
     REQUIRE(result.errors.size() == 1);
-    CHECK(result.errors[0].find("line 2") != std::string::npos);
-    CHECK(result.errors[0].find("did not match") != std::string::npos);
+    CHECK(result.errors[0].contains("line 2"));
+    CHECK(result.errors[0].contains("did not match"));
 }
 
 TEST_CASE("RegexParser optional unmatched groups -> monostate [regex]", "[regex_parser]")
@@ -243,8 +243,8 @@ TEST_CASE("RegexParser ToString joins values in KeyId order [regex]", "[regex_pa
     REQUIRE(result.data.Lines().size() == 1);
 
     const std::string out = parser.ToString(result.data.Lines()[0]);
-    CHECK(out.find("info") != std::string::npos);
-    CHECK(out.find("hello world") != std::string::npos);
+    CHECK(out.contains("info"));
+    CHECK(out.contains("hello world"));
 }
 
 TEST_CASE("RegexParser pinned to empty pattern fails closed on the static path [regex]", "[regex_parser]")
@@ -282,7 +282,7 @@ TEST_CASE("RegexParser pinned to empty pattern fails closed on the static path [
     LogData data = sink.TakeData();
     std::vector<std::string> errors = sink.TakeErrors();
     REQUIRE(errors.size() == 1);
-    CHECK(errors[0].find("non-empty pattern") != std::string::npos);
+    CHECK(errors[0].contains("non-empty pattern"));
     CHECK(data.Lines().empty());
 }
 

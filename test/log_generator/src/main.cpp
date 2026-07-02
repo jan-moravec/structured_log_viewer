@@ -70,24 +70,34 @@ struct RegexTemplateOption
 
 constexpr std::array<RegexTemplateOption, 5> REGEX_TEMPLATE_OPTIONS = {
     RegexTemplateOption{
-        "syslog", "Syslog (RFC3164)", &test_common::SyslogRfc3164Format,
-        "BSD syslog: `MMM DD HH:MM:SS <host> <program>[<pid>]: <message>`"
+        .slug = "syslog",
+        .templateName = "Syslog (RFC3164)",
+        .factory = &test_common::SyslogRfc3164Format,
+        .description = "BSD syslog: `MMM DD HH:MM:SS <host> <program>[<pid>]: <message>`",
     },
     RegexTemplateOption{
-        "apache-combined", "Apache/nginx Combined Log Format", &test_common::ApacheCombinedFormat,
-        "Apache/nginx CLF + \"<referrer>\" \"<agent>\" tail"
+        .slug = "apache-combined",
+        .templateName = "Apache/nginx Combined Log Format",
+        .factory = &test_common::ApacheCombinedFormat,
+        .description = R"(Apache/nginx CLF + "<referrer>" "<agent>" tail)",
     },
     RegexTemplateOption{
-        "apache-common", "Apache/nginx Common Log Format", &test_common::ApacheCommonFormat,
-        "Apache/nginx CLF without the referrer / agent tail"
+        .slug = "apache-common",
+        .templateName = "Apache/nginx Common Log Format",
+        .factory = &test_common::ApacheCommonFormat,
+        .description = "Apache/nginx CLF without the referrer / agent tail",
     },
     RegexTemplateOption{
-        "apache-error", "Apache error log", &test_common::ApacheErrorFormat,
-        "Apache 2.4 error log: `[<time>] [<mod>:<lvl>] [pid N] [client ip:port] <msg>`"
+        .slug = "apache-error",
+        .templateName = "Apache error log",
+        .factory = &test_common::ApacheErrorFormat,
+        .description = "Apache 2.4 error log: `[<time>] [<mod>:<lvl>] [pid N] [client ip:port] <msg>`",
     },
     RegexTemplateOption{
-        "java", "Java / log4j / SLF4J Logback", &test_common::JavaLogFormat,
-        "Logback / log4j / SLF4J default: `<time> LEVEL [<thread>] <logger> - <msg>`"
+        .slug = "java",
+        .templateName = "Java / log4j / SLF4J Logback",
+        .factory = &test_common::JavaLogFormat,
+        .description = "Logback / log4j / SLF4J default: `<time> LEVEL [<thread>] <logger> - <msg>`",
     },
 };
 

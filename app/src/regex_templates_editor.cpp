@@ -374,7 +374,7 @@ void RegexTemplatesEditor::RefreshList()
 
 void RegexTemplatesEditor::OnSelectionChanged()
 {
-    QListWidgetItem *item = mListWidget->currentItem();
+    const QListWidgetItem *item = mListWidget->currentItem();
     const QString name = (item == nullptr) ? QString{} : item->data(Qt::UserRole).toString();
 
     // No-op when the selection didn't change (Qt also fires

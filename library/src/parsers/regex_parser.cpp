@@ -57,6 +57,17 @@ constexpr size_t IS_VALID_MIN_MATCHES = 2;
 constexpr uint32_t PCRE2_MATCH_LIMIT = 100'000;
 constexpr uint32_t PCRE2_DEPTH_LIMIT = 1'000;
 
+/// Buffer size for `pcre2_get_error_message`. Sized per upstream
+/// advice (`pcre2demo.c`); all built-in PCRE2 error strings fit
+/// comfortably.
+constexpr size_t PCRE2_ERROR_BUFFER_SIZE = 256;
+
+/// Maximum number of non-blank probe lines collected before
+/// running the auto-detect template loop. Bounded so a huge
+/// mmap-friendly file doesn't blow up scratch memory for a
+/// yes/no decision.
+constexpr size_t IS_VALID_PROBE_MAX_LINES = 8;
+
 // ---------------------------------------------------------------------
 // RAII wrappers around the PCRE2 C handles.
 // ---------------------------------------------------------------------
@@ -98,10 +109,10 @@ struct Pcre2MatchContextDeleter
 using Pcre2MatchContextPtr = std::unique_ptr<pcre2_match_context, Pcre2MatchContextDeleter>;
 
 /// Decode a PCRE2 errcode to a short message for parse-error
-/// reporting. Buffer sized per upstream advice (`pcre2demo.c`).
+/// reporting.
 std::string FormatPcre2Error(int errcode)
 {
-    PCRE2_UCHAR8 buffer[256] = {};
+    PCRE2_UCHAR8 buffer[PCRE2_ERROR_BUFFER_SIZE] = {};
     const int len = pcre2_get_error_message(errcode, buffer, sizeof(buffer));
     if (len <= 0)
     {
@@ -210,11 +221,14 @@ public:
         return mCode.get();
     }
 
-    [[nodiscard]] const pcre2_match_context *Context() const noexcept
-    {
-        return mContext.get();
-    }
-    [[nodiscard]] pcre2_match_context *Context() noexcept
+    /// The match context is set up once during `Compile()` (its
+    /// limits never change afterwards) and PCRE2's `pcre2_match`
+    /// requires a non-const context. Exposing a single method
+    /// returning `pcre2_match_context *` even from a logically
+    /// const `CompiledPattern` avoids sprinkling `const_cast`
+    /// throughout the parser; `unique_ptr::get() const` already
+    /// returns the mutable pointer type.
+    [[nodiscard]] pcre2_match_context *Context() const noexcept
     {
         return mContext.get();
     }
@@ -262,7 +276,12 @@ private:
         uint32_t entrySize = 0;
         pcre2_pattern_info(mCode.get(), PCRE2_INFO_NAMEENTRYSIZE, &entrySize);
         PCRE2_SPTR table = nullptr;
-        pcre2_pattern_info(mCode.get(), PCRE2_INFO_NAMETABLE, &table);
+        // `pcre2_pattern_info` takes a `void *` out-parameter; going
+        // straight from `PCRE2_SPTR *` (a two-level pointer) is a
+        // multi-level implicit conversion. Route via `void *` so
+        // clang-tidy's `bugprone-multi-level-implicit-pointer-conversion`
+        // stays quiet without changing the ABI-level call.
+        pcre2_pattern_info(mCode.get(), PCRE2_INFO_NAMETABLE, static_cast<void *>(&table));
         if (table == nullptr || entrySize < 3)
         {
             return;
@@ -373,7 +392,7 @@ std::shared_ptr<const CompiledProbeSnapshot> CurrentProbeSnapshot()
 
     const uint64_t generation = internal::TemplatesGeneration();
     {
-        std::shared_lock<std::shared_mutex> read(mutex);
+        const std::shared_lock<std::shared_mutex> read(mutex);
         if (cached && cached->generation == generation)
         {
             return cached;
@@ -407,7 +426,7 @@ std::shared_ptr<const CompiledProbeSnapshot> CurrentProbeSnapshot()
         }
     }
 
-    std::unique_lock<std::shared_mutex> write(mutex);
+    const std::unique_lock<std::shared_mutex> write(mutex);
     // Re-check: another thread may have rebuilt against the same
     // generation between the read lock and the write lock. Prefer
     // their snapshot so two probes don't see different compiled
@@ -448,9 +467,7 @@ bool MatchesFullyForProbe(const CompiledPattern &cp, std::string_view line)
         /*startoffset*/ 0,
         PCRE2_ANCHORED | PCRE2_ENDANCHORED,
         md.get(),
-        // `Context()` is logically const here (we only read limits);
-        // PCRE2 requires the non-const overload.
-        const_cast<pcre2_match_context *>(cp.Context())
+        cp.Context()
     );
     return rc > 0;
 }
@@ -478,13 +495,13 @@ const RegexTemplate *ProbeAutoDetectTemplates(const std::filesystem::path &file)
     }
 
     std::vector<std::string> probeLines;
-    probeLines.reserve(8);
+    probeLines.reserve(IS_VALID_PROBE_MAX_LINES);
     std::string line;
     size_t bytesScanned = 0;
     bool firstLine = true;
     while (std::getline(stream, line))
     {
-        if (firstLine && line.size() >= UTF8_BOM.size() && std::string_view(line).substr(0, UTF8_BOM.size()) == UTF8_BOM)
+        if (firstLine && std::string_view(line).starts_with(UTF8_BOM))
         {
             line.erase(0, UTF8_BOM.size());
         }
@@ -498,7 +515,7 @@ const RegexTemplate *ProbeAutoDetectTemplates(const std::filesystem::path &file)
         {
             probeLines.push_back(line);
         }
-        if (bytesScanned >= IS_VALID_PROBE_BYTES || probeLines.size() >= 8)
+        if (bytesScanned >= IS_VALID_PROBE_BYTES || probeLines.size() >= IS_VALID_PROBE_MAX_LINES)
         {
             break;
         }
@@ -596,7 +613,7 @@ bool MatchLineAndEmit(
         /*startoffset*/ 0,
         /*options*/ 0,
         matchData,
-        const_cast<pcre2_match_context *>(compiled.Context())
+        compiled.Context()
     );
     if (rc == PCRE2_ERROR_NOMATCH)
     {
@@ -643,7 +660,7 @@ bool MatchLineAndEmit(
             // bloat the per-line array.
             continue;
         }
-        internal::CompactLogValue compact =
+        const internal::CompactLogValue compact =
             internal::ClassifyBareScalar(captured, fileBegin, fileSize, ownedArena);
         out.emplace_back(columnKeys[i], compact);
     }
@@ -657,19 +674,22 @@ bool MatchLineAndEmit(
 struct RegexWorkerState
 {
     Pcre2MatchDataPtr matchData;
-
-    /// Lazily attach to @p compiled on first use.
-    /// `enumerable_thread_specific` default-constructs us, so we
-    /// can't allocate at construction: the worker doesn't yet
-    /// know which compiled pattern to size against.
-    void Ensure(const CompiledPattern &compiled)
-    {
-        if (!matchData)
-        {
-            matchData = compiled.NewMatchData();
-        }
-    }
 };
+
+/// Lazily attach @p worker to @p compiled on first use.
+/// `enumerable_thread_specific` default-constructs `RegexWorkerState`,
+/// so we can't allocate at construction: the worker doesn't yet
+/// know which compiled pattern to size against. Kept as a free
+/// function so `RegexWorkerState` stays a pure scratch struct
+/// (no member functions alongside public data — placates
+/// `misc-non-private-member-variables-in-classes`).
+void EnsureWorkerMatchData(RegexWorkerState &worker, const CompiledPattern &compiled)
+{
+    if (!worker.matchData)
+    {
+        worker.matchData = compiled.NewMatchData();
+    }
+}
 
 /// Stage A token: a contiguous mmap range covering complete
 /// lines. Identical to `CsvByteRange`; kept separate so a future
@@ -716,7 +736,7 @@ void DecodeRegexBatch(
     (void)keys; // Schema is pre-interned in `columnKeys`.
     parsed.batchIndex = batch.batchIndex;
 
-    worker.user.Ensure(compiled);
+    EnsureWorkerMatchData(worker.user, compiled);
 
     const char *cursor = batch.bytesBegin;
     const char *end = batch.bytesEnd;
@@ -889,7 +909,7 @@ void EmitErrorAndFinish(
     const auto flushInterval =
         streaming ? internal::STREAMING_BATCH_FLUSH_INTERVAL : internal::STATIC_BATCH_FLUSH_INTERVAL;
     internal::BatchCoalescer coalescer(sink, keys, flushLines, flushInterval, newKeyBaseline);
-    coalescer.Pending().errors.emplace_back(std::string(message));
+    coalescer.Pending().errors.emplace_back(message.data(), message.size());
     coalescer.Finish(1, /*wasCancelled=*/false);
 }
 
@@ -1167,7 +1187,7 @@ bool PatternMatchesLine(std::string_view pattern, std::string_view line)
     {
         return false;
     }
-    Pcre2MatchDataPtr matchData = compiled.NewMatchData();
+    const Pcre2MatchDataPtr matchData = compiled.NewMatchData();
     if (!matchData)
     {
         return false;
@@ -1185,7 +1205,7 @@ bool PatternMatchesLine(std::string_view pattern, std::string_view line)
         /*startoffset*/ 0,
         PCRE2_ANCHORED | PCRE2_ENDANCHORED,
         matchData.get(),
-        const_cast<pcre2_match_context *>(compiled.Context())
+        compiled.Context()
     );
     return rc >= 0;
 }
