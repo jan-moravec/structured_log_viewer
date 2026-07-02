@@ -164,13 +164,13 @@ TEST_CASE(
     CHECK(apacheError < generic);
 
     // Built-in priorities must be set — user templates default
-    // to 100, so a built-in at 100 would mean someone forgot to
-    // curate. All built-ins should be strictly below the
-    // user-template default bucket.
+    // to `USER_TEMPLATE_DEFAULT_PRIORITY`, so a built-in at that
+    // value would mean someone forgot to curate. All built-ins
+    // should be strictly below the user-template default bucket.
     for (const RegexTemplate &t : builtins)
     {
         INFO("template: " << t.name);
-        CHECK(t.priority < 100);
+        CHECK(t.priority < USER_TEMPLATE_DEFAULT_PRIORITY);
     }
 }
 
@@ -252,7 +252,7 @@ TEST_CASE("FindTemplateByPattern round-trips built-in and user templates [regex_
         .pattern = R"(^ALPHA\s+(?<v>\d+)$)",
         .sampleLines = {"ALPHA 1"},
         .autoDetect = false,
-        .priority = 100,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
         .description = "",
     };
     const RegexTemplate userTemplateB{
@@ -260,7 +260,7 @@ TEST_CASE("FindTemplateByPattern round-trips built-in and user templates [regex_
         .pattern = R"(^BETA\s+(?<v>\w+)$)",
         .sampleLines = {"BETA hello"},
         .autoDetect = true,
-        .priority = 100,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
         .description = "",
     };
     const RegexTemplate extras[] = {userTemplateA, userTemplateB};

@@ -9,6 +9,14 @@
 namespace loglib
 {
 
+/// Default `RegexTemplate::priority` bucket for user templates: high
+/// enough to always land after every shipped built-in (which live
+/// between 10 and 30), leaving generous headroom on either side for
+/// users who want to hand-order their own templates. Referenced by
+/// the on-disk JSON schema default and by the app-side editor when
+/// creating a fresh draft, so the two never drift.
+inline constexpr int USER_TEMPLATE_DEFAULT_PRIORITY = 100;
+
 /// A named PCRE2 pattern that splits one log line into columns via
 /// named capture groups.
 ///
@@ -55,8 +63,8 @@ struct RegexTemplate
     /// default to a bucket below built-ins so they never
     /// accidentally steal a match from a shipped template. Same
     /// `priority` retains document order. Defaulted in JSON to
-    /// `100` (user bucket).
-    int priority = 100;
+    /// `USER_TEMPLATE_DEFAULT_PRIORITY` (the user bucket).
+    int priority = USER_TEMPLATE_DEFAULT_PRIORITY;
     /// Free-form description of the format the template parses:
     /// typically a sentence on the format (what emits it, column
     /// meanings, edge cases) and, for ports, an attribution line
@@ -71,8 +79,8 @@ struct RegexTemplate
 /// Parse a single regex-template JSON document. Throws
 /// `std::runtime_error` on parse failure (the message includes
 /// glaze's position context). Defaults `autoDetect = true`,
-/// `priority = 100`, `description = ""` so older JSON files still
-/// load cleanly.
+/// `priority = USER_TEMPLATE_DEFAULT_PRIORITY`, `description = ""`
+/// so older JSON files still load cleanly.
 [[nodiscard]] RegexTemplate ParseRegexTemplate(std::string_view content);
 
 /// Serialise @p tmpl to pretty-printed JSON. Throws

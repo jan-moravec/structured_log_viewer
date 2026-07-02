@@ -36,11 +36,6 @@ constexpr int EDITOR_MIN_HEIGHT_PX = 560;
 constexpr int LIST_INITIAL_WIDTH_PX = 280;
 constexpr int STATUS_CLEAR_MS = 6000;
 
-/// Default "user bucket" priority for new drafts. Matches the
-/// convention used elsewhere (probe stably sorts by `priority`, so
-/// identical user priorities preserve file-name order).
-constexpr int USER_TEMPLATE_DEFAULT_PRIORITY = 100;
-
 /// Priority spinner bounds. Built-ins ship between 10 and 30; the
 /// upper bound is generous so users can stage rare formats far
 /// down the probe order without saturating.
@@ -186,11 +181,11 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
     flagsRow->addWidget(new QLabel(tr("Priority:"), formContainer));
     mPrioritySpin = new QSpinBox(formContainer);
     mPrioritySpin->setRange(PRIORITY_MIN, PRIORITY_MAX);
-    mPrioritySpin->setValue(USER_TEMPLATE_DEFAULT_PRIORITY);
+    mPrioritySpin->setValue(loglib::USER_TEMPLATE_DEFAULT_PRIORITY);
     mPrioritySpin->setToolTip(tr("Probe order: lower probes first. Built-ins are curated between 10 and 30 "
                                  "(specific first). User templates default to %1 (after every shipped built-in). "
                                  "Set to a small number to override a built-in's probe priority.")
-                                  .arg(USER_TEMPLATE_DEFAULT_PRIORITY));
+                                  .arg(loglib::USER_TEMPLATE_DEFAULT_PRIORITY));
     flagsRow->addWidget(mPrioritySpin);
     flagsRow->addStretch(1);
     formLayout->addRow(QString{}, flagsRow);
@@ -435,7 +430,7 @@ void RegexTemplatesEditor::OnNewClicked()
     mPatternEdit->clear();
     mSampleLinesEdit->clear();
     mAutoDetectCheck->setChecked(true);
-    mPrioritySpin->setValue(USER_TEMPLATE_DEFAULT_PRIORITY);
+    mPrioritySpin->setValue(loglib::USER_TEMPLATE_DEFAULT_PRIORITY);
     mDescriptionEdit->clear();
     mSourceLabel->setText(tr("New user template (not yet saved)"));
     mSuppressDirtySignals = false;
@@ -511,7 +506,7 @@ void RegexTemplatesEditor::OnDuplicateClicked()
     // participating in auto-detect at the user-bucket priority;
     // the user can flip either for a manual-only override.
     base.autoDetect = true;
-    base.priority = USER_TEMPLATE_DEFAULT_PRIORITY;
+    base.priority = loglib::USER_TEMPLATE_DEFAULT_PRIORITY;
     // Leave `description` alone: an inherited attribution line
     // gives the user something to build on, and an empty one
     // stays empty so they can write their own.
@@ -817,7 +812,7 @@ void RegexTemplatesEditor::LoadIntoForm(const QString &name)
         mPatternEdit->clear();
         mSampleLinesEdit->clear();
         mAutoDetectCheck->setChecked(true);
-        mPrioritySpin->setValue(USER_TEMPLATE_DEFAULT_PRIORITY);
+        mPrioritySpin->setValue(loglib::USER_TEMPLATE_DEFAULT_PRIORITY);
         mDescriptionEdit->clear();
         mSourceLabel->clear();
 

@@ -45,7 +45,8 @@ TEST_CASE("RegexTemplate JSON parse fills defaults for absent fields", "[regex_t
 {
     // Backward compatibility: pre-schema JSON files must still
     // parse, with new fields defaulted to documented values
-    // (autoDetect=true, priority=100, description="").
+    // (autoDetect=true, priority=USER_TEMPLATE_DEFAULT_PRIORITY,
+    // description="").
     constexpr std::string_view K_LEGACY_JSON = R"({
         "name": "Legacy template",
         "pattern": "^(?<msg>.*)$",
@@ -58,7 +59,7 @@ TEST_CASE("RegexTemplate JSON parse fills defaults for absent fields", "[regex_t
     REQUIRE(parsed.sampleLines.size() == 1);
     CHECK(parsed.sampleLines[0] == "one line");
     CHECK(parsed.autoDetect == true);
-    CHECK(parsed.priority == 100);
+    CHECK(parsed.priority == USER_TEMPLATE_DEFAULT_PRIORITY);
     CHECK(parsed.description.empty());
 }
 
