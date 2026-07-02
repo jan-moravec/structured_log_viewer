@@ -1,15 +1,15 @@
 // Standalone log generator. Loops `test_common::GenerateRandomLogRecord`,
-// serializes each record through `--format` (either a wire format --
-// `json` / `logfmt` / `csv` -- or a shipped regex-template synthesizer
-// slug like `syslog` / `apache-combined` / `java`; run with
-// `--list-formats` for the full shortlist), and stops at `--size` or
-// `--lines`. Supports `--timeout` throttling and in-flight rotation
-// (`--roll-*`) for `TailingBytesProducer` and Stream Mode smoke tests.
+// serializes each record through `--format` (a wire format -- `json` /
+// `logfmt` / `csv` -- or a shipped regex-template synthesizer slug like
+// `syslog` / `apache-combined` / `java`; run `--list-formats` for the
+// full shortlist), and stops at `--size` or `--lines`. Supports
+// `--timeout` throttling and in-flight rotation (`--roll-*`) for
+// `TailingBytesProducer` and Stream Mode smoke tests.
 //
 // The format's `writeHeader` is emitted on initial open (skipped in
-// `--append`) and after every rotation, so a future schema-bearing format
-// drops in without re-plumbing. JSON / logfmt / regex-template return an
-// empty header; only CSV emits one.
+// `--append`) and after every rotation, so a future schema-bearing
+// format drops in without re-plumbing. JSON / logfmt / regex-template
+// return an empty header; only CSV emits one.
 //
 // Default output is file (`--target file://...` or legacy `--output`).
 // Network targets:
@@ -54,12 +54,12 @@
 namespace
 {
 
-// Shortlist of shipped `loglib::RegexTemplate`s that have a matching
-// `test_common::LogFormat` synthesizer. Each entry pairs the CLI slug
-// (shell-friendly, also the `--format` value the user types) with the
-// registry `name` used to look up the parse pattern and a factory for
-// the writer. Adding a new synthesizer means dropping a new row here
-// plus the corresponding factory in `test/common/src/log_format.cpp`.
+// Shortlist of shipped `loglib::RegexTemplate`s with a matching
+// `test_common::LogFormat` synthesizer. Each entry pairs the CLI
+// slug (shell-friendly, also the `--format` value the user types)
+// with the registry `name` for the parse pattern and a factory
+// for the writer. Adding a new synthesizer means adding a row
+// here plus the factory in `test/common/src/log_format.cpp`.
 struct RegexTemplateOption
 {
     std::string_view slug;
@@ -110,10 +110,9 @@ bool EqualsIgnoreCase(std::string_view lhs, std::string_view rhs) noexcept
     return true;
 }
 
-// Match a user-supplied `--format` value against the regex-template
-// shortlist, accepting either the display name (e.g. `Apache/nginx
-// Combined Log Format`, case-insensitive) or the CLI slug
-// (`apache-combined`).
+// Match a `--format` value against the regex-template shortlist,
+// accepting either the display name (e.g. `Apache/nginx Combined
+// Log Format`, case-insensitive) or the CLI slug (`apache-combined`).
 const RegexTemplateOption *FindRegexTemplateOption(std::string_view input) noexcept
 {
     for (const auto &opt : REGEX_TEMPLATE_OPTIONS)
@@ -126,10 +125,10 @@ const RegexTemplateOption *FindRegexTemplateOption(std::string_view input) noexc
     return nullptr;
 }
 
-// Print the full `--format` shortlist: the three wire formats first,
-// then every regex-template synthesizer with its display name and a
-// one-line description. Shared between `--list-formats` and the
-// "unknown --format" error path so the two stay in sync.
+// Print the full `--format` shortlist: the three wire formats
+// first, then every regex-template synthesizer with its display
+// name and a one-line description. Shared between `--list-formats`
+// and the "unknown --format" error path so they stay in sync.
 void PrintFormatShortlist(std::ostream &os)
 {
     os << "log_generator: --format accepts these values:\n"
@@ -584,10 +583,11 @@ int main(int argc, char *argv[])
               "(generated.jsonl for --format json, generated.logfmt for --format logfmt, "
               "generated.csv for --format csv, generated_<slug>.log for a regex-template slug).");
 
-    // Deliberately not using `.choices(...)` here: the regex-template shortlist is
-    // resolved at runtime via `FindRegexTemplateOption` (case-insensitive, accepts
-    // both the slug and the full template name), and argparse's built-in choices
-    // enforcement would reject those before we reach the fallback resolver.
+    // No `.choices(...)`: the regex-template shortlist is resolved at
+    // runtime via `FindRegexTemplateOption` (case-insensitive, accepts
+    // both the slug and the full template name), and argparse's
+    // built-in choices enforcement would reject those before we reach
+    // the fallback resolver.
     program.add_argument("-f", "--format")
         .default_value(std::string{"json"})
         .help("Record serialization format. Wire formats: 'json' (one JSON object per line), 'logfmt', "
@@ -667,8 +667,8 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // `--list-formats` short-circuits before argument validation so users
-    // can discover the shortlist without picking a valid target.
+    // `--list-formats` short-circuits before argument validation
+    // so users can discover the shortlist without a valid target.
     if (program.get<bool>("--list-formats"))
     {
         PrintFormatShortlist(std::cout);
@@ -682,15 +682,15 @@ int main(int argc, char *argv[])
     // from a probe record on a throwaway RNG.
     const std::uint32_t seed = program.is_used("--seed") ? static_cast<std::uint32_t>(program.get<int>("--seed"))
                                                          : test_common::MakeRandomSeed();
-    // Adding a `--format` slug without extending this dispatch table
-    // must fail loudly here, not fall through. Wire-format branches run
-    // first (cheap literal comparisons); anything unrecognised falls
-    // through to `FindRegexTemplateOption` for the shortlist lookup.
+    // Adding a `--format` slug without extending this dispatch
+    // must fail loudly here, not fall through. Wire-format
+    // branches run first (cheap literal comparisons); anything
+    // else falls through to `FindRegexTemplateOption`.
     test_common::LogFormat format;
     test_common::RecordSchema schema;
-    // When the resolver picks a regex-template synthesizer we keep the
-    // pointer so the default-filename branch below can reuse the slug.
-    // Wire-format branches leave it null.
+    // When the resolver picks a regex-template synthesizer we
+    // keep the pointer so the default-filename branch below can
+    // reuse the slug. Wire-format branches leave it null.
     const RegexTemplateOption *pickedTemplate = nullptr;
     if (formatName == "json")
     {
@@ -722,22 +722,23 @@ int main(int argc, char *argv[])
         PrintFormatShortlist(std::cerr);
         return 1;
     }
-    // Diagnostic label used by the startup / summary prints. For regex
-    // templates we normalise to the canonical slug so `format=` in log
-    // output is stable regardless of whether the user typed the slug or
-    // the full display name.
+    // Diagnostic label used by the startup / summary prints. For
+    // regex templates we normalise to the canonical slug so
+    // `format=` is stable whether the user typed the slug or the
+    // full display name.
     const std::string formatLabel = pickedTemplate == nullptr ? formatName : std::string(pickedTemplate->slug);
-    // Empty `--output` means "derive from the format": `generated.<ext>`
-    // for wire formats, `generated_<slug>.log` for regex-template slugs.
-    // The argparse default is empty so `--help` doesn't bias toward JSON.
+    // Empty `--output` means "derive from format": `generated.<ext>`
+    // for wire formats, `generated_<slug>.log` for regex-template
+    // slugs. The argparse default is empty so `--help` doesn't bias
+    // toward JSON.
     auto outputArg = program.get<std::string>("--output");
     if (outputArg.empty())
     {
         if (pickedTemplate != nullptr)
         {
-            // Slugs are constrained to `[a-z0-9-]+` by convention (see
-            // `REGEX_TEMPLATE_OPTIONS`) so they inline into a filename
-            // stem without further scrubbing.
+            // Slugs are `[a-z0-9-]+` by convention (see
+            // `REGEX_TEMPLATE_OPTIONS`) so they inline into a
+            // filename stem without further scrubbing.
             outputArg = "generated_" + std::string(pickedTemplate->slug) + std::string(format.suggestedExtension);
         }
         else

@@ -48,13 +48,13 @@ constexpr size_t STREAMING_READ_BUFFER_SIZE = 64 * 1024;
 /// thread and read concurrently by the GUI; `StreamLineSource`'s
 /// internal mutex + deque storage make that safe.
 ///
-/// @p newKeyBaseline forwards to `BatchCoalescer`: parsers that
-/// pre-intern keys into the sink's `KeyIndex` before calling this
-/// (e.g. `RegexParser`, whose schema is derived from the pattern's
-/// named capture groups at compile time) pass the snapshot taken
-/// *before* the intern step so the eagerly-interned columns still
-/// surface as `newKeys` on the first emitted batch. Parsers that
-/// add keys lazily (JSON, logfmt, CSV) leave this `std::nullopt`.
+/// @p newKeyBaseline forwards to `BatchCoalescer`. Parsers that
+/// pre-intern keys into the sink's `KeyIndex` before calling here
+/// (e.g. `RegexParser`, whose schema comes from the pattern's
+/// named capture groups) pass the snapshot taken *before* the
+/// intern step, so eagerly-interned columns still surface as
+/// `newKeys` on the first emitted batch. Parsers that add keys
+/// lazily (JSON, logfmt, CSV) leave this `std::nullopt`.
 template <class Decoder>
 void RunStreamingParseLoop(
     StreamLineSource &source,

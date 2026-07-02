@@ -284,9 +284,8 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent) : QWi
     sessionLayout->addWidget(new QLabel("Maximum Recent Sessions entries:"));
     sessionLayout->addWidget(mRecentSessionsMaxSpinBox);
 
-    // Regex template lifecycle (browse / create / edit / delete)
-    // lives in the dedicated `RegexTemplatesEditor` opened from
-    // `Settings -> Regex templates...`, not in Preferences.
+    // Regex template CRUD lives in `RegexTemplatesEditor`
+    // (`Settings -> Regex templates...`), not in Preferences.
 
     layout->addWidget(appearanceGroup);
     layout->addWidget(streamingGroup);

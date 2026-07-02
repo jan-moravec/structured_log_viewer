@@ -57,18 +57,18 @@ LogFormat Logfmt();
 // in the record's lex order; real fixtures should pass a schema.
 LogFormat Csv(RecordSchema schema = {});
 
-// Per-template synthesizers for the most-common shipped `RegexTemplate`s.
-// Each factory returns a `LogFormat` whose `writeLine` emits one line that
-// the corresponding template's pattern in `loglib::BuiltinRegexTemplates()`
-// parses without error. They reuse the canonical fields already populated
-// by `GenerateRandomLogRecord` (`timestamp` / `level` / `message`) and
-// synthesize any format-specific extras (client IP, HTTP verb, logger,
-// pid, ...) from small static pools using a per-line RNG seeded from the
-// record's `line_number` so runs stay deterministic under a pinned seed.
+// Per-template synthesizers for the most common shipped
+// `RegexTemplate`s. Each factory returns a `LogFormat` whose
+// `writeLine` emits a line that the corresponding template pattern
+// in `loglib::BuiltinRegexTemplates()` parses without error. They
+// reuse the canonical fields `GenerateRandomLogRecord` populates
+// (`timestamp` / `level` / `message`) and synthesize any format
+// extras (client IP, HTTP verb, logger, pid, ...) from small static
+// pools via a per-line RNG seeded from `line_number` — so runs
+// stay deterministic under a pinned seed.
 //
-// The `test_regex_template_generators` round-trip tests guard against
-// drift between each factory's output and its corresponding template
-// pattern.
+// The `test_regex_template_generators` round-trip tests guard
+// against drift between each factory's output and its template.
 
 // `Syslog (RFC3164)` -> "MMM DD HH:MM:SS <host> <program>[<pid>]: <message>".
 LogFormat SyslogRfc3164Format();

@@ -10,27 +10,23 @@
 #include <map>
 #include <optional>
 
-/// Owns the merged regex-template catalog (built-ins shipped in
-/// `loglib::BuiltinRegexTemplates()` plus user-supplied files
-/// discovered under `<AppDataLocation>/regex_templates/*.json`)
-/// and exposes import / export / reveal affordances mirroring
-/// `ThemeControl`.
+/// Owns the merged regex-template catalog: the built-ins from
+/// `loglib::BuiltinRegexTemplates()` plus user files under
+/// `<AppDataLocation>/regex_templates/*.json`. Mirrors
+/// `ThemeControl`'s import / export / reveal affordances.
 ///
 /// One instance per process, constructed by `main()` after
 /// `QApplication` is up (so `QStandardPaths::AppDataLocation`
-/// resolves correctly). On construction the registry scans disk
-/// and pushes the discovered user templates into the library via
-/// `loglib::SetExtraRegexTemplates`, so `RegexParser::IsValid` /
-/// `DetectRegexTemplate` see user templates in the auto-detect
-/// loop without any per-call plumbing on the parser side.
+/// resolves). Construction scans disk and pushes the user slice
+/// into the library through `loglib::SetExtraRegexTemplates`, so
+/// `RegexParser::IsValid` / `DetectRegexTemplate` see user
+/// templates without any per-call plumbing.
 ///
-/// User files shadow built-ins by `name` (mirroring
-/// `ThemeControl`'s convention): a JSON in the user dir whose
-/// `name` field matches a shipped template silently overrides it
-/// in the picker. The library-side probe order still puts
-/// built-ins ahead of extras tier-wise, so a user shadow doesn't
-/// reorder auto-detection — it just replaces the picker entry
-/// and adds the user pattern to the probe list.
+/// User files shadow built-ins by `name` (same convention as
+/// `ThemeControl`): a user JSON whose `name` matches a shipped
+/// template replaces the picker entry. The library still probes
+/// built-ins before extras tier-wise, so a shadow only changes
+/// the picker — it never reorders auto-detection.
 class RegexTemplateRegistry : public QObject
 {
     Q_OBJECT
@@ -39,8 +35,8 @@ public:
     explicit RegexTemplateRegistry(QObject *parent = nullptr);
 
     /// One row of `Available()`. `priority` and `autoDetect` are
-    /// surfaced so the picker can show "(probe priority N)" or
-    /// "(manual only)" hints without re-fetching the full
+    /// surfaced so the picker can render "(probe priority N)" /
+    /// "(manual only)" hints without loading the full
     /// `loglib::RegexTemplate`.
     struct Listing
     {
@@ -63,53 +59,50 @@ public:
     static QDir UserTemplatesDir();
 
     /// Open the user templates folder in the OS file manager.
-    /// Returns false on failure (typically the dir not existing
-    /// despite `UserTemplatesDir()`'s mkpath, or the desktop
-    /// service refusing — e.g. headless CI).
+    /// Returns false on failure (e.g. missing dir despite mkpath,
+    /// or the desktop service refusing on headless CI).
     static bool RevealUserTemplatesDir();
 
-    /// Atomically write @p tmpl to
-    /// `<UserTemplatesDir>/<name>.json` (the on-disk `name` field
-    /// is pinned to @p name) and refresh the index / library
-    /// extras. Throws `std::runtime_error` on invalid @p name
-    /// (see `SanitiseTemplateName`) or write failure.
+    /// Atomically write @p tmpl to `<UserTemplatesDir>/<name>.json`
+    /// (with the on-disk `name` field pinned to @p name), then
+    /// refresh the index and re-inject library extras. Throws
+    /// `std::runtime_error` on invalid @p name
+    /// (see `SanitiseTemplateName`) or on write failure.
     void SaveUserTemplate(const QString &name, loglib::RegexTemplate tmpl);
 
     /// Re-scan disk and re-inject user templates into the library.
-    /// Surfaced as a "Reload templates from disk" UX affordance
-    /// and called internally by `SaveUserTemplate`.
+    /// Exposed as the "Reload templates from disk" UX action and
+    /// called internally by `SaveUserTemplate`.
     void Reload();
 
-    /// Delete the user template named @p name from disk. Throws
-    /// `std::runtime_error` if @p name is not a known user
-    /// template (built-ins can never be deleted -- they live in
-    /// the binary), if the on-disk file is missing, or if the
-    /// unlink fails. Refreshes the index and re-injects extras on
-    /// success.
+    /// Delete the user template @p name from disk. Refreshes the
+    /// index on success. Throws `std::runtime_error` if @p name is
+    /// not a known user template (built-ins can't be deleted), if
+    /// the on-disk file is missing, or if unlink fails.
     void DeleteUserTemplate(const QString &name);
 
-    /// True iff @p name is a user template (and therefore safe to
-    /// edit / delete). Built-ins and unknown names return false.
+    /// True iff @p name is a user template (safe to edit / delete).
+    /// Built-ins and unknown names return false.
     [[nodiscard]] bool IsUserTemplate(const QString &name) const;
 
-    /// Validate @p name as a safe filename basename. Rejects path
-    /// separators, `..`, control characters, leading/trailing
+    /// Validate @p name as a safe filename basename: rejects path
+    /// separators, `..`, control chars, leading/trailing
     /// whitespace, trailing dot or space, and reserved Win32
-    /// device names. Returns @p name unchanged on success, throws
+    /// device names. Returns @p name on success; throws
     /// `std::runtime_error` on rejection. Same rules as
-    /// `ThemeControl::SanitiseThemeName` so the two registries
-    /// behave consistently.
+    /// `ThemeControl::SanitiseThemeName` for consistency.
     [[nodiscard]] static QString SanitiseTemplateName(const QString &name);
 
 signals:
     /// Emitted whenever the index is rebuilt (construction,
-    /// `Reload`, or `SaveUserTemplate`). Listeners (e.g.
-    /// `NetworkStreamDialog` while open) should repopulate.
+    /// `Reload`, `SaveUserTemplate`, `DeleteUserTemplate`).
+    /// Listeners (e.g. an open `NetworkStreamDialog`) should
+    /// repopulate.
     void templatesChanged();
 
 private:
     void Discover();
-    /// Push the user-template slice to `loglib::SetExtraRegexTemplates`
+    /// Push the user slice through `loglib::SetExtraRegexTemplates`
     /// so the parser's auto-detect probe sees user patterns in
     /// priority order. Called by `Discover`.
     void InjectExtrasIntoLoglib();

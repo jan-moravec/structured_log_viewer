@@ -109,13 +109,12 @@ int main(int argc, char *argv[])
     // `QApplication`.
     ThemeControl themeControl;
 
-    // Same lifetime story for the regex-template registry: its
-    // constructor scans `<AppDataLocation>/regex_templates/` and
-    // pushes the user slice into `loglib::SetExtraRegexTemplates`,
-    // so the auto-detect probe surface sees user templates from
-    // the first file the user drops on the window. Constructed
-    // here (not in `MainWindow`) so peer windows opened later
-    // share one merged registry / one library injection.
+    // Same lifetime story for the regex-template registry.
+    // Its constructor scans `<AppDataLocation>/regex_templates/`
+    // and hands the user slice to `loglib::SetExtraRegexTemplates`
+    // so the auto-detect probe sees user templates immediately.
+    // One registry per process (not per window) so peer windows
+    // share the same merged catalog and library injection.
     RegexTemplateRegistry regexTemplateRegistry;
     // Best-effort cleanup of the legacy `appearance/*` keys from
     // the pre-theme build. The `contains()` gate keeps the

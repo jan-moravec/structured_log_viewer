@@ -48,11 +48,12 @@ constexpr size_t IS_VALID_PROBE_BYTES = 16 * 1024;
 /// disqualifying short files.
 constexpr size_t IS_VALID_MIN_MATCHES = 2;
 
-/// PCRE2 backtracking limits applied to every match. Defaults (10M /
-/// 10M) are far too permissive for untrusted patterns — a user-typed
-/// `.*.*.*` against a long line could otherwise stall the parse for
-/// seconds. These values let well-behaved patterns (lnav / grok) run
-/// untouched and surface a `ParsedLineError` for pathological inputs.
+/// PCRE2 backtracking limits applied to every match. The defaults
+/// (10M / 10M) are too permissive for untrusted patterns —
+/// something like `.*.*.*` against a long line could otherwise
+/// stall the parse for seconds. These values leave well-behaved
+/// patterns (lnav / grok) untouched and surface a `ParsedLineError`
+/// on pathological inputs.
 constexpr uint32_t PCRE2_MATCH_LIMIT = 100'000;
 constexpr uint32_t PCRE2_DEPTH_LIMIT = 1'000;
 
@@ -115,18 +116,18 @@ std::string FormatPcre2Error(int errcode)
 
 /// Schema of a compiled pattern: every named capture group, sorted
 /// by `groupIndex` so the schema reads in pattern-source order
-/// rather than the alphabetical order PCRE2 returns from
-/// `pcre2_pattern_info(PCRE2_INFO_NAMETABLE, ...)`. The KeyId at
-/// `[i]` is `keys.GetOrInsert(groupNames[i])`; the worker indexes
-/// into the ovector at `groupIndices[i] * 2`. Pattern-source order
-/// matters for two consumer-visible properties:
-///  - column order in `LogTable` follows KeyId allocation order,
-///    so columns appear left-to-right the way the user wrote them
-///    (e.g. CLF: `clientip ident auth timestamp verb ...`, not
+/// (PCRE2 returns them alphabetically via
+/// `pcre2_pattern_info(PCRE2_INFO_NAMETABLE, ...)`). The KeyId at
+/// `[i]` is `keys.GetOrInsert(groupNames[i])`; workers index into
+/// the ovector at `groupIndices[i] * 2`. Source order is
+/// consumer-visible in two places:
+///  - column order in `LogTable` follows KeyId allocation, so
+///    columns appear left-to-right as the user wrote them (e.g.
+///    CLF: `clientip ident auth timestamp verb ...`, not
 ///    alphabetical `auth bytes clientip ...`).
-///  - `RegexParser::ToString` joins values in pattern-source order
-///    so a regenerated line at least has its fields in the same
-///    slots the original line did.
+///  - `RegexParser::ToString` joins values in source order so a
+///    regenerated line has its fields in the same slots as the
+///    original.
 struct PatternSchema
 {
     std::vector<std::string> groupNames;
@@ -138,12 +139,12 @@ class CompiledPattern
 public:
     CompiledPattern() = default;
 
-    /// Returns true on success; @p errorOut is populated on failure
+    /// Returns true on success. On failure, populates @p errorOut
     /// with a human-readable message (used in parse-time error
-    /// reporting). On success the pattern is fully ready: JIT-compiled
-    /// where the platform supports it (silently falls back to the
-    /// interpreted matcher otherwise), with a match context that
-    /// carries the project's match/depth limits.
+    /// reporting). On success the pattern is fully ready:
+    /// JIT-compiled where the platform allows (silently falls back
+    /// to the interpreted matcher otherwise), with a match context
+    /// carrying the project's match/depth limits.
     bool Compile(std::string_view pattern, std::string &errorOut)
     {
         mPatternString.assign(pattern);
@@ -165,16 +166,16 @@ public:
         }
         mCode.reset(raw);
 
-        // JIT is a hot-path optimisation. A failure here is non-fatal:
-        // matching falls back to the interpreted engine, which is
-        // correct just slower. Recorded so unit tests can assert JIT
-        // was actually used in CI.
+        // JIT is a hot-path optimisation; failure here is
+        // non-fatal — matching falls back to the interpreted engine
+        // (correct but slower). Recorded so unit tests can assert
+        // JIT was actually used in CI.
         const int jitRc = pcre2_jit_compile(mCode.get(), PCRE2_JIT_COMPLETE);
         mJitCompiled = (jitRc == 0);
 
-        // Match context shared read-only across workers; carries the
-        // match/depth limits so a malicious pattern can't burn CPU
-        // for seconds on a single line.
+        // Match context shared read-only across workers; carries
+        // the match/depth limits so a malicious pattern can't burn
+        // CPU for seconds on a single line.
         pcre2_match_context *ctxRaw = pcre2_match_context_create(/*gcontext*/ nullptr);
         if (ctxRaw == nullptr)
         {
@@ -233,9 +234,10 @@ public:
         return mJitCompiled;
     }
 
-    /// Allocate per-worker match data sized to this pattern's capture
-    /// count. PCRE2 documents `pcre2_match_data_create_from_pattern`
-    /// as the canonical sizing call. Ownership returned to the caller.
+    /// Allocate per-worker match data sized to this pattern's
+    /// capture count. PCRE2 documents
+    /// `pcre2_match_data_create_from_pattern` as the canonical
+    /// sizing call. Caller owns the returned handle.
     [[nodiscard]] Pcre2MatchDataPtr NewMatchData() const
     {
         if (mCode == nullptr)
@@ -279,13 +281,13 @@ private:
             mSchema.groupIndices.push_back(groupIndex);
         }
 
-        // Re-sort into pattern-source order. PCRE2 hands us the name
-        // table sorted alphabetically by name; sorting by group index
-        // here is what makes columns and `ToString` follow the order
-        // the user wrote in the pattern (see `PatternSchema` doc).
-        // `groupNames` and `groupIndices` are parallel arrays so we
-        // permute them together via an index vector — cheap, runs
-        // once at compile time.
+        // Re-sort into pattern-source order. PCRE2 gives us the
+        // name table sorted alphabetically by name; sorting by
+        // group index here is what makes columns and `ToString`
+        // follow the order the user wrote (see `PatternSchema`
+        // doc). `groupNames` and `groupIndices` are parallel
+        // arrays, so we permute them together via an index vector
+        // — cheap, once at compile time.
         std::vector<size_t> order(mSchema.groupIndices.size());
         std::iota(order.begin(), order.end(), 0U);
         std::sort(order.begin(), order.end(), [this](size_t lhs, size_t rhs) {
@@ -324,52 +326,48 @@ struct CompiledTemplate
 };
 
 /// Compiled snapshot of the merged regex-template registry,
-/// pinned to a specific generation. Holds the source-side
-/// `RegexTemplate` storage alive (via `source`) so the
-/// `CompiledTemplate::source` pointers stay valid even if a
-/// concurrent `SetExtraRegexTemplates` call rebuilds the
-/// registry — readers using this snapshot keep working until
-/// they release their reference.
+/// pinned to a specific generation. `source` keeps the underlying
+/// `RegexTemplate` storage alive so the `CompiledTemplate::source`
+/// pointers stay valid even if a concurrent
+/// `SetExtraRegexTemplates` call rebuilds the registry — readers
+/// using this snapshot keep working until they drop their reference.
 struct CompiledProbeSnapshot
 {
     /// The merged template list this snapshot was compiled
-    /// against — built-ins first (sorted by `priority`) then
-    /// extras (sorted by `priority`), the ordering
-    /// `regex_templates.cpp` guarantees. Kept around to anchor
-    /// `compiled[i].source` for the life of the snapshot.
+    /// against: built-ins first (sorted by `priority`) then extras
+    /// (sorted by `priority`), matching `regex_templates.cpp`.
+    /// Retained to keep `compiled[i].source` valid.
     std::shared_ptr<const std::vector<RegexTemplate>> source;
-    /// Compiled patterns in probe order. Templates with
-    /// `autoDetect=false` are excluded entirely; the remainder
-    /// preserve the source list's ordering verbatim (see the
-    /// two-tier invariant on `SetExtraRegexTemplates`).
+    /// Compiled patterns in probe order. `autoDetect=false`
+    /// templates are excluded entirely; the rest preserve source
+    /// ordering (see the two-tier invariant on
+    /// `SetExtraRegexTemplates`).
     std::vector<CompiledTemplate> compiled;
     /// `internal::TemplatesGeneration()` value this snapshot was
-    /// built against. The probe re-acquires when the generation
-    /// counter advances.
+    /// built against. The probe re-acquires when the counter
+    /// advances.
     uint64_t generation = 0;
 };
 
 /// Lazy, thread-safe singleton that mirrors the merged template
-/// registry. Built on first `IsValid` / `DetectRegexTemplate`
-/// call and rebuilt whenever `loglib::SetExtraRegexTemplates`
-/// bumps the generation counter; the compile cost (one
-/// `pcre2_compile` + `pcre2_jit_compile` per entry) is amortised
-/// across every probe between rebuilds.
+/// registry. Built on first `IsValid` / `DetectRegexTemplate` and
+/// rebuilt whenever `SetExtraRegexTemplates` bumps the generation
+/// counter. The compile cost (one `pcre2_compile` +
+/// `pcre2_jit_compile` per entry) is amortised across every probe
+/// between rebuilds.
 ///
-/// Probe order matches the source list exactly: `autoDetect=false`
-/// templates are excluded, everything else keeps its position.
-/// `regex_templates.cpp` guarantees the source list arrives as
-/// (built-ins by priority, then extras by priority), so no local
-/// re-sort is needed — and importantly, re-sorting here by
-/// `priority` alone would break the two-tier invariant on
-/// `SetExtraRegexTemplates` (a user template with a smaller
-/// `priority` than a built-in would then probe first, silently
-/// stealing matches from the shipped catalog).
+/// Probe order matches the source list exactly (excluding
+/// `autoDetect=false` entries). `regex_templates.cpp` already
+/// delivers the list as (built-ins by priority, then extras by
+/// priority); re-sorting here by `priority` alone would break the
+/// two-tier invariant on `SetExtraRegexTemplates` — a user
+/// template with a smaller priority would probe first and
+/// silently steal matches from a shipped template.
 std::shared_ptr<const CompiledProbeSnapshot> CurrentProbeSnapshot()
 {
-    // Read-mostly under steady state: the parser's hot path
-    // re-enters this on every probe, so the fast path is a single
-    // shared_ptr load + atomic counter read.
+    // Read-mostly in steady state: the parser hot path re-enters
+    // on every probe, so the fast path is a single shared_ptr load
+    // + atomic counter read.
     static std::shared_mutex mutex;
     static std::shared_ptr<const CompiledProbeSnapshot> cached;
 
@@ -400,8 +398,8 @@ std::shared_ptr<const CompiledProbeSnapshot> CurrentProbeSnapshot()
             std::string err;
             (void)c.compiled.Compile(tmpl.pattern, err);
             // A failed compile here is a programmer error in the
-            // registry — drop the entry rather than crashing so
-            // auto-detect keeps working for the rest of the formats.
+            // registry. Drop the entry rather than crash so
+            // auto-detect keeps working for the rest.
             if (c.compiled.IsReady())
             {
                 fresh->compiled.push_back(std::move(c));
@@ -411,10 +409,10 @@ std::shared_ptr<const CompiledProbeSnapshot> CurrentProbeSnapshot()
 
     std::unique_lock<std::shared_mutex> write(mutex);
     // Re-check: another thread may have rebuilt against the same
-    // generation between when we released the read lock and took
-    // the write lock; if so, prefer their snapshot to avoid two
-    // probes seeing different compiled instances of the same
-    // template (cheaper than ours, harmless either way).
+    // generation between the read lock and the write lock. Prefer
+    // their snapshot so two probes don't see different compiled
+    // instances of the same template (harmless either way,
+    // cheaper to skip our copy).
     if (cached && cached->generation == generation)
     {
         return cached;
@@ -425,18 +423,17 @@ std::shared_ptr<const CompiledProbeSnapshot> CurrentProbeSnapshot()
 
 /// True iff @p code matches @p line in full. `PCRE2_ANCHORED |
 /// PCRE2_ENDANCHORED` is passed unconditionally so an unanchored
-/// user template (one without explicit `^...$`) cannot claim a
-/// probe match on a substring — auto-detect must mean "the whole
-/// line is a record for this template", never "the pattern is
-/// mentioned somewhere in the line". The shipped built-ins are all
-/// explicitly `^...$`-anchored, so this flag pair is a no-op for
-/// them; it exists purely to keep user templates honest.
-/// `PatternMatchesLine` (used by the editor's Validate button) uses
-/// the same flags for the same reason — the two must stay aligned
-/// or a template that self-tests green would fail the probe (or
-/// vice-versa). A per-call `pcre2_match_data` is used because the
-/// cache is shared across the process; allocating one tiny block
-/// is cheap next to the match itself.
+/// user template (no explicit `^...$`) cannot claim a probe match
+/// on a substring — auto-detect must mean "the whole line is a
+/// record for this template", never "the pattern appears somewhere
+/// in the line". The shipped built-ins are all `^...$`-anchored,
+/// so this flag pair is a no-op for them; it exists to keep user
+/// templates honest. `PatternMatchesLine` (Validate button in the
+/// editor) uses the same flags — the two callers **must** stay
+/// aligned, otherwise a template that self-tests green could fail
+/// the probe (or vice-versa). A per-call `pcre2_match_data` is
+/// used because the cache is process-wide; allocating one tiny
+/// block is cheap next to the match itself.
 bool MatchesFullyForProbe(const CompiledPattern &cp, std::string_view line)
 {
     const Pcre2MatchDataPtr md = cp.NewMatchData();
@@ -458,21 +455,20 @@ bool MatchesFullyForProbe(const CompiledPattern &cp, std::string_view line)
     return rc > 0;
 }
 
-/// UTF-8 BOM. Some editors (Notepad, older PowerShell) prepend it to
-/// text files; with the BOM intact the `^date` / `^IP` / `^[` anchors
-/// in the built-in templates can't bind to position 0 and auto-detect
-/// silently refuses every file. Stripped from the first probe line
-/// (only) to keep the rest of the byte stream untouched.
+/// UTF-8 BOM. Some editors (Notepad, older PowerShell) prepend it
+/// to text files; with the BOM intact the `^date` / `^IP` / `^[`
+/// anchors in the built-in templates can't bind to position 0 and
+/// auto-detect silently refuses every file. Stripped from the first
+/// probe line only, leaving the rest of the byte stream untouched.
 constexpr std::string_view UTF8_BOM = "\xEF\xBB\xBF";
 
 /// File-level probe shared by `IsValid` and `DetectRegexTemplate`.
-/// Walks the merged auto-detect registry (built-ins + any user
-/// templates injected via `SetExtraRegexTemplates` that have
-/// `autoDetect=true`) in probe order and returns the first entry
-/// that matches at least `IS_VALID_MIN_MATCHES` of the first
-/// ~16 KiB worth of non-blank lines, or nullptr. Built-ins are
-/// probed before user templates by construction of the source list
-/// — see `CompiledProbeSnapshot`.
+/// Walks the merged auto-detect registry (built-ins + any
+/// `autoDetect=true` extras from `SetExtraRegexTemplates`) in
+/// probe order and returns the first entry that matches at least
+/// `IS_VALID_MIN_MATCHES` of the first ~16 KiB of non-blank lines,
+/// or nullptr. Built-ins probe before user templates by
+/// construction — see `CompiledProbeSnapshot`.
 const RegexTemplate *ProbeAutoDetectTemplates(const std::filesystem::path &file)
 {
     std::ifstream stream(file);
@@ -510,8 +506,8 @@ const RegexTemplate *ProbeAutoDetectTemplates(const std::filesystem::path &file)
 
     if (probeLines.size() < IS_VALID_MIN_MATCHES)
     {
-        // Pattern matching is brittle on a 1-line file; refuse rather
-        // than declare a winner from a coin flip.
+        // Pattern matching is brittle on a 1-line file; refuse
+        // rather than declare a winner from a coin flip.
         return nullptr;
     }
 
@@ -560,17 +556,19 @@ std::vector<KeyId> InternSchemaKeys(const PatternSchema &schema, KeyIndex &keys)
 // Match-and-emit: shared between the static and streaming pipelines.
 // ---------------------------------------------------------------------
 
-/// Run one `pcre2_match` against @p line and emit the captured named
-/// groups as compact values. `out` is appended in source order
-/// (caller sorts before constructing the `LogLine`). The decoder
-/// reuses `ClassifyBareScalar` so numeric captures get typed (status
-/// codes, byte counts, ...) — mirroring CSV's bare-cell typing.
+/// Run one `pcre2_match` against @p line and emit the captured
+/// named groups as compact values. `out` is appended in source
+/// order (caller sorts before constructing the `LogLine`). The
+/// decoder reuses `ClassifyBareScalar` so numeric captures get
+/// typed (status codes, byte counts, ...), matching CSV's
+/// bare-cell typing.
 ///
-/// `fileBegin`/`fileSize` enable the zero-copy `MmapSlice` fast path
-/// for static-file parsing; streaming callers pass `nullptr`/0.
-/// `errorOut` is populated on no-match / match-limit error and the
-/// function returns false; the caller decides whether to surface it
-/// as a `ParsedLineError` or a `LineDecodeResult::Error`.
+/// `fileBegin`/`fileSize` enable the zero-copy `MmapSlice` fast
+/// path for static parsing; streaming callers pass `nullptr`/0.
+/// `errorOut` is populated on no-match / match-limit / other
+/// errors and the function returns false; the caller decides
+/// whether to surface it as a `ParsedLineError` or a
+/// `LineDecodeResult::Error`.
 bool MatchLineAndEmit(
     const CompiledPattern &compiled,
     pcre2_match_data *matchData,
@@ -583,12 +581,11 @@ bool MatchLineAndEmit(
     std::string &errorOut
 )
 {
-    // Self-contained contract: callers used to have to clear `out`
-    // and `errorOut` themselves, which made the function brittle if
-    // a future caller forgot to reset on a previous error iteration.
-    // Clearing here keeps the existing fast paths (the static and
-    // streaming callers both already clear on their own hot loop,
-    // so this is a no-op for them) without trusting the call site.
+    // Self-contained contract: callers previously had to clear
+    // `out` and `errorOut` themselves — brittle if any future
+    // caller ever forgets on an error iteration. Clearing here
+    // is a no-op for the current hot paths (both static and
+    // streaming clear locally) but doesn't trust the call site.
     out.clear();
     errorOut.clear();
 
@@ -634,16 +631,16 @@ bool MatchLineAndEmit(
         if (startOff == PCRE2_UNSET || endOff == PCRE2_UNSET || endOff < startOff)
         {
             // Optional groups (e.g. `(?<pid>\d+)?`) that did not
-            // participate in the match are simply absent from the
-            // row; lookups return monostate.
+            // participate are simply absent from the row; lookups
+            // return monostate.
             continue;
         }
         const std::string_view captured(line.data() + startOff, endOff - startOff);
         if (captured.empty())
         {
-            // Same convention as CSV: an empty capture is "field
-            // present but blank" — drop it so it doesn't bloat the
-            // per-line array.
+            // Same convention as CSV: an empty capture is
+            // "field present but blank" — drop it so it doesn't
+            // bloat the per-line array.
             continue;
         }
         internal::CompactLogValue compact =
@@ -661,9 +658,10 @@ struct RegexWorkerState
 {
     Pcre2MatchDataPtr matchData;
 
-    /// Lazily attach to @p compiled on first use. `enumerable_thread_specific`
-    /// default-constructs us; we can't allocate at construction time because
-    /// the worker doesn't know which compiled pattern to size against.
+    /// Lazily attach to @p compiled on first use.
+    /// `enumerable_thread_specific` default-constructs us, so we
+    /// can't allocate at construction: the worker doesn't yet
+    /// know which compiled pattern to size against.
     void Ensure(const CompiledPattern &compiled)
     {
         if (!matchData)
@@ -673,9 +671,9 @@ struct RegexWorkerState
     }
 };
 
-/// Stage A token: a contiguous mmap range covering complete lines.
-/// Identical to `CsvByteRange`; if regex grows a parser-specific
-/// per-token field later it stays decoupled from CSV.
+/// Stage A token: a contiguous mmap range covering complete
+/// lines. Identical to `CsvByteRange`; kept separate so a future
+/// regex-specific per-token field stays decoupled from CSV.
 struct RegexByteRange
 {
     uint64_t batchIndex = 0;
@@ -694,7 +692,7 @@ std::string_view StripCr(std::string_view s) noexcept
 }
 
 /// Strip a leading UTF-8 BOM from @p sv if present. Mirrors CSV's
-/// helper; only valid at the start of the very first line of a file.
+/// helper; only valid on the very first line of a file.
 std::string_view StripBom(std::string_view sv) noexcept
 {
     if (sv.starts_with(UTF8_BOM))
@@ -744,19 +742,19 @@ void DecodeRegexBatch(
 
         std::string_view line(lineStart, static_cast<size_t>(lineEnd - lineStart));
         line = StripCr(line);
-        // Strip a leading UTF-8 BOM if and only if this line starts
-        // at file byte 0 — keeps `^...` anchors in user / built-in
-        // patterns binding after a BOM-prefixed editor save. Stage A
-        // emits batches at line boundaries, so only the first line
-        // of batch 0 can ever match this branch.
+        // Strip a leading UTF-8 BOM only when this line starts at
+        // file byte 0. Keeps `^...` anchors in user / built-in
+        // patterns binding after a BOM-prefixed editor save.
+        // Stage A emits batches on line boundaries, so only the
+        // first line of batch 0 can ever match here.
         if (lineStart == fileBegin)
         {
             line = StripBom(line);
         }
 
-        // Pad by 1 on an unterminated last line so the final byte
-        // isn't lost on `LogFile::GetLine` round-trips. Matches the
-        // CSV pipeline.
+        // Pad by 1 on an unterminated last line so the final
+        // byte isn't lost on `LogFile::GetLine` round-trips
+        // (matches the CSV pipeline).
         const uint64_t nextOffset = static_cast<uint64_t>(cursor - fileBegin) + (newline == nullptr ? 1U : 0U);
         parsed.localLineOffsets.push_back(nextOffset);
 
@@ -777,8 +775,8 @@ void DecodeRegexBatch(
             continue;
         }
 
-        // `LogLine` ctor asserts ascending KeyIds; name-table order
-        // is alphabetical, not KeyId order.
+        // `LogLine` ctor asserts ascending KeyIds; the name-table
+        // ordering here is source order, not KeyId order.
         std::sort(values.begin(), values.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
 
         LogLine logLine(std::move(values), keys, source, relativeLineNumber - 1);
@@ -818,9 +816,9 @@ public:
         (void)keyCache; // ditto.
         out.clear();
         outOwnedArena.clear();
-        // Strip a leading UTF-8 BOM from the very first line of the
-        // stream. The flag latches once so a literal `\xEF\xBB\xBF`
-        // appearing inside the body of a later line stays intact.
+        // Strip a leading UTF-8 BOM only on the first line of the
+        // stream. The flag latches so a literal `\xEF\xBB\xBF`
+        // inside a later line stays intact.
         if (!mSawFirstLine)
         {
             line = StripBom(line);
@@ -828,9 +826,9 @@ public:
         }
         if (line.empty())
         {
-            // The streaming loop already filters blank lines, so this
-            // branch is defensive; `Skip` (no row, no error) is the
-            // semantically correct return if it is ever reached.
+            // The streaming loop already filters blank lines;
+            // this branch is defensive. `Skip` (no row, no error)
+            // is the right result if it's ever reached.
             return internal::LineDecodeResult::Skip;
         }
         if (!MatchLineAndEmit(
@@ -858,8 +856,8 @@ static_assert(
 // Helpers to extract the active pattern.
 // ---------------------------------------------------------------------
 
-/// Resolve the pattern to use for this parse. `explicitPattern` (the
-/// pinned-pattern constructor / advanced overload) wins; otherwise we
+/// Resolve the pattern for this parse. `explicitPattern` (from
+/// the pinned-pattern ctor or advanced overload) wins; otherwise
 /// fall back to the configuration snapshot's `Source::regexPattern`.
 std::string ResolvePattern(const std::optional<std::string> &explicitPattern, const ParserOptions &options)
 {
@@ -875,14 +873,11 @@ std::string ResolvePattern(const std::optional<std::string> &explicitPattern, co
 }
 
 /// Single-error terminal pass: honour the sink contract (one
-/// `OnBatch` before `OnFinished`) when we can't even start a pipeline
-/// — empty pattern, bad pattern, missing named groups. @p streaming
-/// picks the flush thresholds that match the surrounding pipeline so
-/// the trailing batch's coalescer settings line up with the rest of
-/// the parse (the constants only affect threshold-driven mid-parse
-/// flushes; for a single-batch error pass both presets behave
-/// identically, but the symmetry keeps the call sites obviously
-/// consistent).
+/// `OnBatch` before `OnFinished`) when we can't start a pipeline
+/// at all — empty pattern, bad pattern, missing named groups.
+/// @p streaming picks flush thresholds that match the surrounding
+/// pipeline. Both presets behave identically for a single-batch
+/// error pass, but the symmetry keeps call sites consistent.
 void EmitErrorAndFinish(
     LogParseSink &sink, std::string_view message, std::optional<size_t> newKeyBaseline, bool streaming = false
 )
@@ -915,15 +910,15 @@ bool RegexParser::IsValid(const std::filesystem::path &file) const
 
 void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
-    // Capture the `KeyIndex` cursor *before* any potential intern.
-    // Forwarded to `EmitErrorAndFinish` on the error paths (so the
-    // sink-side new-key bookkeeping starts at the right place even
-    // on failure) and to `RunStreamingParseLoop` on success so the
-    // pre-interned named-group columns still surface as `newKeys` on
-    // the first emitted batch. Without this baseline,
+    // Capture the `KeyIndex` cursor *before* any intern happens.
+    // Forwarded to `EmitErrorAndFinish` on error paths so sink
+    // new-key bookkeeping starts at the right place even on
+    // failure, and to `RunStreamingParseLoop` on success so
+    // pre-interned named-group columns still surface as `newKeys`
+    // on the first emitted batch. Without this baseline
     // `BatchCoalescer` would start counting from the post-intern
     // size and `LogTable::AppendBatch` would never create the
-    // columns -- live tail and network streams would ingest rows
+    // columns — live tail and network streams would ingest rows
     // with no visible columns.
     const size_t newKeyBaseline = sink.Keys().Size();
 
@@ -960,13 +955,13 @@ void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, P
 
 void RegexParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
-    // Forward `mExplicitPattern` as an `optional<string_view>` (not
-    // `string_view`) so the advanced overload can distinguish "no
-    // pattern pinned" (fall back to options) from "pinned to an
-    // empty pattern" (fail closed). Collapsing both to an empty
-    // `string_view` would let a parser explicitly constructed with
-    // `""` silently pick up the configuration's `regexPattern`,
-    // diverging from the `StreamLineSource` overload's behaviour.
+    // Forward `mExplicitPattern` as `optional<string_view>` (not
+    // `string_view`) so the advanced overload can distinguish
+    // "no pattern pinned" (fall back to options) from "pinned to
+    // empty" (fail closed). Collapsing both to an empty
+    // `string_view` would let a parser explicitly built with `""`
+    // silently pick up the configuration's `regexPattern`,
+    // diverging from the streaming overload's behaviour.
     std::optional<std::string_view> explicitView;
     if (mExplicitPattern.has_value())
     {
@@ -1000,11 +995,11 @@ void RegexParser::ParseStreaming(
         return;
     }
 
-    // Compile once on the orchestrator thread; the pipeline shares
-    // the compiled code read-only across all Stage B workers.
-    // `RunStaticParserPipeline` runs synchronously (it joins every
-    // TBB worker before returning), so a stack value captured by
-    // reference outlives every concurrent use — no shared_ptr or
+    // Compile once on the orchestrator thread; the pipeline
+    // shares the compiled code read-only across Stage B workers.
+    // `RunStaticParserPipeline` runs synchronously (joins every
+    // TBB worker before returning) so a stack value captured by
+    // reference outlives all concurrent uses — no shared_ptr or
     // heap allocation needed.
     CompiledPattern compiled;
     std::string compileError;
@@ -1079,9 +1074,9 @@ std::string RegexParser::ToString(const LogLine &line) const
     {
         return {};
     }
-    // Best effort: regex is not invertible. Concatenate values in
-    // KeyId order separated by a single space — same convention as
-    // `LogfmtParser::ToString` for monostate / unknown fields.
+    // Best effort: regex isn't invertible. Concatenate values in
+    // KeyId order separated by a single space — same convention
+    // as `LogfmtParser::ToString` for monostate / unknown fields.
     std::string out;
     bool first = true;
     for (const auto &kv : values)
@@ -1127,12 +1122,12 @@ std::string RegexParser::ToString(const LogLine &line) const
 
 std::optional<RegexTemplate> DetectRegexTemplate(const std::filesystem::path &file)
 {
-    // Copy the matched template out of the snapshot before returning
-    // so the caller can outlive the pinned snapshot without worrying
-    // about a concurrent `SetExtraRegexTemplates` invalidating a raw
-    // pointer. `RegexTemplate` is a handful of short strings — the
-    // copy cost is negligible next to the file I/O the probe just
-    // paid for.
+    // Copy the matched template out of the snapshot before
+    // returning so the caller can outlive it without worrying
+    // about a concurrent `SetExtraRegexTemplates` invalidating a
+    // raw pointer. `RegexTemplate` is a handful of short strings
+    // — the copy cost is negligible next to the file I/O the
+    // probe just paid for.
     if (const RegexTemplate *tmpl = ProbeAutoDetectTemplates(file); tmpl != nullptr)
     {
         return *tmpl;
@@ -1178,12 +1173,11 @@ bool PatternMatchesLine(std::string_view pattern, std::string_view line)
         return false;
     }
     // `PCRE2_ANCHORED | PCRE2_ENDANCHORED` mirrors the probe loop
-    // (see `MatchesFullyForProbe` in `ProbeAutoDetectTemplates`):
-    // a partial mid-line match is not what a `RegexParser` would
-    // emit for this line, so it should fail the self-test too. The
-    // two callers *must* stay in sync — if you loosen one, loosen
-    // the other, or user templates that pass Validate will silently
-    // fail the probe (or vice-versa).
+    // (see `MatchesFullyForProbe` above): a partial mid-line
+    // match isn't what a `RegexParser` would emit for this line,
+    // so it should fail the self-test too. The two callers
+    // **must** stay in sync — loosen one, loosen the other, or
+    // Validate would pass while the probe fails (or vice-versa).
     const int rc = pcre2_match(
         compiled.Code(),
         reinterpret_cast<PCRE2_SPTR>(line.data()),

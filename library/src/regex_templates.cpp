@@ -28,8 +28,8 @@ namespace
 
 /// Parse one embedded JSON blob into a `RegexTemplate`. Throws
 /// `std::runtime_error` on parse failure with the source filename
-/// woven into the diagnostic. Caller treats the throw as "drop this
-/// entry but keep going" so one malformed shipped file can't wedge
+/// in the diagnostic. Caller treats the throw as "drop this entry
+/// but keep going" so one malformed shipped file can't wedge
 /// auto-detection for the rest of the catalog.
 RegexTemplate ParseEmbeddedOrThrow(const internal::EmbeddedRegexTemplate &entry)
 {
@@ -46,20 +46,18 @@ RegexTemplate ParseEmbeddedOrThrow(const internal::EmbeddedRegexTemplate &entry)
 }
 
 /// The merged probe registry: built-ins first (sorted by
-/// `priority`), then user-supplied extras (also sorted by
-/// `priority`). Two-tier order is deliberate so a careless
-/// user-priority can never steal a probe match from a shipped
-/// template; the priority sort *within* each tier matches the
-/// documented "lower probes first" semantics.
+/// `priority`), then user extras (also sorted by `priority`).
+/// The two-tier order is deliberate — a careless user priority
+/// can never steal a probe match from a shipped template. Within
+/// each tier the sort matches "lower probes first".
 struct MergedRegistry
 {
     std::vector<RegexTemplate> builtins;
     std::vector<RegexTemplate> extras;
-    /// Stable, owning flattened view: built-ins then extras, in
-    /// the order the probe loop should see them. A shared_ptr to
-    /// *this* lets readers pin the storage for the duration of an
-    /// iteration even while a concurrent writer prepares a fresh
-    /// `MergedRegistry`.
+    /// Stable, owning flattened view — built-ins then extras, in
+    /// probe order. A `shared_ptr` to *this* lets readers pin the
+    /// storage for a whole iteration even while a writer prepares
+    /// a fresh `MergedRegistry`.
     std::vector<RegexTemplate> ordered;
 };
 
@@ -78,10 +76,10 @@ std::shared_mutex &RegistryMutex()
     return m;
 }
 
-/// Lazily built once on first read and rebuilt whenever
-/// `SetExtraRegexTemplates` swaps in a new extras set. Protected by
-/// `RegistryMutex()`. Held via `shared_ptr` so a concurrent reader
-/// taking a copy under the read lock is unaffected by a subsequent
+/// Lazily built on first read and rebuilt whenever
+/// `SetExtraRegexTemplates` swaps in a new extras set. Protected
+/// by `RegistryMutex()`. Held via `shared_ptr` so a reader that
+/// took a copy under the read lock is unaffected by a later
 /// rebuild.
 std::shared_ptr<const MergedRegistry> &SharedRegistrySlot()
 {
@@ -113,11 +111,10 @@ std::shared_ptr<const MergedRegistry> RebuildLocked()
         }
         catch (const std::exception &)
         {
-            // Programmer error in the shipped catalog; skip the
-            // entry rather than crashing so auto-detect keeps
-            // working for the rest. The CI sweep in
-            // `test_regex_templates.cpp` would have caught it
-            // before this could ever reach a user.
+            // Programmer error in the shipped catalog. Skip and
+            // keep auto-detect working for the rest; the CI sweep
+            // in `test_regex_templates.cpp` catches this before it
+            // can reach a user.
         }
     }
     std::stable_sort(
@@ -144,9 +141,9 @@ std::shared_ptr<const MergedRegistry> RebuildLocked()
     }
 
     SharedRegistrySlot() = fresh;
-    // Bump the generation counter *after* the slot is updated so
-    // the parser, if it reads the counter and then the snapshot,
-    // can never see an old snapshot under a new generation.
+    // Bump the counter *after* updating the slot so a parser that
+    // reads counter-then-snapshot can never see an old snapshot
+    // under a new generation.
     GenerationCounter().fetch_add(1, std::memory_order_release);
     return fresh;
 }
@@ -161,9 +158,8 @@ std::shared_ptr<const MergedRegistry> CurrentRegistry()
         }
     }
     std::unique_lock<std::shared_mutex> write(RegistryMutex());
-    // Re-check under the write lock; another thread may have built
-    // the registry between dropping the read lock and acquiring the
-    // write lock.
+    // Re-check under the write lock; another thread may have
+    // built the registry between the read and write locks.
     if (auto snap = SharedRegistrySlot())
     {
         return snap;
@@ -203,11 +199,10 @@ std::string SerializeRegexTemplate(const RegexTemplate &tmpl)
 
 std::span<const RegexTemplate> BuiltinRegexTemplates() noexcept
 {
-    // Pin the registry snapshot for the lifetime of the process so
-    // the returned span stays valid regardless of subsequent
+    // Pin the initial snapshot for the process lifetime so the
+    // returned span stays valid across subsequent
     // `SetExtraRegexTemplates` calls (which rebuild the merged
-    // registry but never touch the built-in slice the snapshot
-    // captures).
+    // registry but never touch the built-in slice this captures).
     static const std::vector<RegexTemplate> *cached = nullptr;
     static std::once_flag cacheOnce;
     std::call_once(cacheOnce, []() {
@@ -216,10 +211,10 @@ std::span<const RegexTemplate> BuiltinRegexTemplates() noexcept
         {
             return;
         }
-        // The built-in slice is immutable post-construction; cache
-        // a raw pointer into its storage so subsequent calls don't
-        // re-acquire the mutex. Bumping the snapshot into a
-        // never-destroyed static keeps the underlying vector alive.
+        // The built-in slice is immutable post-construction, so
+        // cache a raw pointer into its storage to avoid the mutex
+        // on later calls. The never-destroyed static keeps the
+        // underlying vector alive.
         static std::shared_ptr<const MergedRegistry> pinned = std::move(snap);
         cached = &pinned->builtins;
     });
@@ -231,16 +226,16 @@ void SetExtraRegexTemplates(std::span<const RegexTemplate> extras)
     std::unique_lock<std::shared_mutex> write(RegistryMutex());
     ExtrasSlot().assign(extras.begin(), extras.end());
     // Eagerly rebuild so the next probe sees the fresh extras
-    // without taking the write lock.
+    // without taking the write lock again.
     (void)RebuildLocked();
 }
 
 std::optional<RegexTemplate> FindTemplateByPattern(std::string_view pattern)
 {
-    // Copy the matched entry out of the snapshot before returning
-    // so the caller can outlive the pinned snapshot without worrying
-    // about a concurrent `SetExtraRegexTemplates` invalidating a raw
-    // pointer. See the doc on the header for the trade-off.
+    // Copy the matched entry out of the snapshot so the caller
+    // can outlive it without a concurrent
+    // `SetExtraRegexTemplates` invalidating a raw pointer.
+    // See the header doc for the trade-off.
     const auto snap = CurrentRegistry();
     if (!snap)
     {
@@ -272,8 +267,8 @@ std::shared_ptr<const std::vector<RegexTemplate>> MergedRegexTemplates()
         return nullptr;
     }
     // Hand out a `shared_ptr` aliased to the `ordered` vector so
-    // the snapshot's reference count keeps the storage alive for
-    // the caller without exposing the `MergedRegistry` type.
+    // the snapshot's refcount keeps storage alive for the caller
+    // without exposing the `MergedRegistry` type.
     return std::shared_ptr<const std::vector<RegexTemplate>>(snap, &snap->ordered);
 }
 

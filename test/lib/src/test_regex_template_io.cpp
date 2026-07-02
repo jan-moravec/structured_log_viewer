@@ -43,10 +43,9 @@ TEST_CASE("RegexTemplate JSON round-trip preserves every field", "[regex_templat
 
 TEST_CASE("RegexTemplate JSON parse fills defaults for absent fields", "[regex_templates][io]")
 {
-    // Backward compatibility: a JSON file written for the pre-schema
-    // template shape should still parse, with the new fields
-    // defaulted to the documented values (autoDetect=true,
-    // priority=100, description="").
+    // Backward compatibility: pre-schema JSON files must still
+    // parse, with new fields defaulted to documented values
+    // (autoDetect=true, priority=100, description="").
     constexpr std::string_view K_LEGACY_JSON = R"({
         "name": "Legacy template",
         "pattern": "^(?<msg>.*)$",
@@ -65,12 +64,13 @@ TEST_CASE("RegexTemplate JSON parse fills defaults for absent fields", "[regex_t
 
 TEST_CASE("RegexTemplate JSON parse tolerates unknown keys", "[regex_templates][io]")
 {
-    // `error_on_unknown_keys=false` is shared with `LogConfiguration`
-    // / `Theme`. Future schema additions in newer builds shouldn't
-    // prevent older builds from loading. The legacy `attribution`
-    // key (renamed to `description` mid-cycle) is the closest
-    // real-world example: pre-rename user JSONs in the wild must
-    // still load -- they just lose that one field's text.
+    // `error_on_unknown_keys=false` is shared with
+    // `LogConfiguration` / `Theme`. Future schema additions in
+    // newer builds shouldn't stop older builds from loading. The
+    // legacy `attribution` key (renamed to `description` mid-
+    // cycle) is the closest real-world example: pre-rename user
+    // JSONs in the wild must still load -- they just lose that
+    // one field's text.
     constexpr std::string_view K_FORWARD_JSON = R"({
         "name": "Forward template",
         "pattern": "^(?<msg>.*)$",
@@ -82,26 +82,25 @@ TEST_CASE("RegexTemplate JSON parse tolerates unknown keys", "[regex_templates][
     const RegexTemplate parsed = ParseRegexTemplate(K_FORWARD_JSON);
     CHECK(parsed.name == "Forward template");
     // Legacy `attribution` is silently dropped; `description`
-    // defaults to empty.
+    // defaults to empty string.
     CHECK(parsed.description.empty());
 }
 
 TEST_CASE("RegexTemplate JSON parse throws on malformed input", "[regex_templates][io]")
 {
-    // Trailing brace missing -> glaze surfaces a parse error, which
-    // we wrap in a runtime_error so callers don't need a glaze
-    // dependency to catch it.
+    // Missing trailing brace -> glaze surfaces a parse error,
+    // which we wrap in a `runtime_error` so callers don't need
+    // a glaze dependency to catch it.
     constexpr std::string_view K_BROKEN_JSON = R"({"name": "broken")";
     CHECK_THROWS_AS(ParseRegexTemplate(K_BROKEN_JSON), std::runtime_error);
 }
 
 TEST_CASE("SetExtraRegexTemplates exposes user entries to FindTemplateByPattern", "[regex_templates][io]")
 {
-    // The merged registry (built-ins + extras) is what
-    // `FindTemplateByPattern` searches; registering an extra should
-    // make a previously-unknown pattern resolve to the registered
-    // template. The teardown step clears extras so other test cases
-    // don't see leftover state.
+    // `FindTemplateByPattern` searches the merged registry (built-
+    // ins + extras); registering an extra must make a previously-
+    // unknown pattern resolve to it. Teardown clears extras so
+    // other cases don't see leftover state.
     const RegexTemplate extra{
         .name = "User-defined demo",
         .pattern = R"(^USER\s+(?<id>\d+)$)",

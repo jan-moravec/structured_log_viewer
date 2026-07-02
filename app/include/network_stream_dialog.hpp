@@ -45,9 +45,8 @@ public:
         Json,
         Logfmt,
         Csv,
-        /// Regex template (PCRE2). Requires picking a built-in
-        /// template from the registry or providing a custom
-        /// `(?<Name>...)` pattern.
+        /// PCRE2 regex. Requires picking a built-in template from
+        /// the registry or providing a custom `(?<Name>...)` pattern.
         Regex,
     };
 
@@ -57,9 +56,9 @@ public:
     {
         Protocol protocol = Protocol::Tcp;
         Format format = Format::Json;
-        /// PCRE2 pattern, only populated when `format == Regex`.
-        /// Either the pattern of the selected built-in template or
-        /// the free-text user-supplied pattern.
+        /// PCRE2 pattern; only populated when `format == Regex`.
+        /// Either the selected template's pattern or a free-text
+        /// user-supplied one.
         QString regexPattern;
         QString bindAddress;
         uint16_t port = 0;
@@ -72,12 +71,11 @@ public:
         bool tlsRequireClientCertificate = false;
     };
 
-    /// @p registry, if non-null, is the source for the regex
-    /// template picker (built-ins ∪ user templates). The dialog
-    /// snapshots it at construction; subsequent registry changes
-    /// don't update the open dialog. Pass nullptr to fall back to
-    /// the library's built-in catalog only (used by tests and the
-    /// minimal-fixture entry points).
+    /// @p registry feeds the regex template picker (built-ins ∪
+    /// user templates), snapshotted at construction — later
+    /// registry changes don't update an open dialog. Pass nullptr
+    /// (tests and minimal-fixture entry points) to fall back to
+    /// the library's built-in catalog only.
     explicit NetworkStreamDialog(RegexTemplateRegistry *registry = nullptr, QWidget *parent = nullptr);
 
     /// Snapshot of the user's choices. Only meaningful after `exec()`
@@ -102,13 +100,12 @@ private:
     QRadioButton *mUdpRadio = nullptr;
     QComboBox *mFormat = nullptr;
     /// Regex template picker; visible only when `Format::Regex` is
-    /// selected. Combobox userData carries the template's display
-    /// `name` (stable across rebuilds); the sentinel "Custom..."
-    /// entry uses an empty string to enable `mRegexPattern` below.
-    /// Template lifecycle (create / edit / delete) lives in the
-    /// dedicated `RegexTemplatesEditor` opened from
-    /// `Settings -> Regex templates...`; this dialog only consumes
-    /// the catalog at construction time.
+    /// selected. Combobox userData holds the template's display
+    /// `name` (stable across rebuilds); a sentinel "Custom..."
+    /// entry with empty userData enables `mRegexPattern` below.
+    /// Template CRUD lives in `RegexTemplatesEditor`
+    /// (`Settings -> Regex templates...`); this dialog is
+    /// read-only against the catalog.
     QGroupBox *mRegexGroup = nullptr;
     QComboBox *mRegexTemplate = nullptr;
     QLineEdit *mRegexPattern = nullptr;
@@ -130,9 +127,9 @@ private:
     /// returning to TCP.
     bool mTcpTlsEnableRemembered = false;
 
-    /// Owning app's regex template registry (built-ins + user
-    /// templates). May be null in tests; falls back to the library's
-    /// built-in catalog when so. Non-owning; the registry outlives
-    /// the dialog (constructed once in `main()`).
+    /// Non-owning. The app's regex template registry (built-ins +
+    /// user templates), constructed once in `main()` and outliving
+    /// this dialog. Null in tests; the dialog then falls back to
+    /// the library's built-in catalog only.
     RegexTemplateRegistry *mRegistry = nullptr;
 };

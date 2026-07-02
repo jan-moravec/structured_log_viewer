@@ -1,20 +1,19 @@
 # EmbedRegexTemplates.cmake — generate `regex_templates_embedded.cpp`
-# from every `*.json` file under `${INPUT_DIR}`, writing the result
-# to `${OUTPUT_FILE}`. Each JSON file becomes one
-# `loglib::internal::EmbeddedRegexTemplate` entry; the per-file JSON
-# bytes are emitted as a C++ string literal with backslashes /
-# quotes / newlines / carriage returns / tabs escaped.
+# from every `*.json` under `${INPUT_DIR}`, writing the result to
+# `${OUTPUT_FILE}`. Each JSON becomes one
+# `loglib::internal::EmbeddedRegexTemplate` entry, with its bytes
+# emitted as a C++ string literal (backslashes, quotes, newlines,
+# CRs, and tabs escaped).
 #
-# Invocation contract (see `library/CMakeLists.txt`):
+# Invocation (see `library/CMakeLists.txt`):
 #   include(cmake/EmbedRegexTemplates.cmake)
 #   embed_regex_templates(
 #     INPUT_DIR  ${CMAKE_CURRENT_SOURCE_DIR}/data/regex_templates
 #     OUTPUT_FILE ${CMAKE_CURRENT_BINARY_DIR}/regex_templates_embedded.cpp
 #   )
 #
-# Idempotent: re-runs at configure time if any input JSON changed
-# (the call site adds the inputs as `CMAKE_CONFIGURE_DEPENDS` so
-# CMake re-runs the configure step on edit).
+# Idempotent: the inputs are registered as `CMAKE_CONFIGURE_DEPENDS`,
+# so editing a JSON re-runs configure and regenerates the file.
 
 function(embed_regex_templates)
     cmake_parse_arguments(EMBED "" "INPUT_DIR;OUTPUT_FILE" "" ${ARGN})
@@ -22,13 +21,13 @@ function(embed_regex_templates)
         message(FATAL_ERROR "embed_regex_templates() requires INPUT_DIR and OUTPUT_FILE")
     endif()
 
-    # Stable alphabetical order so the generated TU is deterministic
-    # across machines and across `file(GLOB)` implementations.
+    # Sort alphabetically for a deterministic TU across machines
+    # and across `file(GLOB)` implementations.
     file(GLOB _json_files LIST_DIRECTORIES false "${EMBED_INPUT_DIR}/*.json")
     list(SORT _json_files)
 
-    # Make the configure step depend on the input files so a JSON
-    # edit re-runs the generator without needing a manual reconfig.
+    # Register inputs as configure-time dependencies so a JSON edit
+    # re-runs configure and regenerates the file.
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_json_files})
 
     # Build the generated file in memory, then write once.
@@ -55,11 +54,12 @@ namespace
         get_filename_component(_basename "${_json_path}" NAME)
         file(READ "${_json_path}" _raw_json)
 
-        # Escape for a C++ string literal. Order matters: backslash
-        # first so it doesn't double-escape the escapes we add below.
+        # Escape for a C++ string literal. Order matters:
+        # backslash first, so it doesn't double-escape our own
+        # escapes below.
         string(REPLACE "\\" "\\\\" _escaped "${_raw_json}")
         string(REPLACE "\"" "\\\"" _escaped "${_escaped}")
-        # Real newline / CR / tab bytes -> escaped sequences.
+        # Real newline / CR / tab bytes -> escape sequences.
         string(REPLACE "\n" "\\n\"\n        \"" _escaped "${_escaped}")
         string(REPLACE "\r" "\\r" _escaped "${_escaped}")
         string(REPLACE "\t" "\\t" _escaped "${_escaped}")
@@ -91,8 +91,8 @@ std::span<const EmbeddedRegexTemplate> EmbeddedBuiltinRegexTemplates() noexcept
 
     set(_contents "${_header}${_literals}${_entries_block}${_footer}")
 
-    # Only rewrite when the content changes, so dependent targets
-    # don't see a "modified" timestamp on no-op reconfigures.
+    # Only rewrite when the content changes, so no-op reconfigures
+    # don't trigger a "modified" timestamp on dependent targets.
     set(_should_write TRUE)
     if(EXISTS "${EMBED_OUTPUT_FILE}")
         file(READ "${EMBED_OUTPUT_FILE}" _existing)

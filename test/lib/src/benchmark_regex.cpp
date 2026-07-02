@@ -1,12 +1,13 @@
-// RegexParser benchmarks; mirror of `[json_parser]` / `[logfmt_parser]` /
-// `[csv_parser]` `[large]` via the shared `benchmark_common.hpp`. One
-// `[large]` case per shipped `test_common::LogFormat` synthesizer, so
-// each case streams lines that the corresponding real `RegexTemplate`
-// pattern parses (rather than the retired bracketed-regex placeholder).
+// RegexParser benchmarks; mirror of `[json_parser]` /
+// `[logfmt_parser]` / `[csv_parser]` `[large]` via the shared
+// `benchmark_common.hpp`. One `[large]` case per shipped
+// `test_common::LogFormat` synthesizer, so each streams lines that
+// the corresponding real `RegexTemplate` pattern parses (rather
+// than the retired bracketed-regex placeholder).
 //
-// Lines/s is the primary regression-gate metric and stays directly
-// comparable across templates. MB/s isn't: each format's per-record
-// punctuation and extra fields land the file at a different byte size.
+// Lines/s is the primary regression-gate metric and is directly
+// comparable across templates. MB/s isn't — each format's
+// per-record punctuation lands files at different byte sizes.
 // See CONTRIBUTING.md `## Benchmarking`.
 
 #include "benchmark_common.hpp"
@@ -36,14 +37,14 @@ namespace
 {
 
 /// Shared per-template streaming benchmark. Materialises a 1M-line
-/// fixture through @p factory, then drives @p templateName's pattern
-/// via `RegexParser::ParseStreaming` through the shared harness.
+/// fixture through @p factory, then drives @p templateName's
+/// pattern via `RegexParser::ParseStreaming` through the shared
+/// harness.
 ///
-/// The pattern is copied into a local `std::string` so the closure keeps
-/// a pointer that outlives every `RunStreamingFlow` sample (the
-/// `RegexTemplate` in the registry is static-lifetime, but resolving
-/// through a std::string_view captured by value would still be safe;
-/// this form is defensive and lets the closure own no other state).
+/// The pattern is copied into a local `std::string` so the closure
+/// captures a reference that outlives every `RunStreamingFlow`
+/// sample. Registry storage is process-lifetime, but a defensive
+/// owned copy keeps the closure state-free.
 void RunRegexTemplateBenchmark(
     std::string_view templateName,
     test_common::LogFormat (*factory)(),
@@ -57,7 +58,7 @@ void RunRegexTemplateBenchmark(
 
     const RegexTemplate *tmpl = FindTemplateByName(templateName);
     REQUIRE(tmpl != nullptr);
-    // Owned copy: the closure captures by reference and the string
+    // Owned copy: the closure captures by reference; this string
     // outlives every `RegexParser::ParseStreaming` invocation.
     const std::string pattern{tmpl->pattern};
 

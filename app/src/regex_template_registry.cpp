@@ -29,7 +29,7 @@ namespace
 {
 
 /// UTF-8 read helper, mirroring `theme_control.cpp`. Returns
-/// nullopt on open failure so the caller can downgrade to a warn.
+/// nullopt on open failure so callers can downgrade to a warning.
 std::optional<std::string> ReadFileUtf8(const QString &path)
 {
     QFile file(path);
@@ -43,7 +43,7 @@ std::optional<std::string> ReadFileUtf8(const QString &path)
 
 /// Parse @p path into a `RegexTemplate`. Swallows parse errors at
 /// scan time (with a `qWarning`) so one broken JSON cannot wedge
-/// the picker / library injection for the rest of the catalog.
+/// the picker or library injection for the rest of the catalog.
 std::optional<loglib::RegexTemplate> ParseFileToTemplate(const QString &path)
 {
     const auto bytes = ReadFileUtf8(path);
@@ -65,9 +65,9 @@ std::optional<loglib::RegexTemplate> ParseFileToTemplate(const QString &path)
 
 bool IsReservedWin32DeviceName(const QString &name)
 {
-    // Same list as `ThemeControl::SanitiseThemeName`; lifting it
-    // verbatim keeps the two registries in lockstep without
-    // either depending on the other.
+    // Duplicated verbatim from `ThemeControl::SanitiseThemeName`
+    // to keep the two registries in lockstep without either
+    // depending on the other.
     static constexpr std::array<const char *, 22> RESERVED = {"CON",  "PRN",  "AUX",  "NUL",  "COM1", "COM2",
                                                               "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
                                                               "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5",
@@ -181,8 +181,8 @@ void RegexTemplateRegistry::SaveUserTemplate(const QString &name, loglib::RegexT
 {
     const QString sanitised = SanitiseTemplateName(name);
 
-    // Pin on-disk `name` so the index key matches even after the
-    // file is renamed on disk.
+    // Pin the on-disk `name` so the index key stays consistent
+    // even if the file is renamed later.
     tmpl.name = sanitised.toStdString();
     const std::string json = loglib::SerializeRegexTemplate(tmpl);
 
@@ -190,7 +190,7 @@ void RegexTemplateRegistry::SaveUserTemplate(const QString &name, loglib::RegexT
     const QString path = dir.filePath(sanitised + QStringLiteral(".json"));
 
     // `QSaveFile` writes atomically (temp file + rename on commit)
-    // and handles UTF-8 paths on Windows, unlike `std::ofstream`.
+    // and handles UTF-8 paths on Windows (unlike `std::ofstream`).
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
     {
@@ -215,8 +215,8 @@ void RegexTemplateRegistry::SaveUserTemplate(const QString &name, loglib::RegexT
         );
     }
 
-    // Refresh the index so the new entry is immediately visible
-    // and the library's auto-detect probe picks it up.
+    // Refresh so the new entry is immediately visible and the
+    // library's auto-detect probe picks it up.
     Discover();
     emit templatesChanged();
 }
@@ -243,10 +243,9 @@ void RegexTemplateRegistry::DeleteUserTemplate(const QString &name)
         );
     }
 
-    // Same path-derivation logic as `SaveUserTemplate`: sanitise
-    // first so a callsite passing an unsanitised string can't
-    // unlink something unexpected, then resolve relative to the
-    // user templates dir.
+    // Same path-derivation as `SaveUserTemplate`: sanitise first
+    // so an unsanitised @p name can never unlink something
+    // outside the user templates dir.
     const QString sanitised = SanitiseTemplateName(name);
     const QDir dir = UserTemplatesDir();
     const QString path = dir.filePath(sanitised + QStringLiteral(".json"));
@@ -254,9 +253,9 @@ void RegexTemplateRegistry::DeleteUserTemplate(const QString &name)
     QFile file(path);
     if (!file.exists())
     {
-        // The index thought this was a user template but the file
-        // is gone. Refresh anyway so the GUI catches up; no
-        // exception (the desired end state is achieved).
+        // The index believed this was a user template but the
+        // file is already gone. Refresh so the GUI catches up and
+        // return success — the desired end state is achieved.
         Discover();
         emit templatesChanged();
         return;
@@ -289,18 +288,16 @@ void RegexTemplateRegistry::Discover()
         const QString name = QString::fromStdString(t.name);
         if (name.isEmpty())
         {
-            // Shouldn't happen for shipped templates — the build
-            // -side test sweep would fail first — but defend
-            // against it so a future malformed JSON doesn't crash
-            // the registry walk.
+            // Shouldn't happen for shipped templates (build-side
+            // tests would fail first), but guard so a future
+            // malformed JSON can't crash the registry walk.
             continue;
         }
         mIndex[name] = IndexEntry{.tmpl = t, .fromUser = false};
     }
 
-    // User entries. Sort alphabetically so the tie-breaker for
-    // `name` collisions across user files is deterministic across
-    // platforms.
+    // User entries. Sort alphabetically so `name` collisions
+    // across user files tie-break deterministically per platform.
     const QDir userDir = UserTemplatesDir();
     const QStringList userFiles = userDir.entryList(QStringList{QStringLiteral("*.json")}, QDir::Files, QDir::Name);
     for (const QString &file : userFiles)
@@ -342,10 +339,10 @@ void RegexTemplateRegistry::Discover()
 
 void RegexTemplateRegistry::InjectExtrasIntoLoglib()
 {
-    // Snapshot user templates (built-ins are already in the
-    // library's catalog; pushing them again would double-count).
-    // Local vector owns the storage for the duration of the call;
-    // the library copies into its own slot.
+    // Only user templates go through — built-ins are already in
+    // the library catalog and pushing them again would double-count.
+    // The local vector owns storage for the call; the library
+    // copies into its own slot.
     std::vector<loglib::RegexTemplate> extras;
     extras.reserve(mIndex.size());
     for (const auto &[name, entry] : mIndex)

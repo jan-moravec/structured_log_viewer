@@ -16,45 +16,41 @@ class QSpinBox;
 class QTimer;
 class RegexTemplateRegistry;
 
-/// Modeless editor for the merged regex-template catalog. Owns the
-/// list view (every built-in + user template from the merged
-/// registry) and an inline form for the selected entry's fields
-/// (`name`, `pattern`, `sampleLines`, `autoDetect`, `priority`,
-/// `description`). Built-ins are read-only (their bytes live in the
-/// binary; the `Duplicate` button is the path to customise them);
-/// user templates can be created, edited, validated, saved, and
-/// deleted in-place.
+/// Modeless editor for the merged regex-template catalog. Shows a
+/// list of every built-in + user template alongside an inline form
+/// for the selected entry's fields (`name`, `pattern`, `sampleLines`,
+/// `autoDetect`, `priority`, `description`). Built-ins are
+/// read-only — the `Duplicate` button is the path to customise
+/// them — while user templates can be created, edited, validated,
+/// saved, and deleted in place.
 ///
 /// Opened from `MainWindow` via `Settings -> Regex templates...`.
-/// Constructed lazily (`MainWindow` keeps a `QPointer` so the
-/// second click raises an existing instance); deleted-on-close is
-/// **not** set so the dialog state (current selection, half-typed
-/// pattern) survives close/reopen, mirroring `PreferencesEditor`.
+/// Constructed lazily; deleted-on-close is intentionally **not**
+/// set so selection and half-typed edits survive close/reopen
+/// (mirrors `PreferencesEditor`).
 ///
-/// The dialog is intentionally programmatically constructed (not
-/// from a `.ui` file): the layout is small and the conditional
-/// "built-in vs user" enablement is awkward to express in static
-/// XML.
+/// Built programmatically (not from a `.ui` file): the layout is
+/// small and the built-in vs user enablement logic is awkward in
+/// static XML.
 class RegexTemplatesEditor : public QWidget
 {
     Q_OBJECT
 
 public:
-    /// @p registry is the merged regex-template catalog the editor
-    /// reads / writes through. Must outlive this widget (lives in
-    /// `main()` for the production window). Passing nullptr is a
-    /// programming error: the editor has nothing to manage without
-    /// a registry.
+    /// @p registry is the merged catalog the editor reads / writes
+    /// through and must outlive this widget (lives in `main()` in
+    /// production). Passing nullptr is a programming error — the
+    /// editor has nothing to manage without a registry.
     explicit RegexTemplatesEditor(RegexTemplateRegistry *registry, QWidget *parent = nullptr);
 
-    /// Repopulate the list (after an external `registry->Reload()`
-    /// or a `templatesChanged()` notification). Preserves the
-    /// current selection by name if the entry still exists.
+    /// Repopulate the list after an external `registry->Reload()`
+    /// or a `templatesChanged()` signal. Preserves the current
+    /// selection by name if the entry still exists.
     void RefreshList();
 
 protected:
     /// Warn before discarding unsaved edits when the user closes
-    /// the window with Esc / X / Alt+F4.
+    /// via Esc / X / Alt+F4.
     void closeEvent(QCloseEvent *event) override;
 
 private slots:
@@ -70,40 +66,37 @@ private slots:
     void OnReloadClicked();
 
 private:
-    /// Build the per-row label shown in the list. Includes the
-    /// `(user)` / `(manual only)` badges so the source of each
-    /// entry is visible without opening the right-pane form.
+    /// Build the list row label. Includes `(user)` / `(manual only)`
+    /// badges so the source is visible without opening the form.
     [[nodiscard]] static QString FormatListLabel(const QString &name, bool fromUser, bool autoDetect);
 
-    /// Populate the right-pane form from the registry entry named
-    /// @p name. Empty name clears the form (e.g. after Delete or
-    /// during `New template...`). Disables the editor controls
-    /// for built-in entries; enables them for user entries or new
-    /// drafts.
+    /// Populate the form from the registry entry @p name. An empty
+    /// name clears the form (e.g. after Delete or in "New template"
+    /// mode). Controls are disabled for built-ins and enabled for
+    /// user entries and new drafts.
     void LoadIntoForm(const QString &name);
 
-    /// Collect the form's current state into a `RegexTemplate`.
-    /// Used by Save and Validate; throws on malformed input
-    /// (empty name, etc.) so the caller can surface a status
-    /// message instead of writing garbage.
+    /// Read the form's current state as a `RegexTemplate`. Throws
+    /// on malformed input (empty name, etc.) so callers can surface
+    /// a status message instead of writing garbage.
     [[nodiscard]] loglib::RegexTemplate GatherForm() const;
 
-    /// Mark the form dirty so the Save / Revert buttons enable.
-    /// Idempotent; called by every field's change signal.
+    /// Mark the form dirty; enables Save / Revert. Idempotent;
+    /// called by every field's change signal.
     void MarkDirty();
     void MarkClean();
 
-    /// Show a transient status message at the bottom of the
-    /// dialog. Auto-clears after a few seconds.
+    /// Show a transient status message at the bottom of the dialog
+    /// (auto-clears after a few seconds).
     void ShowStatus(const QString &message, bool isError = false);
 
-    /// True iff the current form state is editable (a user
-    /// template is selected, or a brand-new draft is being
-    /// authored). Built-ins are read-only.
+    /// True iff the current form is editable — a user template is
+    /// selected or a new draft is being authored. Built-ins are
+    /// read-only.
     [[nodiscard]] bool IsCurrentEditable() const;
 
-    /// Prompt the user "discard unsaved edits?" and return true
-    /// to proceed. Returns true when there are no unsaved edits.
+    /// Prompt "discard unsaved edits?" and return true to proceed.
+    /// Returns true immediately when there are no unsaved edits.
     [[nodiscard]] bool ConfirmDiscardEdits();
 
     RegexTemplateRegistry *mRegistry = nullptr;
@@ -115,8 +108,8 @@ private:
     QPlainTextEdit *mSampleLinesEdit = nullptr;
     QCheckBox *mAutoDetectCheck = nullptr;
     QSpinBox *mPrioritySpin = nullptr;
-    /// Multi-line so descriptions can comfortably hold a paragraph
-    /// covering the format + (optionally) an upstream attribution.
+    /// Multi-line so descriptions can hold a paragraph covering
+    /// the format and an optional upstream attribution.
     QPlainTextEdit *mDescriptionEdit = nullptr;
     QLabel *mSourceLabel = nullptr;
 
@@ -132,23 +125,22 @@ private:
     QLabel *mStatusLabel = nullptr;
     QTimer *mStatusClearTimer = nullptr;
 
-    /// Currently selected entry's name. Empty when the form is in
-    /// "New template..." mode (no list-row backing it).
+    /// Selected entry's name. Empty in "New template..." mode
+    /// (no list row backs it).
     QString mCurrentName;
 
-    /// True when authoring a brand-new template that has not yet
-    /// been saved (no list-row backing it). Controls Save's
-    /// "create vs overwrite" semantics + the close-without-saving
-    /// confirmation.
+    /// True when authoring an unsaved new template (no list row
+    /// backs it). Controls Save's create-vs-overwrite semantics
+    /// and the close-without-saving confirmation.
     bool mIsNewDraft = false;
 
-    /// True when the form has unsaved edits relative to the
-    /// loaded template. Drives Save / Revert button enablement
-    /// and the close-confirmation prompt.
+    /// True when the form has unsaved edits relative to the loaded
+    /// template. Drives Save / Revert enablement and the close
+    /// confirmation.
     bool mDirty = false;
 
-    /// Re-entrancy guard: programmatic form repopulation (via
-    /// `LoadIntoForm`) must not be misread as user edits by the
-    /// field-change signals.
+    /// Re-entrancy guard: programmatic form fills via
+    /// `LoadIntoForm` must not be misread as user edits by field
+    /// change signals.
     bool mSuppressDirtySignals = false;
 };

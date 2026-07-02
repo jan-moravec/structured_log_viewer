@@ -41,14 +41,12 @@ constexpr auto KEY_TLS_CA = "tls/caBundle";
 constexpr auto KEY_TLS_REQUIRE_CLIENT = "tls/requireClientCert";
 constexpr auto KEY_REGEX_PATTERN = "regex/pattern";
 
-/// Build the sentinel value for the regex template combobox
-/// indicating "use the custom-pattern line edit". Real templates
-/// carry their `name` (QString) as the combobox userData; the
-/// sentinel is the empty QString so an "anonymous" template (no
-/// `name` field) can never collide with it — the registry warns
-/// and back-fills a basename in that case. Built as a function so
-/// no QString lives in static storage (clang-tidy
-/// `cert-err58-cpp` flags throwing static init).
+/// Sentinel combobox userData that means "use the custom-pattern
+/// line edit". Real templates carry their `name` as userData, so
+/// the sentinel is the empty QString — no `name` field can ever
+/// resolve to empty (the registry back-fills a basename otherwise).
+/// A function (not a static constant) so no QString lives in static
+/// storage (clang-tidy `cert-err58-cpp` flags throwing static init).
 [[nodiscard]] QString RegexTemplateCustomData()
 {
     return QString{};
@@ -134,11 +132,11 @@ NetworkStreamDialog::NetworkStreamDialog(RegexTemplateRegistry *registry, QWidge
     connect(mFormat, &QComboBox::currentIndexChanged, this, &NetworkStreamDialog::OnFormatChanged);
 
     // Regex template picker + custom-pattern field. Hidden unless
-    // `Format::Regex` is selected; populated from the merged
-    // registry (built-ins ∪ user templates) when one was passed in,
+    // `Format::Regex` is selected. Populated from the merged
+    // registry (built-ins ∪ user templates) when available,
     // otherwise from the library's built-in catalog (test path).
-    // The trailing "Custom..." entry enables the line-edit below
-    // for a user-supplied pattern.
+    // The trailing "Custom..." entry unlocks the line-edit for a
+    // user-supplied pattern.
     mRegexGroup = new QGroupBox(tr("Regex template"), this);
     auto *regexLayout = new QFormLayout(mRegexGroup);
     mRegexTemplate = new QComboBox(mRegexGroup);
@@ -182,11 +180,10 @@ NetworkStreamDialog::NetworkStreamDialog(RegexTemplateRegistry *registry, QWidge
     mRegexPattern->setAccessibleName(tr("Regex pattern"));
     regexLayout->addRow(tr("Pattern:"), mRegexPattern);
 
-    // Hint pointing at the dedicated editor. Template lifecycle
-    // (create / edit / delete) lives behind
-    // `Settings -> Regex templates...`; keeping a tiny visual
-    // signpost here saves the user from hunting through menus the
-    // first time they want to save a tweaked pattern.
+    // Signpost pointing at the dedicated editor. Template CRUD
+    // lives behind `Settings -> Regex templates...`; showing the
+    // hint here saves the user from hunting through menus when
+    // they want to save a tweaked pattern.
     auto *templatesHint = new QLabel(
         tr("Manage templates from <b>Settings &rarr; Regex templates...</b>"), mRegexGroup
     );
@@ -289,7 +286,7 @@ NetworkStreamDialog::NetworkStreamDialog(RegexTemplateRegistry *registry, QWidge
     mTcpTlsEnableRemembered = mTlsEnable->isChecked();
     OnProtocolChanged();
     OnTlsToggled();
-    // Resolve initial regex-group visibility + pattern preview from
+    // Sync initial regex-group visibility and pattern preview to
     // the loaded format / template selection.
     OnFormatChanged();
     OnRegexTemplateChanged();
@@ -345,16 +342,15 @@ void NetworkStreamDialog::OnRegexTemplateChanged()
     const QString templateName = mRegexTemplate->currentData().toString();
     if (templateName.isEmpty())
     {
-        // "Custom..." sentinel: hand the field back to the user;
-        // do not clobber whatever they already typed (a previous
-        // custom session might have persisted text we want to keep
-        // visible).
+        // "Custom..." sentinel: hand the field back to the user
+        // without clobbering whatever they already typed (a prior
+        // custom session may have persisted text worth keeping).
         mRegexPattern->setReadOnly(false);
         return;
     }
     // Resolve by name. Prefer the merged registry (built-ins ∪
-    // user templates); fall back to the library catalog when the
-    // dialog was constructed without one (tests).
+    // user templates); fall back to the library catalog when
+    // constructed without one (tests).
     if (mRegistry != nullptr)
     {
         const auto tmpl = mRegistry->Load(templateName);
@@ -420,11 +416,10 @@ void NetworkStreamDialog::Accepted()
     // returns; the dialog stays open so the user can fix the field.
     if (mFormat->currentData().toInt() == static_cast<int>(Format::Regex))
     {
-        // Canonicalise the field early so the trimmed value is what
-        // gets persisted, handed to `MainWindow::OpenNetworkStream`,
-        // and -- in the validation below -- compiled by PCRE2. Without
-        // this, leading/trailing whitespace would leak into the saved
-        // pattern (and into the parser at session restore).
+        // Trim early so the same value is persisted, handed to
+        // `MainWindow::OpenNetworkStream`, and compiled by PCRE2
+        // below. Without this, leading/trailing whitespace would
+        // leak into the saved pattern (and the parser at restore).
         const QString trimmedPattern = mRegexPattern->text().trimmed();
         if (trimmedPattern != mRegexPattern->text())
         {
@@ -441,10 +436,10 @@ void NetworkStreamDialog::Accepted()
             mRegexPattern->setFocus();
             return;
         }
-        // Pre-compile so syntax errors and "no named capture groups"
-        // surface in the dialog rather than as a single error on the
-        // first inbound line (by which point the dialog has already
-        // been dismissed and the bad pattern persisted).
+        // Pre-compile so syntax errors and "no named capture
+        // groups" surface here rather than as a single error on
+        // the first inbound line (at which point the dialog is
+        // gone and the bad pattern already persisted).
         std::string regexError;
         if (!loglib::ValidateRegexPattern(trimmedPattern.toStdString(), regexError))
         {
@@ -554,13 +549,13 @@ void NetworkStreamDialog::LoadFromSettings()
         mFormat->setCurrentIndex(mFormat->findData(static_cast<int>(Format::Json)));
     }
 
-    // Restore the prior pattern; resolve template-vs-custom by
-    // looking up the stored pattern in the merged registry. This
-    // means a registry upgrade that touches a pattern automatically
-    // moves the user from "matched template" to "custom" without
-    // losing their text -- they just lose the named-template tag.
-    // `FindTemplateByPattern` consults the same merged catalog the
-    // probe loop uses, so user templates that match are honoured.
+    // Restore the prior pattern and resolve template-vs-custom by
+    // looking the stored bytes up in the merged registry. A
+    // registry upgrade that changes a pattern then silently moves
+    // the user from "matched template" to "custom" without losing
+    // their text — they only lose the named-template tag.
+    // `FindTemplateByPattern` consults the same merged catalog
+    // the probe loop uses, so user matches are honoured.
     const QString storedPattern = settings.value(KEY_REGEX_PATTERN).toString();
     if (!storedPattern.isEmpty())
     {
@@ -579,9 +574,9 @@ void NetworkStreamDialog::LoadFromSettings()
         }
         else
         {
-            // Stored template name has vanished from the catalog
-            // since last launch -- fall back to "Custom..." so the
-            // pattern text remains editable.
+            // The stored template name has vanished from the
+            // catalog since last launch. Fall back to "Custom..."
+            // so the pattern text stays editable.
             mRegexTemplate->setCurrentIndex(mRegexTemplate->findData(QVariant(RegexTemplateCustomData())));
         }
     }

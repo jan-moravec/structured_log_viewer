@@ -21,10 +21,10 @@ std::unique_ptr<LogParser> LogFactory::Create(Parser parser)
     case Parser::Csv:
         return std::make_unique<CsvParser>();
     case Parser::Regex:
-        // Default-constructed = no pinned pattern. Suitable for
-        // `IsValid` probes; `ParseStreaming` must be reached via
-        // `ParserOptions::configuration->source->regexPattern` or
-        // one of `RegexParser`'s explicit-pattern overloads.
+        // Default-constructed: no pinned pattern. Fine for
+        // `IsValid` probes; `ParseStreaming` needs a pattern
+        // supplied via `ParserOptions::configuration->source->
+        // regexPattern` or an explicit-pattern overload.
         return std::make_unique<RegexParser>();
     default:
         throw std::runtime_error("Invalid parser " + std::to_string(static_cast<int>(parser)));

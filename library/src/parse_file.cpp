@@ -55,12 +55,12 @@ ParseResult ParseFile(const std::filesystem::path &file)
     {
         const auto parserType = static_cast<LogFactory::Parser>(i);
 
-        // `Regex` needs special handling: the factory-built parser is
-        // probe-only (no pinned pattern), so a plain
-        // `ParseFile(*parser, file)` would surface the "empty pattern"
-        // error even though `IsValid` had already identified the
-        // matching built-in template. Detect the template here and
-        // construct a parser pinned to its pattern instead.
+        // `Regex` needs special handling: the factory-built parser
+        // is probe-only (no pinned pattern), so a plain
+        // `ParseFile(*parser, file)` would emit the "empty pattern"
+        // error even after `IsValid` identified the matching
+        // template. Detect the template and build a parser pinned
+        // to its pattern instead.
         if (parserType == LogFactory::Parser::Regex)
         {
             if (const std::optional<RegexTemplate> tmpl = DetectRegexTemplate(file); tmpl.has_value())

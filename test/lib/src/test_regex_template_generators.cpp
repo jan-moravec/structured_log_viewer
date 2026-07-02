@@ -1,16 +1,18 @@
 // Round-trip coverage for the per-template `test_common::LogFormat`
-// synthesizers. Each `TEST_CASE` drives 1000 random `LogRecord`s through
-// one synthesizer, then parses the resulting file with the corresponding
-// shipped `loglib::RegexTemplate` via `RegexParser`. The assertion is
-// tight: every line must produce exactly one row and zero parse errors.
+// synthesizers. Each `TEST_CASE` drives 1000 random `LogRecord`s
+// through one synthesizer, then parses the resulting file with the
+// matching shipped `loglib::RegexTemplate` via `RegexParser`. The
+// assertion is tight: every line must produce exactly one row and
+// zero parse errors.
 //
-// This is the load-bearing regression guard for synthesizer/pattern
-// drift. `test_regex_templates.cpp` only asserts the 3-5 hand-curated
-// `sampleLines` per template round-trip; the RNG-driven fixture here
-// exercises the full match surface (rare pool combinations, edge-case
-// message contents, both `[pid]`-present and `[pid]`-absent syslog
-// shapes, etc.) so a future tightening of any pattern that would break
-// synthetic-but-valid lines fails here rather than silently in the wild.
+// Load-bearing regression guard for synthesizer/pattern drift.
+// `test_regex_templates.cpp` only asserts the 3-5 hand-curated
+// `sampleLines` per template round-trip; the RNG-driven fixture
+// here exercises the full match surface (rare pool combinations,
+// edge-case message contents, `[pid]`-present and `[pid]`-absent
+// syslog shapes, ...) so a future pattern tightening that would
+// break synthetic-but-valid lines fails here rather than silently
+// in the wild.
 
 #include "common.hpp"
 
@@ -35,11 +37,11 @@ using namespace loglib;
 namespace
 {
 
-/// Serialize @p records through @p format into @p filePath, drive
-/// `RegexParser(pattern)` over the file, and CHECK that every line
+/// Serialize @p records through @p format into @p filePath, run
+/// `RegexParser(pattern)` over the file, and CHECK every line
 /// parsed cleanly. Kept as a helper so the per-template `TEST_CASE`s
-/// stay one-liners and any future assertion change (extra column
-/// spot-check, timing budget, etc.) lands in one place.
+/// stay one-liners and any future assertion change (column spot-
+/// check, timing budget, ...) lands in one place.
 void RoundTripThroughTemplate(
     const std::vector<test_common::LogRecord> &records,
     const test_common::LogFormat &format,
@@ -56,8 +58,8 @@ void RoundTripThroughTemplate(
     const RegexParser parser{tmpl->pattern};
     const ParseResult result = ParseFile(parser, fixture.GetFilePath());
 
-    // A single parse error surfaces the offending line number, so the
-    // check-first-then-require pattern gives us a maximally-useful
+    // A single parse error surfaces the offending line number, so
+    // the check-then-require pattern gives us the most useful
     // failure message when a regression lands.
     CHECK(result.errors.empty());
     if (!result.errors.empty())

@@ -308,11 +308,11 @@ LogFormat Csv(RecordSchema schema)
 namespace
 {
 
-// Parse the pinned ISO-8601 timestamp shape produced by
+// Parse the pinned ISO-8601 timestamp shape from
 // `test_common::GenerateRandomLogRecord` (`date::format("%FT%T", ...)`,
-// e.g. `2026-01-01T00:00:00.001`). Fixed-width so a manual scan avoids
-// the `istringstream` + `date::parse` allocation cost on the per-line
-// hot path.
+// e.g. `2026-01-01T00:00:00.001`). Fixed-width so a manual scan
+// avoids the `istringstream` + `date::parse` allocation cost on
+// the per-line hot path.
 struct IsoTimestamp
 {
     int year = 1970;
@@ -359,9 +359,9 @@ constexpr std::array<std::string_view, 12> MONTH_ABBREV = {
 };
 constexpr std::array<std::string_view, 7> WEEKDAY_ABBREV = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
 
-// Sakamoto's day-of-week algorithm: returns 0=Sun..6=Sat for the given
-// proleptic Gregorian date. Avoids pulling `date::sys_days` on the hot
-// path for the two templates that need a weekday name.
+// Sakamoto's day-of-week algorithm: returns 0=Sun..6=Sat for a
+// proleptic Gregorian date. Avoids pulling `date::sys_days` on
+// the hot path for the two templates that need a weekday name.
 unsigned WeekdayIndex(int y, unsigned m, unsigned d) noexcept
 {
     static constexpr std::array<int, 12> T = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
@@ -371,9 +371,9 @@ unsigned WeekdayIndex(int y, unsigned m, unsigned d) noexcept
     return static_cast<unsigned>(idx);
 }
 
-// Zero-pad @p value to @p width digits (@p width in [1, 4]). Values that
-// don't fit in @p width digits are truncated to the least-significant
-// tail; callers pass a matching width for the field they're emitting.
+// Zero-pad @p value to @p width digits (@p width in [1, 4]).
+// Values wider than @p width are truncated to the low digits;
+// callers pass a matching width for their field.
 void AppendPadded(std::string &out, int value, std::size_t width)
 {
     std::array<char, 8> buf{};
@@ -385,10 +385,11 @@ void AppendPadded(std::string &out, int value, std::size_t width)
     out.append(buf.data(), width);
 }
 
-// Append @p value as unpadded decimal digits ("1", "42", "65535"). Used
-// for variable-width numeric fields (pid, response bytes) where zero
-// padding would falsify the shape. The 16-byte buffer is wider than the
-// decimal expansion of any `unsigned`, so `to_chars` cannot fail.
+// Append @p value as unpadded decimal digits ("1", "42",
+// "65535"). Used for variable-width numeric fields (pid, response
+// bytes) where zero padding would falsify the shape. The 16-byte
+// buffer exceeds the decimal expansion of any `unsigned`, so
+// `to_chars` cannot fail.
 void AppendUInt(std::string &out, unsigned value)
 {
     std::array<char, 16> buf{};
@@ -410,9 +411,9 @@ void AppendSpacePadded2(std::string &out, unsigned value)
     }
 }
 
-// Read a scalar object field as `string_view`. Returns @p fallback for
-// missing / non-string values so the synthesizer's format string stays
-// well-formed even when the record is minimal (e.g. no `message`).
+// Read a scalar object field as `string_view`. Returns @p fallback
+// for missing / non-string values so the synthesizer's output
+// stays well-formed even for minimal records (e.g. no `message`).
 std::string_view FieldOr(const LogRecord &record, const std::string &key, std::string_view fallback)
 {
     const LogRecord *value = FindObjectField(record, key);
@@ -423,13 +424,13 @@ std::string_view FieldOr(const LogRecord &record, const std::string &key, std::s
     return value->get_string();
 }
 
-// Read the record's `line_number` if present; used to seed the per-line
-// RNG so synthesized extras stay deterministic under a pinned generator
-// seed. Falls back to @p fallback when the field is absent (materialized
-// fixtures that skip line-number injection). Uses `as<uint64_t>()` rather
-// than `get_number()` so callers that stored the value as `int64_t` (as
-// `test_common::GenerateRandomLogRecord` does) don't trip glaze's
-// "cannot get reference to double" abort path.
+// Read the record's `line_number` if present. Seeds the per-line
+// RNG so synthesized extras stay deterministic under a pinned
+// generator seed. Falls back to @p fallback when absent (fixtures
+// that skip line-number injection). Uses `as<uint64_t>()` rather
+// than `get_number()` so callers storing the value as `int64_t`
+// (as `GenerateRandomLogRecord` does) don't trip glaze's "cannot
+// get reference to double" abort.
 std::uint64_t LineNumberOr(const LogRecord &record, std::uint64_t fallback)
 {
     const LogRecord *value = FindObjectField(record, "line_number");
@@ -440,15 +441,15 @@ std::uint64_t LineNumberOr(const LogRecord &record, std::uint64_t fallback)
     return value->as<std::uint64_t>();
 }
 
-// Deterministic per-line PRNG. `minstd_rand` is cheap and keeps the
-// per-record synthesizer cost near-zero; the harness only needs enough
+// Deterministic per-line PRNG. `minstd_rand` is cheap and keeps
+// the per-record synthesizer cost near-zero; we only need enough
 // entropy to spread pool picks across a large fixture.
 using LineRng = std::minstd_rand;
 
-// SplitMix64-style hash so consecutive `lineNumber`s land on distant
-// PRNG trajectories. Necessary because `minstd_rand`'s first output
-// is strongly correlated with its seed (near-identical seeds pick the
-// same pool entry on the first `Pick(...)` call).
+// SplitMix64-style hash so consecutive `lineNumber`s land on
+// distant PRNG trajectories. Necessary because `minstd_rand`'s
+// first output correlates strongly with its seed — near-identical
+// seeds would pick the same pool entry on the first `Pick(...)`.
 LineRng MakeLineRng(std::uint64_t lineNumber) noexcept
 {
     std::uint64_t x = lineNumber + 0x9E3779B97F4A7C15ULL;
@@ -465,9 +466,10 @@ template <std::size_t N> std::string_view Pick(const std::array<std::string_view
     return pool[std::uniform_int_distribution<std::size_t>{0, N - 1}(rng)];
 }
 
-// Static pools shared across the Apache-family / syslog synthesizers.
-// Small on purpose: each pool only needs enough entropy to spread bytes
-// across a large fixture without dominating the per-line cost.
+// Static pools shared across the Apache / syslog synthesizers.
+// Small on purpose — each pool only needs enough entropy to
+// spread bytes across a large fixture without dominating the
+// per-line cost.
 constexpr std::array<std::string_view, 6> SYSLOG_HOSTS = {"host-a", "host-b", "host-c", "web01", "db02", "edge03"};
 constexpr std::array<std::string_view, 6> SYSLOG_PROGRAMS = {
     "systemd", "sshd", "kernel", "cron", "networkd", "auditd"
@@ -594,9 +596,9 @@ void AppendApacheClfTimestamp(std::string &out, const IsoTimestamp &t)
     out.append(" +0000");
 }
 
-// Append "Www Mon DD HH:MM:SS.mmm YYYY" (Apache error log form). Fires
-// millis only when the source record carried them so both sample-line
-// variants of the pattern remain covered.
+// Append "Www Mon DD HH:MM:SS.mmm YYYY" (Apache error log form).
+// Emits millis only when the source record carried them, so both
+// sample-line variants of the pattern get covered.
 void AppendApacheErrorTimestamp(std::string &out, const IsoTimestamp &t)
 {
     const unsigned wd = WeekdayIndex(t.year, t.month == 0 ? 1U : t.month, t.day == 0 ? 1U : t.day);
@@ -621,9 +623,10 @@ void AppendApacheErrorTimestamp(std::string &out, const IsoTimestamp &t)
     AppendPadded(out, t.year, 4);
 }
 
-// Strip characters that would end a `"..."` field in Apache CLF: quotes
-// and control characters. The generator's message pool is already safe
-// but user-injected records aren't guaranteed to be, so scrub defensively.
+// Strip characters that would terminate a `"..."` field in Apache
+// CLF (quotes and control characters). The generator's message
+// pool is already safe; user-injected records may not be, so
+// scrub defensively.
 void AppendCleanQuotedText(std::string &out, std::string_view text)
 {
     for (const char c : text)
@@ -657,8 +660,8 @@ LogFormat SyslogRfc3164Format()
                 out.append(Pick(SYSLOG_HOSTS, rng));
                 out.push_back(' ');
                 out.append(Pick(SYSLOG_PROGRAMS, rng));
-                // Emit `[pid]` on odd lines so both sample-line variants
-                // of the pattern get exercised at ~50/50 mix.
+                // Emit `[pid]` on odd lines so both sample-line
+                // variants of the pattern get exercised at ~50/50.
                 if ((std::uniform_int_distribution<int>{0, 1}(rng)) != 0)
                 {
                     out.push_back('[');
@@ -695,7 +698,8 @@ LogFormat ApacheCombinedFormat()
                 out.append(" HTTP/1.1\" ");
                 out.append(Pick(APACHE_STATUSES, rng));
                 out.push_back(' ');
-                // Response bytes: `-` (unknown) on ~1/4 of lines, digits otherwise.
+                // Response bytes: `-` (unknown) on ~1/4 of lines,
+                // digits otherwise.
                 if ((std::uniform_int_distribution<int>{0, 3}(rng)) == 0)
                 {
                     out.push_back('-');
@@ -789,8 +793,9 @@ LogFormat JavaLogFormat()
             [](const LogRecord &record) {
                 LineRng rng = MakeLineRng(LineNumberOr(record, 0));
                 IsoTimestamp ts = ParseIsoTimestamp(FieldOr(record, "timestamp", ""));
-                // Force a comma-decimal millisecond field so `AppendJavaTimestamp`
-                // always emits the fractional part the template accepts.
+                // Force a millisecond field so `AppendJavaTimestamp`
+                // always emits the comma-decimal fractional part the
+                // template accepts.
                 ts.hasMillis = true;
 
                 std::string out;

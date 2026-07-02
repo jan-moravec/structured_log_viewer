@@ -21,9 +21,8 @@ public:
     /// `MainWindow`; tests can pass `nullptr` for a dialog that
     /// renders without theme group behaviour.
     ///
-    /// Regex template lifecycle (create / edit / delete) lives in
-    /// the dedicated `RegexTemplatesEditor` opened from
-    /// `Settings -> Regex templates...`, not here.
+    /// Regex template CRUD is not here; it lives in
+    /// `RegexTemplatesEditor` (`Settings -> Regex templates...`).
     explicit PreferencesEditor(ThemeControl *theme = nullptr, QWidget *parent = nullptr);
 
     void UpdateFields();

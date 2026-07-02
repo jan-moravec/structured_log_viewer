@@ -227,17 +227,17 @@ else()
 endif()
 
 # PCRE2 (8-bit + JIT) backs the regex-template log parser
-# (`loglib::RegexParser`). Per the engine evaluation in CONTRIBUTING.md
-# / the regex-template plan, PCRE2's JIT outperforms RE2 on capture-heavy
+# (`loglib::RegexParser`). Per the engine evaluation in
+# CONTRIBUTING.md, PCRE2's JIT outperforms RE2 on capture-heavy
 # patterns (rebar geomean) and runs upstream lnav / logstash-grok
-# patterns verbatim (PCRE2 syntax). We build the 8-bit variant only
-# (we never feed UTF-16 / UTF-32 to the parser), with the JIT enabled
-# (`PCRE2_SUPPORT_JIT=ON`); upstream tests / pcre2grep are disabled to
-# keep configure time short. `PCRE2_STATIC_PIC=ON` matches the
-# project-wide `CMAKE_POSITION_INDEPENDENT_CODE=ON`, otherwise linking
-# `loglib` into the PIC `StructuredLogViewer` executable fails on
-# Linux. The compiled `pcre2_code*` is shared read-only across Stage B
-# workers; each worker owns its own `pcre2_match_data*` (see
+# patterns verbatim. We build the 8-bit variant only (we never
+# feed UTF-16 / UTF-32 to the parser), with JIT enabled; upstream
+# tests / pcre2grep are disabled to keep configure time short.
+# `PCRE2_STATIC_PIC=ON` matches the project-wide
+# `CMAKE_POSITION_INDEPENDENT_CODE=ON`; otherwise linking `loglib`
+# into the PIC executable fails on Linux. The compiled
+# `pcre2_code*` is shared read-only across Stage B workers, each
+# owning its own `pcre2_match_data*` (see
 # `library/src/parsers/regex_parser.cpp`).
 if(NOT USE_SYSTEM_PCRE2)
     FetchContent_Declare(
@@ -261,16 +261,17 @@ if(NOT USE_SYSTEM_PCRE2)
         FetchContent_MakeAvailable(pcre2)
     endblock()
 
-    # PCRE2 names its static 8-bit target `pcre2-8-static`. Provide a
-    # stable namespaced alias so the consumer link line reads identically
-    # whether the dependency came from FetchContent or `find_package`.
+    # PCRE2 names its static 8-bit target `pcre2-8-static`. Alias it
+    # under a stable namespaced name so the consumer link line reads
+    # the same regardless of whether the dep came from FetchContent
+    # or `find_package`.
     if(NOT TARGET PCRE2::pcre2-8 AND TARGET pcre2-8-static)
         add_library(PCRE2::pcre2-8 ALIAS pcre2-8-static)
     endif()
 
-    # PCRE2's CMake currently emits a couple of warnings under MSVC and
-    # Clang (signed/unsigned mismatches, deprecated decls). Silence them
-    # so the third-party build doesn't dominate the configure log.
+    # PCRE2's CMake emits a few warnings under MSVC and Clang (signed/
+    # unsigned mismatches, deprecated decls). Silence them so the
+    # third-party build doesn't dominate the configure log.
     if(TARGET pcre2-8-static)
         if(MSVC)
             target_compile_options(pcre2-8-static PRIVATE /w)
@@ -280,9 +281,9 @@ if(NOT USE_SYSTEM_PCRE2)
     endif()
 else()
     find_package(PCRE2 REQUIRED COMPONENTS 8BIT)
-    # Normalise the consumer-side target name to `PCRE2::pcre2-8` whether
-    # the system package exposed it under that name or as a non-namespaced
-    # `pcre2-8` / `PCRE2::8BIT`.
+    # Normalise the consumer-side target name to `PCRE2::pcre2-8`
+    # whether the system package exposes it under that name or as
+    # a non-namespaced `pcre2-8` / `PCRE2::8BIT`.
     if(NOT TARGET PCRE2::pcre2-8)
         if(TARGET PCRE2::8BIT)
             add_library(PCRE2::pcre2-8 ALIAS PCRE2::8BIT)

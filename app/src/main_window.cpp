@@ -451,9 +451,9 @@ QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &se
 /// Build the parser matching @p format. All open paths route through
 /// here so the parser tracks the persisted `Source::format` instead
 /// of being hard-coded at the call sites. @p regexPattern is only
-/// honoured when @p format is `Regex`; passing an empty string there
-/// yields a probe-only parser that refuses to parse (the parse will
-/// surface a single "empty pattern" error through the sink).
+/// consulted for `Regex`; an empty pattern yields a probe-only
+/// parser that surfaces a single "empty pattern" error through the
+/// sink.
 std::unique_ptr<loglib::LogParser>
 MakeParserForFormat(loglib::LogConfiguration::Source::Format format, std::string_view regexPattern = {})
 {
@@ -464,10 +464,10 @@ MakeParserForFormat(loglib::LogConfiguration::Source::Format format, std::string
     case loglib::LogConfiguration::Source::Format::Csv:
         return std::make_unique<loglib::CsvParser>();
     case loglib::LogConfiguration::Source::Format::Regex:
-        // Pin the pattern onto the parser instance. We do not rely on
-        // `ParserOptions::configuration->source->regexPattern` here —
-        // some callers pass an unrelated configuration snapshot, and
-        // the explicit-pattern constructor short-circuits the lookup.
+        // Pin the pattern on the parser instance directly rather
+        // than relying on `ParserOptions::configuration->source->
+        // regexPattern`: some callers pass an unrelated snapshot,
+        // and the explicit-pattern ctor short-circuits the lookup.
         return std::make_unique<loglib::RegexParser>(std::string(regexPattern));
     case loglib::LogConfiguration::Source::Format::Json:
         return std::make_unique<loglib::JsonParser>();
@@ -475,26 +475,25 @@ MakeParserForFormat(loglib::LogConfiguration::Source::Format format, std::string
     return std::make_unique<loglib::JsonParser>();
 }
 
-/// Output of `DetectFormatForPath`: the detected format plus, for
-/// `Regex`, the pattern of the matched template (built-in or user).
-/// Pattern is empty for every other format and for files that
-/// nothing claimed. Returned by value (small struct, single call
-/// site each).
+/// Output of `DetectFormatForPath`: the detected format and, for
+/// `Regex`, the matched template's pattern (built-in or user).
+/// `regexPattern` is empty for every other format and for files
+/// nothing claimed.
 struct DetectedFormat
 {
     loglib::LogConfiguration::Source::Format format = loglib::LogConfiguration::Source::Format::Json;
     std::string regexPattern;
 };
 
-/// Sniff @p file and return the first format whose parser accepts it
-/// (JSON before logfmt before CSV before Regex, matching
-/// `loglib::ParseFile(path)`). For `Regex`, `loglib::DetectRegexTemplate`
-/// walks the merged catalog (built-ins ∪ user templates injected via
-/// `loglib::SetExtraRegexTemplates`) in priority order; the matched
-/// template's pattern is carried through so the caller can persist
-/// it on `mCurrentSource->regexPattern`. Falls back to `Json` when
-/// nothing matches so the parse surfaces the bytes as parse errors
-/// rather than silently doing nothing.
+/// Sniff @p file and return the first format whose parser accepts
+/// it, matching `loglib::ParseFile(path)`'s order (JSON, logfmt,
+/// CSV, Regex). For `Regex` we call `loglib::DetectRegexTemplate`,
+/// which walks the merged catalog (built-ins ∪ user templates
+/// injected via `loglib::SetExtraRegexTemplates`) in priority
+/// order; the matched template's pattern is carried through so
+/// callers can persist it on `mCurrentSource->regexPattern`.
+/// Falls back to `Json` when nothing matches so the parse surfaces
+/// the bytes as errors instead of silently doing nothing.
 DetectedFormat DetectFormatForPath(const std::filesystem::path &file)
 {
     for (int i = 0; i < static_cast<int>(loglib::LogFactory::Parser::Count); ++i)
@@ -502,8 +501,8 @@ DetectedFormat DetectFormatForPath(const std::filesystem::path &file)
         const auto parserType = static_cast<loglib::LogFactory::Parser>(i);
         if (parserType == loglib::LogFactory::Parser::Regex)
         {
-            // Same special case as `loglib::ParseFile(path)`: we need
-            // the matched template's pattern, not just a yes/no.
+            // Special-cased like `loglib::ParseFile(path)`: we need
+            // the matched template's pattern, not a bare yes/no.
             if (const std::optional<loglib::RegexTemplate> tmpl = loglib::DetectRegexTemplate(file);
                 tmpl.has_value())
             {
@@ -1031,12 +1030,9 @@ MainWindow::MainWindow(
     });
 
     // Settings -> Regex templates... opens the dedicated editor.
-    // Constructed lazily so the (modest but non-trivial) widget
-    // tree only materialises if the user actually visits it.
-    // Disabled entirely when no registry was passed in (test
-    // fixtures, ad-hoc instances) -- the editor's whole job is to
-    // mutate the registry, so without one the menu entry would be
-    // a no-op.
+    // Built lazily so the widget tree only materialises on first
+    // visit. Disabled without a registry (test fixtures / ad-hoc
+    // instances) since the editor exists to mutate one.
     if (mRegexTemplateRegistry != nullptr)
     {
         connect(ui->actionRegexTemplates, &QAction::triggered, this, [this]() {
@@ -1046,9 +1042,9 @@ MainWindow::MainWindow(
             }
             else
             {
-                // Re-running RefreshList on every menu activation
-                // keeps the picker honest if the registry changed
-                // out-of-band (e.g. a Reload triggered elsewhere).
+                // Refresh on every menu open so out-of-band
+                // registry changes (e.g. a Reload elsewhere) are
+                // reflected in the list.
                 mRegexTemplatesEditor->RefreshList();
             }
             mRegexTemplatesEditor->show();

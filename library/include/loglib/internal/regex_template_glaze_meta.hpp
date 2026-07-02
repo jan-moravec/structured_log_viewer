@@ -5,10 +5,10 @@
 #include <glaze/glaze.hpp>
 
 // Glaze meta-specialisation for `loglib::RegexTemplate`. Kept out
-// of the public header so consumers don't pull in `<glaze/glaze.hpp>`.
-// Mirrors `theme_glaze_meta.hpp`.
+// of the public header so consumers don't pull in
+// `<glaze/glaze.hpp>`. Mirrors `theme_glaze_meta.hpp`.
 //
-// `value` is a slot name required by Glaze reflection, so it keeps
+// `value` is a slot name required by Glaze reflection, so keeps
 // its lowercase name.
 // NOLINTBEGIN(readability-identifier-naming)
 

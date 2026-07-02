@@ -36,31 +36,26 @@ constexpr int EDITOR_MIN_HEIGHT_PX = 560;
 constexpr int LIST_INITIAL_WIDTH_PX = 280;
 constexpr int STATUS_CLEAR_MS = 6000;
 
-/// Sentinel "user bucket" priority shown to new drafts. Matches
-/// the convention used elsewhere (the registry's user templates
-/// land in the same bucket; the library probe stably sorts by
-/// `priority` so identical user priorities preserve file-name order).
+/// Default "user bucket" priority for new drafts. Matches the
+/// convention used elsewhere (probe stably sorts by `priority`, so
+/// identical user priorities preserve file-name order).
 constexpr int USER_TEMPLATE_DEFAULT_PRIORITY = 100;
 
 /// Priority spinner bounds. Built-ins ship between 10 and 30; the
-/// upper bound is generous so users can stage rare formats far down
-/// the probe order without saturating the spinner.
+/// upper bound is generous so users can stage rare formats far
+/// down the probe order without saturating.
 constexpr int PRIORITY_MIN = 0;
 constexpr int PRIORITY_MAX = 10000;
 
-/// Horizontal padding between the auto-detect checkbox and the
-/// priority row, in pixels. Big enough to read as two logical
-/// controls (not one), small enough to keep the form compact.
+/// Horizontal spacing (px) between the auto-detect checkbox and
+/// the priority row. Wide enough to read as two controls,
+/// narrow enough to keep the form compact.
 constexpr int FLAGS_ROW_SPACING_PX = 16;
 
 /// Replace every character `RegexTemplateRegistry::SanitiseTemplateName`
-/// would reject with an underscore so the result is filename-safe.
-/// Used by `Duplicate` to seed a name a built-in's
-/// `"Apache / nginx Combined Log Format"` flows through without
-/// the user having to manually edit the slashes out before Save.
-/// Conservative: matches the registry's blacklist exactly (no
-/// extra cleverness like collapsing runs of underscores), so the
-/// suggested name stays readable.
+/// would reject with an underscore, yielding a filename-safe name.
+/// Used by `Duplicate` so a built-in like "Apache / nginx Combined
+/// Log Format" seeds a name Save can accept without manual editing.
 [[nodiscard]] QString MakeFilenameSafe(const QString &name)
 {
     QString out;
@@ -79,8 +74,8 @@ constexpr int FLAGS_ROW_SPACING_PX = 16;
             out.append(ch);
         }
     }
-    // Trim trailing dots / spaces (the registry also rejects
-    // those) so a name like "MyTemplate. " round-trips cleanly.
+    // Trim trailing dots / spaces (the registry rejects those
+    // too) so names like "MyTemplate. " round-trip cleanly.
     while (!out.isEmpty() && (out.endsWith(QLatin1Char('.')) || out.endsWith(QLatin1Char(' '))))
     {
         out.chop(1);
@@ -98,9 +93,9 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
     setMinimumSize(EDITOR_MIN_WIDTH_PX, EDITOR_MIN_HEIGHT_PX);
 
     // ------------------------------------------------------------
-    // Toolbar (top row) -- list-side actions on the left, folder /
-    // reload on the right. Keeps the heavy CRUD verbs (New,
-    // Duplicate, Delete) close to the list they operate on.
+    // Toolbar (top row): list-side actions on the left, folder /
+    // reload on the right, keeping the CRUD verbs next to the
+    // list they operate on.
     // ------------------------------------------------------------
     auto *topBar = new QHBoxLayout();
     mNewButton = new QPushButton(tr("New template..."), this);
@@ -126,8 +121,9 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
     topBar->addWidget(mReloadButton);
 
     // ------------------------------------------------------------
-    // Main split: list on the left, form on the right. `QSplitter`
-    // so the user can resize per their screen / pattern length.
+    // Main split: list on the left, form on the right. Uses
+    // `QSplitter` so the user can resize per screen / pattern
+    // length.
     // ------------------------------------------------------------
     auto *splitter = new QSplitter(Qt::Horizontal, this);
     splitter->setChildrenCollapsible(false);
@@ -141,10 +137,9 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
                                "in place; built-ins are read-only and must be duplicated to customise."));
 
     // Right-pane form. `QFormLayout` keeps the label column tight;
-    // multi-line fields (pattern, samples) use `QPlainTextEdit` so
-    // they can scroll on tall patterns. A monospace font is pinned
-    // on the regex / samples fields because regex character classes
-    // are unreadable in a proportional face.
+    // multi-line fields use `QPlainTextEdit` so they scroll on
+    // tall patterns. A monospace font is pinned on regex / samples
+    // — character classes are unreadable in a proportional face.
     auto *formContainer = new QWidget(splitter);
     auto *formLayout = new QFormLayout(formContainer);
 
@@ -210,17 +205,14 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
                                     "generator scans this field for recognisable licence citations."));
     mDescriptionEdit->setTabChangesFocus(true);
     // Word-wrap so long descriptions stay readable without
-    // forcing the user to break lines manually.
+    // making the user break lines manually.
     mDescriptionEdit->setLineWrapMode(QPlainTextEdit::WidgetWidth);
     {
-        // The shipped descriptions for upstream-ported templates
-        // (AWS Classic ELB, Cisco ASA, ...) are 4-6 wrapped lines,
-        // so floor the field at ~6 rows so they fit without
-        // scrolling on first load. The widget keeps its default
-        // Expanding vertical size policy, so it shares any extra
-        // vertical space with Pattern and Sample lines the same
-        // way they share it with each other when the window
-        // grows.
+        // Shipped descriptions for upstream ports (AWS Classic ELB,
+        // Cisco ASA, ...) run 4-6 wrapped lines, so floor at ~6
+        // rows to fit without scrolling on first load. The default
+        // Expanding vertical policy still shares extra space with
+        // the Pattern and Sample fields.
         const QFontMetrics fm(mDescriptionEdit->font());
         constexpr int DESCRIPTION_MIN_ROWS = 6;
         const int frameHeight = mDescriptionEdit->frameWidth() * 2;
@@ -229,9 +221,8 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
     formLayout->addRow(tr("Description:"), mDescriptionEdit);
 
     // ------------------------------------------------------------
-    // Per-form action row (Validate / Save / Revert). Right-aligned
-    // so the Save+Revert pair sits next to the buttons their state
-    // applies to.
+    // Per-form action row (Validate / Save / Revert), right-aligned
+    // so Save+Revert sit next to the fields their state applies to.
     // ------------------------------------------------------------
     auto *formButtonsRow = new QHBoxLayout();
     mValidateButton = new QPushButton(tr("Validate"), formContainer);
@@ -296,8 +287,8 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
     connect(closeButton, &QPushButton::clicked, this, &QWidget::close);
 
     // Field-edit -> dirty bridge. `MarkDirty` is idempotent and
-    // cheap; rebuilding the registry connections is what's gated
-    // through `mSuppressDirtySignals` (set by `LoadIntoForm`).
+    // cheap; programmatic form fills are gated through
+    // `mSuppressDirtySignals` (set by `LoadIntoForm`).
     connect(mNameEdit, &QLineEdit::textEdited, this, &RegexTemplatesEditor::OnFieldEdited);
     connect(mPatternEdit, &QPlainTextEdit::textChanged, this, &RegexTemplatesEditor::OnFieldEdited);
     connect(mSampleLinesEdit, &QPlainTextEdit::textChanged, this, &RegexTemplatesEditor::OnFieldEdited);
@@ -305,17 +296,17 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
     connect(mPrioritySpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &RegexTemplatesEditor::OnFieldEdited);
     connect(mDescriptionEdit, &QPlainTextEdit::textChanged, this, &RegexTemplatesEditor::OnFieldEdited);
 
-    // External registry changes (Reload from disk, a different
-    // widget saving a template, ...) repopulate the list. The
-    // current selection is preserved by name when possible.
+    // External registry changes (Reload from disk, a save from
+    // another widget, ...) repopulate the list. Selection is
+    // preserved by name when possible.
     connect(mRegistry, &RegexTemplateRegistry::templatesChanged, this, &RegexTemplatesEditor::RefreshList);
 
     RefreshList();
-    // Default to selecting the first entry so the form isn't blank
-    // on open. `RefreshList` already restored a selection if any
-    // exists, but in the empty-list case (no entries at all -- very
-    // unusual but possible if every built-in were ever stripped)
-    // we still want the form in a sensible "New draft" mode.
+    // Default to selecting the first entry so the form isn't
+    // blank on open. `RefreshList` already restored a prior
+    // selection if one existed. If the list is empty (very
+    // unusual — would need every built-in stripped) fall back to
+    // "New draft" mode so the form has something to show.
     if (mListWidget->count() > 0 && mListWidget->currentItem() == nullptr)
     {
         mListWidget->setCurrentRow(0);
@@ -329,16 +320,15 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
 void RegexTemplatesEditor::RefreshList()
 {
     const QString preserveName = mCurrentName;
-    // Stash any in-flight draft so a refresh that misses the
-    // current row doesn't silently throw away the user's typing.
-    // (The Confirmation prompt only fires on user-driven actions;
-    // an external `templatesChanged()` mustn't surprise us.)
+    // Preserve any in-flight draft so a refresh that misses the
+    // current row doesn't silently throw the user's typing away.
+    // (The confirmation prompt only fires on user-driven actions;
+    // an external `templatesChanged()` must not surprise us.)
     if (mDirty && !mIsNewDraft)
     {
-        // Built-in / user toggle could have flipped if a user file
-        // appeared on disk that shadows the built-in we're editing.
-        // Leave the form alone: the next user click will trigger
-        // `ConfirmDiscardEdits` and they can react then.
+        // A user file appearing on disk could flip built-in/user
+        // for the row we're editing. Leave the form alone; the
+        // next user click will trigger `ConfirmDiscardEdits`.
     }
 
     {
@@ -349,8 +339,8 @@ void RegexTemplatesEditor::RefreshList()
         {
             auto *item = new QListWidgetItem(FormatListLabel(row.name, row.fromUser, row.autoDetect), mListWidget);
             item->setData(Qt::UserRole, row.name);
-            // Tooltip with the same metadata as the badge so users
-            // can verify priority / source without opening the form.
+            // Tooltip echoes the badge plus priority / source so
+            // users can inspect a row without opening the form.
             item->setToolTip(
                 tr("%1\nSource: %2\nPriority: %3\nAuto-detect: %4")
                     .arg(row.name, row.fromUser ? tr("user (editable)") : tr("built-in (read-only)"))
@@ -360,10 +350,9 @@ void RegexTemplatesEditor::RefreshList()
         }
     }
 
-    // Restore selection by name if possible. If the previously
-    // selected entry vanished (user deleted it, etc.), fall back
-    // to selecting the first row -- which clears any unsaved-draft
-    // state via `OnSelectionChanged`.
+    // Restore selection by name if the entry still exists. If it
+    // vanished (deleted, etc.), fall back to the first row —
+    // which clears any unsaved-draft state via `OnSelectionChanged`.
     if (!preserveName.isEmpty())
     {
         for (int i = 0; i < mListWidget->count(); ++i)
@@ -377,8 +366,8 @@ void RegexTemplatesEditor::RefreshList()
     }
     if (mIsNewDraft)
     {
-        // Keep the draft alive across an external refresh; nothing
-        // in the list is selected.
+        // Preserve the draft across an external refresh; nothing
+        // in the list is selected while it's live.
         mListWidget->clearSelection();
     }
 }
@@ -388,8 +377,8 @@ void RegexTemplatesEditor::OnSelectionChanged()
     QListWidgetItem *item = mListWidget->currentItem();
     const QString name = (item == nullptr) ? QString{} : item->data(Qt::UserRole).toString();
 
-    // No-op when the selection didn't actually change (Qt fires
-    // `currentItemChanged` on programmatic list rebuilds too).
+    // No-op when the selection didn't change (Qt also fires
+    // `currentItemChanged` on programmatic list rebuilds).
     if (name == mCurrentName && !mIsNewDraft)
     {
         return;
@@ -464,9 +453,8 @@ void RegexTemplatesEditor::OnNewClicked()
     mDeleteButton->setEnabled(false);
     mDuplicateButton->setEnabled(false);
 
-    // A blank draft starts "dirty" so the Save button is enabled
-    // immediately; the user has to type a name + pattern before
-    // it'll actually commit (validated in `OnSaveClicked`).
+    // Blank drafts start "dirty" so Save enables immediately.
+    // A missing name / pattern is caught in `OnSaveClicked`.
     MarkDirty();
 
     mNameEdit->setFocus();
@@ -484,8 +472,8 @@ void RegexTemplatesEditor::OnDuplicateClicked()
         return;
     }
 
-    // Snapshot the form (not the registry) so a half-typed edit on
-    // a user template still serves as the duplication base.
+    // Snapshot the form (not the registry) so half-typed edits on
+    // a user template can still seed the duplicate.
     QString sourceName;
     loglib::RegexTemplate base;
     try
@@ -508,11 +496,10 @@ void RegexTemplatesEditor::OnDuplicateClicked()
     }
 
     // Find a unique "<name>-copy[ N]" so repeated clicks don't
-    // collide. Same convention as the themes editor. The base name
-    // runs through `MakeFilenameSafe` so duplicating a built-in
-    // like "Apache / nginx Combined Log Format" produces a name
-    // that Save can actually accept ("Apache _ nginx Combined Log
-    // Format-copy") instead of throwing on the first save attempt.
+    // collide. Same convention as the themes editor. Base name
+    // runs through `MakeFilenameSafe` so a built-in like "Apache
+    // / nginx Combined Log Format" becomes "Apache _ nginx ...
+    // -copy" — a name Save can accept without throwing.
     const QString safeSource = MakeFilenameSafe(sourceName);
     const QString seed = safeSource.isEmpty() ? tr("Untitled") : safeSource;
     QString candidate = seed + tr("-copy");
@@ -524,16 +511,14 @@ void RegexTemplatesEditor::OnDuplicateClicked()
     }
 
     base.name = candidate.toStdString();
-    // Duplicates become user templates regardless of the source.
-    // Default to participating in auto-detect at the user bucket
-    // priority; the user can flip those if they want a manual-only
-    // override.
+    // Duplicates always become user templates. Default to
+    // participating in auto-detect at the user-bucket priority;
+    // the user can flip either for a manual-only override.
     base.autoDetect = true;
     base.priority = USER_TEMPLATE_DEFAULT_PRIORITY;
-    // Leave `description` alone on duplicate: an empty one stays
-    // empty so the user can write their own, while a description
-    // inherited from the source (built-in attribution line, etc.)
-    // is preserved so the user has something to build on.
+    // Leave `description` alone: an inherited attribution line
+    // gives the user something to build on, and an empty one
+    // stays empty so they can write their own.
 
     {
         const QSignalBlocker blocker(mListWidget);
@@ -592,9 +577,9 @@ void RegexTemplatesEditor::OnSaveClicked()
     }
 
     // Compile-check before writing so the saved file is always
-    // valid PCRE2. Front-loaded here (rather than only in
-    // `OnValidateClicked`) so a `Save` without a prior `Validate`
-    // can't smuggle a broken pattern onto disk.
+    // valid PCRE2. Front-loaded here (not only in Validate) so a
+    // Save without a prior Validate can't put a broken pattern
+    // on disk.
     std::string regexError;
     if (!loglib::ValidateRegexPattern(tmpl.pattern, regexError))
     {
@@ -608,20 +593,18 @@ void RegexTemplatesEditor::OnSaveClicked()
     const QString name = QString::fromStdString(tmpl.name);
     if (name.isEmpty())
     {
-        // Save is the only consumer that needs a name (the file
-        // basename); Validate / Duplicate don't, so the check
-        // lives here rather than in `GatherForm`.
+        // Save is the only consumer that requires a name (as the
+        // file basename); Validate and Duplicate don't, so the
+        // check lives here rather than in `GatherForm`.
         ShowStatus(tr("Template name must not be empty."), /*isError=*/true);
         mNameEdit->setFocus();
         return;
     }
 
-    // Collision check: when authoring a brand-new draft, refuse to
-    // silently overwrite an existing user template (the user may
-    // not realise there's already a file). Editing an existing
-    // user template is allowed (that's the whole point of the
-    // edit flow); overwriting a built-in name shadows it
-    // intentionally.
+    // Collision check for new drafts: refuse to silently overwrite
+    // an existing user template. Editing an existing user template
+    // is fine (that's the edit flow), and overwriting a built-in
+    // name intentionally shadows it.
     if (mIsNewDraft && mRegistry->IsUserTemplate(name))
     {
         const auto reply = QMessageBox::question(
@@ -637,13 +620,12 @@ void RegexTemplatesEditor::OnSaveClicked()
         }
     }
 
-    // Transition out of draft mode *before* the save call so that
-    // `RefreshList` (fired synchronously from
-    // `SaveUserTemplate`'s `templatesChanged()` signal) sees the
-    // just-saved name in `mCurrentName` and restores the row
-    // selection. Doing it after the save leaves `mCurrentName`
-    // empty during the refresh, so the new row lands unselected
-    // and the user has to click it manually.
+    // Transition out of draft mode *before* the save so
+    // `RefreshList` (fired synchronously from `SaveUserTemplate`'s
+    // `templatesChanged()`) sees the just-saved name in
+    // `mCurrentName` and restores selection. Doing it after would
+    // leave `mCurrentName` empty during the refresh and the new
+    // row would land unselected.
     const bool wasNewDraft = mIsNewDraft;
     const QString previousName = mCurrentName;
     mIsNewDraft = false;
@@ -654,9 +636,9 @@ void RegexTemplatesEditor::OnSaveClicked()
     }
     catch (const std::exception &ex)
     {
-        // Roll back so the failed save doesn't leave the editor
-        // pretending the draft is committed. The form contents
-        // are untouched; the user's typing stays intact.
+        // Roll back so a failed save doesn't leave the editor
+        // pretending the draft was committed. Form contents are
+        // untouched so the user's typing stays intact.
         mIsNewDraft = wasNewDraft;
         mCurrentName = previousName;
         ShowStatus(QString::fromUtf8(ex.what()), /*isError=*/true);
@@ -675,7 +657,7 @@ void RegexTemplatesEditor::OnRevertClicked()
         mCurrentName.clear();
         LoadIntoForm(QString{});
         // Re-select the first row so the user has somewhere to
-        // start from after discarding the draft.
+        // pick up from after discarding the draft.
         if (mListWidget->count() > 0)
         {
             mListWidget->setCurrentRow(0);
@@ -720,8 +702,8 @@ void RegexTemplatesEditor::OnDeleteClicked()
     ShowStatus(tr("Deleted \"%1\".").arg(mCurrentName));
     mDirty = false;
     mCurrentName.clear();
-    // `templatesChanged()` re-runs RefreshList; we just need to
-    // make sure the form clears.
+    // `templatesChanged()` re-runs RefreshList; we just clear the
+    // form here.
     LoadIntoForm(QString{});
     if (mListWidget->count() > 0)
     {
@@ -759,9 +741,7 @@ void RegexTemplatesEditor::OnValidateClicked()
     }
 
     // Walk the samples through the compiled template via the
-    // helper the library already exposes for the same purpose.
-    // `RegexLineMatch` returns a match struct; we don't need the
-    // groups here, just success/failure.
+    // library helper. We only need pass/fail, not the groups.
     std::size_t passed = 0;
     std::size_t failedIndex = 0;
     bool sawFailure = false;
@@ -812,7 +792,7 @@ void RegexTemplatesEditor::OnReloadClicked()
     }
     mRegistry->Reload();
     // `templatesChanged()` already fired RefreshList from inside
-    // `Reload`. Just acknowledge.
+    // `Reload` — just acknowledge.
     ShowStatus(tr("Reloaded regex templates from disk."));
 }
 
@@ -863,9 +843,9 @@ void RegexTemplatesEditor::LoadIntoForm(const QString &name)
 
     if (!loaded.has_value())
     {
-        // The list said this template exists but the load failed
-        // (file disappeared between scans, malformed JSON, ...).
-        // Clear the form and let the status line carry the news.
+        // The list claimed this template exists but the load
+        // failed (file gone between scans, malformed JSON, ...).
+        // Clear the form and let the status line report it.
         mNameEdit->clear();
         mPatternEdit->clear();
         mSampleLinesEdit->clear();
@@ -904,9 +884,9 @@ void RegexTemplatesEditor::LoadIntoForm(const QString &name)
     mDescriptionEdit->setPlainText(QString::fromStdString(t.description));
     mSourceLabel->setText(isUser ? tr("User template (editable in place)") : tr("Built-in template (read-only)"));
 
-    // Built-ins are read-only -- the bytes live in the binary, so
-    // editing the form would be misleading. The Duplicate button
-    // is the path to customise.
+    // Built-ins are read-only — the bytes live in the binary, so
+    // editing here would be misleading. Duplicate is the path to
+    // customise.
     const bool editable = isUser;
     mNameEdit->setReadOnly(!editable);
     mPatternEdit->setReadOnly(!editable);
@@ -927,19 +907,16 @@ loglib::RegexTemplate RegexTemplatesEditor::GatherForm() const
     // Name is collected as-is; filename safety (slashes, reserved
     // Win32 device names, etc.) is enforced by `SaveUserTemplate`
     // because it only matters when the name is about to become a
-    // file. Validate and Duplicate also call this helper but
-    // genuinely don't care -- "Apache / nginx Combined Log Format"
-    // is a perfectly valid template name to compile-check, and the
-    // Duplicate path is going to overwrite the name anyway. Pattern
-    // emptiness *is* checked here because every consumer (Validate
-    // / Duplicate / Save) needs a pattern to do anything useful.
+    // file. Validate / Duplicate don't care — "Apache / nginx ..."
+    // is a valid name to compile-check, and Duplicate overwrites
+    // it anyway. Pattern emptiness *is* checked here because every
+    // consumer needs a pattern to do anything useful.
     const QString name = mNameEdit->text().trimmed();
-    // Trim the pattern to match `NetworkStreamDialog::Accepted`:
-    // `QPlainTextEdit` happily accumulates a stray trailing
-    // newline / spaces from paste operations, and persisting that
-    // whitespace onto disk causes both a pointless diff on every
-    // save round-trip *and* a mismatch against the same pattern
-    // typed into the network-stream dialog (which does trim). No
+    // Trim the pattern (matches `NetworkStreamDialog::Accepted`).
+    // `QPlainTextEdit` accumulates stray trailing whitespace from
+    // paste, and persisting that would cause a pointless diff on
+    // every save round-trip and a mismatch with the same pattern
+    // typed into the network-stream dialog (which trims). No
     // shipped pattern relies on leading or trailing literal
     // whitespace — anchors are `^...$`, real whitespace lives
     // inside `\s+` / `\s*` — so trimming is safe.
@@ -956,9 +933,8 @@ loglib::RegexTemplate RegexTemplatesEditor::GatherForm() const
     t.sampleLines.reserve(static_cast<std::size_t>(lines.size()));
     for (const QString &line : lines)
     {
-        // Empty rows are skipped: trailing newlines in the editor
-        // would otherwise produce phantom empty samples that
-        // Validate would always fail.
+        // Skip empty rows — trailing newlines would otherwise
+        // produce phantom samples that Validate always fails.
         if (line.isEmpty())
         {
             continue;
@@ -998,9 +974,9 @@ bool RegexTemplatesEditor::IsCurrentEditable() const
 void RegexTemplatesEditor::ShowStatus(const QString &message, bool isError)
 {
     mStatusLabel->setText(message);
-    // Subtle visual differentiation: error rows in a warning hue,
-    // success / info rows in the regular palette. Done via stylesheet
-    // (cheap, theme-respecting because we only set foreground).
+    // Subtle visual differentiation: errors in a warning hue,
+    // info in the regular palette. Only sets foreground so the
+    // stylesheet stays theme-respecting.
     mStatusLabel->setStyleSheet(isError ? QStringLiteral("color: #b00020;") : QString{});
     if (message.isEmpty())
     {

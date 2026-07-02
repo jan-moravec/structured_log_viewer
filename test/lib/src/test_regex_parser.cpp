@@ -34,8 +34,8 @@ TEST_CASE("RegexParser validates against built-in templates [regex]", "[regex_pa
 {
     const RegexParser parser;
     const TestLogFile file("regex_isvalid.log");
-    // Two syslog lines — enough to trip the IS_VALID_MIN_MATCHES = 2
-    // guard and identify Syslog (RFC3164).
+    // Two syslog lines: enough to trip `IS_VALID_MIN_MATCHES = 2`
+    // and identify Syslog (RFC3164).
     file.Write("Apr 28 04:02:03 host-a systemd: System starting\n"
                "Jun 27 01:47:20 host-b configd[17]: network changed\n");
     CHECK(parser.IsValid(file.GetFilePath()));
@@ -47,8 +47,8 @@ TEST_CASE("RegexParser validates against built-in templates [regex]", "[regex_pa
 
 TEST_CASE("RegexParser rejects single-line files [regex]", "[regex_parser]")
 {
-    // Pattern-matching one line is too brittle for auto-detect; the
-    // probe requires at least two non-blank probe lines.
+    // One matched line is too brittle for auto-detect; the probe
+    // requires at least two non-blank lines.
     const RegexParser parser;
     const TestLogFile file("regex_oneline.log");
     file.Write("Apr 28 04:02:03 host-a systemd: System starting\n");
@@ -57,9 +57,8 @@ TEST_CASE("RegexParser rejects single-line files [regex]", "[regex_parser]")
 
 TEST_CASE("RegexParser rejects JSON / logfmt files [regex]", "[regex_parser]")
 {
-    // Auto-detect precedence demonstration: a file that the other
-    // probes claim must not also be claimed by Regex. Run on JSON
-    // because it's the broadest non-regex shape.
+    // Auto-detect precedence: a file another probe claims must not
+    // also be claimed by Regex. JSON is the broadest non-regex shape.
     const RegexParser parser;
     const TestLogFile file("regex_rejects_json.log");
     file.Write(R"({"level":"info","msg":"hello"})"
@@ -72,8 +71,7 @@ TEST_CASE("RegexParser rejects JSON / logfmt files [regex]", "[regex_parser]")
 TEST_CASE("RegexParser default-constructed parse without pattern surfaces error [regex]", "[regex_parser]")
 {
     // `LogFactory::Create(Regex)` returns a no-pattern instance.
-    // Calling parse on it must not crash; it must surface one error
-    // and end the parse cleanly.
+    // Parsing must not crash; it surfaces one error and ends cleanly.
     const RegexParser parser;
     const TestLogFile file("regex_no_pattern.log");
     file.Write("Apr 28 04:02:03 host-a systemd: System starting\n"
@@ -99,8 +97,8 @@ TEST_CASE("RegexParser unparseable pattern surfaces error [regex]", "[regex_pars
 
 TEST_CASE("RegexParser pattern without named groups surfaces error [regex]", "[regex_parser]")
 {
-    // Anonymous groups don't map to columns; the parser refuses
-    // rather than producing schemaless rows.
+    // Anonymous groups don't map to columns; refuse rather than
+    // producing schemaless rows.
     const RegexParser parser(R"(^(\w+)\s+(.*)$)");
     const TestLogFile file("regex_no_groups.log");
     file.Write("a b\nc d\n");
@@ -113,7 +111,7 @@ TEST_CASE("RegexParser pattern without named groups surfaces error [regex]", "[r
 
 TEST_CASE("RegexParser parses well-formed lines [regex]", "[regex_parser]")
 {
-    // Simple `LEVEL message` shape; named groups -> columns.
+    // Simple `LEVEL message` shape; named groups map to columns.
     const RegexParser parser(R"(^(?<level>\w+)\s+(?<message>.*)$)");
     const TestLogFile file("regex_parse_minimal.log");
     file.Write("info hello\nerror boom\n");
@@ -129,8 +127,8 @@ TEST_CASE("RegexParser parses well-formed lines [regex]", "[regex_parser]")
 
 TEST_CASE("RegexParser types numeric captures [regex]", "[regex_parser]")
 {
-    // ClassifyBareScalar promotes numeric / bool captures the same
-    // way it does for CSV / logfmt bare cells.
+    // `ClassifyBareScalar` promotes numeric / bool captures the
+    // same way it does for CSV / logfmt bare cells.
     const RegexParser parser(R"(^(?<level>\w+)\s+(?<code>\d+)\s+(?<ratio>\S+)\s+(?<ok>\S+)$)");
     const TestLogFile file("regex_typing.log");
     file.Write("info 200 0.75 true\n"
@@ -169,10 +167,10 @@ TEST_CASE("RegexParser non-matching lines surface as errors [regex]", "[regex_pa
 
 TEST_CASE("RegexParser optional unmatched groups -> monostate [regex]", "[regex_parser]")
 {
-    // `pid` is optional; absent on the first line, present on the
-    // second. Captures that didn't participate in the match drop to
-    // monostate (not the empty string) so column lookups behave
-    // like CSV's "missing trailing cell" case.
+    // `pid` is optional: absent on line 1, present on line 2.
+    // Captures that didn't participate in the match drop to
+    // monostate (not the empty string), matching CSV's "missing
+    // trailing cell" behaviour.
     const RegexParser parser(R"(^(?<program>\w+)(?:\[(?<pid>\d+)\])?:\s+(?<message>.*)$)");
     const TestLogFile file("regex_optional.log");
     file.Write("systemd: System starting\n"
@@ -194,9 +192,9 @@ TEST_CASE("RegexParser optional unmatched groups -> monostate [regex]", "[regex_
 
 TEST_CASE("RegexParser auto-detect through ParseFile picks the matched template [regex]", "[regex_parser]")
 {
-    // End-to-end: `loglib::ParseFile(path)` runs the full auto-detect
-    // loop including the Regex special-case branch. The file has no
-    // header, just two syslog-shaped lines.
+    // End-to-end: `loglib::ParseFile(path)` runs the full auto-
+    // detect loop, including the Regex special case. Two syslog-
+    // shaped lines with no header.
     const TestLogFile file("regex_e2e.log");
     file.Write("Apr 28 04:02:03 host-a systemd: System starting\n"
                "Apr 28 04:02:04 host-b CRON[1234]: (root) CMD (test)\n");
@@ -214,9 +212,9 @@ TEST_CASE("RegexParser auto-detect through ParseFile picks the matched template 
 
 TEST_CASE("RegexParser does not steal JSON / CSV files [regex]", "[regex_parser]")
 {
-    // Regression: the auto-detect order is JSON to logfmt to CSV to
-    // Regex. A two-line JSON file must come out as JSON; the regex
-    // probe is the *last* fallback, so we'd see syslog-style columns
+    // Regression: auto-detect order is JSON to logfmt to CSV to
+    // Regex. A two-line JSON file must come out as JSON — Regex
+    // is the *last* fallback, so we'd see syslog-style columns
     // if the order ever drifted.
     const TestLogFile file("regex_precedence.log");
     file.Write(R"({"level":"info","msg":"hello"})"
@@ -227,15 +225,15 @@ TEST_CASE("RegexParser does not steal JSON / CSV files [regex]", "[regex_parser]
     auto result = ParseFile(file.GetFilePath());
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
-    // If Regex had won, we'd not see a `level` JSON column.
+    // If Regex had won, there'd be no `level` JSON column.
     CHECK(AsStringView(result.data.Lines()[0].GetValue("level")) == std::string_view{"info"});
 }
 
 TEST_CASE("RegexParser ToString joins values in KeyId order [regex]", "[regex_parser]")
 {
-    // Best-effort round-trip: regex is not invertible, so we accept
-    // any space-separated form that includes all the captured
-    // values. Used only when the line's source bytes are gone.
+    // Best-effort round-trip: regex isn't invertible, so we accept
+    // any space-separated form that includes every captured value.
+    // Only used when the line's source bytes are gone.
     const RegexParser parser(R"(^(?<level>\w+)\s+(?<message>.*)$)");
     const TestLogFile file("regex_tostring.log");
     file.Write("info hello world\n");
@@ -251,14 +249,14 @@ TEST_CASE("RegexParser ToString joins values in KeyId order [regex]", "[regex_pa
 
 TEST_CASE("RegexParser pinned to empty pattern fails closed on the static path [regex]", "[regex_parser]")
 {
-    // Regression: a parser constructed with `RegexParser("")` must
-    // NOT silently fall back to `options.configuration->source->regexPattern`.
-    // The bug was that the advanced overload treated an empty
-    // `string_view` as "no explicit pattern" and read the config —
-    // which contradicted the streaming overload's fail-closed
-    // behaviour for the same pinned-empty parser. The fix changed
-    // the advanced overload to take `optional<string_view>` so
-    // "pinned to empty" stays distinct from "no pattern pinned".
+    // Regression: `RegexParser("")` must NOT silently fall back
+    // to `options.configuration->source->regexPattern`. The bug
+    // was that the advanced overload treated an empty
+    // `string_view` as "no explicit pattern" and read the config,
+    // contradicting the streaming overload's fail-closed behaviour
+    // for the same parser. The fix took the advanced overload to
+    // `optional<string_view>` so "pinned to empty" stays distinct
+    // from "no pattern pinned".
     const RegexParser parser{std::string{}};
     const TestLogFile file("regex_pinned_empty.log");
     file.Write("info hello\nwarn world\n");
@@ -290,12 +288,12 @@ TEST_CASE("RegexParser pinned to empty pattern fails closed on the static path [
 
 TEST_CASE("RegexParser auto-detect and parse handle a UTF-8 BOM [regex]", "[regex_parser]")
 {
-    // Editors (Notepad, older PowerShell) sometimes prepend a UTF-8
-    // BOM to log files. Without the BOM strip the `^date` anchor in
-    // every built-in template fails at byte 0 of the first line and
-    // both auto-detect and the parse silently refuse the file. After
-    // the fix `DetectRegexTemplate` claims the file *and* the first
-    // line emits a row instead of a `did not match` error.
+    // Some editors (Notepad, older PowerShell) prepend a UTF-8 BOM
+    // to log files. Without the BOM strip the `^date` anchor in
+    // every built-in template fails at byte 0 of line 1 and both
+    // auto-detect and parse silently refuse the file. After the
+    // fix `DetectRegexTemplate` claims the file *and* the first
+    // line emits a row (not a `did not match` error).
     const TestLogFile file("regex_bom.log");
     file.Write("\xEF\xBB\xBF"
                "Apr 28 04:02:03 host-a systemd: System starting\n"
@@ -313,12 +311,13 @@ TEST_CASE("RegexParser auto-detect and parse handle a UTF-8 BOM [regex]", "[rege
 
 TEST_CASE("RegexParser surfaces columns in pattern-source order [regex]", "[regex_parser]")
 {
-    // PCRE2's name table returns groups alphabetically by name, but
-    // `LogTable`'s column order tracks the `KeyIndex` allocation
+    // PCRE2's name table returns groups alphabetically, but
+    // `LogTable`'s column order follows `KeyIndex` allocation
     // order — so we deliberately intern named groups by their
-    // pattern-source index. A pattern with `message` declared before
-    // `level` must produce a `ToString` that reads `<message> <level>`
-    // (matching the original line), not the alphabetical permutation.
+    // pattern-source index. A pattern with `message` declared
+    // before `level` must produce a `ToString` reading
+    // `<message> <level>` (the original order), not the
+    // alphabetical permutation.
     const RegexParser parser(R"(^(?<message>[^|]*)\|(?<level>\w+)$)");
     const TestLogFile file("regex_tostring_order.log");
     file.Write("hello world|info\n");
@@ -339,9 +338,9 @@ namespace
 {
 
 /// Single-shot in-memory `BytesProducer` for the live-tail regex
-/// streaming test. Yields the test's pre-baked bytes once and reports
-/// terminal EOF so the parser exits its drain loop without parking
-/// on `WaitForBytes`. Mirrors `test_json_parser.cpp`'s helper.
+/// streaming test. Yields the pre-baked bytes once and reports
+/// terminal EOF so the parser exits its drain loop without
+/// parking on `WaitForBytes`. Mirrors `test_json_parser.cpp`.
 class StreamingInMemoryProducer final : public loglib::BytesProducer
 {
 public:
@@ -393,10 +392,10 @@ private:
     bool mClosed = false;
 };
 
-/// `LogParseSink` that records every emitted batch verbatim so the
-/// test can assert on `newKeys`. Owns the `KeyIndex` so the streaming
-/// parser interns into a sink-local index instead of mutating a
-/// shared one.
+/// `LogParseSink` that records every emitted batch verbatim so
+/// the test can assert on `newKeys`. Owns its `KeyIndex` so the
+/// streaming parser interns into a sink-local index rather than
+/// mutating a shared one.
 struct CollectingStreamSink final : loglib::LogParseSink
 {
     loglib::KeyIndex keys;
@@ -424,15 +423,15 @@ struct CollectingStreamSink final : loglib::LogParseSink
 
 } // namespace
 
-// Regression for the live-tail / network-stream regression: the
-// pattern's named capture groups are interned into `KeyIndex` before
-// `RunStreamingParseLoop` starts, but the streaming overload used to
-// drop the pre-intern baseline on the floor. `BatchCoalescer` then
-// started its key cursor at the post-intern size, so every flushed
-// batch reported an empty `newKeys` list and `LogTable::AppendBatch`
-// never created the columns -- streaming regex sessions ingested
-// rows with no visible columns. This test fails on the pre-fix
-// codebase and passes after threading `newKeyBaseline` through.
+// Regression for a live-tail / network-stream bug: the pattern's
+// named capture groups are interned into `KeyIndex` before
+// `RunStreamingParseLoop` starts, but the streaming overload used
+// to drop the pre-intern baseline. `BatchCoalescer` then started
+// its key cursor at the post-intern size, so every flushed batch
+// reported an empty `newKeys` and `LogTable::AppendBatch` never
+// created the columns -- streaming regex sessions ingested rows
+// with no visible columns. Fails on the pre-fix codebase; passes
+// once `newKeyBaseline` is threaded through.
 TEST_CASE(
     "RegexParser streaming surfaces named-group columns via newKeys [regex][stream_line_source]",
     "[regex_parser]"
@@ -454,9 +453,9 @@ TEST_CASE(
     REQUIRE(sink.finished);
     CHECK_FALSE(sink.finishedCancelled);
 
-    // The "level" and "message" columns must appear in the union of
-    // `newKeys` across all emitted batches; without the baseline fix
-    // both lists would be empty.
+    // `level` and `message` must appear in the union of `newKeys`
+    // across all emitted batches; without the baseline fix both
+    // lists would be empty.
     std::vector<std::string> announcedKeys;
     for (const auto &batch : sink.batches)
     {
@@ -468,8 +467,8 @@ TEST_CASE(
     CHECK(std::ranges::find(announcedKeys, "level") != announcedKeys.end());
     CHECK(std::ranges::find(announcedKeys, "message") != announcedKeys.end());
 
-    // Sanity: the rows themselves carry the captured values, proving
-    // the regression is in the new-key surfacing rather than parsing.
+    // Sanity: rows carry the captured values, showing the
+    // regression is in new-key surfacing rather than parsing.
     size_t totalLines = 0;
     for (const auto &batch : sink.batches)
     {

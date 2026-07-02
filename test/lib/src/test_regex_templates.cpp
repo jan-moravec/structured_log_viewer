@@ -33,10 +33,9 @@ std::string SlugifyName(std::string_view name)
 }
 
 /// Drive @p pattern through `RegexParser` over a synthetic file
-/// containing @p lines. Wraps the static pipeline plus
+/// of @p lines. Wraps the static pipeline plus the
 /// `LogFactory`/`ParseFile`-style sink so we can assert on row /
-/// error counts directly. Returns the `ParseResult` for further
-/// inspection.
+/// error counts directly. Returns the `ParseResult`.
 ParseResult ParseLinesWith(std::string_view pattern, std::span<const std::string> lines, std::string_view filePath)
 {
     std::string content;
@@ -56,11 +55,11 @@ ParseResult ParseLinesWith(std::string_view pattern, std::span<const std::string
 
 TEST_CASE("Built-in regex templates compile and parse their sample lines [regex_templates]", "[regex_templates]")
 {
-    // For every built-in entry: compile the pattern and assert that
-    // every sample line emits exactly one row (no errors). This is
-    // both a syntax check (PCRE2 wouldn't compile a malformed
-    // pattern) and a behavioural check that the named groups are
-    // wired the way the template documents.
+    // For every built-in entry: compile the pattern and assert
+    // that every sample line emits exactly one row (no errors).
+    // Doubles as a syntax check (PCRE2 wouldn't compile a
+    // malformed pattern) and a behavioural check (named groups
+    // wired as the template documents).
     const auto builtins = BuiltinRegexTemplates();
     REQUIRE_FALSE(builtins.empty());
 
@@ -69,9 +68,10 @@ TEST_CASE("Built-in regex templates compile and parse their sample lines [regex_
         INFO("template: " << t.name);
         REQUIRE_FALSE(t.sampleLines.empty());
 
-        // ParseFile needs at least two non-blank lines or the regex
-        // auto-detect probe declines; we drive the pinned-pattern
-        // RegexParser directly so single-sample templates still parse.
+        // ParseFile needs at least two non-blank lines or the
+        // regex auto-detect probe declines. Drive the
+        // pinned-pattern RegexParser directly so single-sample
+        // templates still parse.
         const ParseResult result = ParseLinesWith(
             t.pattern, std::span<const std::string>(t.sampleLines), "regex_templates_" + SlugifyName(t.name) + ".log"
         );
@@ -82,9 +82,9 @@ TEST_CASE("Built-in regex templates compile and parse their sample lines [regex_
 
 TEST_CASE("DetectRegexTemplate identifies syslog samples [regex_templates]", "[regex_templates]")
 {
-    // Cross-template check: the syslog samples are *not* misidentified
+    // Cross-template check: syslog samples aren't misidentified
     // as one of the other formats. The probe scans templates in
-    // registry order; the first hit wins.
+    // registry order and the first hit wins.
     const TestLogFile file{"regex_templates_detect.log"};
     file.Write("Apr 28 04:02:03 host-a systemd: System starting\n"
                "Jun 27 01:47:20 host-b configd[17]: network changed\n");
@@ -107,9 +107,9 @@ TEST_CASE("DetectRegexTemplate identifies Apache CLF samples [regex_templates]",
 
 TEST_CASE("FindBuiltinByPattern round-trips every registry entry [regex_templates]", "[regex_templates]")
 {
-    // The GUI / config persistence relies on this lookup to recover
-    // the display name from a saved pattern. Regression-guard
-    // against a future refactor that changes string identity.
+    // GUI / config persistence uses this lookup to recover the
+    // display name from a saved pattern. Regression guard against
+    // a future refactor that changes string identity.
     for (const RegexTemplate &t : BuiltinRegexTemplates())
     {
         INFO("template: " << t.name);
@@ -124,17 +124,15 @@ TEST_CASE("FindBuiltinByPattern round-trips every registry entry [regex_template
 
 TEST_CASE("Built-in regex templates are returned in priority-then-document order [regex_templates]", "[regex_templates]")
 {
-    // The probe loop scans templates in `priority` ascending,
-    // so the curated order is load-bearing. Assert the relative
-    // order of the four Apache-family templates plus the generic
+    // The probe loop scans templates in `priority` ascending, so
+    // the curated order is load-bearing. Assert the relative
+    // order of the Apache-family templates plus the generic
     // fallback to lock the documented "Combined before Common
     // before Apache error before Generic" invariant.
     //
-    // This is a structural assertion against `BuiltinRegexTemplates`
-    // — we don't drive a fixture file because the relative order
-    // is what matters; behavioural coverage of "the right template
-    // wins for an ambiguous file" lives in the existing detect
-    // cases.
+    // Purely structural — behavioural coverage of "the right
+    // template wins for an ambiguous file" lives in the existing
+    // detect cases.
     const auto builtins = BuiltinRegexTemplates();
     auto indexOf = [&](std::string_view name) -> size_t {
         for (size_t i = 0; i < builtins.size(); ++i)
@@ -163,10 +161,10 @@ TEST_CASE("Built-in regex templates are returned in priority-then-document order
     CHECK(common <= apacheError);
     CHECK(apacheError < generic);
 
-    // Built-in priorities must be set (default-constructed user
-    // templates default to 100; a built-in with priority 100 would
-    // mean someone forgot to curate). Built-ins should all be
-    // strictly below the user-template default bucket.
+    // Built-in priorities must be set — user templates default
+    // to 100, so a built-in at 100 would mean someone forgot to
+    // curate. All built-ins should be strictly below the
+    // user-template default bucket.
     for (const RegexTemplate &t : builtins)
     {
         INFO("template: " << t.name);
@@ -178,10 +176,10 @@ TEST_CASE("autoDetect=false templates are excluded from the probe [regex_templat
 {
     // Register a high-priority (priority=1, would beat every
     // built-in) user template with `autoDetect=false` and a
-    // catch-all pattern; the probe must still pick the matching
-    // built-in instead of the higher-priority extra. Reset the
+    // catch-all pattern. The probe must still pick the matching
+    // built-in rather than the higher-priority extra. Reset
     // extras on the way out so other test cases don't inherit
-    // the leftover registration.
+    // the registration.
     const RegexTemplate hiddenCatchAll{
         .name = "Hidden catch-all",
         .pattern = R"(^(?<line>.*)$)",
@@ -206,10 +204,9 @@ TEST_CASE("autoDetect=false templates are excluded from the probe [regex_templat
 TEST_CASE("User-registered templates with autoDetect=true participate in the probe [regex_templates]", "[regex_templates]")
 {
     // Symmetric of the autoDetect=false case: an extra with
-    // autoDetect=true and a high priority beats a built-in that
-    // would otherwise win for the same fixture. The pattern is
-    // contrived so neither it nor any built-in could mis-match the
-    // syslog samples used elsewhere.
+    // `autoDetect=true` and a high priority beats a built-in that
+    // would otherwise win. The pattern is contrived so it can't
+    // mis-match syslog samples used elsewhere.
     const RegexTemplate userTemplate{
         .name = "User priority test",
         .pattern = R"(^FOO\s+(?<id>\d+)\s+(?<msg>.*)$)",
@@ -234,10 +231,10 @@ TEST_CASE("User-registered templates with autoDetect=true participate in the pro
 TEST_CASE("FindTemplateByPattern round-trips built-in and user templates [regex_templates]", "[regex_templates]")
 {
     // Persistence layer dependency: saved sessions store the raw
-    // pattern, and `FindTemplateByPattern` is what the UI calls to
+    // pattern; `FindTemplateByPattern` is what the UI calls to
     // re-derive the display name on load. Sweep the built-in
-    // catalog AND a stub user slice so a regression that misses
-    // one of the two storage tiers fails here loudly.
+    // catalog AND a stub user slice so a regression missing
+    // either tier fails here loudly.
     for (const RegexTemplate &t : BuiltinRegexTemplates())
     {
         INFO("built-in template: " << t.name);
@@ -280,11 +277,11 @@ TEST_CASE("FindTemplateByPattern round-trips built-in and user templates [regex_
 TEST_CASE("Every shipped JSON declares a description [regex_templates]", "[regex_templates]")
 {
     // Cheap structural assertion: a built-in without a
-    // description string would slip past the source-of-truth
-    // requirement that every shipped template cite where its
+    // description would slip past the source-of-truth
+    // requirement that every shipped template cites where its
     // pattern came from (lnav, logstash-patterns-core, vendor
-    // docs, etc.). The exact text is free-form; we only assert
-    // that something is there.
+    // docs, ...). Text is free-form; only check that something
+    // is there.
     for (const RegexTemplate &t : BuiltinRegexTemplates())
     {
         INFO("template: " << t.name);
@@ -294,17 +291,15 @@ TEST_CASE("Every shipped JSON declares a description [regex_templates]", "[regex
 
 TEST_CASE("Built-ins probe before user templates regardless of priority [regex_templates]", "[regex_templates]")
 {
-    // Regression guard for the CompiledProbeSnapshot ordering
-    // invariant. The `Syslog (RFC3164)` template ships with
-    // priority=10; a user template with priority=1 (which would
-    // outrank every shipped built-in on a priority-only sort) must
-    // still lose the probe race for a syslog-shaped file, because
-    // the parser-side compile cache preserves the two-tier "built-
-    // ins first" ordering the source list encodes.
+    // Regression guard for `CompiledProbeSnapshot`'s ordering
+    // invariant. `Syslog (RFC3164)` ships with priority=10; a
+    // user template with priority=1 (which would outrank every
+    // built-in on a priority-only sort) must still lose the
+    // probe race for a syslog-shaped file, because the compile
+    // cache preserves the two-tier "built-ins first" ordering.
     //
-    // The user template's pattern matches every non-blank line
-    // (`^.*$`) so it would definitely win if the probe ordering
-    // were broken.
+    // The user template's `^.*$` matches every non-blank line,
+    // so it would definitely win if the probe ordering broke.
     const RegexTemplate userCatchAll{
         .name = "User catch-all with low priority",
         .pattern = R"(^.*$)",
@@ -329,14 +324,13 @@ TEST_CASE("Built-ins probe before user templates regardless of priority [regex_t
 TEST_CASE("Unanchored user templates cannot substring-match the probe [regex_templates]", "[regex_templates]")
 {
     // Regression guard for `MatchesFullyForProbe` passing
-    // `PCRE2_ANCHORED | PCRE2_ENDANCHORED`. Without those flags a
-    // user template like `USER (?<id>\d+)` (no `^...$`) would
-    // partial-match any line that mentioned `USER 42` anywhere,
-    // silently claiming files that were never meant for it and
-    // producing junk parse output afterwards. With the anchor
-    // flags in place, a substring-only match must fail auto-detect
-    // and let the syslog template (which is properly anchored)
-    // win instead.
+    // `PCRE2_ANCHORED | PCRE2_ENDANCHORED`. Without those flags
+    // a user template like `USER (?<id>\d+)` (no `^...$`) would
+    // partial-match any line mentioning `USER 42`, silently
+    // claiming files it wasn't meant for and producing junk
+    // afterwards. With the anchor flags in place, a substring-
+    // only match must fail auto-detect and let the properly
+    // anchored syslog template win.
     const RegexTemplate userUnanchored{
         .name = "User unanchored substring",
         .pattern = R"(USER\s+(?<id>\d+))",
@@ -349,8 +343,8 @@ TEST_CASE("Unanchored user templates cannot substring-match the probe [regex_tem
     SetExtraRegexTemplates(extras);
 
     // Fixture lines mention "USER 42" mid-line so an unanchored
-    // probe would match; anchored probe must refuse and let syslog
-    // claim the file instead.
+    // probe would match. The anchored probe must refuse and let
+    // syslog claim the file.
     const TestLogFile file{"regex_templates_unanchored_user.log"};
     file.Write("Apr 28 04:02:03 host-a systemd: connect USER 42 ok\n"
                "Jun 27 01:47:20 host-b configd[17]: reload USER 42 done\n");
