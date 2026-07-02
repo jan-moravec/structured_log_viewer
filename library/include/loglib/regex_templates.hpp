@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -111,21 +112,31 @@ struct RegexTemplate
 /// Built-ins always probe before user templates regardless of
 /// `priority`, so a careless user-priority can never steal a probe
 /// match from a shipped template; within each tier the merged
-/// list is stable-sorted by `priority`.
+/// list is stable-sorted by `priority` (lower probes first). The
+/// parser-side compile cache preserves this two-tier ordering
+/// verbatim — see `CompiledProbeSnapshot` in
+/// `library/src/parsers/regex_parser.cpp`.
 void SetExtraRegexTemplates(std::span<const RegexTemplate> extras);
 
 /// Find a template (built-in or extra) whose `pattern` matches
 /// @p pattern exactly. Used to look up the display name for a
-/// persisted `Source::regexPattern` value. Returns `nullptr` when
-/// the pattern matches neither a built-in nor a registered user
-/// template (i.e. it is custom and unsaved).
-[[nodiscard]] const RegexTemplate *FindTemplateByPattern(std::string_view pattern) noexcept;
+/// persisted `Source::regexPattern` value. Returns `std::nullopt`
+/// when the pattern matches neither a built-in nor a registered
+/// user template (i.e. it is custom and unsaved).
+///
+/// Returned by value (not by pointer into the registry) so a
+/// concurrent `SetExtraRegexTemplates` call cannot invalidate the
+/// caller's copy — the previous pointer flavour was safe today
+/// only because every caller consumed the pointer synchronously on
+/// the GUI thread. `RegexTemplate` is a handful of short strings,
+/// so the copy is negligible next to the linear scan itself.
+[[nodiscard]] std::optional<RegexTemplate> FindTemplateByPattern(std::string_view pattern);
 
 /// Back-compat alias for `FindTemplateByPattern`. New code should
 /// prefer the new name; the old name is kept for one release so
 /// downstream consumers that pinned `FindBuiltinByPattern` still
 /// compile. Behaves identically (the merged registry has always
 /// been the right answer).
-[[nodiscard]] const RegexTemplate *FindBuiltinByPattern(std::string_view pattern) noexcept;
+[[nodiscard]] std::optional<RegexTemplate> FindBuiltinByPattern(std::string_view pattern);
 
 } // namespace loglib

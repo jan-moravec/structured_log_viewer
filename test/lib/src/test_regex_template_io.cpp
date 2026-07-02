@@ -111,17 +111,17 @@ TEST_CASE("SetExtraRegexTemplates exposes user entries to FindTemplateByPattern"
         .description = "",
     };
 
-    REQUIRE(FindTemplateByPattern(extra.pattern) == nullptr);
+    REQUIRE_FALSE(FindTemplateByPattern(extra.pattern).has_value());
 
     const RegexTemplate extras[] = {extra};
     SetExtraRegexTemplates(extras);
 
-    const RegexTemplate *found = FindTemplateByPattern(extra.pattern);
-    REQUIRE(found != nullptr);
+    const auto found = FindTemplateByPattern(extra.pattern);
+    REQUIRE(found.has_value());
     CHECK(found->name == extra.name);
     CHECK(found->autoDetect == false);
     CHECK(found->priority == 50);
 
     SetExtraRegexTemplates({});
-    CHECK(FindTemplateByPattern(extra.pattern) == nullptr);
+    CHECK_FALSE(FindTemplateByPattern(extra.pattern).has_value());
 }

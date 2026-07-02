@@ -14,6 +14,7 @@
 namespace loglib
 {
 
+
 class FileLineSource;
 class StreamLineSource;
 
@@ -51,9 +52,11 @@ struct AdvancedParserOptions;
 ///   traces) are out of scope; they surface as one parse error per
 ///   line in the trailer.
 /// - The pattern itself is parser configuration, not file content,
-///   so `IsValid` only auto-detects files that match a *built-in*
-///   template (see `loglib::DetectRegexTemplate`). Files that need a
-///   custom user pattern are reachable today through
+///   so `IsValid` only auto-detects files that match a template
+///   from the merged catalog — built-ins plus any user templates
+///   registered via `loglib::SetExtraRegexTemplates` (see
+///   `loglib::DetectRegexTemplate`). Files that need a completely
+///   custom, unregistered pattern are reachable today through
 ///   `File → Open Network Stream…` (custom pattern field) or by
 ///   restoring a saved session whose `LogConfiguration::Source` is
 ///   already pinned to `Regex` + the desired pattern.
@@ -72,11 +75,16 @@ public:
     /// pipeline.
     explicit RegexParser(std::string pattern);
 
-    /// Probes the file's first non-blank lines against every entry
-    /// in `BuiltinRegexTemplates()`. Returns `true` on the first
-    /// template whose pattern matches enough sample lines. The
-    /// probe is bounded so we don't read large files just to refuse
-    /// them. Custom patterns are not auto-detectable here.
+    /// Probes the file's first non-blank lines against every
+    /// `autoDetect=true` entry in the merged registry — built-ins
+    /// shipped with the library plus any user templates registered
+    /// via `loglib::SetExtraRegexTemplates`. Returns `true` on the
+    /// first template whose pattern matches enough sample lines,
+    /// with built-ins tried before user templates so a careless
+    /// user priority cannot steal a probe match from a shipped
+    /// template. The probe is bounded so we don't read large files
+    /// just to refuse them. Patterns that live only on disk (never
+    /// registered as a template) are not auto-detectable here.
     bool IsValid(const std::filesystem::path &file) const override;
 
     /// Static-file parse. Pattern is read from
@@ -122,13 +130,21 @@ private:
     std::optional<std::string> mExplicitPattern;
 };
 
-/// Probe @p file against `BuiltinRegexTemplates()` and return the
-/// first matching template, or `nullptr` if none match. The same
-/// probe `RegexParser::IsValid` runs; exposing it separately lets
+/// Probe @p file against the merged auto-detect registry
+/// (built-ins plus any user templates registered via
+/// `SetExtraRegexTemplates`) and return the first matching
+/// template, or `std::nullopt` if none match. Same probe
+/// `RegexParser::IsValid` runs; exposing it separately lets
 /// callers (e.g. `MainWindow::DetectFormatForPath`) capture *which*
 /// template matched so they can persist its pattern on the
 /// `LogConfiguration::Source`.
-[[nodiscard]] const RegexTemplate *DetectRegexTemplate(const std::filesystem::path &file);
+///
+/// Returned by value (not by pointer into the registry) so callers
+/// can safely outlive a concurrent `SetExtraRegexTemplates` call
+/// — the pointer flavour that used to live here was subtly unsafe
+/// because the registry snapshot the pointer aliased could drop
+/// its last reference before the caller was done with the result.
+[[nodiscard]] std::optional<RegexTemplate> DetectRegexTemplate(const std::filesystem::path &file);
 
 /// Compile-only validation used by GUI surfaces (e.g. the Network
 /// Stream dialog) to front-load pattern errors before they surface
@@ -141,10 +157,12 @@ private:
 /// check, not a parse setup.
 [[nodiscard]] bool ValidateRegexPattern(std::string_view pattern, std::string &errorOut);
 
-/// True iff @p pattern compiles and matches @p line in full (the
-/// same `PCRE2_ANCHORED | PCRE2_ENDANCHORED` shape the probe loop
-/// uses, so "matches" means "a `RegexParser` would emit a row for
-/// this line"). Used by the regex-templates editor to self-test a
+/// True iff @p pattern compiles and matches @p line in full,
+/// passing the same `PCRE2_ANCHORED | PCRE2_ENDANCHORED` flags
+/// the auto-detect probe uses. "Matches" therefore means "a
+/// `RegexParser` would emit a row for this line" — a template
+/// whose sample line passes here will also pass the probe, and
+/// vice versa. Used by the regex-templates editor to self-test a
 /// pattern against its `sampleLines` before saving. Discards the
 /// compiled state immediately; intended for one-off interactive
 /// checks, not parse hot paths.

@@ -84,6 +84,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <system_error>
 #include <unordered_set>
 #include <utility>
@@ -503,7 +504,8 @@ DetectedFormat DetectFormatForPath(const std::filesystem::path &file)
         {
             // Same special case as `loglib::ParseFile(path)`: we need
             // the matched template's pattern, not just a yes/no.
-            if (const loglib::RegexTemplate *tmpl = loglib::DetectRegexTemplate(file))
+            if (const std::optional<loglib::RegexTemplate> tmpl = loglib::DetectRegexTemplate(file);
+                tmpl.has_value())
             {
                 return {loglib::LogConfiguration::Source::Format::Regex, tmpl->pattern};
             }

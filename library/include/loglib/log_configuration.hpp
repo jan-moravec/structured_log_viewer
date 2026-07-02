@@ -185,9 +185,9 @@ struct LogConfiguration
         /// only meaningful when `format == Format::Regex`. Empty for
         /// every other format and for fresh `Source`s. Persisted so
         /// reopened sessions / network streams keep parsing under
-        /// the same template; the matching builtin name (if any) is
-        /// looked up via `loglib::FindBuiltinByPattern` at display
-        /// time.
+        /// the same template; the matching template name (if any,
+        /// built-in or user) is looked up via
+        /// `loglib::FindTemplateByPattern` at display time.
         std::string regexPattern;
     };
 

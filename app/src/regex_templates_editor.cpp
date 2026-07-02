@@ -637,21 +637,32 @@ void RegexTemplatesEditor::OnSaveClicked()
         }
     }
 
+    // Transition out of draft mode *before* the save call so that
+    // `RefreshList` (fired synchronously from
+    // `SaveUserTemplate`'s `templatesChanged()` signal) sees the
+    // just-saved name in `mCurrentName` and restores the row
+    // selection. Doing it after the save leaves `mCurrentName`
+    // empty during the refresh, so the new row lands unselected
+    // and the user has to click it manually.
+    const bool wasNewDraft = mIsNewDraft;
+    const QString previousName = mCurrentName;
+    mIsNewDraft = false;
+    mCurrentName = name;
     try
     {
         mRegistry->SaveUserTemplate(name, std::move(tmpl));
     }
     catch (const std::exception &ex)
     {
+        // Roll back so the failed save doesn't leave the editor
+        // pretending the draft is committed. The form contents
+        // are untouched; the user's typing stays intact.
+        mIsNewDraft = wasNewDraft;
+        mCurrentName = previousName;
         ShowStatus(QString::fromUtf8(ex.what()), /*isError=*/true);
         return;
     }
 
-    // Transition out of draft mode so the next field edit doesn't
-    // recreate the row. `RefreshList` (fired via the registry's
-    // `templatesChanged()` signal) restores the selection by name.
-    mIsNewDraft = false;
-    mCurrentName = name;
     MarkClean();
     ShowStatus(tr("Saved \"%1\".").arg(name));
 }
@@ -923,8 +934,17 @@ loglib::RegexTemplate RegexTemplatesEditor::GatherForm() const
     // emptiness *is* checked here because every consumer (Validate
     // / Duplicate / Save) needs a pattern to do anything useful.
     const QString name = mNameEdit->text().trimmed();
-    const QString pattern = mPatternEdit->toPlainText();
-    if (pattern.trimmed().isEmpty())
+    // Trim the pattern to match `NetworkStreamDialog::Accepted`:
+    // `QPlainTextEdit` happily accumulates a stray trailing
+    // newline / spaces from paste operations, and persisting that
+    // whitespace onto disk causes both a pointless diff on every
+    // save round-trip *and* a mismatch against the same pattern
+    // typed into the network-stream dialog (which does trim). No
+    // shipped pattern relies on leading or trailing literal
+    // whitespace — anchors are `^...$`, real whitespace lives
+    // inside `\s+` / `\s*` — so trimming is safe.
+    const QString pattern = mPatternEdit->toPlainText().trimmed();
+    if (pattern.isEmpty())
     {
         throw std::runtime_error("Pattern must not be empty.");
     }

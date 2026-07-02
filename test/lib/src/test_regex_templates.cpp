@@ -88,8 +88,8 @@ TEST_CASE("DetectRegexTemplate identifies syslog samples [regex_templates]", "[r
     const TestLogFile file{"regex_templates_detect.log"};
     file.Write("Apr 28 04:02:03 host-a systemd: System starting\n"
                "Jun 27 01:47:20 host-b configd[17]: network changed\n");
-    const RegexTemplate *detected = DetectRegexTemplate(file.GetFilePath());
-    REQUIRE(detected != nullptr);
+    const auto detected = DetectRegexTemplate(file.GetFilePath());
+    REQUIRE(detected.has_value());
     CHECK(detected->name == "Syslog (RFC3164)");
 }
 
@@ -100,8 +100,8 @@ TEST_CASE("DetectRegexTemplate identifies Apache CLF samples [regex_templates]",
                "\n"
                R"(10.1.10.51 - - [23/Dec/2014:21:20:35 +0000] "POST /api/1/rest/foo HTTP/1.1" 200 -)"
                "\n");
-    const RegexTemplate *detected = DetectRegexTemplate(file.GetFilePath());
-    REQUIRE(detected != nullptr);
+    const auto detected = DetectRegexTemplate(file.GetFilePath());
+    REQUIRE(detected.has_value());
     CHECK(detected->name == "Apache/nginx Common Log Format");
 }
 
@@ -113,13 +113,13 @@ TEST_CASE("FindBuiltinByPattern round-trips every registry entry [regex_template
     for (const RegexTemplate &t : BuiltinRegexTemplates())
     {
         INFO("template: " << t.name);
-        const RegexTemplate *found = FindBuiltinByPattern(t.pattern);
-        REQUIRE(found != nullptr);
+        const auto found = FindBuiltinByPattern(t.pattern);
+        REQUIRE(found.has_value());
         CHECK(found->name == t.name);
     }
 
-    // Unknown pattern (user-supplied custom) returns nullptr.
-    CHECK(FindBuiltinByPattern("definitely not a built-in pattern") == nullptr);
+    // Unknown pattern (user-supplied custom) returns nullopt.
+    CHECK_FALSE(FindBuiltinByPattern("definitely not a built-in pattern").has_value());
 }
 
 TEST_CASE("Built-in regex templates are returned in priority-then-document order [regex_templates]", "[regex_templates]")
@@ -196,8 +196,8 @@ TEST_CASE("autoDetect=false templates are excluded from the probe [regex_templat
     const TestLogFile file{"regex_templates_autodetect_off.log"};
     file.Write("Apr 28 04:02:03 host-a systemd: System starting\n"
                "Jun 27 01:47:20 host-b configd[17]: network changed\n");
-    const RegexTemplate *detected = DetectRegexTemplate(file.GetFilePath());
-    REQUIRE(detected != nullptr);
+    const auto detected = DetectRegexTemplate(file.GetFilePath());
+    REQUIRE(detected.has_value());
     CHECK(detected->name == "Syslog (RFC3164)");
 
     SetExtraRegexTemplates({});
@@ -224,8 +224,8 @@ TEST_CASE("User-registered templates with autoDetect=true participate in the pro
     const TestLogFile file{"regex_templates_user_priority.log"};
     file.Write("FOO 1 hello\n"
                "FOO 2 world\n");
-    const RegexTemplate *detected = DetectRegexTemplate(file.GetFilePath());
-    REQUIRE(detected != nullptr);
+    const auto detected = DetectRegexTemplate(file.GetFilePath());
+    REQUIRE(detected.has_value());
     CHECK(detected->name == "User priority test");
 
     SetExtraRegexTemplates({});
@@ -241,8 +241,8 @@ TEST_CASE("FindTemplateByPattern round-trips built-in and user templates [regex_
     for (const RegexTemplate &t : BuiltinRegexTemplates())
     {
         INFO("built-in template: " << t.name);
-        const RegexTemplate *found = FindTemplateByPattern(t.pattern);
-        REQUIRE(found != nullptr);
+        const auto found = FindTemplateByPattern(t.pattern);
+        REQUIRE(found.has_value());
         CHECK(found->name == t.name);
     }
 
@@ -265,14 +265,14 @@ TEST_CASE("FindTemplateByPattern round-trips built-in and user templates [regex_
     const RegexTemplate extras[] = {userTemplateA, userTemplateB};
     SetExtraRegexTemplates(extras);
 
-    const RegexTemplate *foundA = FindTemplateByPattern(userTemplateA.pattern);
-    REQUIRE(foundA != nullptr);
+    const auto foundA = FindTemplateByPattern(userTemplateA.pattern);
+    REQUIRE(foundA.has_value());
     CHECK(foundA->name == userTemplateA.name);
-    const RegexTemplate *foundB = FindTemplateByPattern(userTemplateB.pattern);
-    REQUIRE(foundB != nullptr);
+    const auto foundB = FindTemplateByPattern(userTemplateB.pattern);
+    REQUIRE(foundB.has_value());
     CHECK(foundB->name == userTemplateB.name);
 
-    CHECK(FindTemplateByPattern("definitely not a built-in or user pattern") == nullptr);
+    CHECK_FALSE(FindTemplateByPattern("definitely not a built-in or user pattern").has_value());
 
     SetExtraRegexTemplates({});
 }
@@ -290,4 +290,131 @@ TEST_CASE("Every shipped JSON declares a description [regex_templates]", "[regex
         INFO("template: " << t.name);
         CHECK_FALSE(t.description.empty());
     }
+}
+
+TEST_CASE("Built-ins probe before user templates regardless of priority [regex_templates]", "[regex_templates]")
+{
+    // Regression guard for the CompiledProbeSnapshot ordering
+    // invariant. The `Syslog (RFC3164)` template ships with
+    // priority=10; a user template with priority=1 (which would
+    // outrank every shipped built-in on a priority-only sort) must
+    // still lose the probe race for a syslog-shaped file, because
+    // the parser-side compile cache preserves the two-tier "built-
+    // ins first" ordering the source list encodes.
+    //
+    // The user template's pattern matches every non-blank line
+    // (`^.*$`) so it would definitely win if the probe ordering
+    // were broken.
+    const RegexTemplate userCatchAll{
+        .name = "User catch-all with low priority",
+        .pattern = R"(^.*$)",
+        .sampleLines = {"any line"},
+        .autoDetect = true,
+        .priority = 1,
+        .description = "",
+    };
+    const RegexTemplate extras[] = {userCatchAll};
+    SetExtraRegexTemplates(extras);
+
+    const TestLogFile file{"regex_templates_builtins_first.log"};
+    file.Write("Apr 28 04:02:03 host-a systemd: System starting\n"
+               "Jun 27 01:47:20 host-b configd[17]: network changed\n");
+    const auto detected = DetectRegexTemplate(file.GetFilePath());
+    REQUIRE(detected.has_value());
+    CHECK(detected->name == "Syslog (RFC3164)");
+
+    SetExtraRegexTemplates({});
+}
+
+TEST_CASE("Unanchored user templates cannot substring-match the probe [regex_templates]", "[regex_templates]")
+{
+    // Regression guard for `MatchesFullyForProbe` passing
+    // `PCRE2_ANCHORED | PCRE2_ENDANCHORED`. Without those flags a
+    // user template like `USER (?<id>\d+)` (no `^...$`) would
+    // partial-match any line that mentioned `USER 42` anywhere,
+    // silently claiming files that were never meant for it and
+    // producing junk parse output afterwards. With the anchor
+    // flags in place, a substring-only match must fail auto-detect
+    // and let the syslog template (which is properly anchored)
+    // win instead.
+    const RegexTemplate userUnanchored{
+        .name = "User unanchored substring",
+        .pattern = R"(USER\s+(?<id>\d+))",
+        .sampleLines = {"USER 42"},
+        .autoDetect = true,
+        .priority = 1,
+        .description = "",
+    };
+    const RegexTemplate extras[] = {userUnanchored};
+    SetExtraRegexTemplates(extras);
+
+    // Fixture lines mention "USER 42" mid-line so an unanchored
+    // probe would match; anchored probe must refuse and let syslog
+    // claim the file instead.
+    const TestLogFile file{"regex_templates_unanchored_user.log"};
+    file.Write("Apr 28 04:02:03 host-a systemd: connect USER 42 ok\n"
+               "Jun 27 01:47:20 host-b configd[17]: reload USER 42 done\n");
+    const auto detected = DetectRegexTemplate(file.GetFilePath());
+    REQUIRE(detected.has_value());
+    CHECK(detected->name == "Syslog (RFC3164)");
+
+    SetExtraRegexTemplates({});
+}
+
+TEST_CASE("Java template captures logger separately from message for colon-fused lines [regex_templates]", "[regex_templates]")
+{
+    // Regression guard for the `\s*[-:]\s+` separator in the Java
+    // template. Logback's default layout uses `logger - message`;
+    // log4j and some vendor overrides use the fused-colon shape
+    // `logger: message` (no space between the logger name and the
+    // colon). The earlier `\s+[-:]?\s+` shape required whitespace
+    // on both sides of the separator, so the entire optional
+    // logger group failed on colon-fused lines and the message
+    // column swallowed the logger name — silent data loss the
+    // "Built-in regex templates compile and parse their sample
+    // lines" sweep didn't catch because it only asserted a row
+    // gets emitted.
+    // Look the pattern up out-of-band via the template name
+    // rather than hardcoding the pattern string here; if someone
+    // renames or reshapes the template we want the test to fail
+    // loudly with the assertion below, not silently via a stale
+    // pattern literal.
+    std::string javaPattern;
+    for (const RegexTemplate &t : BuiltinRegexTemplates())
+    {
+        if (t.name == "Java / log4j / SLF4J Logback")
+        {
+            javaPattern = t.pattern;
+            break;
+        }
+    }
+    REQUIRE_FALSE(javaPattern.empty());
+    const RegexParser parser{javaPattern};
+
+    const TestLogFile file{"regex_templates_java_colon_fused.log"};
+    file.Write("2024-04-28 04:02:05.789 ERROR [pool-1-thread-3] com.example.Worker$Inner: Task failed after 3 retries\n"
+               "2024-04-28 04:02:06.123 INFO  [main] com.example.App - Application starting\n");
+
+    const ParseResult result = ParseFile(parser, file.GetFilePath());
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.data.Lines().size() == 2);
+
+    // Row 0: colon-fused. `logger` must be the class name, and
+    // `message` must be the payload only (no logger prefix folded
+    // in).
+    const auto row0logger = result.data.Lines()[0].GetValue("logger");
+    const auto row0message = result.data.Lines()[0].GetValue("message");
+    REQUIRE(std::holds_alternative<std::string_view>(row0logger));
+    CHECK(std::get<std::string_view>(row0logger) == std::string_view{"com.example.Worker$Inner"});
+    REQUIRE(std::holds_alternative<std::string_view>(row0message));
+    CHECK(std::get<std::string_view>(row0message) == std::string_view{"Task failed after 3 retries"});
+
+    // Row 1: dash-with-spaces, the Logback-default shape. Same
+    // expectations — regression guard both shapes symmetrically.
+    const auto row1logger = result.data.Lines()[1].GetValue("logger");
+    const auto row1message = result.data.Lines()[1].GetValue("message");
+    REQUIRE(std::holds_alternative<std::string_view>(row1logger));
+    CHECK(std::get<std::string_view>(row1logger) == std::string_view{"com.example.App"});
+    REQUIRE(std::holds_alternative<std::string_view>(row1message));
+    CHECK(std::get<std::string_view>(row1message) == std::string_view{"Application starting"});
 }

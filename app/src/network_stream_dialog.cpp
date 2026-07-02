@@ -24,6 +24,8 @@
 #include <QSpinBox>
 #include <QVBoxLayout>
 
+#include <optional>
+
 namespace
 {
 constexpr auto SETTINGS_GROUP = "networkStream";
@@ -565,7 +567,8 @@ void NetworkStreamDialog::LoadFromSettings()
         mRegexPattern->setText(storedPattern);
         const std::string storedStdString = storedPattern.toStdString();
         QVariant pickerData = QVariant(RegexTemplateCustomData());
-        if (const loglib::RegexTemplate *match = loglib::FindTemplateByPattern(storedStdString); match != nullptr)
+        if (const std::optional<loglib::RegexTemplate> match = loglib::FindTemplateByPattern(storedStdString);
+            match.has_value())
         {
             pickerData = QVariant(QString::fromStdString(match->name));
         }

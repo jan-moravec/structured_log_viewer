@@ -235,24 +235,28 @@ void SetExtraRegexTemplates(std::span<const RegexTemplate> extras)
     (void)RebuildLocked();
 }
 
-const RegexTemplate *FindTemplateByPattern(std::string_view pattern) noexcept
+std::optional<RegexTemplate> FindTemplateByPattern(std::string_view pattern)
 {
+    // Copy the matched entry out of the snapshot before returning
+    // so the caller can outlive the pinned snapshot without worrying
+    // about a concurrent `SetExtraRegexTemplates` invalidating a raw
+    // pointer. See the doc on the header for the trade-off.
     const auto snap = CurrentRegistry();
     if (!snap)
     {
-        return nullptr;
+        return std::nullopt;
     }
     for (const RegexTemplate &t : snap->ordered)
     {
         if (t.pattern == pattern)
         {
-            return &t;
+            return t;
         }
     }
-    return nullptr;
+    return std::nullopt;
 }
 
-const RegexTemplate *FindBuiltinByPattern(std::string_view pattern) noexcept
+std::optional<RegexTemplate> FindBuiltinByPattern(std::string_view pattern)
 {
     return FindTemplateByPattern(pattern);
 }

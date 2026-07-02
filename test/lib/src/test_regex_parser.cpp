@@ -40,8 +40,8 @@ TEST_CASE("RegexParser validates against built-in templates [regex]", "[regex_pa
                "Jun 27 01:47:20 host-b configd[17]: network changed\n");
     CHECK(parser.IsValid(file.GetFilePath()));
 
-    const RegexTemplate *detected = DetectRegexTemplate(file.GetFilePath());
-    REQUIRE(detected != nullptr);
+    const auto detected = DetectRegexTemplate(file.GetFilePath());
+    REQUIRE(detected.has_value());
     CHECK(detected->name == "Syslog (RFC3164)");
 }
 
@@ -301,8 +301,8 @@ TEST_CASE("RegexParser auto-detect and parse handle a UTF-8 BOM [regex]", "[rege
                "Apr 28 04:02:03 host-a systemd: System starting\n"
                "Apr 28 04:02:04 host-a systemd: another line\n");
 
-    const RegexTemplate *detected = DetectRegexTemplate(file.GetFilePath());
-    REQUIRE(detected != nullptr);
+    const auto detected = DetectRegexTemplate(file.GetFilePath());
+    REQUIRE(detected.has_value());
     CHECK(detected->name == "Syslog (RFC3164)");
 
     auto result = ParseFile(file.GetFilePath());

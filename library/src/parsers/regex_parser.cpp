@@ -312,7 +312,9 @@ private:
 };
 
 // ---------------------------------------------------------------------
-// Built-in template compile cache (used by IsValid / DetectRegexTemplate).
+// Auto-detect template compile cache (used by IsValid /
+// DetectRegexTemplate). Covers both built-ins and any user
+// templates registered via `SetExtraRegexTemplates`.
 // ---------------------------------------------------------------------
 
 struct CompiledTemplate
@@ -330,15 +332,16 @@ struct CompiledTemplate
 /// they release their reference.
 struct CompiledProbeSnapshot
 {
-    /// The merged template list (built-ins then extras, each
-    /// stable-sorted by `priority`) this snapshot was compiled
-    /// against. Kept around to anchor `compiled[i].source` for
-    /// the life of the snapshot.
+    /// The merged template list this snapshot was compiled
+    /// against — built-ins first (sorted by `priority`) then
+    /// extras (sorted by `priority`), the ordering
+    /// `regex_templates.cpp` guarantees. Kept around to anchor
+    /// `compiled[i].source` for the life of the snapshot.
     std::shared_ptr<const std::vector<RegexTemplate>> source;
     /// Compiled patterns in probe order. Templates with
     /// `autoDetect=false` are excluded entirely; the remainder
-    /// retain the source list's ordering (built-ins first by
-    /// priority, then extras by priority).
+    /// preserve the source list's ordering verbatim (see the
+    /// two-tier invariant on `SetExtraRegexTemplates`).
     std::vector<CompiledTemplate> compiled;
     /// `internal::TemplatesGeneration()` value this snapshot was
     /// built against. The probe re-acquires when the generation
@@ -353,13 +356,15 @@ struct CompiledProbeSnapshot
 /// `pcre2_compile` + `pcre2_jit_compile` per entry) is amortised
 /// across every probe between rebuilds.
 ///
-/// Probe order: `autoDetect=false` templates are excluded
-/// entirely; the remainder are kept in the source list's order,
-/// which `regex_templates.cpp` has already arranged as
-/// (built-ins by priority, then extras by priority). The
-/// `stable_sort` below is defensive — a malformed registry that
-/// somehow violated the ordering invariant would still probe
-/// sensibly here.
+/// Probe order matches the source list exactly: `autoDetect=false`
+/// templates are excluded, everything else keeps its position.
+/// `regex_templates.cpp` guarantees the source list arrives as
+/// (built-ins by priority, then extras by priority), so no local
+/// re-sort is needed — and importantly, re-sorting here by
+/// `priority` alone would break the two-tier invariant on
+/// `SetExtraRegexTemplates` (a user template with a smaller
+/// `priority` than a built-in would then probe first, silently
+/// stealing matches from the shipped catalog).
 std::shared_ptr<const CompiledProbeSnapshot> CurrentProbeSnapshot()
 {
     // Read-mostly under steady state: the parser's hot path
@@ -402,13 +407,6 @@ std::shared_ptr<const CompiledProbeSnapshot> CurrentProbeSnapshot()
                 fresh->compiled.push_back(std::move(c));
             }
         }
-        std::stable_sort(
-            fresh->compiled.begin(),
-            fresh->compiled.end(),
-            [](const CompiledTemplate &a, const CompiledTemplate &b) {
-                return a.source->priority < b.source->priority;
-            }
-        );
     }
 
     std::unique_lock<std::shared_mutex> write(mutex);
@@ -425,14 +423,21 @@ std::shared_ptr<const CompiledProbeSnapshot> CurrentProbeSnapshot()
     return cached;
 }
 
-/// True iff @p code matches @p line. The built-in templates are all
-/// explicitly anchored with `^...$` in `regex_templates.cpp`, so a
-/// successful `pcre2_match` already means the pattern consumed the
-/// whole line — we don't need to pass `PCRE2_ANCHORED |
-/// PCRE2_ENDANCHORED` here. A per-call `pcre2_match_data` is used
-/// because the cache is shared across the process; allocating one
-/// tiny block is cheap next to the match itself.
-bool BuiltinMatchesFully(const CompiledPattern &cp, std::string_view line)
+/// True iff @p code matches @p line in full. `PCRE2_ANCHORED |
+/// PCRE2_ENDANCHORED` is passed unconditionally so an unanchored
+/// user template (one without explicit `^...$`) cannot claim a
+/// probe match on a substring — auto-detect must mean "the whole
+/// line is a record for this template", never "the pattern is
+/// mentioned somewhere in the line". The shipped built-ins are all
+/// explicitly `^...$`-anchored, so this flag pair is a no-op for
+/// them; it exists purely to keep user templates honest.
+/// `PatternMatchesLine` (used by the editor's Validate button) uses
+/// the same flags for the same reason — the two must stay aligned
+/// or a template that self-tests green would fail the probe (or
+/// vice-versa). A per-call `pcre2_match_data` is used because the
+/// cache is shared across the process; allocating one tiny block
+/// is cheap next to the match itself.
+bool MatchesFullyForProbe(const CompiledPattern &cp, std::string_view line)
 {
     const Pcre2MatchDataPtr md = cp.NewMatchData();
     if (md == nullptr)
@@ -444,7 +449,7 @@ bool BuiltinMatchesFully(const CompiledPattern &cp, std::string_view line)
         reinterpret_cast<PCRE2_SPTR>(line.data()),
         line.size(),
         /*startoffset*/ 0,
-        /*options*/ 0,
+        PCRE2_ANCHORED | PCRE2_ENDANCHORED,
         md.get(),
         // `Context()` is logically const here (we only read limits);
         // PCRE2 requires the non-const overload.
@@ -461,10 +466,14 @@ bool BuiltinMatchesFully(const CompiledPattern &cp, std::string_view line)
 constexpr std::string_view UTF8_BOM = "\xEF\xBB\xBF";
 
 /// File-level probe shared by `IsValid` and `DetectRegexTemplate`.
-/// Returns the first builtin that matches at least
-/// `IS_VALID_MIN_MATCHES` of the first ~16 KiB worth of non-blank
-/// lines, or nullptr.
-const RegexTemplate *ProbeBuiltinTemplates(const std::filesystem::path &file)
+/// Walks the merged auto-detect registry (built-ins + any user
+/// templates injected via `SetExtraRegexTemplates` that have
+/// `autoDetect=true`) in probe order and returns the first entry
+/// that matches at least `IS_VALID_MIN_MATCHES` of the first
+/// ~16 KiB worth of non-blank lines, or nullptr. Built-ins are
+/// probed before user templates by construction of the source list
+/// — see `CompiledProbeSnapshot`.
+const RegexTemplate *ProbeAutoDetectTemplates(const std::filesystem::path &file)
 {
     std::ifstream stream(file);
     if (!stream.is_open())
@@ -516,7 +525,7 @@ const RegexTemplate *ProbeBuiltinTemplates(const std::filesystem::path &file)
         size_t hits = 0;
         for (const std::string &l : probeLines)
         {
-            if (BuiltinMatchesFully(t.compiled, l))
+            if (MatchesFullyForProbe(t.compiled, l))
             {
                 ++hits;
                 if (hits >= IS_VALID_MIN_MATCHES)
@@ -901,7 +910,7 @@ RegexParser::RegexParser(std::string pattern) : mExplicitPattern(std::move(patte
 
 bool RegexParser::IsValid(const std::filesystem::path &file) const
 {
-    return ProbeBuiltinTemplates(file) != nullptr;
+    return ProbeAutoDetectTemplates(file) != nullptr;
 }
 
 void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
@@ -1116,9 +1125,19 @@ std::string RegexParser::ToString(const LogLine &line) const
     return out;
 }
 
-const RegexTemplate *DetectRegexTemplate(const std::filesystem::path &file)
+std::optional<RegexTemplate> DetectRegexTemplate(const std::filesystem::path &file)
 {
-    return ProbeBuiltinTemplates(file);
+    // Copy the matched template out of the snapshot before returning
+    // so the caller can outlive the pinned snapshot without worrying
+    // about a concurrent `SetExtraRegexTemplates` invalidating a raw
+    // pointer. `RegexTemplate` is a handful of short strings — the
+    // copy cost is negligible next to the file I/O the probe just
+    // paid for.
+    if (const RegexTemplate *tmpl = ProbeAutoDetectTemplates(file); tmpl != nullptr)
+    {
+        return *tmpl;
+    }
+    return std::nullopt;
 }
 
 bool ValidateRegexPattern(std::string_view pattern, std::string &errorOut)
@@ -1159,9 +1178,12 @@ bool PatternMatchesLine(std::string_view pattern, std::string_view line)
         return false;
     }
     // `PCRE2_ANCHORED | PCRE2_ENDANCHORED` mirrors the probe loop
-    // (see `ProbeBuiltinTemplates`): a partial mid-line match is
-    // not what a `RegexParser` would emit for this line, so it
-    // should fail the self-test too.
+    // (see `MatchesFullyForProbe` in `ProbeAutoDetectTemplates`):
+    // a partial mid-line match is not what a `RegexParser` would
+    // emit for this line, so it should fail the self-test too. The
+    // two callers *must* stay in sync — if you loosen one, loosen
+    // the other, or user templates that pass Validate will silently
+    // fail the probe (or vice-versa).
     const int rc = pcre2_match(
         compiled.Code(),
         reinterpret_cast<PCRE2_SPTR>(line.data()),

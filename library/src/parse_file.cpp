@@ -13,6 +13,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -62,7 +63,7 @@ ParseResult ParseFile(const std::filesystem::path &file)
         // construct a parser pinned to its pattern instead.
         if (parserType == LogFactory::Parser::Regex)
         {
-            if (const RegexTemplate *tmpl = DetectRegexTemplate(file))
+            if (const std::optional<RegexTemplate> tmpl = DetectRegexTemplate(file); tmpl.has_value())
             {
                 RegexParser parser(tmpl->pattern);
                 return ParseFile(parser, file);
