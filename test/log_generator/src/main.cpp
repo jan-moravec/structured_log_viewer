@@ -1,12 +1,14 @@
 // Standalone log generator. Loops `test_common::GenerateRandomLogRecord`,
-// serializes each record through `--format` (`json` / `logfmt` / `csv` /
-// `regex`), and stops at `--size` or `--lines`. Supports `--timeout`
-// throttling and in-flight rotation (`--roll-*`) for `TailingBytesProducer`
-// and Stream Mode smoke tests.
+// serializes each record through `--format` (`json` / `logfmt` / `csv`)
+// or `--regex-template <NAME>` (per-template synthesizer matching a
+// shipped `loglib::RegexTemplate`), and stops at `--size` or `--lines`.
+// Supports `--timeout` throttling and in-flight rotation (`--roll-*`)
+// for `TailingBytesProducer` and Stream Mode smoke tests.
 //
 // The format's `writeHeader` is emitted on initial open (skipped in
 // `--append`) and after every rotation, so a future schema-bearing format
-// drops in without re-plumbing. JSON / logfmt return an empty header.
+// drops in without re-plumbing. JSON / logfmt / regex-template return an
+// empty header; only CSV emits one.
 //
 // Default output is file (`--target file://...` or legacy `--output`).
 // Network targets:
@@ -26,8 +28,12 @@
 #include <test_common/log_record.hpp>
 #include <test_common/network_log_client.hpp>
 
+#include <loglib/regex_templates.hpp>
+
 #include <argparse/argparse.hpp>
 
+#include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cstddef>
@@ -37,14 +43,112 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <ostream>
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <thread>
 
 namespace
 {
+
+// Shortlist of shipped `loglib::RegexTemplate`s that have a matching
+// `test_common::LogFormat` synthesizer. Each entry pairs the CLI slug
+// (shell-friendly) with the registry `name` used to look up the parse
+// pattern and a factory for the writer. Adding a new synthesizer means
+// dropping a new row here plus the corresponding factory in
+// `test/common/src/log_format.cpp`.
+struct RegexTemplateOption
+{
+    std::string_view slug;
+    std::string_view templateName;
+    test_common::LogFormat (*factory)();
+    std::string_view description;
+};
+
+constexpr std::array<RegexTemplateOption, 5> REGEX_TEMPLATE_OPTIONS = {
+    RegexTemplateOption{
+        "syslog", "Syslog (RFC3164)", &test_common::SyslogRfc3164Format,
+        "BSD syslog: `MMM DD HH:MM:SS <host> <program>[<pid>]: <message>`"
+    },
+    RegexTemplateOption{
+        "apache-combined", "Apache/nginx Combined Log Format", &test_common::ApacheCombinedFormat,
+        "Apache/nginx CLF + \"<referrer>\" \"<agent>\" tail"
+    },
+    RegexTemplateOption{
+        "apache-common", "Apache/nginx Common Log Format", &test_common::ApacheCommonFormat,
+        "Apache/nginx CLF without the referrer / agent tail"
+    },
+    RegexTemplateOption{
+        "apache-error", "Apache error log", &test_common::ApacheErrorFormat,
+        "Apache 2.4 error log: `[<time>] [<mod>:<lvl>] [pid N] [client ip:port] <msg>`"
+    },
+    RegexTemplateOption{
+        "java", "Java / log4j / SLF4J Logback", &test_common::JavaLogFormat,
+        "Logback / log4j / SLF4J default: `<time> LEVEL [<thread>] <logger> - <msg>`"
+    },
+};
+
+// Case-insensitive equality for the `--regex-template` name lookup.
+bool EqualsIgnoreCase(std::string_view lhs, std::string_view rhs) noexcept
+{
+    if (lhs.size() != rhs.size())
+    {
+        return false;
+    }
+    for (std::size_t i = 0; i < lhs.size(); ++i)
+    {
+        const auto a = static_cast<unsigned char>(lhs[i]);
+        const auto b = static_cast<unsigned char>(rhs[i]);
+        if (std::tolower(a) != std::tolower(b))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Match a user-supplied `--regex-template` value against the shortlist,
+// accepting either the display name (e.g. `Apache/nginx Combined Log
+// Format`, case-insensitive) or the CLI slug (`apache-combined`).
+const RegexTemplateOption *FindRegexTemplateOption(std::string_view input) noexcept
+{
+    for (const auto &opt : REGEX_TEMPLATE_OPTIONS)
+    {
+        if (EqualsIgnoreCase(input, opt.slug) || EqualsIgnoreCase(input, opt.templateName))
+        {
+            return &opt;
+        }
+    }
+    return nullptr;
+}
+
+// Slugify @p name into a filesystem-friendly stem, matching the
+// `SlugifyName` convention used by `test/lib/src/test_regex_templates.cpp`.
+// Used to derive the default `--output` name when `--regex-template` is
+// set (`generated_<slug>.log`).
+std::string SlugifyForFilename(std::string_view name)
+{
+    std::string slug{name};
+    std::ranges::replace_if(
+        slug,
+        [](char c) { return std::isalnum(static_cast<unsigned char>(c)) == 0; },
+        '_'
+    );
+    return slug;
+}
+
+void PrintRegexTemplateShortlist(std::ostream &os)
+{
+    os << "log_generator: --regex-template accepts these values (either slug or full name):\n";
+    for (const auto &opt : REGEX_TEMPLATE_OPTIONS)
+    {
+        os << "  " << opt.slug << "  (" << opt.templateName << ")\n"
+           << "      " << opt.description << '\n';
+    }
+}
 
 // Parse a byte-count literal: plain integer or with `B`/`KB`/`MB`/`GB`
 // suffix (case-insensitive, base 1024).
@@ -452,15 +556,17 @@ std::uint64_t Rotate(
 // NOLINTNEXTLINE(bugprone-exception-escape)
 int main(int argc, char *argv[])
 {
-    argparse::ArgumentParser program("log_generator", "0.3.0");
+    argparse::ArgumentParser program("log_generator", "0.4.0");
     program.add_description("Generate a structured log file with synthetic timestamp/level/message records. "
-                            "Pick the wire format with --format (json|logfmt|csv|regex). Lines are produced until "
-                            "--size or --lines is reached (whichever comes first; 0 means unbounded on that "
-                            "axis). Pass --timeout to throttle writes and simulate a streaming feed; pass "
+                            "Pick the wire format with --format (json|logfmt|csv) or select a shipped "
+                            "regex-template synthesizer with --regex-template <NAME> (see "
+                            "--list-regex-templates for the shortlist). Lines are produced until --size or "
+                            "--lines is reached (whichever comes first; 0 means unbounded on that axis). "
+                            "Pass --timeout to throttle writes and simulate a streaming feed; pass "
                             "--roll-size and/or --roll-lines to rotate the active file in-flight "
                             "(--roll-strategy controls how). When --output is omitted the default base name "
                             "takes the format's extension (generated.jsonl for json, generated.logfmt for "
-                            "logfmt, generated.csv for csv, generated.log for regex).");
+                            "logfmt, generated.csv for csv) or, for --regex-template, generated_<slug>.log.");
 
     program.add_argument("-s", "--size")
         .default_value(std::string{"10MB"})
@@ -477,15 +583,25 @@ int main(int argc, char *argv[])
         .help("Output file path (overwritten if it already exists, unless --append). When --output is "
               "omitted the default base name is `generated` plus the format's extension "
               "(generated.jsonl for --format json, generated.logfmt for --format logfmt, "
-              "generated.csv for --format csv, generated.log for --format regex).");
+              "generated.csv for --format csv, generated_<slug>.log for --regex-template).");
 
     program.add_argument("-f", "--format")
         .default_value(std::string{"json"})
-        .choices("json", "logfmt", "csv", "regex")
-        .help("Record serialization format: 'json' (one JSON object per line), 'logfmt', 'csv' "
-              "(RFC 4180 strict, comma-only, header derived from the first generated record), or "
-              "'regex' (bracketed `[<timestamp>] <level> <component> tid=<n> | <message>` form "
-              "extractable by `loglib::RegexParser` with the bracketed-regex template).");
+        .choices("json", "logfmt", "csv")
+        .help("Record serialization format: 'json' (one JSON object per line), 'logfmt', or 'csv' "
+              "(RFC 4180 strict, comma-only, header derived from the first generated record). Use "
+              "--regex-template <NAME> instead of --format to emit lines matching one of the shipped "
+              "`loglib::RegexTemplate`s.");
+
+    program.add_argument("--regex-template")
+        .help("Emit lines matching a shipped regex-template. Overrides --format when set. Value is a "
+              "CLI slug (`syslog`, `apache-combined`, `apache-common`, `apache-error`, `java`) or the "
+              "full template name (case-insensitive). Pass --list-regex-templates for the shortlist.");
+
+    program.add_argument("--list-regex-templates")
+        .default_value(false)
+        .implicit_value(true)
+        .help("Print the --regex-template shortlist (slug + display name + description) and exit.");
 
     program.add_argument("-t", "--timeout")
         .default_value(0)
@@ -553,6 +669,14 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    // `--list-regex-templates` short-circuits before argument validation
+    // so users can discover the shortlist without picking a valid target.
+    if (program.get<bool>("--list-regex-templates"))
+    {
+        PrintRegexTemplateShortlist(std::cout);
+        return 0;
+    }
+
     const auto sizeText = program.get<std::string>("--size");
     const auto linesText = program.get<std::string>("--lines");
     const auto formatName = program.get<std::string>("--format");
@@ -560,11 +684,27 @@ int main(int argc, char *argv[])
     // from a probe record on a throwaway RNG.
     const std::uint32_t seed = program.is_used("--seed") ? static_cast<std::uint32_t>(program.get<int>("--seed"))
                                                          : test_common::MakeRandomSeed();
-    // Adding a `--format` choice without extending this dispatch
-    // table must fail loudly here, not fall through.
+    // Adding a `--format` choice or a `--regex-template` slug without
+    // extending this dispatch table must fail loudly here, not fall through.
     test_common::LogFormat format;
     test_common::RecordSchema schema;
-    if (formatName == "json")
+    // Diagnostic label used by the startup / summary prints; matches the
+    // CLI knob the user supplied so log output is greppable.
+    std::string formatLabel = formatName;
+    if (program.is_used("--regex-template"))
+    {
+        const auto requested = program.get<std::string>("--regex-template");
+        const RegexTemplateOption *opt = FindRegexTemplateOption(requested);
+        if (opt == nullptr)
+        {
+            std::cerr << "Unknown --regex-template value: " << requested << '\n';
+            PrintRegexTemplateShortlist(std::cerr);
+            return 1;
+        }
+        format = opt->factory();
+        formatLabel = std::string("regex-template=") + std::string(opt->slug);
+    }
+    else if (formatName == "json")
     {
         format = test_common::JsonLines();
     }
@@ -583,28 +723,27 @@ int main(int argc, char *argv[])
         schema = test_common::DeriveSchemaFromRecord(probe);
         format = test_common::Csv(schema);
     }
-    else if (formatName == "regex")
-    {
-        // Bracketed text shape: lines are extractable by `loglib::RegexParser`
-        // with `test_common::BracketedRegexPattern()`. Schemaless on the
-        // wire (no header), but the parser needs the pattern out-of-band.
-        // Lossy: only the canonical 5 fields survive; `line_number` is
-        // emitted by the generator but dropped at parse time.
-        format = test_common::BracketedRegex();
-    }
     else
     {
         std::cerr << "Unknown --format value: " << formatName
-                  << " (expected one of: json, logfmt, csv, regex)\n";
+                  << " (expected one of: json, logfmt, csv; use --regex-template for a shipped regex template)\n";
         return 1;
     }
-    // Empty `--output` means "derive from the format" (`generated.jsonl` /
-    // `generated.logfmt`); the argparse default is empty so `--help` doesn't
-    // bias toward JSON.
+    // Empty `--output` means "derive from the format" (`generated.jsonl`
+    // / `generated.logfmt` / `generated_<slug>.log` for --regex-template);
+    // the argparse default is empty so `--help` doesn't bias toward JSON.
     auto outputArg = program.get<std::string>("--output");
     if (outputArg.empty())
     {
-        outputArg = "generated" + std::string(format.suggestedExtension);
+        if (program.is_used("--regex-template"))
+        {
+            const RegexTemplateOption *opt = FindRegexTemplateOption(program.get<std::string>("--regex-template"));
+            outputArg = "generated_" + SlugifyForFilename(opt->slug) + std::string(format.suggestedExtension);
+        }
+        else
+        {
+            outputArg = "generated" + std::string(format.suggestedExtension);
+        }
     }
     const auto outputPath = std::filesystem::path(outputArg);
     const auto timeoutMs = program.get<int>("--timeout");
@@ -795,7 +934,7 @@ int main(int argc, char *argv[])
               << " up to "
               << (targetBytes == 0 ? std::string{"unbounded bytes"} : std::to_string(targetBytes) + " bytes") << ", "
               << (targetLines == 0 ? std::string{"unbounded lines"} : std::to_string(targetLines) + " lines") << " to "
-              << targetDescription << " (format=" << formatName << ", timeout=" << timeoutMs << "ms, seed=" << seed
+              << targetDescription << " (format=" << formatLabel << ", timeout=" << timeoutMs << "ms, seed=" << seed
               << ", append=" << (append ? "true" : "false");
     if (rollingEnabled)
     {

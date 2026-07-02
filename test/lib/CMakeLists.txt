@@ -28,6 +28,7 @@ add_executable(
     "src/test_logfmt_parser.cpp"
     "src/test_parser_pipeline.cpp"
     "src/test_regex_parser.cpp"
+    "src/test_regex_template_generators.cpp"
     "src/test_regex_template_io.cpp"
     "src/test_regex_templates.cpp"
     "src/test_stream_line_source.cpp"

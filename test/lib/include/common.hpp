@@ -1,6 +1,7 @@
 #include <loglib/file_line_source.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_line.hpp>
+#include <loglib/regex_templates.hpp>
 
 #include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>
@@ -11,6 +12,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Streaming-fixture spec: generate and write `count` random records on the
@@ -99,3 +101,22 @@ private:
 };
 
 void InitializeTimezoneData();
+
+/// Look up a shipped `loglib::RegexTemplate` by exact display name.
+/// Small linear scan; the built-in registry is O(30) entries and this
+/// only fires in test setup. Returns nullptr when @p name matches no
+/// built-in, letting the caller REQUIRE non-null with a clear error
+/// message. Shared between the round-trip synthesizer tests and the
+/// per-template `[regex_parser][large]` benchmarks so both look up the
+/// same source-of-truth pattern.
+inline const loglib::RegexTemplate *FindTemplateByName(std::string_view name) noexcept
+{
+    for (const auto &tmpl : loglib::BuiltinRegexTemplates())
+    {
+        if (tmpl.name == name)
+        {
+            return &tmpl;
+        }
+    }
+    return nullptr;
+}

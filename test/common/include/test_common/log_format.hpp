@@ -57,28 +57,36 @@ LogFormat Logfmt();
 // in the record's lex order; real fixtures should pass a schema.
 LogFormat Csv(RecordSchema schema = {});
 
-// Bracketed text shape suitable for regex-template extraction. Each
-// record emits one line of the form:
-//   `[<timestamp>] <level> <component> tid=<thread_id> | <message>`
+// Per-template synthesizers for the most-common shipped `RegexTemplate`s.
+// Each factory returns a `LogFormat` whose `writeLine` emits one line that
+// the corresponding template's pattern in `loglib::BuiltinRegexTemplates()`
+// parses without error. They reuse the canonical fields already populated
+// by `GenerateRandomLogRecord` (`timestamp` / `level` / `message`) and
+// synthesize any format-specific extras (client IP, HTTP verb, logger,
+// pid, ...) from small static pools using a per-line RNG seeded from the
+// record's `line_number` so runs stay deterministic under a pinned seed.
 //
-// Lossy: only the five canonical fields from `GenerateRandomLogRecord`
-// (`timestamp` / `level` / `component` / `thread_id` / `message`)
-// survive; other fields are dropped. Use with `loglib::RegexParser`
-// and `BracketedRegexPattern()` for a directly comparable cross-format
-// benchmark.
-//
-// Field constraints (asserted in debug builds): `level` / `component`
-// must be bare non-space tokens, `thread_id` must serialize to
-// digits-only, `timestamp` must not contain `]`, and `message` must
-// not contain a newline. The fixture generator already satisfies all
-// of these.
-LogFormat BracketedRegex();
+// The `test_regex_template_generators` round-trip tests guard against
+// drift between each factory's output and its corresponding template
+// pattern.
 
-// PCRE2 pattern that pairs with `BracketedRegex()`. Five named
-// groups -- `timestamp`, `level`, `component`, `thread_id`,
-// `message` -- map onto the same column names that the other
-// formats produce, so cross-format lines/s comparisons line up.
-std::string_view BracketedRegexPattern();
+// `Syslog (RFC3164)` -> "MMM DD HH:MM:SS <host> <program>[<pid>]: <message>".
+LogFormat SyslogRfc3164Format();
+
+// `Apache/nginx Combined Log Format` -> Apache/nginx CLF + referrer + agent.
+LogFormat ApacheCombinedFormat();
+
+// `Apache/nginx Common Log Format` -> Apache/nginx CLF without the trailing
+// referrer / user-agent fields.
+LogFormat ApacheCommonFormat();
+
+// `Apache error log` -> "[<Www Mon DD HH:MM:SS YYYY>] [<module>:<level>]
+// [pid <n>] [client <ip>:<port>] <message>".
+LogFormat ApacheErrorFormat();
+
+// `Java / log4j / SLF4J Logback` -> "YYYY-MM-DD HH:MM:SS,mmm LEVEL
+// [<thread>] <logger> - <message>". Levels normalised to SLF4J tokens.
+LogFormat JavaLogFormat();
 
 // Lex-ordered list of @p record's object keys; empty if @p record
 // is not an object. Used to derive a CSV header from a sample record.

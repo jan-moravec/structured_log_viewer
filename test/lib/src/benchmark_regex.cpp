@@ -1,10 +1,13 @@
-// RegexParser benchmark; mirror of `[json_parser]` / `[logfmt_parser]` /
-// `[csv_parser]` `[large]` via the shared `benchmark_common.hpp`. The
-// fixture is the same `GenerateRandomLogRecord` sequence used by the
-// other formats, serialised through `BracketedRegex()` so lines/s is
-// directly comparable; MB/s is not (the bracketed shape has more
-// punctuation than logfmt/csv per record). See CONTRIBUTING.md
-// `## Benchmarking`.
+// RegexParser benchmarks; mirror of `[json_parser]` / `[logfmt_parser]` /
+// `[csv_parser]` `[large]` via the shared `benchmark_common.hpp`. One
+// `[large]` case per shipped `test_common::LogFormat` synthesizer, so
+// each case streams lines that the corresponding real `RegexTemplate`
+// pattern parses (rather than the retired bracketed-regex placeholder).
+//
+// Lines/s is the primary regression-gate metric and stays directly
+// comparable across templates. MB/s isn't: each format's per-record
+// punctuation and extra fields land the file at a different byte size.
+// See CONTRIBUTING.md `## Benchmarking`.
 
 #include "benchmark_common.hpp"
 #include "common.hpp"
@@ -14,6 +17,7 @@
 #include <loglib/log_parse_sink.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/parsers/regex_parser.hpp>
+#include <loglib/regex_templates.hpp>
 
 #include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>
@@ -23,6 +27,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 using namespace loglib;
 using namespace bench;
@@ -30,36 +35,41 @@ using namespace bench;
 namespace
 {
 
-// Free-function adapter (a `bench::ParserStreamFn` global would trip
-// `bugprone-throwing-static-initialization` from `std::function`'s ctor).
-// Pinned to the bracketed-regex pattern paired with the wire format.
-void RegexStream(
-    FileLineSource &source,
-    LogParseSink &sink,
-    const ParserOptions &options,
-    internal::AdvancedParserOptions advanced
+/// Shared per-template streaming benchmark. Materialises a 1M-line
+/// fixture through @p factory, then drives @p templateName's pattern
+/// via `RegexParser::ParseStreaming` through the shared harness.
+///
+/// The pattern is copied into a local `std::string` so the closure keeps
+/// a pointer that outlives every `RunStreamingFlow` sample (the
+/// `RegexTemplate` in the registry is static-lifetime, but resolving
+/// through a std::string_view captured by value would still be safe;
+/// this form is defensive and lets the closure own no other state).
+void RunRegexTemplateBenchmark(
+    std::string_view templateName,
+    test_common::LogFormat (*factory)(),
+    const char *label,
+    const std::filesystem::path &logPath,
+    std::size_t lines,
+    std::size_t samples
 )
 {
-    RegexParser::ParseStreaming(source, sink, options, advanced, test_common::BracketedRegexPattern());
-}
-
-} // namespace
-
-// Large-file streaming benchmark, mirror of `[json_parser]` /
-// `[logfmt_parser]` / `[csv_parser]` `[large]`. Records stream
-// straight to disk -- no 1M-record vector ever materialises.
-TEST_CASE("Stream regex log to LogTable (1'000'000 lines)", "[.][benchmark][regex_parser][large]")
-{
     BENCHMARK_REQUIRES_RELEASE_BUILD();
+
+    const RegexTemplate *tmpl = FindTemplateByName(templateName);
+    REQUIRE(tmpl != nullptr);
+    // Owned copy: the closure captures by reference and the string
+    // outlives every `RegexParser::ParseStreaming` invocation.
+    const std::string pattern{tmpl->pattern};
 
     const test_common::TimestampPolicy timestamps = DeterministicBenchmarkTimestamps();
 
     const TestStructuredLogFile testFile(
-        StreamedRecords{.count = 1'000'000, .seed = LARGE_FIXTURE_SEED, .timestamps = timestamps},
-        test_common::BracketedRegex(),
-        test_common::RecordSchema{}
+        StreamedRecords{.count = lines, .seed = LARGE_FIXTURE_SEED, .timestamps = timestamps},
+        factory(),
+        test_common::RecordSchema{},
+        logPath.string()
     );
-    const size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
+    const std::size_t bytes = std::filesystem::file_size(testFile.GetFilePath());
 
     InitializeTimezoneData();
 
@@ -67,14 +77,94 @@ TEST_CASE("Stream regex log to LogTable (1'000'000 lines)", "[.][benchmark][rege
     const TestLogConfiguration configFile;
     configFile.Write(*configuration);
 
+    const ParserStreamFn parserStream = [&pattern](
+                                            FileLineSource &source,
+                                            LogParseSink &sink,
+                                            const ParserOptions &options,
+                                            internal::AdvancedParserOptions advanced
+                                        ) { RegexParser::ParseStreaming(source, sink, options, advanced, pattern); };
+
     RunStreamingBenchmark(
-        "Stream 1'000'000 regex log entries to LogTable",
+        label,
         configFile.GetFilePath(),
         testFile.GetFilePath(),
         configuration,
-        RegexStream,
+        parserStream,
         testFile.RecordCount(),
         bytes,
-        4
+        samples
+    );
+}
+
+constexpr std::size_t REGEX_BENCH_LINES = 1'000'000;
+constexpr std::size_t REGEX_BENCH_SAMPLES = 4;
+
+} // namespace
+
+TEST_CASE("Stream Syslog (RFC3164) log to LogTable (1'000'000 lines)", "[.][benchmark][regex_parser][large]")
+{
+    RunRegexTemplateBenchmark(
+        "Syslog (RFC3164)",
+        &test_common::SyslogRfc3164Format,
+        "Stream 1'000'000 Syslog (RFC3164) entries to LogTable",
+        "bench_regex_syslog.log",
+        REGEX_BENCH_LINES,
+        REGEX_BENCH_SAMPLES
+    );
+}
+
+TEST_CASE(
+    "Stream Apache/nginx Combined Log Format log to LogTable (1'000'000 lines)",
+    "[.][benchmark][regex_parser][large]"
+)
+{
+    RunRegexTemplateBenchmark(
+        "Apache/nginx Combined Log Format",
+        &test_common::ApacheCombinedFormat,
+        "Stream 1'000'000 Apache/nginx Combined entries to LogTable",
+        "bench_regex_apache_combined.log",
+        REGEX_BENCH_LINES,
+        REGEX_BENCH_SAMPLES
+    );
+}
+
+TEST_CASE(
+    "Stream Apache/nginx Common Log Format log to LogTable (1'000'000 lines)",
+    "[.][benchmark][regex_parser][large]"
+)
+{
+    RunRegexTemplateBenchmark(
+        "Apache/nginx Common Log Format",
+        &test_common::ApacheCommonFormat,
+        "Stream 1'000'000 Apache/nginx Common entries to LogTable",
+        "bench_regex_apache_common.log",
+        REGEX_BENCH_LINES,
+        REGEX_BENCH_SAMPLES
+    );
+}
+
+TEST_CASE("Stream Apache error log to LogTable (1'000'000 lines)", "[.][benchmark][regex_parser][large]")
+{
+    RunRegexTemplateBenchmark(
+        "Apache error log",
+        &test_common::ApacheErrorFormat,
+        "Stream 1'000'000 Apache error entries to LogTable",
+        "bench_regex_apache_error.log",
+        REGEX_BENCH_LINES,
+        REGEX_BENCH_SAMPLES
+    );
+}
+
+TEST_CASE(
+    "Stream Java / log4j / SLF4J Logback log to LogTable (1'000'000 lines)", "[.][benchmark][regex_parser][large]"
+)
+{
+    RunRegexTemplateBenchmark(
+        "Java / log4j / SLF4J Logback",
+        &test_common::JavaLogFormat,
+        "Stream 1'000'000 Java / log4j / SLF4J entries to LogTable",
+        "bench_regex_java_log.log",
+        REGEX_BENCH_LINES,
+        REGEX_BENCH_SAMPLES
     );
 }
