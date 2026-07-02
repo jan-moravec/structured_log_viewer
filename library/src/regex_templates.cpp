@@ -109,7 +109,7 @@ std::shared_ptr<const MergedRegistry> RebuildLocked()
         {
             fresh->builtins.push_back(ParseEmbeddedOrThrow(entry));
         }
-        catch (const std::exception &)  // NOLINT(bugprone-empty-catch)
+        catch (const std::exception &) // NOLINT(bugprone-empty-catch)
         {
             // Programmer error in the shipped catalog. Skip and
             // keep auto-detect working for the rest; the CI sweep
@@ -127,11 +127,9 @@ std::shared_ptr<const MergedRegistry> RebuildLocked()
     );
 
     fresh->extras = ExtrasSlot();
-    std::stable_sort(
-        fresh->extras.begin(),
-        fresh->extras.end(),
-        [](const RegexTemplate &a, const RegexTemplate &b) { return a.priority < b.priority; }
-    );
+    std::stable_sort(fresh->extras.begin(), fresh->extras.end(), [](const RegexTemplate &a, const RegexTemplate &b) {
+        return a.priority < b.priority;
+    });
 
     fresh->ordered.reserve(fresh->builtins.size() + fresh->extras.size());
     for (const RegexTemplate &t : fresh->builtins)
@@ -229,7 +227,7 @@ std::span<const RegexTemplate> BuiltinRegexTemplates() noexcept
             cached = &PINNED->builtins;
         });
     }
-    catch (...)  // NOLINT(bugprone-empty-catch)
+    catch (...) // NOLINT(bugprone-empty-catch)
     {
         // Empty catch: the noexcept promise means the only
         // recovery is to hand back an empty span. See comment

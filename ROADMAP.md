@@ -71,8 +71,8 @@ The roadmap aims to close the **mainstream desktop log-viewer expectations** bef
 Beyond the per-item list, three themes run through the roadmap:
 
 1. **Pre-release ergonomics.** Close the "table stakes" gaps any reviewer will flag in a head-to-head against Klogg or lnav: compressed files, histogram strip, highlight rules, bookmark notes, AND/OR filters, multi-line records, export, goto, stdin, headless mode.
-2. **Structured-log power user.** Lean into what `loglib` already does well — typed columns, level promotion, the regex-template registry — with features that only make sense on structured data: SQL queries over typed rows, per-cell quick filters, pattern clustering by template key, time-gap detection across the first `Type::Time` column.
-3. **Scale and performance.** Preserve the existing performance envelope (see [CONTRIBUTING.md → Benchmarking](CONTRIBUTING.md#benchmarking)) as features land. Each Tier 1 / 2 item below documents whether it needs a new benchmark or a regression check against the [Acceptance bar](CONTRIBUTING.md#acceptance-bar).
+1. **Structured-log power user.** Lean into what `loglib` already does well — typed columns, level promotion, the regex-template registry — with features that only make sense on structured data: SQL queries over typed rows, per-cell quick filters, pattern clustering by template key, time-gap detection across the first `Type::Time` column.
+1. **Scale and performance.** Preserve the existing performance envelope (see [CONTRIBUTING.md → Benchmarking](CONTRIBUTING.md#benchmarking)) as features land. Each Tier 1 / 2 item below documents whether it needs a new benchmark or a regression check against the [Acceptance bar](CONTRIBUTING.md#acceptance-bar).
 
 ## Tier 1 — Pre-`v1` release-blocking ergonomics
 
@@ -349,40 +349,40 @@ Every merged Tier 1 / Tier 2 item updates this file in the same PR — strike th
 
 Reference snapshot from the survey that informed the roadmap (June 2026). `✓` = present, `~` = partial / limited, blank = absent.
 
-| Feature | **Yours today** | lnav | Klogg | LogExpert | LogViewPlus | OtrosLV | QLogExplorer | LogSleuth | Logan |
-| --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| JSON / NDJSON parsing | ✓ | ✓ | | ~ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| logfmt / CSV / regex templates | ✓ | ✓ | | ~ | ~ | ~ | ~ | ~ | ~ |
-| Multi-file merge into one table | ✓ | ✓ | | ~ | ✓ | ✓ | | ✓ | |
-| Tabs for separate files | | | ✓ | ✓ | ✓ | ✓ | ✓ | | ✓ |
-| Live tail | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Log rotation handling | ✓ | ✓ | ~ | ✓ | ✓ | ~ | ✓ | ~ | ~ |
-| Network ingestion (TCP / UDP) | ✓ | ~ | | | | ✓ | | | |
-| TLS for network ingestion | ✓ | | | | | | | | |
-| Compressed file (gz / bz2 / zst / zip) | | ✓ | ~ | | ✓ | ✓ | | ~ | |
-| Pulling rotated history off disk | | ✓ | | | | ~ | | | |
-| stdin / pipe input | | ✓ | ✓ | | | | | | ~ |
-| Per-row colouring by level | ✓ | ✓ | | ~ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| User-defined highlight rules | | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | | ✓ |
-| Bookmarks with notes / comments | ~ anchors only | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓ |
-| Boolean filter expressions (AND / OR / NOT) | partial (AND) | ✓ | ✓ | ✓ | ✓ | | ✓ | ~ | ✓ |
-| Per-column / per-cell scoped filters | ✓ | ✓ | | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Saved / named filter or query presets | ~ session only | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Histogram / activity timeline | | ✓ | | ~ | ✓ | | | | ✓ |
-| Match overview rail / minimap | | | ✓ | | | | | | ✓ |
-| Pretty-print JSON / XML inline | ~ Record Details | ✓ | | | ✓ | ✓ | ✓ | | ✓ |
-| Multi-line records (stack traces) | | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Goto line / Goto timestamp | | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Time-range zoom / jump-by-N-min | ~ time filter | ✓ | | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Timeshift (per-file clock offset) | | | | ✓ | | | | | |
-| Encoding auto-detect (UTF-16, cp125x) | | | ✓ | ✓ | ✓ | ✓ | | | |
-| Export filtered rows (CSV / JSON / MD) | | ✓ | ~ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Diff view of two files | | | | | ~ | | | | ✓ |
-| Pattern clustering / similar-line grouping | | | | | | | | | ✓ |
-| Time-gap detection | | | | | | | | | ✓ |
-| SQL queries over rows | | ✓ | | | ✓ | | | | |
-| Headless / CLI / scriptable mode | | ✓ | ~ | | ~ | | | ~ | |
-| Remote sources (SSH / SFTP / SMB) | ~ via TCP / UDP | | | | | ✓ | | | ~ |
-| Plugin / extension system | | ~ scripts | | ✓ | ✓ | ✓ | | | |
-| Scratchpad / notes panel | | | ✓ | | | | | | ✓ |
-| Search / activity history | | | | | ✓ | | | | ✓ |
+| Feature                                     | **Yours today**  |   lnav    | Klogg | LogExpert | LogViewPlus | OtrosLV | QLogExplorer | LogSleuth | Logan |
+| ------------------------------------------- | :--------------: | :-------: | :---: | :-------: | :---------: | :-----: | :----------: | :-------: | :---: |
+| JSON / NDJSON parsing                       |        ✓         |     ✓     |       |     ~     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
+| logfmt / CSV / regex templates              |        ✓         |     ✓     |       |     ~     |      ~      |    ~    |      ~       |     ~     |   ~   |
+| Multi-file merge into one table             |        ✓         |     ✓     |       |     ~     |      ✓      |    ✓    |              |     ✓     |       |
+| Tabs for separate files                     |                  |           |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |           |   ✓   |
+| Live tail                                   |        ✓         |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
+| Log rotation handling                       |        ✓         |     ✓     |   ~   |     ✓     |      ✓      |    ~    |      ✓       |     ~     |   ~   |
+| Network ingestion (TCP / UDP)               |        ✓         |     ~     |       |           |             |    ✓    |              |           |       |
+| TLS for network ingestion                   |        ✓         |           |       |           |             |         |              |           |       |
+| Compressed file (gz / bz2 / zst / zip)      |                  |     ✓     |   ~   |           |      ✓      |    ✓    |              |     ~     |       |
+| Pulling rotated history off disk            |                  |     ✓     |       |           |             |    ~    |              |           |       |
+| stdin / pipe input                          |                  |     ✓     |   ✓   |           |             |         |              |           |   ~   |
+| Per-row colouring by level                  |        ✓         |     ✓     |       |     ~     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
+| User-defined highlight rules                |                  |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |           |   ✓   |
+| Bookmarks with notes / comments             |  ~ anchors only  |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |     ~     |   ✓   |
+| Boolean filter expressions (AND / OR / NOT) |  partial (AND)   |     ✓     |   ✓   |     ✓     |      ✓      |         |      ✓       |     ~     |   ✓   |
+| Per-column / per-cell scoped filters        |        ✓         |     ✓     |       |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
+| Saved / named filter or query presets       |  ~ session only  |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
+| Histogram / activity timeline               |                  |     ✓     |       |     ~     |      ✓      |         |              |           |   ✓   |
+| Match overview rail / minimap               |                  |           |   ✓   |           |             |         |              |           |   ✓   |
+| Pretty-print JSON / XML inline              | ~ Record Details |     ✓     |       |           |      ✓      |    ✓    |      ✓       |           |   ✓   |
+| Multi-line records (stack traces)           |                  |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
+| Goto line / Goto timestamp                  |                  |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
+| Time-range zoom / jump-by-N-min             |  ~ time filter   |     ✓     |       |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
+| Timeshift (per-file clock offset)           |                  |           |       |     ✓     |             |         |              |           |       |
+| Encoding auto-detect (UTF-16, cp125x)       |                  |           |   ✓   |     ✓     |      ✓      |    ✓    |              |           |       |
+| Export filtered rows (CSV / JSON / MD)      |                  |     ✓     |   ~   |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
+| Diff view of two files                      |                  |           |       |           |      ~      |         |              |           |   ✓   |
+| Pattern clustering / similar-line grouping  |                  |           |       |           |             |         |              |           |   ✓   |
+| Time-gap detection                          |                  |           |       |           |             |         |              |           |   ✓   |
+| SQL queries over rows                       |                  |     ✓     |       |           |      ✓      |         |              |           |       |
+| Headless / CLI / scriptable mode            |                  |     ✓     |   ~   |           |      ~      |         |              |     ~     |       |
+| Remote sources (SSH / SFTP / SMB)           | ~ via TCP / UDP  |           |       |           |             |    ✓    |              |           |   ~   |
+| Plugin / extension system                   |                  | ~ scripts |       |     ✓     |      ✓      |    ✓    |              |           |       |
+| Scratchpad / notes panel                    |                  |           |   ✓   |           |             |         |              |           |   ✓   |
+| Search / activity history                   |                  |           |       |           |      ✓      |         |              |           |   ✓   |

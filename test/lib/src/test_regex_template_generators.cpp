@@ -74,9 +74,7 @@ constexpr std::size_t GENERATOR_TEST_LINES = 1000;
 
 } // namespace
 
-TEST_CASE(
-    "Synthesized syslog lines parse under Syslog (RFC3164) [regex_templates]", "[regex_templates][regex_parser]"
-)
+TEST_CASE("Synthesized syslog lines parse under Syslog (RFC3164) [regex_templates]", "[regex_templates][regex_parser]")
 {
     const auto records = test_common::GenerateRandomLogRecords(GENERATOR_TEST_LINES, GENERATOR_TEST_SEED);
     RoundTripThroughTemplate(records, test_common::SyslogRfc3164Format(), "Syslog (RFC3164)", "regex_gen_syslog.log");
@@ -103,16 +101,12 @@ TEST_CASE(
 {
     const auto records = test_common::GenerateRandomLogRecords(GENERATOR_TEST_LINES, GENERATOR_TEST_SEED);
     RoundTripThroughTemplate(
-        records,
-        test_common::ApacheCommonFormat(),
-        "Apache/nginx Common Log Format",
-        "regex_gen_apache_common.log"
+        records, test_common::ApacheCommonFormat(), "Apache/nginx Common Log Format", "regex_gen_apache_common.log"
     );
 }
 
 TEST_CASE(
-    "Synthesized Apache error lines parse under Apache error log [regex_templates]",
-    "[regex_templates][regex_parser]"
+    "Synthesized Apache error lines parse under Apache error log [regex_templates]", "[regex_templates][regex_parser]"
 )
 {
     const auto records = test_common::GenerateRandomLogRecords(GENERATOR_TEST_LINES, GENERATOR_TEST_SEED);

@@ -83,7 +83,7 @@ TEST_CASE("RegexParser default-constructed parse without pattern surfaces error 
     CHECK(result.data.Lines().empty());
 }
 
-TEST_CASE("RegexParser unparseable pattern surfaces error [regex]", "[regex_parser]")
+TEST_CASE("RegexParser unparsable pattern surfaces error [regex]", "[regex_parser]")
 {
     const RegexParser parser(R"((?<a)"); // dangling group
     const TestLogFile file("regex_bad_pattern.log");
@@ -433,8 +433,7 @@ struct CollectingStreamSink final : loglib::LogParseSink
 // with no visible columns. Fails on the pre-fix codebase; passes
 // once `newKeyBaseline` is threaded through.
 TEST_CASE(
-    "RegexParser streaming surfaces named-group columns via newKeys [regex][stream_line_source]",
-    "[regex_parser]"
+    "RegexParser streaming surfaces named-group columns via newKeys [regex][stream_line_source]", "[regex_parser]"
 )
 {
     using namespace loglib;

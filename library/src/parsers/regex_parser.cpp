@@ -785,8 +785,15 @@ void DecodeRegexBatch(
         }
 
         if (!MatchLineAndEmit(
-                compiled, worker.user.matchData.get(), columnKeys, line, fileBegin, fileSize,
-                parsed.ownedStringsArena, values, lineError
+                compiled,
+                worker.user.matchData.get(),
+                columnKeys,
+                line,
+                fileBegin,
+                fileSize,
+                parsed.ownedStringsArena,
+                values,
+                lineError
             ))
         {
             parsed.errors.push_back(internal::ParsedLineError{.relativeLine = relativeLineNumber, .body = lineError});
@@ -852,8 +859,15 @@ public:
             return internal::LineDecodeResult::Skip;
         }
         if (!MatchLineAndEmit(
-                *mCompiled, mMatchData.get(), *mColumnKeys, line,
-                /*fileBegin=*/nullptr, /*fileSize=*/0, outOwnedArena, out, errorOut
+                *mCompiled,
+                mMatchData.get(),
+                *mColumnKeys,
+                line,
+                /*fileBegin=*/nullptr,
+                /*fileSize=*/0,
+                outOwnedArena,
+                out,
+                errorOut
             ))
         {
             return internal::LineDecodeResult::Error;
@@ -904,8 +918,7 @@ void EmitErrorAndFinish(
 {
     sink.OnStarted();
     KeyIndex &keys = sink.Keys();
-    const size_t flushLines =
-        streaming ? internal::STREAMING_BATCH_FLUSH_LINES : internal::STATIC_BATCH_FLUSH_LINES;
+    const size_t flushLines = streaming ? internal::STREAMING_BATCH_FLUSH_LINES : internal::STATIC_BATCH_FLUSH_LINES;
     const auto flushInterval =
         streaming ? internal::STREAMING_BATCH_FLUSH_INTERVAL : internal::STATIC_BATCH_FLUSH_INTERVAL;
     internal::BatchCoalescer coalescer(sink, keys, flushLines, flushInterval, newKeyBaseline);
@@ -919,7 +932,8 @@ void EmitErrorAndFinish(
 // RegexParser public surface.
 // ---------------------------------------------------------------------
 
-RegexParser::RegexParser(std::string pattern) : mExplicitPattern(std::move(pattern))
+RegexParser::RegexParser(std::string pattern)
+    : mExplicitPattern(std::move(pattern))
 {
 }
 
@@ -998,9 +1012,8 @@ void RegexParser::ParseStreaming(
     std::optional<std::string_view> explicitPattern
 )
 {
-    const std::string pattern = explicitPattern.has_value()
-                                    ? std::string(*explicitPattern)
-                                    : ResolvePattern(/*explicitPattern=*/std::nullopt, options);
+    const std::string pattern = explicitPattern.has_value() ? std::string(*explicitPattern)
+                                                            : ResolvePattern(/*explicitPattern=*/std::nullopt, options);
 
     const LogFile &file = source.File();
     const char *fileBegin = file.Data();
@@ -1078,9 +1091,7 @@ void RegexParser::ParseStreaming(
                       KeyIndex &keys,
                       std::span<const internal::TimeColumnSpec> timeColumns,
                       internal::ParsedPipelineBatch &parsed
-                  ) {
-        DecodeRegexBatch(token, worker, keys, *sourcePtr, timeColumns, parsed, compiled, columnKeys);
-    };
+                  ) { DecodeRegexBatch(token, worker, keys, *sourcePtr, timeColumns, parsed, compiled, columnKeys); };
 
     internal::RunStaticParserPipeline<RegexByteRange, RegexWorkerState>(
         source, sink, options, advanced, stageA, stageB, newKeyBaseline

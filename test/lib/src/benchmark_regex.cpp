@@ -115,8 +115,7 @@ TEST_CASE("Stream Syslog (RFC3164) log to LogTable (1'000'000 lines)", "[.][benc
 }
 
 TEST_CASE(
-    "Stream Apache/nginx Combined Log Format log to LogTable (1'000'000 lines)",
-    "[.][benchmark][regex_parser][large]"
+    "Stream Apache/nginx Combined Log Format log to LogTable (1'000'000 lines)", "[.][benchmark][regex_parser][large]"
 )
 {
     RunRegexTemplateBenchmark(
@@ -130,8 +129,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "Stream Apache/nginx Common Log Format log to LogTable (1'000'000 lines)",
-    "[.][benchmark][regex_parser][large]"
+    "Stream Apache/nginx Common Log Format log to LogTable (1'000'000 lines)", "[.][benchmark][regex_parser][large]"
 )
 {
     RunRegexTemplateBenchmark(

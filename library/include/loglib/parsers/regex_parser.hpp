@@ -14,7 +14,6 @@
 namespace loglib
 {
 
-
 class FileLineSource;
 class StreamLineSource;
 

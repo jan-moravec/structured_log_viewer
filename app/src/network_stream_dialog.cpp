@@ -184,9 +184,8 @@ NetworkStreamDialog::NetworkStreamDialog(RegexTemplateRegistry *registry, QWidge
     // lives behind `Settings -> Regex templates...`; showing the
     // hint here saves the user from hunting through menus when
     // they want to save a tweaked pattern.
-    auto *templatesHint = new QLabel(
-        tr("Manage templates from <b>Settings &rarr; Regex templates...</b>"), mRegexGroup
-    );
+    auto *templatesHint =
+        new QLabel(tr("Manage templates from <b>Settings &rarr; Regex templates...</b>"), mRegexGroup);
     templatesHint->setToolTip(tr("Use the dedicated editor (Settings menu) to create, edit, validate, or delete "
                                  "regex templates. This dialog only consumes the catalog."));
     templatesHint->setTextFormat(Qt::RichText);

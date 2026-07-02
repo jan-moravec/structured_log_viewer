@@ -10,11 +10,11 @@
 #include "log_warning.hpp"
 #include "network_stream_dialog.hpp"
 #include "qt_streaming_log_sink.hpp"
+#include "regex_template_registry.hpp"
+#include "regex_templates_editor.hpp"
 #include "session_history_manager.hpp"
 #include "shortcuts_dialog.hpp"
 #include "streaming_control.hpp"
-#include "regex_template_registry.hpp"
-#include "regex_templates_editor.hpp"
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
@@ -454,8 +454,9 @@ QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &se
 /// consulted for `Regex`; an empty pattern yields a probe-only
 /// parser that surfaces a single "empty pattern" error through the
 /// sink.
-std::unique_ptr<loglib::LogParser>
-MakeParserForFormat(loglib::LogConfiguration::Source::Format format, std::string_view regexPattern = {})
+std::unique_ptr<loglib::LogParser> MakeParserForFormat(
+    loglib::LogConfiguration::Source::Format format, std::string_view regexPattern = {}
+)
 {
     switch (format)
     {
@@ -503,8 +504,7 @@ DetectedFormat DetectFormatForPath(const std::filesystem::path &file)
         {
             // Special-cased like `loglib::ParseFile(path)`: we need
             // the matched template's pattern, not a bare yes/no.
-            if (const std::optional<loglib::RegexTemplate> tmpl = loglib::DetectRegexTemplate(file);
-                tmpl.has_value())
+            if (const std::optional<loglib::RegexTemplate> tmpl = loglib::DetectRegexTemplate(file); tmpl.has_value())
             {
                 return {.format = loglib::LogConfiguration::Source::Format::Regex, .regexPattern = tmpl->pattern};
             }
@@ -548,7 +548,10 @@ MainWindow::MainWindow(
     RegexTemplateRegistry *regexTemplateRegistry,
     QWidget *parent
 )
-    : QMainWindow(parent), ui(new Ui::MainWindow), mHistoryManager(historyManager), mTheme(theme),
+    : QMainWindow(parent),
+      ui(new Ui::MainWindow),
+      mHistoryManager(historyManager),
+      mTheme(theme),
       mRegexTemplateRegistry(regexTemplateRegistry)
 {
     ui->setupUi(this);

@@ -471,9 +471,7 @@ template <std::size_t N> std::string_view Pick(const std::array<std::string_view
 // spread bytes across a large fixture without dominating the
 // per-line cost.
 constexpr std::array<std::string_view, 6> SYSLOG_HOSTS = {"host-a", "host-b", "host-c", "web01", "db02", "edge03"};
-constexpr std::array<std::string_view, 6> SYSLOG_PROGRAMS = {
-    "systemd", "sshd", "kernel", "cron", "networkd", "auditd"
-};
+constexpr std::array<std::string_view, 6> SYSLOG_PROGRAMS = {"systemd", "sshd", "kernel", "cron", "networkd", "auditd"};
 
 constexpr std::array<std::string_view, 6> APACHE_CLIENT_IPS = {
     "127.0.0.1", "10.0.0.5", "10.1.10.51", "192.168.1.42", "203.0.113.7", "198.51.100.9"

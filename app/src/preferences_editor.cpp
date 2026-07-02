@@ -56,7 +56,8 @@ QString DescribeThemeKind(loglib::ThemeKind kind)
 }
 } // namespace
 
-PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent) : QWidget{parent}, mTheme(theme)
+PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
+    : QWidget{parent}, mTheme(theme)
 {
     setWindowFlags(Qt::Window);
     setWindowTitle("Preferences");

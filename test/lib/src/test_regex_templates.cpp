@@ -25,9 +25,7 @@ std::string SlugifyName(std::string_view name)
 {
     std::string slug{name};
     std::ranges::replace_if(
-        slug,
-        [](char c) { return !static_cast<bool>(std::isalnum(static_cast<unsigned char>(c))); },
-        '_'
+        slug, [](char c) { return !static_cast<bool>(std::isalnum(static_cast<unsigned char>(c))); }, '_'
     );
     return slug;
 }
@@ -122,7 +120,9 @@ TEST_CASE("FindBuiltinByPattern round-trips every registry entry [regex_template
     CHECK_FALSE(FindBuiltinByPattern("definitely not a built-in pattern").has_value());
 }
 
-TEST_CASE("Built-in regex templates are returned in priority-then-document order [regex_templates]", "[regex_templates]")
+TEST_CASE(
+    "Built-in regex templates are returned in priority-then-document order [regex_templates]", "[regex_templates]"
+)
 {
     // The probe loop scans templates in `priority` ascending, so
     // the curated order is load-bearing. Assert the relative
@@ -155,8 +155,10 @@ TEST_CASE("Built-in regex templates are returned in priority-then-document order
     REQUIRE(apacheError != std::numeric_limits<size_t>::max());
     REQUIRE(generic != std::numeric_limits<size_t>::max());
 
-    INFO("Combined slot=" << combined << ", Common slot=" << common << ", Apache err slot=" << apacheError
-                          << ", Generic slot=" << generic);
+    INFO(
+        "Combined slot=" << combined << ", Common slot=" << common << ", Apache err slot=" << apacheError
+                         << ", Generic slot=" << generic
+    );
     CHECK(combined < common);
     CHECK(common <= apacheError);
     CHECK(apacheError < generic);
@@ -201,12 +203,14 @@ TEST_CASE("autoDetect=false templates are excluded from the probe [regex_templat
     SetExtraRegexTemplates({});
 }
 
-TEST_CASE("User-registered templates with autoDetect=true participate in the probe [regex_templates]", "[regex_templates]")
+TEST_CASE(
+    "User-registered templates with autoDetect=true participate in the probe [regex_templates]", "[regex_templates]"
+)
 {
     // Symmetric of the autoDetect=false case: an extra with
     // `autoDetect=true` and a high priority beats a built-in that
     // would otherwise win. The pattern is contrived so it can't
-    // mis-match syslog samples used elsewhere.
+    // mismatch syslog samples used elsewhere.
     const RegexTemplate userTemplate{
         .name = "User priority test",
         .pattern = R"(^FOO\s+(?<id>\d+)\s+(?<msg>.*)$)",
@@ -355,7 +359,9 @@ TEST_CASE("Unanchored user templates cannot substring-match the probe [regex_tem
     SetExtraRegexTemplates({});
 }
 
-TEST_CASE("Java template captures logger separately from message for colon-fused lines [regex_templates]", "[regex_templates]")
+TEST_CASE(
+    "Java template captures logger separately from message for colon-fused lines [regex_templates]", "[regex_templates]"
+)
 {
     // Regression guard for the `\s*[-:]\s+` separator in the Java
     // template. Logback's default layout uses `logger - message`;

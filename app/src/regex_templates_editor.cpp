@@ -226,10 +226,8 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
     // ------------------------------------------------------------
     auto *formButtonsRow = new QHBoxLayout();
     mValidateButton = new QPushButton(tr("Validate"), formContainer);
-    mValidateButton->setToolTip(
-        tr("Compile the pattern and check every sample line matches. Reports first failure. "
-           "Does not write to disk.")
-    );
+    mValidateButton->setToolTip(tr("Compile the pattern and check every sample line matches. Reports first failure. "
+                                   "Does not write to disk."));
     mSaveButton = new QPushButton(tr("Save"), formContainer);
     mSaveButton->setToolTip(tr("Write the template to <AppData>/regex_templates/<name>.json and refresh the "
                                "registry (so the parser's auto-detect probe sees it immediately)."));
@@ -341,12 +339,10 @@ void RegexTemplatesEditor::RefreshList()
             item->setData(Qt::UserRole, row.name);
             // Tooltip echoes the badge plus priority / source so
             // users can inspect a row without opening the form.
-            item->setToolTip(
-                tr("%1\nSource: %2\nPriority: %3\nAuto-detect: %4")
-                    .arg(row.name, row.fromUser ? tr("user (editable)") : tr("built-in (read-only)"))
-                    .arg(row.priority)
-                    .arg(row.autoDetect ? tr("yes") : tr("no (manual only)"))
-            );
+            item->setToolTip(tr("%1\nSource: %2\nPriority: %3\nAuto-detect: %4")
+                                 .arg(row.name, row.fromUser ? tr("user (editable)") : tr("built-in (read-only)"))
+                                 .arg(row.priority)
+                                 .arg(row.autoDetect ? tr("yes") : tr("no (manual only)")));
         }
     }
 
@@ -995,8 +991,7 @@ bool RegexTemplatesEditor::ConfirmDiscardEdits()
     const auto reply = QMessageBox::question(
         this,
         tr("Discard changes?"),
-        tr("You have unsaved edits to \"%1\". Discard them?")
-            .arg(mIsNewDraft ? tr("(new draft)") : mCurrentName),
+        tr("You have unsaved edits to \"%1\". Discard them?").arg(mIsNewDraft ? tr("(new draft)") : mCurrentName),
         QMessageBox::Discard | QMessageBox::Cancel,
         QMessageBox::Cancel
     );
