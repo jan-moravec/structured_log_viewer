@@ -2,6 +2,7 @@
 
 #include <loglib/bytes_producer.hpp>
 #include <loglib/file_line_source.hpp>
+#include <loglib/internal/advanced_parser_options.hpp>
 #include <loglib/internal/buffering_sink.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_data.hpp>
@@ -474,4 +475,277 @@ TEST_CASE(
         totalLines += batch.lines.size();
     }
     CHECK(totalLines == 3);
+}
+
+namespace
+{
+
+/// Aggregate the per-batch errors a `CollectingStreamSink`
+/// captured into one flat list so the error-path streaming tests
+/// below can assert on the message the parser produced without
+/// hard-coding a batch index. The failure mode a caller cares
+/// about is "did the streaming pipeline surface this error at
+/// all" — the batch boundary the coalescer picked is an
+/// implementation detail.
+std::vector<std::string> FlattenSinkErrors(const CollectingStreamSink &sink)
+{
+    std::vector<std::string> all;
+    for (const auto &batch : sink.batches)
+    {
+        for (const auto &err : batch.errors)
+        {
+            all.push_back(err);
+        }
+    }
+    return all;
+}
+
+/// Drive `RegexParser::ParseStreaming(StreamLineSource, ...)`
+/// with @p pattern and a two-line payload, then return the
+/// collected errors. Wraps the boilerplate the three streaming
+/// error tests need so each test case reads as a single assertion
+/// block. The payload text is irrelevant on the error paths —
+/// they fail before any line is decoded — but keeping it varied
+/// makes it obvious in stack traces which test tripped.
+std::vector<std::string> RunStreamingParseCollectingErrors(std::string_view pattern, std::string_view payload)
+{
+    const RegexParser parser{std::string{pattern}};
+    StreamLineSource source(
+        std::filesystem::path("regex_stream_error.log"),
+        std::make_unique<StreamingInMemoryProducer>(std::string{payload})
+    );
+    CollectingStreamSink sink;
+    parser.ParseStreaming(source, sink, ParserOptions{});
+    REQUIRE(sink.finished);
+    return FlattenSinkErrors(sink);
+}
+
+} // namespace
+
+TEST_CASE("RegexParser streaming with empty pattern surfaces error [regex][stream_line_source]", "[regex_parser]")
+{
+    // Streaming counterpart of the static-path "default-constructed
+    // parse without pattern surfaces error" case. The default ctor
+    // means "read pattern from options"; without a
+    // `LogConfiguration` on the options the resolved pattern is
+    // empty and the parser must fail closed before decoding any
+    // line. Prior to the newKeyBaseline fix the streaming overload
+    // dropped this error entirely because `EmitErrorAndFinish`
+    // wasn't wired for the streaming flush thresholds.
+    const RegexParser parser;
+    StreamLineSource source(
+        std::filesystem::path("regex_stream_empty_pattern.log"),
+        std::make_unique<StreamingInMemoryProducer>("one\ntwo\n")
+    );
+    CollectingStreamSink sink;
+    parser.ParseStreaming(source, sink, ParserOptions{});
+
+    REQUIRE(sink.finished);
+    CHECK_FALSE(sink.finishedCancelled);
+    const auto errors = FlattenSinkErrors(sink);
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0].contains("non-empty pattern"));
+}
+
+TEST_CASE("RegexParser streaming with unparsable pattern surfaces error [regex][stream_line_source]", "[regex_parser]")
+{
+    // Dangling group `(?<a` fails PCRE2 compile; the compile error
+    // must be forwarded through the streaming sink verbatim
+    // (fmt-formatted "Pattern compile failed at offset ..." from
+    // `CompiledPattern::Compile`) rather than crashing the
+    // pipeline or eating the message.
+    const auto errors = RunStreamingParseCollectingErrors(R"((?<a)", "one\ntwo\n");
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0].contains("Pattern compile failed"));
+}
+
+TEST_CASE(
+    "RegexParser streaming with anonymous groups only surfaces error [regex][stream_line_source]", "[regex_parser]"
+)
+{
+    // Anonymous groups don't map to columns. Same guarantee the
+    // static path already exercises: refuse before running the
+    // decoder so callers see a clear error rather than a stream
+    // of "did not match" per line (which is what would happen if
+    // the guard was ever removed).
+    const auto errors = RunStreamingParseCollectingErrors(R"(^(\w+)\s+(.*)$)", "info hello\nwarn world\n");
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0].contains("named capture groups"));
+}
+
+TEST_CASE("ValidateRegexPattern rejects empty pattern [regex]", "[regex_parser]")
+{
+    // GUI pre-flight: the Network Stream dialog calls this before
+    // wiring up a live tail so the user sees the "non-empty
+    // pattern" error next to the field, not on the first inbound
+    // byte. Message must match the parser's runtime error so both
+    // surfaces read identically.
+    std::string err;
+    CHECK_FALSE(ValidateRegexPattern("", err));
+    CHECK(err.contains("non-empty pattern"));
+}
+
+TEST_CASE("ValidateRegexPattern rejects patterns that fail to compile [regex]", "[regex_parser]")
+{
+    // A dangling `(?<a` is the simplest PCRE2 syntax error that
+    // fits on one line; the surfaced message must include the
+    // "Pattern compile failed" prefix `CompiledPattern::Compile`
+    // produces so error text stays uniform across the parse-time
+    // and pre-flight surfaces.
+    std::string err;
+    CHECK_FALSE(ValidateRegexPattern(R"((?<a)", err));
+    CHECK(err.contains("Pattern compile failed"));
+}
+
+TEST_CASE("ValidateRegexPattern rejects patterns without named groups [regex]", "[regex_parser]")
+{
+    // Anonymous groups don't map to columns; ValidateRegexPattern
+    // uses the same "no named groups" guard the parser does. The
+    // editor blocks Save on this before the user gets to run the
+    // template through a real file.
+    std::string err;
+    CHECK_FALSE(ValidateRegexPattern(R"(^(\w+)\s+(.*)$)", err));
+    CHECK(err.contains("named capture groups"));
+}
+
+TEST_CASE("ValidateRegexPattern accepts valid patterns [regex]", "[regex_parser]")
+{
+    // Happy path: valid PCRE2 with at least one `(?<Name>...)` -
+    // the pre-flight check must clear @p errorOut so callers can
+    // key their UI off "empty error means OK".
+    std::string err = "stale";
+    CHECK(ValidateRegexPattern(R"(^(?<level>\w+)\s+(?<message>.*)$)", err));
+}
+
+TEST_CASE("PatternMatchesLine returns false for empty pattern [regex]", "[regex_parser]")
+{
+    // The Validate button in the regex editor calls this on every
+    // sample line; an empty pattern is a common intermediate
+    // state during editing. It must fail closed rather than crash
+    // or accept every input (which would show a misleading tick
+    // in the UI).
+    CHECK_FALSE(PatternMatchesLine("", "any line"));
+}
+
+TEST_CASE("PatternMatchesLine returns false on compile failure [regex]", "[regex_parser]")
+{
+    // Same intermediate state as above: mid-typed dangling group.
+    // The one-off compile is discarded silently — callers wanting
+    // the compile error text call `ValidateRegexPattern` first.
+    CHECK_FALSE(PatternMatchesLine(R"((?<a)", "any line"));
+}
+
+TEST_CASE("PatternMatchesLine returns true only on a full anchored match [regex]", "[regex_parser]")
+{
+    // Anchored full-match semantics mirror the auto-detect probe
+    // (`MatchesFullyForProbe`): "matches" means "a `RegexParser`
+    // would emit a row for this line", never "the pattern appears
+    // somewhere in the line". Regression guard for
+    // `PCRE2_ANCHORED | PCRE2_ENDANCHORED` staying paired across
+    // future refactors. A substring-only match must fail; a full
+    // match must pass; a truly non-matching line must fail.
+    constexpr std::string_view PATTERN = R"(^USER\s+(?<id>\d+)$)";
+    CHECK(PatternMatchesLine(PATTERN, "USER 42"));
+    CHECK_FALSE(PatternMatchesLine(PATTERN, "prefix USER 42 suffix"));
+    CHECK_FALSE(PatternMatchesLine(PATTERN, "USER not-a-number"));
+}
+
+TEST_CASE("RegexParser::IsValid returns false for a missing file [regex]", "[regex_parser]")
+{
+    // `ProbeAutoDetectTemplates` short-circuits on
+    // `!stream.is_open()`. Exercising that path keeps the coverage
+    // sweep honest — a future refactor that dropped the check
+    // would either crash on a fresh install (no session file yet)
+    // or start returning true for paths that don't exist.
+    const RegexParser parser;
+    const std::filesystem::path missing = std::filesystem::temp_directory_path() / "regex_parser_missing_file_test.log";
+    std::filesystem::remove(missing);
+    REQUIRE_FALSE(std::filesystem::exists(missing));
+    CHECK_FALSE(parser.IsValid(missing));
+    CHECK_FALSE(DetectRegexTemplate(missing).has_value());
+}
+
+TEST_CASE("RegexParser ToString skips monostate columns [regex]", "[regex_parser]")
+{
+    // Optional groups that didn't participate in the match land
+    // as monostate and must not surface in `ToString`'s space-
+    // joined output. The syslog-style optional `[pid]` group is
+    // the natural fixture: line 1 leaves `pid` absent, line 2
+    // fills it.
+    const RegexParser parser(R"(^(?<program>\w+)(?:\[(?<pid>\d+)\])?:\s+(?<message>.*)$)");
+    const TestLogFile file("regex_tostring_monostate.log");
+    file.Write("systemd: System starting\n"
+               "configd[17]: network changed\n");
+
+    auto result = ParseFile(parser, file.GetFilePath());
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.data.Lines().size() == 2);
+
+    const std::string row0 = parser.ToString(result.data.Lines()[0]);
+    CHECK(row0.contains("systemd"));
+    CHECK(row0.contains("System starting"));
+    // No `[pid]`-shaped digits in the output; the only digits in
+    // the sample come from an optional group that didn't fire.
+    CHECK(row0.find_first_of("0123456789") == std::string::npos);
+
+    const std::string row1 = parser.ToString(result.data.Lines()[1]);
+    CHECK(row1.contains("configd"));
+    CHECK(row1.contains("17"));
+    CHECK(row1.contains("network changed"));
+}
+
+TEST_CASE("RegexParser static overload with explicit pattern overrides configuration [regex]", "[regex_parser]")
+{
+    // The advanced-tuning overload (`RegexParser::ParseStreaming`
+    // static) takes an `optional<string_view>` explicit pattern.
+    // A present value must override any `regexPattern` on the
+    // configuration snapshot — this is what a benchmark driver
+    // needs to bypass the pinned-pattern parser without touching
+    // the caller's config. Also asserts a non-empty override
+    // succeeds where the configuration would have failed
+    // (mismatched pattern), so a bug that quietly consulted the
+    // configuration would flip the test to red.
+    const std::string_view explicitPattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
+    const TestLogFile file("regex_static_advanced.log");
+    file.Write("info hello\nwarn world\n");
+
+    auto config = std::make_shared<LogConfiguration>();
+    config->source = LogConfiguration::Source{
+        .kind = LogConfiguration::Source::Kind::File,
+        .format = LogConfiguration::Source::Format::Regex,
+        .locators = {file.GetFilePath()},
+        .locatorDedupKeys = {file.GetFilePath()},
+        // Deliberately wrong: if the overload ever falls back to
+        // this pattern the columns would come out as (`k`, `v`)
+        // and neither of the fixture lines would match at all.
+        .regexPattern = R"(^(?<k>\S+)=(?<v>\S+)$)",
+    };
+    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
+    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    FileLineSource *sourcePtr = source.get();
+    internal::BufferingSink sink(std::move(source));
+
+    ParserOptions options;
+    options.configuration = std::shared_ptr<const LogConfiguration>(config);
+    RegexParser::ParseStreaming(*sourcePtr, sink, options, internal::AdvancedParserOptions{}, explicitPattern);
+
+    LogData data = sink.TakeData();
+    const std::vector<std::string> errors = sink.TakeErrors();
+    CHECK(errors.empty());
+    REQUIRE(data.Lines().size() == 2);
+    CHECK(AsStringView(data.Lines()[0].GetValue("level")) == std::string_view{"info"});
+    CHECK(AsStringView(data.Lines()[1].GetValue("message")) == std::string_view{"world"});
+}
+
+TEST_CASE("RegexParser handles empty file cleanly [regex]", "[regex_parser]")
+{
+    // An empty regex file must be refused by `ParseFile(path)`
+    // (its `file_size(file) == 0` guard fires before the parser
+    // runs). Exercised here so the guard stays wired for the
+    // regex path — a future refactor that let empty files reach
+    // `RegexParser::ParseStreaming` would crash on the mmap
+    // sizing rather than surface a clean error.
+    const TestLogFile file("regex_empty.log");
+    file.Write("");
+    CHECK_THROWS_AS(ParseFile(file.GetFilePath()), std::runtime_error);
 }
