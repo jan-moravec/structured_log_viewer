@@ -528,7 +528,13 @@ jobs:
 
   build-macos:
     needs: pre-commit
-    runs-on: macos-latest
+    # Pinned to macos-15 (Sequoia). macos-latest was rolled forward to
+    # macos-26 (Tahoe) on 2026-07-02, which removed the deprecated AGL
+    # framework. Qt 6.8.3's CMake targets still reference it, so the
+    # release link fails with `ld: framework 'AGL' not found`. Pin
+    # until we can move to Qt 6.9+ (where the AGL dependency is
+    # dropped) or a Qt 6.8 patch release without it.
+    runs-on: macos-15
     timeout-minutes: 60
     permissions:
       contents: write
