@@ -52,7 +52,7 @@ const std::filesystem::path &ScratchDir()
 // at fixed OS-temp locations); everything else lands inside `ScratchDir()`.
 std::string ResolveScratchPath(std::string filePath)
 {
-    std::filesystem::path fsPath(filePath);
+    const std::filesystem::path fsPath(filePath);
     if (fsPath.is_absolute())
     {
         return filePath;
