@@ -57,6 +57,8 @@ QT_END_NAMESPACE
 
 class SessionHistoryManager;
 class ThemeControl;
+class RegexTemplateRegistry;
+class RegexTemplatesEditor;
 
 class MainWindow : public QMainWindow
 {
@@ -121,12 +123,26 @@ public:
     /// about session history.
     MainWindow(ThemeControl *theme, QWidget *parent = nullptr);
 
-    /// Production constructor. The theme controller and history
-    /// manager are owned by `main()`; the window keeps non-owning
-    /// pointers and writes snapshots through the history manager
-    /// on streaming completion / close. `theme` may be nullptr in
-    /// tests; theme-dependent code paths fall back to defaults.
-    MainWindow(ThemeControl *theme, SessionHistoryManager *historyManager, QWidget *parent = nullptr);
+    /// Production constructor. The theme controller, history
+    /// manager and regex-template registry are owned by `main()`;
+    /// the window keeps non-owning pointers and writes snapshots
+    /// through the history manager on streaming completion /
+    /// close. Any of `theme` / `regexTemplateRegistry` may be
+    /// nullptr in tests; theme code paths fall back to defaults,
+    /// and the network-stream dialog falls back to the library's
+    /// built-in template catalog.
+    ///
+    /// No separate `(theme, history, parent)` overload exists on
+    /// purpose: it would make `MainWindow(theme, history, nullptr)`
+    /// test calls ambiguous with this one. Tests that don't need a
+    /// registry keep their 3-arg shape and resolve here with
+    /// `parent` defaulted.
+    MainWindow(
+        ThemeControl *theme,
+        SessionHistoryManager *historyManager,
+        RegexTemplateRegistry *regexTemplateRegistry,
+        QWidget *parent = nullptr
+    );
 
     ~MainWindow();
 
@@ -1087,6 +1103,14 @@ private:
     };
     std::optional<FindMatchCache> mFindMatchCache;
     PreferencesEditor *mPreferencesEditor;
+
+    /// Modeless editor for the merged regex-template catalog
+    /// (`Settings -> Regex templates...`). Created lazily on first
+    /// menu activation and reused across show/hide so in-flight
+    /// edits survive a close-reopen. Parented to `this` (Qt-owned).
+    /// Stays null when `mRegexTemplateRegistry` is null (the menu
+    /// action is disabled in that case).
+    RegexTemplatesEditor *mRegexTemplatesEditor = nullptr;
     /// Non-owning. Lives in `main()` (or the test fixture).
     /// `nullptr` for legacy no-args construction; theme code paths
     /// in this class check before dereferencing.
@@ -1265,6 +1289,12 @@ private:
     /// `nullptr` for ad-hoc / test-only instances, in which case
     /// auto-save / Recent Sessions / restore-on-launch are no-ops.
     SessionHistoryManager *mHistoryManager = nullptr;
+
+    /// Non-owning. Provided by `main()` so `OpenNetworkStream` can
+    /// pass it to `NetworkStreamDialog`. `nullptr` for ad-hoc
+    /// instances, in which case the dialog uses the library's
+    /// built-in template catalog only.
+    RegexTemplateRegistry *mRegexTemplateRegistry = nullptr;
 
     /// uuid of the recents entry this window owns. Set after the
     /// first successful `WriteSnapshot` so subsequent saves rewrite

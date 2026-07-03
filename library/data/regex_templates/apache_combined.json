@@ -1,0 +1,11 @@
+{
+    "name": "Apache/nginx Combined Log Format",
+    "pattern": "^(?<clientip>\\S+)\\s+(?<ident>\\S+)\\s+(?<auth>\\S+)\\s+\\[(?<timestamp>[^\\]]+)\\]\\s+\"(?:(?<verb>\\S+)\\s+(?<request>\\S+)(?:\\s+HTTP/(?<httpversion>\\S+))?|-)\"\\s+(?<response>\\d+)\\s+(?<bytes>\\d+|-)\\s+\"(?<referrer>[^\"]*)\"\\s+\"(?<agent>[^\"]*)\"$",
+    "sampleLines": [
+        "10.112.72.172 - - [11/Feb/2013:06:43:36 +0000] \"GET /client/ HTTP/1.1\" 200 5778 \"-\" \"Mozilla/5.0\"",
+        "1.2.3.4 - bob [10/Feb/2012:16:41:07 -0500] \"GET / HTTP/1.0\" 200 368 \"https://example.com\" \"curl/8.5.0\""
+    ],
+    "autoDetect": true,
+    "priority": 12,
+    "description": "Adapted from grok COMBINEDAPACHELOG (Apache-2.0). Flattened by inlining the IPORHOST / USER / NUMBER macros into plain PCRE2 character classes."
+}

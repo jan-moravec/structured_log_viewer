@@ -1,0 +1,13 @@
+{
+    "name": "MongoDB 3.x text log",
+    "pattern": "^(?<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+\\-]\\d{2}:?\\d{2}))\\s+(?<severity>[FEWI]|D[1-5]?)\\s+(?<component>[A-Z_-]+)\\s+\\[(?<context>[^\\]]+)\\]\\s+(?<message>.*)$",
+    "sampleLines": [
+        "2024-04-28T04:02:03.123+0000 I NETWORK  [listener] connection accepted from 127.0.0.1:54321 #42 (1 connection now open)",
+        "2024-04-28T04:02:04.456Z W STORAGE  [WTCheckpointThread] Checkpointer took 5000ms",
+        "2024-04-28T04:02:05.789-04:00 E QUERY    [conn42] Error executing query: bad cursor",
+        "2024-04-28T04:02:06.000Z D2 COMMAND  [conn7] run command admin.$cmd { isMaster: 1 }"
+    ],
+    "autoDetect": true,
+    "priority": 20,
+    "description": "Adapted from logstash-plugins/logstash-patterns-core patterns/ecs-v1/mongodb (Apache-2.0), entry MONGO3_LOG. Inlined %{TIMESTAMP_ISO8601}, %{WORD}, %{NOTSPACE}, %{GREEDYDATA} macros to plain PCRE2; the severity letter (F/E/W/I/D) is documented in the MongoDB 3.x 'Log Messages' chapter and survives into 4.x text logs as a legacy fallback."
+}

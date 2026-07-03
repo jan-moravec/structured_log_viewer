@@ -1,0 +1,12 @@
+{
+    "name": "BIND9 query log",
+    "pattern": "^(?<timestamp>\\d{2}-[A-Z][a-z]{2}-\\d{4}\\s+\\d{2}:\\d{2}:\\d{2}\\.\\d{3})\\s+queries:\\s+(?<level>info|debug|warning|error|notice):\\s+client(?:\\s+@0x[0-9a-fA-F]+)?\\s+(?<clientip>[0-9a-fA-F:.]+)#(?<clientport>\\d+)(?:\\s+\\((?<question>[^)]+)\\))?:\\s+query:\\s+(?<query>\\S+)\\s+(?<class>\\S+)\\s+(?<qtype>\\S+)\\s+(?<flags>\\S+)(?:\\s+\\((?<server>[^)]+)\\))?$",
+    "sampleLines": [
+        "28-Apr-2024 04:02:03.123 queries: info: client 10.0.0.1#54321 (example.com): query: example.com IN A + (10.0.0.53)",
+        "28-Apr-2024 04:02:04.456 queries: info: client @0x7f1234567890 192.168.1.5#33445 (api.example.com): query: api.example.com IN AAAA +E(0)K (192.168.1.53)",
+        "28-Apr-2024 04:02:05.789 queries: info: client ::1#5353: query: localhost IN PTR -"
+    ],
+    "autoDetect": true,
+    "priority": 10,
+    "description": "Adapted from logstash-plugins/logstash-patterns-core patterns/ecs-v1/bind (Apache-2.0), entry BIND9_QUERYLOG. Inlined %{BIND9_TIMESTAMP} (DD-Mon-YYYY HH:MM:SS.fff), %{IP:client.ip}, %{POSINT:client.port}, %{HOSTNAME:question}, %{NOTSPACE:dns.question.*}, %{IP:server.ip} to plain PCRE2."
+}

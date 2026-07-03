@@ -1,0 +1,12 @@
+{
+    "name": "PostgreSQL",
+    "pattern": "^(?<timestamp>\\d{4}-\\d{2}-\\d{2}\\s+\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:\\s+[A-Z]{2,5})?)\\s+\\[(?<pid>\\d+)\\](?:\\s+(?<user>\\S+)@(?<database>\\S+))?\\s+(?<level>LOG|DEBUG[1-5]?|INFO|NOTICE|WARNING|ERROR|FATAL|PANIC|STATEMENT|DETAIL|HINT|CONTEXT|LOCATION):\\s+(?<message>.*)$",
+    "sampleLines": [
+        "2024-04-28 04:02:03.123 UTC [12345] LOG:  database system is ready to accept connections",
+        "2024-04-28 04:02:04 UTC [12346] postgres@mydb ERROR:  relation \"users\" does not exist",
+        "2024-04-28 04:02:05.456 [12347] WARNING:  there is no transaction in progress"
+    ],
+    "autoDetect": true,
+    "priority": 10,
+    "description": "Adapted from lnav src/formats/postgres_log.json (BSD-2-Clause). The default log_line_prefix on modern PostgreSQL ships timestamp + pid + optional user@database + severity (LOG/ERROR/FATAL/...) followed by ':  message' (two spaces). All severity tokens come from PostgreSQL's elog.c enum."
+}

@@ -1,0 +1,13 @@
+{
+    "name": "Redis",
+    "pattern": "^(?<pid>\\d+):(?<role>[XCMSR])\\s+(?<timestamp>\\d{2}\\s+[A-Z][a-z]{2}\\s+\\d{4}\\s+\\d{2}:\\d{2}:\\d{2}\\.\\d+)\\s+(?<level>[.\\-*#])\\s+(?<message>.*)$",
+    "sampleLines": [
+        "12345:M 28 Apr 2024 04:02:03.123 * Ready to accept connections tcp",
+        "12345:M 28 Apr 2024 04:02:04.456 # WARNING overcommit_memory is set to 0!",
+        "12345:S 28 Apr 2024 04:02:05.789 . slave start",
+        "12345:C 28 Apr 2024 04:02:06.000 - DB loaded from disk: 0.123 seconds"
+    ],
+    "autoDetect": true,
+    "priority": 10,
+    "description": "Adapted from lnav src/formats/redis_log.json (BSD-2-Clause). Matches the redis-server text log header introduced in Redis 3.0: '<pid>:<role-letter> <DD Mon YYYY HH:MM:SS.fff> <level-symbol> <message>' where role is X/C/M/S/R (sentinel/cluster/master/slave/replica) and level is . (debug) / - (verbose) / * (notice) / # (warning). See redis.io 'Log Format'."
+}

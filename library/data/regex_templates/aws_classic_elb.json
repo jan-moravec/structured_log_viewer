@@ -1,0 +1,12 @@
+{
+    "name": "AWS Classic ELB access log",
+    "pattern": "^(?<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z)\\s+(?<elb>\\S+)\\s+(?<clientip>\\S+):(?<clientport>\\d+)\\s+(?:(?<backendip>\\S+):(?<backendport>\\d+)|-)\\s+(?<request_processing_time>-?\\d+(?:\\.\\d+)?)\\s+(?<backend_processing_time>-?\\d+(?:\\.\\d+)?)\\s+(?<response_processing_time>-?\\d+(?:\\.\\d+)?)\\s+(?<elb_status_code>-|\\d{3})\\s+(?<backend_status_code>-|\\d{3})\\s+(?<received_bytes>\\d+)\\s+(?<sent_bytes>\\d+)\\s+\"(?:(?<verb>\\S+)\\s+(?<request>\\S+)(?:\\s+HTTP/(?<httpversion>\\S+))?|-(?:\\s+-){0,2}\\s*)\"\\s+\"(?<user_agent>[^\"]*)\"\\s+(?<ssl_cipher>\\S+)\\s+(?<ssl_protocol>\\S+)$",
+    "sampleLines": [
+        "2015-05-13T23:39:43.945958Z my-loadbalancer 192.168.131.39:2817 10.0.0.1:80 0.000073 0.001048 0.000057 200 200 0 29 \"GET http://www.example.com:80/ HTTP/1.1\" \"curl/7.38.0\" - -",
+        "2024-04-28T04:02:03.123Z prod-elb 1.2.3.4:54321 10.0.0.5:443 0.001 0.020 0.001 502 - 0 0 \"POST https://api.example.com:443/v1/orders HTTP/2.0\" \"Mozilla/5.0\" ECDHE-RSA-AES128-GCM-SHA256 TLSv1.2",
+        "2024-04-28T04:02:04Z my-elb 10.0.0.1:33442 - -1 -1 -1 - - 0 0 \"- - - \" \"-\" - -"
+    ],
+    "autoDetect": true,
+    "priority": 10,
+    "description": "Adapted from logstash-plugins/logstash-patterns-core patterns/ecs-v1/aws (Apache-2.0), entry ELB_ACCESS_LOG. Inlined %{TIMESTAMP_ISO8601}, %{IP}, %{INT}, %{NUMBER}, %{NOTSPACE} macros to plain PCRE2; the backend ip:port and status code fields go to '-' when the request was rejected before the backend responded. The request alternation also accepts the four-dash AWS-documented form ('- - - ' with trailing space) emitted when the request line couldn't be parsed."
+}

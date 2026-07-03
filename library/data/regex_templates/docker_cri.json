@@ -1,0 +1,13 @@
+{
+    "name": "Docker / containerd CRI runtime",
+    "pattern": "^(?<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+\\-]\\d{2}:?\\d{2}))\\s+(?<stream>stdout|stderr)\\s+(?<tag>[FP])\\s+(?<message>.*)$",
+    "sampleLines": [
+        "2024-04-28T04:02:03.123456789Z stdout F Server started on port 8080",
+        "2024-04-28T04:02:04.987654321Z stderr F panic: runtime error: index out of range [5] with length 3",
+        "2024-04-28T04:02:05.000000000Z stdout P partial-line-without-trailing-newline-because-buffer-was",
+        "2024-04-28T04:02:05.123456789Z stdout F flushed-after-the-process-printed-the-final-newline"
+    ],
+    "autoDetect": true,
+    "priority": 10,
+    "description": "Written from scratch against the Kubernetes CRI logging spec (Apache-2.0). The on-disk format kubelet expects from CRI runtimes (containerd, CRI-O, docker via dockershim/cri-dockerd) is documented in kubernetes/cri-api `vendor/k8s.io/cri-api/pkg/apis/runtime/v1/api.proto` and the contributors guide 'CRI container logs': '<RFC3339Nano-timestamp> <stdout|stderr> <F|P> <message>'. F = full line, P = partial line (kubelet stitches consecutive P's into one logical entry)."
+}

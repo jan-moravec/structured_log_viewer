@@ -1,0 +1,11 @@
+{
+    "name": "AWS S3 access log",
+    "pattern": "^(?<owner>\\S+)\\s+(?<bucket>\\S+)\\s+\\[(?<timestamp>[^\\]]+)\\]\\s+(?<clientip>\\S+)\\s+(?<requester>\\S+)\\s+(?<request_id>\\S+)\\s+(?<operation>\\S+)\\s+(?<key>\\S+)\\s+\"(?:(?<verb>\\S+)\\s+(?<request>\\S+)(?:\\s+HTTP/(?<httpversion>\\S+))?|-)\"\\s+(?<status>\\d{3}|-)\\s+(?<error_code>\\S+)\\s+(?<bytes_sent>\\d+|-)\\s+(?<object_size>\\d+|-)\\s+(?<total_time>\\d+|-)\\s+(?<turnaround_time>\\d+|-)\\s+\"(?<referrer>[^\"]*)\"\\s+\"(?<agent>[^\"]*)\"\\s+(?<version_id>\\S+)(?:\\s+(?<host_id>\\S+)\\s+(?<sig_version>\\S+)\\s+(?<cipher>\\S+)\\s+(?<auth_type>\\S+)\\s+(?<host_header>\\S+)\\s+(?<tls_version>\\S+)(?:\\s+(?<access_point_arn>\\S+)(?:\\s+(?<acl_required>\\S+))?)?)?$",
+    "sampleLines": [
+        "79a59df900b949e55d96a1e698fbacedfd6e09d98eacf8f8d5218e7cd47ef2be DOC-EXAMPLE-BUCKET [06/Feb/2023:00:00:38 +0000] 192.0.2.3 79a59df900b949e55d96a1e698fbacedfd6e09d98eacf8f8d5218e7cd47ef2be 3E57427F33A59F07 REST.GET.VERSIONING - \"GET /DOC-EXAMPLE-BUCKET?versioning HTTP/1.1\" 200 - 113 - 7 - \"-\" \"S3Console/0.4\" - s9lzHYrFp76ZVxRcpX9+5cl40K2lviPsiXqsTuRGFcc9rGE6m4hY/L8nVHGJVcAlbB1Y2L+yMOQOg= SigV2 ECDHE-RSA-AES128-GCM-SHA256 AuthHeader s3.amazonaws.com TLSv1.2 - -",
+        "owner_canonical_id mybucket [10/Oct/2020:13:55:36 -0700] 1.2.3.4 - 0123456789ABCDEF REST.PUT.OBJECT object/key.txt \"PUT /mybucket/object/key.txt HTTP/1.1\" 200 - 0 1024 35 28 \"-\" \"aws-sdk-go/1.31.0\" -"
+    ],
+    "autoDetect": true,
+    "priority": 10,
+    "description": "Adapted from logstash-plugins/logstash-patterns-core patterns/ecs-v1/aws (Apache-2.0), entry S3_ACCESS_LOG. Inlined %{HTTPDATE}, %{IP}, %{NUMBER}, %{NOTSPACE}, %{QS} macros to plain PCRE2; trailing fields after `agent` were added by AWS in 2019-2022 and are optional here."
+}

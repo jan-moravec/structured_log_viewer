@@ -1,0 +1,11 @@
+{
+    "name": "Juniper NetScreen session log",
+    "pattern": "^(?:<(?<priority>\\d{1,3})>)?(?<timestamp>[A-Z][a-z]{2}\\s+\\d{1,2}\\s+\\d{2}:\\d{2}:\\d{2})\\s+(?<hostname>\\S+):\\s+NetScreen device_id=(?<device_id>\\S+)\\s+\\[(?<facility>[^\\]]+)\\](?<level_tag>[^:]*):\\s+start_time=\"(?<start_time>[^\"]+)\"\\s+duration=(?<duration>\\d+)\\s+policy_id=(?<policy_id>\\d+)\\s+service=(?<service>\\S+)\\s+proto=(?<proto>\\d+)\\s+src\\s*zone=(?<src_zone>\\S+)\\s+dst\\s*zone=(?<dst_zone>\\S+)\\s+action=(?<action>\\S+)\\s+sent=(?<sent>\\d+)\\s+rcvd=(?<rcvd>\\d+)\\s+src=(?<srcip>\\S+)\\s+dst=(?<dstip>\\S+)(?:\\s+src_port=(?<srcport>\\d+))?(?:\\s+dst_port=(?<dstport>\\d+))?(?:\\s+src-xlated.*?)?(?:\\s+session_id=(?<session_id>\\d+))?(?:\\s+reason=(?<reason>.*))?$",
+    "sampleLines": [
+        "<14>Apr 28 04:02:03 fw01: NetScreen device_id=ns5gt [Root]system-notification-00257(traffic): start_time=\"2024-04-28 04:02:01\" duration=2 policy_id=10 service=tcp/port:443 proto=6 src zone=Trust dst zone=Untrust action=Permit sent=1024 rcvd=2048 src=10.0.0.5 dst=1.2.3.4 src_port=54321 dst_port=443 session_id=12345",
+        "Apr 28 04:02:04 fw02: NetScreen device_id=ssg140 [Root]system-warning-00518(traffic): start_time=\"2024-04-28 04:02:03\" duration=1 policy_id=1 service=icmp proto=1 src zone=Untrust dst zone=Trust action=Deny sent=0 rcvd=0 src=1.2.3.4 dst=10.0.0.5 session_id=0 reason=Policy denied"
+    ],
+    "autoDetect": true,
+    "priority": 10,
+    "description": "Adapted from logstash-plugins/logstash-patterns-core patterns/ecs-v1/firewalls (Apache-2.0), entry NETSCREENSESSIONLOG. Inlined SYSLOGTIMESTAMP, NSDEVID, HOSTNAME, NS_DEVID, NS_DURATION, NS_POLICY_ID, NS_PROTO, NS_SERVICE, NS_ACTION, IPORHOST macros to plain PCRE2."
+}

@@ -6,11 +6,14 @@
 #include "loglib/log_file.hpp"
 #include "loglib/log_parser.hpp"
 #include "loglib/parser_options.hpp"
+#include "loglib/parsers/regex_parser.hpp"
+#include "loglib/regex_templates.hpp"
 
 #include <fmt/format.h>
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -51,6 +54,23 @@ ParseResult ParseFile(const std::filesystem::path &file)
     for (int i = 0; i < static_cast<int>(LogFactory::Parser::Count); ++i)
     {
         const auto parserType = static_cast<LogFactory::Parser>(i);
+
+        // `Regex` needs special handling: the factory-built parser
+        // is probe-only (no pinned pattern), so a plain
+        // `ParseFile(*parser, file)` would emit the "empty pattern"
+        // error even after `IsValid` identified the matching
+        // template. Detect the template and build a parser pinned
+        // to its pattern instead.
+        if (parserType == LogFactory::Parser::Regex)
+        {
+            if (const std::optional<RegexTemplate> tmpl = DetectRegexTemplate(file); tmpl.has_value())
+            {
+                const RegexParser parser(tmpl->pattern);
+                return ParseFile(parser, file);
+            }
+            continue;
+        }
+
         const std::unique_ptr<LogParser> parser = LogFactory::Create(parserType);
         if (parser->IsValid(file))
         {
