@@ -5,6 +5,7 @@ cmake_minimum_required(VERSION 3.28)
 add_executable(
     tests
     "src/benchmark_csv.cpp"
+    "src/benchmark_decompression.cpp"
     "src/benchmark_json.cpp"
     "src/benchmark_log_filter.cpp"
     "src/benchmark_logfmt.cpp"
@@ -12,6 +13,7 @@ add_executable(
     "src/benchmark_stream.cpp"
     "src/common.cpp"
     "src/test_csv_parser.cpp"
+    "src/test_decompressing_byte_source.cpp"
     "src/test_enum_dictionary.cpp"
     "src/test_file_line_source.cpp"
     "src/test_json_parser.cpp"
@@ -50,9 +52,12 @@ endif()
 target_include_directories(tests PRIVATE include)
 
 # TBB linked directly here for the concurrent KeyIndex test; loglib keeps it PRIVATE.
+# The compression codecs are linked directly too so the decompression tests can
+# build reference compressed fixtures with the same libraries loglib decodes.
 target_link_libraries(
     tests
-    PRIVATE loglib test_common Catch2::Catch2WithMain project_warnings TBB::tbb
+    PRIVATE loglib test_common Catch2::Catch2WithMain project_warnings TBB::tbb ZLIB::ZLIB BZip2::BZip2 LibLZMA::LibLZMA
+            zstd::libzstd
 )
 
 # `benchmark_json.cpp` calls `GetProcessMemoryInfo` to report peak working

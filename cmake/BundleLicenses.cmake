@@ -92,6 +92,16 @@ function(bundle_third_party_licenses target_name)
         # linked whenever the parser is compiled in, so we always
         # attribute it.
         "pcre2:LICENCE.md:PCRE2 (BSD-3-Clause)"
+        # Compression codecs used by
+        # `library/src/decompressing_byte_source.cpp` for transparent
+        # decompression of `.gz` / `.bz2` / `.xz` / `.zst` in the static
+        # open path. All four are statically linked; their upstream
+        # licenses are permissive (zlib / BSD-like) and require
+        # attribution in redistributed binaries.
+        "zlib:LICENSE:zlib (zlib)"
+        "bzip2:LICENSE:bzip2 (BSD-4-Clause-like)"
+        "xz:COPYING:xz-utils / liblzma (0BSD)"
+        "zstd:LICENSE:zstd (BSD-3-Clause)"
     )
     foreach(spec IN LISTS FETCHED_DEPS)
         string(REPLACE ":" ";" parts "${spec}")

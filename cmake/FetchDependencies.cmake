@@ -12,6 +12,10 @@ option(USE_SYSTEM_TBB "Use system uxlfoundation oneTBB library" OFF)
 option(USE_SYSTEM_ARGPARSE "Use system p-ranav/argparse library" OFF)
 option(USE_SYSTEM_EFSW "Use system SpartanJ/efsw library" OFF)
 option(USE_SYSTEM_PCRE2 "Use system PCRE2 library" OFF)
+option(USE_SYSTEM_ZLIB "Use system zlib library" OFF)
+option(USE_SYSTEM_BZIP2 "Use system bzip2 library" OFF)
+option(USE_SYSTEM_XZ "Use system xz/liblzma library" OFF)
+option(USE_SYSTEM_ZSTD "Use system zstd library" OFF)
 
 if(NOT USE_SYSTEM_DATE)
     FetchContent_Declare(
@@ -333,6 +337,191 @@ if(NOT USE_SYSTEM_ASIO)
     endif()
 else()
     find_package(asio REQUIRED)
+endif()
+
+# Compression codecs used by `loglib::internal::DecompressingByteSource`
+# for transparent decompression of `.gz` / `.bz2` / `.xz` / `.zst` in the
+# static open path. Each codec is linked statically (`BUILD_SHARED_LIBS
+# OFF`) so no runtime DLL is staged next to the executable on Windows.
+# All four are PRIVATE deps of `loglib`; no public header exposes any
+# codec type (all codec-specific state lives inside the .cpp).
+if(NOT USE_SYSTEM_ZLIB)
+    FetchContent_Declare(
+        zlib
+        GIT_REPOSITORY https://github.com/madler/zlib.git
+        GIT_TAG v1.3.1
+        SYSTEM
+        EXCLUDE_FROM_ALL
+    )
+    block()
+        set(ZLIB_BUILD_EXAMPLES OFF)
+        set(BUILD_SHARED_LIBS OFF)
+        set(CMAKE_POLICY_VERSION_MINIMUM 3.28) # silence zlib's older cmake_minimum_required
+        FetchContent_MakeAvailable(zlib)
+    endblock()
+    # zlib exports a `zlibstatic` target and (if BUILD_SHARED_LIBS was
+    # somehow flipped by another dep) a `zlib` shared target too. We
+    # always consume the static one. Normalise to `ZLIB::ZLIB` so the
+    # consumer link line reads the same whether we fetched or found.
+    if(NOT TARGET ZLIB::ZLIB AND TARGET zlibstatic)
+        add_library(ZLIB::ZLIB ALIAS zlibstatic)
+    endif()
+    if(TARGET zlibstatic)
+        if(MSVC)
+            target_compile_options(zlibstatic PRIVATE /w)
+        else()
+            target_compile_options(zlibstatic PRIVATE -w)
+        endif()
+        # zlib's public headers live in the source and build dirs.
+        target_include_directories(
+            zlibstatic INTERFACE $<BUILD_INTERFACE:${zlib_SOURCE_DIR}> $<BUILD_INTERFACE:${zlib_BINARY_DIR}>
+        )
+    endif()
+else()
+    find_package(ZLIB REQUIRED)
+endif()
+
+if(NOT USE_SYSTEM_BZIP2)
+    # Upstream bzip2 is distributed as raw .c sources with a hand-rolled
+    # Makefile — no CMakeLists. We fetch the libarchive mirror (which is
+    # a straight source copy of the sourceware release) and compile the
+    # canonical 7-file library manually into a static target. Same shape
+    # `find_package(BZip2)` produces so the consumer link line matches.
+    FetchContent_Declare(
+        bzip2
+        GIT_REPOSITORY https://github.com/libarchive/bzip2.git
+        GIT_TAG bzip2-1.0.8
+        SYSTEM
+        EXCLUDE_FROM_ALL
+    )
+    FetchContent_MakeAvailable(bzip2)
+
+    # The top-level project() only enables CXX; enable C now so the
+    # bzip2 .c files can be compiled. Idempotent when called twice.
+    enable_language(C)
+
+    add_library(
+        bz2_static STATIC
+        ${bzip2_SOURCE_DIR}/blocksort.c
+        ${bzip2_SOURCE_DIR}/huffman.c
+        ${bzip2_SOURCE_DIR}/crctable.c
+        ${bzip2_SOURCE_DIR}/randtable.c
+        ${bzip2_SOURCE_DIR}/compress.c
+        ${bzip2_SOURCE_DIR}/decompress.c
+        ${bzip2_SOURCE_DIR}/bzlib.c
+    )
+    target_include_directories(bz2_static SYSTEM PUBLIC $<BUILD_INTERFACE:${bzip2_SOURCE_DIR}>)
+    set_target_properties(bz2_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    if(MSVC)
+        target_compile_options(bz2_static PRIVATE /w)
+        # BZ_UNIX is picked automatically on POSIX via bzlib_private.h's
+        # `unix` macro; on Windows we need to disable UNIX quirks.
+        target_compile_definitions(bz2_static PRIVATE _CRT_SECURE_NO_WARNINGS)
+    else()
+        target_compile_options(bz2_static PRIVATE -w)
+    endif()
+
+    if(NOT TARGET BZip2::BZip2)
+        add_library(BZip2::BZip2 ALIAS bz2_static)
+    endif()
+else()
+    find_package(BZip2 REQUIRED)
+endif()
+
+if(NOT USE_SYSTEM_XZ)
+    FetchContent_Declare(
+        xz
+        GIT_REPOSITORY https://github.com/tukaani-project/xz.git
+        GIT_TAG v5.6.3
+        SYSTEM
+        EXCLUDE_FROM_ALL
+    )
+    block()
+        set(BUILD_SHARED_LIBS OFF)
+        set(XZ_TOOL_XZ OFF)
+        set(XZ_TOOL_XZDEC OFF)
+        set(XZ_TOOL_LZMADEC OFF)
+        set(XZ_TOOL_LZMAINFO OFF)
+        set(XZ_TOOL_SCRIPTS OFF)
+        set(XZ_DOC OFF)
+        set(XZ_MICROLZMA_ENCODER OFF)
+        set(XZ_MICROLZMA_DECODER ON)
+        set(XZ_LZIP_DECODER ON)
+        set(CMAKE_POLICY_VERSION_MINIMUM 3.28) # silence xz's older cmake_minimum_required
+        FetchContent_MakeAvailable(xz)
+    endblock()
+    # xz exposes the C library as `liblzma`. Normalise to `LibLZMA::LibLZMA`
+    # so the consumer link line matches the `find_package(LibLZMA)` naming.
+    # xz's CMakeLists doesn't set INTERFACE_INCLUDE_DIRECTORIES for external
+    # consumers — its own build uses `-I` flags baked into add_library — so
+    # we attach the public API dir ourselves.
+    if(TARGET liblzma)
+        target_include_directories(liblzma SYSTEM INTERFACE $<BUILD_INTERFACE:${xz_SOURCE_DIR}/src/liblzma/api>)
+        if(MSVC)
+            target_compile_options(liblzma PRIVATE /w)
+        else()
+            target_compile_options(liblzma PRIVATE -w)
+        endif()
+    endif()
+    if(NOT TARGET LibLZMA::LibLZMA AND TARGET liblzma)
+        add_library(LibLZMA::LibLZMA ALIAS liblzma)
+    endif()
+else()
+    find_package(LibLZMA REQUIRED)
+endif()
+
+if(NOT USE_SYSTEM_ZSTD)
+    FetchContent_Declare(
+        zstd
+        GIT_REPOSITORY https://github.com/facebook/zstd.git
+        GIT_TAG v1.5.6
+        SYSTEM
+        EXCLUDE_FROM_ALL
+        SOURCE_SUBDIR build/cmake
+    )
+    block()
+        set(ZSTD_BUILD_PROGRAMS OFF)
+        set(ZSTD_BUILD_SHARED OFF)
+        set(ZSTD_BUILD_STATIC ON)
+        set(ZSTD_BUILD_TESTS OFF)
+        set(ZSTD_BUILD_CONTRIB OFF)
+        set(ZSTD_MULTITHREAD_SUPPORT OFF)
+        set(ZSTD_LEGACY_SUPPORT OFF)
+        set(BUILD_SHARED_LIBS OFF)
+        set(CMAKE_POLICY_VERSION_MINIMUM 3.28) # silence zstd's older cmake_minimum_required
+        FetchContent_MakeAvailable(zstd)
+    endblock()
+    # Upstream exposes the static library as `libzstd_static`. Alias to
+    # `zstd::libzstd` so the consumer link line matches the pkg-config
+    # target the system find_package produces.
+    if(NOT TARGET zstd::libzstd)
+        if(TARGET libzstd_static)
+            add_library(zstd::libzstd ALIAS libzstd_static)
+        elseif(TARGET zstd_static)
+            add_library(zstd::libzstd ALIAS zstd_static)
+        endif()
+    endif()
+    foreach(_zstd_target libzstd_static zstd_static)
+        if(TARGET ${_zstd_target})
+            if(MSVC)
+                target_compile_options(${_zstd_target} PRIVATE /w)
+            else()
+                target_compile_options(${_zstd_target} PRIVATE -w)
+            endif()
+        endif()
+    endforeach()
+else()
+    find_package(zstd REQUIRED)
+    # zstd's CMake config exports `zstd::libzstd_static` and
+    # `zstd::libzstd_shared` in modern releases; older ones only expose
+    # `zstd::libzstd`. Normalise.
+    if(NOT TARGET zstd::libzstd)
+        if(TARGET zstd::libzstd_static)
+            add_library(zstd::libzstd ALIAS zstd::libzstd_static)
+        elseif(TARGET zstd::libzstd_shared)
+            add_library(zstd::libzstd ALIAS zstd::libzstd_shared)
+        endif()
+    endif()
 endif()
 
 # TLS support for `TcpServerProducer`. Default ON so packaged binaries

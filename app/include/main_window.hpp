@@ -13,7 +13,9 @@
 #include "record_detail_window.hpp"
 #include "row_order_proxy_model.hpp"
 
+#include <loglib/internal/decompressing_byte_source.hpp>
 #include <loglib/log_configuration.hpp>
+#include <loglib/stop_token.hpp>
 #include <loglib/theme.hpp>
 
 // `loglib::EnumDictionary` is referenced via `ResolveEnumDictionary` below;
@@ -21,6 +23,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QAtomicInteger>
 #include <QDockWidget>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -40,6 +43,7 @@
 #include <QVBoxLayout>
 
 #include <array>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -53,6 +57,8 @@ namespace Ui
 class MainWindow;
 }
 class QMenu;
+class QProgressDialog;
+template <typename T> class QFutureWatcher;
 QT_END_NAMESPACE
 
 class SessionHistoryManager;
@@ -699,8 +705,62 @@ private:
     void StartStreamingOpenQueue(QStringList files, OpenMode mode);
 
     /// Pop the next file off `mPendingOpenFiles` and parse it. Open
-    /// errors accumulate in `mPendingOpenErrors`.
+    /// errors accumulate in `mPendingOpenErrors`; decompression
+    /// failures land in `mPendingDecompressionErrors` (drained under
+    /// its own title).
+    ///
+    /// For compressed files the function spawns an async
+    /// `DecompressingByteSource` worker and returns before the
+    /// parse begins; `OnDecompressionFinished` re-enters the
+    /// remainder of the open path.
     void StreamNextPendingFile();
+
+    /// Dispatch an async `DecompressingByteSource` worker for
+    /// @p originalPath after the sniff has decided it is
+    /// compressed. Wires up the progress dialog, poll timer, and
+    /// watcher; the worker runs on the Qt thread pool. Called
+    /// from `StreamNextPendingFile`; the finished slot
+    /// (`OnDecompressionFinished`) picks the flow back up on the
+    /// GUI thread.
+    void BeginAsyncDecompression(const QString &originalPath, loglib::internal::DecompressingByteSource::Codec codec);
+
+    /// Continuation of `StreamNextPendingFile` for compressed
+    /// inputs: takes ownership of the worker-produced
+    /// `DecompressingByteSource`, resumes the parse (or the queue
+    /// drain, on failure) on the GUI thread.
+    void OnDecompressionFinished();
+
+    /// GUI-thread continuation of a successful open (either a
+    /// direct uncompressed file or the effective path emitted by
+    /// `DecompressingByteSource`). Constructs `LogFile`,
+    /// detects format, and hands off to `LogModel::BeginStreaming`
+    /// or `AppendStreaming`. Splits the seam between the direct
+    /// path and the decompression continuation so both surfaces
+    /// share the same downstream logic.
+    ///
+    /// @p originalPath is the user-facing path (what appears in
+    /// window title / status bar / session locators);
+    /// @p effectivePath is the path downstream code should mmap
+    /// and probe (equal to @p originalPath when the file was not
+    /// compressed).
+    /// @p decompressionAnchor keeps a decompressed temp file alive
+    /// for the parse's duration; nullptr for uncompressed opens.
+    void ContinueOpenAfterPrepared(
+        const QString &originalPath,
+        const std::filesystem::path &effectivePath,
+        std::shared_ptr<loglib::internal::DecompressingByteSource> decompressionAnchor
+    );
+
+    /// Show the modal progress dialog + spin up the poll timer for
+    /// the current decompression. Called from `StreamNextPendingFile`
+    /// after the sniff decides the file is compressed and before
+    /// the worker is dispatched.
+    void ShowDecompressionProgress();
+
+    /// Tear down the progress dialog + poll timer created by
+    /// `ShowDecompressionProgress`. Idempotent; safe to call from
+    /// the finished slot and from destructive teardown paths.
+    void TeardownDecompressionProgress();
 
     /// Slot for `LogModel::streamingFinished`. Hoisted out of an
     /// inline lambda so crash-dump frames identify it by name and
@@ -1312,7 +1372,74 @@ private:
     QStringList mPendingOpenFiles;
 
     /// File-open errors collected while draining `mPendingOpenFiles`.
+    /// Drained under the `tr("Error Opening File")` title.
     std::vector<std::string> mPendingOpenErrors;
+
+    /// Decompression-specific errors + user cancels collected while
+    /// draining `mPendingOpenFiles`. Kept separate from
+    /// `mPendingOpenErrors` because it drains under its own title
+    /// (`tr("Error Decompressing File")`); reusing the open-errors
+    /// vector would mislabel the batch.
+    std::vector<std::string> mPendingDecompressionErrors;
+
+    /// QFutureWatcher for the current async decompression. Owns a
+    /// `std::shared_ptr<DecompressingByteSource>`; the shared_ptr
+    /// is captured into the subsequent parse callable so the temp
+    /// file survives for the whole parse. `nullptr` when no
+    /// decompression is in flight.
+    QFutureWatcher<std::shared_ptr<loglib::internal::DecompressingByteSource>> *mDecompressionWatcher = nullptr;
+
+    /// Stop source paired with the current decompression worker.
+    /// `QProgressDialog::canceled` calls `request_stop()`; the
+    /// worker polls `stop_requested()` between chunks. Refreshed
+    /// per-open, so a cancelled operation cannot bleed into the
+    /// next one.
+    loglib::StopSource mDecompressionStopSource;
+
+    /// Progress atomics: worker writes, GUI polls on the
+    /// `mDecompressionPollTimer` cadence. Widened to `qint64` to
+    /// match Qt's atomic contract; the payload never exceeds
+    /// `size_t` in practice.
+    QAtomicInteger<qint64> mDecompressionBytesIn = 0;
+    QAtomicInteger<qint64> mDecompressionTotalBytesIn = 0;
+
+    /// 200 ms cadence timer that pumps the atomics above into the
+    /// progress dialog. Nulled out when no decompression is
+    /// active.
+    QTimer *mDecompressionPollTimer = nullptr;
+
+    /// Modal-per-window progress dialog surfaced while a
+    /// decompression is running. `QPointer` because `deleteLater`
+    /// may run between the finished slot and the parent's
+    /// destructor.
+    QPointer<QProgressDialog> mDecompressionProgressDialog;
+
+    /// The user-facing path of the file currently being
+    /// decompressed. Populated when the worker is dispatched so
+    /// the progress dialog and post-decompression toast can name
+    /// the original filename even after the worker cleared its
+    /// local copy.
+    QString mDecompressionOriginalPath;
+
+    /// The temp path selected by the worker (revealed once the
+    /// worker starts). Left empty until `OnDecompressionFinished`
+    /// pulls it off the shared_ptr.
+    QString mDecompressionTempPathHint;
+
+    /// Wall-clock start of the current decompression. Used only
+    /// for the post-success `statusBar()` toast.
+    std::chrono::steady_clock::time_point mDecompressionStartedAt;
+
+    /// Anchors keeping successfully-produced
+    /// `DecompressingByteSource` instances alive across a static
+    /// session's whole lifetime, so the temp files backing their
+    /// mmap'd `LogFile` handles are only removed after the model
+    /// releases the mmap (mio on Windows fails
+    /// `std::filesystem::remove` while a mapping is open). Cleared
+    /// at every destructive session boundary
+    /// (`StartStreamingOpenQueue` reset, `~MainWindow`,
+    /// `OnStreamingFinished` Failed path).
+    std::vector<std::shared_ptr<loglib::internal::DecompressingByteSource>> mDecompressionAnchors;
 
     /// Streaming session kind; gates UI variants. Set on open,
     /// cleared in `streamingFinished`. Underlying type pinned to
