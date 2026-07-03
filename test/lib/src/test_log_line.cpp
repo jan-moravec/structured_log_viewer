@@ -36,7 +36,10 @@ TEST_CASE("Construct LogLine with valid values and file reference", "[log_line]"
     CHECK(std::holds_alternative<std::monostate>(line.GetValue("key6")));
 
     REQUIRE(line.Source() != nullptr);
-    CHECK(line.Source()->Path() == "test_file.json");
+    // `TestLogFile` resolves the fixture under a per-process scratch dir, so
+    // compare against the fixture's own resolved path rather than the bare
+    // filename literal.
+    CHECK(line.Source()->Path() == testLogFile.GetFilePath());
     CHECK(line.LineId() == 1);
     CHECK(line.Source()->RawLine(line.LineId()) == "efgh");
 
