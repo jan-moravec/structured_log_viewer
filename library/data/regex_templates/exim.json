@@ -1,0 +1,13 @@
+{
+    "name": "Exim mail log",
+    "pattern": "^(?<timestamp>\\d{4}-\\d{2}-\\d{2}\\s+\\d{2}:\\d{2}:\\d{2}(?:\\s+[+\\-]\\d{4})?)\\s+(?:(?<pid>\\[\\d+\\])\\s+)?(?<message_id>[A-Za-z0-9]{6}-[A-Za-z0-9]{6}-[A-Za-z0-9]{2,4})?\\s*(?<flag>(?:<=|=>|->|>>|\\*\\*|==|<>|Completed|SMTP connection from|SMTP connection outbound|no host name found for IP address|no IP address found for host|TLS error|Start queue run|End queue run|cancelled by timeout|temporarily refused connection|H=|U=|F=))?\\s*(?<message>.*)$",
+    "sampleLines": [
+        "2024-04-28 04:02:03 1qK3dV-0001Bp-7y <= sender@example.com H=mail.example.com [192.0.2.1] P=esmtp S=1500 id=<deadbeef@example.com>",
+        "2024-04-28 04:02:04 1qK3dV-0001Bp-7y => recipient@example.org R=dnslookup T=remote_smtp H=mx.example.org [203.0.113.1] X=TLS1.3:ECDHE_RSA_AES_256_GCM_SHA384:256 CV=yes",
+        "2024-04-28 04:02:05 1qK3dV-0001Bp-7y Completed",
+        "2024-04-28 04:02:06 +0000 [12345] H=(badmailer) [198.51.100.5] sender verify defer for <bad@example.com>: temporary problem"
+    ],
+    "autoDetect": true,
+    "priority": 20,
+    "description": "Adapted from logstash-plugins/logstash-patterns-core patterns/ecs-v1/exim (Apache-2.0), entry EXIM_MAINLOG. Inlined %{EXIM_DATE}, %{EXIM_MSGID}, %{EXIM_FLAGS}, %{NOTSPACE}, %{GREEDYDATA} macros to plain PCRE2; the flag tokens are the message-arrival ('<='), delivery ('=>'), additional-address ('->'), local-bounce ('**'), defer ('=='), and frozen ('<>') indicators from Exim's mainlog (see Exim spec chapter 52 'Log Files')."
+}

@@ -1,0 +1,12 @@
+{
+    "name": "Apache error log",
+    "pattern": "^\\[(?<timestamp>[^\\]]+)\\]\\s+\\[(?<level>[^\\]]+)\\](?:\\s+\\[pid\\s+(?<pid>\\d+)(?::tid\\s+\\d+)?\\])?(?:\\s+\\[client\\s+(?<client>[^\\]]+)\\])?\\s+(?<message>.*)$",
+    "sampleLines": [
+        "[Wed Oct 11 14:32:52 2000] [error] [client 127.0.0.1] File does not exist: /var/www/html/foo",
+        "[Tue Apr 19 16:38:38.290122 2011] [ssl:warn] [pid 1234] [client 127.0.0.1:50318] AH02032: log",
+        "[Mon Jan 01 00:00:00.000000 2024] [core:notice] [pid 9999] AH00094: Command line: 'httpd'"
+    ],
+    "autoDetect": true,
+    "priority": 15,
+    "description": "Written from scratch; cross-checked against lnav's src/formats/error_log.json shape (BSD-2-Clause). Handles both the legacy '[time] [level] [client x] msg' and the modern '[time] [module:level] [pid N] [client x] msg' Apache 2.4 error log formats."
+}

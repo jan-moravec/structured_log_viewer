@@ -1,0 +1,13 @@
+{
+    "name": "Java / log4j / SLF4J Logback",
+    "pattern": "^(?<timestamp>\\d{4}-\\d{2}-\\d{2}[T\\s]\\d{2}:\\d{2}:\\d{2}(?:[.,]\\d+)?(?:Z|[+\\-]\\d{2}:?\\d{2})?)\\s+(?<level>TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL|SEVERE)\\s+(?:\\[(?<thread>[^\\]]+)\\]\\s+)?(?:(?<logger>[\\w$.]+(?:\\$\\w+)*)\\s*[-:]\\s+)?(?<message>.*)$",
+    "sampleLines": [
+        "2024-04-28 04:02:03,123 INFO  [main] com.example.App - Application starting",
+        "2024-04-28T04:02:04.456Z WARN [http-nio-8080-exec-1] o.s.web.servlet.PageNotFound - No mapping for GET /favicon.ico",
+        "2024-04-28 04:02:05.789 ERROR [pool-1-thread-3] com.example.Worker$Inner: Task failed after 3 retries",
+        "2024-04-28T04:02:06+02:00 DEBUG Trace evaluated"
+    ],
+    "autoDetect": true,
+    "priority": 20,
+    "description": "Adapted from lnav src/formats/java_log.json (BSD-2-Clause). Matches the Logback / log4j2 / Spring Boot default `%d %-5level [%thread] %logger - %msg` PatternLayout (see Logback 'Layouts' and log4j2 PatternLayout docs). The logger/message separator accepts either `logger - message` (Logback default) or `logger: message` (log4j fused-colon shape); the `\\s*[-:]\\s+` shape is deliberate so the colon-fused case still captures the logger as its own column instead of letting it fold into the message. Severity tokens include SLF4J's TRACE..ERROR plus java.util.logging's SEVERE / WARNING / FATAL."
+}

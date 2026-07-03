@@ -6,7 +6,7 @@ Structured Log Viewer is a Qt 6 desktop application for inspecting structured lo
 
 ## Supported Input Formats
 
-The application reads three structured-log formats out of the box. The format is auto-detected on `File → Open` and persisted with the session, so reopening a saved session reuses the same parser without re-prompting.
+The application reads four structured-log formats out of the box. The format is auto-detected on `File → Open` and persisted with the session, so reopening a saved session reuses the same parser without re-prompting. Auto-detection probes JSON Lines first, then logfmt, then CSV; the regex-template format is tried **last** so the more specific formats always win on logs they understand.
 
 **JSON Lines** (also known as NDJSON / JSOND): one JSON object per line.
 
@@ -30,7 +30,16 @@ timestamp,level,component,message
 2025-01-15T12:34:57.000Z,error,db,"connection refused"
 ```
 
-Bare values are typed: empty becomes null, `true` / `false` become booleans, decimal integers become int / uint, decimals with point or exponent become double, otherwise the value stays a string. Quoted values **stay strings even if the contents look numeric** (so `"42"` does not promote to a number). Repeated keys within one record are last-write-wins.
+**Regex templates** (PCRE2 with named capture groups): one record per line, no header on the wire — the parser receives the **pattern itself** as configuration. Each `(?<Name>...)` group in the pattern becomes a column named `Name` whose value is the matched substring. The application ships a registry of common shapes and you can also supply a custom pattern through the Network Stream dialog.
+
+```log
+Apr 28 04:02:03 host-a systemd: System starting
+Apr 28 04:02:04 host-b CRON[1234]: (root) CMD (test)
+```
+
+Built-in templates ship for **Syslog (RFC3164)**, **Syslog (RFC5424)**, **Apache/nginx Common Log Format**, **Apache/nginx Combined Log Format**, **Apache error log**, and a **Generic `[LEVEL]`** form. The patterns are based on shapes from [lnav](https://github.com/tstack/lnav) (BSD-2-Clause) and [logstash grok patterns](https://github.com/logstash-plugins/logstash-patterns-core) (Apache-2.0). Auto-detection probes every built-in template on the first few non-blank lines and picks the first one that matches enough samples — files that match a **custom** user pattern can only be opened via the Network Stream dialog where the pattern is supplied explicitly.
+
+Bare values are typed: empty becomes null, `true` / `false` become booleans, decimal integers become int / uint, decimals with point or exponent become double, otherwise the value stays a string. Quoted values **stay strings even if the contents look numeric** (so `"42"` does not promote to a number). Repeated keys within one record are last-write-wins. The same typing rules apply to regex captures: a `(?<pid>\d+)` group reads as `uint64`, a `(?<ratio>[-+]?\d*\.\d+)` as `double`, etc.
 
 Empty CSV cells (`a,,c` or trailing missing cells) are omitted from the record rather than stored as null — looking up a missing column still returns null, but the in-memory footprint stays small on wide rows.
 
@@ -57,7 +66,7 @@ In Stream Mode and Network Stream Mode, **Stop** ends the session but keeps the 
 
 You can open a finished log file in two ways:
 
-1. **File → Open…** (`Ctrl+O`) — opens a file picker that auto-detects whether the selected file is a log or a [configuration](#configurations) file, *and* whether a log file is JSON Lines, logfmt, or CSV.
+1. **File → Open…** (`Ctrl+O`) — opens a file picker that auto-detects whether the selected file is a log or a [configuration](#configurations) file, *and* whether a log file is JSON Lines, logfmt, CSV, or one of the built-in [regex templates](#supported-input-formats).
 1. **Drag & drop** one or more files onto the main window.
 
 The file dialog defaults to a filter that lists `*.json`, `*.jsonl`, `*.ndjson`, `*.logfmt`, `*.csv`, `*.log`, and `*.txt`; switch it to **All Files (\*.\*)** to pick anything else (including unsuffixed files). The actual format is decided by content sniffing, not by extension, so the extension only affects what the picker shows — not how the file is parsed. The detected format is recorded on the active session so reopening a saved session keeps the same parser.
@@ -140,7 +149,8 @@ The following are **out of scope** for the current Stream Mode implementation:
 - **stdin / named-pipe sources** — only file tailing is wired up; for network ingestion see [Network Stream Mode](#network-stream-mode-tcp--udp).
 - **Auto-detect "this file is being actively written → open in Stream Mode"** — Stream Mode is always an explicit `File → Open Log Stream…` action.
 - **Per-file or per-session retention overrides** — the retention cap is a single application-wide setting.
-- **Streaming for arbitrary formats** — JSON Lines, logfmt, and CSV are first-class; other formats (ad-hoc text, multi-line records, alternative delimiters) are not yet supported but the seam in `loglib` is format-agnostic so future parsers inherit live tail and network ingestion for free.
+- **Streaming for arbitrary formats** — JSON Lines, logfmt, CSV, and regex templates are first-class; other formats (ad-hoc text, multi-line records, alternative delimiters) are not yet supported but the seam in `loglib` is format-agnostic so future parsers inherit live tail and network ingestion for free.
+- **Multi-line regex matches** — every record must match on a single line. Stack traces and other multi-line payloads surface as one parse error per stray line; coalesce them on the producer side or pre-process the file before opening.
 
 ## Network Stream Mode (TCP / UDP)
 
@@ -151,7 +161,7 @@ Network Stream Mode listens on a local TCP or UDP port and ingests structured lo
 Use **File → Open Network Stream…** (`Ctrl+Shift+L`). The dialog asks for:
 
 - **Protocol** — TCP or UDP.
-- **Format** — JSON Lines, logfmt, or CSV. Network ingestion has no file to sniff, so the parser is selected explicitly here. The choice is persisted with the session. **CSV caveat:** the first inbound line is treated as the schema header. With multiple concurrent TCP clients, whichever client's first line arrives first sets the schema for *every* connected client — coordinate the header across producers (same column order, same names) or restrict CSV mode to a single producer.
+- **Format** — JSON Lines, logfmt, CSV, or **Regex template**. Network ingestion has no file to sniff, so the parser is selected explicitly here. The choice is persisted with the session. **CSV caveat:** the first inbound line is treated as the schema header. With multiple concurrent TCP clients, whichever client's first line arrives first sets the schema for *every* connected client — coordinate the header across producers (same column order, same names) or restrict CSV mode to a single producer. **Regex template:** picking *Regex template* reveals a *Template* dropdown listing every built-in pattern plus *Custom…*; the latter unlocks a free-form *Pattern* editor where you can paste any PCRE2 pattern with named groups. The selected pattern is persisted with the session.
 - **Bind address** — `0.0.0.0` (IPv4 any), `::` (IPv6 dual-stack), `127.0.0.1` / `::1` (loopback only), or a specific interface IP.
 - **Port** — the listening port. `0` requests an OS-assigned ephemeral port (handy for ad-hoc local testing).
 - **Max concurrent clients (TCP)** — hard cap on simultaneous accepted connections (default 16). New connections beyond this are accepted-and-immediately-closed.
@@ -490,7 +500,7 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 
 ### "Failed to parse …" or "No valid log data found"
 
-The selected file is not valid JSON Lines, logfmt, or CSV, or every line failed to parse. Check the error dialog for the first few offending line numbers. If a file is being opened with the wrong parser, make sure the first non-empty line is unambiguously one format — auto-detection requires JSON Lines to start with `{`, logfmt to contain at least one bare `key=` token, and CSV to have a header row with two or more comma-separated cells followed by a data row of the same cell count.
+The selected file is not valid JSON Lines, logfmt, CSV, or any built-in regex template, or every line failed to parse. Check the error dialog for the first few offending line numbers. If a file is being opened with the wrong parser, make sure the first non-empty line is unambiguously one format — auto-detection requires JSON Lines to start with `{`, logfmt to contain at least one bare `key=` token, CSV to have a header row with two or more comma-separated cells followed by a data row of the same cell count, and regex templates to match at least two of the first non-blank lines (and only the built-in registry; custom patterns must be opened via the Network Stream dialog).
 
 ### Timestamps show as raw strings
 

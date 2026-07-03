@@ -50,6 +50,10 @@ set(PROJECT_SOURCES
     include/streaming_control.hpp
     src/network_stream_dialog.cpp
     include/network_stream_dialog.hpp
+    src/regex_template_registry.cpp
+    include/regex_template_registry.hpp
+    src/regex_templates_editor.cpp
+    include/regex_templates_editor.hpp
     src/configuration_diagnostics_dialog.cpp
     include/configuration_diagnostics_dialog.hpp
     src/column_editor.cpp

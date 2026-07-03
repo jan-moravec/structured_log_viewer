@@ -2,6 +2,7 @@
 
 #include "cli_parser.hpp"
 #include "log_warning.hpp"
+#include "regex_template_registry.hpp"
 #include "session_history_manager.hpp"
 #include "single_instance_guard.hpp"
 #include "theme_control.hpp"
@@ -107,6 +108,14 @@ int main(int argc, char *argv[])
     // auto-disconnect), then the theme controller, then
     // `QApplication`.
     ThemeControl themeControl;
+
+    // Same lifetime story for the regex-template registry.
+    // Its constructor scans `<AppDataLocation>/regex_templates/`
+    // and hands the user slice to `loglib::SetExtraRegexTemplates`
+    // so the auto-detect probe sees user templates immediately.
+    // One registry per process (not per window) so peer windows
+    // share the same merged catalog and library injection.
+    RegexTemplateRegistry regexTemplateRegistry;
     // Best-effort cleanup of the legacy `appearance/*` keys from
     // the pre-theme build. The `contains()` gate keeps the
     // post-migration steady state free of `QSettings::sync` cost.
@@ -170,7 +179,7 @@ int main(int argc, char *argv[])
     // result feeds a status-bar hint.
     const SessionHistoryManager::CleanupReport cleanupReport = historyManager.CleanupOrphanFiles();
 
-    MainWindow w(&themeControl, &historyManager, nullptr);
+    MainWindow w(&themeControl, &historyManager, &regexTemplateRegistry, nullptr);
     w.show();
     if (cleanupReport.capped)
     {
@@ -254,7 +263,7 @@ int main(int argc, char *argv[])
                     }
                     continue;
                 }
-                auto *peer = new MainWindow(&themeControl, &historyManager, nullptr);
+                auto *peer = new MainWindow(&themeControl, &historyManager, &regexTemplateRegistry, nullptr);
                 peer->setAttribute(Qt::WA_DeleteOnClose);
                 peer->show();
                 peer->RestoreLastSessionFromPath(peerPath);
@@ -332,8 +341,10 @@ int main(int argc, char *argv[])
         &instanceGuard,
         &SingleInstanceGuard::openWindowRequested,
         &a,
-        [&themeControl, &historyManager, &appendPeer](const QStringList &files, int truncatedCount) {
-            auto *child = new MainWindow(&themeControl, &historyManager, nullptr);
+        [&themeControl, &historyManager, &regexTemplateRegistry, &appendPeer](
+            const QStringList &files, int truncatedCount
+        ) {
+            auto *child = new MainWindow(&themeControl, &historyManager, &regexTemplateRegistry, nullptr);
             child->setAttribute(Qt::WA_DeleteOnClose);
             child->show();
             child->raise();

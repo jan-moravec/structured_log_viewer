@@ -12,6 +12,7 @@ class QLineEdit;
 class QRadioButton;
 class QSpinBox;
 class QGroupBox;
+class RegexTemplateRegistry;
 
 /// Modal dialog for `MainWindow::OpenNetworkStream`. Lets the user
 /// pick a protocol (TCP or UDP), a bind address + port, and (TCP-only,
@@ -44,6 +45,9 @@ public:
         Json,
         Logfmt,
         Csv,
+        /// PCRE2 regex. Requires picking a built-in template from
+        /// the registry or providing a custom `(?<Name>...)` pattern.
+        Regex,
     };
 
     /// Resolved configuration; populated only after the dialog is
@@ -52,6 +56,10 @@ public:
     {
         Protocol protocol = Protocol::Tcp;
         Format format = Format::Json;
+        /// PCRE2 pattern; only populated when `format == Regex`.
+        /// Either the selected template's pattern or a free-text
+        /// user-supplied one.
+        QString regexPattern;
         QString bindAddress;
         uint16_t port = 0;
         size_t maxConcurrentClients = 16; // TCP-only
@@ -63,7 +71,12 @@ public:
         bool tlsRequireClientCertificate = false;
     };
 
-    explicit NetworkStreamDialog(QWidget *parent = nullptr);
+    /// @p registry feeds the regex template picker (built-ins ∪
+    /// user templates), snapshotted at construction — later
+    /// registry changes don't update an open dialog. Pass nullptr
+    /// (tests and minimal-fixture entry points) to fall back to
+    /// the library's built-in catalog only.
+    explicit NetworkStreamDialog(RegexTemplateRegistry *registry = nullptr, QWidget *parent = nullptr);
 
     /// Snapshot of the user's choices. Only meaningful after `exec()`
     /// returned `Accepted`.
@@ -72,6 +85,8 @@ public:
 private slots:
     void OnProtocolChanged();
     void OnTlsToggled();
+    void OnFormatChanged();
+    void OnRegexTemplateChanged();
     void BrowseCertChain();
     void BrowsePrivateKey();
     void BrowseCaBundle();
@@ -84,6 +99,16 @@ private:
     QRadioButton *mTcpRadio = nullptr;
     QRadioButton *mUdpRadio = nullptr;
     QComboBox *mFormat = nullptr;
+    /// Regex template picker; visible only when `Format::Regex` is
+    /// selected. Combobox userData holds the template's display
+    /// `name` (stable across rebuilds); a sentinel "Custom..."
+    /// entry with empty userData enables `mRegexPattern` below.
+    /// Template CRUD lives in `RegexTemplatesEditor`
+    /// (`Settings -> Regex templates...`); this dialog is
+    /// read-only against the catalog.
+    QGroupBox *mRegexGroup = nullptr;
+    QComboBox *mRegexTemplate = nullptr;
+    QLineEdit *mRegexPattern = nullptr;
     QLineEdit *mBindAddress = nullptr;
     QSpinBox *mPort = nullptr;
     QSpinBox *mMaxConcurrentClients = nullptr;
@@ -101,4 +126,10 @@ private:
     /// before forcing the checkbox off for UDP, then reads it back when
     /// returning to TCP.
     bool mTcpTlsEnableRemembered = false;
+
+    /// Non-owning. The app's regex template registry (built-ins +
+    /// user templates), constructed once in `main()` and outliving
+    /// this dialog. Null in tests; the dialog then falls back to
+    /// the library's built-in catalog only.
+    RegexTemplateRegistry *mRegistry = nullptr;
 };

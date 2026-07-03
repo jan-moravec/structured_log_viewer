@@ -1,0 +1,13 @@
+{
+    "name": "Python logging (conventional)",
+    "pattern": "^(?<timestamp>\\d{4}-\\d{2}-\\d{2}\\s+\\d{2}:\\d{2}:\\d{2}(?:[.,]\\d+)?)\\s+-\\s+(?<logger>[\\w.]+)\\s+-\\s+(?<level>DEBUG|INFO|WARNING|ERROR|CRITICAL|NOTSET)\\s+-\\s+(?<message>.*)$",
+    "sampleLines": [
+        "2024-04-28 04:02:03,123 - myapp.module - INFO - Server started on port 8080",
+        "2024-04-28 04:02:04.456 - requests.connectionpool - WARNING - Retrying request",
+        "2024-04-28 04:02:05,789 - myapp - ERROR - Failed to connect to backend: ConnectionRefusedError",
+        "2024-04-28 04:02:06 - myapp.handlers - DEBUG - Processing request /v1/health"
+    ],
+    "autoDetect": false,
+    "priority": 100,
+    "description": "Stock example for Python's stdlib `logging` module using the conventional `%(asctime)s - %(name)s - %(levelname)s - %(message)s` format string. Python has no portable default (each app calls `logging.basicConfig` with its own format), so this ships as a user-template example rather than a built-in. Copy this file into <AppDataLocation>/regex_templates/ to enable; set `autoDetect` to true if you want it in the probe loop."
+}

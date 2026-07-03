@@ -1,0 +1,12 @@
+{
+    "name": "Squid native access log",
+    "pattern": "^(?<timestamp>\\d+\\.\\d+)\\s+(?<duration>\\d+)\\s+(?<clientip>\\S+)\\s+(?<result>[A-Z_]+)/(?<status>\\d{3})\\s+(?<bytes>\\d+)\\s+(?<verb>\\S+)\\s+(?<url>\\S+)\\s+(?<rfc931>\\S+)\\s+(?<hierarchy>[A-Z_]+)/(?<server>\\S+)\\s+(?<mimetype>\\S+)$",
+    "sampleLines": [
+        "1714276923.123    234 10.0.0.5 TCP_MISS/200 1024 GET http://example.com/ - DIRECT/93.184.216.34 text/html",
+        "1714276924.456     45 10.0.0.6 TCP_HIT/200 512 GET http://example.com/style.css - NONE/- text/css",
+        "1714276925.789   1234 192.168.1.7 TCP_REFRESH_MODIFIED/304 350 GET http://example.com/api - DIRECT/93.184.216.34 -"
+    ],
+    "autoDetect": true,
+    "priority": 10,
+    "description": "Adapted from logstash-plugins/logstash-patterns-core patterns/ecs-v1/squid (Apache-2.0), entry SQUID3. The native access.log format is a fixed nine-field whitespace-separated record (see Squid docs 'Squid Log Files'); we inline %{NUMBER}, %{INT}, %{IP}, %{WORD}, %{NOTSPACE} macros to plain PCRE2."
+}

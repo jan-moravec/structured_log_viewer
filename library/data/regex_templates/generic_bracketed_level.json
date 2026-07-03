@@ -1,0 +1,12 @@
+{
+    "name": "Generic bracketed level",
+    "pattern": "^\\[(?<Level>\\w+)\\]\\s+(?<Timestamp>\\S+)\\s+(?<Thread>\\S+)\\s+(?<Message>.*)$",
+    "sampleLines": [
+        "[INFO] 2022-02-18T15:37:10.354 0xBF32 System starting",
+        "[WARNING] 2022-02-19T15:37:13.427 0xBF32 Not in UTC timezone",
+        "[ERROR] 2024-01-01T00:00:00.000 main Connection refused"
+    ],
+    "autoDetect": true,
+    "priority": 30,
+    "description": "Written from scratch from qlogexplorer's README example (https://github.com/rafaelfassi/qlogexplorer) of a generic '[LEVEL] timestamp thread message' shape, translated to PCRE2. Kept last because its anchor is loose enough to catch ad-hoc app logs."
+}

@@ -1,5 +1,20 @@
 cmake_minimum_required(VERSION 3.28)
 
+# Generate `regex_templates_embedded.cpp` from every JSON file under
+# `data/regex_templates/` at configure time. The generated TU plays
+# the role of a Qt resource file for the library layer: it lets
+# `loglib::BuiltinRegexTemplates()` ship the same one-file-per-template
+# data shape themes use, without dragging Qt into the library. The
+# generator (`cmake/EmbedRegexTemplates.cmake`) registers each JSON
+# as a configure-step dependency, so editing a template
+# automatically re-runs the embed step.
+include(${CMAKE_SOURCE_DIR}/cmake/EmbedRegexTemplates.cmake)
+set(REGEX_TEMPLATES_EMBEDDED_SRC ${CMAKE_CURRENT_BINARY_DIR}/regex_templates_embedded.cpp)
+embed_regex_templates(
+    INPUT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/data/regex_templates
+    OUTPUT_FILE ${REGEX_TEMPLATES_EMBEDDED_SRC}
+)
+
 add_library(
     loglib
     STATIC
@@ -33,6 +48,10 @@ add_library(
     src/parsers/csv_parser.cpp
     src/parsers/json_parser.cpp
     src/parsers/logfmt_parser.cpp
+    src/parsers/regex_parser.cpp
+    src/regex_templates.cpp
+    ${REGEX_TEMPLATES_EMBEDDED_SRC}
+    src/clang_tidy_stubs/regex_template_glaze_meta.cpp
     src/theme.cpp
     src/clang_tidy_stubs/theme_glaze_meta.cpp
 )
@@ -49,7 +68,10 @@ target_link_libraries(
     # no efsw type appears in any public loglib header, so it stays PRIVATE.
     # asio is used by Tcp/UdpServerProducer; no Asio type leaks through the public
     # loglib headers (pimpl), so it stays PRIVATE.
-    PRIVATE TBB::tbb efsw asio::asio
+    # PCRE2 backs the regex-template parser (RegexParser). All PCRE2 includes
+    # are confined to `library/src/parsers/regex_parser.cpp`; no `pcre2_*`
+    # type appears in any public loglib header. PRIVATE link.
+    PRIVATE TBB::tbb efsw asio::asio PCRE2::pcre2-8
 )
 
 # Optional TLS support for `TcpServerProducer`. When enabled, define

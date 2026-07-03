@@ -20,6 +20,9 @@ public:
     /// `themeChanged` signal). Production wires it through
     /// `MainWindow`; tests can pass `nullptr` for a dialog that
     /// renders without theme group behaviour.
+    ///
+    /// Regex template CRUD is not here; it lives in
+    /// `RegexTemplatesEditor` (`Settings -> Regex templates...`).
     explicit PreferencesEditor(ThemeControl *theme = nullptr, QWidget *parent = nullptr);
 
     void UpdateFields();

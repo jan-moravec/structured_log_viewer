@@ -1,0 +1,13 @@
+{
+    "name": "nginx error log",
+    "pattern": "^(?<timestamp>\\d{4}/\\d{2}/\\d{2}\\s+\\d{2}:\\d{2}:\\d{2})\\s+\\[(?<level>debug|info|notice|warn|warning|error|crit|critical|alert|emerg|emergency)\\]\\s+(?<pid>\\d+)#(?<tid>\\d+):\\s+(?:\\*(?<cid>\\d+)\\s+)?(?<message>.*?)(?:,\\s+client:\\s+(?<clientip>[^,]+))?(?:,\\s+server:\\s+(?<server>[^,]*))?(?:,\\s+request:\\s+\"(?<request>[^\"]*)\")?(?:,\\s+upstream:\\s+\"(?<upstream>[^\"]*)\")?(?:,\\s+host:\\s+\"(?<host>[^\"]*)\")?(?:,\\s+referrer:\\s+\"(?<referrer>[^\"]*)\")?$",
+    "sampleLines": [
+        "2024/04/28 04:02:03 [error] 12345#67890: *42 open() \"/usr/share/nginx/html/missing.html\" failed (2: No such file or directory), client: 10.0.0.5, server: example.com, request: \"GET /missing.html HTTP/1.1\", host: \"example.com\"",
+        "2024/04/28 04:02:04 [warn] 12345#67890: *43 upstream server temporarily disabled while connecting to upstream, client: 1.2.3.4, server: api.example.com, request: \"POST /v1/orders HTTP/2.0\", upstream: \"http://10.0.0.10:8080/v1/orders\", host: \"api.example.com\", referrer: \"https://example.com/checkout\"",
+        "2024/04/28 04:02:05 [notice] 12345#0: signal process started",
+        "2024/04/28 04:02:06 [info] 12345#67890: *44 client closed connection while waiting for request, client: 10.0.0.6, server: 0.0.0.0:443"
+    ],
+    "autoDetect": true,
+    "priority": 10,
+    "description": "Written from scratch against nginx OSS sources (BSD-2-Clause). The format is produced by `ngx_log_error_core` in src/core/ngx_log.c: 'YYYY/MM/DD HH:MM:SS [level] PID#TID: *CID message[, client: IP[, server: HOST[, request: \"...\"[, upstream: \"...\"[, host: \"...\"[, referrer: \"...\"]]]]]]'. Severity tokens come from nginx's err_levels[] array."
+}

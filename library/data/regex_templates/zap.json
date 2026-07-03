@@ -1,0 +1,13 @@
+{
+    "name": "Uber Zap (console)",
+    "pattern": "^(?<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+\\-]\\d{2}:?\\d{2}))\\s+(?<level>DEBUG|INFO|WARN|ERROR|DPANIC|PANIC|FATAL)\\s+(?:(?<caller>[^\\s\"]+:\\d+)\\s+)?(?<message>.*)$",
+    "sampleLines": [
+        "2024-04-28T04:02:03.123Z INFO main.go:42 server started {\"port\": 8080}",
+        "2024-04-28T04:02:04.456-04:00 WARN service/foo.go:99 retrying request {\"attempt\": 3}",
+        "2024-04-28T04:02:05Z ERROR Failed to connect to backend",
+        "2024-04-28T04:02:06.789Z DEBUG handler.go:17 request received {\"method\": \"GET\", \"path\": \"/v1/health\"}"
+    ],
+    "autoDetect": true,
+    "priority": 10,
+    "description": "Adapted from lnav src/formats/zap_console_log.json (BSD-2-Clause). Matches the default `zapcore.NewConsoleEncoder` output: ISO-8601 timestamp + capitalised level + optional caller + message + trailing structured fields. See go.uber.org/zap NewProductionConfig for the encoder defaults."
+}
