@@ -10,6 +10,7 @@
 #include <date/tz.h>
 
 #include <cassert>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <random>
@@ -22,6 +23,42 @@ using namespace loglib;
 
 namespace
 {
+
+// Per-process scratch directory under `std::filesystem::temp_directory_path()`.
+// Bare relative fixture names (e.g. `"test_file.json"`,
+// `"regex_templates_<template>.log"`) resolve inside this directory so ad-hoc
+// runs of a test binary from the workspace root can't leak stray files into
+// the source tree. The random suffix keeps parallel `ctest -j` runs (and
+// concurrent test binaries) from colliding on a fixed path; the directory
+// itself is not removed at process exit because individual fixtures already
+// remove their own files in their dtors and the OS reclaims the empty dir
+// on its usual temp-cleanup cadence.
+const std::filesystem::path &ScratchDir()
+{
+    static const std::filesystem::path SCRATCH_DIR = [] {
+        std::random_device rd;
+        std::mt19937_64 gen(rd());
+        const std::uint64_t suffix = gen();
+        auto path = std::filesystem::temp_directory_path() / ("loglib_tests_" + std::to_string(suffix));
+        std::error_code ec;
+        std::filesystem::create_directories(path, ec);
+        return path;
+    }();
+    return SCRATCH_DIR;
+}
+
+// Resolve a caller-supplied path to a concrete on-disk location. Absolute
+// paths pass through unchanged (a small number of tests deliberately point
+// at fixed OS-temp locations); everything else lands inside `ScratchDir()`.
+std::string ResolveScratchPath(std::string filePath)
+{
+    std::filesystem::path fsPath(filePath);
+    if (fsPath.is_absolute())
+    {
+        return filePath;
+    }
+    return (ScratchDir() / fsPath).string();
+}
 
 // Open @p fsPath for binary writing (no '\n' translation, so offsets match
 // `LogFile`), emit the format header if non-empty, and return the stream.
@@ -41,15 +78,16 @@ std::ofstream OpenStructuredFile(
 
 // Resolve the on-disk fixture name: explicit `filePath` wins, otherwise
 // `test<format-extension>` (so different-format fixtures don't collide).
+// Both branches then land inside `ScratchDir()` via `ResolveScratchPath`.
 std::string ResolveStructuredFilePath(std::string filePath, const test_common::LogFormat &format)
 {
     if (!filePath.empty())
     {
-        return filePath;
+        return ResolveScratchPath(std::move(filePath));
     }
     std::string derived = "test";
     derived.append(format.suggestedExtension);
-    return derived;
+    return ResolveScratchPath(std::move(derived));
 }
 
 } // namespace
@@ -133,7 +171,7 @@ const std::vector<test_common::LogRecord> &TestStructuredLogFile::Records() cons
 }
 
 TestLogConfiguration::TestLogConfiguration(std::string filePath)
-    : mFilePath(std::move(filePath)), mFsPath(mFilePath)
+    : mFilePath(ResolveScratchPath(std::move(filePath))), mFsPath(mFilePath)
 {
     const std::ofstream file(mFsPath);
     REQUIRE(file.is_open());
@@ -169,7 +207,7 @@ const std::string &TestLogFile::GetFilePath() const
 }
 
 TestLogFile::TestLogFile(std::string filePath)
-    : mFilePath(std::move(filePath)), mFsPath(mFilePath)
+    : mFilePath(ResolveScratchPath(std::move(filePath))), mFsPath(mFilePath)
 {
     const std::ofstream file(mFsPath, std::ios::binary);
     REQUIRE(file.is_open());
