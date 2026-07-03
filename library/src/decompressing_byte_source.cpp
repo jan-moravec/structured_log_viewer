@@ -389,7 +389,15 @@ void DecodeBzip2(
                 }
                 ret = BZ_OK;
             }
-        } while (strm.avail_out == 0 && ret != BZ_STREAM_END);
+            // Loop until *all* input is consumed for this chunk, not
+            // just until the output buffer stops filling. Matches the
+            // gzip decoder above: the outer `in.read` overwrites
+            // `inBuf`, so exiting with `avail_in > 0` would leave
+            // bzip2 pointing at soon-to-be-clobbered bytes. bzip2's
+            // API in practice consumes all input when output has
+            // room, so this is defensive -- it is still the correct
+            // invariant to hold.
+        } while (strm.avail_in > 0 && ret != BZ_STREAM_END);
 
         consumed += static_cast<std::size_t>(gotSigned);
         ObservePoll(consumed, totalBytesIn, progress, stopToken);
@@ -600,22 +608,29 @@ DecompressingByteSource::DecompressingByteSource(
 
     // Compressed: stream-decode into a temp file. Any exception from
     // the codec must delete the partial temp file before propagating.
+    // Note: `mOwnsTempFile` is deliberately deferred until
+    // `OpenExclusive` succeeds -- before that point no file exists
+    // on disk, so an early throw (from opening the *input* stream)
+    // must NOT trigger `ReleaseTempFile()`. Setting the flag inside
+    // the try scope keeps the "owns the file" invariant tight.
     const std::filesystem::path tempPath = MakeTempPath();
     mEffectivePath = tempPath;
-    mOwnsTempFile = true;
 
     std::ifstream inStream(mDisplayPath, std::ios::binary);
     if (!inStream.is_open())
     {
         // Undo the temp path assignment before throwing.
         mEffectivePath = mDisplayPath;
-        mOwnsTempFile = false;
         throw std::runtime_error(fmt::format("Failed to open '{}' for decompression", mDisplayPath.string()));
     }
 
     try
     {
         FileHandle outHandle = OpenExclusive(tempPath);
+        // Only now does a file exist on disk that we're responsible
+        // for cleaning up. Any exception below unwinds through the
+        // catch block, which calls ReleaseTempFile().
+        mOwnsTempFile = true;
 
         switch (mCodec)
         {

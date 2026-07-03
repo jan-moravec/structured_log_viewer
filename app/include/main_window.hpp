@@ -762,6 +762,22 @@ private:
     /// the finished slot and from destructive teardown paths.
     void TeardownDecompressionProgress();
 
+    /// Cancel + drain any in-flight decompression worker and detach
+    /// its future from `mDecompressionWatcher` so the queued
+    /// `finished` signal cannot fire against a subsequently
+    /// re-armed session. Called at every destructive session
+    /// boundary that also drops `mDecompressionAnchors` -- without
+    /// this, an orphaned worker's `OnDecompressionFinished` would
+    /// splice the old file into the new session (see the branch
+    /// review notes).
+    ///
+    /// Idempotent: no-op when no watcher exists or when the future
+    /// is already finished + detached. Also clears
+    /// `mDecompressionOriginalPath` and any accumulated
+    /// `mPendingDecompressionErrors` so a partial cancel doesn't
+    /// leak error text into the next session's summary.
+    void CancelInFlightDecompression();
+
     /// Slot for `LogModel::streamingFinished`. Hoisted out of an
     /// inline lambda so crash-dump frames identify it by name and
     /// tests can exercise the post-streaming reset logic directly.
@@ -1375,11 +1391,13 @@ private:
     /// Drained under the `tr("Error Opening File")` title.
     std::vector<std::string> mPendingOpenErrors;
 
-    /// Decompression-specific errors + user cancels collected while
-    /// draining `mPendingOpenFiles`. Kept separate from
-    /// `mPendingOpenErrors` because it drains under its own title
+    /// Decompression-specific errors collected while draining
+    /// `mPendingOpenFiles`. Kept separate from `mPendingOpenErrors`
+    /// because it drains under its own title
     /// (`tr("Error Decompressing File")`); reusing the open-errors
-    /// vector would mislabel the batch.
+    /// vector would mislabel the batch. User cancels do **not**
+    /// land here -- they surface as a status-bar toast (see
+    /// `OnDecompressionFinished`).
     std::vector<std::string> mPendingDecompressionErrors;
 
     /// QFutureWatcher for the current async decompression. Owns a
@@ -1425,6 +1443,14 @@ private:
     /// worker starts). Left empty until `OnDecompressionFinished`
     /// pulls it off the shared_ptr.
     QString mDecompressionTempPathHint;
+
+    /// Human-readable codec name (`"gzip"` / `"bzip2"` / `"xz"` /
+    /// `"zstd"`) for the file currently being decompressed. Set by
+    /// `BeginAsyncDecompression` up-front (the sniff already
+    /// identified the codec on the GUI thread) so the poll-timer
+    /// lambda can render it in the progress label without
+    /// re-reading the shared_ptr.
+    QString mDecompressionCodecName;
 
     /// Wall-clock start of the current decompression. Used only
     /// for the post-success `statusBar()` toast.
