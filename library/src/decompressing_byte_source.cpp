@@ -17,6 +17,15 @@
 #include <utility>
 #include <vector>
 
+// POSIX-only headers for the exclusive-create temp file path. Kept
+// out of the Windows build so MSVC (which lacks `<fcntl.h>`'s POSIX
+// constants + `<sys/stat.h>`) doesn't need to fake them.
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 // Codec headers. All four codecs are linked PRIVATE to loglib; their
 // types must not leak out of this TU. Everything below the include
 // block stays inside `loglib::internal` and does not touch the public
@@ -194,29 +203,72 @@ struct FileHandle
     }
 };
 
+// Open @p path for writing, failing (rather than truncating) if a
+// file already exists at that path. Also, on POSIX, restricts
+// permissions to owner read/write (0600) so decompressed log
+// contents are not readable by other local users. Both properties
+// close symlink-attack / shared-tmpdir race windows that the raw
+// `fopen("wb")` used previously did not.
+//
+// Windows: MSVC's fopen family accepts the C11 `x` mode letter --
+// combined with `w` it means "create new file; fail if it already
+// exists". `N` keeps the underlying HANDLE non-inheritable so a
+// child process spawned during a long decompression can't
+// accidentally observe our temp fd. The path is passed through
+// `_wfopen_s` so long paths and non-ASCII characters survive.
+//
+// POSIX: `open(O_WRONLY | O_CREAT | O_EXCL, 0600)` is the canonical
+// safe-tempfile idiom; the exclusive-create is enforced by the
+// kernel (also on network filesystems that support the flag),
+// which is stronger than the userspace random-name check that
+// `MakeTempPath` performs. `O_CLOEXEC` matches the Windows `N`
+// no-inherit intent. `fdopen(fd, "wb")` layers a FILE* over the
+// fd so the rest of the decompression pipeline is unchanged.
 [[nodiscard]] FileHandle OpenExclusive(const std::filesystem::path &path)
 {
 #ifdef _WIN32
     std::FILE *raw = nullptr;
-    // "wbN" -> write, binary, don't inherit. `_wfopen_s` handles wide paths.
-    const errno_t err = ::_wfopen_s(&raw, path.native().c_str(), L"wbN");
+    // "wbxN" -> write, binary, exclusive create (C11 `x`), no-inherit.
+    // `_wfopen_s` handles wide paths.
+    const errno_t err = ::_wfopen_s(&raw, path.native().c_str(), L"wbxN");
     if (err != 0 || raw == nullptr)
     {
         throw std::runtime_error(
             fmt::format("Failed to create temp file '{}': errno {}", path.string(), err)
         );
     }
+    return FileHandle(raw);
 #else
-    std::FILE *raw = std::fopen(path.string().c_str(), "wb");
-    if (raw == nullptr)
+    // `O_CLOEXEC` is POSIX.1-2008; every platform we support (glibc,
+    // musl, Darwin, BSD) has it. Guard just in case some minimal
+    // platform lacks the macro.
+    int flags = O_WRONLY | O_CREAT | O_EXCL;
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+    const int fd = ::open(path.string().c_str(), flags, S_IRUSR | S_IWUSR);
+    if (fd < 0)
     {
         const int savedErrno = errno;
         throw std::runtime_error(
             fmt::format("Failed to create temp file '{}': errno {}", path.string(), savedErrno)
         );
     }
-#endif
+    std::FILE *raw = ::fdopen(fd, "wb");
+    if (raw == nullptr)
+    {
+        const int savedErrno = errno;
+        // `fdopen` failure means we own the fd + the just-created
+        // file; both need cleanup or we leak them.
+        ::close(fd);
+        std::error_code ignoreEc;
+        std::filesystem::remove(path, ignoreEc);
+        throw std::runtime_error(
+            fmt::format("Failed to fdopen temp file '{}': errno {}", path.string(), savedErrno)
+        );
+    }
     return FileHandle(raw);
+#endif
 }
 
 void WriteAll(FileHandle &out, const void *data, std::size_t bytes, const std::filesystem::path &tempPath)
@@ -317,6 +369,14 @@ void DecodeGzip(
         // to consume (`avail_in > 0`), which lets a single chunk
         // straddle a concatenated-member boundary and lets highly
         // compressible members drain even after their input is gone.
+        //
+        // The extra `ObservePoll` inside the loop bounds cancel
+        // latency by ONE `inflate` call (~one 64 KiB output write),
+        // not by the whole chunk drain -- highly compressible input
+        // (e.g. long runs of the same byte) can expand a 64 KiB
+        // compressed chunk into many MB of output, so polling only
+        // per-read leaves cancels stuck for seconds. Matches DecodeXz
+        // and DecodeZstd's inner-loop polling.
         do
         {
             if (ret == Z_STREAM_END)
@@ -337,6 +397,7 @@ void DecodeGzip(
                 }
                 ret = Z_OK;
             }
+            ObservePoll(consumed, totalBytesIn, progress, stopToken);
             strm.next_out = outBuf.data();
             strm.avail_out = static_cast<uInt>(outBuf.size());
             // Use Z_NO_FLUSH so concatenated members work uniformly:
@@ -432,6 +493,12 @@ void DecodeBzip2(
         // Drain buffered output (`avail_out == 0`) and remaining input
         // (`avail_in > 0`) so a member boundary landing mid-buffer or
         // exactly at the chunk edge still feeds the next member.
+        //
+        // Poll cadence: see DecodeGzip's matching comment.
+        // `BZ2_bzDecompress` produces at most `outBuf.size()` bytes
+        // per call, so the extra poll here caps cancel latency at
+        // one bzip2 decode iteration regardless of how much output
+        // a single input chunk expands into.
         do
         {
             if (ret == BZ_STREAM_END)
@@ -450,6 +517,7 @@ void DecodeBzip2(
                 }
                 ret = BZ_OK;
             }
+            ObservePoll(consumed, totalBytesIn, progress, stopToken);
             strm.next_out = outBuf.data();
             strm.avail_out = static_cast<unsigned>(outBuf.size());
             ret = ::BZ2_bzDecompress(&strm);
@@ -533,8 +601,19 @@ void DecodeXz(
                 action = LZMA_FINISH;
             }
             consumed += static_cast<std::size_t>(gotSigned);
-            ObservePoll(consumed, totalBytesIn, progress, stopToken);
         }
+
+        // Poll the stop token + fire progress on EVERY iteration,
+        // not just fresh reads. `lzma_code` can spend a long time
+        // draining a single 64 KiB input chunk into potentially
+        // many megabytes of decompressed output (highly-compressible
+        // input like repeating text, or a well-compressed member
+        // whose output straddles many output buffers). Without a
+        // poll here, cancel latency scales with the decompressed
+        // output size instead of the compressed input chunk size.
+        // Matches the ObservePoll cadence used in DecodeZstd's
+        // outer loop for the same reason.
+        ObservePoll(consumed, totalBytesIn, progress, stopToken);
 
         strm.next_out = outBuf.data();
         strm.avail_out = outBuf.size();
@@ -598,15 +677,19 @@ void DecodeZstd(
         }
 
         consumed += static_cast<std::size_t>(gotSigned);
-        // Poll BEFORE the inner drain so cancel latency matches the
-        // gzip / bzip2 codecs (bounded by one 64 KiB chunk read, not
-        // by the drain of one 64 KiB input into potentially many
-        // megabytes of decompressed output).
-        ObservePoll(consumed, totalBytesIn, progress, stopToken);
 
         ZSTD_inBuffer input{inBuf.data(), static_cast<std::size_t>(gotSigned), 0};
         while (input.pos < input.size)
         {
+            // Poll on every ZSTD_decompressStream call, not just per
+            // read. A highly-compressible zstd frame can spend
+            // multiple iterations expanding a 64 KiB compressed chunk
+            // into much more decompressed output; polling per-read
+            // would leave cancels stuck for the whole drain. Bounds
+            // cancel latency at one decompressStream call. Matches
+            // DecodeGzip / DecodeBzip2 / DecodeXz's inner-loop
+            // polling cadence.
+            ObservePoll(consumed, totalBytesIn, progress, stopToken);
             ZSTD_outBuffer output{outBuf.data(), outBuf.size(), 0};
             const std::size_t result = ::ZSTD_decompressStream(dctx, &output, &input);
             if (::ZSTD_isError(result) != 0U)

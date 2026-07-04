@@ -171,6 +171,17 @@ size_t LogFile::OwnedStringsMemoryBytes() const noexcept
     return mOwnedStrings.capacity();
 }
 
+void LogFile::AttachLifetimeAnchor(std::shared_ptr<void> anchor) noexcept
+{
+    // Swap-in: any previously-attached anchor's dtor runs *now*
+    // (after the assignment returns), not on the caller's stack.
+    // That's fine for the decompression use case -- callers only
+    // ever attach once per LogFile lifetime. Documented as
+    // "newest wins" in the header so anyone chaining multiple
+    // anchors isn't surprised.
+    mLifetimeAnchor = std::move(anchor);
+}
+
 void LogFile::AppendLineOffsets(const std::vector<uint64_t> &offsets)
 {
 #ifndef NDEBUG

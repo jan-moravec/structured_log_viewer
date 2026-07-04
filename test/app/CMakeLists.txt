@@ -20,7 +20,14 @@ qt_add_executable(apptest src/main_window_test.cpp ${RESOURCES})
 # `test_common` provides Tcp/UdpLogClient used by the network-stream
 # open-path tests. Qt::Test stays first so generated MOC integrates
 # normally; logapp pulls in the GUI under test.
-target_link_libraries(apptest PRIVATE Qt6::Test logapp test_common)
+#
+# ZLIB::ZLIB is linked so the transparent-decompression regression
+# tests can compress a fixture in-process (deterministic byte-for-byte
+# output, no dependency on a system `gzip` binary). Only gzip is
+# needed at the test surface: the other three codecs are already
+# exercised by `test_lib_decompressing_byte_source`, and the app-side
+# tests focus on the MainWindow orchestration, which is codec-agnostic.
+target_link_libraries(apptest PRIVATE Qt6::Test logapp test_common ZLIB::ZLIB)
 
 target_include_directories(apptest PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
 

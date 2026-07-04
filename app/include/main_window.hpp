@@ -424,6 +424,15 @@ public:
     {
         JumpToNewestRow();
     }
+
+    /// Test-only accessor for the in-flight decompression flag.
+    /// Lets append-during-decompression regression tests confirm
+    /// their timing precondition (worker armed but finished slot
+    /// not yet delivered) without racing on wall-clock sleeps.
+    [[nodiscard]] bool IsDecompressionInFlightForTest() const noexcept
+    {
+        return mDecompressionInFlight;
+    }
 #endif
 
 protected:
@@ -766,10 +775,11 @@ private:
     /// its future from `mDecompressionWatcher` so the queued
     /// `finished` signal cannot fire against a subsequently
     /// re-armed session. Called at every destructive session
-    /// boundary that also drops `mDecompressionAnchors` -- without
-    /// this, an orphaned worker's `OnDecompressionFinished` would
-    /// splice the old file into the new session (see the branch
-    /// review notes).
+    /// boundary -- without this, an orphaned worker's
+    /// `OnDecompressionFinished` would splice the old file into the
+    /// new session (see the branch review notes). Anchor cleanup
+    /// happens automatically when the model releases each
+    /// FileLineSource (via `LogFile::AttachLifetimeAnchor`).
     ///
     /// Idempotent: no-op when no watcher exists or when the future
     /// is already finished + detached. Also clears
@@ -1474,16 +1484,19 @@ private:
     /// for the post-success `statusBar()` toast.
     std::chrono::steady_clock::time_point mDecompressionStartedAt;
 
-    /// Anchors keeping successfully-produced
-    /// `DecompressingByteSource` instances alive across a static
-    /// session's whole lifetime, so the temp files backing their
-    /// mmap'd `LogFile` handles are only removed after the model
-    /// releases the mmap (mio on Windows fails
-    /// `std::filesystem::remove` while a mapping is open). Cleared
-    /// at every destructive session boundary
-    /// (`StartStreamingOpenQueue` reset, `~MainWindow`,
-    /// `OnStreamingFinished` Failed path).
-    std::vector<std::shared_ptr<loglib::internal::DecompressingByteSource>> mDecompressionAnchors;
+    // NOTE (removed member `mDecompressionAnchors`): the session-
+    // scoped vector of shared `DecompressingByteSource` anchors is
+    // gone. Each anchor now attaches to the specific `LogFile` it
+    // decompressed via `LogFile::AttachLifetimeAnchor`, so
+    // destruction order is deterministic on a per-file basis:
+    // when the model releases the FileLineSource -> LogFile, the
+    // mmap unmaps first (member-destruction order inside LogFile),
+    // then the anchor's dtor unlinks the temp file. This removes
+    // the review-flagged failure mode where a
+    // `mDecompressionAnchors.clear()` at a destructive boundary
+    // could unlink temp files that were still backing rows in the
+    // model (e.g. after a Failed streaming result on an appended
+    // N-th file while the first N-1 files' rows were still live).
 
     /// Streaming session kind; gates UI variants. Set on open,
     /// cleared in `streamingFinished`. Underlying type pinned to

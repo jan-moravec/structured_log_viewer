@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -64,8 +65,33 @@ public:
     /// Heap bytes owned by `mOwnedStrings` (capacity).
     size_t OwnedStringsMemoryBytes() const noexcept;
 
+    /// Attach an arbitrary RAII object whose destructor will run
+    /// **after** this `LogFile`'s mmap is unmapped. The intended use
+    /// case is transparent decompression: the caller (`MainWindow`)
+    /// creates a `DecompressingByteSource` that stages a temp file,
+    /// then hands that shared_ptr in here. When the model drops the
+    /// last reference to this `LogFile`, the mmap unmap runs first
+    /// (member destruction order), then the anchor's dtor unlinks
+    /// the temp file. That ordering matters on Windows where
+    /// `std::filesystem::remove` fails while a mapping is open, and
+    /// on POSIX where a stale mmap would silently outlive the file.
+    ///
+    /// Multiple calls chain: the newest anchor replaces the
+    /// previous one, so callers who need to keep several objects
+    /// alive should compose them (e.g. via a lambda capture list
+    /// or a helper struct) before attaching.
+    void AttachLifetimeAnchor(std::shared_ptr<void> anchor) noexcept;
+
 private:
     std::filesystem::path mPath;
+
+    /// Post-mmap RAII anchor; see `AttachLifetimeAnchor` for the
+    /// destruction-order contract. Declared **before** `mMmap` so
+    /// C++'s reverse-declaration destruction runs `mMmap`'s dtor
+    /// first (unmap), then this anchor's (unlink temp file). Do
+    /// not reorder without re-reading the doc comment above.
+    std::shared_ptr<void> mLifetimeAnchor;
+
     mio::mmap_source mMmap;
 
     /// Byte offsets of every line boundary plus a one-past-the-last sentinel.

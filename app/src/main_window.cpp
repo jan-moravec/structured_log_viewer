@@ -1541,21 +1541,21 @@ MainWindow::~MainWindow()
     // `finished` signal can't fire against a half-destructed
     // MainWindow.
     CancelInFlightDecompression();
-    // Explicitly drop the model's mmap BEFORE releasing the
-    // anchors so the temp file is safe to unlink on Windows
-    // (mio's `std::filesystem::remove` fails while a mapping is
-    // open). `~LogModel` would run later via member-destruction
-    // order, but by then the anchors have already tried and
-    // silently-failed to remove the temp file, leaking it into
-    // `%TEMP%`. The `SessionSwitchScope` suppresses the
-    // synchronous `streamingFinished(Cancelled)` slot so it
-    // doesn't run against a half-destructed MainWindow.
+    // Explicitly drop the model's mmap now (via
+    // `mModel->Reset()`) so the decompression temp files are safe
+    // to unlink: each `DecompressingByteSource` anchor is attached
+    // to its `LogFile`, and `LogFile`'s member-destruction order
+    // guarantees the mmap unmap runs before the anchor's dtor
+    // deletes the temp file. Doing this here (rather than relying
+    // on `~LogModel`'s implicit member-destruction) also lets the
+    // `SessionSwitchScope` suppress the synchronous
+    // `streamingFinished(Cancelled)` slot so it doesn't run against
+    // a half-destructed MainWindow.
     if (mModel != nullptr)
     {
         const SessionSwitchScope destructorGuard(*this);
         mModel->Reset();
     }
-    mDecompressionAnchors.clear();
 
     // Sever the snapshot windows' `destroyed -> remove` hooks before
     // our members go away. Without this, the inherited `~QWidget`
@@ -2124,15 +2124,14 @@ void MainWindow::NewSession()
     mFirstStreamingBatchSeen = false;
     mSourceWaiting = false;
     // Cancel any in-flight decompression from the outgoing session
-    // BEFORE releasing the anchors -- otherwise the worker's
-    // `finished` slot would resurface with the OLD original path
-    // and splice the file into the fresh session. Also clears the
-    // progress dialog + error bucket.
+    // -- otherwise the worker's `finished` slot would resurface
+    // with the OLD original path and splice the file into the
+    // fresh session. Also clears the progress dialog + error
+    // bucket. Per-file anchor cleanup happens automatically when
+    // `mModel->Reset()` above dropped each FileLineSource ->
+    // LogFile (whose attached anchor's dtor then unlinks the temp
+    // file in mmap-safe order).
     CancelInFlightDecompression();
-    // `mModel->Reset()` above dropped the mmap, so decompression
-    // temp files backing the outgoing session's rows can be
-    // deleted safely now.
-    mDecompressionAnchors.clear();
     // The configuration that requested the deferred sort is gone.
     mPendingApplySortFromConfig = false;
     // Drop the pinned uuid + open-windows membership so the next
@@ -2388,25 +2387,39 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
         mPendingApplySortFromConfig = false;
         DetachAutoSaveUuid();
         // Cancel any in-flight decompression from the outgoing
-        // session BEFORE releasing anchors -- otherwise its
-        // `finished` slot would fire after the new open has been
-        // armed and splice the old file into the new session
-        // (either `BeginStreaming` if the new open is uncompressed
-        // + fast, or `AppendStreaming` if a new session already
-        // started). Also drains the progress dialog + error bucket.
+        // session -- otherwise its `finished` slot would fire
+        // after the new open has been armed and splice the old
+        // file into the new session (either `BeginStreaming` if
+        // the new open is uncompressed + fast, or `AppendStreaming`
+        // if a new session already started). Also drains the
+        // progress dialog + error bucket. Per-file anchor cleanup
+        // happens automatically: `mModel->Reset()` above dropped
+        // each FileLineSource -> LogFile, so the attached anchor's
+        // dtor already unlinked the temp file in mmap-safe order.
         CancelInFlightDecompression();
-        // Any decompression from the outgoing session's temp files
-        // is now orphaned: `mModel->Reset()` above dropped the
-        // mmap, so it's safe to release the anchors and delete
-        // the temp files.
-        mDecompressionAnchors.clear();
     }
-    else if (mModel->IsStreamingActive())
+    else if (mModel->IsStreamingActive() || mDecompressionInFlight)
     {
         // Append onto an in-flight static session: queue and let
         // the existing `streamingFinished` -> `StreamNextPendingFile`
         // chain drain it. Starting another worker here would assert
         // in `LogModel::AppendStreaming`.
+        //
+        // The `mDecompressionInFlight` half of the OR guards the
+        // window between `BeginAsyncDecompression` (which flips the
+        // flag on) and the first `BeginStreaming` inside
+        // `ContinueOpenAfterPrepared` (which flips `IsStreamingActive`
+        // on). Without it, an Append that lands mid-decompression on
+        // an empty model would fall through to the "replace queue
+        // + `StreamNextPendingFile`" path below and start a *second*
+        // in-flight parse -- either racing to `BeginStreaming` (row
+        // loss when the decompression finishes and resets the model)
+        // or tripping the `!mStreamingWatcher->isRunning()` assertion
+        // in `LogModel::AppendStreaming` (double-parse). Queueing
+        // instead lets the existing pipeline drain the compressed
+        // file first, arm the session, and pick up these files via
+        // the same `OnStreamingFinished` -> `StreamNextPendingFile`
+        // chain that handles the multi-file uncompressed case.
         mPendingOpenFiles.append(std::move(files));
         return;
     }
@@ -2484,7 +2497,22 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
     if (result == StreamingResult::Success && !mPendingOpenFiles.isEmpty())
     {
         StreamNextPendingFile();
-        if (mModel->IsStreamingActive())
+        // `IsStreamingActive()` covers the uncompressed fast path
+        // (where `StreamNextPendingFile` synchronously called
+        // `AppendStreaming`). The `mDecompressionInFlight` half is
+        // the mirror of the guard in `StartStreamingOpenQueue` --
+        // for a compressed next-file, `StreamNextPendingFile`
+        // dispatches the async decompression worker and returns
+        // without starting a parse. Without checking
+        // `mDecompressionInFlight` here we'd fall through to the
+        // session teardown below (setting `mSessionMode = Idle`,
+        // re-enabling the configuration UI, and possibly
+        // auto-saving an incomplete session), then when
+        // `OnDecompressionFinished` fires `ContinueOpenAfterPrepared`
+        // would see `!IsSessionActive()` and take the
+        // row-clearing `BeginStreaming` path -- discarding
+        // every row parsed by the queue's previous files.
+        if (mModel->IsStreamingActive() || mDecompressionInFlight)
         {
             return;
         }
@@ -2561,11 +2589,18 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
         // pending-files queue is likely being drained on error and
         // an in-flight worker would otherwise inject into the
         // teardown that follows.
+        //
+        // Per-file anchor lifetime is intentionally NOT touched
+        // here: each anchor is attached to its LogFile via
+        // `AttachLifetimeAnchor` and will be released the moment
+        // the model drops that FileLineSource (which happens in
+        // the natural sequence -- typically at the next
+        // destructive session boundary). Attempting a session-
+        // wide clear here would risk unlinking temp files that
+        // still back mmap'd rows from previously-successful
+        // appends in the same session, which is the review-flagged
+        // failure mode B3 is about.
         CancelInFlightDecompression();
-        // Failed session -> nothing left to read from the temp
-        // files, so drop the anchors now. Success / Cancelled
-        // keep them alive because the mmap is still in the model.
-        mDecompressionAnchors.clear();
     }
 
     // Apply the deferred sort before the auto-save below so the
@@ -2676,24 +2711,29 @@ void MainWindow::ContinueOpenAfterPrepared(
         {
             mPendingOpenErrors.push_back(msg);
         }
-        // The `shared_ptr` parameter goes out of scope on return,
-        // which is the last reference held anywhere (we never
-        // pushed it into `mDecompressionAnchors`). That releases
-        // the `DecompressingByteSource`, which deletes the temp
-        // file via its dtor.
+        // `decompressionAnchor` (the shared_ptr parameter) goes out
+        // of scope on return, which is the last reference held
+        // anywhere -- we never handed it off to the LogFile below.
+        // That releases the `DecompressingByteSource`, which deletes
+        // the temp file via its dtor.
         StreamNextPendingFile();
         return;
     }
 
-    // From here on the flow matches the pre-decompression path
-    // exactly. The only two divergences are (a) parser format
-    // detection uses `effectivePath` (temp file contents drive the
-    // sniff, matching what the parser will actually see), and (b)
-    // the anchor is stashed so the temp file survives until the
-    // whole session is torn down.
+    // Bind the decompression anchor's lifetime to this specific
+    // LogFile instead of a session-scoped vector. When the model
+    // eventually drops the FileLineSource -> LogFile, the mmap
+    // dtor runs first (member-destruction order inside LogFile),
+    // then the anchor's dtor unlinks the temp file. That's the
+    // Windows-safe order (mio's `filesystem::remove` fails while a
+    // mapping is open) and avoids the review-flagged failure mode
+    // where a session-scoped `.clear()` on the failed-N-th open
+    // could yank temp files out from under the first N-1 mmap'd
+    // LogFiles that are still live in the model. See the
+    // `AttachLifetimeAnchor` doc comment for the ordering contract.
     if (decompressionAnchor)
     {
-        mDecompressionAnchors.push_back(decompressionAnchor);
+        logFile->AttachLifetimeAnchor(std::move(decompressionAnchor));
     }
 
     auto cfg = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
@@ -2880,6 +2920,18 @@ void MainWindow::BeginAsyncDecompression(const QString &originalPath, loglib::in
 
 void MainWindow::ShowDecompressionProgress()
 {
+    // Suppress the dialog entirely under the test flag. Even though
+    // `minimumDuration=500ms` hides the dialog for small fixtures,
+    // any headless test that opens a genuinely large compressed
+    // file would see the modal appear and hijack the event loop,
+    // which is exactly what `mSuppressDialogsForTest` exists to
+    // avoid (matches the treatment of `ShowDroppedFiltersDialog`,
+    // the recents / restore prompts, etc.). Progress is still
+    // tracked in the atomics; the toast at completion still fires.
+    if (mSuppressDialogsForTest)
+    {
+        return;
+    }
     // Progress dialog: window-modal (blocks *this* window, not the
     // whole app) so the user can still switch to the app's other
     // windows during a multi-minute decompression. Deferred show
@@ -2932,7 +2984,19 @@ void MainWindow::ShowDecompressionProgress()
             {
                 const int pct = static_cast<int>((100 * bytesIn) / total);
                 mDecompressionProgressDialog->setValue(std::min(pct, 100));
-                labelText = tr("%1\n%2 / %3 read")
+                // Compressed bytes only -- the worker reports the
+                // *input* it has consumed, not the decompressed
+                // output. The distinction matters when the user
+                // sees "12 MiB / 500 MiB" on a .gz that expands
+                // 100x: without "compressed" in the label they
+                // reasonably expect that's the decompressed size,
+                // then are surprised when the on-disk staged temp
+                // file is much larger. Cheap textual fix; adding
+                // a second "decompressed:" line was considered but
+                // deferred because we'd have to plumb the output
+                // atomic through DecompressingByteSource just for
+                // the label.
+                labelText = tr("%1\n%2 / %3 compressed bytes read")
                                 .arg(header,
                                      HumanBytes(static_cast<std::size_t>(bytesIn)),
                                      HumanBytes(static_cast<std::size_t>(total)));
@@ -3138,9 +3202,12 @@ void MainWindow::OnDecompressionFinished()
         dbs ? dbs->EffectivePath() : std::filesystem::path(mDecompressionOriginalPath.toStdString());
 
     // Hand off to the shared post-preparation continuation. The
-    // shared_ptr keeps the temp file alive; `ContinueOpenAfterPrepared`
-    // stashes it into `mDecompressionAnchors` for the duration of the
-    // session so mio's mmap holds up on Windows.
+    // shared_ptr keeps the temp file alive across the parse
+    // hand-off; `ContinueOpenAfterPrepared` attaches it to the
+    // LogFile via `AttachLifetimeAnchor`, so the temp file survives
+    // for exactly as long as the LogFile's mmap does (and gets
+    // unlinked immediately after the mmap unmaps, in mmap-safe
+    // destruction order).
     ContinueOpenAfterPrepared(mDecompressionOriginalPath, effectivePath, std::move(dbs));
 }
 
@@ -3228,15 +3295,15 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
         mParseErrorsDock->ResetSessionState();
     }
     mStreamingErrorsCut = 0;
-    // Session boundary: cancel any in-flight decompression BEFORE
-    // releasing the anchors -- otherwise the worker's `finished`
-    // slot would fire after this switch and splice the outgoing
-    // static file into the new live-tail session. Matches the guard
-    // ordering used at every other destructive boundary.
+    // Session boundary: cancel any in-flight decompression --
+    // otherwise the worker's `finished` slot would fire after this
+    // switch and splice the outgoing static file into the new
+    // live-tail session. Matches the guard ordering used at every
+    // other destructive boundary. Per-file anchor cleanup happens
+    // automatically: `mModel->Reset()` above dropped each
+    // FileLineSource -> LogFile, and each attached anchor's dtor
+    // already unlinked its temp file in mmap-safe order.
     CancelInFlightDecompression();
-    // `mModel->Reset()` above dropped the mmap, so the outgoing
-    // session's temp files are no longer referenced by any live mmap.
-    mDecompressionAnchors.clear();
     // Live-tail is transient and not auto-saved; leaving the prior
     // static session's uuid pinned would let closeEvent's
     // `RemoveOpenWindowUuid` drop that session from the multi-
@@ -3372,15 +3439,15 @@ void MainWindow::OpenNetworkStream()
         mParseErrorsDock->ResetSessionState();
     }
     mStreamingErrorsCut = 0;
-    // Session boundary: cancel any in-flight decompression BEFORE
-    // releasing the anchors -- otherwise the worker's `finished`
-    // slot would fire after this switch and splice the outgoing
-    // static file into the new network-stream session. Matches the
-    // guard ordering used at every other destructive boundary.
+    // Session boundary: cancel any in-flight decompression --
+    // otherwise the worker's `finished` slot would fire after this
+    // switch and splice the outgoing static file into the new
+    // network-stream session. Matches the guard ordering used at
+    // every other destructive boundary. Per-file anchor cleanup
+    // happens automatically: `mModel->Reset()` above dropped each
+    // FileLineSource -> LogFile, and each attached anchor's dtor
+    // already unlinked its temp file in mmap-safe order.
     CancelInFlightDecompression();
-    // `mModel->Reset()` above dropped the mmap, so the outgoing
-    // session's temp files are no longer referenced by any live mmap.
-    mDecompressionAnchors.clear();
     DetachAutoSaveUuid();
 
     mStreamingFileName = QString::fromStdString(displayName);
@@ -5606,14 +5673,14 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
             mParseErrorsDock->ResetSessionState();
         }
         mStreamingErrorsCut = 0;
-        // Session boundary: cancel any in-flight decompression
-        // BEFORE releasing anchors so the worker's `finished` slot
-        // can't fire against the freshly-loaded configuration and
-        // splice the old file back into the model.
+        // Session boundary: cancel any in-flight decompression so
+        // the worker's `finished` slot can't fire against the
+        // freshly-loaded configuration and splice the old file
+        // back into the model. Per-file anchor cleanup happens
+        // automatically: `mModel->Reset()` above dropped each
+        // FileLineSource -> LogFile, and each attached anchor's
+        // dtor already unlinked its temp file in mmap-safe order.
         CancelInFlightDecompression();
-        // Reset drops the mmap; safe to release decompressed
-        // temp files backing the previous session.
-        mDecompressionAnchors.clear();
         mModel->ConfigurationManager().SetConfiguration(std::move(parsed));
         // `SetConfiguration` does not emit a model signal; the
         // reset re-initialises the header section count and the
