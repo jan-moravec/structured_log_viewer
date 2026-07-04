@@ -258,8 +258,12 @@ void DecodeGzip(
     std::array<Bytef, kChunkSize> outBuf{};
 
     std::size_t consumed = 0;
+    // `ret` persists across read-chunk iterations: a member can end
+    // exactly when `avail_in` hits 0 (member boundary aligned with the
+    // 64 KiB read chunk), so the reset for the *next* concatenated
+    // member is deferred to the iteration that reads fresh input.
     int ret = Z_OK;
-    do
+    for (;;)
     {
         in.read(reinterpret_cast<char *>(inBuf.data()), static_cast<std::streamsize>(inBuf.size()));
         const auto gotSigned = in.gcount();
@@ -267,12 +271,44 @@ void DecodeGzip(
         {
             throw std::runtime_error(fmt::format("Failed to read from '{}'", sourcePath.string()));
         }
+        const bool eof = in.eof() || gotSigned == 0;
         strm.next_in = inBuf.data();
         strm.avail_in = static_cast<uInt>(gotSigned);
-        const bool eof = in.eof() || gotSigned == 0;
+        consumed += static_cast<std::size_t>(gotSigned);
+        ObservePoll(consumed, totalBytesIn, progress, stopToken);
 
+        // A pure-EOF read (0 bytes) has nothing to decode; the final
+        // validity check after the loop catches truncation.
+        if (gotSigned == 0)
+        {
+            break;
+        }
+
+        // Drain this chunk. The loop keeps calling inflate while there
+        // is buffered output to flush (`avail_out == 0`) or input left
+        // to consume (`avail_in > 0`), which lets a single chunk
+        // straddle a concatenated-member boundary and lets highly
+        // compressible members drain even after their input is gone.
         do
         {
+            if (ret == Z_STREAM_END)
+            {
+                if (strm.avail_in == 0)
+                {
+                    // Member finished exactly at the chunk edge; wait
+                    // for the next read to learn if another follows.
+                    break;
+                }
+                // Bytes remain after a member end -> concatenated
+                // member. Reset before decoding them.
+                if (::inflateReset(&strm) != Z_OK)
+                {
+                    throw std::runtime_error(
+                        fmt::format("zlib inflateReset failed on '{}' at input byte {}", sourcePath.string(), consumed)
+                    );
+                }
+                ret = Z_OK;
+            }
             strm.next_out = outBuf.data();
             strm.avail_out = static_cast<uInt>(outBuf.size());
             // Use Z_NO_FLUSH so concatenated members work uniformly:
@@ -294,29 +330,21 @@ void DecodeGzip(
             const std::size_t produced = outBuf.size() - strm.avail_out;
             WriteAll(out, outBuf.data(), produced, tempPath);
             decompressedSize += produced;
-            if (ret == Z_STREAM_END && strm.avail_in > 0)
-            {
-                // Concatenated member: reset and continue.
-                if (::inflateReset(&strm) != Z_OK)
-                {
-                    throw std::runtime_error(
-                        fmt::format("zlib inflateReset failed on '{}' at input byte {}", sourcePath.string(), consumed)
-                    );
-                }
-                ret = Z_OK;
-            }
-        } while (strm.avail_in > 0 && ret != Z_STREAM_END);
+        } while (strm.avail_out == 0 || strm.avail_in > 0);
 
-        consumed += static_cast<std::size_t>(gotSigned);
-        ObservePoll(consumed, totalBytesIn, progress, stopToken);
-
-        if (eof && ret != Z_STREAM_END)
+        if (eof)
         {
-            throw std::runtime_error(
-                fmt::format("Unexpected EOF in gzip stream '{}' at input byte {}", sourcePath.string(), consumed)
-            );
+            break;
         }
-    } while (ret != Z_STREAM_END);
+    }
+
+    // Reaching real EOF without a clean member end means truncation.
+    if (ret != Z_STREAM_END)
+    {
+        throw std::runtime_error(
+            fmt::format("Unexpected EOF in gzip stream '{}' at input byte {}", sourcePath.string(), consumed)
+        );
+    }
 }
 
 // --- bzip2 -------------------------------------------------------------
@@ -350,8 +378,11 @@ void DecodeBzip2(
     std::array<char, kChunkSize> outBuf{};
 
     std::size_t consumed = 0;
+    // See `DecodeGzip`: `ret` persists across read-chunk iterations so
+    // a member that ends exactly at the chunk edge defers its reset to
+    // the iteration that reads the next member's bytes.
     int ret = BZ_OK;
-    do
+    for (;;)
     {
         in.read(inBuf.data(), static_cast<std::streamsize>(inBuf.size()));
         const auto gotSigned = in.gcount();
@@ -362,9 +393,35 @@ void DecodeBzip2(
         const bool eof = in.eof() || gotSigned == 0;
         strm.next_in = inBuf.data();
         strm.avail_in = static_cast<unsigned>(gotSigned);
+        consumed += static_cast<std::size_t>(gotSigned);
+        ObservePoll(consumed, totalBytesIn, progress, stopToken);
 
+        if (gotSigned == 0)
+        {
+            break;
+        }
+
+        // Drain buffered output (`avail_out == 0`) and remaining input
+        // (`avail_in > 0`) so a member boundary landing mid-buffer or
+        // exactly at the chunk edge still feeds the next member.
         do
         {
+            if (ret == BZ_STREAM_END)
+            {
+                if (strm.avail_in == 0)
+                {
+                    break;
+                }
+                // Concatenated bz2 stream: end + re-init for the next
+                // member before decoding the remaining bytes.
+                if (::BZ2_bzDecompressEnd(&strm) != BZ_OK || ::BZ2_bzDecompressInit(&strm, 0, 0) != BZ_OK)
+                {
+                    throw std::runtime_error(
+                        fmt::format("bzip2 reset failed on '{}' at input byte {}", sourcePath.string(), consumed)
+                    );
+                }
+                ret = BZ_OK;
+            }
             strm.next_out = outBuf.data();
             strm.avail_out = static_cast<unsigned>(outBuf.size());
             ret = ::BZ2_bzDecompress(&strm);
@@ -377,38 +434,20 @@ void DecodeBzip2(
             const std::size_t produced = outBuf.size() - strm.avail_out;
             WriteAll(out, outBuf.data(), produced, tempPath);
             decompressedSize += produced;
-            if (ret == BZ_STREAM_END && strm.avail_in > 0)
-            {
-                // Concatenated bz2 stream: reset and continue.
-                if (::BZ2_bzDecompressEnd(&strm) != BZ_OK ||
-                    ::BZ2_bzDecompressInit(&strm, 0, 0) != BZ_OK)
-                {
-                    throw std::runtime_error(
-                        fmt::format("bzip2 reset failed on '{}' at input byte {}", sourcePath.string(), consumed)
-                    );
-                }
-                ret = BZ_OK;
-            }
-            // Loop until *all* input is consumed for this chunk, not
-            // just until the output buffer stops filling. Matches the
-            // gzip decoder above: the outer `in.read` overwrites
-            // `inBuf`, so exiting with `avail_in > 0` would leave
-            // bzip2 pointing at soon-to-be-clobbered bytes. bzip2's
-            // API in practice consumes all input when output has
-            // room, so this is defensive -- it is still the correct
-            // invariant to hold.
-        } while (strm.avail_in > 0 && ret != BZ_STREAM_END);
+        } while (strm.avail_out == 0 || strm.avail_in > 0);
 
-        consumed += static_cast<std::size_t>(gotSigned);
-        ObservePoll(consumed, totalBytesIn, progress, stopToken);
-
-        if (eof && ret != BZ_STREAM_END)
+        if (eof)
         {
-            throw std::runtime_error(
-                fmt::format("Unexpected EOF in bzip2 stream '{}' at input byte {}", sourcePath.string(), consumed)
-            );
+            break;
         }
-    } while (ret != BZ_STREAM_END);
+    }
+
+    if (ret != BZ_STREAM_END)
+    {
+        throw std::runtime_error(
+            fmt::format("Unexpected EOF in bzip2 stream '{}' at input byte {}", sourcePath.string(), consumed)
+        );
+    }
 }
 
 // --- xz / lzma ---------------------------------------------------------

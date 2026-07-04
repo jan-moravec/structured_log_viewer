@@ -3199,8 +3199,14 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
         mParseErrorsDock->ResetSessionState();
     }
     mStreamingErrorsCut = 0;
-    // Session boundary: the outgoing session's temp files are no
-    // longer referenced by any live mmap.
+    // Session boundary: cancel any in-flight decompression BEFORE
+    // releasing the anchors -- otherwise the worker's `finished`
+    // slot would fire after this switch and splice the outgoing
+    // static file into the new live-tail session. Matches the guard
+    // ordering used at every other destructive boundary.
+    CancelInFlightDecompression();
+    // `mModel->Reset()` above dropped the mmap, so the outgoing
+    // session's temp files are no longer referenced by any live mmap.
     mDecompressionAnchors.clear();
     // Live-tail is transient and not auto-saved; leaving the prior
     // static session's uuid pinned would let closeEvent's
@@ -3337,8 +3343,14 @@ void MainWindow::OpenNetworkStream()
         mParseErrorsDock->ResetSessionState();
     }
     mStreamingErrorsCut = 0;
-    // Session boundary: the outgoing session's temp files are no
-    // longer referenced by any live mmap.
+    // Session boundary: cancel any in-flight decompression BEFORE
+    // releasing the anchors -- otherwise the worker's `finished`
+    // slot would fire after this switch and splice the outgoing
+    // static file into the new network-stream session. Matches the
+    // guard ordering used at every other destructive boundary.
+    CancelInFlightDecompression();
+    // `mModel->Reset()` above dropped the mmap, so the outgoing
+    // session's temp files are no longer referenced by any live mmap.
     mDecompressionAnchors.clear();
     DetachAutoSaveUuid();
 

@@ -302,6 +302,55 @@ TEST_CASE("DecompressingByteSource: multi-member gzip stream", "[DecompressingBy
     CHECK(ReadFileContents(dbs.EffectivePath()) == first + second);
 }
 
+// Large multi-member streams: each member is big enough that the
+// decoder's 64 KiB read/output chunking straddles member boundaries,
+// so this exercises the concatenation reset *and* the pending-output
+// drain paths (a single compressed chunk can span the end of one
+// member and the start of the next, and a member's decompressed output
+// spans many output buffers). The tiny multi-member test above stays in
+// a single chunk and would not catch a boundary regression.
+TEST_CASE("DecompressingByteSource: large multi-member gzip stream", "[DecompressingByteSource]")
+{
+    const std::string first = SampleContent(200 * 1024);
+    const std::string second = SampleContent(150 * 1024);
+    const std::string third = SampleContent(300 * 1024);
+    std::vector<std::uint8_t> combined = CompressGzip(first);
+    for (const auto &member : {second, third})
+    {
+        const auto part = CompressGzip(member);
+        combined.insert(combined.end(), part.begin(), part.end());
+    }
+
+    const TempBinaryFile fixture(".log.gz");
+    fixture.WriteBytes(combined);
+
+    DecompressingByteSource dbs(fixture.Path());
+    CHECK(dbs.DetectedCodec() == DecompressingByteSource::Codec::Gzip);
+    CHECK(dbs.DecompressedSize() == first.size() + second.size() + third.size());
+    CHECK(ReadFileContents(dbs.EffectivePath()) == first + second + third);
+}
+
+TEST_CASE("DecompressingByteSource: large multi-member bzip2 stream", "[DecompressingByteSource]")
+{
+    const std::string first = SampleContent(200 * 1024);
+    const std::string second = SampleContent(150 * 1024);
+    const std::string third = SampleContent(300 * 1024);
+    std::vector<std::uint8_t> combined = CompressBzip2(first);
+    for (const auto &member : {second, third})
+    {
+        const auto part = CompressBzip2(member);
+        combined.insert(combined.end(), part.begin(), part.end());
+    }
+
+    const TempBinaryFile fixture(".log.bz2");
+    fixture.WriteBytes(combined);
+
+    DecompressingByteSource dbs(fixture.Path());
+    CHECK(dbs.DetectedCodec() == DecompressingByteSource::Codec::Bzip2);
+    CHECK(dbs.DecompressedSize() == first.size() + second.size() + third.size());
+    CHECK(ReadFileContents(dbs.EffectivePath()) == first + second + third);
+}
+
 TEST_CASE("DecompressingByteSource: truncated codec input surfaces an error", "[DecompressingByteSource]")
 {
     const std::string content = SampleContent(64 * 1024);
