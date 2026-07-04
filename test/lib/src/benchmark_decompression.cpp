@@ -116,7 +116,13 @@ void CompressToBzip2(const std::filesystem::path &input, const std::filesystem::
     std::array<char, kIoChunk> inBuf{};
     std::array<char, kIoChunk> outBuf{};
     int action = BZ_RUN;
-    while (action != BZ_FINISH || strm.avail_in > 0)
+    // Loop until `BZ2_bzCompress` reports `BZ_STREAM_END`. Do NOT
+    // exit early on `avail_in == 0` in FINISH mode -- bzip2 keeps
+    // returning `BZ_FINISH_OK` (not `BZ_STREAM_END`) while it
+    // flushes internally buffered output, and the final flush can
+    // exceed our 256 KiB output buffer for large inputs. Exiting
+    // when `avail_in` hits zero would silently truncate the file.
+    while (true)
     {
         if (action != BZ_FINISH && strm.avail_in == 0)
         {

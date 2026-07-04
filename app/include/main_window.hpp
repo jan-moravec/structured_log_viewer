@@ -1407,6 +1407,24 @@ private:
     /// decompression is in flight.
     QFutureWatcher<std::shared_ptr<loglib::internal::DecompressingByteSource>> *mDecompressionWatcher = nullptr;
 
+    /// Set to `true` in `BeginAsyncDecompression`, cleared in
+    /// `OnDecompressionFinished` and in `CancelInFlightDecompression`.
+    /// Guards `OnDecompressionFinished` against a queued `finished()`
+    /// callout event slipping through after `CancelInFlightDecompression`
+    /// has already reset the shared state:
+    ///
+    /// - `QFutureWatcher::setFuture({})` clears its own
+    ///   `pendingCallOutEvents` queue, so the common case is fine.
+    /// - The residual case is a callout that had already been
+    ///   *dispatched into `QObject::event`* on the current stack
+    ///   before `setFuture({})` ran (e.g. through a nested
+    ///   `QDialog::exec` in a signal handler). Without this
+    ///   flag, the slot would then read `mDecompressionWatcher->result()`
+    ///   from the (now-empty) future, get a null `shared_ptr`, and
+    ///   splice a spurious "Failed to open ''" entry into
+    ///   `mPendingOpenErrors` against the newly-armed session.
+    bool mDecompressionInFlight = false;
+
     /// Stop source paired with the current decompression worker.
     /// `QProgressDialog::canceled` calls `request_stop()`; the
     /// worker polls `stop_requested()` between chunks. Refreshed

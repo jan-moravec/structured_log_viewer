@@ -89,7 +89,6 @@
 #include <cstdint>
 #include <exception>
 #include <filesystem>
-#include <fstream>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -255,55 +254,6 @@ QString HumanDuration(std::chrono::steady_clock::duration d)
     const auto minutes = ms / 60'000;
     const auto seconds = (ms % 60'000) / 1000;
     return QStringLiteral("%1m %2s").arg(minutes).arg(seconds);
-}
-
-// Cheap up-front sniff (6 bytes) that mirrors
-// `DecompressingByteSource`'s magic-byte table. Runs on the GUI
-// thread so the fast path (uncompressed) stays synchronous.
-// Zero-byte files return `None` -- `LogFile` handles them, and no
-// codec's frame header fits in 0 bytes anyway. I/O errors also
-// return `None` so the downstream `LogFile` ctor can surface the
-// canonical open-error message rather than a second copy from
-// this helper.
-loglib::internal::DecompressingByteSource::Codec SniffCompressionCodec(const std::filesystem::path &path)
-{
-    std::error_code ec;
-    const auto size = std::filesystem::file_size(path, ec);
-    if (ec || size == 0)
-    {
-        return loglib::internal::DecompressingByteSource::Codec::None;
-    }
-    std::array<unsigned char, 6> magic{};
-    std::ifstream in(path, std::ios::binary);
-    if (!in.is_open())
-    {
-        return loglib::internal::DecompressingByteSource::Codec::None;
-    }
-    in.read(reinterpret_cast<char *>(magic.data()), static_cast<std::streamsize>(magic.size()));
-    const auto got = in.gcount();
-    if (got < 2)
-    {
-        return loglib::internal::DecompressingByteSource::Codec::None;
-    }
-    using Codec = loglib::internal::DecompressingByteSource::Codec;
-    if (got >= 2 && magic[0] == 0x1f && magic[1] == 0x8b)
-    {
-        return Codec::Gzip;
-    }
-    if (got >= 3 && magic[0] == 0x42 && magic[1] == 0x5a && magic[2] == 0x68)
-    {
-        return Codec::Bzip2;
-    }
-    if (got >= 6 && magic[0] == 0xfd && magic[1] == 0x37 && magic[2] == 0x7a && magic[3] == 0x58 && magic[4] == 0x5a
-        && magic[5] == 0x00)
-    {
-        return Codec::Xz;
-    }
-    if (got >= 4 && magic[0] == 0x28 && magic[1] == 0xb5 && magic[2] == 0x2f && magic[3] == 0xfd)
-    {
-        return Codec::Zstd;
-    }
-    return Codec::None;
 }
 
 // "Is this file a configuration?" classifier used by
@@ -1591,6 +1541,20 @@ MainWindow::~MainWindow()
     // `finished` signal can't fire against a half-destructed
     // MainWindow.
     CancelInFlightDecompression();
+    // Explicitly drop the model's mmap BEFORE releasing the
+    // anchors so the temp file is safe to unlink on Windows
+    // (mio's `std::filesystem::remove` fails while a mapping is
+    // open). `~LogModel` would run later via member-destruction
+    // order, but by then the anchors have already tried and
+    // silently-failed to remove the temp file, leaking it into
+    // `%TEMP%`. The `SessionSwitchScope` suppresses the
+    // synchronous `streamingFinished(Cancelled)` slot so it
+    // doesn't run against a half-destructed MainWindow.
+    if (mModel != nullptr)
+    {
+        const SessionSwitchScope destructorGuard(*this);
+        mModel->Reset();
+    }
     mDecompressionAnchors.clear();
 
     // Sever the snapshot windows' `destroyed -> remove` hooks before
@@ -2631,15 +2595,16 @@ void MainWindow::StreamNextPendingFile()
     {
         const QString file = mPendingOpenFiles.takeFirst();
 
-        // Cheap up-front magic-byte sniff. `SniffCompressionCodec`
-        // reads only the first 6 bytes; for uncompressed / empty /
-        // unreadable files it returns `None` and we take the fast
-        // path below, matching the pre-decompression behaviour
-        // byte-for-byte. Genuinely broken paths (e.g. permission
-        // denied) still surface via the `LogFile` ctor a few lines
-        // later, so we don't need a redundant open-error check
-        // here.
-        const auto codec = SniffCompressionCodec(std::filesystem::path(file.toStdString()));
+        // Cheap up-front magic-byte sniff via the library helper --
+        // single source of truth for the codec table. Reads only
+        // the first 6 bytes; uncompressed / empty / unreadable
+        // paths return `None` and we take the fast path below,
+        // matching the pre-decompression behaviour byte-for-byte.
+        // Genuinely broken paths (e.g. permission denied) still
+        // surface via the `LogFile` ctor a few lines later, so we
+        // don't need a redundant open-error check here.
+        const auto codec =
+            loglib::internal::DecompressingByteSource::SniffCodec(std::filesystem::path(file.toStdString()));
         if (codec != loglib::internal::DecompressingByteSource::Codec::None)
         {
             // Compressed input: run decompression on a worker thread
@@ -2711,10 +2676,11 @@ void MainWindow::ContinueOpenAfterPrepared(
         {
             mPendingOpenErrors.push_back(msg);
         }
-        // Drop the anchor: nothing downstream will read from the
-        // temp file, so release it now instead of waiting for the
-        // next destructive boundary.
-        decompressionAnchor.reset();
+        // The `shared_ptr` parameter goes out of scope on return,
+        // which is the last reference held anywhere (we never
+        // pushed it into `mDecompressionAnchors`). That releases
+        // the `DecompressingByteSource`, which deletes the temp
+        // file via its dtor.
         StreamNextPendingFile();
         return;
     }
@@ -2833,8 +2799,23 @@ void MainWindow::BeginAsyncDecompression(const QString &originalPath, loglib::in
 
     mDecompressionOriginalPath = originalPath;
     mDecompressionTempPathHint.clear();
-    mDecompressionCodecName = QString::fromLatin1(loglib::internal::CodecName(codec).data());
+    // Pass the codec name's size explicitly rather than relying on
+    // `.data()` being NUL-terminated. `CodecName` currently returns
+    // string_views over static string literals so `.data()` happens
+    // to be NUL-terminated, but that's not part of the string_view
+    // contract; a future refactor returning e.g. a substring would
+    // silently read past the end.
+    const std::string_view codecName = loglib::internal::CodecName(codec);
+    mDecompressionCodecName = QString::fromLatin1(codecName.data(), static_cast<qsizetype>(codecName.size()));
     mDecompressionStartedAt = std::chrono::steady_clock::now();
+    // Arm the in-flight guard so a stale `finished()` callout that
+    // slips through after a subsequent `CancelInFlightDecompression`
+    // (e.g. via a nested event loop dispatched by a signal handler
+    // between the future finishing and the cancel running) does not
+    // splice an empty-path "Failed to open ''" entry into the next
+    // session's error summary. Cleared in `OnDecompressionFinished`
+    // and in `CancelInFlightDecompression`.
+    mDecompressionInFlight = true;
 
     ShowDecompressionProgress();
     // Point the label at the codec name up-front so the "0 / N MiB"
@@ -2920,7 +2901,11 @@ void MainWindow::ShowDecompressionProgress()
             mDecompressionStopSource.request_stop();
         });
     }
-    mDecompressionProgressDialog->setValue(0);
+    // `reset()` restores the dialog to the "no operation" state and
+    // hides it. `setValue(0)` then starts the estimation clock so
+    // `minimumDuration` re-arms cleanly for this open. Two calls
+    // to `setValue(0)` (one before, one after `reset()`) is dead
+    // code -- `reset()` throws the pre-value away.
     mDecompressionProgressDialog->reset();
     mDecompressionProgressDialog->setValue(0);
 
@@ -2991,6 +2976,16 @@ void MainWindow::TeardownDecompressionProgress()
 
 void MainWindow::CancelInFlightDecompression()
 {
+    // Disarm the in-flight guard up-front so any `finished()`
+    // callout event that has already been *dispatched into*
+    // `OnDecompressionFinished` on the current stack (through a
+    // nested event loop before we reach here) short-circuits at
+    // its entry check rather than reading `result()` off the
+    // about-to-be-detached future. `setFuture({})` below removes
+    // *pending* callouts from the watcher's queue, but not one
+    // that Qt is already in the middle of delivering.
+    mDecompressionInFlight = false;
+
     if (mDecompressionWatcher == nullptr)
     {
         // Nothing armed. Still clean up the label + error bucket
@@ -3013,7 +3008,8 @@ void MainWindow::CancelInFlightDecompression()
 
     // Detach the future so the queued `finished` slot cannot fire
     // against the newly-armed session. `setFuture({})` is the
-    // documented way to tell a watcher to stop observing.
+    // documented way to tell a watcher to stop observing (and it
+    // clears the watcher's `pendingCallOutEvents` queue).
     mDecompressionWatcher->setFuture(QFuture<std::shared_ptr<loglib::internal::DecompressingByteSource>>{});
 
     // Progress UI + error bucket are session-scoped; drop them
@@ -3026,6 +3022,24 @@ void MainWindow::CancelInFlightDecompression()
 
 void MainWindow::OnDecompressionFinished()
 {
+    // Bail out immediately if the arming caller already decided this
+    // decompression is dead (via `CancelInFlightDecompression`).
+    // `QFutureWatcher::setFuture({})` clears the *pending* callout
+    // queue, but a callout that Qt has already dispatched into this
+    // slot on the current stack (e.g. through a nested event loop
+    // like `QMessageBox::exec` executed in a signal handler between
+    // the future finishing and the cancel running) can still land
+    // here with the watcher's future already reset. Without this
+    // guard we would read `result()` off the empty future and emit
+    // a bogus "Failed to open ''" error against the freshly-armed
+    // session. Also short-circuits before `TeardownDecompressionProgress`,
+    // which the cancel path has already run.
+    if (!mDecompressionInFlight)
+    {
+        return;
+    }
+    mDecompressionInFlight = false;
+
     TeardownDecompressionProgress();
 
     if (mDecompressionWatcher == nullptr)
@@ -3095,24 +3109,39 @@ void MainWindow::OnDecompressionFinished()
     if (dbs)
     {
         const auto elapsed = std::chrono::steady_clock::now() - mDecompressionStartedAt;
+        // Pass the codec name's size explicitly so this doesn't rely
+        // on `CodecName`'s string_view being NUL-terminated (see the
+        // matching site in `BeginAsyncDecompression`).
+        const std::string_view codecName = loglib::internal::CodecName(dbs->DetectedCodec());
         const QString msg = tr("Decompressed %1 (%2 \u2192 %3, %4) in %5")
                                 .arg(QFileInfo(mDecompressionOriginalPath).fileName(),
                                      HumanBytes(dbs->CompressedSize()),
                                      HumanBytes(dbs->DecompressedSize()),
-                                     QString::fromLatin1(loglib::internal::CodecName(dbs->DetectedCodec()).data()),
+                                     QString::fromLatin1(codecName.data(), static_cast<qsizetype>(codecName.size())),
                                      HumanDuration(elapsed));
         statusBar()->showMessage(msg, STATUS_BAR_MESSAGE_TIMEOUT_MS);
     }
+
+    // Compute `effectivePath` into a local BEFORE the call so it is
+    // evaluated while `dbs` is still populated. Passing
+    // `dbs ? dbs->EffectivePath() : ...` and `std::move(dbs)` as two
+    // separate arguments to `ContinueOpenAfterPrepared` is a real
+    // C++17 bug: parameter initialisations are indeterminately
+    // sequenced (see [expr.call]/8), so if the third argument's
+    // move-construction wins the race, `dbs` becomes null before the
+    // ternary is evaluated and the *compressed* path is handed to
+    // `LogFile::mmap`, silently parsing raw gzip/bz2/xz/zstd bytes
+    // as JSONL for zero valid records. MSVC evaluates arguments
+    // right-to-left, so this used to be the *likely* order on the
+    // primary target. The local sequences the read before the move.
+    const std::filesystem::path effectivePath =
+        dbs ? dbs->EffectivePath() : std::filesystem::path(mDecompressionOriginalPath.toStdString());
 
     // Hand off to the shared post-preparation continuation. The
     // shared_ptr keeps the temp file alive; `ContinueOpenAfterPrepared`
     // stashes it into `mDecompressionAnchors` for the duration of the
     // session so mio's mmap holds up on Windows.
-    ContinueOpenAfterPrepared(
-        mDecompressionOriginalPath,
-        dbs ? dbs->EffectivePath() : std::filesystem::path(mDecompressionOriginalPath.toStdString()),
-        std::move(dbs)
-    );
+    ContinueOpenAfterPrepared(mDecompressionOriginalPath, effectivePath, std::move(dbs));
 }
 
 void MainWindow::OpenLogStream()

@@ -59,7 +59,10 @@ constexpr std::array<std::uint8_t, 4> kZstdMagic = {0x28, 0xb5, 0x2f, 0xfd};
 }
 
 /// Read up to @p max bytes from the beginning of @p path. On IO error
-/// or missing file, throws `std::runtime_error`.
+/// or missing file, throws `std::runtime_error`. Used by the ctor
+/// which has a path already known to exist (from `file_size`) and
+/// wants a hard error when the read subsequently fails; the noexcept
+/// `SniffCodec` public helper uses `TryReadMagic` instead.
 [[nodiscard]] std::vector<std::uint8_t> ReadMagic(const std::filesystem::path &path, std::size_t max)
 {
     std::ifstream stream(path, std::ios::binary);
@@ -72,6 +75,31 @@ constexpr std::array<std::uint8_t, 4> kZstdMagic = {0x28, 0xb5, 0x2f, 0xfd};
     const auto got = static_cast<std::size_t>(stream.gcount());
     out.resize(got);
     return out;
+}
+
+/// Non-throwing sibling of `ReadMagic`. Returns an empty vector on
+/// any I/O error so `SniffCodec` can safely present `Codec::None`
+/// upstream and let the downstream `LogFile` ctor produce the
+/// canonical open-error message.
+[[nodiscard]] std::vector<std::uint8_t> TryReadMagic(const std::filesystem::path &path, std::size_t max) noexcept
+{
+    try
+    {
+        std::ifstream stream(path, std::ios::binary);
+        if (!stream.is_open())
+        {
+            return {};
+        }
+        std::vector<std::uint8_t> out(max);
+        stream.read(reinterpret_cast<char *>(out.data()), static_cast<std::streamsize>(max));
+        const auto got = static_cast<std::size_t>(stream.gcount());
+        out.resize(got);
+        return out;
+    }
+    catch (...)
+    {
+        return {};
+    }
 }
 
 [[nodiscard]] DecompressingByteSource::Codec DetectCodec(std::span<const std::uint8_t> magic) noexcept
@@ -569,6 +597,13 @@ void DecodeZstd(
             break;
         }
 
+        consumed += static_cast<std::size_t>(gotSigned);
+        // Poll BEFORE the inner drain so cancel latency matches the
+        // gzip / bzip2 codecs (bounded by one 64 KiB chunk read, not
+        // by the drain of one 64 KiB input into potentially many
+        // megabytes of decompressed output).
+        ObservePoll(consumed, totalBytesIn, progress, stopToken);
+
         ZSTD_inBuffer input{inBuf.data(), static_cast<std::size_t>(gotSigned), 0};
         while (input.pos < input.size)
         {
@@ -579,7 +614,7 @@ void DecodeZstd(
                 throw std::runtime_error(fmt::format(
                     "zstd decode error on '{}' at input byte {} ({})",
                     sourcePath.string(),
-                    consumed + input.pos,
+                    (consumed - static_cast<std::size_t>(gotSigned)) + input.pos,
                     ::ZSTD_getErrorName(result)
                 ));
             }
@@ -587,9 +622,6 @@ void DecodeZstd(
             decompressedSize += output.pos;
             lastResult = result;
         }
-
-        consumed += static_cast<std::size_t>(gotSigned);
-        ObservePoll(consumed, totalBytesIn, progress, stopToken);
 
         if (in.eof())
         {
@@ -784,6 +816,25 @@ std::size_t DecompressingByteSource::CompressedSize() const noexcept
 std::size_t DecompressingByteSource::DecompressedSize() const noexcept
 {
     return mDecompressedSize;
+}
+
+DecompressingByteSource::Codec DecompressingByteSource::SniffCodec(const std::filesystem::path &input) noexcept
+{
+    std::error_code ec;
+    // Empty / missing / unreadable files -> None. `file_size` on a
+    // directory sets `ec`; `file_size(missing)` also sets `ec`.
+    // Zero-byte files can't hold any codec's frame header.
+    const auto size = std::filesystem::file_size(input, ec);
+    if (ec || size == 0)
+    {
+        return Codec::None;
+    }
+    const std::vector<std::uint8_t> magic = TryReadMagic(input, kMagicMaxBytes);
+    if (magic.empty())
+    {
+        return Codec::None;
+    }
+    return DetectCodec({magic.data(), magic.size()});
 }
 
 std::string_view CodecName(DecompressingByteSource::Codec codec) noexcept

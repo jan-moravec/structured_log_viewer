@@ -429,6 +429,14 @@ else()
 endif()
 
 if(NOT USE_SYSTEM_XZ)
+    # SECURITY: do NOT downgrade below v5.6.2. Versions 5.6.0 and
+    # 5.6.1 shipped the CVE-2024-3094 "xz-utils" build-system
+    # backdoor (a `liblzma` payload activated when the library was
+    # loaded into `sshd`'s dependency chain, via `ifunc` hijacking);
+    # v5.6.2 was the first upstream release with the backdoor
+    # artefacts + infrastructure fully purged. Any dependabot /
+    # manual bump that lowers this pin must be treated as a
+    # supply-chain regression, not a routine downgrade.
     FetchContent_Declare(
         xz
         GIT_REPOSITORY https://github.com/tukaani-project/xz.git

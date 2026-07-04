@@ -74,6 +74,17 @@ public:
         std::filesystem::path input, ProgressCallback progress = {}, StopToken stopToken = {}
     );
 
+    /// Cheap up-front sniff: opens @p input, reads at most 6 bytes,
+    /// and returns the codec its magic prefix identifies (or
+    /// `Codec::None` for uncompressed / empty / unreadable files).
+    /// Callers use this to decide "sync fast path vs async worker"
+    /// without paying for a full construction. Any I/O failure
+    /// collapses to `Codec::None` on purpose so the downstream
+    /// `LogFile` ctor produces the canonical open-error message
+    /// rather than a duplicate from here. Kept in the library so
+    /// there is exactly one magic-byte table across the codebase.
+    [[nodiscard]] static Codec SniffCodec(const std::filesystem::path &input) noexcept;
+
     ~DecompressingByteSource();
 
     DecompressingByteSource(const DecompressingByteSource &) = delete;
