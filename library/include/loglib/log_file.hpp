@@ -86,20 +86,30 @@ public:
     size_t OwnedStringsMemoryBytes() const noexcept;
 
     /// Attach an arbitrary RAII object whose destructor will run
-    /// **after** this `LogFile`'s mmap is unmapped. The intended use
-    /// case is transparent decompression: the caller (`MainWindow`)
-    /// creates a `DecompressingByteSource` that stages a temp file,
-    /// then hands that shared_ptr in here. When the model drops the
+    /// **after** this `LogFile`'s mmap is unmapped **during
+    /// `~LogFile`**. The intended use case is transparent
+    /// decompression: the caller (`MainWindow`) creates a
+    /// `DecompressingByteSource` that stages a temp file, then
+    /// hands that shared_ptr in here. When the model drops the
     /// last reference to this `LogFile`, the mmap unmap runs first
-    /// (member destruction order), then the anchor's dtor unlinks
-    /// the temp file. That ordering matters on Windows where
-    /// `std::filesystem::remove` fails while a mapping is open, and
-    /// on POSIX where a stale mmap would silently outlive the file.
+    /// (member destruction order inside `~LogFile`), then the
+    /// anchor's dtor unlinks the temp file. That ordering matters
+    /// on Windows where `std::filesystem::remove` fails while a
+    /// mapping is open, and on POSIX where a stale mmap would
+    /// silently outlive the file.
     ///
-    /// Multiple calls chain: the newest anchor replaces the
-    /// previous one, so callers who need to keep several objects
-    /// alive should compose them (e.g. via a lambda capture list
-    /// or a helper struct) before attaching.
+    /// Note: the "mmap-before-anchor" guarantee applies **only** at
+    /// `LogFile` destruction. Explicitly *reassigning* the anchor
+    /// mid-lifetime (either by calling this method twice or via
+    /// move-assignment -- which is deleted for this reason) drops
+    /// the previous anchor **while the mmap is still live**, which
+    /// on Windows leaks the previous anchor's temp file until
+    /// process exit. Every production caller attaches exactly once
+    /// per `LogFile`; multiple calls are supported so `#ifdef`-heavy
+    /// tests can rebind, but callers who need several RAII objects
+    /// to survive the mmap should compose them into a single
+    /// wrapper (e.g. a lambda capture list or a helper struct)
+    /// before attaching.
     void AttachLifetimeAnchor(std::shared_ptr<void> anchor) noexcept;
 
 private:

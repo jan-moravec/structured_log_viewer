@@ -9565,6 +9565,174 @@ private slots:
         QCOMPARE(model->rowCount(), followUpLines.size());
     }
 
+    // Chain-terminal decompression failure regression. Pre-fix,
+    // opening `[good.log, corrupt.gz]` in Append mode ran the
+    // pipeline as:
+    //   - `good.log` parses successfully -> `OnStreamingFinished(Success)`
+    //   - chain to `corrupt.gz` -> `BeginAsyncDecompression`
+    //   - `OnStreamingFinished` early-returns on `mDecompressionInFlight`
+    //   - worker fails, `OnDecompressionFinished` pushes an entry
+    //     into `mPendingDecompressionErrors`, calls
+    //     `StreamNextPendingFile()`
+    //   - `SNP` finds empty queue, sees `IsSessionActive() == true`
+    //     and skips its own drain, returns
+    // ...and now the error sits in `mPendingDecompressionErrors`
+    // forever: `mSessionMode` is still `Static` with no live worker,
+    // so `OnStreamingFinished` never fires again to drain it. The
+    // user sees the app in a wedged "Parsing corrupt.gz" state with
+    // no error dialog / dock entry. `NewSession` or the next
+    // destructive open silently clears the error bucket.
+    //
+    // The fix (`FinalizeAfterDecompressionIfChainTerminal` called
+    // at the end of the error / cancel / mmap-fail branches of
+    // `OnDecompressionFinished`) drains both error buckets under
+    // their own titles when no successor worker was armed AND
+    // settles the UI back to Idle so the previous file's rows
+    // stay accessible.
+    void TestChainTerminalDecompressionFailureSurfacesError()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+        mWindow->SetSuppressDialogsForTest(true);
+
+        auto *dock = mWindow->findChild<ParseErrorsDock *>();
+        QVERIFY2(dock != nullptr, "MainWindow must own a ParseErrorsDock");
+        dock->ResetSessionState();
+        const int startingErrorCount = dock->Count();
+
+        // Uncompressed fixture: 500 lines to guarantee its parse is
+        // still running when the corrupt .gz Append lands (matches
+        // the timing precondition used by
+        // `TestQueuedCompressedFollowUpKeepsPriorRows`). Short
+        // fixtures let the queue drain before the Append is even
+        // dispatched, which would put the second file into
+        // `mPendingOpenFiles` via a *fresh* `StartStreamingOpenQueue`
+        // rather than the chain path the regression targets.
+        QStringList uncompressedLines;
+        uncompressedLines.reserve(500);
+        for (int i = 0; i < 500; ++i)
+        {
+            uncompressedLines.append(QStringLiteral(R"({"idx": %1, "msg": "good-%1"})").arg(i));
+        }
+        const TempJsonFile uncompressedFixture(uncompressedLines);
+
+        // Corrupt gzip: valid magic bytes (`SniffCodec` returns
+        // `Gzip` so the dispatch takes the decompression branch)
+        // followed by a truncated deflate stream. The worker will
+        // read the header, start inflating, and fail on the
+        // premature end-of-stream inside `DecodeGzip`, throwing
+        // an exception that `OnDecompressionFinished` catches on
+        // the non-`DecompressionCancelled` branch.
+        const QByteArray validGzip =
+            GzipCompressForTest(QByteArrayLiteral(R"({"idx": 0, "msg": "will-not-survive-truncation"})"));
+        QVERIFY2(validGzip.size() > 12, "gzip helper must produce a real stream (magic + header + payload + footer)");
+        // Truncate mid-payload: keep the magic + header but chop
+        // off the deflate stream so the decoder errors on
+        // premature EOF.
+        const QByteArray corruptGzip = validGzip.left(12);
+
+        const QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString gzipPath = tempDir.filePath(QStringLiteral("chain_terminal_corrupt.jsonl.gz"));
+        WriteBinaryForTest(gzipPath, corruptGzip);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        // Arm the uncompressed open; pump one round so the parse
+        // worker actually starts before we append the .gz.
+        mWindow->OpenFilesForTest({uncompressedFixture.Path()}, MainWindow::OpenMode::Append);
+        QCoreApplication::processEvents();
+
+        // Append the corrupt .gz while the first parse is in
+        // flight -- queues behind the running parse in
+        // `mPendingOpenFiles`.
+        mWindow->OpenFilesForTest({gzipPath}, MainWindow::OpenMode::Append);
+
+        // Wait for `good.log` to reach terminal state
+        // (`streamingFinished(Success)` -> chain to `corrupt.gz`).
+        QVERIFY2(finishedSpy.wait(10000), "first file must reach terminal state before the chain kicks in");
+        // Now drive the event loop until the chained decompression
+        // has finished and the pipeline has settled: worker
+        // unwinds via the error path, `OnDecompressionFinished`
+        // clears `mDecompressionInFlight` and calls the finalize
+        // helper. Two conditions in one wait -- IsStreamingActive
+        // returns false the moment `good.log` finished, so we
+        // gate on the decompression flag too.
+        QTRY_VERIFY_WITH_TIMEOUT(!mWindow->IsDecompressionInFlightForTest(), 10000);
+        QTRY_VERIFY_WITH_TIMEOUT(!model->IsStreamingActive(), 10000);
+        QCoreApplication::processEvents();
+
+        // Regression assertion #1: the previous file's rows must
+        // survive. Pre-fix these were preserved too -- the bug was
+        // silent-error-loss, not row-loss -- but the assertion is
+        // cheap and makes the intent obvious.
+        QCOMPARE(model->rowCount(), uncompressedLines.size());
+
+        // Regression assertion #2: the decompression failure must
+        // surface in the parse-errors dock. Pre-fix, the entry sat
+        // in `mPendingDecompressionErrors` forever and the dock
+        // count was unchanged.
+        QCOMPARE(dock->Count(), startingErrorCount + 1);
+
+        // Locate the entry and confirm it landed under the
+        // `Error Decompressing File` header (as opposed to
+        // `Error Opening File`). Categorising the failure
+        // correctly is the whole reason we kept a second error
+        // bucket in the first place; a regression that lumps
+        // decompression failures back into the open-error bucket
+        // would degrade the user-facing message without changing
+        // the count.
+        auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
+        QVERIFY2(list != nullptr, "ParseErrorsDock must expose its internal QListWidget");
+        bool foundDecompressionHeader = false;
+        bool foundCorruptEntry = false;
+        for (int i = 0; i < list->count(); ++i)
+        {
+            const QListWidgetItem *item = list->item(i);
+            if (item == nullptr)
+            {
+                continue;
+            }
+            const QString text = item->text();
+            if (text.contains(QStringLiteral("Error Decompressing File")))
+            {
+                foundDecompressionHeader = true;
+            }
+            if (text.contains(QStringLiteral("chain_terminal_corrupt.jsonl.gz")))
+            {
+                foundCorruptEntry = true;
+            }
+        }
+        QVERIFY2(
+            foundDecompressionHeader,
+            "the chain-terminal decompression failure must be surfaced under an "
+            "`Error Decompressing File` header, not lumped into `Error Opening File`"
+        );
+        QVERIFY2(
+            foundCorruptEntry,
+            "the failure entry must name the original .gz path so the user can locate the culprit"
+        );
+
+        // Regression assertion #3: the pipeline must be usable
+        // again after the chain-terminal failure. Pre-fix,
+        // `mSessionMode` was stuck at `Static` with no live worker
+        // and the configuration UI stayed disabled. Re-arming a
+        // fresh session via Append (which follows the "no active
+        // session" branch in `StartStreamingOpenQueue`) would
+        // succeed either way, but the *observable* stuckness is
+        // the streaming label / session mode -- so we exercise
+        // that indirectly by opening a follow-up and confirming
+        // its rows land on top (append onto the surviving
+        // session, not a wedged Replace that clears them).
+        const QStringList followUpLines{QStringLiteral(R"({"idx": 0, "msg": "after-chain-failure"})")};
+        const TempJsonFile followUp(followUpLines);
+        mWindow->OpenFilesForTest({followUp.Path()}, MainWindow::OpenMode::Append);
+        QVERIFY2(finishedSpy.wait(10000), "follow-up open after chain-terminal failure must produce streamingFinished");
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), uncompressedLines.size() + followUpLines.size());
+    }
+
     // `actionNewSession` clears rows, runtime filters, the persisted
     // column configuration, and session mode. Reached through
     // `findChild<QAction*>("actionNewSession")` so the action wiring

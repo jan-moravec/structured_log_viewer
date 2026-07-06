@@ -818,6 +818,28 @@ private:
     /// leak error text into the next session's summary.
     void CancelInFlightDecompression();
 
+    /// Chain-terminal completion helper for `OnDecompressionFinished`.
+    /// Runs the subset of `OnStreamingFinished`'s teardown that
+    /// otherwise never fires when the queue drains through a
+    /// decompression that did NOT hand off to a parse worker (e.g.
+    /// the last queued file failed at decompression, or its
+    /// post-decompression `LogFile` mmap threw). Without this the
+    /// accumulated `mPendingOpenErrors` /
+    /// `mPendingDecompressionErrors` sit in memory until the next
+    /// destructive session boundary silently clears them, and
+    /// `mSessionMode` stays at `Static` with no live worker --
+    /// leaving the config UI greyed out and the "Parsing X" status
+    /// label up until the user forces a reset.
+    ///
+    /// No-op when a parse worker or another decompression is still
+    /// in flight (the natural drain point -- `OnStreamingFinished`
+    /// or the follow-up `OnDecompressionFinished` -- will run
+    /// instead). Rows + `mCurrentSource` are preserved: successfully-
+    /// parsed earlier files remain valid content, only the failed
+    /// tail contributes nothing. Auto-save runs if the surviving
+    /// session shape is restorable.
+    void FinalizeAfterDecompressionIfChainTerminal();
+
     /// Slot for `LogModel::streamingFinished`. Hoisted out of an
     /// inline lambda so crash-dump frames identify it by name and
     /// tests can exercise the post-streaming reset logic directly.

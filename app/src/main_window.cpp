@@ -3227,6 +3227,11 @@ void MainWindow::OnDecompressionFinished()
         mDecompressionOriginalPath.clear();
         mDecompressionCodecName.clear();
         StreamNextPendingFile();
+        // Chain-terminal cancel: run the shared tail so any
+        // errors accumulated earlier in the drain surface now and
+        // the session UI returns to Idle. See the helper's contract
+        // for why this is a no-op if a successor worker was armed.
+        FinalizeAfterDecompressionIfChainTerminal();
         return;
     }
 
@@ -3238,6 +3243,21 @@ void MainWindow::OnDecompressionFinished()
         // title (`Error Decompressing File`), keeping decompression
         // failures visually distinct from open failures.
         StreamNextPendingFile();
+        // Chain-terminal decompression failure: without this call
+        // the `Error Decompressing File` batch (including THIS
+        // entry) would sit in `mPendingDecompressionErrors` until
+        // the next destructive session boundary silently cleared
+        // it -- the exact silent-error-loss bug the review
+        // flagged (a three-file drop
+        // [ok.log, ok.log, broken.gz] would show a green
+        // "Parsing complete" state, no dialog).
+        FinalizeAfterDecompressionIfChainTerminal();
+        // Also clear the per-open scratch fields on this exit --
+        // matches the equivalent clearing at the tail of the
+        // success branch. The cancel branch above already cleared
+        // them before the toast.
+        mDecompressionOriginalPath.clear();
+        mDecompressionCodecName.clear();
         return;
     }
 
@@ -3293,6 +3313,103 @@ void MainWindow::OnDecompressionFinished()
     if (!ContinueOpenAfterPrepared(mDecompressionOriginalPath, effectivePath, std::move(dbs)))
     {
         StreamNextPendingFile();
+        FinalizeAfterDecompressionIfChainTerminal();
+    }
+    // Clear the per-open scratch fields so a subsequent open that
+    // hits the cancel or error branch (which reads
+    // `mDecompressionOriginalPath` for the toast / error message)
+    // cannot pick up a stale value from this successful open.
+    // `BeginAsyncDecompression` overwrites them at the start of
+    // each open, so this is defensive belt-and-braces for the
+    // window between success and the next open.
+    mDecompressionOriginalPath.clear();
+    mDecompressionCodecName.clear();
+}
+
+void MainWindow::FinalizeAfterDecompressionIfChainTerminal()
+{
+    // If another async worker is armed (a follow-up parse from
+    // `ContinueOpenAfterPrepared`, or a queued file's decompression
+    // that `StreamNextPendingFile` just dispatched), the natural
+    // drain point will fire later -- do not preempt it. The
+    // pre-existing `OnStreamingFinished` teardown owns those
+    // transitions; running our tail on top would either double-
+    // drain the error buckets (harmless) or preempt the
+    // `justFinishedMode` snapshot that gates auto-save (silent
+    // regression: A.log parses fine, chain-terminal follow-up
+    // fails synchronously, no auto-save because we flipped
+    // `mSessionMode` to `Idle` before `OnStreamingFinished`'s
+    // teardown snapshotted it).
+    if (mModel->IsStreamingActive() || mDecompressionInFlight)
+    {
+        return;
+    }
+
+    // Drain both error buckets under their own titles. The
+    // `OnStreamingFinished` teardown is the normal drain point,
+    // but a chain-terminal decompression failure never re-enters
+    // that slot (no new parse worker was armed for the failed
+    // file), so without this the errors would sit in memory
+    // until `NewSession` / `StartStreamingOpenQueue`'s destructive
+    // branch silently cleared them -- the user would never see
+    // that a queued file was skipped.
+    if (!mPendingOpenErrors.empty())
+    {
+        ShowParseErrors(tr("Error Opening File"), mPendingOpenErrors);
+        mPendingOpenErrors.clear();
+    }
+    if (!mPendingDecompressionErrors.empty())
+    {
+        ShowParseErrors(tr("Error Decompressing File"), mPendingDecompressionErrors);
+        mPendingDecompressionErrors.clear();
+    }
+
+    // No session was ever armed (all queued files failed before
+    // any parse worker started): the SNP-tail drain already ran
+    // above for us, and there's nothing more to reset. Bail so
+    // we don't touch `mLastTerminalSessionMode` /
+    // `mSessionMode` unnecessarily.
+    if (!IsSessionActive())
+    {
+        return;
+    }
+
+    // Settle the UI as if `OnStreamingFinished` had fired for the
+    // final file: `mSessionMode` back to `Idle` so the config
+    // menus re-enable and the "Parsing X" streaming label goes
+    // away. Rows + `mCurrentSource` stay in place -- the earlier
+    // queued file(s) parsed successfully and their content is
+    // valid; only the failed decompression tail contributed
+    // nothing. Mirror the mode-snapshot dance from
+    // `OnStreamingFinished` so `closeEvent`'s
+    // `AutoSaveSessionSnapshot` (which reads
+    // `mLastTerminalSessionMode` when `mSessionMode` is already
+    // `Idle`) can still auto-save this session.
+    const SessionMode justFinishedMode = mSessionMode;
+    mLastTerminalSessionMode = mSessionMode;
+    mSessionMode = SessionMode::Idle;
+    SetConfigurationUiEnabled(true);
+    UpdateStreamToolbarVisibility();
+    UpdateUi();
+    UpdateStreamingStatus();
+    UpdateWindowTitle();
+    mStreamingFileName.clear();
+
+    // Apply the deferred sort before the auto-save so the mirror
+    // reads the applied sort from the proxy -- same reasoning as
+    // `OnStreamingFinished` line 2645.
+    ApplyDeferredSortFromConfig();
+
+    // Auto-save the surviving session so Recent Sessions +
+    // restore-on-launch can reopen the earlier files' view. The
+    // failed tail is not in `mCurrentSource->locators` (we never
+    // reached the locator-append site for it in
+    // `ContinueOpenAfterPrepared`), so a restore reopens exactly
+    // the files that parsed successfully -- correct behaviour for
+    // "the .gz at the end was broken; salvage the rest".
+    if (ShouldAutoSaveSession(justFinishedMode))
+    {
+        AutoSaveSessionSnapshot();
     }
 }
 
@@ -5246,6 +5363,30 @@ void MainWindow::closeEvent(QCloseEvent *event)
     // QSettings write failure is silently swallowed alongside the
     // auto-save failures below.
     SaveWindowChrome();
+
+    // Cancel + drain any in-flight decompression before we touch
+    // session state. Without this the worker keeps holding
+    // `this`-captured references and its queued `finished` callout
+    // would fire against a MainWindow whose `mCurrentSource` /
+    // `mSessionMode` we just reset a few lines below -- either
+    // splicing a spurious "Failed to open ''" into
+    // `mPendingOpenErrors` for a session that no longer exists,
+    // or (worse) attempting a `BeginStreaming` on a torn-down
+    // model between now and `~MainWindow`. The helper is a bounded
+    // blocking wait (the worker polls the stop token between
+    // 64 KiB chunks) so this returns within one poll interval;
+    // it also tears down the progress dialog + poll timer so no
+    // stray `QTimer::timeout` fires past the return below.
+    //
+    // Runs BEFORE `AutoSaveSessionSnapshot` on purpose: any
+    // in-flight decompression was targeting a file that was never
+    // successfully parsed, so its locator is not in
+    // `mCurrentSource` and the auto-save doesn't lose it. If we
+    // ran the cancel *after* the snapshot we'd risk the finished
+    // callout re-entering user code (nested event loops from
+    // `QMessageBox` inside `ShowParseErrors`) between the snapshot
+    // and the state reset.
+    CancelInFlightDecompression();
 
     // Final flush so the restore-on-launch loop captures user
     // edits made after the last `streamingFinished`. Best-effort:

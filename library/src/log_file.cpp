@@ -174,11 +174,16 @@ size_t LogFile::OwnedStringsMemoryBytes() const noexcept
 void LogFile::AttachLifetimeAnchor(std::shared_ptr<void> anchor) noexcept
 {
     // Swap-in: any previously-attached anchor's dtor runs *now*
-    // (after the assignment returns), not on the caller's stack.
-    // That's fine for the decompression use case -- callers only
-    // ever attach once per LogFile lifetime. Documented as
-    // "newest wins" in the header so anyone chaining multiple
-    // anchors isn't surprised.
+    // (as the assignment overwrites the shared_ptr), which is
+    // BEFORE this `LogFile`'s mmap unmap. That violates the
+    // mmap-before-anchor destruction contract that
+    // `~LogFile`'s reverse-declaration-order teardown enforces --
+    // on Windows the previous anchor's `std::filesystem::remove`
+    // would silently fail (mapping still open) and leak the temp
+    // file until process exit. Every production caller attaches
+    // exactly once per LogFile so this branch is not exercised,
+    // but the header explicitly warns callers off multiple
+    // attaches for this reason.
     mLifetimeAnchor = std::move(anchor);
 }
 
