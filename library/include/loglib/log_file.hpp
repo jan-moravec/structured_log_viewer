@@ -23,11 +23,31 @@ public:
     /// Throws `std::runtime_error` if the file cannot be opened or mapped.
     explicit LogFile(std::filesystem::path filePath);
 
+    /// Defaulted destructor is spelled out so the rule-of-five is
+    /// explicit: this class deletes copy + move-assign but keeps
+    /// move construction; the compiler-synthesised destructor is
+    /// the correct behaviour (reverse-declaration-order member
+    /// destruction is exactly what preserves the mmap-before-anchor
+    /// contract documented on `mLifetimeAnchor`).
+    ~LogFile() = default;
+
     LogFile(const LogFile &) = delete;
     LogFile &operator=(const LogFile &) = delete;
 
     LogFile(LogFile &&) noexcept = default;
-    LogFile &operator=(LogFile &&) noexcept = default;
+    /// Move-assignment is **deliberately deleted**. The compiler-
+    /// synthesised operator would assign members in declaration
+    /// order (`mLifetimeAnchor` first, then `mMmap`), which
+    /// destroys the LHS's anchor -- and therefore attempts to
+    /// unlink its temp file -- while `mMmap` is still holding the
+    /// mapping. On Windows that leaks the temp file silently
+    /// (`std::filesystem::remove` returns false without erroring
+    /// while a mapping is open). No caller move-assigns a
+    /// `LogFile` today (they are exclusively owned via
+    /// `std::unique_ptr`), so making this a compile error is
+    /// cheaper than maintaining a hand-rolled swap-and-destroy
+    /// implementation just to preserve a facility nobody uses.
+    LogFile &operator=(LogFile &&) noexcept = delete;
 
     const std::filesystem::path &GetPath() const;
     const char *Data() const;
@@ -89,7 +109,10 @@ private:
     /// destruction-order contract. Declared **before** `mMmap` so
     /// C++'s reverse-declaration destruction runs `mMmap`'s dtor
     /// first (unmap), then this anchor's (unlink temp file). Do
-    /// not reorder without re-reading the doc comment above.
+    /// not reorder without re-reading the doc comment above -- and
+    /// note that move-**assignment** is deleted for the same
+    /// reason (it would go in declaration order and thus release
+    /// the anchor before the mmap; see the `operator=` comment).
     std::shared_ptr<void> mLifetimeAnchor;
 
     mio::mmap_source mMmap;

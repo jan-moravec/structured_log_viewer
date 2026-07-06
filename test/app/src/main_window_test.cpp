@@ -9471,6 +9471,100 @@ private slots:
         );
     }
 
+    // Cancel-path regression. Verifies that requesting stop while a
+    // decompression worker is running unwinds cleanly:
+    //   - `mDecompressionInFlight` flips back to false;
+    //   - no `streamingFinished` is emitted (no session was ever
+    //     armed on the model, so a spurious Success / Cancelled here
+    //     would signal the cancel branch is starting BeginStreaming
+    //     by accident);
+    //   - no rows land in the model;
+    //   - a subsequent open on a different file still works
+    //     (proves the cancel drained the queue + reset the state
+    //     rather than wedging the pipeline).
+    //
+    // Uses `RequestDecompressionCancelForTest` because the
+    // production `QProgressDialog::canceled` wiring lives inside
+    // the dialog, which is suppressed under
+    // `SetSuppressDialogsForTest`.
+    void TestCancelDecompressionUnwindsCleanly()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+        mWindow->SetSuppressDialogsForTest(true);
+
+        // Fixture sized so the worker is very likely to still be
+        // running when the cancel lands. Small (few-KB) fixtures
+        // race the cancel: the worker completes first and the test
+        // would pass vacuously along the Success path instead of
+        // exercising the cancel branch. 20K lines with padded
+        // messages produces ~2 MiB of uncompressed input, which
+        // gives the worker several `ObservePoll` checkpoints per
+        // 64 KiB input chunk to notice the stop token.
+        QByteArray uncompressed;
+        uncompressed.reserve(3'000'000);
+        const QString pad = QStringLiteral("padding-payload-so-the-input-stream-is-big-enough-that-cancel-lands-before-completion");
+        for (int i = 0; i < 20000; ++i)
+        {
+            uncompressed.append(QStringLiteral(R"({"idx": %1, "msg": "%2-%1"})").arg(i).arg(pad).toUtf8());
+            uncompressed.append('\n');
+        }
+        const QByteArray gzipped = GzipCompressForTest(uncompressed);
+
+        const QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString gzipPath = tempDir.filePath(QStringLiteral("cancel.jsonl.gz"));
+        WriteBinaryForTest(gzipPath, gzipped);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        mWindow->OpenFilesForTest({gzipPath}, MainWindow::OpenMode::Replace);
+        QVERIFY2(
+            mWindow->IsDecompressionInFlightForTest(),
+            "precondition: decompression worker must be armed synchronously so the cancel below has a target"
+        );
+
+        // Trip the stop token. The worker unwinds on its next
+        // `ObservePoll` (between 64 KiB input chunks); the finished
+        // slot then posts the cancel toast and returns to idle.
+        mWindow->RequestDecompressionCancelForTest();
+
+        // Pump events until the finished slot has cleared the flag,
+        // or 10 s -- generous headroom for a slow CI runner. On
+        // failure this fires QFAIL with a diagnostic pointing at
+        // the flag itself, which is exactly the right seam.
+        QTRY_VERIFY_WITH_TIMEOUT(!mWindow->IsDecompressionInFlightForTest(), 10000);
+
+        // Cancel is deliberately NOT surfaced as a
+        // `streamingFinished` event: no `LogModel::BeginStreaming`
+        // ever ran, so the model's watcher was never armed.
+        // A non-zero count here would mean the cancel branch is
+        // accidentally taking the "arm session + call
+        // AppendStreaming" path -- either a plumbing bug or the
+        // wrong catch order in `OnDecompressionFinished`.
+        QCOMPARE(finishedSpy.count(), 0);
+        QCOMPARE(model->rowCount(), 0);
+
+        // The cancel must leave the pipeline usable. A follow-up
+        // open on a different file exercises `StreamNextPendingFile`
+        // -> `ContinueOpenAfterPrepared` -> `BeginStreaming` starting
+        // from a clean slate, so any residual state left by the
+        // cancel (dangling watcher, stale `mCurrentSource`, unclosed
+        // `mSessionMode`, ...) surfaces as either the follow-up
+        // failing to finish or its rows getting appended onto the
+        // cancelled session's residue.
+        const QStringList followUpLines{
+            QStringLiteral(R"({"idx": 0, "msg": "after-cancel-0"})"),
+            QStringLiteral(R"({"idx": 1, "msg": "after-cancel-1"})"),
+        };
+        const TempJsonFile followUp(followUpLines);
+        mWindow->OpenFilesForTest({followUp.Path()}, MainWindow::OpenMode::Replace);
+        QVERIFY2(finishedSpy.wait(10000), "follow-up open after cancel must produce a streamingFinished event");
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), followUpLines.size());
+    }
+
     // `actionNewSession` clears rows, runtime filters, the persisted
     // column configuration, and session mode. Reached through
     // `findChild<QAction*>("actionNewSession")` so the action wiring

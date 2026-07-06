@@ -204,11 +204,7 @@ struct FileHandle
 };
 
 // Open @p path for writing, failing (rather than truncating) if a
-// file already exists at that path. Also, on POSIX, restricts
-// permissions to owner read/write (0600) so decompressed log
-// contents are not readable by other local users. Both properties
-// close symlink-attack / shared-tmpdir race windows that the raw
-// `fopen("wb")` used previously did not.
+// file already exists at that path.
 //
 // Windows: MSVC's fopen family accepts the C11 `x` mode letter --
 // combined with `w` it means "create new file; fail if it already
@@ -217,13 +213,28 @@ struct FileHandle
 // accidentally observe our temp fd. The path is passed through
 // `_wfopen_s` so long paths and non-ASCII characters survive.
 //
+// Confidentiality note (Windows): the temp file inherits the DACL
+// of its parent directory. In practice this is the per-user
+// `%TEMP%` (`C:\Users\<name>\AppData\Local\Temp`), which is
+// already restricted to the owning user + SYSTEM + Administrators.
+// If `%TEMP%` has been redirected to a shared location (some
+// service accounts, unusual Citrix / Terminal Services setups) the
+// decompressed contents will be readable by anyone with local
+// access to that directory. We deliberately do not set an explicit
+// DACL via `CreateFileW` + `SECURITY_ATTRIBUTES`: the extra Win32
+// surface is not worth carrying for a scenario the default temp
+// layout already handles correctly.
+//
 // POSIX: `open(O_WRONLY | O_CREAT | O_EXCL, 0600)` is the canonical
 // safe-tempfile idiom; the exclusive-create is enforced by the
 // kernel (also on network filesystems that support the flag),
 // which is stronger than the userspace random-name check that
-// `MakeTempPath` performs. `O_CLOEXEC` matches the Windows `N`
-// no-inherit intent. `fdopen(fd, "wb")` layers a FILE* over the
-// fd so the rest of the decompression pipeline is unchanged.
+// `MakeTempPath` performs. The `0600` mode restricts read/write
+// to the owner so decompressed log contents are not visible to
+// other local users on a shared `/tmp`. `O_CLOEXEC` matches the
+// Windows `N` no-inherit intent. `fdopen(fd, "wb")` layers a
+// FILE* over the fd so the rest of the decompression pipeline is
+// unchanged.
 [[nodiscard]] FileHandle OpenExclusive(const std::filesystem::path &path)
 {
 #ifdef _WIN32

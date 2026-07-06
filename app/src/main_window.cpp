@@ -221,6 +221,13 @@ constexpr int DECOMPRESSION_DIALOG_DEFER_MS = 500;
 // explicitly-English "MiB". Powers of 1024 (binary IEC) because
 // that's what `std::filesystem::file_size` reports and what users
 // see in Explorer's "Size" column.
+//
+// The `%1` markers below rely on Qt's non-`%L`-form guarantee that
+// `QString::arg(double, ..., 'f', ...)` formats via
+// `QLocaleData::c()` (C locale, `.` decimal separator, no
+// thousands grouping). Using `%L1` here would switch to the
+// current locale and break the "explicitly-English" contract
+// above -- do not do that.
 QString HumanBytes(std::size_t bytes)
 {
     constexpr std::array<const char *, 5> units = {"B", "KiB", "MiB", "GiB", "TiB"};
@@ -240,6 +247,9 @@ QString HumanBytes(std::size_t bytes)
 
 // Format a wall-clock duration for the post-decompression toast.
 // Sub-second: "480 ms"; otherwise "X.Y s" or "Xm Ys" past a minute.
+// Uses `%1` markers (not `%L1`) for the same "C-locale-only"
+// reason as `HumanBytes` above -- the toast composes with
+// `HumanBytes` output, so mixing separators would be jarring.
 QString HumanDuration(std::chrono::steady_clock::duration d)
 {
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(d).count();
@@ -2132,6 +2142,21 @@ void MainWindow::NewSession()
     // LogFile (whose attached anchor's dtor then unlinks the temp
     // file in mmap-safe order).
     CancelInFlightDecompression();
+    // Also drop the outgoing session's multi-file queue: files that
+    // haven't reached `StreamNextPendingFile` yet still live in
+    // `mPendingOpenFiles`, and their accumulated errors live in
+    // the parallel buckets. Without this reset, hitting `Ctrl+N`
+    // mid-drain would silently retain a queue that the next
+    // destructive open (`StartStreamingOpenQueue`) would then
+    // overwrite; but if the user does *anything else* first
+    // (Save Configuration, opens preferences, resizes columns...)
+    // those queued files remain invisibly attached to a session
+    // that no longer exists. `OpenLogStreamFromPath` /
+    // `OpenNetworkStream` clear the queue at their own seams; do
+    // the same here for consistency.
+    mPendingOpenFiles.clear();
+    mPendingOpenErrors.clear();
+    mPendingDecompressionErrors.clear();
     // The configuration that requested the deferred sort is gone.
     mPendingApplySortFromConfig = false;
     // Drop the pinned uuid + open-windows membership so the next
@@ -2562,15 +2587,29 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
     // entries are tied to files that never streamed, so they get
     // their own dedicated batch instead of being mislabeled under
     // a streamed-file header.
-    if (result == StreamingResult::Success && !mPendingOpenErrors.empty())
+    //
+    // Drained on **any** terminal result (Success / Failed /
+    // Cancelled) rather than only on Success. Rationale: consider a
+    // three-file drop `[a.log, b.log-unreadable, c.log]` -- if the
+    // parse of `c.log` ends up Failed or the user hits Stop mid-
+    // parse, the pre-existing "Success-only" gate would silently
+    // drop `b.log`'s "Failed to open" entry, leaving the user with
+    // no signal that a queued file was skipped. The destructive
+    // session-switch case (a Cancelled emitted while
+    // `mSessionSwitchInProgress` is set) already returned at the
+    // top of this function, so this drain only runs for genuine
+    // user-facing completions.
+    if (!mPendingOpenErrors.empty())
     {
         ShowParseErrors(tr("Error Opening File"), mPendingOpenErrors);
     }
     mPendingOpenErrors.clear();
-    // Same treatment for decompression errors + user cancels, under
-    // their own title. Kept separate from open errors on purpose:
-    // reusing `mPendingOpenErrors` would mislabel the batch.
-    if (result == StreamingResult::Success && !mPendingDecompressionErrors.empty())
+    // Same treatment for decompression errors under their own
+    // title. Kept separate from open errors on purpose: reusing
+    // `mPendingOpenErrors` would mislabel the batch. User cancels
+    // of a decompression do **not** land here -- they surface as
+    // a status-bar toast in `OnDecompressionFinished`.
+    if (!mPendingDecompressionErrors.empty())
     {
         ShowParseErrors(tr("Error Decompressing File"), mPendingDecompressionErrors);
     }
@@ -2621,12 +2660,21 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
 
 void MainWindow::StreamNextPendingFile()
 {
-    // One file per call. Both branches of the `if` end with a
-    // `return`, so a `while` loop here would be misleading -- the
-    // continuation happens through `streamingFinished` (uncompressed
-    // fast path) or `OnDecompressionFinished` (compressed path),
-    // both of which re-enter this function to drain the next file.
-    if (!mPendingOpenFiles.isEmpty())
+    // Iterative queue drain. Each iteration either:
+    //   (a) hands off async work -- compressed input (dispatches
+    //       decompression, returns), or uncompressed input that
+    //       successfully armed a parse worker -- in which case we
+    //       `return` and wait for the corresponding finished slot
+    //       (`OnDecompressionFinished` / `OnStreamingFinished`)
+    //       to re-enter this function for the next file;
+    //   (b) records a synchronous open failure in the appropriate
+    //       error bucket and continues the loop.
+    //
+    // The loop replaces a previous recursion where
+    // `ContinueOpenAfterPrepared`'s catch block called
+    // `StreamNextPendingFile()` on error -- fine in practice but
+    // stack-unbounded on a drop of many failing files.
+    while (!mPendingOpenFiles.isEmpty())
     {
         const QString file = mPendingOpenFiles.takeFirst();
 
@@ -2636,7 +2684,8 @@ void MainWindow::StreamNextPendingFile()
         // paths return `None` and we take the fast path below,
         // matching the pre-decompression behaviour byte-for-byte.
         // Genuinely broken paths (e.g. permission denied) still
-        // surface via the `LogFile` ctor a few lines later, so we
+        // surface via the `LogFile` ctor inside
+        // `ContinueOpenAfterPrepared` a few lines down, so we
         // don't need a redundant open-error check here.
         const auto codec =
             loglib::internal::DecompressingByteSource::SniffCodec(std::filesystem::path(file.toStdString()));
@@ -2645,17 +2694,20 @@ void MainWindow::StreamNextPendingFile()
             // Compressed input: run decompression on a worker thread
             // so the GUI stays responsive on multi-hundred-MB files.
             // Returns without touching the queue -- the finished
-            // slot re-enters `StreamNextPendingFile` after the
-            // parse hand-off (on success) or after pushing the
-            // error and continuing (on failure).
+            // slot re-enters this function after the parse hand-off
+            // (on success) or after pushing the error and continuing
+            // (on failure).
             BeginAsyncDecompression(file, codec);
             return;
         }
 
-        // Uncompressed fast path: identical to the pre-decompression
-        // flow -- open synchronously, hand off to the parser worker.
-        ContinueOpenAfterPrepared(file, std::filesystem::path(file.toStdString()), nullptr);
-        return;
+        // Uncompressed fast path: open synchronously, hand off to
+        // the parser worker. On sync error (`false` return), stay in
+        // the loop to try the next queued file.
+        if (ContinueOpenAfterPrepared(file, std::filesystem::path(file.toStdString()), nullptr))
+        {
+            return;
+        }
     }
 
     // Queue drained without a session ever arming: surface errors now;
@@ -2675,7 +2727,7 @@ void MainWindow::StreamNextPendingFile()
     }
 }
 
-void MainWindow::ContinueOpenAfterPrepared(
+bool MainWindow::ContinueOpenAfterPrepared(
     const QString &originalPath,
     const std::filesystem::path &effectivePath,
     std::shared_ptr<loglib::internal::DecompressingByteSource> decompressionAnchor
@@ -2716,8 +2768,12 @@ void MainWindow::ContinueOpenAfterPrepared(
         // anywhere -- we never handed it off to the LogFile below.
         // That releases the `DecompressingByteSource`, which deletes
         // the temp file via its dtor.
-        StreamNextPendingFile();
-        return;
+        //
+        // Return `false` so the caller (`StreamNextPendingFile` for
+        // uncompressed opens, `OnDecompressionFinished` for the
+        // post-decompression tail) knows we did NOT hand off to a
+        // parse worker and can continue draining the queue.
+        return false;
     }
 
     // Bind the decompression anchor's lifetime to this specific
@@ -2820,6 +2876,8 @@ void MainWindow::ContinueOpenAfterPrepared(
     {
         mModel->AppendStreaming(std::move(fileSource), std::move(parseCallable));
     }
+    // Parse worker armed; caller unwinds and awaits `streamingFinished`.
+    return true;
 }
 
 void MainWindow::BeginAsyncDecompression(const QString &originalPath, loglib::internal::DecompressingByteSource::Codec codec)
@@ -2838,7 +2896,6 @@ void MainWindow::BeginAsyncDecompression(const QString &originalPath, loglib::in
     mDecompressionTotalBytesIn.storeRelaxed(sizeEc ? 0 : static_cast<qint64>(compressedSize));
 
     mDecompressionOriginalPath = originalPath;
-    mDecompressionTempPathHint.clear();
     // Pass the codec name's size explicitly rather than relying on
     // `.data()` being NUL-terminated. `CodecName` currently returns
     // string_views over static string literals so `.data()` happens
@@ -2953,11 +3010,11 @@ void MainWindow::ShowDecompressionProgress()
             mDecompressionStopSource.request_stop();
         });
     }
-    // `reset()` restores the dialog to the "no operation" state and
-    // hides it. `setValue(0)` then starts the estimation clock so
-    // `minimumDuration` re-arms cleanly for this open. Two calls
-    // to `setValue(0)` (one before, one after `reset()`) is dead
-    // code -- `reset()` throws the pre-value away.
+    // `reset()` restores the dialog to the "no operation" state
+    // and hides it. `setValue(0)` after `reset()` then starts the
+    // estimation clock cleanly so `minimumDuration` re-arms for
+    // this open (each `setValue` after a `reset` starts a fresh
+    // deferred-show timer inside `QProgressDialog`).
     mDecompressionProgressDialog->reset();
     mDecompressionProgressDialog->setValue(0);
 
@@ -2966,7 +3023,19 @@ void MainWindow::ShowDecompressionProgress()
         mDecompressionPollTimer = new QTimer(this);
         mDecompressionPollTimer->setInterval(DECOMPRESSION_POLL_INTERVAL_MS);
         connect(mDecompressionPollTimer, &QTimer::timeout, this, [this]() {
-            if (!mDecompressionProgressDialog)
+            // Re-entry guard. `QProgressDialog::setValue` on a
+            // `Qt::WindowModal` dialog calls
+            // `QCoreApplication::processEvents()` internally, which
+            // can drain a queued `QFutureCallOutEvent` and dispatch
+            // `OnDecompressionFinished` mid-lambda. That slot
+            // tears the dialog down + possibly starts the next
+            // pending file's decompression, so by the time control
+            // returns here `mDecompressionProgressDialog` may point
+            // at a *different* run's state (or have been reset).
+            // Bailing out when the in-flight flag has been cleared
+            // avoids scribbling a stale label onto a hidden or
+            // re-armed dialog.
+            if (!mDecompressionInFlight || !mDecompressionProgressDialog)
             {
                 return;
             }
@@ -2984,6 +3053,17 @@ void MainWindow::ShowDecompressionProgress()
             {
                 const int pct = static_cast<int>((100 * bytesIn) / total);
                 mDecompressionProgressDialog->setValue(std::min(pct, 100));
+                // Recheck the re-entry guard: `setValue` above may
+                // have pumped a nested event loop that fired
+                // `OnDecompressionFinished`, torn the dialog down,
+                // and (if the queue has more files) started the
+                // next open. Continuing to touch the dialog here
+                // would then either poke a hidden widget or
+                // overwrite a label the next run just set.
+                if (!mDecompressionInFlight || !mDecompressionProgressDialog)
+                {
+                    return;
+                }
                 // Compressed bytes only -- the worker reports the
                 // *input* it has consumed, not the decompressed
                 // output. The distinction matters when the user
@@ -3004,10 +3084,6 @@ void MainWindow::ShowDecompressionProgress()
             else
             {
                 labelText = tr("%1\nPreparing\u2026").arg(header);
-            }
-            if (!mDecompressionTempPathHint.isEmpty())
-            {
-                labelText += tr("\n\u2192 %1").arg(mDecompressionTempPathHint);
             }
             mDecompressionProgressDialog->setLabelText(labelText);
         });
@@ -3035,7 +3111,6 @@ void MainWindow::TeardownDecompressionProgress()
         mDecompressionProgressDialog->reset();
         mDecompressionProgressDialog->hide();
     }
-    mDecompressionTempPathHint.clear();
 }
 
 void MainWindow::CancelInFlightDecompression()
@@ -3208,7 +3283,17 @@ void MainWindow::OnDecompressionFinished()
     // for exactly as long as the LogFile's mmap does (and gets
     // unlinked immediately after the mmap unmaps, in mmap-safe
     // destruction order).
-    ContinueOpenAfterPrepared(mDecompressionOriginalPath, effectivePath, std::move(dbs));
+    //
+    // If the mmap of the just-decompressed temp file itself failed
+    // (transient FS pressure, AV interference, ...),
+    // `ContinueOpenAfterPrepared` records that in
+    // `mPendingDecompressionErrors` and returns `false`; drain the
+    // remainder of the queue so a mixed drop still surfaces the
+    // rest of the batch.
+    if (!ContinueOpenAfterPrepared(mDecompressionOriginalPath, effectivePath, std::move(dbs)))
+    {
+        StreamNextPendingFile();
+    }
 }
 
 void MainWindow::OpenLogStream()

@@ -433,6 +433,26 @@ public:
     {
         return mDecompressionInFlight;
     }
+
+    /// Test-only cancel injection: raise the same stop request that
+    /// `QProgressDialog::canceled` sends when the user hits Cancel.
+    /// The dialog itself is suppressed under `SetSuppressDialogsForTest`
+    /// (`ShowDecompressionProgress` early-returns), so the
+    /// production `canceled -> request_stop` wiring is unreachable
+    /// from tests -- this shim gives regression tests a way to
+    /// exercise the cancel path (worker unwinds via
+    /// `DecompressionCancelled`, `OnDecompressionFinished` posts the
+    /// toast, next queued file drains).
+    ///
+    /// No-op when no decompression is in flight. Callers still need
+    /// to pump the event loop to drive the finished slot.
+    void RequestDecompressionCancelForTest()
+    {
+        if (mDecompressionInFlight)
+        {
+            mDecompressionStopSource.request_stop();
+        }
+    }
 #endif
 
 protected:
@@ -754,7 +774,17 @@ private:
     /// compressed).
     /// @p decompressionAnchor keeps a decompressed temp file alive
     /// for the parse's duration; nullptr for uncompressed opens.
-    void ContinueOpenAfterPrepared(
+    ///
+    /// Returns `true` if a parse worker was armed (caller must
+    /// unwind and wait for `streamingFinished`), or `false` if a
+    /// synchronous open error was accumulated into the appropriate
+    /// error bucket (caller should continue draining
+    /// `mPendingOpenFiles`). Splitting this decision out of the
+    /// function's body -- instead of the previous "recurse into
+    /// `StreamNextPendingFile` from the catch block" pattern -- keeps
+    /// the pending-queue drain iterative even when every file in a
+    /// large drop fails synchronously.
+    [[nodiscard]] bool ContinueOpenAfterPrepared(
         const QString &originalPath,
         const std::filesystem::path &effectivePath,
         std::shared_ptr<loglib::internal::DecompressingByteSource> decompressionAnchor
@@ -1466,11 +1496,6 @@ private:
     /// the original filename even after the worker cleared its
     /// local copy.
     QString mDecompressionOriginalPath;
-
-    /// The temp path selected by the worker (revealed once the
-    /// worker starts). Left empty until `OnDecompressionFinished`
-    /// pulls it off the shared_ptr.
-    QString mDecompressionTempPathHint;
 
     /// Human-readable codec name (`"gzip"` / `"bzip2"` / `"xz"` /
     /// `"zstd"`) for the file currently being decompressed. Set by
