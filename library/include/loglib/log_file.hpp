@@ -23,30 +23,23 @@ public:
     /// Throws `std::runtime_error` if the file cannot be opened or mapped.
     explicit LogFile(std::filesystem::path filePath);
 
-    /// Defaulted destructor is spelled out so the rule-of-five is
-    /// explicit: this class deletes copy + move-assign but keeps
-    /// move construction; the compiler-synthesised destructor is
-    /// the correct behaviour (reverse-declaration-order member
-    /// destruction is exactly what preserves the mmap-before-anchor
-    /// contract documented on `mLifetimeAnchor`).
+    /// Explicit `= default` spelling makes the rule-of-five
+    /// explicit. Reverse-declaration-order member destruction
+    /// (mmap first, then anchor) is exactly what upholds the
+    /// contract on `mLifetimeAnchor`.
     ~LogFile() = default;
 
     LogFile(const LogFile &) = delete;
     LogFile &operator=(const LogFile &) = delete;
 
     LogFile(LogFile &&) noexcept = default;
-    /// Move-assignment is **deliberately deleted**. The compiler-
-    /// synthesised operator would assign members in declaration
-    /// order (`mLifetimeAnchor` first, then `mMmap`), which
-    /// destroys the LHS's anchor -- and therefore attempts to
-    /// unlink its temp file -- while `mMmap` is still holding the
-    /// mapping. On Windows that leaks the temp file silently
-    /// (`std::filesystem::remove` returns false without erroring
-    /// while a mapping is open). No caller move-assigns a
-    /// `LogFile` today (they are exclusively owned via
-    /// `std::unique_ptr`), so making this a compile error is
-    /// cheaper than maintaining a hand-rolled swap-and-destroy
-    /// implementation just to preserve a facility nobody uses.
+    /// Deliberately deleted: the synthesised operator would assign
+    /// members in declaration order (`mLifetimeAnchor` before
+    /// `mMmap`), releasing the anchor -- and unlinking the temp
+    /// file -- while the mmap still holds the mapping. On Windows
+    /// `remove` silently fails then, leaking the temp. All callers
+    /// hold `LogFile` via `unique_ptr`, so deletion is cheaper than
+    /// a hand-rolled swap-and-destroy.
     LogFile &operator=(LogFile &&) noexcept = delete;
 
     const std::filesystem::path &GetPath() const;
@@ -85,41 +78,27 @@ public:
     /// Heap bytes owned by `mOwnedStrings` (capacity).
     size_t OwnedStringsMemoryBytes() const noexcept;
 
-    /// Attach an arbitrary RAII object whose destructor will run
-    /// **after** this `LogFile`'s mmap is unmapped **during
-    /// `~LogFile`**. The intended use case is transparent
-    /// decompression: the caller (`MainWindow`) creates a
-    /// `DecompressingByteSource` that stages a temp file, then
-    /// hands that shared_ptr in here. When the model drops the
-    /// last reference to this `LogFile`, the mmap unmap runs first
-    /// (member destruction order inside `~LogFile`), then the
-    /// anchor's dtor unlinks the temp file. That ordering matters
-    /// on Windows where `std::filesystem::remove` fails while a
-    /// mapping is open, and on POSIX where a stale mmap would
-    /// silently outlive the file.
+    /// Attach an RAII object whose destructor runs **after** this
+    /// `LogFile`'s mmap is unmapped in `~LogFile`. Used by
+    /// transparent decompression so the temp file only gets
+    /// unlinked once the mapping is torn down (Windows silently
+    /// fails `remove` while a mapping is open; POSIX would leave a
+    /// stale mmap over a deleted file).
     ///
-    /// Multiple attaches are supported: the implementation composes
-    /// each new anchor with the pre-existing one so both survive
-    /// until `~LogFile` unmaps the mmap. Order-of-destruction across
-    /// the composed anchors is LIFO (last-attached destroys first),
-    /// but every anchor's dtor runs *after* the mmap unmap. Move-
-    /// assignment on `LogFile` is deleted because the compiler-
-    /// synthesised operator would still assign members in
-    /// declaration order and defeat the guarantee -- attach the
-    /// anchor to the destination `LogFile` explicitly instead.
+    /// Multiple attaches are supported and composed LIFO
+    /// (last-attached destroys first); every anchor still runs
+    /// after the mmap unmap. Move-assignment on `LogFile` is
+    /// deleted because the synthesised operator would violate this
+    /// ordering -- attach to the destination `LogFile` explicitly.
     void AttachLifetimeAnchor(std::shared_ptr<void> anchor) noexcept;
 
 private:
     std::filesystem::path mPath;
 
-    /// Post-mmap RAII anchor; see `AttachLifetimeAnchor` for the
-    /// destruction-order contract. Declared **before** `mMmap` so
-    /// C++'s reverse-declaration destruction runs `mMmap`'s dtor
-    /// first (unmap), then this anchor's (unlink temp file). Do
-    /// not reorder without re-reading the doc comment above -- and
-    /// note that move-**assignment** is deleted for the same
-    /// reason (it would go in declaration order and thus release
-    /// the anchor before the mmap; see the `operator=` comment).
+    /// Post-mmap RAII anchor; see `AttachLifetimeAnchor`. Declared
+    /// **before** `mMmap` so reverse-declaration destruction
+    /// unmaps first, then releases the anchor. Do not reorder;
+    /// move-assignment is deleted for the same reason.
     std::shared_ptr<void> mLifetimeAnchor;
 
     mio::mmap_source mMmap;

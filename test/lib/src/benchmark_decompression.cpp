@@ -1,9 +1,8 @@
-// Decompression benchmark for `loglib::internal::DecompressingByteSource`.
-// Measures the end-to-end time of `DecompressingByteSource` + `ParseFile`
-// (JsonParser) on a ~500 MiB JSONL fixture compressed with each codec,
-// vs the uncompressed baseline. Runs only in release builds (see
-// `BENCHMARK_REQUIRES_RELEASE_BUILD`) and is opt-in via the `[benchmark]`
-// tag — `ctest -L benchmark` selects it.
+// Decompression benchmark for `DecompressingByteSource`. Measures
+// end-to-end `DecompressingByteSource` + `ParseFile` on a ~500 MiB
+// JSONL fixture per codec vs. the uncompressed baseline.
+// Release-only (see `BENCHMARK_REQUIRES_RELEASE_BUILD`); opt-in via
+// the `[benchmark]` tag (`ctest -L benchmark`).
 
 #include "benchmark_common.hpp"
 #include "common.hpp"
@@ -128,12 +127,10 @@ void CompressToBzip2(const std::filesystem::path &input, const std::filesystem::
     std::array<char, IO_CHUNK> inBuf{};
     std::array<char, IO_CHUNK> outBuf{};
     int action = BZ_RUN;
-    // Loop until `BZ2_bzCompress` reports `BZ_STREAM_END`. Do NOT
-    // exit early on `avail_in == 0` in FINISH mode -- bzip2 keeps
-    // returning `BZ_FINISH_OK` (not `BZ_STREAM_END`) while it
-    // flushes internally buffered output, and the final flush can
-    // exceed our 256 KiB output buffer for large inputs. Exiting
-    // when `avail_in` hits zero would silently truncate the file.
+    // Loop until BZ_STREAM_END. Do NOT exit on `avail_in == 0` in
+    // FINISH mode -- bzip2 returns BZ_FINISH_OK (not BZ_STREAM_END)
+    // while flushing internal buffers, and the final flush can
+    // exceed a single 256 KiB output buffer.
     while (true)
     {
         if (action != BZ_FINISH && strm.avail_in == 0)
@@ -168,7 +165,7 @@ void CompressToXz(const std::filesystem::path &input, const std::filesystem::pat
     REQUIRE((in.is_open() && out.is_open()));
 
     lzma_stream strm = LZMA_STREAM_INIT;
-    // Preset 1 keeps compression time reasonable for a 500 MiB fixture.
+    // Preset 1 keeps 500 MiB compression time reasonable.
     REQUIRE(::lzma_easy_encoder(&strm, 1, LZMA_CHECK_CRC64) == LZMA_OK);
 
     std::array<std::uint8_t, IO_CHUNK> inBuf{};
@@ -198,14 +195,12 @@ void CompressToXz(const std::filesystem::path &input, const std::filesystem::pat
     ::lzma_end(&strm);
 }
 
-// Multi-block .xz fixture, equivalent to what `xz -T <N> <file>` writes.
-// `lzma_stream_encoder_mt` splits input into blocks (one per worker) and
-// emits block headers with the compressed-size field populated -- both
-// preconditions that `lzma_stream_decoder_mt` needs to actually
-// parallelize decoding. The single-block fixture produced by
-// `CompressToXz` above is invisible to the MT decoder (it falls back to
-// single-threaded), so this second variant is the one that exercises
-// the MT decoder swap done in `library/src/decompressing_byte_source.cpp`.
+// Multi-block .xz fixture (equivalent to `xz -T <N>`).
+// `lzma_stream_encoder_mt` emits per-block headers with populated
+// compressed-size fields -- both preconditions for the MT decoder.
+// The single-block `CompressToXz` fixture is invisible to the MT
+// decoder (it falls back to ST), so this variant is what actually
+// exercises the MT decoder path.
 void CompressToXzMt(const std::filesystem::path &input, const std::filesystem::path &output)
 {
     std::ifstream in(input, std::ios::binary);
@@ -216,13 +211,13 @@ void CompressToXzMt(const std::filesystem::path &input, const std::filesystem::p
     std::uint32_t threads = ::lzma_cputhreads();
     if (threads == 0)
     {
-        threads = 2; // ensure >=2 blocks so the MT decoder has something to parallelize
+        threads = 2; // >=2 blocks so the MT decoder has work to split
     }
     lzma_mt mt = {};
     mt.flags = 0;
     mt.threads = threads;
     mt.timeout = 0;
-    mt.preset = 1; // matches CompressToXz preset so the fixture size stays comparable
+    mt.preset = 1; // match CompressToXz so fixture sizes stay comparable
     mt.filters = nullptr;
     mt.check = LZMA_CHECK_CRC64;
     REQUIRE(::lzma_stream_encoder_mt(&strm, &mt) == LZMA_OK);
@@ -307,11 +302,9 @@ struct FixtureLocations
     std::filesystem::path gzip;
     std::filesystem::path bzip2;
     std::filesystem::path xz;
-    // Multi-block .xz produced by `lzma_stream_encoder_mt` (equivalent
-    // to `xz -T <N>`), kept separate from the single-block `xz` fixture
-    // so the ST baseline number stays comparable across benchmark
-    // history; only the extra MT line moves as the decoder MT swap
-    // takes effect.
+    // Multi-block .xz (`xz -T <N>` equivalent). Kept separate from
+    // the ST fixture so the ST baseline stays comparable across
+    // benchmark history.
     std::filesystem::path xzMt;
     std::filesystem::path zstd;
 };
@@ -326,11 +319,9 @@ FixtureLocations BuildFixtures()
     paths.xzMt = BenchScratchPath(".jsonl.mt.xz");
     paths.zstd = BenchScratchPath(".jsonl.zst");
 
-    // Regenerate the uncompressed fixture every run so the on-disk size
-    // is deterministic across CI hosts (and always reflects the shape of
-    // `TestStructuredLogFile`'s streaming ctor). The named temporary
-    // pins the file for the lifetime of this scope so its destructor
-    // runs *after* the compressor loop below reads from it.
+    // Regenerate the uncompressed fixture every run so on-disk size
+    // is deterministic across CI hosts. The named temporary keeps
+    // the file alive past the compressor loop below.
     const TestStructuredLogFile fixtureBuilder(
         StreamedRecords{
             .count = BENCH_LINE_COUNT,
@@ -343,8 +334,8 @@ FixtureLocations BuildFixtures()
     );
     (void)fixtureBuilder;
 
-    // Compress once per codec. Skip when a stale artefact of the same size
-    // is already present — makes local iteration cheap after the first run.
+    // Compress once per codec; skip if a non-empty artefact already
+    // exists (cheap local iteration after the first run).
     auto ensureCompressed = [](const std::filesystem::path &input,
                                const std::filesystem::path &output,
                                void (*compress)(const std::filesystem::path &, const std::filesystem::path &)) {
@@ -392,8 +383,8 @@ TEST_CASE("Decompress + parse a 500 MiB JSONL fixture (all codecs)", "[.][benchm
 
     const FixtureLocations paths = BuildFixtures();
 
-    // Baseline: parse the uncompressed file directly. This calibrates
-    // the parser cost so codec overhead is easy to read off the numbers.
+    // Baseline: parser cost on the uncompressed file, for reading
+    // codec overhead off the numbers below.
     const std::size_t baselineBytes =
         TimeAndReport("Baseline: ParseFile on uncompressed JSONL", paths.uncompressed, false);
     (void)baselineBytes;
@@ -406,11 +397,9 @@ TEST_CASE("Decompress + parse a 500 MiB JSONL fixture (all codecs)", "[.][benchm
 
     TimeAndReport("Decompress + parse (gzip)", paths.gzip, true);
     TimeAndReport("Decompress + parse (bzip2)", paths.bzip2, true);
-    // Single-block .xz: `lzma_stream_decoder_mt` silently falls back to
-    // single-threaded here, so this line stays the ST-decode baseline.
+    // Single-block .xz: MT decoder falls back to ST here (baseline).
     TimeAndReport("Decompress + parse (xz, single-block)", paths.xz, true);
-    // Multi-block .xz (`xz -T <N>`): exercises the MT decoder path
-    // added to `library/src/decompressing_byte_source.cpp`.
+    // Multi-block .xz: exercises the MT decoder path.
     TimeAndReport("Decompress + parse (xz, multi-block/MT)", paths.xzMt, true);
     TimeAndReport("Decompress + parse (zstd)", paths.zstd, true);
 }

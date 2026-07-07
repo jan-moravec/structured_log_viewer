@@ -191,19 +191,14 @@ private:
     QString mPath;
 };
 
-// Gzip-compress @p bytes into a self-contained gzip stream using
-// zlib's `windowBits = 15 + 16` mode (gzip framing on top of raw
-// deflate). Kept in this TU rather than a shared helper because
-// only the transparent-decompression regression suite needs it, and
-// the codec-level round-trip lives in
-// `test/lib/src/test_decompressing_byte_source.cpp`.
+// Gzip-compress @p bytes into a self-contained gzip stream
+// (windowBits = 15 + 16). In-TU helper for the transparent-
+// decompression regression suite; the codec-level round-trip lives
+// in `test_decompressing_byte_source.cpp`.
 //
-// Fixture-setup failures use `qFatal` instead of `QVERIFY2`: this
-// helper returns a value, and `QVERIFY2` expands to `return;` on
-// failure -- which would be ill-formed in a non-void function. A
-// zlib init failure at test-fixture-build time means the whole
-// suite is broken anyway (system-level zlib misconfiguration), so
-// terminating hard is the right response.
+// Uses `qFatal` (not `QVERIFY2`, which expands to `return;` and is
+// ill-formed in a value-returning function). A zlib init failure at
+// fixture time means the whole suite is broken.
 QByteArray GzipCompressForTest(const QByteArray &bytes)
 {
     z_stream strm{};
@@ -214,9 +209,8 @@ QByteArray GzipCompressForTest(const QByteArray &bytes)
     }
     QByteArray out;
     out.resize(static_cast<qsizetype>(::deflateBound(&strm, static_cast<uLong>(bytes.size()))));
-    // zlib's `deflate` takes non-const `next_in` even though it does
-    // not mutate the input. Older headers require the cast; newer
-    // ones silently discard the const. Keep the cast for portability.
+    // zlib's `deflate` takes non-const `next_in`; cast kept for
+    // portability across zlib header vintages.
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
     strm.next_in = const_cast<Bytef *>(reinterpret_cast<const Bytef *>(bytes.constData()));
     strm.avail_in = static_cast<uInt>(bytes.size());
@@ -233,10 +227,10 @@ QByteArray GzipCompressForTest(const QByteArray &bytes)
     return out;
 }
 
-// Write @p bytes to @p path (binary, truncating). Used together
-// with `GzipCompressForTest` to stage compressed fixtures on disk
-// without pulling in Catch2's `TempBinaryFile` from the library tests.
-// Same `qFatal`-vs-`QVERIFY2` rationale as above.
+// Write @p bytes to @p path (binary, truncating). Used with
+// `GzipCompressForTest` to stage compressed fixtures without
+// pulling in the library-tests' `TempBinaryFile`. Same qFatal
+// rationale as above.
 void WriteBinaryForTest(const QString &path, const QByteArray &bytes)
 {
     QFile file(path);
@@ -9158,27 +9152,20 @@ private slots:
         );
     }
 
-    // Transparent decompression happy path: a gzip-compressed JSONL
-    // fixture streams through `MainWindow::StartStreamingOpenQueue`
-    // -> `SniffCodec` -> `BeginAsyncDecompression` ->
-    // `OnDecompressionFinished` -> `ContinueOpenAfterPrepared` and
-    // lands rows in the model. Row count, source locator (original
-    // .gz path, not the temp file), and detected format are all
-    // pinned so a regression in any of those seams surfaces here.
+    // Transparent decompression happy path: a gzip JSONL fixture
+    // streams through the full open pipeline (sniff -> decompress
+    // -> continue -> parse). Pins row count, the source locator
+    // (original .gz path, not the temp file), and detected format.
     void TestOpenCompressedFileDecodesAndStreams()
     {
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
-        // Skip the potential progress dialog on slow runners; the
-        // decompression completes in a few ms for this size but
-        // the modal would still steal focus in headless CI.
+        // Skip the potential progress dialog on slow runners.
         mWindow->SetSuppressDialogsForTest(true);
 
-        // 500 lines is small enough to decompress well under
-        // `DECOMPRESSION_DIALOG_DEFER_MS` on any runner, so the
-        // dialog never even appears -- but large enough that the
-        // decompression is genuinely async (worker on the thread
-        // pool + queued `finished` callout).
+        // 500 lines: well below `DECOMPRESSION_DIALOG_DEFER_MS` on
+        // any runner but still large enough that decompression is
+        // genuinely async (worker + queued `finished` callout).
         QStringList fixtureLines;
         fixtureLines.reserve(500);
         for (int i = 0; i < 500; ++i)
@@ -9202,12 +9189,9 @@ private slots:
         QVERIFY(finishedSpy.isValid());
 
         mWindow->OpenFilesForTest({path}, MainWindow::OpenMode::Replace);
-        // Decompression is async: `mDecompressionInFlight` must be
-        // observably true immediately after the call returns (before
-        // any events pump). This is the same precondition the
-        // Append-during-decompression regression relies on; if it
-        // ever stops holding, the fixture selection above needs
-        // revisiting.
+        // The decompression flag must be set synchronously (before
+        // any events pump). Same precondition as the Append-during-
+        // decompression regression; fixture size ensures it holds.
         QVERIFY2(
             mWindow->IsDecompressionInFlightForTest(),
             "gzip open must arm the async decompression worker synchronously; without this precondition the "
@@ -9223,8 +9207,8 @@ private slots:
         QCOMPARE(model->rowCount(), fixtureLines.size());
 
         // Session locator must be the ORIGINAL compressed path --
-        // the temp file is a per-open implementation detail and
-        // must never appear in a persisted descriptor.
+        // the temp file is a per-open implementation detail and must
+        // never appear in a persisted descriptor.
         const QTemporaryDir savedDir;
         QVERIFY(savedDir.isValid());
         const QString sessionPath = savedDir.filePath(QStringLiteral("compressed_happy.json"));
@@ -9237,22 +9221,17 @@ private slots:
         QCOMPARE(
             QString::fromStdString(probe.Configuration().source->locators.front()), logapp::CanonicalDisplayPath(path)
         );
-        // Format sniff runs against the *decompressed* bytes; JSON
-        // Lines must be detected even though the file extension
-        // suffix (`.jsonl.gz`) would tempt an extension-based
-        // classifier to over-index.
+        // Format sniff runs on the DECOMPRESSED bytes -- extension
+        // (`.jsonl.gz`) must not fool the classifier.
         QCOMPARE(probe.Configuration().source->format, loglib::LogConfiguration::Source::Format::Json);
     }
 
-    // Regression for the review note "B1": appending a file (of any
-    // codec) while a decompression is in flight must queue behind the
-    // pending worker instead of racing it. Prior to the guard in
-    // `StartStreamingOpenQueue`, this scenario either wiped the
-    // Append's rows when the decompression's `BeginStreaming`
-    // finished second, or tripped `LogModel::AppendStreaming`'s
-    // `Q_ASSERT(!mStreamingWatcher->isRunning())` when it finished
-    // first. The append must land after the decompressed file
-    // streams, and the total row count must equal the sum of both.
+    // Regression: appending during an in-flight decompression must
+    // queue behind the worker instead of racing it. Pre-fix, this
+    // either wiped the Append's rows (decompression's `BeginStreaming`
+    // finished second) or tripped `AppendStreaming`'s assert
+    // (`!mStreamingWatcher->isRunning()`) when it finished first. The
+    // append lands after the decompressed file; total = sum of both.
     void TestAppendDuringDecompressionQueuesBehindWorker()
     {
         auto *model = mWindow->Model();
@@ -9289,51 +9268,43 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        // Step 1: arm the compressed open. Do NOT pump events --
-        // we deliberately race the append against a synchronously-
-        // armed decompression worker so the timing is deterministic.
+        // Step 1: arm the compressed open WITHOUT pumping events so
+        // the append races a synchronously-armed decompression worker
+        // (deterministic timing).
         mWindow->OpenFilesForTest({gzipPath}, MainWindow::OpenMode::Replace);
         QVERIFY2(
             mWindow->IsDecompressionInFlightForTest(),
             "test precondition: gzip decompression must be in flight before the append call lands"
         );
 
-        // Step 2: append the uncompressed file while the guard
-        // above holds. Without the fix, this call would either
-        // clobber `mPendingOpenFiles` and race `BeginStreaming`
-        // (row loss when the decompression later resets the model)
-        // or drop through the "fall-through" branch and dispatch a
-        // second worker that trips `AppendStreaming`'s assert
-        // once the decompression completes.
+        // Step 2: append while the guard above still holds. Pre-fix,
+        // this would either clobber `mPendingOpenFiles` and race
+        // `BeginStreaming` (row loss when decompression resets the
+        // model), or fall through and dispatch a second worker that
+        // tripped `AppendStreaming`'s assert.
         mWindow->OpenFilesForTest({appendFixture.Path()}, MainWindow::OpenMode::Append);
-        // The Append must have taken the "queue" branch, NOT the
-        // "arm the fast path" branch. The former leaves the
-        // decompression flag set; the latter would have cleared it
-        // (only `OnDecompressionFinished` / `CancelInFlightDecompression`
-        // clear the flag, and neither runs synchronously here).
+        // Append must have taken the "queue" branch; only the
+        // finished / cancel slots clear the flag, and neither runs
+        // synchronously here.
         QVERIFY2(
             mWindow->IsDecompressionInFlightForTest(),
             "Append during in-flight decompression must not cancel the pending worker; the guard should defer "
             "the append into mPendingOpenFiles and leave the decompression running"
         );
 
-        // Two files -> two streamingFinished events (one per
-        // BeginStreaming / AppendStreaming pair). The decompressed
-        // one fires first, then the uncompressed append.
+        // Two files -> two `streamingFinished` events (decompressed
+        // first, then the uncompressed append).
         while (finishedSpy.count() < 2)
         {
             QVERIFY2(finishedSpy.wait(10000), "both compressed + appended sessions must finish");
         }
         QCoreApplication::processEvents();
 
-        // Total rows = gz payload + append payload. A row-loss
-        // regression would leave only one file's rows here.
+        // Row-count == sum of both files (row-loss would leave only one).
         QCOMPARE(model->rowCount(), gzipLines.size() + appendLines.size());
 
-        // Load order preserved: the .gz was queued first, so its
-        // locator is index 0 and the appended file is index 1.
-        // Both locators must be the ORIGINAL user-facing paths (the
-        // .gz path, not the decompressed temp file's).
+        // Locators must preserve load order and be the ORIGINAL
+        // user-facing paths (not the decompressed temp file).
         const QTemporaryDir savedDir;
         QVERIFY(savedDir.isValid());
         const QString sessionPath = savedDir.filePath(QStringLiteral("append_during_decompression.json"));
@@ -9352,41 +9323,26 @@ private slots:
         );
     }
 
-    // Regression for the review note "compressed follow-up in a
-    // multi-file queue is torn down mid-chain".
-    //
-    // When `OnStreamingFinished(Success)` chains to
-    // `StreamNextPendingFile` and the next queued file happens to
-    // be compressed, `StreamNextPendingFile` dispatches the async
-    // decompression worker and returns without starting a parse.
-    // The subsequent guard `if (mModel->IsStreamingActive())`
-    // (line ~2500 in `OnStreamingFinished`) then evaluates false --
-    // no parse worker is running, only a decompression worker --
-    // and the function falls through to the session teardown
-    // block, setting `mSessionMode = Idle`. When the decompression
-    // eventually finishes and `ContinueOpenAfterPrepared` runs,
-    // `IsSessionActive()` is false, so `BeginStreaming` is called
-    // instead of `AppendStreaming`, wiping the rows previously
-    // parsed from `a.log`.
-    //
-    // The fix adds `|| mDecompressionInFlight` to the guard so
-    // the teardown is suppressed while the compressed follow-up
-    // is decompressing. This test opens an uncompressed fixture
-    // first, immediately appends a gzip fixture (which queues
-    // behind the in-flight `a.log` parse), and verifies BOTH
-    // files' rows end up in the model with locators preserved
-    // in load order.
+    // Regression: a compressed file queued behind an uncompressed
+    // one used to wipe the prior file's rows. Pre-fix flow:
+    // `OnStreamingFinished(Success)` chained to
+    // `StreamNextPendingFile`, which dispatched decompression and
+    // returned; the "streaming active?" guard was then false (only
+    // a decompression worker was running), so teardown ran and
+    // `mSessionMode` went Idle. On finish,
+    // `ContinueOpenAfterPrepared` saw `!IsSessionActive()` and took
+    // `BeginStreaming` instead of `AppendStreaming`, wiping the
+    // uncompressed file's rows. The fix adds
+    // `|| mDecompressionInFlight` to the guard.
     void TestQueuedCompressedFollowUpKeepsPriorRows()
     {
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
         mWindow->SetSuppressDialogsForTest(true);
 
-        // Inflate the uncompressed fixture so its parse is
-        // guaranteed to still be running when the Append lands
-        // (matches the timing precondition used by
+        // Uncompressed fixture large enough that its parse is still
+        // running when the Append lands (same precondition as
         // `TestAppendDuringActiveStreamingDefersInsteadOfCrashing`).
-        // Short fixtures would race the GUI thread.
         QStringList fixtureLinesA;
         fixtureLinesA.reserve(500);
         for (int i = 0; i < 500; ++i)
@@ -9395,10 +9351,7 @@ private slots:
         }
         const TempJsonFile uncompressedFixture(fixtureLinesA);
 
-        // The compressed follow-up: any size works -- the
-        // regression is triggered by *any* codec-detected file
-        // dequeued after a Success. Keep it short so the second
-        // decompression completes quickly under CI.
+        // Compressed follow-up: any size works, keep it short.
         const QStringList gzipLines{
             QStringLiteral(R"({"idx": 0, "msg": "chain-b-0"})"),
             QStringLiteral(R"({"idx": 1, "msg": "chain-b-1"})"),
@@ -9420,24 +9373,18 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        // Step 1: arm the uncompressed open. Pump events so the
-        // parse worker actually starts (mirrors the setup used by
-        // `TestAppendDuringActiveStreamingDefersInsteadOfCrashing`).
+        // Step 1: arm the uncompressed open and pump so the parse
+        // worker actually starts.
         mWindow->OpenFilesForTest({uncompressedFixture.Path()}, MainWindow::OpenMode::Append);
         QCoreApplication::processEvents();
 
-        // Step 2: append the gzip fixture while `a.log`'s parse is
-        // still in flight. Existing behaviour: it queues behind
-        // the in-flight parse via `mPendingOpenFiles.append`.
+        // Step 2: append the gzip while the parse is still running;
+        // it queues in `mPendingOpenFiles`.
         mWindow->OpenFilesForTest({gzipPath}, MainWindow::OpenMode::Append);
 
-        // Both files must land in the model in load order:
-        //   - `a.log` (uncompressed, parses first)
-        //   - `b.log.gz` (chained after a.log's `OnStreamingFinished`
-        //     -> `StreamNextPendingFile` -> `BeginAsyncDecompression`)
-        // Without the guard fix, `a.log`'s rows would be wiped
-        // when the gzip's `BeginStreaming` runs, leaving only the
-        // gzip's rows in the model.
+        // Both files land in load order. Pre-fix, the gzip's
+        // `BeginStreaming` (taken because teardown had set Idle)
+        // would wipe the uncompressed rows.
         while (finishedSpy.count() < 2)
         {
             QVERIFY2(finishedSpy.wait(10000), "both queued sessions must finish");
@@ -9446,10 +9393,8 @@ private slots:
 
         QCOMPARE(model->rowCount(), fixtureLinesA.size() + gzipLines.size());
 
-        // Locator round-trip in load order (uncompressed first,
-        // compressed second). Both must be the ORIGINAL user-
-        // facing paths (the `.gz` path, not the decompressed
-        // temp file's).
+        // Locators in load order; both must be the ORIGINAL paths
+        // (not the decompressed temp file).
         const QTemporaryDir savedDir;
         QVERIFY(savedDir.isValid());
         const QString sessionPath = savedDir.filePath(QStringLiteral("queued_compressed_follow_up.json"));
@@ -9468,36 +9413,28 @@ private slots:
         );
     }
 
-    // Cancel-path regression. Verifies that requesting stop while a
-    // decompression worker is running unwinds cleanly:
-    //   - `mDecompressionInFlight` flips back to false;
-    //   - no `streamingFinished` is emitted (no session was ever
-    //     armed on the model, so a spurious Success / Cancelled here
-    //     would signal the cancel branch is starting BeginStreaming
-    //     by accident);
-    //   - no rows land in the model;
-    //   - a subsequent open on a different file still works
-    //     (proves the cancel drained the queue + reset the state
-    //     rather than wedging the pipeline).
+    // Cancel-path regression. Verifies a stop mid-decompression
+    // unwinds cleanly:
+    //   - flag flips back to false;
+    //   - no `streamingFinished` (nothing was ever armed on the
+    //     model; a spurious event would mean cancel accidentally
+    //     took the BeginStreaming path);
+    //   - no rows in the model;
+    //   - a subsequent open still works.
     //
     // Uses `RequestDecompressionCancelForTest` because the
-    // production `QProgressDialog::canceled` wiring lives inside
-    // the dialog, which is suppressed under
-    // `SetSuppressDialogsForTest`.
+    // production `QProgressDialog::canceled` wiring is unreachable
+    // under `SetSuppressDialogsForTest`.
     void TestCancelDecompressionUnwindsCleanly()
     {
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
         mWindow->SetSuppressDialogsForTest(true);
 
-        // Fixture sized so the worker is very likely to still be
-        // running when the cancel lands. Small (few-KB) fixtures
-        // race the cancel: the worker completes first and the test
-        // would pass vacuously along the Success path instead of
-        // exercising the cancel branch. 20K lines with padded
-        // messages produces ~2 MiB of uncompressed input, which
-        // gives the worker several `ObservePoll` checkpoints per
-        // 64 KiB input chunk to notice the stop token.
+        // Big enough that the worker is still running when cancel
+        // lands. Small fixtures race the cancel and pass vacuously.
+        // 20K padded lines -> ~2 MiB, plenty of `ObservePoll`
+        // checkpoints for the stop token.
         QByteArray uncompressed;
         uncompressed.reserve(3'000'000);
         const QString pad =
@@ -9520,38 +9457,27 @@ private slots:
         mWindow->OpenFilesForTest({gzipPath}, MainWindow::OpenMode::Replace);
         QVERIFY2(
             mWindow->IsDecompressionInFlightForTest(),
-            "precondition: decompression worker must be armed synchronously so the cancel below has a target"
+            "precondition: decompression worker must be armed synchronously so the cancel has a target"
         );
 
-        // Trip the stop token. The worker unwinds on its next
-        // `ObservePoll` (between 64 KiB input chunks); the finished
-        // slot then posts the cancel toast and returns to idle.
+        // Trip the stop token. Worker unwinds on its next
+        // `ObservePoll`; finished slot posts the toast, returns idle.
         mWindow->RequestDecompressionCancelForTest();
 
-        // Pump events until the finished slot has cleared the flag,
-        // or 10 s -- generous headroom for a slow CI runner. On
-        // failure this fires QFAIL with a diagnostic pointing at
-        // the flag itself, which is exactly the right seam.
+        // Pump until the flag clears (10 s headroom).
         QTRY_VERIFY_WITH_TIMEOUT(!mWindow->IsDecompressionInFlightForTest(), 10000);
 
-        // Cancel is deliberately NOT surfaced as a
-        // `streamingFinished` event: no `LogModel::BeginStreaming`
-        // ever ran, so the model's watcher was never armed.
-        // A non-zero count here would mean the cancel branch is
-        // accidentally taking the "arm session + call
-        // AppendStreaming" path -- either a plumbing bug or the
-        // wrong catch order in `OnDecompressionFinished`.
+        // Cancel must NOT surface as `streamingFinished`: nothing
+        // ever armed the model watcher. A non-zero count means the
+        // cancel path is accidentally starting a parse session.
         QCOMPARE(finishedSpy.count(), 0);
         QCOMPARE(model->rowCount(), 0);
 
-        // The cancel must leave the pipeline usable. A follow-up
-        // open on a different file exercises `StreamNextPendingFile`
-        // -> `ContinueOpenAfterPrepared` -> `BeginStreaming` starting
-        // from a clean slate, so any residual state left by the
-        // cancel (dangling watcher, stale `mCurrentSource`, unclosed
-        // `mSessionMode`, ...) surfaces as either the follow-up
-        // failing to finish or its rows getting appended onto the
-        // cancelled session's residue.
+        // Pipeline must remain usable. Follow-up on a different
+        // file exercises the full open path from a clean slate, so
+        // residual state (dangling watcher, stale mCurrentSource,
+        // wrong mSessionMode) surfaces as either no finish event
+        // or rows leaking into the cancelled session.
         const QStringList followUpLines{
             QStringLiteral(R"({"idx": 0, "msg": "after-cancel-0"})"),
             QStringLiteral(R"({"idx": 1, "msg": "after-cancel-1"})"),
@@ -9563,30 +9489,16 @@ private slots:
         QCOMPARE(model->rowCount(), followUpLines.size());
     }
 
-    // Chain-terminal decompression failure regression. Pre-fix,
-    // opening `[good.log, corrupt.gz]` in Append mode ran the
-    // pipeline as:
-    //   - `good.log` parses successfully -> `OnStreamingFinished(Success)`
-    //   - chain to `corrupt.gz` -> `BeginAsyncDecompression`
-    //   - `OnStreamingFinished` early-returns on `mDecompressionInFlight`
-    //   - worker fails, `OnDecompressionFinished` pushes an entry
-    //     into `mPendingDecompressionErrors`, calls
-    //     `StreamNextPendingFile()`
-    //   - `SNP` finds empty queue, sees `IsSessionActive() == true`
-    //     and skips its own drain, returns
-    // ...and now the error sits in `mPendingDecompressionErrors`
-    // forever: `mSessionMode` is still `Static` with no live worker,
-    // so `OnStreamingFinished` never fires again to drain it. The
-    // user sees the app in a wedged "Parsing corrupt.gz" state with
-    // no error dialog / dock entry. `NewSession` or the next
-    // destructive open silently clears the error bucket.
+    // Regression: a decompression failure at the end of a multi-file
+    // queue used to be silently lost. Pre-fix, opening `[good.log,
+    // corrupt.gz]` in Append ended with the error entry stuck in
+    // `mPendingDecompressionErrors`, `mSessionMode` still `Static`,
+    // and no live worker to drain it -- user sees a wedged
+    // "Parsing corrupt.gz" state.
     //
-    // The fix (`FinalizeAfterDecompressionIfChainTerminal` called
-    // at the end of the error / cancel / mmap-fail branches of
-    // `OnDecompressionFinished`) drains both error buckets under
-    // their own titles when no successor worker was armed AND
-    // settles the UI back to Idle so the previous file's rows
-    // stay accessible.
+    // Fix: `FinalizeAfterDecompressionIfChainTerminal` drains both
+    // error buckets under their own titles when no successor worker
+    // was armed, and settles the UI back to Idle. Prior rows survive.
     void TestChainTerminalDecompressionFailureSurfacesError()
     {
         auto *model = mWindow->Model();
@@ -9598,14 +9510,10 @@ private slots:
         dock->ResetSessionState();
         const int startingErrorCount = dock->Count();
 
-        // Uncompressed fixture: 500 lines to guarantee its parse is
-        // still running when the corrupt .gz Append lands (matches
-        // the timing precondition used by
-        // `TestQueuedCompressedFollowUpKeepsPriorRows`). Short
-        // fixtures let the queue drain before the Append is even
-        // dispatched, which would put the second file into
-        // `mPendingOpenFiles` via a *fresh* `StartStreamingOpenQueue`
-        // rather than the chain path the regression targets.
+        // 500-line uncompressed fixture so its parse is still
+        // running when the corrupt .gz Append lands (short fixtures
+        // drain first and hit the fresh-open path, not the chain
+        // path this regression targets).
         QStringList uncompressedLines;
         uncompressedLines.reserve(500);
         for (int i = 0; i < 500; ++i)
@@ -9614,19 +9522,11 @@ private slots:
         }
         const TempJsonFile uncompressedFixture(uncompressedLines);
 
-        // Corrupt gzip: valid magic bytes (`SniffCodec` returns
-        // `Gzip` so the dispatch takes the decompression branch)
-        // followed by a truncated deflate stream. The worker will
-        // read the header, start inflating, and fail on the
-        // premature end-of-stream inside `DecodeGzip`, throwing
-        // an exception that `OnDecompressionFinished` catches on
-        // the non-`DecompressionCancelled` branch.
+        // Valid gzip magic + header, truncated deflate stream ->
+        // sniff routes to gzip, decoder errors on premature EOF.
         const QByteArray validGzip =
             GzipCompressForTest(QByteArrayLiteral(R"({"idx": 0, "msg": "will-not-survive-truncation"})"));
         QVERIFY2(validGzip.size() > 12, "gzip helper must produce a real stream (magic + header + payload + footer)");
-        // Truncate mid-payload: keep the magic + header but chop
-        // off the deflate stream so the decoder errors on
-        // premature EOF.
         const QByteArray corruptGzip = validGzip.left(12);
 
         const QTemporaryDir tempDir;
@@ -9637,50 +9537,33 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        // Arm the uncompressed open; pump one round so the parse
-        // worker actually starts before we append the .gz.
+        // Arm the uncompressed open and pump so the parse starts.
         mWindow->OpenFilesForTest({uncompressedFixture.Path()}, MainWindow::OpenMode::Append);
         QCoreApplication::processEvents();
 
-        // Append the corrupt .gz while the first parse is in
-        // flight -- queues behind the running parse in
-        // `mPendingOpenFiles`.
+        // Append the corrupt .gz while the parse is running --
+        // queues in `mPendingOpenFiles`.
         mWindow->OpenFilesForTest({gzipPath}, MainWindow::OpenMode::Append);
 
-        // Wait for `good.log` to reach terminal state
-        // (`streamingFinished(Success)` -> chain to `corrupt.gz`).
+        // Wait for `good.log` to finish (chains into decompression).
         QVERIFY2(finishedSpy.wait(10000), "first file must reach terminal state before the chain kicks in");
-        // Now drive the event loop until the chained decompression
-        // has finished and the pipeline has settled: worker
-        // unwinds via the error path, `OnDecompressionFinished`
-        // clears `mDecompressionInFlight` and calls the finalize
-        // helper. Two conditions in one wait -- IsStreamingActive
-        // returns false the moment `good.log` finished, so we
-        // gate on the decompression flag too.
+        // Drive events until the chained decompression fails and the
+        // pipeline settles. `IsStreamingActive` clears when
+        // `good.log` finishes, so also gate on the decompression flag.
         QTRY_VERIFY_WITH_TIMEOUT(!mWindow->IsDecompressionInFlightForTest(), 10000);
         QTRY_VERIFY_WITH_TIMEOUT(!model->IsStreamingActive(), 10000);
         QCoreApplication::processEvents();
 
-        // Regression assertion #1: the previous file's rows must
-        // survive. Pre-fix these were preserved too -- the bug was
-        // silent-error-loss, not row-loss -- but the assertion is
-        // cheap and makes the intent obvious.
+        // Prior rows survive (the bug was silent-error-loss, not
+        // row-loss; assertion here for intent).
         QCOMPARE(model->rowCount(), uncompressedLines.size());
 
-        // Regression assertion #2: the decompression failure must
-        // surface in the parse-errors dock. Pre-fix, the entry sat
-        // in `mPendingDecompressionErrors` forever and the dock
-        // count was unchanged.
+        // The decompression failure surfaces in the dock.
         QCOMPARE(dock->Count(), startingErrorCount + 1);
 
-        // Locate the entry and confirm it landed under the
-        // `Error Decompressing File` header (as opposed to
-        // `Error Opening File`). Categorising the failure
-        // correctly is the whole reason we kept a second error
-        // bucket in the first place; a regression that lumps
-        // decompression failures back into the open-error bucket
-        // would degrade the user-facing message without changing
-        // the count.
+        // Entry must land under `Error Decompressing File`, not
+        // `Error Opening File`. The whole point of the second error
+        // bucket is correct categorisation.
         auto *list = dock->findChild<QListWidget *>(QStringLiteral("parseErrorsList"));
         QVERIFY2(list != nullptr, "ParseErrorsDock must expose its internal QListWidget");
         bool foundDecompressionHeader = false;

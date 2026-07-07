@@ -339,22 +339,15 @@ else()
     find_package(asio REQUIRED)
 endif()
 
-# Compression codecs used by `loglib::internal::DecompressingByteSource`
-# for transparent decompression of `.gz` / `.bz2` / `.xz` / `.zst` in the
-# static open path. Each codec is linked statically (`BUILD_SHARED_LIBS
-# OFF`) so no runtime DLL is staged next to the executable on Windows.
-# All four are PRIVATE deps of `loglib`; no public header exposes any
-# codec type (all codec-specific state lives inside the .cpp).
-# zlib-ng in `ZLIB_COMPAT=ON` mode: preserves the classic zlib API
-# surface (`z_stream`, `inflate`, `deflateInit2`, ...) while adding
-# SIMD-accelerated inflate paths (SSE2 / PCLMUL / AVX2 on x86, NEON on
-# ARM). This is a drop-in swap for upstream `madler/zlib` -- the
-# consumer link line stays `ZLIB::ZLIB` and no `#include <zlib.h>` /
-# call-site changes are required. Compat mode also keeps the same
-# `zlibstatic` / `zlib` target names upstream zlib exports so the
-# alias below still works. Perf win: roughly 2x faster inflate on
-# x86_64 with AVX2 (see zlib-ng 2.2.3 release notes) which is what
-# every `.log.gz` in the static open path pays.
+# Compression codecs backing `DecompressingByteSource`. Statically
+# linked (`BUILD_SHARED_LIBS OFF`) so no runtime DLLs are staged.
+# All four are PRIVATE deps of `loglib` -- their types don't cross
+# the public header.
+#
+# zlib-ng in `ZLIB_COMPAT=ON` mode: drop-in for upstream `madler/zlib`
+# with the classic API surface, plus SIMD inflate (SSE2 / PCLMUL /
+# AVX2 on x86, NEON on ARM). ~2x faster inflate on x86_64 AVX2 vs.
+# upstream zlib; consumer link line stays `ZLIB::ZLIB`.
 if(NOT USE_SYSTEM_ZLIB)
     FetchContent_Declare(
         zlib
@@ -364,12 +357,11 @@ if(NOT USE_SYSTEM_ZLIB)
         EXCLUDE_FROM_ALL
     )
     block()
-        set(ZLIB_COMPAT ON) # provide the classic zlib API surface (z_stream, inflate, ...)
-        set(ZLIB_ALIASES ON) # export `zlib` / `zlibstatic` compat targets so downstream find matches
-        # `BUILD_TESTING=OFF` (not the deprecated `ZLIB_ENABLE_TESTS`) is
-        # how zlib-ng 2.3.x gates its test suite. Scoped to this block so
-        # the project-level `include(CTest)` further down keeps our own
-        # test binaries armed.
+        set(ZLIB_COMPAT ON) # classic zlib API surface (z_stream, inflate, ...)
+        set(ZLIB_ALIASES ON) # export `zlib` / `zlibstatic` compat targets
+        # zlib-ng 2.3.x gates its tests on BUILD_TESTING (not the
+        # deprecated ZLIB_ENABLE_TESTS). Scoped to this block so our
+        # own tests stay armed downstream.
         set(BUILD_TESTING OFF)
         set(WITH_GTEST OFF)
         set(WITH_BENCHMARKS OFF)
@@ -377,21 +369,15 @@ if(NOT USE_SYSTEM_ZLIB)
         set(CMAKE_POLICY_VERSION_MINIMUM 3.28) # silence zlib-ng's older cmake_minimum_required
         FetchContent_MakeAvailable(zlib)
     endblock()
-    # zlib-ng's `ZLIB_ALIASES=ON` exports `zlib` / `zlibstatic` targets
-    # matching upstream zlib's names, but in a static-only build (which
-    # is what we want here) they are ALIAS-to-alias chains rooted at the
-    # concrete `zlib-ng` target. `add_library(... ALIAS ...)` forbids
-    # pointing at another ALIAS (CMake 3.28 policy), so we anchor
-    # `ZLIB::ZLIB` on the concrete target directly. `zlib-ng` is always
-    # the underlying real library regardless of `BUILD_SHARED_LIBS`.
+    # In our static-only build, `ZLIB_ALIASES=ON` produces alias-to-alias
+    # chains rooted at the concrete `zlib-ng` target. CMake 3.28 forbids
+    # aliasing another alias, so anchor `ZLIB::ZLIB` directly on the
+    # concrete target.
     if(NOT TARGET ZLIB::ZLIB AND TARGET zlib-ng)
         add_library(ZLIB::ZLIB ALIAS zlib-ng)
     endif()
-    # Silence third-party warnings on the same concrete target.
-    # `target_include_directories` is intentionally NOT set here:
-    # zlib-ng already declares its generated `zlib.h` (from `zlib.h.in`
-    # in compat mode) via its own PUBLIC include-directories on
-    # `zlib-ng`.
+    # No `target_include_directories`: zlib-ng already declares its
+    # generated `zlib.h` (compat mode) as a PUBLIC include directory.
     if(TARGET zlib-ng)
         if(MSVC)
             target_compile_options(zlib-ng PRIVATE /w)
@@ -400,19 +386,16 @@ if(NOT USE_SYSTEM_ZLIB)
         endif()
     endif()
 else()
-    # System zlib -- either upstream `zlib` or a distro zlib-ng shipped
-    # in compat mode (e.g. Fedora / Arch). Both expose the same
-    # `ZLIB::ZLIB` target via CMake's Findzlib module, so no branching
-    # is needed here.
+    # System zlib -- upstream `zlib` or a distro zlib-ng in compat mode.
+    # Both expose `ZLIB::ZLIB` via CMake's Findzlib.
     find_package(ZLIB REQUIRED)
 endif()
 
 if(NOT USE_SYSTEM_BZIP2)
-    # Upstream bzip2 is distributed as raw .c sources with a hand-rolled
-    # Makefile — no CMakeLists. We fetch the libarchive mirror (which is
-    # a straight source copy of the sourceware release) and compile the
-    # canonical 7-file library manually into a static target. Same shape
-    # `find_package(BZip2)` produces so the consumer link line matches.
+    # Upstream bzip2 has no CMakeLists (Makefile only). Fetch the
+    # libarchive mirror (verbatim source copy) and build the canonical
+    # 7-file static library ourselves. Matches `find_package(BZip2)`
+    # target shape.
     FetchContent_Declare(
         bzip2
         GIT_REPOSITORY https://github.com/libarchive/bzip2.git
@@ -422,8 +405,8 @@ if(NOT USE_SYSTEM_BZIP2)
     )
     FetchContent_MakeAvailable(bzip2)
 
-    # The top-level project() only enables CXX; enable C now so the
-    # bzip2 .c files can be compiled. Idempotent when called twice.
+    # Top-level project() enables only CXX; enable C for bzip2's .c
+    # sources. Idempotent.
     enable_language(C)
 
     add_library(
@@ -441,8 +424,8 @@ if(NOT USE_SYSTEM_BZIP2)
     set_target_properties(bz2_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
     if(MSVC)
         target_compile_options(bz2_static PRIVATE /w)
-        # BZ_UNIX is picked automatically on POSIX via bzlib_private.h's
-        # `unix` macro; on Windows we need to disable UNIX quirks.
+        # bzlib_private.h auto-detects UNIX via the `unix` macro on
+        # POSIX; on Windows disable UNIX quirks and CRT warnings.
         target_compile_definitions(bz2_static PRIVATE _CRT_SECURE_NO_WARNINGS)
     else()
         target_compile_options(bz2_static PRIVATE -w)
@@ -456,14 +439,11 @@ else()
 endif()
 
 if(NOT USE_SYSTEM_XZ)
-    # SECURITY: do NOT downgrade below v5.6.2. Versions 5.6.0 and
-    # 5.6.1 shipped the CVE-2024-3094 "xz-utils" build-system
-    # backdoor (a `liblzma` payload activated when the library was
-    # loaded into `sshd`'s dependency chain, via `ifunc` hijacking);
-    # v5.6.2 was the first upstream release with the backdoor
-    # artefacts + infrastructure fully purged. Any dependabot /
-    # manual bump that lowers this pin must be treated as a
-    # supply-chain regression, not a routine downgrade.
+    # SECURITY: never downgrade below v5.6.2. v5.6.0 and 5.6.1 shipped
+    # the CVE-2024-3094 "xz-utils" build-system backdoor (liblzma
+    # payload triggered inside sshd's dependency chain via ifunc
+    # hijacking); v5.6.2 was the first release with the backdoor
+    # fully purged. Any downward bump is a supply-chain regression.
     FetchContent_Declare(
         xz
         GIT_REPOSITORY https://github.com/tukaani-project/xz.git
@@ -482,32 +462,24 @@ if(NOT USE_SYSTEM_XZ)
         set(XZ_MICROLZMA_ENCODER OFF)
         set(XZ_MICROLZMA_DECODER ON)
         set(XZ_LZIP_DECODER ON)
-        # Suppress upstream xz's CTest suite. xz's tests/tests.cmake
-        # wraps its `add_test(NAME test_bcj_exact_size ...)` etc. in
-        # an `if(BUILD_TESTING)` guard, but the guard runs in xz's
-        # inherited scope after `include(CTest)`; a plain
-        # `set(BUILD_TESTING OFF)` in this block is out-shadowed by
-        # the CMake CACHE variable that the top-level `include(CTest)`
-        # promoted to ON. Left unhandled that registers ~13
-        # `test_bcj_exact_size`/`test_check`/... tests whose
-        # executables the `XZ_TOOL_*` overrides above never even
-        # build, and they surface as `***Not Run` noise in our own
-        # `ctest`. Save + FORCE the CACHE to OFF for the scope of the
-        # FetchContent, then restore afterwards -- CMake does NOT
-        # revert cache mutations on block exit, so an explicit
-        # restore is required to keep our own test binaries armed in
-        # the sibling test subdirectories.
+        # Suppress xz's own CTest suite. xz's tests are gated on the
+        # `BUILD_TESTING` cache variable which the top-level
+        # `include(CTest)` promoted to ON, out-shadowing a plain
+        # `set()` here. Otherwise xz registers ~13 tests whose
+        # executables the `XZ_TOOL_*` flags above never build, so
+        # they show up as `***Not Run` noise. Save + FORCE OFF for
+        # the FetchContent scope, then restore -- cache mutations
+        # don't unwind on `endblock()`.
         get_property(_slv_saved_build_testing CACHE BUILD_TESTING PROPERTY VALUE)
         set(BUILD_TESTING OFF CACHE BOOL "Build the testing tree." FORCE)
         set(CMAKE_POLICY_VERSION_MINIMUM 3.28) # silence xz's older cmake_minimum_required
         FetchContent_MakeAvailable(xz)
         set(BUILD_TESTING ${_slv_saved_build_testing} CACHE BOOL "Build the testing tree." FORCE)
     endblock()
-    # xz exposes the C library as `liblzma`. Normalise to `LibLZMA::LibLZMA`
-    # so the consumer link line matches the `find_package(LibLZMA)` naming.
-    # xz's CMakeLists doesn't set INTERFACE_INCLUDE_DIRECTORIES for external
-    # consumers — its own build uses `-I` flags baked into add_library — so
-    # we attach the public API dir ourselves.
+    # Normalise `liblzma` -> `LibLZMA::LibLZMA` to match
+    # `find_package(LibLZMA)`. xz's CMakeLists doesn't set
+    # INTERFACE_INCLUDE_DIRECTORIES for external consumers, so attach
+    # the public API dir ourselves.
     if(TARGET liblzma)
         target_include_directories(liblzma SYSTEM INTERFACE $<BUILD_INTERFACE:${xz_SOURCE_DIR}/src/liblzma/api>)
         if(MSVC)
@@ -520,13 +492,11 @@ if(NOT USE_SYSTEM_XZ)
         add_library(LibLZMA::LibLZMA ALIAS liblzma)
     endif()
 else()
-    # `library/src/decompressing_byte_source.cpp` calls
-    # `lzma_stream_decoder_mt` (multi-threaded xz stream decoder), which
-    # first shipped in liblzma 5.4.0 (Dec 2022). Older distro packages
-    # (Ubuntu 20.04 ships 5.2.4, RHEL 8 ships 5.2.4, Debian 11 ships
-    # 5.2.5) would otherwise fail at link time with a missing-symbol
-    # error deep in loglib's build; requesting 5.4 up front gives a
-    # clean "package too old" diagnostic during configure instead.
+    # `decompressing_byte_source.cpp` calls `lzma_stream_decoder_mt`,
+    # which first shipped in liblzma 5.4.0. Requesting 5.4 turns the
+    # link-time missing-symbol error on older distros (Ubuntu 20.04,
+    # RHEL 8, Debian 11 all ship 5.2.x) into a clean configure-time
+    # "package too old" diagnostic.
     find_package(LibLZMA 5.4 REQUIRED)
 endif()
 
@@ -552,9 +522,9 @@ if(NOT USE_SYSTEM_ZSTD)
         set(CMAKE_POLICY_VERSION_MINIMUM 3.28) # silence zstd's older cmake_minimum_required
         FetchContent_MakeAvailable(zstd)
     endblock()
-    # Upstream exposes the static library as `libzstd_static`. Alias to
-    # `zstd::libzstd` so the consumer link line matches the pkg-config
-    # target the system find_package produces.
+    # Upstream exports the static lib as `libzstd_static`; alias to
+    # `zstd::libzstd` to match the pkg-config target system
+    # find_package produces.
     if(NOT TARGET zstd::libzstd)
         if(TARGET libzstd_static)
             add_library(zstd::libzstd ALIAS libzstd_static)
@@ -573,15 +543,11 @@ if(NOT USE_SYSTEM_ZSTD)
     endforeach()
 else()
     find_package(zstd REQUIRED)
-    # zstd's CMake config exports `zstd::libzstd_static` and
-    # `zstd::libzstd_shared` in modern releases; older ones only expose
-    # `zstd::libzstd`. Normalise, but PREFER the static variant on
-    # purpose: the FetchContent branch is static-only (see the
-    # `ZSTD_BUILD_SHARED OFF` block above) and the whole point of the
-    # switch is to avoid staging a `libzstd.dll` next to the binary at
-    # deploy time. Silently aliasing to `zstd::libzstd_shared` would
-    # reintroduce that runtime DLL / .so dependency on system-mode
-    # builds and diverge shipping-vs-CI artefacts.
+    # Modern zstd exports `zstd::libzstd_static` + `libzstd_shared`;
+    # older ones only `zstd::libzstd`. Prefer the static variant --
+    # our FetchContent branch is static-only, so aliasing to the
+    # shared target on system-mode builds would silently reintroduce
+    # a runtime libzstd DLL/.so dependency.
     if(NOT TARGET zstd::libzstd)
         if(TARGET zstd::libzstd_static)
             add_library(zstd::libzstd ALIAS zstd::libzstd_static)
@@ -600,11 +566,9 @@ else()
     endif()
 endif()
 
-# Whether we came from FetchContent or system mode, `loglib` links
-# `zstd::libzstd`; if the alias never resolved we'd otherwise fail
-# only at link time with a cryptic "cannot find -lzstd::libzstd"
-# diagnostic. Fail loudly at configure time so the misconfiguration
-# is obvious.
+# loglib links `zstd::libzstd` either way; fail loudly at configure
+# time if the alias never resolved (avoids a cryptic
+# "cannot find -lzstd::libzstd" at link time).
 if(NOT TARGET zstd::libzstd)
     message(
         FATAL_ERROR

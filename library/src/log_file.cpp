@@ -175,18 +175,12 @@ void LogFile::AttachLifetimeAnchor(std::shared_ptr<void> anchor) noexcept
 {
     if (mLifetimeAnchor)
     {
-        // Compose the incoming anchor with the pre-existing one so
-        // both survive until `~LogFile` (which unmaps `mMmap` first,
-        // then destroys the composite -- releasing both underlying
-        // anchors in the mmap-safe window). A plain
-        // `mLifetimeAnchor = std::move(anchor)` would drop the
-        // previous anchor *now*, while `mMmap` is still live, which
-        // on Windows silently leaks its temp file until process exit
-        // (`std::filesystem::remove` returns false without erroring
-        // while a mapping is open). Every production caller attaches
-        // exactly once per LogFile, so this branch is defensive
-        // rather than hot; tests that rebind the anchor still get
-        // the correct destruction order.
+        // Compose incoming + existing anchors so both survive to
+        // `~LogFile` (unmap first, then release composite). A plain
+        // assign would drop the previous anchor immediately, and
+        // on Windows that silently leaks the temp file (`remove`
+        // returns false while the mmap is open). Defensive branch --
+        // production callers attach exactly once.
         struct AnchorPair
         {
             std::shared_ptr<void> previous;

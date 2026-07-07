@@ -40,9 +40,9 @@ using loglib::internal::DecompressionCancelled;
 namespace
 {
 
-/// Small RAII fixture: a unique on-disk path that gets removed on
-/// destruction. Simpler than `TestLogFile` because we write raw bytes
-/// (compressed streams) rather than newline-terminated text.
+/// RAII fixture with a unique on-disk path removed on destruction.
+/// Used for raw-byte writes (compressed streams); `TestLogFile` is
+/// text-oriented.
 class TempBinaryFile
 {
 public:
@@ -92,13 +92,12 @@ private:
 std::vector<std::uint8_t> CompressGzip(const std::string &input)
 {
     z_stream strm{};
-    // `windowBits = 15 + 16` selects gzip framing (raw deflate + gzip header).
+    // windowBits = 15 + 16: gzip framing (raw deflate + gzip header).
     REQUIRE(::deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) == Z_OK);
     std::vector<std::uint8_t> out;
     out.resize(::deflateBound(&strm, static_cast<uLong>(input.size())));
-    // zlib's `deflate` takes non-const `next_in` even though it doesn't
-    // mutate the input. Older headers require the cast; new ones just
-    // discard the const in an implicit conversion. Keep the cast for portability.
+    // zlib's `deflate` takes non-const `next_in`; cast kept for
+    // portability across zlib header vintages.
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
     strm.next_in = const_cast<Bytef *>(reinterpret_cast<const Bytef *>(input.data()));
     strm.avail_in = static_cast<uInt>(input.size());
@@ -117,8 +116,7 @@ std::vector<std::uint8_t> CompressBzip2(const std::string &input)
     std::vector<std::uint8_t> out;
     auto outLen = static_cast<unsigned int>(input.size() + (input.size() / 100) + 800);
     out.resize(outLen);
-    // `BZ2_bzBuffToBuffCompress` takes a non-const `char *` even though
-    // it does not mutate the input; strip the const for the call.
+    // `BZ2_bzBuffToBuffCompress` takes non-const `char *`.
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
     char *inputBuf = const_cast<char *>(input.data());
     const int rc = ::BZ2_bzBuffToBuffCompress(
@@ -177,16 +175,14 @@ std::string SampleContent(std::size_t targetBytes)
 {
     std::string out;
     out.reserve(targetBytes);
-    // Deterministic seed for reproducible test fixtures. Test data
-    // must not vary across runs; a fixed literal is exactly right here.
+    // Fixed seed for reproducible fixtures.
     // NOLINTNEXTLINE(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
     std::mt19937 gen(42);
     while (out.size() < targetBytes)
     {
-        // Mix of repetition (compression-friendly) and pseudo-random
-        // (compression-resistant) so all codecs produce non-trivial
-        // output. Each "record" is a JSONL-style line so integration
-        // tests can reuse the same shape.
+        // Mix of repetition + pseudo-random keeps every codec's
+        // output non-trivial. JSONL shape so integration tests can
+        // reuse the fixture.
         out += "{\"index\":";
         out += std::to_string(gen());
         out += ",\"msg\":\"decompression fixture line - hello world hello world\"}\n";
@@ -283,7 +279,7 @@ TEST_CASE("DecompressingByteSource: detects codec by content, not extension", "[
     const std::string content = SampleContent(4 * 1024);
     const auto compressed = CompressGzip(content);
 
-    // Extension deliberately not .gz — sniffing must still detect gzip.
+    // Non-.gz extension: sniffing must still detect gzip.
     const TempBinaryFile fixture(".log");
     fixture.WriteBytes(compressed);
 
@@ -309,13 +305,9 @@ TEST_CASE("DecompressingByteSource: multi-member gzip stream", "[DecompressingBy
     CHECK(ReadFileContents(dbs.EffectivePath()) == first + second);
 }
 
-// Large multi-member streams: each member is big enough that the
-// decoder's 64 KiB read/output chunking straddles member boundaries,
-// so this exercises the concatenation reset *and* the pending-output
-// drain paths (a single compressed chunk can span the end of one
-// member and the start of the next, and a member's decompressed output
-// spans many output buffers). The tiny multi-member test above stays in
-// a single chunk and would not catch a boundary regression.
+// Large multi-member streams so decoder chunking straddles member
+// boundaries. Exercises the concatenation reset AND the pending-
+// output drain paths that the tiny multi-member test can't reach.
 TEST_CASE("DecompressingByteSource: large multi-member gzip stream", "[DecompressingByteSource]")
 {
     const std::string first = SampleContent(200 * 1024);
@@ -380,11 +372,9 @@ TEST_CASE("DecompressingByteSource: truncated codec input surfaces an error", "[
                 }(),
                 std::runtime_error
             );
-            // We can't observe `EffectivePath()` after the throw, but the
-            // internal cleanup contract says any partial temp must be gone.
-            // Scanning the temp dir for `slv-decompressed-*.tmp` isn't
-            // reliable in parallel test runs; instead we simply confirm
-            // the source file is intact.
+            // Can't observe EffectivePath() post-throw, and scanning
+            // temp for orphans is unreliable in parallel runs; just
+            // check the source file is intact.
             CHECK(std::filesystem::file_size(fixture.Path()) == truncatedSize);
         };
 
@@ -411,10 +401,9 @@ TEST_CASE("DecompressingByteSource: corrupted codec input surfaces an error", "[
     const std::string content = SampleContent(64 * 1024);
 
     auto verifyCorruptionThrows = [](std::vector<std::uint8_t> bytes, const std::string &suffix) {
-        // Flip bytes past the magic prefix so detection still triggers
-        // the codec, but the payload is invalid. The flip site is well
-        // inside the payload (offset 24) so it's safely past every
-        // codec's magic bytes and container header prefix.
+        // Flip bytes past every codec's magic + header (offset 24)
+        // so detection still routes to the codec but the payload
+        // fails.
         REQUIRE(bytes.size() > 32);
         bytes[24] ^= 0xFF;
         bytes[25] ^= 0xFF;
@@ -461,9 +450,8 @@ TEST_CASE("DecompressingByteSource: destructor removes the temp file", "[Decompr
 
 TEST_CASE("DecompressingByteSource: progress callback observations", "[DecompressingByteSource]")
 {
-    // Use ~4 MB of compressed data so we get at least 60 chunks of
-    // 64 KiB. That gives us enough progress firings to see the
-    // monotonic property clearly.
+    // ~4 MB gives >=60 chunks of 64 KiB, enough firings to see
+    // monotonicity clearly.
     const auto compressed = CompressGzip(SampleContent(4 * 1024 * 1024));
     const TempBinaryFile fixture(".log.gz");
     fixture.WriteBytes(compressed);
@@ -486,17 +474,14 @@ TEST_CASE("DecompressingByteSource: progress callback observations", "[Decompres
 
 TEST_CASE("DecompressingByteSource: StopToken cancels mid-decompress", "[DecompressingByteSource]")
 {
-    // Large fixture so the worker has enough work for the cancel to
-    // land before it naturally completes.
+    // Large enough that the cancel lands before natural completion.
     const auto compressed = CompressGzip(SampleContent(32 * 1024 * 1024));
     const TempBinaryFile fixture(".log.gz");
     fixture.WriteBytes(compressed);
 
-    // Snapshot the temp directory contents before the cancel so we
-    // can prove the partial temp file the worker created got
-    // cleaned up (see below). We compare by name pattern rather
-    // than by exact set to avoid false positives from unrelated
-    // temp files created by other processes on shared CI hosts.
+    // Compare temp dir contents by `slv-decompressed-` count before
+    // vs. after (name pattern, not exact set) so unrelated temp
+    // files on shared CI hosts don't skew the check.
     const std::filesystem::path tempDir = std::filesystem::temp_directory_path();
     auto countSlvTemps = [&]() {
         std::size_t n = 0;
@@ -516,9 +501,8 @@ TEST_CASE("DecompressingByteSource: StopToken cancels mid-decompress", "[Decompr
 
     std::atomic<bool> observedFirstProgress{false};
 
-    // Kick the stop from a helper thread as soon as the worker
-    // reports its first progress tick — this guarantees we cancel
-    // mid-decompress, not before.
+    // Fire the stop from a helper thread on the first progress
+    // tick to guarantee we cancel mid-decompress.
     auto callback = [&](const DecompressingByteSource::Progress &) {
         observedFirstProgress.store(true, std::memory_order_release);
     };
@@ -534,24 +518,20 @@ TEST_CASE("DecompressingByteSource: StopToken cancels mid-decompress", "[Decompr
 
     canceller.join();
 
-    // Cleanup contract: any temp file created for this decompress
-    // must have been removed. Source file must also be intact.
+    // Cleanup: any temp file created by the worker must be gone;
+    // source file intact.
     CHECK(std::filesystem::file_size(fixture.Path()) == compressed.size());
     CHECK(countSlvTemps() == beforeSlvTemps);
 }
 
 TEST_CASE("DecompressingByteSource: DecompressionCancelled is not a std::runtime_error", "[DecompressingByteSource]")
 {
-    // Regression guard: `MainWindow::OnDecompressionFinished`
-    // relies on `catch (DecompressionCancelled)` firing before
-    // `catch (std::exception)` so cancels surface as a toast and
-    // codec errors surface as a modal batch. Historically
-    // `DecompressionCancelled` derived from `std::runtime_error`,
-    // which meant any older catch-`std::runtime_error` site would
-    // silently absorb cancels as codec errors. Lock the intent in
-    // with a static type-relation assertion so a future refactor
-    // that re-parents the class trips this test before any
-    // downstream catches misclassify.
+    // Regression guard. `MainWindow::OnDecompressionFinished` relies
+    // on `catch (DecompressionCancelled)` matching before
+    // `catch (std::exception)` so cancels toast and codec errors
+    // surface as a modal batch. If the class ever re-parents under
+    // `runtime_error`, this static_assert trips before any
+    // downstream catch site misclassifies.
     static_assert(!std::is_base_of_v<std::runtime_error, DecompressionCancelled>);
     static_assert(std::is_base_of_v<std::exception, DecompressionCancelled>);
     SUCCEED();
@@ -559,40 +539,32 @@ TEST_CASE("DecompressingByteSource: DecompressionCancelled is not a std::runtime
 
 TEST_CASE("DecompressingByteSource: zstd skippable-frame prefix detected", "[DecompressingByteSource]")
 {
-    // RFC 8878 §3.1.2: skippable frames start with a 32-bit LE
-    // magic in `[0x184D2A50, 0x184D2A5F]` followed by a 32-bit LE
-    // frame-content size, then that many arbitrary bytes. A valid
-    // zstd stream can begin with any number of these before its
-    // first regular frame; producers use them to embed metadata
-    // (dictionary IDs, custom headers). Historically we sniffed
-    // only the regular frame magic (`0x28 0xB5 0x2F 0xFD`) and
-    // silently dropped these inputs to the plain-text path,
-    // where the raw compressed bytes would then flow into the
-    // JSONL parser. Regression fixture: prepend a 4-byte payload
-    // skippable frame to a real zstd stream and confirm SniffCodec
-    // + full decompress recover the underlying payload.
+    // RFC 8878 §3.1.2 skippable frame: 32-bit LE magic in
+    // `[0x184D2A50, 0x184D2A5F]` + 32-bit LE size + payload. Zstd
+    // streams may start with one (dictionary IDs, custom headers).
+    // Regression: we used to sniff only the regular frame magic and
+    // route these files to the plain-text path.
     const std::string payload = SampleContent(4 * 1024);
     const auto zstd = CompressZstd(payload);
 
     std::vector<std::uint8_t> withSkippable;
     withSkippable.reserve(zstd.size() + 12);
-    // Skippable magic (bit 0..3 pick a variant; use 0x50 which
-    // is the "reserved" byte pattern in libzstd's own test corpus).
+    // Skippable magic (0x50 variant, matching libzstd's test corpus).
     withSkippable.push_back(0x50);
     withSkippable.push_back(0x2A);
     withSkippable.push_back(0x4D);
     withSkippable.push_back(0x18);
-    // Skippable frame body length: 4 bytes little-endian.
+    // Body length: 4 bytes LE.
     withSkippable.push_back(0x04);
     withSkippable.push_back(0x00);
     withSkippable.push_back(0x00);
     withSkippable.push_back(0x00);
-    // Skippable frame body: 4 arbitrary bytes.
+    // 4-byte body.
     withSkippable.push_back(0xDE);
     withSkippable.push_back(0xAD);
     withSkippable.push_back(0xBE);
     withSkippable.push_back(0xEF);
-    // Real zstd frame appended.
+    // Real zstd frame.
     withSkippable.insert(withSkippable.end(), zstd.begin(), zstd.end());
 
     const TempBinaryFile fixture(".log.zst");
@@ -608,9 +580,8 @@ TEST_CASE("DecompressingByteSource: zstd skippable-frame prefix detected", "[Dec
 
 TEST_CASE("DecompressingByteSource: max decompressed size cap trips", "[DecompressingByteSource]")
 {
-    // Force a size-cap trip on a small but highly-compressible
-    // gzip payload. Cap set below the payload size so the check
-    // fires deterministically after the first output chunk.
+    // Cap below the payload size guarantees a trip on the first
+    // output chunk.
     const std::string payload = SampleContent(256 * 1024);
     const auto compressed = CompressGzip(payload);
     const TempBinaryFile fixture(".log.gz");
@@ -632,25 +603,22 @@ TEST_CASE("DecompressingByteSource: max decompressed size cap trips", "[Decompre
     const std::size_t beforeSlvTemps = countSlvTemps();
 
     DecompressingByteSource::Options options;
-    // 16 KiB cap << 256 KiB payload -> guaranteed trip on the
-    // first 64 KiB output chunk.
+    // 16 KiB cap << 256 KiB payload => trip on the first output chunk.
     options.maxDecompressedBytes = 16 * 1024;
 
     CHECK_THROWS_AS(
         DecompressingByteSource(fixture.Path(), {}, {}, options), loglib::internal::DecompressionSizeCapExceeded
     );
 
-    // The partial temp file must be cleaned up on the exception
-    // unwind, same contract as the cancel path.
+    // Partial temp cleaned up on unwind, same as the cancel path.
     CHECK(countSlvTemps() == beforeSlvTemps);
 }
 
 TEST_CASE("DecompressingByteSource: max decompressed size cap of 0 is disabled", "[DecompressingByteSource]")
 {
-    // A 0 cap must NOT throw: it disables enforcement entirely,
-    // per the ctor Options doc. Regression guard against a
-    // future accidental `> 0` -> `>= 0` off-by-one that would
-    // reject every decompress.
+    // 0 disables the cap per the ctor Options doc. Regression guard
+    // against a `> 0` -> `>= 0` off-by-one that would reject
+    // every decompress.
     const std::string payload = SampleContent(4 * 1024);
     const auto compressed = CompressGzip(payload);
     const TempBinaryFile fixture(".log.gz");
@@ -665,14 +633,10 @@ TEST_CASE("DecompressingByteSource: max decompressed size cap of 0 is disabled",
 
 TEST_CASE("DecompressingByteSource: move-construct transfers temp-file ownership", "[DecompressingByteSource]")
 {
-    // Regression guard for the move-ctor path: the moved-into
-    // object must own the temp file and the moved-from object
-    // must NOT unlink it in its destructor. Historical bug shape:
-    // a shallow move that left both objects with
-    // `mOwnsTempFile = true` would double-delete the temp path on
-    // scope exit; a swap-based move that forgot to clear the
-    // source's ownership flag would let the source's dtor unlink
-    // the file the destination was still reading.
+    // Regression guard: after move, the destination owns the temp
+    // file and the source must NOT unlink it. Historical bug
+    // shapes: shallow move (both own -> double-delete) or missing
+    // source-clear (source's dtor unlinks the file dst still reads).
     const std::string payload = SampleContent(64 * 1024);
     const auto compressed = CompressGzip(payload);
     const TempBinaryFile fixture(".log.gz");
@@ -686,24 +650,19 @@ TEST_CASE("DecompressingByteSource: move-construct transfers temp-file ownership
         REQUIRE(std::filesystem::exists(effective));
 
         DecompressingByteSource dst(std::move(src));
-        // After the move, the destination owns the file and can
-        // still see it on disk. When `src`'s destructor runs at
-        // the end of this inner scope it must NOT unlink the file
-        // that ownership has transferred to `dst`.
+        // dst owns the file; src's dtor (running at scope end)
+        // must NOT unlink it.
         CHECK(dst.EffectivePath() == effective);
         CHECK(std::filesystem::exists(effective));
     }
-    // Both DBS objects destroyed; the surviving owner (dst) has
-    // now also gone, so the temp file must be cleaned up.
+    // Both destroyed -> temp file gone.
     CHECK(!std::filesystem::exists(effective));
 }
 
 TEST_CASE("DecompressingByteSource: move-assign releases previous temp file", "[DecompressingByteSource]")
 {
-    // Companion to the move-ctor test: move-assignment must
-    // release the destination's *existing* temp file before it
-    // adopts the source's, otherwise a second decompress would
-    // leak the first one to the temp directory.
+    // Move-assignment must release the destination's existing
+    // temp before adopting the source's, else it leaks.
     const std::string payload = SampleContent(64 * 1024);
     const auto compressed = CompressGzip(payload);
     const TempBinaryFile fixture(".log.gz");
@@ -736,15 +695,10 @@ TEST_CASE(
     "[DecompressingByteSource][LogFile][anchor-lifetime]"
 )
 {
-    // Mirrors the production `MainWindow::ContinueOpenAfterPrepared`
-    // flow: after a successful decompress, the app wraps the
-    // `DecompressingByteSource` in a shared_ptr and attaches it as
-    // a lifetime anchor to the `LogFile` that maps its temp file.
-    // Correct ordering (anchor destroyed AFTER `mMmap` unmaps) is
-    // required so the OS-level file lock on the temp path is
-    // released *before* the unlink attempt on Windows, which
-    // otherwise silently no-ops and leaks the temp file. Peg the
-    // contract with a real DBS + real LogFile.
+    // Mirrors `MainWindow::ContinueOpenAfterPrepared`: wrap the DBS
+    // in a shared_ptr, attach as a `LogFile` lifetime anchor. The
+    // anchor must be destroyed AFTER the mmap unmap or Windows
+    // silently leaks the temp file. Uses a real DBS + real LogFile.
     const std::string payload = SampleContent(4 * 1024);
     const auto compressed = CompressGzip(payload);
     const TempBinaryFile fixture(".log.gz");
@@ -760,13 +714,11 @@ TEST_CASE(
         auto logFile = std::make_unique<loglib::LogFile>(tempPath);
         logFile->AttachLifetimeAnchor(std::move(dbs));
 
-        // While the LogFile is alive, the temp file must remain
-        // (the mmap holds a handle into it).
+        // Alive LogFile -> temp file survives (mmap holds a handle).
         CHECK(std::filesystem::exists(tempPath));
     }
-    // LogFile destroyed. mmap unmapped first (member order in
-    // LogFile), then the composed anchor's dtor ran the DBS's
-    // ReleaseTempFile(), which unlinked the temp file.
+    // LogFile destroyed: mmap unmapped first (member order), then
+    // the anchor's dtor ran the DBS's ReleaseTempFile().
     CHECK(!std::filesystem::exists(tempPath));
 }
 
@@ -774,32 +726,29 @@ TEST_CASE(
     "DecompressingByteSource::SniffCodec: empty and missing paths report Codec::None", "[DecompressingByteSource]"
 )
 {
-    // `SniffCodec` is the pre-flight gate `MainWindow::StreamNextPendingFile`
-    // uses to decide "sync fast path vs async worker" before it commits to a
-    // `QtConcurrent::run` dispatch. It must be noexcept-safe on any input the
-    // OS lets us pass, and any I/O failure has to collapse to `Codec::None`
-    // so the downstream `LogFile` ctor produces the canonical
-    // open-error message rather than a duplicate diagnostic here.
+    // `SniffCodec` gates the sync-vs-async decision in
+    // `StreamNextPendingFile`. Must be noexcept on any input and
+    // collapse any I/O failure to `Codec::None` so the downstream
+    // `LogFile` ctor emits the canonical open error.
     using Codec = DecompressingByteSource::Codec;
 
-    // Empty file: 0 bytes can't hold any codec's frame header.
+    // Empty file: cannot hold any codec's header.
     const TempBinaryFile empty(".log");
     empty.WriteBytes({});
     CHECK(DecompressingByteSource::SniffCodec(empty.Path()) == Codec::None);
 
-    // Missing path: `file_size` returns an error; must not throw.
+    // Missing path: `file_size` sets `ec`; must not throw.
     const auto missing = std::filesystem::temp_directory_path() / "slv-test-does-not-exist-8f4b3c2d1e5a.tmp";
     std::error_code ignoreEc;
     std::filesystem::remove(missing, ignoreEc);
     CHECK(DecompressingByteSource::SniffCodec(missing) == Codec::None);
 
-    // Directory (POSIX file_size on a directory is an error; must not throw).
+    // Directory: `file_size` on a directory is an error; must not throw.
     CHECK(DecompressingByteSource::SniffCodec(std::filesystem::temp_directory_path()) == Codec::None);
 
-    // Short-but-non-matching prefix: 1 byte, no codec magic starts
-    // that short so this must classify as plain text.
+    // 1-byte non-matching prefix.
     const TempBinaryFile tiny(".log");
-    tiny.WriteBytes({0x7B}); // '{' -- not a magic prefix for anything we recognise
+    tiny.WriteBytes({0x7B}); // '{'
     CHECK(DecompressingByteSource::SniffCodec(tiny.Path()) == Codec::None);
 }
 
@@ -813,13 +762,10 @@ TEST_CASE("DecompressingByteSource: CodecName maps every enum value", "[Decompre
     CHECK(loglib::internal::CodecName(Codec::Zstd) == "zstd");
 }
 
-// -----------------------------------------------------------------------
-// Integration test: compressed input -> DecompressingByteSource ->
-// ParseFile(JsonParser). Row count and error count must match the
-// uncompressed reference. This mirrors the app-level flow that
-// MainWindow uses (sniff + decompress + LogFile + parse).
-// -----------------------------------------------------------------------
-
+// Integration: compressed input -> DecompressingByteSource ->
+// ParseFile(JsonParser). Row + error counts must match the
+// uncompressed reference. Mirrors MainWindow's sniff + decompress +
+// LogFile + parse flow.
 TEST_CASE("DecompressingByteSource: row-count parity with ParseFile", "[DecompressingByteSource][ParseFile]")
 {
     constexpr std::size_t LINE_COUNT = 5000;
@@ -832,7 +778,7 @@ TEST_CASE("DecompressingByteSource: row-count parity with ParseFile", "[Decompre
         jsonl += ",\"level\":\"info\",\"msg\":\"decompression parity fixture line\"}\n";
     }
 
-    // Reference uncompressed parse.
+    // Uncompressed reference parse.
     const TempBinaryFile plainFile(".jsonl");
     plainFile.WriteBytes(std::vector<std::uint8_t>(jsonl.begin(), jsonl.end()));
 
