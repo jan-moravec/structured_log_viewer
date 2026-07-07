@@ -481,8 +481,26 @@ if(NOT USE_SYSTEM_XZ)
         set(XZ_MICROLZMA_ENCODER OFF)
         set(XZ_MICROLZMA_DECODER ON)
         set(XZ_LZIP_DECODER ON)
+        # Suppress upstream xz's CTest suite. xz's tests/tests.cmake
+        # wraps its `add_test(NAME test_bcj_exact_size ...)` etc. in
+        # an `if(BUILD_TESTING)` guard, but the guard runs in xz's
+        # inherited scope after `include(CTest)`; a plain
+        # `set(BUILD_TESTING OFF)` in this block is out-shadowed by
+        # the CMake CACHE variable that the top-level `include(CTest)`
+        # promoted to ON. Left unhandled that registers ~13
+        # `test_bcj_exact_size`/`test_check`/... tests whose
+        # executables the `XZ_TOOL_*` overrides above never even
+        # build, and they surface as `***Not Run` noise in our own
+        # `ctest`. Save + FORCE the CACHE to OFF for the scope of the
+        # FetchContent, then restore afterwards -- CMake does NOT
+        # revert cache mutations on block exit, so an explicit
+        # restore is required to keep our own test binaries armed in
+        # the sibling test subdirectories.
+        get_property(_slv_saved_build_testing CACHE BUILD_TESTING PROPERTY VALUE)
+        set(BUILD_TESTING OFF CACHE BOOL "Build the testing tree." FORCE)
         set(CMAKE_POLICY_VERSION_MINIMUM 3.28) # silence xz's older cmake_minimum_required
         FetchContent_MakeAvailable(xz)
+        set(BUILD_TESTING ${_slv_saved_build_testing} CACHE BOOL "Build the testing tree." FORCE)
     endblock()
     # xz exposes the C library as `liblzma`. Normalise to `LibLZMA::LibLZMA`
     # so the consumer link line matches the `find_package(LibLZMA)` naming.
@@ -501,7 +519,14 @@ if(NOT USE_SYSTEM_XZ)
         add_library(LibLZMA::LibLZMA ALIAS liblzma)
     endif()
 else()
-    find_package(LibLZMA REQUIRED)
+    # `library/src/decompressing_byte_source.cpp` calls
+    # `lzma_stream_decoder_mt` (multi-threaded xz stream decoder), which
+    # first shipped in liblzma 5.4.0 (Dec 2022). Older distro packages
+    # (Ubuntu 20.04 ships 5.2.4, RHEL 8 ships 5.2.4, Debian 11 ships
+    # 5.2.5) would otherwise fail at link time with a missing-symbol
+    # error deep in loglib's build; requesting 5.4 up front gives a
+    # clean "package too old" diagnostic during configure instead.
+    find_package(LibLZMA 5.4 REQUIRED)
 endif()
 
 if(NOT USE_SYSTEM_ZSTD)
@@ -548,14 +573,42 @@ else()
     find_package(zstd REQUIRED)
     # zstd's CMake config exports `zstd::libzstd_static` and
     # `zstd::libzstd_shared` in modern releases; older ones only expose
-    # `zstd::libzstd`. Normalise.
+    # `zstd::libzstd`. Normalise, but PREFER the static variant on
+    # purpose: the FetchContent branch is static-only (see the
+    # `ZSTD_BUILD_SHARED OFF` block above) and the whole point of the
+    # switch is to avoid staging a `libzstd.dll` next to the binary at
+    # deploy time. Silently aliasing to `zstd::libzstd_shared` would
+    # reintroduce that runtime DLL / .so dependency on system-mode
+    # builds and diverge shipping-vs-CI artefacts.
     if(NOT TARGET zstd::libzstd)
         if(TARGET zstd::libzstd_static)
             add_library(zstd::libzstd ALIAS zstd::libzstd_static)
         elseif(TARGET zstd::libzstd_shared)
+            message(WARNING
+                "USE_SYSTEM_ZSTD=ON but the system zstd package only exposes "
+                "the SHARED library (zstd::libzstd_shared). The binary will "
+                "depend on a runtime libzstd (DLL/.so) that must be present on "
+                "the deploy target. Prefer installing a package that ships the "
+                "static variant (e.g. Debian's libzstd-dev provides both), or "
+                "leave USE_SYSTEM_ZSTD=OFF to fetch a static build."
+            )
             add_library(zstd::libzstd ALIAS zstd::libzstd_shared)
         endif()
     endif()
+endif()
+
+# Whether we came from FetchContent or system mode, `loglib` links
+# `zstd::libzstd`; if the alias never resolved we'd otherwise fail
+# only at link time with a cryptic "cannot find -lzstd::libzstd"
+# diagnostic. Fail loudly at configure time so the misconfiguration
+# is obvious.
+if(NOT TARGET zstd::libzstd)
+    message(FATAL_ERROR
+        "zstd::libzstd target was not defined. FetchContent may have failed "
+        "to build zstd, or a system zstd install is missing its CMake config "
+        "package. Set USE_SYSTEM_ZSTD accordingly or install zstd (with CMake "
+        "package files) on this system."
+    )
 endif()
 
 # TLS support for `TcpServerProducer`. Default ON so packaged binaries

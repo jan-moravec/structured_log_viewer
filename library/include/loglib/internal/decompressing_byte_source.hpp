@@ -3,21 +3,70 @@
 #include <loglib/stop_token.hpp>
 
 #include <cstddef>
+#include <exception>
 #include <filesystem>
 #include <functional>
-#include <stdexcept>
+#include <string>
 #include <string_view>
 
 namespace loglib::internal
 {
 
 /// Thrown by `DecompressingByteSource` when its `StopToken` observes a
-/// stop request mid-decode. Distinct from `std::runtime_error` so
-/// callers can surface "cancelled" separately from "corrupt".
-class DecompressionCancelled : public std::runtime_error
+/// stop request mid-decode. **Deliberately not** a subclass of
+/// `std::runtime_error`: the constructor's other failure surfaces
+/// (short read, codec error, temp write) throw `std::runtime_error`,
+/// and callers need to distinguish "user cancelled" (surface as toast,
+/// continue draining the queue) from "input corrupt / IO failed"
+/// (surface as an `Error Decompressing File` batch). Making cancel a
+/// sibling exception type instead of a derived one turns
+/// `catch (const std::runtime_error &)` into a compile-time forcing
+/// function -- callers can no longer accidentally lump cancel in with
+/// codec failures.
+class DecompressionCancelled : public std::exception
 {
 public:
-    using std::runtime_error::runtime_error;
+    // Not `noexcept`: the pass-by-value parameter copy may allocate
+    // if the caller passes an lvalue. Callers in practice pass
+    // rvalue string literals or moved fmt::format() results, so
+    // this remains cheap.
+    explicit DecompressionCancelled(std::string what) : mWhat(std::move(what))
+    {
+    }
+
+    [[nodiscard]] const char *what() const noexcept override
+    {
+        return mWhat.c_str();
+    }
+
+private:
+    std::string mWhat;
+};
+
+/// Thrown by the `DecompressingByteSource` constructor when the
+/// decompressed payload would exceed the configured size cap. Distinct
+/// exception type so callers can surface a specific "too large" toast
+/// / dialog rather than a generic parse error; also so a future retry
+/// UI (e.g. "raise the cap and try again") has a clean type to catch
+/// on. Not derived from `std::runtime_error` for the same reason as
+/// `DecompressionCancelled`.
+class DecompressionSizeCapExceeded : public std::exception
+{
+public:
+    // See DecompressionCancelled: pass-by-value + a `noexcept`
+    // guarantee would misrepresent the parameter copy, which may
+    // allocate.
+    explicit DecompressionSizeCapExceeded(std::string what) : mWhat(std::move(what))
+    {
+    }
+
+    [[nodiscard]] const char *what() const noexcept override
+    {
+        return mWhat.c_str();
+    }
+
+private:
+    std::string mWhat;
 };
 
 /// RAII pre-open filter for transparent decompression of the four
@@ -65,13 +114,48 @@ public:
 
     using ProgressCallback = std::function<void(const Progress &)>;
 
+    /// Default size cap on decompressed output. 32 GiB is chosen so
+    /// that no realistic log file trips it -- even a very
+    /// compressible 500 MiB `.xz` stays well under this ceiling --
+    /// while still bounding zip-bomb / disk-exhaustion attacks
+    /// where a small compressed input would expand into TB of
+    /// output. Callers with tighter needs (headless tools, sandboxed
+    /// CI, memory-constrained embedded consumers) can lower it via
+    /// the `Options`-taking constructor overload.
+    static constexpr std::size_t kDefaultMaxDecompressedBytes = std::size_t{32} << 30;
+
+    struct Options
+    {
+        /// Hard cap on decompressed output bytes. Once the accumulated
+        /// output exceeds this value the decoder throws
+        /// `DecompressionSizeCapExceeded` after cleaning up the
+        /// partial temp file. A value of 0 disables the cap.
+        std::size_t maxDecompressedBytes = kDefaultMaxDecompressedBytes;
+    };
+
     /// Sniff @p input and (if compressed) decode to a temp file. The
     /// callback is invoked on the calling thread after each 64 KiB
     /// input chunk; may be null. The token is polled between chunks;
     /// if `stop_requested()` becomes true, throws
-    /// `DecompressionCancelled` after cleanup.
+    /// `DecompressionCancelled` after cleanup. Uses the default
+    /// `Options` (32 GiB decompressed-size cap).
     DecompressingByteSource(
         std::filesystem::path input, ProgressCallback progress = {}, StopToken stopToken = {}
+    );
+
+    /// Same as above but with explicit @p options. Split into a
+    /// separate overload rather than expressed as `Options = {}`
+    /// on the primary ctor because using an aggregate-default
+    /// (`Options{}`) as a default argument for a member function
+    /// of the enclosing class triggers a "default member
+    /// initializer needed within definition of enclosing class
+    /// outside of member functions" diagnostic on some clang
+    /// versions -- Options's own default member initializer for
+    /// `maxDecompressedBytes` isn't guaranteed to be usable until
+    /// the enclosing class is complete. Two overloads sidesteps
+    /// that entirely with no runtime cost.
+    DecompressingByteSource(
+        std::filesystem::path input, ProgressCallback progress, StopToken stopToken, Options options
     );
 
     /// Cheap up-front sniff: opens @p input, reads at most 6 bytes,

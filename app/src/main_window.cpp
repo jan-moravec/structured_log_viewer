@@ -5950,6 +5950,37 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         // FileLineSource -> LogFile, and each attached anchor's
         // dtor already unlinked its temp file in mmap-safe order.
         CancelInFlightDecompression();
+        // Fully quiesce the outgoing session **before** applying
+        // the new configuration -- mirrors `NewSession` because
+        // this path is likewise a session boundary. Without this,
+        // any files that had been queued for the previous session
+        // but not yet handed to `StreamNextPendingFile` would
+        // survive the config load and leak into the newly-loaded
+        // session on the next drain tick (e.g. loading a config
+        // during a slow multi-file open would splice the tail of
+        // the old queue into the new session), and the toolbar /
+        // streaming counters would keep displaying the OLD
+        // session's file name + line counts until the next
+        // action forced a redraw. The `mSessionMode = Idle` +
+        // `SetConfigurationUiEnabled(true)` calls also re-enable
+        // toolbar controls that a live-tail session might have
+        // greyed out. If the caller (e.g. `OpenRecentSession`)
+        // is about to start streaming from the loaded config's
+        // source, its own dispatch path re-flips these back to
+        // the streaming state.
+        mPendingOpenFiles.clear();
+        mPendingOpenErrors.clear();
+        mPendingDecompressionErrors.clear();
+        mSessionMode = SessionMode::Idle;
+        mLastTerminalSessionMode = SessionMode::Idle;
+        mStreamingFileName.clear();
+        mStreamingLineCount = 0;
+        mStreamingErrorCount = 0;
+        mFirstStreamingBatchSeen = false;
+        mSourceWaiting = false;
+        SetConfigurationUiEnabled(true);
+        UpdateStreamToolbarVisibility();
+        UpdateStreamingStatus();
         mModel->ConfigurationManager().SetConfiguration(std::move(parsed));
         // `SetConfiguration` does not emit a model signal; the
         // reset re-initialises the header section count and the

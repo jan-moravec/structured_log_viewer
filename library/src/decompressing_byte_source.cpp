@@ -58,6 +58,23 @@ constexpr std::array<std::uint8_t, 3> kBzip2Magic = {'B', 'Z', 'h'};
 constexpr std::array<std::uint8_t, 6> kXzMagic = {0xfd, '7', 'z', 'X', 'Z', 0x00};
 constexpr std::array<std::uint8_t, 4> kZstdMagic = {0x28, 0xb5, 0x2f, 0xfd};
 
+/// A valid `.zst` stream may begin with a **skippable frame** instead
+/// of the normal zstd frame magic above. Per RFC 8878 §3.1.2 the
+/// skippable-frame magic is the little-endian 32-bit range
+/// `[0x184D2A50, 0x184D2A5F]`. In little-endian byte order that lays
+/// out on disk as `<byte0 in 0x50..0x5F> 0x2A 0x4D 0x18`, so only the
+/// low nibble of the first byte varies. `ZSTD_decompressStream`
+/// transparently skips these frames on its way to the next real
+/// frame, so detecting them as `Codec::Zstd` lets us handle producers
+/// that prepend one (e.g. dictionary IDs, custom container headers)
+/// without silently misclassifying the file as uncompressed and
+/// dumping raw compressed bytes into the JSONL parser.
+[[nodiscard]] bool IsZstdSkippableMagic(std::span<const std::uint8_t> haystack) noexcept
+{
+    return haystack.size() >= 4 && (haystack[0] & 0xF0) == 0x50 && haystack[1] == 0x2A && haystack[2] == 0x4D &&
+           haystack[3] == 0x18;
+}
+
 [[nodiscard]] bool StartsWith(std::span<const std::uint8_t> haystack, std::span<const std::uint8_t> needle) noexcept
 {
     if (haystack.size() < needle.size())
@@ -126,7 +143,7 @@ constexpr std::array<std::uint8_t, 4> kZstdMagic = {0x28, 0xb5, 0x2f, 0xfd};
     {
         return Codec::Xz;
     }
-    if (StartsWith(magic, {kZstdMagic.data(), kZstdMagic.size()}))
+    if (StartsWith(magic, {kZstdMagic.data(), kZstdMagic.size()}) || IsZstdSkippableMagic(magic))
     {
         return Codec::Zstd;
     }
@@ -135,8 +152,9 @@ constexpr std::array<std::uint8_t, 4> kZstdMagic = {0x28, 0xb5, 0x2f, 0xfd};
 
 /// Build a unique temp file path under `std::filesystem::temp_directory_path()`.
 /// Uses a random suffix seeded from `std::random_device` + steady-clock
-/// so parallel workers don't collide. The file is not created here —
-/// the caller opens it exclusively.
+/// + a process-local counter so parallel workers don't collide. The
+/// file is not created here — the caller opens it exclusively via
+/// `OpenExclusive`.
 [[nodiscard]] std::filesystem::path MakeTempPath()
 {
     std::error_code ec;
@@ -235,7 +253,24 @@ struct FileHandle
 // Windows `N` no-inherit intent. `fdopen(fd, "wb")` layers a
 // FILE* over the fd so the rest of the decompression pipeline is
 // unchanged.
-[[nodiscard]] FileHandle OpenExclusive(const std::filesystem::path &path)
+/// Sentinel `errno` / `errno_t` we treat as "temp path collided; try
+/// another". Anything else is a hard error. `EEXIST` on POSIX is the
+/// canonical "file already exists" from `O_EXCL`. On Windows, MSVC's
+/// `_wfopen_s(..., L"wbxN")` maps a pre-existing target file to
+/// `EEXIST` too, matching the POSIX contract.
+constexpr int kTempFileCollisionErrno = EEXIST;
+
+/// Result of a single `OpenExclusive` attempt. `collided == true` when
+/// the failure was specifically "target path already existed"; the
+/// caller then retries with a fresh `MakeTempPath()`.
+struct OpenExclusiveResult
+{
+    FileHandle handle;
+    bool collided = false;
+    int savedErrno = 0;
+};
+
+[[nodiscard]] OpenExclusiveResult TryOpenExclusive(const std::filesystem::path &path) noexcept
 {
 #ifdef _WIN32
     std::FILE *raw = nullptr;
@@ -244,11 +279,9 @@ struct FileHandle
     const errno_t err = ::_wfopen_s(&raw, path.native().c_str(), L"wbxN");
     if (err != 0 || raw == nullptr)
     {
-        throw std::runtime_error(
-            fmt::format("Failed to create temp file '{}': errno {}", path.string(), err)
-        );
+        return OpenExclusiveResult{FileHandle(), err == kTempFileCollisionErrno, err};
     }
-    return FileHandle(raw);
+    return OpenExclusiveResult{FileHandle(raw), false, 0};
 #else
     // `O_CLOEXEC` is POSIX.1-2008; every platform we support (glibc,
     // musl, Darwin, BSD) has it. Guard just in case some minimal
@@ -257,29 +290,72 @@ struct FileHandle
 #ifdef O_CLOEXEC
     flags |= O_CLOEXEC;
 #endif
-    const int fd = ::open(path.string().c_str(), flags, S_IRUSR | S_IWUSR);
+    // Use `path.c_str()` (native `char*` on POSIX) instead of
+    // `path.string().c_str()`. `path::string()` transcodes into the
+    // narrow "generic" encoding, which on some systems (notably
+    // POSIX locales where the filesystem encoding is not UTF-8, or
+    // Darwin's NFD normalisation quirks) can round-trip a valid
+    // native path into an invalid or differently-normalised one and
+    // fail the `open()` even though the input file itself was
+    // opened fine via `std::ifstream(path)` (which uses the
+    // implementation's own path handling). `c_str()` is the raw
+    // native representation and matches `_wfopen_s(path.native())`
+    // on the Windows branch for the same reason.
+    const int fd = ::open(path.c_str(), flags, S_IRUSR | S_IWUSR);
     if (fd < 0)
     {
         const int savedErrno = errno;
-        throw std::runtime_error(
-            fmt::format("Failed to create temp file '{}': errno {}", path.string(), savedErrno)
-        );
+        return OpenExclusiveResult{FileHandle(), savedErrno == kTempFileCollisionErrno, savedErrno};
     }
     std::FILE *raw = ::fdopen(fd, "wb");
     if (raw == nullptr)
     {
         const int savedErrno = errno;
         // `fdopen` failure means we own the fd + the just-created
-        // file; both need cleanup or we leak them.
+        // file; both need cleanup or we leak them. Not a collision
+        // (the open succeeded), so this reports as a hard failure.
         ::close(fd);
         std::error_code ignoreEc;
         std::filesystem::remove(path, ignoreEc);
-        throw std::runtime_error(
-            fmt::format("Failed to fdopen temp file '{}': errno {}", path.string(), savedErrno)
-        );
+        return OpenExclusiveResult{FileHandle(), false, savedErrno};
     }
-    return FileHandle(raw);
+    return OpenExclusiveResult{FileHandle(raw), false, 0};
 #endif
+}
+
+/// Combined `MakeTempPath` + `TryOpenExclusive` retry loop. Extremely
+/// unlikely to matter in practice (the temp-path suffix combines 128
+/// bits of `random_device` + a steady-clock nanosecond count + a
+/// process-local counter), but a burst of parallel worker opens under
+/// a shared `%TEMP%` on CI can hit a collision often enough to be
+/// worth the retry rather than surfacing a spurious ctor failure. We
+/// cap retries so a genuinely broken temp directory (e.g. read-only,
+/// or every candidate name blocked by AV) still fails fast rather
+/// than looping forever. Returns the created path via @p outPath.
+[[nodiscard]] FileHandle OpenExclusiveWithRetry(std::filesystem::path &outPath)
+{
+    constexpr int kMaxAttempts = 8;
+    int lastErrno = 0;
+    std::filesystem::path lastPath;
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt)
+    {
+        std::filesystem::path candidate = MakeTempPath();
+        OpenExclusiveResult result = TryOpenExclusive(candidate);
+        if (result.handle.handle != nullptr)
+        {
+            outPath = std::move(candidate);
+            return std::move(result.handle);
+        }
+        lastErrno = result.savedErrno;
+        lastPath = std::move(candidate);
+        if (!result.collided)
+        {
+            break;
+        }
+    }
+    throw std::runtime_error(
+        fmt::format("Failed to create temp file '{}': errno {}", lastPath.string(), lastErrno)
+    );
 }
 
 void WriteAll(FileHandle &out, const void *data, std::size_t bytes, const std::filesystem::path &tempPath)
@@ -294,6 +370,39 @@ void WriteAll(FileHandle &out, const void *data, std::size_t bytes, const std::f
         throw std::runtime_error(
             fmt::format("Short write to temp file '{}' ({} of {} bytes)", tempPath.string(), wrote, bytes)
         );
+    }
+}
+
+/// Write @p bytes bytes from @p data to @p out, then account them
+/// against the running decompressed-output counter and enforce the
+/// caller-supplied cap. The cap check runs **after** the write so the
+/// counter reflects what actually landed on disk; the caller
+/// (`DecompressingByteSource` ctor) unlinks the partial temp file in
+/// its `catch (...)` when we throw. A cap of 0 disables enforcement
+/// (still updates the counter). Every codec's write path routes
+/// through here so there is exactly one place to bolt the check on
+/// -- do not add codec-local `decompressedSize +=` shortcuts.
+void WriteOutput(
+    FileHandle &out,
+    const void *data,
+    std::size_t bytes,
+    const std::filesystem::path &tempPath,
+    const std::filesystem::path &sourcePath,
+    std::size_t &decompressedSize,
+    std::size_t maxDecompressedBytes
+)
+{
+    WriteAll(out, data, bytes, tempPath);
+    decompressedSize += bytes;
+    if (maxDecompressedBytes != 0 && decompressedSize > maxDecompressedBytes)
+    {
+        throw DecompressionSizeCapExceeded(fmt::format(
+            "Decompressed output for '{}' exceeded the {}-byte cap "
+            "(would need at least {} bytes)",
+            sourcePath.string(),
+            maxDecompressedBytes,
+            decompressedSize
+        ));
     }
 }
 
@@ -326,7 +435,8 @@ void DecodeGzip(
     std::size_t totalBytesIn,
     const DecompressingByteSource::ProgressCallback &progress,
     const StopToken &stopToken,
-    std::size_t &decompressedSize
+    std::size_t &decompressedSize,
+    std::size_t maxDecompressedBytes
 )
 {
     z_stream strm{};
@@ -428,8 +538,7 @@ void DecodeGzip(
                 break;
             }
             const std::size_t produced = outBuf.size() - strm.avail_out;
-            WriteAll(out, outBuf.data(), produced, tempPath);
-            decompressedSize += produced;
+            WriteOutput(out, outBuf.data(), produced, tempPath, sourcePath, decompressedSize, maxDecompressedBytes);
         } while (strm.avail_out == 0 || strm.avail_in > 0);
 
         if (eof)
@@ -457,7 +566,8 @@ void DecodeBzip2(
     std::size_t totalBytesIn,
     const DecompressingByteSource::ProgressCallback &progress,
     const StopToken &stopToken,
-    std::size_t &decompressedSize
+    std::size_t &decompressedSize,
+    std::size_t maxDecompressedBytes
 )
 {
     bz_stream strm{};
@@ -539,8 +649,7 @@ void DecodeBzip2(
                 );
             }
             const std::size_t produced = outBuf.size() - strm.avail_out;
-            WriteAll(out, outBuf.data(), produced, tempPath);
-            decompressedSize += produced;
+            WriteOutput(out, outBuf.data(), produced, tempPath, sourcePath, decompressedSize, maxDecompressedBytes);
         } while (strm.avail_out == 0 || strm.avail_in > 0);
 
         if (eof)
@@ -585,7 +694,8 @@ void DecodeXz(
     std::size_t totalBytesIn,
     const DecompressingByteSource::ProgressCallback &progress,
     const StopToken &stopToken,
-    std::size_t &decompressedSize
+    std::size_t &decompressedSize,
+    std::size_t maxDecompressedBytes
 )
 {
     lzma_stream strm = LZMA_STREAM_INIT;
@@ -685,8 +795,7 @@ void DecodeXz(
             );
         }
         const std::size_t produced = outBuf.size() - strm.avail_out;
-        WriteAll(out, outBuf.data(), produced, tempPath);
-        decompressedSize += produced;
+        WriteOutput(out, outBuf.data(), produced, tempPath, sourcePath, decompressedSize, maxDecompressedBytes);
     }
 }
 
@@ -700,7 +809,8 @@ void DecodeZstd(
     std::size_t totalBytesIn,
     const DecompressingByteSource::ProgressCallback &progress,
     const StopToken &stopToken,
-    std::size_t &decompressedSize
+    std::size_t &decompressedSize,
+    std::size_t maxDecompressedBytes
 )
 {
     ZSTD_DCtx *dctx = ::ZSTD_createDCtx();
@@ -761,8 +871,7 @@ void DecodeZstd(
                     ::ZSTD_getErrorName(result)
                 ));
             }
-            WriteAll(out, output.dst, output.pos, tempPath);
-            decompressedSize += output.pos;
+            WriteOutput(out, output.dst, output.pos, tempPath, sourcePath, decompressedSize, maxDecompressedBytes);
             lastResult = result;
         }
 
@@ -786,9 +895,17 @@ void DecodeZstd(
 DecompressingByteSource::DecompressingByteSource(
     std::filesystem::path input, ProgressCallback progress, StopToken stopToken
 )
+    : DecompressingByteSource(std::move(input), std::move(progress), std::move(stopToken), Options{})
+{
+}
+
+DecompressingByteSource::DecompressingByteSource(
+    std::filesystem::path input, ProgressCallback progress, StopToken stopToken, Options options
+)
     : mDisplayPath(std::move(input))
     , mEffectivePath(mDisplayPath)
 {
+    const std::size_t maxDecompressedBytes = options.maxDecompressedBytes;
     std::error_code ec;
     // MSVC's <filesystem> flag-cast trips clang-analyzer's enum-cast check.
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
@@ -823,42 +940,51 @@ DecompressingByteSource::DecompressingByteSource(
     // Compressed: stream-decode into a temp file. Any exception from
     // the codec must delete the partial temp file before propagating.
     // Note: `mOwnsTempFile` is deliberately deferred until
-    // `OpenExclusive` succeeds -- before that point no file exists
-    // on disk, so an early throw (from opening the *input* stream)
-    // must NOT trigger `ReleaseTempFile()`. Setting the flag inside
-    // the try scope keeps the "owns the file" invariant tight.
-    const std::filesystem::path tempPath = MakeTempPath();
-    mEffectivePath = tempPath;
-
+    // `OpenExclusiveWithRetry` succeeds -- before that point no file
+    // exists on disk, so an early throw (from opening the *input*
+    // stream) must NOT trigger `ReleaseTempFile()`. Setting the flag
+    // inside the try scope keeps the "owns the file" invariant tight.
     std::ifstream inStream(mDisplayPath, std::ios::binary);
     if (!inStream.is_open())
     {
-        // Undo the temp path assignment before throwing.
-        mEffectivePath = mDisplayPath;
         throw std::runtime_error(fmt::format("Failed to open '{}' for decompression", mDisplayPath.string()));
     }
 
     try
     {
-        FileHandle outHandle = OpenExclusive(tempPath);
+        std::filesystem::path tempPath;
+        FileHandle outHandle = OpenExclusiveWithRetry(tempPath);
         // Only now does a file exist on disk that we're responsible
         // for cleaning up. Any exception below unwinds through the
         // catch block, which calls ReleaseTempFile().
+        mEffectivePath = tempPath;
         mOwnsTempFile = true;
 
         switch (mCodec)
         {
         case Codec::Gzip:
-            DecodeGzip(inStream, outHandle, mDisplayPath, tempPath, mCompressedSize, progress, stopToken, mDecompressedSize);
+            DecodeGzip(
+                inStream, outHandle, mDisplayPath, tempPath, mCompressedSize, progress, stopToken, mDecompressedSize,
+                maxDecompressedBytes
+            );
             break;
         case Codec::Bzip2:
-            DecodeBzip2(inStream, outHandle, mDisplayPath, tempPath, mCompressedSize, progress, stopToken, mDecompressedSize);
+            DecodeBzip2(
+                inStream, outHandle, mDisplayPath, tempPath, mCompressedSize, progress, stopToken, mDecompressedSize,
+                maxDecompressedBytes
+            );
             break;
         case Codec::Xz:
-            DecodeXz(inStream, outHandle, mDisplayPath, tempPath, mCompressedSize, progress, stopToken, mDecompressedSize);
+            DecodeXz(
+                inStream, outHandle, mDisplayPath, tempPath, mCompressedSize, progress, stopToken, mDecompressedSize,
+                maxDecompressedBytes
+            );
             break;
         case Codec::Zstd:
-            DecodeZstd(inStream, outHandle, mDisplayPath, tempPath, mCompressedSize, progress, stopToken, mDecompressedSize);
+            DecodeZstd(
+                inStream, outHandle, mDisplayPath, tempPath, mCompressedSize, progress, stopToken, mDecompressedSize,
+                maxDecompressedBytes
+            );
             break;
         case Codec::None:
             // Handled above; the switch enumerates for -Wswitch.
@@ -877,6 +1003,10 @@ DecompressingByteSource::DecompressingByteSource(
     catch (...)
     {
         ReleaseTempFile();
+        // Restore the effective path to the input so a caller that
+        // catches (and inspects `EffectivePath()` for diagnostics)
+        // doesn't see a dangling temp-file path we just unlinked.
+        mEffectivePath = mDisplayPath;
         throw;
     }
 }
