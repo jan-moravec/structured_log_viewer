@@ -186,6 +186,62 @@ void CompressToXz(const std::filesystem::path &input, const std::filesystem::pat
     ::lzma_end(&strm);
 }
 
+// Multi-block .xz fixture, equivalent to what `xz -T <N> <file>` writes.
+// `lzma_stream_encoder_mt` splits input into blocks (one per worker) and
+// emits block headers with the compressed-size field populated -- both
+// preconditions that `lzma_stream_decoder_mt` needs to actually
+// parallelize decoding. The single-block fixture produced by
+// `CompressToXz` above is invisible to the MT decoder (it falls back to
+// single-threaded), so this second variant is the one that exercises
+// the MT decoder swap done in `library/src/decompressing_byte_source.cpp`.
+void CompressToXzMt(const std::filesystem::path &input, const std::filesystem::path &output)
+{
+    std::ifstream in(input, std::ios::binary);
+    std::ofstream out(output, std::ios::binary);
+    REQUIRE((in.is_open() && out.is_open()));
+
+    lzma_stream strm = LZMA_STREAM_INIT;
+    std::uint32_t threads = ::lzma_cputhreads();
+    if (threads == 0)
+    {
+        threads = 2; // ensure >=2 blocks so the MT decoder has something to parallelize
+    }
+    lzma_mt mt = {};
+    mt.flags = 0;
+    mt.threads = threads;
+    mt.timeout = 0;
+    mt.preset = 1; // matches CompressToXz preset so the fixture size stays comparable
+    mt.filters = nullptr;
+    mt.check = LZMA_CHECK_CRC64;
+    REQUIRE(::lzma_stream_encoder_mt(&strm, &mt) == LZMA_OK);
+
+    std::array<std::uint8_t, kIoChunk> inBuf{};
+    std::array<std::uint8_t, kIoChunk> outBuf{};
+    lzma_action action = LZMA_RUN;
+    lzma_ret ret = LZMA_OK;
+    while (ret != LZMA_STREAM_END)
+    {
+        if (strm.avail_in == 0 && action == LZMA_RUN)
+        {
+            in.read(reinterpret_cast<char *>(inBuf.data()), static_cast<std::streamsize>(inBuf.size()));
+            const auto got = static_cast<std::size_t>(in.gcount());
+            strm.next_in = inBuf.data();
+            strm.avail_in = got;
+            if (in.eof())
+            {
+                action = LZMA_FINISH;
+            }
+        }
+        strm.next_out = outBuf.data();
+        strm.avail_out = outBuf.size();
+        ret = ::lzma_code(&strm, action);
+        REQUIRE((ret == LZMA_OK || ret == LZMA_STREAM_END));
+        const std::size_t produced = outBuf.size() - strm.avail_out;
+        out.write(reinterpret_cast<const char *>(outBuf.data()), static_cast<std::streamsize>(produced));
+    }
+    ::lzma_end(&strm);
+}
+
 void CompressToZstd(const std::filesystem::path &input, const std::filesystem::path &output)
 {
     std::ifstream in(input, std::ios::binary);
@@ -239,6 +295,12 @@ struct FixtureLocations
     std::filesystem::path gzip;
     std::filesystem::path bzip2;
     std::filesystem::path xz;
+    // Multi-block .xz produced by `lzma_stream_encoder_mt` (equivalent
+    // to `xz -T <N>`), kept separate from the single-block `xz` fixture
+    // so the ST baseline number stays comparable across benchmark
+    // history; only the extra MT line moves as the decoder MT swap
+    // takes effect.
+    std::filesystem::path xzMt;
     std::filesystem::path zstd;
 };
 
@@ -249,6 +311,7 @@ FixtureLocations BuildFixtures()
     paths.gzip = BenchScratchPath(".jsonl.gz");
     paths.bzip2 = BenchScratchPath(".jsonl.bz2");
     paths.xz = BenchScratchPath(".jsonl.xz");
+    paths.xzMt = BenchScratchPath(".jsonl.mt.xz");
     paths.zstd = BenchScratchPath(".jsonl.zst");
 
     // Regenerate the uncompressed fixture every run so the on-disk size
@@ -279,6 +342,7 @@ FixtureLocations BuildFixtures()
     ensureCompressed(paths.uncompressed, paths.gzip, &CompressToGzip);
     ensureCompressed(paths.uncompressed, paths.bzip2, &CompressToBzip2);
     ensureCompressed(paths.uncompressed, paths.xz, &CompressToXz);
+    ensureCompressed(paths.uncompressed, paths.xzMt, &CompressToXzMt);
     ensureCompressed(paths.uncompressed, paths.zstd, &CompressToZstd);
     return paths;
 }
@@ -325,6 +389,11 @@ TEST_CASE("Decompress + parse a 500 MiB JSONL fixture (all codecs)", "[.][benchm
 
     TimeAndReport("Decompress + parse (gzip)", paths.gzip, true);
     TimeAndReport("Decompress + parse (bzip2)", paths.bzip2, true);
-    TimeAndReport("Decompress + parse (xz)", paths.xz, true);
+    // Single-block .xz: `lzma_stream_decoder_mt` silently falls back to
+    // single-threaded here, so this line stays the ST-decode baseline.
+    TimeAndReport("Decompress + parse (xz, single-block)", paths.xz, true);
+    // Multi-block .xz (`xz -T <N>`): exercises the MT decoder path
+    // added to `library/src/decompressing_byte_source.cpp`.
+    TimeAndReport("Decompress + parse (xz, multi-block/MT)", paths.xzMt, true);
     TimeAndReport("Decompress + parse (zstd)", paths.zstd, true);
 }

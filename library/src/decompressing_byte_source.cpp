@@ -559,6 +559,24 @@ void DecodeBzip2(
 
 // --- xz / lzma ---------------------------------------------------------
 
+// Decodes .xz / .lzma streams via liblzma's *multi-threaded* decoder
+// (`lzma_stream_decoder_mt`). liblzma silently falls back to single-
+// threaded decoding for streams that either only contain one block
+// (the default `xz file` output is single-block) or lack block-header
+// size info -- so this MT path is a strict >= for every .xz input, and
+// only inputs produced with `xz -T <N>` (or `xz --block-size`) actually
+// gain parallel throughput. See the tukaani docs on
+// `lzma_stream_decoder_mt` and the `lzma_mt` struct:
+//
+//   https://tukaani.org/xz/xz-file-format.txt (`Multi-Block` section)
+//   https://github.com/tukaani-project/xz/blob/master/src/liblzma/api/lzma/container.h
+//
+// The drain loop below is unchanged from the single-threaded decoder --
+// `lzma_code` returns the same LZMA_OK / LZMA_STREAM_END / error codes,
+// and with `mt.timeout = 100` a busy-waiting MT worker yields an idle
+// LZMA_OK return every ~100 ms which flows naturally through the
+// existing `ObservePoll` between input reads (so Cancel latency stays
+// comparable to the single-thread codec paths).
 void DecodeXz(
     std::ifstream &in,
     FileHandle &out,
@@ -571,9 +589,40 @@ void DecodeXz(
 )
 {
     lzma_stream strm = LZMA_STREAM_INIT;
+
+    // Worker count. `lzma_cputhreads()` returns 0 when the platform
+    // doesn't expose CPU-count info; clamp to 1 so the MT decoder still
+    // constructs a valid single-worker pipeline (equivalent to the old
+    // single-threaded path).
+    std::uint32_t threads = ::lzma_cputhreads();
+    if (threads == 0)
+    {
+        threads = 1;
+    }
+
+    lzma_mt mt = {};
     // `LZMA_CONCATENATED` lets us stream through concatenated members
-    // (like `xzcat file1.xz file2.xz`).
-    const lzma_ret initRet = ::lzma_stream_decoder(&strm, UINT64_MAX, LZMA_CONCATENATED);
+    // (like `xzcat file1.xz file2.xz`) exactly as the ST decoder did.
+    mt.flags = LZMA_CONCATENATED;
+    mt.threads = threads;
+    // 100 ms poll window (the xz CLI uses 300 ms). This bounds the
+    // wall-clock gap between the StopToken being set and the next
+    // `ObservePoll` seeing it, so Cancel latency stays in the same
+    // ballpark as the single-thread codec branches.
+    mt.timeout = 100;
+    // Hard memory cap: never fail with `LZMA_MEMLIMIT_ERROR`. Any file
+    // that opens today under the ST decoder must still open here.
+    mt.memlimit_stop = UINT64_MAX;
+    // Soft memory cap: when the MT decoder would need more than this
+    // to run all workers in parallel, liblzma silently reduces the
+    // active thread count (never bailing out). `lzma_physmem() / 4`
+    // is the upstream-recommended starting point; when physmem is 0
+    // (unknown / restricted container / sandbox) we fall back to a
+    // 512 MiB floor so the MT scheduler always has room to breathe.
+    const std::uint64_t physmem = ::lzma_physmem();
+    mt.memlimit_threading = physmem == 0 ? (std::uint64_t{512} << 20) : (physmem / 4);
+
+    const lzma_ret initRet = ::lzma_stream_decoder_mt(&strm, &mt);
     if (initRet != LZMA_OK)
     {
         throw std::runtime_error(
