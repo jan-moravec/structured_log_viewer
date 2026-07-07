@@ -30,7 +30,8 @@ public:
     // if the caller passes an lvalue. Callers in practice pass
     // rvalue string literals or moved fmt::format() results, so
     // this remains cheap.
-    explicit DecompressionCancelled(std::string what) : mWhat(std::move(what))
+    explicit DecompressionCancelled(std::string what)
+        : mWhat(std::move(what))
     {
     }
 
@@ -56,7 +57,8 @@ public:
     // See DecompressionCancelled: pass-by-value + a `noexcept`
     // guarantee would misrepresent the parameter copy, which may
     // allocate.
-    explicit DecompressionSizeCapExceeded(std::string what) : mWhat(std::move(what))
+    explicit DecompressionSizeCapExceeded(std::string what)
+        : mWhat(std::move(what))
     {
     }
 
@@ -139,8 +141,12 @@ public:
     /// if `stop_requested()` becomes true, throws
     /// `DecompressionCancelled` after cleanup. Uses the default
     /// `Options` (32 GiB decompressed-size cap).
+    ///
+    /// `progress` and `stopToken` are taken by const reference:
+    /// their callables/state are only used during construction, so
+    /// there is no reason to pay for a copy per invocation.
     DecompressingByteSource(
-        std::filesystem::path input, ProgressCallback progress = {}, StopToken stopToken = {}
+        std::filesystem::path input, const ProgressCallback &progress = {}, const StopToken &stopToken = {}
     );
 
     /// Same as above but with explicit @p options. Split into a
@@ -155,7 +161,7 @@ public:
     /// the enclosing class is complete. Two overloads sidesteps
     /// that entirely with no runtime cost.
     DecompressingByteSource(
-        std::filesystem::path input, ProgressCallback progress, StopToken stopToken, Options options
+        std::filesystem::path input, const ProgressCallback &progress, const StopToken &stopToken, Options options
     );
 
     /// Cheap up-front sniff: opens @p input, reads at most 6 bytes,

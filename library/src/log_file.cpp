@@ -192,7 +192,8 @@ void LogFile::AttachLifetimeAnchor(std::shared_ptr<void> anchor) noexcept
             std::shared_ptr<void> previous;
             std::shared_ptr<void> next;
         };
-        anchor = std::make_shared<AnchorPair>(AnchorPair{std::move(mLifetimeAnchor), std::move(anchor)});
+        anchor =
+            std::make_shared<AnchorPair>(AnchorPair{.previous = std::move(mLifetimeAnchor), .next = std::move(anchor)});
     }
     mLifetimeAnchor = std::move(anchor);
 }

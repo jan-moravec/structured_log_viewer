@@ -56,8 +56,16 @@ target_include_directories(tests PRIVATE include)
 # build reference compressed fixtures with the same libraries loglib decodes.
 target_link_libraries(
     tests
-    PRIVATE loglib test_common Catch2::Catch2WithMain project_warnings TBB::tbb ZLIB::ZLIB BZip2::BZip2 LibLZMA::LibLZMA
-            zstd::libzstd
+    PRIVATE
+        loglib
+        test_common
+        Catch2::Catch2WithMain
+        project_warnings
+        TBB::tbb
+        ZLIB::ZLIB
+        BZip2::BZip2
+        LibLZMA::LibLZMA
+        zstd::libzstd
 )
 
 # `benchmark_json.cpp` calls `GetProcessMemoryInfo` to report peak working

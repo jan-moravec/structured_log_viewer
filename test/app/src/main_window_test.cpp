@@ -9235,8 +9235,7 @@ private slots:
         QVERIFY(probe.Configuration().source.has_value());
         QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators.front()),
-            logapp::CanonicalDisplayPath(path)
+            QString::fromStdString(probe.Configuration().source->locators.front()), logapp::CanonicalDisplayPath(path)
         );
         // Format sniff runs against the *decompressed* bytes; JSON
         // Lines must be detected even though the file extension
@@ -9345,8 +9344,7 @@ private slots:
         QVERIFY(probe.Configuration().source.has_value());
         QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[0]),
-            logapp::CanonicalDisplayPath(gzipPath)
+            QString::fromStdString(probe.Configuration().source->locators[0]), logapp::CanonicalDisplayPath(gzipPath)
         );
         QCOMPARE(
             QString::fromStdString(probe.Configuration().source->locators[1]),
@@ -9466,8 +9464,7 @@ private slots:
             logapp::CanonicalDisplayPath(uncompressedFixture.Path())
         );
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[1]),
-            logapp::CanonicalDisplayPath(gzipPath)
+            QString::fromStdString(probe.Configuration().source->locators[1]), logapp::CanonicalDisplayPath(gzipPath)
         );
     }
 
@@ -9503,7 +9500,8 @@ private slots:
         // 64 KiB input chunk to notice the stop token.
         QByteArray uncompressed;
         uncompressed.reserve(3'000'000);
-        const QString pad = QStringLiteral("padding-payload-so-the-input-stream-is-big-enough-that-cancel-lands-before-completion");
+        const QString pad =
+            QStringLiteral("padding-payload-so-the-input-stream-is-big-enough-that-cancel-lands-before-completion");
         for (int i = 0; i < 20000; ++i)
         {
             uncompressed.append(QStringLiteral(R"({"idx": %1, "msg": "%2-%1"})").arg(i).arg(pad).toUtf8());
@@ -9710,8 +9708,7 @@ private slots:
             "`Error Decompressing File` header, not lumped into `Error Opening File`"
         );
         QVERIFY2(
-            foundCorruptEntry,
-            "the failure entry must name the original .gz path so the user can locate the culprit"
+            foundCorruptEntry, "the failure entry must name the original .gz path so the user can locate the culprit"
         );
 
         // Regression assertion #3: the pipeline must be usable

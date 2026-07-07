@@ -33,10 +33,7 @@
 #include <stdexcept>
 #include <string>
 
-using bench::RequireReleaseBuildForBenchmarks;
 using bench::ReportThroughput;
-using bench::RunTimedSamples;
-using bench::ThroughputInputs;
 using loglib::JsonParser;
 using loglib::ParseFile;
 using loglib::internal::DecompressingByteSource;
@@ -44,29 +41,40 @@ using loglib::internal::DecompressingByteSource;
 namespace
 {
 
-constexpr std::size_t kBenchLineCount = 5'000'000; // ~500 MiB JSONL
-constexpr std::size_t kIoChunk = 256 * 1024;
+constexpr std::size_t BENCH_LINE_COUNT = 5'000'000; // ~500 MiB JSONL
+constexpr std::size_t IO_CHUNK = 256 * 1024;
 
 /// Delete @p path (best-effort) when the RAII guard goes out of scope.
-struct FileScrubGuard
+class FileScrubGuard
 {
-    std::filesystem::path path;
+public:
+    explicit FileScrubGuard(std::filesystem::path path) noexcept
+        : mPath(std::move(path))
+    {
+    }
     ~FileScrubGuard()
     {
         std::error_code ec;
-        std::filesystem::remove(path, ec);
+        std::filesystem::remove(mPath, ec);
     }
+    FileScrubGuard(const FileScrubGuard &) = delete;
+    FileScrubGuard &operator=(const FileScrubGuard &) = delete;
+    FileScrubGuard(FileScrubGuard &&) = delete;
+    FileScrubGuard &operator=(FileScrubGuard &&) = delete;
+
+private:
+    std::filesystem::path mPath;
 };
 
 std::string BenchScratchPath(const std::string &suffix)
 {
-    static const std::filesystem::path scratchRoot = [] {
+    static const std::filesystem::path SCRATCH_ROOT = [] {
         auto p = std::filesystem::temp_directory_path() / "slv-bench-decompression";
         std::error_code ec;
         std::filesystem::create_directories(p, ec);
         return p;
     }();
-    return (scratchRoot / ("decompression_fixture" + suffix)).string();
+    return (SCRATCH_ROOT / ("decompression_fixture" + suffix)).string();
 }
 
 // -------- streaming compressors (input file -> compressed output file) --------
@@ -80,10 +88,10 @@ void CompressToGzip(const std::filesystem::path &input, const std::filesystem::p
     z_stream strm{};
     REQUIRE(::deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) == Z_OK);
 
-    std::array<Bytef, kIoChunk> inBuf{};
-    std::array<Bytef, kIoChunk> outBuf{};
+    std::array<Bytef, IO_CHUNK> inBuf{};
+    std::array<Bytef, IO_CHUNK> outBuf{};
     int flush = Z_NO_FLUSH;
-    do
+    while (flush != Z_FINISH)
     {
         in.read(reinterpret_cast<char *>(inBuf.data()), static_cast<std::streamsize>(inBuf.size()));
         const auto got = static_cast<std::size_t>(in.gcount());
@@ -91,7 +99,7 @@ void CompressToGzip(const std::filesystem::path &input, const std::filesystem::p
         strm.next_in = inBuf.data();
         strm.avail_in = static_cast<uInt>(got);
 
-        do
+        while (true)
         {
             strm.next_out = outBuf.data();
             strm.avail_out = static_cast<uInt>(outBuf.size());
@@ -99,8 +107,12 @@ void CompressToGzip(const std::filesystem::path &input, const std::filesystem::p
             REQUIRE(ret != Z_STREAM_ERROR);
             const std::size_t produced = outBuf.size() - strm.avail_out;
             out.write(reinterpret_cast<const char *>(outBuf.data()), static_cast<std::streamsize>(produced));
-        } while (strm.avail_out == 0);
-    } while (flush != Z_FINISH);
+            if (strm.avail_out != 0)
+            {
+                break;
+            }
+        }
+    }
     ::deflateEnd(&strm);
 }
 
@@ -113,8 +125,8 @@ void CompressToBzip2(const std::filesystem::path &input, const std::filesystem::
     bz_stream strm{};
     REQUIRE(::BZ2_bzCompressInit(&strm, 9, 0, 30) == BZ_OK);
 
-    std::array<char, kIoChunk> inBuf{};
-    std::array<char, kIoChunk> outBuf{};
+    std::array<char, IO_CHUNK> inBuf{};
+    std::array<char, IO_CHUNK> outBuf{};
     int action = BZ_RUN;
     // Loop until `BZ2_bzCompress` reports `BZ_STREAM_END`. Do NOT
     // exit early on `avail_in == 0` in FINISH mode -- bzip2 keeps
@@ -159,8 +171,8 @@ void CompressToXz(const std::filesystem::path &input, const std::filesystem::pat
     // Preset 1 keeps compression time reasonable for a 500 MiB fixture.
     REQUIRE(::lzma_easy_encoder(&strm, 1, LZMA_CHECK_CRC64) == LZMA_OK);
 
-    std::array<std::uint8_t, kIoChunk> inBuf{};
-    std::array<std::uint8_t, kIoChunk> outBuf{};
+    std::array<std::uint8_t, IO_CHUNK> inBuf{};
+    std::array<std::uint8_t, IO_CHUNK> outBuf{};
     lzma_action action = LZMA_RUN;
     lzma_ret ret = LZMA_OK;
     while (ret != LZMA_STREAM_END)
@@ -215,8 +227,8 @@ void CompressToXzMt(const std::filesystem::path &input, const std::filesystem::p
     mt.check = LZMA_CHECK_CRC64;
     REQUIRE(::lzma_stream_encoder_mt(&strm, &mt) == LZMA_OK);
 
-    std::array<std::uint8_t, kIoChunk> inBuf{};
-    std::array<std::uint8_t, kIoChunk> outBuf{};
+    std::array<std::uint8_t, IO_CHUNK> inBuf{};
+    std::array<std::uint8_t, IO_CHUNK> outBuf{};
     lzma_action action = LZMA_RUN;
     lzma_ret ret = LZMA_OK;
     while (ret != LZMA_STREAM_END)
@@ -262,10 +274,10 @@ void CompressToZstd(const std::filesystem::path &input, const std::filesystem::p
         in.read(inBuf.data(), static_cast<std::streamsize>(inBuf.size()));
         const auto got = static_cast<std::size_t>(in.gcount());
         const ZSTD_EndDirective mode = in.eof() ? ZSTD_e_end : ZSTD_e_continue;
-        ZSTD_inBuffer inChunkView{inBuf.data(), got, 0};
+        ZSTD_inBuffer inChunkView{.src = inBuf.data(), .size = got, .pos = 0};
         while (inChunkView.pos < inChunkView.size || (mode == ZSTD_e_end && !finished))
         {
-            ZSTD_outBuffer outputBuf{outBuf.data(), outBuf.size(), 0};
+            ZSTD_outBuffer outputBuf{.dst = outBuf.data(), .size = outBuf.size(), .pos = 0};
             const std::size_t remaining = ::ZSTD_compressStream2(cctx, &outputBuf, &inChunkView, mode);
             REQUIRE(!::ZSTD_isError(remaining));
             out.write(outBuf.data(), static_cast<std::streamsize>(outputBuf.pos));
@@ -316,10 +328,12 @@ FixtureLocations BuildFixtures()
 
     // Regenerate the uncompressed fixture every run so the on-disk size
     // is deterministic across CI hosts (and always reflects the shape of
-    // `TestStructuredLogFile`'s streaming ctor).
-    TestStructuredLogFile(
+    // `TestStructuredLogFile`'s streaming ctor). The named temporary
+    // pins the file for the lifetime of this scope so its destructor
+    // runs *after* the compressor loop below reads from it.
+    const TestStructuredLogFile fixtureBuilder(
         StreamedRecords{
-            .count = kBenchLineCount,
+            .count = BENCH_LINE_COUNT,
             .seed = bench::LARGE_FIXTURE_SEED,
             .timestamps = bench::DeterministicBenchmarkTimestamps()
         },
@@ -327,6 +341,7 @@ FixtureLocations BuildFixtures()
         {}, // default schema
         paths.uncompressed.string()
     );
+    (void)fixtureBuilder;
 
     // Compress once per codec. Skip when a stale artefact of the same size
     // is already present — makes local iteration cheap after the first run.
@@ -357,15 +372,15 @@ std::size_t TimeAndReport(const char *label, const std::filesystem::path &path, 
         DecompressingByteSource dbs(path);
         REQUIRE(dbs.WasDecompressed());
         const auto result = ParseFile(parser, dbs.EffectivePath());
-        REQUIRE(result.data.Lines().size() == kBenchLineCount);
+        REQUIRE(result.data.Lines().size() == BENCH_LINE_COUNT);
     }
     else
     {
         const auto result = ParseFile(parser, path);
-        REQUIRE(result.data.Lines().size() == kBenchLineCount);
+        REQUIRE(result.data.Lines().size() == BENCH_LINE_COUNT);
     }
     const auto elapsed = std::chrono::steady_clock::now() - start;
-    ReportThroughput(label, elapsed, bytes, kBenchLineCount);
+    ReportThroughput(label, elapsed, bytes, BENCH_LINE_COUNT);
     return bytes;
 }
 
@@ -379,12 +394,14 @@ TEST_CASE("Decompress + parse a 500 MiB JSONL fixture (all codecs)", "[.][benchm
 
     // Baseline: parse the uncompressed file directly. This calibrates
     // the parser cost so codec overhead is easy to read off the numbers.
-    const std::size_t baselineBytes = TimeAndReport("Baseline: ParseFile on uncompressed JSONL", paths.uncompressed, false);
+    const std::size_t baselineBytes =
+        TimeAndReport("Baseline: ParseFile on uncompressed JSONL", paths.uncompressed, false);
     (void)baselineBytes;
 
     const auto compressedBytes = std::filesystem::file_size(paths.gzip);
     WARN(
-        "Fixture sizes: uncompressed=" << baselineBytes / (1024 * 1024) << " MiB, gzip=" << compressedBytes / (1024 * 1024) << " MiB"
+        "Fixture sizes: uncompressed=" << baselineBytes / (1024 * 1024)
+                                       << " MiB, gzip=" << compressedBytes / (1024 * 1024) << " MiB"
     );
 
     TimeAndReport("Decompress + parse (gzip)", paths.gzip, true);

@@ -124,13 +124,18 @@ TEST_CASE("LogFile: AttachLifetimeAnchor composes multiple anchors", "[LogFile]"
     struct Sentinel
     {
         int *counter;
-        explicit Sentinel(int *c) : counter(c)
+        explicit Sentinel(int *c)
+            : counter(c)
         {
         }
         ~Sentinel()
         {
             ++(*counter);
         }
+        Sentinel(const Sentinel &) = delete;
+        Sentinel &operator=(const Sentinel &) = delete;
+        Sentinel(Sentinel &&) = delete;
+        Sentinel &operator=(Sentinel &&) = delete;
     };
 
     int firstDestructed = 0;

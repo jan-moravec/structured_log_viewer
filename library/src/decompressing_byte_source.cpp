@@ -20,9 +20,9 @@
 // POSIX-only headers for the exclusive-create temp file path. Kept
 // out of the Windows build so MSVC (which lacks `<fcntl.h>`'s POSIX
 // constants + `<sys/stat.h>`) doesn't need to fake them.
-#if !defined(_WIN32)
-#include <fcntl.h>
+#ifndef _WIN32
 #include <sys/stat.h>
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -45,25 +45,32 @@ namespace
 /// small enough to keep worker-thread RSS bounded on large files and
 /// large enough to amortise per-chunk overhead (zlib's inflate benefits
 /// from ≥16 KiB feeds).
-constexpr std::size_t kChunkSize = 64 * 1024;
+constexpr std::size_t CHUNK_SIZE = 64 * 1024;
 
 /// Bytes we sniff for the initial codec probe. Six is the widest
 /// codec magic we recognise (`.xz` magic is 6 bytes).
-constexpr std::size_t kMagicMaxBytes = 6;
+constexpr std::size_t MAGIC_MAX_BYTES = 6;
 
 /// Codec magic-byte prefixes. All four are extension-agnostic —
 /// detection is content-first.
-constexpr std::array<std::uint8_t, 2> kGzipMagic = {0x1f, 0x8b};
-constexpr std::array<std::uint8_t, 3> kBzip2Magic = {'B', 'Z', 'h'};
-constexpr std::array<std::uint8_t, 6> kXzMagic = {0xfd, '7', 'z', 'X', 'Z', 0x00};
-constexpr std::array<std::uint8_t, 4> kZstdMagic = {0x28, 0xb5, 0x2f, 0xfd};
+constexpr std::array<std::uint8_t, 2> GZIP_MAGIC = {0x1f, 0x8b};
+constexpr std::array<std::uint8_t, 3> BZIP2_MAGIC = {'B', 'Z', 'h'};
+constexpr std::array<std::uint8_t, 6> XZ_MAGIC = {0xfd, '7', 'z', 'X', 'Z', 0x00};
+constexpr std::array<std::uint8_t, 4> ZSTD_MAGIC = {0x28, 0xb5, 0x2f, 0xfd};
+
+/// Zstd skippable-frame magic (per RFC 8878 §3.1.2) is a LE 32-bit
+/// range `[0x184D2A50, 0x184D2A5F]` -- on disk that is
+/// `<0x5?> 0x2A 0x4D 0x18` with only the low nibble of the first
+/// byte varying. Mask + expected pattern for byte 0, exact match
+/// for the remaining three bytes.
+constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE0_MASK = 0xF0;
+constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE0_VALUE = 0x50;
+constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE1 = 0x2A;
+constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE2 = 0x4D;
+constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE3 = 0x18;
 
 /// A valid `.zst` stream may begin with a **skippable frame** instead
-/// of the normal zstd frame magic above. Per RFC 8878 §3.1.2 the
-/// skippable-frame magic is the little-endian 32-bit range
-/// `[0x184D2A50, 0x184D2A5F]`. In little-endian byte order that lays
-/// out on disk as `<byte0 in 0x50..0x5F> 0x2A 0x4D 0x18`, so only the
-/// low nibble of the first byte varies. `ZSTD_decompressStream`
+/// of the normal zstd frame magic above. `ZSTD_decompressStream`
 /// transparently skips these frames on its way to the next real
 /// frame, so detecting them as `Codec::Zstd` lets us handle producers
 /// that prepend one (e.g. dictionary IDs, custom container headers)
@@ -71,8 +78,10 @@ constexpr std::array<std::uint8_t, 4> kZstdMagic = {0x28, 0xb5, 0x2f, 0xfd};
 /// dumping raw compressed bytes into the JSONL parser.
 [[nodiscard]] bool IsZstdSkippableMagic(std::span<const std::uint8_t> haystack) noexcept
 {
-    return haystack.size() >= 4 && (haystack[0] & 0xF0) == 0x50 && haystack[1] == 0x2A && haystack[2] == 0x4D &&
-           haystack[3] == 0x18;
+    return haystack.size() >= 4 &&
+           (haystack[0] & ZSTD_SKIPPABLE_MAGIC_BYTE0_MASK) == ZSTD_SKIPPABLE_MAGIC_BYTE0_VALUE &&
+           haystack[1] == ZSTD_SKIPPABLE_MAGIC_BYTE1 && haystack[2] == ZSTD_SKIPPABLE_MAGIC_BYTE2 &&
+           haystack[3] == ZSTD_SKIPPABLE_MAGIC_BYTE3;
 }
 
 [[nodiscard]] bool StartsWith(std::span<const std::uint8_t> haystack, std::span<const std::uint8_t> needle) noexcept
@@ -131,19 +140,19 @@ constexpr std::array<std::uint8_t, 4> kZstdMagic = {0x28, 0xb5, 0x2f, 0xfd};
 [[nodiscard]] DecompressingByteSource::Codec DetectCodec(std::span<const std::uint8_t> magic) noexcept
 {
     using Codec = DecompressingByteSource::Codec;
-    if (StartsWith(magic, {kGzipMagic.data(), kGzipMagic.size()}))
+    if (StartsWith(magic, {GZIP_MAGIC.data(), GZIP_MAGIC.size()}))
     {
         return Codec::Gzip;
     }
-    if (StartsWith(magic, {kBzip2Magic.data(), kBzip2Magic.size()}))
+    if (StartsWith(magic, {BZIP2_MAGIC.data(), BZIP2_MAGIC.size()}))
     {
         return Codec::Bzip2;
     }
-    if (StartsWith(magic, {kXzMagic.data(), kXzMagic.size()}))
+    if (StartsWith(magic, {XZ_MAGIC.data(), XZ_MAGIC.size()}))
     {
         return Codec::Xz;
     }
-    if (StartsWith(magic, {kZstdMagic.data(), kZstdMagic.size()}) || IsZstdSkippableMagic(magic))
+    if (StartsWith(magic, {ZSTD_MAGIC.data(), ZSTD_MAGIC.size()}) || IsZstdSkippableMagic(magic))
     {
         return Codec::Zstd;
     }
@@ -169,9 +178,7 @@ constexpr std::array<std::uint8_t, 4> kZstdMagic = {0x28, 0xb5, 0x2f, 0xfd};
     static std::atomic<std::uint32_t> counter{0};
     std::random_device rd;
     const std::uint64_t r1 = (static_cast<std::uint64_t>(rd()) << 32) | rd();
-    const std::uint64_t r2 = static_cast<std::uint64_t>(
-        std::chrono::steady_clock::now().time_since_epoch().count()
-    );
+    const std::uint64_t r2 = static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
     const std::uint32_t c = counter.fetch_add(1, std::memory_order_relaxed);
 
     return base / fmt::format("slv-decompressed-{:016x}{:016x}{:08x}.tmp", r1, r2, c);
@@ -181,28 +188,29 @@ constexpr std::array<std::uint8_t, 4> kZstdMagic = {0x28, 0xb5, 0x2f, 0xfd};
 /// `std::ofstream` for the temp file because it exposes buffered
 /// `fwrite` with predictable failure surfaces and a native handle we
 /// can flush at close.
-struct FileHandle
+class FileHandle
 {
-    std::FILE *handle = nullptr;
-
+public:
     FileHandle() noexcept = default;
-    explicit FileHandle(std::FILE *h) noexcept : handle(h)
+    explicit FileHandle(std::FILE *h) noexcept
+        : mHandle(h)
     {
     }
     FileHandle(const FileHandle &) = delete;
     FileHandle &operator=(const FileHandle &) = delete;
 
-    FileHandle(FileHandle &&other) noexcept : handle(other.handle)
+    FileHandle(FileHandle &&other) noexcept
+        : mHandle(other.mHandle)
     {
-        other.handle = nullptr;
+        other.mHandle = nullptr;
     }
     FileHandle &operator=(FileHandle &&other) noexcept
     {
         if (this != &other)
         {
             Close();
-            handle = other.handle;
-            other.handle = nullptr;
+            mHandle = other.mHandle;
+            other.mHandle = nullptr;
         }
         return *this;
     }
@@ -211,14 +219,27 @@ struct FileHandle
         Close();
     }
 
+    [[nodiscard]] std::FILE *Get() const noexcept
+    {
+        return mHandle;
+    }
+    [[nodiscard]] bool IsOpen() const noexcept
+    {
+        return mHandle != nullptr;
+    }
+
     void Close() noexcept
     {
-        if (handle != nullptr)
+        if (mHandle != nullptr)
         {
-            std::fclose(handle);
-            handle = nullptr;
+            // NOLINTNEXTLINE(cppcoreguidelines-owning-memory,cert-err33-c)
+            (void)std::fclose(mHandle);
+            mHandle = nullptr;
         }
     }
+
+private:
+    std::FILE *mHandle = nullptr;
 };
 
 // Open @p path for writing, failing (rather than truncating) if a
@@ -258,7 +279,7 @@ struct FileHandle
 /// canonical "file already exists" from `O_EXCL`. On Windows, MSVC's
 /// `_wfopen_s(..., L"wbxN")` maps a pre-existing target file to
 /// `EEXIST` too, matching the POSIX contract.
-constexpr int kTempFileCollisionErrno = EEXIST;
+constexpr int TEMP_FILE_COLLISION_ERRNO = EEXIST;
 
 /// Result of a single `OpenExclusive` attempt. `collided == true` when
 /// the failure was specifically "target path already existed"; the
@@ -279,9 +300,11 @@ struct OpenExclusiveResult
     const errno_t err = ::_wfopen_s(&raw, path.native().c_str(), L"wbxN");
     if (err != 0 || raw == nullptr)
     {
-        return OpenExclusiveResult{FileHandle(), err == kTempFileCollisionErrno, err};
+        return OpenExclusiveResult{
+            .handle = FileHandle(), .collided = err == TEMP_FILE_COLLISION_ERRNO, .savedErrno = err
+        };
     }
-    return OpenExclusiveResult{FileHandle(raw), false, 0};
+    return OpenExclusiveResult{.handle = FileHandle(raw), .collided = false, .savedErrno = 0};
 #else
     // `O_CLOEXEC` is POSIX.1-2008; every platform we support (glibc,
     // musl, Darwin, BSD) has it. Guard just in case some minimal
@@ -305,7 +328,9 @@ struct OpenExclusiveResult
     if (fd < 0)
     {
         const int savedErrno = errno;
-        return OpenExclusiveResult{FileHandle(), savedErrno == kTempFileCollisionErrno, savedErrno};
+        return OpenExclusiveResult{
+            .handle = FileHandle(), .collided = savedErrno == TEMP_FILE_COLLISION_ERRNO, .savedErrno = savedErrno
+        };
     }
     std::FILE *raw = ::fdopen(fd, "wb");
     if (raw == nullptr)
@@ -317,9 +342,9 @@ struct OpenExclusiveResult
         ::close(fd);
         std::error_code ignoreEc;
         std::filesystem::remove(path, ignoreEc);
-        return OpenExclusiveResult{FileHandle(), false, savedErrno};
+        return OpenExclusiveResult{.handle = FileHandle(), .collided = false, .savedErrno = savedErrno};
     }
-    return OpenExclusiveResult{FileHandle(raw), false, 0};
+    return OpenExclusiveResult{.handle = FileHandle(raw), .collided = false, .savedErrno = 0};
 #endif
 }
 
@@ -334,14 +359,14 @@ struct OpenExclusiveResult
 /// than looping forever. Returns the created path via @p outPath.
 [[nodiscard]] FileHandle OpenExclusiveWithRetry(std::filesystem::path &outPath)
 {
-    constexpr int kMaxAttempts = 8;
+    constexpr int MAX_ATTEMPTS = 8;
     int lastErrno = 0;
     std::filesystem::path lastPath;
-    for (int attempt = 0; attempt < kMaxAttempts; ++attempt)
+    for (int attempt = 0; attempt < MAX_ATTEMPTS; ++attempt)
     {
         std::filesystem::path candidate = MakeTempPath();
         OpenExclusiveResult result = TryOpenExclusive(candidate);
-        if (result.handle.handle != nullptr)
+        if (result.handle.IsOpen())
         {
             outPath = std::move(candidate);
             return std::move(result.handle);
@@ -353,9 +378,7 @@ struct OpenExclusiveResult
             break;
         }
     }
-    throw std::runtime_error(
-        fmt::format("Failed to create temp file '{}': errno {}", lastPath.string(), lastErrno)
-    );
+    throw std::runtime_error(fmt::format("Failed to create temp file '{}': errno {}", lastPath.string(), lastErrno));
 }
 
 void WriteAll(FileHandle &out, const void *data, std::size_t bytes, const std::filesystem::path &tempPath)
@@ -364,7 +387,7 @@ void WriteAll(FileHandle &out, const void *data, std::size_t bytes, const std::f
     {
         return;
     }
-    const std::size_t wrote = std::fwrite(data, 1, bytes, out.handle);
+    const std::size_t wrote = std::fwrite(data, 1, bytes, out.Get());
     if (wrote != bytes)
     {
         throw std::runtime_error(
@@ -417,7 +440,7 @@ inline void ObservePoll(
 {
     if (progress)
     {
-        progress({bytesInSoFar, totalBytesIn});
+        progress({.bytesIn = bytesInSoFar, .totalBytesIn = totalBytesIn});
     }
     if (stopToken.stop_requested())
     {
@@ -446,17 +469,29 @@ void DecodeGzip(
     {
         throw std::runtime_error(fmt::format("Failed to init zlib inflate for '{}'", sourcePath.string()));
     }
-    struct ZlibGuard
+    class ZlibGuard
     {
-        z_stream *s;
-        ~ZlibGuard()
+    public:
+        explicit ZlibGuard(z_stream *s) noexcept
+            : mStream(s)
         {
-            ::inflateEnd(s);
         }
-    } guard{&strm};
+        ~ZlibGuard() noexcept
+        {
+            (void)::inflateEnd(mStream);
+        }
+        ZlibGuard(const ZlibGuard &) = delete;
+        ZlibGuard &operator=(const ZlibGuard &) = delete;
+        ZlibGuard(ZlibGuard &&) = delete;
+        ZlibGuard &operator=(ZlibGuard &&) = delete;
 
-    std::array<Bytef, kChunkSize> inBuf{};
-    std::array<Bytef, kChunkSize> outBuf{};
+    private:
+        z_stream *mStream;
+    };
+    const ZlibGuard guard(&strm);
+
+    std::array<Bytef, CHUNK_SIZE> inBuf{};
+    std::array<Bytef, CHUNK_SIZE> outBuf{};
 
     std::size_t consumed = 0;
     // `ret` persists across read-chunk iterations: a member can end
@@ -498,7 +533,7 @@ void DecodeGzip(
         // compressed chunk into many MB of output, so polling only
         // per-read leaves cancels stuck for seconds. Matches DecodeXz
         // and DecodeZstd's inner-loop polling.
-        do
+        while (true)
         {
             if (ret == Z_STREAM_END)
             {
@@ -509,14 +544,15 @@ void DecodeGzip(
                     break;
                 }
                 // Bytes remain after a member end -> concatenated
-                // member. Reset before decoding them.
+                // member. Reset before decoding them. `ret` is not
+                // assigned here because the `inflate` call below
+                // overwrites it unconditionally.
                 if (::inflateReset(&strm) != Z_OK)
                 {
                     throw std::runtime_error(
                         fmt::format("zlib inflateReset failed on '{}' at input byte {}", sourcePath.string(), consumed)
                     );
                 }
-                ret = Z_OK;
             }
             ObservePoll(consumed, totalBytesIn, progress, stopToken);
             strm.next_out = outBuf.data();
@@ -531,15 +567,19 @@ void DecodeGzip(
             case Z_DATA_ERROR:
             case Z_MEM_ERROR:
             case Z_STREAM_ERROR:
-                throw std::runtime_error(
-                    fmt::format("zlib inflate error on '{}' at input byte {} (code {})", sourcePath.string(), consumed, ret)
-                );
+                throw std::runtime_error(fmt::format(
+                    "zlib inflate error on '{}' at input byte {} (code {})", sourcePath.string(), consumed, ret
+                ));
             default:
                 break;
             }
             const std::size_t produced = outBuf.size() - strm.avail_out;
             WriteOutput(out, outBuf.data(), produced, tempPath, sourcePath, decompressedSize, maxDecompressedBytes);
-        } while (strm.avail_out == 0 || strm.avail_in > 0);
+            if (strm.avail_out != 0 && strm.avail_in == 0)
+            {
+                break;
+            }
+        }
 
         if (eof)
         {
@@ -575,17 +615,29 @@ void DecodeBzip2(
     {
         throw std::runtime_error(fmt::format("Failed to init bzip2 for '{}'", sourcePath.string()));
     }
-    struct BzGuard
+    class BzGuard
     {
-        bz_stream *s;
-        ~BzGuard()
+    public:
+        explicit BzGuard(bz_stream *s) noexcept
+            : mStream(s)
         {
-            ::BZ2_bzDecompressEnd(s);
         }
-    } guard{&strm};
+        ~BzGuard() noexcept
+        {
+            (void)::BZ2_bzDecompressEnd(mStream);
+        }
+        BzGuard(const BzGuard &) = delete;
+        BzGuard &operator=(const BzGuard &) = delete;
+        BzGuard(BzGuard &&) = delete;
+        BzGuard &operator=(BzGuard &&) = delete;
 
-    std::array<char, kChunkSize> inBuf{};
-    std::array<char, kChunkSize> outBuf{};
+    private:
+        bz_stream *mStream;
+    };
+    const BzGuard guard(&strm);
+
+    std::array<char, CHUNK_SIZE> inBuf{};
+    std::array<char, CHUNK_SIZE> outBuf{};
 
     std::size_t consumed = 0;
     // See `DecodeGzip`: `ret` persists across read-chunk iterations so
@@ -620,7 +672,7 @@ void DecodeBzip2(
         // per call, so the extra poll here caps cancel latency at
         // one bzip2 decode iteration regardless of how much output
         // a single input chunk expands into.
-        do
+        while (true)
         {
             if (ret == BZ_STREAM_END)
             {
@@ -629,14 +681,15 @@ void DecodeBzip2(
                     break;
                 }
                 // Concatenated bz2 stream: end + re-init for the next
-                // member before decoding the remaining bytes.
+                // member before decoding the remaining bytes. `ret` is
+                // not reassigned here because the `BZ2_bzDecompress`
+                // call below overwrites it unconditionally.
                 if (::BZ2_bzDecompressEnd(&strm) != BZ_OK || ::BZ2_bzDecompressInit(&strm, 0, 0) != BZ_OK)
                 {
                     throw std::runtime_error(
                         fmt::format("bzip2 reset failed on '{}' at input byte {}", sourcePath.string(), consumed)
                     );
                 }
-                ret = BZ_OK;
             }
             ObservePoll(consumed, totalBytesIn, progress, stopToken);
             strm.next_out = outBuf.data();
@@ -644,13 +697,17 @@ void DecodeBzip2(
             ret = ::BZ2_bzDecompress(&strm);
             if (ret != BZ_OK && ret != BZ_STREAM_END)
             {
-                throw std::runtime_error(
-                    fmt::format("bzip2 decompress error on '{}' at input byte {} (code {})", sourcePath.string(), consumed, ret)
-                );
+                throw std::runtime_error(fmt::format(
+                    "bzip2 decompress error on '{}' at input byte {} (code {})", sourcePath.string(), consumed, ret
+                ));
             }
             const std::size_t produced = outBuf.size() - strm.avail_out;
             WriteOutput(out, outBuf.data(), produced, tempPath, sourcePath, decompressedSize, maxDecompressedBytes);
-        } while (strm.avail_out == 0 || strm.avail_in > 0);
+            if (strm.avail_out != 0 && strm.avail_in == 0)
+            {
+                break;
+            }
+        }
 
         if (eof)
         {
@@ -719,7 +776,8 @@ void DecodeXz(
     // wall-clock gap between the StopToken being set and the next
     // `ObservePoll` seeing it, so Cancel latency stays in the same
     // ballpark as the single-thread codec branches.
-    mt.timeout = 100;
+    constexpr std::uint32_t XZ_MT_POLL_WINDOW_MS = 100;
+    mt.timeout = XZ_MT_POLL_WINDOW_MS;
     // Hard memory cap: never fail with `LZMA_MEMLIMIT_ERROR`. Any file
     // that opens today under the ST decoder must still open here.
     mt.memlimit_stop = UINT64_MAX;
@@ -729,8 +787,12 @@ void DecodeXz(
     // is the upstream-recommended starting point; when physmem is 0
     // (unknown / restricted container / sandbox) we fall back to a
     // 512 MiB floor so the MT scheduler always has room to breathe.
+    constexpr std::uint64_t XZ_MEMLIMIT_FALLBACK_MIB = 512;
+    constexpr unsigned MIB_TO_BYTES_SHIFT = 20;
+    constexpr unsigned PHYSMEM_FRACTION_SHIFT = 2; // physmem / 4
     const std::uint64_t physmem = ::lzma_physmem();
-    mt.memlimit_threading = physmem == 0 ? (std::uint64_t{512} << 20) : (physmem / 4);
+    mt.memlimit_threading =
+        physmem == 0 ? (XZ_MEMLIMIT_FALLBACK_MIB << MIB_TO_BYTES_SHIFT) : (physmem >> PHYSMEM_FRACTION_SHIFT);
 
     const lzma_ret initRet = ::lzma_stream_decoder_mt(&strm, &mt);
     if (initRet != LZMA_OK)
@@ -739,17 +801,29 @@ void DecodeXz(
             fmt::format("Failed to init xz decoder for '{}' (code {})", sourcePath.string(), static_cast<int>(initRet))
         );
     }
-    struct XzGuard
+    class XzGuard
     {
-        lzma_stream *s;
-        ~XzGuard()
+    public:
+        explicit XzGuard(lzma_stream *s) noexcept
+            : mStream(s)
         {
-            ::lzma_end(s);
         }
-    } guard{&strm};
+        ~XzGuard() noexcept
+        {
+            ::lzma_end(mStream);
+        }
+        XzGuard(const XzGuard &) = delete;
+        XzGuard &operator=(const XzGuard &) = delete;
+        XzGuard(XzGuard &&) = delete;
+        XzGuard &operator=(XzGuard &&) = delete;
 
-    std::array<std::uint8_t, kChunkSize> inBuf{};
-    std::array<std::uint8_t, kChunkSize> outBuf{};
+    private:
+        lzma_stream *mStream;
+    };
+    const XzGuard guard(&strm);
+
+    std::array<std::uint8_t, CHUNK_SIZE> inBuf{};
+    std::array<std::uint8_t, CHUNK_SIZE> outBuf{};
 
     std::size_t consumed = 0;
     lzma_ret ret = LZMA_OK;
@@ -790,9 +864,12 @@ void DecodeXz(
         ret = ::lzma_code(&strm, action);
         if (ret != LZMA_OK && ret != LZMA_STREAM_END)
         {
-            throw std::runtime_error(
-                fmt::format("xz decode error on '{}' at input byte {} (code {})", sourcePath.string(), consumed, static_cast<int>(ret))
-            );
+            throw std::runtime_error(fmt::format(
+                "xz decode error on '{}' at input byte {} (code {})",
+                sourcePath.string(),
+                consumed,
+                static_cast<int>(ret)
+            ));
         }
         const std::size_t produced = outBuf.size() - strm.avail_out;
         WriteOutput(out, outBuf.data(), produced, tempPath, sourcePath, decompressedSize, maxDecompressedBytes);
@@ -818,17 +895,29 @@ void DecodeZstd(
     {
         throw std::runtime_error(fmt::format("Failed to create zstd DCtx for '{}'", sourcePath.string()));
     }
-    struct ZstdGuard
+    class ZstdGuard
     {
-        ZSTD_DCtx *ctx;
-        ~ZstdGuard()
+    public:
+        explicit ZstdGuard(ZSTD_DCtx *ctx) noexcept
+            : mCtx(ctx)
         {
-            ::ZSTD_freeDCtx(ctx);
         }
-    } guard{dctx};
+        ~ZstdGuard() noexcept
+        {
+            (void)::ZSTD_freeDCtx(mCtx);
+        }
+        ZstdGuard(const ZstdGuard &) = delete;
+        ZstdGuard &operator=(const ZstdGuard &) = delete;
+        ZstdGuard(ZstdGuard &&) = delete;
+        ZstdGuard &operator=(ZstdGuard &&) = delete;
 
-    std::array<char, kChunkSize> inBuf{};
-    std::array<char, kChunkSize> outBuf{};
+    private:
+        ZSTD_DCtx *mCtx;
+    };
+    const ZstdGuard guard(dctx);
+
+    std::array<char, CHUNK_SIZE> inBuf{};
+    std::array<char, CHUNK_SIZE> outBuf{};
 
     std::size_t consumed = 0;
     std::size_t lastResult = 0;
@@ -848,7 +937,7 @@ void DecodeZstd(
 
         consumed += static_cast<std::size_t>(gotSigned);
 
-        ZSTD_inBuffer input{inBuf.data(), static_cast<std::size_t>(gotSigned), 0};
+        ZSTD_inBuffer input{.src = inBuf.data(), .size = static_cast<std::size_t>(gotSigned), .pos = 0};
         while (input.pos < input.size)
         {
             // Poll on every ZSTD_decompressStream call, not just per
@@ -860,7 +949,7 @@ void DecodeZstd(
             // DecodeGzip / DecodeBzip2 / DecodeXz's inner-loop
             // polling cadence.
             ObservePoll(consumed, totalBytesIn, progress, stopToken);
-            ZSTD_outBuffer output{outBuf.data(), outBuf.size(), 0};
+            ZSTD_outBuffer output{.dst = outBuf.data(), .size = outBuf.size(), .pos = 0};
             const std::size_t result = ::ZSTD_decompressStream(dctx, &output, &input);
             if (::ZSTD_isError(result) != 0U)
             {
@@ -893,17 +982,16 @@ void DecodeZstd(
 } // namespace
 
 DecompressingByteSource::DecompressingByteSource(
-    std::filesystem::path input, ProgressCallback progress, StopToken stopToken
+    std::filesystem::path input, const ProgressCallback &progress, const StopToken &stopToken
 )
-    : DecompressingByteSource(std::move(input), std::move(progress), std::move(stopToken), Options{})
+    : DecompressingByteSource(std::move(input), progress, stopToken, Options{})
 {
 }
 
 DecompressingByteSource::DecompressingByteSource(
-    std::filesystem::path input, ProgressCallback progress, StopToken stopToken, Options options
+    std::filesystem::path input, const ProgressCallback &progress, const StopToken &stopToken, Options options
 )
-    : mDisplayPath(std::move(input))
-    , mEffectivePath(mDisplayPath)
+    : mDisplayPath(std::move(input)), mEffectivePath(mDisplayPath)
 {
     const std::size_t maxDecompressedBytes = options.maxDecompressedBytes;
     std::error_code ec;
@@ -917,9 +1005,7 @@ DecompressingByteSource::DecompressingByteSource(
     const auto size = std::filesystem::file_size(mDisplayPath, ec);
     if (ec)
     {
-        throw std::runtime_error(
-            fmt::format("Failed to stat '{}': {}", mDisplayPath.string(), ec.message())
-        );
+        throw std::runtime_error(fmt::format("Failed to stat '{}': {}", mDisplayPath.string(), ec.message()));
     }
     mCompressedSize = static_cast<std::size_t>(size);
 
@@ -929,7 +1015,7 @@ DecompressingByteSource::DecompressingByteSource(
         return;
     }
 
-    const std::vector<std::uint8_t> magic = ReadMagic(mDisplayPath, kMagicMaxBytes);
+    const std::vector<std::uint8_t> magic = ReadMagic(mDisplayPath, MAGIC_MAX_BYTES);
     mCodec = DetectCodec({magic.data(), magic.size()});
     if (mCodec == Codec::None)
     {
@@ -964,25 +1050,53 @@ DecompressingByteSource::DecompressingByteSource(
         {
         case Codec::Gzip:
             DecodeGzip(
-                inStream, outHandle, mDisplayPath, tempPath, mCompressedSize, progress, stopToken, mDecompressedSize,
+                inStream,
+                outHandle,
+                mDisplayPath,
+                tempPath,
+                mCompressedSize,
+                progress,
+                stopToken,
+                mDecompressedSize,
                 maxDecompressedBytes
             );
             break;
         case Codec::Bzip2:
             DecodeBzip2(
-                inStream, outHandle, mDisplayPath, tempPath, mCompressedSize, progress, stopToken, mDecompressedSize,
+                inStream,
+                outHandle,
+                mDisplayPath,
+                tempPath,
+                mCompressedSize,
+                progress,
+                stopToken,
+                mDecompressedSize,
                 maxDecompressedBytes
             );
             break;
         case Codec::Xz:
             DecodeXz(
-                inStream, outHandle, mDisplayPath, tempPath, mCompressedSize, progress, stopToken, mDecompressedSize,
+                inStream,
+                outHandle,
+                mDisplayPath,
+                tempPath,
+                mCompressedSize,
+                progress,
+                stopToken,
+                mDecompressedSize,
                 maxDecompressedBytes
             );
             break;
         case Codec::Zstd:
             DecodeZstd(
-                inStream, outHandle, mDisplayPath, tempPath, mCompressedSize, progress, stopToken, mDecompressedSize,
+                inStream,
+                outHandle,
+                mDisplayPath,
+                tempPath,
+                mCompressedSize,
+                progress,
+                stopToken,
+                mDecompressedSize,
                 maxDecompressedBytes
             );
             break;
@@ -992,7 +1106,7 @@ DecompressingByteSource::DecompressingByteSource(
         }
         // Explicit flush before close so a partial-write failure is
         // visible here rather than at destructor time.
-        if (std::fflush(outHandle.handle) != 0)
+        if (std::fflush(outHandle.Get()) != 0)
         {
             const int savedErrno = errno;
             throw std::runtime_error(
@@ -1017,12 +1131,12 @@ DecompressingByteSource::~DecompressingByteSource()
 }
 
 DecompressingByteSource::DecompressingByteSource(DecompressingByteSource &&other) noexcept
-    : mDisplayPath(std::move(other.mDisplayPath))
-    , mEffectivePath(std::move(other.mEffectivePath))
-    , mCodec(other.mCodec)
-    , mCompressedSize(other.mCompressedSize)
-    , mDecompressedSize(other.mDecompressedSize)
-    , mOwnsTempFile(other.mOwnsTempFile)
+    : mDisplayPath(std::move(other.mDisplayPath)),
+      mEffectivePath(std::move(other.mEffectivePath)),
+      mCodec(other.mCodec),
+      mCompressedSize(other.mCompressedSize),
+      mDecompressedSize(other.mDecompressedSize),
+      mOwnsTempFile(other.mOwnsTempFile)
 {
     other.mCodec = Codec::None;
     other.mCompressedSize = 0;
@@ -1097,12 +1211,14 @@ DecompressingByteSource::Codec DecompressingByteSource::SniffCodec(const std::fi
     // Empty / missing / unreadable files -> None. `file_size` on a
     // directory sets `ec`; `file_size(missing)` also sets `ec`.
     // Zero-byte files can't hold any codec's frame header.
+    // MSVC's <filesystem> flag-cast trips clang-analyzer's enum-cast check.
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     const auto size = std::filesystem::file_size(input, ec);
     if (ec || size == 0)
     {
         return Codec::None;
     }
-    const std::vector<std::uint8_t> magic = TryReadMagic(input, kMagicMaxBytes);
+    const std::vector<std::uint8_t> magic = TryReadMagic(input, MAGIC_MAX_BYTES);
     if (magic.empty())
     {
         return Codec::None;

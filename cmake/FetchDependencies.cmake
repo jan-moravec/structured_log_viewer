@@ -427,7 +427,8 @@ if(NOT USE_SYSTEM_BZIP2)
     enable_language(C)
 
     add_library(
-        bz2_static STATIC
+        bz2_static
+        STATIC
         ${bzip2_SOURCE_DIR}/blocksort.c
         ${bzip2_SOURCE_DIR}/huffman.c
         ${bzip2_SOURCE_DIR}/crctable.c
@@ -536,7 +537,8 @@ if(NOT USE_SYSTEM_ZSTD)
         GIT_TAG v1.5.6
         SYSTEM
         EXCLUDE_FROM_ALL
-        SOURCE_SUBDIR build/cmake
+        SOURCE_SUBDIR
+        build/cmake
     )
     block()
         set(ZSTD_BUILD_PROGRAMS OFF)
@@ -584,7 +586,8 @@ else()
         if(TARGET zstd::libzstd_static)
             add_library(zstd::libzstd ALIAS zstd::libzstd_static)
         elseif(TARGET zstd::libzstd_shared)
-            message(WARNING
+            message(
+                WARNING
                 "USE_SYSTEM_ZSTD=ON but the system zstd package only exposes "
                 "the SHARED library (zstd::libzstd_shared). The binary will "
                 "depend on a runtime libzstd (DLL/.so) that must be present on "
@@ -603,7 +606,8 @@ endif()
 # diagnostic. Fail loudly at configure time so the misconfiguration
 # is obvious.
 if(NOT TARGET zstd::libzstd)
-    message(FATAL_ERROR
+    message(
+        FATAL_ERROR
         "zstd::libzstd target was not defined. FetchContent may have failed "
         "to build zstd, or a system zstd install is missing its CMake config "
         "package. Set USE_SYSTEM_ZSTD accordingly or install zstd (with CMake "

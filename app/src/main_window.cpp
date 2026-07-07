@@ -21,8 +21,8 @@
 #include <loglib/bytes_producer.hpp>
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
-#include <loglib/internal/decompressing_byte_source.hpp>
 #include <loglib/internal/ascii_case.hpp>
+#include <loglib/internal/decompressing_byte_source.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_factory.hpp>
 #include <loglib/log_file.hpp>
@@ -214,6 +214,11 @@ constexpr int DECOMPRESSION_POLL_INTERVAL_MS = 200;
 // `QProgressDialog`'s own default.
 constexpr int DECOMPRESSION_DIALOG_DEFER_MS = 500;
 
+// Maximum percentage value we feed to the decompression `QProgressDialog`.
+// `QProgressDialog` expects an integer range; we hardcode the top of the
+// range as a named constant so the arithmetic below reads clearly.
+constexpr int PROGRESS_PERCENT_MAX = 100;
+
 // Format a byte count for the progress dialog / post-decompression
 // toast. Deliberately locale-independent -- the temp path already
 // has a `slv-decompressed-...` prefix that pins the message to
@@ -230,19 +235,20 @@ constexpr int DECOMPRESSION_DIALOG_DEFER_MS = 500;
 // above -- do not do that.
 QString HumanBytes(std::size_t bytes)
 {
-    constexpr std::array<const char *, 5> units = {"B", "KiB", "MiB", "GiB", "TiB"};
-    double value = static_cast<double>(bytes);
+    constexpr std::array<const char *, 5> UNITS = {"B", "KiB", "MiB", "GiB", "TiB"};
+    constexpr double BINARY_UNIT_SCALE = 1024.0;
+    auto value = static_cast<double>(bytes);
     std::size_t unitIndex = 0;
-    while (value >= 1024.0 && unitIndex + 1 < units.size())
+    while (value >= BINARY_UNIT_SCALE && unitIndex + 1 < UNITS.size())
     {
-        value /= 1024.0;
+        value /= BINARY_UNIT_SCALE;
         ++unitIndex;
     }
     if (unitIndex == 0)
     {
-        return QStringLiteral("%1 %2").arg(bytes).arg(QString::fromLatin1(units[0]));
+        return QStringLiteral("%1 %2").arg(bytes).arg(QString::fromLatin1(UNITS[0]));
     }
-    return QStringLiteral("%1 %2").arg(value, 0, 'f', 1).arg(QString::fromLatin1(units[unitIndex]));
+    return QStringLiteral("%1 %2").arg(value, 0, 'f', 1).arg(QString::fromLatin1(UNITS[unitIndex]));
 }
 
 // Format a wall-clock duration for the post-decompression toast.
@@ -252,17 +258,19 @@ QString HumanBytes(std::size_t bytes)
 // `HumanBytes` output, so mixing separators would be jarring.
 QString HumanDuration(std::chrono::steady_clock::duration d)
 {
+    constexpr std::int64_t MS_PER_SECOND = 1000;
+    constexpr std::int64_t MS_PER_MINUTE = 60 * MS_PER_SECOND;
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(d).count();
-    if (ms < 1000)
+    if (ms < MS_PER_SECOND)
     {
         return QStringLiteral("%1 ms").arg(ms);
     }
-    if (ms < 60'000)
+    if (ms < MS_PER_MINUTE)
     {
-        return QStringLiteral("%1 s").arg(static_cast<double>(ms) / 1000.0, 0, 'f', 1);
+        return QStringLiteral("%1 s").arg(static_cast<double>(ms) / static_cast<double>(MS_PER_SECOND), 0, 'f', 1);
     }
-    const auto minutes = ms / 60'000;
-    const auto seconds = (ms % 60'000) / 1000;
+    const auto minutes = ms / MS_PER_MINUTE;
+    const auto seconds = (ms % MS_PER_MINUTE) / MS_PER_SECOND;
     return QStringLiteral("%1m %2s").arg(minutes).arg(seconds);
 }
 
@@ -2765,8 +2773,7 @@ bool MainWindow::ContinueOpenAfterPrepared(
         // labeling it as a plain "open error" would confuse users
         // who handed us a `.gz` -- the message would name the
         // original path but the cause is downstream of the codec.
-        const std::string msg =
-            std::string("Failed to open '") + originalPath.toStdString() + "': " + e.what();
+        const std::string msg = std::string("Failed to open '") + originalPath.toStdString() + "': " + e.what();
         if (decompressionAnchor)
         {
             mPendingDecompressionErrors.push_back(msg);
@@ -2868,7 +2875,8 @@ bool MainWindow::ContinueOpenAfterPrepared(
     // the sniff sees the actual (decompressed) bytes. `mCurrentSource`
     // still stores the first file's session-level format.
     const DetectedFormat detectedPerFile = DetectFormatForPath(effectivePath);
-    std::shared_ptr<loglib::LogParser> parser = MakeParserForFormat(detectedPerFile.format, detectedPerFile.regexPattern);
+    std::shared_ptr<loglib::LogParser> parser =
+        MakeParserForFormat(detectedPerFile.format, detectedPerFile.regexPattern);
 
     // False positive: `parseCallable` is moved into the model and invoked;
     // `cfg` is consumed by `options`.
@@ -2892,7 +2900,9 @@ bool MainWindow::ContinueOpenAfterPrepared(
     return true;
 }
 
-void MainWindow::BeginAsyncDecompression(const QString &originalPath, loglib::internal::DecompressingByteSource::Codec codec)
+void MainWindow::BeginAsyncDecompression(
+    const QString &originalPath, loglib::internal::DecompressingByteSource::Codec codec
+)
 {
     // Reset the atomics + stop-source. Each open gets a fresh
     // stop-source so a cancel from the previous compressed file
@@ -2904,6 +2914,8 @@ void MainWindow::BeginAsyncDecompression(const QString &originalPath, loglib::in
     // compute a percentage without waiting for the worker to
     // observe it.
     std::error_code sizeEc;
+    // MSVC's <filesystem> flag-cast trips clang-analyzer's enum-cast check.
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     const auto compressedSize = std::filesystem::file_size(std::filesystem::path(originalPath.toStdString()), sizeEc);
     mDecompressionTotalBytesIn.storeRelaxed(sizeEc ? 0 : static_cast<qint64>(compressedSize));
 
@@ -2933,8 +2945,7 @@ void MainWindow::BeginAsyncDecompression(const QString &originalPath, loglib::in
     if (mDecompressionProgressDialog)
     {
         mDecompressionProgressDialog->setLabelText(
-            tr("Decompressing %1 (%2)\nPreparing…")
-                .arg(QFileInfo(originalPath).fileName(), mDecompressionCodecName)
+            tr("Decompressing %1 (%2)\nPreparing…").arg(QFileInfo(originalPath).fileName(), mDecompressionCodecName)
         );
     }
 
@@ -2945,10 +2956,9 @@ void MainWindow::BeginAsyncDecompression(const QString &originalPath, loglib::in
     //
     // Captures are all trivially copyable / owned-by-value: no
     // MainWindow reference escapes to the worker.
-    const QString capturedOriginal = originalPath;
     const auto stopToken = mDecompressionStopSource.get_token();
-    auto sharedBytesIn = &mDecompressionBytesIn;
-    auto sharedTotal = &mDecompressionTotalBytesIn;
+    auto *sharedBytesIn = &mDecompressionBytesIn;
+    auto *sharedTotal = &mDecompressionTotalBytesIn;
 
     // `QtConcurrent::run` returns a QFuture<T> where T is the return
     // type of the callable. We deliberately return a shared_ptr
@@ -2956,18 +2966,24 @@ void MainWindow::BeginAsyncDecompression(const QString &originalPath, loglib::in
     // move-cheap and cancellation errors travel as thrown
     // exceptions we retrieve via `future.result()` in the finished
     // slot.
-    auto future = QtConcurrent::run(
-        [capturedOriginal, sharedBytesIn, sharedTotal, stopToken]() {
-            const std::filesystem::path input(capturedOriginal.toStdString());
-            auto progressCb = [sharedBytesIn, sharedTotal](const loglib::internal::DecompressingByteSource::Progress &p) {
-                // Relaxed ordering: the GUI thread only needs a
-                // recent-enough snapshot for the progress bar.
-                sharedBytesIn->storeRelaxed(static_cast<qint64>(p.bytesIn));
-                sharedTotal->storeRelaxed(static_cast<qint64>(p.totalBytesIn));
-            };
-            return std::make_shared<loglib::internal::DecompressingByteSource>(input, std::move(progressCb), stopToken);
-        }
-    );
+    //
+    // The `clang-analyzer-webkit.UncountedLambdaCapturesChecker` check
+    // is WebKit-specific and misclassifies raw `QAtomicInteger *`
+    // captures as unsafe -- they are members of `this` and outlive the
+    // worker thanks to `mDecompressionInFlight`. Suppress the noise on
+    // the two capture lists that hold the atomic pointers.
+    // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
+    auto future = QtConcurrent::run([originalPath, sharedBytesIn, sharedTotal, stopToken]() {
+        const std::filesystem::path input(originalPath.toStdString());
+        // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
+        auto progressCb = [sharedBytesIn, sharedTotal](const loglib::internal::DecompressingByteSource::Progress &p) {
+            // Relaxed ordering: the GUI thread only needs a
+            // recent-enough snapshot for the progress bar.
+            sharedBytesIn->storeRelaxed(static_cast<qint64>(p.bytesIn));
+            sharedTotal->storeRelaxed(static_cast<qint64>(p.totalBytesIn));
+        };
+        return std::make_shared<loglib::internal::DecompressingByteSource>(input, std::move(progressCb), stopToken);
+    });
 
     // Own our own watcher so we don't collide with
     // `LogModel::mStreamingWatcher` -- the model asserts that its
@@ -3011,7 +3027,7 @@ void MainWindow::ShowDecompressionProgress()
         mDecompressionProgressDialog->setWindowTitle(tr("Decompressing"));
         mDecompressionProgressDialog->setWindowModality(Qt::WindowModal);
         mDecompressionProgressDialog->setMinimumDuration(DECOMPRESSION_DIALOG_DEFER_MS);
-        mDecompressionProgressDialog->setRange(0, 100);
+        mDecompressionProgressDialog->setRange(0, PROGRESS_PERCENT_MAX);
         mDecompressionProgressDialog->setAutoClose(false);
         mDecompressionProgressDialog->setAutoReset(false);
         connect(mDecompressionProgressDialog.data(), &QProgressDialog::canceled, this, [this]() {
@@ -3056,15 +3072,14 @@ void MainWindow::ShowDecompressionProgress()
             const QString displayName = QFileInfo(mDecompressionOriginalPath).fileName();
             // Header shows the file + codec so the user knows what
             // the app is doing without reading the second line.
-            const QString header =
-                mDecompressionCodecName.isEmpty()
-                    ? tr("Decompressing %1").arg(displayName)
-                    : tr("Decompressing %1 (%2)").arg(displayName, mDecompressionCodecName);
+            const QString header = mDecompressionCodecName.isEmpty()
+                                       ? tr("Decompressing %1").arg(displayName)
+                                       : tr("Decompressing %1 (%2)").arg(displayName, mDecompressionCodecName);
             QString labelText;
             if (total > 0)
             {
-                const int pct = static_cast<int>((100 * bytesIn) / total);
-                mDecompressionProgressDialog->setValue(std::min(pct, 100));
+                const int pct = static_cast<int>((PROGRESS_PERCENT_MAX * bytesIn) / total);
+                mDecompressionProgressDialog->setValue(std::min(pct, PROGRESS_PERCENT_MAX));
                 // Recheck the re-entry guard: `setValue` above may
                 // have pumped a nested event loop that fired
                 // `OnDecompressionFinished`, torn the dialog down,
@@ -3089,9 +3104,11 @@ void MainWindow::ShowDecompressionProgress()
                 // atomic through DecompressingByteSource just for
                 // the label.
                 labelText = tr("%1\n%2 / %3 compressed bytes read")
-                                .arg(header,
-                                     HumanBytes(static_cast<std::size_t>(bytesIn)),
-                                     HumanBytes(static_cast<std::size_t>(total)));
+                                .arg(
+                                    header,
+                                    HumanBytes(static_cast<std::size_t>(bytesIn)),
+                                    HumanBytes(static_cast<std::size_t>(total))
+                                );
             }
             else
             {
@@ -3220,8 +3237,8 @@ void MainWindow::OnDecompressionFinished()
     }
     catch (const std::exception &e)
     {
-        errorEntry = tr("Failed to decompress '%1': %2")
-                         .arg(mDecompressionOriginalPath, QString::fromLocal8Bit(e.what()));
+        errorEntry =
+            tr("Failed to decompress '%1': %2").arg(mDecompressionOriginalPath, QString::fromLocal8Bit(e.what()));
     }
     catch (...)
     {
@@ -3299,11 +3316,13 @@ void MainWindow::OnDecompressionFinished()
         // matching site in `BeginAsyncDecompression`).
         const std::string_view codecName = loglib::internal::CodecName(dbs->DetectedCodec());
         const QString msg = tr("Decompressed %1 (%2 \u2192 %3, %4) in %5")
-                                .arg(QFileInfo(mDecompressionOriginalPath).fileName(),
-                                     HumanBytes(dbs->CompressedSize()),
-                                     HumanBytes(dbs->DecompressedSize()),
-                                     QString::fromLatin1(codecName.data(), static_cast<qsizetype>(codecName.size())),
-                                     HumanDuration(elapsed));
+                                .arg(
+                                    QFileInfo(mDecompressionOriginalPath).fileName(),
+                                    HumanBytes(dbs->CompressedSize()),
+                                    HumanBytes(dbs->DecompressedSize()),
+                                    QString::fromLatin1(codecName.data(), static_cast<qsizetype>(codecName.size())),
+                                    HumanDuration(elapsed)
+                                );
         statusBar()->showMessage(msg, STATUS_BAR_MESSAGE_TIMEOUT_MS);
     }
 

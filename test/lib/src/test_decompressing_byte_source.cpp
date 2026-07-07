@@ -34,7 +34,6 @@
 #include <vector>
 
 using loglib::StopSource;
-using loglib::StopToken;
 using loglib::internal::DecompressingByteSource;
 using loglib::internal::DecompressionCancelled;
 
@@ -81,9 +80,7 @@ public:
     {
         std::ifstream in(mPath, std::ios::binary);
         REQUIRE(in.is_open());
-        return std::vector<std::uint8_t>(
-            (std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()
-        );
+        return {(std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()};
     }
 
 private:
@@ -118,12 +115,16 @@ std::vector<std::uint8_t> CompressBzip2(const std::string &input)
 {
     // BZ2_bzBuffToBuffCompress needs at least 1% + 600 bytes headroom.
     std::vector<std::uint8_t> out;
-    unsigned int outLen = static_cast<unsigned int>(input.size() + input.size() / 100 + 800);
+    auto outLen = static_cast<unsigned int>(input.size() + (input.size() / 100) + 800);
     out.resize(outLen);
+    // `BZ2_bzBuffToBuffCompress` takes a non-const `char *` even though
+    // it does not mutate the input; strip the const for the call.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+    char *inputBuf = const_cast<char *>(input.data());
     const int rc = ::BZ2_bzBuffToBuffCompress(
         reinterpret_cast<char *>(out.data()),
         &outLen,
-        const_cast<char *>(input.data()),
+        inputBuf,
         static_cast<unsigned int>(input.size()),
         9, // block size 900 KB
         0, // silent
@@ -176,6 +177,9 @@ std::string SampleContent(std::size_t targetBytes)
 {
     std::string out;
     out.reserve(targetBytes);
+    // Deterministic seed for reproducible test fixtures. Test data
+    // must not vary across runs; a fixed literal is exactly right here.
+    // NOLINTNEXTLINE(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
     std::mt19937 gen(42);
     while (out.size() < targetBytes)
     {
@@ -194,7 +198,7 @@ std::string ReadFileContents(const std::filesystem::path &path)
 {
     std::ifstream in(path, std::ios::binary);
     REQUIRE(in.is_open());
-    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return {(std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()};
 }
 
 } // namespace
@@ -358,32 +362,31 @@ TEST_CASE("DecompressingByteSource: truncated codec input surfaces an error", "[
 {
     const std::string content = SampleContent(64 * 1024);
 
-    auto verifyTruncationThrows = [&content](
-                                      const std::vector<std::uint8_t> &compressed,
-                                      const std::string &suffix,
-                                      std::size_t truncatedSize
-                                  ) {
-        REQUIRE(compressed.size() > truncatedSize);
-        std::vector<std::uint8_t> truncated(compressed.begin(), compressed.begin() + truncatedSize);
+    auto verifyTruncationThrows =
+        [&content](const std::vector<std::uint8_t> &compressed, const std::string &suffix, std::size_t truncatedSize) {
+            REQUIRE(compressed.size() > truncatedSize);
+            const std::vector<std::uint8_t> truncated(
+                compressed.begin(), compressed.begin() + static_cast<std::ptrdiff_t>(truncatedSize)
+            );
 
-        const TempBinaryFile fixture(suffix);
-        fixture.WriteBytes(truncated);
+            const TempBinaryFile fixture(suffix);
+            fixture.WriteBytes(truncated);
 
-        std::filesystem::path effectiveBefore;
-        CHECK_THROWS_AS(
-            [&]() {
-                DecompressingByteSource dbs(fixture.Path());
-                effectiveBefore = dbs.EffectivePath();
-            }(),
-            std::runtime_error
-        );
-        // We can't observe `EffectivePath()` after the throw, but the
-        // internal cleanup contract says any partial temp must be gone.
-        // Scanning the temp dir for `slv-decompressed-*.tmp` isn't
-        // reliable in parallel test runs; instead we simply confirm
-        // the source file is intact.
-        CHECK(std::filesystem::file_size(fixture.Path()) == truncatedSize);
-    };
+            std::filesystem::path effectiveBefore;
+            CHECK_THROWS_AS(
+                [&]() {
+                    DecompressingByteSource dbs(fixture.Path());
+                    effectiveBefore = dbs.EffectivePath();
+                }(),
+                std::runtime_error
+            );
+            // We can't observe `EffectivePath()` after the throw, but the
+            // internal cleanup contract says any partial temp must be gone.
+            // Scanning the temp dir for `slv-decompressed-*.tmp` isn't
+            // reliable in parallel test runs; instead we simply confirm
+            // the source file is intact.
+            CHECK(std::filesystem::file_size(fixture.Path()) == truncatedSize);
+        };
 
     SECTION("gzip")
     {
@@ -469,15 +472,12 @@ TEST_CASE("DecompressingByteSource: progress callback observations", "[Decompres
     std::size_t lastBytesIn = 0;
     std::size_t observedTotal = 0;
 
-    DecompressingByteSource dbs(
-        fixture.Path(),
-        [&](const DecompressingByteSource::Progress &p) {
-            ++callCount;
-            CHECK(p.bytesIn >= lastBytesIn);
-            lastBytesIn = p.bytesIn;
-            observedTotal = p.totalBytesIn;
-        }
-    );
+    DecompressingByteSource dbs(fixture.Path(), [&](const DecompressingByteSource::Progress &p) {
+        ++callCount;
+        CHECK(p.bytesIn >= lastBytesIn);
+        lastBytesIn = p.bytesIn;
+        observedTotal = p.totalBytesIn;
+    });
 
     CHECK(callCount >= 1);
     CHECK(lastBytesIn == compressed.size());
@@ -503,7 +503,7 @@ TEST_CASE("DecompressingByteSource: StopToken cancels mid-decompress", "[Decompr
         std::error_code ec;
         for (const auto &entry : std::filesystem::directory_iterator(tempDir, ec))
         {
-            if (entry.path().filename().string().rfind("slv-decompressed-", 0) == 0)
+            if (entry.path().filename().string().starts_with("slv-decompressed-"))
             {
                 ++n;
             }
@@ -530,9 +530,7 @@ TEST_CASE("DecompressingByteSource: StopToken cancels mid-decompress", "[Decompr
         stopSource.request_stop();
     });
 
-    CHECK_THROWS_AS(
-        DecompressingByteSource(fixture.Path(), callback, stopSource.get_token()), DecompressionCancelled
-    );
+    CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), callback, stopSource.get_token()), DecompressionCancelled);
 
     canceller.join();
 
@@ -542,10 +540,7 @@ TEST_CASE("DecompressingByteSource: StopToken cancels mid-decompress", "[Decompr
     CHECK(countSlvTemps() == beforeSlvTemps);
 }
 
-TEST_CASE(
-    "DecompressingByteSource: DecompressionCancelled is not a std::runtime_error",
-    "[DecompressingByteSource]"
-)
+TEST_CASE("DecompressingByteSource: DecompressionCancelled is not a std::runtime_error", "[DecompressingByteSource]")
 {
     // Regression guard: `MainWindow::OnDecompressionFinished`
     // relies on `catch (DecompressionCancelled)` firing before
@@ -627,7 +622,7 @@ TEST_CASE("DecompressingByteSource: max decompressed size cap trips", "[Decompre
         std::error_code ec;
         for (const auto &entry : std::filesystem::directory_iterator(tempDir, ec))
         {
-            if (entry.path().filename().string().rfind("slv-decompressed-", 0) == 0)
+            if (entry.path().filename().string().starts_with("slv-decompressed-"))
             {
                 ++n;
             }
@@ -642,8 +637,7 @@ TEST_CASE("DecompressingByteSource: max decompressed size cap trips", "[Decompre
     options.maxDecompressedBytes = 16 * 1024;
 
     CHECK_THROWS_AS(
-        DecompressingByteSource(fixture.Path(), {}, {}, options),
-        loglib::internal::DecompressionSizeCapExceeded
+        DecompressingByteSource(fixture.Path(), {}, {}, options), loglib::internal::DecompressionSizeCapExceeded
     );
 
     // The partial temp file must be cleaned up on the exception
@@ -651,10 +645,7 @@ TEST_CASE("DecompressingByteSource: max decompressed size cap trips", "[Decompre
     CHECK(countSlvTemps() == beforeSlvTemps);
 }
 
-TEST_CASE(
-    "DecompressingByteSource: max decompressed size cap of 0 is disabled",
-    "[DecompressingByteSource]"
-)
+TEST_CASE("DecompressingByteSource: max decompressed size cap of 0 is disabled", "[DecompressingByteSource]")
 {
     // A 0 cap must NOT throw: it disables enforcement entirely,
     // per the ctor Options doc. Regression guard against a
@@ -779,7 +770,9 @@ TEST_CASE(
     CHECK(!std::filesystem::exists(tempPath));
 }
 
-TEST_CASE("DecompressingByteSource::SniffCodec: empty and missing paths report Codec::None", "[DecompressingByteSource]")
+TEST_CASE(
+    "DecompressingByteSource::SniffCodec: empty and missing paths report Codec::None", "[DecompressingByteSource]"
+)
 {
     // `SniffCodec` is the pre-flight gate `MainWindow::StreamNextPendingFile`
     // uses to decide "sync fast path vs async worker" before it commits to a
@@ -795,8 +788,7 @@ TEST_CASE("DecompressingByteSource::SniffCodec: empty and missing paths report C
     CHECK(DecompressingByteSource::SniffCodec(empty.Path()) == Codec::None);
 
     // Missing path: `file_size` returns an error; must not throw.
-    const auto missing = std::filesystem::temp_directory_path() /
-                         "slv-test-does-not-exist-8f4b3c2d1e5a.tmp";
+    const auto missing = std::filesystem::temp_directory_path() / "slv-test-does-not-exist-8f4b3c2d1e5a.tmp";
     std::error_code ignoreEc;
     std::filesystem::remove(missing, ignoreEc);
     CHECK(DecompressingByteSource::SniffCodec(missing) == Codec::None);
@@ -830,10 +822,10 @@ TEST_CASE("DecompressingByteSource: CodecName maps every enum value", "[Decompre
 
 TEST_CASE("DecompressingByteSource: row-count parity with ParseFile", "[DecompressingByteSource][ParseFile]")
 {
-    constexpr std::size_t kLineCount = 5000;
+    constexpr std::size_t LINE_COUNT = 5000;
     std::string jsonl;
-    jsonl.reserve(kLineCount * 96);
-    for (std::size_t i = 0; i < kLineCount; ++i)
+    jsonl.reserve(LINE_COUNT * 96);
+    for (std::size_t i = 0; i < LINE_COUNT; ++i)
     {
         jsonl += "{\"index\":";
         jsonl += std::to_string(i);
@@ -846,7 +838,7 @@ TEST_CASE("DecompressingByteSource: row-count parity with ParseFile", "[Decompre
 
     const loglib::JsonParser parser;
     const auto reference = loglib::ParseFile(parser, plainFile.Path());
-    REQUIRE(reference.data.Lines().size() == kLineCount);
+    REQUIRE(reference.data.Lines().size() == LINE_COUNT);
     REQUIRE(reference.errors.empty());
 
     auto verifyParity = [&](const std::vector<std::uint8_t> &compressed, const std::string &suffix) {
