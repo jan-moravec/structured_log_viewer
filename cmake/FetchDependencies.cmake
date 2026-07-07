@@ -345,39 +345,65 @@ endif()
 # OFF`) so no runtime DLL is staged next to the executable on Windows.
 # All four are PRIVATE deps of `loglib`; no public header exposes any
 # codec type (all codec-specific state lives inside the .cpp).
+# zlib-ng in `ZLIB_COMPAT=ON` mode: preserves the classic zlib API
+# surface (`z_stream`, `inflate`, `deflateInit2`, ...) while adding
+# SIMD-accelerated inflate paths (SSE2 / PCLMUL / AVX2 on x86, NEON on
+# ARM). This is a drop-in swap for upstream `madler/zlib` -- the
+# consumer link line stays `ZLIB::ZLIB` and no `#include <zlib.h>` /
+# call-site changes are required. Compat mode also keeps the same
+# `zlibstatic` / `zlib` target names upstream zlib exports so the
+# alias below still works. Perf win: roughly 2x faster inflate on
+# x86_64 with AVX2 (see zlib-ng 2.2.3 release notes) which is what
+# every `.log.gz` in the static open path pays.
 if(NOT USE_SYSTEM_ZLIB)
     FetchContent_Declare(
         zlib
-        GIT_REPOSITORY https://github.com/madler/zlib.git
-        GIT_TAG v1.3.1
+        GIT_REPOSITORY https://github.com/zlib-ng/zlib-ng.git
+        GIT_TAG 2.3.3
         SYSTEM
         EXCLUDE_FROM_ALL
     )
     block()
-        set(ZLIB_BUILD_EXAMPLES OFF)
+        set(ZLIB_COMPAT ON) # provide the classic zlib API surface (z_stream, inflate, ...)
+        set(ZLIB_ALIASES ON) # export `zlib` / `zlibstatic` compat targets so downstream find matches
+        # `BUILD_TESTING=OFF` (not the deprecated `ZLIB_ENABLE_TESTS`) is
+        # how zlib-ng 2.3.x gates its test suite. Scoped to this block so
+        # the project-level `include(CTest)` further down keeps our own
+        # test binaries armed.
+        set(BUILD_TESTING OFF)
+        set(WITH_GTEST OFF)
+        set(WITH_BENCHMARKS OFF)
         set(BUILD_SHARED_LIBS OFF)
-        set(CMAKE_POLICY_VERSION_MINIMUM 3.28) # silence zlib's older cmake_minimum_required
+        set(CMAKE_POLICY_VERSION_MINIMUM 3.28) # silence zlib-ng's older cmake_minimum_required
         FetchContent_MakeAvailable(zlib)
     endblock()
-    # zlib exports a `zlibstatic` target and (if BUILD_SHARED_LIBS was
-    # somehow flipped by another dep) a `zlib` shared target too. We
-    # always consume the static one. Normalise to `ZLIB::ZLIB` so the
-    # consumer link line reads the same whether we fetched or found.
-    if(NOT TARGET ZLIB::ZLIB AND TARGET zlibstatic)
-        add_library(ZLIB::ZLIB ALIAS zlibstatic)
+    # zlib-ng's `ZLIB_ALIASES=ON` exports `zlib` / `zlibstatic` targets
+    # matching upstream zlib's names, but in a static-only build (which
+    # is what we want here) they are ALIAS-to-alias chains rooted at the
+    # concrete `zlib-ng` target. `add_library(... ALIAS ...)` forbids
+    # pointing at another ALIAS (CMake 3.28 policy), so we anchor
+    # `ZLIB::ZLIB` on the concrete target directly. `zlib-ng` is always
+    # the underlying real library regardless of `BUILD_SHARED_LIBS`.
+    if(NOT TARGET ZLIB::ZLIB AND TARGET zlib-ng)
+        add_library(ZLIB::ZLIB ALIAS zlib-ng)
     endif()
-    if(TARGET zlibstatic)
+    # Silence third-party warnings on the same concrete target.
+    # `target_include_directories` is intentionally NOT set here:
+    # zlib-ng already declares its generated `zlib.h` (from `zlib.h.in`
+    # in compat mode) via its own PUBLIC include-directories on
+    # `zlib-ng`.
+    if(TARGET zlib-ng)
         if(MSVC)
-            target_compile_options(zlibstatic PRIVATE /w)
+            target_compile_options(zlib-ng PRIVATE /w)
         else()
-            target_compile_options(zlibstatic PRIVATE -w)
+            target_compile_options(zlib-ng PRIVATE -w)
         endif()
-        # zlib's public headers live in the source and build dirs.
-        target_include_directories(
-            zlibstatic INTERFACE $<BUILD_INTERFACE:${zlib_SOURCE_DIR}> $<BUILD_INTERFACE:${zlib_BINARY_DIR}>
-        )
     endif()
 else()
+    # System zlib -- either upstream `zlib` or a distro zlib-ng shipped
+    # in compat mode (e.g. Fedora / Arch). Both expose the same
+    # `ZLIB::ZLIB` target via CMake's Findzlib module, so no branching
+    # is needed here.
     find_package(ZLIB REQUIRED)
 endif()
 

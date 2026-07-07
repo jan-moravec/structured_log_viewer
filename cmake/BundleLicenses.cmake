@@ -98,7 +98,11 @@ function(bundle_third_party_licenses target_name)
         # open path. All four are statically linked; their upstream
         # licenses are permissive (zlib / BSD-like) and require
         # attribution in redistributed binaries.
-        "zlib:LICENSE:zlib (zlib)"
+        # zlib-ng (a drop-in fork of upstream zlib, same zlib license).
+        # Ships under the source-root `LICENSE.md` filename rather than
+        # upstream zlib's `LICENSE`; the FetchContent dep name is still
+        # `zlib` so the lookup key matches FetchDependencies.cmake.
+        "zlib:LICENSE.md:zlib-ng (zlib)"
         "bzip2:LICENSE:bzip2 (BSD-4-Clause-like)"
         "xz:COPYING:xz-utils / liblzma (0BSD)"
         "zstd:LICENSE:zstd (BSD-3-Clause)"
