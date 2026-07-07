@@ -462,6 +462,17 @@ if(NOT USE_SYSTEM_XZ)
         set(XZ_MICROLZMA_ENCODER OFF)
         set(XZ_MICROLZMA_DECODER ON)
         set(XZ_LZIP_DECODER ON)
+        # xz's `xz` CLI wraps decompression in a Landlock sandbox (on
+        # Linux) / pledge (on OpenBSD) / Capsicum (on FreeBSD). The
+        # Landlock probe hard-fails at configure time when `CFLAGS`
+        # contains `-fsanitize=` (upstream refuses to build the sandbox
+        # under a sanitizer runtime because the sandbox blocks the
+        # `open()` calls sanitizers issue for their runtime symlinks).
+        # We disable the `xz` CLI (`XZ_TOOL_XZ OFF`) so the sandbox is
+        # never linked into what we ship, but xz's top-level CMakeLists
+        # runs the Landlock probe unconditionally. Turn the sandbox off
+        # explicitly so `clang-ci (asan-ubsan / tsan)` configures.
+        set(ENABLE_SANDBOX OFF)
         # Suppress xz's own CTest suite. xz's tests are gated on the
         # `BUILD_TESTING` cache variable which the top-level
         # `include(CTest)` promoted to ON, out-shadowing a plain

@@ -319,10 +319,14 @@ FixtureLocations BuildFixtures()
     paths.xzMt = BenchScratchPath(".jsonl.mt.xz");
     paths.zstd = BenchScratchPath(".jsonl.zst");
 
-    // Regenerate the uncompressed fixture every run so on-disk size
-    // is deterministic across CI hosts. The named temporary keeps
-    // the file alive past the compressor loop below.
-    const TestStructuredLogFile fixtureBuilder(
+    // Regenerate the uncompressed fixture on first entry so on-disk
+    // size is deterministic across CI hosts. Held in a function-local
+    // static so the RAII cleanup (which unlinks the file on dtor) runs
+    // at process exit, not when this helper returns -- otherwise the
+    // baseline `TimeAndReport` below (and the compressor loop, on a
+    // clean scratch dir) would race the destructor and see
+    // `filesystem_error: No such file` from `file_size`.
+    static const TestStructuredLogFile fixtureBuilder(
         StreamedRecords{
             .count = BENCH_LINE_COUNT,
             .seed = bench::LARGE_FIXTURE_SEED,
