@@ -326,7 +326,7 @@ FixtureLocations BuildFixtures()
     // baseline `TimeAndReport` below (and the compressor loop, on a
     // clean scratch dir) would race the destructor and see
     // `filesystem_error: No such file` from `file_size`.
-    static const TestStructuredLogFile fixtureBuilder(
+    static const TestStructuredLogFile FIXTURE_BUILDER(
         StreamedRecords{
             .count = BENCH_LINE_COUNT,
             .seed = bench::LARGE_FIXTURE_SEED,
@@ -336,7 +336,7 @@ FixtureLocations BuildFixtures()
         {}, // default schema
         paths.uncompressed.string()
     );
-    (void)fixtureBuilder;
+    (void)FIXTURE_BUILDER;
 
     // Compress once per codec; skip if a non-empty artefact already
     // exists (cheap local iteration after the first run).

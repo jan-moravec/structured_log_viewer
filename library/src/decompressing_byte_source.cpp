@@ -283,6 +283,10 @@ struct OpenExclusiveResult
     // can mangle a valid native path (non-UTF-8 POSIX locales,
     // Darwin NFD quirks) and fail an `open()` that `ifstream(path)`
     // handled fine. Matches `_wfopen_s(path.native())` above.
+    // POSIX `open()` is a variadic function only because the `mode`
+    // arg is conditionally used with `O_CREAT`; there is no
+    // non-variadic replacement to pick.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg,cppcoreguidelines-pro-type-cstyle-cast,hicpp-vararg)
     const int fd = ::open(path.c_str(), flags, S_IRUSR | S_IWUSR);
     if (fd < 0)
     {
@@ -321,6 +325,13 @@ struct OpenExclusiveResult
     for (int attempt = 0; attempt < MAX_ATTEMPTS; ++attempt)
     {
         std::filesystem::path candidate = MakeTempPath();
+        // clang-analyzer doesn't trace `FILE*` ownership through the
+        // `FileHandle` RAII wrapper inside `OpenExclusiveResult`, so
+        // it flags this call site as `unix.Stream: Opened stream
+        // never closed`. On the success branch we move the handle
+        // out; on the collision / hard-fail branch `~FileHandle` on
+        // the local `result` at the end of the iteration closes it.
+        // NOLINTNEXTLINE(clang-analyzer-unix.Stream)
         OpenExclusiveResult result = TryOpenExclusive(candidate);
         if (result.handle.IsOpen())
         {

@@ -99,13 +99,13 @@ public:
     /// Default size cap on decompressed output. 32 GiB comfortably
     /// covers realistic logs (even a highly compressible 500 MiB
     /// `.xz`) while bounding zip-bomb inputs.
-    static constexpr std::size_t kDefaultMaxDecompressedBytes = std::size_t{32} << 30;
+    static constexpr std::size_t DEFAULT_MAX_DECOMPRESSED_BYTES = std::size_t{32} << 30;
 
     struct Options
     {
         /// Hard cap; throws `DecompressionSizeCapExceeded` if
         /// exceeded. Zero disables the cap.
-        std::size_t maxDecompressedBytes = kDefaultMaxDecompressedBytes;
+        std::size_t maxDecompressedBytes = DEFAULT_MAX_DECOMPRESSED_BYTES;
     };
 
     /// Sniff @p input and (if compressed) decode to a temp file.
