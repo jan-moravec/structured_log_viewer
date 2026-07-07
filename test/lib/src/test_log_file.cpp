@@ -106,3 +106,60 @@ TEST_CASE("LogFile move preserves mmap pointer and content", "[LogFile][mmap-sta
     CHECK(moved.Data() == originalData);
     CHECK(moved.GetLine(0) == "Line 1");
 }
+
+// Regression: `AttachLifetimeAnchor` used to overwrite the previous
+// anchor's shared_ptr when called twice, dropping the previous
+// anchor's dtor *before* `~LogFile` unmapped the mmap. On Windows
+// that made the previous anchor's temp-file removal silently no-op
+// (`std::filesystem::remove` returns false while a mapping is
+// open). The implementation now composes anchors -- previous +
+// next both survive until `~LogFile`. This test pins that
+// composition contract using a pair of tiny sentinels that count
+// their own destruction.
+TEST_CASE("LogFile: AttachLifetimeAnchor composes multiple anchors", "[LogFile]")
+{
+    const TestLogFile testLogFile;
+    testLogFile.Write("Line 1\nLine 2\n");
+
+    struct Sentinel
+    {
+        int *counter;
+        explicit Sentinel(int *c) : counter(c)
+        {
+        }
+        ~Sentinel()
+        {
+            ++(*counter);
+        }
+    };
+
+    int firstDestructed = 0;
+    int secondDestructed = 0;
+    {
+        auto logFile = testLogFile.CreateLogFile();
+        REQUIRE(logFile != nullptr);
+
+        auto first = std::make_shared<Sentinel>(&firstDestructed);
+        auto second = std::make_shared<Sentinel>(&secondDestructed);
+
+        logFile->AttachLifetimeAnchor(first);
+        logFile->AttachLifetimeAnchor(second);
+
+        // Drop the local shared_ptrs; the LogFile's composed anchor
+        // is now the sole strong reference to both sentinels.
+        first.reset();
+        second.reset();
+
+        // Neither sentinel should have been destructed yet -- the
+        // LogFile is still alive and its composed anchor still
+        // holds both.
+        CHECK(firstDestructed == 0);
+        CHECK(secondDestructed == 0);
+    }
+
+    // Post-scope: LogFile is destroyed. Both sentinels' dtors ran
+    // exactly once -- confirming that the earlier `AttachLifetimeAnchor`
+    // call didn't silently overwrite (and drop) the first anchor.
+    CHECK(firstDestructed == 1);
+    CHECK(secondDestructed == 1);
+}

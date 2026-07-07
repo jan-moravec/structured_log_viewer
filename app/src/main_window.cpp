@@ -2687,6 +2687,18 @@ void MainWindow::StreamNextPendingFile()
         // surface via the `LogFile` ctor inside
         // `ContinueOpenAfterPrepared` a few lines down, so we
         // don't need a redundant open-error check here.
+        //
+        // Runs on the GUI thread. 6 bytes off a local disk is
+        // sub-millisecond; the same open on a stalled network
+        // share can block indefinitely. Acceptable trade-off for
+        // now (the alternative -- always dispatching an async
+        // sniff worker even for uncompressed inputs -- costs a
+        // thread pool round-trip on every single-file open) but
+        // if UDP/SMB latency ever becomes a supported use-case,
+        // fold the sniff into `BeginAsyncDecompression`'s worker
+        // and drop the up-front branch. `LogFile`'s open below
+        // has the same GUI-thread blocking property, so this
+        // sniff isn't the tightest link in the chain.
         const auto codec =
             loglib::internal::DecompressingByteSource::SniffCodec(std::filesystem::path(file.toStdString()));
         if (codec != loglib::internal::DecompressingByteSource::Codec::None)
@@ -3138,12 +3150,19 @@ void MainWindow::CancelInFlightDecompression()
 
     // Request stop first so the worker sees it on its next
     // between-chunk poll, then block until it observes the request
-    // and unwinds via `DecompressionCancelled`.
-    if (mDecompressionWatcher->isRunning())
-    {
-        mDecompressionStopSource.request_stop();
-        mDecompressionWatcher->waitForFinished();
-    }
+    // and unwinds via `DecompressionCancelled`. Both calls are
+    // unconditional on purpose: `waitForFinished()` on an already-
+    // completed future returns immediately, and `request_stop()` on
+    // a stop-source whose worker already returned is a harmless
+    // flag flip. Guarding on `isRunning()` is a racy snapshot -- if
+    // the worker completes between the check and the wait, we would
+    // skip `waitForFinished()` while a `finished()` callout is
+    // already dispatching on this stack, and the `setFuture({})`
+    // below wouldn't clear it. The `mDecompressionInFlight = false`
+    // above still catches that residual case, but avoiding the
+    // race in the first place keeps the reasoning local.
+    mDecompressionStopSource.request_stop();
+    mDecompressionWatcher->waitForFinished();
 
     // Detach the future so the queued `finished` slot cannot fire
     // against the newly-armed session. `setFuture({})` is the
@@ -3238,6 +3257,19 @@ void MainWindow::OnDecompressionFinished()
     if (!errorEntry.isEmpty())
     {
         mPendingDecompressionErrors.push_back(errorEntry.toStdString());
+        // Clear the per-open scratch fields BEFORE we drain into
+        // the next file: `StreamNextPendingFile` below may sniff
+        // a compressed follow-up and re-enter
+        // `BeginAsyncDecompression`, which repopulates these
+        // fields for the NEW file. Clearing after that would wipe
+        // the follow-up's metadata, causing its progress dialog /
+        // toast to render an empty filename. This matches the
+        // ordering used in the cancel branch above; the success
+        // branch below does not need the pre-clear because a
+        // parse worker was armed and the follow-up doesn't happen
+        // until `OnStreamingFinished`.
+        mDecompressionOriginalPath.clear();
+        mDecompressionCodecName.clear();
         // Continue with the next queued file. On queue exhaustion
         // this drains `mPendingDecompressionErrors` under its own
         // title (`Error Decompressing File`), keeping decompression
@@ -3252,12 +3284,6 @@ void MainWindow::OnDecompressionFinished()
         // [ok.log, ok.log, broken.gz] would show a green
         // "Parsing complete" state, no dialog).
         FinalizeAfterDecompressionIfChainTerminal();
-        // Also clear the per-open scratch fields on this exit --
-        // matches the equivalent clearing at the tail of the
-        // success branch. The cancel branch above already cleared
-        // them before the toast.
-        mDecompressionOriginalPath.clear();
-        mDecompressionCodecName.clear();
         return;
     }
 
@@ -3310,20 +3336,26 @@ void MainWindow::OnDecompressionFinished()
     // `mPendingDecompressionErrors` and returns `false`; drain the
     // remainder of the queue so a mixed drop still surfaces the
     // rest of the batch.
-    if (!ContinueOpenAfterPrepared(mDecompressionOriginalPath, effectivePath, std::move(dbs)))
+    const bool armedParseWorker = ContinueOpenAfterPrepared(mDecompressionOriginalPath, effectivePath, std::move(dbs));
+    // Clear the per-open scratch fields BEFORE the follow-up drain
+    // for the same reason the error branch clears early: if
+    // `ContinueOpenAfterPrepared` returned false and the next
+    // queued file is compressed, `StreamNextPendingFile` re-enters
+    // `BeginAsyncDecompression` which repopulates these for the
+    // new file, and a subsequent clear here would wipe the
+    // follow-up's metadata. When a parse worker WAS armed
+    // (`armedParseWorker == true`), the follow-up doesn't happen
+    // until `OnStreamingFinished` re-enters
+    // `StreamNextPendingFile`, so clearing here is still correct
+    // (belt-and-braces: `BeginAsyncDecompression` overwrites them
+    // at the start of each open).
+    mDecompressionOriginalPath.clear();
+    mDecompressionCodecName.clear();
+    if (!armedParseWorker)
     {
         StreamNextPendingFile();
         FinalizeAfterDecompressionIfChainTerminal();
     }
-    // Clear the per-open scratch fields so a subsequent open that
-    // hits the cancel or error branch (which reads
-    // `mDecompressionOriginalPath` for the toast / error message)
-    // cannot pick up a stale value from this successful open.
-    // `BeginAsyncDecompression` overwrites them at the start of
-    // each open, so this is defensive belt-and-braces for the
-    // window between success and the next open.
-    mDecompressionOriginalPath.clear();
-    mDecompressionCodecName.clear();
 }
 
 void MainWindow::FinalizeAfterDecompressionIfChainTerminal()
@@ -3394,6 +3426,17 @@ void MainWindow::FinalizeAfterDecompressionIfChainTerminal()
     UpdateStreamingStatus();
     UpdateWindowTitle();
     mStreamingFileName.clear();
+    // Mirror `OnStreamingFinished`'s column-health refresh -- the
+    // intermediate `OnStreamingFinished` calls in a multi-file
+    // chain all return early (they still have queued files or an
+    // in-flight decompression) before reaching their own refresh,
+    // so if the chain terminates through a decompression failure
+    // no one has refreshed the health snapshot for the successfully
+    // parsed earlier files. Without this the header warning glyphs
+    // and the status-bar mismatch summary stay pinned to whatever
+    // stale state they were in at the *start* of the drop, even
+    // though the current row set differs.
+    mModel->RefreshColumnHealth();
 
     // Apply the deferred sort before the auto-save so the mirror
     // reads the applied sort from the proxy -- same reasoning as

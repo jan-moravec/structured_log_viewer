@@ -98,18 +98,15 @@ public:
     /// mapping is open, and on POSIX where a stale mmap would
     /// silently outlive the file.
     ///
-    /// Note: the "mmap-before-anchor" guarantee applies **only** at
-    /// `LogFile` destruction. Explicitly *reassigning* the anchor
-    /// mid-lifetime (either by calling this method twice or via
-    /// move-assignment -- which is deleted for this reason) drops
-    /// the previous anchor **while the mmap is still live**, which
-    /// on Windows leaks the previous anchor's temp file until
-    /// process exit. Every production caller attaches exactly once
-    /// per `LogFile`; multiple calls are supported so `#ifdef`-heavy
-    /// tests can rebind, but callers who need several RAII objects
-    /// to survive the mmap should compose them into a single
-    /// wrapper (e.g. a lambda capture list or a helper struct)
-    /// before attaching.
+    /// Multiple attaches are supported: the implementation composes
+    /// each new anchor with the pre-existing one so both survive
+    /// until `~LogFile` unmaps the mmap. Order-of-destruction across
+    /// the composed anchors is LIFO (last-attached destroys first),
+    /// but every anchor's dtor runs *after* the mmap unmap. Move-
+    /// assignment on `LogFile` is deleted because the compiler-
+    /// synthesised operator would still assign members in
+    /// declaration order and defeat the guarantee -- attach the
+    /// anchor to the destination `LogFile` explicitly instead.
     void AttachLifetimeAnchor(std::shared_ptr<void> anchor) noexcept;
 
 private:
