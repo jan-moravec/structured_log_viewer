@@ -356,6 +356,41 @@ The anchor list is persisted as part of the [configuration](#configurations), so
 
 > Anchored rows that are FIFO-evicted from a [streaming session](#retention-cap) are dropped from the anchor list automatically — they would otherwise linger in the panel and in the saved configuration with no resolvable row to point at.
 
+## Histogram / activity-rate strip
+
+The **Histogram** dock is a bottom-of-window strip that plots the row count over time, stacked and coloured by [canonical log level](#automatic-column-detection). Use it for triage: the spike, the burst of errors, the quiet stretch — all become visible at a glance, and clicking or dragging jumps or filters the table accordingly.
+
+The dock is hidden by default; toggle it from **View → Histogram** (`Ctrl+H`), the primary toolbar's bar-chart icon, or the dock's own close button. Placement, size, and last-shown state are persisted per Qt dock convention so a re-opened window restores the previous layout.
+
+### What the strip shows
+
+- **X axis** — time, using the values of the first `Type::Time` column in the current configuration. When the log has no time column the strip shows a "This log has no time column — histogram unavailable." placeholder; an empty log shows "No rows to bucket yet."
+- **Y axis** — row count per bucket. Bars are stacked segments, one per canonical `LogLevel` (`Trace` / `Debug` / `Info` / `Warn` / `Error` / `Fatal`, plus an "Unknown" segment for rows without a resolvable level). Segments use the active theme's level brushes so the histogram tracks the row-tint palette.
+- **Bucket size** — the strip auto-picks between `1 s`, `10 s`, `1 min`, `10 min`, `1 h`, and `1 d` based on the observed time range so ~500 buckets always cover the visible span. The current bucket size is shown at the top of the dock.
+- **Tooltip** — hover any bar to see its exact bucket start, bucket width, and the per-level counts.
+
+The strip is computed from the raw parsed rows, not from the current filter view, so the shape stays stable while you narrow the visible table. That means a burst of errors is still visible as a red spike after you filter down to `level=info` — handy for triaging what got filtered out. To see a filter's effect on the histogram, drag on the strip itself to install a `Type::Time` range filter (see below).
+
+### Zooming the bucket rung
+
+- **`Z`** — zoom in one step (finer bucket, e.g. `1 h` → `10 min`).
+- **`Shift+Z`** — zoom out one step.
+- **`Ctrl+wheel`** — same effect from the pointer.
+- **Right-click → Reset zoom (auto)** — returns the rung to the auto-picked size for the current range.
+
+Manual zoom pins the rung until you reset it, so appending new rows in a live stream doesn't secretly change the granularity under you.
+
+### Click to jump, drag to filter
+
+- **Click a bar** — selects the first source-model row whose timestamp falls in that bucket and scrolls the table to it. Sort and hidden columns are honoured. When the strip cannot find a row for the bucket (e.g. because retention has already evicted it, or a filter hides every row in that time range) the status bar surfaces `No visible row in the selected bucket.` instead of silently no-oping.
+- **Left-drag across bars** — brushes a time range. On mouse release the app installs (or replaces) a `Type::Time` filter on the timestamp column covering the selected span; the filter appears in the **Filters** menu labelled `histogram-time-range` and can be edited or removed like any other filter.
+- **`Esc`** during a drag — cancels the brush without installing a filter.
+- **Filter removal** — deleting the `histogram-time-range` entry in the **Filters** menu (or **Filters → Clear All**) removes the range and the strip returns to the unfiltered view.
+
+### Streaming behaviour
+
+In [Stream Mode](#stream-mode-live-tail) and [Network Stream Mode](#network-stream-mode-tcp--udp) the strip repaints at the existing ~50 ms batch cadence — a burst of arrivals lands as a single stacked bar without dropping frames. The bucket index is rebuilt from scratch when the FIFO retention cap evicts old rows so the counts never lag the visible table.
+
 ## Searching
 
 Open the Find bar with **Edit → Find** (`Ctrl+F`). It appears at the bottom of the window with:
@@ -501,6 +536,7 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 | Copy selected rows as JSON     | `Ctrl+C`            |
 | Toggle Record Details pane     | `Ctrl+I`            |
 | Toggle Anchors panel           | `Ctrl+K`            |
+| Toggle Histogram panel         | `Ctrl+H`            |
 | Anchor selection (colour 1..8) | `Ctrl+1` … `Ctrl+8` |
 | Remove anchor from selection   | `Ctrl+0`            |
 | Clear every anchor             | `Ctrl+Shift+A`      |
