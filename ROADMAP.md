@@ -10,7 +10,7 @@ For the architecture each item plugs into, see [CONTRIBUTING.md → Architecture
 - [Competitive context](#competitive-context)
 - [Themes](#themes)
 - [Tier 1 — Pre-`v1` release-blocking ergonomics](#tier-1--pre-v1-release-blocking-ergonomics)
-  - [1. Transparent decompression of `.gz` / `.bz2` / `.xz` / `.zst`](#1-transparent-decompression-of-gz--bz2--xz--zst)
+  - [1. ~~Transparent decompression of `.gz` / `.bz2` / `.xz` / `.zst`~~ (shipped)](#1-transparent-decompression-of-gz--bz2--xz--zst)
   - [2. Histogram / activity-rate strip](#2-histogram--activity-rate-strip)
   - [3. User-defined highlight rules](#3-user-defined-highlight-rules)
   - [4. Bookmark notes on anchors](#4-bookmark-notes-on-anchors)
@@ -78,7 +78,9 @@ Beyond the per-item list, three themes run through the roadmap:
 
 Each of the ten items below closes a gap that reviewers and first-time users routinely flag against direct competitors. They should all land before `v1.0`. Items are listed in suggested implementation order; the order also roughly tracks how much code surface each touches.
 
-### 1. Transparent decompression of `.gz` / `.bz2` / `.xz` / `.zst`
+### 1. ~~Transparent decompression of `.gz` / `.bz2` / `.xz` / `.zst`~~
+
+> **Shipped.** Static `File → Open…`, drag & drop, CLI arguments, and session restore all transparently decompress `.gz`, `.bz2`, `.xz`, and `.zst` (magic-byte detection, extension-agnostic). Backing bits: `loglib::internal::DecompressingByteSource` (streams to a RAII temp file under `std::filesystem::temp_directory_path()`), a `QtConcurrent::run` worker orchestrated from `MainWindow::StreamNextPendingFile`, and a modal-per-window `QProgressDialog` with **Cancel** wired to a `loglib::StopSource`. Session locators always store the *original* compressed path — the temp path is a per-open implementation detail. See [`doc/README.md § Compressed inputs`](doc/README.md#compressed-inputs) for the user-facing surface.
 
 **Why.** Logrotate-style deployments compress every retained segment (`app.log.1.gz`, `app.log.1.zst`, ...). Today the app cannot open them at all. lnav, Klogg, LogViewPlus, OtrosLogViewer all do this transparently. This is the single biggest "first impression" gap.
 
@@ -86,7 +88,7 @@ Each of the ten items below closes a gap that reviewers and first-time users rou
 
 **Non-goals (v1).** `.zip` / `.tar.gz` multi-member archives (extract first), encrypted archives, live-tail of a compressed file (the producer would need to re-decompress on every truncate; defer to a v1.x ticket if there's demand).
 
-**Approach.** Add a `DecompressingByteSource` layer beneath `FileLineSource`. Sniff the first 6 bytes of the file in `MainWindow::DetectFormatForPath` (already the central format-sniff point) and pick a decompressor before the existing format probe runs. Bytes flow into a memory-mapped staging buffer (small files) or a streaming decoder feeding a temp file (large files) so the rest of the static pipeline (mmap + TBB) sees a uniform byte source. Dependencies: prefer system `zlib` / `libbz2` / `liblzma` / `libzstd` where present, FetchContent fallback. License-bundle entries already exist for zlib; add the rest to [`cmake/BundleLicenses.cmake`](cmake/BundleLicenses.cmake).
+**Approach.** Add a `DecompressingByteSource` layer beneath `FileLineSource`. Sniff the first 6 bytes of the file in `MainWindow::DetectFormatForPath` (already the central format-sniff point) and pick a decompressor before the existing format probe runs. Bytes flow into a memory-mapped staging buffer (small files) or a streaming decoder feeding a temp file (large files) so the rest of the static pipeline (mmap + TBB) sees a uniform byte source. Dependencies: prefer system `zlib` / `libbz2` / `liblzma` / `libzstd` where present, FetchContent fallback. Add license-bundle entries for all four codecs to [`cmake/BundleLicenses.cmake`](cmake/BundleLicenses.cmake) (none were previously registered).
 
 **Acceptance bar.** Open one ~500 MiB JSONL file compressed with each of the four codecs in `< 2 ×` the time of the uncompressed equivalent. Existing parser benchmarks unchanged (the decompression path is upstream of them). Unit tests for each codec with truncated / corrupt input must surface a parse error rather than crash.
 
@@ -181,7 +183,7 @@ Exports respect the current filter set and sort order; an explicit "Export selec
 
 **Non-goals (v1).** Streaming export (continuous flush to disk as new lines arrive — defer to v1.x), exports with attachments (anchors / notes), per-column transformations.
 
-**Approach.** Reuse the per-column formatter that drives `LogTableView`. The export runs on a `QThread` so the GUI stays responsive on million-row exports. Progress + cancel via the existing `QProgressDialog` pattern used by Save Configuration.
+**Approach.** Reuse the per-column formatter that drives `LogTableView`. The export runs on a `QThread` so the GUI stays responsive on million-row exports. Progress + cancel via the modal-per-window `QProgressDialog` pattern introduced by item 1's async decompression path (`QFutureWatcher` + `loglib::StopSource`) — Save Configuration is fully synchronous today and has no progress UI to model on.
 
 **Acceptance bar.** Exporting 1 M rows to NDJSON completes in `< 5 s` on a warm cache. JSON Lines round-trips back through `File → Open…` byte-identically.
 

@@ -22,6 +22,7 @@ add_library(
     src/buffering_sink.cpp
     src/bytes_producer.cpp
     src/compact_log_value.cpp
+    src/decompressing_byte_source.cpp
     src/enum_dictionary.cpp
     src/file_identity.cpp
     src/file_line_source.cpp
@@ -71,7 +72,11 @@ target_link_libraries(
     # PCRE2 backs the regex-template parser (RegexParser). All PCRE2 includes
     # are confined to `library/src/parsers/regex_parser.cpp`; no `pcre2_*`
     # type appears in any public loglib header. PRIVATE link.
-    PRIVATE TBB::tbb efsw asio::asio PCRE2::pcre2-8
+    # zlib / bzip2 / liblzma / zstd back `loglib::internal::DecompressingByteSource`
+    # for transparent decompression of the four canonical codecs. All codec
+    # includes are confined to `library/src/decompressing_byte_source.cpp`;
+    # no codec type appears in any public loglib header. PRIVATE link.
+    PRIVATE TBB::tbb efsw asio::asio PCRE2::pcre2-8 ZLIB::ZLIB BZip2::BZip2 LibLZMA::LibLZMA zstd::libzstd
 )
 
 # Optional TLS support for `TcpServerProducer`. When enabled, define

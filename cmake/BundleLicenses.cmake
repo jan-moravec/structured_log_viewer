@@ -92,6 +92,16 @@ function(bundle_third_party_licenses target_name)
         # linked whenever the parser is compiled in, so we always
         # attribute it.
         "pcre2:LICENCE.md:PCRE2 (BSD-3-Clause)"
+        # Compression codecs backing transparent decompression in
+        # `decompressing_byte_source.cpp`. All four are statically
+        # linked; permissive licenses that still require attribution.
+        # zlib-ng is a drop-in zlib fork; the FetchContent dep name
+        # remains `zlib` so the lookup key matches FetchDependencies.
+        # Its license file is `LICENSE.md` (upstream zlib uses `LICENSE`).
+        "zlib:LICENSE.md:zlib-ng (zlib)"
+        "bzip2:LICENSE:bzip2 (BSD-4-Clause-like)"
+        "xz:COPYING:xz-utils / liblzma (0BSD)"
+        "zstd:LICENSE:zstd (BSD-3-Clause)"
     )
     foreach(spec IN LISTS FETCHED_DEPS)
         string(REPLACE ":" ";" parts "${spec}")

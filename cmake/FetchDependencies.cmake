@@ -12,6 +12,10 @@ option(USE_SYSTEM_TBB "Use system uxlfoundation oneTBB library" OFF)
 option(USE_SYSTEM_ARGPARSE "Use system p-ranav/argparse library" OFF)
 option(USE_SYSTEM_EFSW "Use system SpartanJ/efsw library" OFF)
 option(USE_SYSTEM_PCRE2 "Use system PCRE2 library" OFF)
+option(USE_SYSTEM_ZLIB "Use system zlib library" OFF)
+option(USE_SYSTEM_BZIP2 "Use system bzip2 library" OFF)
+option(USE_SYSTEM_XZ "Use system xz/liblzma library" OFF)
+option(USE_SYSTEM_ZSTD "Use system zstd library" OFF)
 
 if(NOT USE_SYSTEM_DATE)
     FetchContent_Declare(
@@ -333,6 +337,257 @@ if(NOT USE_SYSTEM_ASIO)
     endif()
 else()
     find_package(asio REQUIRED)
+endif()
+
+# Compression codecs backing `DecompressingByteSource`. Statically
+# linked (`BUILD_SHARED_LIBS OFF`) so no runtime DLLs are staged.
+# All four are PRIVATE deps of `loglib` -- their types don't cross
+# the public header.
+#
+# zlib-ng in `ZLIB_COMPAT=ON` mode: drop-in for upstream `madler/zlib`
+# with the classic API surface, plus SIMD inflate (SSE2 / PCLMUL /
+# AVX2 on x86, NEON on ARM). ~2x faster inflate on x86_64 AVX2 vs.
+# upstream zlib; consumer link line stays `ZLIB::ZLIB`.
+if(NOT USE_SYSTEM_ZLIB)
+    FetchContent_Declare(
+        zlib
+        GIT_REPOSITORY https://github.com/zlib-ng/zlib-ng.git
+        GIT_TAG 2.3.3
+        SYSTEM
+        EXCLUDE_FROM_ALL
+    )
+    block()
+        set(ZLIB_COMPAT ON) # classic zlib API surface (z_stream, inflate, ...)
+        set(ZLIB_ALIASES ON) # export `zlib` / `zlibstatic` compat targets
+        # zlib-ng 2.3.x gates its tests on BUILD_TESTING (not the
+        # deprecated ZLIB_ENABLE_TESTS). Scoped to this block so our
+        # own tests stay armed downstream.
+        set(BUILD_TESTING OFF)
+        set(WITH_GTEST OFF)
+        set(WITH_BENCHMARKS OFF)
+        set(BUILD_SHARED_LIBS OFF)
+        set(CMAKE_POLICY_VERSION_MINIMUM 3.28) # silence zlib-ng's older cmake_minimum_required
+        FetchContent_MakeAvailable(zlib)
+    endblock()
+    # In our static-only build, `ZLIB_ALIASES=ON` produces alias-to-alias
+    # chains rooted at the concrete `zlib-ng` target. CMake 3.28 forbids
+    # aliasing another alias, so anchor `ZLIB::ZLIB` directly on the
+    # concrete target.
+    if(NOT TARGET ZLIB::ZLIB AND TARGET zlib-ng)
+        add_library(ZLIB::ZLIB ALIAS zlib-ng)
+    endif()
+    # No `target_include_directories`: zlib-ng already declares its
+    # generated `zlib.h` (compat mode) as a PUBLIC include directory.
+    if(TARGET zlib-ng)
+        if(MSVC)
+            target_compile_options(zlib-ng PRIVATE /w)
+        else()
+            target_compile_options(zlib-ng PRIVATE -w)
+        endif()
+    endif()
+else()
+    # System zlib -- upstream `zlib` or a distro zlib-ng in compat mode.
+    # Both expose `ZLIB::ZLIB` via CMake's Findzlib.
+    find_package(ZLIB REQUIRED)
+endif()
+
+if(NOT USE_SYSTEM_BZIP2)
+    # Upstream bzip2 has no CMakeLists (Makefile only). Fetch the
+    # libarchive mirror (verbatim source copy) and build the canonical
+    # 7-file static library ourselves. Matches `find_package(BZip2)`
+    # target shape.
+    FetchContent_Declare(
+        bzip2
+        GIT_REPOSITORY https://github.com/libarchive/bzip2.git
+        GIT_TAG bzip2-1.0.8
+        SYSTEM
+        EXCLUDE_FROM_ALL
+    )
+    FetchContent_MakeAvailable(bzip2)
+
+    # Top-level project() enables only CXX; enable C for bzip2's .c
+    # sources. Idempotent.
+    enable_language(C)
+
+    add_library(
+        bz2_static
+        STATIC
+        ${bzip2_SOURCE_DIR}/blocksort.c
+        ${bzip2_SOURCE_DIR}/huffman.c
+        ${bzip2_SOURCE_DIR}/crctable.c
+        ${bzip2_SOURCE_DIR}/randtable.c
+        ${bzip2_SOURCE_DIR}/compress.c
+        ${bzip2_SOURCE_DIR}/decompress.c
+        ${bzip2_SOURCE_DIR}/bzlib.c
+    )
+    target_include_directories(bz2_static SYSTEM PUBLIC $<BUILD_INTERFACE:${bzip2_SOURCE_DIR}>)
+    set_target_properties(bz2_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    if(MSVC)
+        target_compile_options(bz2_static PRIVATE /w)
+        # bzlib_private.h auto-detects UNIX via the `unix` macro on
+        # POSIX; on Windows disable UNIX quirks and CRT warnings.
+        target_compile_definitions(bz2_static PRIVATE _CRT_SECURE_NO_WARNINGS)
+    else()
+        target_compile_options(bz2_static PRIVATE -w)
+    endif()
+
+    if(NOT TARGET BZip2::BZip2)
+        add_library(BZip2::BZip2 ALIAS bz2_static)
+    endif()
+else()
+    find_package(BZip2 REQUIRED)
+endif()
+
+if(NOT USE_SYSTEM_XZ)
+    # SECURITY: never downgrade below v5.6.2. v5.6.0 and 5.6.1 shipped
+    # the CVE-2024-3094 "xz-utils" build-system backdoor (liblzma
+    # payload triggered inside sshd's dependency chain via ifunc
+    # hijacking); v5.6.2 was the first release with the backdoor
+    # fully purged. Any downward bump is a supply-chain regression.
+    FetchContent_Declare(
+        xz
+        GIT_REPOSITORY https://github.com/tukaani-project/xz.git
+        GIT_TAG v5.6.3
+        SYSTEM
+        EXCLUDE_FROM_ALL
+    )
+    block()
+        set(BUILD_SHARED_LIBS OFF)
+        set(XZ_TOOL_XZ OFF)
+        set(XZ_TOOL_XZDEC OFF)
+        set(XZ_TOOL_LZMADEC OFF)
+        set(XZ_TOOL_LZMAINFO OFF)
+        set(XZ_TOOL_SCRIPTS OFF)
+        set(XZ_DOC OFF)
+        set(XZ_MICROLZMA_ENCODER OFF)
+        set(XZ_MICROLZMA_DECODER ON)
+        set(XZ_LZIP_DECODER ON)
+        # xz's `xz` CLI wraps decompression in a Landlock sandbox (on
+        # Linux) / pledge (on OpenBSD) / Capsicum (on FreeBSD). The
+        # Landlock probe hard-fails at configure time when `CFLAGS`
+        # contains `-fsanitize=` (upstream refuses to build the sandbox
+        # under a sanitizer runtime because the sandbox blocks the
+        # `open()` calls sanitizers issue for their runtime symlinks).
+        # We disable the `xz` CLI (`XZ_TOOL_XZ OFF`) so the sandbox is
+        # never linked into what we ship, but xz's top-level CMakeLists
+        # runs the Landlock probe unconditionally. Turn the sandbox off
+        # explicitly so `clang-ci (asan-ubsan / tsan)` configures.
+        set(ENABLE_SANDBOX OFF)
+        # Suppress xz's own CTest suite. xz's tests are gated on the
+        # `BUILD_TESTING` cache variable which the top-level
+        # `include(CTest)` promoted to ON, out-shadowing a plain
+        # `set()` here. Otherwise xz registers ~13 tests whose
+        # executables the `XZ_TOOL_*` flags above never build, so
+        # they show up as `***Not Run` noise. Save + FORCE OFF for
+        # the FetchContent scope, then restore -- cache mutations
+        # don't unwind on `endblock()`.
+        get_property(_slv_saved_build_testing CACHE BUILD_TESTING PROPERTY VALUE)
+        set(BUILD_TESTING OFF CACHE BOOL "Build the testing tree." FORCE)
+        set(CMAKE_POLICY_VERSION_MINIMUM 3.28) # silence xz's older cmake_minimum_required
+        FetchContent_MakeAvailable(xz)
+        set(BUILD_TESTING ${_slv_saved_build_testing} CACHE BOOL "Build the testing tree." FORCE)
+    endblock()
+    # Normalise `liblzma` -> `LibLZMA::LibLZMA` to match
+    # `find_package(LibLZMA)`. xz's CMakeLists doesn't set
+    # INTERFACE_INCLUDE_DIRECTORIES for external consumers, so attach
+    # the public API dir ourselves.
+    if(TARGET liblzma)
+        target_include_directories(liblzma SYSTEM INTERFACE $<BUILD_INTERFACE:${xz_SOURCE_DIR}/src/liblzma/api>)
+        if(MSVC)
+            target_compile_options(liblzma PRIVATE /w)
+        else()
+            target_compile_options(liblzma PRIVATE -w)
+        endif()
+    endif()
+    if(NOT TARGET LibLZMA::LibLZMA AND TARGET liblzma)
+        add_library(LibLZMA::LibLZMA ALIAS liblzma)
+    endif()
+else()
+    # `decompressing_byte_source.cpp` calls `lzma_stream_decoder_mt`,
+    # which first shipped in liblzma 5.4.0. Requesting 5.4 turns the
+    # link-time missing-symbol error on older distros (Ubuntu 20.04,
+    # RHEL 8, Debian 11 all ship 5.2.x) into a clean configure-time
+    # "package too old" diagnostic.
+    find_package(LibLZMA 5.4 REQUIRED)
+endif()
+
+if(NOT USE_SYSTEM_ZSTD)
+    FetchContent_Declare(
+        zstd
+        GIT_REPOSITORY https://github.com/facebook/zstd.git
+        GIT_TAG v1.5.6
+        SYSTEM
+        EXCLUDE_FROM_ALL
+        SOURCE_SUBDIR
+        build/cmake
+    )
+    block()
+        set(ZSTD_BUILD_PROGRAMS OFF)
+        set(ZSTD_BUILD_SHARED OFF)
+        set(ZSTD_BUILD_STATIC ON)
+        set(ZSTD_BUILD_TESTS OFF)
+        set(ZSTD_BUILD_CONTRIB OFF)
+        set(ZSTD_MULTITHREAD_SUPPORT OFF)
+        set(ZSTD_LEGACY_SUPPORT OFF)
+        set(BUILD_SHARED_LIBS OFF)
+        set(CMAKE_POLICY_VERSION_MINIMUM 3.28) # silence zstd's older cmake_minimum_required
+        FetchContent_MakeAvailable(zstd)
+    endblock()
+    # Upstream exports the static lib as `libzstd_static`; alias to
+    # `zstd::libzstd` to match the pkg-config target system
+    # find_package produces.
+    if(NOT TARGET zstd::libzstd)
+        if(TARGET libzstd_static)
+            add_library(zstd::libzstd ALIAS libzstd_static)
+        elseif(TARGET zstd_static)
+            add_library(zstd::libzstd ALIAS zstd_static)
+        endif()
+    endif()
+    foreach(_zstd_target libzstd_static zstd_static)
+        if(TARGET ${_zstd_target})
+            if(MSVC)
+                target_compile_options(${_zstd_target} PRIVATE /w)
+            else()
+                target_compile_options(${_zstd_target} PRIVATE -w)
+            endif()
+        endif()
+    endforeach()
+else()
+    find_package(zstd REQUIRED)
+    # Modern zstd exports `zstd::libzstd_static` + `libzstd_shared`;
+    # older ones only `zstd::libzstd`. Prefer the static variant --
+    # our FetchContent branch is static-only, so aliasing to the
+    # shared target on system-mode builds would silently reintroduce
+    # a runtime libzstd DLL/.so dependency.
+    if(NOT TARGET zstd::libzstd)
+        if(TARGET zstd::libzstd_static)
+            add_library(zstd::libzstd ALIAS zstd::libzstd_static)
+        elseif(TARGET zstd::libzstd_shared)
+            message(
+                WARNING
+                "USE_SYSTEM_ZSTD=ON but the system zstd package only exposes "
+                "the SHARED library (zstd::libzstd_shared). The binary will "
+                "depend on a runtime libzstd (DLL/.so) that must be present on "
+                "the deploy target. Prefer installing a package that ships the "
+                "static variant (e.g. Debian's libzstd-dev provides both), or "
+                "leave USE_SYSTEM_ZSTD=OFF to fetch a static build."
+            )
+            add_library(zstd::libzstd ALIAS zstd::libzstd_shared)
+        endif()
+    endif()
+endif()
+
+# loglib links `zstd::libzstd` either way; fail loudly at configure
+# time if the alias never resolved (avoids a cryptic
+# "cannot find -lzstd::libzstd" at link time).
+if(NOT TARGET zstd::libzstd)
+    message(
+        FATAL_ERROR
+        "zstd::libzstd target was not defined. FetchContent may have failed "
+        "to build zstd, or a system zstd install is missing its CMake config "
+        "package. Set USE_SYSTEM_ZSTD accordingly or install zstd (with CMake "
+        "package files) on this system."
+    )
 endif()
 
 # TLS support for `TcpServerProducer`. Default ON so packaged binaries

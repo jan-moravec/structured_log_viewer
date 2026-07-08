@@ -45,6 +45,21 @@ Empty CSV cells (`a,,c` or trailing missing cells) are omitted from the record r
 
 Empty lines are skipped. Lines that fail to parse are reported as errors but do not abort loading — valid records are still shown. Nested JSON objects and arrays are preserved as their compact JSON string in logfmt and CSV; only JSON Lines preserves nesting natively.
 
+### Compressed inputs
+
+Static-mode opens (`File → Open…`, drag & drop, command-line arguments, session restore) transparently decompress the four canonical single-file codecs before the format-detection step above runs:
+
+- **gzip** (`.gz`) — including concatenated multi-member streams as produced by `journalctl -o export --gzip`.
+- **bzip2** (`.bz2`).
+- **xz / LZMA** (`.xz`).
+- **Zstandard** (`.zst`).
+
+Detection is by **content magic bytes**, not by file extension: a file named `app.log` that is actually gzipped is decompressed anyway, and a `.log.gz` file that is *not* gzipped goes straight to the plain-text path. Decompression writes to a temp file under the OS temp directory (`std::filesystem::temp_directory_path()`), streams through a bounded buffer so 500 MiB + inputs stay memory-safe, and reports progress in a modal-per-window dialog that shows the original filename, the codec, and a **Cancel** button. Cancelling deletes the partial temp file within one poll interval (~200 ms) and surfaces a `Decompression cancelled: <file>` status-bar toast rather than an error dialog. If the cancelled file was the only queued open, the app then returns to idle; if it was one of several files in a multi-file open, the drain continues with the next queued file — cancelling one decompression **does not** cancel the entire batch. (Use **File → New Session** or close the window to abort the whole queue.) A hard cap of 32 GiB on decompressed output guards against zip-bomb inputs and disk exhaustion; files that would exceed the cap surface a decompression error and leave the file unopened.
+
+The window title, status bar, and Recent Sessions list always show the **original compressed path** — the temp path is a per-open implementation detail and only surfaces in the transient `Decompressed X → Y in Zs` toast that follows a successful decode. Sessions saved from a compressed source round-trip the compressed path, so a re-open re-runs decompression fresh rather than pointing at a stale temp file.
+
+This applies to static mode only. Live-tail (`Open Log Stream…`) does **not** decompress compressed rotations — see the [Non-goals](#non-goals) list under Stream Mode below.
+
 ## Ingestion modes
 
 Structured Log Viewer ingests logs through three distinct paths. Pick the one that matches what you are looking at:
@@ -69,9 +84,9 @@ You can open a finished log file in two ways:
 1. **File → Open…** (`Ctrl+O`) — opens a file picker that auto-detects whether the selected file is a log or a [configuration](#configurations) file, *and* whether a log file is JSON Lines, logfmt, CSV, or one of the built-in [regex templates](#supported-input-formats).
 1. **Drag & drop** one or more files onto the main window.
 
-The file dialog defaults to a filter that lists `*.json`, `*.jsonl`, `*.ndjson`, `*.logfmt`, `*.csv`, `*.log`, and `*.txt`; switch it to **All Files (\*.\*)** to pick anything else (including unsuffixed files). The actual format is decided by content sniffing, not by extension, so the extension only affects what the picker shows — not how the file is parsed. The detected format is recorded on the active session so reopening a saved session keeps the same parser.
+The file dialog defaults to a filter that lists `*.json`, `*.jsonl`, `*.ndjson`, `*.logfmt`, `*.csv`, `*.log`, and `*.txt`, plus their `.gz` / `.bz2` / `.xz` / `.zst` variants (see [Compressed inputs](#compressed-inputs)); switch it to **All Files (\*.\*)** to pick anything else (including unsuffixed files). The actual format is decided by content sniffing, not by extension, so the extension only affects what the picker shows — not how the file is parsed. The detected format is recorded on the active session so reopening a saved session keeps the same parser.
 
-Opening multiple files at once **merges** their records into a single table; the files are queued and parsed sequentially while sharing one column layout. Mixing formats across the queue is supported — each file is sniffed individually. If parsing errors occur, the first 20 are shown in a dialog when the queue drains; the rest are summarized as "… and N more error(s)". The status bar shows `Parsing <file> — N lines, M errors` while the queue is in flight.
+Opening multiple files at once **merges** their records into a single table; the files are queued and parsed sequentially while sharing one column layout. Mixing formats across the queue is supported — each file is sniffed individually, and any file whose bytes start with a supported codec's magic number is transparently decompressed in a worker thread with a cancellable progress dialog before it enters the format-detection step (see [Compressed inputs](#compressed-inputs)). If parsing errors occur, the first 20 are shown in a dialog when the queue drains; the rest are summarized as "… and N more error(s)". Decompression failures surface under a separate `Error Decompressing File` batch so they stay visually distinct from open failures. The status bar shows `Parsing <file> — N lines, M errors` while the queue is in flight, using the *original* filename even when the file was decompressed.
 
 For a file that is **still being written**, use [Stream Mode](#stream-mode-live-tail) instead — static mode parses the bytes that exist when you opened the file and stops there.
 
@@ -144,7 +159,7 @@ While a stream is active the **Configuration** menus (Save / Load) and **Setting
 
 The following are **out of scope** for the current Stream Mode implementation:
 
-- **Compressed rotations** (`app.log.1.gz` etc.) — only uncompressed rotations are handled.
+- **Compressed live-tail** — Stream Mode follows uncompressed files only. Static opens of `.gz` / `.bz2` / `.xz` / `.zst` files work (see [Compressed inputs](#compressed-inputs)); Stream Mode's rotation handling likewise only tracks uncompressed rotations.
 - **Pulling rotated history off disk** — the viewer does not read `app.log.1` to recover lines older than the in-memory cap.
 - **stdin / named-pipe sources** — only file tailing is wired up; for network ingestion see [Network Stream Mode](#network-stream-mode-tcp--udp).
 - **Auto-detect "this file is being actively written → open in Stream Mode"** — Stream Mode is always an explicit `File → Open Log Stream…` action.

@@ -171,6 +171,27 @@ size_t LogFile::OwnedStringsMemoryBytes() const noexcept
     return mOwnedStrings.capacity();
 }
 
+void LogFile::AttachLifetimeAnchor(std::shared_ptr<void> anchor) noexcept
+{
+    if (mLifetimeAnchor)
+    {
+        // Compose incoming + existing anchors so both survive to
+        // `~LogFile` (unmap first, then release composite). A plain
+        // assign would drop the previous anchor immediately, and
+        // on Windows that silently leaks the temp file (`remove`
+        // returns false while the mmap is open). Defensive branch --
+        // production callers attach exactly once.
+        struct AnchorPair
+        {
+            std::shared_ptr<void> previous;
+            std::shared_ptr<void> next;
+        };
+        anchor =
+            std::make_shared<AnchorPair>(AnchorPair{.previous = std::move(mLifetimeAnchor), .next = std::move(anchor)});
+    }
+    mLifetimeAnchor = std::move(anchor);
+}
+
 void LogFile::AppendLineOffsets(const std::vector<uint64_t> &offsets)
 {
 #ifndef NDEBUG
