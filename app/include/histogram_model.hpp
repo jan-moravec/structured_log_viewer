@@ -46,7 +46,20 @@ public:
     /// Recompute `AutoBucketSize` from the current time range and
     /// apply it. Rebuilds only if the picked rung differs from the
     /// current one. Emits `bucketsChanged` on change.
+    ///
+    /// Respects the manual-pin latch: after the user has zoomed with
+    /// `SetBucketSize` (Z / Shift+Z / Ctrl+wheel), this is a no-op so
+    /// streaming batches can't secretly re-pick the rung under them.
+    /// The user-driven "Reset zoom (auto)" path calls
+    /// `ResetBucketSizeToAuto` instead, which drops the pin first.
     void ApplyAutoBucketSize();
+
+    /// User-initiated "return to auto zoom". Clears the manual-pin
+    /// latch and forces an `ApplyAutoBucketSize` recompute so the
+    /// current range picks a fresh rung regardless of prior zooms.
+    /// Wired to `HistogramWidget`'s context-menu "Reset zoom (auto)"
+    /// entry. Emits `bucketsChanged` on change.
+    void ResetBucketSizeToAuto();
 
     /// Full re-scan of the log model into the bucket index. Called on
     /// `modelReset` and on bucket-size change. Emits `bucketsChanged`.

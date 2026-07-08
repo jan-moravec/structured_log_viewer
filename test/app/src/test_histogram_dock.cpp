@@ -27,13 +27,17 @@
 #include <loglib/stop_token.hpp>
 
 #include <QAbstractItemModel>
+#include <QAbstractProxyModel>
 #include <QApplication>
 #include <QCloseEvent>
 #include <QMouseEvent>
 #include <QKeyEvent>
+#include <QModelIndex>
+#include <QSettings>
 #include <QSignalSpy>
 #include <QString>
 #include <QStringList>
+#include <QTableView>
 #include <QTemporaryDir>
 #include <QtTest/QtTest>
 
@@ -134,6 +138,26 @@ void WaitForBucketsChanged(HistogramModel &model)
         return;
     }
     QVERIFY2(spy.wait(1000), "bucketsChanged must arrive after streaming");
+}
+
+// Drive `MainWindow::OpenFilesForTest` and pump the event loop until
+// `LogModel::streamingFinished` arrives. Mirrors the wait idiom the
+// bigger `apptest` fixture uses.
+void OpenFixtureInMainWindow(MainWindow &window, const HistogramFixture &fixture)
+{
+    auto *model = window.findChild<LogModel *>();
+    QVERIFY(model != nullptr);
+    QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+    QVERIFY(finishedSpy.isValid());
+    window.OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Replace);
+    if (finishedSpy.count() == 0)
+    {
+        QVERIFY2(finishedSpy.wait(5000), "streamingFinished must arrive");
+    }
+    QVERIFY(model->rowCount() > 0);
+    // Pump once more so any coalesced `bucketsChanged` timers /
+    // queued histogram slots run before the assertions.
+    QCoreApplication::processEvents();
 }
 
 } // namespace
@@ -370,6 +394,182 @@ private slots:
         QCOMPARE(hm->FirstRowInBucket(5), 5);
         // Bucket count is at least 10 (fenceposts may add one).
         QVERIFY(hm->Index().Buckets().size() >= 10);
+    }
+
+    /// Regression: after the user manually pinned a rung via
+    /// `SetBucketSize` (Z / Shift+Z / Ctrl+wheel), calling
+    /// `ApplyAutoBucketSize` was silently vetoed by the manual-pin
+    /// latch, leaving the widget's context-menu "Reset zoom (auto)"
+    /// entry inert. `ResetBucketSizeToAuto` must drop the pin and
+    /// re-pick a rung freshly.
+    static void TestResetBucketSizeToAutoDropsManualPin()
+    {
+        LogModel model;
+        HistogramDock dock(&model, /*theme=*/nullptr);
+        HistogramModel *hm = dock.ModelForTest();
+        QVERIFY(hm != nullptr);
+
+        // A 30 s span picks `OneSecond` on the auto ladder.
+        const HistogramFixture fixture(30, /*stepSeconds=*/1);
+        StreamJsonInto(model, fixture);
+        WaitForBucketsChanged(*hm);
+        const auto autoRung = hm->Index().BucketSize();
+        QCOMPARE(autoRung, loglib::HistogramBucketSize::OneSecond);
+
+        // Manually pin a coarser rung. `SetBucketSize` sets the
+        // internal `mBucketSizePinned` latch, which used to make
+        // the subsequent `ApplyAutoBucketSize` a no-op.
+        hm->SetBucketSize(loglib::HistogramBucketSize::TenMinutes);
+        QCOMPARE(hm->Index().BucketSize(), loglib::HistogramBucketSize::TenMinutes);
+
+        // A plain `ApplyAutoBucketSize` here would be swallowed by
+        // the pin. `ResetBucketSizeToAuto` explicitly drops the pin
+        // first, so the rung snaps back to the auto pick.
+        hm->ResetBucketSizeToAuto();
+        QCOMPARE(hm->Index().BucketSize(), autoRung);
+
+        // The pin must actually be gone: a subsequent
+        // `ApplyAutoBucketSize` (streaming-side path) still has to
+        // work without another explicit reset.
+        hm->SetBucketSize(loglib::HistogramBucketSize::OneMinute);
+        hm->ResetBucketSizeToAuto();
+        QCOMPARE(hm->Index().BucketSize(), autoRung);
+        hm->ApplyAutoBucketSize();
+        QCOMPARE(hm->Index().BucketSize(), autoRung);
+    }
+
+    /// Regression: presses on the subtitle strip at the top of the
+    /// widget used to anchor a click / drag even though the pointer
+    /// was clearly not on a bar. The strip now rejects presses
+    /// outside `PlotRect()` so an accidental subtitle click can't
+    /// jump the table.
+    static void TestPressAboveSubtitleDoesNotEmitBucketClicked()
+    {
+        LogModel model;
+        HistogramDock dock(&model, /*theme=*/nullptr);
+        HistogramModel *hm = dock.ModelForTest();
+        HistogramWidget *widget = dock.WidgetForTest();
+        QVERIFY(hm != nullptr);
+        QVERIFY(widget != nullptr);
+
+        const HistogramFixture fixture(30, /*stepSeconds=*/1);
+        StreamJsonInto(model, fixture);
+        WaitForBucketsChanged(*hm);
+
+        widget->resize(400, 100);
+        QSignalSpy clickSpy(&dock, &HistogramDock::bucketClicked);
+        QSignalSpy rangeSpy(&dock, &HistogramDock::timeRangeSelected);
+        QVERIFY(clickSpy.isValid());
+        QVERIFY(rangeSpy.isValid());
+
+        // y = 5 sits above the plot rect (top-padding is 20 px), so
+        // this press must be rejected entirely — no drag anchor,
+        // no click emit on release.
+        const QPoint subtitle(widget->width() / 2, 5);
+        QMouseEvent press(
+            QEvent::MouseButtonPress, subtitle, widget->mapToGlobal(subtitle), Qt::LeftButton, Qt::LeftButton, {}
+        );
+        QMouseEvent release(
+            QEvent::MouseButtonRelease, subtitle, widget->mapToGlobal(subtitle), Qt::LeftButton, Qt::NoButton, {}
+        );
+        QApplication::sendEvent(widget, &press);
+        QApplication::sendEvent(widget, &release);
+
+        QCOMPARE(clickSpy.count(), 0);
+        QCOMPARE(rangeSpy.count(), 0);
+
+        // Sanity: a press inside the plot rect still emits a click,
+        // proving the fixture is otherwise wired up.
+        const QPoint bar(widget->width() / 2, widget->height() / 2);
+        QMouseEvent barPress(
+            QEvent::MouseButtonPress, bar, widget->mapToGlobal(bar), Qt::LeftButton, Qt::LeftButton, {}
+        );
+        QMouseEvent barRelease(
+            QEvent::MouseButtonRelease, bar, widget->mapToGlobal(bar), Qt::LeftButton, Qt::NoButton, {}
+        );
+        QApplication::sendEvent(widget, &barPress);
+        QApplication::sendEvent(widget, &barRelease);
+        QCOMPARE(clickSpy.count(), 1);
+    }
+
+    /// End-to-end: `MainWindow::AddTimeRangeFilterFromHistogram`
+    /// (the slot behind `HistogramDock::timeRangeSelected`) must
+    /// install a `Type::Time` filter under the sentinel
+    /// `histogram-time-range` ID so a second drag replaces it
+    /// instead of stacking. Guards the plumbing from
+    /// `HistogramWidget::mouseReleaseEvent` all the way through to
+    /// `MainWindow::mFilters`.
+    static void TestMainWindowInstallsHistogramTimeRangeFilter()
+    {
+        QSettings().clear();
+        MainWindow window;
+        const HistogramFixture fixture(30, /*stepSeconds=*/1);
+        OpenFixtureInMainWindow(window, fixture);
+
+        auto *dock = window.findChild<HistogramDock *>();
+        QVERIFY(dock != nullptr);
+        HistogramModel *hm = dock->ModelForTest();
+        QVERIFY(hm != nullptr);
+        QVERIFY(hm->HasTimeColumn());
+
+        const auto range = hm->ObservedRange();
+        QVERIFY(range.has_value());
+        const qint64 from = range->min.time_since_epoch().count();
+        const qint64 to = range->max.time_since_epoch().count();
+
+        window.AddTimeRangeFilterFromHistogram(from, to);
+
+        const auto &filters = window.Filters();
+        const auto it = filters.find("histogram-time-range");
+        QVERIFY2(it != filters.end(), "sentinel filter ID must be installed");
+        QCOMPARE(it->second.type, loglib::LogConfiguration::LogFilter::Type::Time);
+        QCOMPARE(it->second.row, hm->TimeColumnIndex());
+        QVERIFY(it->second.filterBegin.has_value());
+        QVERIFY(it->second.filterEnd.has_value());
+        QCOMPARE(*it->second.filterBegin, from);
+        QCOMPARE(*it->second.filterEnd, to);
+
+        // A second drag with a narrower range must *replace* the
+        // filter rather than stacking a second entry.
+        window.AddTimeRangeFilterFromHistogram(from, from);
+        const auto &filters2 = window.Filters();
+        QCOMPARE(filters2.count("histogram-time-range"), std::size_t{1});
+        QCOMPARE(*filters2.at("histogram-time-range").filterEnd, from);
+    }
+
+    /// End-to-end: `MainWindow::JumpToFirstRowInBucket` moves the
+    /// table's current selection to the source row of the first
+    /// row in that bucket. With rows 1 s apart and the auto rung
+    /// picking `OneSecond`, bucket `0` maps to source row `0`.
+    static void TestMainWindowJumpToFirstRowInBucket()
+    {
+        QSettings().clear();
+        MainWindow window;
+        const HistogramFixture fixture(10, /*stepSeconds=*/1);
+        OpenFixtureInMainWindow(window, fixture);
+
+        auto *dock = window.findChild<HistogramDock *>();
+        QVERIFY(dock != nullptr);
+        HistogramModel *hm = dock->ModelForTest();
+        QVERIFY(hm != nullptr);
+        // Pin the rung so the bucket->row mapping is deterministic
+        // even when the auto pick would already agree.
+        hm->SetBucketSize(loglib::HistogramBucketSize::OneSecond);
+
+        window.JumpToFirstRowInBucket(0);
+
+        auto *table = window.findChild<QTableView *>();
+        QVERIFY(table != nullptr);
+        const QModelIndex currentProxy = table->currentIndex();
+        QVERIFY2(currentProxy.isValid(), "JumpToFirstRowInBucket must move the current index");
+        // The current index lives in the proxy chain; map to source
+        // by walking each proxy in turn.
+        QModelIndex idx = currentProxy;
+        while (auto *proxy = qobject_cast<const QAbstractProxyModel *>(idx.model()))
+        {
+            idx = proxy->mapToSource(idx);
+        }
+        QCOMPARE(idx.row(), 0);
     }
 };
 

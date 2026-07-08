@@ -76,6 +76,15 @@ void HistogramModel::ApplyAutoBucketSize()
     Rebuild();
 }
 
+void HistogramModel::ResetBucketSizeToAuto()
+{
+    // The pin exists to keep streaming inserts from re-picking the
+    // rung under a user who explicitly zoomed. "Reset zoom (auto)"
+    // is the user un-doing that pin, so drop it before delegating.
+    mBucketSizePinned = false;
+    ApplyAutoBucketSize();
+}
+
 void HistogramModel::Rebuild()
 {
     InvalidateFirstRowCache();
@@ -133,15 +142,20 @@ std::optional<HistogramModel::TimeRange> HistogramModel::ObservedRange() const
     {
         return std::nullopt;
     }
-    // Fast path: derive the range from `mIndex` in O(1). Bucket
-    // boundaries are truncated timestamps, so the range they cover
-    // is a tight superset of the true observed range — precise
-    // enough for `AutoBucketSize`, which only needs the span to
-    // pick a rung. This avoids the second full-model walk that
-    // used to fire on every `OnModelReset` alongside `Rebuild`.
-    if (!mIndex.Empty())
+    // Fast path: the index tracks precise min / max timestamps as
+    // rows are added (O(1) per `AddRow`). Reading them here avoids
+    // the second full-model walk that used to fire on every
+    // `OnModelReset` alongside `Rebuild`, *and* avoids the earlier
+    // bucket-boundary approximation that inflated the range by up
+    // to one `BucketWidth()` — a difference big enough to make
+    // `AutoBucketSize` pick a coarser rung than the true range
+    // warrants after a `SetBucketSize` -> `ResetBucketSizeToAuto`
+    // round-trip on a tight span.
+    const auto minTs = mIndex.MinTimestamp();
+    const auto maxTs = mIndex.MaxTimestamp();
+    if (minTs.has_value() && maxTs.has_value())
     {
-        return TimeRange{mIndex.BucketStart(0), mIndex.BucketEnd(mIndex.Buckets().size() - 1)};
+        return TimeRange{*minTs, *maxTs};
     }
     // Slow path: the index is empty but the model still holds rows.
     // Happens only when every row's timestamp failed to parse (so
@@ -152,8 +166,8 @@ std::optional<HistogramModel::TimeRange> HistogramModel::ObservedRange() const
     {
         return std::nullopt;
     }
-    std::optional<loglib::TimeStamp> minTs;
-    std::optional<loglib::TimeStamp> maxTs;
+    std::optional<loglib::TimeStamp> walkedMin;
+    std::optional<loglib::TimeStamp> walkedMax;
     for (int row = 0; row < rowCount; ++row)
     {
         const auto ts = TimeStampForRow(row);
@@ -161,20 +175,20 @@ std::optional<HistogramModel::TimeRange> HistogramModel::ObservedRange() const
         {
             continue;
         }
-        if (!minTs.has_value() || *ts < *minTs)
+        if (!walkedMin.has_value() || *ts < *walkedMin)
         {
-            minTs = ts;
+            walkedMin = ts;
         }
-        if (!maxTs.has_value() || *ts > *maxTs)
+        if (!walkedMax.has_value() || *ts > *walkedMax)
         {
-            maxTs = ts;
+            walkedMax = ts;
         }
     }
-    if (!minTs.has_value() || !maxTs.has_value())
+    if (!walkedMin.has_value() || !walkedMax.has_value())
     {
         return std::nullopt;
     }
-    return TimeRange{*minTs, *maxTs};
+    return TimeRange{*walkedMin, *walkedMax};
 }
 
 void HistogramModel::OnRowsInserted(const QModelIndex &parent, int first, int last)

@@ -382,7 +382,7 @@ Manual zoom pins the rung until you reset it, so appending new rows in a live st
 
 ### Click to jump, drag to filter
 
-- **Click a bar** — selects the first source-model row whose timestamp falls in that bucket and scrolls the table to it. Sort and hidden columns are honoured. When the strip cannot find a row for the bucket (e.g. because retention has already evicted it, or a filter hides every row in that time range) the status bar surfaces `No visible row in the selected bucket.` instead of silently no-oping.
+- **Click a bar** — selects the first source-model row whose timestamp falls in the clicked bar and scrolls the table to it. When the strip is narrower than the raw bucket count several buckets fold into one visual column; a click resolves to the first non-empty bucket inside that column so you don't jump into a gap between visible bars. Sort and hidden columns are honoured. When the strip cannot find a row for the bucket (e.g. because retention has already evicted it, or a filter hides every row in that time range) the status bar surfaces `No visible row in the selected bucket.` instead of silently no-oping.
 - **Left-drag across bars** — brushes a time range. On mouse release the app installs (or replaces) a `Type::Time` filter on the timestamp column covering the selected span; the filter appears in the **Filters** menu labelled `histogram-time-range` and can be edited or removed like any other filter.
 - **`Esc`** during a drag — cancels the brush without installing a filter.
 - **Filter removal** — deleting the `histogram-time-range` entry in the **Filters** menu (or **Filters → Clear All**) removes the range and the strip returns to the unfiltered view.

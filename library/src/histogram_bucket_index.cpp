@@ -1,6 +1,7 @@
 #include "loglib/histogram_bucket_index.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -13,13 +14,16 @@ namespace
 
 /// Level -> array index. `Unknown` (0) is a valid slot in
 /// `LevelBucket::counts`; every value maps directly through
-/// `static_cast<size_t>`, but we clamp to guard against a future
-/// `LogLevel` grow (the enum is currently tightly packed 0..6).
+/// `static_cast<size_t>`. Debug builds trip an assert if the enum
+/// grows past the slot count so the mismatch is noticed at test
+/// time; release keeps the clamp so a rogue value degrades to
+/// `Unknown` instead of stomping the array.
 constexpr size_t LEVEL_SLOT_COUNT = CANONICAL_LEVEL_COUNT + 1;
 
 constexpr size_t LevelToSlot(LogLevel level) noexcept
 {
     const auto raw = static_cast<size_t>(level);
+    assert(raw < LEVEL_SLOT_COUNT && "LogLevel grew; extend HistogramBucketIndex::LEVEL_SLOT_COUNT");
     return raw < LEVEL_SLOT_COUNT ? raw : 0;
 }
 
@@ -72,6 +76,11 @@ std::string_view HistogramBucketSizeLabel(HistogramBucketSize size) noexcept
     case HistogramBucketSize::OneDay:
         return "1 d"sv;
     }
+    // Unreachable given the closed `HistogramBucketSize` enum.
+    // Assert in debug so an added rung without a label is caught by
+    // tests; release falls back to `"?"` rather than aborting the
+    // whole GUI paint.
+    assert(false && "HistogramBucketSize rung is missing a label");
     return "?"sv;
 }
 
@@ -133,6 +142,8 @@ void HistogramBucketIndex::AddRow(TimeStamp ts, LogLevel level)
         mBuckets.resize(1);
         mBuckets[0].counts[LevelToSlot(level)] += 1;
         mTotalRowCount += 1;
+        mMinTimestamp = ts;
+        mMaxTimestamp = ts;
         return;
     }
 
@@ -146,7 +157,7 @@ void HistogramBucketIndex::AddRow(TimeStamp ts, LogLevel level)
         // Rare in append-only streams; O(N) in the current bucket count.
         const auto shift = static_cast<size_t>(-bucketIdx);
         mBuckets.insert(mBuckets.begin(), shift, LevelBucket{});
-        mOrigin = TimeStamp{std::chrono::microseconds{originUs + bucketIdx * widthUs}};
+        mOrigin = TimeStamp{std::chrono::microseconds{originUs + (bucketIdx * widthUs)}};
         bucketIdx = 0;
     }
     else if (static_cast<size_t>(bucketIdx) >= mBuckets.size())
@@ -156,6 +167,14 @@ void HistogramBucketIndex::AddRow(TimeStamp ts, LogLevel level)
 
     mBuckets[static_cast<size_t>(bucketIdx)].counts[LevelToSlot(level)] += 1;
     mTotalRowCount += 1;
+    if (ts < mMinTimestamp)
+    {
+        mMinTimestamp = ts;
+    }
+    if (ts > mMaxTimestamp)
+    {
+        mMaxTimestamp = ts;
+    }
 }
 
 void HistogramBucketIndex::Reset() noexcept
@@ -163,6 +182,8 @@ void HistogramBucketIndex::Reset() noexcept
     mBuckets.clear();
     mOrigin = TimeStamp{};
     mTotalRowCount = 0;
+    mMinTimestamp = TimeStamp{};
+    mMaxTimestamp = TimeStamp{};
 }
 
 void HistogramBucketIndex::SetBucketSize(HistogramBucketSize size) noexcept
@@ -194,7 +215,7 @@ TimeStamp HistogramBucketIndex::BucketStart(size_t index) const noexcept
 {
     const auto widthUs = BucketWidth().count();
     return TimeStamp{std::chrono::microseconds{
-        mOrigin.time_since_epoch().count() + static_cast<int64_t>(index) * widthUs}};
+        mOrigin.time_since_epoch().count() + (static_cast<int64_t>(index) * widthUs)}};
 }
 
 TimeStamp HistogramBucketIndex::BucketEnd(size_t index) const noexcept

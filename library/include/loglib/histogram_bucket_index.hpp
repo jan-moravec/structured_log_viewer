@@ -160,12 +160,30 @@ public:
     /// Buckets().size()`.
     [[nodiscard]] TimeStamp BucketEnd(size_t index) const noexcept;
 
+    /// Precise minimum / maximum timestamp observed via `AddRow`,
+    /// tracked in O(1) per row. Distinct from `BucketStart(0)` /
+    /// `BucketEnd(last)` (which snap to bucket boundaries) so a
+    /// caller like `AutoBucketSize` sees the *true* span, not one
+    /// inflated by up to `BucketWidth()`. `nullopt` when empty.
+    [[nodiscard]] std::optional<TimeStamp> MinTimestamp() const noexcept
+    {
+        return mBuckets.empty() ? std::nullopt : std::optional<TimeStamp>{mMinTimestamp};
+    }
+    [[nodiscard]] std::optional<TimeStamp> MaxTimestamp() const noexcept
+    {
+        return mBuckets.empty() ? std::nullopt : std::optional<TimeStamp>{mMaxTimestamp};
+    }
+
 private:
     HistogramBucketSize mBucketSize = HistogramBucketSize::OneMinute;
     /// Start of the first bucket. Meaningful only when `!mBuckets.empty()`.
     TimeStamp mOrigin{};
     std::vector<LevelBucket> mBuckets;
     uint64_t mTotalRowCount = 0;
+    /// Precise observed range. Updated in `AddRow`; meaningful only
+    /// when `!mBuckets.empty()`. Cleared by `Reset()`.
+    TimeStamp mMinTimestamp{};
+    TimeStamp mMaxTimestamp{};
 };
 
 } // namespace loglib

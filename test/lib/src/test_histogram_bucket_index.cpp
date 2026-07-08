@@ -57,6 +57,44 @@ TEST_CASE("HistogramBucketIndex is empty on construction", "[histogram_bucket_in
     CHECK(index.Buckets().empty());
     CHECK(index.TotalRowCount() == 0);
     CHECK(index.BucketSize() == HistogramBucketSize::OneMinute);
+    CHECK(!index.MinTimestamp().has_value());
+    CHECK(!index.MaxTimestamp().has_value());
+}
+
+TEST_CASE("MinTimestamp / MaxTimestamp track the precise observed range", "[histogram_bucket_index]")
+{
+    HistogramBucketIndex index{HistogramBucketSize::TenMinutes};
+    // Boundary-hugging rows: bucket boundaries at 00:00 and 00:10
+    // would overstate the range by 10 minutes on either side. The
+    // precise min / max must clamp to the actual first / last row.
+    const auto firstTs = At(Base(), 15s);
+    const auto lastTs = At(Base(), 45s);
+    index.AddRow(firstTs, LogLevel::Info);
+    index.AddRow(lastTs, LogLevel::Warn);
+
+    REQUIRE(index.MinTimestamp().has_value());
+    REQUIRE(index.MaxTimestamp().has_value());
+    CHECK(*index.MinTimestamp() == firstTs);
+    CHECK(*index.MaxTimestamp() == lastTs);
+
+    // Reset clears the range along with the buckets.
+    index.Reset();
+    CHECK(!index.MinTimestamp().has_value());
+    CHECK(!index.MaxTimestamp().has_value());
+}
+
+TEST_CASE("MinTimestamp / MaxTimestamp survive out-of-order backfill", "[histogram_bucket_index]")
+{
+    HistogramBucketIndex index{HistogramBucketSize::OneMinute};
+    const auto later = At(Base(), std::chrono::minutes{2});
+    const auto earlier = Base();
+    index.AddRow(later, LogLevel::Info);
+    // Out-of-order row must both shift the origin and refresh min.
+    index.AddRow(earlier, LogLevel::Error);
+    REQUIRE(index.MinTimestamp().has_value());
+    REQUIRE(index.MaxTimestamp().has_value());
+    CHECK(*index.MinTimestamp() == earlier);
+    CHECK(*index.MaxTimestamp() == later);
 }
 
 TEST_CASE("AddRow anchors origin at the truncated first timestamp", "[histogram_bucket_index]")

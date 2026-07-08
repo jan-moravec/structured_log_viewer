@@ -1,7 +1,9 @@
 // Micro-benchmarks for `loglib::HistogramBucketIndex`. Gates the
 // ROADMAP-item-2 acceptance bar: rebuild the index over 1 M rows in
-// < 50 ms. Numbers are reported via `WARN` so they print on success
-// and end up in the CI log lines the comparison script scrapes.
+// well under a frame (target ~5 ms on the developer workstation the
+// ROADMAP entry cites; CI machines vary, so the numbers are reported
+// via `WARN` instead of a hard cap and the comparison script scrapes
+// the log lines to flag regressions).
 
 #include "benchmark_common.hpp"
 

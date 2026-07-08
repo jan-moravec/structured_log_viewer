@@ -282,6 +282,11 @@ QString HistogramWidget::FormatSubtitle() const
 
 void HistogramWidget::paintEvent(QPaintEvent *event)
 {
+    // No partial-repaint bookkeeping: `paintEvent` re-renders the
+    // whole strip on every call. The parameter is required by the
+    // Qt override signature but intentionally unused.
+    Q_UNUSED(event);
+
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, false);
 
@@ -316,7 +321,6 @@ void HistogramWidget::paintEvent(QPaintEvent *event)
             message = tr("No rows to bucket yet.");
         }
         painter.drawText(plotRect, Qt::AlignCenter, message);
-        (void)event;
         return;
     }
 
@@ -333,7 +337,6 @@ void HistogramWidget::paintEvent(QPaintEvent *event)
     const VisualLayout layout = ComputeVisualLayout(nBuckets, plotWidth);
     if (layout.columnCount == 0)
     {
-        (void)event;
         return;
     }
 
@@ -355,7 +358,6 @@ void HistogramWidget::paintEvent(QPaintEvent *event)
     }
     if (maxTotal == 0)
     {
-        (void)event;
         return;
     }
 
@@ -396,7 +398,6 @@ void HistogramWidget::paintEvent(QPaintEvent *event)
         painter.setPen(palette().color(QPalette::Highlight));
         painter.drawRect(brushRect.adjusted(0, 0, -1, -1));
     }
-    (void)event;
 }
 
 std::optional<std::size_t> HistogramWidget::VisualColumnAtX(int x) const
@@ -524,6 +525,15 @@ void HistogramWidget::mousePressEvent(QMouseEvent *event)
         QWidget::mousePressEvent(event);
         return;
     }
+    // Reject presses on the subtitle strip and the outer padding:
+    // the user hasn't pointed at a bar, so treating this as a click
+    // (or the anchor of a drag) would install a filter or jump the
+    // table from an accidental touch on the header line.
+    if (!PlotRect().contains(event->pos()))
+    {
+        QWidget::mousePressEvent(event);
+        return;
+    }
     mDragStartX = event->pos().x();
     mDragCurrentX = mDragStartX;
     mDragging = false;
@@ -532,11 +542,26 @@ void HistogramWidget::mousePressEvent(QMouseEvent *event)
 
 void HistogramWidget::mouseMoveEvent(QMouseEvent *event)
 {
-    UpdateHoverTooltip(event->pos().x());
+    const bool dragThresholdCrossedThisEvent = mDragStartX >= 0 &&
+                                               (event->buttons() & Qt::LeftButton) != 0 &&
+                                               std::abs(event->pos().x() - mDragStartX) > DRAG_THRESHOLD_PIXELS;
+    // Suppress hover tooltips while the user is drag-brushing: they
+    // are pointing at a range, not a bucket, so a single-bucket
+    // popup is contradictory. Hide any tooltip left over from before
+    // the drag threshold was crossed.
+    if (mDragging || dragThresholdCrossedThisEvent)
+    {
+        QToolTip::hideText();
+        mLastHoverBucket = -1;
+    }
+    else
+    {
+        UpdateHoverTooltip(event->pos().x());
+    }
     if (mDragStartX >= 0 && (event->buttons() & Qt::LeftButton) != 0)
     {
         mDragCurrentX = event->pos().x();
-        if (std::abs(mDragCurrentX - mDragStartX) > DRAG_THRESHOLD_PIXELS)
+        if (dragThresholdCrossedThisEvent)
         {
             mDragging = true;
         }
@@ -663,7 +688,11 @@ void HistogramWidget::contextMenuEvent(QContextMenuEvent *event)
         connect(resetAction, &QAction::triggered, this, [this]() {
             if (mModel != nullptr)
             {
-                mModel->ApplyAutoBucketSize();
+                // `ResetBucketSizeToAuto` drops the manual-pin latch
+                // first; a plain `ApplyAutoBucketSize` would be
+                // silently vetoed after any Z / Shift+Z / Ctrl+wheel
+                // zoom, leaving this menu entry inert.
+                mModel->ResetBucketSizeToAuto();
                 emit bucketSizeChanged(static_cast<int>(mModel->Index().BucketSize()));
             }
         });
