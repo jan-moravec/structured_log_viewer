@@ -23,6 +23,14 @@ HistogramDock::HistogramDock(LogModel *model, ThemeControl *theme, QWidget *pare
 
 void HistogramDock::closeEvent(QCloseEvent *event)
 {
-    emit closed();
+    // Mirror `AnchorsDock::closeEvent`: let the base class (and any
+    // installed event filters) run first, and only propagate `closed()`
+    // when the close is actually going through. Emitting before the
+    // base call would fire `closed()` even for a vetoed close and
+    // unwire the toggle action from a still-visible dock.
     QDockWidget::closeEvent(event);
+    if (event->isAccepted())
+    {
+        emit closed();
+    }
 }

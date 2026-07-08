@@ -59,16 +59,30 @@ protected:
     void wheelEvent(QWheelEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     void contextMenuEvent(QContextMenuEvent *event) override;
+    void changeEvent(QEvent *event) override;
 
 private:
     void ZoomIn();
     void ZoomOut();
     void CancelDrag();
 
-    /// Convert widget X pixel to a bucket index, clamped to the
+    /// Visual-column index the pixel @p x lands on, clamped to the
     /// visible range. Returns `nullopt` when the index is empty or
-    /// the X is outside the plot rect.
-    [[nodiscard]] std::optional<std::size_t> BucketAtX(int x) const;
+    /// the plot rect is degenerate. Kept as the single source of
+    /// truth so click / tooltip / drag all agree on the same
+    /// stride-aware layout the paint routine renders.
+    [[nodiscard]] std::optional<std::size_t> VisualColumnAtX(int x) const;
+
+    /// First raw bucket at or after `columnStart` that has at least
+    /// one row. Falls back to `columnStart` when the entire visual
+    /// column is empty (paint would skip it anyway; the caller then
+    /// surfaces a "no visible row" hint instead of jumping).
+    [[nodiscard]] std::size_t FirstNonEmptyBucketInColumn(std::size_t columnIndex) const;
+
+    /// Half-open raw-bucket range `[begin, end)` merged into visual
+    /// column @p columnIndex. Empty range when the model is unset or
+    /// @p columnIndex is out of range.
+    [[nodiscard]] std::pair<std::size_t, std::size_t> BucketRangeForVisualColumn(std::size_t columnIndex) const;
 
     /// Rect in widget coords where bars are painted (excludes the
     /// subtitle line and the small vertical padding).
@@ -94,7 +108,11 @@ private:
     int mDragStartX = -1;
     /// Latest pixel of the current drag (updated in mouseMove).
     int mDragCurrentX = -1;
-    /// Latest bucket index the mouse was over. `-1` when outside.
+    /// Latest visual-column index the mouse was over. `-1` when
+    /// outside the plot rect or invalidated by a data / theme
+    /// change. Kept in visual-column coords (not raw bucket
+    /// indices) so the tooltip dedup matches what the paint routine
+    /// draws under the pointer.
     int mLastHoverBucket = -1;
 
     static constexpr int DRAG_THRESHOLD_PIXELS = 3;

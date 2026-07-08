@@ -5,14 +5,17 @@
 
 #include <loglib/histogram_bucket_index.hpp>
 #include <loglib/log_level.hpp>
+#include <loglib/log_processing.hpp>
 #include <loglib/log_value.hpp>
+
+#include <date/date.h>
+#include <date/tz.h>
 
 #include <QBrush>
 #include <QColor>
 #include <QContextMenuEvent>
-#include <QDateTime>
+#include <QEvent>
 #include <QKeyEvent>
-#include <QTimeZone>
 #include <QLocale>
 #include <QMenu>
 #include <QMouseEvent>
@@ -31,6 +34,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <span>
+#include <string>
 
 namespace
 {
@@ -101,33 +106,103 @@ QColor ColorForLevel(const ThemeControl *theme, loglib::LogLevel level)
     return FallbackColorFor(level);
 }
 
-QString FormatTimestampForZoom(qint64 epochMicros, loglib::HistogramBucketSize size)
+/// Format string suitable for `date::format` given the bucket rung.
+/// Precision matches the bucket width so a 1 h rung doesn't advertise
+/// fake sub-hour precision. Kept aligned with the shape `log_table.cpp`
+/// uses for its `%F %T` cells so the table and the strip agree.
+[[nodiscard]] const char *DateFormatForZoom(loglib::HistogramBucketSize size) noexcept
 {
-    // Show only as much precision as the bucket width justifies:
-    // - 1 s/10 s buckets -> HH:mm:ss
-    // - 1 min/10 min      -> HH:mm
-    // - 1 h               -> yyyy-MM-dd HH:00
-    // - 1 d               -> yyyy-MM-dd
-    const auto dt = QDateTime::fromMSecsSinceEpoch(epochMicros / 1000, QTimeZone::UTC);
     switch (size)
     {
     case loglib::HistogramBucketSize::OneSecond:
     case loglib::HistogramBucketSize::TenSeconds:
-        return dt.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+        return "%F %T";
     case loglib::HistogramBucketSize::OneMinute:
     case loglib::HistogramBucketSize::TenMinutes:
-        return dt.toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+        return "%F %R";
     case loglib::HistogramBucketSize::OneHour:
-        return dt.toString(QStringLiteral("yyyy-MM-dd HH:00"));
+        return "%F %H:00";
     case loglib::HistogramBucketSize::OneDay:
-        return dt.toString(QStringLiteral("yyyy-MM-dd"));
+        return "%F";
     }
-    return dt.toString(Qt::ISODate);
+    return "%F %T";
 }
 
-qint64 EpochMicros(loglib::TimeStamp ts)
+/// Render @p ts as a local-time string using the same `date::CurrentZone`
+/// / `date::format` pipeline the log table uses, so the histogram and
+/// the table agree on how a timestamp reads. Second precision is enough
+/// for every rung we ship (finest is 1 s), so we round down and skip
+/// sub-second formatting entirely.
+QString FormatLocalTimestampForZoom(loglib::TimeStamp ts, loglib::HistogramBucketSize size)
 {
-    return ts.time_since_epoch().count();
+    const auto seconds = std::chrono::floor<std::chrono::seconds>(ts);
+    const date::zoned_time localTime{loglib::CurrentZone(), seconds};
+    const std::string formatted = date::format(DateFormatForZoom(size), localTime);
+    return QString::fromStdString(formatted);
+}
+
+QString BucketSizeLabelQt(loglib::HistogramBucketSize size)
+{
+    const auto label = loglib::HistogramBucketSizeLabel(size);
+    return QString::fromLatin1(label.data(), static_cast<qsizetype>(label.size()));
+}
+
+QString CanonicalLevelNameQt(loglib::LogLevel level)
+{
+    const auto name = loglib::CanonicalLevelName(level);
+    return QString::fromLatin1(name.data(), static_cast<qsizetype>(name.size()));
+}
+
+/// Bar-width policy: `stride` is how many raw buckets fold into one
+/// visual column when the widget is narrower than the bucket count.
+/// Kept as a free helper so `paintEvent` and hit-testing agree on the
+/// layout exactly.
+struct VisualLayout
+{
+    std::size_t stride = 1;
+    std::size_t columnCount = 0;
+    double columnWidth = 0.0;
+};
+
+[[nodiscard]] VisualLayout ComputeVisualLayout(std::size_t nBuckets, double plotWidth) noexcept
+{
+    VisualLayout layout;
+    if (nBuckets == 0 || plotWidth <= 0.0)
+    {
+        return layout;
+    }
+    layout.stride = std::max<std::size_t>(
+        1, static_cast<std::size_t>(std::ceil(static_cast<double>(nBuckets) / plotWidth))
+    );
+    layout.columnCount = (nBuckets + layout.stride - 1) / layout.stride;
+    layout.columnWidth = plotWidth / static_cast<double>(layout.columnCount);
+    return layout;
+}
+
+/// Half-open bucket range `[begin, end)` merged into visual column @p col.
+[[nodiscard]] std::pair<std::size_t, std::size_t> BucketRangeForColumn(
+    std::size_t col, const VisualLayout &layout, std::size_t nBuckets
+) noexcept
+{
+    const std::size_t begin = col * layout.stride;
+    const std::size_t end = std::min(nBuckets, begin + layout.stride);
+    return {begin, end};
+}
+
+/// Sum the raw buckets in `[begin, end)` into one merged column.
+[[nodiscard]] loglib::LevelBucket MergeBuckets(
+    std::span<const loglib::LevelBucket> buckets, std::size_t begin, std::size_t end
+) noexcept
+{
+    loglib::LevelBucket merged{};
+    for (std::size_t i = begin; i < end; ++i)
+    {
+        for (std::size_t s = 0; s < merged.counts.size(); ++s)
+        {
+            merged.counts[s] += buckets[i].counts[s];
+        }
+    }
+    return merged;
 }
 
 } // namespace
@@ -145,14 +220,30 @@ HistogramWidget::HistogramWidget(HistogramModel *model, ThemeControl *theme, QWi
 
     if (mModel != nullptr)
     {
-        connect(mModel, &HistogramModel::bucketsChanged, this, qOverload<>(&QWidget::update));
+        // Any data mutation invalidates the hover-tooltip cache: the
+        // bucket the pointer currently sits over may now report
+        // different counts (streaming batch), a different label
+        // (rung change), or not exist at all (retention eviction).
+        // Without this reset the dedup guard on `mLastHoverBucket`
+        // would leave a stale tooltip on screen until the mouse moves.
+        connect(mModel, &HistogramModel::bucketsChanged, this, [this]() {
+            mLastHoverBucket = -1;
+            update();
+        });
         connect(mModel, &HistogramModel::timeColumnAvailabilityChanged, this, [this](bool /*hasTime*/) {
+            mLastHoverBucket = -1;
             update();
         });
     }
     if (mTheme != nullptr)
     {
-        connect(mTheme, &ThemeControl::themeChanged, this, qOverload<>(&QWidget::update));
+        // Same reasoning: a theme flip changes the bar palette; drop
+        // the cached hover bucket so the next mouse move rebuilds
+        // the tooltip in the new colours.
+        connect(mTheme, &ThemeControl::themeChanged, this, [this]() {
+            mLastHoverBucket = -1;
+            update();
+        });
     }
 }
 
@@ -172,18 +263,15 @@ QString HistogramWidget::FormatSubtitle() const
         return {};
     }
     const auto &idx = mModel->Index();
-    const QString bucketLabel = QString::fromLatin1(
-        loglib::HistogramBucketSizeLabel(idx.BucketSize()).data(),
-        static_cast<qsizetype>(loglib::HistogramBucketSizeLabel(idx.BucketSize()).size())
-    );
+    const QString bucketLabel = BucketSizeLabelQt(idx.BucketSize());
     QString rangePart;
     if (!idx.Empty())
     {
-        const auto first = EpochMicros(idx.BucketStart(0));
-        const auto last = EpochMicros(idx.BucketEnd(idx.Buckets().size() - 1));
+        const auto first = idx.BucketStart(0);
+        const auto last = idx.BucketEnd(idx.Buckets().size() - 1);
         rangePart = QStringLiteral("  %1 \u2013 %2")
-                        .arg(FormatTimestampForZoom(first, idx.BucketSize()))
-                        .arg(FormatTimestampForZoom(last, idx.BucketSize()));
+                        .arg(FormatLocalTimestampForZoom(first, idx.BucketSize()))
+                        .arg(FormatLocalTimestampForZoom(last, idx.BucketSize()));
     }
     const QLocale locale = QLocale::system();
     return QStringLiteral("bucket: %1  \u00b7  rows: %2%3")
@@ -207,9 +295,10 @@ void HistogramWidget::paintEvent(QPaintEvent *event)
         FormatSubtitle()
     );
 
-    // Empty-state placeholder: no model, no time column, or empty index.
-    const bool empty =
-        mModel == nullptr || !mModel->HasTimeColumn() || mModel->Index().Empty() || plotRect.height() <= 0;
+    // Empty-state placeholder: no model, no time column, empty
+    // index, or a plot rect too small to render bars into.
+    const bool empty = mModel == nullptr || !mModel->HasTimeColumn() || mModel->Index().Empty() ||
+                       plotRect.height() <= 0 || plotRect.width() <= 0;
     if (empty)
     {
         painter.setPen(palette().color(QPalette::PlaceholderText));
@@ -235,13 +324,34 @@ void HistogramWidget::paintEvent(QPaintEvent *event)
     const auto buckets = idx.Buckets();
     const std::size_t nBuckets = buckets.size();
 
-    // Compute the tallest bucket total so bars scale to the plot
-    // rect. Use double to keep the per-segment math stable at
-    // extreme aspect ratios.
-    uint32_t maxTotal = 0;
-    for (const auto &b : buckets)
+    const double plotWidth = plotRect.width();
+    const double plotHeight = plotRect.height();
+
+    // Aggregate consecutive buckets into single visual columns when
+    // the bar width would drop below 1 px. `stride` is 1 when every
+    // bucket gets its own pixel or more.
+    const VisualLayout layout = ComputeVisualLayout(nBuckets, plotWidth);
+    if (layout.columnCount == 0)
     {
-        maxTotal = std::max(maxTotal, b.Total());
+        (void)event;
+        return;
+    }
+
+    // Precompute the merged totals up-front so `maxTotal` reflects
+    // the tallest *visible* column, not the tallest raw bucket. When
+    // `stride > 1` the two disagree by up to a factor of `stride`,
+    // and using raw `maxTotal` would let aggregated columns overshoot
+    // the plot rect and paint over the subtitle. The extra pass is
+    // O(nBuckets) — a rounding-error cost next to the per-column
+    // painter fills below.
+    std::vector<loglib::LevelBucket> merged;
+    merged.reserve(layout.columnCount);
+    uint32_t maxTotal = 0;
+    for (std::size_t col = 0; col < layout.columnCount; ++col)
+    {
+        const auto [begin, end] = BucketRangeForColumn(col, layout, nBuckets);
+        merged.push_back(MergeBuckets(buckets, begin, end));
+        maxTotal = std::max(maxTotal, merged.back().Total());
     }
     if (maxTotal == 0)
     {
@@ -249,39 +359,20 @@ void HistogramWidget::paintEvent(QPaintEvent *event)
         return;
     }
 
-    const double plotWidth = plotRect.width();
-    const double plotHeight = plotRect.height();
-    // Aggregate consecutive buckets into single visual columns when
-    // the bar width would drop below 1 px. `stride` is 1 when every
-    // bucket gets its own pixel or more.
-    const std::size_t stride = std::max<std::size_t>(1, static_cast<std::size_t>(std::ceil(static_cast<double>(nBuckets) / std::max(1.0, plotWidth))));
-    const std::size_t columnCount = (nBuckets + stride - 1) / stride;
-    const double columnWidth = plotWidth / static_cast<double>(columnCount);
-
-    for (std::size_t col = 0; col < columnCount; ++col)
+    for (std::size_t col = 0; col < layout.columnCount; ++col)
     {
-        const std::size_t start = col * stride;
-        const std::size_t end = std::min(nBuckets, start + stride);
-        loglib::LevelBucket merged{};
-        for (std::size_t i = start; i < end; ++i)
-        {
-            for (std::size_t s = 0; s < merged.counts.size(); ++s)
-            {
-                merged.counts[s] += buckets[i].counts[s];
-            }
-        }
-        const uint32_t total = merged.Total();
+        const uint32_t total = merged[col].Total();
         if (total == 0)
         {
             continue;
         }
-        const double columnX = plotRect.left() + (static_cast<double>(col) * columnWidth);
-        const double columnPixelWidth = std::max(1.0, columnWidth - 0.5);
+        const double columnX = plotRect.left() + (static_cast<double>(col) * layout.columnWidth);
+        const double columnPixelWidth = std::max(1.0, layout.columnWidth - 0.5);
         const double totalHeight = plotHeight * (static_cast<double>(total) / static_cast<double>(maxTotal));
         double stackTop = plotRect.bottom() + 1.0 - totalHeight;
         for (loglib::LogLevel level : STACK_ORDER)
         {
-            const uint32_t count = merged.counts[static_cast<std::size_t>(level)];
+            const uint32_t count = merged[col].counts[static_cast<std::size_t>(level)];
             if (count == 0)
             {
                 continue;
@@ -308,7 +399,7 @@ void HistogramWidget::paintEvent(QPaintEvent *event)
     (void)event;
 }
 
-std::optional<std::size_t> HistogramWidget::BucketAtX(int x) const
+std::optional<std::size_t> HistogramWidget::VisualColumnAtX(int x) const
 {
     if (mModel == nullptr || mModel->Index().Empty())
     {
@@ -319,15 +410,58 @@ std::optional<std::size_t> HistogramWidget::BucketAtX(int x) const
     {
         return std::nullopt;
     }
+    const std::size_t nBuckets = mModel->Index().Buckets().size();
+    const VisualLayout layout = ComputeVisualLayout(nBuckets, static_cast<double>(plotRect.width()));
+    if (layout.columnCount == 0)
+    {
+        return std::nullopt;
+    }
     const int clampedX = std::clamp(x, plotRect.left(), plotRect.right());
     const double norm = static_cast<double>(clampedX - plotRect.left()) / static_cast<double>(plotRect.width());
-    const std::size_t nBuckets = mModel->Index().Buckets().size();
-    auto bucketIdx = static_cast<std::size_t>(norm * static_cast<double>(nBuckets));
-    if (bucketIdx >= nBuckets)
+    auto columnIdx = static_cast<std::size_t>(norm * static_cast<double>(layout.columnCount));
+    if (columnIdx >= layout.columnCount)
     {
-        bucketIdx = nBuckets - 1;
+        columnIdx = layout.columnCount - 1;
     }
-    return bucketIdx;
+    return columnIdx;
+}
+
+std::pair<std::size_t, std::size_t> HistogramWidget::BucketRangeForVisualColumn(std::size_t columnIndex) const
+{
+    if (mModel == nullptr)
+    {
+        return {0, 0};
+    }
+    const std::size_t nBuckets = mModel->Index().Buckets().size();
+    const QRect plotRect = PlotRect();
+    const VisualLayout layout = ComputeVisualLayout(nBuckets, static_cast<double>(std::max(0, plotRect.width())));
+    if (columnIndex >= layout.columnCount)
+    {
+        return {0, 0};
+    }
+    return BucketRangeForColumn(columnIndex, layout, nBuckets);
+}
+
+std::size_t HistogramWidget::FirstNonEmptyBucketInColumn(std::size_t columnIndex) const
+{
+    const auto [begin, end] = BucketRangeForVisualColumn(columnIndex);
+    if (begin >= end)
+    {
+        return begin;
+    }
+    const auto buckets = mModel->Index().Buckets();
+    for (std::size_t i = begin; i < end; ++i)
+    {
+        if (buckets[i].Total() > 0)
+        {
+            return i;
+        }
+    }
+    // Every raw bucket in the visual column is empty. Return the
+    // column's first bucket so the click still resolves to a stable
+    // index; `HistogramModel::FirstRowInBucket` will report `-1` and
+    // the main window will surface the "no visible row" toast.
+    return begin;
 }
 
 void HistogramWidget::UpdateHoverTooltip(int mouseX)
@@ -337,39 +471,46 @@ void HistogramWidget::UpdateHoverTooltip(int mouseX)
         QToolTip::hideText();
         return;
     }
-    const auto bucketOpt = BucketAtX(mouseX);
-    if (!bucketOpt.has_value())
+    const auto columnOpt = VisualColumnAtX(mouseX);
+    if (!columnOpt.has_value())
     {
         QToolTip::hideText();
         mLastHoverBucket = -1;
         return;
     }
-    const std::size_t bucketIdx = *bucketOpt;
-    if (static_cast<int>(bucketIdx) == mLastHoverBucket)
+    const std::size_t columnIdx = *columnOpt;
+    if (static_cast<int>(columnIdx) == mLastHoverBucket)
     {
         return;
     }
-    mLastHoverBucket = static_cast<int>(bucketIdx);
+    mLastHoverBucket = static_cast<int>(columnIdx);
     const auto &idx = mModel->Index();
-    const auto &bucket = idx.Buckets()[bucketIdx];
-    const auto start = EpochMicros(idx.BucketStart(bucketIdx));
-    const auto end = EpochMicros(idx.BucketEnd(bucketIdx));
+    const auto [begin, end] = BucketRangeForVisualColumn(columnIdx);
+    if (begin >= end)
+    {
+        QToolTip::hideText();
+        return;
+    }
+    // Tooltip reflects the *visual* column, so multi-bucket columns
+    // (stride > 1) show the merged counts the user actually sees.
+    const loglib::LevelBucket merged = MergeBuckets(idx.Buckets(), begin, end);
+    const auto start = idx.BucketStart(begin);
+    // `end` is exclusive in raw-bucket coords; the visible span
+    // ends at the *end* of the last merged bucket, i.e. `end - 1`.
+    const auto stop = idx.BucketEnd(end - 1);
     QString body = tr("%1 \u2013 %2\ntotal: %3")
-                       .arg(FormatTimestampForZoom(start, idx.BucketSize()))
-                       .arg(FormatTimestampForZoom(end, idx.BucketSize()))
-                       .arg(bucket.Total());
+                       .arg(FormatLocalTimestampForZoom(start, idx.BucketSize()))
+                       .arg(FormatLocalTimestampForZoom(stop, idx.BucketSize()))
+                       .arg(merged.Total());
     for (auto level : STACK_ORDER)
     {
-        const uint32_t count = bucket.counts[static_cast<std::size_t>(level)];
+        const uint32_t count = merged.counts[static_cast<std::size_t>(level)];
         if (count == 0)
         {
             continue;
         }
         body.append(QStringLiteral("\n"));
-        body.append(QString::fromLatin1(
-            loglib::CanonicalLevelName(level).data(),
-            static_cast<qsizetype>(loglib::CanonicalLevelName(level).size())
-        ));
+        body.append(CanonicalLevelNameQt(level));
         body.append(QStringLiteral(": "));
         body.append(QString::number(count));
     }
@@ -421,29 +562,48 @@ void HistogramWidget::mouseReleaseEvent(QMouseEvent *event)
 
     if (!wasDragging)
     {
-        // Single click: emit bucketClicked.
-        if (const auto bucketOpt = BucketAtX(releaseX); bucketOpt.has_value())
+        // Single click: emit `bucketClicked` for the first
+        // non-empty bucket in the visual column under the click. The
+        // visual-column mapping matters when `stride > 1`: mapping
+        // through raw bucket coordinates would pick a bucket the
+        // paint routine folded into an adjacent column, and the
+        // table jump would land somewhere the user didn't visually
+        // point at. Picking a non-empty bucket in the merged range
+        // also keeps the jump useful — an empty leading bucket in a
+        // stride>1 column would otherwise surface "no visible row"
+        // even when the column obviously has bars.
+        if (const auto columnOpt = VisualColumnAtX(releaseX); columnOpt.has_value())
         {
-            emit bucketClicked(*bucketOpt);
+            emit bucketClicked(FirstNonEmptyBucketInColumn(*columnOpt));
         }
         event->accept();
         return;
     }
 
-    // Drag release: convert brush endpoints to a time range.
-    const auto startBucket = BucketAtX(std::min(startX, releaseX));
-    const auto endBucket = BucketAtX(std::max(startX, releaseX));
-    if (!startBucket.has_value() || !endBucket.has_value() || mModel == nullptr)
+    // Drag release: convert brush endpoints to a time range. The
+    // range covers *every* raw bucket inside the visual columns
+    // between the two brush edges, so the installed filter matches
+    // the bars the user actually swept across.
+    const auto startColumn = VisualColumnAtX(std::min(startX, releaseX));
+    const auto endColumn = VisualColumnAtX(std::max(startX, releaseX));
+    if (!startColumn.has_value() || !endColumn.has_value() || mModel == nullptr)
     {
         event->accept();
         return;
     }
     const auto &idx = mModel->Index();
-    const auto fromUs = EpochMicros(idx.BucketStart(*startBucket));
-    // BucketEnd is exclusive; subtract 1 us so the caller-side
-    // inclusive comparator ((from <= ts && ts <= to)) doesn't spill
+    const auto [startBegin, startEnd] = BucketRangeForVisualColumn(*startColumn);
+    const auto [endBegin, endEnd] = BucketRangeForVisualColumn(*endColumn);
+    if (startBegin >= startEnd || endBegin >= endEnd)
+    {
+        event->accept();
+        return;
+    }
+    const auto fromUs = idx.BucketStart(startBegin).time_since_epoch().count();
+    // `BucketEnd` is exclusive; subtract 1 us so the caller-side
+    // inclusive comparator (`from <= ts && ts <= to`) doesn't spill
     // into the next bucket.
-    const auto toUs = EpochMicros(idx.BucketEnd(*endBucket)) - 1;
+    const auto toUs = idx.BucketEnd(endEnd - 1).time_since_epoch().count() - 1;
     emit timeRangeSelected(fromUs, toUs);
     event->accept();
 }
@@ -553,5 +713,32 @@ void HistogramWidget::CancelDrag()
     mDragging = false;
     mDragStartX = -1;
     mDragCurrentX = -1;
+    // Hide any tooltip that was showing the hovered column: after
+    // Esc the user wants a clean strip, not a lingering popup that
+    // still references the range they abandoned.
+    QToolTip::hideText();
+    mLastHoverBucket = -1;
     update();
+}
+
+void HistogramWidget::changeEvent(QEvent *event)
+{
+    QWidget::changeEvent(event);
+    // OS-level palette / style / theme changes bypass `ThemeControl`
+    // (on Windows a dark/light system switch arrives as
+    // `QEvent::ThemeChange` without going through our theme
+    // controller). Repaint on those so the bar palette stays in
+    // sync with the surrounding chrome, and drop the tooltip cache
+    // so the next hover recolours the popup. Mirrors the same idiom
+    // `MainWindow::changeEvent` uses for the toolbar icons.
+    if (event == nullptr)
+    {
+        return;
+    }
+    const auto type = event->type();
+    if (type == QEvent::PaletteChange || type == QEvent::StyleChange || type == QEvent::ThemeChange)
+    {
+        mLastHoverBucket = -1;
+        update();
+    }
 }

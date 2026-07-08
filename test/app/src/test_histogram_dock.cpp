@@ -12,6 +12,7 @@
 #include "histogram_model.hpp"
 #include "histogram_widget.hpp"
 #include "log_model.hpp"
+#include "main_window.hpp"
 #include "qt_streaming_log_sink.hpp"
 
 #include <loglib/file_line_source.hpp>
@@ -143,6 +144,24 @@ class HistogramDockTest : public QObject
     Q_OBJECT
 
 private slots:
+    /// One-shot fixture setup: install the timezone database so
+    /// `date::CurrentZone()` returns a live pointer when the
+    /// widget formats hover / subtitle labels. Without this the
+    /// first `date::zoned_time` construction throws (memoized in
+    /// `loglib::CurrentZone`) and the test binary crashes on the
+    /// first paint that touches a populated index. Mirrors the
+    /// setup `main_window_test.cpp::initTestCase` performs for
+    /// the sibling `apptest` binary.
+    void initTestCase()
+    {
+        QVERIFY2(
+            MainWindow::InitializeTimezoneDatabase(),
+            "Failed to initialise timezone database; see qCritical above. The staged "
+            "`tzdata/` directory must live next to the apptest binary "
+            "(handled by test/app/CMakeLists.txt)."
+        );
+    }
+
     /// A dock created against a log with no time column should sit
     /// in the empty state: no buckets, `HasTimeColumn` false,
     /// `bucketClicked` a no-op even on click.

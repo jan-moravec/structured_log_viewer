@@ -78,6 +78,7 @@ void HistogramModel::ApplyAutoBucketSize()
 
 void HistogramModel::Rebuild()
 {
+    InvalidateFirstRowCache();
     if (mLogModel == nullptr)
     {
         mIndex.Reset();
@@ -108,22 +109,22 @@ int HistogramModel::FirstRowInBucket(std::size_t bucketIndex) const
     {
         return -1;
     }
-    const auto bucketStart = mIndex.BucketStart(bucketIndex);
-    const auto bucketEnd = mIndex.BucketEnd(bucketIndex);
-    const int rowCount = mLogModel->rowCount();
-    for (int row = 0; row < rowCount; ++row)
+    // Lazy cache build. First click after a data change pays one
+    // O(N) walk; every subsequent click across the same data is
+    // O(1). The cache is invalidated eagerly from every mutation
+    // path (`Rebuild`, `AppendRange`, `OnRowsRemoved`), so a stale
+    // lookup is impossible without a use-after-Reset bug in the
+    // caller — protected here by the size check below.
+    if (!mFirstRowPerBucketCache.has_value())
     {
-        const auto ts = TimeStampForRow(row);
-        if (!ts.has_value())
-        {
-            continue;
-        }
-        if (*ts >= bucketStart && *ts < bucketEnd)
-        {
-            return row;
-        }
+        BuildFirstRowCache();
     }
-    return -1;
+    const auto &cache = *mFirstRowPerBucketCache;
+    if (bucketIndex >= cache.size())
+    {
+        return -1;
+    }
+    return cache[bucketIndex];
 }
 
 std::optional<HistogramModel::TimeRange> HistogramModel::ObservedRange() const
@@ -132,12 +133,25 @@ std::optional<HistogramModel::TimeRange> HistogramModel::ObservedRange() const
     {
         return std::nullopt;
     }
+    // Fast path: derive the range from `mIndex` in O(1). Bucket
+    // boundaries are truncated timestamps, so the range they cover
+    // is a tight superset of the true observed range — precise
+    // enough for `AutoBucketSize`, which only needs the span to
+    // pick a rung. This avoids the second full-model walk that
+    // used to fire on every `OnModelReset` alongside `Rebuild`.
+    if (!mIndex.Empty())
+    {
+        return TimeRange{mIndex.BucketStart(0), mIndex.BucketEnd(mIndex.Buckets().size() - 1)};
+    }
+    // Slow path: the index is empty but the model still holds rows.
+    // Happens only when every row's timestamp failed to parse (so
+    // `AddRow` was never called). Walk the model rather than lie
+    // about the range.
     const int rowCount = mLogModel->rowCount();
     if (rowCount == 0)
     {
         return std::nullopt;
     }
-
     std::optional<loglib::TimeStamp> minTs;
     std::optional<loglib::TimeStamp> maxTs;
     for (int row = 0; row < rowCount; ++row)
@@ -240,6 +254,12 @@ void HistogramModel::AppendRange(int first, int last)
         }
         mIndex.AddRow(*ts, LevelForRow(row));
     }
+    // Bucket geometry (origin + count) shifts under `AddRow`, so
+    // any incremental cache would need to shift too. Drop and let
+    // the next `FirstRowInBucket` rebuild instead — that's cheaper
+    // than re-anchoring the cache on every batch, and the click
+    // rate is typically much lower than the streaming batch rate.
+    InvalidateFirstRowCache();
 }
 
 int HistogramModel::ComputeTimeColumnIndex() const
@@ -297,4 +317,41 @@ void HistogramModel::ScheduleEmit()
     {
         mEmitTimer->start();
     }
+}
+
+void HistogramModel::InvalidateFirstRowCache() const noexcept
+{
+    mFirstRowPerBucketCache.reset();
+}
+
+void HistogramModel::BuildFirstRowCache() const
+{
+    // Preconditions verified by the sole caller (`FirstRowInBucket`).
+    Q_ASSERT(mLogModel != nullptr);
+    Q_ASSERT(mTimeColumnIndex >= 0);
+    std::vector<int> cache(mIndex.Buckets().size(), -1);
+    const int rowCount = mLogModel->rowCount();
+    for (int row = 0; row < rowCount; ++row)
+    {
+        const auto ts = TimeStampForRow(row);
+        if (!ts.has_value())
+        {
+            continue;
+        }
+        const auto bucketOpt = mIndex.BucketOf(*ts);
+        if (!bucketOpt.has_value())
+        {
+            // Row lives outside the current index (shouldn't happen
+            // in practice — the index is rebuilt from the same
+            // rows). Skip rather than resize; the missing bucket
+            // stays at `-1` and reports "no visible row".
+            continue;
+        }
+        const std::size_t bucketIdx = *bucketOpt;
+        if (bucketIdx < cache.size() && cache[bucketIdx] == -1)
+        {
+            cache[bucketIdx] = row;
+        }
+    }
+    mFirstRowPerBucketCache = std::move(cache);
 }

@@ -175,7 +175,7 @@ TEST_CASE("AutoBucketSize picks the coarsest rung under budget", "[histogram_buc
             == HistogramBucketSize::TenSeconds
         );
     }
-    SECTION("A full day -> OneMinute is the coarsest that fits 500")
+    SECTION("A full day -> TenMinutes is the coarsest that fits 500")
     {
         // 86400 s / 60 s = 1440 buckets; too many.
         // 86400 s / 600 s = 144 buckets; fits.

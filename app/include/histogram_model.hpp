@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <optional>
+#include <vector>
 
 class LogModel;
 class QTimer;
@@ -68,11 +69,25 @@ public:
     /// First source-model row whose timestamp falls in bucket @p index.
     /// Returns `-1` when the bucket has no rows in the current log
     /// model (possible if a proxy/eviction cleared it since the last
-    /// rebuild). O(N) scan; called only on user click.
+    /// rebuild).
+    ///
+    /// Backed by a lazy `firstRowPerBucket` cache built on first call
+    /// after each `Rebuild()` / `AppendRange` cycle. First call after
+    /// a data change costs one O(N) scan; subsequent clicks are O(1).
+    /// The cache is `mutable` so the read path can populate it without
+    /// giving up the const contract callers rely on.
     [[nodiscard]] int FirstRowInBucket(std::size_t bucketIndex) const;
 
     /// Min / max timestamp observed in the log model. `nullopt` when
     /// the model has no rows or no time column.
+    ///
+    /// Derived from `mIndex` in O(1) whenever the bucket index is
+    /// non-empty: `[BucketStart(0), BucketEnd(last))` is a tight
+    /// superset of the observed range (buckets are anchored on
+    /// timestamp truncation, so the true min / max sit inside those
+    /// bounds). Falls back to an O(N) walk only when the caller
+    /// needs the exact min / max and `mIndex` is empty (e.g. every
+    /// row's timestamp failed to parse). Used by `ApplyAutoBucketSize`.
     struct TimeRange
     {
         loglib::TimeStamp min;
@@ -116,6 +131,18 @@ private:
     /// Fire `bucketsChanged` on the coalesce timer (single-shot restart).
     void ScheduleEmit();
 
+    /// Drop the `firstRowPerBucket` cache. Called from every path
+    /// that mutates the bucket index (`Rebuild`, `AppendRange`,
+    /// `OnRowsRemoved`) so a subsequent `FirstRowInBucket` call
+    /// re-scans against fresh geometry rather than returning stale
+    /// row indices into a rebased vector.
+    void InvalidateFirstRowCache() const noexcept;
+
+    /// Populate `mFirstRowPerBucketCache` from a full model walk.
+    /// Idempotent; called lazily from `FirstRowInBucket`. Assumes
+    /// `mTimeColumnIndex >= 0` and `mLogModel != nullptr`.
+    void BuildFirstRowCache() const;
+
     QPointer<LogModel> mLogModel;
     loglib::HistogramBucketIndex mIndex;
     int mTimeColumnIndex = -1;
@@ -125,4 +152,12 @@ private:
     /// Suppresses the automatic re-pick that would otherwise fire on
     /// every rebuild.
     bool mBucketSizePinned = false;
+
+    /// Lazy cache: entry `i` is the first source-model row whose
+    /// timestamp falls in bucket `i`, or `-1` when that bucket has
+    /// no live rows. `nullopt` means "cache stale, rebuild on next
+    /// read". Mutable so `FirstRowInBucket` can be `const` (the
+    /// invariant is that the cache reflects the current `mIndex`;
+    /// reads only observe it, they don't mutate observable state).
+    mutable std::optional<std::vector<int>> mFirstRowPerBucketCache;
 };
