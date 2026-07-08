@@ -28,6 +28,12 @@ set(PROJECT_SOURCES
     include/find_record_widget.hpp
     src/find_dock.cpp
     include/find_dock.hpp
+    src/histogram_dock.cpp
+    include/histogram_dock.hpp
+    src/histogram_model.cpp
+    include/histogram_model.hpp
+    src/histogram_widget.cpp
+    include/histogram_widget.hpp
     src/icon_loader.cpp
     include/icon_loader.hpp
     src/jump_to_tail_pill.cpp

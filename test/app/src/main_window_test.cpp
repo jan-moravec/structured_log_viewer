@@ -13369,6 +13369,7 @@ private slots:
             QStringLiteral("actionToggleFind"),
             QStringLiteral("actionToggleRecordDetails"),
             QStringLiteral("actionToggleAnchors"),
+            QStringLiteral("actionToggleHistogram"),
             QStringLiteral("__widget"), // expanding spacer
             QStringLiteral("actionPreferences"),
         };

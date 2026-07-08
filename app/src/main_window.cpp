@@ -5,6 +5,7 @@
 #include "columns_manager_dialog.hpp"
 #include "configuration_diagnostics_dialog.hpp"
 #include "filter_editor.hpp"
+#include "histogram_model.hpp"
 #include "icon_loader.hpp"
 #include "level_cell_delegate.hpp"
 #include "log_warning.hpp"
@@ -647,6 +648,25 @@ MainWindow::MainWindow(
     mActionToggleAnchors->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_K));
     addAction(mActionToggleAnchors);
     WireDockToggle(mAnchorsDock, mActionToggleAnchors, &AnchorsDock::closed);
+
+    // Histogram dock (ROADMAP item 2). Same lifecycle as the anchors
+    // dock: hidden by default, toggled from View menu / toolbar /
+    // Ctrl+H. Bottom-docked so it doesn't compete with the right-hand
+    // Anchors / Record Details stack.
+    mHistogramDock = new HistogramDock(mModel, mTheme, this);
+    addDockWidget(Qt::BottomDockWidgetArea, mHistogramDock);
+    mHistogramDock->hide();
+    connect(mHistogramDock, &HistogramDock::bucketClicked, this, &MainWindow::JumpToFirstRowInBucket);
+    connect(
+        mHistogramDock, &HistogramDock::timeRangeSelected, this, &MainWindow::AddTimeRangeFilterFromHistogram
+    );
+
+    mActionToggleHistogram = new QAction(tr("Histogram"), this);
+    mActionToggleHistogram->setObjectName(QStringLiteral("actionToggleHistogram"));
+    mActionToggleHistogram->setCheckable(true);
+    mActionToggleHistogram->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_H));
+    addAction(mActionToggleHistogram);
+    WireDockToggle(mHistogramDock, mActionToggleHistogram, &HistogramDock::closed);
     // `modelReset` clears the header's hidden flags, but
     // `Column::visible` survives. Re-apply on every reset so load /
     // re-stream / teardown all stay consistent with the saved config.
@@ -4034,6 +4054,7 @@ void MainWindow::BuildMainToolbar()
     tag(mActionToggleFind, mMainToolbar, QStringLiteral(":/icons/search.svg"));
     tag(ui->actionToggleRecordDetails, mMainToolbar, QStringLiteral(":/icons/panel-right-open.svg"));
     tag(mActionToggleAnchors, mMainToolbar, QStringLiteral(":/icons/bookmark.svg"));
+    tag(mActionToggleHistogram, mMainToolbar, QStringLiteral(":/icons/bar-chart-3.svg"));
     tag(ui->actionPreferences, mMainToolbar, QStringLiteral(":/icons/settings-2.svg"));
     // Stream toolbar gets the same treatment so the combined strip
     // looks uniform when both bars are visible. Pause is the one
@@ -4173,6 +4194,10 @@ void MainWindow::BuildMainToolbar()
     if (mActionToggleAnchors != nullptr)
     {
         mMainToolbar->addAction(mActionToggleAnchors);
+    }
+    if (mActionToggleHistogram != nullptr)
+    {
+        mMainToolbar->addAction(mActionToggleHistogram);
     }
 
     // Expanding spacer pushes Preferences to the far right edge,
@@ -5888,6 +5913,58 @@ void MainWindow::SelectSourceRow(int sourceRow)
     mTableView->scrollTo(proxyIdx, QAbstractItemView::PositionAtCenter);
     mTableView->selectionModel()->select(proxyIdx, QItemSelectionModel::Select | QItemSelectionModel::Rows);
     mTableView->selectionModel()->setCurrentIndex(proxyIdx, QItemSelectionModel::NoUpdate);
+}
+
+void MainWindow::JumpToFirstRowInBucket(std::size_t bucketIndex)
+{
+    if (mHistogramDock == nullptr)
+    {
+        return;
+    }
+    HistogramModel *hm = mHistogramDock->ModelForTest();
+    if (hm == nullptr)
+    {
+        return;
+    }
+    const int sourceRow = hm->FirstRowInBucket(bucketIndex);
+    if (sourceRow < 0)
+    {
+        // Bucket exists in the index but no live row falls in it right
+        // now (possible after a retention eviction that hasn't yet
+        // triggered a histogram rebuild). Match `SelectSourceRow`'s
+        // "not visible" surface so the user isn't left wondering.
+        statusBar()->showMessage(tr("No visible row in the selected bucket."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+    SelectSourceRow(sourceRow);
+}
+
+void MainWindow::AddTimeRangeFilterFromHistogram(qint64 fromEpochMicros, qint64 toEpochMicros)
+{
+    if (mHistogramDock == nullptr || mModel == nullptr)
+    {
+        return;
+    }
+    HistogramModel *hm = mHistogramDock->ModelForTest();
+    if (hm == nullptr || !hm->HasTimeColumn())
+    {
+        // Guarded by the widget too, but keep this as a hard gate:
+        // an out-of-band signal on a log with no time column would
+        // otherwise install a filter on an invalid column.
+        statusBar()->showMessage(
+            tr("Cannot filter by time \u2014 this log has no time column."), STATUS_BAR_MESSAGE_TIMEOUT_MS
+        );
+        return;
+    }
+    if (fromEpochMicros > toEpochMicros)
+    {
+        std::swap(fromEpochMicros, toEpochMicros);
+    }
+    const int column = hm->TimeColumnIndex();
+    // Sentinel filter ID so a subsequent drag replaces the previous
+    // histogram-driven range rather than stacking a second filter.
+    static const QString HISTOGRAM_FILTER_ID = QStringLiteral("histogram-time-range");
+    FilterTimeStampSubmitted(HISTOGRAM_FILTER_ID, column, fromEpochMicros, toEpochMicros);
 }
 
 void MainWindow::JumpToAnchor(bool forward)
@@ -7887,6 +7964,13 @@ void MainWindow::RebuildViewMenu()
     if (mActionToggleParseErrors != nullptr)
     {
         viewMenu->addAction(mActionToggleParseErrors);
+    }
+
+    // Histogram dock toggle. Same pattern as the other programmatic
+    // dock actions above.
+    if (mActionToggleHistogram != nullptr)
+    {
+        viewMenu->addAction(mActionToggleHistogram);
     }
 
     // Primary toolbar toggle. `QToolBar::toggleViewAction` returns a
