@@ -219,6 +219,51 @@ private slots:
         QVERIFY(!hm->Index().Empty());
     }
 
+    /// The cached `LevelColumnIndex` mirrors `LogModel::FirstLevelColumnIndex`
+    /// after a stream. Guards against regressions in
+    /// `ComputeLevelColumnIndex` / `OnModelReset` and, transitively,
+    /// against the mid-stream promotion path in `OnRowsInserted` /
+    /// `OnEnumColumnsChanged` reading the wrong column. Also asserts
+    /// that at least one canonical (non-Unknown) level appears in the
+    /// merged buckets — a `LevelForRow` bug that always returned
+    /// Unknown would land every row in slot 0 and pass the row-count
+    /// assertion, so we need a level-attribution check to catch it.
+    static void TestLevelColumnIndexTracksLogModel()
+    {
+        LogModel model;
+        HistogramDock dock(&model, /*theme=*/nullptr);
+        HistogramModel *hm = dock.ModelForTest();
+        QVERIFY(hm != nullptr);
+
+        // Empty model — no level column yet.
+        QCOMPARE(hm->LevelColumnIndex(), -1);
+
+        const HistogramFixture fixture(30, /*stepSeconds=*/1);
+        StreamJsonInto(model, fixture);
+        WaitForBucketsChanged(*hm);
+
+        // After streaming a fixture that carries canonical levels
+        // (`info`, `warn`, `error`, `debug`) the LogModel promotes
+        // the `level` column to `Type::Level`, and our cached mirror
+        // must agree.
+        const int expected = model.FirstLevelColumnIndex();
+        QVERIFY2(expected >= 0, "fixture must produce a Type::Level column");
+        QCOMPARE(hm->LevelColumnIndex(), expected);
+
+        // Row totals go through slot 0 (Unknown) when
+        // `mLevelColumnIndex < 0`; if that path leaked through
+        // we'd see zero canonical rows across all buckets.
+        std::uint64_t canonicalRows = 0;
+        for (const auto &bucket : hm->Index().Buckets())
+        {
+            for (std::size_t slot = 1; slot < bucket.counts.size(); ++slot)
+            {
+                canonicalRows += bucket.counts[slot];
+            }
+        }
+        QVERIFY2(canonicalRows > 0, "at least one row must land in a canonical level slot");
+    }
+
     /// A click on the widget with populated data emits
     /// `bucketClicked` with a valid in-range bucket index.
     static void TestClickEmitsBucketClicked()

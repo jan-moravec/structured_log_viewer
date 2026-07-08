@@ -43,8 +43,12 @@ namespace
 /// Painted stack order, bottom to top. Level with the higher severity
 /// paints on top so error / fatal spikes are visually dominant.
 /// `Unknown` sits at the bottom so unstyled rows are visible but
-/// don't hide meaningful segments.
-constexpr std::array<loglib::LogLevel, 7> STACK_ORDER = {
+/// don't hide meaningful segments. Size is derived from
+/// `CANONICAL_LEVEL_COUNT` so a new canonical level in `loglib` is
+/// caught at compile time here (the `static_assert` below also pins
+/// the count so a bare `+= 1` in `LogLevel` without an entry here
+/// fails the build).
+constexpr std::array<loglib::LogLevel, loglib::CANONICAL_LEVEL_COUNT + 1> STACK_ORDER = {
     loglib::LogLevel::Unknown,
     loglib::LogLevel::Trace,
     loglib::LogLevel::Debug,
@@ -53,6 +57,10 @@ constexpr std::array<loglib::LogLevel, 7> STACK_ORDER = {
     loglib::LogLevel::Error,
     loglib::LogLevel::Fatal,
 };
+static_assert(
+    STACK_ORDER.size() == loglib::CANONICAL_LEVEL_COUNT + 1,
+    "STACK_ORDER must cover Unknown + every canonical LogLevel"
+);
 
 constexpr int SUBTITLE_HEIGHT = 18;
 constexpr int PLOT_TOP_PADDING = 20;
@@ -292,13 +300,14 @@ void HistogramWidget::paintEvent(QPaintEvent *event)
 
     const QRect plotRect = PlotRect();
 
-    // Subtitle line at the top.
+    // Subtitle line at the top. Elide with the current font metrics
+    // so a narrow dock (or a wide range that fills the label) truncates
+    // with an ellipsis instead of clipping mid-glyph.
+    const QRect subtitleRect(PLOT_HORIZONTAL_PADDING, 0, width() - (2 * PLOT_HORIZONTAL_PADDING), SUBTITLE_HEIGHT);
     painter.setPen(palette().color(QPalette::WindowText));
-    painter.drawText(
-        QRect(PLOT_HORIZONTAL_PADDING, 0, width() - (2 * PLOT_HORIZONTAL_PADDING), SUBTITLE_HEIGHT),
-        Qt::AlignVCenter | Qt::AlignLeft,
-        FormatSubtitle()
-    );
+    const QString subtitle = FormatSubtitle();
+    const QString elidedSubtitle = fontMetrics().elidedText(subtitle, Qt::ElideRight, subtitleRect.width());
+    painter.drawText(subtitleRect, Qt::AlignVCenter | Qt::AlignLeft, elidedSubtitle);
 
     // Empty-state placeholder: no model, no time column, empty
     // index, or a plot rect too small to render bars into.
@@ -386,17 +395,23 @@ void HistogramWidget::paintEvent(QPaintEvent *event)
         }
     }
 
-    // Draw the drag brush overlay on top.
+    // Draw the drag brush overlay on top. Both fill and frame use
+    // `QRectF` on the same rectangle so the outline stays symmetric
+    // (the previous `.adjusted(0, 0, -1, -1)` on the integer rect
+    // shrank the frame by one pixel at the right and bottom edges).
     if (mDragging)
     {
-        const int x1 = std::min(mDragStartX, mDragCurrentX);
-        const int x2 = std::max(mDragStartX, mDragCurrentX);
-        const QRect brushRect(x1, plotRect.top(), std::max(1, x2 - x1), plotRect.height());
+        const qreal x1 = std::min(mDragStartX, mDragCurrentX);
+        const qreal x2 = std::max(mDragStartX, mDragCurrentX);
+        const QRectF brushRect(x1, plotRect.top(), std::max<qreal>(1.0, x2 - x1), plotRect.height());
         QColor brushColor = palette().color(QPalette::Highlight);
         brushColor.setAlpha(DRAG_BRUSH_ALPHA);
         painter.fillRect(brushRect, brushColor);
-        painter.setPen(palette().color(QPalette::Highlight));
-        painter.drawRect(brushRect.adjusted(0, 0, -1, -1));
+        QPen framePen(palette().color(QPalette::Highlight));
+        framePen.setCosmetic(true);
+        painter.setPen(framePen);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(brushRect);
     }
 }
 
@@ -465,14 +480,14 @@ std::size_t HistogramWidget::FirstNonEmptyBucketInColumn(std::size_t columnIndex
     return begin;
 }
 
-void HistogramWidget::UpdateHoverTooltip(int mouseX)
+void HistogramWidget::UpdateHoverTooltip(const QPoint &pos)
 {
     if (mModel == nullptr)
     {
         QToolTip::hideText();
         return;
     }
-    const auto columnOpt = VisualColumnAtX(mouseX);
+    const auto columnOpt = VisualColumnAtX(pos.x());
     if (!columnOpt.has_value())
     {
         QToolTip::hideText();
@@ -515,7 +530,11 @@ void HistogramWidget::UpdateHoverTooltip(int mouseX)
         body.append(QStringLiteral(": "));
         body.append(QString::number(count));
     }
-    QToolTip::showText(mapToGlobal(QPoint(mouseX, PLOT_TOP_PADDING)), body, this);
+    // Anchor at the pointer so the OS's tooltip placement picks a
+    // side that doesn't occlude the bar under the cursor. The old
+    // anchor at `y = PLOT_TOP_PADDING` sat over the tallest part of
+    // the tallest bar.
+    QToolTip::showText(mapToGlobal(pos), body, this);
 }
 
 void HistogramWidget::mousePressEvent(QMouseEvent *event)
@@ -556,7 +575,7 @@ void HistogramWidget::mouseMoveEvent(QMouseEvent *event)
     }
     else
     {
-        UpdateHoverTooltip(event->pos().x());
+        UpdateHoverTooltip(event->pos());
     }
     if (mDragStartX >= 0 && (event->buttons() & Qt::LeftButton) != 0)
     {
@@ -691,9 +710,10 @@ void HistogramWidget::contextMenuEvent(QContextMenuEvent *event)
                 // `ResetBucketSizeToAuto` drops the manual-pin latch
                 // first; a plain `ApplyAutoBucketSize` would be
                 // silently vetoed after any Z / Shift+Z / Ctrl+wheel
-                // zoom, leaving this menu entry inert.
+                // zoom, leaving this menu entry inert. The subtitle
+                // re-derives the rung label from the model on the
+                // next paint, so no explicit refresh is needed here.
                 mModel->ResetBucketSizeToAuto();
-                emit bucketSizeChanged(static_cast<int>(mModel->Index().BucketSize()));
             }
         });
     }
@@ -717,7 +737,6 @@ void HistogramWidget::ZoomIn()
         return;
     }
     mModel->SetBucketSize(static_cast<loglib::HistogramBucketSize>(current - 1));
-    emit bucketSizeChanged(current - 1);
     update();
 }
 
@@ -733,7 +752,6 @@ void HistogramWidget::ZoomOut()
         return;
     }
     mModel->SetBucketSize(static_cast<loglib::HistogramBucketSize>(current + 1));
-    emit bucketSizeChanged(current + 1);
     update();
 }
 

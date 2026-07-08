@@ -38,6 +38,16 @@ HistogramModel::HistogramModel(LogModel *logModel, QObject *parent) : QObject(pa
         connect(mLogModel, &QAbstractItemModel::rowsInserted, this, &HistogramModel::OnRowsInserted);
         connect(mLogModel, &QAbstractItemModel::rowsRemoved, this, &HistogramModel::OnRowsRemoved);
         connect(mLogModel, &QAbstractItemModel::modelReset, this, &HistogramModel::OnModelReset);
+        // `enumColumnsChanged` fires after `AppendBatch` when an enum
+        // column is promoted / grown / demoted. The signal carries a
+        // reason + column index, but we ignore both and let
+        // `OnEnumColumnsChanged` re-derive the level column index --
+        // an unrelated enum column promoting doesn't concern us, and
+        // the cost of the diff check is trivial next to the rebuild
+        // it may trigger. A lambda drops the trailing args cleanly.
+        connect(mLogModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason, int) {
+            OnEnumColumnsChanged();
+        });
     }
 
     // Prime with whatever the model already holds (typical when the
@@ -201,16 +211,28 @@ void HistogramModel::OnRowsInserted(const QModelIndex &parent, int first, int la
     // rewrites the earlier string slots to `TimeStamp` values. When
     // that happens, we have to rebuild from row 0 rather than just
     // append the fresh range.
+    //
+    // The level column can flip in the same window (enum promoted to
+    // `Type::Level` on the same batch that adds the first level
+    // values), so re-check it alongside. `enumColumnsChanged` also
+    // covers this via `OnEnumColumnsChanged`, but the signal is
+    // emitted *after* `rowsInserted`; catching it here avoids one
+    // wasted `AppendRange` + one wasted rebuild when both columns
+    // flip in the same batch.
     const int freshTimeColumn = ComputeTimeColumnIndex();
-    if (freshTimeColumn != mTimeColumnIndex)
+    const int freshLevelColumn = ComputeLevelColumnIndex();
+    if (freshTimeColumn != mTimeColumnIndex || freshLevelColumn != mLevelColumnIndex)
     {
         const bool wasUnavailable = mTimeColumnIndex < 0;
         mTimeColumnIndex = freshTimeColumn;
+        mLevelColumnIndex = freshLevelColumn;
         if (wasUnavailable != (mTimeColumnIndex < 0))
         {
             emit timeColumnAvailabilityChanged(mTimeColumnIndex >= 0);
         }
-        // Rebuild picks up every earlier row whose slot was rewritten.
+        // Rebuild picks up every earlier row whose slot was rewritten
+        // and re-attributes previously-Unknown levels to their
+        // canonical slot after a mid-stream level promotion.
         Rebuild();
         ApplyAutoBucketSize();
         return;
@@ -241,6 +263,7 @@ void HistogramModel::OnModelReset()
     const int newTimeColumn = ComputeTimeColumnIndex();
     const bool availabilityChanged = (newTimeColumn >= 0) != (mTimeColumnIndex >= 0);
     mTimeColumnIndex = newTimeColumn;
+    mLevelColumnIndex = ComputeLevelColumnIndex();
     if (availabilityChanged)
     {
         emit timeColumnAvailabilityChanged(mTimeColumnIndex >= 0);
@@ -249,6 +272,26 @@ void HistogramModel::OnModelReset()
     mBucketSizePinned = false;
     Rebuild();
     ApplyAutoBucketSize();
+}
+
+void HistogramModel::OnEnumColumnsChanged()
+{
+    // Cheap guard: if the level column index is unchanged the enum
+    // signal was for an unrelated column (or a `Grew` on the existing
+    // level column, which doesn't change any per-bucket count -- the
+    // levels themselves are resolved fresh at every `LevelForRow`).
+    // Bail without a rebuild so live-tail promotions on 20-column
+    // logs don't repeatedly trip a full O(N) rebuild.
+    const int freshLevelColumn = ComputeLevelColumnIndex();
+    if (freshLevelColumn == mLevelColumnIndex)
+    {
+        return;
+    }
+    mLevelColumnIndex = freshLevelColumn;
+    // Rows in `mIndex` were bucketed against the *old* level slot
+    // (typically `Unknown` when the column just promoted). Rebuild
+    // so their canonical level shows up in the strip.
+    Rebuild();
 }
 
 void HistogramModel::AppendRange(int first, int last)
@@ -293,6 +336,23 @@ int HistogramModel::ComputeTimeColumnIndex() const
     return -1;
 }
 
+int HistogramModel::ComputeLevelColumnIndex() const
+{
+    if (mLogModel == nullptr)
+    {
+        return -1;
+    }
+    const auto &config = mLogModel->Configuration();
+    for (std::size_t i = 0; i < config.columns.size(); ++i)
+    {
+        if (config.columns[i].type == loglib::LogConfiguration::Type::Level)
+        {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
 std::optional<loglib::TimeStamp> HistogramModel::TimeStampForRow(int row) const
 {
     if (mLogModel == nullptr || mTimeColumnIndex < 0)
@@ -310,17 +370,24 @@ std::optional<loglib::TimeStamp> HistogramModel::TimeStampForRow(int row) const
 
 loglib::LogLevel HistogramModel::LevelForRow(int row) const
 {
-    if (mLogModel == nullptr)
+    if (mLogModel == nullptr || mLevelColumnIndex < 0)
     {
         return loglib::LogLevel::Unknown;
     }
-    const int levelColumn = mLogModel->FirstLevelColumnIndex();
-    if (levelColumn < 0)
-    {
-        return loglib::LogLevel::Unknown;
-    }
+    // Prefer our cached column index over `LogModel::FirstLevelColumnIndex()`:
+    // both are cheap, but hitting LogModel every row invalidated its
+    // own cache-repair invariants under the invalidate-then-restore
+    // dance in `AppendBatch`. Using the mirror also keeps the level
+    // slot consistent with the column identity our rebuild guards
+    // (`OnRowsInserted` / `OnEnumColumnsChanged`) reacted to.
+    //
+    // Values that don't resolve to a canonical level fall through to
+    // `Unknown` (slot 0). `DisplayLevelForRow` would also fold them
+    // into `Unknown` for display, but we deliberately skip that hop
+    // -- the bucket slot is a semantic bucket, not a rendering hint,
+    // and the two happen to line up.
     const auto level = mLogModel->Table().GetLevelForRow(
-        static_cast<std::size_t>(row), static_cast<std::size_t>(levelColumn)
+        static_cast<std::size_t>(row), static_cast<std::size_t>(mLevelColumnIndex)
     );
     return level.value_or(loglib::LogLevel::Unknown);
 }

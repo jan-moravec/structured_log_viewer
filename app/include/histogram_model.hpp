@@ -39,8 +39,16 @@ public:
         return mIndex;
     }
 
-    /// Change the bucket rung and rebuild from `LogModel`. No-op if
-    /// @p size equals the current rung. Emits `bucketsChanged`.
+    /// Change the bucket rung and rebuild from `LogModel`. Always
+    /// installs the manual-pin latch, even when @p size equals the
+    /// current rung: the pin represents *the user's intent to fix
+    /// this rung*, so an idempotent call still overrides the
+    /// automatic re-pick. Skips the rebuild when @p size matches the
+    /// current rung. Emits `bucketsChanged` when a rebuild fires.
+    ///
+    /// Callers that want an auto-adjust *without* pinning should use
+    /// `ApplyAutoBucketSize` instead; callers that want to drop the
+    /// pin explicitly should use `ResetBucketSizeToAuto`.
     void SetBucketSize(loglib::HistogramBucketSize size);
 
     /// Recompute `AutoBucketSize` from the current time range and
@@ -77,6 +85,17 @@ public:
     [[nodiscard]] bool HasTimeColumn() const noexcept
     {
         return mTimeColumnIndex >= 0;
+    }
+
+    /// First `Type::Level` column index in the current configuration,
+    /// or `-1` when the log has none. Cached; refreshed on `modelReset`,
+    /// row-insert flip detection, and `LogModel::enumColumnsChanged`.
+    /// Mid-stream promotion of an enum column to `Type::Level` triggers
+    /// a full rebuild so earlier rows (previously slotted into
+    /// `LogLevel::Unknown`) are re-attributed to their canonical level.
+    [[nodiscard]] int LevelColumnIndex() const noexcept
+    {
+        return mLevelColumnIndex;
     }
 
     /// First source-model row whose timestamp falls in bucket @p index.
@@ -124,6 +143,14 @@ private:
     void OnRowsRemoved(const QModelIndex &parent, int first, int last);
     void OnModelReset();
 
+    /// Rebuild trigger for `LogModel::enumColumnsChanged`. Enum
+    /// promotions / demotions can shift the first `Type::Level`
+    /// column index or introduce one where none existed; either
+    /// case invalidates the per-level counts baked into `mIndex`.
+    /// No-op when the level column index is unchanged (e.g. a
+    /// simple dictionary `Grew` on an unrelated enum column).
+    void OnEnumColumnsChanged();
+
     /// Walk source-model rows `[first, last]` and add them to the
     /// index. Assumes `mTimeColumnIndex >= 0`.
     void AppendRange(int first, int last);
@@ -131,6 +158,10 @@ private:
     /// Compute the first `Type::Time` column index from the log
     /// model's configuration.
     [[nodiscard]] int ComputeTimeColumnIndex() const;
+
+    /// Compute the first `Type::Level` column index from the log
+    /// model's configuration. `-1` when none.
+    [[nodiscard]] int ComputeLevelColumnIndex() const;
 
     /// Extract `TimeStamp` for source-model @p row at
     /// `mTimeColumnIndex`. Returns `nullopt` for monostate or
@@ -159,6 +190,12 @@ private:
     QPointer<LogModel> mLogModel;
     loglib::HistogramBucketIndex mIndex;
     int mTimeColumnIndex = -1;
+    /// Cached first `Type::Level` column index. Mirrors
+    /// `mTimeColumnIndex`: updated on `modelReset`, in the row-insert
+    /// flip guard, and from `OnEnumColumnsChanged`. Reads in
+    /// `AppendRange` prefer this cache over hitting `LogModel`'s cache
+    /// every row.
+    int mLevelColumnIndex = -1;
     QTimer *mEmitTimer = nullptr;
 
     /// True when the user has pinned a rung with `SetBucketSize`.

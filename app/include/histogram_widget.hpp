@@ -48,9 +48,6 @@ signals:
     /// microseconds, inclusive. `from <= to` invariantly.
     void timeRangeSelected(qint64 fromEpochMicros, qint64 toEpochMicros);
 
-    /// The active bucket-size rung changed. Argument is the new rung.
-    void bucketSizeChanged(int rung);
-
 protected:
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
@@ -92,10 +89,12 @@ private:
     /// total row count.
     [[nodiscard]] QString FormatSubtitle() const;
 
-    /// Refresh a hover tooltip anchored to the current mouse
-    /// position. Called from `mouseMoveEvent` and `paintEvent` so
-    /// the tooltip stays accurate across data updates.
-    void UpdateHoverTooltip(int mouseX);
+    /// Refresh the hover tooltip using the pointer's widget-local
+    /// position. The X coordinate drives visual-column resolution;
+    /// the Y is only used to anchor the tooltip so the OS placement
+    /// heuristics can pick a side that doesn't occlude the bar under
+    /// the pointer. Called from `mouseMoveEvent` on every motion.
+    void UpdateHoverTooltip(const QPoint &pos);
 
     QPointer<HistogramModel> mModel;
     QPointer<ThemeControl> mTheme;
