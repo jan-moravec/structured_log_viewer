@@ -43,7 +43,7 @@ jobs:
       - name: Cache pre-commit environments
         # Resolved Python version in the key so a runner-image 3.12 -> 3.13
         # bump invalidates venvs with stale interpreter paths.
-        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('.pre-commit-config.yaml') }}
@@ -132,7 +132,7 @@ jobs:
         # SHA-pinned so a tag re-cut can't change what we run.
         if: matrix.mode == 'coverage'
         id: cpp-linter
-        uses: cpp-linter/cpp-linter-action@4f2a4033eda6119c3bf1a4d30857a4c61c11c247 # v2.19.0
+        uses: cpp-linter/cpp-linter-action@8e85cd02c8c3fe3ae527c94b5683fe2366b144ed # v2.20.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
