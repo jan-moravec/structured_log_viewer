@@ -85,3 +85,14 @@ target_link_libraries(apptest_theme PRIVATE Qt6::Test Qt6::Widgets logapp)
 target_include_directories(apptest_theme PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
 
 add_test(NAME apptest_theme COMMAND apptest_theme WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_theme>)
+
+# Unit tests for the histogram / activity-rate strip (ROADMAP item 2).
+# Focused binary so the histogram concern doesn't inflate the
+# monolithic `apptest`. Runs the same offscreen QPA pattern.
+qt_add_executable(apptest_histogram src/test_histogram_dock.cpp)
+
+target_link_libraries(apptest_histogram PRIVATE Qt6::Test Qt6::Widgets logapp)
+
+target_include_directories(apptest_histogram PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+
+add_test(NAME apptest_histogram COMMAND apptest_histogram WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_histogram>)

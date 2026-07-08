@@ -166,6 +166,28 @@ std::optional<HistogramModel::TimeRange> HistogramModel::ObservedRange() const
 void HistogramModel::OnRowsInserted(const QModelIndex &parent, int first, int last)
 {
     (void)parent; // `LogModel` is a table model — parent is always root.
+
+    // Detect a time-column availability flip mid-stream: the JSON /
+    // logfmt / regex parsers can promote a column to `Type::Time`
+    // after the first `AppendBatch`, and `LogTable` retroactively
+    // rewrites the earlier string slots to `TimeStamp` values. When
+    // that happens, we have to rebuild from row 0 rather than just
+    // append the fresh range.
+    const int freshTimeColumn = ComputeTimeColumnIndex();
+    if (freshTimeColumn != mTimeColumnIndex)
+    {
+        const bool wasUnavailable = mTimeColumnIndex < 0;
+        mTimeColumnIndex = freshTimeColumn;
+        if (wasUnavailable != (mTimeColumnIndex < 0))
+        {
+            emit timeColumnAvailabilityChanged(mTimeColumnIndex >= 0);
+        }
+        // Rebuild picks up every earlier row whose slot was rewritten.
+        Rebuild();
+        ApplyAutoBucketSize();
+        return;
+    }
+
     if (mTimeColumnIndex < 0)
     {
         return;
