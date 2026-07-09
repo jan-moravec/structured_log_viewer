@@ -19,8 +19,8 @@ namespace
 // derive their timestamps from this so the tests are TZ-agnostic.
 constexpr TimeStamp Base()
 {
-    constexpr auto epochSeconds = std::chrono::seconds{1767225600};
-    return TimeStamp{std::chrono::duration_cast<std::chrono::microseconds>(epochSeconds)};
+    constexpr auto EPOCH_SECONDS = std::chrono::seconds{1767225600};
+    return TimeStamp{std::chrono::duration_cast<std::chrono::microseconds>(EPOCH_SECONDS)};
 }
 
 TimeStamp At(TimeStamp base, std::chrono::microseconds offset)
@@ -52,7 +52,7 @@ TEST_CASE("HistogramBucketWidth matches the ladder", "[histogram_bucket_index]")
 
 TEST_CASE("HistogramBucketIndex is empty on construction", "[histogram_bucket_index]")
 {
-    HistogramBucketIndex index;
+    const HistogramBucketIndex index;
     CHECK(index.Empty());
     CHECK(index.Buckets().empty());
     CHECK(index.TotalRowCount() == 0);

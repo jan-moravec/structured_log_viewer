@@ -36,6 +36,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <utility>
 
 namespace
 {
@@ -381,7 +382,7 @@ void HistogramWidget::paintEvent(QPaintEvent *event)
         const double columnPixelWidth = std::max(1.0, layout.columnWidth - 0.5);
         const double totalHeight = plotHeight * (static_cast<double>(total) / static_cast<double>(maxTotal));
         double stackTop = plotRect.bottom() + 1.0 - totalHeight;
-        for (loglib::LogLevel level : STACK_ORDER)
+        for (const loglib::LogLevel level : STACK_ORDER)
         {
             const uint32_t count = merged[col].counts[static_cast<std::size_t>(level)];
             if (count == 0)
@@ -495,7 +496,7 @@ void HistogramWidget::UpdateHoverTooltip(const QPoint &pos)
         return;
     }
     const std::size_t columnIdx = *columnOpt;
-    if (static_cast<int>(columnIdx) == mLastHoverBucket)
+    if (std::cmp_equal(columnIdx, mLastHoverBucket))
     {
         return;
     }

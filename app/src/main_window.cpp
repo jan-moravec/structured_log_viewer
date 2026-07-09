@@ -5921,7 +5921,7 @@ void MainWindow::JumpToFirstRowInBucket(std::size_t bucketIndex)
     {
         return;
     }
-    HistogramModel *hm = mHistogramDock->ModelForTest();
+    const HistogramModel *hm = mHistogramDock->ModelForTest();
     if (hm == nullptr)
     {
         return;
@@ -5945,7 +5945,7 @@ void MainWindow::AddTimeRangeFilterFromHistogram(qint64 fromEpochMicros, qint64 
     {
         return;
     }
-    HistogramModel *hm = mHistogramDock->ModelForTest();
+    const HistogramModel *hm = mHistogramDock->ModelForTest();
     if (hm == nullptr || !hm->HasTimeColumn())
     {
         // Guarded by the widget too, but keep this as a hard gate:

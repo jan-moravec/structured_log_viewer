@@ -147,6 +147,13 @@ void OpenFixtureInMainWindow(MainWindow &window, const HistogramFixture &fixture
 {
     auto *model = window.findChild<LogModel *>();
     QVERIFY(model != nullptr);
+    // Guard the analyzer: `QVERIFY` inside a non-slot helper only
+    // registers a failure; it does not abort the caller, so a null
+    // `model` would dereference below without the explicit return.
+    if (model == nullptr)
+    {
+        return;
+    }
     QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
     QVERIFY(finishedSpy.isValid());
     window.OpenFilesForTest({fixture.Path()}, MainWindow::OpenMode::Replace);
@@ -192,8 +199,8 @@ private slots:
     static void TestEmptyStateWhenNoTimeColumn()
     {
         LogModel model;
-        HistogramDock dock(&model, /*theme=*/nullptr);
-        HistogramModel *hm = dock.ModelForTest();
+        const HistogramDock dock(&model, /*theme=*/nullptr);
+        const HistogramModel *hm = dock.ModelForTest();
         QVERIFY(hm != nullptr);
         QVERIFY(!hm->HasTimeColumn());
         QCOMPARE(hm->TimeColumnIndex(), -1);
@@ -206,7 +213,7 @@ private slots:
     static void TestBucketIndexPopulatesFromLogModel()
     {
         LogModel model;
-        HistogramDock dock(&model, /*theme=*/nullptr);
+        const HistogramDock dock(&model, /*theme=*/nullptr);
         HistogramModel *hm = dock.ModelForTest();
         QVERIFY(hm != nullptr);
 
@@ -231,7 +238,7 @@ private slots:
     static void TestLevelColumnIndexTracksLogModel()
     {
         LogModel model;
-        HistogramDock dock(&model, /*theme=*/nullptr);
+        const HistogramDock dock(&model, /*theme=*/nullptr);
         HistogramModel *hm = dock.ModelForTest();
         QVERIFY(hm != nullptr);
 
@@ -269,7 +276,7 @@ private slots:
     static void TestClickEmitsBucketClicked()
     {
         LogModel model;
-        HistogramDock dock(&model, /*theme=*/nullptr);
+        const HistogramDock dock(&model, /*theme=*/nullptr);
         HistogramModel *hm = dock.ModelForTest();
         HistogramWidget *widget = dock.WidgetForTest();
         QVERIFY(hm != nullptr);
@@ -280,7 +287,7 @@ private slots:
         WaitForBucketsChanged(*hm);
 
         widget->resize(400, 100);
-        QSignalSpy spy(&dock, &HistogramDock::bucketClicked);
+        const QSignalSpy spy(&dock, &HistogramDock::bucketClicked);
         QVERIFY(spy.isValid());
 
         const QPoint centre(widget->width() / 2, widget->height() / 2);
@@ -299,7 +306,7 @@ private slots:
     static void TestDragEmitsTimeRangeSelected()
     {
         LogModel model;
-        HistogramDock dock(&model, /*theme=*/nullptr);
+        const HistogramDock dock(&model, /*theme=*/nullptr);
         HistogramModel *hm = dock.ModelForTest();
         HistogramWidget *widget = dock.WidgetForTest();
         QVERIFY(hm != nullptr);
@@ -310,8 +317,8 @@ private slots:
         WaitForBucketsChanged(*hm);
 
         widget->resize(400, 100);
-        QSignalSpy rangeSpy(&dock, &HistogramDock::timeRangeSelected);
-        QSignalSpy clickSpy(&dock, &HistogramDock::bucketClicked);
+        const QSignalSpy rangeSpy(&dock, &HistogramDock::timeRangeSelected);
+        const QSignalSpy clickSpy(&dock, &HistogramDock::bucketClicked);
         QVERIFY(rangeSpy.isValid());
         QVERIFY(clickSpy.isValid());
 
@@ -328,7 +335,7 @@ private slots:
         QCOMPARE(rangeSpy.count(), 1);
         // Drag must not double-emit a bucketClicked.
         QCOMPARE(clickSpy.count(), 0);
-        const auto args = rangeSpy.first();
+        const auto &args = rangeSpy.first();
         const qint64 fromUs = args.value(0).toLongLong();
         const qint64 toUs = args.value(1).toLongLong();
         QVERIFY(fromUs <= toUs);
@@ -340,7 +347,7 @@ private slots:
     static void TestEscCancelsInProgressDrag()
     {
         LogModel model;
-        HistogramDock dock(&model, /*theme=*/nullptr);
+        const HistogramDock dock(&model, /*theme=*/nullptr);
         HistogramModel *hm = dock.ModelForTest();
         HistogramWidget *widget = dock.WidgetForTest();
         QVERIFY(hm != nullptr);
@@ -352,7 +359,7 @@ private slots:
 
         widget->resize(400, 100);
         widget->setFocus();
-        QSignalSpy rangeSpy(&dock, &HistogramDock::timeRangeSelected);
+        const QSignalSpy rangeSpy(&dock, &HistogramDock::timeRangeSelected);
         QVERIFY(rangeSpy.isValid());
 
         const QPoint start(widget->width() / 4, widget->height() / 2);
@@ -376,7 +383,7 @@ private slots:
     static void TestZoomKeysWalkTheLadder()
     {
         LogModel model;
-        HistogramDock dock(&model, /*theme=*/nullptr);
+        const HistogramDock dock(&model, /*theme=*/nullptr);
         HistogramModel *hm = dock.ModelForTest();
         HistogramWidget *widget = dock.WidgetForTest();
         QVERIFY(hm != nullptr);
@@ -407,7 +414,7 @@ private slots:
     {
         LogModel model;
         HistogramDock dock(&model, /*theme=*/nullptr);
-        QSignalSpy closedSpy(&dock, &HistogramDock::closed);
+        const QSignalSpy closedSpy(&dock, &HistogramDock::closed);
         QVERIFY(closedSpy.isValid());
 
         QCloseEvent event;
@@ -422,7 +429,7 @@ private slots:
     static void TestFirstRowInBucketMapsToRowIndex()
     {
         LogModel model;
-        HistogramDock dock(&model, /*theme=*/nullptr);
+        const HistogramDock dock(&model, /*theme=*/nullptr);
         HistogramModel *hm = dock.ModelForTest();
         QVERIFY(hm != nullptr);
 
@@ -450,7 +457,7 @@ private slots:
     static void TestResetBucketSizeToAutoDropsManualPin()
     {
         LogModel model;
-        HistogramDock dock(&model, /*theme=*/nullptr);
+        const HistogramDock dock(&model, /*theme=*/nullptr);
         HistogramModel *hm = dock.ModelForTest();
         QVERIFY(hm != nullptr);
 
@@ -491,7 +498,7 @@ private slots:
     static void TestPressAboveSubtitleDoesNotEmitBucketClicked()
     {
         LogModel model;
-        HistogramDock dock(&model, /*theme=*/nullptr);
+        const HistogramDock dock(&model, /*theme=*/nullptr);
         HistogramModel *hm = dock.ModelForTest();
         HistogramWidget *widget = dock.WidgetForTest();
         QVERIFY(hm != nullptr);
@@ -502,8 +509,8 @@ private slots:
         WaitForBucketsChanged(*hm);
 
         widget->resize(400, 100);
-        QSignalSpy clickSpy(&dock, &HistogramDock::bucketClicked);
-        QSignalSpy rangeSpy(&dock, &HistogramDock::timeRangeSelected);
+        const QSignalSpy clickSpy(&dock, &HistogramDock::bucketClicked);
+        const QSignalSpy rangeSpy(&dock, &HistogramDock::timeRangeSelected);
         QVERIFY(clickSpy.isValid());
         QVERIFY(rangeSpy.isValid());
 
@@ -553,7 +560,7 @@ private slots:
 
         auto *dock = window.findChild<HistogramDock *>();
         QVERIFY(dock != nullptr);
-        HistogramModel *hm = dock->ModelForTest();
+        const HistogramModel *hm = dock->ModelForTest();
         QVERIFY(hm != nullptr);
         QVERIFY(hm->HasTimeColumn());
 
@@ -610,7 +617,7 @@ private slots:
         // The current index lives in the proxy chain; map to source
         // by walking each proxy in turn.
         QModelIndex idx = currentProxy;
-        while (auto *proxy = qobject_cast<const QAbstractProxyModel *>(idx.model()))
+        while (const auto *proxy = qobject_cast<const QAbstractProxyModel *>(idx.model()))
         {
             idx = proxy->mapToSource(idx);
         }

@@ -165,7 +165,7 @@ std::optional<HistogramModel::TimeRange> HistogramModel::ObservedRange() const
     const auto maxTs = mIndex.MaxTimestamp();
     if (minTs.has_value() && maxTs.has_value())
     {
-        return TimeRange{*minTs, *maxTs};
+        return TimeRange{.min = *minTs, .max = *maxTs};
     }
     // Slow path: the index is empty but the model still holds rows.
     // Happens only when every row's timestamp failed to parse (so
@@ -198,7 +198,7 @@ std::optional<HistogramModel::TimeRange> HistogramModel::ObservedRange() const
     {
         return std::nullopt;
     }
-    return TimeRange{*walkedMin, *walkedMax};
+    return TimeRange{.min = *walkedMin, .max = *walkedMax};
 }
 
 void HistogramModel::OnRowsInserted(const QModelIndex &parent, int first, int last)

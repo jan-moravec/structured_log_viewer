@@ -51,7 +51,7 @@ constexpr int64_t FloorDivide(int64_t numerator, int64_t denominator) noexcept
 uint32_t LevelBucket::Total() const noexcept
 {
     uint32_t total = 0;
-    for (uint32_t count : counts)
+    for (const uint32_t count : counts)
     {
         total += count;
     }

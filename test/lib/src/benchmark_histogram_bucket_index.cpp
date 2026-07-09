@@ -36,8 +36,8 @@ struct Event
 
 TimeStamp BenchBase()
 {
-    constexpr auto epochSeconds = std::chrono::seconds{1767225600}; // 2026-01-01T00:00:00Z
-    return TimeStamp{std::chrono::duration_cast<std::chrono::microseconds>(epochSeconds)};
+    constexpr auto EPOCH_SECONDS = std::chrono::seconds{1767225600}; // 2026-01-01T00:00:00Z
+    return TimeStamp{std::chrono::duration_cast<std::chrono::microseconds>(EPOCH_SECONDS)};
 }
 
 std::vector<Event> GenerateEvents(std::size_t count, std::chrono::microseconds step)
@@ -57,6 +57,8 @@ std::vector<Event> GenerateEvents(std::size_t count, std::chrono::microseconds s
         LogLevel::Error,
     };
 
+    // Deterministic fixture: reproducibility, not unpredictability, is the goal.
+    // NOLINTNEXTLINE(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
     std::mt19937 rng{0xC0FFEEu};
     std::uniform_int_distribution<std::size_t> pick{0, LEVELS.size() - 1};
 
@@ -64,7 +66,7 @@ std::vector<Event> GenerateEvents(std::size_t count, std::chrono::microseconds s
     events.reserve(count);
     for (std::size_t i = 0; i < count; ++i)
     {
-        events.push_back({BenchBase() + step * i, LEVELS[pick(rng)]});
+        events.push_back({.ts = BenchBase() + step * i, .level = LEVELS[pick(rng)]});
     }
     return events;
 }
@@ -145,7 +147,7 @@ TEST_CASE("HistogramBucketIndex: incremental live-tail append", "[.][benchmark][
             {
                 for (std::size_t i = 0; i < BATCH; ++i)
                 {
-                    const auto idx = b * BATCH + i;
+                    const auto idx = (b * BATCH) + i;
                     index.AddRow(tailStart + step * idx, tailEvents[idx].level);
                 }
             }
