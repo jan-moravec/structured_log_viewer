@@ -190,7 +190,9 @@ int HistogramModel::FirstRowInBucket(std::size_t bucketIndex) const
     {
         BuildFirstRowCache();
     }
-    const auto &cache = *mFirstRowPerBucketCache;
+    // `.value()` (not `*optional`) so bugprone-unchecked-optional-access
+    // sees the checked read; `BuildFirstRowCache` always populates.
+    const auto &cache = mFirstRowPerBucketCache.value();
     if (bucketIndex >= cache.size())
     {
         return -1;

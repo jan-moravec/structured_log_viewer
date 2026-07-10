@@ -30,6 +30,14 @@ enum class HistogramBucketSize : uint8_t
 /// Number of rungs on `HistogramBucketSize` (OneSecond..OneDay).
 inline constexpr size_t HISTOGRAM_BUCKET_SIZE_COUNT = 6;
 
+/// Named ladder step. `TenSeconds` / `TenMinutes` step by
+/// `TEN_UNITS_PER_STRIDE` from their neighbours; `OneDay` groups
+/// `HOURS_PER_DAY` hours. Pulled out so clang-tidy's
+/// `cppcoreguidelines-avoid-magic-numbers` doesn't fire on the
+/// switch below, and so the constants document intent inline.
+inline constexpr int TEN_UNITS_PER_STRIDE = 10;
+inline constexpr int HOURS_PER_DAY = 24;
+
 /// Microsecond width of one bucket at @p size.
 [[nodiscard]] constexpr std::chrono::microseconds HistogramBucketWidth(HistogramBucketSize size) noexcept
 {
@@ -39,15 +47,15 @@ inline constexpr size_t HISTOGRAM_BUCKET_SIZE_COUNT = 6;
     case HistogramBucketSize::OneSecond:
         return duration_cast<microseconds>(seconds{1});
     case HistogramBucketSize::TenSeconds:
-        return duration_cast<microseconds>(seconds{10});
+        return duration_cast<microseconds>(seconds{TEN_UNITS_PER_STRIDE});
     case HistogramBucketSize::OneMinute:
         return duration_cast<microseconds>(minutes{1});
     case HistogramBucketSize::TenMinutes:
-        return duration_cast<microseconds>(minutes{10});
+        return duration_cast<microseconds>(minutes{TEN_UNITS_PER_STRIDE});
     case HistogramBucketSize::OneHour:
         return duration_cast<microseconds>(hours{1});
     case HistogramBucketSize::OneDay:
-        return duration_cast<microseconds>(hours{24});
+        return duration_cast<microseconds>(hours{HOURS_PER_DAY});
     }
     return microseconds{1};
 }
@@ -58,11 +66,13 @@ inline constexpr size_t HISTOGRAM_BUCKET_SIZE_COUNT = 6;
 
 /// Per-bucket counts, one slot per canonical `LogLevel`. Slot 0
 /// (`Unknown`) is included so unresolved-level rows still contribute
-/// to the total.
+/// to the total. Aggregate by design so `HistogramBucketIndex` can
+/// index into it directly; the public array is intentional.
 struct LevelBucket
 {
     /// Indexed by `static_cast<size_t>(LogLevel)`; size is
     /// `CANONICAL_LEVEL_COUNT + 1` (Unknown..Fatal).
+    // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
     std::array<uint32_t, CANONICAL_LEVEL_COUNT + 1> counts{};
 
     [[nodiscard]] uint32_t Total() const noexcept;
@@ -97,12 +107,18 @@ public:
     /// expected to re-feed rows.
     void SetBucketSize(HistogramBucketSize size) noexcept;
 
+    /// Default column budget passed to `AutoBucketSize` from the
+    /// widget. ~500 columns give a bar-per-pixel-ish density on a
+    /// typical bottom-docked strip; tuned once and named here so the
+    /// value doesn't reappear as a magic literal.
+    static constexpr int DEFAULT_VISIBLE_BUCKET_BUDGET = 500;
+
     /// Coarsest rung whose bucket count over `[min, max]` stays under
     /// @p visibleBucketBudget. Returns `OneSecond` for a zero-width
     /// range and `OneDay` when even a day-wide rung would exceed the
     /// budget (caller decides how to render very wide ranges).
     [[nodiscard]] static HistogramBucketSize AutoBucketSize(
-        TimeStamp min, TimeStamp max, int visibleBucketBudget = 500
+        TimeStamp min, TimeStamp max, int visibleBucketBudget = DEFAULT_VISIBLE_BUCKET_BUDGET
     ) noexcept;
 
     /// Truncate @p ts down to a @p size bucket boundary. Public so
@@ -169,12 +185,15 @@ public:
 private:
     HistogramBucketSize mBucketSize = HistogramBucketSize::OneMinute;
     /// Start of bucket 0; only meaningful when `!mBuckets.empty()`.
-    TimeStamp mOrigin{};
+    /// `TimeStamp` is a chrono `time_point`, which value-initialises
+    /// to the epoch on default construction; the explicit brace
+    /// initialiser was flagged as redundant by clang-tidy.
+    TimeStamp mOrigin;
     std::vector<LevelBucket> mBuckets;
     uint64_t mTotalRowCount = 0;
     /// Precise observed range; only meaningful when `!mBuckets.empty()`.
-    TimeStamp mMinTimestamp{};
-    TimeStamp mMaxTimestamp{};
+    TimeStamp mMinTimestamp;
+    TimeStamp mMaxTimestamp;
 };
 
 } // namespace loglib
