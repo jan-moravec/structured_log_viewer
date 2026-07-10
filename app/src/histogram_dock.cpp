@@ -8,16 +8,18 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
-HistogramDock::HistogramDock(LogModel *model, ThemeControl *theme, QWidget *parent) : QDockWidget(tr("Histogram"), parent)
+HistogramDock::HistogramDock(LogModel *model, ThemeControl *theme, AnchorManager *anchors, QWidget *parent)
+    : QDockWidget(tr("Histogram"), parent)
 {
     setObjectName(QStringLiteral("histogramDock"));
     setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
 
-    mModel = new HistogramModel(model, this);
+    mModel = new HistogramModel(model, anchors, this);
     mWidget = new HistogramWidget(mModel, theme, this);
     setWidget(mWidget);
 
     connect(mWidget, &HistogramWidget::bucketClicked, this, &HistogramDock::bucketClicked);
+    connect(mWidget, &HistogramWidget::anchorClicked, this, &HistogramDock::anchorClicked);
     connect(mWidget, &HistogramWidget::timeRangeSelected, this, &HistogramDock::timeRangeSelected);
 }
 

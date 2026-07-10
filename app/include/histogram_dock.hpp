@@ -7,6 +7,7 @@
 
 #include <cstddef>
 
+class AnchorManager;
 class HistogramWidget;
 class LogModel;
 class ThemeControl;
@@ -31,7 +32,11 @@ class HistogramDock : public QDockWidget
     Q_OBJECT
 
 public:
-    HistogramDock(LogModel *model, ThemeControl *theme, QWidget *parent = nullptr);
+    /// @p anchors, when non-null, drives a small tick strip above the
+    /// bars: every bucket containing at least one anchored row gets a
+    /// coloured tick per palette slot. Passing `nullptr` disables the
+    /// strip entirely (used by the empty / anchor-free tests).
+    HistogramDock(LogModel *model, ThemeControl *theme, AnchorManager *anchors, QWidget *parent = nullptr);
 
     /// Non-owning accessor for tests.
     [[nodiscard]] HistogramModel *ModelForTest() const noexcept
@@ -49,6 +54,13 @@ signals:
     /// User clicked (no drag) on a bucket. Consumer maps to a source
     /// row via `HistogramModel::FirstRowInBucket`.
     void bucketClicked(std::size_t bucketIndex);
+
+    /// User clicked (no drag) directly on the anchor tick strip.
+    /// `sourceRow` is the earliest anchored source-model row in the
+    /// clicked visual column. Consumers route this to
+    /// `MainWindow::SelectSourceRow` so the click lands on the
+    /// anchored row itself rather than the bucket's first row.
+    void anchorClicked(int sourceRow);
 
     /// User dragged a range and released. Bounds are epoch
     /// microseconds, inclusive.

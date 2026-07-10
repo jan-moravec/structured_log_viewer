@@ -50,6 +50,7 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <utility>
 
 namespace
 {
@@ -272,6 +273,60 @@ std::uint64_t ParseCount(const std::string &text)
     }
 
     return std::stoull(upper) * multiplier;
+}
+
+// Parse a `--timeout` value. Accepts either a plain non-negative integer
+// (`"50"` -> fixed 50 ms sleep between lines) or a `MIN-MAX` range
+// (`"10-200"` -> uniform sample in `[10, 200]` per line). The dash form
+// is intentional over a separate `--timeout-min` / `--timeout-max` pair
+// because negative values are already rejected downstream, so a leading
+// minus in the input is never ambiguous with a range separator.
+std::pair<int, int> ParseTimeoutRange(const std::string &text)
+{
+    if (text.empty())
+    {
+        throw std::invalid_argument("timeout must not be empty");
+    }
+
+    // Skip a possible leading `-` (rejected below) so we only treat an
+    // *internal* dash as the range separator.
+    const auto dashAt = text.find('-', text.front() == '-' ? 1 : 0);
+    const auto parseInt = [&](const std::string &token) {
+        if (token.empty())
+        {
+            throw std::invalid_argument("timeout '" + text + "' has an empty numeric component");
+        }
+        for (const char c : token)
+        {
+            if (std::isdigit(static_cast<unsigned char>(c)) == 0 && c != '-')
+            {
+                throw std::invalid_argument(
+                    "timeout '" + text + "' must be an integer or MIN-MAX range of integers"
+                );
+            }
+        }
+        try
+        {
+            return std::stoi(token);
+        }
+        catch (const std::exception &)
+        {
+            throw std::invalid_argument("timeout '" + text + "' is not a valid integer");
+        }
+    };
+
+    if (dashAt == std::string::npos)
+    {
+        const int value = parseInt(text);
+        return {value, value};
+    }
+    const int lo = parseInt(text.substr(0, dashAt));
+    const int hi = parseInt(text.substr(dashAt + 1));
+    if (hi < lo)
+    {
+        throw std::invalid_argument("timeout range '" + text + "' must satisfy MIN <= MAX");
+    }
+    return {lo, hi};
 }
 
 enum class RollStrategy
@@ -612,9 +667,10 @@ int main(int argc, char *argv[])
               "display names, and descriptions) and exit.");
 
     program.add_argument("-t", "--timeout")
-        .default_value(0)
-        .scan<'i', int>()
-        .help("Delay in milliseconds between line writes. 0 disables throttling.");
+        .default_value(std::string{"0"})
+        .help("Delay in milliseconds between line writes. Either a fixed value (e.g. 50) or a MIN-MAX range "
+              "(e.g. 10-200) sampled uniformly per line so timestamps look organically jittered. 0 disables "
+              "throttling.");
 
     program.add_argument("--seed").scan<'i', int>().help(
         "Optional RNG seed for reproducible output. Defaults to std::random_device."
@@ -757,7 +813,7 @@ int main(int argc, char *argv[])
         }
     }
     const auto outputPath = std::filesystem::path(outputArg);
-    const auto timeoutMs = program.get<int>("--timeout");
+    const auto timeoutText = program.get<std::string>("--timeout");
     const auto append = program.get<bool>("--append");
     const auto rollSizeText = program.get<std::string>("--roll-size");
     const auto rollLinesText = program.get<std::string>("--roll-lines");
@@ -772,6 +828,8 @@ int main(int argc, char *argv[])
     ParsedTarget target;
     target.kind = TargetKind::File;
     target.filePath = outputPath.string();
+    int timeoutMinMs = 0;
+    int timeoutMaxMs = 0;
     try
     {
         targetBytes = ParseSize(sizeText);
@@ -779,6 +837,9 @@ int main(int argc, char *argv[])
         rollBytes = ParseSize(rollSizeText);
         rollLines = ParseCount(rollLinesText);
         strategy = ParseRollStrategy(rollStrategyText);
+        const auto timeoutRange = ParseTimeoutRange(timeoutText);
+        timeoutMinMs = timeoutRange.first;
+        timeoutMaxMs = timeoutRange.second;
         if (program.is_used("--target"))
         {
             target = ParseTarget(program.get<std::string>("--target"));
@@ -790,9 +851,11 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    if (timeoutMs < 0)
+    if (timeoutMinMs < 0 || timeoutMaxMs < timeoutMinMs)
     {
-        std::cerr << "Invalid --timeout: must be >= 0\n" << program;
+        std::cerr << "Invalid --timeout: must be non-negative and MIN <= MAX (got " << timeoutMinMs << ".."
+                  << timeoutMaxMs << ")\n"
+                  << program;
         return 1;
     }
     if (keepRolledInt < 0)
@@ -941,12 +1004,16 @@ int main(int argc, char *argv[])
     }
     bytesInFile += headerBytes;
 
+    const std::string timeoutDescription =
+        timeoutMinMs == timeoutMaxMs
+            ? std::to_string(timeoutMinMs) + "ms"
+            : std::to_string(timeoutMinMs) + "-" + std::to_string(timeoutMaxMs) + "ms";
     std::cout << "log_generator: writing"
               << " up to "
               << (targetBytes == 0 ? std::string{"unbounded bytes"} : std::to_string(targetBytes) + " bytes") << ", "
               << (targetLines == 0 ? std::string{"unbounded lines"} : std::to_string(targetLines) + " lines") << " to "
-              << targetDescription << " (format=" << formatLabel << ", timeout=" << timeoutMs << "ms, seed=" << seed
-              << ", append=" << (append ? "true" : "false");
+              << targetDescription << " (format=" << formatLabel << ", timeout=" << timeoutDescription
+              << ", seed=" << seed << ", append=" << (append ? "true" : "false");
     if (rollingEnabled)
     {
         std::cout << ", roll=" << rollStrategyText << " every "
@@ -1043,15 +1110,29 @@ int main(int argc, char *argv[])
         ++totalLines;
         ++linesInFile;
 
-        if (timeoutMs > 0)
+        if (timeoutMaxMs > 0)
         {
+            // Sample the sleep length per line so timestamps look
+            // organically jittered instead of showing up as evenly
+            // spaced ticks. Reusing the shared `rng` is safe: the
+            // benchmarks that pin `TimestampPolicy` never pass
+            // `--timeout`, so their per-line RNG state is untouched.
+            int sleepMs = timeoutMinMs;
+            if (timeoutMaxMs > timeoutMinMs)
+            {
+                std::uniform_int_distribution<int> sleepDist(timeoutMinMs, timeoutMaxMs);
+                sleepMs = sleepDist(rng);
+            }
             // Flush so consumers see incremental progress during the sleep.
             // Network clients write synchronously and need no extra flush.
             if (target.kind == TargetKind::File)
             {
                 out.flush();
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(timeoutMs));
+            if (sleepMs > 0)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
+            }
         }
 
         if (shouldRoll() && !reachedTotal())

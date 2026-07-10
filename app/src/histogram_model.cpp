@@ -26,7 +26,8 @@ constexpr int EMIT_COALESCE_MS = 50;
 
 } // namespace
 
-HistogramModel::HistogramModel(LogModel *logModel, QObject *parent) : QObject(parent), mLogModel(logModel)
+HistogramModel::HistogramModel(LogModel *logModel, AnchorManager *anchors, QObject *parent)
+    : QObject(parent), mLogModel(logModel), mAnchors(anchors)
 {
     mEmitTimer = new QTimer(this);
     mEmitTimer->setSingleShot(true);
@@ -38,6 +39,16 @@ HistogramModel::HistogramModel(LogModel *logModel, QObject *parent) : QObject(pa
         connect(mLogModel, &QAbstractItemModel::rowsInserted, this, &HistogramModel::OnRowsInserted);
         connect(mLogModel, &QAbstractItemModel::rowsRemoved, this, &HistogramModel::OnRowsRemoved);
         connect(mLogModel, &QAbstractItemModel::modelReset, this, &HistogramModel::OnModelReset);
+        // `columnsMoved` fires when `LogModel` bubbles a freshly
+        // observed `Type::Time` column to position 0 or a
+        // `Type::Level` column to `CANONICAL_LEVEL_COLUMN_INDEX`.
+        // These reorderings happen post-`AppendBatch` without
+        // inserting new rows, so `OnRowsInserted` doesn't see them
+        // and our cached column indices go stale. The signal carries
+        // parent / source / destination args we don't need -- a
+        // lambda drops them so the slot signature stays lean.
+        connect(mLogModel, &QAbstractItemModel::columnsMoved, this,
+                [this](const QModelIndex &, int, int, const QModelIndex &, int) { OnColumnsMoved(); });
         // `enumColumnsChanged` fires after `AppendBatch` when an enum
         // column is promoted / grown / demoted. The signal carries a
         // reason + column index, but we ignore both and let
@@ -48,6 +59,12 @@ HistogramModel::HistogramModel(LogModel *logModel, QObject *parent) : QObject(pa
         connect(mLogModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason, int) {
             OnEnumColumnsChanged();
         });
+    }
+
+    if (mAnchors != nullptr)
+    {
+        connect(mAnchors, &AnchorManager::anchorChanged, this, &HistogramModel::OnAnchorChanged);
+        connect(mAnchors, &AnchorManager::anchorsReset, this, &HistogramModel::OnAnchorsReset);
     }
 
     // Prime with whatever the model already holds (typical when the
@@ -101,12 +118,18 @@ void HistogramModel::Rebuild()
     if (mLogModel == nullptr)
     {
         mIndex.Reset();
+        // Bucket geometry is now empty. Sync the anchor vector so
+        // `HasAnchorTicks` doesn't outlive the buckets it references.
+        SyncAnchorBucketVectorSize();
+        RebuildAnchorBuckets();
         ScheduleEmit();
         return;
     }
     mIndex.Reset();
     if (mTimeColumnIndex < 0)
     {
+        SyncAnchorBucketVectorSize();
+        RebuildAnchorBuckets();
         ScheduleEmit();
         return;
     }
@@ -115,7 +138,57 @@ void HistogramModel::Rebuild()
     {
         AppendRange(0, rowCount - 1);
     }
+    // `AppendRange` above already grew `mAnchorSlotPerBucket` and
+    // seeded anchors for freshly inserted rows. A full `Rebuild`
+    // however has just wiped `mIndex`, so any earlier bucket -> slot
+    // mapping is invalid; walk the anchor manager once here to
+    // resettle every anchor onto the fresh bucket geometry.
+    RebuildAnchorBuckets();
     ScheduleEmit();
+}
+
+int HistogramModel::FirstAnchoredRowInBucketRange(std::size_t bucketBegin, std::size_t bucketEnd) const
+{
+    if (mAnchors == nullptr || mLogModel == nullptr || mTimeColumnIndex < 0 || bucketBegin >= bucketEnd)
+    {
+        return -1;
+    }
+    // Anchors are typically single-digit-to-tens; iterating the
+    // manager and doing an O(N) `SourceRowForAnchorKey` per hit is
+    // cheaper than maintaining a separate `bucket -> anchor row`
+    // index and keeping it in sync across every insert / retention
+    // event. Runtime-only anchors are included so an in-memory
+    // stream still routes ticks to the anchored row.
+    int bestRow = -1;
+    for (const auto &entry : mAnchors->EntriesIncludingRuntimeOnly())
+    {
+        const AnchorManager::Key key{.locator = entry.locator, .lineId = entry.lineId};
+        const int row = mLogModel->SourceRowForAnchorKey(key);
+        if (row < 0)
+        {
+            continue;
+        }
+        const auto ts = TimeStampForRow(row);
+        if (!ts.has_value())
+        {
+            continue;
+        }
+        const auto bucketOpt = mIndex.BucketOf(*ts);
+        if (!bucketOpt.has_value())
+        {
+            continue;
+        }
+        const std::size_t bucket = *bucketOpt;
+        if (bucket < bucketBegin || bucket >= bucketEnd)
+        {
+            continue;
+        }
+        if (bestRow < 0 || row < bestRow)
+        {
+            bestRow = row;
+        }
+    }
+    return bestRow;
 }
 
 int HistogramModel::FirstRowInBucket(std::size_t bucketIndex) const
@@ -276,22 +349,60 @@ void HistogramModel::OnModelReset()
 
 void HistogramModel::OnEnumColumnsChanged()
 {
-    // Cheap guard: if the level column index is unchanged the enum
+    // Cheap guard: if neither cached column index moved the enum
     // signal was for an unrelated column (or a `Grew` on the existing
     // level column, which doesn't change any per-bucket count -- the
     // levels themselves are resolved fresh at every `LevelForRow`).
     // Bail without a rebuild so live-tail promotions on 20-column
     // logs don't repeatedly trip a full O(N) rebuild.
+    //
+    // We also refresh the time column here because the same
+    // finalize / promote path can bubble a freshly-typed `Type::Time`
+    // column to position 0 alongside a level promotion (see
+    // `LogModel::EndStreaming`). Rebuilding against a stale time
+    // column would feed the index the wrong column's raw values.
+    const int freshTimeColumn = ComputeTimeColumnIndex();
     const int freshLevelColumn = ComputeLevelColumnIndex();
-    if (freshLevelColumn == mLevelColumnIndex)
+    if (freshTimeColumn == mTimeColumnIndex && freshLevelColumn == mLevelColumnIndex)
     {
         return;
     }
+    const bool wasUnavailable = mTimeColumnIndex < 0;
+    mTimeColumnIndex = freshTimeColumn;
     mLevelColumnIndex = freshLevelColumn;
+    if (wasUnavailable != (mTimeColumnIndex < 0))
+    {
+        emit timeColumnAvailabilityChanged(mTimeColumnIndex >= 0);
+    }
     // Rows in `mIndex` were bucketed against the *old* level slot
     // (typically `Unknown` when the column just promoted). Rebuild
     // so their canonical level shows up in the strip.
     Rebuild();
+}
+
+void HistogramModel::OnColumnsMoved()
+{
+    // Reorderings that don't touch our two tracked columns are
+    // no-ops -- most notably the user dragging an unrelated column
+    // in the header, which mustn't repaint the strip.
+    const int freshTimeColumn = ComputeTimeColumnIndex();
+    const int freshLevelColumn = ComputeLevelColumnIndex();
+    if (freshTimeColumn == mTimeColumnIndex && freshLevelColumn == mLevelColumnIndex)
+    {
+        return;
+    }
+    const bool wasUnavailable = mTimeColumnIndex < 0;
+    mTimeColumnIndex = freshTimeColumn;
+    mLevelColumnIndex = freshLevelColumn;
+    if (wasUnavailable != (mTimeColumnIndex < 0))
+    {
+        emit timeColumnAvailabilityChanged(mTimeColumnIndex >= 0);
+    }
+    // The move mutated column identity behind rows already in the
+    // index (`AddRow` recorded values from the *old* column slot).
+    // Rebuild from row 0 against the fresh identity.
+    Rebuild();
+    ApplyAutoBucketSize();
 }
 
 void HistogramModel::AppendRange(int first, int last)
@@ -302,6 +413,8 @@ void HistogramModel::AppendRange(int first, int last)
     }
     const int rowCount = mLogModel->rowCount();
     const int clampedLast = std::min(last, rowCount - 1);
+    const bool trackAnchors = mAnchors != nullptr && !mAnchors->Empty();
+    bool anchorMaskChanged = false;
     for (int row = std::max(0, first); row <= clampedLast; ++row)
     {
         const auto ts = TimeStampForRow(row);
@@ -310,13 +423,51 @@ void HistogramModel::AppendRange(int first, int last)
             continue;
         }
         mIndex.AddRow(*ts, LevelForRow(row));
+        // Anchor tick incremental update: for each streamed row that
+        // happens to be anchored (typical count is single-digit
+        // across the whole session), OR its palette slot into the
+        // bucket-slot mask. Cost is one hashmap lookup + one
+        // `BucketOf` per anchored row -- effectively free next to
+        // the log parse throughput.
+        if (trackAnchors)
+        {
+            const auto slot = mLogModel->AnchorSlotForRow(row);
+            if (slot.has_value())
+            {
+                const auto bucketOpt = mIndex.BucketOf(*ts);
+                if (bucketOpt.has_value())
+                {
+                    // The bucket vector grows as `AddRow` observes
+                    // fresh timestamps, so resync before indexing so
+                    // we can't write past the vector end even when
+                    // the current row extended the range.
+                    SyncAnchorBucketVectorSize();
+                    auto &mask = mAnchorSlotPerBucket[*bucketOpt];
+                    if (!mask.test(*slot))
+                    {
+                        mask.set(*slot);
+                        ++mAnchorBucketBitsSet;
+                        anchorMaskChanged = true;
+                    }
+                }
+            }
+        }
     }
+    // Ensure the anchor vector matches the (possibly expanded)
+    // bucket vector even when the batch itself had no anchored rows
+    // -- otherwise a later `OnAnchorChanged` could index a bucket
+    // that has no slot in `mAnchorSlotPerBucket`.
+    SyncAnchorBucketVectorSize();
     // Bucket geometry (origin + count) shifts under `AddRow`, so
     // any incremental cache would need to shift too. Drop and let
     // the next `FirstRowInBucket` rebuild instead — that's cheaper
     // than re-anchoring the cache on every batch, and the click
     // rate is typically much lower than the streaming batch rate.
     InvalidateFirstRowCache();
+    if (anchorMaskChanged)
+    {
+        emit anchorBucketsChanged();
+    }
 }
 
 int HistogramModel::ComputeTimeColumnIndex() const
@@ -435,4 +586,219 @@ void HistogramModel::BuildFirstRowCache() const
         }
     }
     mFirstRowPerBucketCache = std::move(cache);
+}
+
+void HistogramModel::SyncAnchorBucketVectorSize()
+{
+    if (mAnchors == nullptr)
+    {
+        // Anchor tracking disabled -- the vector stays empty. Keep
+        // the popcount in sync so `HasAnchorTicks` returns false.
+        mAnchorSlotPerBucket.clear();
+        mAnchorBucketBitsSet = 0;
+        return;
+    }
+    const std::size_t bucketCount = mIndex.Buckets().size();
+    if (mAnchorSlotPerBucket.size() == bucketCount)
+    {
+        return;
+    }
+    if (mAnchorSlotPerBucket.size() > bucketCount)
+    {
+        // Shrink: subtract the bits we're dropping from the running
+        // popcount. Only Rebuild + Reset shrink, and both wipe the
+        // whole vector, but the accounting stays honest for any
+        // future partial-shrink path.
+        for (std::size_t i = bucketCount; i < mAnchorSlotPerBucket.size(); ++i)
+        {
+            mAnchorBucketBitsSet -= mAnchorSlotPerBucket[i].count();
+        }
+        mAnchorSlotPerBucket.resize(bucketCount);
+        return;
+    }
+    // Grow: default-constructed masks are zero, so `mAnchorBucketBitsSet`
+    // doesn't need adjustment.
+    mAnchorSlotPerBucket.resize(bucketCount);
+}
+
+void HistogramModel::RebuildAnchorBuckets()
+{
+    // Zero the vector and popcount, then reseed from the anchor
+    // manager. Emits `anchorBucketsChanged` iff the pre/post state
+    // differs (measured via the popcount + a cheap tail-comparison).
+    if (mAnchors == nullptr)
+    {
+        if (mAnchorBucketBitsSet > 0 || !mAnchorSlotPerBucket.empty())
+        {
+            mAnchorSlotPerBucket.clear();
+            mAnchorBucketBitsSet = 0;
+            emit anchorBucketsChanged();
+        }
+        return;
+    }
+    // Snapshot the previous state so we can detect a genuine change
+    // rather than emitting on every reset. Comparing bitsets is
+    // cheap (one `memcmp`-shaped call per bucket) so the snapshot
+    // path is fine even at 500 buckets.
+    std::vector<AnchorSlotMask> previous;
+    previous.swap(mAnchorSlotPerBucket);
+    const std::size_t previousBitsSet = mAnchorBucketBitsSet;
+    mAnchorBucketBitsSet = 0;
+
+    SyncAnchorBucketVectorSize();
+
+    if (mLogModel == nullptr || mTimeColumnIndex < 0)
+    {
+        // Nothing to bucket against. Emit only if the previous state
+        // was non-empty.
+        if (previousBitsSet > 0)
+        {
+            emit anchorBucketsChanged();
+        }
+        return;
+    }
+
+    for (const auto &entry : mAnchors->EntriesIncludingRuntimeOnly())
+    {
+        const AnchorManager::Key key{.locator = entry.locator, .lineId = entry.lineId};
+        (void)UpdateAnchorSlotForKey(key);
+    }
+
+    const bool changed =
+        previousBitsSet != mAnchorBucketBitsSet || previous.size() != mAnchorSlotPerBucket.size() ||
+        !std::equal(previous.begin(), previous.end(), mAnchorSlotPerBucket.begin(), mAnchorSlotPerBucket.end());
+    if (changed)
+    {
+        emit anchorBucketsChanged();
+    }
+}
+
+std::optional<std::size_t> HistogramModel::UpdateAnchorSlotForKey(const AnchorManager::Key &key)
+{
+    if (mAnchors == nullptr || mLogModel == nullptr || mTimeColumnIndex < 0)
+    {
+        return std::nullopt;
+    }
+    const int row = mLogModel->SourceRowForAnchorKey(key);
+    if (row < 0)
+    {
+        return std::nullopt;
+    }
+    const auto slot = mAnchors->ColorFor(key);
+    if (!slot.has_value())
+    {
+        return std::nullopt;
+    }
+    const auto ts = TimeStampForRow(row);
+    if (!ts.has_value())
+    {
+        return std::nullopt;
+    }
+    const auto bucketOpt = mIndex.BucketOf(*ts);
+    if (!bucketOpt.has_value())
+    {
+        return std::nullopt;
+    }
+    const std::size_t bucketIdx = *bucketOpt;
+    if (bucketIdx >= mAnchorSlotPerBucket.size())
+    {
+        return std::nullopt;
+    }
+    auto &mask = mAnchorSlotPerBucket[bucketIdx];
+    if (!mask.test(*slot))
+    {
+        mask.set(*slot);
+        ++mAnchorBucketBitsSet;
+    }
+    return bucketIdx;
+}
+
+void HistogramModel::OnAnchorChanged(const AnchorManager::Key &key)
+{
+    if (mAnchors == nullptr)
+    {
+        return;
+    }
+    // The bit we need to flip depends on whether this event is an
+    // add/recolour or a remove. Rather than diffing per-slot (harder
+    // once recolour is in play — the old slot is gone from
+    // `AnchorManager` by the time this fires), just rebuild the
+    // affected bucket from every remaining anchor whose row lands
+    // in it. For typical anchor counts (single digits) that's a few
+    // hashmap lookups + `BucketOf` calls, well below the paint budget.
+    SyncAnchorBucketVectorSize();
+
+    // Resolve the changed key to the bucket it *was* in, so we know
+    // which bucket's mask to rebuild. If the key resolves to a live
+    // row, use its current bucket; otherwise fall back to a full
+    // scan (rare: removal after retention eviction).
+    std::optional<std::size_t> targetBucket;
+    if (mLogModel != nullptr && mTimeColumnIndex >= 0)
+    {
+        const int row = mLogModel->SourceRowForAnchorKey(key);
+        if (row >= 0)
+        {
+            const auto ts = TimeStampForRow(row);
+            if (ts.has_value())
+            {
+                targetBucket = mIndex.BucketOf(*ts);
+            }
+        }
+    }
+
+    if (!targetBucket.has_value())
+    {
+        // We can't localise the change — fall back to a full rebuild.
+        // This still hits the O(anchors) upper bound rather than an
+        // O(rows) scan; anchors are the small set here.
+        RebuildAnchorBuckets();
+        return;
+    }
+
+    // Recompute just that one bucket: clear its bits, subtract from
+    // the running popcount, then reseed from every anchor whose row
+    // resolves into it.
+    const std::size_t bucketIdx = *targetBucket;
+    if (bucketIdx >= mAnchorSlotPerBucket.size())
+    {
+        return;
+    }
+    AnchorSlotMask &mask = mAnchorSlotPerBucket[bucketIdx];
+    const AnchorSlotMask previous = mask;
+    mAnchorBucketBitsSet -= mask.count();
+    mask.reset();
+
+    for (const auto &entry : mAnchors->EntriesIncludingRuntimeOnly())
+    {
+        const AnchorManager::Key entryKey{.locator = entry.locator, .lineId = entry.lineId};
+        const int row = mLogModel->SourceRowForAnchorKey(entryKey);
+        if (row < 0)
+        {
+            continue;
+        }
+        const auto ts = TimeStampForRow(row);
+        if (!ts.has_value())
+        {
+            continue;
+        }
+        const auto anchorBucket = mIndex.BucketOf(*ts);
+        if (!anchorBucket.has_value() || *anchorBucket != bucketIdx)
+        {
+            continue;
+        }
+        if (!mask.test(entry.colorIndex))
+        {
+            mask.set(entry.colorIndex);
+        }
+    }
+    mAnchorBucketBitsSet += mask.count();
+    if (mask != previous)
+    {
+        emit anchorBucketsChanged();
+    }
+}
+
+void HistogramModel::OnAnchorsReset()
+{
+    RebuildAnchorBuckets();
 }

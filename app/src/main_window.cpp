@@ -653,10 +653,15 @@ MainWindow::MainWindow(
     // dock: hidden by default, toggled from View menu / toolbar /
     // Ctrl+H. Bottom-docked so it doesn't compete with the right-hand
     // Anchors / Record Details stack.
-    mHistogramDock = new HistogramDock(mModel, mTheme, this);
+    mHistogramDock = new HistogramDock(mModel, mTheme, mAnchors, this);
     addDockWidget(Qt::BottomDockWidgetArea, mHistogramDock);
     mHistogramDock->hide();
     connect(mHistogramDock, &HistogramDock::bucketClicked, this, &MainWindow::JumpToFirstRowInBucket);
+    // Tick-strip clicks jump straight to the anchored row via the
+    // existing `SelectSourceRow` slot so the table scrolls to the
+    // exact anchor the user clicked, not just the bucket's first
+    // row (which usually sits next to the anchor but not on it).
+    connect(mHistogramDock, &HistogramDock::anchorClicked, this, &MainWindow::SelectSourceRow);
     connect(
         mHistogramDock, &HistogramDock::timeRangeSelected, this, &MainWindow::AddTimeRangeFilterFromHistogram
     );
@@ -4862,6 +4867,14 @@ void MainWindow::SetCurrentSourceForTest(std::optional<loglib::LogConfiguration:
 
 void MainWindow::OpenFilesForTest(const QStringList &files, OpenMode mode)
 {
+    // MSVC's <filesystem> bitmask flag-cast trips clang-analyzer's
+    // enum-cast check on any trace that reaches the STL filesystem
+    // code from here. The analyzer picks this test-only helper as a
+    // top-level entry point, so suppression at the innermost call
+    // sites is not enough; the diagnostic's note trace only touches
+    // lines in the upstream callers. Suppressing at the entry note
+    // covers the whole trace.
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     StartStreamingOpenQueue(files, mode);
 }
 

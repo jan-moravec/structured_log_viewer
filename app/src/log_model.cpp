@@ -1399,6 +1399,23 @@ int LogModel::SourceRowForAnchorKey(const AnchorManager::Key &key) const noexcep
     return -1;
 }
 
+std::optional<uint8_t> LogModel::AnchorSlotForRow(int row) const noexcept
+{
+    // Empty-manager fast path: skips both the row-to-key resolution
+    // and the subsequent hashmap lookup so a no-anchor session pays
+    // essentially nothing.
+    if (mAnchors == nullptr || mAnchors->Empty())
+    {
+        return std::nullopt;
+    }
+    const auto key = AnchorKeyForRow(row);
+    if (!key.has_value())
+    {
+        return std::nullopt;
+    }
+    return mAnchors->ColorFor(*key);
+}
+
 void LogModel::PrewarmCanonicalLocatorCache()
 {
     // Idempotent: existing entries are skipped, only new sources

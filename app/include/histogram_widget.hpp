@@ -1,9 +1,12 @@
 #pragma once
 
+#include "histogram_model.hpp"
+
 #include <loglib/histogram_bucket_index.hpp>
 #include <loglib/log_value.hpp>
 
 #include <QPointer>
+#include <QString>
 #include <QWidget>
 
 #include <cstddef>
@@ -38,11 +41,71 @@ class HistogramWidget : public QWidget
 public:
     HistogramWidget(HistogramModel *model, ThemeControl *theme, QWidget *parent = nullptr);
 
+    /// Current details-line text (the strip below the bars).
+    /// Reflects whichever branch of `FormatDetailsLine` is active:
+    /// the hovered-bucket format when the pointer is over a
+    /// populated column, or the plot summary otherwise. Exposed
+    /// for `apptest_histogram` so tests can assert on the readout
+    /// without racing `QToolTip` visibility under the offscreen
+    /// QPA plugin (which is why the old `QToolTip`-based
+    /// affordance was replaced by this strip in the first place).
+    [[nodiscard]] QString DetailsTextForTest() const;
+
+    /// Cached visual-column index of the bar the pointer last
+    /// hovered, or `-1` when the cache is invalidated (leave, data
+    /// change, theme change, drag). Same "for tests only" caveat
+    /// as `DetailsTextForTest`.
+    [[nodiscard]] int LastHoverBucketForTest() const noexcept
+    {
+        return mLastHoverBucket;
+    }
+
+    /// Merged anchor slot mask for visual column @p col — the OR of
+    /// every raw bucket the paint routine folds into that column via
+    /// the same `ComputeVisualLayout` stride. Empty bitset when the
+    /// model isn't wired, the anchor manager is `nullptr`, or @p col
+    /// is out of range. Exposed so `apptest_histogram` can assert
+    /// that stride > 1 preserves anchor visibility without scraping
+    /// pixels.
+    [[nodiscard]] HistogramModel::AnchorSlotMask VisualColumnAnchorMaskForTest(std::size_t col) const;
+
+    /// Height of the anchor tick strip currently reserved above the
+    /// plot rect (`0` when no bucket carries an anchor). Exposed so
+    /// tests can assert the strip's hidden-when-empty behaviour by
+    /// numeric height rather than pixel inspection.
+    [[nodiscard]] int AnchorTickStripHeightForTest() const;
+
+    /// Read-only accessors mirroring the private geometry helpers.
+    /// Exposed so `apptest_histogram` can assert PlotRect stability
+    /// across anchor toggles and derive tick-strip click points
+    /// without re-implementing the layout logic.
+    [[nodiscard]] QRect PlotRectForTest() const
+    {
+        return PlotRect();
+    }
+
+    [[nodiscard]] QRect AnchorTickRectForTest() const
+    {
+        return AnchorTickRect();
+    }
+
 signals:
     /// User clicked (no drag) on a bucket. `bucketIndex` is a valid
     /// index into `HistogramModel::Index().Buckets()` at the moment
     /// the click landed.
     void bucketClicked(std::size_t bucketIndex);
+
+    /// User clicked (no drag) directly on the anchor tick strip
+    /// overlaying a column that carries at least one anchor.
+    /// `sourceRow` is the earliest anchored source-model row in
+    /// that visual column, resolved via
+    /// `HistogramModel::FirstAnchoredRowInBucketRange`. Consumers
+    /// route this to `MainWindow::SelectSourceRow` so the click
+    /// lands on the anchor itself, not just the bucket's first
+    /// row. Emitted *instead* of `bucketClicked` for tick-zone
+    /// clicks; the bar area continues to route through
+    /// `bucketClicked`.
+    void anchorClicked(int sourceRow);
 
     /// User dragged a range and released. Bounds are epoch
     /// microseconds, inclusive. `from <= to` invariantly.
@@ -53,6 +116,7 @@ protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    void leaveEvent(QEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     void contextMenuEvent(QContextMenuEvent *event) override;
@@ -82,19 +146,48 @@ private:
     [[nodiscard]] std::pair<std::size_t, std::size_t> BucketRangeForVisualColumn(std::size_t columnIndex) const;
 
     /// Rect in widget coords where bars are painted (excludes the
-    /// subtitle line and the small vertical padding).
+    /// details strip along the bottom, the small padding around
+    /// the plot area, and the anchor tick strip along the top when
+    /// any bucket carries an anchor).
     [[nodiscard]] QRect PlotRect() const;
 
-    /// Header line above the bars: bucket size + covered range +
-    /// total row count.
-    [[nodiscard]] QString FormatSubtitle() const;
+    /// Rect in widget coords occupied by the anchor tick strip.
+    /// The strip is painted as an *overlay* at the top of
+    /// `PlotRect` (not reserved chrome above it), so this rect
+    /// intersects `PlotRect` when it's non-empty. Empty when no
+    /// bucket currently carries an anchor -- a no-anchor session
+    /// then paints pixel-identical to the pre-anchor layout.
+    /// Kept as a helper so paint, hit-testing, and geometry
+    /// inspectors all agree on the strip's extent.
+    [[nodiscard]] QRect AnchorTickRect() const;
 
-    /// Refresh the hover tooltip using the pointer's widget-local
-    /// position. The X coordinate drives visual-column resolution;
-    /// the Y is only used to anchor the tooltip so the OS placement
-    /// heuristics can pick a side that doesn't occlude the bar under
-    /// the pointer. Called from `mouseMoveEvent` on every motion.
-    void UpdateHoverTooltip(const QPoint &pos);
+    /// Paint the anchor tick strip into @p painter over the top of
+    /// the plot area. Iterates visual columns with the same stride
+    /// the bar pass uses so ticks line up with the columns
+    /// underneath. No-op when the model isn't wired, no anchor
+    /// exists, or the theme is unset.
+    void PaintAnchorTickStrip(QPainter &painter);
+
+    /// Rect in widget coords reserved for the always-visible
+    /// details line below the bars. Empty when the widget is too
+    /// short to fit it. The strip carries the plot summary in the
+    /// idle state and the hovered bucket's details on hover; it
+    /// replaces the OS `QToolTip` popup we used earlier.
+    [[nodiscard]] QRect DetailsRect() const;
+
+    /// Text painted into `DetailsRect`. If a valid visual column
+    /// is hovered, returns the hover format
+    /// (`<range> . total: N . <level>: <count> ...`);
+    /// otherwise returns the plot summary
+    /// (`bucket: <size> . rows: N <range>`).
+    [[nodiscard]] QString FormatDetailsLine() const;
+
+    /// Refresh the hover state from the pointer's widget-local
+    /// position. Updates `mLastHoverBucket` and requests a partial
+    /// repaint of `DetailsRect` when the visual column under the
+    /// pointer changes. Called from `mouseMoveEvent` on every
+    /// motion outside a drag.
+    void UpdateHoverState(const QPoint &pos);
 
     QPointer<HistogramModel> mModel;
     QPointer<ThemeControl> mTheme;
@@ -110,8 +203,8 @@ private:
     /// Latest visual-column index the mouse was over. `-1` when
     /// outside the plot rect or invalidated by a data / theme
     /// change. Kept in visual-column coords (not raw bucket
-    /// indices) so the tooltip dedup matches what the paint routine
-    /// draws under the pointer.
+    /// indices) so `FormatDetailsLine` reflects exactly the
+    /// column the paint routine draws under the pointer.
     int mLastHoverBucket = -1;
 
     static constexpr int DRAG_THRESHOLD_PIXELS = 3;
