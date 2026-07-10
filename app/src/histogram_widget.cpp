@@ -19,8 +19,8 @@
 #include <QLocale>
 #include <QMenu>
 #include <QMouseEvent>
-#include <QPainter>
 #include <QPaintEvent>
+#include <QPainter>
 #include <QPalette>
 #include <QRect>
 #include <QString>
@@ -55,8 +55,7 @@ constexpr std::array<loglib::LogLevel, loglib::CANONICAL_LEVEL_COUNT + 1> STACK_
     loglib::LogLevel::Fatal,
 };
 static_assert(
-    STACK_ORDER.size() == loglib::CANONICAL_LEVEL_COUNT + 1,
-    "STACK_ORDER must cover Unknown + every canonical LogLevel"
+    STACK_ORDER.size() == loglib::CANONICAL_LEVEL_COUNT + 1, "STACK_ORDER must cover Unknown + every canonical LogLevel"
 );
 
 /// Horizontal inset for `PlotRect` and `DetailsRect`. Wide enough
@@ -202,9 +201,8 @@ struct VisualLayout
     {
         return layout;
     }
-    layout.stride = std::max<std::size_t>(
-        1, static_cast<std::size_t>(std::ceil(static_cast<double>(nBuckets) / plotWidth))
-    );
+    layout.stride =
+        std::max<std::size_t>(1, static_cast<std::size_t>(std::ceil(static_cast<double>(nBuckets) / plotWidth)));
     layout.columnCount = (nBuckets + layout.stride - 1) / layout.stride;
     layout.columnWidth = plotWidth / static_cast<double>(layout.columnCount);
     return layout;
@@ -785,8 +783,7 @@ void HistogramWidget::mousePressEvent(QMouseEvent *event)
 
 void HistogramWidget::mouseMoveEvent(QMouseEvent *event)
 {
-    const bool dragThresholdCrossedThisEvent = mDragStartX >= 0 &&
-                                               (event->buttons() & Qt::LeftButton) != 0 &&
+    const bool dragThresholdCrossedThisEvent = mDragStartX >= 0 && (event->buttons() & Qt::LeftButton) != 0 &&
                                                std::abs(event->pos().x() - mDragStartX) > DRAG_THRESHOLD_PIXELS;
     // While drag-brushing, the user is pointing at a range, not a
     // bucket -- suppress the single-bucket hover readout and let

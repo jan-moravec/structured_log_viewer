@@ -41,8 +41,12 @@ HistogramModel::HistogramModel(LogModel *logModel, AnchorManager *anchors, QObje
         // Column reorderings after `AppendBatch` (time bubbled to slot 0,
         // level to canonical slot) don't emit `rowsInserted`, so hook
         // `columnsMoved` explicitly. Lambda strips the unused args.
-        connect(mLogModel, &QAbstractItemModel::columnsMoved, this,
-                [this](const QModelIndex &, int, int, const QModelIndex &, int) { OnColumnsMoved(); });
+        connect(
+            mLogModel,
+            &QAbstractItemModel::columnsMoved,
+            this,
+            [this](const QModelIndex &, int, int, const QModelIndex &, int) { OnColumnsMoved(); }
+        );
         // Enum promotion / grow / demote can shift or introduce the
         // level column. Let `OnEnumColumnsChanged` do the diff itself.
         connect(mLogModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason, int) {
@@ -444,7 +448,8 @@ std::optional<loglib::TimeStamp> HistogramModel::TimeStampForRow(int row) const
     {
         return std::nullopt;
     }
-    const auto value = mLogModel->Table().GetValue(static_cast<std::size_t>(row), static_cast<std::size_t>(mTimeColumnIndex));
+    const auto value =
+        mLogModel->Table().GetValue(static_cast<std::size_t>(row), static_cast<std::size_t>(mTimeColumnIndex));
     const auto epochMicros = loglib::AsEpochMicroseconds(value);
     if (!epochMicros.has_value())
     {
@@ -463,9 +468,8 @@ loglib::LogLevel HistogramModel::LevelForRow(int row) const
     // hitting LogModel per row would race its own cache-repair dance
     // inside `AppendBatch`. Non-canonical values fall through to
     // `Unknown` (slot 0), matching `DisplayLevelForRow`.
-    const auto level = mLogModel->Table().GetLevelForRow(
-        static_cast<std::size_t>(row), static_cast<std::size_t>(mLevelColumnIndex)
-    );
+    const auto level =
+        mLogModel->Table().GetLevelForRow(static_cast<std::size_t>(row), static_cast<std::size_t>(mLevelColumnIndex));
     return level.value_or(loglib::LogLevel::Unknown);
 }
 

@@ -28,9 +28,9 @@
 #include <QAbstractProxyModel>
 #include <QApplication>
 #include <QCloseEvent>
-#include <QMouseEvent>
 #include <QKeyEvent>
 #include <QModelIndex>
+#include <QMouseEvent>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QString>
@@ -78,13 +78,12 @@ public:
             const int second = totalSeconds % 60;
             // Time column ships parseFormats {%FT%T%Ez, %F %T%Ez,
             // %FT%T, %F %T}; no trailing "Z" form, so use %FT%T.
-            const QString line =
-                QStringLiteral(R"({"time": "2026-01-01T%1:%2:%3", "level": "%4", "body": "msg %5"})")
-                    .arg(hour, 2, 10, QChar('0'))
-                    .arg(minute, 2, 10, QChar('0'))
-                    .arg(second, 2, 10, QChar('0'))
-                    .arg(LEVELS[i % LEVELS.size()])
-                    .arg(i);
+            const QString line = QStringLiteral(R"({"time": "2026-01-01T%1:%2:%3", "level": "%4", "body": "msg %5"})")
+                                     .arg(hour, 2, 10, QChar('0'))
+                                     .arg(minute, 2, 10, QChar('0'))
+                                     .arg(second, 2, 10, QChar('0'))
+                                     .arg(LEVELS[i % LEVELS.size()])
+                                     .arg(i);
             stream << line.toStdString() << '\n';
         }
     }
@@ -126,9 +125,7 @@ public:
             const int minute = (totalSeconds / 60) % 60;
             const int second = totalSeconds % 60;
             const QString line =
-                QStringLiteral(
-                    R"({"level": "%1", "line_number": %2, "body": "msg %3", "time": "2026-01-01T%4:%5:%6"})"
-                )
+                QStringLiteral(R"({"level": "%1", "line_number": %2, "body": "msg %3", "time": "2026-01-01T%4:%5:%6"})")
                     .arg(LEVELS[i % LEVELS.size()])
                     .arg(i)
                     .arg(i)
@@ -424,8 +421,7 @@ private slots:
             qPrintable(details)
         );
         QVERIFY2(
-            !details.startsWith(QStringLiteral("bucket:")),
-            "hover format must not fall back to the plot-summary prefix"
+            !details.startsWith(QStringLiteral("bucket:")), "hover format must not fall back to the plot-summary prefix"
         );
 
         // Dedup: a follow-up move inside the same bar mustn't
@@ -469,8 +465,7 @@ private slots:
         // details text then falls through to the plot summary.
         QCOMPARE(widget->LastHoverBucketForTest(), -1);
         QVERIFY2(
-            widget->DetailsTextForTest().startsWith(QStringLiteral("bucket:")),
-            qPrintable(widget->DetailsTextForTest())
+            widget->DetailsTextForTest().startsWith(QStringLiteral("bucket:")), qPrintable(widget->DetailsTextForTest())
         );
     }
 
@@ -494,8 +489,12 @@ private slots:
         QVERIFY(spy.isValid());
 
         const QPoint centre(widget->width() / 2, widget->height() / 2);
-        QMouseEvent press(QEvent::MouseButtonPress, centre, widget->mapToGlobal(centre), Qt::LeftButton, Qt::LeftButton, {});
-        QMouseEvent release(QEvent::MouseButtonRelease, centre, widget->mapToGlobal(centre), Qt::LeftButton, Qt::NoButton, {});
+        QMouseEvent press(
+            QEvent::MouseButtonPress, centre, widget->mapToGlobal(centre), Qt::LeftButton, Qt::LeftButton, {}
+        );
+        QMouseEvent release(
+            QEvent::MouseButtonRelease, centre, widget->mapToGlobal(centre), Qt::LeftButton, Qt::NoButton, {}
+        );
         QApplication::sendEvent(widget, &press);
         QApplication::sendEvent(widget, &release);
 
@@ -528,9 +527,13 @@ private slots:
         const QPoint start(widget->width() / 4, widget->height() / 2);
         const QPoint middle((widget->width() * 3) / 4, widget->height() / 2);
         const QPoint end((widget->width() * 3) / 4, widget->height() / 2);
-        QMouseEvent press(QEvent::MouseButtonPress, start, widget->mapToGlobal(start), Qt::LeftButton, Qt::LeftButton, {});
+        QMouseEvent press(
+            QEvent::MouseButtonPress, start, widget->mapToGlobal(start), Qt::LeftButton, Qt::LeftButton, {}
+        );
         QMouseEvent move(QEvent::MouseMove, middle, widget->mapToGlobal(middle), Qt::NoButton, Qt::LeftButton, {});
-        QMouseEvent release(QEvent::MouseButtonRelease, end, widget->mapToGlobal(end), Qt::LeftButton, Qt::NoButton, {});
+        QMouseEvent release(
+            QEvent::MouseButtonRelease, end, widget->mapToGlobal(end), Qt::LeftButton, Qt::NoButton, {}
+        );
         QApplication::sendEvent(widget, &press);
         QApplication::sendEvent(widget, &move);
         QApplication::sendEvent(widget, &release);
@@ -566,7 +569,9 @@ private slots:
 
         const QPoint start(widget->width() / 4, widget->height() / 2);
         const QPoint middle(widget->width() / 2, widget->height() / 2);
-        QMouseEvent press(QEvent::MouseButtonPress, start, widget->mapToGlobal(start), Qt::LeftButton, Qt::LeftButton, {});
+        QMouseEvent press(
+            QEvent::MouseButtonPress, start, widget->mapToGlobal(start), Qt::LeftButton, Qt::LeftButton, {}
+        );
         QMouseEvent move(QEvent::MouseMove, middle, widget->mapToGlobal(middle), Qt::NoButton, Qt::LeftButton, {});
         QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
         QApplication::sendEvent(widget, &press);
@@ -574,7 +579,9 @@ private slots:
         QApplication::sendEvent(widget, &esc);
 
         // The drag was cancelled, so the release must not emit a range.
-        QMouseEvent release(QEvent::MouseButtonRelease, middle, widget->mapToGlobal(middle), Qt::LeftButton, Qt::NoButton, {});
+        QMouseEvent release(
+            QEvent::MouseButtonRelease, middle, widget->mapToGlobal(middle), Qt::LeftButton, Qt::NoButton, {}
+        );
         QApplication::sendEvent(widget, &release);
 
         QCOMPARE(rangeSpy.count(), 0);
@@ -846,8 +853,7 @@ private slots:
         const auto anchorMasks = hm->AnchorSlotsPerBucket();
         QVERIFY(anchorMasks.size() == hm->Index().Buckets().size());
         QVERIFY2(
-            anchorMasks[TARGET_ROW].test(TARGET_SLOT),
-            "target bucket must carry the anchor slot bit after SetAnchor"
+            anchorMasks[TARGET_ROW].test(TARGET_SLOT), "target bucket must carry the anchor slot bit after SetAnchor"
         );
         // Every other bucket must stay empty (no OR into neighbours).
         for (std::size_t i = 0; i < anchorMasks.size(); ++i)

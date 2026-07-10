@@ -661,9 +661,7 @@ MainWindow::MainWindow(
     // `SelectSourceRow`, not the bucket's first row (which may sit
     // next to the anchor but isn't the anchor).
     connect(mHistogramDock, &HistogramDock::anchorClicked, this, &MainWindow::SelectSourceRow);
-    connect(
-        mHistogramDock, &HistogramDock::timeRangeSelected, this, &MainWindow::AddTimeRangeFilterFromHistogram
-    );
+    connect(mHistogramDock, &HistogramDock::timeRangeSelected, this, &MainWindow::AddTimeRangeFilterFromHistogram);
 
     mActionToggleHistogram = new QAction(tr("Histogram"), this);
     mActionToggleHistogram->setObjectName(QStringLiteral("actionToggleHistogram"));

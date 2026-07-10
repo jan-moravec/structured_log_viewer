@@ -298,9 +298,7 @@ std::pair<int, int> ParseTimeoutRange(const std::string &text)
         {
             if (std::isdigit(static_cast<unsigned char>(c)) == 0 && c != '-')
             {
-                throw std::invalid_argument(
-                    "timeout '" + text + "' must be an integer or MIN-MAX range of integers"
-                );
+                throw std::invalid_argument("timeout '" + text + "' must be an integer or MIN-MAX range of integers");
             }
         }
         try
@@ -1003,9 +1001,8 @@ int main(int argc, char *argv[])
     bytesInFile += headerBytes;
 
     const std::string timeoutDescription =
-        timeoutMinMs == timeoutMaxMs
-            ? std::to_string(timeoutMinMs) + "ms"
-            : std::to_string(timeoutMinMs) + "-" + std::to_string(timeoutMaxMs) + "ms";
+        timeoutMinMs == timeoutMaxMs ? std::to_string(timeoutMinMs) + "ms"
+                                     : std::to_string(timeoutMinMs) + "-" + std::to_string(timeoutMaxMs) + "ms";
     std::cout << "log_generator: writing"
               << " up to "
               << (targetBytes == 0 ? std::string{"unbounded bytes"} : std::to_string(targetBytes) + " bytes") << ", "

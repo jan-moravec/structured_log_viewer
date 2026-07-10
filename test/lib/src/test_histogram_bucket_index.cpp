@@ -209,8 +209,8 @@ TEST_CASE("AutoBucketSize picks the coarsest rung under budget", "[histogram_buc
         // 3600 s / 10 s = 360 buckets < 500 -> TenSeconds wins over OneMinute
         // because we walk the ladder from finest to coarsest.
         CHECK(
-            HistogramBucketIndex::AutoBucketSize(Base(), Base() + std::chrono::hours{1})
-            == HistogramBucketSize::TenSeconds
+            HistogramBucketIndex::AutoBucketSize(Base(), Base() + std::chrono::hours{1}) ==
+            HistogramBucketSize::TenSeconds
         );
     }
     SECTION("A full day -> TenMinutes is the coarsest that fits 500")
@@ -218,8 +218,8 @@ TEST_CASE("AutoBucketSize picks the coarsest rung under budget", "[histogram_buc
         // 86400 s / 60 s = 1440 buckets; too many.
         // 86400 s / 600 s = 144 buckets; fits.
         CHECK(
-            HistogramBucketIndex::AutoBucketSize(Base(), Base() + std::chrono::hours{24})
-            == HistogramBucketSize::TenMinutes
+            HistogramBucketIndex::AutoBucketSize(Base(), Base() + std::chrono::hours{24}) ==
+            HistogramBucketSize::TenMinutes
         );
     }
     SECTION("A month -> OneDay")
@@ -234,8 +234,8 @@ TEST_CASE("AutoBucketSize picks the coarsest rung under budget", "[histogram_buc
     SECTION("Swapped inputs are normalised")
     {
         CHECK(
-            HistogramBucketIndex::AutoBucketSize(Base() + std::chrono::hours{1}, Base())
-            == HistogramBucketSize::TenSeconds
+            HistogramBucketIndex::AutoBucketSize(Base() + std::chrono::hours{1}, Base()) ==
+            HistogramBucketSize::TenSeconds
         );
     }
 }
@@ -247,8 +247,8 @@ TEST_CASE("TruncateToBucket floors correctly at day boundaries", "[histogram_buc
     const auto offset = std::chrono::hours{2} + std::chrono::minutes{34};
     CHECK(HistogramBucketIndex::TruncateToBucket(midnight + offset, HistogramBucketSize::OneDay) == midnight);
     CHECK(
-        HistogramBucketIndex::TruncateToBucket(midnight + offset, HistogramBucketSize::OneHour)
-        == midnight + std::chrono::hours{2}
+        HistogramBucketIndex::TruncateToBucket(midnight + offset, HistogramBucketSize::OneHour) ==
+        midnight + std::chrono::hours{2}
     );
 }
 

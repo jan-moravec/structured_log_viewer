@@ -77,7 +77,8 @@ std::string_view HistogramBucketSizeLabel(HistogramBucketSize size) noexcept
     return "?"sv;
 }
 
-HistogramBucketIndex::HistogramBucketIndex(HistogramBucketSize size) noexcept : mBucketSize(size)
+HistogramBucketIndex::HistogramBucketIndex(HistogramBucketSize size) noexcept
+    : mBucketSize(size)
 {
 }
 
@@ -89,9 +90,7 @@ TimeStamp HistogramBucketIndex::TruncateToBucket(TimeStamp ts, HistogramBucketSi
     return TimeStamp{std::chrono::microseconds{bucketIdx * widthUs}};
 }
 
-HistogramBucketSize HistogramBucketIndex::AutoBucketSize(
-    TimeStamp min, TimeStamp max, int visibleBucketBudget
-) noexcept
+HistogramBucketSize HistogramBucketIndex::AutoBucketSize(TimeStamp min, TimeStamp max, int visibleBucketBudget) noexcept
 {
     if (max < min)
     {
@@ -206,8 +205,9 @@ std::optional<size_t> HistogramBucketIndex::BucketOf(TimeStamp ts) const noexcep
 TimeStamp HistogramBucketIndex::BucketStart(size_t index) const noexcept
 {
     const auto widthUs = BucketWidth().count();
-    return TimeStamp{std::chrono::microseconds{
-        mOrigin.time_since_epoch().count() + (static_cast<int64_t>(index) * widthUs)}};
+    return TimeStamp{
+        std::chrono::microseconds{mOrigin.time_since_epoch().count() + (static_cast<int64_t>(index) * widthUs)}
+    };
 }
 
 TimeStamp HistogramBucketIndex::BucketEnd(size_t index) const noexcept

@@ -81,18 +81,14 @@ TEST_CASE("HistogramBucketIndex: rebuild 1M events / 1s buckets", "[.][benchmark
     const auto step = std::chrono::microseconds{1000};
     const auto events = GenerateEvents(ROWS, step);
 
-    bench::RunTimedSamples(
-        "HistogramBucketIndex rebuild (1M rows / 1s buckets)",
-        5,
-        [&]() {
-            HistogramBucketIndex index{HistogramBucketSize::OneSecond};
-            for (const auto &ev : events)
-            {
-                index.AddRow(ev.ts, ev.level);
-            }
-            REQUIRE(index.TotalRowCount() == ROWS);
+    bench::RunTimedSamples("HistogramBucketIndex rebuild (1M rows / 1s buckets)", 5, [&]() {
+        HistogramBucketIndex index{HistogramBucketSize::OneSecond};
+        for (const auto &ev : events)
+        {
+            index.AddRow(ev.ts, ev.level);
         }
-    );
+        REQUIRE(index.TotalRowCount() == ROWS);
+    });
 }
 
 TEST_CASE("HistogramBucketIndex: rebuild 1M events / 1min buckets", "[.][benchmark][histogram]")
@@ -103,18 +99,14 @@ TEST_CASE("HistogramBucketIndex: rebuild 1M events / 1min buckets", "[.][benchma
     const auto step = std::chrono::microseconds{60'000}; // 60 ms/row -> 60000 s span.
     const auto events = GenerateEvents(ROWS, step);
 
-    bench::RunTimedSamples(
-        "HistogramBucketIndex rebuild (1M rows / 1min buckets)",
-        5,
-        [&]() {
-            HistogramBucketIndex index{HistogramBucketSize::OneMinute};
-            for (const auto &ev : events)
-            {
-                index.AddRow(ev.ts, ev.level);
-            }
-            REQUIRE(index.TotalRowCount() == ROWS);
+    bench::RunTimedSamples("HistogramBucketIndex rebuild (1M rows / 1min buckets)", 5, [&]() {
+        HistogramBucketIndex index{HistogramBucketSize::OneMinute};
+        for (const auto &ev : events)
+        {
+            index.AddRow(ev.ts, ev.level);
         }
-    );
+        REQUIRE(index.TotalRowCount() == ROWS);
+    });
 }
 
 TEST_CASE("HistogramBucketIndex: incremental live-tail append", "[.][benchmark][histogram]")
@@ -130,27 +122,23 @@ TEST_CASE("HistogramBucketIndex: incremental live-tail append", "[.][benchmark][
     const auto preloadEvents = GenerateEvents(PRELOAD, step);
     const auto tailEvents = GenerateEvents(BATCH * BATCHES, step);
 
-    bench::RunTimedSamples(
-        "HistogramBucketIndex live-tail (100x 1k row batches)",
-        5,
-        [&]() {
-            HistogramBucketIndex index{HistogramBucketSize::OneSecond};
-            for (const auto &ev : preloadEvents)
-            {
-                index.AddRow(ev.ts, ev.level);
-            }
-            const auto tailStart = BenchBase() + step * (PRELOAD + 1);
-            for (std::size_t b = 0; b < BATCHES; ++b)
-            {
-                for (std::size_t i = 0; i < BATCH; ++i)
-                {
-                    const auto idx = (b * BATCH) + i;
-                    index.AddRow(tailStart + step * idx, tailEvents[idx].level);
-                }
-            }
-            REQUIRE(index.TotalRowCount() == PRELOAD + (BATCH * BATCHES));
+    bench::RunTimedSamples("HistogramBucketIndex live-tail (100x 1k row batches)", 5, [&]() {
+        HistogramBucketIndex index{HistogramBucketSize::OneSecond};
+        for (const auto &ev : preloadEvents)
+        {
+            index.AddRow(ev.ts, ev.level);
         }
-    );
+        const auto tailStart = BenchBase() + step * (PRELOAD + 1);
+        for (std::size_t b = 0; b < BATCHES; ++b)
+        {
+            for (std::size_t i = 0; i < BATCH; ++i)
+            {
+                const auto idx = (b * BATCH) + i;
+                index.AddRow(tailStart + step * idx, tailEvents[idx].level);
+            }
+        }
+        REQUIRE(index.TotalRowCount() == PRELOAD + (BATCH * BATCHES));
+    });
 }
 
 TEST_CASE("HistogramBucketIndex: AutoBucketSize is O(1)", "[.][benchmark][histogram]")
