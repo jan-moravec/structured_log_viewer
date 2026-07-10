@@ -191,10 +191,14 @@ private:
     /// fresh geometry.
     void InvalidateFirstRowCache() const noexcept;
 
-    /// Populate the cache from a full model walk. Called lazily from
-    /// `FirstRowInBucket`. Assumes the log model and time column are
-    /// available.
-    void BuildFirstRowCache() const;
+    /// Build the first-row-per-bucket cache from a full model walk.
+    /// Called lazily from `FirstRowInBucket`. Assumes the log model
+    /// and time column are available. Returns by value so the caller
+    /// assigns into `mFirstRowPerBucketCache` — a linear write that
+    /// stays visible to `bugprone-unchecked-optional-access` (a
+    /// side-effecting inner call would appear "possibly still empty"
+    /// to the checker).
+    [[nodiscard]] std::vector<int> BuildFirstRowCache() const;
 
     /// Wipe and recompute `mAnchorSlotPerBucket` from
     /// `mAnchors->Entries()`. Called from every path that changes

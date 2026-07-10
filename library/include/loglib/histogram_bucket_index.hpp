@@ -70,10 +70,11 @@ inline constexpr int HOURS_PER_DAY = 24;
 /// index into it directly; the public array is intentional.
 struct LevelBucket
 {
+    // NOLINTBEGIN(misc-non-private-member-variables-in-classes)
     /// Indexed by `static_cast<size_t>(LogLevel)`; size is
     /// `CANONICAL_LEVEL_COUNT + 1` (Unknown..Fatal).
-    // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
     std::array<uint32_t, CANONICAL_LEVEL_COUNT + 1> counts{};
+    // NOLINTEND(misc-non-private-member-variables-in-classes)
 
     [[nodiscard]] uint32_t Total() const noexcept;
 };

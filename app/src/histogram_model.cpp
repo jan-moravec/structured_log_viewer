@@ -188,11 +188,12 @@ int HistogramModel::FirstRowInBucket(std::size_t bucketIndex) const
     // clicks are O(1). The cache is invalidated on every mutation.
     if (!mFirstRowPerBucketCache.has_value())
     {
-        BuildFirstRowCache();
+        // Linear write (return-by-value + assign) rather than a
+        // side-effecting inner call; keeps
+        // `bugprone-unchecked-optional-access` happy on the read below.
+        mFirstRowPerBucketCache = BuildFirstRowCache();
     }
-    // `.value()` (not `*optional`) so bugprone-unchecked-optional-access
-    // sees the checked read; `BuildFirstRowCache` always populates.
-    const auto &cache = mFirstRowPerBucketCache.value();
+    const auto &cache = *mFirstRowPerBucketCache;
     if (bucketIndex >= cache.size())
     {
         return -1;
@@ -488,7 +489,7 @@ void HistogramModel::InvalidateFirstRowCache() const noexcept
     mFirstRowPerBucketCache.reset();
 }
 
-void HistogramModel::BuildFirstRowCache() const
+std::vector<int> HistogramModel::BuildFirstRowCache() const
 {
     Q_ASSERT(mLogModel != nullptr);
     Q_ASSERT(mTimeColumnIndex >= 0);
@@ -514,7 +515,7 @@ void HistogramModel::BuildFirstRowCache() const
             cache[bucketIdx] = row;
         }
     }
-    mFirstRowPerBucketCache = std::move(cache);
+    return cache;
 }
 
 void HistogramModel::SyncAnchorBucketVectorSize()
