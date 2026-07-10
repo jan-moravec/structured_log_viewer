@@ -16,14 +16,12 @@ namespace test_common
 namespace
 {
 
-// Canonical level pool. Order is load-bearing: `SlfjLevel` in
-// `log_format.cpp`, the Java / Apache-error regex synthesizers, and the
-// enum-promotion benchmarks all key off these exact spellings. Levels are
-// sampled with `LEVEL_WEIGHTS` below (geometric pyramid, `trace` most
-// frequent, `fatal` least frequent) so downstream fixtures see a
-// production-ish mix instead of a uniform 1/6 split. Every weight stays
-// strictly positive so all six aliases still appear in any long enough
-// corpus (relied on by dictionary-promotion benchmarks).
+// Canonical level pool. Order is load-bearing (matched by `SlfjLevel`,
+// the Java / Apache-error regex synthesizers, and the enum-promotion
+// benchmarks). Sampled via `LEVEL_WEIGHTS` (geometric pyramid, `trace`
+// most frequent) so fixtures see a production-ish mix. All weights are
+// positive so all six aliases appear in any long corpus (relied on by
+// dictionary-promotion benchmarks).
 constexpr std::array<std::string_view, 6> LEVELS = {"trace", "debug", "info", "warning", "error", "fatal"};
 constexpr std::array<double, 6> LEVEL_WEIGHTS = {32.0, 16.0, 8.0, 4.0, 2.0, 1.0};
 constexpr std::array<std::string_view, 5> COMPONENTS = {"app", "network", "database", "ui", "system"};
@@ -46,10 +44,9 @@ std::string StampTimestamp(const TimestampPolicy &policy, std::size_t lineIndex)
     return FormatTimestamp(std::chrono::system_clock::now());
 }
 
-// Shared factory so `GenerateRandomLogRecord` and `GenerateWideLogRecords`
-// pick from the same weighted distribution. `std::discrete_distribution`
-// is copy/move-cheap; constructing it per record keeps the call sites
-// self-contained without measurable overhead.
+// Shared factory so both generators pick from the same weighted
+// distribution. `std::discrete_distribution` is cheap enough to
+// build per record and keeps call sites self-contained.
 std::discrete_distribution<std::size_t> MakeLevelDist()
 {
     return {LEVEL_WEIGHTS.begin(), LEVEL_WEIGHTS.end()};

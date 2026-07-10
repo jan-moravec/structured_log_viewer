@@ -25,9 +25,8 @@ using namespace loglib;
 namespace
 {
 
-// A synthetic (ts, level) stream. Timestamps step by `stepUs` from
-// `Base()`; levels cycle through a fixed vocabulary with the natural
-// info-heavy distribution real logs have.
+// Synthetic (ts, level) stream. Timestamps step by `stepUs` from
+// `Base()`; levels come from a fixed info-heavy vocabulary.
 struct Event
 {
     TimeStamp ts;
@@ -42,8 +41,8 @@ TimeStamp BenchBase()
 
 std::vector<Event> GenerateEvents(std::size_t count, std::chrono::microseconds step)
 {
-    // Vocabulary weighted like a typical production log: mostly info,
-    // some warn, occasional error/debug. Kept deterministic (seeded).
+    // Weighted like a production log: mostly info, some warn,
+    // occasional error/debug. Deterministic (seeded).
     static constexpr std::array<LogLevel, 10> LEVELS = {
         LogLevel::Info,
         LogLevel::Info,
@@ -57,7 +56,7 @@ std::vector<Event> GenerateEvents(std::size_t count, std::chrono::microseconds s
         LogLevel::Error,
     };
 
-    // Deterministic fixture: reproducibility, not unpredictability, is the goal.
+    // Fixed seed: reproducibility, not unpredictability.
     // NOLINTNEXTLINE(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
     std::mt19937 rng{0xC0FFEEu};
     std::uniform_int_distribution<std::size_t> pick{0, LEVELS.size() - 1};
@@ -78,9 +77,8 @@ TEST_CASE("HistogramBucketIndex: rebuild 1M events / 1s buckets", "[.][benchmark
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
     constexpr std::size_t ROWS = 1'000'000;
-    // Pick a step that gives us ~86400 rows/day at 1s buckets -> heavy
-    // fill per bucket, which is the hot path.
-    const auto step = std::chrono::microseconds{1000}; // 1ms/row -> 1000 s total span
+    // 1 ms/row -> 1000 s span with a heavy fill per bucket (hot path).
+    const auto step = std::chrono::microseconds{1000};
     const auto events = GenerateEvents(ROWS, step);
 
     bench::RunTimedSamples(
@@ -102,7 +100,7 @@ TEST_CASE("HistogramBucketIndex: rebuild 1M events / 1min buckets", "[.][benchma
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
     constexpr std::size_t ROWS = 1'000'000;
-    const auto step = std::chrono::microseconds{60'000}; // 60ms/row -> 60000 s total span
+    const auto step = std::chrono::microseconds{60'000}; // 60 ms/row -> 60000 s span.
     const auto events = GenerateEvents(ROWS, step);
 
     bench::RunTimedSamples(
@@ -123,9 +121,8 @@ TEST_CASE("HistogramBucketIndex: incremental live-tail append", "[.][benchmark][
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    // Preload the index with 900k events, then append 100k in small
-    // batches to simulate the 100 ms tail cadence. Reports mean batch
-    // append cost across 5 runs.
+    // Preload 900k events, then append 100k in small batches to
+    // simulate the 100 ms tail cadence. Reports mean over 5 runs.
     constexpr std::size_t PRELOAD = 900'000;
     constexpr std::size_t BATCH = 1'000;
     constexpr std::size_t BATCHES = 100;

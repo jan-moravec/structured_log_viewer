@@ -12,12 +12,9 @@ namespace loglib
 namespace
 {
 
-/// Level -> array index. `Unknown` (0) is a valid slot in
-/// `LevelBucket::counts`; every value maps directly through
-/// `static_cast<size_t>`. Debug builds trip an assert if the enum
-/// grows past the slot count so the mismatch is noticed at test
-/// time; release keeps the clamp so a rogue value degrades to
-/// `Unknown` instead of stomping the array.
+/// Level -> array index. Debug asserts if the enum grows past the
+/// slot count; release clamps rogue values to `Unknown` (slot 0)
+/// rather than stomping the array.
 constexpr size_t LEVEL_SLOT_COUNT = CANONICAL_LEVEL_COUNT + 1;
 
 constexpr size_t LevelToSlot(LogLevel level) noexcept
@@ -27,18 +24,15 @@ constexpr size_t LevelToSlot(LogLevel level) noexcept
     return raw < LEVEL_SLOT_COUNT ? raw : 0;
 }
 
-/// Floor of `microsSinceEpoch / bucketWidthMicros`, correct for both
-/// positive and negative epochs. `system_clock` epochs pre-1970 come
-/// out negative, and integer division truncates toward zero, which
-/// would put e.g. `-1 us / 1 s` into bucket `0` instead of bucket
-/// `-1`. Explicit floor keeps the truncation monotonic across the
-/// epoch boundary.
+/// Floor of `numerator / denominator`. Plain integer division
+/// truncates toward zero, which would put e.g. `-1 us / 1 s` into
+/// bucket 0 rather than bucket -1. Explicit floor keeps bucket
+/// truncation monotonic across the pre-1970 epoch boundary.
 constexpr int64_t FloorDivide(int64_t numerator, int64_t denominator) noexcept
 {
     const int64_t quotient = numerator / denominator;
     const int64_t remainder = numerator % denominator;
-    // If the signs disagree and there's a non-zero remainder, the
-    // truncated quotient is one *above* the floor.
+    // Signs disagree with a non-zero remainder: truncation is one above the floor.
     if ((remainder != 0) && ((remainder < 0) != (denominator < 0)))
     {
         return quotient - 1;
@@ -76,10 +70,9 @@ std::string_view HistogramBucketSizeLabel(HistogramBucketSize size) noexcept
     case HistogramBucketSize::OneDay:
         return "1 d"sv;
     }
-    // Unreachable given the closed `HistogramBucketSize` enum.
-    // Assert in debug so an added rung without a label is caught by
-    // tests; release falls back to `"?"` rather than aborting the
-    // whole GUI paint.
+    // Unreachable given the closed enum. Assert in debug so a new
+    // rung without a label is caught by tests; release falls back
+    // to `"?"` rather than aborting the GUI paint.
     assert(false && "HistogramBucketSize rung is missing a label");
     return "?"sv;
 }
@@ -104,8 +97,7 @@ HistogramBucketSize HistogramBucketIndex::AutoBucketSize(
     {
         std::swap(min, max);
     }
-    // A degenerate range (single instant) hits every rung with 1
-    // bucket, so the finest one is the natural choice.
+    // Degenerate (single-instant) range: finest rung is fine.
     if (max == min)
     {
         return HistogramBucketSize::OneSecond;
@@ -119,7 +111,7 @@ HistogramBucketSize HistogramBucketIndex::AutoBucketSize(
     {
         const auto size = static_cast<HistogramBucketSize>(rung);
         const auto widthUs = HistogramBucketWidth(size).count();
-        // +1 for the fencepost: `[min, max]` inclusive spans
+        // +1 fencepost: `[min, max]` inclusive spans up to
         // `ceil((max-min)/width) + 1` buckets in the worst case.
         const int64_t bucketCount = (spanUs / widthUs) + 1;
         if (bucketCount <= visibleBucketBudget)
@@ -137,7 +129,7 @@ void HistogramBucketIndex::AddRow(TimeStamp ts, LogLevel level)
 
     if (mBuckets.empty())
     {
-        // Anchor origin to the bucket boundary covering the first row.
+        // Anchor origin at the bucket boundary covering the first row.
         mOrigin = TruncateToBucket(ts, mBucketSize);
         mBuckets.resize(1);
         mBuckets[0].counts[LevelToSlot(level)] += 1;
@@ -153,8 +145,8 @@ void HistogramBucketIndex::AddRow(TimeStamp ts, LogLevel level)
 
     if (bucketIdx < 0)
     {
-        // Out-of-order backfill: shift the vector right and rebase the origin.
-        // Rare in append-only streams; O(N) in the current bucket count.
+        // Out-of-order backfill: shift right and rebase the origin.
+        // Rare for append-only streams; O(N) in the bucket count.
         const auto shift = static_cast<size_t>(-bucketIdx);
         mBuckets.insert(mBuckets.begin(), shift, LevelBucket{});
         mOrigin = TimeStamp{std::chrono::microseconds{originUs + (bucketIdx * widthUs)}};

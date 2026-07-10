@@ -1401,9 +1401,8 @@ int LogModel::SourceRowForAnchorKey(const AnchorManager::Key &key) const noexcep
 
 std::optional<uint8_t> LogModel::AnchorSlotForRow(int row) const noexcept
 {
-    // Empty-manager fast path: skips both the row-to-key resolution
-    // and the subsequent hashmap lookup so a no-anchor session pays
-    // essentially nothing.
+    // Fast path: skip the key resolution + hashmap lookup entirely
+    // when there are no anchors to look up.
     if (mAnchors == nullptr || mAnchors->Empty())
     {
         return std::nullopt;

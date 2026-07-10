@@ -649,18 +649,17 @@ MainWindow::MainWindow(
     addAction(mActionToggleAnchors);
     WireDockToggle(mAnchorsDock, mActionToggleAnchors, &AnchorsDock::closed);
 
-    // Histogram dock (ROADMAP item 2). Same lifecycle as the anchors
-    // dock: hidden by default, toggled from View menu / toolbar /
-    // Ctrl+H. Bottom-docked so it doesn't compete with the right-hand
-    // Anchors / Record Details stack.
+    // Histogram dock (ROADMAP item 2). Bottom-docked so it doesn't
+    // compete with the right-hand Anchors / Record Details stack.
+    // Same lifecycle as the anchors dock: hidden by default, toggled
+    // from View / toolbar / Ctrl+H.
     mHistogramDock = new HistogramDock(mModel, mTheme, mAnchors, this);
     addDockWidget(Qt::BottomDockWidgetArea, mHistogramDock);
     mHistogramDock->hide();
     connect(mHistogramDock, &HistogramDock::bucketClicked, this, &MainWindow::JumpToFirstRowInBucket);
-    // Tick-strip clicks jump straight to the anchored row via the
-    // existing `SelectSourceRow` slot so the table scrolls to the
-    // exact anchor the user clicked, not just the bucket's first
-    // row (which usually sits next to the anchor but not on it).
+    // Tick-strip clicks jump to the anchored row itself via
+    // `SelectSourceRow`, not the bucket's first row (which may sit
+    // next to the anchor but isn't the anchor).
     connect(mHistogramDock, &HistogramDock::anchorClicked, this, &MainWindow::SelectSourceRow);
     connect(
         mHistogramDock, &HistogramDock::timeRangeSelected, this, &MainWindow::AddTimeRangeFilterFromHistogram
@@ -4867,13 +4866,10 @@ void MainWindow::SetCurrentSourceForTest(std::optional<loglib::LogConfiguration:
 
 void MainWindow::OpenFilesForTest(const QStringList &files, OpenMode mode)
 {
-    // MSVC's <filesystem> bitmask flag-cast trips clang-analyzer's
-    // enum-cast check on any trace that reaches the STL filesystem
-    // code from here. The analyzer picks this test-only helper as a
-    // top-level entry point, so suppression at the innermost call
-    // sites is not enough; the diagnostic's note trace only touches
-    // lines in the upstream callers. Suppressing at the entry note
-    // covers the whole trace.
+    // clang-analyzer flags MSVC's <filesystem> bitmask flag-cast on
+    // every trace reaching STL filesystem code from this test-only
+    // entry point. Suppressing at the innermost sites doesn't cover
+    // the diagnostic's trace, so suppress at the entry.
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     StartStreamingOpenQueue(files, mode);
 }
@@ -5942,10 +5938,8 @@ void MainWindow::JumpToFirstRowInBucket(std::size_t bucketIndex)
     const int sourceRow = hm->FirstRowInBucket(bucketIndex);
     if (sourceRow < 0)
     {
-        // Bucket exists in the index but no live row falls in it right
-        // now (possible after a retention eviction that hasn't yet
-        // triggered a histogram rebuild). Match `SelectSourceRow`'s
-        // "not visible" surface so the user isn't left wondering.
+        // Bucket exists but no live row falls in it (can happen after
+        // a retention eviction before the histogram rebuild fires).
         statusBar()->showMessage(tr("No visible row in the selected bucket."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
         return;
     }
@@ -5961,9 +5955,8 @@ void MainWindow::AddTimeRangeFilterFromHistogram(qint64 fromEpochMicros, qint64 
     const HistogramModel *hm = mHistogramDock->ModelForTest();
     if (hm == nullptr || !hm->HasTimeColumn())
     {
-        // Guarded by the widget too, but keep this as a hard gate:
-        // an out-of-band signal on a log with no time column would
-        // otherwise install a filter on an invalid column.
+        // Hard gate against an out-of-band signal installing a filter
+        // on a non-time column (the widget also guards, but be safe).
         statusBar()->showMessage(
             tr("Cannot filter by time \u2014 this log has no time column."), STATUS_BAR_MESSAGE_TIMEOUT_MS
         );
@@ -5974,8 +5967,8 @@ void MainWindow::AddTimeRangeFilterFromHistogram(qint64 fromEpochMicros, qint64 
         std::swap(fromEpochMicros, toEpochMicros);
     }
     const int column = hm->TimeColumnIndex();
-    // Sentinel filter ID so a subsequent drag replaces the previous
-    // histogram-driven range rather than stacking a second filter.
+    // Sentinel filter ID so a second drag replaces the previous
+    // histogram range rather than stacking a duplicate filter.
     static const QString HISTOGRAM_FILTER_ID = QStringLiteral("histogram-time-range");
     FilterTimeStampSubmitted(HISTOGRAM_FILTER_ID, column, fromEpochMicros, toEpochMicros);
 }
@@ -7979,8 +7972,7 @@ void MainWindow::RebuildViewMenu()
         viewMenu->addAction(mActionToggleParseErrors);
     }
 
-    // Histogram dock toggle. Same pattern as the other programmatic
-    // dock actions above.
+    // Histogram dock toggle; same pattern as the other programmatic dock actions.
     if (mActionToggleHistogram != nullptr)
     {
         viewMenu->addAction(mActionToggleHistogram);

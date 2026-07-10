@@ -104,12 +104,11 @@ public:
     /// matching source-row index, or -1 if no live row matches.
     [[nodiscard]] int SourceRowForAnchorKey(const AnchorManager::Key &key) const noexcept;
 
-    /// Anchor palette slot for @p row, or nullopt when the row is out
-    /// of range, has no anchor, or the manager isn't wired. Folds the
-    /// two-step `AnchorKeyForRow` + `AnchorManager::ColorFor` chain
-    /// into one call so overlays (histogram tick strip, future
-    /// minimap) don't repeat the boilerplate. Guards with `Empty()`
-    /// so the no-anchor session pays only a single load.
+    /// Anchor palette slot for @p row, or nullopt when the row has
+    /// no anchor / isn't valid / the manager isn't wired. Folds the
+    /// `AnchorKeyForRow` + `AnchorManager::ColorFor` chain into one
+    /// call for overlay callers. Fast-paths through `Empty()` so
+    /// anchor-free sessions pay ~nothing.
     [[nodiscard]] std::optional<uint8_t> AnchorSlotForRow(int row) const noexcept;
 
     /// Full teardown followed by a model reset. Emits `lineCountChanged(0)`,

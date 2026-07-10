@@ -13,29 +13,21 @@ class LogModel;
 class ThemeControl;
 class QCloseEvent;
 
-/// Dockable bottom strip that renders a per-time-bucket, per-level
-/// row-count histogram over the current session (ROADMAP item 2).
+/// Bottom-docked strip that plots per-time-bucket, per-level row
+/// counts over the current session (ROADMAP item 2).
 ///
-/// The dock owns a `HistogramModel` (which subscribes to `LogModel`)
-/// and a `HistogramWidget` (custom paint). It forwards two signals
-/// to `MainWindow` so navigation lives outside the dock:
-///   - `bucketClicked(bucketIndex)` — jump the table to the first
-///     row in the bucket.
-///   - `timeRangeSelected(fromUs, toUs)` — install a `Type::Time`
-///     range filter on `LogFilterModel`.
-///
-/// `closed()` fires on genuine user dismissal (X / system close);
-/// `MainWindow::WireDockToggle` uses it to keep the toolbar / menu
-/// action check state in sync.
+/// Owns a `HistogramModel` (subscribed to `LogModel`) and a
+/// `HistogramWidget` (custom paint), and forwards their signals so
+/// navigation logic stays in `MainWindow`. `closed()` mirrors
+/// `AnchorsDock::closed` for `MainWindow::WireDockToggle`.
 class HistogramDock : public QDockWidget
 {
     Q_OBJECT
 
 public:
-    /// @p anchors, when non-null, drives a small tick strip above the
-    /// bars: every bucket containing at least one anchored row gets a
-    /// coloured tick per palette slot. Passing `nullptr` disables the
-    /// strip entirely (used by the empty / anchor-free tests).
+    /// @p anchors, when non-null, enables the tick strip above the
+    /// bars (one coloured tick per palette slot in each anchored
+    /// bucket). Pass `nullptr` to disable anchor tracking entirely.
     HistogramDock(LogModel *model, ThemeControl *theme, AnchorManager *anchors, QWidget *parent = nullptr);
 
     /// Non-owning accessor for tests.
@@ -51,22 +43,20 @@ public:
     }
 
 signals:
-    /// User clicked (no drag) on a bucket. Consumer maps to a source
-    /// row via `HistogramModel::FirstRowInBucket`.
+    /// Bar clicked (no drag). Consumer maps to a source row via
+    /// `HistogramModel::FirstRowInBucket`.
     void bucketClicked(std::size_t bucketIndex);
 
-    /// User clicked (no drag) directly on the anchor tick strip.
-    /// `sourceRow` is the earliest anchored source-model row in the
-    /// clicked visual column. Consumers route this to
-    /// `MainWindow::SelectSourceRow` so the click lands on the
-    /// anchored row itself rather than the bucket's first row.
+    /// Tick-strip clicked on an anchored column. `sourceRow` is the
+    /// earliest anchored source-model row in that column, so
+    /// consumers can route it to `MainWindow::SelectSourceRow`.
     void anchorClicked(int sourceRow);
 
     /// User dragged a range and released. Bounds are epoch
     /// microseconds, inclusive.
     void timeRangeSelected(qint64 fromEpochMicros, qint64 toEpochMicros);
 
-    /// Emitted on genuine user dismissal (X, system close).
+    /// Fired on genuine user dismissal (X / system close).
     void closed();
 
 protected:

@@ -275,12 +275,10 @@ std::uint64_t ParseCount(const std::string &text)
     return std::stoull(upper) * multiplier;
 }
 
-// Parse a `--timeout` value. Accepts either a plain non-negative integer
-// (`"50"` -> fixed 50 ms sleep between lines) or a `MIN-MAX` range
-// (`"10-200"` -> uniform sample in `[10, 200]` per line). The dash form
-// is intentional over a separate `--timeout-min` / `--timeout-max` pair
-// because negative values are already rejected downstream, so a leading
-// minus in the input is never ambiguous with a range separator.
+// Parse a `--timeout` value. Accepts a non-negative integer (fixed
+// sleep in ms) or a `MIN-MAX` range (uniform sample per line). A
+// leading `-` is rejected downstream, so an internal dash is
+// unambiguous as the range separator.
 std::pair<int, int> ParseTimeoutRange(const std::string &text)
 {
     if (text.empty())
@@ -1112,11 +1110,10 @@ int main(int argc, char *argv[])
 
         if (timeoutMaxMs > 0)
         {
-            // Sample the sleep length per line so timestamps look
-            // organically jittered instead of showing up as evenly
-            // spaced ticks. Reusing the shared `rng` is safe: the
+            // Sample the sleep per line so timestamps look organically
+            // jittered instead of evenly spaced. Reusing `rng` is safe:
             // benchmarks that pin `TimestampPolicy` never pass
-            // `--timeout`, so their per-line RNG state is untouched.
+            // `--timeout`, so their RNG state stays untouched.
             int sleepMs = timeoutMinMs;
             if (timeoutMaxMs > timeoutMinMs)
             {

@@ -40,14 +40,11 @@
 namespace
 {
 
-/// Painted stack order, bottom to top. Level with the higher severity
-/// paints on top so error / fatal spikes are visually dominant.
-/// `Unknown` sits at the bottom so unstyled rows are visible but
-/// don't hide meaningful segments. Size is derived from
-/// `CANONICAL_LEVEL_COUNT` so a new canonical level in `loglib` is
-/// caught at compile time here (the `static_assert` below also pins
-/// the count so a bare `+= 1` in `LogLevel` without an entry here
-/// fails the build).
+/// Bar stacking order, bottom to top. Higher severity on top so
+/// error / fatal spikes dominate; `Unknown` at the bottom so unstyled
+/// rows stay visible without hiding meaningful segments. The
+/// `static_assert` below pins the size to catch a new canonical level
+/// being added to `loglib` without an entry here.
 constexpr std::array<loglib::LogLevel, loglib::CANONICAL_LEVEL_COUNT + 1> STACK_ORDER = {
     loglib::LogLevel::Unknown,
     loglib::LogLevel::Trace,
@@ -62,78 +59,53 @@ static_assert(
     "STACK_ORDER must cover Unknown + every canonical LogLevel"
 );
 
-/// Horizontal inset applied to `PlotRect` and `DetailsRect`. Also
-/// leaves room for the outer plot-area frame -- the 2 px cosmetic
-/// pen drawn one pixel outside `PlotRect` bleeds another ~1 px
-/// beyond that, so anything smaller here risks clipping the frame
-/// against the widget's outer edge.
+/// Horizontal inset for `PlotRect` and `DetailsRect`. Wide enough
+/// to keep the plot-area frame (drawn one pixel outside `PlotRect`)
+/// clear of the widget's outer edge.
 constexpr int PLOT_HORIZONTAL_PADDING = 4;
 
-/// Small vertical inset above the plot rect. Mirrors the horizontal
-/// padding so the outer plot-area frame has room to breathe against
-/// the widget's top edge.
+/// Vertical inset above the plot rect. Mirrors the horizontal padding.
 constexpr int PLOT_INNER_PADDING = 4;
 
-/// Height of the details strip painted below the bars. Matches the
-/// visual weight the old top subtitle carried so the widget's
-/// vertical rhythm doesn't change; the strip now doubles as the
-/// hover readout that replaced `QToolTip`.
+/// Height of the details strip below the bars. Doubles as the hover
+/// readout (which replaced the old `QToolTip`).
 constexpr int DETAILS_HEIGHT = 18;
 
-/// Vertical gap between the outer plot-area frame's bottom edge
-/// and the details strip. Kept small but non-zero so the frame
-/// and the text don't visually touch, especially when the text
-/// contains a descender-heavy character right at the frame line.
+/// Gap between the plot-area frame and the details strip so the
+/// frame and text don't visually touch.
 constexpr int DETAILS_TOP_PADDING = 4;
 
-/// Minimum widget height. Preserves the historical ~72 px plot
-/// area even after reserving the new bottom chrome (details strip
-/// + its top gap + the inner padding).
+/// Minimum widget height. Preserves ~72 px of plot area after
+/// reserving the bottom chrome.
 constexpr int MIN_WIDGET_HEIGHT = 98;
 
-/// Height (in logical pixels) of the anchor tick strip. Painted as
-/// an overlay at the top of `PlotRect` (over any bars that reach
-/// that far), *not* as separate reserved chrome above the plot —
-/// dedicating a full row for ticks stole too much visual budget
-/// from the bars and made the ticks themselves feel cramped in
-/// return. Tall enough to still resolve the per-slot vertical
-/// sub-bands when multiple palette slots co-occur in the same
-/// visual column.
+/// Height of the anchor tick strip. Painted as an overlay at the top
+/// of `PlotRect` rather than reserved chrome above it; reserving a
+/// full row for ticks stole too much visual budget from the bars.
 constexpr int ANCHOR_TICK_STRIP_HEIGHT = 10;
 
-/// Extra painter alpha applied to each tick band. Keeps the tick
-/// legible when it overlays a filled bar segment underneath while
-/// still letting the bar's colour tint through, so the reader can
-/// tell the tick sits *on top of* the bar rather than replacing a
-/// slice of it. Applied to the theme's `AnchorBrushFor` colour.
+/// Alpha applied to each tick band. Lets the underlying bar colour
+/// tint through so the tick reads as an overlay marker, not a bar slice.
 constexpr int ANCHOR_TICK_ALPHA = 235;
 
-/// Alpha channel for the drag-brush overlay (0-255). Kept subtle so
-/// the underlying bars stay readable through the highlight tint.
+/// Alpha for the drag-brush overlay. Subtle so bars stay readable.
 constexpr int DRAG_BRUSH_ALPHA = 80;
 
-/// Cosmetic-pen width (device pixels) for the plot-area border.
-/// Two pixels is enough to read as a defined "chart frame" on both
-/// Hi-DPI and 100% displays without stealing visual weight from
-/// the bars themselves.
+/// Cosmetic pen width for the plot-area frame. Two pixels reads as
+/// a defined chart border on both Hi-DPI and 100% displays.
 constexpr int FRAME_PEN_WIDTH = 2;
 
-/// Cosmetic-pen width (device pixels) for the per-bucket outlines.
-/// Kept at one pixel so the outline reads as a subtle divider on
-/// wider bars and can be safely skipped for bars too thin to
-/// tolerate any outline (see `MIN_BUCKET_OUTLINE_WIDTH_PX`).
+/// Cosmetic pen width for per-bucket outlines. One pixel reads as a
+/// subtle divider on wider bars; skipped on very narrow bars.
 constexpr int BUCKET_PEN_WIDTH = 1;
 
-/// Minimum on-screen bar width (logical pixels) at which we still
-/// draw the per-bucket outline. Below this, a 1 px outline on each
-/// side would leave zero or one pixel of fill visible, which loses
-/// more information than the outline gains.
+/// Minimum bar width (px) at which we still draw the per-bucket
+/// outline. Below this, a 1 px outline on each side leaves no visible
+/// fill.
 constexpr double MIN_BUCKET_OUTLINE_WIDTH_PX = 3.0;
 
-/// Fallback colour for a level slot the active theme leaves
-/// unstyled. Matches the historical tint the row-styling code falls
-/// back to when `ThemeControl::BackgroundFor` returns an invalid
-/// brush.
+/// Fallback colour for a level the active theme doesn't style.
+/// Mirrors the row-styling fallback.
 QColor FallbackColorFor(loglib::LogLevel level)
 {
     switch (level)
@@ -169,10 +141,9 @@ QColor ColorForLevel(const ThemeControl *theme, loglib::LogLevel level)
     return FallbackColorFor(level);
 }
 
-/// Format string suitable for `date::format` given the bucket rung.
-/// Precision matches the bucket width so a 1 h rung doesn't advertise
-/// fake sub-hour precision. Kept aligned with the shape `log_table.cpp`
-/// uses for its `%F %T` cells so the table and the strip agree.
+/// `date::format` template for @p size. Precision matches the bucket
+/// width so a 1 h rung doesn't advertise fake sub-hour precision.
+/// Aligned with the shape `log_table.cpp` uses for its `%F %T` cells.
 [[nodiscard]] const char *DateFormatForZoom(loglib::HistogramBucketSize size) noexcept
 {
     switch (size)
@@ -191,11 +162,9 @@ QColor ColorForLevel(const ThemeControl *theme, loglib::LogLevel level)
     return "%F %T";
 }
 
-/// Render @p ts as a local-time string using the same `date::CurrentZone`
-/// / `date::format` pipeline the log table uses, so the histogram and
-/// the table agree on how a timestamp reads. Second precision is enough
-/// for every rung we ship (finest is 1 s), so we round down and skip
-/// sub-second formatting entirely.
+/// Render @p ts as a local-time string using the same
+/// `date::CurrentZone` / `date::format` pipeline the table uses.
+/// Rounds to whole seconds (finest rung is 1 s).
 QString FormatLocalTimestampForZoom(loglib::TimeStamp ts, loglib::HistogramBucketSize size)
 {
     const auto seconds = std::chrono::floor<std::chrono::seconds>(ts);
@@ -218,8 +187,7 @@ QString CanonicalLevelNameQt(loglib::LogLevel level)
 
 /// Bar-width policy: `stride` is how many raw buckets fold into one
 /// visual column when the widget is narrower than the bucket count.
-/// Kept as a free helper so `paintEvent` and hit-testing agree on the
-/// layout exactly.
+/// A free helper so paint and hit-testing use the exact same layout.
 struct VisualLayout
 {
     std::size_t stride = 1;
@@ -283,12 +251,9 @@ HistogramWidget::HistogramWidget(HistogramModel *model, ThemeControl *theme, QWi
 
     if (mModel != nullptr)
     {
-        // Any data mutation invalidates the hover cache: the bucket
-        // the pointer currently sits over may now report different
-        // counts (streaming batch), a different label (rung change),
-        // or not exist at all (retention eviction). Without this
-        // reset the details strip would keep displaying a hover
-        // readout for a bucket that no longer matches the paint.
+        // Any data mutation invalidates the hover cache: the hovered
+        // bucket may now have different counts, a new label, or be
+        // gone entirely. Drop it so the details strip doesn't lie.
         connect(mModel, &HistogramModel::bucketsChanged, this, [this]() {
             mLastHoverBucket = -1;
             update();
@@ -297,20 +262,16 @@ HistogramWidget::HistogramWidget(HistogramModel *model, ThemeControl *theme, QWi
             mLastHoverBucket = -1;
             update();
         });
-        // Anchor mask changes don't shift the bars (bucket geometry
-        // is unchanged) so the hover cache stays valid. We still
-        // need a repaint so the tick strip picks up the new mask.
-        // Toggling the strip's presence also flips `PlotRect` (see
-        // the `HasAnchorTicks` branch there), so a full `update()`
-        // is required rather than just the tick rect.
+        // Anchor changes leave bar geometry alone, so the hover cache
+        // stays valid. Still needs a full `update()` because toggling
+        // the strip's presence can change what `PlotRect` returns.
         connect(mModel, &HistogramModel::anchorBucketsChanged, this, [this]() { update(); });
     }
     if (mTheme != nullptr)
     {
-        // Same reasoning: a theme flip changes the bar palette and
-        // the palette that colours the details strip; drop the
-        // cached hover bucket so the next mouse move re-derives the
-        // readout under the new palette.
+        // Theme flip: bar palette and details-strip palette both
+        // change. Drop the hover cache so the next mouse move
+        // re-derives the readout under the new palette.
         connect(mTheme, &ThemeControl::themeChanged, this, [this]() {
             mLastHoverBucket = -1;
             update();
@@ -320,14 +281,10 @@ HistogramWidget::HistogramWidget(HistogramModel *model, ThemeControl *theme, QWi
 
 QRect HistogramWidget::PlotRect() const
 {
-    // The plot area no longer reserves separate chrome for the
-    // anchor tick strip: ticks are painted *inside* the plot area
-    // at the top edge. That keeps the strip visually attached to
-    // the bar the reader can see underneath, and it means a
-    // no-anchor session and an anchored session share identical
-    // plot geometry (the ticks overlap the bar tops rather than
-    // resizing the bars). The bar-height scaling is unaffected
-    // because bars are normalised against `PlotRect::height()`.
+    // The anchor tick strip is an overlay inside this rect, not
+    // reserved chrome above it, so anchor-free and anchored sessions
+    // share identical plot geometry (bars don't reflow when an
+    // anchor is toggled). Bar heights normalise to `height()`.
     const int x = PLOT_HORIZONTAL_PADDING;
     const int y = PLOT_INNER_PADDING;
     const int w = std::max(0, width() - (2 * PLOT_HORIZONTAL_PADDING));
@@ -343,10 +300,8 @@ QRect HistogramWidget::AnchorTickRect() const
         return {};
     }
     const QRect plot = PlotRect();
-    // Overlay at the top of the plot rect: same x / width as bars
-    // so ticks line up with the columns underneath. Height is
-    // clamped by the plot rect so a very short widget doesn't
-    // paint the strip past the details line.
+    // Overlay at the top of `PlotRect`. Clamped by `plot.height()`
+    // so a very short widget doesn't spill past the details line.
     const int stripHeight = std::min(ANCHOR_TICK_STRIP_HEIGHT, plot.height());
     return {plot.x(), plot.y(), plot.width(), stripHeight};
 }
@@ -354,9 +309,8 @@ QRect HistogramWidget::AnchorTickRect() const
 QRect HistogramWidget::DetailsRect() const
 {
     const int stripHeight = DETAILS_HEIGHT;
-    // Anchor from the bottom so the widget can shrink below
-    // `MIN_WIDGET_HEIGHT` (e.g. during a resize animation) without
-    // stranding the strip in the middle of the plot area.
+    // Anchor to the bottom so a resize below `MIN_WIDGET_HEIGHT`
+    // doesn't strand the strip in the middle of the plot area.
     const int y = std::max(0, height() - stripHeight);
     const int w = std::max(0, width() - (2 * PLOT_HORIZONTAL_PADDING));
     const int h = std::min(stripHeight, height());
@@ -372,11 +326,10 @@ QString HistogramWidget::FormatDetailsLine() const
     const auto &idx = mModel->Index();
     const QLocale locale = QLocale::system();
 
-    // Hovered-bucket branch: use the visual column the pointer
-    // last sat on, mirroring the merged counts the paint routine
-    // actually rendered under the pointer. Falls through to the
-    // plot summary when the hover cache is stale (the visual
-    // column shrank away between the mouse move and the paint).
+    // Hovered-bucket branch: mirror the merged counts the paint
+    // routine drew under the pointer. Falls through to the plot
+    // summary if the hover cache went stale (column shrank away
+    // between the mouse move and the paint).
     if (mLastHoverBucket >= 0 && !idx.Empty())
     {
         const auto columnIdx = static_cast<std::size_t>(mLastHoverBucket);
@@ -385,8 +338,8 @@ QString HistogramWidget::FormatDetailsLine() const
         {
             const loglib::LevelBucket merged = MergeBuckets(idx.Buckets(), begin, end);
             const auto start = idx.BucketStart(begin);
-            // `end` is exclusive in raw-bucket coords; the visible
-            // span ends at the *end* of the last merged bucket.
+            // `end` is exclusive: the span reaches the *end* of the
+            // last merged bucket.
             const auto stop = idx.BucketEnd(end - 1);
             QString body = QStringLiteral("%1 \u2013 %2  \u00b7  total: %3")
                                .arg(FormatLocalTimestampForZoom(start, idx.BucketSize()))
@@ -408,9 +361,8 @@ QString HistogramWidget::FormatDetailsLine() const
         }
     }
 
-    // Idle branch: plot summary. Same content the old top subtitle
-    // carried, kept here so an unloaded / empty index still tells
-    // the user what the bar area is meant to represent.
+    // Idle branch: plot summary. Also shown when the index is empty
+    // so the strip explains what the bar area represents.
     const QString bucketLabel = BucketSizeLabelQt(idx.BucketSize());
     QString rangePart;
     if (!idx.Empty())
@@ -446,10 +398,8 @@ HistogramModel::AnchorSlotMask HistogramWidget::VisualColumnAnchorMaskForTest(st
         return empty;
     }
     const QRect tickRect = AnchorTickRect();
-    // Mirror the paint routine's layout: we want the mask *as it
-    // would be painted*, folded through the same visual-column
-    // stride the bar pass uses. When the tick strip isn't reserved
-    // (no bucket carries an anchor) the mask is empty by construction.
+    // Mirror the paint routine's layout so tests see the mask as it
+    // would be painted. Empty tick rect (no anchor) -> empty mask.
     if (tickRect.width() <= 0)
     {
         return empty;
@@ -503,11 +453,9 @@ void HistogramWidget::PaintAnchorTickStrip(QPainter &painter)
         {
             continue;
         }
-        // Subdivide the strip vertically into one sub-band per set
-        // slot. Using `popcount` avoids reserving pixels for slots
-        // that aren't present, so a bucket with one slot fills the
-        // strip and a bucket with eight slots crams eight thin
-        // bands into the same vertical budget.
+        // One sub-band per set slot (via `popcount`), so a bucket
+        // with one slot fills the strip and a bucket with eight
+        // slots crams eight bands into the same vertical budget.
         const std::size_t slotCount = mergedMask.count();
         const double columnX = tickRect.left() + (static_cast<double>(col) * tickLayout.columnWidth);
         const double columnWidth = std::max(1.0, tickLayout.columnWidth);
@@ -523,9 +471,8 @@ void HistogramWidget::PaintAnchorTickStrip(QPainter &painter)
             const QRectF band(columnX, bandTop, columnWidth, bandHeight);
             const QBrush brush = mTheme->AnchorBrushFor(static_cast<uint8_t>(slot), Qt::BackgroundRole);
             QColor color = brush.style() != Qt::NoBrush ? brush.color() : palette().color(QPalette::Highlight);
-            // Slight alpha so the bar underneath tints through and
-            // the reader can tell the tick is an overlay marker
-            // rather than a bar segment.
+            // Slight alpha so the underlying bar tints through and
+            // the tick reads as an overlay, not a bar slice.
             color.setAlpha(ANCHOR_TICK_ALPHA);
             painter.fillRect(band, color);
             ++bandIndex;
@@ -535,11 +482,8 @@ void HistogramWidget::PaintAnchorTickStrip(QPainter &painter)
 
 void HistogramWidget::paintEvent(QPaintEvent *event)
 {
-    // Partial repaints from `UpdateHoverState` request only the
-    // details rect, but we still recompute the plot on every call
-    // -- both because the details region can be `contains`-ed by
-    // the paint event's rect and because the bars are cheap. The
-    // parameter is required by the Qt override signature.
+    // Even partial repaints (from `UpdateHoverState`) recompute the
+    // plot: bars are cheap and the details rect is often included.
     Q_UNUSED(event);
 
     QPainter painter(this);
@@ -547,20 +491,13 @@ void HistogramWidget::paintEvent(QPaintEvent *event)
 
     const QRect plotRect = PlotRect();
 
-    // Outline the plot area. Without this the darker level tints
-    // (info / debug on the dark themes especially) visually bleed
-    // into the dock's background where they touch the frame edge,
-    // and the strip reads as an ambiguous smear rather than a
-    // bounded chart. `QPalette::Mid` is Qt's semantic slot for
-    // subtle dividers -- contrasts against `Window` in both the
-    // light and dark palettes, so we don't need theme-specific
-    // wiring. The same colour is reused for the per-bucket outlines
-    // below so the chart chrome reads as a single visual system.
-    // Draw one pixel *outside* `plotRect` so we don't clip the
-    // bars that fill it exactly, and keep the pen cosmetic so the
-    // outline stays crisp on high-DPI displays. Drawn before the
-    // empty-state early-return so the frame still tells the user
-    // where the histogram will appear.
+    // Plot-area frame. Without it, dark level tints bleed into the
+    // dock background and the strip reads as an ambiguous smear.
+    // `QPalette::Mid` is Qt's semantic slot for subtle dividers and
+    // contrasts against `Window` in both light and dark palettes.
+    // Drawn one pixel outside `plotRect` (cosmetic pen) so it never
+    // clips the bars. Drawn before the empty-state early-return so
+    // the frame still tells the user where the histogram will appear.
     const QColor frameColor = palette().color(QPalette::Mid);
     if (plotRect.width() > 0 && plotRect.height() > 0)
     {
@@ -574,12 +511,9 @@ void HistogramWidget::paintEvent(QPaintEvent *event)
         painter.restore();
     }
 
-    // Details strip below the bars. Drawn before any early return
-    // so the readout is present in every path -- empty state,
-    // degenerate plot rect, and populated bars alike. Elide with
-    // the current font metrics so a narrow dock (or a very wide
-    // hovered-level breakdown) truncates cleanly instead of
-    // clipping mid-glyph.
+    // Details strip below the bars. Drawn before any early return so
+    // the readout is present in every state. Elided with font metrics
+    // so narrow docks truncate cleanly instead of clipping mid-glyph.
     const QRect detailsRect = DetailsRect();
     if (detailsRect.width() > 0 && detailsRect.height() > 0)
     {
@@ -592,7 +526,7 @@ void HistogramWidget::paintEvent(QPaintEvent *event)
     }
 
     // Empty-state placeholder: no model, no time column, empty
-    // index, or a plot rect too small to render bars into.
+    // index, or degenerate plot rect.
     const bool empty = mModel == nullptr || !mModel->HasTimeColumn() || mModel->Index().Empty() ||
                        plotRect.height() <= 0 || plotRect.width() <= 0;
     if (empty)
@@ -622,22 +556,18 @@ void HistogramWidget::paintEvent(QPaintEvent *event)
     const double plotWidth = plotRect.width();
     const double plotHeight = plotRect.height();
 
-    // Aggregate consecutive buckets into single visual columns when
-    // the bar width would drop below 1 px. `stride` is 1 when every
-    // bucket gets its own pixel or more.
+    // Fold consecutive buckets into single visual columns when the
+    // bar width would drop below 1 px. `stride` is 1 when every
+    // bucket gets its own pixel.
     const VisualLayout layout = ComputeVisualLayout(nBuckets, plotWidth);
     if (layout.columnCount == 0)
     {
         return;
     }
 
-    // Precompute the merged totals up-front so `maxTotal` reflects
-    // the tallest *visible* column, not the tallest raw bucket. When
-    // `stride > 1` the two disagree by up to a factor of `stride`,
-    // and using raw `maxTotal` would let aggregated columns overshoot
-    // the plot rect and paint outside its bounds. The extra pass is
-    // O(nBuckets) — a rounding-error cost next to the per-column
-    // painter fills below.
+    // Precompute merged totals so `maxTotal` reflects the tallest
+    // *visible* column. Using raw bucket totals when `stride > 1`
+    // would let aggregated columns overshoot the plot rect.
     std::vector<loglib::LevelBucket> merged;
     merged.reserve(layout.columnCount);
     uint32_t maxTotal = 0;
@@ -652,12 +582,9 @@ void HistogramWidget::paintEvent(QPaintEvent *event)
         return;
     }
 
-    // Fill pass: paint each column's stacked level segments. We used
-    // to shave `0.5 px` off `columnPixelWidth` to leave an ad-hoc gap
-    // between columns, but with a real per-bucket outline (the second
-    // pass below) that gap became a fuzzy artefact rather than a
-    // divider. Let adjacent columns share their boundary pixel and
-    // rely on the outline to separate them.
+    // Fill pass: paint each column's stacked level segments. Adjacent
+    // columns share their boundary pixel; the outline pass below
+    // separates them cleanly.
     for (std::size_t col = 0; col < layout.columnCount; ++col)
     {
         const uint32_t total = merged[col].Total();
@@ -683,14 +610,10 @@ void HistogramWidget::paintEvent(QPaintEvent *event)
         }
     }
 
-    // Outline pass: trace each populated column with the same colour
-    // as the plot-area frame. The shared right-edge of column N and
-    // left-edge of column N+1 rasterise onto the same pixel column,
-    // so adjacent outlines merge into a single 1 px divider (matching
-    // the outer frame's aesthetic instead of the previous fuzzy gap).
-    // Skipped for columns narrower than `MIN_BUCKET_OUTLINE_WIDTH_PX`
-    // because a 1 px outline on each side would leave zero visible
-    // fill, which loses more information than the divider adds.
+    // Outline pass: trace each populated column with the frame colour.
+    // Adjacent outlines rasterise onto the same pixel column, merging
+    // into a single 1 px divider. Skipped on columns too narrow to
+    // fit any fill next to a 1 px outline on each side.
     {
         painter.save();
         QPen bucketPen(frameColor);
@@ -719,16 +642,12 @@ void HistogramWidget::paintEvent(QPaintEvent *event)
         painter.restore();
     }
 
-    // Anchor tick strip overlay. Painted *after* the bars and their
-    // outline pass so ticks sit visibly on top of any bar that
-    // reaches the top of the plot area, and the reader can tell
-    // the tick is a marker on the bar rather than a slice of it.
+    // Anchor tick strip. Painted after the bars so ticks sit visibly
+    // on top of any bar that reaches the plot's top edge.
     PaintAnchorTickStrip(painter);
 
-    // Draw the drag brush overlay on top. Both fill and frame use
-    // `QRectF` on the same rectangle so the outline stays symmetric
-    // (the previous `.adjusted(0, 0, -1, -1)` on the integer rect
-    // shrank the frame by one pixel at the right and bottom edges).
+    // Drag brush overlay. Fill and frame use the same `QRectF` so
+    // the outline stays symmetric.
     if (mDragging)
     {
         const qreal x1 = std::min(mDragStartX, mDragCurrentX);
@@ -803,10 +722,9 @@ std::size_t HistogramWidget::FirstNonEmptyBucketInColumn(std::size_t columnIndex
             return i;
         }
     }
-    // Every raw bucket in the visual column is empty. Return the
-    // column's first bucket so the click still resolves to a stable
-    // index; `HistogramModel::FirstRowInBucket` will report `-1` and
-    // the main window will surface the "no visible row" toast.
+    // Every raw bucket empty. Return the column's first bucket so
+    // the click still resolves; the caller then surfaces a "no
+    // visible row" toast.
     return begin;
 }
 
@@ -832,11 +750,9 @@ void HistogramWidget::UpdateHoverState(const QPoint &pos)
         return;
     }
     const std::size_t columnIdx = *columnOpt;
-    // Dedup guard: the details strip only needs a repaint when
-    // the visual column under the pointer changes. Without this
-    // every mouse-move inside the same bar would repaint the
-    // strip, which flickers on some styles and burns CPU during
-    // fast drags across the widget.
+    // Dedup: only repaint the details strip when the visual column
+    // changes. Otherwise every mouse move inside the same bar would
+    // repaint (flickers on some styles, burns CPU on fast drags).
     if (mLastHoverBucket >= 0 && std::cmp_equal(mLastHoverBucket, columnIdx))
     {
         return;
@@ -852,11 +768,10 @@ void HistogramWidget::mousePressEvent(QMouseEvent *event)
         QWidget::mousePressEvent(event);
         return;
     }
-    // Reject presses outside the plot rect (the outer padding and
-    // the bottom details strip): the user hasn't pointed at a bar,
-    // so treating this as a click (or the anchor of a drag) would
-    // install a filter or jump the table from an accidental touch
-    // on the details line.
+    // Reject presses outside the plot rect (outer padding or the
+    // details strip): the user hasn't pointed at a bar, so a
+    // click/drag would jump the table or install a filter from an
+    // accidental touch on the chrome.
     if (!PlotRect().contains(event->pos()))
     {
         QWidget::mousePressEvent(event);
@@ -873,11 +788,9 @@ void HistogramWidget::mouseMoveEvent(QMouseEvent *event)
     const bool dragThresholdCrossedThisEvent = mDragStartX >= 0 &&
                                                (event->buttons() & Qt::LeftButton) != 0 &&
                                                std::abs(event->pos().x() - mDragStartX) > DRAG_THRESHOLD_PIXELS;
-    // Suppress the hover readout while the user is drag-brushing:
-    // they are pointing at a range, not a bucket, so a single-bucket
-    // details line is contradictory. Reset the cache and repaint
-    // the strip so it falls back to the plot summary while the
-    // drag is in flight.
+    // While drag-brushing, the user is pointing at a range, not a
+    // bucket -- suppress the single-bucket hover readout and let
+    // the strip fall back to the plot summary.
     if (mDragging || dragThresholdCrossedThisEvent)
     {
         if (mLastHoverBucket != -1)
@@ -904,9 +817,8 @@ void HistogramWidget::mouseMoveEvent(QMouseEvent *event)
 
 void HistogramWidget::leaveEvent(QEvent *event)
 {
-    // The pointer left the widget entirely. Drop the hover cache
-    // so the details strip snaps back to the plot summary and a
-    // fresh entry over the same bar re-derives the hover readout.
+    // Pointer left the widget: drop the hover cache so the details
+    // strip snaps back to the plot summary.
     if (mLastHoverBucket != -1)
     {
         mLastHoverBucket = -1;
@@ -932,28 +844,14 @@ void HistogramWidget::mouseReleaseEvent(QMouseEvent *event)
 
     if (!wasDragging)
     {
-        // Single click: two possible outcomes, decided by *where*
-        // in the plot area the click landed.
-        //
-        //  - Inside the anchor tick strip AND the column carries an
-        //    anchor: emit `anchorClicked(sourceRow)` so the table
-        //    scrolls to the anchored row itself. Without this the
-        //    reader sees the tick, clicks it, and lands on the
-        //    bucket's first row — usually adjacent to but not the
-        //    anchor they clicked, which is confusing.
-        //  - Anywhere else (including a tick-zone click on a
-        //    column with no anchor): fall through to the existing
-        //    `bucketClicked` path.
-        //
-        // The visual-column mapping matters when `stride > 1`:
-        // mapping through raw bucket coordinates would pick a
-        // bucket the paint routine folded into an adjacent column,
-        // and the table jump would land somewhere the user didn't
-        // visually point at. Picking a non-empty bucket in the
-        // merged range also keeps the jump useful — an empty
-        // leading bucket in a stride>1 column would otherwise
-        // surface "no visible row" even when the column obviously
-        // has bars.
+        // Single click: two outcomes, decided by where the click
+        // landed:
+        //  - Inside the tick strip on an anchored column ->
+        //    `anchorClicked(sourceRow)` so the table lands on the
+        //    anchor itself (not the bucket's first row).
+        //  - Anywhere else (or tick-zone on an anchor-free column)
+        //    -> `bucketClicked` with the first non-empty bucket in
+        //    the visual column (so `stride > 1` clicks don't miss).
         if (const auto columnOpt = VisualColumnAtX(releaseX); columnOpt.has_value())
         {
             const QRect tickRect = AnchorTickRect();
@@ -979,10 +877,9 @@ void HistogramWidget::mouseReleaseEvent(QMouseEvent *event)
         return;
     }
 
-    // Drag release: convert brush endpoints to a time range. The
-    // range covers *every* raw bucket inside the visual columns
-    // between the two brush edges, so the installed filter matches
-    // the bars the user actually swept across.
+    // Drag release: convert brush endpoints to a time range covering
+    // every raw bucket in the swept visual columns so the installed
+    // filter matches the bars the user swept across.
     const auto startColumn = VisualColumnAtX(std::min(startX, releaseX));
     const auto endColumn = VisualColumnAtX(std::max(startX, releaseX));
     if (!startColumn.has_value() || !endColumn.has_value() || mModel == nullptr)
@@ -999,9 +896,8 @@ void HistogramWidget::mouseReleaseEvent(QMouseEvent *event)
         return;
     }
     const auto fromUs = idx.BucketStart(startBegin).time_since_epoch().count();
-    // `BucketEnd` is exclusive; subtract 1 us so the caller-side
-    // inclusive comparator (`from <= ts && ts <= to`) doesn't spill
-    // into the next bucket.
+    // `BucketEnd` is exclusive; subtract 1 us so the inclusive
+    // comparator on the caller side doesn't spill into the next bucket.
     const auto toUs = idx.BucketEnd(endEnd - 1).time_since_epoch().count() - 1;
     emit timeRangeSelected(fromUs, toUs);
     event->accept();
@@ -1062,13 +958,9 @@ void HistogramWidget::contextMenuEvent(QContextMenuEvent *event)
         connect(resetAction, &QAction::triggered, this, [this]() {
             if (mModel != nullptr)
             {
-                // `ResetBucketSizeToAuto` drops the manual-pin latch
-                // first; a plain `ApplyAutoBucketSize` would be
-                // silently vetoed after any Z / Shift+Z / Ctrl+wheel
-                // zoom, leaving this menu entry inert. The details
-                // strip re-derives the rung label from the model
-                // on the next paint, so no explicit refresh is
-                // needed here.
+                // `ResetBucketSizeToAuto` drops the manual pin first;
+                // a plain `ApplyAutoBucketSize` would be vetoed after
+                // any Z / Shift+Z / Ctrl+wheel zoom.
                 mModel->ResetBucketSizeToAuto();
             }
         });
@@ -1116,10 +1008,8 @@ void HistogramWidget::CancelDrag()
     mDragging = false;
     mDragStartX = -1;
     mDragCurrentX = -1;
-    // After Esc the user wants a clean strip, so drop the hover
-    // cache too -- the details line snaps back to the plot summary
-    // instead of lingering on a bucket the pointer might no longer
-    // be over by the time the drag is cancelled.
+    // Drop the hover cache too so the details strip snaps to the
+    // plot summary instead of lingering on a stale bucket.
     mLastHoverBucket = -1;
     update();
 }
@@ -1128,13 +1018,10 @@ void HistogramWidget::changeEvent(QEvent *event)
 {
     QWidget::changeEvent(event);
     // OS-level palette / style / theme changes bypass `ThemeControl`
-    // (on Windows a dark/light system switch arrives as
-    // `QEvent::ThemeChange` without going through our theme
-    // controller). Repaint on those so the bar palette stays in
-    // sync with the surrounding chrome, and drop the hover cache
-    // so the next hover re-derives the details readout under the
-    // new palette. Mirrors the same idiom `MainWindow::changeEvent`
-    // uses for the toolbar icons.
+    // (e.g. Windows dark/light system switch arrives as
+    // `QEvent::ThemeChange`). Repaint and drop the hover cache so
+    // the details readout re-derives under the new palette. Same
+    // idiom as `MainWindow::changeEvent` for toolbar icons.
     if (event == nullptr)
     {
         return;
