@@ -714,6 +714,32 @@ MainWindow::MainWindow(
     mTableView->setSortingEnabled(true);
     mTableView->sortByColumn(-1, Qt::SortOrder::AscendingOrder);
 
+    // Overview rail (ROADMAP item 13). Constructed after the
+    // proxy chain because the model buckets `mSortFilterProxyModel`
+    // rows and the widget derives its viewport indicator from
+    // `mTableView`'s scrollbar.
+    //
+    // The rail's lifetime is bound to the window: the model
+    // stays live even while the rail is hidden so the toggle
+    // is instant on both edges. The widget is owned by `this`
+    // while detached and reparents to `mTableView` inside
+    // `LogTableView::AttachOverviewRail` when visible.
+    mOverviewRailModel = new OverviewRailModel(mSortFilterProxyModel, mModel, mAnchors, this);
+    mOverviewRailWidget = new OverviewRailWidget(mOverviewRailModel, mTheme, mTableView, this);
+    mOverviewRailWidget->hide();
+    connect(mOverviewRailWidget, &OverviewRailWidget::proxyRowClicked, this, &MainWindow::ScrollToProxyRow);
+
+    mActionToggleOverviewRail = new QAction(tr("Overview rail"), this);
+    mActionToggleOverviewRail->setObjectName(QStringLiteral("actionToggleOverviewRail"));
+    mActionToggleOverviewRail->setCheckable(true);
+    // Ctrl+Shift+O sits next to the histogram's Ctrl+H in the
+    // View menu. Ctrl+O opens files, so we differentiate with
+    // the Shift modifier; Ctrl+Shift+A and Ctrl+Shift+S are
+    // already taken by the anchor / session shortcuts.
+    mActionToggleOverviewRail->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
+    addAction(mActionToggleOverviewRail);
+    connect(mActionToggleOverviewRail, &QAction::toggled, this, &MainWindow::SetOverviewRailVisible);
+
     // Icon-pill delegate is created only when we have a
     // `ThemeControl`; the no-theme test fixture keeps the standard
     // text delegate (`IsLevelIconModeActive` is always false there).
@@ -1037,6 +1063,25 @@ MainWindow::MainWindow(
         if (mFindRecord != nullptr)
         {
             mFindRecord->BumpMatchCountDebounce();
+        }
+        // Repopulate the rail's match ticks from the current
+        // cache. Without this, closing and reopening the find
+        // bar would leave the rail blank until the user typed
+        // again.
+        if (mOverviewRailModel != nullptr && mFindMatchCache.has_value())
+        {
+            mOverviewRailModel->SetMatchProxyRows(mFindMatchCache->sortedRows);
+        }
+    });
+
+    // Dropping the find bar drops the rail's match ticks too —
+    // matching the "*i* of *N*" indicator which is only shown
+    // while the bar is visible. The cache itself survives so a
+    // later reveal can restore ticks without re-scanning.
+    connect(mFindDock, &FindDock::closed, this, [this]() {
+        if (mOverviewRailModel != nullptr)
+        {
+            mOverviewRailModel->SetMatchProxyRows({});
         }
     });
 
@@ -1524,6 +1569,17 @@ MainWindow::MainWindow(
         const QSettings settings;
         const bool showLevelIcons = settings.value(QStringLiteral("ui/showLevelIcons"), true).toBool();
         mModel->SetShowLevelIcons(showLevelIcons);
+    }
+
+    // Seed the overview rail from the persisted preference
+    // (default on, per the ROADMAP guidance for item 13).
+    // Routing through `SetOverviewRailVisible` keeps the QAction,
+    // the attach state, and the settings write in one place.
+    if (mActionToggleOverviewRail != nullptr)
+    {
+        const QSettings settings;
+        const bool showOverviewRail = settings.value(QStringLiteral("ui/showOverviewRail"), true).toBool();
+        SetOverviewRailVisible(showOverviewRail);
     }
 
     // Run after every action is wired so they can all be decorated in one pass.
@@ -4057,6 +4113,7 @@ void MainWindow::BuildMainToolbar()
     tag(ui->actionToggleRecordDetails, mMainToolbar, QStringLiteral(":/icons/panel-right-open.svg"));
     tag(mActionToggleAnchors, mMainToolbar, QStringLiteral(":/icons/bookmark.svg"));
     tag(mActionToggleHistogram, mMainToolbar, QStringLiteral(":/icons/bar-chart-3.svg"));
+    tag(mActionToggleOverviewRail, mMainToolbar, QStringLiteral(":/icons/bar-chart-horizontal.svg"));
     tag(ui->actionPreferences, mMainToolbar, QStringLiteral(":/icons/settings-2.svg"));
     // Stream toolbar gets the same treatment so the combined strip
     // looks uniform when both bars are visible. Pause is the one
@@ -4200,6 +4257,10 @@ void MainWindow::BuildMainToolbar()
     if (mActionToggleHistogram != nullptr)
     {
         mMainToolbar->addAction(mActionToggleHistogram);
+    }
+    if (mActionToggleOverviewRail != nullptr)
+    {
+        mMainToolbar->addAction(mActionToggleOverviewRail);
     }
 
     // Expanding spacer pushes Preferences to the far right edge,
@@ -5632,6 +5693,15 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
             .overflowed = overflowed,
             .sortedRows = std::move(rows),
         };
+        // Push the fresh match rows into the overview rail so its
+        // find-tick band matches the "*i* of *N*" indicator. The
+        // rail's model coalesces the bucket recompute but emits
+        // `matchesChanged` immediately so the widget repaints on
+        // the next event loop pass.
+        if (mOverviewRailModel != nullptr)
+        {
+            mOverviewRailModel->SetMatchProxyRows(mFindMatchCache->sortedRows);
+        }
     }
 
     const int total = static_cast<int>(mFindMatchCache->sortedRows.size());
@@ -5656,6 +5726,13 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
 void MainWindow::InvalidateFindMatchCache()
 {
     mFindMatchCache.reset();
+    // Rail ticks are keyed on the cached proxy-row list; drop
+    // them alongside the cache so a stale find selection can't
+    // strand ticks on rows the current filter no longer accepts.
+    if (mOverviewRailModel != nullptr)
+    {
+        mOverviewRailModel->SetMatchProxyRows({});
+    }
 }
 
 void MainWindow::OnFindCacheInvalidated()
@@ -5942,6 +6019,72 @@ void MainWindow::JumpToFirstRowInBucket(std::size_t bucketIndex)
         return;
     }
     SelectSourceRow(sourceRow);
+}
+
+void MainWindow::ScrollToProxyRow(int proxyRow)
+{
+    if (mTableView == nullptr || mSortFilterProxyModel == nullptr)
+    {
+        return;
+    }
+    if (proxyRow < 0 || proxyRow >= mSortFilterProxyModel->rowCount())
+    {
+        // Row can be transiently stale during an insert / filter
+        // change race — silently no-op so a drag scrub stays smooth.
+        return;
+    }
+    const QModelIndex proxyIdx = mSortFilterProxyModel->index(proxyRow, 0);
+    if (!proxyIdx.isValid())
+    {
+        return;
+    }
+    mTableView->clearSelection();
+    mTableView->scrollTo(proxyIdx, QAbstractItemView::PositionAtCenter);
+    mTableView->selectionModel()->select(proxyIdx, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    mTableView->selectionModel()->setCurrentIndex(proxyIdx, QItemSelectionModel::NoUpdate);
+}
+
+void MainWindow::SetOverviewRailVisible(bool visible)
+{
+    if (mTableView == nullptr || mOverviewRailWidget == nullptr)
+    {
+        return;
+    }
+    // Persist immediately so the next launch honours the current
+    // preference regardless of how we got here (user toggle,
+    // load-time seed, session reload).
+    QSettings settings;
+    settings.setValue(QStringLiteral("ui/showOverviewRail"), visible);
+
+    // Keep the QAction's check state consistent when the slot is
+    // driven programmatically (load-time seed). `QSignalBlocker`
+    // stops the mirroring from re-triggering us.
+    if (mActionToggleOverviewRail != nullptr && mActionToggleOverviewRail->isChecked() != visible)
+    {
+        const QSignalBlocker blocker(mActionToggleOverviewRail);
+        mActionToggleOverviewRail->setChecked(visible);
+    }
+
+    if (visible)
+    {
+        mTableView->AttachOverviewRail(mOverviewRailWidget);
+        // Rebuild once on attach so buckets reflect the current
+        // row count (the model was quiet while the widget stayed
+        // hidden and had a zero-height sizeHint).
+        if (mOverviewRailModel != nullptr)
+        {
+            mOverviewRailModel->Rebuild();
+        }
+    }
+    else
+    {
+        mTableView->AttachOverviewRail(nullptr);
+        // Reparent to `this` so the widget survives the detach
+        // and Qt cleanup remains ours. `AttachOverviewRail(null)`
+        // already dropped the parent.
+        mOverviewRailWidget->setParent(this);
+        mOverviewRailWidget->hide();
+    }
 }
 
 void MainWindow::AddTimeRangeFilterFromHistogram(qint64 fromEpochMicros, qint64 toEpochMicros)
@@ -7974,6 +8117,12 @@ void MainWindow::RebuildViewMenu()
     if (mActionToggleHistogram != nullptr)
     {
         viewMenu->addAction(mActionToggleHistogram);
+    }
+
+    // Overview rail toggle; same pattern.
+    if (mActionToggleOverviewRail != nullptr)
+    {
+        viewMenu->addAction(mActionToggleOverviewRail);
     }
 
     // Primary toolbar toggle. `QToolBar::toggleViewAction` returns a

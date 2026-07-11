@@ -8,6 +8,8 @@
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
 #include "log_table_view.hpp"
+#include "overview_rail_model.hpp"
+#include "overview_rail_widget.hpp"
 #include "parse_errors_dock.hpp"
 #include "preferences_editor.hpp"
 #include "record_detail_dock.hpp"
@@ -345,6 +347,19 @@ public:
     /// Jump the table to the first row in histogram bucket
     /// @p bucketIndex. Wired to `HistogramDock::bucketClicked`.
     void JumpToFirstRowInBucket(std::size_t bucketIndex);
+
+    /// Scroll the table so proxy row @p proxyRow is centred, and
+    /// select it. Wired to `OverviewRailWidget::proxyRowClicked`;
+    /// no-op when the row is out of range (rail geometry can
+    /// briefly out-race a `modelReset`).
+    void ScrollToProxyRow(int proxyRow);
+
+    /// Attach or detach `mOverviewRailWidget` on the table view,
+    /// persist the visibility to `QSettings("ui/showOverviewRail")`,
+    /// and mirror the state onto `mActionToggleOverviewRail`. The
+    /// slot is idempotent so the load-time seed / user toggle
+    /// share one code path.
+    void SetOverviewRailVisible(bool visible);
 
     /// Install a `Type::Time` filter on
     /// `[fromEpochMicros, toEpochMicros]` for the histogram's time
@@ -1255,6 +1270,23 @@ private:
     /// Toggle action for the Histogram dock; re-added on every
     /// `RebuildViewMenu`. Programmatic because the .ui has no entry.
     QAction *mActionToggleHistogram = nullptr;
+
+    /// Owned QObject. Bucketed index of the outermost proxy row
+    /// space that feeds `mOverviewRailWidget`. Lives even when
+    /// the rail is hidden — cheap to keep in sync so the toggle
+    /// is instant.
+    OverviewRailModel *mOverviewRailModel = nullptr;
+
+    /// Owned by `mTableView` (via `LogTableView::AttachOverviewRail`
+    /// while visible; via `this` while detached). `QPointer` so a
+    /// teardown-time delete zeroes here before the attach helper
+    /// runs.
+    QPointer<OverviewRailWidget> mOverviewRailWidget;
+
+    /// Toggle action for the overview rail. Checkable, mirrored
+    /// onto the primary toolbar and View menu; persists through
+    /// `ui/showOverviewRail` in `QSettings`.
+    QAction *mActionToggleOverviewRail = nullptr;
 
     /// Anchor hotkey actions: index N maps to `Ctrl+(N+1)`.
     /// `mActionClearRowAnchor` is `Ctrl+0`; jumps are `F2` /
