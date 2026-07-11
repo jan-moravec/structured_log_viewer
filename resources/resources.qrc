@@ -22,6 +22,7 @@
              asset works for Light and Dark themes. -->
         <file>icons/arrow-down-to-line.svg</file>
         <file>icons/arrow-down-up.svg</file>
+        <file>icons/bar-chart-3.svg</file>
         <file>icons/bookmark.svg</file>
         <file>icons/circle-x.svg</file>
         <file>icons/file-clock.svg</file>

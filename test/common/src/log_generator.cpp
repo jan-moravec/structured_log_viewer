@@ -16,7 +16,14 @@ namespace test_common
 namespace
 {
 
+// Canonical level pool. Order is load-bearing (matched by `SlfjLevel`,
+// the Java / Apache-error regex synthesizers, and the enum-promotion
+// benchmarks). Sampled via `LEVEL_WEIGHTS` (geometric pyramid, `trace`
+// most frequent) so fixtures see a production-ish mix. All weights are
+// positive so all six aliases appear in any long corpus (relied on by
+// dictionary-promotion benchmarks).
 constexpr std::array<std::string_view, 6> LEVELS = {"trace", "debug", "info", "warning", "error", "fatal"};
+constexpr std::array<double, 6> LEVEL_WEIGHTS = {32.0, 16.0, 8.0, 4.0, 2.0, 1.0};
 constexpr std::array<std::string_view, 5> COMPONENTS = {"app", "network", "database", "ui", "system"};
 constexpr std::array<std::string_view, 20> WORDS = {"lorem",       "ipsum",      "dolor",      "sit",    "amet",
                                                     "consectetur", "adipiscing", "elit",       "sed",    "do",
@@ -37,6 +44,14 @@ std::string StampTimestamp(const TimestampPolicy &policy, std::size_t lineIndex)
     return FormatTimestamp(std::chrono::system_clock::now());
 }
 
+// Shared factory so both generators pick from the same weighted
+// distribution. `std::discrete_distribution` is cheap enough to
+// build per record and keeps call sites self-contained.
+std::discrete_distribution<std::size_t> MakeLevelDist()
+{
+    return {LEVEL_WEIGHTS.begin(), LEVEL_WEIGHTS.end()};
+}
+
 } // namespace
 
 std::uint32_t MakeRandomSeed()
@@ -47,7 +62,7 @@ std::uint32_t MakeRandomSeed()
 
 LogRecord GenerateRandomLogRecord(std::mt19937 &rng, std::size_t lineIndex, const TimestampPolicy &timestamps)
 {
-    std::uniform_int_distribution<int> levelDist(0, static_cast<int>(LEVELS.size()) - 1);
+    auto levelDist = MakeLevelDist();
     std::uniform_int_distribution<int> componentDist(0, static_cast<int>(COMPONENTS.size()) - 1);
     std::uniform_int_distribution<int> wordDist(0, static_cast<int>(WORDS.size()) - 1);
     std::uniform_int_distribution<int> wordsCountDist(5, 20);
@@ -65,7 +80,7 @@ LogRecord GenerateRandomLogRecord(std::mt19937 &rng, std::size_t lineIndex, cons
 
     LogRecord record;
     record["timestamp"] = StampTimestamp(timestamps, lineIndex);
-    record["level"] = std::string(LEVELS[static_cast<std::size_t>(levelDist(rng))]);
+    record["level"] = std::string(LEVELS[levelDist(rng)]);
     record["message"] = message;
     record["thread_id"] = static_cast<std::int64_t>(lineIndex % 16);
     record["component"] = std::string(COMPONENTS[static_cast<std::size_t>(componentDist(rng))]);
@@ -204,7 +219,7 @@ std::vector<LogRecord> GenerateWideLogRecords(
     records.reserve(count);
 
     std::mt19937 rng(seed);
-    std::uniform_int_distribution<int> levelDist(0, static_cast<int>(LEVELS.size()) - 1);
+    auto levelDist = MakeLevelDist();
     std::uniform_int_distribution<int> componentDist(0, static_cast<int>(COMPONENTS.size()) - 1);
     std::uniform_int_distribution<int> wordDist(0, static_cast<int>(WORDS.size()) - 1);
     std::uniform_int_distribution<int> wordsCountDist(3, 8);
@@ -227,7 +242,7 @@ std::vector<LogRecord> GenerateWideLogRecords(
                 }
                 else if (keyName.starts_with("level"))
                 {
-                    json[keyName] = std::string(LEVELS[static_cast<std::size_t>(levelDist(rng))]);
+                    json[keyName] = std::string(LEVELS[levelDist(rng)]);
                 }
                 else if (keyName.starts_with("component"))
                 {

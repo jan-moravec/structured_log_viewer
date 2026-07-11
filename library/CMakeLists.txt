@@ -26,6 +26,7 @@ add_library(
     src/enum_dictionary.cpp
     src/file_identity.cpp
     src/file_line_source.cpp
+    src/histogram_bucket_index.cpp
     src/key_index.cpp
     src/parse_file.cpp
     src/static_parser_pipeline.cpp
