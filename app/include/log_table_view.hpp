@@ -182,6 +182,12 @@ private:
     /// attached rail's `sizeHint().width()` and reposition it to
     /// span the viewport height. No-op when no rail is attached.
     void UpdateOverviewRailGeometry();
+
+    /// Resolve the rail's effective width for margin reservation,
+    /// preferring `sizeHint` and falling back to `minimumSizeHint`
+    /// / `width` so callers that ship a fixed-width rail (via
+    /// `setFixedWidth`) still get a positive reservation.
+    [[nodiscard]] static int ResolvedRailWidth(const QWidget *rail);
     void OnVerticalScrollValueChanged(int value);
 
     /// Refresh `mAtTailEdge` when the scrollbar range changes

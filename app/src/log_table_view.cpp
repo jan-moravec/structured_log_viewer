@@ -655,13 +655,35 @@ void LogTableView::AttachOverviewRail(QWidget *rail)
         return;
     }
     rail->setParent(this);
-    // Cache the width from `sizeHint` so `changeEvent` can
-    // refresh it on DPI / style / font changes without querying
-    // the rail on every geometry pass.
-    mReservedRightMargin = std::max(0, rail->sizeHint().width());
+    // Cache the width so `changeEvent` can refresh it on DPI /
+    // style / font changes without querying the rail on every
+    // geometry pass. Prefer `sizeHint` (the widget's own DPI-fluent
+    // width) but fall back to `minimumSizeHint` and then the
+    // current `width` so callers that ship a fixed-width rail
+    // (`setFixedWidth`, `setMinimumWidth`) still reserve margin.
+    mReservedRightMargin = ResolvedRailWidth(rail);
     setViewportMargins(0, 0, mReservedRightMargin, 0);
     rail->show();
     UpdateOverviewRailGeometry();
+}
+
+int LogTableView::ResolvedRailWidth(const QWidget *rail)
+{
+    if (rail == nullptr)
+    {
+        return 0;
+    }
+    const int hint = rail->sizeHint().width();
+    if (hint > 0)
+    {
+        return hint;
+    }
+    const int minHint = rail->minimumSizeHint().width();
+    if (minHint > 0)
+    {
+        return minHint;
+    }
+    return std::max(0, rail->width());
 }
 
 void LogTableView::resizeEvent(QResizeEvent *event)
@@ -687,7 +709,7 @@ void LogTableView::changeEvent(QEvent *event)
     case QEvent::ApplicationFontChange:
     case QEvent::ScreenChangeInternal:
     {
-        const int freshWidth = std::max(0, mOverviewRail->sizeHint().width());
+        const int freshWidth = ResolvedRailWidth(mOverviewRail);
         if (freshWidth != mReservedRightMargin)
         {
             mReservedRightMargin = freshWidth;

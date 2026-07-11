@@ -96,3 +96,15 @@ target_link_libraries(apptest_histogram PRIVATE Qt6::Test Qt6::Widgets logapp)
 target_include_directories(apptest_histogram PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
 
 add_test(NAME apptest_histogram COMMAND apptest_histogram WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_histogram>)
+
+# Unit tests for the match overview rail (ROADMAP item 13). Same
+# concern-per-binary pattern as `apptest_histogram`: keeps the
+# monolithic `apptest` lean and lets `ctest -R apptest_overview_rail`
+# rerun just this concern.
+qt_add_executable(apptest_overview_rail src/test_overview_rail.cpp)
+
+target_link_libraries(apptest_overview_rail PRIVATE Qt6::Test Qt6::Widgets logapp)
+
+target_include_directories(apptest_overview_rail PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+
+add_test(NAME apptest_overview_rail COMMAND apptest_overview_rail WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_overview_rail>)
