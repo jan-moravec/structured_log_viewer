@@ -630,6 +630,102 @@ bool LogTableView::eventFilter(QObject *watched, QEvent *event)
     return QTableView::eventFilter(watched, event);
 }
 
+void LogTableView::AttachOverviewRail(QWidget *rail)
+{
+    if (mOverviewRail == rail)
+    {
+        return;
+    }
+    // Detach the old rail (hide + drop from margin) without
+    // deleting it — ownership stays with the caller. Reparent
+    // to nullptr so a later attach against a different table
+    // view is legal.
+    if (mOverviewRail != nullptr)
+    {
+        mOverviewRail->hide();
+        mOverviewRail->setParent(nullptr);
+    }
+    mOverviewRail = rail;
+    if (rail == nullptr)
+    {
+        mReservedRightMargin = 0;
+        // `setViewportMargins` is protected on QAbstractScrollArea;
+        // we're a subclass so calling it is legal.
+        setViewportMargins(0, 0, 0, 0);
+        return;
+    }
+    rail->setParent(this);
+    // Cache the width from `sizeHint` so `changeEvent` can
+    // refresh it on DPI / style / font changes without querying
+    // the rail on every geometry pass.
+    mReservedRightMargin = std::max(0, rail->sizeHint().width());
+    setViewportMargins(0, 0, mReservedRightMargin, 0);
+    rail->show();
+    UpdateOverviewRailGeometry();
+}
+
+void LogTableView::resizeEvent(QResizeEvent *event)
+{
+    QTableView::resizeEvent(event);
+    UpdateOverviewRailGeometry();
+}
+
+void LogTableView::changeEvent(QEvent *event)
+{
+    QTableView::changeEvent(event);
+    if (event == nullptr || mOverviewRail == nullptr)
+    {
+        return;
+    }
+    // Refresh the reserved margin on events that can change the
+    // rail's DPI-fluent width or its wash / colour palette.
+    switch (event->type())
+    {
+    case QEvent::StyleChange:
+    case QEvent::PaletteChange:
+    case QEvent::FontChange:
+    case QEvent::ApplicationFontChange:
+    case QEvent::ScreenChangeInternal:
+    {
+        const int freshWidth = std::max(0, mOverviewRail->sizeHint().width());
+        if (freshWidth != mReservedRightMargin)
+        {
+            mReservedRightMargin = freshWidth;
+            setViewportMargins(0, 0, mReservedRightMargin, 0);
+        }
+        UpdateOverviewRailGeometry();
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+void LogTableView::UpdateOverviewRailGeometry()
+{
+    if (mOverviewRail == nullptr)
+    {
+        return;
+    }
+    const QWidget *vp = viewport();
+    if (vp == nullptr)
+    {
+        return;
+    }
+    // Rail sits immediately to the right of the viewport,
+    // spanning the viewport's Y range. Anchor to the viewport
+    // (not the widget) so header / horizontal-scrollbar chrome
+    // gets subtracted for free.
+    const QRect vpGeom = vp->geometry();
+    const int width = mReservedRightMargin;
+    if (width <= 0)
+    {
+        return;
+    }
+    mOverviewRail->setGeometry(vpGeom.right() + 1, vpGeom.top(), width, vpGeom.height());
+    mOverviewRail->raise();
+}
+
 void LogTableView::CopySelectedRowsToClipboard()
 {
     const QModelIndexList selectedRows = this->selectionModel()->selectedRows();

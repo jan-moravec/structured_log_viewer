@@ -34,6 +34,10 @@ set(PROJECT_SOURCES
     include/histogram_model.hpp
     src/histogram_widget.cpp
     include/histogram_widget.hpp
+    src/overview_rail_model.cpp
+    include/overview_rail_model.hpp
+    src/overview_rail_widget.cpp
+    include/overview_rail_widget.hpp
     src/icon_loader.cpp
     include/icon_loader.hpp
     src/jump_to_tail_pill.cpp

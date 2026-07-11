@@ -12,7 +12,6 @@
 #include <QStyleOptionHeader>
 #include <QTableView>
 
-#include <cstdint>
 #include <vector>
 
 /// Horizontal header that centres the icon in icon-only sections
@@ -91,6 +90,30 @@ public:
     /// crossing `maximum`).
     void AcknowledgePendingNewRows();
 
+    /// Reserve the right viewport margin for an overview rail
+    /// widget. Passing nullptr detaches the current rail and
+    /// reclaims the strip. When @p rail is non-null it is
+    /// reparented to `this`, positioned inside the reserved
+    /// margin, and its geometry is tracked via `resizeEvent` /
+    /// `changeEvent(StyleChange, ScreenChangeInternal)`. The
+    /// previously-attached rail (if any) is hidden and detached
+    /// but not deleted — ownership is the caller's.
+    void AttachOverviewRail(QWidget *rail);
+
+    /// Currently-attached overview rail (nullptr when detached).
+    /// Non-owning.
+    [[nodiscard]] QWidget *OverviewRail() const noexcept
+    {
+        return mOverviewRail.data();
+    }
+
+    /// Current reserved right-margin width in device-independent
+    /// px (0 when no rail is attached). Exposed for tests.
+    [[nodiscard]] int ReservedRightMargin() const noexcept
+    {
+        return mReservedRightMargin;
+    }
+
 public slots:
     void CopySelectedRowsToClipboard();
 
@@ -140,12 +163,25 @@ protected:
     /// Mark the next `valueChanged` as user-initiated.
     void wheelEvent(QWheelEvent *event) override;
 
+    /// Repositions the overview rail (if attached) and forwards
+    /// to the base class for the standard scroll-area layout.
+    void resizeEvent(QResizeEvent *event) override;
+
+    /// Refreshes the reserved right margin on style / screen /
+    /// font changes so a DPI-fluent rail resizes with the
+    /// platform's scrollbar extent.
+    void changeEvent(QEvent *event) override;
+
     /// Watches the viewport for resize events so the floating pill
     /// stays glued to the tail-side edge without subclassing the
     /// viewport.
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
+    /// Refresh the reserved right margin from the currently
+    /// attached rail's `sizeHint().width()` and reposition it to
+    /// span the viewport height. No-op when no rail is attached.
+    void UpdateOverviewRailGeometry();
     void OnVerticalScrollValueChanged(int value);
 
     /// Refresh `mAtTailEdge` when the scrollbar range changes
@@ -230,6 +266,16 @@ private:
     /// scroll-back. Kept separate from `mAtTailEdge` because that
     /// flag also feeds the anchor / signal state machines.
     bool mPendingNewRowsSuppressed = false;
+
+    /// Non-owning. `QPointer` so a rail widget destroyed by its
+    /// original owner zeroes here before our next geometry pass.
+    QPointer<QWidget> mOverviewRail;
+
+    /// Current reserved right-margin width in device-independent
+    /// px. Zero when no rail is attached. Cached so
+    /// `resizeEvent` can reuse the last known width without
+    /// re-querying the rail's `sizeHint`.
+    int mReservedRightMargin = 0;
 
 #ifdef LOGAPP_BUILD_TESTING
 public:
