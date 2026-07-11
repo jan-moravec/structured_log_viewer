@@ -254,9 +254,9 @@ When the user opens `app.log`, also surface `app.log.1`, `app.log.2`, `app.log.1
 
 Sessions already persist a single filter set. Real triage needs a small library of named presets: `@errors`, `@my-service`, `@slow-requests`, swappable from a dropdown next to the filter bar. The chosen "view" applies its filters + sort + visible-column set in one click. Views live in a new section of the user configuration; the global library lives under `<AppDataLocation>/views/*.json` with the same shadowing rules as themes and regex templates.
 
-### 13. Match overview rail / minimap
+### 13. ~~Match overview rail / minimap~~
 
-A vertical colour strip to the right of the scrollbar showing where in the source the matches, anchors, errors, and high-severity rows are. Klogg's overview rail and Logan's minimap are the references. Cheap to render once the level / match indices exist; reuses the histogram's bucket data structure ([item 2](#2-histogram--activity-rate-strip)) tilted 90°.
+> **Shipped.** `OverviewRailWidget` renders a thin vertical strip to the right of the table's viewport (Qt Creator gutter model, reserved via `QAbstractScrollArea::setViewportMargins`), showing where in the proxy stream matches, anchors, and level-coloured bands sit. Width tracks `QStyle::PM_ScrollBarExtent` so it scales cleanly across DPI / style changes; the viewport indicator mirrors the visible slice and supports click / drag / wheel to jump the table (coalesced through `MainWindow::ScrollToProxyRow`). On by default; toggle from **View → Overview Rail** or `Ctrl+Shift+O`; state persists in `QSettings`. Backing bits: `OverviewRailModel` (bucketed index over proxy rows, reuses `loglib::LevelBucket` for level counts, subscribes to `rowsInserted` / `rowsRemoved` / `modelReset` / `layoutChanged` / `AnchorManager` signals with a 50 ms coalesce timer), `LogTableView::AttachOverviewRail` (viewport-margin hook with `sizeHint` → `minimumSizeHint` → `width` fallback for width resolution), and `MainWindow` wiring that pushes `mFindMatchCache` results into the model on every rebuild / invalidation / FindDock open-close. See [`doc/README.md § Match overview rail`](doc/README.md#match-overview-rail) for the user-facing surface.
 
 ### 14. Per-cell quick filter
 

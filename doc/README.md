@@ -392,6 +392,29 @@ Manual zoom pins the rung until you reset it, so appending new rows in a live st
 
 In [Stream Mode](#stream-mode-live-tail) and [Network Stream Mode](#network-stream-mode-tcp--udp) the strip repaints at the existing ~50 ms batch cadence — a burst of arrivals lands as a single stacked bar without dropping frames. The bucket index is rebuilt from scratch when the FIFO retention cap evicts old rows so the counts never lag the visible table.
 
+## Match overview rail
+
+The **Overview Rail** is a thin vertical strip along the right edge of the log table. It condenses the whole proxy-filtered stream into ~one row of pixels per bucket, so you can see where matches, anchors, and clusters of high-severity rows sit without scrolling.
+
+The rail is on by default; toggle it from **View → Overview Rail** (`Ctrl+Shift+O`) or the toolbar's rail icon. Visibility is persisted in `QSettings` so a re-opened window restores your preference. Width tracks `QStyle::PM_ScrollBarExtent`, so the strip scales cleanly on Hi-DPI and follows system-style changes.
+
+### What the rail shows
+
+- **Level underlay** — every bucket is tinted with the dominant [canonical `LogLevel`](#automatic-column-detection) of the rows it covers, using the active theme's row-tint palette. A wall of red immediately says "errors down there".
+- **Match ticks** — while the [Find bar](#searching) is open, current-search matches are folded into their buckets and drawn as bright ticks. Closing the Find bar clears the ticks; reopening it restores them from the cached result set.
+- **Anchor bands** — buckets with any [anchored](#anchors) row show a coloured band in the anchor's slot colour along the rail's right edge. When a bucket carries anchors from multiple slots the lowest-index slot wins (deterministic, and rare given the rail's coarse bucketing).
+- **Viewport indicator** — a translucent rectangle marks the slice of the stream that is currently visible in the table, so scrolling the table slides the indicator up or down the rail.
+
+The rail is computed off the current proxy chain (post filter, post sort), so it always agrees with what the table would show if you scrolled to that point.
+
+### Click to jump, drag to scroll
+
+- **Click a bucket** — scrolls the table so the first proxy row of that bucket is visible.
+- **Left-drag** — scrubs the viewport indicator along the rail, live-updating the table as you drag.
+- **Mouse wheel over the rail** — routes to the table's vertical scrollbar, so you can spin through the stream from the rail.
+
+Row mapping is coalesced through `MainWindow::ScrollToProxyRow`, so rapid drags don't queue up a backlog of scroll jumps.
+
 ## Searching
 
 Open the Find bar with **Edit → Find** (`Ctrl+F`). It appears at the bottom of the window with:
