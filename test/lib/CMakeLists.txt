@@ -6,6 +6,7 @@ add_executable(
     tests
     "src/benchmark_csv.cpp"
     "src/benchmark_decompression.cpp"
+    "src/benchmark_histogram_bucket_index.cpp"
     "src/benchmark_json.cpp"
     "src/benchmark_log_filter.cpp"
     "src/benchmark_logfmt.cpp"
@@ -16,6 +17,7 @@ add_executable(
     "src/test_decompressing_byte_source.cpp"
     "src/test_enum_dictionary.cpp"
     "src/test_file_line_source.cpp"
+    "src/test_histogram_bucket_index.cpp"
     "src/test_json_parser.cpp"
     "src/test_key_index.cpp"
     "src/test_log_configuration.cpp"

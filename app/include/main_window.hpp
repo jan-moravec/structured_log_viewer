@@ -4,6 +4,7 @@
 #include "anchors_dock.hpp"
 #include "find_dock.hpp"
 #include "find_record_widget.hpp"
+#include "histogram_dock.hpp"
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
 #include "log_table_view.hpp"
@@ -340,6 +341,16 @@ public:
     /// that is currently filtered out (the latter shows a status bar
     /// note). Used by the Anchors dock for jump targets.
     void SelectSourceRow(int sourceRow);
+
+    /// Jump the table to the first row in histogram bucket
+    /// @p bucketIndex. Wired to `HistogramDock::bucketClicked`.
+    void JumpToFirstRowInBucket(std::size_t bucketIndex);
+
+    /// Install a `Type::Time` filter on
+    /// `[fromEpochMicros, toEpochMicros]` for the histogram's time
+    /// column. Wired to `HistogramDock::timeRangeSelected`; no-op
+    /// when the log has no time column.
+    void AddTimeRangeFilterFromHistogram(qint64 fromEpochMicros, qint64 toEpochMicros);
 
 #ifdef LOGAPP_BUILD_TESTING
     /// Test-only session-mode override so display-order tests can
@@ -1236,6 +1247,14 @@ private:
     /// Toggle action for the Anchors dock. Re-added to View on every
     /// `RebuildViewMenu`. Programmatic because the .ui has no entry.
     QAction *mActionToggleAnchors = nullptr;
+
+    /// Owned. Bottom-docked histogram strip; hidden by default,
+    /// toggled via View -> Histogram (or Ctrl+H).
+    HistogramDock *mHistogramDock = nullptr;
+
+    /// Toggle action for the Histogram dock; re-added on every
+    /// `RebuildViewMenu`. Programmatic because the .ui has no entry.
+    QAction *mActionToggleHistogram = nullptr;
 
     /// Anchor hotkey actions: index N maps to `Ctrl+(N+1)`.
     /// `mActionClearRowAnchor` is `Ctrl+0`; jumps are `F2` /

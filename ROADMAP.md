@@ -11,7 +11,7 @@ For the architecture each item plugs into, see [CONTRIBUTING.md → Architecture
 - [Themes](#themes)
 - [Tier 1 — Pre-`v1` release-blocking ergonomics](#tier-1--pre-v1-release-blocking-ergonomics)
   - [1. ~~Transparent decompression of `.gz` / `.bz2` / `.xz` / `.zst`~~ (shipped)](#1-transparent-decompression-of-gz--bz2--xz--zst)
-  - [2. Histogram / activity-rate strip](#2-histogram--activity-rate-strip)
+  - [2. ~~Histogram / activity-rate strip~~ (shipped)](#2-histogram--activity-rate-strip)
   - [3. User-defined highlight rules](#3-user-defined-highlight-rules)
   - [4. Bookmark notes on anchors](#4-bookmark-notes-on-anchors)
   - [5. Boolean filter expressions (AND / OR / NOT)](#5-boolean-filter-expressions-and--or--not)
@@ -94,7 +94,9 @@ Each of the ten items below closes a gap that reviewers and first-time users rou
 
 **Touches.** `loglib`: new `library/include/loglib/internal/decompressing_byte_source.hpp` + `.cpp`. `app`: `MainWindow::DetectFormatForPath`, `StartStreamingOpenQueue`. Docs: [`doc/README.md`](doc/README.md) supported-extensions section.
 
-### 2. Histogram / activity-rate strip
+### 2. ~~Histogram / activity-rate strip~~
+
+> **Shipped.** Bottom-docked `HistogramDock` renders stacked per-level bars over time for the first `Type::Time` column. Bucket rungs cycle through `1 s` .. `1 d` via `z` / `Shift+Z` (and `Ctrl+wheel`); `AutoBucketSize` picks a rung that fits ~500 columns on open. Click jumps the table to the first row in the bucket; drag brushes a time range and installs a `Type::Time` filter through `LogFilterModel`. Backing bits: `loglib::HistogramBucketIndex` (rebuilds 1 M rows in `< 5 ms`), `HistogramModel` (subscribes to `LogModel::rowsInserted` / `rowsRemoved` / `modelReset` with 50 ms coalesce), `HistogramWidget` (custom `paintEvent`, per-level palette from `ThemeControl::BackgroundFor`), and `HistogramDock` wired through `MainWindow::WireDockToggle`. See [`doc/README.md § Histogram / activity-rate strip`](doc/README.md#histogram--activity-rate-strip) for the user-facing surface.
 
 **Why.** The single most-cited "structured-log power user" feature, present in lnav, LogViewPlus, Logan, Acacia, Nerdlog. Bucketed message counts over time, coloured by level, give triage an immediate visual anchor: spot the spike, click to jump.
 
