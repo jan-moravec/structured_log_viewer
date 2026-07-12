@@ -5,6 +5,7 @@
 #include <QSize>
 #include <QWidget>
 
+#include <climits>
 #include <cstddef>
 
 class OverviewRailModel;
@@ -133,7 +134,10 @@ private:
 
     /// Last emitted proxy row during an active drag. Sentinel
     /// `INT_MIN` while idle so the first click still emits.
-    int mLastEmittedRow;
+    /// Default-initialised in-class so a future ctor overload
+    /// that forgets the init list can't leak an indeterminate
+    /// value into the first `EmitProxyRowForY` comparison.
+    int mLastEmittedRow = INT_MIN;
 
     /// True while the user is holding the left button on the
     /// rail. Used to differentiate a wheel-through-rail scroll

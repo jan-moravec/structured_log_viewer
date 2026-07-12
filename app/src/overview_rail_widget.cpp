@@ -148,7 +148,7 @@ QColor ColorForAnchorSlot(const ThemeControl *theme, std::uint8_t colorIndex, co
 OverviewRailWidget::OverviewRailWidget(
     OverviewRailModel *model, ThemeControl *theme, QAbstractItemView *tableView, QWidget *parent
 )
-    : QWidget(parent), mModel(model), mTheme(theme), mTableView(tableView), mLastEmittedRow(INT_MIN)
+    : QWidget(parent), mModel(model), mTheme(theme), mTableView(tableView)
 {
     setAttribute(Qt::WA_OpaquePaintEvent, false);
     setFocusPolicy(Qt::NoFocus);
@@ -534,11 +534,12 @@ QRect OverviewRailWidget::ComputeViewportIndicatorRect() const
         return {};
     }
 
-    // The visible range is best expressed via `rowAt`/`rowAt`+
-    // viewport height on the table. Fall back to scrollbar-based
-    // math when the view can't resolve rows (empty layout).
-    const QAbstractItemModel *proxy = mTableView->model();
-    if (proxy == nullptr)
+    // The visible range is best expressed via `indexAt` on the
+    // table (top + bottom of the viewport). `indexAt` already
+    // tolerates a null model (returns an invalid index whose
+    // `.row()` is `-1`), which the row-resolution branch below
+    // treats the same as "empty layout".
+    if (mTableView->model() == nullptr)
     {
         return {};
     }

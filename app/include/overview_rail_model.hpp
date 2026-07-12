@@ -162,7 +162,10 @@ public:
     [[nodiscard]] int ProxyRowForYPixel(int y, int railHeight) const noexcept;
 
 signals:
-    /// Buckets have repaint-worthy new content. Coalesced (~50 ms).
+    /// Buckets have repaint-worthy new content. Typically
+    /// coalesced (~50 ms) via the rebuild timer, but forced
+    /// paths (`SetBucketCount`, `RebuildNow`) emit synchronously
+    /// so callers that need fresh buckets on return get them.
     void bucketsChanged();
 
     /// Match rows changed. Not coalesced — user typing in the

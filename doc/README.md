@@ -413,7 +413,7 @@ The rail is computed off the current proxy chain (post filter, post sort), so it
 - **Left-drag** — scrubs the viewport indicator along the rail, live-updating the table as you drag.
 - **Mouse wheel over the rail** — routes to the table's vertical scrollbar, so you can spin through the stream from the rail.
 
-Row mapping is coalesced through `MainWindow::ScrollToProxyRow`, so rapid drags don't queue up a backlog of scroll jumps.
+The rail de-duplicates consecutive same-row emissions before calling `MainWindow::ScrollToProxyRow`, so a fast scrub across a range of pixels that all map to the same proxy row doesn't queue a backlog of identical scroll jumps.
 
 ## Searching
 

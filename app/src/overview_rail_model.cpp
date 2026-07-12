@@ -125,8 +125,12 @@ void OverviewRailModel::SetMatchProxyRows(std::vector<int> proxyRows)
     // anchor bits are unaffected. Refresh just the tick field so
     // a find-bar keystroke doesn't re-walk the whole proxy.
     RefreshMatchTicks();
+    // Only `matchesChanged` fires here: bucket geometry (levels,
+    // anchor bits) is unchanged, and the widget listens to both
+    // signals with the same `update()` slot — an extra
+    // `bucketsChanged` would only trigger a redundant repaint
+    // request that Qt would immediately coalesce out again.
     emit matchesChanged();
-    emit bucketsChanged();
 }
 
 void OverviewRailModel::Rebuild()
@@ -375,6 +379,17 @@ void OverviewRailModel::RefreshMatchTicks()
 
 void OverviewRailModel::ScheduleRebuild()
 {
+    // While the rail is hidden, `SetBucketCount(0)` drops the
+    // bucket vector; a rebuild would fully short-circuit and
+    // emit a redundant `bucketsChanged` that fans out into
+    // queued widget `update()` calls (each a no-op on the
+    // hidden widget, but not free). Skip the timer entirely
+    // instead — the next `SetBucketCount(H)` on re-show runs
+    // its own synchronous rebuild against fresh proxy state.
+    if (mBuckets.empty())
+    {
+        return;
+    }
     if (mRebuildTimer != nullptr && !mRebuildTimer->isActive())
     {
         mRebuildTimer->start();

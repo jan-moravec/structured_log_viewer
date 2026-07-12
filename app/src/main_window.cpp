@@ -6062,9 +6062,16 @@ void MainWindow::SetOverviewRailVisible(bool visible)
     }
     // Persist immediately so the next launch honours the current
     // preference regardless of how we got here (user toggle,
-    // load-time seed, session reload).
+    // load-time seed, session reload). Guarded so the load-time
+    // seed (which replays the persisted value verbatim) doesn't
+    // round-trip through QSettings for no reason — that's a
+    // registry write on Windows, and we call it on every window
+    // construction.
     QSettings settings;
-    settings.setValue(QStringLiteral("ui/showOverviewRail"), visible);
+    if (settings.value(QStringLiteral("ui/showOverviewRail"), true).toBool() != visible)
+    {
+        settings.setValue(QStringLiteral("ui/showOverviewRail"), visible);
+    }
 
     // Keep the QAction's check state consistent when the slot is
     // driven programmatically (load-time seed). `QSignalBlocker`
