@@ -6021,7 +6021,7 @@ void MainWindow::JumpToFirstRowInBucket(std::size_t bucketIndex)
     SelectSourceRow(sourceRow);
 }
 
-void MainWindow::ScrollToProxyRow(int proxyRow)
+void MainWindow::ScrollToProxyRow(int proxyRow, bool replaceSelection)
 {
     if (mTableView == nullptr || mSortFilterProxyModel == nullptr)
     {
@@ -6038,10 +6038,20 @@ void MainWindow::ScrollToProxyRow(int proxyRow)
     {
         return;
     }
-    mTableView->clearSelection();
     mTableView->scrollTo(proxyIdx, QAbstractItemView::PositionAtCenter);
-    mTableView->selectionModel()->select(proxyIdx, QItemSelectionModel::Select | QItemSelectionModel::Rows);
-    mTableView->selectionModel()->setCurrentIndex(proxyIdx, QItemSelectionModel::NoUpdate);
+    if (replaceSelection)
+    {
+        // Fresh click: same "commit to row" semantics as
+        // `SelectSourceRow` (anchors dock, histogram bucket click).
+        mTableView->clearSelection();
+        mTableView->selectionModel()->select(proxyIdx, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        mTableView->selectionModel()->setCurrentIndex(proxyIdx, QItemSelectionModel::NoUpdate);
+    }
+    // Drag scrub (`replaceSelection == false`): scroll only, so
+    // the user's existing selection survives the exploration
+    // pass. Deliberately do not update the current index either
+    // — advancing it would clobber the last-clicked row for the
+    // next arrow-key press.
 }
 
 void MainWindow::SetOverviewRailVisible(bool visible)
@@ -6067,14 +6077,13 @@ void MainWindow::SetOverviewRailVisible(bool visible)
 
     if (visible)
     {
+        // Attach reparents + shows the widget; its `resizeEvent`
+        // then calls `SetBucketCount(H)` on the model which runs a
+        // synchronous rebuild, so we do NOT need to invoke
+        // `Rebuild()` here. A second rebuild would only produce a
+        // wasted O(rowCount) walk (and, worse, a duplicate paint
+        // on the widget's first show).
         mTableView->AttachOverviewRail(mOverviewRailWidget);
-        // Rebuild once on attach so buckets reflect the current
-        // row count (the model was quiet while the widget stayed
-        // hidden and had a zero-height sizeHint).
-        if (mOverviewRailModel != nullptr)
-        {
-            mOverviewRailModel->Rebuild();
-        }
     }
     else
     {
@@ -6084,6 +6093,16 @@ void MainWindow::SetOverviewRailVisible(bool visible)
         // already dropped the parent.
         mOverviewRailWidget->setParent(this);
         mOverviewRailWidget->hide();
+        // Drop the model's bucket vector so `RebuildInternal`
+        // short-circuits on every incoming proxy signal while the
+        // rail is hidden. Without this, live-tail bursts would
+        // pay the full O(rowCount) walk even though nothing is
+        // painted. `SetBucketCount(H)` from the widget's next
+        // `resizeEvent` re-arms the model on the toggle back on.
+        if (mOverviewRailModel != nullptr)
+        {
+            mOverviewRailModel->SetBucketCount(0);
+        }
     }
 }
 

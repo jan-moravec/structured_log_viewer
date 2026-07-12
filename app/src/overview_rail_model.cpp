@@ -19,10 +19,12 @@
 namespace
 {
 
-/// Coalesce cadence for `bucketsChanged`. Matches the histogram's
-/// 50 ms cadence and the table's live-tail batch cadence so a
-/// row burst yields at most one repaint.
-constexpr int EMIT_COALESCE_MS = 50;
+/// Coalesce cadence for the full-rebuild + `bucketsChanged`
+/// emit. Matches the histogram's 50 ms cadence and the table's
+/// live-tail batch cadence, so a per-row `rowsInserted` volley
+/// (LogFilterModel's active-sort branch) collapses to one
+/// O(rowCount) walk instead of one per row.
+constexpr int REBUILD_COALESCE_MS = 50;
 
 /// Severity ranking for the dominant-level tie-break. Higher
 /// value == more severe, so ties go to the row colour users are
@@ -45,10 +47,10 @@ OverviewRailModel::OverviewRailModel(
 )
     : QObject(parent), mProxyModel(proxyModel), mSourceModel(sourceModel), mAnchors(anchors)
 {
-    mEmitTimer = new QTimer(this);
-    mEmitTimer->setSingleShot(true);
-    mEmitTimer->setInterval(EMIT_COALESCE_MS);
-    connect(mEmitTimer, &QTimer::timeout, this, &OverviewRailModel::bucketsChanged);
+    mRebuildTimer = new QTimer(this);
+    mRebuildTimer->setSingleShot(true);
+    mRebuildTimer->setInterval(REBUILD_COALESCE_MS);
+    connect(mRebuildTimer, &QTimer::timeout, this, &OverviewRailModel::OnRebuildTimeout);
 
     if (mProxyModel != nullptr)
     {
@@ -97,28 +99,49 @@ void OverviewRailModel::SetBucketCount(std::size_t nBuckets)
         return;
     }
     mBuckets.assign(nBuckets, Bucket{});
-    // Bit count is preserved separately because the fresh buckets
-    // start at zero; recompute inside RebuildInternal.
+    // Zero-bucket case (rail hidden) is the fast-path the
+    // visibility toggle relies on: `RebuildInternal` short-
+    // circuits on `mBuckets.empty()` so subsequent proxy signals
+    // cost only the timer restart.
+    //
+    // Non-zero case: called from the widget's `resizeEvent`, which
+    // triggers a paint on return. Rebuild synchronously so the
+    // widget sees fresh bucket geometry on the next paint tick
+    // instead of the coalesce timer's stale buckets.
+    if (mRebuildTimer != nullptr && mRebuildTimer->isActive())
+    {
+        // A coalesced rebuild was in flight; the sync rebuild
+        // below supersedes it.
+        mRebuildTimer->stop();
+    }
     RebuildInternal();
-    // Rail widget consumes the change immediately on the next
-    // paint tick, so avoid the coalesce delay here.
     emit bucketsChanged();
 }
 
 void OverviewRailModel::SetMatchProxyRows(std::vector<int> proxyRows)
 {
     mMatchProxyRows = std::move(proxyRows);
-    // Match counts overlay the existing per-level bucket data;
-    // rebuild to fold the fresh rows into the bucket vector.
-    RebuildInternal();
+    // Match ticks live in `matchCount` only; level counts and
+    // anchor bits are unaffected. Refresh just the tick field so
+    // a find-bar keystroke doesn't re-walk the whole proxy.
+    RefreshMatchTicks();
     emit matchesChanged();
     emit bucketsChanged();
 }
 
 void OverviewRailModel::Rebuild()
 {
+    ScheduleRebuild();
+}
+
+void OverviewRailModel::RebuildNow()
+{
+    if (mRebuildTimer != nullptr && mRebuildTimer->isActive())
+    {
+        mRebuildTimer->stop();
+    }
     RebuildInternal();
-    ScheduleEmit();
+    emit bucketsChanged();
 }
 
 loglib::LogLevel OverviewRailModel::DominantLevel(std::size_t bucket) const noexcept
@@ -178,39 +201,31 @@ int OverviewRailModel::ProxyRowForYPixel(int y, int railHeight) const noexcept
     {
         return 0;
     }
-    // Clamp Y into the rail's usable range.
+    // Clamp Y into the rail's usable range, then map directly to
+    // proxy rows: `row = y * rowCount / railHeight`. This gives
+    // sub-bucket precision so scrubbing a bucket that spans many
+    // rows still moves the viewport smoothly. The bucket-based
+    // mapping is only relevant to the paint pass, not to click
+    // resolution — a user clicking the middle of a bucket wants
+    // to land on the middle row, not the bucket's first row.
     const int clampedY = std::clamp(y, 0, railHeight - 1);
-    // Linear map: bucket = (y * bucketCount) / railHeight, then
-    // return the first proxy row in that bucket (matches paint
-    // math so click-and-scroll lands on the row the user sees).
-    if (mBuckets.empty())
-    {
-        // No bucket vector yet — approximate directly with row
-        // math so clicks work even before the first `SetBucketCount`.
-        const long long row = (static_cast<long long>(clampedY) * static_cast<long long>(mProxyRowCount)) /
-                              static_cast<long long>(railHeight);
-        return static_cast<int>(std::clamp<long long>(row, 0, mProxyRowCount - 1));
-    }
-    const long long bucket = (static_cast<long long>(clampedY) * static_cast<long long>(mBuckets.size())) /
-                             static_cast<long long>(railHeight);
-    const int clampedBucket = static_cast<int>(std::clamp<long long>(bucket, 0, static_cast<long long>(mBuckets.size()) - 1));
-    const int firstRow = FirstProxyRowInBucket(static_cast<std::size_t>(clampedBucket));
-    return firstRow >= 0 ? firstRow : 0;
+    const long long row = (static_cast<long long>(clampedY) * static_cast<long long>(mProxyRowCount)) /
+                          static_cast<long long>(railHeight);
+    return static_cast<int>(std::clamp<long long>(row, 0, mProxyRowCount - 1));
 }
 
-void OverviewRailModel::OnRowsInserted(const QModelIndex &parent, int first, int last)
+void OverviewRailModel::OnRowsInserted(const QModelIndex & /*parent*/, int /*first*/, int /*last*/)
 {
-    (void)parent;
-    (void)first;
-    (void)last;
+    // Rebuild is coalesced through the 50 ms timer, so a burst
+    // (per-row inserts under an active sort in `LogFilterModel`)
+    // collapses to one walk. The `first` / `last` range is
+    // ignored today; keeping the slot signature intact leaves
+    // room for a tail-append fast path later.
     Rebuild();
 }
 
-void OverviewRailModel::OnRowsRemoved(const QModelIndex &parent, int first, int last)
+void OverviewRailModel::OnRowsRemoved(const QModelIndex & /*parent*/, int /*first*/, int /*last*/)
 {
-    (void)parent;
-    (void)first;
-    (void)last;
     Rebuild();
 }
 
@@ -274,6 +289,7 @@ void OverviewRailModel::RebuildInternal()
         bucket.anchorSlots.reset();
     }
     mAnchorBucketBitsSet = 0;
+    mBucketedMatchCount = 0;
 
     if (mProxyModel == nullptr)
     {
@@ -331,9 +347,53 @@ void OverviewRailModel::RebuildInternal()
         }
     }
 
-    // Fold match rows in. `mFindMatchCache->sortedRows` is a
-    // sorted, deduplicated proxy-row list — bucket assignment
-    // matches the row pass above.
+    // Fold current match rows in as part of the same walk so
+    // the caller doesn't have to invoke `RefreshMatchTicks`
+    // separately. Path is O(nMatchRows) on top of the O(rowCount)
+    // proxy walk above.
+    FoldMatchTicksIntoBuckets();
+
+    EmitAnchorChangeIfDifferent(previousBitsSet);
+}
+
+void OverviewRailModel::RefreshMatchTicks()
+{
+    mBucketedMatchCount = 0;
+    for (auto &bucket : mBuckets)
+    {
+        bucket.matchCount = 0;
+    }
+    // No-op when the rail has no bucket vector (hidden) or the
+    // proxy is empty — `mBucketedMatchCount` is already zero and
+    // there's nothing to fold into.
+    if (mBuckets.empty() || mProxyRowCount <= 0)
+    {
+        return;
+    }
+    FoldMatchTicksIntoBuckets();
+}
+
+void OverviewRailModel::ScheduleRebuild()
+{
+    if (mRebuildTimer != nullptr && !mRebuildTimer->isActive())
+    {
+        mRebuildTimer->start();
+    }
+}
+
+void OverviewRailModel::OnRebuildTimeout()
+{
+    RebuildInternal();
+    emit bucketsChanged();
+}
+
+void OverviewRailModel::FoldMatchTicksIntoBuckets()
+{
+    if (mBuckets.empty() || mProxyRowCount <= 0)
+    {
+        return;
+    }
+    const std::size_t nBuckets = mBuckets.size();
     for (const int proxyRow : mMatchProxyRows)
     {
         if (proxyRow < 0 || proxyRow >= mProxyRowCount)
@@ -344,16 +404,7 @@ void OverviewRailModel::RebuildInternal()
             (static_cast<std::size_t>(proxyRow) * nBuckets) / static_cast<std::size_t>(mProxyRowCount);
         const std::size_t bounded = std::min(bucketIdx, nBuckets - 1);
         ++mBuckets[bounded].matchCount;
-    }
-
-    EmitAnchorChangeIfDifferent(previousBitsSet);
-}
-
-void OverviewRailModel::ScheduleEmit()
-{
-    if (!mEmitTimer->isActive())
-    {
-        mEmitTimer->start();
+        ++mBucketedMatchCount;
     }
 }
 

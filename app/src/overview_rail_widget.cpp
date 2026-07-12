@@ -21,6 +21,7 @@
 #include <QRect>
 #include <QResizeEvent>
 #include <QScrollBar>
+#include <QShowEvent>
 #include <QSize>
 #include <QStyle>
 #include <QStyleOptionViewItem>
@@ -85,6 +86,15 @@ constexpr int INDICATOR_MIN_HEIGHT_PX = 12;
 /// Minimum rail width in device-independent px. Guarantees a
 /// hittable target at very small font sizes.
 constexpr int RAIL_MIN_WIDTH_PX = 10;
+
+/// Maximum rail width in device-independent px. Some styles
+/// (accessibility themes on Windows, GTK "chunky-scrollbar"
+/// setups) advertise very large `PM_ScrollBarExtent` values —
+/// mirroring them 1:1 would cover a large fraction of the
+/// viewport with a nearly-empty rail. The cap keeps the rail
+/// at klogg-parity density; ticks + indicator remain crisp
+/// above this width so raising it further wastes pixels.
+constexpr int RAIL_MAX_WIDTH_PX = 22;
 
 /// Extra width added to the DPI-fluent metric. Nudges the
 /// rail slightly wider than the scrollbar so it doesn't merge
@@ -171,11 +181,16 @@ QSize OverviewRailWidget::sizeHint() const
     // recognise. Add a small padding so the rail doesn't look
     // like a duplicate scrollbar when the two sit next to each
     // other. Fall back to the font's `M` advance when the style
-    // returns a degenerate 0 (offscreen QPA in tests).
+    // returns a degenerate 0 (offscreen QPA in tests). Clamp
+    // into `[RAIL_MIN_WIDTH_PX, RAIL_MAX_WIDTH_PX]` so a themed
+    // style with a giant scrollbar extent doesn't inflate the
+    // rail past the point where extra pixels stop conveying
+    // information.
     const QStyle *s = style();
     const int scrollbarExtent = (s != nullptr) ? s->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, this) : 0;
     const int fontExtent = fontMetrics().horizontalAdvance(QLatin1Char('M'));
-    const int extent = std::max({scrollbarExtent, fontExtent, RAIL_MIN_WIDTH_PX}) + RAIL_WIDTH_PADDING;
+    const int raw = std::max({scrollbarExtent, fontExtent, RAIL_MIN_WIDTH_PX}) + RAIL_WIDTH_PADDING;
+    const int extent = std::min(raw, RAIL_MAX_WIDTH_PX);
     return {extent, 0};
 }
 
@@ -390,7 +405,11 @@ void OverviewRailWidget::mousePressEvent(QMouseEvent *event)
     }
     mDragging = true;
     mLastEmittedRow = INT_MIN;
-    EmitProxyRowForY(static_cast<int>(event->position().y()));
+    // A fresh click commits the user to that row: the downstream
+    // handler is allowed to replace the current selection with
+    // just this row (matches the "click to jump" idiom used by
+    // the histogram tick strip and the anchors dock).
+    EmitProxyRowForY(static_cast<int>(event->position().y()), /*replaceSelection=*/true);
     event->accept();
 }
 
@@ -401,7 +420,10 @@ void OverviewRailWidget::mouseMoveEvent(QMouseEvent *event)
         QWidget::mouseMoveEvent(event);
         return;
     }
-    EmitProxyRowForY(static_cast<int>(event->position().y()));
+    // Scrubbing: the user is exploring, not committing. Ask the
+    // handler to scroll without touching the selection so a
+    // carefully-built multi-row selection survives a rail scrub.
+    EmitProxyRowForY(static_cast<int>(event->position().y()), /*replaceSelection=*/false);
     event->accept();
 }
 
@@ -451,12 +473,28 @@ void OverviewRailWidget::resizeEvent(QResizeEvent *event)
     SyncBucketCountToHeight();
 }
 
+void OverviewRailWidget::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+    // Re-arm the model after a hide-toggle dropped its bucket
+    // vector. Idempotent when the height matches — `SetBucketCount`
+    // is a no-op on a matching count.
+    SyncBucketCountToHeight();
+}
+
 void OverviewRailWidget::changeEvent(QEvent *event)
 {
     QWidget::changeEvent(event);
     // Style / palette / font change may shift the DPI-fluent
     // width and the wash colour. Force a fresh sizeHint so the
     // hosting `LogTableView` reserves the right margin.
+    // `ScreenChangeInternal` is a private Qt enum today; we
+    // rely on it as the most reliable cross-version proxy for a
+    // DPR change (Qt 6.6+ ships public `DevicePixelRatioChange`,
+    // but the project targets Qt 6.1+). Both events go through
+    // this switch so the newer one is picked up for free once we
+    // raise the floor. See LogTableView::changeEvent for the
+    // matching comment.
     switch (event->type())
     {
     case QEvent::StyleChange:
@@ -552,7 +590,7 @@ void OverviewRailWidget::SyncBucketCountToHeight()
     mModel->SetBucketCount(static_cast<std::size_t>(height));
 }
 
-void OverviewRailWidget::EmitProxyRowForY(int y)
+void OverviewRailWidget::EmitProxyRowForY(int y, bool replaceSelection)
 {
     if (mModel == nullptr)
     {
@@ -570,5 +608,5 @@ void OverviewRailWidget::EmitProxyRowForY(int y)
         return;
     }
     mLastEmittedRow = proxyRow;
-    emit proxyRowClicked(proxyRow);
+    emit proxyRowClicked(proxyRow, replaceSelection);
 }

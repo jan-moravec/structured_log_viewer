@@ -701,6 +701,12 @@ void LogTableView::changeEvent(QEvent *event)
     }
     // Refresh the reserved margin on events that can change the
     // rail's DPI-fluent width or its wash / colour palette.
+    // `ScreenChangeInternal` is a private Qt enum; we accept the
+    // one-time deprecation risk because it's the only signal that
+    // reliably fires on a monitor DPR change across the Qt
+    // versions the project supports (6.1+). Qt 6.6+ ships the
+    // public `DevicePixelRatioChange` — once the minimum bumps
+    // that far, replace this case with the newer event.
     switch (event->type())
     {
     case QEvent::StyleChange:

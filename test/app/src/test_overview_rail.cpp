@@ -31,9 +31,11 @@
 #include <QAbstractItemModel>
 #include <QAction>
 #include <QApplication>
+#include <QItemSelectionModel>
 #include <QModelIndex>
 #include <QSettings>
 #include <QSignalSpy>
+#include <QStandardPaths>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
@@ -163,6 +165,23 @@ private slots:
             MainWindow::InitializeTimezoneDatabase(),
             "Failed to initialise timezone database; see qCritical above."
         );
+        // Route every QSettings / QStandardPaths lookup this
+        // suite makes to a throw-away location. Prevents the
+        // MainWindow toggle test from writing real registry keys
+        // on Windows, and pins the test's org / app name so slot
+        // ordering can't leak state between tests.
+        QStandardPaths::setTestModeEnabled(true);
+        QCoreApplication::setOrganizationName(QStringLiteral("StructuredLogViewerTest"));
+        QCoreApplication::setApplicationName(QStringLiteral("OverviewRailTest"));
+    }
+
+    void cleanupTestCase()
+    {
+        // Belt-and-braces cleanup: even under `setTestModeEnabled`
+        // the file/registry hive lingers on disk. Clearing keeps
+        // successive local runs deterministic.
+        QSettings settings;
+        settings.clear();
     }
 
     /// Empty model + no anchors -> zero row count, no anchor
@@ -260,6 +279,128 @@ private slots:
         // Clearing drops ticks.
         rail.SetMatchProxyRows({});
         QVERIFY(!rail.HasMatchTicks());
+
+        // `HasMatchTicks` reflects the *bucketed* count, not the
+        // raw list. A caller pushing only out-of-range rows (all
+        // silently dropped by the folder) must NOT see ticks.
+        rail.SetMatchProxyRows({-1, 999, -5, 42});
+        QVERIFY2(!rail.HasMatchTicks(), "all-out-of-range match rows must fold to zero ticks");
+    }
+
+    /// `SetMatchProxyRows` is the find-bar hot path — every
+    /// keystroke calls it, so it must NOT walk the whole proxy
+    /// to re-fill level counts / anchor bits. Pin the invariant
+    /// by capturing per-bucket level counts, calling
+    /// `SetMatchProxyRows`, and asserting the level counts are
+    /// bit-for-bit unchanged (only `matchCount` moved).
+    static void TestSetMatchProxyRowsLeavesLevelCountsUntouched()
+    {
+        LogModel model;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel rail(chain.filter, &model, /*anchors=*/nullptr);
+        rail.SetBucketCount(20);
+
+        constexpr int ROWS = 20;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(rail);
+        QCOMPARE(rail.ProxyRowCount(), ROWS);
+
+        std::vector<loglib::LevelBucket> baseline;
+        baseline.reserve(rail.BucketCount());
+        for (const auto &bucket : rail.Buckets())
+        {
+            baseline.push_back(bucket.levels);
+        }
+
+        rail.SetMatchProxyRows({2, 7, 11});
+
+        std::size_t i = 0;
+        for (const auto &bucket : rail.Buckets())
+        {
+            QCOMPARE(bucket.levels.counts, baseline[i].counts);
+            ++i;
+        }
+    }
+
+    /// `Rebuild()` is coalesced through a 50 ms timer, so a
+    /// burst of proxy signals must collapse to a single
+    /// `bucketsChanged` emission (and a single walk of the
+    /// row set). Without the coalesce, `LogFilterModel`'s
+    /// per-row `rowsInserted` volley under an active sort would
+    /// pay `O(rowCount)` per row.
+    static void TestRebuildIsCoalesced()
+    {
+        LogModel model;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel rail(chain.filter, &model, /*anchors=*/nullptr);
+        rail.SetBucketCount(16);
+
+        constexpr int ROWS = 16;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(rail);
+
+        // Fire many rebuild requests inside one quiet window.
+        // A single timeout should suffice for all of them.
+        QSignalSpy spy(&rail, &OverviewRailModel::bucketsChanged);
+        for (int i = 0; i < 10; ++i)
+        {
+            rail.Rebuild();
+        }
+        QVERIFY(spy.wait(1000));
+        QCOMPARE_LE(spy.count(), 1);
+    }
+
+    /// `SetBucketCount(0)` -- the mechanism
+    /// `MainWindow::SetOverviewRailVisible(false)` uses to stop
+    /// paying rebuild cost while the rail is hidden -- must make
+    /// subsequent proxy signals cheap. Assert `BucketCount()` is
+    /// zero after the drop; the `RebuildInternal` short-circuit
+    /// on `mBuckets.empty()` is what makes the hidden state free.
+    static void TestSetBucketCountZeroDropsBuckets()
+    {
+        LogModel model;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel rail(chain.filter, &model, /*anchors=*/nullptr);
+        rail.SetBucketCount(32);
+        QCOMPARE(rail.BucketCount(), static_cast<std::size_t>(32));
+
+        rail.SetBucketCount(0);
+        QCOMPARE(rail.BucketCount(), static_cast<std::size_t>(0));
+        QVERIFY(rail.Buckets().empty());
+    }
+
+    /// `ProxyRowForYPixel` maps rail Y linearly onto proxy rows,
+    /// bypassing the bucket step. A click near the top of a
+    /// bucket-spanning range must resolve to a lower row than a
+    /// click near the bottom of the same range (klogg-style
+    /// sub-bucket precision so scrubbing feels smooth).
+    static void TestProxyRowForYPixelSubBucketPrecision()
+    {
+        LogModel model;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel rail(chain.filter, &model, /*anchors=*/nullptr);
+        // Deliberately fewer buckets than rows so each bucket
+        // spans several rows -- the sub-bucket mapping is only
+        // observable under that ratio.
+        rail.SetBucketCount(10);
+
+        constexpr int ROWS = 100;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(rail);
+
+        // Bucket 0 spans rows [0, 10). Y=0 should land row 0,
+        // Y=9 should land row >= 4 (a bucket-first mapping would
+        // return 0 for both).
+        QCOMPARE(rail.ProxyRowForYPixel(0, 100), 0);
+        const int nearBucketBottom = rail.ProxyRowForYPixel(9, 100);
+        QVERIFY2(nearBucketBottom >= 4, "sub-bucket precision must move within a single bucket");
     }
 
     /// Adding an anchor via `AnchorManager` flows into the
@@ -291,18 +432,17 @@ private slots:
         {
             return;
         }
+        // Anchor mutations flow through `Rebuild()`, which is
+        // coalesced through the 50 ms rebuild timer. Waiting on
+        // the signal spy synchronises the test against the timer
+        // without hard-coding a sleep.
         QSignalSpy anchorSpy(&rail, &OverviewRailModel::anchorBucketsChanged);
         anchors.SetAnchor(*keyOpt, 3);
-        // Anchor mutation triggers a full rebuild in the rail;
-        // the signal is coalesced with buckets rebuilds via a
-        // direct `emit`, so no wait is needed after the mutation.
-        // Give Qt a tick to route the queued anchor emit.
-        QCoreApplication::processEvents();
+        QVERIFY2(anchorSpy.wait(1000), "anchor rebuild must emit anchorBucketsChanged within the timeout");
         QVERIFY(rail.HasAnchorTicks());
-        QVERIFY(anchorSpy.count() >= 1);
 
         anchors.ClearAll();
-        QCoreApplication::processEvents();
+        QVERIFY2(anchorSpy.wait(1000), "anchor clear must emit anchorBucketsChanged within the timeout");
         QVERIFY(!rail.HasAnchorTicks());
     }
 
@@ -399,11 +539,9 @@ private slots:
     /// off attaches / detaches the widget from the table view.
     static void TestMainWindowOverviewRailToggle()
     {
-        // Isolate the QSettings key so a prior run doesn't seed
-        // the pref off. A scoped org / app name keeps writes in a
-        // throw-away registry hive.
-        QCoreApplication::setOrganizationName(QStringLiteral("StructuredLogViewerTest"));
-        QCoreApplication::setApplicationName(QStringLiteral("OverviewRailToggle"));
+        // `initTestCase` set the org / app name and enabled
+        // test-mode QSettings; clear the specific key we probe
+        // so a prior run doesn't seed the pref off.
         {
             QSettings settings;
             settings.remove(QStringLiteral("ui/showOverviewRail"));
@@ -449,6 +587,88 @@ private slots:
         QVERIFY(action != nullptr);
         const QKeySequence expected(Qt::CTRL | Qt::SHIFT | Qt::Key_O);
         QCOMPARE(action->shortcut(), expected);
+    }
+
+    /// Toggling the rail off drops the underlying
+    /// `OverviewRailModel`'s bucket vector so subsequent proxy
+    /// signals short-circuit inside `RebuildInternal`. Toggling
+    /// back on re-arms the bucket count from the widget's height
+    /// (via `showEvent` -> `SyncBucketCountToHeight`).
+    static void TestMainWindowOverviewRailHideDropsBuckets()
+    {
+        {
+            QSettings settings;
+            settings.remove(QStringLiteral("ui/showOverviewRail"));
+        }
+        MainWindow window;
+        window.show();
+
+        auto *action = window.findChild<QAction *>(QStringLiteral("actionToggleOverviewRail"));
+        QVERIFY(action != nullptr);
+        auto *railModel = window.findChild<OverviewRailModel *>();
+        QVERIFY2(railModel != nullptr, "OverviewRailModel must be a QObject child of MainWindow");
+        QVERIFY2(action->isChecked(), "rail should be on by default");
+        QVERIFY2(railModel->BucketCount() > 0, "model must be armed while the rail is visible");
+
+        action->trigger();
+        QVERIFY(!action->isChecked());
+        QCOMPARE(railModel->BucketCount(), static_cast<std::size_t>(0));
+
+        action->trigger();
+        QVERIFY(action->isChecked());
+        QVERIFY2(
+            railModel->BucketCount() > 0,
+            "re-showing the rail must re-sync the bucket count from the widget height"
+        );
+    }
+
+    /// A drag scrub across the rail must preserve the user's
+    /// existing selection. Simulates the emit the widget sends
+    /// on `mouseMoveEvent` (replaceSelection == false) and pins
+    /// that `ScrollToProxyRow` doesn't clobber the caller's
+    /// selection model.
+    static void TestScrollToProxyRowPreservesSelectionOnDrag()
+    {
+        {
+            QSettings settings;
+            settings.remove(QStringLiteral("ui/showOverviewRail"));
+        }
+        MainWindow window;
+        window.show();
+
+        auto *view = window.findChild<LogTableView *>();
+        QVERIFY(view != nullptr);
+
+        // Populate the model so there are rows to select.
+        constexpr int ROWS = 30;
+        const RailFixture fixture(ROWS);
+        auto *model = window.Model();
+        QVERIFY(model != nullptr);
+        StreamJsonPathInto(*model, fixture.Path());
+
+        auto *proxy = window.FilterModel();
+        QVERIFY(proxy != nullptr);
+        QCOMPARE(proxy->rowCount(), ROWS);
+
+        // Seed a multi-row selection [3, 4, 5].
+        auto *selection = view->selectionModel();
+        QVERIFY(selection != nullptr);
+        selection->clearSelection();
+        for (int r = 3; r <= 5; ++r)
+        {
+            selection->select(proxy->index(r, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        }
+        QCOMPARE(selection->selectedRows().size(), 3);
+
+        // Drag scrub to row 20 -- selection should survive.
+        window.ScrollToProxyRow(20, /*replaceSelection=*/false);
+        QCOMPARE(selection->selectedRows().size(), 3);
+
+        // Fresh click at row 25 -- selection is replaced with
+        // just that row (matches `SelectSourceRow` semantics).
+        window.ScrollToProxyRow(25, /*replaceSelection=*/true);
+        QCOMPARE(selection->selectedRows().size(), 1);
+        QCOMPARE(selection->selectedRows().front().row(), 25);
     }
 };
 

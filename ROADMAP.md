@@ -256,7 +256,7 @@ Sessions already persist a single filter set. Real triage needs a small library 
 
 ### 13. ~~Match overview rail / minimap~~
 
-> **Shipped.** `OverviewRailWidget` renders a thin vertical strip to the right of the table's viewport (Qt Creator gutter model, reserved via `QAbstractScrollArea::setViewportMargins`), showing where in the proxy stream matches, anchors, and level-coloured bands sit. Width tracks `QStyle::PM_ScrollBarExtent` so it scales cleanly across DPI / style changes; the viewport indicator mirrors the visible slice and supports click / drag / wheel to jump the table (coalesced through `MainWindow::ScrollToProxyRow`). On by default; toggle from **View → Overview Rail** or `Ctrl+Shift+O`; state persists in `QSettings`. Backing bits: `OverviewRailModel` (bucketed index over proxy rows, reuses `loglib::LevelBucket` for level counts, subscribes to `rowsInserted` / `rowsRemoved` / `modelReset` / `layoutChanged` / `AnchorManager` signals with a 50 ms coalesce timer), `LogTableView::AttachOverviewRail` (viewport-margin hook with `sizeHint` → `minimumSizeHint` → `width` fallback for width resolution), and `MainWindow` wiring that pushes `mFindMatchCache` results into the model on every rebuild / invalidation / FindDock open-close. See [`doc/README.md § Match overview rail`](doc/README.md#match-overview-rail) for the user-facing surface.
+> **Shipped.** Vertical strip to the right of the table showing matches, anchors, and level-coloured bands over the whole proxy stream, with a click / drag / wheel viewport indicator. On by default; toggle from **View → Overview Rail** (`Ctrl+Shift+O`). See [`doc/README.md § Match overview rail`](doc/README.md#match-overview-rail).
 
 ### 14. Per-cell quick filter
 

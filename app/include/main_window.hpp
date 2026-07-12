@@ -348,11 +348,18 @@ public:
     /// @p bucketIndex. Wired to `HistogramDock::bucketClicked`.
     void JumpToFirstRowInBucket(std::size_t bucketIndex);
 
-    /// Scroll the table so proxy row @p proxyRow is centred, and
-    /// select it. Wired to `OverviewRailWidget::proxyRowClicked`;
-    /// no-op when the row is out of range (rail geometry can
-    /// briefly out-race a `modelReset`).
-    void ScrollToProxyRow(int proxyRow);
+    /// Scroll the table so proxy row @p proxyRow is centred.
+    /// Wired to `OverviewRailWidget::proxyRowClicked`; no-op
+    /// when the row is out of range (rail geometry can briefly
+    /// out-race a `modelReset`).
+    ///
+    /// @p replaceSelection is `true` on a fresh rail click
+    /// (destructive: clears the existing selection and selects
+    /// just @p proxyRow, matching `SelectSourceRow`); `false`
+    /// during a drag scrub (the scroll happens but selection is
+    /// left alone, so a carefully-built multi-row selection
+    /// survives a scroll-by-rail).
+    void ScrollToProxyRow(int proxyRow, bool replaceSelection = true);
 
     /// Attach or detach `mOverviewRailWidget` on the table view,
     /// persist the visibility to `QSettings("ui/showOverviewRail")`,

@@ -13,6 +13,7 @@ class QAbstractItemView;
 class QMouseEvent;
 class QPaintEvent;
 class QResizeEvent;
+class QShowEvent;
 class QWheelEvent;
 
 /// Klogg / Qt-Creator-inspired match overview rail. A slim
@@ -79,9 +80,12 @@ public:
 signals:
     /// Emitted after the widget resolves a click / drag Y to a
     /// proxy row. `MainWindow` connects this to
-    /// `ScrollToProxyRow` (or a moral equivalent) so the table
-    /// scrolls and the current selection follows.
-    void proxyRowClicked(int proxyRow);
+    /// `ScrollToProxyRow`; @p replaceSelection is `true` on a
+    /// fresh click (the user is committing to that row, so it's
+    /// safe to replace the existing selection) and `false`
+    /// during a drag scrub (the user is exploring, so any
+    /// existing multi-selection is preserved).
+    void proxyRowClicked(int proxyRow, bool replaceSelection);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -91,6 +95,14 @@ protected:
     void wheelEvent(QWheelEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     void changeEvent(QEvent *event) override;
+
+    /// Re-sync the model's bucket count on every show. Needed
+    /// because `MainWindow::SetOverviewRailVisible(false)` drops
+    /// the bucket vector to skip rebuilds while the rail is
+    /// hidden — a subsequent show whose viewport height didn't
+    /// change would not re-fire `resizeEvent`, and the rail
+    /// would paint blank against a zero-bucket model.
+    void showEvent(QShowEvent *event) override;
 
 private:
     /// Rail Y range that maps 1-to-1 to proxy rows. Excludes a
@@ -110,8 +122,10 @@ private:
     /// Resolve mouse Y to a proxy row and emit
     /// `proxyRowClicked`. Filters out consecutive same-row
     /// emissions during a drag so downstream handlers aren't
-    /// spammed with duplicate scrolls.
-    void EmitProxyRowForY(int y);
+    /// spammed with duplicate scrolls. @p replaceSelection is
+    /// forwarded to the signal so the initial click and the
+    /// scrubbing moves can request different selection policies.
+    void EmitProxyRowForY(int y, bool replaceSelection);
 
     QPointer<OverviewRailModel> mModel;
     QPointer<ThemeControl> mTheme;
