@@ -21,6 +21,7 @@
 #include <loglib/file_line_source.hpp>
 #include <loglib/internal/advanced_parser_options.hpp>
 #include <loglib/log_file.hpp>
+#include <loglib/log_filter.hpp>
 #include <loglib/log_level.hpp>
 #include <loglib/log_parse_sink.hpp>
 #include <loglib/parser_options.hpp>
@@ -47,6 +48,7 @@
 #include <cstdint>
 #include <fstream>
 #include <memory>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -669,6 +671,180 @@ private slots:
         window.ScrollToProxyRow(25, /*replaceSelection=*/true);
         QCOMPARE(selection->selectedRows().size(), 1);
         QCOMPARE(selection->selectedRows().front().row(), 25);
+    }
+
+    /// Toggling the rail off (`SetBucketCount(0)`) drops the
+    /// bucket vector but preserves the cached match rows.
+    /// Toggling back on (`SetBucketCount(H)`) folds the cached
+    /// ticks into fresh buckets so the widget doesn't paint a
+    /// blank match band. Pins the "hide, keep find results,
+    /// reveal, ticks restored" cycle used by
+    /// `MainWindow::SetOverviewRailVisible`.
+    static void TestHideAndShowRestoresMatchTicks()
+    {
+        LogModel model;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel rail(chain.filter, &model, /*anchors=*/nullptr);
+        rail.SetBucketCount(20);
+
+        constexpr int ROWS = 20;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(rail);
+        QCOMPARE(rail.ProxyRowCount(), ROWS);
+
+        rail.SetMatchProxyRows({4, 9, 14});
+        QVERIFY(rail.HasMatchTicks());
+
+        // Hide: bucket vector drops, `HasMatchTicks` -> false
+        // (bucketed count is zero because there are no buckets
+        // to fold into), but the raw match list is retained.
+        rail.SetBucketCount(0);
+        QCOMPARE(rail.BucketCount(), static_cast<std::size_t>(0));
+        QVERIFY2(!rail.HasMatchTicks(), "hidden rail must report no match ticks");
+
+        // Reveal: `SetBucketCount(H)` reallocates buckets,
+        // `RebuildInternal` folds the retained match list into
+        // them, and `HasMatchTicks` flips back on without the
+        // caller re-pushing the list.
+        rail.SetBucketCount(20);
+        QVERIFY2(rail.HasMatchTicks(), "revealed rail must restore the cached match ticks");
+        std::uint32_t totalMatches = 0;
+        for (const auto &bucket : rail.Buckets())
+        {
+            totalMatches += bucket.matchCount;
+        }
+        QCOMPARE(totalMatches, static_cast<std::uint32_t>(3));
+    }
+
+    /// Installing a filter on the outer proxy fires
+    /// `layoutChanged`, which the rail wires to `Rebuild`.
+    /// Assert we get a `bucketsChanged` emit within the
+    /// coalesce window (pins the wiring path that
+    /// `TestRebuildIsCoalesced` doesn't exercise).
+    static void TestLayoutChangedTriggersRebuild()
+    {
+        LogModel model;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel rail(chain.filter, &model, /*anchors=*/nullptr);
+        rail.SetBucketCount(16);
+
+        constexpr int ROWS = 20;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(rail);
+        QCOMPARE(rail.ProxyRowCount(), ROWS);
+
+        // Install a callback filter on column 0 that drops
+        // every other source row. The rules change fires
+        // `layoutChanged` on `LogFilterModel`, which the rail
+        // wires to `Rebuild` -> coalesce timer.
+        QSignalSpy spy(&rail, &OverviewRailModel::bucketsChanged);
+        QVERIFY(spy.isValid());
+        std::vector<loglib::RowPredicate> rules;
+        rules.emplace_back(
+            std::in_place_type<loglib::CallbackStringRowPredicate>,
+            /*columnIndex=*/static_cast<std::size_t>(0),
+            /*match=*/[callCount = std::make_shared<std::size_t>(0)](std::string_view) mutable {
+                return ((*callCount)++ % 2) == 0;
+            }
+        );
+        chain.filter->SetFilterRules(std::move(rules));
+
+        QVERIFY2(spy.wait(1000), "layoutChanged must trigger a rebuild via the coalesce timer");
+        QVERIFY2(rail.ProxyRowCount() < ROWS, "filter must reduce the proxy row count");
+    }
+
+    /// Duplicate entries in the match-rows list must not
+    /// double-count into their bucket. Pins the `sort + unique`
+    /// normalisation in `SetMatchProxyRows`.
+    static void TestSetMatchProxyRowsDedupsDuplicates()
+    {
+        LogModel model;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel rail(chain.filter, &model, /*anchors=*/nullptr);
+        rail.SetBucketCount(20);
+
+        constexpr int ROWS = 20;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(rail);
+
+        // Same three unique rows, plus assorted duplicates and
+        // out-of-order entries.
+        rail.SetMatchProxyRows({5, 10, 5, 15, 10, 5, 15, 15});
+        QVERIFY(rail.HasMatchTicks());
+        std::uint32_t total = 0;
+        for (const auto &bucket : rail.Buckets())
+        {
+            total += bucket.matchCount;
+        }
+        QCOMPARE(total, static_cast<std::uint32_t>(3));
+    }
+
+    /// `enumColumnsChanged(Grew, ...)` never moves the level
+    /// column (only `Promoted` / `Demoted` do), so it must not
+    /// schedule a rebuild. Regression against a wide-log parse
+    /// paying `O(nColumns)` scans on every dictionary grow.
+    static void TestEnumGrewDoesNotTriggerRebuild()
+    {
+        LogModel model;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel rail(chain.filter, &model, /*anchors=*/nullptr);
+        rail.SetBucketCount(16);
+
+        constexpr int ROWS = 16;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(rail);
+
+        QSignalSpy spy(&rail, &OverviewRailModel::bucketsChanged);
+        QVERIFY(spy.isValid());
+        // Fire a synthetic `Grew` on the level column (the
+        // wide-log worst case). The rail's connect explicitly
+        // short-circuits `Grew` so the coalesce timer must not
+        // arm.
+        emit model.enumColumnsChanged(EnumColumnsChangeReason::Grew, /*columnIndex=*/0);
+
+        // Wait > coalesce interval to be sure we didn't
+        // just miss a scheduled emit. 200 ms is well past the
+        // 50 ms timer plus event-loop slack.
+        QTest::qWait(200);
+        QCOMPARE_LE(spy.count(), 0);
+    }
+
+    /// A rail widget destroyed through a non-`AttachOverviewRail`
+    /// path silently clears the view's `QPointer`. The next
+    /// geometry pass must reclaim the reserved right margin so
+    /// the viewport doesn't keep a phantom gap.
+    static void TestPhantomMarginResetsWhenRailDestroyed()
+    {
+        LogTableView view;
+        view.resize(800, 400);
+        view.show();
+
+        constexpr int RAIL_WIDTH = 16;
+        auto *rail = new QWidget(nullptr);
+        rail->setFixedWidth(RAIL_WIDTH);
+        view.AttachOverviewRail(rail);
+        QVERIFY(view.ReservedRightMargin() > 0);
+
+        // External destruction: `mOverviewRail` (QPointer) is
+        // cleared silently by Qt's QObject teardown. The view
+        // must notice on the next geometry pass and reclaim the
+        // margin without a call to `AttachOverviewRail(nullptr)`.
+        delete rail;
+        QCOMPARE(view.OverviewRail(), static_cast<QWidget *>(nullptr));
+
+        // Trigger `UpdateOverviewRailGeometry` via a resize.
+        view.resize(view.width() + 10, view.height());
+        // Give Qt a chance to deliver the resize event.
+        QCoreApplication::processEvents();
+        QCOMPARE(view.ReservedRightMargin(), 0);
     }
 };
 

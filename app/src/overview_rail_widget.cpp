@@ -33,6 +33,7 @@
 #include <bitset>
 #include <climits>
 #include <cstddef>
+#include <vector>
 
 namespace
 {
@@ -191,6 +192,10 @@ QSize OverviewRailWidget::sizeHint() const
     const int fontExtent = fontMetrics().horizontalAdvance(QLatin1Char('M'));
     const int raw = std::max({scrollbarExtent, fontExtent, RAIL_MIN_WIDTH_PX}) + RAIL_WIDTH_PADDING;
     const int extent = std::min(raw, RAIL_MAX_WIDTH_PX);
+    // Cache so `RailWidthForTest` (and any future non-const
+    // helper that wants the last DPI-fluent width) doesn't have
+    // to re-run the platform-metric query.
+    mCachedRailWidth = extent;
     return {extent, 0};
 }
 
@@ -201,7 +206,13 @@ QSize OverviewRailWidget::minimumSizeHint() const
 
 int OverviewRailWidget::RailWidthForTest() const
 {
-    return sizeHint().width();
+    // Warm the cache when a test asks before the first
+    // `sizeHint()` roundtrip, then return the cached value.
+    if (mCachedRailWidth == 0)
+    {
+        (void)sizeHint();
+    }
+    return mCachedRailWidth;
 }
 
 QRect OverviewRailWidget::ViewportIndicatorRectForTest() const
@@ -286,6 +297,19 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
     const int underlayWidth = std::max(1, rail.width() - (2 * RAIL_UNDERLAY_INSET));
     const QColor highlightColor = pal.color(QPalette::Highlight);
 
+    // Precompute the Y coordinate of every bucket edge once.
+    // Each of the three paint passes below picks the top from
+    // `yEdges[i]` and the bottom from `yEdges[i+1]` -- avoids
+    // recomputing the same integer division three times per
+    // bucket on tall rails and keeps the seam-rounding
+    // ("bottom == next bucket's top") consistent across passes.
+    std::vector<int> yEdges(nBuckets + 1);
+    for (std::size_t i = 0; i <= nBuckets; ++i)
+    {
+        yEdges[i] = railTop + static_cast<int>((i * static_cast<std::size_t>(railHeight)) / nBuckets);
+    }
+    yEdges.back() = railTop + railHeight;
+
     // Pass 1: dominant-level underlay per non-empty bucket.
     // One pixel row per bucket by construction (buckets sized to
     // rail height via `SetBucketCount`). Skip the expensive
@@ -297,14 +321,8 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
         {
             continue;
         }
-        const int y = railTop + static_cast<int>((i * static_cast<std::size_t>(railHeight)) / nBuckets);
-        // Height of at least 1 px so the row is always visible.
-        // Rounding via next-bucket-start avoids gaps at the
-        // seams while keeping the layout tight.
-        const int nextY = (i + 1 < nBuckets)
-                              ? railTop + static_cast<int>(((i + 1) * static_cast<std::size_t>(railHeight)) / nBuckets)
-                              : (railTop + railHeight);
-        const int height = std::max(1, nextY - y);
+        const int y = yEdges[i];
+        const int height = std::max(1, yEdges[i + 1] - y);
 
         const loglib::LogLevel dominant = mModel->DominantLevel(i);
         QColor color = ColorForLevelWithFallback(mTheme, dominant, pal);
@@ -325,12 +343,8 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
             {
                 continue;
             }
-            const int y = railTop + static_cast<int>((i * static_cast<std::size_t>(railHeight)) / nBuckets);
-            const int nextY =
-                (i + 1 < nBuckets)
-                    ? railTop + static_cast<int>(((i + 1) * static_cast<std::size_t>(railHeight)) / nBuckets)
-                    : (railTop + railHeight);
-            const int height = std::max(1, nextY - y);
+            const int y = yEdges[i];
+            const int height = std::max(1, yEdges[i + 1] - y);
             painter.fillRect(QRect(tickLeft, y, tickWidth, height), highlightColor);
         }
     }
@@ -349,12 +363,8 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
             {
                 continue;
             }
-            const int y = railTop + static_cast<int>((i * static_cast<std::size_t>(railHeight)) / nBuckets);
-            const int nextY =
-                (i + 1 < nBuckets)
-                    ? railTop + static_cast<int>(((i + 1) * static_cast<std::size_t>(railHeight)) / nBuckets)
-                    : (railTop + railHeight);
-            const int height = std::max(1, nextY - y);
+            const int y = yEdges[i];
+            const int height = std::max(1, yEdges[i + 1] - y);
             // Paint the lowest-index set slot: multiple anchor
             // colours in one bucket collapse to the first-set
             // (deterministic, and rare for a small rail).
@@ -461,6 +471,14 @@ void OverviewRailWidget::wheelEvent(QWheelEvent *event)
         event->ignore();
         return;
     }
+    // TODO: `event->position()` is in this widget's coordinate
+    // system, not the scrollbar's. `QAbstractSlider::wheelEvent`
+    // only reads `angleDelta` today so the mismatch is
+    // invisible, but any style / accessibility layer that
+    // inspects position sees rail-widget coordinates. Consider
+    // translating with `QWheelEvent` cloned at `vbar->mapFromGlobal
+    // (event->globalPosition().toPoint())` once we hit a case
+    // that cares.
     QApplication::sendEvent(vbar, event);
     // Mark accepted so the parent scroll area doesn't double-
     // process the wheel event.
@@ -479,7 +497,17 @@ void OverviewRailWidget::showEvent(QShowEvent *event)
     // Re-arm the model after a hide-toggle dropped its bucket
     // vector. Idempotent when the height matches — `SetBucketCount`
     // is a no-op on a matching count.
-    SyncBucketCountToHeight();
+    //
+    // Skip the call when the widget hasn't been sized yet (first
+    // show, before the hosting `LogTableView::UpdateOverviewRail
+    // Geometry` runs). Calling `SetBucketCount(0)` here would
+    // fire a redundant no-op transition; the follow-up
+    // `resizeEvent` immediately supersedes it with the real
+    // height.
+    if (height() > 0)
+    {
+        SyncBucketCountToHeight();
+    }
 }
 
 void OverviewRailWidget::changeEvent(QEvent *event)
@@ -523,23 +551,33 @@ QRect OverviewRailWidget::ComputeViewportIndicatorRect() const
     {
         return {};
     }
-    const int totalRows = mModel->ProxyRowCount();
-    if (totalRows <= 0)
-    {
-        return {};
-    }
-    const QRect rail = InteractiveRailRect();
-    if (rail.isEmpty())
-    {
-        return {};
-    }
-
     // The visible range is best expressed via `indexAt` on the
     // table (top + bottom of the viewport). `indexAt` already
     // tolerates a null model (returns an invalid index whose
     // `.row()` is `-1`), which the row-resolution branch below
     // treats the same as "empty layout".
     if (mTableView->model() == nullptr)
+    {
+        return {};
+    }
+    // Prefer the *live* row count from the attached table's model
+    // over `mModel->ProxyRowCount()`. The latter is a snapshot
+    // from the last rebuild -- between rebuilds during a heavy
+    // stream it can lag the true count by a batch, and the
+    // indicator would size against the stale value. Fall back to
+    // the cached count when the live query returns 0 (rare, but
+    // guards against a torn read during teardown).
+    int totalRows = mTableView->model()->rowCount();
+    if (totalRows <= 0)
+    {
+        totalRows = mModel->ProxyRowCount();
+    }
+    if (totalRows <= 0)
+    {
+        return {};
+    }
+    const QRect rail = InteractiveRailRect();
+    if (rail.isEmpty())
     {
         return {};
     }

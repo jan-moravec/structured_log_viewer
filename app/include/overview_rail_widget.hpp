@@ -63,7 +63,8 @@ public:
     /// Retrieve the widget's currently-cached DPI-fluent width.
     /// Kept as a helper (over `sizeHint().width()`) because
     /// `sizeHint()` is const and re-runs the platform-metric
-    /// query on every call. Test-only.
+    /// query on every call. Returns `mCachedRailWidth`, refreshed
+    /// as a side-effect of `sizeHint()`. Test-only.
     [[nodiscard]] int RailWidthForTest() const;
 
     /// Rail rect for the viewport indicator overlay. Empty
@@ -144,4 +145,10 @@ private:
     /// (idle state, forward to scrollbar) from a drag scrub
     /// (active state, do not forward).
     bool mDragging = false;
+
+    /// Last DPI-fluent width computed by `sizeHint()`. Mutable so
+    /// `sizeHint() const` can refresh it as a side-effect, and
+    /// `RailWidthForTest()` can return it without re-running the
+    /// platform-metric query.
+    mutable int mCachedRailWidth = 0;
 };

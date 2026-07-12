@@ -733,6 +733,17 @@ void LogTableView::UpdateOverviewRailGeometry()
 {
     if (mOverviewRail == nullptr)
     {
+        // Defensive: `mOverviewRail` is a `QPointer` and can be
+        // silently cleared if the rail widget is destroyed
+        // through a path other than `AttachOverviewRail(nullptr)`
+        // (an external `delete`, its parent being torn down,
+        // ...). Reclaim the reserved margin so the viewport
+        // doesn't keep a phantom gap on its right edge.
+        if (mReservedRightMargin > 0)
+        {
+            mReservedRightMargin = 0;
+            setViewportMargins(0, 0, 0, 0);
+        }
         return;
     }
     const QWidget *vp = viewport();

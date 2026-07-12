@@ -18,6 +18,7 @@
 
 class LogModel;
 class QAbstractItemModel;
+class QAbstractProxyModel;
 class QTimer;
 
 /// Data source for the overview rail. Owns a densely-bucketed
@@ -84,7 +85,9 @@ public:
     /// Push the current find-match proxy rows. Only touches
     /// `matchCount`, not the level counts or anchor bits — a
     /// bucket rebuild is unnecessary for a match-set change. Rows
-    /// outside the current proxy range are silently dropped.
+    /// outside the current proxy range are silently dropped, and
+    /// the incoming list is de-duplicated internally (a duplicate
+    /// row would otherwise be double-counted into its bucket).
     /// Emits `matchesChanged` and `bucketsChanged` immediately so
     /// the widget repaints on the next event-loop pass; find
     /// updates are already debounced upstream.
@@ -232,8 +235,16 @@ private:
 
     /// Walk the proxy chain down to a source `LogModel` row.
     /// Returns -1 when the chain doesn't terminate at `mSourceModel`
-    /// or when any proxy hides the row.
+    /// or when any proxy hides the row. Uses the cached
+    /// `mProxyChain` populated by `RebuildProxyChainCache` so the
+    /// hot path avoids a `qobject_cast` per row.
     [[nodiscard]] int ProxyToSourceRow(int proxyRow) const noexcept;
+
+    /// (Re)populate `mProxyChain` / `mProxyChainTerminatesAtSource`
+    /// by walking `mProxyModel` down until the terminal source
+    /// model. Called from the constructor and on `modelReset` so
+    /// the rebuild hot path can skip repeated `qobject_cast`s.
+    void RebuildProxyChainCache();
 
     /// Level lookup for source row @p sourceRow. Returns
     /// `LogLevel::Unknown` when no level column is configured
@@ -251,6 +262,20 @@ private:
     QPointer<QAbstractItemModel> mProxyModel;
     QPointer<LogModel> mSourceModel;
     QPointer<AnchorManager> mAnchors;
+
+    /// Cached proxy layers between `mProxyModel` and `mSourceModel`.
+    /// Populated once from `RebuildProxyChainCache` so the per-row
+    /// `qobject_cast` inside `ProxyToSourceRow` disappears from the
+    /// rebuild hot path. Rebuilt on `modelReset`; empty when the
+    /// outermost proxy is the source model itself (no proxies) or
+    /// when there is no proxy at all.
+    std::vector<QAbstractProxyModel *> mProxyChain;
+
+    /// True iff the last-cached `mProxyChain` terminates at
+    /// `mSourceModel`. `ProxyToSourceRow` short-circuits to `-1`
+    /// when this is false so a mismatched attach can't miscount
+    /// rows.
+    bool mProxyChainTerminatesAtSource = false;
 
     std::vector<Bucket> mBuckets;
     std::vector<int> mMatchProxyRows;
