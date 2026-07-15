@@ -1225,17 +1225,24 @@ private:
     /// has entries; clicking it opens the dock.
     QPushButton *mParseErrorsStatusButton = nullptr;
 
-    /// Hard cap on the "*i* of *N*" scan. The scan runs synchronously
-    /// on the GUI thread; an unbounded walk over a million-row proxy
-    /// with a frequent needle would freeze the UI per recount. Past
-    /// the cap the indicator shows "*N*+"; Next / Previous still work.
+    /// Soft cap used only for shaping the initial `MatchRow`
+    /// reserve and for legacy `overflowed`-flag preservation.
+    /// The find-match scan itself is uncapped now (bounded by
+    /// the proxy's row count) so both the "*i* of *N*"
+    /// indicator and the overview rail always see every match
+    /// -- capping the scan biased the row list to the top of
+    /// the log and caused the rail's search highlights to
+    /// "stop working" whenever a common needle produced more
+    /// than N hits.
     static constexpr int MAX_FIND_MATCH_COUNT = 10000;
 
     /// Cached match-row list for the "*i* of *N*" indicator. Keyed by
     /// `(needle, wildcards, regex)` so a Next / Previous click can
     /// resolve the new `i` via binary search instead of re-scanning.
     /// Row-deduplicated so the indicator agrees with how `FindRecords`
-    /// walks the table. `overflowed` is set when the scan hit the cap.
+    /// walks the table. `overflowed` is retained for struct
+    /// backward-compat but is always `false` under the uncapped
+    /// scan (the count in `sortedRows.size()` is exact).
     struct FindMatchCache
     {
         QString needle;

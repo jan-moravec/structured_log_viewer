@@ -649,22 +649,26 @@ void LogTableView::AttachOverviewRail(QWidget *rail)
     if (rail == nullptr)
     {
         mReservedRightMargin = 0;
-        // `setViewportMargins` is protected on QAbstractScrollArea;
-        // we're a subclass so calling it is legal.
-        setViewportMargins(0, 0, 0, 0);
+        // Trigger a geometry pass so the reclaimed margin lands
+        // (our `updateGeometries` override propagates the zero
+        // margin, driving `layoutChildren` to re-expand the
+        // viewport to the frame edge).
+        updateGeometries();
         return;
     }
     rail->setParent(this);
-    // Cache the width so `changeEvent` can refresh it on DPI /
-    // style / font changes without querying the rail on every
-    // geometry pass. Prefer `sizeHint` (the widget's own DPI-fluent
-    // width) but fall back to `minimumSizeHint` and then the
-    // current `width` so callers that ship a fixed-width rail
-    // (`setFixedWidth`, `setMinimumWidth`) still reserve margin.
+    // Cache the rail's width so every subsequent
+    // `updateGeometries` pass can re-apply the same reservation
+    // without re-querying `sizeHint`. `QAbstractScrollArea`
+    // already reserves `PM_ScrollBarExtent` on the right for the
+    // scrollbar itself, so this margin is JUST the rail width --
+    // adding the scrollbar extent here would leave a gap between
+    // the rail and the scrollbar. See `updateGeometries()` for
+    // the fight against `QTableView::updateGeometries()` wiping
+    // this margin back to zero.
     mReservedRightMargin = ResolvedRailWidth(rail);
-    setViewportMargins(0, 0, mReservedRightMargin, 0);
     rail->show();
-    UpdateOverviewRailGeometry();
+    updateGeometries();
 }
 
 int LogTableView::ResolvedRailWidth(const QWidget *rail)
@@ -692,6 +696,59 @@ void LogTableView::resizeEvent(QResizeEvent *event)
     UpdateOverviewRailGeometry();
 }
 
+void LogTableView::updateGeometries()
+{
+    // Base implementation calls `setViewportMargins(vHeaderW,
+    // hHeaderH, 0, 0)` unconditionally (qtableview.cpp line 2330),
+    // wiping any right margin we set from `AttachOverviewRail`.
+    QTableView::updateGeometries();
+
+    if (mReservedRightMargin > 0)
+    {
+        const QMargins current = viewportMargins();
+        if (current.right() != mReservedRightMargin)
+        {
+            // Applying the margin here triggers `layoutChildren`,
+            // which fires a viewport `Resize` event that would
+            // otherwise cascade into `updateGeometries()` again
+            // via `QAbstractItemView::resizeEvent` -- creating an
+            // infinite ping-pong with the base's margin reset.
+            // `viewportEvent()` overrides swallow that resize
+            // during the flag window so the layout settles in
+            // one pass. After settling, re-position the
+            // horizontal header against the shrunken viewport
+            // (the base captured its width against the pre-shrink
+            // rect and would otherwise let the header extend into
+            // the rail's slot).
+            mApplyingRailMargin = true;
+            setViewportMargins(current.left(), current.top(), mReservedRightMargin, current.bottom());
+            mApplyingRailMargin = false;
+            if (QHeaderView *hh = horizontalHeader(); hh != nullptr)
+            {
+                const QRect vg = viewport()->geometry();
+                hh->setGeometry(vg.left(), hh->y(), vg.width(), hh->height());
+            }
+        }
+    }
+
+    UpdateOverviewRailGeometry();
+}
+
+bool LogTableView::viewportEvent(QEvent *event)
+{
+    // Suppress the viewport `Resize` event that our own
+    // `setViewportMargins()` call triggers during margin
+    // re-application. Without this, `QAbstractItemView::resizeEvent`
+    // (invoked via the viewport filter's `QFrame::event` dispatch)
+    // would re-enter `updateGeometries()`, whose first step wipes
+    // the right margin back to zero -- undoing the reservation.
+    if (mApplyingRailMargin && event != nullptr && event->type() == QEvent::Resize)
+    {
+        return true;
+    }
+    return QTableView::viewportEvent(event);
+}
+
 void LogTableView::changeEvent(QEvent *event)
 {
     QTableView::changeEvent(event);
@@ -700,7 +757,7 @@ void LogTableView::changeEvent(QEvent *event)
         return;
     }
     // Refresh the reserved margin on events that can change the
-    // rail's DPI-fluent width or its wash / colour palette.
+    // rail's DPI-fluent width.
     // `ScreenChangeInternal` is a private Qt enum; we accept the
     // one-time deprecation risk because it's the only signal that
     // reliably fires on a monitor DPR change across the Qt
@@ -715,13 +772,14 @@ void LogTableView::changeEvent(QEvent *event)
     case QEvent::ApplicationFontChange:
     case QEvent::ScreenChangeInternal:
     {
-        const int freshWidth = ResolvedRailWidth(mOverviewRail);
-        if (freshWidth != mReservedRightMargin)
+        const int freshRailWidth = ResolvedRailWidth(mOverviewRail);
+        if (freshRailWidth != mReservedRightMargin)
         {
-            mReservedRightMargin = freshWidth;
-            setViewportMargins(0, 0, mReservedRightMargin, 0);
+            mReservedRightMargin = freshRailWidth;
         }
-        UpdateOverviewRailGeometry();
+        // `updateGeometries()` re-applies `mReservedRightMargin`
+        // after the base wipes it, and repositions the rail.
+        updateGeometries();
         break;
     }
     default:
@@ -742,7 +800,8 @@ void LogTableView::UpdateOverviewRailGeometry()
         if (mReservedRightMargin > 0)
         {
             mReservedRightMargin = 0;
-            setViewportMargins(0, 0, 0, 0);
+            const QMargins m = viewportMargins();
+            setViewportMargins(m.left(), m.top(), 0, m.bottom());
         }
         return;
     }
@@ -751,17 +810,30 @@ void LogTableView::UpdateOverviewRailGeometry()
     {
         return;
     }
-    // Rail sits immediately to the right of the viewport,
-    // spanning the viewport's Y range. Anchor to the viewport
-    // (not the widget) so header / horizontal-scrollbar chrome
-    // gets subtracted for free.
+    // Rail sits immediately to the right of the viewport. The
+    // remaining right-edge slice (past `vpGeom.right() +
+    // reservedMargin`) belongs to `QAbstractScrollArea`'s
+    // auto-placed vertical scrollbar -- Qt reserves
+    // `PM_ScrollBarExtent` there independently of viewport
+    // margins, so we don't have to leave room ourselves.
+    //
+    // Vertical span: from the top of the frame (Y=0, level with
+    // the horizontal header's top edge) down to the bottom of
+    // the viewport, so the strip reads as one continuous piece
+    // of chrome from the header down to the scrollbar corner.
+    // The rail widget's paint pass restricts the level bars and
+    // the viewport indicator to the viewport-Y slice of the
+    // widget (see `OverviewRailWidget::InteractiveRailRect`), so
+    // a bar for a visible row lines up horizontally with that
+    // row's table entry -- the header-Y slice above stays as
+    // wash chrome.
     const QRect vpGeom = vp->geometry();
     const int width = mReservedRightMargin;
     if (width <= 0)
     {
         return;
     }
-    mOverviewRail->setGeometry(vpGeom.right() + 1, vpGeom.top(), width, vpGeom.height());
+    mOverviewRail->setGeometry(vpGeom.right() + 1, 0, width, vpGeom.bottom() + 1);
     mOverviewRail->raise();
 }
 

@@ -6,6 +6,7 @@
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QList>
+#include <QMargins>
 #include <QMetaObject>
 #include <QPersistentModelIndex>
 #include <QPointer>
@@ -98,6 +99,15 @@ public:
     /// `changeEvent(StyleChange, ScreenChangeInternal)`. The
     /// previously-attached rail (if any) is hidden and detached
     /// but not deleted — ownership is the caller's.
+    ///
+    /// Implementation note: `QTableView::updateGeometries()` calls
+    /// `setViewportMargins(vHeaderWidth, hHeaderHeight, 0, 0)`
+    /// every time it runs (see qtableview.cpp), which would wipe
+    /// any right margin we set here. `LogTableView` overrides
+    /// `updateGeometries()` to re-apply `mReservedRightMargin`
+    /// after the base call, so the rail's slot stays reserved
+    /// across every implicit re-layout (row insert, column
+    /// change, header resize, viewport show).
     void AttachOverviewRail(QWidget *rail);
 
     /// Currently-attached overview rail (nullptr when detached).
@@ -172,6 +182,23 @@ protected:
     /// platform's scrollbar extent.
     void changeEvent(QEvent *event) override;
 
+    /// Re-applies our reserved right margin after the base's
+    /// `updateGeometries()` resets it. `QTableView::updateGeometries`
+    /// unconditionally calls `setViewportMargins(vHeaderW,
+    /// hHeaderH, 0, 0)` on every geometry pass (line 2330 in
+    /// qtableview.cpp), which would wipe the rail's slot on every
+    /// row insert or column change. Overriding here lets us
+    /// re-set the right margin *after* the base runs, so the
+    /// viewport keeps a stable width even during heavy streaming.
+    void updateGeometries() override;
+
+    /// Suppresses the viewport `Resize` event that our own
+    /// `setViewportMargins()` call triggers during rail margin
+    /// re-application, breaking the recursive
+    /// `updateGeometries` cascade that would otherwise wipe the
+    /// margin back to zero.
+    bool viewportEvent(QEvent *event) override;
+
     /// Watches the viewport for resize events so the floating pill
     /// stays glued to the tail-side edge without subclassing the
     /// viewport.
@@ -188,6 +215,7 @@ private:
     /// / `width` so callers that ship a fixed-width rail (via
     /// `setFixedWidth`) still get a positive reservation.
     [[nodiscard]] static int ResolvedRailWidth(const QWidget *rail);
+
     void OnVerticalScrollValueChanged(int value);
 
     /// Refresh `mAtTailEdge` when the scrollbar range changes
@@ -278,10 +306,28 @@ private:
     QPointer<QWidget> mOverviewRail;
 
     /// Current reserved right-margin width in device-independent
-    /// px. Zero when no rail is attached. Cached so
-    /// `resizeEvent` can reuse the last known width without
-    /// re-querying the rail's `sizeHint`.
+    /// px, equal to the rail's `sizeHint().width()`. Zero when no
+    /// rail is attached. Cached so every `updateGeometries` pass
+    /// (which runs on every model / column / header change) can
+    /// re-apply the same margin without re-querying the rail's
+    /// `sizeHint`.
+    ///
+    /// `QAbstractScrollArea::layoutChildren_helper` reserves
+    /// `PM_ScrollBarExtent` on the right for the vertical
+    /// scrollbar *independently* of viewport margins, so the
+    /// margin here is JUST the rail width -- the scrollbar sits
+    /// past the rail with no additional bookkeeping. See the
+    /// docstring on `AttachOverviewRail` for the interaction with
+    /// `QTableView::updateGeometries`.
     int mReservedRightMargin = 0;
+
+    /// True while our `updateGeometries()` override is inside the
+    /// rail-margin `setViewportMargins()` call. Read by
+    /// `viewportEvent()` to swallow the viewport `Resize` event
+    /// that would otherwise cascade back into `updateGeometries`
+    /// (via `QAbstractItemView::resizeEvent`) and wipe the margin
+    /// we just applied.
+    bool mApplyingRailMargin = false;
 
 #ifdef LOGAPP_BUILD_TESTING
 public:
@@ -304,6 +350,20 @@ public:
     [[nodiscard]] bool AtTailEdgeForTest() const noexcept
     {
         return mAtTailEdge;
+    }
+    /// Test seam over the protected `updateGeometries` slot so
+    /// the rail-margin regression can force a base-class layout
+    /// pass without waiting for a resize or model-reset trigger.
+    void UpdateGeometriesForTest()
+    {
+        updateGeometries();
+    }
+    /// Test seam over the protected `viewportMargins()` accessor.
+    /// Lets the same regression read the *live* margin the base
+    /// left behind so it can pin our override's re-application.
+    [[nodiscard]] QMargins ViewportMarginsForTest() const
+    {
+        return viewportMargins();
     }
 #endif
 };

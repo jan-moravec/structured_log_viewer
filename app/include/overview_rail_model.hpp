@@ -123,10 +123,16 @@ public:
         return mProxyRowCount;
     }
 
-    /// Dominant `LogLevel` in @p bucket, or `Unknown` when the
-    /// bucket is empty or out of range. Ties break in favour of
-    /// higher severity so a bucket with equal error and info rows
-    /// paints red, not blue (triage bias).
+    /// Majority-count `LogLevel` in @p bucket, tie-broken by
+    /// severity (Fatal > Error > Warn > Info > Debug > Trace >
+    /// Unknown), or `Unknown` when the bucket is empty or out
+    /// of range. The rail widget itself no longer picks a single
+    /// bucket colour via this method -- it iterates the per-level
+    /// counts (`Buckets()[i].levels.counts`) and paints stacked
+    /// severity segments so both density and rare high-severity
+    /// anomalies are visible at once. Retained on the model for
+    /// callers that want a single representative colour (anchor
+    /// tick legend, tests, future summary widgets).
     [[nodiscard]] loglib::LogLevel DominantLevel(std::size_t bucket) const noexcept;
 
     /// Cached first-`Type::Level` column index, `-1` when none.

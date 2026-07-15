@@ -17,6 +17,7 @@
 #include "overview_rail_widget.hpp"
 #include "qt_streaming_log_sink.hpp"
 #include "row_order_proxy_model.hpp"
+#include "theme_control.hpp"
 
 #include <loglib/file_line_source.hpp>
 #include <loglib/internal/advanced_parser_options.hpp>
@@ -32,8 +33,13 @@
 #include <QAbstractItemModel>
 #include <QAction>
 #include <QApplication>
+#include <QImage>
 #include <QItemSelectionModel>
 #include <QModelIndex>
+#include <QPainter>
+#include <QRect>
+#include <QScrollBar>
+#include <QSet>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QStandardPaths>
@@ -481,6 +487,967 @@ private slots:
         QVERIFY(lastFirst < ROWS);
     }
 
+    /// Log-scaled bar width contract: an empty bucket paints
+    /// nothing; a 1-row bucket still lights up a visible tick at
+    /// least `MIN_BAR_WIDTH_PX` wide; a max-count bucket
+    /// saturates to the full column width; and intensity is
+    /// monotone non-decreasing in the row count. Pins the
+    /// widget's "small bins still show" guarantee without
+    /// pixel-scraping the paint output.
+    static void TestLevelBarWidthIsLogScaled()
+    {
+        constexpr int COLUMN_WIDTH = 14;
+        QCOMPARE(OverviewRailWidget::WidthForCountForTest(/*count=*/0, /*maxCount=*/100, COLUMN_WIDTH), 0);
+        QCOMPARE(OverviewRailWidget::WidthForCountForTest(/*count=*/5, /*maxCount=*/0, COLUMN_WIDTH), 0);
+        QCOMPARE(OverviewRailWidget::WidthForCountForTest(/*count=*/5, /*maxCount=*/100, /*columnWidth=*/0), 0);
+        // 1-row bucket: log scale would give a sub-1-px bar for
+        // large maxCount; the min-width clamp lifts it to 2 px.
+        const int oneRow = OverviewRailWidget::WidthForCountForTest(1, 10000, COLUMN_WIDTH);
+        QVERIFY2(oneRow >= 2, "1-row bucket must paint at least MIN_BAR_WIDTH_PX so sparse activity stays visible");
+        QVERIFY(oneRow <= COLUMN_WIDTH);
+        // Max-count bucket: intensity 1.0 -> full column width.
+        QCOMPARE(OverviewRailWidget::WidthForCountForTest(10000, 10000, COLUMN_WIDTH), COLUMN_WIDTH);
+        // A mid-range bucket sits strictly between the min-clamp
+        // and the max fill under log scaling, so we can visually
+        // distinguish "some activity" from "hot spot".
+        const int mid = OverviewRailWidget::WidthForCountForTest(100, 10000, COLUMN_WIDTH);
+        QVERIFY(mid > oneRow);
+        QVERIFY(mid < COLUMN_WIDTH);
+        // Monotone non-decreasing in count.
+        int previous = 0;
+        for (std::uint32_t count : {std::uint32_t{1}, std::uint32_t{4}, std::uint32_t{16}, std::uint32_t{64},
+                                    std::uint32_t{256}, std::uint32_t{1024}, std::uint32_t{4096}})
+        {
+            const int w = OverviewRailWidget::WidthForCountForTest(count, 4096, COLUMN_WIDTH);
+            QVERIFY2(w >= previous, "bar width must be monotone non-decreasing in the bucket count");
+            previous = w;
+        }
+    }
+
+    /// Helper: render `widget` to a QImage and count how many
+    /// pixels in the leftmost 4 px of the rail's level column
+    /// differ from the widget's background colour. Reports the
+    /// widget's Base colour so failing tests can log what "wash"
+    /// they saw the bars blending into.
+    static int CountLitLevelPixels(OverviewRailWidget *widget, QColor *outBaseColor = nullptr)
+    {
+        QImage image(widget->size(), QImage::Format_ARGB32);
+        image.fill(Qt::transparent);
+        widget->render(&image);
+        const QColor bg = widget->palette().color(QPalette::Base);
+        if (outBaseColor != nullptr)
+        {
+            *outBaseColor = bg;
+        }
+        constexpr int LEVEL_COL_LEFT = 2;
+        int lit = 0;
+        for (int y = 0; y < image.height(); ++y)
+        {
+            for (int x = LEVEL_COL_LEFT; x < LEVEL_COL_LEFT + 4; ++x)
+            {
+                if (QColor(image.pixel(x, y)).rgb() != bg.rgb())
+                {
+                    ++lit;
+                }
+            }
+        }
+        return lit;
+    }
+
+    /// End-to-end paint contract: rendering the widget onto a
+    /// `QImage` MUST produce visible level-bar pixels (i.e. any
+    /// pixel that isn't the widget's background colour) inside
+    /// the level column area, once the model has non-empty
+    /// buckets. Regression guard for "bars are drawn with a
+    /// colour that matches the widget background" bugs (e.g. the
+    /// pre-fix issue where `ColorForLevel(Info)` returned a tone
+    /// indistinguishable from `QPalette::Window`).
+    static void TestRailPaintsVisibleLevelBars()
+    {
+        LogModel model;
+        AnchorManager anchors;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel railModel(chain.filter, &model, &anchors, &owner);
+        railModel.SetBucketCount(100);
+
+        constexpr int ROWS = 500;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(railModel);
+        QVERIFY2(railModel.BucketCount() > 0, "test fixture must yield a non-zero bucket count");
+
+        auto *widget = new OverviewRailWidget(&railModel, /*theme=*/nullptr, /*tableView=*/nullptr);
+        widget->resize(60, 200);
+        widget->show();
+        QColor bg;
+        const int lit = CountLitLevelPixels(widget, &bg);
+        QVERIFY2(
+            lit > 0,
+            qPrintable(QStringLiteral("no level-bar pixels found (bg=%1) -- bars are painting invisibly")
+                           .arg(bg.name()))
+        );
+        delete widget;
+    }
+
+    /// End-to-end integration: attach the rail through
+    /// `LogTableView::AttachOverviewRail` (production wiring) and
+    /// verify bars paint against the *live* geometry the widget
+    /// picks under the Dark theme -- narrower than the offscreen
+    /// unit tests use, so this catches regressions in the sizeHint /
+    /// three-column split that only show at production widths.
+    static void TestRailPaintsVisibleBarsAtProductionWidth()
+    {
+        ThemeControl theme;
+        theme.SetActiveSelection(QStringLiteral("Dark"));
+
+        LogTableView view;
+        view.resize(1200, 700);
+        view.show();
+        LogModel model;
+        view.setModel(&model);
+
+        AnchorManager anchors;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel railModel(chain.filter, &model, &anchors, &owner);
+        auto *widget = new OverviewRailWidget(&railModel, &theme, &view);
+        view.AttachOverviewRail(widget);
+
+        QCoreApplication::processEvents();
+
+        constexpr int ROWS = 500;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(railModel);
+        QVERIFY(railModel.BucketCount() > 0);
+
+        // The rail's width comes from its own `sizeHint` (via
+        // `AttachOverviewRail`), not from a manual resize. That's
+        // exactly the code path the production wiring exercises.
+        QCoreApplication::processEvents();
+        const int railWidth = widget->width();
+        QVERIFY2(railWidth >= 24, qPrintable(QStringLiteral("rail is only %1 px wide -- narrower than the "
+                                                            "minimum, so the level column would collapse "
+                                                            "to a single pixel").arg(railWidth)));
+
+        QImage image(widget->size(), QImage::Format_ARGB32);
+        image.fill(Qt::transparent);
+        widget->render(&image);
+
+        // Sample the full content slot (single section from
+        // `RAIL_UNDERLAY_INSET = 1` to the widget's right edge
+        // minus that inset). The rail collapsed to a single
+        // full-width section for its bin bars; match / anchor
+        // overlays share the same slot.
+        const QColor bg = widget->palette().color(QPalette::Base);
+        constexpr int CONTENT_LEFT = 2;
+        const int contentRight = std::max(CONTENT_LEFT + 4, railWidth - 1);
+        int highContrastPixels = 0;
+        for (int y = 0; y < image.height(); ++y)
+        {
+            for (int x = CONTENT_LEFT; x < contentRight; ++x)
+            {
+                const QColor c(image.pixel(x, y));
+                const int delta =
+                    std::abs(c.red() - bg.red()) + std::abs(c.green() - bg.green()) + std::abs(c.blue() - bg.blue());
+                if (delta >= 30)
+                {
+                    ++highContrastPixels;
+                }
+            }
+        }
+        QVERIFY2(
+            highContrastPixels > image.height() / 4,
+            qPrintable(QStringLiteral("only %1 high-contrast pixels in the content slot at production width "
+                                      "%2 px -- bars are not painting visibly against Base %3")
+                           .arg(highContrastPixels)
+                           .arg(railWidth)
+                           .arg(bg.name()))
+        );
+
+        view.AttachOverviewRail(nullptr);
+        delete widget;
+    }
+
+    /// Stacked severity segments using row *background* colours.
+    /// On a mixed-level bucket the paint pass must split the bar
+    /// into per-level segments and colour each from the theme's
+    /// row background (`ThemeControl::BackgroundFor`), *not* the
+    /// foreground -- foregrounds are bright pastels tuned for
+    /// text-on-row legibility, and painting them as bars
+    /// composited to a "light band" wash across every bucket
+    /// that carried any Warn / Error / Fatal row (the "rail is
+    /// still too light" regression). Row backgrounds are the
+    /// theme designer's chosen severity *tint* on Base, so the
+    /// rail reads as a mini-map of the row-tinted table.
+    ///
+    /// Verifies (Dark theme, normal contrast):
+    /// 1. Buckets containing Error paint the row-background tone
+    ///    `#352121` -- the same tint the Error row shows on the
+    ///    main table.
+    /// 2. Buckets containing Warn but no Error paint `#272620`.
+    /// 3. The *foreground* tones (Warn `#FCD34D`, Error
+    ///    `#FCA5A5`, Fatal `#FECACA`) do *not* appear anywhere
+    ///    on the rail. Their presence would be an accidental
+    ///    revert to the "bright pastels" paint that caused the
+    ///    "too light" regression.
+    static void TestRailPaintsStackedBackgroundSegments()
+    {
+        ThemeControl theme;
+        theme.SetActiveSelection(QStringLiteral("Dark"));
+
+        LogModel model;
+        AnchorManager anchors;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel railModel(chain.filter, &model, &anchors, &owner);
+        railModel.SetBucketCount(100);
+
+        // 500 rows / 4-level cycle from `RailFixture` gives every
+        // bucket a mix of Info + Warn + Error + Debug (buckets
+        // large enough to span a full cycle) or a 2--3 level
+        // slice of that cycle (buckets holding a fractional
+        // cycle).
+        constexpr int ROWS = 500;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(railModel);
+        QVERIFY(railModel.BucketCount() > 0);
+
+        auto *widget = new OverviewRailWidget(&railModel, &theme, /*tableView=*/nullptr);
+        widget->resize(60, 200);
+        widget->show();
+
+        QImage image(widget->size(), QImage::Format_ARGB32);
+        image.fill(Qt::transparent);
+        widget->render(&image);
+
+        // Dark theme row-background tones (levels).
+        const QRgb errorBgRgb = QColor(QStringLiteral("#352121")).rgb();
+        const QRgb warnBgRgb = QColor(QStringLiteral("#272620")).rgb();
+        const QRgb debugBgRgb = QColor(QStringLiteral("#20252E")).rgb();
+        // Bright foregrounds -- the *regression* tones that
+        // stacked-segments produced when we painted from
+        // `ForegroundFor` instead of `BackgroundFor`. They must
+        // be entirely absent.
+        const QRgb errorFgRgb = QColor(QStringLiteral("#FCA5A5")).rgb();
+        const QRgb warnFgRgb = QColor(QStringLiteral("#FCD34D")).rgb();
+        const QRgb fatalFgRgb = QColor(QStringLiteral("#FECACA")).rgb();
+
+        int errorBgPixels = 0;
+        int warnBgPixels = 0;
+        int debugBgPixels = 0;
+        int brightFgPixels = 0;
+        constexpr int CONTENT_LEFT = 2;
+        const int contentRight = std::max(CONTENT_LEFT + 4, image.width() - 1);
+        for (int y = 0; y < image.height(); ++y)
+        {
+            for (int x = CONTENT_LEFT; x < contentRight; ++x)
+            {
+                const QRgb rgb = image.pixel(x, y);
+                if (rgb == errorBgRgb)
+                {
+                    ++errorBgPixels;
+                }
+                else if (rgb == warnBgRgb)
+                {
+                    ++warnBgPixels;
+                }
+                else if (rgb == debugBgRgb)
+                {
+                    ++debugBgPixels;
+                }
+                else if (rgb == errorFgRgb || rgb == warnFgRgb || rgb == fatalFgRgb)
+                {
+                    ++brightFgPixels;
+                }
+            }
+        }
+        qInfo() << "stacked-bg paint: Error-bg" << errorBgPixels << "Warn-bg" << warnBgPixels << "Debug-bg"
+                << debugBgPixels << "bright-fg (regression)" << brightFgPixels;
+
+        QVERIFY2(errorBgPixels > 0, "stacked segments must paint the Dark theme's Error row-bg tone (#352121)");
+        QVERIFY2(warnBgPixels > 0, "stacked segments must paint the Dark theme's Warn row-bg tone (#272620)");
+        // Debug row-bg painting is a spot-check: at the widget's
+        // 200-px height Debug buckets pack tightly, but any
+        // bucket that includes a Debug row must at least paint
+        // its 1-px floor.
+        QVERIFY2(
+            debugBgPixels > 0,
+            qPrintable(QStringLiteral("stacked segments must paint the Dark theme's Debug row-bg tone (#20252E); "
+                                      "found only %1 Debug-bg pixels")
+                           .arg(debugBgPixels))
+        );
+        QVERIFY2(
+            brightFgPixels == 0,
+            qPrintable(QStringLiteral("bright foreground pastels must not appear on the rail -- their presence "
+                                      "reverts the 'rail is too light' fix; found %1 bright-fg pixels")
+                           .arg(brightFgPixels))
+        );
+
+        delete widget;
+    }
+
+    /// Rare-anomaly visibility: a bucket with 1 Fatal row and
+    /// 100 Trace rows must still paint a visible slice of the
+    /// Fatal background tone in that bucket's bar (via the
+    /// `MIN_SEGMENT_WIDTH_PX` floor in the stacked-segment
+    /// paint), so a needle-in-haystack Fatal isn't rounded away
+    /// to zero pixels. Verified by streaming a hand-rolled log
+    /// where every bucket is Trace-heavy except one bucket that
+    /// contains a single Fatal row, then asserting the Fatal
+    /// row-bg tone appears in the rendered rail.
+    static void TestRareFatalPaintsAtBucketFloor()
+    {
+        ThemeControl theme;
+        theme.SetActiveSelection(QStringLiteral("Dark"));
+
+        LogModel model;
+        AnchorManager anchors;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel railModel(chain.filter, &model, &anchors, &owner);
+        railModel.SetBucketCount(50);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = dir.filePath(QStringLiteral("fatal_needle.jsonl"));
+        {
+            std::ofstream stream(path.toStdString(), std::ios::binary);
+            QVERIFY(stream.is_open());
+            constexpr int ROWS = 500;
+            constexpr int FATAL_ROW = 250;
+            for (int i = 0; i < ROWS; ++i)
+            {
+                const QString level = (i == FATAL_ROW) ? QStringLiteral("fatal") : QStringLiteral("trace");
+                const QString line =
+                    QStringLiteral(R"({"time": "2026-01-01T00:00:00", "level": "%1", "body": "msg %2"})")
+                        .arg(level)
+                        .arg(i);
+                stream << line.toStdString() << '\n';
+            }
+        }
+        StreamJsonPathInto(model, path);
+        WaitForBucketsChanged(railModel);
+        QVERIFY(railModel.BucketCount() > 0);
+
+        auto *widget = new OverviewRailWidget(&railModel, &theme, /*tableView=*/nullptr);
+        widget->resize(60, 200);
+        widget->show();
+
+        QImage image(widget->size(), QImage::Format_ARGB32);
+        image.fill(Qt::transparent);
+        widget->render(&image);
+
+        // Dark theme's Fatal row background (`#4A1E1E`) must
+        // be present somewhere in the rendered rail. Its
+        // presence proves the 1-px severity floor keeps rare
+        // anomalies visible; a regression that dropped the
+        // floor for high-severity would zero the count.
+        const QRgb expectedFatalBgRgb = QColor(QStringLiteral("#4A1E1E")).rgb();
+        int fatalBgPixels = 0;
+        constexpr int CONTENT_LEFT = 2;
+        const int contentRight = std::max(CONTENT_LEFT + 4, image.width() - 1);
+        for (int y = 0; y < image.height(); ++y)
+        {
+            for (int x = CONTENT_LEFT; x < contentRight; ++x)
+            {
+                if (image.pixel(x, y) == expectedFatalBgRgb)
+                {
+                    ++fatalBgPixels;
+                }
+            }
+        }
+        QVERIFY2(
+            fatalBgPixels > 0,
+            "rare Fatal (1-in-500) must paint the Fatal row-bg tone at the 1-px severity floor"
+        );
+
+        delete widget;
+    }
+
+    /// Log-weighted segment sizing: rare severities get a
+    /// *visibly larger* slice than linear proportion would
+    /// award. On a bucket with 99 Trace + 1 Fatal (1 % Fatal),
+    /// linear shares floor the Fatal segment to 1 px (noise on
+    /// a Trace-dominated rail); the `log2(count + 1)` weighting
+    /// raises Fatal's share to
+    /// log2(2) / (log2(100) + log2(2)) ~= 13 % of the bar --
+    /// visibly readable without flipping the majority. This
+    /// test uses a fixture where *every* bucket has the same
+    /// 99 : 1 ratio (one Fatal every 100 rows), so the measured
+    /// Fatal-to-Trace pixel ratio equals the per-bucket ratio
+    /// independent of bucket count.
+    static void TestSegmentSharesUseLogWeighting()
+    {
+        ThemeControl theme;
+        theme.SetActiveSelection(QStringLiteral("Dark"));
+
+        LogModel model;
+        AnchorManager anchors;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel railModel(chain.filter, &model, &anchors, &owner);
+        // Non-zero bucket count *before* streaming so the
+        // rebuild that follows fires `bucketsChanged`.
+        // `SyncBucketCountToHeight` on `widget->show()` later
+        // resizes this to the widget's rail height.
+        railModel.SetBucketCount(100);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = dir.filePath(QStringLiteral("log_weight.jsonl"));
+        {
+            std::ofstream stream(path.toStdString(), std::ios::binary);
+            QVERIFY(stream.is_open());
+            constexpr int ROWS = 5000;
+            for (int i = 0; i < ROWS; ++i)
+            {
+                const QString level = (i % 100 == 0) ? QStringLiteral("fatal") : QStringLiteral("trace");
+                const QString line =
+                    QStringLiteral(R"({"time": "2026-01-01T00:00:00", "level": "%1", "body": "msg %2"})")
+                        .arg(level)
+                        .arg(i);
+                stream << line.toStdString() << '\n';
+            }
+        }
+        StreamJsonPathInto(model, path);
+        WaitForBucketsChanged(railModel);
+        QVERIFY(railModel.BucketCount() > 0);
+
+        auto *widget = new OverviewRailWidget(&railModel, &theme, /*tableView=*/nullptr);
+        widget->resize(60, 200);
+        widget->show();
+
+        QImage image(widget->size(), QImage::Format_ARGB32);
+        image.fill(Qt::transparent);
+        widget->render(&image);
+
+        const QRgb fatalBg = QColor(QStringLiteral("#4A1E1E")).rgb();
+        const QRgb traceBg = QColor(QStringLiteral("#1F2228")).rgb();
+        int fatalPixels = 0;
+        int tracePixels = 0;
+        constexpr int CONTENT_LEFT = 2;
+        const int contentRight = std::max(CONTENT_LEFT + 4, image.width() - 1);
+        for (int y = 0; y < image.height(); ++y)
+        {
+            for (int x = CONTENT_LEFT; x < contentRight; ++x)
+            {
+                const QRgb rgb = image.pixel(x, y);
+                if (rgb == fatalBg)
+                {
+                    ++fatalPixels;
+                }
+                else if (rgb == traceBg)
+                {
+                    ++tracePixels;
+                }
+            }
+        }
+        qInfo() << "log-weight paint: Fatal px" << fatalPixels << "Trace px" << tracePixels;
+
+        const int totalLevelPixels = fatalPixels + tracePixels;
+        QVERIFY2(totalLevelPixels > 0, "no severity pixels found in the rendered rail");
+        // Compare against the *linear-share* baseline. On a
+        // 1 % rare level with a 60 px content width and the
+        // 1 px severity floor, linear proportion allocates
+        // Fatal ~= floor(58 * 1 / 25) + 1 = 3 px per
+        // Fatal-carrying bucket. The rail spawns roughly one
+        // Fatal bucket per 4 buckets (5000 rows / ~196
+        // buckets ~= 25 rows / bucket, one Fatal every 100
+        // rows) -- so linear ceiling is ~= 3 px * 50 buckets
+        // = 150 Fatal pixels. Log-weighted shares raise Fatal
+        // to ~15 % per Fatal-bucket, yielding ~450 pixels in
+        // the same geometry. Assert Fatal pixels exceed 2x
+        // the linear ceiling so a regression back to linear
+        // fails loudly, without pinning the exact ratio (test
+        // stays robust to future paint-pass tuning).
+        constexpr int LINEAR_CEILING_PX = 150;
+        QVERIFY2(
+            fatalPixels > 2 * LINEAR_CEILING_PX,
+            qPrintable(QStringLiteral("log-weighted segments must give a 1-in-100 Fatal >%1 px on this "
+                                      "geometry (linear would give ~%2 px); got %3 px")
+                           .arg(2 * LINEAR_CEILING_PX)
+                           .arg(LINEAR_CEILING_PX)
+                           .arg(fatalPixels))
+        );
+        QVERIFY2(
+            tracePixels > fatalPixels,
+            "log-weighted segments must keep the majority level (Trace) larger than the rare Fatal"
+        );
+
+        delete widget;
+    }
+
+    /// High-contrast preference recolours the rail. `ThemeControl`
+    /// reads the `ui/highContrastLevels` setting into
+    /// `mHighContrast`, and `BackgroundFor(level)` -- which the
+    /// rail's paint pass reaches for -- resolves through
+    /// `StyleForLevel(theme, level, mHighContrast)`. Toggling the
+    /// preference must therefore switch every bucket's severity
+    /// segments from the theme's normal row-bg palette to the
+    /// louder `levelsHighContrast` palette without any extra
+    /// wiring in the widget. Verified by rendering the same rail
+    /// twice against the Dark theme (normal + high-contrast) and
+    /// asserting the Error segments switch from `#352121`
+    /// (normal) to `#4C1D1D` (high contrast).
+    static void TestRailRespectsHighContrastPreference()
+    {
+        ThemeControl theme;
+        theme.SetActiveSelection(QStringLiteral("Dark"));
+        QVERIFY(theme.HasLevelsHighContrast());
+        theme.SetHighContrast(false);
+
+        LogModel model;
+        AnchorManager anchors;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel railModel(chain.filter, &model, &anchors, &owner);
+        railModel.SetBucketCount(100);
+
+        constexpr int ROWS = 500;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(railModel);
+
+        auto *widget = new OverviewRailWidget(&railModel, &theme, /*tableView=*/nullptr);
+        widget->resize(60, 200);
+        widget->show();
+
+        const QRgb normalErrorBg = QColor(QStringLiteral("#352121")).rgb();
+        const QRgb loudErrorBg = QColor(QStringLiteral("#4C1D1D")).rgb();
+
+        auto countErrorTones = [&](QRgb wanted) {
+            QImage image(widget->size(), QImage::Format_ARGB32);
+            image.fill(Qt::transparent);
+            widget->render(&image);
+            int count = 0;
+            constexpr int CONTENT_LEFT = 2;
+            const int contentRight = std::max(CONTENT_LEFT + 4, image.width() - 1);
+            for (int y = 0; y < image.height(); ++y)
+            {
+                for (int x = CONTENT_LEFT; x < contentRight; ++x)
+                {
+                    if (image.pixel(x, y) == wanted)
+                    {
+                        ++count;
+                    }
+                }
+            }
+            return count;
+        };
+
+        const int normalHitsNormal = countErrorTones(normalErrorBg);
+        const int normalHitsLoud = countErrorTones(loudErrorBg);
+        QVERIFY2(normalHitsNormal > 0, "normal-contrast paint must render the theme's normal Error row-bg");
+        QVERIFY2(normalHitsLoud == 0, "normal-contrast paint must not render the loud Error row-bg");
+
+        theme.SetHighContrast(true);
+        widget->update();
+        QApplication::processEvents();
+
+        const int loudHitsNormal = countErrorTones(normalErrorBg);
+        const int loudHitsLoud = countErrorTones(loudErrorBg);
+        QVERIFY2(loudHitsLoud > 0, "high-contrast paint must render the theme's `levelsHighContrast` Error row-bg");
+        QVERIFY2(loudHitsNormal == 0, "high-contrast paint must not render the normal Error row-bg");
+
+        delete widget;
+    }
+
+    /// Overlay contract: match ticks repaint the *entire content
+    /// width* of any bucket carrying a match row, overriding the
+    /// base-layer bin painting. Verifies the single-section
+    /// rework -- the old three-column layout dedicated only ~20 %
+    /// of the underlay to matches, which was hard to spot on a
+    /// narrow rail; the overlay approach makes every match bucket
+    /// paint as a solid full-width Highlight band. The test
+    /// pushes a single match into a known bucket and confirms
+    /// the whole content slot at that Y band is dominated by
+    /// the palette Highlight colour.
+    static void TestMatchOverlayCoversFullContentWidth()
+    {
+        ThemeControl theme;
+        theme.SetActiveSelection(QStringLiteral("Dark"));
+
+        LogModel model;
+        AnchorManager anchors;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel railModel(chain.filter, &model, &anchors, &owner);
+
+        // Small bucket count so a single match row lights up a
+        // sizeable Y band we can sample confidently.
+        railModel.SetBucketCount(20);
+
+        constexpr int ROWS = 200;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(railModel);
+        QVERIFY(railModel.BucketCount() > 0);
+
+        // Push a match at row 50 (roughly the middle). Every
+        // bucket has activity by construction, so the base layer
+        // paints level bars first and the overlay must repaint
+        // the matched bucket in Highlight over the top.
+        railModel.SetMatchProxyRows({50});
+        QVERIFY(railModel.HasMatchTicks());
+
+        auto *widget = new OverviewRailWidget(&railModel, &theme, /*tableView=*/nullptr);
+        widget->resize(60, 200);
+        widget->show();
+
+        QImage image(widget->size(), QImage::Format_ARGB32);
+        image.fill(Qt::transparent);
+        widget->render(&image);
+
+        const QColor highlight = widget->palette().color(QPalette::Highlight);
+
+        // Locate the Y band of the bucket that received the
+        // match by scanning for the row whose content slot is
+        // dominantly Highlight-coloured. `matchProxyRow / rows *
+        // bucketCount` gives the target bucket; use the widget's
+        // helper to resolve it to a Y range.
+        const std::size_t matchBucket = std::min<std::size_t>(
+            railModel.BucketCount() - 1,
+            static_cast<std::size_t>(
+                (static_cast<std::size_t>(50) * railModel.BucketCount()) / static_cast<std::size_t>(ROWS)
+            )
+        );
+        const int yTop = widget->YForBucketForTest(matchBucket);
+        const int yBottom = matchBucket + 1 < railModel.BucketCount()
+                                ? widget->YForBucketForTest(matchBucket + 1)
+                                : image.height();
+
+        // Sample the *right* portion of the content slot (columns
+        // past where the level bar could ever reach at ~20 % row
+        // density). If the overlay repainted the full content
+        // width, we expect Highlight there; if only the old
+        // match column painted (right 20 % of the underlay), the
+        // sample also passes -- but the left portion of the
+        // content slot must also be Highlight for the overlay
+        // semantic to hold.
+        constexpr int CONTENT_LEFT = 2;
+        const int contentRight = std::max(CONTENT_LEFT + 4, image.width() - 1);
+        int highlightPixelsLeftHalf = 0;
+        int highlightPixelsRightHalf = 0;
+        const int mid = (CONTENT_LEFT + contentRight) / 2;
+        for (int y = yTop; y < yBottom; ++y)
+        {
+            for (int x = CONTENT_LEFT; x < contentRight; ++x)
+            {
+                const QColor c(image.pixel(x, y));
+                const int delta = std::abs(c.red() - highlight.red()) + std::abs(c.green() - highlight.green()) +
+                                  std::abs(c.blue() - highlight.blue());
+                if (delta < 30)
+                {
+                    if (x < mid)
+                    {
+                        ++highlightPixelsLeftHalf;
+                    }
+                    else
+                    {
+                        ++highlightPixelsRightHalf;
+                    }
+                }
+            }
+        }
+        QVERIFY2(
+            highlightPixelsLeftHalf > 0 && highlightPixelsRightHalf > 0,
+            qPrintable(
+                QStringLiteral("match overlay must span the full content width -- found %1 Highlight px on the "
+                               "left half and %2 on the right half of the matched bucket's Y band")
+                    .arg(highlightPixelsLeftHalf)
+                    .arg(highlightPixelsRightHalf)
+            )
+        );
+
+        delete widget;
+    }
+
+    /// Same as `TestRailPaintsVisibleLevelBars` but with the real
+    /// Dark theme loaded. Reproduces the user-reported "bars are
+    /// invisible" bug where the theme's subtle row-background
+    /// tint for Info-heavy buckets composited onto the rail's own
+    /// Base wash and disappeared. Row-background painting is
+    /// intentionally subtle (Warn bg delta 11, Error bg delta 21
+    /// against Base) -- the test therefore asserts (a) *any*
+    /// non-Base pixels are painted and (b) at least one distinctly
+    /// contrasting tone is present so the rail is never invisible.
+    static void TestRailPaintsVisibleBarsUnderDarkTheme()
+    {
+        ThemeControl theme;
+        theme.SetActiveSelection(QStringLiteral("Dark"));
+        QCOMPARE(QString::fromStdString(theme.Active().name), QStringLiteral("Dark"));
+
+        LogModel model;
+        AnchorManager anchors;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel railModel(chain.filter, &model, &anchors, &owner);
+        railModel.SetBucketCount(100);
+
+        constexpr int ROWS = 500;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(railModel);
+
+        auto *widget = new OverviewRailWidget(&railModel, &theme, /*tableView=*/nullptr);
+        widget->resize(60, 200);
+        widget->show();
+
+        QImage image(widget->size(), QImage::Format_ARGB32);
+        image.fill(Qt::transparent);
+        widget->render(&image);
+
+        const QColor bg = widget->palette().color(QPalette::Base);
+        // Sample a vertical strip in the level column (left side of
+        // the rail underlay). Log every distinct non-background
+        // colour we find so a failing render tells us exactly what
+        // ghost tone was used.
+        constexpr int LEVEL_COL_LEFT = 2;
+        QSet<QRgb> distinctColors;
+        int litPixels = 0;
+        int highContrastPixels = 0;
+        for (int y = 0; y < image.height(); ++y)
+        {
+            for (int x = LEVEL_COL_LEFT; x < LEVEL_COL_LEFT + 4; ++x)
+            {
+                const QRgb pixel = image.pixel(x, y);
+                if (QColor(pixel).rgb() == bg.rgb())
+                {
+                    continue;
+                }
+                ++litPixels;
+                distinctColors.insert(pixel);
+                // Perceptual delta: sum of absolute channel diffs.
+                // Anything < 30 is essentially invisible on screen
+                // (the eye can't resolve <10% per-channel deltas on
+                // small strips at typical desktop viewing distance).
+                const QColor c(pixel);
+                const int delta =
+                    std::abs(c.red() - bg.red()) + std::abs(c.green() - bg.green()) + std::abs(c.blue() - bg.blue());
+                if (delta >= 30)
+                {
+                    ++highContrastPixels;
+                }
+            }
+        }
+
+        // Emit the colour set as a debug info so a failing test
+        // shows *what* tones the rail is using.
+        QStringList colorNames;
+        for (const QRgb c : distinctColors)
+        {
+            colorNames << QColor(c).name();
+        }
+        qInfo() << "Dark rail bar colours found:" << colorNames << "against bg" << bg.name();
+        qInfo() << "Lit pixels:" << litPixels << "  high-contrast pixels:" << highContrastPixels;
+
+        QVERIFY2(litPixels > 0, "no level-bar pixels found under Dark theme (bars painted invisibly)");
+        // At least one bucket must paint a *distinctly*
+        // contrasting tone (delta >= 30). Under the row-
+        // background palette this is guaranteed by any Error /
+        // Fatal bucket (Error bg delta 21 is borderline; Fatal
+        // bg delta 48 clears the bar); the `RailFixture` cycle
+        // ensures every bucket lands an Error row. Guards
+        // against a regression that mis-routes paint back to
+        // Base (invisible) or to a single near-Base tint (also
+        // invisible).
+        QVERIFY2(
+            highContrastPixels > 0,
+            qPrintable(QStringLiteral("Dark theme: no bar pixels contrast strongly against bg %1. Bars painted "
+                                      "with `ColorForLevel` are near-invisible on the widget background.")
+                           .arg(bg.name()))
+        );
+
+        delete widget;
+    }
+
+    /// Whole-file overview contract: the rail projects the file's
+    /// row range across its *entire* widget height (klogg / glogg /
+    /// VS Code minimap style), not just the viewport-Y slice below
+    /// the header. Pinned via `YForBucketForTest(0)` -- the first
+    /// bucket's Y must land near the top of the widget (well above
+    /// the viewport's top edge) so bars fill the whole rail
+    /// instead of being confined to a header-height-shifted strip.
+    static void TestRailProjectsAcrossFullWidgetHeight()
+    {
+        LogTableView view;
+        view.resize(800, 400);
+        view.show();
+        LogModel model;
+        view.setModel(&model);
+
+        AnchorManager anchors;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel railModel(chain.filter, &model, &anchors, &owner);
+        auto *widget = new OverviewRailWidget(&railModel, /*theme=*/nullptr, &view);
+        view.AttachOverviewRail(widget);
+
+        // Give Qt a chance to lay out header + viewport under the
+        // reserved margin so `viewport()->geometry().top()` reflects
+        // the actual header height (offscreen QPA still routes the
+        // layout pass).
+        QCoreApplication::processEvents();
+
+        constexpr int ROWS = 40;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(railModel);
+        QVERIFY(railModel.BucketCount() > 0);
+
+        const int viewportTop = view.viewport()->geometry().top();
+        QVERIFY2(viewportTop > 0, "test needs a non-degenerate header height to be meaningful");
+
+        // Bar for bucket 0 must sit *above* the viewport's top
+        // edge in the widget's own coordinate system -- i.e., the
+        // rail's row-to-Y projection spans the full widget, not
+        // just the viewport-Y slice. Otherwise the rail wastes the
+        // header-Y strip as empty chrome, which reads as "the rail
+        // is broken -- half of it is empty".
+        const int firstBucketY = widget->YForBucketForTest(0);
+        QVERIFY2(firstBucketY < viewportTop, "first bucket must sit above the viewport top (whole-file overview)");
+
+        // Last bucket must sit near the widget bottom so the file's
+        // final rows are reachable via a click at the rail's foot.
+        const int lastBucketY = widget->YForBucketForTest(static_cast<int>(railModel.BucketCount()) - 1);
+        QVERIFY2(lastBucketY >= viewportTop, "last bucket must be at or below the viewport top");
+        QVERIFY(lastBucketY < widget->height());
+
+        view.AttachOverviewRail(nullptr);
+        delete widget;
+    }
+
+    /// Viewport indicator centring: on tall logs the visible-row
+    /// Y-range naturally maps to fewer than `INDICATOR_MIN_HEIGHT_PX`
+    /// rail pixels, so the widget inflates the indicator up to the
+    /// minimum. That inflation must happen *around the centre* of
+    /// the visible range, not by pinning the indicator's top to
+    /// the visible-top's Y -- otherwise a row selected in the
+    /// middle of the viewport is drawn near the top of the
+    /// indicator on the rail, which reads as "current-view
+    /// preview is misaligned relative to what I see in the
+    /// table" (regression report). Verified by scrolling to the
+    /// middle of a tall model and asserting the indicator's
+    /// vertical mid-point lands on (or very close to) the Y of
+    /// the middle visible row.
+    static void TestViewportIndicatorCentersOnVisibleRange()
+    {
+        LogTableView view;
+        view.resize(800, 400);
+        view.show();
+        LogModel model;
+        view.setModel(&model);
+
+        AnchorManager anchors;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel railModel(chain.filter, &model, &anchors, &owner);
+        auto *widget = new OverviewRailWidget(&railModel, /*theme=*/nullptr, &view);
+        view.AttachOverviewRail(widget);
+
+        QCoreApplication::processEvents();
+
+        // Enough rows that ~20 visible rows fall below the
+        // indicator's min-height floor when projected onto the
+        // rail -- i.e. the min-height inflation path *must* run.
+        constexpr int ROWS = 10000;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(railModel);
+        QVERIFY(railModel.BucketCount() > 0);
+
+        // Scroll the table to somewhere in the middle so the
+        // visible range is a small window well away from either
+        // edge. `PositionAtCenter` centres `middleRow` in the
+        // viewport (subject to Qt's scrollbar snap) -- exactly
+        // the layout that used to trigger the "anchor at the
+        // top of the indicator" bug.
+        constexpr int MIDDLE_ROW = ROWS / 2;
+        const QModelIndex midIdx = view.model()->index(MIDDLE_ROW, 0);
+        QVERIFY(midIdx.isValid());
+        view.scrollTo(midIdx, QAbstractItemView::PositionAtCenter);
+        QCoreApplication::processEvents();
+
+        const QRect indicator = widget->ViewportIndicatorRectForTest();
+        QVERIFY2(!indicator.isEmpty(), "viewport indicator must be non-empty when the table has rows");
+
+        // Y coordinate on the rail where the *middle* visible row
+        // projects to. If the indicator top was pinned to the
+        // visible-top's Y (pre-fix behaviour), the middle-row Y
+        // would land near the *top edge* of the indicator on a
+        // very tall log. With centring, the middle-row Y must
+        // land close to the indicator's vertical mid-point.
+        const int middleBucket = widget->BucketAtYForTest(
+            widget->height() / 2 // seed near the widget centre
+        );
+        // Bucket index for the middle row via the projection the
+        // widget itself uses (row -> bucket = row * nBuckets /
+        // rowCount). Guarded against a torn bucket count.
+        const std::size_t nBuckets = railModel.BucketCount();
+        QVERIFY(nBuckets > 0);
+        const std::size_t midRowBucket = std::min<std::size_t>(
+            nBuckets - 1,
+            (static_cast<std::size_t>(MIDDLE_ROW) * nBuckets) / static_cast<std::size_t>(ROWS)
+        );
+        const int midRowY = widget->YForBucketForTest(midRowBucket);
+
+        const int indicatorMidY = indicator.top() + (indicator.height() / 2);
+        const int misalignment = std::abs(indicatorMidY - midRowY);
+
+        // Tolerance: half the indicator height plus one pixel of
+        // rounding slack from Qt's row-to-scrollbar snapping. If
+        // the fix is in place, `misalignment` is typically zero
+        // or one; pre-fix the middle row landed at the indicator
+        // top so `misalignment ≈ indicator.height() / 2`, far
+        // above the tolerance.
+        const int tolerance = 3;
+        QVERIFY2(
+            misalignment <= tolerance,
+            qPrintable(QStringLiteral("indicator midpoint (%1) must be within %2 px of the middle visible row's "
+                                      "rail-Y (%3); off by %4 px. indicator=%5x%6 at (%7,%8)")
+                           .arg(indicatorMidY)
+                           .arg(tolerance)
+                           .arg(midRowY)
+                           .arg(misalignment)
+                           .arg(indicator.width())
+                           .arg(indicator.height())
+                           .arg(indicator.left())
+                           .arg(indicator.top()))
+        );
+        // Silence unused-var warning when the seed bucket isn't
+        // referenced by any assertion above; the call itself
+        // exercises the widget's Y-to-bucket path.
+        Q_UNUSED(middleBucket);
+
+        view.AttachOverviewRail(nullptr);
+        delete widget;
+    }
+
+    /// Single-section content contract: the level bins, match
+    /// ticks, and anchor ticks all share one full-width content
+    /// slot inside the usable underlay. Match / anchor ticks are
+    /// *overlays* on top of the bins (see the paint pass) rather
+    /// than dedicated columns, so a search hit or user anchor
+    /// paints the whole rail width in that bucket and reads as
+    /// an unambiguous "here!" marker even on a narrow rail.
+    static void TestContentRectSpansFullUnderlay()
+    {
+        constexpr int UNDERLAY_LEFT = 2;
+        constexpr int UNDERLAY_WIDTH = 25; // 28 px rail - 1 sep - 2 inset
+        const QRect content = OverviewRailWidget::ContentRectForTest(UNDERLAY_LEFT, UNDERLAY_WIDTH);
+
+        QCOMPARE(content.left(), UNDERLAY_LEFT);
+        QCOMPARE(content.width(), UNDERLAY_WIDTH);
+
+        // Degenerate zero-width underlay: helper returns an
+        // empty rect without crashing.
+        const QRect empty = OverviewRailWidget::ContentRectForTest(UNDERLAY_LEFT, 0);
+        QCOMPARE(empty.width(), 0);
+    }
+
     /// `sizeHint()` returns a positive DPI-fluent width and a
     /// zero preferred height (rail grows vertically to fit the
     /// hosting margin). `minimumSizeHint` never exceeds it.
@@ -518,21 +1485,107 @@ private slots:
 
         // Use a QWidget with a fixed size so `sizeHint()` returns
         // a positive width — a bare QWidget's sizeHint is (-1,-1),
-        // which would leave `ReservedRightMargin` at zero. The
+        // which would leave the reservation at zero. The
         // `OverviewRailWidget` in production supplies its own
-        // DPI-fluent width; test just needs any positive value.
+        // DPI-fluent width; the test just needs any positive value.
         constexpr int RAIL_WIDTH = 16;
         auto *rail = new QWidget(nullptr);
         rail->setFixedWidth(RAIL_WIDTH);
         view.AttachOverviewRail(rail);
         QCOMPARE(view.OverviewRail(), rail);
+        // Reserved right margin is JUST the rail width.
+        // `QAbstractScrollArea::layoutChildren_helper` already
+        // reserves `PM_ScrollBarExtent` for the vertical
+        // scrollbar independently of viewport margins, so the
+        // scrollbar auto-places past the rail without needing an
+        // extra reservation here.
         QCOMPARE(view.ReservedRightMargin(), RAIL_WIDTH);
         QCOMPARE(rail->parent(), &view);
+
+        // Force an `updateGeometries` pass so `QTableView`'s
+        // implicit `setViewportMargins(headerW, headerH, 0, 0)`
+        // gets a chance to wipe our right margin. Our override
+        // must re-apply it, otherwise the rail's slot silently
+        // disappears on the first row insert / column change /
+        // header resize in production.
+        view.UpdateGeometriesForTest();
+        QCOMPARE(view.ViewportMarginsForTest().right(), RAIL_WIDTH);
+
+        // Geometry: the rail must sit immediately right of the
+        // viewport and MUST NOT overlap the scrollbar's rect --
+        // that was the "invisible rail" bug where the scrollbar
+        // painted on top of the rail's rightmost pixels. The Y
+        // span covers the frame from Y=0 (aligned with the top
+        // of the horizontal header) down to the viewport bottom
+        // so the strip reads as one continuous piece of chrome
+        // from the header down to the scrollbar corner. The
+        // level bars / viewport indicator themselves paint only
+        // in the viewport-Y slice (`InteractiveRailRect` skips
+        // the header-Y strip) so a bar for a visible row still
+        // aligns horizontally with that row's table entry --
+        // the header-Y strip above stays as wash chrome.
+        const QRect railGeom = rail->geometry();
+        const QRect vpGeom = view.viewport()->geometry();
+        QCOMPARE(railGeom.left(), vpGeom.right() + 1);
+        QCOMPARE(railGeom.width(), RAIL_WIDTH);
+        QCOMPARE(railGeom.top(), 0);
+        QCOMPARE(railGeom.bottom(), vpGeom.bottom());
+        if (const QScrollBar *vsb = view.verticalScrollBar(); vsb != nullptr && vsb->isVisible())
+        {
+            QVERIFY2(
+                railGeom.right() < vsb->geometry().left(),
+                "rail must not overlap the vertical scrollbar's paint rect"
+            );
+        }
 
         view.AttachOverviewRail(nullptr);
         QCOMPARE(view.OverviewRail(), static_cast<QWidget *>(nullptr));
         QCOMPARE(view.ReservedRightMargin(), 0);
         // Widget survives detach (caller owns it). Delete manually.
+        delete rail;
+    }
+
+    /// Regression against the bug where `QTableView::updateGeometries()`
+    /// unconditionally calls `setViewportMargins(vHeaderW, hHeaderH,
+    /// 0, 0)` and would silently wipe the rail's reserved slot on
+    /// the next row insert / column change / header resize. Force
+    /// several implicit re-layouts and assert the margin sticks
+    /// each time.
+    static void TestRailMarginSurvivesUpdateGeometries()
+    {
+        LogTableView view;
+        view.resize(800, 400);
+        view.show();
+
+        constexpr int RAIL_WIDTH = 18;
+        auto *rail = new QWidget(nullptr);
+        rail->setFixedWidth(RAIL_WIDTH);
+        view.AttachOverviewRail(rail);
+
+        // Attach a small model so `updateGeometries` runs through
+        // the same code paths a live table hits (columns, rows,
+        // scrollbar range checks).
+        LogModel model;
+        view.setModel(&model);
+
+        for (int i = 0; i < 5; ++i)
+        {
+            view.UpdateGeometriesForTest();
+            QCOMPARE(view.ViewportMarginsForTest().right(), RAIL_WIDTH);
+            const QRect railGeom = rail->geometry();
+            const QRect vpGeom = view.viewport()->geometry();
+            QCOMPARE(railGeom.left(), vpGeom.right() + 1);
+            QCOMPARE(railGeom.width(), RAIL_WIDTH);
+            // Rail Y span must stay from the frame top down to
+            // the viewport bottom across every implicit re-layout
+            // so the strip reads as one continuous piece of
+            // chrome (`InteractiveRailRect` handles the header-Y
+            // skip for the bars themselves).
+            QCOMPARE(railGeom.top(), 0);
+            QCOMPARE(railGeom.bottom(), vpGeom.bottom());
+        }
+
+        view.AttachOverviewRail(nullptr);
         delete rail;
     }
 

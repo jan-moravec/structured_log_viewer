@@ -191,10 +191,14 @@ loglib::LogLevel OverviewRailModel::DominantLevel(std::size_t bucket) const noex
         return loglib::LogLevel::Unknown;
     }
     const auto &counts = mBuckets[bucket].levels.counts;
-    // Pick the entry with the highest count, tie-broken by
-    // severity rank (Fatal wins over Error wins over Warn, ...).
-    // `Unknown` (slot 0) contributes to the paint like any other
-    // level so unresolved rows still tint the rail.
+    // Majority-count level, tie-broken by severity (Fatal wins
+    // over Error wins over Warn, ...). Retained for callers that
+    // want a *single* colour per bucket (e.g. the anchor tick
+    // legend, tests). The widget's level histogram no longer
+    // relies on this method -- it iterates the per-level counts
+    // and paints stacked severity segments so a bucket with 200
+    // Trace + 1 Fatal shows both the grey volume *and* a visible
+    // red anomaly pixel, which majority-count alone erases.
     std::size_t bestSlot = 0;
     uint32_t bestCount = 0;
     int bestSeverity = -1;

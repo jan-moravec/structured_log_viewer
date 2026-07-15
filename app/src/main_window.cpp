@@ -5643,12 +5643,38 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
             return;
         }
         const QVariant value = QVariant::fromValue(text);
-        // Cap + 1: the extra hit lets us distinguish "exactly at the
-        // cap" from "ran off the end". Keeps the GUI bounded on huge
-        // tables with a common needle.
+        // Scan the whole proxy for matches (bounded by proxy row
+        // count, not by a fixed hit cap). We used to stop after
+        // `MAX_FIND_MATCH_COUNT + 1` hits, which is fine for the
+        // i-of-N label but *biased* the returned row list to
+        // the first N matching rows -- so the overview rail (which
+        // consumes the same list) drew highlight ticks only in
+        // the top slice of the log and appeared "broken" whenever
+        // a common needle produced >10 000 hits. The debounce
+        // upstream (`FindRecordWidget::mMatchCountTimer`, ~200 ms
+        // trailing + max-age cap) already coalesces per-keystroke
+        // bursts, so paying the full scan cost is acceptable per
+        // finalised query. The scan itself is O(rows * cols) with
+        // an early-exit-per-row on the first cell match, which
+        // matches the previous cost for common needles that hit
+        // the cap; only rare-needle scans (which walked the whole
+        // proxy before too) see any additional work here.
+        const int proxyRowCount = mSortFilterProxyModel->rowCount();
+        // Use `proxyRowCount` as the ceiling so `MatchRow` still
+        // stops as soon as every row has been visited. A zero
+        // row count would fall through with an empty match list
+        // as it always did.
+        const int scanCap = std::max(1, proxyRowCount);
         const QModelIndexList matches =
-            mSortFilterProxyModel->MatchRow(start, Qt::DisplayRole, value, MAX_FIND_MATCH_COUNT + 1, flags, true, 0);
-        const bool overflowed = matches.size() > MAX_FIND_MATCH_COUNT;
+            mSortFilterProxyModel->MatchRow(start, Qt::DisplayRole, value, scanCap, flags, true, 0);
+        // The scan is uncapped so the returned list is exhaustive
+        // (no "we stopped after N hits" lower-bound semantics).
+        // `overflowed` -> `false` disables the "+" suffix on the
+        // "*i* of *N*" label; the exact count is fine to display
+        // and no longer misleadingly reads as a lower bound.
+        // Kept as a cache field for backward-compat with the
+        // struct's existing consumers.
+        const bool overflowed = false;
         // `MatchRow` is contracted to return one entry per row in
         // ascending order. Sort + unique defensively so a future
         // contract drift can't silently corrupt the binary search;
@@ -5679,13 +5705,15 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
                           "deduplicating defensively. This is a contract violation worth investigating.";
         }
         rows.erase(std::ranges::unique(rows).begin(), rows.end());
-        // Trim only when there's surplus -- the dedup above can drop
-        // entries below the cap, and a blind `resize(cap)` would then
-        // grow the vector with zeros that look like matches at row 0.
-        if (rows.size() > static_cast<size_t>(MAX_FIND_MATCH_COUNT))
-        {
-            rows.resize(static_cast<size_t>(MAX_FIND_MATCH_COUNT));
-        }
+        // No truncation: `rows` already holds every match found
+        // by the uncapped scan above, and both consumers (the
+        // overview rail's bucket-folder and the Next / Previous
+        // binary search) benefit from an exact list. The old
+        // `resize(MAX_FIND_MATCH_COUNT)` truncation was the
+        // second half of the "highlight stops working with many
+        // hits" bug -- combined with the capped `MatchRow`, it
+        // left the rail's tick vector contiguous from row 0 and
+        // silently missing every match past the first N.
         mFindMatchCache = FindMatchCache{
             .needle = text,
             .wildcards = wildcards,

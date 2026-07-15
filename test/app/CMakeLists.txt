@@ -101,7 +101,13 @@ add_test(NAME apptest_histogram COMMAND apptest_histogram WORKING_DIRECTORY $<TA
 # concern-per-binary pattern as `apptest_histogram`: keeps the
 # monolithic `apptest` lean and lets `ctest -R apptest_overview_rail`
 # rerun just this concern.
-qt_add_executable(apptest_overview_rail src/test_overview_rail.cpp)
+#
+# Links the built-in theme JSONs from `resources.qrc` so the paint
+# tests can load the real Dark / Light themes via
+# `ThemeControl::SetActiveSelection` and assert contrast against a
+# realistic palette (not the offscreen QPA's blank fallback).
+qt_add_resources(RAIL_TEST_RESOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../../resources/resources.qrc)
+qt_add_executable(apptest_overview_rail src/test_overview_rail.cpp ${RAIL_TEST_RESOURCES})
 
 target_link_libraries(apptest_overview_rail PRIVATE Qt6::Test Qt6::Widgets logapp)
 

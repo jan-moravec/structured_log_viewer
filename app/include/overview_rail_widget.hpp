@@ -7,6 +7,7 @@
 
 #include <climits>
 #include <cstddef>
+#include <cstdint>
 
 class OverviewRailModel;
 class ThemeControl;
@@ -20,18 +21,37 @@ class QWheelEvent;
 /// Klogg / Qt-Creator-inspired match overview rail. A slim
 /// vertical strip painted in a reserved right-hand viewport
 /// margin of `LogTableView` (via
-/// `LogTableView::AttachOverviewRail`). Renders:
+/// `LogTableView::AttachOverviewRail`). Renders one full-width
+/// content section with three stacked layers:
 ///
-/// - A **subtle wash background** (`QPalette::Base` blended
-///   toward `QPalette::Window`) so the rail reads as an
-///   integrated frame element in every theme.
-/// - A **dominant-level colour underlay** per bucket, drawn at
-///   ~50 % alpha over the wash. Severity ties break in favour
-///   of the higher level (Fatal beats Error beats Warn).
-/// - **Find match ticks** for buckets containing at least one
-///   find match, painted in the palette's Highlight accent.
-/// - **Anchor tick bands** per set anchor palette slot,
-///   coloured via `ThemeControl::AnchorBrushFor`.
+/// - A **base wash** in `QPalette::Base` so the rail reads as an
+///   integrated extension of the table's data area in every
+///   theme.
+/// - A **stacked-severity bin bar** per non-empty bucket. Bar
+///   width encodes total row density (log-scaled); the bar is
+///   split into per-level segments in severity-descending order
+///   (Fatal / Error / Warn / Info / Debug / Trace / Unknown),
+///   each sized by that level's `log2(count + 1)`-weighted
+///   share of the bucket with a 1 px floor so rare severities
+///   never round away. The log-weighted split compresses the
+///   dynamic range: a 500 Trace + 1 Fatal bucket paints a
+///   noticeable Fatal band instead of a single-pixel needle,
+///   while still keeping the majority level clearly dominant.
+///   Segment colours come from the active theme's row
+///   *background* (via `ThemeControl::BackgroundFor`) so the
+///   rail reads as a mini-map of the row-tinted table rather
+///   than a bright pastel band. `BackgroundFor` respects
+///   `mHighContrast`, so the "high contrast levels" preference
+///   automatically recolours the rail with the loud
+///   `levelsHighContrast` variants. Theme-unstyled levels fall
+///   back to `QPalette::PlaceholderText` painted at reduced
+///   alpha (`LEVEL_FALLBACK_ALPHA`).
+/// - **Match / anchor overlays** repaint the whole content
+///   width for buckets that carry a search hit or an anchor.
+///   Anchors are drawn on top of matches so a user-set marker
+///   always wins over live search state; both use only theme
+///   palette colours (`QPalette::Highlight` for matches,
+///   `ThemeControl::AnchorBrushFor` for anchors).
 /// - A **rounded viewport indicator** showing the currently
 ///   visible proxy-row range, tracked from the attached table
 ///   view's vertical scrollbar. Anti-aliased translucent fill
@@ -78,6 +98,23 @@ public:
 
     /// Y coordinate of the top of bucket @p bucket. Test-only.
     [[nodiscard]] int YForBucketForTest(std::size_t bucket) const;
+
+    /// Bar width (in device-independent px) the level pass would
+    /// paint for a bucket with @p count rows against a rail-wide
+    /// @p maxCount, laid out in a level column of @p columnWidth
+    /// pixels. Exposes the log-scale + `MIN_BAR_WIDTH_PX` clamp
+    /// so the paint math can be verified without pixel-scraping
+    /// the widget. Test-only.
+    [[nodiscard]] static int WidthForCountForTest(std::uint32_t count, std::uint32_t maxCount, int columnWidth);
+
+    /// Single content rect inside the usable underlay. Returned
+    /// with `.left / .width` populated and `.top / .height` zero
+    /// because each bucket's paint pass fills its own Y slice
+    /// on top of this. The bin bar, match overlay, and anchor
+    /// overlay all share this same horizontal slot -- the old
+    /// three-column layout collapsed into a single slot with
+    /// paint order handling overlap. Test-only.
+    [[nodiscard]] static QRect ContentRectForTest(int underlayLeft, int underlayWidth);
 
 signals:
     /// Emitted after the widget resolves a click / drag Y to a

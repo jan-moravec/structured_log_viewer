@@ -375,12 +375,23 @@ void FindRecordWidget::RequestMatchCountSoon()
 {
     if (mEdit->text().isEmpty())
     {
-        // Empty needle: clear immediately and cancel any in-flight
-        // tick so a stale needle can't overwrite the cleared state.
-        // No emit; the parent has nothing to recount.
+        // Empty needle: clear the label immediately, cancel any
+        // in-flight debounce so a stale needle can't overwrite
+        // the cleared state, and *also* signal the parent so it
+        // can drop dependent match state that lives outside this
+        // widget (find-match cache and overview-rail tick
+        // vector). We used to skip the emit here on the
+        // reasoning that "the parent has nothing to recount",
+        // but the emit is what resets the rail highlight --
+        // without it a cleared find bar would leave the last
+        // needle's ticks stranded on the rail. `MainWindow::
+        // UpdateFindMatchCount` short-circuits on empty text
+        // and calls `InvalidateFindMatchCache`, which in turn
+        // pushes an empty match list into the rail.
         mMatchCountTimer->stop();
         mMatchCountMaxAgeTimer->stop();
         SetMatchInfo(0, 0);
+        emit MatchCountRequested(mEdit->text(), mWildcardsAction->isChecked(), mRegexAction->isChecked());
         return;
     }
     mMatchCountTimer->start();
