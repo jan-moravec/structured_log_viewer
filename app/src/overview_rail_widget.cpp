@@ -471,12 +471,26 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
     // recomputing the same integer division per bucket on tall
     // rails and keeps the seam-rounding ("bottom == next
     // bucket's top") consistent across passes.
-    std::vector<int> yEdges(nBuckets + 1);
-    for (std::size_t i = 0; i <= nBuckets; ++i)
+    //
+    // Cached on `(nBuckets, railTop, railHeight)` so a drag-scroll
+    // burst (many paints per second, geometry unchanged between
+    // them) reuses the same vector instead of re-allocating
+    // `nBuckets + 1` ints per paint. Invalidated implicitly on
+    // resize / bucket-count change / style-driven inset shift.
+    if (mCachedYEdgesBuckets != nBuckets || mCachedYEdgesRailTop != railTop ||
+        mCachedYEdgesRailHeight != railHeight)
     {
-        yEdges[i] = railTop + static_cast<int>((i * static_cast<std::size_t>(railHeight)) / nBuckets);
+        mCachedYEdges.assign(nBuckets + 1, 0);
+        for (std::size_t i = 0; i <= nBuckets; ++i)
+        {
+            mCachedYEdges[i] = railTop + static_cast<int>((i * static_cast<std::size_t>(railHeight)) / nBuckets);
+        }
+        mCachedYEdges.back() = railTop + railHeight;
+        mCachedYEdgesBuckets = nBuckets;
+        mCachedYEdgesRailTop = railTop;
+        mCachedYEdgesRailHeight = railHeight;
     }
-    yEdges.back() = railTop + railHeight;
+    const std::vector<int> &yEdges = mCachedYEdges;
 
     // Rail-wide max bucket total. Drives the log-scaled bar
     // width in Pass 1 so density is expressed as bar length

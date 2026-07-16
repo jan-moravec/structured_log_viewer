@@ -728,6 +728,27 @@ MainWindow::MainWindow(
     mOverviewRailWidget = new OverviewRailWidget(mOverviewRailModel, mTheme, mTableView, this);
     mOverviewRailWidget->hide();
     connect(mOverviewRailWidget, &OverviewRailWidget::proxyRowClicked, this, &MainWindow::ScrollToProxyRow);
+    // A height change reallocates buckets and drops size-mismatched
+    // durable match counts. When find is open, re-push / rescan so
+    // ticks don't vanish until the next keystroke.
+    connect(mOverviewRailModel, &OverviewRailModel::bucketsChanged, this, [this]() {
+        if (!IsFindBarVisible() || !mFindMatchCache.has_value() || mOverviewRailModel == nullptr)
+        {
+            return;
+        }
+        const std::size_t n = mOverviewRailModel->BucketCount();
+        if (n == 0)
+        {
+            return;
+        }
+        // Same H and ticks already present: RebuildInternal
+        // re-applied durable counts; nothing to do.
+        if (mFindMatchCache->bucketCounts.size() == n && mOverviewRailModel->HasMatchTicks())
+        {
+            return;
+        }
+        PushFindMatchesToOverviewRail();
+    });
 
     mActionToggleOverviewRail = new QAction(tr("Overview rail"), this);
     mActionToggleOverviewRail->setObjectName(QStringLiteral("actionToggleOverviewRail"));
@@ -1064,14 +1085,12 @@ MainWindow::MainWindow(
         {
             mFindRecord->BumpMatchCountDebounce();
         }
-        // Repopulate the rail's match ticks from the current
-        // cache. Without this, closing and reopening the find
-        // bar would leave the rail blank until the user typed
-        // again.
-        if (mOverviewRailModel != nullptr && mFindMatchCache.has_value())
-        {
-            mOverviewRailModel->SetMatchProxyRows(mFindMatchCache->sortedRows);
-        }
+        // Restore rail ticks from the surviving cache. Prefer
+        // unbiased `bucketCounts` over the capped `sortedRows`
+        // list — a naive `SetMatchProxyRows(sortedRows)` would
+        // paint only the first 10 000 hits after a common-needle
+        // reopen, and a cache-hit debounce would never re-scan.
+        PushFindMatchesToOverviewRail();
     });
 
     // Dropping the find bar drops the rail's match ticks too —
@@ -5643,98 +5662,155 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
             return;
         }
         const QVariant value = QVariant::fromValue(text);
-        // Scan the whole proxy for matches (bounded by proxy row
-        // count, not by a fixed hit cap). We used to stop after
-        // `MAX_FIND_MATCH_COUNT + 1` hits, which is fine for the
-        // i-of-N label but *biased* the returned row list to
-        // the first N matching rows -- so the overview rail (which
-        // consumes the same list) drew highlight ticks only in
-        // the top slice of the log and appeared "broken" whenever
-        // a common needle produced >10 000 hits. The debounce
-        // upstream (`FindRecordWidget::mMatchCountTimer`, ~200 ms
-        // trailing + max-age cap) already coalesces per-keystroke
-        // bursts, so paying the full scan cost is acceptable per
-        // finalised query. The scan itself is O(rows * cols) with
-        // an early-exit-per-row on the first cell match, which
-        // matches the previous cost for common needles that hit
-        // the cap; only rare-needle scans (which walked the whole
-        // proxy before too) see any additional work here.
         const int proxyRowCount = mSortFilterProxyModel->rowCount();
-        // Use `proxyRowCount` as the ceiling so `MatchRow` still
-        // stops as soon as every row has been visited. A zero
-        // row count would fall through with an empty match list
-        // as it always did.
-        const int scanCap = std::max(1, proxyRowCount);
-        const QModelIndexList matches =
-            mSortFilterProxyModel->MatchRow(start, Qt::DisplayRole, value, scanCap, flags, true, 0);
-        // The scan is uncapped so the returned list is exhaustive
-        // (no "we stopped after N hits" lower-bound semantics).
-        // `overflowed` -> `false` disables the "+" suffix on the
-        // "*i* of *N*" label; the exact count is fine to display
-        // and no longer misleadingly reads as a lower bound.
-        // Kept as a cache field for backward-compat with the
-        // struct's existing consumers.
-        const bool overflowed = false;
-        // `MatchRow` is contracted to return one entry per row in
-        // ascending order. Sort + unique defensively so a future
-        // contract drift can't silently corrupt the binary search;
-        // asserts catch the regression at the source in debug builds.
-        std::vector<int> rows;
-        rows.reserve(static_cast<size_t>(matches.size()));
-        for (const QModelIndex &m : matches)
-        {
-            rows.push_back(m.row());
-        }
-        // Sort check must precede dedup check: `adjacent_find` only
-        // spots adjacent dupes, so unsorted input with non-adjacent
-        // duplicates would slip through. `qWarning` mirrors the
-        // assert because release builds compile it out.
-        const bool sortedAsExpected = std::ranges::is_sorted(rows);
+        // Ask the rail for its live bucket count so we can fold
+        // per-hit counters straight into a fixed-size vector as
+        // the scan runs. The rail is dropped to zero buckets while
+        // hidden (see `SetOverviewRailVisible`), in which case we
+        // skip the bucket-counter fold entirely and let the rail
+        // reattach via its own rebuild path.
+        const std::size_t nBuckets =
+            (mOverviewRailModel != nullptr) ? mOverviewRailModel->BucketCount() : std::size_t{0};
+
+        // Single-walk accumulator. `sortedRows` caps out at
+        // `MAX_FIND_MATCH_COUNT` (see field doc): the vector feeds
+        // the `Next / Previous` binary search and needs to fit in
+        // predictable memory. The rail is fed via `bucketCounts`
+        // (fixed-size at `nBuckets`). Paint only needs presence
+        // (`matchCount > 0`), so once every bucket has a tick and
+        // the navigator list is past the cap we can stop — a
+        // common needle on a huge proxy must not force a full
+        // synchronous walk. Sparse needles still scan to the end
+        // (not every bucket lights up early).
+        std::vector<int> sortedRows;
+        // Clamp against a possible pathological `rowCount() == -1`
+        // (some `QAbstractItemModel` overrides return -1 to signal
+        // "unknown"). Without the `max(0, ...)`, casting a negative
+        // value to `size_t` would ask `reserve` for a multi-EB
+        // allocation and throw `std::length_error` on the GUI
+        // thread. `MAX_FIND_MATCH_COUNT` is also the hard cap on
+        // the walk, so oversizing beyond it wastes memory.
+        const int reserveHint = std::min(std::max(0, proxyRowCount), MAX_FIND_MATCH_COUNT);
+        sortedRows.reserve(static_cast<size_t>(reserveHint));
+        std::vector<uint32_t> bucketCounts(nBuckets, uint32_t{0});
+        uint32_t totalMatches = 0;
+        std::size_t bucketsHit = 0;
+        bool scanExhausted = true;
+        // `ForEachMatchingRow` streams matches to the callback
+        // without allocating a `QList<QModelIndex>`. Contract:
+        // one invocation per matching row, in ascending row order
+        // (forward, no wrap), so `sortedRows` stays sorted-unique
+        // for the downstream binary search.
+        mSortFilterProxyModel->ForEachMatchingRow(
+            start,
+            Qt::DisplayRole,
+            value,
+            flags,
+            /*forward=*/true,
+            /*skipFirstN=*/0,
+            [&](const QModelIndex &matchIndex) -> bool {
+                ++totalMatches;
+                const int proxyRow = matchIndex.row();
+                if (nBuckets > 0 && proxyRowCount > 0 && proxyRow >= 0)
+                {
+                    const std::size_t bucketIdx =
+                        (static_cast<std::size_t>(proxyRow) * nBuckets) / static_cast<std::size_t>(proxyRowCount);
+                    uint32_t &slot = bucketCounts[std::min(bucketIdx, nBuckets - 1)];
+                    if (slot == 0)
+                    {
+                        ++bucketsHit;
+                    }
+                    ++slot;
+                }
+                if (static_cast<int>(sortedRows.size()) < MAX_FIND_MATCH_COUNT)
+                {
+                    sortedRows.push_back(proxyRow);
+                }
+                // Early-exit once overflow is proven (one past the
+                // navigator cap) and the rail either is hidden or
+                // already has a presence tick in every bucket.
+                // Further hits only change density / the exact
+                // total; the label shows "+" and paint ignores
+                // density. Mirrors the pre-rail `hits = MAX+1`
+                // freeze guard without re-biasing the rail strip
+                // for dense needles.
+                if (totalMatches > static_cast<uint32_t>(MAX_FIND_MATCH_COUNT) &&
+                    (nBuckets == 0 || bucketsHit >= nBuckets))
+                {
+                    scanExhausted = false;
+                    return false;
+                }
+                return true;
+            }
+        );
+
+        const bool overflowed =
+            !scanExhausted || totalMatches > static_cast<uint32_t>(MAX_FIND_MATCH_COUNT);
+        // Defensive sort/dedup: `ForEachMatchingRow` is contracted
+        // to yield rows in ascending order without duplicates, but
+        // a future contract drift can't be allowed to silently
+        // corrupt the binary search. `qWarning` mirrors the assert
+        // so release builds still leave a breadcrumb.
+        const bool sortedAsExpected = std::ranges::is_sorted(sortedRows);
         Q_ASSERT(sortedAsExpected);
         if (!sortedAsExpected)
         {
-            qWarning() << "MainWindow::UpdateFindMatchCount: MatchRow returned unsorted rows; "
+            qWarning() << "MainWindow::UpdateFindMatchCount: ForEachMatchingRow returned unsorted rows; "
                           "sorting defensively. This is a contract violation worth investigating.";
-            std::ranges::sort(rows);
+            std::ranges::sort(sortedRows);
         }
-        const bool dedupedAsExpected = std::ranges::adjacent_find(rows) == rows.end();
+        const bool dedupedAsExpected = std::ranges::adjacent_find(sortedRows) == sortedRows.end();
         Q_ASSERT(dedupedAsExpected);
         if (!dedupedAsExpected)
         {
-            qWarning() << "MainWindow::UpdateFindMatchCount: MatchRow returned duplicate rows; "
+            qWarning() << "MainWindow::UpdateFindMatchCount: ForEachMatchingRow returned duplicate rows; "
                           "deduplicating defensively. This is a contract violation worth investigating.";
+            sortedRows.erase(std::ranges::unique(sortedRows).begin(), sortedRows.end());
         }
-        rows.erase(std::ranges::unique(rows).begin(), rows.end());
-        // No truncation: `rows` already holds every match found
-        // by the uncapped scan above, and both consumers (the
-        // overview rail's bucket-folder and the Next / Previous
-        // binary search) benefit from an exact list. The old
-        // `resize(MAX_FIND_MATCH_COUNT)` truncation was the
-        // second half of the "highlight stops working with many
-        // hits" bug -- combined with the capped `MatchRow`, it
-        // left the rail's tick vector contiguous from row 0 and
-        // silently missing every match past the first N.
         mFindMatchCache = FindMatchCache{
             .needle = text,
             .wildcards = wildcards,
             .regularExpressions = regularExpressions,
             .overflowed = overflowed,
-            .sortedRows = std::move(rows),
+            .sortedRows = std::move(sortedRows),
+            .totalMatches = totalMatches,
+            // Keep a copy for find-dock reveal / rail re-show so a
+            // cache-hit path can still push unbiased ticks without
+            // re-walking the proxy. Empty when the rail had zero
+            // buckets during this scan (hidden).
+            .bucketCounts = (nBuckets > 0) ? bucketCounts : std::vector<uint32_t>{},
         };
-        // Push the fresh match rows into the overview rail so its
-        // find-tick band matches the "*i* of *N*" indicator. The
-        // rail's model coalesces the bucket recompute but emits
-        // `matchesChanged` immediately so the widget repaints on
-        // the next event loop pass.
+        // Push the fresh match state into the overview rail. The
+        // bucket-counts path is preferred when the rail has an
+        // active bucket vector: it feeds every hit into the rail's
+        // paint without the O(matches) allocation, and it never
+        // biases toward the top of the log even when the sorted-
+        // rows vector is capped. When the rail is hidden
+        // (`nBuckets == 0`), fall back to the row-list path so
+        // the cached list survives a later re-show via
+        // `SetBucketCount(H)` triggering a fresh rebuild (and
+        // `PushFindMatchesToOverviewRail` forces a recount when
+        // that list was capped).
         if (mOverviewRailModel != nullptr)
         {
-            mOverviewRailModel->SetMatchProxyRows(mFindMatchCache->sortedRows);
+            if (nBuckets > 0)
+            {
+                mOverviewRailModel->SetMatchBucketCounts(std::move(bucketCounts), totalMatches);
+            }
+            else
+            {
+                mOverviewRailModel->SetMatchProxyRows(mFindMatchCache->sortedRows);
+            }
         }
     }
 
-    const int total = static_cast<int>(mFindMatchCache->sortedRows.size());
+    // When `overflowed`, `totalMatches` is a lower bound (early
+    // exit or capped navigator) and the "+" suffix also signals
+    // that the position lookup below can return `0` for a current
+    // row past the cap.
+    const int total = static_cast<int>(mFindMatchCache->totalMatches);
     int currentOneBased = 0;
-    if (total > 0 && mTableView != nullptr)
+    if (total > 0 && mTableView != nullptr && !mFindMatchCache->sortedRows.empty())
     {
         const QModelIndex currentIdx = mTableView->currentIndex();
         if (currentIdx.isValid())
@@ -5754,13 +5830,55 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
 void MainWindow::InvalidateFindMatchCache()
 {
     mFindMatchCache.reset();
-    // Rail ticks are keyed on the cached proxy-row list; drop
+    // Rail ticks are keyed on the cached match state; drop
     // them alongside the cache so a stale find selection can't
     // strand ticks on rows the current filter no longer accepts.
     if (mOverviewRailModel != nullptr)
     {
         mOverviewRailModel->SetMatchProxyRows({});
     }
+}
+
+void MainWindow::PushFindMatchesToOverviewRail()
+{
+    if (mOverviewRailModel == nullptr || !mFindMatchCache.has_value())
+    {
+        return;
+    }
+    const std::size_t nBuckets = mOverviewRailModel->BucketCount();
+    if (nBuckets == 0)
+    {
+        // Rail hidden: durable model state (row list or stored
+        // bucket counts) is enough for the next SetBucketCount(H).
+        return;
+    }
+
+    const FindMatchCache &cache = *mFindMatchCache;
+    if (cache.bucketCounts.size() == nBuckets)
+    {
+        mOverviewRailModel->SetMatchBucketCounts(cache.bucketCounts, cache.totalMatches);
+        return;
+    }
+
+    // Bucket counts missing (scan ran while rail was hidden) or
+    // size-mismatched (H changed since the scan). Prefer a full
+    // recount so the rail never paints a top-biased capped strip.
+    if (IsFindBarVisible() && !cache.needle.isEmpty())
+    {
+        const QString text = cache.needle;
+        const bool wildcards = cache.wildcards;
+        const bool regularExpressions = cache.regularExpressions;
+        // Soft-invalidate: drop the cache so UpdateFindMatchCount
+        // rescans, but do not clear the rail first — the recount
+        // below replaces ticks in one shot.
+        mFindMatchCache.reset();
+        UpdateFindMatchCount(text, wildcards, regularExpressions);
+        return;
+    }
+
+    // Find bar unavailable: best-effort restore from the capped
+    // row list (may be top-biased when overflowed).
+    mOverviewRailModel->SetMatchProxyRows(cache.sortedRows);
 }
 
 void MainWindow::OnFindCacheInvalidated()
@@ -6119,6 +6237,11 @@ void MainWindow::SetOverviewRailVisible(bool visible)
         // wasted O(rowCount) walk (and, worse, a duplicate paint
         // on the widget's first show).
         mTableView->AttachOverviewRail(mOverviewRailWidget);
+        // If find is active, re-push match ticks. Same-H hide→show
+        // already restores via durable model state; a height change
+        // (or a scan that ran while the rail was hidden) needs
+        // `PushFindMatchesToOverviewRail` to re-bucket / rescan.
+        PushFindMatchesToOverviewRail();
     }
     else
     {

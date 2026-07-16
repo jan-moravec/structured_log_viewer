@@ -188,4 +188,16 @@ private:
     /// `RailWidthForTest()` can return it without re-running the
     /// platform-metric query.
     mutable int mCachedRailWidth = 0;
+
+    /// Bucket-edge Y-coordinates cache (one entry per bucket edge,
+    /// so `nBuckets + 1` entries). Recomputed only when the
+    /// `(nBuckets, railTop, railHeight)` triple changes. Drag-scroll
+    /// bursts trigger many paints per second and this vector would
+    /// otherwise allocate `~2 KB` per paint on a 500-px rail — a
+    /// small win in isolation, but on the hot path it shows up
+    /// under a profiler at heavy tail-append cadence.
+    std::vector<int> mCachedYEdges;
+    std::size_t mCachedYEdgesBuckets = 0;
+    int mCachedYEdgesRailTop = INT_MIN;
+    int mCachedYEdgesRailHeight = INT_MIN;
 };

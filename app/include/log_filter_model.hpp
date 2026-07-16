@@ -14,6 +14,7 @@
 #include <QVariant>
 
 #include <cstddef>
+#include <functional>
 #include <unordered_map>
 #include <vector>
 
@@ -60,7 +61,14 @@ public:
     [[nodiscard]] static Qt::MatchFlags ComposeFindFlags(bool wildcards, bool regularExpressions);
 
     /// Find proxy-coord rows whose cell matches @p value under @p role.
-    /// Returns up to @p hits matches (all when `UNLIMITED_HITS`).
+    /// Returns up to @p hits matches. `hits` must be either
+    /// `UNLIMITED_HITS` (return every match) or `>= 1`; `0` is
+    /// rejected via `Q_ASSERT` (asking for zero results is a
+    /// programming error, and the wrapper's stop-condition
+    /// `size < hits` would otherwise stop after the first match
+    /// under `hits == 0`, which is a silent behaviour change
+    /// from the previous "0 == all" alias — force callers to
+    /// pick a real value instead).
     QList<QModelIndex> MatchRow(
         const QModelIndex &start,
         int role,
@@ -69,6 +77,30 @@ public:
         Qt::MatchFlags flags = Qt::MatchStartsWith | Qt::MatchWrap,
         bool forward = true,
         int skipFirstN = 0
+    ) const;
+
+    /// Callback invoked once per matching proxy-coord row in
+    /// `ForEachMatchingRow`. Returning `true` continues the walk;
+    /// returning `false` stops it. Only one cell per row is
+    /// reported (the first matching column in scan order), mirroring
+    /// `MatchRow`.
+    using MatchRowCallback = std::function<bool(const QModelIndex &proxyIndex)>;
+
+    /// Iterate matching proxy-coord rows via a callback rather than
+    /// materialising them into a `QList<QModelIndex>`. Same probe
+    /// semantics as `MatchRow` (hidden columns skipped, `MatchWrap`
+    /// honoured, `DisplayRole` fast path through `LogTable`), but
+    /// avoids the O(matches) list allocation when the caller only
+    /// needs to accumulate aggregates (per-bucket counters, total
+    /// count). `MatchRow` is now a thin wrapper on top of this.
+    void ForEachMatchingRow(
+        const QModelIndex &start,
+        int role,
+        const QVariant &value,
+        Qt::MatchFlags flags,
+        bool forward,
+        int skipFirstN,
+        const MatchRowCallback &onMatch
     ) const;
 
     /// Replace the active predicate list and rebuild the row map.

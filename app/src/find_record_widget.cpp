@@ -248,9 +248,15 @@ void FindRecordWidget::SetMatchInfo(int current, int total, bool overflowed)
     {
         // Blank label, slot stays reserved (see `MATCH_LABEL_MIN_WIDTH`).
         mMatchCountLabel->clear();
+        mMatchCountLabel->setToolTip(QString());
         return;
     }
     // Locale-grouped digits; "+" suffix surfaces the parent's hit cap.
+    // Under `overflowed` the scan may have early-exited once the
+    // rail's presence fold was settled, so `total` is a lower bound;
+    // the tooltip below spells out the caveat (visible text alone
+    // used to be ambiguous — was it "at least N" or "exactly N but
+    // I can't find your cursor position"?).
     const QLocale locale = QLocale::system();
     const QString totalText =
         locale.toString(static_cast<qlonglong>(total)) + (overflowed ? QStringLiteral("+") : QString());
@@ -267,6 +273,25 @@ void FindRecordWidget::SetMatchInfo(int current, int total, bool overflowed)
         text = overflowed ? tr("%1 matches").arg(totalText) : tr("%Ln matches", nullptr, total);
     }
     mMatchCountLabel->setText(text);
+    // Tooltip: only meaningful under `overflowed`, when the "+" on
+    // its own reads as either "at least N" or "cursor position
+    // capped". Spell out both effects so a user who cares can tell
+    // whether the label undercount matters. Clear the tooltip
+    // otherwise so a stale one from a previous overflow doesn't
+    // linger after the user narrows the search.
+    if (overflowed)
+    {
+        mMatchCountLabel->setToolTip(
+            tr("Match count is a lower bound (the scan bails once every rail bucket "
+               "has a hit and the internal cursor cache is full). The current-match "
+               "index may read as 0 for a match past the cache. The overview rail "
+               "still shows every bucket that carries a hit.")
+        );
+    }
+    else
+    {
+        mMatchCountLabel->setToolTip(QString());
+    }
 }
 
 void FindRecordWidget::BumpMatchCountDebounce()

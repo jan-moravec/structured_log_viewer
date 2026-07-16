@@ -43,8 +43,13 @@ public slots:
     ///   buttons don't jitter).
     /// - `current <= 0`: shows "*N* matches".
     /// - `current > 0`: shows "*i* of *N*".
-    /// - `overflowed`: appends "+" so the user can tell the count was
-    ///   capped rather than landing exactly at the cap.
+    /// - `overflowed`: appends "+" to `total` so the user sees the
+    ///   count as a lower bound (scan may have early-exited once
+    ///   every rail bucket had a hit and the cursor-position cache
+    ///   was full), and installs a tooltip explaining both effects
+    ///   — visible text alone used to be ambiguous between "*at
+    ///   least* N matches" and "*exactly* N matches but position
+    ///   lookup is degraded".
     void SetMatchInfo(int current, int total, bool overflowed = false);
 
     /// Close the host `QDockWidget`. Wired to Escape; no-op when not

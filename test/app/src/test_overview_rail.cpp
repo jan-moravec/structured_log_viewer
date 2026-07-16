@@ -9,6 +9,7 @@
 // `apptest_overview_rail`.
 
 #include "anchor_manager.hpp"
+#include "find_dock.hpp"
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
 #include "log_table_view.hpp"
@@ -33,8 +34,10 @@
 #include <QAbstractItemModel>
 #include <QAction>
 #include <QApplication>
+#include <QCoreApplication>
 #include <QImage>
 #include <QItemSelectionModel>
+#include <QMetaObject>
 #include <QModelIndex>
 #include <QPainter>
 #include <QRect>
@@ -1677,6 +1680,161 @@ private slots:
         );
     }
 
+    /// Closing and reopening the find dock must restore unbiased
+    /// rail ticks from cached per-bucket counts — not the capped
+    /// `sortedRows` list. Pins the regression where a cache-hit
+    /// debounce after `revealed` left the rail painting only the
+    /// first 10 000 hits of a common needle.
+    static void TestFindDockRevealRestoresUnbiasedMatchTicks()
+    {
+        {
+            QSettings settings;
+            settings.remove(QStringLiteral("ui/showOverviewRail"));
+        }
+        MainWindow window;
+        window.show();
+        QCoreApplication::processEvents();
+
+        constexpr int ROWS = 40;
+        const RailFixture fixture(ROWS);
+        auto *model = window.Model();
+        QVERIFY(model != nullptr);
+        StreamJsonPathInto(*model, fixture.Path());
+        QCOMPARE(window.FilterModel()->rowCount(), ROWS);
+
+        auto *railModel = window.findChild<OverviewRailModel *>();
+        QVERIFY(railModel != nullptr);
+        QVERIFY(railModel->BucketCount() > 0);
+
+        auto *findDock = window.findChild<FindDock *>();
+        QVERIFY(findDock != nullptr);
+        findDock->show();
+        QCoreApplication::processEvents();
+        QVERIFY(findDock->isVisible());
+
+        // "msg" matches every fixture row — spreads ticks across
+        // the whole rail when bucketed correctly.
+        QVERIFY(QMetaObject::invokeMethod(
+            &window,
+            "UpdateFindMatchCount",
+            Qt::DirectConnection,
+            Q_ARG(QString, QStringLiteral("msg")),
+            Q_ARG(bool, false),
+            Q_ARG(bool, false)
+        ));
+        QVERIFY(railModel->HasMatchTicks());
+
+        std::vector<uint32_t> baseline;
+        baseline.reserve(railModel->BucketCount());
+        uint32_t baselineTotal = 0;
+        std::size_t bucketsWithTicks = 0;
+        for (const auto &bucket : railModel->Buckets())
+        {
+            baseline.push_back(bucket.matchCount);
+            baselineTotal += bucket.matchCount;
+            if (bucket.matchCount > 0)
+            {
+                ++bucketsWithTicks;
+            }
+        }
+        QCOMPARE(baselineTotal, static_cast<uint32_t>(ROWS));
+        QVERIFY2(bucketsWithTicks > 1, "matches must span more than one bucket before close");
+
+        // Close clears live rail ticks; cache survives.
+        emit findDock->closed();
+        QVERIFY2(!railModel->HasMatchTicks(), "closing find must clear rail match ticks");
+
+        // Reveal must restore the same unbiased distribution —
+        // not a top-biased strip from capped sortedRows.
+        emit findDock->revealed();
+        QVERIFY2(railModel->HasMatchTicks(), "revealed find must restore rail match ticks");
+        QCOMPARE(railModel->BucketCount(), baseline.size());
+        for (std::size_t i = 0; i < baseline.size(); ++i)
+        {
+            QCOMPARE(railModel->Buckets()[i].matchCount, baseline[i]);
+        }
+    }
+
+    /// Resizing the rail widget past a bucket-count boundary
+    /// (e.g. user drags the window taller, `SyncBucketCountToHeight`
+    /// calls `SetBucketCount(newH)`) invalidates the durable
+    /// `mMatchBucketCounts` — sizes disagree, so `ApplyStoredMatch-
+    /// BucketCounts` no-ops and the freshly-rebuilt buckets have
+    /// zero ticks. Without the `bucketsChanged` -> `PushFindMatches-
+    /// ToOverviewRail` wiring in `MainWindow`, the rail would then
+    /// paint an empty match strip until the next find-bar debounce
+    /// (or forever, if the user isn't typing). Pins that the wire
+    /// triggers a synchronous recount and re-installs ticks at the
+    /// new H.
+    static void TestRailResizeReinstallsFindTicksAtNewBucketCount()
+    {
+        {
+            QSettings settings;
+            settings.remove(QStringLiteral("ui/showOverviewRail"));
+        }
+        MainWindow window;
+        window.show();
+        QCoreApplication::processEvents();
+
+        constexpr int ROWS = 40;
+        const RailFixture fixture(ROWS);
+        auto *model = window.Model();
+        QVERIFY(model != nullptr);
+        StreamJsonPathInto(*model, fixture.Path());
+        QCOMPARE(window.FilterModel()->rowCount(), ROWS);
+
+        auto *railModel = window.findChild<OverviewRailModel *>();
+        QVERIFY(railModel != nullptr);
+        const std::size_t initialBuckets = railModel->BucketCount();
+        QVERIFY(initialBuckets > 0);
+
+        auto *findDock = window.findChild<FindDock *>();
+        QVERIFY(findDock != nullptr);
+        findDock->show();
+        QCoreApplication::processEvents();
+
+        // Broad needle: every row is a hit, so every bucket must
+        // light up when ticks are correctly installed.
+        QVERIFY(QMetaObject::invokeMethod(
+            &window,
+            "UpdateFindMatchCount",
+            Qt::DirectConnection,
+            Q_ARG(QString, QStringLiteral("msg")),
+            Q_ARG(bool, false),
+            Q_ARG(bool, false)
+        ));
+        QVERIFY2(railModel->HasMatchTicks(), "broad find must light up rail ticks before resize");
+
+        // Simulate a rail-widget height change by pushing a new
+        // bucket count into the model — same call path the widget
+        // takes through `SyncBucketCountToHeight`. Pick a value
+        // that is provably different from `initialBuckets` so the
+        // durable-counts fast path can't accidentally rescue us.
+        const std::size_t newBuckets = (initialBuckets == 24) ? 48 : 24;
+        railModel->SetBucketCount(newBuckets);
+
+        // Post-condition: the `bucketsChanged` slot fires
+        // synchronously (DirectConnection, same thread), the slot
+        // sees size-mismatched cached counts, drops into the
+        // rescan branch of `PushFindMatchesToOverviewRail`, and
+        // installs fresh ticks against `newBuckets` before this
+        // call returns. No event-loop pump needed.
+        QCOMPARE(railModel->BucketCount(), newBuckets);
+        QVERIFY2(
+            railModel->HasMatchTicks(),
+            "rail-resize past a bucket-count boundary must not leave ticks empty; "
+            "bucketsChanged is wired to PushFindMatchesToOverviewRail's rescan branch"
+        );
+        // Every fixture row is a hit and there are more rows than
+        // buckets, so *every* bucket should carry a tick after the
+        // rescan. Pins the "unbiased distribution" property in
+        // addition to plain `HasMatchTicks`.
+        for (std::size_t i = 0; i < newBuckets; ++i)
+        {
+            QVERIFY2(railModel->Buckets()[i].matchCount > 0, "every bucket must carry a tick after resize rescan");
+        }
+    }
+
     /// A drag scrub across the rail must preserve the user's
     /// existing selection. Simulates the emit the widget sends
     /// on `mouseMoveEvent` (replaceSelection == false) and pins
@@ -1898,6 +2056,606 @@ private slots:
         // Give Qt a chance to deliver the resize event.
         QCoreApplication::processEvents();
         QCOMPARE(view.ReservedRightMargin(), 0);
+    }
+
+    /// `SetMatchBucketCounts` installs pre-bucketed match counts
+    /// directly, without going through the raw-row fold path.
+    /// This is the API `MainWindow::UpdateFindMatchCount` uses to
+    /// feed the rail unbiased ticks when a broad needle would
+    /// otherwise fill an O(matches) row vector on the GUI thread.
+    static void TestSetMatchBucketCountsBasic()
+    {
+        LogModel model;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel rail(chain.filter, &model, /*anchors=*/nullptr);
+        rail.SetBucketCount(20);
+
+        constexpr int ROWS = 20;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(rail);
+        QCOMPARE(rail.ProxyRowCount(), ROWS);
+        QVERIFY(!rail.HasMatchTicks());
+
+        std::vector<uint32_t> counts(20, uint32_t{0});
+        counts[3] = 7;
+        counts[19] = 42;
+
+        QSignalSpy matchSpy(&rail, &OverviewRailModel::matchesChanged);
+        rail.SetMatchBucketCounts(counts, /*totalMatches=*/49);
+        QCOMPARE(matchSpy.count(), 1);
+        QVERIFY(rail.HasMatchTicks());
+
+        std::size_t i = 0;
+        for (const auto &bucket : rail.Buckets())
+        {
+            QCOMPARE(bucket.matchCount, counts[i]);
+            ++i;
+        }
+
+        // Zeroing every bucket flips `HasMatchTicks` back off,
+        // matching the row-list path.
+        rail.SetMatchBucketCounts(std::vector<uint32_t>(20, uint32_t{0}), /*totalMatches=*/0);
+        QVERIFY(!rail.HasMatchTicks());
+    }
+
+    /// `SetMatchBucketCounts` must leave the level counts and
+    /// anchor bits untouched; only the tick counters move.
+    /// Mirrors `TestSetMatchProxyRowsLeavesLevelCountsUntouched`
+    /// for the bucketed API so future refactors can't silently
+    /// tie a match-set push to a full rebuild.
+    static void TestSetMatchBucketCountsLeavesLevelCountsUntouched()
+    {
+        LogModel model;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel rail(chain.filter, &model, /*anchors=*/nullptr);
+        rail.SetBucketCount(20);
+
+        constexpr int ROWS = 20;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(rail);
+        QCOMPARE(rail.ProxyRowCount(), ROWS);
+
+        std::vector<loglib::LevelBucket> baseline;
+        baseline.reserve(rail.BucketCount());
+        for (const auto &bucket : rail.Buckets())
+        {
+            baseline.push_back(bucket.levels);
+        }
+
+        std::vector<uint32_t> counts(20, uint32_t{0});
+        counts[5] = 3;
+        counts[10] = 5;
+        rail.SetMatchBucketCounts(counts, /*totalMatches=*/8);
+
+        std::size_t i = 0;
+        for (const auto &bucket : rail.Buckets())
+        {
+            QCOMPARE(bucket.levels.counts, baseline[i].counts);
+            ++i;
+        }
+    }
+
+    /// Size mismatch (mid-resize race, or a caller with stale
+    /// bucket-count info) must be dropped silently so a half-
+    /// applied vector cannot leak into the rail. Pins the
+    /// defensive size check on `SetMatchBucketCounts`.
+    static void TestSetMatchBucketCountsSizeMismatchDropsSilently()
+    {
+        LogModel model;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel rail(chain.filter, &model, /*anchors=*/nullptr);
+        rail.SetBucketCount(20);
+
+        constexpr int ROWS = 20;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(rail);
+        QCOMPARE(rail.ProxyRowCount(), ROWS);
+
+        // Prime the rail with a known set of ticks so we can
+        // prove the mismatched call didn't overwrite them.
+        rail.SetMatchProxyRows({5, 10, 15});
+        QVERIFY(rail.HasMatchTicks());
+        const uint32_t baselineTotal = [&]() {
+            uint32_t sum = 0;
+            for (const auto &bucket : rail.Buckets())
+            {
+                sum += bucket.matchCount;
+            }
+            return sum;
+        }();
+        QCOMPARE(baselineTotal, static_cast<uint32_t>(3));
+
+        QSignalSpy matchSpy(&rail, &OverviewRailModel::matchesChanged);
+        // Off-by-one on the vector size: rail has 20 buckets.
+        rail.SetMatchBucketCounts(std::vector<uint32_t>(19, uint32_t{7}), /*totalMatches=*/133);
+        QCOMPARE(matchSpy.count(), 0);
+
+        // Original tick totals must survive the rejected push.
+        uint32_t survivedTotal = 0;
+        for (const auto &bucket : rail.Buckets())
+        {
+            survivedTotal += bucket.matchCount;
+        }
+        QCOMPARE(survivedTotal, baselineTotal);
+    }
+
+    /// After `SetMatchBucketCounts` the raw-rows vector must be
+    /// cleared *and* the durable bucket counts retained, so a
+    /// follow-up full rebuild (anchor edit, coalesced proxy
+    /// change, hide→show at the same H) re-applies the same
+    /// ticks without double-folding a stale row list on top.
+    static void TestSetMatchBucketCountsClearsRawRowsSoRebuildDoesNotDoubleFold()
+    {
+        LogModel model;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel rail(chain.filter, &model, /*anchors=*/nullptr);
+        rail.SetBucketCount(20);
+
+        constexpr int ROWS = 20;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(rail);
+
+        // Seed the raw-rows path so `mMatchProxyRows` is
+        // non-empty going in.
+        rail.SetMatchProxyRows({2, 4, 6, 8});
+        QCOMPARE(rail.HasMatchTicks(), true);
+
+        // Now overwrite via the bucketed API. The buckets should
+        // reflect the new counts exactly, not "new counts + old
+        // row-list fold".
+        std::vector<uint32_t> counts(20, uint32_t{0});
+        counts[10] = 1;
+        rail.SetMatchBucketCounts(counts, /*totalMatches=*/1);
+
+        // Force a synchronous full rebuild. Durable bucket counts
+        // must survive (same H); the cleared raw-rows list must
+        // not resurrect the earlier {2,4,6,8} fold on top.
+        rail.RebuildNow();
+        uint32_t afterRebuild = 0;
+        for (const auto &bucket : rail.Buckets())
+        {
+            afterRebuild += bucket.matchCount;
+        }
+        QCOMPARE(afterRebuild, static_cast<uint32_t>(1));
+        QCOMPARE(rail.Buckets()[10].matchCount, static_cast<uint32_t>(1));
+        QVERIFY(rail.HasMatchTicks());
+    }
+
+    /// Bucket-counts path mirrors `TestHideAndShowRestoresMatchTicks`:
+    /// `SetBucketCount(0)` drops the live vector but keeps durable
+    /// counts, and `SetBucketCount(H)` re-applies them without the
+    /// caller re-pushing.
+    static void TestSetMatchBucketCountsSurviveHideAndShow()
+    {
+        LogModel model;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel rail(chain.filter, &model, /*anchors=*/nullptr);
+        rail.SetBucketCount(20);
+
+        constexpr int ROWS = 20;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(rail);
+
+        std::vector<uint32_t> counts(20, uint32_t{0});
+        counts[3] = 5;
+        counts[17] = 2;
+        rail.SetMatchBucketCounts(counts, /*totalMatches=*/7);
+        QVERIFY(rail.HasMatchTicks());
+
+        rail.SetBucketCount(0);
+        QVERIFY2(!rail.HasMatchTicks(), "hidden rail must report no match ticks");
+
+        rail.SetBucketCount(20);
+        QVERIFY2(rail.HasMatchTicks(), "revealed rail must restore durable bucket counts");
+        QCOMPARE(rail.Buckets()[3].matchCount, static_cast<uint32_t>(5));
+        QCOMPARE(rail.Buckets()[17].matchCount, static_cast<uint32_t>(2));
+        uint32_t total = 0;
+        for (const auto &bucket : rail.Buckets())
+        {
+            total += bucket.matchCount;
+        }
+        QCOMPARE(total, static_cast<uint32_t>(7));
+    }
+
+    /// Changing H invalidates durable bucket counts (size mismatch).
+    /// Rebuild must not invent ticks; the caller (MainWindow) is
+    /// responsible for rescanning against the new bucket count.
+    static void TestSetMatchBucketCountsDroppedOnBucketCountChange()
+    {
+        LogModel model;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel rail(chain.filter, &model, /*anchors=*/nullptr);
+        rail.SetBucketCount(20);
+
+        constexpr int ROWS = 20;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(rail);
+
+        std::vector<uint32_t> counts(20, uint32_t{0});
+        counts[5] = 4;
+        rail.SetMatchBucketCounts(counts, /*totalMatches=*/4);
+        QVERIFY(rail.HasMatchTicks());
+
+        rail.SetBucketCount(30);
+        QVERIFY2(!rail.HasMatchTicks(), "H change must drop size-mismatched durable counts");
+    }
+
+    /// Regression for the "stale proxy row count misplaces ticks"
+    /// bug. `RefreshMatchTicks` / `FoldMatchTicksIntoBuckets` use
+    /// `mProxyRowCount`, which was only written inside the
+    /// coalesced `RebuildInternal`. A `SetMatchProxyRows` call
+    /// scheduled between a filter/insert layout change and the
+    /// next rebuild would fold rows referenced to the live row
+    /// count against a stale denominator, dropping hits (when
+    /// the proxy grew) or misplacing them into the last bucket
+    /// (either direction).
+    ///
+    /// The fix: `SetMatchProxyRows` refreshes `mProxyRowCount`
+    /// from the live proxy at entry, so the fold uses the same
+    /// denominator the caller scanned against.
+    ///
+    /// We drive the divergence with a filter install: it fires
+    /// `layoutChanged` on `LogFilterModel`, which the rail wires
+    /// to `Rebuild` -> `ScheduleRebuild` (50 ms coalesce timer).
+    /// Between `SetFilterRules` returning and the timer firing,
+    /// no event-loop iteration happens in this test, so the
+    /// cached `mProxyRowCount` is guaranteed to be stale when
+    /// we call `SetMatchProxyRows` on the next line.
+    static void TestSetMatchProxyRowsRefreshesRowCountAfterProxyChurn()
+    {
+        LogModel model;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel rail(chain.filter, &model, /*anchors=*/nullptr);
+        rail.SetBucketCount(20);
+
+        constexpr int ROWS = 40;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(rail);
+        QCOMPARE(rail.ProxyRowCount(), ROWS);
+
+        // Install a filter that drops every other row. The
+        // proxy's row count halves (~20 rows) but the rail's
+        // cached `mProxyRowCount` stays at 40 until the coalesce
+        // timer fires ~50 ms later.
+        std::vector<loglib::RowPredicate> rules;
+        rules.emplace_back(
+            std::in_place_type<loglib::CallbackStringRowPredicate>,
+            static_cast<std::size_t>(0),
+            [callCount = std::make_shared<std::size_t>(0)](std::string_view) mutable {
+                return ((*callCount)++ % 2) == 0;
+            }
+        );
+        chain.filter->SetFilterRules(std::move(rules));
+        const int liveRowCount = chain.filter->rowCount();
+        QVERIFY2(liveRowCount > 0 && liveRowCount < ROWS, "filter must reduce the proxy row count");
+
+        // Under the pre-fix code path, `mProxyRowCount` stays 40
+        // and folding row `liveRowCount - 1` (in range under the
+        // filter, but potentially misbucketed against the old
+        // denominator) misplaces the tick. Under the fix,
+        // `mProxyRowCount` refreshes and the tick lands correctly.
+        rail.SetMatchProxyRows({liveRowCount - 1});
+        QCOMPARE(rail.ProxyRowCount(), liveRowCount);
+        QVERIFY(rail.HasMatchTicks());
+
+        // Sanity: the tick sits in one of the tail buckets --
+        // `(liveRowCount - 1) * 20 / liveRowCount` rounds to
+        // ~19 for any positive `liveRowCount`.
+        uint32_t totalTicks = 0;
+        std::size_t highestBucketWithTick = 0;
+        for (std::size_t i = 0; i < rail.BucketCount(); ++i)
+        {
+            const uint32_t c = rail.Buckets()[i].matchCount;
+            totalTicks += c;
+            if (c > 0)
+            {
+                highestBucketWithTick = i;
+            }
+        }
+        QCOMPARE(totalTicks, static_cast<uint32_t>(1));
+        QCOMPARE(highestBucketWithTick, rail.BucketCount() - 1);
+    }
+
+    /// Companion regression for the bucketed API: same stale-
+    /// denominator failure mode, checked through
+    /// `SetMatchBucketCounts` (which is what `MainWindow`
+    /// actually calls under the fix).
+    static void TestSetMatchBucketCountsRefreshesRowCountAfterProxyChurn()
+    {
+        LogModel model;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel rail(chain.filter, &model, /*anchors=*/nullptr);
+        rail.SetBucketCount(20);
+
+        constexpr int ROWS = 40;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        WaitForBucketsChanged(rail);
+        QCOMPARE(rail.ProxyRowCount(), ROWS);
+
+        std::vector<loglib::RowPredicate> rules;
+        rules.emplace_back(
+            std::in_place_type<loglib::CallbackStringRowPredicate>,
+            static_cast<std::size_t>(0),
+            [callCount = std::make_shared<std::size_t>(0)](std::string_view) mutable {
+                return ((*callCount)++ % 2) == 0;
+            }
+        );
+        chain.filter->SetFilterRules(std::move(rules));
+        const int liveRowCount = chain.filter->rowCount();
+        QVERIFY2(liveRowCount > 0 && liveRowCount < ROWS, "filter must reduce the proxy row count");
+
+        std::vector<uint32_t> counts(rail.BucketCount(), uint32_t{0});
+        counts[rail.BucketCount() - 1] = 3;
+        rail.SetMatchBucketCounts(counts, /*totalMatches=*/3);
+
+        // The row count must refresh independently of the raw-
+        // rows path: `SetMatchBucketCounts` has its own
+        // `mProxyRowCount = mProxyModel->rowCount()` assignment
+        // so downstream `HasMatchTicks` / `BucketForProxyRow`
+        // math sees the current denominator.
+        QCOMPARE(rail.ProxyRowCount(), liveRowCount);
+        QVERIFY(rail.HasMatchTicks());
+    }
+
+    /// `LogFilterModel::ForEachMatchingRow` walks every matching
+    /// row without allocating a `QList<QModelIndex>`, which is
+    /// how `MainWindow::UpdateFindMatchCount` avoids the memory
+    /// spike on a broad needle. Pin the contract: the callback
+    /// fires once per matching row, in ascending order, and
+    /// returning `false` stops the walk mid-stream. Removing the
+    /// hard 10 000-hit cap on the sorted-rows cache is only safe
+    /// if callers can accumulate counters cheaply without the
+    /// intermediate list.
+    static void TestForEachMatchingRowStreamsWithoutMaterialising()
+    {
+        LogModel model;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+
+        constexpr int ROWS = 30;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        QCOMPARE(chain.filter->rowCount(), ROWS);
+
+        // Every fixture row carries a `"msg N"` body, so "msg"
+        // matches every row.
+        const QModelIndex start = chain.filter->index(0, 0);
+        QVERIFY(start.isValid());
+
+        std::vector<int> seenRows;
+        seenRows.reserve(ROWS);
+        chain.filter->ForEachMatchingRow(
+            start,
+            Qt::DisplayRole,
+            QVariant::fromValue(QStringLiteral("msg")),
+            Qt::MatchContains | Qt::MatchWrap,
+            /*forward=*/true,
+            /*skipFirstN=*/0,
+            [&](const QModelIndex &proxyIndex) -> bool {
+                seenRows.push_back(proxyIndex.row());
+                return true;
+            }
+        );
+
+        QCOMPARE(static_cast<int>(seenRows.size()), ROWS);
+        QVERIFY2(std::ranges::is_sorted(seenRows), "ForEachMatchingRow must yield rows in ascending order");
+        QVERIFY2(
+            std::ranges::adjacent_find(seenRows) == seenRows.end(),
+            "ForEachMatchingRow must not repeat a row"
+        );
+
+        // Returning `false` stops the walk on the first hit. The
+        // caller has full control over the accumulator shape.
+        int visitedCount = 0;
+        chain.filter->ForEachMatchingRow(
+            start,
+            Qt::DisplayRole,
+            QVariant::fromValue(QStringLiteral("msg")),
+            Qt::MatchContains | Qt::MatchWrap,
+            /*forward=*/true,
+            /*skipFirstN=*/0,
+            [&](const QModelIndex &) -> bool {
+                ++visitedCount;
+                return false;
+            }
+        );
+        QCOMPARE(visitedCount, 1);
+    }
+
+    /// Regression for the "uncapped find scan" bug. Pin the two
+    /// consumer patterns `MainWindow::UpdateFindMatchCount` uses
+    /// to avoid the O(matches) allocation while keeping the rail
+    /// unbiased:
+    ///   1. A capped row vector for the "*i* of *N*" binary
+    ///      search (never grows past `SCAN_CAP` regardless of
+    ///      total hits).
+    ///   2. An `nBuckets`-sized counter vector for the rail (sees
+    ///      every hit, including tail rows past the row-vector
+    ///      cap).
+    ///
+    /// This test drives `ForEachMatchingRow` with a broad needle
+    /// that matches every row and asserts both invariants
+    /// simultaneously.
+    static void TestForEachMatchingRowFeedsCappedListPlusUnbiasedBuckets()
+    {
+        LogModel model;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+
+        constexpr int ROWS = 60;
+        constexpr int SCAN_CAP = 10;
+        constexpr std::size_t BUCKETS = 6;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        QCOMPARE(chain.filter->rowCount(), ROWS);
+
+        const QModelIndex start = chain.filter->index(0, 0);
+        QVERIFY(start.isValid());
+
+        std::vector<int> cappedRows;
+        cappedRows.reserve(SCAN_CAP);
+        std::vector<uint32_t> bucketCounts(BUCKETS, uint32_t{0});
+        uint32_t totalMatches = 0;
+        chain.filter->ForEachMatchingRow(
+            start,
+            Qt::DisplayRole,
+            QVariant::fromValue(QStringLiteral("msg")),
+            Qt::MatchContains | Qt::MatchWrap,
+            /*forward=*/true,
+            /*skipFirstN=*/0,
+            [&](const QModelIndex &proxyIndex) -> bool {
+                ++totalMatches;
+                const std::size_t bucket = (static_cast<std::size_t>(proxyIndex.row()) * BUCKETS) /
+                                           static_cast<std::size_t>(ROWS);
+                ++bucketCounts[std::min(bucket, BUCKETS - 1)];
+                if (static_cast<int>(cappedRows.size()) < SCAN_CAP)
+                {
+                    cappedRows.push_back(proxyIndex.row());
+                }
+                return true;
+            }
+        );
+
+        QCOMPARE(totalMatches, static_cast<uint32_t>(ROWS));
+        QCOMPARE(static_cast<int>(cappedRows.size()), SCAN_CAP);
+        // The capped list holds only the first N rows, biased to
+        // the top of the log (this is the trade-off the row cap
+        // makes -- the "*i* of *N*" navigator degrades past the
+        // cap, but the total count and the rail stay accurate).
+        QCOMPARE(cappedRows.front(), 0);
+        QCOMPARE(cappedRows.back(), SCAN_CAP - 1);
+
+        // Bucket sum must equal total (no matches dropped). Every
+        // bucket must carry at least one hit since matches are
+        // spread across all rows -- this is the "unbiased rail"
+        // property that the cap on `cappedRows` alone would have
+        // broken.
+        uint32_t summedFromBuckets = 0;
+        for (std::size_t i = 0; i < BUCKETS; ++i)
+        {
+            summedFromBuckets += bucketCounts[i];
+            QVERIFY2(
+                bucketCounts[i] > 0,
+                qPrintable(QStringLiteral("bucket %1 must carry at least one match tick").arg(i))
+            );
+        }
+        QCOMPARE(summedFromBuckets, totalMatches);
+    }
+
+    /// Pins the early-exit policy `UpdateFindMatchCount` uses so a
+    /// common needle cannot force a full proxy walk on the GUI
+    /// thread: once the navigator list is past its cap *and* every
+    /// rail bucket already has a presence tick, the walk stops.
+    /// Paint is presence-only, so further density is irrelevant;
+    /// sparse needles (not every bucket lit) still scan to the end.
+    static void TestFindMatchScanEarlyExitsWhenRailPresenceSettled()
+    {
+        LogModel model;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+
+        constexpr int ROWS = 60;
+        constexpr int SCAN_CAP = 10;
+        constexpr std::size_t BUCKETS = 6;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        QCOMPARE(chain.filter->rowCount(), ROWS);
+
+        const QModelIndex start = chain.filter->index(0, 0);
+        QVERIFY(start.isValid());
+
+        std::vector<int> cappedRows;
+        cappedRows.reserve(SCAN_CAP);
+        std::vector<uint32_t> bucketCounts(BUCKETS, uint32_t{0});
+        uint32_t totalMatches = 0;
+        std::size_t bucketsHit = 0;
+        bool scanExhausted = true;
+        int callbackInvocations = 0;
+        chain.filter->ForEachMatchingRow(
+            start,
+            Qt::DisplayRole,
+            QVariant::fromValue(QStringLiteral("msg")),
+            Qt::MatchContains | Qt::MatchWrap,
+            /*forward=*/true,
+            /*skipFirstN=*/0,
+            [&](const QModelIndex &proxyIndex) -> bool {
+                ++callbackInvocations;
+                ++totalMatches;
+                const std::size_t bucket = (static_cast<std::size_t>(proxyIndex.row()) * BUCKETS) /
+                                           static_cast<std::size_t>(ROWS);
+                uint32_t &slot = bucketCounts[std::min(bucket, BUCKETS - 1)];
+                if (slot == 0)
+                {
+                    ++bucketsHit;
+                }
+                ++slot;
+                if (static_cast<int>(cappedRows.size()) < SCAN_CAP)
+                {
+                    cappedRows.push_back(proxyIndex.row());
+                }
+                if (totalMatches > static_cast<uint32_t>(SCAN_CAP) && bucketsHit >= BUCKETS)
+                {
+                    scanExhausted = false;
+                    return false;
+                }
+                return true;
+            }
+        );
+
+        QVERIFY2(!scanExhausted, "dense needle must early-exit once every bucket has a tick");
+        QVERIFY2(
+            callbackInvocations < ROWS,
+            "early-exit must stop before visiting every matching row"
+        );
+        QCOMPARE(static_cast<int>(cappedRows.size()), SCAN_CAP);
+        QCOMPARE(bucketsHit, BUCKETS);
+        for (std::size_t i = 0; i < BUCKETS; ++i)
+        {
+            QVERIFY2(bucketCounts[i] > 0, "every bucket must carry a presence tick after early-exit");
+        }
+
+        // Sparse needle: only the first few rows match a unique
+        // body token, so not every bucket lights up and the walk
+        // must exhaust the proxy (no early-exit).
+        int sparseInvocations = 0;
+        bool sparseExhausted = true;
+        chain.filter->ForEachMatchingRow(
+            start,
+            Qt::DisplayRole,
+            QVariant::fromValue(QStringLiteral("msg 0")),
+            Qt::MatchContains | Qt::MatchWrap,
+            /*forward=*/true,
+            /*skipFirstN=*/0,
+            [&](const QModelIndex &) -> bool {
+                ++sparseInvocations;
+                // Cap proven + "all buckets hit" can never both be
+                // true for a single-row hit set spanning one bucket.
+                if (sparseInvocations > SCAN_CAP)
+                {
+                    sparseExhausted = false;
+                    return false;
+                }
+                return true;
+            }
+        );
+        QVERIFY2(sparseExhausted, "sparse needle must not take the dense early-exit path");
+        QCOMPARE(sparseInvocations, 1);
     }
 };
 

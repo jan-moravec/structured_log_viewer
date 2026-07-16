@@ -147,6 +147,11 @@ void OverviewRailModel::SetBucketCount(std::size_t nBuckets)
 void OverviewRailModel::SetMatchProxyRows(std::vector<int> proxyRows)
 {
     mMatchProxyRows = std::move(proxyRows);
+    // Row-list path owns match state; drop any durable bucket
+    // counts so a later rebuild can't re-apply a stale fold on
+    // top of (or instead of) the rows we just installed.
+    mMatchBucketCounts.clear();
+    mMatchBucketTotal = 0;
     // Normalise: sort + unique. `FoldMatchTicksIntoBuckets`
     // increments per entry, so a duplicated row would double-
     // count into its bucket and inflate `mBucketedMatchCount`.
@@ -157,6 +162,24 @@ void OverviewRailModel::SetMatchProxyRows(std::vector<int> proxyRows)
     // upstream).
     std::sort(mMatchProxyRows.begin(), mMatchProxyRows.end());
     mMatchProxyRows.erase(std::unique(mMatchProxyRows.begin(), mMatchProxyRows.end()), mMatchProxyRows.end());
+    // Refresh the cached row count from the live proxy before
+    // folding. `mProxyRowCount` is otherwise only written inside
+    // `RebuildInternal` and lags reality by up to one coalesce
+    // window (~50 ms); during live-tail inserts the caller has
+    // already scanned against the current row count and passed
+    // us match rows referenced to it. Using the stale (smaller)
+    // denominator would either drop tail-row hits (proxy index
+    // >= `mProxyRowCount`) or fold them into the last bucket via
+    // a divide-by-smaller-M — both visible as ticks vanishing
+    // or bunching after a live-tail append. The level counts
+    // and anchor bits keep their old `mProxyRowCount` bucketing
+    // for one coalesce interval; that mismatch is invisible on
+    // the timescale a user perceives and self-heals on the next
+    // rebuild.
+    if (mProxyModel != nullptr)
+    {
+        mProxyRowCount = mProxyModel->rowCount();
+    }
     // Match ticks live in `matchCount` only; level counts and
     // anchor bits are unaffected. Refresh just the tick field so
     // a find-bar keystroke doesn't re-walk the whole proxy.
@@ -166,6 +189,45 @@ void OverviewRailModel::SetMatchProxyRows(std::vector<int> proxyRows)
     // signals with the same `update()` slot — an extra
     // `bucketsChanged` would only trigger a redundant repaint
     // request that Qt would immediately coalesce out again.
+    emit matchesChanged();
+}
+
+void OverviewRailModel::SetMatchBucketCounts(std::vector<uint32_t> perBucketCounts, uint32_t totalMatches)
+{
+    // Size mismatch: the rail resized (or the caller has stale
+    // bucket-count info) between the caller computing its counts
+    // and this call landing. Drop the update silently rather than
+    // half-applying a mismatched vector — the resize will trigger
+    // its own synchronous rebuild via `SetBucketCount` and the
+    // next find-bar debounce recomputes cleanly against the new
+    // bucket count. Validate BEFORE mutating any local state so a
+    // dropped update leaves the model bit-for-bit untouched (the
+    // previous ordering refreshed `mProxyRowCount` speculatively
+    // even in the drop path — harmless today but a landmine for
+    // any future consumer that reads `mProxyRowCount` between
+    // this call and the next rebuild).
+    if (perBucketCounts.size() != mBuckets.size())
+    {
+        return;
+    }
+    // Refresh the cached row count for the same reason as
+    // `SetMatchProxyRows`: the caller has already scanned against
+    // the live proxy, and any subsequent rail math (e.g.
+    // `HasMatchTicks`, `BucketForProxyRow` on paint) needs the
+    // denominator that matches.
+    if (mProxyModel != nullptr)
+    {
+        mProxyRowCount = mProxyModel->rowCount();
+    }
+    // Clear the raw-rows path so the next coalesced full rebuild
+    // doesn't double-count a stale row-list fold on top of the
+    // pre-bucketed values. Retain the counts themselves so
+    // `RebuildInternal` can re-apply them (anchor edits, hide→show
+    // at the same H) without the caller re-pushing.
+    mMatchProxyRows.clear();
+    mMatchBucketCounts = std::move(perBucketCounts);
+    mMatchBucketTotal = totalMatches;
+    ApplyStoredMatchBucketCounts();
     emit matchesChanged();
 }
 
@@ -415,8 +477,15 @@ void OverviewRailModel::RebuildInternal()
     // Fold current match rows in as part of the same walk so
     // the caller doesn't have to invoke `RefreshMatchTicks`
     // separately. Path is O(nMatchRows) on top of the O(rowCount)
-    // proxy walk above.
+    // proxy walk above. When the bucketed API owns match state
+    // (`mMatchProxyRows` empty, durable counts retained), re-apply
+    // those counts so anchor edits / hide→show / same-H resize
+    // don't wipe find highlights.
     FoldMatchTicksIntoBuckets();
+    if (mMatchProxyRows.empty())
+    {
+        ApplyStoredMatchBucketCounts();
+    }
 
     EmitAnchorChangeIfDifferent(previousBitsSet);
 }
@@ -484,6 +553,19 @@ void OverviewRailModel::FoldMatchTicksIntoBuckets()
     }
 }
 
+void OverviewRailModel::ApplyStoredMatchBucketCounts()
+{
+    if (mMatchBucketCounts.size() != mBuckets.size() || mBuckets.empty())
+    {
+        return;
+    }
+    mBucketedMatchCount = mMatchBucketTotal;
+    for (std::size_t i = 0; i < mBuckets.size(); ++i)
+    {
+        mBuckets[i].matchCount = mMatchBucketCounts[i];
+    }
+}
+
 int OverviewRailModel::BucketForProxyRow(int proxyRow) const noexcept
 {
     if (mProxyRowCount <= 0 || mBuckets.empty() || proxyRow < 0 || proxyRow >= mProxyRowCount)
@@ -518,6 +600,17 @@ int OverviewRailModel::ProxyToSourceRow(int proxyRow) const noexcept
     {
         return -1;
     }
+    // Debug-only guard against chain drift: if a mid-chain proxy
+    // swaps its `sourceModel()` after our cache is populated and
+    // the outer proxy doesn't emit `modelReset`, the walk lands on
+    // an alien model and we'd fold rows from the wrong table. Cheap
+    // pointer compare so we can afford it in debug; skipped in
+    // release because a single misattributed bucket is preferable
+    // to spinning `qWarning` per row.
+    Q_ASSERT_X(
+        idx.model() == mSourceModel, "OverviewRailModel::ProxyToSourceRow",
+        "proxy chain no longer terminates at the cached source model"
+    );
     return idx.row();
 }
 

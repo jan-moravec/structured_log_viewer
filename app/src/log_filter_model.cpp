@@ -1084,17 +1084,16 @@ const loglib::EnumDictRank *LogFilterModel::EnumRankFor(int columnIndex) const
     return &it->second.rank;
 }
 
-QList<QModelIndex> LogFilterModel::MatchRow(
+void LogFilterModel::ForEachMatchingRow(
     const QModelIndex &start,
     int role,
     const QVariant &value,
-    int hits,
     Qt::MatchFlags flags,
     bool forward,
-    int skipFirstN
+    int skipFirstN,
+    const MatchRowCallback &onMatch
 ) const
 {
-    QList<QModelIndex> result;
     const int rowCount = this->rowCount(start.parent());
     const int columnCount = this->columnCount(start.parent());
 
@@ -1146,6 +1145,9 @@ QList<QModelIndex> LogFilterModel::MatchRow(
         return idx < columnsForVisibility->size() && !(*columnsForVisibility)[idx].visible;
     };
 
+    // Returns true iff the caller asked us to stop (`onMatch` returned
+    // false). A match without stop-request still returns false so the
+    // outer walk continues on to the next row.
     auto scanRow = [&](int actualRow) -> bool {
         int logRowCached = LOG_ROW_UNRESOLVED;
         for (int col = 0; col < columnCount; ++col)
@@ -1159,8 +1161,7 @@ QList<QModelIndex> LogFilterModel::MatchRow(
             resolveLogRow(proxyIndex, logRowCached);
             if (probeCell(proxyIndex, logRowCached))
             {
-                result.append(proxyIndex);
-                if (result.size() == hits)
+                if (!onMatch(proxyIndex))
                 {
                     return true;
                 }
@@ -1185,7 +1186,7 @@ QList<QModelIndex> LogFilterModel::MatchRow(
             }
             if (scanRow(actualRow))
             {
-                return result;
+                return;
             }
         }
     }
@@ -1204,11 +1205,52 @@ QList<QModelIndex> LogFilterModel::MatchRow(
             }
             if (scanRow(actualRow))
             {
-                return result;
+                return;
             }
         }
     }
+}
 
+QList<QModelIndex> LogFilterModel::MatchRow(
+    const QModelIndex &start,
+    int role,
+    const QVariant &value,
+    int hits,
+    Qt::MatchFlags flags,
+    bool forward,
+    int skipFirstN
+) const
+{
+    QList<QModelIndex> result;
+    // `hits == 0` is nonsensical (asking for zero results is a
+    // programming error) and would silently stop after the first
+    // match under the `size < hits` ceiling below. Fail loudly in
+    // debug so a regression surfaces at the call site; release
+    // builds fall through to the `size < hits` branch which stops
+    // after one match — same as the assert's implicit contract.
+    Q_ASSERT(hits == UNLIMITED_HITS || hits >= 1);
+    // `UNLIMITED_HITS` (-1) means "return every match"; represent it
+    // as "no ceiling" so the callback never signals stop on its own.
+    const bool unlimited = (hits == UNLIMITED_HITS);
+    if (!unlimited && hits > 0)
+    {
+        result.reserve(hits);
+    }
+    ForEachMatchingRow(
+        start,
+        role,
+        value,
+        flags,
+        forward,
+        skipFirstN,
+        [&](const QModelIndex &proxyIndex) -> bool {
+            result.append(proxyIndex);
+            // Stop as soon as we've reached the caller's cap; the
+            // unlimited branch keeps walking until the row space is
+            // exhausted.
+            return unlimited || result.size() < hits;
+        }
+    );
     return result;
 }
 

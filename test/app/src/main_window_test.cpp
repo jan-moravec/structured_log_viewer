@@ -13097,6 +13097,62 @@ private slots:
         QCOMPARE(label->text(), QStringLiteral("sentinel-do-not-touch"));
     }
 
+    // Regression: `SetMatchInfo(overflowed=true)` used to only
+    // append "+" to the visible total, which was ambiguous
+    // between "the total is a lower bound (scan bailed)" and
+    // "the total is exact but cursor-position lookup is capped".
+    // The label now installs a tooltip that spells both effects
+    // out; `overflowed=false` must clear the tooltip so a
+    // narrower search doesn't inherit a stale hover from the
+    // previous broad one. Pins both edges.
+    void TestSetMatchInfoOverflowedInstallsTooltip()
+    {
+        auto *findRecord = mWindow->findChild<FindRecordWidget *>();
+        QVERIFY2(findRecord != nullptr, "MainWindow must own a FindRecordWidget");
+        auto *label = findRecord->findChild<QLabel *>(QStringLiteral("findMatchCount"));
+        QVERIFY2(label != nullptr, "FindRecordWidget must expose its match-count label");
+
+        // Baseline: no matches, tooltip clear.
+        findRecord->SetMatchInfo(0, 0);
+        QVERIFY2(label->toolTip().isEmpty(), "empty result must clear the tooltip");
+
+        // Exact count (not overflowed): visible text has no "+"
+        // and no tooltip.
+        findRecord->SetMatchInfo(3, 42, /*overflowed=*/false);
+        QVERIFY2(!label->text().contains(QChar('+')), "non-overflowed total must not carry a '+' suffix");
+        QVERIFY2(label->toolTip().isEmpty(), "non-overflowed match info must not install a tooltip");
+
+        // Overflowed: visible text keeps "+" (lower-bound cue),
+        // AND the tooltip explains what the "+" means and calls
+        // out the cursor-position degradation. Keyword probes
+        // rather than exact-text matches so translation drift or
+        // wording tweaks don't tank the test.
+        findRecord->SetMatchInfo(0, 25000, /*overflowed=*/true);
+        QVERIFY2(label->text().contains(QChar('+')), "overflowed total must retain the '+' lower-bound cue");
+        const QString tooltip = label->toolTip();
+        QVERIFY2(!tooltip.isEmpty(), "overflowed match info must install an explanatory tooltip");
+        QVERIFY2(
+            tooltip.contains(QStringLiteral("lower bound"), Qt::CaseInsensitive) ||
+                tooltip.contains(QStringLiteral("bails"), Qt::CaseInsensitive),
+            qPrintable(QStringLiteral(
+                           "tooltip should mention the scan's early-exit / lower-bound "
+                           "nature so the user can interpret the '+' correctly: %1"
+            )
+                           .arg(tooltip))
+        );
+        QVERIFY2(
+            tooltip.contains(QStringLiteral("current"), Qt::CaseInsensitive) ||
+                tooltip.contains(QStringLiteral("cursor"), Qt::CaseInsensitive) ||
+                tooltip.contains(QStringLiteral("index"), Qt::CaseInsensitive),
+            qPrintable(QStringLiteral("tooltip should also mention the cursor / current-match degradation: %1").arg(tooltip))
+        );
+
+        // Narrowing the search (overflow gone) must not leave the
+        // previous tooltip stranded on the label.
+        findRecord->SetMatchInfo(1, 5, /*overflowed=*/false);
+        QVERIFY2(label->toolTip().isEmpty(), "narrower search must clear the stale overflow tooltip");
+    }
+
     // Regression: the status button used to total `count +
     // droppedCount`, which didn't match the dock summary ("X
     // errors; Y earlier dropped"). Now the button renders the

@@ -47,6 +47,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -570,6 +571,14 @@ private slots:
     /// Drop the cached match-row list. Wired to model resets and
     /// proxy layout changes so a stale cache cannot survive.
     void InvalidateFindMatchCache();
+
+    /// Push the current `mFindMatchCache` match state into the
+    /// overview rail. Prefers cached per-bucket counts (unbiased
+    /// even when `sortedRows` is capped); when those are missing
+    /// or size-mismatched against the live rail (scan ran while
+    /// the rail was hidden, or H changed), forces a full recount
+    /// so the rail never paints a top-biased tick strip.
+    void PushFindMatchesToOverviewRail();
 
     /// Centralised invalidate + debounced re-request. Wired to every
     /// model / proxy signal that can change the match set; a sync
@@ -1225,24 +1234,36 @@ private:
     /// has entries; clicking it opens the dock.
     QPushButton *mParseErrorsStatusButton = nullptr;
 
-    /// Soft cap used only for shaping the initial `MatchRow`
-    /// reserve and for legacy `overflowed`-flag preservation.
-    /// The find-match scan itself is uncapped now (bounded by
-    /// the proxy's row count) so both the "*i* of *N*"
-    /// indicator and the overview rail always see every match
-    /// -- capping the scan biased the row list to the top of
-    /// the log and caused the rail's search highlights to
-    /// "stop working" whenever a common needle produced more
-    /// than N hits.
+    /// Hard cap on `sortedRows`, the vector used for the
+    /// "*i* of *N*" binary search. Past this many hits the scan
+    /// may early-exit (see `UpdateFindMatchCount`) once the
+    /// overview rail's presence fold is settled, so a common
+    /// needle on a million-row proxy cannot freeze the GUI for
+    /// a full-table walk. `sortedRows` itself never grows past
+    /// this size. When `overflowed` is set, `totalMatches` is a
+    /// lower bound and the per-hit cursor-position lookup
+    /// degrades for match `#10 001` or later.
     static constexpr int MAX_FIND_MATCH_COUNT = 10000;
 
-    /// Cached match-row list for the "*i* of *N*" indicator. Keyed by
+    /// Cached match state for the "*i* of *N*" indicator. Keyed by
     /// `(needle, wildcards, regex)` so a Next / Previous click can
     /// resolve the new `i` via binary search instead of re-scanning.
-    /// Row-deduplicated so the indicator agrees with how `FindRecords`
-    /// walks the table. `overflowed` is retained for struct
-    /// backward-compat but is always `false` under the uncapped
-    /// scan (the count in `sortedRows.size()` is exact).
+    /// `sortedRows` is deduplicated and capped at
+    /// `MAX_FIND_MATCH_COUNT`; `totalMatches` is exact when
+    /// `!overflowed`, otherwise a lower bound from an early-exit
+    /// or capped navigator list. `overflowed` is `true` when the
+    /// scan stopped short of exhausting the proxy (or the
+    /// navigator list hit the cap after a full walk) — a
+    /// "current" cursor at match `#10 001` or later will resolve
+    /// to `0` (no position highlight) in that case.
+    /// `bucketCounts` mirrors the per-bucket totals pushed to the
+    /// overview rail (empty when the rail was hidden / had zero
+    /// buckets during the scan); find-dock reveal restores from
+    /// this so a cache-hit recount cannot leave the rail stuck on
+    /// the capped `sortedRows` strip. Counts may be density-
+    /// incomplete after an early-exit, but every bucket that has
+    /// a match still carries `matchCount > 0` (paint is presence-
+    /// only).
     struct FindMatchCache
     {
         QString needle;
@@ -1250,6 +1271,8 @@ private:
         bool regularExpressions = false;
         bool overflowed = false;
         std::vector<int> sortedRows;
+        uint32_t totalMatches = 0;
+        std::vector<uint32_t> bucketCounts;
     };
     std::optional<FindMatchCache> mFindMatchCache;
     PreferencesEditor *mPreferencesEditor;

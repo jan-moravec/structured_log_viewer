@@ -88,10 +88,42 @@ public:
     /// outside the current proxy range are silently dropped, and
     /// the incoming list is de-duplicated internally (a duplicate
     /// row would otherwise be double-counted into its bucket).
-    /// Emits `matchesChanged` and `bucketsChanged` immediately so
-    /// the widget repaints on the next event-loop pass; find
-    /// updates are already debounced upstream.
+    /// Emits `matchesChanged` immediately so the widget repaints
+    /// on the next event-loop pass; find updates are already
+    /// debounced upstream.
+    ///
+    /// Refreshes the cached proxy row count from the live proxy
+    /// before folding so a caller that scanned against a newer
+    /// row count than the last coalesced rebuild doesn't drop
+    /// tail-row hits (row indices past the stale cache) or land
+    /// them in the last bucket via a divide-by-smaller-M.
     void SetMatchProxyRows(std::vector<int> proxyRows);
+
+    /// Push per-bucket match counts directly, bypassing the
+    /// `mMatchProxyRows` vector. Preferred over `SetMatchProxyRows`
+    /// when the caller already knows the totals per bucket and
+    /// wants to skip materializing every matching row — the whole
+    /// point is to avoid an O(matches) vector allocation for
+    /// broad needles that hit most rows.
+    ///
+    /// @p perBucketCounts must have `BucketCount()` entries. When
+    /// the size mismatches (mid-resize race, or the caller has
+    /// stale bucket-count info), the update is dropped silently
+    /// and the previous match ticks stay put — a subsequent call
+    /// after the resize settles will fix it. @p totalMatches is
+    /// the exact pre-cap match total (used for `HasMatchTicks`
+    /// and as a fast source of truth for the sum, so the model
+    /// doesn't have to re-add the counters).
+    ///
+    /// Clears `mMatchProxyRows` so the next coalesced rebuild
+    /// does not double-count a stale row-list fold on top of the
+    /// pre-bucketed values, and retains `@p perBucketCounts` as
+    /// durable state so `RebuildInternal` (anchor edits, resize
+    /// with the same H, hide→show) can re-apply the ticks without
+    /// the caller re-pushing. Emits `matchesChanged` only (level
+    /// counts / anchor bits are untouched, same as
+    /// `SetMatchProxyRows`).
+    void SetMatchBucketCounts(std::vector<uint32_t> perBucketCounts, uint32_t totalMatches);
 
     /// Request a full bucket rebuild. Coalesced through the 50 ms
     /// emit timer so a burst of proxy signals (per-row inserts
@@ -221,6 +253,15 @@ private:
     /// `HasMatchTicks` check stays accurate.
     void FoldMatchTicksIntoBuckets();
 
+    /// Re-apply `mMatchBucketCounts` into the live bucket vector
+    /// when the sizes still agree (same H since the last
+    /// `SetMatchBucketCounts`). No-op when the durable vector is
+    /// empty or size-mismatched (caller must rescan). Used by
+    /// `RebuildInternal` after the raw-rows fold so the
+    /// bucket-counts path survives coalesced rebuilds the same
+    /// way `mMatchProxyRows` already does.
+    void ApplyStoredMatchBucketCounts();
+
     /// (Re)start the coalesce timer. On timeout the timer body
     /// runs a full `RebuildInternal` and emits `bucketsChanged`
     /// as one operation, so a burst of signals collapses to one
@@ -285,6 +326,17 @@ private:
 
     std::vector<Bucket> mBuckets;
     std::vector<int> mMatchProxyRows;
+
+    /// Durable per-bucket match totals from the last successful
+    /// `SetMatchBucketCounts`. Mutually exclusive with a non-empty
+    /// `mMatchProxyRows`: the bucketed API clears the row list
+    /// (and vice versa) so a rebuild never double-folds. Empty
+    /// when the row-list path is active or matches were cleared.
+    std::vector<uint32_t> mMatchBucketCounts;
+
+    /// Exact match total paired with `mMatchBucketCounts` (may
+    /// exceed the sum of a capped scan's row list upstream).
+    uint32_t mMatchBucketTotal = 0;
 
     /// Cached row count from the last rebuild. Used by
     /// `ProxyRowForYPixel` so the widget doesn't have to
