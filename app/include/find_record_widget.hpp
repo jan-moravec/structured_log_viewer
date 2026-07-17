@@ -69,9 +69,10 @@ signals:
     void MatchCountRequested(const QString &text, bool wildcards, bool regularExpressions);
 
 public:
-    /// Catches `Shift+Return` on `mEdit` before `QLineEdit` swallows
-    /// it; `returnPressed` is modifier-agnostic and `keyPressEvent`
-    /// doesn't bubble, so the filter is the only way to wire find-prev.
+    /// Catches Return / Shift+Return on `mEdit` before `QLineEdit`
+    /// handles them. Plain Return must be consumed here: `QLineEdit`
+    /// ignores the key after `returnPressed`, so a parent
+    /// `keyPressEvent` would otherwise fire FindNext a second time.
     /// Public to match `QObject::eventFilter`'s visibility.
     bool eventFilter(QObject *watched, QEvent *event) override;
 

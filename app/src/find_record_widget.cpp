@@ -187,10 +187,14 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
     connect(mButtonNext, &QToolButton::clicked, this, &FindRecordWidget::FindNext);
     connect(mButtonPrevious, &QToolButton::clicked, this, &FindRecordWidget::FindPrevious);
 
-    // Plain Return -> find-next. Shift+Return -> find-prev is wired
-    // in `eventFilter`: `returnPressed` is modifier-agnostic and
-    // `QLineEdit::keyPressEvent` accepts the event without bubbling.
-    connect(mEdit, &QLineEdit::returnPressed, this, &FindRecordWidget::FindNext);
+    // Return / Shift+Return on the search field are handled in
+    // `eventFilter` (not via `returnPressed`). `QLineEdit` emits
+    // `returnPressed` then *ignores* the key event, so a
+    // `returnPressed` -> FindNext hook plus the parent
+    // `keyPressEvent` FindNext path would double-advance and skip
+    // every other match. Consuming the key in the filter keeps a
+    // single jump; `keyPressEvent` still covers Enter when focus
+    // is on a toggle / arrow button.
     mEdit->installEventFilter(this);
 
     // `objectName`s on both timers let tests probe trailing vs max-age
@@ -341,8 +345,8 @@ void FindRecordWidget::DismissBar()
 void FindRecordWidget::keyPressEvent(QKeyEvent *event)
 {
     // Only reaches us when focus is on a toggle / arrow button. For
-    // `mEdit`, the line edit handles Return itself and `eventFilter`
-    // handles Shift+Return.
+    // `mEdit`, `eventFilter` consumes Return / Shift+Return so they
+    // never bubble here (a bubble would double-fire FindNext).
     if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
     {
         if (event->modifiers().testFlag(Qt::ShiftModifier))
@@ -366,12 +370,22 @@ bool FindRecordWidget::eventFilter(QObject *watched, QEvent *event)
         // `QEvent::KeyPress` guarantees the dynamic type; Qt doesn't
         // enable RTTI on `QEvent`.
         auto *ke = static_cast<QKeyEvent *>(event); // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
-        if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) && ke->modifiers().testFlag(Qt::ShiftModifier))
+        if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter)
         {
-            // Intercept before `QLineEdit::keyPressEvent`, which
-            // would otherwise emit `returnPressed` (-> FindNext)
-            // and swallow the shift-modified variant.
-            FindPrevious();
+            // Consume before `QLineEdit::keyPressEvent`: it emits
+            // `returnPressed` then ignores the event, which would
+            // bubble into `FindRecordWidget::keyPressEvent` and
+            // fire FindNext a second time (skipping every other
+            // match). Shift+Return is find-prev; plain Return is
+            // find-next.
+            if (ke->modifiers().testFlag(Qt::ShiftModifier))
+            {
+                FindPrevious();
+            }
+            else
+            {
+                FindNext();
+            }
             return true;
         }
     }
