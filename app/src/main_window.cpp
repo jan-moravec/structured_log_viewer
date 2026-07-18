@@ -5675,9 +5675,12 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
     }
     if (text.isEmpty())
     {
-        // Only reachable via a programmatic call (the widget
-        // suppresses the signal on empty text). Keep the label
-        // clear in case the cache was previously populated.
+        // Reached both programmatically (find bar not yet used) and
+        // via `FindRecordWidget::RequestMatchCountSoon`, which emits
+        // `MatchCountRequested("")` after the user clears the field
+        // so downstream match state (this cache + the overview rail's
+        // tick vector) drops in one round-trip. `InvalidateFindMatchCache`
+        // is what pushes the empty match list into the rail.
         InvalidateFindMatchCache();
         mFindRecord->SetMatchInfo(0, 0);
         return;
@@ -6236,8 +6239,10 @@ void MainWindow::ScrollToProxyRow(int proxyRow, bool replaceSelection)
     // viewport back to the tail mid-exploration. `scrollTo` is
     // programmatic and would not fire `userScrolledAwayFromTail`
     // on its own; handle Follow here instead of relying on the
-    // scrollbar attribution path.
-    if (ui != nullptr && ui->actionFollowTail->isChecked())
+    // scrollbar attribution path. Null-check both handles: a partial
+    // UI setup (early failure path in `setupUi`) can leave the
+    // action pointer null even when `ui` itself is valid.
+    if (ui != nullptr && ui->actionFollowTail != nullptr && ui->actionFollowTail->isChecked())
     {
         ui->actionFollowTail->setChecked(false);
     }

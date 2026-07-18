@@ -318,13 +318,31 @@ private:
     /// rebuild hot path. Rebuilt on `modelReset`; empty when the
     /// outermost proxy is the source model itself (no proxies) or
     /// when there is no proxy at all.
-    std::vector<QAbstractProxyModel *> mProxyChain;
+    ///
+    /// Held as `QPointer` so an inner proxy destroyed under us —
+    /// without a `modelReset` on the outermost proxy — zeroes the
+    /// slot before the next `ProxyToSourceRow` walk dereferences
+    /// it. `ProxyToSourceRow` short-circuits to `-1` on a null
+    /// entry rather than crashing.
+    std::vector<QPointer<QAbstractProxyModel>> mProxyChain;
 
     /// True iff the last-cached `mProxyChain` terminates at
     /// `mSourceModel`. `ProxyToSourceRow` short-circuits to `-1`
     /// when this is false so a mismatched attach can't miscount
     /// rows.
     bool mProxyChainTerminatesAtSource = false;
+
+    /// One-shot flag: set the first time `ProxyToSourceRow`
+    /// detects the walked chain no longer terminates at
+    /// `mSourceModel`. Prevents the `qWarning` breadcrumb from
+    /// spamming the log at scan cadence (~1 M rows). Reset on
+    /// every `RebuildProxyChainCache` so a subsequent drift after
+    /// a fresh cache still surfaces once.
+    ///
+    /// `mutable` because the flag is set from the `const`
+    /// `ProxyToSourceRow` observer — it's a diagnostic side-effect,
+    /// not part of the model's logical state.
+    mutable bool mProxyChainDriftWarned = false;
 
     std::vector<Bucket> mBuckets;
     std::vector<int> mMatchProxyRows;

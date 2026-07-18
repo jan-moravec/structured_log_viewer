@@ -138,6 +138,21 @@ public:
         mNextValueChangeIsUser = true;
     }
 
+    /// Clear a previously-set user-attribution flag when the
+    /// caller can confirm the wheel / scroll did not move the
+    /// value (e.g. the scrollbar was pinned at `minimum()` /
+    /// `maximum()` in the direction of the delta). Without
+    /// this, the flag survives until the next value change —
+    /// which could be programmatic — and misattributes that
+    /// change as user input, spuriously firing
+    /// `userScrolled{To,AwayFrom}Tail` and disengaging Follow
+    /// newest. Paired with `AttributeNextScrollToUser` in
+    /// `OverviewRailWidget::wheelEvent`.
+    void ClearNextScrollUserAttribution() noexcept
+    {
+        mNextValueChangeIsUser = false;
+    }
+
     /// Re-read the attached rail's `sizeHint().width()` into
     /// `mReservedRightMargin` and re-run geometry. Call after
     /// `OverviewRailWidget::SetWidthMode` so the viewport margin

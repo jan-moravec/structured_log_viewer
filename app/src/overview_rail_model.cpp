@@ -8,7 +8,9 @@
 
 #include <QAbstractItemModel>
 #include <QAbstractProxyModel>
+#include <QDebug>
 #include <QModelIndex>
+#include <QPointer>
 #include <QTimer>
 
 #include <algorithm>
@@ -592,8 +594,16 @@ int OverviewRailModel::ProxyToSourceRow(int proxyRow) const noexcept
         return -1;
     }
     QModelIndex idx = mProxyModel->index(proxyRow, 0);
-    for (QAbstractProxyModel *proxy : mProxyChain)
+    for (const QPointer<QAbstractProxyModel> &proxy : mProxyChain)
     {
+        // A `QPointer` slot can zero if the referenced proxy was
+        // destroyed under us without the outermost proxy firing
+        // `modelReset`. Short-circuit rather than dereferencing a
+        // null slot; the caller treats `-1` as "row not resolvable".
+        if (proxy.isNull())
+        {
+            return -1;
+        }
         idx = proxy->mapToSource(idx);
     }
     if (!idx.isValid())
@@ -604,13 +614,28 @@ int OverviewRailModel::ProxyToSourceRow(int proxyRow) const noexcept
     // swaps its `sourceModel()` after our cache is populated and
     // the outer proxy doesn't emit `modelReset`, the walk lands on
     // an alien model and we'd fold rows from the wrong table. Cheap
-    // pointer compare so we can afford it in debug; skipped in
-    // release because a single misattributed bucket is preferable
-    // to spinning `qWarning` per row.
+    // pointer compare so we can afford it in debug; release emits a
+    // one-shot `qWarning` (see below) so the shipped build isn't
+    // silent about it, then falls through with the (wrong) row —
+    // that's still better than crashing on a `nullptr` dereference.
     Q_ASSERT_X(
         idx.model() == mSourceModel, "OverviewRailModel::ProxyToSourceRow",
         "proxy chain no longer terminates at the cached source model"
     );
+    if (idx.model() != mSourceModel)
+    {
+        // Once-per-model-instance breadcrumb. `qWarning` per row
+        // would drown the log at 1M-row-scan cadence; the flag keeps
+        // it to a single line per drift event.
+        if (!mProxyChainDriftWarned)
+        {
+            mProxyChainDriftWarned = true;
+            qWarning() << "OverviewRailModel::ProxyToSourceRow: proxy chain no longer terminates at the "
+                          "cached source model. Bucket counts may misattribute rows until the next "
+                          "modelReset refreshes the chain cache.";
+        }
+        return -1;
+    }
     return idx.row();
 }
 
@@ -618,6 +643,12 @@ void OverviewRailModel::RebuildProxyChainCache()
 {
     mProxyChain.clear();
     mProxyChainTerminatesAtSource = false;
+    // Fresh cache: arm the drift warning again so a *new* chain
+    // drift after this rebuild still surfaces its one-shot
+    // `qWarning`. Without the reset, once-warned-per-lifetime
+    // would silently swallow a second drift event after e.g. a
+    // dictionary rebuild that emitted `modelReset`.
+    mProxyChainDriftWarned = false;
     if (mProxyModel == nullptr || mSourceModel == nullptr)
     {
         return;
@@ -631,7 +662,7 @@ void OverviewRailModel::RebuildProxyChainCache()
     QAbstractItemModel *current = mProxyModel;
     while (auto *proxy = qobject_cast<QAbstractProxyModel *>(current))
     {
-        mProxyChain.push_back(proxy);
+        mProxyChain.push_back(QPointer<QAbstractProxyModel>(proxy));
         current = proxy->sourceModel();
         if (current == nullptr)
         {

@@ -988,10 +988,17 @@ void OverviewRailWidget::wheelEvent(QWheelEvent *event)
     // also set the flag), but attributing explicitly keeps Follow
     // newest disengage correct even if a style / platform path
     // calls `setValue` directly.
-    if (auto *logView = qobject_cast<LogTableView *>(mTableView.data()); logView != nullptr)
+    auto *logView = qobject_cast<LogTableView *>(mTableView.data());
+    if (logView != nullptr)
     {
         logView->AttributeNextScrollToUser();
     }
+    // Snapshot the scrollbar value so we can detect the pinned-
+    // edge case (wheel forwarded but the scrollbar was already at
+    // `minimum()` / `maximum()` in the wheel's direction, so no
+    // `valueChanged` fires and the attribution flag would survive
+    // until the next — possibly programmatic — value change).
+    const int valueBefore = vbar->value();
     const QPointF globalPos = event->globalPosition();
     const QPointF localPos = vbar->mapFromGlobal(globalPos.toPoint());
     QWheelEvent translated(
@@ -1007,6 +1014,15 @@ void OverviewRailWidget::wheelEvent(QWheelEvent *event)
         event->pointingDevice()
     );
     QApplication::sendEvent(vbar, &translated);
+    // Pinned-edge case: value didn't move, so `OnVerticalScrollValue
+    // Changed` never fired and the user-attribution flag we set
+    // above is still true. Clear it so a later programmatic
+    // `setValue` (e.g. anchor-restore on the next batch) isn't
+    // mistakenly reported as a user scroll.
+    if (logView != nullptr && vbar->value() == valueBefore)
+    {
+        logView->ClearNextScrollUserAttribution();
+    }
     // Mark accepted so the parent scroll area doesn't double-
     // process the wheel event.
     event->accept();
