@@ -124,6 +124,26 @@ public:
         return mReservedRightMargin;
     }
 
+    /// Mark the next vertical-scrollbar `valueChanged` as
+    /// user-initiated so `userScrolledAwayFromTail` /
+    /// `userScrolledToTail` can fire. Used by
+    /// `OverviewRailWidget::wheelEvent`, which forwards the
+    /// wheel directly to the scrollbar and therefore bypasses
+    /// `LogTableView::wheelEvent` (the usual attribution path).
+    /// Consumed by `OnVerticalScrollValueChanged` on the next
+    /// value change (or cleared without emitting if the value
+    /// does not move).
+    void AttributeNextScrollToUser() noexcept
+    {
+        mNextValueChangeIsUser = true;
+    }
+
+    /// Re-read the attached rail's `sizeHint().width()` into
+    /// `mReservedRightMargin` and re-run geometry. Call after
+    /// `OverviewRailWidget::SetWidthMode` so the viewport margin
+    /// tracks the new preset. No-op when no rail is attached.
+    void RefreshOverviewRailMargin();
+
 public slots:
     void CopySelectedRowsToClipboard();
 

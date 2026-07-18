@@ -72,10 +72,12 @@ public:
     );
 
     /// Set the number of rail pixel rows. Triggers a synchronous
-    /// rebuild when the bucket count changes so the widget's next
-    /// paint sees fresh data (called from the widget's own
-    /// `resizeEvent`, where a coalesced rebuild would race the
-    /// paint). Zero is legal (widget hidden / zero-height) and
+    /// rebuild when the bucket count changes so the caller sees
+    /// fresh data on return. The widget calls this from
+    /// `showEvent` (immediate) and from a debounced
+    /// `resizeEvent` path (`BUCKET_SYNC_DEBOUNCE_MS`) so interactive
+    /// window-drag storms collapse to one rebuild + one find
+    /// rescan. Zero is legal (widget hidden / zero-height) and
     /// produces an empty bucket vector; `RebuildInternal`
     /// short-circuits on that branch, which is the mechanism that
     /// lets `MainWindow::SetOverviewRailVisible(false)` stop

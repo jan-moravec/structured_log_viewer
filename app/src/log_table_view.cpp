@@ -690,6 +690,24 @@ int LogTableView::ResolvedRailWidth(const QWidget *rail)
     return std::max(0, rail->width());
 }
 
+void LogTableView::RefreshOverviewRailMargin()
+{
+    if (mOverviewRail == nullptr)
+    {
+        return;
+    }
+    const int fresh = ResolvedRailWidth(mOverviewRail);
+    if (fresh == mReservedRightMargin)
+    {
+        // Width unchanged; still reposition in case geometry
+        // drifted, but skip the heavier margin rewrite.
+        UpdateOverviewRailGeometry();
+        return;
+    }
+    mReservedRightMargin = fresh;
+    updateGeometries();
+}
+
 void LogTableView::resizeEvent(QResizeEvent *event)
 {
     QTableView::resizeEvent(event);
@@ -821,12 +839,10 @@ void LogTableView::UpdateOverviewRailGeometry()
     // the horizontal header's top edge) down to the bottom of
     // the viewport, so the strip reads as one continuous piece
     // of chrome from the header down to the scrollbar corner.
-    // The rail widget's paint pass restricts the level bars and
-    // the viewport indicator to the viewport-Y slice of the
-    // widget (see `OverviewRailWidget::InteractiveRailRect`), so
-    // a bar for a visible row lines up horizontally with that
-    // row's table entry -- the header-Y slice above stays as
-    // wash chrome.
+    // The rail paints a whole-file overview across that full
+    // height (`OverviewRailWidget::InteractiveRailRect`); the
+    // viewport indicator overlay shows which proxy rows are
+    // currently visible.
     const QRect vpGeom = vp->geometry();
     const int width = mReservedRightMargin;
     if (width <= 0)

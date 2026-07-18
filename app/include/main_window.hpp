@@ -360,6 +360,10 @@ public:
     /// during a drag scrub (the scroll happens but selection is
     /// left alone, so a carefully-built multi-row selection
     /// survives a scroll-by-rail).
+    ///
+    /// Always disengages Follow newest: rail navigation is
+    /// intentional browsing, and a programmatic `scrollTo` would
+    /// not otherwise fire `userScrolledAwayFromTail`.
     void ScrollToProxyRow(int proxyRow, bool replaceSelection = true);
 
     /// Attach or detach `mOverviewRailWidget` on the table view,
@@ -573,11 +577,14 @@ private slots:
     void InvalidateFindMatchCache();
 
     /// Push the current `mFindMatchCache` match state into the
-    /// overview rail. Prefers cached per-bucket counts (unbiased
-    /// even when `sortedRows` is capped); when those are missing
-    /// or size-mismatched against the live rail (scan ran while
-    /// the rail was hidden, or H changed), forces a full recount
-    /// so the rail never paints a top-biased tick strip.
+    /// overview rail. No-op when the find bar is not visible —
+    /// match ticks mirror the find indicator and must not
+    /// reappear from a surviving cache after find was closed.
+    /// Prefers cached per-bucket counts (unbiased even when
+    /// `sortedRows` is capped); when those are missing or
+    /// size-mismatched against the live rail (scan ran while the
+    /// rail was hidden, or H changed), forces a full recount so
+    /// the rail never paints a top-biased tick strip.
     void PushFindMatchesToOverviewRail();
 
     /// Centralised invalidate + debounced re-request. Wired to every

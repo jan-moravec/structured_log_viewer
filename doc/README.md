@@ -396,7 +396,9 @@ In [Stream Mode](#stream-mode-live-tail) and [Network Stream Mode](#network-stre
 
 The **Overview Rail** is a thin vertical strip along the right edge of the log table. It condenses the whole proxy-filtered stream into ~one row of pixels per bucket, so you can see where matches, anchors, and clusters of high-severity rows sit without scrolling.
 
-The rail is on by default; toggle it from **View → Overview Rail** (`Ctrl+Shift+O`) or the toolbar's rail icon. Visibility is persisted in `QSettings` so a re-opened window restores your preference. Width tracks `QStyle::PM_ScrollBarExtent`, so the strip scales cleanly on Hi-DPI and follows system-style changes.
+The rail is on by default; toggle it from **View → Overview Rail** (`Ctrl+Shift+O`) or the toolbar's rail icon. Visibility is persisted in `QSettings` so a re-opened window restores your preference.
+
+Width is DPI-fluent (anchored to the system scrollbar extent) and selectable in **Settings → Preferences** as **Narrow**, **Medium** (default), or **Wide**. Medium is about 1.5× the compact Narrow strip; Wide is 2× — useful when stacked severity bands need more room on Hi-DPI displays.
 
 ### What the rail shows
 

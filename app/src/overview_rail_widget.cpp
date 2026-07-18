@@ -1,5 +1,6 @@
 #include "overview_rail_widget.hpp"
 
+#include "log_table_view.hpp"
 #include "overview_rail_model.hpp"
 #include "theme_control.hpp"
 
@@ -13,11 +14,14 @@
 #include <QColor>
 #include <QEvent>
 #include <QFontMetrics>
+#include <QHideEvent>
 #include <QMouseEvent>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPalette>
 #include <QPen>
+#include <QPointF>
+#include <QPointingDevice>
 #include <QRect>
 #include <QResizeEvent>
 #include <QScrollBar>
@@ -25,6 +29,7 @@
 #include <QSize>
 #include <QStyle>
 #include <QStyleOptionViewItem>
+#include <QTimer>
 #include <QWheelEvent>
 #include <QWidget>
 #include <Qt>
@@ -112,22 +117,42 @@ constexpr int INDICATOR_MIN_HEIGHT_PX = 12;
 /// (which is enough to spot a rare Fatal streak).
 constexpr int RAIL_MIN_WIDTH_PX = 24;
 
-/// Maximum rail width in device-independent px. Some styles
-/// (accessibility themes on Windows, GTK "chunky-scrollbar"
-/// setups) advertise very large `PM_ScrollBarExtent` values —
-/// mirroring them 1:1 would cover a large fraction of the
-/// viewport with a nearly-empty rail. The cap is deliberately
-/// wide so per-level stacked-segment colours are
-/// unmistakably readable even on 4K displays where 14 px bars
-/// were near-invisible in user reports. Klogg's overview strip
-/// is 16 px; we run wider because we also show anchors + match
-/// ticks in dedicated columns, not just matches.
-constexpr int RAIL_MAX_WIDTH_PX = 60;
+/// Maximum rail width in device-independent px after the
+/// width-mode scale is applied. Headroom for Wide (`2 ×` base)
+/// when accessibility themes advertise a large
+/// `PM_ScrollBarExtent` (base can already sit near 60). A lower
+/// cap (e.g. 96) would collapse Wide into Medium on those
+/// setups. Typical Win11 Wide lands around ~72 and never hits
+/// this ceiling.
+constexpr int RAIL_MAX_WIDTH_PX = 128;
+
+/// Scale factors applied to the DPI-fluent base width for each
+/// `OverviewRailWidthMode`. Narrow is today's unscaled formula.
+constexpr double RAIL_WIDTH_SCALE_NARROW = 1.0;
+constexpr double RAIL_WIDTH_SCALE_MEDIUM = 1.5;
+constexpr double RAIL_WIDTH_SCALE_WIDE = 2.0;
 
 /// Extra width added to the DPI-fluent metric. Nudges the
 /// rail slightly wider than the scrollbar so it doesn't merge
 /// visually with a scrollbar rendered in the same theme.
 constexpr int RAIL_WIDTH_PADDING = 2;
+
+/// Trailing-edge debounce for `SyncBucketCountToHeight()` on
+/// `resizeEvent`. A live drag-resize storm fires a resize event
+/// per pixel of height change, and each `SetBucketCount(H)` call
+/// on the model reallocates buckets, invalidates the durable
+/// per-bucket find-match counts (`ApplyStoredMatchBucketCounts`
+/// no-ops on size mismatch), and forces the `MainWindow`
+/// `bucketsChanged` -> `PushFindMatchesToOverviewRail` wiring
+/// to run a synchronous full-table find rescan. Without
+/// debouncing, dragging the window edge with the Find bar open
+/// and a moderately broad needle on a large log freezes the UI
+/// for seconds. 100 ms is above typical human-perceptible
+/// resize latency yet short enough that the rail settles into
+/// the new geometry the moment the drag stops. `showEvent`
+/// bypasses the timer so the first paint after a show is never
+/// delayed.
+constexpr int BUCKET_SYNC_DEBOUNCE_MS = 100;
 
 QColor ColorForLevel(const ThemeControl *theme, loglib::LogLevel level, const QPalette &palette)
 {
@@ -241,7 +266,49 @@ QColor ColorForAnchorSlot(const ThemeControl *theme, std::uint8_t colorIndex, co
     return QRect(underlayLeft, 0, underlayWidth, 0);
 }
 
+[[nodiscard]] double WidthScaleForMode(OverviewRailWidthMode mode) noexcept
+{
+    switch (mode)
+    {
+    case OverviewRailWidthMode::Narrow:
+        return RAIL_WIDTH_SCALE_NARROW;
+    case OverviewRailWidthMode::Wide:
+        return RAIL_WIDTH_SCALE_WIDE;
+    case OverviewRailWidthMode::Medium:
+    default:
+        return RAIL_WIDTH_SCALE_MEDIUM;
+    }
+}
+
 } // namespace
+
+OverviewRailWidthMode ParseOverviewRailWidthMode(const QString &value)
+{
+    if (value == QLatin1String("narrow"))
+    {
+        return OverviewRailWidthMode::Narrow;
+    }
+    if (value == QLatin1String("wide"))
+    {
+        return OverviewRailWidthMode::Wide;
+    }
+    // Default / unknown / "medium" → Medium (shipped default).
+    return OverviewRailWidthMode::Medium;
+}
+
+QString OverviewRailWidthModeToSettingsString(OverviewRailWidthMode mode)
+{
+    switch (mode)
+    {
+    case OverviewRailWidthMode::Narrow:
+        return QStringLiteral("narrow");
+    case OverviewRailWidthMode::Wide:
+        return QStringLiteral("wide");
+    case OverviewRailWidthMode::Medium:
+    default:
+        return QStringLiteral("medium");
+    }
+}
 
 OverviewRailWidget::OverviewRailWidget(
     OverviewRailModel *model, ThemeControl *theme, QAbstractItemView *tableView, QWidget *parent
@@ -285,34 +352,55 @@ OverviewRailWidget::OverviewRailWidget(
             connect(vbar, &QAbstractSlider::rangeChanged, this, [this](int, int) { update(); });
         }
     }
+
+    // Trailing-edge debounce so a drag-resize storm collapses to
+    // one `SetBucketCount(H)` call. See `BUCKET_SYNC_DEBOUNCE_MS`
+    // for the perf rationale. Object-named for tests.
+    mBucketSyncTimer = new QTimer(this);
+    mBucketSyncTimer->setObjectName(QStringLiteral("overviewRailBucketSyncTimer"));
+    mBucketSyncTimer->setSingleShot(true);
+    mBucketSyncTimer->setInterval(BUCKET_SYNC_DEBOUNCE_MS);
+    connect(mBucketSyncTimer, &QTimer::timeout, this, &OverviewRailWidget::SyncBucketCountToHeight);
+}
+
+void OverviewRailWidget::SetWidthMode(OverviewRailWidthMode mode)
+{
+    if (mWidthMode == mode)
+    {
+        return;
+    }
+    mWidthMode = mode;
+    mCachedRailWidth = 0;
+    // Notify the layout system so `LogTableView` re-reads
+    // `sizeHint()` and refreshes the reserved right margin.
+    updateGeometry();
+    update();
 }
 
 QSize OverviewRailWidget::sizeHint() const
 {
-    // DPI-fluent width: anchor to twice the platform scrollbar
-    // extent so the rail scales with the same DPI metric users
-    // already recognise, but stays wide enough that the three
-    // internal columns (level / match / anchor) each get several
-    // clearly visible pixels. Fall back to the font's `M` advance
-    // when the style returns a degenerate 0 (offscreen QPA in
-    // tests). Clamp into `[RAIL_MIN_WIDTH_PX, RAIL_MAX_WIDTH_PX]`
-    // so a themed style with a giant scrollbar extent doesn't
-    // inflate the rail past the point where extra pixels stop
-    // conveying information, and a tiny extent (accessibility
-    // narrow-scrollbar setups) can't collapse the level column
-    // to a single-pixel streak.
+    // DPI-fluent base: twice the platform scrollbar extent so
+    // the rail scales with the same DPI metric users already
+    // recognise, but stays wide enough that the stacked-
+    // severity bin bar remains readable. Fall back to the
+    // font's `M` advance when the style returns a degenerate 0
+    // (offscreen QPA in tests). Floor at `RAIL_MIN_WIDTH_PX`.
     //
     // The 2x factor was tuned against the "invisible bars"
     // report on Windows 11: a raw scrollbar extent of 17 px
-    // collapsed the level column to ~10 px, which reads as a
-    // hair-thin line at typical viewing distance. Doubling puts
-    // the level column at ~19 px -- comfortably readable per
-    // level colour.
+    // left the content strip too narrow at typical viewing
+    // distance. Doubling lands around ~36 px of base width
+    // before the width-mode scale is applied.
+    //
+    // Width mode then multiplies that base (Narrow 1.0 /
+    // Medium 1.5 / Wide 2.0) and the result is clamped into
+    // `[RAIL_MIN_WIDTH_PX, RAIL_MAX_WIDTH_PX]`.
     const QStyle *s = style();
     const int scrollbarExtent = (s != nullptr) ? s->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, this) : 0;
     const int fontExtent = fontMetrics().horizontalAdvance(QLatin1Char('M'));
-    const int raw = std::max({2 * scrollbarExtent, 2 * fontExtent, RAIL_MIN_WIDTH_PX}) + RAIL_WIDTH_PADDING;
-    const int extent = std::clamp(raw, RAIL_MIN_WIDTH_PX, RAIL_MAX_WIDTH_PX);
+    const int base = std::max({2 * scrollbarExtent, 2 * fontExtent, RAIL_MIN_WIDTH_PX}) + RAIL_WIDTH_PADDING;
+    const double scaled = static_cast<double>(base) * WidthScaleForMode(mWidthMode);
+    const int extent = std::clamp(static_cast<int>(std::lround(scaled)), RAIL_MIN_WIDTH_PX, RAIL_MAX_WIDTH_PX);
     // Cache so `RailWidthForTest` (and any future non-const
     // helper that wants the last DPI-fluent width) doesn't have
     // to re-run the platform-metric query.
@@ -878,15 +966,47 @@ void OverviewRailWidget::wheelEvent(QWheelEvent *event)
         event->ignore();
         return;
     }
-    // TODO: `event->position()` is in this widget's coordinate
-    // system, not the scrollbar's. `QAbstractSlider::wheelEvent`
-    // only reads `angleDelta` today so the mismatch is
-    // invisible, but any style / accessibility layer that
-    // inspects position sees rail-widget coordinates. Consider
-    // translating with `QWheelEvent` cloned at `vbar->mapFromGlobal
-    // (event->globalPosition().toPoint())` once we hit a case
-    // that cares.
-    QApplication::sendEvent(vbar, event);
+    // Translate the wheel event's local position into the
+    // scrollbar's coordinate space before forwarding. The
+    // original `event->position()` is in this widget's coords,
+    // which sit past the scrollbar's rect on the horizontal
+    // axis; forwarding verbatim would leave any style /
+    // accessibility layer that inspects the point looking at
+    // coordinates outside `vbar`. `QAbstractSlider::wheelEvent`
+    // currently reads only `angleDelta` (so the mismatch was
+    // invisible in production), but the translation is cheap
+    // and future-proofs the wiring against a style that ever
+    // starts caring — e.g. a hover indicator or a hit-test
+    // for click-past-thumb page behaviour. Global position
+    // stays as-is so screen-space consumers see the same
+    // point the user pointed at.
+    // Attribute the forthcoming scrollbar `valueChanged` as
+    // user-driven. Forwarding via `sendEvent` bypasses
+    // `LogTableView::wheelEvent`, which is the normal path that
+    // sets this flag. Qt's `QAbstractSlider::wheelEvent` usually
+    // goes through `triggerAction` (so `actionTriggered` would
+    // also set the flag), but attributing explicitly keeps Follow
+    // newest disengage correct even if a style / platform path
+    // calls `setValue` directly.
+    if (auto *logView = qobject_cast<LogTableView *>(mTableView.data()); logView != nullptr)
+    {
+        logView->AttributeNextScrollToUser();
+    }
+    const QPointF globalPos = event->globalPosition();
+    const QPointF localPos = vbar->mapFromGlobal(globalPos.toPoint());
+    QWheelEvent translated(
+        localPos,
+        globalPos,
+        event->pixelDelta(),
+        event->angleDelta(),
+        event->buttons(),
+        event->modifiers(),
+        event->phase(),
+        event->inverted(),
+        event->source(),
+        event->pointingDevice()
+    );
+    QApplication::sendEvent(vbar, &translated);
     // Mark accepted so the parent scroll area doesn't double-
     // process the wheel event.
     event->accept();
@@ -895,7 +1015,51 @@ void OverviewRailWidget::wheelEvent(QWheelEvent *event)
 void OverviewRailWidget::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
-    SyncBucketCountToHeight();
+    // Debounce: an interactive window drag fires a resize event
+    // per pixel of height change, and each `SyncBucketCountToHeight`
+    // would call `SetBucketCount(H±1)` on the model, which drops
+    // the durable per-bucket find-match counts and (with the Find
+    // bar open) forces `MainWindow` to run a full synchronous
+    // find rescan through the `bucketsChanged` lambda. Coalescing
+    // through `mBucketSyncTimer` collapses the burst to one
+    // bucket update + one rescan when the drag settles.
+    //
+    // Paints during the debounce window use the previous
+    // bucket count against the current widget height, so the
+    // rail's proportions stretch slightly for up to
+    // `BUCKET_SYNC_DEBOUNCE_MS` — visually indistinguishable
+    // from the settled state given the rail is a summary
+    // strip, not a pixel-accurate view. Click / drag / wheel
+    // still resolve against the live widget height + live
+    // model row count (see `ProxyRowForYPixel`), so hit-testing
+    // stays correct.
+    if (mBucketSyncTimer != nullptr)
+    {
+        mBucketSyncTimer->start();
+    }
+    else
+    {
+        // Defensive: constructor guarantees the timer exists,
+        // but if a future refactor moves timer construction out
+        // of the ctor keep the widget functional.
+        SyncBucketCountToHeight();
+    }
+}
+
+void OverviewRailWidget::hideEvent(QHideEvent *event)
+{
+    QWidget::hideEvent(event);
+    // Cancel any pending debounced sync. `MainWindow::
+    // SetOverviewRailVisible(false)` drops the model's bucket
+    // vector immediately after this hide fires; a queued
+    // `SyncBucketCountToHeight()` firing right after would
+    // re-populate the vector against the widget's persisted
+    // height and undo the visibility-toggle optimisation
+    // (paying rebuild cost while the rail is invisible).
+    if (mBucketSyncTimer != nullptr)
+    {
+        mBucketSyncTimer->stop();
+    }
 }
 
 void OverviewRailWidget::showEvent(QShowEvent *event)
@@ -911,8 +1075,19 @@ void OverviewRailWidget::showEvent(QShowEvent *event)
     // fire a redundant no-op transition; the follow-up
     // `resizeEvent` immediately supersedes it with the real
     // height.
+    //
+    // A show is a discrete user action (toggle, tab switch, first
+    // appearance) and must not wait on the resize debounce — the
+    // first paint after the show has to see correct bucket
+    // geometry. Cancel any pending resize-debounce so we don't
+    // double-fire `SetBucketCount` on the same H after this call
+    // returns.
     if (height() > 0)
     {
+        if (mBucketSyncTimer != nullptr)
+        {
+            mBucketSyncTimer->stop();
+        }
         SyncBucketCountToHeight();
     }
 }
@@ -1063,6 +1238,20 @@ void OverviewRailWidget::SyncBucketCountToHeight()
     // when the count matches.
     mModel->SetBucketCount(static_cast<std::size_t>(height));
 }
+
+#ifdef LOGAPP_BUILD_TESTING
+void OverviewRailWidget::FlushPendingBucketSyncForTest()
+{
+    if (mBucketSyncTimer == nullptr || !mBucketSyncTimer->isActive())
+    {
+        return;
+    }
+    // Stop first so the timer's own `timeout` can't race the
+    // sync we're about to run manually and double-fire.
+    mBucketSyncTimer->stop();
+    SyncBucketCountToHeight();
+}
+#endif
 
 void OverviewRailWidget::EmitProxyRowForY(int y, bool replaceSelection)
 {

@@ -1,8 +1,10 @@
 #pragma once
 
+#include <QMetaType>
 #include <QPointer>
 #include <QRect>
 #include <QSize>
+#include <QString>
 #include <QWidget>
 
 #include <climits>
@@ -14,9 +16,32 @@ class ThemeControl;
 class QAbstractItemView;
 class QMouseEvent;
 class QPaintEvent;
+class QHideEvent;
 class QResizeEvent;
 class QShowEvent;
+class QTimer;
 class QWheelEvent;
+
+/// User-selectable overview-rail width preset. All three modes
+/// share the same DPI-fluent base formula (`2 × scrollbar
+/// extent`, etc.); the mode only scales that base.
+/// Persisted as `ui/overviewRailWidth` (`"narrow"` / `"medium"`
+/// / `"wide"`). Default is `Medium`.
+enum class OverviewRailWidthMode
+{
+    Narrow,
+    Medium,
+    Wide,
+};
+
+/// Parse a `QSettings` string into a width mode. Unknown /
+/// empty values map to `Medium` (the shipped default).
+[[nodiscard]] OverviewRailWidthMode ParseOverviewRailWidthMode(const QString &value);
+
+/// Serialise a width mode for `QSettings`.
+[[nodiscard]] QString OverviewRailWidthModeToSettingsString(OverviewRailWidthMode mode);
+
+Q_DECLARE_METATYPE(OverviewRailWidthMode)
 
 /// Klogg / Qt-Creator-inspired match overview rail. A slim
 /// vertical strip painted in a reserved right-hand viewport
@@ -57,10 +82,10 @@ class QWheelEvent;
 ///   view's vertical scrollbar. Anti-aliased translucent fill
 ///   with a 2 px cosmetic outline (the "glass thumb" look).
 ///
-/// Rail width is DPI-fluent: `sizeHint()` returns
-/// `max(fontMetrics('M'), style()->PM_ScrollBarExtent)` so the
-/// rail scales with the platform's own DPI-aware scrollbar
-/// sizing. Repositioning is owned by `LogTableView`; this
+/// Rail width is DPI-fluent: `sizeHint()` builds a base from
+/// `2 × max(PM_ScrollBarExtent, font 'M')` then multiplies by
+/// the active `OverviewRailWidthMode` (Narrow 1.0 / Medium 1.5 /
+/// Wide 2.0). Repositioning is owned by `LogTableView`; this
 /// widget just paints and forwards mouse events.
 class OverviewRailWidget : public QWidget
 {
@@ -79,6 +104,16 @@ public:
 
     [[nodiscard]] QSize sizeHint() const override;
     [[nodiscard]] QSize minimumSizeHint() const override;
+
+    /// Select the DPI-fluent width preset. No-op when unchanged.
+    /// Calls `updateGeometry()` so `LogTableView` can re-reserve
+    /// the right viewport margin.
+    void SetWidthMode(OverviewRailWidthMode mode);
+
+    [[nodiscard]] OverviewRailWidthMode WidthMode() const noexcept
+    {
+        return mWidthMode;
+    }
 
     /// Retrieve the widget's currently-cached DPI-fluent width.
     /// Kept as a helper (over `sizeHint().width()`) because
@@ -141,7 +176,33 @@ protected:
     /// hidden — a subsequent show whose viewport height didn't
     /// change would not re-fire `resizeEvent`, and the rail
     /// would paint blank against a zero-bucket model.
+    ///
+    /// Runs synchronously (bypasses `mBucketSyncTimer`) so the
+    /// first paint after a show already has correct bucket
+    /// geometry. The debounce is only there to coalesce interactive
+    /// window-resize storms; a show event is a discrete user action
+    /// and should feel instant.
     void showEvent(QShowEvent *event) override;
+
+    /// Cancel any pending debounced bucket-sync when the widget
+    /// hides. `MainWindow::SetOverviewRailVisible(false)` also
+    /// drops the model's bucket vector to skip rebuild cost while
+    /// hidden; without cancelling the timer, a queued
+    /// `SyncBucketCountToHeight()` firing right after the hide
+    /// would immediately re-populate the buckets against the
+    /// widget's persisted height, undoing the visibility-toggle
+    /// optimisation.
+    void hideEvent(QHideEvent *event) override;
+
+#ifdef LOGAPP_BUILD_TESTING
+public:
+    /// Flush any pending debounced `SyncBucketCountToHeight()`
+    /// call now. Tests that resize the widget after `show()` and
+    /// expect the bucket vector to update before the next paint
+    /// call this to skip the debounce wait. No-op when no sync is
+    /// pending.
+    void FlushPendingBucketSyncForTest();
+#endif
 
 private:
     /// Rail Y range that maps 1-to-1 to proxy rows. Excludes a
@@ -155,7 +216,11 @@ private:
 
     /// Push the current widget height into the model so the
     /// bucket vector matches the rail's usable pixel count.
-    /// Idempotent when the height matches.
+    /// Idempotent when the height matches. Called synchronously
+    /// from `showEvent` and via `mBucketSyncTimer` from
+    /// `resizeEvent` so a drag-resize storm coalesces to a
+    /// single `SetBucketCount(H)` call (see
+    /// `BUCKET_SYNC_DEBOUNCE_MS` in the .cpp for the rationale).
     void SyncBucketCountToHeight();
 
     /// Resolve mouse Y to a proxy row and emit
@@ -183,6 +248,11 @@ private:
     /// (active state, do not forward).
     bool mDragging = false;
 
+    /// Active width preset. Default Medium matches the
+    /// Preferences / `QSettings` default so a brand-new widget
+    /// agrees with a first-launch MainWindow before settings load.
+    OverviewRailWidthMode mWidthMode = OverviewRailWidthMode::Medium;
+
     /// Last DPI-fluent width computed by `sizeHint()`. Mutable so
     /// `sizeHint() const` can refresh it as a side-effect, and
     /// `RailWidthForTest()` can return it without re-running the
@@ -200,4 +270,15 @@ private:
     std::size_t mCachedYEdgesBuckets = 0;
     int mCachedYEdgesRailTop = INT_MIN;
     int mCachedYEdgesRailHeight = INT_MIN;
+
+    /// Debounce timer for `SyncBucketCountToHeight()` on
+    /// `resizeEvent`. Interactive window-drag resizes fire a
+    /// resize event per changed pixel, and each `SetBucketCount(H)`
+    /// call reallocates buckets, drops the durable find-match
+    /// counts (sizes disagree), and forces a synchronous
+    /// full-table rescan through the `MainWindow`
+    /// `bucketsChanged` -> `PushFindMatchesToOverviewRail`
+    /// lambda. Coalescing collapses a drag burst into one
+    /// bucket-count update + one rescan.
+    QTimer *mBucketSyncTimer = nullptr;
 };

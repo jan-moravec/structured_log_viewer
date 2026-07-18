@@ -1454,6 +1454,8 @@ private slots:
     /// `sizeHint()` returns a positive DPI-fluent width and a
     /// zero preferred height (rail grows vertically to fit the
     /// hosting margin). `minimumSizeHint` never exceeds it.
+    /// Default width mode is Medium (the shipped Preferences /
+    /// `QSettings` default).
     static void TestWidgetSizeHintIsDpiFluent()
     {
         LogModel model;
@@ -1466,6 +1468,7 @@ private slots:
         // still routes both). The DPI-fluent width should be > 0
         // and >= the minimum floor.
         widget.ensurePolished();
+        QCOMPARE(widget.WidthMode(), OverviewRailWidthMode::Medium);
         const int width = widget.sizeHint().width();
         QVERIFY2(width > 0, "size hint width must be positive after ensurePolished");
         const int minWidth = widget.minimumSizeHint().width();
@@ -1474,6 +1477,70 @@ private slots:
         // sizeHint() returns 0 height so the parent layout drives
         // vertical extent.
         QCOMPARE(widget.sizeHint().height(), 0);
+    }
+
+    /// Width modes scale the same DPI base: Medium > Narrow and
+    /// Wide > Medium. Unknown settings strings parse to Medium.
+    static void TestWidthModesScaleSizeHint()
+    {
+        LogModel model;
+        AnchorManager anchors;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel rail(chain.filter, &model, &anchors, &owner);
+        OverviewRailWidget widget(&rail, /*theme=*/nullptr, /*tableView=*/nullptr);
+        widget.ensurePolished();
+
+        QCOMPARE(ParseOverviewRailWidthMode(QStringLiteral("narrow")), OverviewRailWidthMode::Narrow);
+        QCOMPARE(ParseOverviewRailWidthMode(QStringLiteral("medium")), OverviewRailWidthMode::Medium);
+        QCOMPARE(ParseOverviewRailWidthMode(QStringLiteral("wide")), OverviewRailWidthMode::Wide);
+        QCOMPARE(ParseOverviewRailWidthMode(QStringLiteral("garbage")), OverviewRailWidthMode::Medium);
+        QCOMPARE(OverviewRailWidthModeToSettingsString(OverviewRailWidthMode::Wide), QStringLiteral("wide"));
+
+        widget.SetWidthMode(OverviewRailWidthMode::Narrow);
+        const int narrow = widget.sizeHint().width();
+        widget.SetWidthMode(OverviewRailWidthMode::Medium);
+        const int medium = widget.sizeHint().width();
+        widget.SetWidthMode(OverviewRailWidthMode::Wide);
+        const int wide = widget.sizeHint().width();
+
+        QVERIFY2(medium > narrow, "Medium must be wider than Narrow");
+        QVERIFY2(wide > medium, "Wide must be wider than Medium");
+        QVERIFY(narrow >= 24);
+        QVERIFY(wide <= 128);
+    }
+
+    /// Changing the width mode on an attached rail refreshes the
+    /// reserved right margin so the viewport tracks sizeHint.
+    static void TestWidthModeChangeRefreshesReservedMargin()
+    {
+        LogTableView view;
+        view.resize(800, 400);
+        view.show();
+
+        LogModel model;
+        AnchorManager anchors;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel railModel(chain.filter, &model, &anchors, &owner);
+        auto *widget = new OverviewRailWidget(&railModel, /*theme=*/nullptr, &view);
+        widget->SetWidthMode(OverviewRailWidthMode::Narrow);
+        view.AttachOverviewRail(widget);
+        QCoreApplication::processEvents();
+
+        const int narrowMargin = view.ReservedRightMargin();
+        QCOMPARE(narrowMargin, widget->sizeHint().width());
+
+        widget->SetWidthMode(OverviewRailWidthMode::Wide);
+        view.RefreshOverviewRailMargin();
+        QCoreApplication::processEvents();
+
+        const int wideMargin = view.ReservedRightMargin();
+        QCOMPARE(wideMargin, widget->sizeHint().width());
+        QVERIFY2(wideMargin > narrowMargin, "Wide mode must enlarge the reserved table margin");
+
+        view.AttachOverviewRail(nullptr);
+        delete widget;
     }
 
     /// Attaching a rail widget to `LogTableView` reserves a
@@ -2656,6 +2723,528 @@ private slots:
         );
         QVERIFY2(sparseExhausted, "sparse needle must not take the dense early-exit path");
         QCOMPARE(sparseInvocations, 1);
+    }
+
+    /// Regression against the "resize-storm rescan" bug. A live
+    /// drag-resize of the window fires a resize event per pixel
+    /// of rail-height change, and each `SetBucketCount(H±1)` on
+    /// the model would invalidate the durable per-bucket
+    /// find-match counts and force `MainWindow`'s
+    /// `bucketsChanged` -> `PushFindMatchesToOverviewRail`
+    /// wiring to run a synchronous full-table find rescan --
+    /// seconds of freeze on a large log with the Find bar open.
+    ///
+    /// The widget debounces `SyncBucketCountToHeight()` through
+    /// `mBucketSyncTimer`; a burst of resize events must collapse
+    /// to a single `SetBucketCount(finalH)` when the drag settles.
+    static void TestResizeStormCoalescesToSingleBucketCountUpdate()
+    {
+        LogModel model;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel railModel(chain.filter, &model, /*anchors=*/nullptr, &owner);
+
+        constexpr int ROWS = 40;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+
+        auto *widget = new OverviewRailWidget(&railModel, /*theme=*/nullptr, /*tableView=*/nullptr);
+        // Initial size + show fires the synchronous first-sync
+        // path in `showEvent`. Subsequent resize events are what
+        // this test asserts on -- they must go through the
+        // debounce, not straight to `SetBucketCount`.
+        widget->resize(60, 100);
+        widget->show();
+        QCoreApplication::processEvents();
+
+        // Spy starts after the initial show so the baseline is
+        // clean; anything the spy sees now is the response to
+        // the resize burst below.
+        QSignalSpy spy(&railModel, &OverviewRailModel::bucketsChanged);
+        QVERIFY(spy.isValid());
+
+        // Simulate a drag-resize storm: many resize events with
+        // different heights in rapid succession. Without the
+        // debounce, each one would land on the model as a
+        // separate `SetBucketCount(H)` and emit `bucketsChanged`.
+        constexpr int STORM_START_H = 101;
+        constexpr int STORM_END_H = 130;
+        for (int h = STORM_START_H; h <= STORM_END_H; ++h)
+        {
+            widget->resize(60, h);
+        }
+
+        // Immediately after the storm the debounce is still
+        // armed; no bucket-count update has landed on the model
+        // yet. `processEvents` here would let queued Qt events
+        // run but must NOT let the timer fire.
+        QCoreApplication::processEvents();
+        QCOMPARE(spy.count(), 0);
+
+        // Wait for the debounce interval to elapse and the
+        // trailing sync to fire. Generous slack over the
+        // 100 ms debounce so CI jitter doesn't flake.
+        QVERIFY2(
+            spy.wait(1000),
+            "debounced sync must land within a comfortable slack over BUCKET_SYNC_DEBOUNCE_MS"
+        );
+
+        // One more event-loop spin to prove no stragglers land
+        // after the trailing edge (defends against a future bug
+        // where the timer re-arms itself under some condition).
+        QCoreApplication::processEvents();
+        QCOMPARE(spy.count(), 1);
+
+        // Bucket count reflects the *final* widget height, not
+        // any of the intermediate storm values -- pins that the
+        // coalesce takes the last resize's height, not an
+        // arbitrary one from the middle.
+        const QRect finalRail = widget->rect().adjusted(0, 2, 0, -2);
+        QCOMPARE(static_cast<int>(railModel.BucketCount()), std::max(0, finalRail.height()));
+
+        delete widget;
+    }
+
+    /// `showEvent` bypasses the resize-debounce timer so the
+    /// first paint after a show sees correct bucket geometry.
+    /// A toggle / tab-switch / initial appearance is a discrete
+    /// user action and must feel instant; deferring it to the
+    /// debounce would paint a stale (or empty) rail for up to
+    /// `BUCKET_SYNC_DEBOUNCE_MS` on every show.
+    static void TestShowFlushesPendingBucketSyncSynchronously()
+    {
+        LogModel model;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel railModel(chain.filter, &model, /*anchors=*/nullptr, &owner);
+
+        constexpr int ROWS = 20;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+
+        auto *widget = new OverviewRailWidget(&railModel, /*theme=*/nullptr, /*tableView=*/nullptr);
+        // Pre-show resize: `SetBucketCount` has NOT run yet
+        // because `resizeEvent` before show is queued but the
+        // widget's own machinery only exercises it inside the
+        // show flow. Either way, this must be a hard 0 before
+        // the show fires.
+        widget->resize(60, 150);
+        QCOMPARE(static_cast<int>(railModel.BucketCount()), 0);
+
+        QSignalSpy spy(&railModel, &OverviewRailModel::bucketsChanged);
+        QVERIFY(spy.isValid());
+
+        widget->show();
+
+        // Contract: bucket count reflects the widget height
+        // *before* `show()` returns. No `processEvents`, no
+        // timer wait. Paint tests rely on this -- rendering
+        // straight after `show()` must not see a zero-bucket
+        // model.
+        QVERIFY2(
+            railModel.BucketCount() > 0,
+            "showEvent must apply the current widget height synchronously; the "
+            "resize-debounce timer is only for interactive drag-resize storms"
+        );
+        QCOMPARE(spy.count(), 1);
+
+        delete widget;
+    }
+
+    /// `showEvent` cancels any pending resize-debounce so a
+    /// resize-then-show sequence doesn't double-fire the sync
+    /// (once synchronously in show, once when the debounced
+    /// timer expires against the same H). Both would emit
+    /// `bucketsChanged`, and the second is a wasted paint
+    /// invalidation.
+    static void TestShowCancelsPendingResizeDebounce()
+    {
+        LogModel model;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        OverviewRailModel railModel(chain.filter, &model, /*anchors=*/nullptr, &owner);
+
+        constexpr int ROWS = 20;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+
+        auto *widget = new OverviewRailWidget(&railModel, /*theme=*/nullptr, /*tableView=*/nullptr);
+        widget->resize(60, 100);
+        widget->show();
+        QCoreApplication::processEvents();
+
+        // Hide + resize (arms the debounce) + show. If show
+        // doesn't cancel the pending debounce, the timer fires
+        // ~100 ms later on the same H, wasting a
+        // `bucketsChanged` + repaint pass.
+        widget->hide();
+        widget->resize(60, 140);
+        // Confirm the debounce is armed post-resize: no
+        // `bucketsChanged` yet.
+        QSignalSpy spy(&railModel, &OverviewRailModel::bucketsChanged);
+        QVERIFY(spy.isValid());
+        widget->show();
+        // Show fires exactly one emit synchronously.
+        QCOMPARE(spy.count(), 1);
+        // Wait long enough for a stray debounce to sneak in
+        // (200 ms > 100 ms debounce) and pin that none does.
+        QTest::qWait(200);
+        QCOMPARE(spy.count(), 1);
+
+        delete widget;
+    }
+
+    /// `wheelEvent` on the rail forwards to the table view's
+    /// vertical scrollbar so scrolling over the rail feels like
+    /// scrolling past the scrollbar. Regression: the forwarded
+    /// event's *local* position must sit inside the scrollbar's
+    /// rect, not the rail widget's -- `QAbstractSlider::wheelEvent`
+    /// currently reads only `angleDelta`, but a style /
+    /// accessibility layer that inspects position must not see
+    /// rail-widget coordinates that don't correspond to anything
+    /// on the scrollbar. `angleDelta` must be preserved verbatim
+    /// so the scrollbar acts on the same scroll the user gave.
+    static void TestWheelForwardTranslatesPositionIntoScrollbarCoords()
+    {
+        LogTableView view;
+        view.resize(600, 400);
+
+        LogModel model;
+        AnchorManager anchors;
+        QObject owner;
+        const auto chain = BuildProxyChain(&model, &owner);
+        view.setModel(chain.filter);
+        view.show();
+        QCoreApplication::processEvents();
+
+        // Enough rows to force a scrollable range so the vbar
+        // is realised with a positive rect.
+        constexpr int ROWS = 400;
+        const RailFixture fixture(ROWS);
+        StreamJsonPathInto(model, fixture.Path());
+        QCoreApplication::processEvents();
+
+        QScrollBar *vbar = view.verticalScrollBar();
+        QVERIFY(vbar != nullptr);
+        // The scrollbar has to be realised (visible) so its
+        // rect is populated; without rows the vbar range is
+        // 0 and Qt hides it.
+        QVERIFY2(vbar->isVisible(), "vertical scrollbar must be visible for the wheel forward test");
+        const QRect vbarRect = vbar->rect();
+        QVERIFY(vbarRect.width() > 0 && vbarRect.height() > 0);
+
+        OverviewRailModel railModel(chain.filter, &model, &anchors, &owner);
+        auto *widget = new OverviewRailWidget(&railModel, /*theme=*/nullptr, &view);
+        widget->resize(30, 300);
+        widget->show();
+        QCoreApplication::processEvents();
+
+        // Event filter captures wheel events landing on the
+        // vbar so the test inspects the forwarded coordinates
+        // without pumping the real style through.
+        class WheelSpy : public QObject
+        {
+        public:
+            QList<QPointF> localPositions;
+            QList<QPoint> angleDeltas;
+            bool eventFilter(QObject *watched, QEvent *event) override
+            {
+                if (event->type() == QEvent::Wheel)
+                {
+                    // `QEvent::Wheel` guarantees the dynamic
+                    // type; Qt doesn't enable RTTI on `QEvent`.
+                    auto *w = // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
+                        static_cast<QWheelEvent *>(event);
+                    localPositions.append(w->position());
+                    angleDeltas.append(w->angleDelta());
+                }
+                return QObject::eventFilter(watched, event);
+            }
+        };
+        WheelSpy spy;
+        vbar->installEventFilter(&spy);
+
+        // Synthesise a wheel event at a point inside the rail
+        // widget. In rail-widget coords the point is nowhere
+        // near `vbar->rect()`; the wheelEvent path must
+        // translate it via `vbar->mapFromGlobal` before
+        // forwarding.
+        const QPointF railLocal(10.0, 40.0);
+        const QPoint globalPos = widget->mapToGlobal(railLocal.toPoint());
+        const QPoint angleDelta(0, -120);
+        QWheelEvent wheel(
+            railLocal,
+            QPointF(globalPos),
+            QPoint(),
+            angleDelta,
+            Qt::NoButton,
+            Qt::NoModifier,
+            Qt::NoScrollPhase,
+            /*inverted=*/false
+        );
+        QApplication::sendEvent(widget, &wheel);
+
+        // Delta preserved verbatim -- the scrollbar sees the
+        // same scroll the user gave.
+        QCOMPARE(spy.angleDeltas.size(), 1);
+        QCOMPARE(spy.angleDeltas.first(), angleDelta);
+
+        // Position now sits inside the scrollbar's coordinate
+        // space. The vbar's local rect is anchored at (0, 0),
+        // so a translated point should fall inside the rect
+        // (or at worst touch its bounds). If the widget were
+        // still forwarding rail-widget coords, the point's X
+        // would be far past `vbarRect.right()`.
+        QCOMPARE(spy.localPositions.size(), 1);
+        const QPointF forwarded = spy.localPositions.first();
+        QVERIFY2(
+            forwarded.x() <= static_cast<qreal>(vbarRect.width()),
+            qPrintable(QStringLiteral(
+                "forwarded local X %1 must land within vbar width %2; larger value means "
+                "rail-widget coords leaked through")
+                           .arg(forwarded.x())
+                           .arg(vbarRect.width()))
+        );
+
+        vbar->removeEventFilter(&spy);
+        delete widget;
+    }
+
+    /// Rail click / scrub must disengage Follow newest. `scrollTo`
+    /// is programmatic and would not fire `userScrolledAwayFromTail`
+    /// on its own — without an explicit Follow off in
+    /// `ScrollToProxyRow`, a live-tail batch would yank the
+    /// viewport back to the tail after the user navigated away
+    /// via the minimap.
+    static void TestScrollToProxyRowDisengagesFollow()
+    {
+        {
+            QSettings settings;
+            settings.remove(QStringLiteral("ui/showOverviewRail"));
+        }
+        MainWindow window;
+        window.show();
+        QCoreApplication::processEvents();
+
+        constexpr int ROWS = 40;
+        const RailFixture fixture(ROWS);
+        auto *model = window.Model();
+        QVERIFY(model != nullptr);
+        StreamJsonPathInto(*model, fixture.Path());
+
+        QAction *followAction = window.findChild<QAction *>(QStringLiteral("actionFollowTail"));
+        QVERIFY(followAction != nullptr);
+        followAction->setEnabled(true);
+        followAction->setChecked(true);
+        QVERIFY(followAction->isChecked());
+
+        // Scrub path (replaceSelection == false) must also
+        // disengage — exploring via drag is still browsing.
+        window.ScrollToProxyRow(5, /*replaceSelection=*/false);
+        QVERIFY2(
+            !followAction->isChecked(),
+            "rail scrub must disengage Follow newest so live-tail cannot yank the viewport back"
+        );
+
+        followAction->setChecked(true);
+        window.ScrollToProxyRow(10, /*replaceSelection=*/true);
+        QVERIFY2(
+            !followAction->isChecked(),
+            "rail click must disengage Follow newest so live-tail cannot yank the viewport back"
+        );
+    }
+
+    /// Closing find clears rail ticks but keeps `mFindMatchCache`
+    /// so a later reveal can restore without re-scanning.
+    /// Toggling the overview rail off→on must NOT re-apply that
+    /// cache while find is still closed — otherwise stale search
+    /// ticks reappear with no active find bar.
+    static void TestRailToggleDoesNotRestoreTicksWhenFindClosed()
+    {
+        {
+            QSettings settings;
+            settings.remove(QStringLiteral("ui/showOverviewRail"));
+        }
+        MainWindow window;
+        window.show();
+        QCoreApplication::processEvents();
+
+        constexpr int ROWS = 40;
+        const RailFixture fixture(ROWS);
+        auto *model = window.Model();
+        QVERIFY(model != nullptr);
+        StreamJsonPathInto(*model, fixture.Path());
+
+        auto *railModel = window.findChild<OverviewRailModel *>();
+        QVERIFY(railModel != nullptr);
+        QVERIFY(railModel->BucketCount() > 0);
+
+        auto *findDock = window.findChild<FindDock *>();
+        QVERIFY(findDock != nullptr);
+        findDock->show();
+        QCoreApplication::processEvents();
+        QVERIFY(findDock->isVisible());
+
+        QVERIFY(QMetaObject::invokeMethod(
+            &window,
+            "UpdateFindMatchCount",
+            Qt::DirectConnection,
+            Q_ARG(QString, QStringLiteral("msg")),
+            Q_ARG(bool, false),
+            Q_ARG(bool, false)
+        ));
+        QVERIFY(railModel->HasMatchTicks());
+
+        // Genuine dismissal: ticks clear, cache survives.
+        emit findDock->closed();
+        findDock->hide();
+        QCoreApplication::processEvents();
+        QVERIFY2(!railModel->HasMatchTicks(), "closing find must clear rail match ticks");
+
+        // Rail off→on with find still closed must leave ticks empty.
+        window.SetOverviewRailVisible(false);
+        QCoreApplication::processEvents();
+        window.SetOverviewRailVisible(true);
+        QCoreApplication::processEvents();
+        // showEvent may re-arm buckets asynchronously relative to
+        // attach; flush any pending bucket sync from the widget.
+        auto *railWidget = window.findChild<OverviewRailWidget *>();
+        QVERIFY(railWidget != nullptr);
+        railWidget->FlushPendingBucketSyncForTest();
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            !railModel->HasMatchTicks(),
+            "toggling overview rail on after find was closed must not resurrect cached match ticks"
+        );
+        QVERIFY2(railModel->BucketCount() > 0, "rail toggle-on must re-arm a non-zero bucket vector");
+    }
+
+    /// Tabbing the find dock away (visibilityChanged(false)
+    /// without `closed`) must clear rail match ticks, matching
+    /// the "*i* of *N*" indicator which is only shown while the
+    /// bar is visible. `closed` alone is not enough: tabified
+    /// bottom docks fire visibilityChanged on tab switch but
+    /// leave the dock "open" from the menu-checkmark's point
+    /// of view.
+    static void TestFindTabHideClearsMatchTicks()
+    {
+        {
+            QSettings settings;
+            settings.remove(QStringLiteral("ui/showOverviewRail"));
+        }
+        MainWindow window;
+        window.show();
+        QCoreApplication::processEvents();
+
+        constexpr int ROWS = 40;
+        const RailFixture fixture(ROWS);
+        auto *model = window.Model();
+        QVERIFY(model != nullptr);
+        StreamJsonPathInto(*model, fixture.Path());
+
+        auto *railModel = window.findChild<OverviewRailModel *>();
+        QVERIFY(railModel != nullptr);
+
+        auto *findDock = window.findChild<FindDock *>();
+        QVERIFY(findDock != nullptr);
+        findDock->show();
+        QCoreApplication::processEvents();
+        QVERIFY(findDock->isVisible());
+
+        QVERIFY(QMetaObject::invokeMethod(
+            &window,
+            "UpdateFindMatchCount",
+            Qt::DirectConnection,
+            Q_ARG(QString, QStringLiteral("msg")),
+            Q_ARG(bool, false),
+            Q_ARG(bool, false)
+        ));
+        QVERIFY(railModel->HasMatchTicks());
+
+        // Tab-hide path: `hide()` fires visibilityChanged(false)
+        // but does NOT emit FindDock::closed (that is reserved
+        // for genuine dismissal). Match ticks must still clear.
+        findDock->hide();
+        QCoreApplication::processEvents();
+        QVERIFY2(
+            !railModel->HasMatchTicks(),
+            "tab-hiding the find dock must clear rail match ticks even without FindDock::closed"
+        );
+
+        // Production `FindDock::showEvent` emits `revealed` only
+        // after the dock is visible again; push is gated on
+        // `IsFindBarVisible()`, so restore requires a real show.
+        findDock->show();
+        QCoreApplication::processEvents();
+        emit findDock->revealed();
+        QVERIFY2(railModel->HasMatchTicks(), "revealed find must restore rail match ticks after a tab hide");
+    }
+
+    /// Wheel over the rail must attribute the scrollbar change
+    /// as user-initiated so Follow newest disengages. The rail
+    /// forwards via `sendEvent` to the scrollbar and bypasses
+    /// `LogTableView::wheelEvent`; without
+    /// `AttributeNextScrollToUser` (or a reliable
+    /// `actionTriggered` path) Follow would stay engaged.
+    static void TestRailWheelDisengagesFollow()
+    {
+        {
+            QSettings settings;
+            settings.remove(QStringLiteral("ui/showOverviewRail"));
+        }
+        MainWindow window;
+        window.show();
+        QCoreApplication::processEvents();
+
+        constexpr int ROWS = 200;
+        const RailFixture fixture(ROWS);
+        auto *model = window.Model();
+        QVERIFY(model != nullptr);
+        StreamJsonPathInto(*model, fixture.Path());
+        QCoreApplication::processEvents();
+
+        auto *view = window.findChild<LogTableView *>();
+        QVERIFY(view != nullptr);
+        auto *railWidget = window.findChild<OverviewRailWidget *>();
+        QVERIFY(railWidget != nullptr);
+        QVERIFY(railWidget->isVisible());
+
+        QAction *followAction = window.findChild<QAction *>(QStringLiteral("actionFollowTail"));
+        QVERIFY(followAction != nullptr);
+        followAction->setEnabled(true);
+        followAction->setChecked(true);
+
+        QScrollBar *vbar = view->verticalScrollBar();
+        QVERIFY(vbar != nullptr);
+        QVERIFY(vbar->maximum() > 0);
+        vbar->setValue(vbar->maximum());
+        view->SetTailEdge(LogTableView::TailEdge::Bottom);
+        QVERIFY(followAction->isChecked());
+
+        const QSignalSpy awaySpy(view, &LogTableView::userScrolledAwayFromTail);
+        QVERIFY(awaySpy.isValid());
+
+        // Wheel up on the rail (negative angleDelta = scroll
+        // content up / scrollbar value down from the bottom
+        // tail). Must leave the tail edge and disengage Follow.
+        const QPointF railLocal(10.0, 40.0);
+        const QPoint globalPos = railWidget->mapToGlobal(railLocal.toPoint());
+        QWheelEvent wheel(
+            railLocal,
+            QPointF(globalPos),
+            QPoint(),
+            QPoint(0, 120), // angleDelta: scroll toward older rows
+            Qt::NoButton,
+            Qt::NoModifier,
+            Qt::NoScrollPhase,
+            /*inverted=*/false
+        );
+        QApplication::sendEvent(railWidget, &wheel);
+        QCoreApplication::processEvents();
+
+        QVERIFY2(awaySpy.count() >= 1, "rail wheel away from tail must emit userScrolledAwayFromTail");
+        QVERIFY2(!followAction->isChecked(), "rail wheel away from tail must disengage Follow newest");
     }
 };
 

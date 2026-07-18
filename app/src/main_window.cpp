@@ -1093,14 +1093,24 @@ MainWindow::MainWindow(
         PushFindMatchesToOverviewRail();
     });
 
-    // Dropping the find bar drops the rail's match ticks too —
-    // matching the "*i* of *N*" indicator which is only shown
-    // while the bar is visible. The cache itself survives so a
-    // later reveal can restore ticks without re-scanning.
-    connect(mFindDock, &FindDock::closed, this, [this]() {
+    // Dropping the find bar (or tabbing it away) drops the rail's
+    // match ticks too — matching the "*i* of *N*" indicator which
+    // is only shown while the bar is visible. `closed` covers the
+    // X-button / Escape dismissal; `visibilityChanged(false)` also
+    // covers tab inactivation in a tabified bottom dock group,
+    // where `closed` does not fire. The cache itself survives so a
+    // later `revealed` can restore ticks without re-scanning.
+    const auto clearOverviewRailMatchTicks = [this]() {
         if (mOverviewRailModel != nullptr)
         {
             mOverviewRailModel->SetMatchProxyRows({});
+        }
+    };
+    connect(mFindDock, &FindDock::closed, this, clearOverviewRailMatchTicks);
+    connect(mFindDock, &QDockWidget::visibilityChanged, this, [clearOverviewRailMatchTicks](bool visible) {
+        if (!visible)
+        {
+            clearOverviewRailMatchTicks();
         }
     });
 
@@ -1248,6 +1258,26 @@ MainWindow::MainWindow(
         }
         mTheme->SetHighContrast(on);
     });
+
+    // Overview-rail width preset (live preview from Preferences).
+    // Apply to the widget then refresh the table's reserved margin
+    // so the viewport shrinks/grows with the new sizeHint.
+    connect(
+        mPreferencesEditor,
+        &PreferencesEditor::overviewRailWidthChanged,
+        this,
+        [this](OverviewRailWidthMode mode) {
+            if (mOverviewRailWidget == nullptr)
+            {
+                return;
+            }
+            mOverviewRailWidget->SetWidthMode(mode);
+            if (mTableView != nullptr)
+            {
+                mTableView->RefreshOverviewRailMargin();
+            }
+        }
+    );
 
     // Anchor hotkeys (programmatic so the .ui isn't bloated):
     //   Ctrl+1..8     anchor selection at colour N
@@ -1594,9 +1624,17 @@ MainWindow::MainWindow(
     // (default on, per the ROADMAP guidance for item 13).
     // Routing through `SetOverviewRailVisible` keeps the QAction,
     // the attach state, and the settings write in one place.
+    // Width mode is applied before attach so the first
+    // `ResolvedRailWidth` already sees the scaled sizeHint.
     if (mActionToggleOverviewRail != nullptr)
     {
         const QSettings settings;
+        if (mOverviewRailWidget != nullptr)
+        {
+            mOverviewRailWidget->SetWidthMode(ParseOverviewRailWidthMode(
+                settings.value(QStringLiteral("ui/overviewRailWidth"), QStringLiteral("medium")).toString()
+            ));
+        }
         const bool showOverviewRail = settings.value(QStringLiteral("ui/showOverviewRail"), true).toBool();
         SetOverviewRailVisible(showOverviewRail);
     }
@@ -5845,6 +5883,15 @@ void MainWindow::PushFindMatchesToOverviewRail()
     {
         return;
     }
+    // Match ticks mirror the find indicator: only while the bar
+    // is visible. The cache still survives a close / tab-hide so
+    // `FindDock::revealed` can restore without re-scanning; do
+    // not re-apply ticks from a stale cache while the bar is
+    // hidden (e.g. rail toggled off→on after find was closed).
+    if (!IsFindBarVisible())
+    {
+        return;
+    }
     const std::size_t nBuckets = mOverviewRailModel->BucketCount();
     if (nBuckets == 0)
     {
@@ -5863,7 +5910,7 @@ void MainWindow::PushFindMatchesToOverviewRail()
     // Bucket counts missing (scan ran while rail was hidden) or
     // size-mismatched (H changed since the scan). Prefer a full
     // recount so the rail never paints a top-biased capped strip.
-    if (IsFindBarVisible() && !cache.needle.isEmpty())
+    if (!cache.needle.isEmpty())
     {
         const QString text = cache.needle;
         const bool wildcards = cache.wildcards;
@@ -5876,8 +5923,8 @@ void MainWindow::PushFindMatchesToOverviewRail()
         return;
     }
 
-    // Find bar unavailable: best-effort restore from the capped
-    // row list (may be top-biased when overflowed).
+    // Empty needle with a surviving cache: best-effort restore
+    // from the capped row list (may be top-biased when overflowed).
     mOverviewRailModel->SetMatchProxyRows(cache.sortedRows);
 }
 
@@ -6184,6 +6231,16 @@ void MainWindow::ScrollToProxyRow(int proxyRow, bool replaceSelection)
     {
         return;
     }
+    // Rail click / scrub is intentional browsing. Disengage Follow
+    // newest so a subsequent live-tail batch cannot yank the
+    // viewport back to the tail mid-exploration. `scrollTo` is
+    // programmatic and would not fire `userScrolledAwayFromTail`
+    // on its own; handle Follow here instead of relying on the
+    // scrollbar attribution path.
+    if (ui != nullptr && ui->actionFollowTail->isChecked())
+    {
+        ui->actionFollowTail->setChecked(false);
+    }
     mTableView->scrollTo(proxyIdx, QAbstractItemView::PositionAtCenter);
     if (replaceSelection)
     {
@@ -6237,11 +6294,19 @@ void MainWindow::SetOverviewRailVisible(bool visible)
         // wasted O(rowCount) walk (and, worse, a duplicate paint
         // on the widget's first show).
         mTableView->AttachOverviewRail(mOverviewRailWidget);
-        // If find is active, re-push match ticks. Same-H hide→show
-        // already restores via durable model state; a height change
-        // (or a scan that ran while the rail was hidden) needs
+        // Re-push match ticks only while find is visible — same
+        // contract as the find-dock close / tab-hide handlers.
+        // Same-H hide→show already restores via durable model
+        // state when find is still open; a height change (or a
+        // scan that ran while the rail was hidden) needs
         // `PushFindMatchesToOverviewRail` to re-bucket / rescan.
-        PushFindMatchesToOverviewRail();
+        // Unconditional push would resurrect stale ticks from
+        // `mFindMatchCache` after the user closed find then
+        // toggled the rail.
+        if (IsFindBarVisible())
+        {
+            PushFindMatchesToOverviewRail();
+        }
     }
     else
     {
