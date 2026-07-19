@@ -1145,9 +1145,7 @@ void LogFilterModel::ForEachMatchingRow(
         return idx < columnsForVisibility->size() && !(*columnsForVisibility)[idx].visible;
     };
 
-    // Returns true iff the caller asked us to stop (`onMatch` returned
-    // false). A match without stop-request still returns false so the
-    // outer walk continues on to the next row.
+    // Returns true iff `onMatch` returned false (stop requested).
     auto scanRow = [&](int actualRow) -> bool {
         int logRowCached = LOG_ROW_UNRESOLVED;
         for (int col = 0; col < columnCount; ++col)
@@ -1222,15 +1220,9 @@ QList<QModelIndex> LogFilterModel::MatchRow(
 ) const
 {
     QList<QModelIndex> result;
-    // `hits == 0` is nonsensical (asking for zero results is a
-    // programming error) and would silently stop after the first
-    // match under the `size < hits` ceiling below. Fail loudly in
-    // debug so a regression surfaces at the call site; release
-    // builds fall through to the `size < hits` branch which stops
-    // after one match — same as the assert's implicit contract.
+    // `hits == 0` would silently stop after the first match under
+    // the `size < hits` ceiling; require a real value.
     Q_ASSERT(hits == UNLIMITED_HITS || hits >= 1);
-    // `UNLIMITED_HITS` (-1) means "return every match"; represent it
-    // as "no ceiling" so the callback never signals stop on its own.
     const bool unlimited = (hits == UNLIMITED_HITS);
     if (!unlimited && hits > 0)
     {
@@ -1245,9 +1237,6 @@ QList<QModelIndex> LogFilterModel::MatchRow(
         skipFirstN,
         [&](const QModelIndex &proxyIndex) -> bool {
             result.append(proxyIndex);
-            // Stop as soon as we've reached the caller's cap; the
-            // unlimited branch keeps walking until the row space is
-            // exhausted.
             return unlimited || result.size() < hits;
         }
     );

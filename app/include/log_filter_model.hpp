@@ -62,13 +62,9 @@ public:
 
     /// Find proxy-coord rows whose cell matches @p value under @p role.
     /// Returns up to @p hits matches. `hits` must be either
-    /// `UNLIMITED_HITS` (return every match) or `>= 1`; `0` is
-    /// rejected via `Q_ASSERT` (asking for zero results is a
-    /// programming error, and the wrapper's stop-condition
-    /// `size < hits` would otherwise stop after the first match
-    /// under `hits == 0`, which is a silent behaviour change
-    /// from the previous "0 == all" alias — force callers to
-    /// pick a real value instead).
+    /// `UNLIMITED_HITS` (all) or `>= 1`; `0` is rejected via
+    /// `Q_ASSERT` because the stop-condition `size < hits` would
+    /// otherwise silently stop after the first match.
     QList<QModelIndex> MatchRow(
         const QModelIndex &start,
         int role,
@@ -79,20 +75,17 @@ public:
         int skipFirstN = 0
     ) const;
 
-    /// Callback invoked once per matching proxy-coord row in
-    /// `ForEachMatchingRow`. Returning `true` continues the walk;
-    /// returning `false` stops it. Only one cell per row is
-    /// reported (the first matching column in scan order), mirroring
+    /// Callback for `ForEachMatchingRow`, invoked once per matching
+    /// proxy-coord row. Return `true` to continue, `false` to stop.
+    /// Only the first matching column per row is reported, matching
     /// `MatchRow`.
     using MatchRowCallback = std::function<bool(const QModelIndex &proxyIndex)>;
 
-    /// Iterate matching proxy-coord rows via a callback rather than
-    /// materialising them into a `QList<QModelIndex>`. Same probe
-    /// semantics as `MatchRow` (hidden columns skipped, `MatchWrap`
-    /// honoured, `DisplayRole` fast path through `LogTable`), but
-    /// avoids the O(matches) list allocation when the caller only
-    /// needs to accumulate aggregates (per-bucket counters, total
-    /// count). `MatchRow` is now a thin wrapper on top of this.
+    /// Iterate matching proxy-coord rows via a callback instead of
+    /// building a `QList<QModelIndex>`. Same probe semantics as
+    /// `MatchRow`, but avoids the O(matches) list allocation when
+    /// the caller only accumulates aggregates. `MatchRow` is a thin
+    /// wrapper on top of this.
     void ForEachMatchingRow(
         const QModelIndex &start,
         int role,

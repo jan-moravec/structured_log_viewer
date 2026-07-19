@@ -39,13 +39,12 @@ class OverviewRailModel : public QObject
     Q_OBJECT
 
 public:
-    /// One entry per rail pixel row. Aggregate on purpose:
-    /// `OverviewRailWidget` reads the counts, tick flags, and
-    /// anchor slots directly on the paint path. Reuses
-    /// `loglib::LevelBucket` (same struct the histogram
-    /// consumes) so the two features share their per-level
-    /// counts layout — ROADMAP item 13 explicitly calls this
-    /// "the histogram's bucket data structure tilted 90°".
+    /// One entry per rail pixel row. Aggregate on purpose: the
+    /// widget reads counts / tick flags / anchor slots directly on
+    /// the paint path. Reuses `loglib::LevelBucket` so the rail and
+    /// the histogram share the per-level counts layout — ROADMAP
+    /// item 13 calls this "the histogram's bucket data structure
+    /// tilted 90°".
     struct Bucket
     {
         // NOLINTBEGIN(misc-non-private-member-variables-in-classes)
@@ -72,72 +71,47 @@ public:
     );
 
     /// Set the number of rail pixel rows. Triggers a synchronous
-    /// rebuild when the bucket count changes so the caller sees
-    /// fresh data on return. The widget calls this from
-    /// `showEvent` (immediate) and from a debounced
-    /// `resizeEvent` path (`BUCKET_SYNC_DEBOUNCE_MS`) so interactive
-    /// window-drag storms collapse to one rebuild + one find
-    /// rescan. Zero is legal (widget hidden / zero-height) and
-    /// produces an empty bucket vector; `RebuildInternal`
-    /// short-circuits on that branch, which is the mechanism that
-    /// lets `MainWindow::SetOverviewRailVisible(false)` stop
-    /// paying rebuild cost while the rail is hidden.
+    /// rebuild on a size change so the caller sees fresh data on
+    /// return. Zero is legal (widget hidden) and produces an empty
+    /// bucket vector; incoming proxy signals then short-circuit
+    /// inside `RebuildInternal`, which is what lets
+    /// `MainWindow::SetOverviewRailVisible(false)` skip rebuild
+    /// cost while hidden.
     void SetBucketCount(std::size_t nBuckets);
 
     /// Push the current find-match proxy rows. Only touches
-    /// `matchCount`, not the level counts or anchor bits — a
-    /// bucket rebuild is unnecessary for a match-set change. Rows
-    /// outside the current proxy range are silently dropped, and
-    /// the incoming list is de-duplicated internally (a duplicate
-    /// row would otherwise be double-counted into its bucket).
-    /// Emits `matchesChanged` immediately so the widget repaints
-    /// on the next event-loop pass; find updates are already
-    /// debounced upstream.
+    /// `matchCount`; the level counts and anchor bits are left
+    /// alone. Out-of-range rows are dropped and the list is
+    /// de-duplicated internally. Emits `matchesChanged` immediately
+    /// — find updates are already debounced upstream.
     ///
     /// Refreshes the cached proxy row count from the live proxy
-    /// before folding so a caller that scanned against a newer
-    /// row count than the last coalesced rebuild doesn't drop
-    /// tail-row hits (row indices past the stale cache) or land
-    /// them in the last bucket via a divide-by-smaller-M.
+    /// before folding so tail-row hits scanned against a newer
+    /// row count than the last coalesced rebuild are attributed to
+    /// the right bucket.
     void SetMatchProxyRows(std::vector<int> proxyRows);
 
-    /// Push per-bucket match counts directly, bypassing the
-    /// `mMatchProxyRows` vector. Preferred over `SetMatchProxyRows`
-    /// when the caller already knows the totals per bucket and
-    /// wants to skip materializing every matching row — the whole
-    /// point is to avoid an O(matches) vector allocation for
-    /// broad needles that hit most rows.
+    /// Push per-bucket match counts directly, skipping the row-list
+    /// path. Preferred when the caller already has per-bucket totals
+    /// — avoids the O(matches) allocation for broad needles.
     ///
-    /// @p perBucketCounts must have `BucketCount()` entries. When
-    /// the size mismatches (mid-resize race, or the caller has
-    /// stale bucket-count info), the update is dropped silently
-    /// and the previous match ticks stay put — a subsequent call
-    /// after the resize settles will fix it. @p totalMatches is
-    /// the exact pre-cap match total (used for `HasMatchTicks`
-    /// and as a fast source of truth for the sum, so the model
-    /// doesn't have to re-add the counters).
+    /// @p perBucketCounts must have `BucketCount()` entries; a
+    /// size mismatch (resize race) drops the update silently.
+    /// @p totalMatches is the exact pre-cap total.
     ///
-    /// Clears `mMatchProxyRows` so the next coalesced rebuild
-    /// does not double-count a stale row-list fold on top of the
-    /// pre-bucketed values, and retains `@p perBucketCounts` as
-    /// durable state so `RebuildInternal` (anchor edits, resize
-    /// with the same H, hide→show) can re-apply the ticks without
-    /// the caller re-pushing. Emits `matchesChanged` only (level
-    /// counts / anchor bits are untouched, same as
-    /// `SetMatchProxyRows`).
+    /// Clears `mMatchProxyRows` and stores the counts as durable
+    /// state so `RebuildInternal` (anchor edits, same-H resize,
+    /// hide→show) can re-apply the ticks without the caller
+    /// re-pushing. Emits `matchesChanged` only.
     void SetMatchBucketCounts(std::vector<uint32_t> perBucketCounts, uint32_t totalMatches);
 
-    /// Request a full bucket rebuild. Coalesced through the 50 ms
-    /// emit timer so a burst of proxy signals (per-row inserts
-    /// under an active sort, anchor bulk edits, ...) collapses to
-    /// a single O(rowCount) walk + one repaint per quiet window.
-    /// Prefer this over `RebuildInternal` on every signal path.
+    /// Request a coalesced rebuild (~50 ms). A burst of proxy
+    /// signals collapses to a single O(rowCount) walk + one
+    /// repaint per quiet window.
     void Rebuild();
 
-    /// Rebuild synchronously without waiting for the coalesce
-    /// timer. Only used by call sites that need the fresh bucket
-    /// vector on return (widget resize, initial attach). Tests
-    /// exercise the coalescing behaviour via `Rebuild()`.
+    /// Rebuild synchronously. Used by callers that need fresh
+    /// buckets on return (widget resize, initial attach).
     void RebuildNow();
 
     [[nodiscard]] std::span<const Bucket> Buckets() const noexcept
@@ -158,15 +132,11 @@ public:
     }
 
     /// Majority-count `LogLevel` in @p bucket, tie-broken by
-    /// severity (Fatal > Error > Warn > Info > Debug > Trace >
-    /// Unknown), or `Unknown` when the bucket is empty or out
-    /// of range. The rail widget itself no longer picks a single
-    /// bucket colour via this method -- it iterates the per-level
-    /// counts (`Buckets()[i].levels.counts`) and paints stacked
-    /// severity segments so both density and rare high-severity
-    /// anomalies are visible at once. Retained on the model for
-    /// callers that want a single representative colour (anchor
-    /// tick legend, tests, future summary widgets).
+    /// severity (Fatal > Error > … > Unknown). Returns `Unknown`
+    /// for an empty / out-of-range bucket. The rail widget paints
+    /// stacked severity segments instead of a single colour;
+    /// retained for callers that want one representative colour
+    /// (anchor tick legend, tests).
     [[nodiscard]] loglib::LogLevel DominantLevel(std::size_t bucket) const noexcept;
 
     /// Cached first-`Type::Level` column index, `-1` when none.
@@ -184,46 +154,41 @@ public:
     }
 
     /// True iff any bucket carries at least one match tick.
-    /// Widget uses this to skip the tick pass entirely. Tracks
-    /// the *bucketed* total (not `mMatchProxyRows.size()`) so a
-    /// stale match list that only contains rows outside the
-    /// current proxy range correctly reports "no ticks".
+    /// Tracks the *bucketed* total (not the raw row-list size) so
+    /// a stale match list whose rows all fall outside the current
+    /// proxy range correctly reports "no ticks".
     [[nodiscard]] bool HasMatchTicks() const noexcept
     {
         return mBucketedMatchCount > 0;
     }
 
-    /// First proxy row whose bucket falls in @p bucket, or `-1`
-    /// when the bucket is empty or out of range. Backed by the
-    /// linear mapping (proxy row -> bucket = row * N / M) so it's
-    /// O(1) once the row count is known.
+    /// First proxy row in @p bucket, or `-1` for empty / out of
+    /// range. O(1) via `row = ceil(bucket * M / N)`.
     [[nodiscard]] int FirstProxyRowInBucket(std::size_t bucket) const noexcept;
 
-    /// Rail pixel Y (top-anchored, 0..railHeight-1) → proxy row.
+    /// Rail pixel Y (top-anchored, `0..railHeight-1`) → proxy row.
     /// Clamped into `[0, proxyRowCount)`; returns `-1` when the
-    /// proxy is empty. Rail widget uses this on click / drag.
+    /// proxy is empty.
     [[nodiscard]] int ProxyRowForYPixel(int y, int railHeight) const noexcept;
 
 signals:
-    /// Buckets have repaint-worthy new content. Typically
-    /// coalesced (~50 ms) via the rebuild timer, but forced
-    /// paths (`SetBucketCount`, `RebuildNow`) emit synchronously
-    /// so callers that need fresh buckets on return get them.
+    /// Buckets have repaint-worthy new content. Coalesced via the
+    /// ~50 ms rebuild timer; forced paths (`SetBucketCount`,
+    /// `RebuildNow`) emit synchronously.
     void bucketsChanged();
 
-    /// Match rows changed. Not coalesced — user typing in the
-    /// find bar is already debounced upstream, and one paint per
-    /// find recompute is desirable.
+    /// Match rows changed. Not coalesced — find updates are
+    /// already debounced upstream.
     void matchesChanged();
 
     /// Anchor mask on at least one bucket changed. Not coalesced;
-    /// anchor edits are user-driven and low-frequency.
+    /// anchor edits are user-driven and rare.
     void anchorBucketsChanged();
 
 private:
     // Signal handlers. All hand off to `Rebuild()` today; kept
-    // as separate slots so we can inline incremental append later
-    // without disturbing the wiring surface.
+    // as separate slots so a future incremental-append can be
+    // inlined without changing the wiring.
     void OnRowsInserted(const QModelIndex &parent, int first, int last);
     void OnRowsRemoved(const QModelIndex &parent, int first, int last);
     void OnModelReset();
@@ -233,66 +198,46 @@ private:
     void OnAnchorChanged(const AnchorManager::Key &key);
     void OnAnchorsReset();
 
-    /// Full rebuild body — walks the proxy row set, refreshes
-    /// level counts + anchor bits, then re-folds the current
-    /// match rows in. Factored so `SetBucketCount` can trigger
-    /// it synchronously without re-entering the coalesce timer.
+    /// Full rebuild — walks the proxy, refreshes level counts +
+    /// anchor bits, then re-folds the current match rows. Factored
+    /// so `SetBucketCount` can run it synchronously.
     void RebuildInternal();
 
     /// Zero + refill `matchCount` on every bucket from
-    /// `mMatchProxyRows`. Leaves level counts and anchor bits
-    /// alone — cheap enough (`O(nBuckets + nMatchRows)`) to run
-    /// on every find-bar keystroke without coalescing. Keeps
-    /// `mBucketedMatchCount` in sync so `HasMatchTicks` stays
-    /// truthful.
+    /// `mMatchProxyRows`. `O(nBuckets + nMatchRows)`, cheap enough
+    /// to run on every find keystroke without coalescing.
     void RefreshMatchTicks();
 
-    /// Shared inner loop: fold `mMatchProxyRows` into the
-    /// buckets' `matchCount` fields. Bucket zeroing is the
-    /// caller's job (`RebuildInternal` folds after a full clear,
-    /// `RefreshMatchTicks` zeroes only the tick counters).
-    /// Updates `mBucketedMatchCount` in lockstep so the fast
-    /// `HasMatchTicks` check stays accurate.
+    /// Fold `mMatchProxyRows` into `matchCount`. Caller zeroes the
+    /// counters first. Keeps `mBucketedMatchCount` in lockstep.
     void FoldMatchTicksIntoBuckets();
 
-    /// Re-apply `mMatchBucketCounts` into the live bucket vector
-    /// when the sizes still agree (same H since the last
-    /// `SetMatchBucketCounts`). No-op when the durable vector is
-    /// empty or size-mismatched (caller must rescan). Used by
-    /// `RebuildInternal` after the raw-rows fold so the
-    /// bucket-counts path survives coalesced rebuilds the same
-    /// way `mMatchProxyRows` already does.
+    /// Re-apply `mMatchBucketCounts` when sizes still agree (same
+    /// H since the last `SetMatchBucketCounts`). No-op otherwise;
+    /// caller must rescan. Lets the bucket-counts path survive
+    /// coalesced rebuilds.
     void ApplyStoredMatchBucketCounts();
 
-    /// (Re)start the coalesce timer. On timeout the timer body
-    /// runs a full `RebuildInternal` and emits `bucketsChanged`
-    /// as one operation, so a burst of signals collapses to one
-    /// walk + one repaint.
+    /// (Re)start the coalesce timer. Timeout runs `RebuildInternal`
+    /// and emits `bucketsChanged`.
     void ScheduleRebuild();
 
-    /// Timer slot: drain the pending-rebuild flag, run
-    /// `RebuildInternal`, and emit `bucketsChanged`. Hoisted so
-    /// `SetBucketCount` (which needs a sync rebuild) can share
-    /// the emit path.
+    /// Timer slot: run `RebuildInternal` and emit `bucketsChanged`.
     void OnRebuildTimeout();
 
-    /// Bucket index for proxy row @p proxyRow, or -1 when out of
-    /// range or when the bucket vector is empty. Public math but
-    /// kept private so callers go through `FirstProxyRowInBucket`
-    /// / `ProxyRowForYPixel` for the direction they need.
+    /// Bucket index for proxy row @p proxyRow, or `-1` for out of
+    /// range / empty bucket vector.
     [[nodiscard]] int BucketForProxyRow(int proxyRow) const noexcept;
 
     /// Walk the proxy chain down to a source `LogModel` row.
-    /// Returns -1 when the chain doesn't terminate at `mSourceModel`
-    /// or when any proxy hides the row. Uses the cached
-    /// `mProxyChain` populated by `RebuildProxyChainCache` so the
-    /// hot path avoids a `qobject_cast` per row.
+    /// Returns `-1` when the chain doesn't terminate at
+    /// `mSourceModel`. Uses the cached `mProxyChain` so the hot
+    /// path skips a `qobject_cast` per row.
     [[nodiscard]] int ProxyToSourceRow(int proxyRow) const noexcept;
 
-    /// (Re)populate `mProxyChain` / `mProxyChainTerminatesAtSource`
-    /// by walking `mProxyModel` down until the terminal source
-    /// model. Called from the constructor and on `modelReset` so
-    /// the rebuild hot path can skip repeated `qobject_cast`s.
+    /// (Re)populate `mProxyChain` / `mProxyChainTerminatesAtSource`.
+    /// Called from the constructor and on `modelReset` so the
+    /// rebuild hot path can skip repeated `qobject_cast`s.
     void RebuildProxyChainCache();
 
     /// Level lookup for source row @p sourceRow. Returns
@@ -312,36 +257,21 @@ private:
     QPointer<LogModel> mSourceModel;
     QPointer<AnchorManager> mAnchors;
 
-    /// Cached proxy layers between `mProxyModel` and `mSourceModel`.
-    /// Populated once from `RebuildProxyChainCache` so the per-row
-    /// `qobject_cast` inside `ProxyToSourceRow` disappears from the
-    /// rebuild hot path. Rebuilt on `modelReset`; empty when the
-    /// outermost proxy is the source model itself (no proxies) or
-    /// when there is no proxy at all.
-    ///
-    /// Held as `QPointer` so an inner proxy destroyed under us —
-    /// without a `modelReset` on the outermost proxy — zeroes the
-    /// slot before the next `ProxyToSourceRow` walk dereferences
-    /// it. `ProxyToSourceRow` short-circuits to `-1` on a null
-    /// entry rather than crashing.
+    /// Cached proxy layers between `mProxyModel` and `mSourceModel`,
+    /// populated once from `RebuildProxyChainCache`. Empty when the
+    /// outermost proxy IS the source model. `QPointer` so an inner
+    /// proxy destroyed without a `modelReset` zeroes the slot;
+    /// `ProxyToSourceRow` short-circuits to `-1` rather than crash.
     std::vector<QPointer<QAbstractProxyModel>> mProxyChain;
 
-    /// True iff the last-cached `mProxyChain` terminates at
-    /// `mSourceModel`. `ProxyToSourceRow` short-circuits to `-1`
-    /// when this is false so a mismatched attach can't miscount
-    /// rows.
+    /// True iff `mProxyChain` terminates at `mSourceModel`.
+    /// `ProxyToSourceRow` short-circuits to `-1` when false.
     bool mProxyChainTerminatesAtSource = false;
 
-    /// One-shot flag: set the first time `ProxyToSourceRow`
-    /// detects the walked chain no longer terminates at
-    /// `mSourceModel`. Prevents the `qWarning` breadcrumb from
-    /// spamming the log at scan cadence (~1 M rows). Reset on
-    /// every `RebuildProxyChainCache` so a subsequent drift after
-    /// a fresh cache still surfaces once.
-    ///
-    /// `mutable` because the flag is set from the `const`
-    /// `ProxyToSourceRow` observer — it's a diagnostic side-effect,
-    /// not part of the model's logical state.
+    /// One-shot flag preventing per-row `qWarning` spam when the
+    /// chain drifts off the cached source model. Reset on every
+    /// `RebuildProxyChainCache`. `mutable` because
+    /// `ProxyToSourceRow` is `const`.
     mutable bool mProxyChainDriftWarned = false;
 
     std::vector<Bucket> mBuckets;
@@ -349,23 +279,20 @@ private:
 
     /// Durable per-bucket match totals from the last successful
     /// `SetMatchBucketCounts`. Mutually exclusive with a non-empty
-    /// `mMatchProxyRows`: the bucketed API clears the row list
-    /// (and vice versa) so a rebuild never double-folds. Empty
-    /// when the row-list path is active or matches were cleared.
+    /// `mMatchProxyRows`: whichever API is active clears the other
+    /// so a rebuild never double-folds.
     std::vector<uint32_t> mMatchBucketCounts;
 
-    /// Exact match total paired with `mMatchBucketCounts` (may
-    /// exceed the sum of a capped scan's row list upstream).
+    /// Exact total paired with `mMatchBucketCounts` (may exceed
+    /// the sum of a capped scan's row list upstream).
     uint32_t mMatchBucketTotal = 0;
 
     /// Cached row count from the last rebuild. Used by
-    /// `ProxyRowForYPixel` so the widget doesn't have to
-    /// re-query the proxy after every scroll.
+    /// `ProxyRowForYPixel` so scroll paths skip a proxy query.
     int mProxyRowCount = 0;
 
-    /// Cached first-`Type::Level` column index in source-model
-    /// coords, `-1` when none. Refreshed on model reset and
-    /// column-shape signals.
+    /// Cached first `Type::Level` column index in source-model
+    /// coords, `-1` when none.
     int mLevelColumnIndex = -1;
 
     /// Running popcount of `mBuckets[*].anchorSlots` so
@@ -373,13 +300,10 @@ private:
     std::size_t mAnchorBucketBitsSet = 0;
 
     /// Running sum of `mBuckets[*].matchCount` — the source of
-    /// truth for `HasMatchTicks`. Refreshed by
-    /// `RefreshMatchTicks` and `RebuildInternal`.
+    /// truth for `HasMatchTicks`.
     uint32_t mBucketedMatchCount = 0;
 
-    /// Coalesce timer for `Rebuild()`. When active, one or more
-    /// callers have requested a rebuild; the timer's `timeout`
-    /// runs `OnRebuildTimeout` which does the walk once and
-    /// emits `bucketsChanged`.
+    /// Coalesce timer for `Rebuild()`. Timeout runs
+    /// `OnRebuildTimeout` once and emits `bucketsChanged`.
     QTimer *mRebuildTimer = nullptr;
 };

@@ -63,10 +63,8 @@ signals:
     /// `themeChanged()` repaint path.
     void highContrastLevelsChanged(bool on);
 
-    /// Fired on every overview-rail width combo change (live
-    /// preview) and again on Cancel/close to revert. `MainWindow`
-    /// applies the mode to the rail widget and refreshes the
-    /// reserved viewport margin. `QSettings` is written only on
+    /// Fired on every combo change (live preview) and on
+    /// Cancel/close to revert. `QSettings` is only written on
     /// Ok when the value actually changed.
     void overviewRailWidthChanged(OverviewRailWidthMode mode);
 

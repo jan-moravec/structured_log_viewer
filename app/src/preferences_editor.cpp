@@ -250,9 +250,9 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
     mOverviewRailWidthComboBox->addItem(tr("Narrow"), QStringLiteral("narrow"));
     mOverviewRailWidthComboBox->addItem(tr("Medium"), QStringLiteral("medium"));
     mOverviewRailWidthComboBox->addItem(tr("Wide"), QStringLiteral("wide"));
-    // Live preview: every selection fires the signal so
-    // `MainWindow` resizes the rail immediately. `UpdateFields`
-    // / ctor seeding block signals while loading.
+    // Live preview: every selection fires the signal so the rail
+    // resizes immediately. Ctor / `UpdateFields` block signals
+    // while seeding.
     connect(
         mOverviewRailWidthComboBox,
         QOverload<int>::of(&QComboBox::activated),

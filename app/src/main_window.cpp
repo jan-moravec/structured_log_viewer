@@ -714,16 +714,11 @@ MainWindow::MainWindow(
     mTableView->setSortingEnabled(true);
     mTableView->sortByColumn(-1, Qt::SortOrder::AscendingOrder);
 
-    // Overview rail (ROADMAP item 13). Constructed after the
-    // proxy chain because the model buckets `mSortFilterProxyModel`
-    // rows and the widget derives its viewport indicator from
-    // `mTableView`'s scrollbar.
-    //
-    // The rail's lifetime is bound to the window: the model
-    // stays live even while the rail is hidden so the toggle
-    // is instant on both edges. The widget is owned by `this`
-    // while detached and reparents to `mTableView` inside
-    // `LogTableView::AttachOverviewRail` when visible.
+    // Overview rail (ROADMAP item 13). Constructed after the proxy
+    // chain: the model buckets `mSortFilterProxyModel` rows and
+    // the widget's viewport indicator reads `mTableView`'s
+    // scrollbar. The model stays live even while the rail is
+    // hidden so the toggle is instant on both edges.
     mOverviewRailModel = new OverviewRailModel(mSortFilterProxyModel, mModel, mAnchors, this);
     mOverviewRailWidget = new OverviewRailWidget(mOverviewRailModel, mTheme, mTableView, this);
     mOverviewRailWidget->hide();
@@ -753,11 +748,10 @@ MainWindow::MainWindow(
     mActionToggleOverviewRail = new QAction(tr("Overview rail"), this);
     mActionToggleOverviewRail->setObjectName(QStringLiteral("actionToggleOverviewRail"));
     mActionToggleOverviewRail->setCheckable(true);
-    // Ctrl+Shift+O sits next to the histogram's Ctrl+H in the
-    // View menu. Ctrl+O opens files, so we differentiate with
-    // the Shift modifier; Ctrl+Shift+A and Ctrl+Shift+S are
-    // already taken by the anchor / session shortcuts.
-    mActionToggleOverviewRail->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
+    // `R` for Rail. `Ctrl+Shift+O` belongs to `actionOpenLogStream`
+    // (see `main_window.ui`); binding it here as well produced a
+    // Qt "ambiguous shortcut overload" warning at runtime.
+    mActionToggleOverviewRail->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_R));
     addAction(mActionToggleOverviewRail);
     connect(mActionToggleOverviewRail, &QAction::toggled, this, &MainWindow::SetOverviewRailVisible);
 
@@ -1087,19 +1081,17 @@ MainWindow::MainWindow(
         }
         // Restore rail ticks from the surviving cache. Prefer
         // unbiased `bucketCounts` over the capped `sortedRows`
-        // list — a naive `SetMatchProxyRows(sortedRows)` would
-        // paint only the first 10 000 hits after a common-needle
-        // reopen, and a cache-hit debounce would never re-scan.
+        // list; a naive push would paint only the first 10 000
+        // hits after a common-needle reopen.
         PushFindMatchesToOverviewRail();
     });
 
-    // Dropping the find bar (or tabbing it away) drops the rail's
-    // match ticks too — matching the "*i* of *N*" indicator which
-    // is only shown while the bar is visible. `closed` covers the
-    // X-button / Escape dismissal; `visibilityChanged(false)` also
-    // covers tab inactivation in a tabified bottom dock group,
-    // where `closed` does not fire. The cache itself survives so a
-    // later `revealed` can restore ticks without re-scanning.
+    // Dropping the find bar clears the rail's match ticks (they
+    // mirror the "*i* of *N*" indicator, which is only shown while
+    // the bar is visible). `closed` covers X-button / Escape;
+    // `visibilityChanged(false)` also covers tab inactivation in a
+    // tabified dock group where `closed` doesn't fire. The cache
+    // survives so a later reveal can restore without re-scanning.
     const auto clearOverviewRailMatchTicks = [this]() {
         if (mOverviewRailModel != nullptr)
         {
@@ -1260,8 +1252,8 @@ MainWindow::MainWindow(
     });
 
     // Overview-rail width preset (live preview from Preferences).
-    // Apply to the widget then refresh the table's reserved margin
-    // so the viewport shrinks/grows with the new sizeHint.
+    // Refresh the table's reserved margin after applying so the
+    // viewport tracks the new sizeHint.
     connect(
         mPreferencesEditor,
         &PreferencesEditor::overviewRailWidthChanged,
@@ -1620,12 +1612,11 @@ MainWindow::MainWindow(
         mModel->SetShowLevelIcons(showLevelIcons);
     }
 
-    // Seed the overview rail from the persisted preference
-    // (default on, per the ROADMAP guidance for item 13).
-    // Routing through `SetOverviewRailVisible` keeps the QAction,
-    // the attach state, and the settings write in one place.
-    // Width mode is applied before attach so the first
-    // `ResolvedRailWidth` already sees the scaled sizeHint.
+    // Seed the overview rail from the persisted preference (default
+    // on). Routing through `SetOverviewRailVisible` keeps the
+    // QAction, attach state, and settings write in one place. Width
+    // mode is applied before attach so the first `ResolvedRailWidth`
+    // sees the scaled sizeHint.
     if (mActionToggleOverviewRail != nullptr)
     {
         const QSettings settings;
@@ -5675,12 +5666,11 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
     }
     if (text.isEmpty())
     {
-        // Reached both programmatically (find bar not yet used) and
-        // via `FindRecordWidget::RequestMatchCountSoon`, which emits
-        // `MatchCountRequested("")` after the user clears the field
-        // so downstream match state (this cache + the overview rail's
-        // tick vector) drops in one round-trip. `InvalidateFindMatchCache`
-        // is what pushes the empty match list into the rail.
+        // Reached both programmatically and via
+        // `FindRecordWidget::RequestMatchCountSoon` after the user
+        // cleared the field. `InvalidateFindMatchCache` drops the
+        // cache and pushes an empty list into the rail so its ticks
+        // clear in one round-trip.
         InvalidateFindMatchCache();
         mFindRecord->SetMatchInfo(0, 0);
         return;
@@ -5704,44 +5694,33 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
         }
         const QVariant value = QVariant::fromValue(text);
         const int proxyRowCount = mSortFilterProxyModel->rowCount();
-        // Ask the rail for its live bucket count so we can fold
-        // per-hit counters straight into a fixed-size vector as
-        // the scan runs. The rail is dropped to zero buckets while
-        // hidden (see `SetOverviewRailVisible`), in which case we
-        // skip the bucket-counter fold entirely and let the rail
-        // reattach via its own rebuild path.
+        // Read the rail's live bucket count so per-hit counters can
+        // fold straight into a fixed-size vector during the scan.
+        // Zero when the rail is hidden — the bucket fold is skipped
+        // in that case.
         const std::size_t nBuckets =
             (mOverviewRailModel != nullptr) ? mOverviewRailModel->BucketCount() : std::size_t{0};
 
-        // Single-walk accumulator. `sortedRows` caps out at
-        // `MAX_FIND_MATCH_COUNT` (see field doc): the vector feeds
-        // the `Next / Previous` binary search and needs to fit in
-        // predictable memory. The rail is fed via `bucketCounts`
-        // (fixed-size at `nBuckets`). Paint only needs presence
-        // (`matchCount > 0`), so once every bucket has a tick and
-        // the navigator list is past the cap we can stop — a
-        // common needle on a huge proxy must not force a full
-        // synchronous walk. Sparse needles still scan to the end
-        // (not every bucket lights up early).
+        // Single-walk accumulator. `sortedRows` is capped at
+        // `MAX_FIND_MATCH_COUNT` for the Next / Previous binary
+        // search; the rail is fed via `bucketCounts`. Once every
+        // bucket has a tick and the navigator list is past the cap
+        // we can stop: further hits only change density, and paint
+        // is presence-only. Sparse needles still scan to the end.
         std::vector<int> sortedRows;
-        // Clamp against a possible pathological `rowCount() == -1`
-        // (some `QAbstractItemModel` overrides return -1 to signal
-        // "unknown"). Without the `max(0, ...)`, casting a negative
-        // value to `size_t` would ask `reserve` for a multi-EB
-        // allocation and throw `std::length_error` on the GUI
-        // thread. `MAX_FIND_MATCH_COUNT` is also the hard cap on
-        // the walk, so oversizing beyond it wastes memory.
+        // Clamp against `rowCount() == -1` (some models return -1
+        // for "unknown"); a negative cast to size_t would trigger
+        // a multi-EB `reserve` and throw on the GUI thread.
         const int reserveHint = std::min(std::max(0, proxyRowCount), MAX_FIND_MATCH_COUNT);
         sortedRows.reserve(static_cast<size_t>(reserveHint));
         std::vector<uint32_t> bucketCounts(nBuckets, uint32_t{0});
         uint32_t totalMatches = 0;
         std::size_t bucketsHit = 0;
         bool scanExhausted = true;
-        // `ForEachMatchingRow` streams matches to the callback
-        // without allocating a `QList<QModelIndex>`. Contract:
-        // one invocation per matching row, in ascending row order
-        // (forward, no wrap), so `sortedRows` stays sorted-unique
-        // for the downstream binary search.
+        // `ForEachMatchingRow` streams matches without allocating a
+        // `QList<QModelIndex>`. Ascending row order + no duplicates
+        // is contracted, so `sortedRows` stays sorted-unique for
+        // the binary search.
         mSortFilterProxyModel->ForEachMatchingRow(
             start,
             Qt::DisplayRole,
@@ -5767,14 +5746,10 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
                 {
                     sortedRows.push_back(proxyRow);
                 }
-                // Early-exit once overflow is proven (one past the
-                // navigator cap) and the rail either is hidden or
-                // already has a presence tick in every bucket.
-                // Further hits only change density / the exact
-                // total; the label shows "+" and paint ignores
-                // density. Mirrors the pre-rail `hits = MAX+1`
-                // freeze guard without re-biasing the rail strip
-                // for dense needles.
+                // Early-exit once overflow is proven and the rail
+                // is either hidden or has a tick in every bucket.
+                // Further hits only change density, which paint
+                // ignores; the label reads "+" past the cap.
                 if (totalMatches > static_cast<uint32_t>(MAX_FIND_MATCH_COUNT) &&
                     (nBuckets == 0 || bucketsHit >= nBuckets))
                 {
@@ -5787,11 +5762,9 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
 
         const bool overflowed =
             !scanExhausted || totalMatches > static_cast<uint32_t>(MAX_FIND_MATCH_COUNT);
-        // Defensive sort/dedup: `ForEachMatchingRow` is contracted
-        // to yield rows in ascending order without duplicates, but
-        // a future contract drift can't be allowed to silently
-        // corrupt the binary search. `qWarning` mirrors the assert
-        // so release builds still leave a breadcrumb.
+        // Defensive sort/dedup: contract violations would silently
+        // corrupt the binary search. Assert in debug, warn in
+        // release, still recover so the caller doesn't see garbage.
         const bool sortedAsExpected = std::ranges::is_sorted(sortedRows);
         Q_ASSERT(sortedAsExpected);
         if (!sortedAsExpected)
@@ -5815,23 +5788,16 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
             .overflowed = overflowed,
             .sortedRows = std::move(sortedRows),
             .totalMatches = totalMatches,
-            // Keep a copy for find-dock reveal / rail re-show so a
-            // cache-hit path can still push unbiased ticks without
-            // re-walking the proxy. Empty when the rail had zero
-            // buckets during this scan (hidden).
+            // Keep a copy so a find-dock reveal / rail re-show can
+            // push unbiased ticks without re-walking the proxy.
+            // Empty when the rail had zero buckets (hidden).
             .bucketCounts = (nBuckets > 0) ? bucketCounts : std::vector<uint32_t>{},
         };
-        // Push the fresh match state into the overview rail. The
-        // bucket-counts path is preferred when the rail has an
-        // active bucket vector: it feeds every hit into the rail's
-        // paint without the O(matches) allocation, and it never
-        // biases toward the top of the log even when the sorted-
-        // rows vector is capped. When the rail is hidden
-        // (`nBuckets == 0`), fall back to the row-list path so
-        // the cached list survives a later re-show via
-        // `SetBucketCount(H)` triggering a fresh rebuild (and
-        // `PushFindMatchesToOverviewRail` forces a recount when
-        // that list was capped).
+        // Prefer the bucket-counts path when the rail is armed: it
+        // avoids the O(matches) allocation and doesn't bias toward
+        // the top of the log when `sortedRows` is capped. Fall back
+        // to the row-list path when hidden so a later re-show can
+        // still restore ticks.
         if (mOverviewRailModel != nullptr)
         {
             if (nBuckets > 0)
@@ -5845,10 +5811,9 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
         }
     }
 
-    // When `overflowed`, `totalMatches` is a lower bound (early
-    // exit or capped navigator) and the "+" suffix also signals
-    // that the position lookup below can return `0` for a current
-    // row past the cap.
+    // Under `overflowed` `totalMatches` is a lower bound and the
+    // position lookup below can return `0` for a cursor past the
+    // cap; the "+" suffix on the label signals both.
     const int total = static_cast<int>(mFindMatchCache->totalMatches);
     int currentOneBased = 0;
     if (total > 0 && mTableView != nullptr && !mFindMatchCache->sortedRows.empty())
@@ -5871,9 +5836,8 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
 void MainWindow::InvalidateFindMatchCache()
 {
     mFindMatchCache.reset();
-    // Rail ticks are keyed on the cached match state; drop
-    // them alongside the cache so a stale find selection can't
-    // strand ticks on rows the current filter no longer accepts.
+    // Drop rail ticks alongside the cache so a stale find selection
+    // can't strand ticks on rows the current filter rejects.
     if (mOverviewRailModel != nullptr)
     {
         mOverviewRailModel->SetMatchProxyRows({});
@@ -5910,24 +5874,23 @@ void MainWindow::PushFindMatchesToOverviewRail()
         return;
     }
 
-    // Bucket counts missing (scan ran while rail was hidden) or
-    // size-mismatched (H changed since the scan). Prefer a full
-    // recount so the rail never paints a top-biased capped strip.
+    // Bucket counts missing or size-mismatched (rail was hidden
+    // during the scan, or H changed since). Prefer a fresh recount
+    // so the rail never paints a top-biased capped strip.
     if (!cache.needle.isEmpty())
     {
         const QString text = cache.needle;
         const bool wildcards = cache.wildcards;
         const bool regularExpressions = cache.regularExpressions;
-        // Soft-invalidate: drop the cache so UpdateFindMatchCount
-        // rescans, but do not clear the rail first — the recount
-        // below replaces ticks in one shot.
+        // Soft-invalidate: drop the cache so `UpdateFindMatchCount`
+        // rescans, but leave the rail alone — the recount replaces
+        // ticks in one shot.
         mFindMatchCache.reset();
         UpdateFindMatchCount(text, wildcards, regularExpressions);
         return;
     }
 
-    // Empty needle with a surviving cache: best-effort restore
-    // from the capped row list (may be top-biased when overflowed).
+    // Empty needle: best-effort restore from the capped row list.
     mOverviewRailModel->SetMatchProxyRows(cache.sortedRows);
 }
 
@@ -6225,8 +6188,8 @@ void MainWindow::ScrollToProxyRow(int proxyRow, bool replaceSelection)
     }
     if (proxyRow < 0 || proxyRow >= mSortFilterProxyModel->rowCount())
     {
-        // Row can be transiently stale during an insert / filter
-        // change race — silently no-op so a drag scrub stays smooth.
+        // Silently no-op on a transient out-of-range so a drag
+        // scrub stays smooth during insert / filter races.
         return;
     }
     const QModelIndex proxyIdx = mSortFilterProxyModel->index(proxyRow, 0);
@@ -6234,14 +6197,10 @@ void MainWindow::ScrollToProxyRow(int proxyRow, bool replaceSelection)
     {
         return;
     }
-    // Rail click / scrub is intentional browsing. Disengage Follow
-    // newest so a subsequent live-tail batch cannot yank the
-    // viewport back to the tail mid-exploration. `scrollTo` is
-    // programmatic and would not fire `userScrolledAwayFromTail`
-    // on its own; handle Follow here instead of relying on the
-    // scrollbar attribution path. Null-check both handles: a partial
-    // UI setup (early failure path in `setupUi`) can leave the
-    // action pointer null even when `ui` itself is valid.
+    // Rail navigation is intentional browsing; disengage Follow
+    // newest so a live-tail batch can't yank the viewport back to
+    // the tail. `scrollTo` is programmatic and wouldn't fire
+    // `userScrolledAwayFromTail` on its own.
     if (ui != nullptr && ui->actionFollowTail != nullptr && ui->actionFollowTail->isChecked())
     {
         ui->actionFollowTail->setChecked(false);
@@ -6250,16 +6209,13 @@ void MainWindow::ScrollToProxyRow(int proxyRow, bool replaceSelection)
     if (replaceSelection)
     {
         // Fresh click: same "commit to row" semantics as
-        // `SelectSourceRow` (anchors dock, histogram bucket click).
+        // `SelectSourceRow`.
         mTableView->clearSelection();
         mTableView->selectionModel()->select(proxyIdx, QItemSelectionModel::Select | QItemSelectionModel::Rows);
         mTableView->selectionModel()->setCurrentIndex(proxyIdx, QItemSelectionModel::NoUpdate);
     }
-    // Drag scrub (`replaceSelection == false`): scroll only, so
-    // the user's existing selection survives the exploration
-    // pass. Deliberately do not update the current index either
-    // — advancing it would clobber the last-clicked row for the
-    // next arrow-key press.
+    // Drag scrub: scroll only, leave selection + current index
+    // untouched so exploration doesn't clobber the last-clicked row.
 }
 
 void MainWindow::SetOverviewRailVisible(bool visible)
@@ -6269,21 +6225,17 @@ void MainWindow::SetOverviewRailVisible(bool visible)
         return;
     }
     // Persist immediately so the next launch honours the current
-    // preference regardless of how we got here (user toggle,
-    // load-time seed, session reload). Guarded so the load-time
-    // seed (which replays the persisted value verbatim) doesn't
-    // round-trip through QSettings for no reason — that's a
-    // registry write on Windows, and we call it on every window
-    // construction.
+    // preference. Guarded to skip the redundant write on the
+    // load-time seed (replaying the persisted value verbatim) —
+    // avoids a Windows registry write on every window construction.
     QSettings settings;
     if (settings.value(QStringLiteral("ui/showOverviewRail"), true).toBool() != visible)
     {
         settings.setValue(QStringLiteral("ui/showOverviewRail"), visible);
     }
 
-    // Keep the QAction's check state consistent when the slot is
-    // driven programmatically (load-time seed). `QSignalBlocker`
-    // stops the mirroring from re-triggering us.
+    // Mirror the QAction check state for programmatic callers;
+    // block the signal so this doesn't re-enter us.
     if (mActionToggleOverviewRail != nullptr && mActionToggleOverviewRail->isChecked() != visible)
     {
         const QSignalBlocker blocker(mActionToggleOverviewRail);
@@ -6293,21 +6245,14 @@ void MainWindow::SetOverviewRailVisible(bool visible)
     if (visible)
     {
         // Attach reparents + shows the widget; its `resizeEvent`
-        // then calls `SetBucketCount(H)` on the model which runs a
-        // synchronous rebuild, so we do NOT need to invoke
-        // `Rebuild()` here. A second rebuild would only produce a
-        // wasted O(rowCount) walk (and, worse, a duplicate paint
-        // on the widget's first show).
+        // then calls `SetBucketCount(H)` on the model (synchronous
+        // rebuild), so we don't need `Rebuild()` here.
         mTableView->AttachOverviewRail(mOverviewRailWidget);
         // Re-push match ticks only while find is visible — same
-        // contract as the find-dock close / tab-hide handlers.
-        // Same-H hide→show already restores via durable model
-        // state when find is still open; a height change (or a
-        // scan that ran while the rail was hidden) needs
-        // `PushFindMatchesToOverviewRail` to re-bucket / rescan.
-        // Unconditional push would resurrect stale ticks from
-        // `mFindMatchCache` after the user closed find then
-        // toggled the rail.
+        // contract as the find-dock hide handlers. Same-H hide→show
+        // restores via durable model state; a height change (or a
+        // scan that ran while the rail was hidden) needs the
+        // re-bucket / rescan path in `PushFindMatchesToOverviewRail`.
         if (IsFindBarVisible())
         {
             PushFindMatchesToOverviewRail();
@@ -6316,17 +6261,13 @@ void MainWindow::SetOverviewRailVisible(bool visible)
     else
     {
         mTableView->AttachOverviewRail(nullptr);
-        // Reparent to `this` so the widget survives the detach
-        // and Qt cleanup remains ours. `AttachOverviewRail(null)`
-        // already dropped the parent.
+        // Reparent to `this` so the widget survives the detach.
+        // `AttachOverviewRail(null)` already dropped the parent.
         mOverviewRailWidget->setParent(this);
         mOverviewRailWidget->hide();
-        // Drop the model's bucket vector so `RebuildInternal`
-        // short-circuits on every incoming proxy signal while the
-        // rail is hidden. Without this, live-tail bursts would
-        // pay the full O(rowCount) walk even though nothing is
-        // painted. `SetBucketCount(H)` from the widget's next
-        // `resizeEvent` re-arms the model on the toggle back on.
+        // Drop the bucket vector so `RebuildInternal` short-circuits
+        // on incoming proxy signals while the rail is hidden.
+        // `SetBucketCount(H)` on the next `showEvent` re-arms it.
         if (mOverviewRailModel != nullptr)
         {
             mOverviewRailModel->SetBucketCount(0);

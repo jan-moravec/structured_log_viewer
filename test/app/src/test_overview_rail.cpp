@@ -1702,7 +1702,7 @@ private slots:
         QCOMPARE(settings.value(QStringLiteral("ui/showOverviewRail")).toBool(), true);
     }
 
-    /// The Ctrl+Shift+O shortcut fires the toggle. Confirms the
+    /// The Ctrl+Shift+R shortcut fires the toggle. Confirms the
     /// shortcut is registered on the window so the discovery path
     /// (Shortcuts dialog + toolbar tooltip) matches expectations.
     static void TestMainWindowOverviewRailShortcut()
@@ -1710,7 +1710,7 @@ private slots:
         MainWindow window;
         auto *action = window.findChild<QAction *>(QStringLiteral("actionToggleOverviewRail"));
         QVERIFY(action != nullptr);
-        const QKeySequence expected(Qt::CTRL | Qt::SHIFT | Qt::Key_O);
+        const QKeySequence expected(Qt::CTRL | Qt::SHIFT | Qt::Key_R);
         QCOMPARE(action->shortcut(), expected);
     }
 

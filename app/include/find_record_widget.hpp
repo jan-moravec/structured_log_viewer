@@ -43,13 +43,10 @@ public slots:
     ///   buttons don't jitter).
     /// - `current <= 0`: shows "*N* matches".
     /// - `current > 0`: shows "*i* of *N*".
-    /// - `overflowed`: appends "+" to `total` so the user sees the
-    ///   count as a lower bound (scan may have early-exited once
-    ///   every rail bucket had a hit and the cursor-position cache
-    ///   was full), and installs a tooltip explaining both effects
-    ///   — visible text alone used to be ambiguous between "*at
-    ///   least* N matches" and "*exactly* N matches but position
-    ///   lookup is degraded".
+    /// - `overflowed`: appends "+" to `total` (count is a lower
+    ///   bound) and installs a tooltip explaining that the
+    ///   current-match index may read as 0 once the scan
+    ///   early-exits past the cursor-position cache.
     void SetMatchInfo(int current, int total, bool overflowed = false);
 
     /// Close the host `QDockWidget`. Wired to Escape; no-op when not
@@ -70,9 +67,9 @@ signals:
 
 public:
     /// Catches Return / Shift+Return on `mEdit` before `QLineEdit`
-    /// handles them. Plain Return must be consumed here: `QLineEdit`
-    /// ignores the key after `returnPressed`, so a parent
-    /// `keyPressEvent` would otherwise fire FindNext a second time.
+    /// handles them. `QLineEdit` emits `returnPressed` but then
+    /// ignores the key, so without this filter the parent
+    /// `keyPressEvent` would fire FindNext a second time.
     /// Public to match `QObject::eventFilter`'s visibility.
     bool eventFilter(QObject *watched, QEvent *event) override;
 

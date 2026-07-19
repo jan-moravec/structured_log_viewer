@@ -94,20 +94,15 @@ public:
     /// Reserve the right viewport margin for an overview rail
     /// widget. Passing nullptr detaches the current rail and
     /// reclaims the strip. When @p rail is non-null it is
-    /// reparented to `this`, positioned inside the reserved
-    /// margin, and its geometry is tracked via `resizeEvent` /
-    /// `changeEvent(StyleChange, ScreenChangeInternal)`. The
-    /// previously-attached rail (if any) is hidden and detached
-    /// but not deleted — ownership is the caller's.
+    /// reparented to `this` and positioned in the reserved margin;
+    /// ownership stays with the caller (detached rails are hidden,
+    /// not deleted).
     ///
-    /// Implementation note: `QTableView::updateGeometries()` calls
-    /// `setViewportMargins(vHeaderWidth, hHeaderHeight, 0, 0)`
-    /// every time it runs (see qtableview.cpp), which would wipe
-    /// any right margin we set here. `LogTableView` overrides
-    /// `updateGeometries()` to re-apply `mReservedRightMargin`
-    /// after the base call, so the rail's slot stays reserved
-    /// across every implicit re-layout (row insert, column
-    /// change, header resize, viewport show).
+    /// `QTableView::updateGeometries()` unconditionally resets the
+    /// right margin to zero on every layout pass. `updateGeometries`
+    /// is overridden here to re-apply `mReservedRightMargin` after
+    /// the base call, so the rail's slot survives every implicit
+    /// re-layout (row insert, column change, viewport show).
     void AttachOverviewRail(QWidget *rail);
 
     /// Currently-attached overview rail (nullptr when detached).
@@ -124,30 +119,21 @@ public:
         return mReservedRightMargin;
     }
 
-    /// Mark the next vertical-scrollbar `valueChanged` as
-    /// user-initiated so `userScrolledAwayFromTail` /
-    /// `userScrolledToTail` can fire. Used by
-    /// `OverviewRailWidget::wheelEvent`, which forwards the
-    /// wheel directly to the scrollbar and therefore bypasses
-    /// `LogTableView::wheelEvent` (the usual attribution path).
-    /// Consumed by `OnVerticalScrollValueChanged` on the next
-    /// value change (or cleared without emitting if the value
-    /// does not move).
+    /// Mark the next scrollbar `valueChanged` as user-initiated so
+    /// `userScrolled{To,AwayFrom}Tail` can fire. Used by
+    /// `OverviewRailWidget::wheelEvent`, which forwards the wheel
+    /// directly to the scrollbar and bypasses the usual
+    /// `LogTableView::wheelEvent` attribution path.
     void AttributeNextScrollToUser() noexcept
     {
         mNextValueChangeIsUser = true;
     }
 
-    /// Clear a previously-set user-attribution flag when the
-    /// caller can confirm the wheel / scroll did not move the
-    /// value (e.g. the scrollbar was pinned at `minimum()` /
-    /// `maximum()` in the direction of the delta). Without
-    /// this, the flag survives until the next value change —
-    /// which could be programmatic — and misattributes that
-    /// change as user input, spuriously firing
-    /// `userScrolled{To,AwayFrom}Tail` and disengaging Follow
-    /// newest. Paired with `AttributeNextScrollToUser` in
-    /// `OverviewRailWidget::wheelEvent`.
+    /// Clear the user-attribution flag when the caller can confirm
+    /// no `valueChanged` will follow (e.g. scrollbar pinned at the
+    /// edge). Without this, the flag would linger and misattribute
+    /// the next — possibly programmatic — value change, spuriously
+    /// disengaging Follow newest.
     void ClearNextScrollUserAttribution() noexcept
     {
         mNextValueChangeIsUser = false;
@@ -218,20 +204,15 @@ protected:
     void changeEvent(QEvent *event) override;
 
     /// Re-applies our reserved right margin after the base's
-    /// `updateGeometries()` resets it. `QTableView::updateGeometries`
-    /// unconditionally calls `setViewportMargins(vHeaderW,
-    /// hHeaderH, 0, 0)` on every geometry pass (line 2330 in
-    /// qtableview.cpp), which would wipe the rail's slot on every
-    /// row insert or column change. Overriding here lets us
-    /// re-set the right margin *after* the base runs, so the
-    /// viewport keeps a stable width even during heavy streaming.
+    /// `updateGeometries()` resets it to zero. Without this the
+    /// rail's slot would be wiped on every row insert or column
+    /// change.
     void updateGeometries() override;
 
-    /// Suppresses the viewport `Resize` event that our own
-    /// `setViewportMargins()` call triggers during rail margin
-    /// re-application, breaking the recursive
-    /// `updateGeometries` cascade that would otherwise wipe the
-    /// margin back to zero.
+    /// Suppresses the viewport `Resize` event our own
+    /// `setViewportMargins()` call triggers during rail-margin
+    /// re-application. Breaks the recursion that would otherwise
+    /// wipe the margin back to zero.
     bool viewportEvent(QEvent *event) override;
 
     /// Watches the viewport for resize events so the floating pill
@@ -340,28 +321,21 @@ private:
     /// original owner zeroes here before our next geometry pass.
     QPointer<QWidget> mOverviewRail;
 
-    /// Current reserved right-margin width in device-independent
-    /// px, equal to the rail's `sizeHint().width()`. Zero when no
-    /// rail is attached. Cached so every `updateGeometries` pass
-    /// (which runs on every model / column / header change) can
-    /// re-apply the same margin without re-querying the rail's
-    /// `sizeHint`.
+    /// Reserved right-margin width in device-independent px (the
+    /// rail's `sizeHint().width()`; zero when no rail is attached).
+    /// Cached so `updateGeometries` doesn't re-query `sizeHint` on
+    /// every model / column / header change.
     ///
-    /// `QAbstractScrollArea::layoutChildren_helper` reserves
-    /// `PM_ScrollBarExtent` on the right for the vertical
-    /// scrollbar *independently* of viewport margins, so the
-    /// margin here is JUST the rail width -- the scrollbar sits
-    /// past the rail with no additional bookkeeping. See the
-    /// docstring on `AttachOverviewRail` for the interaction with
-    /// `QTableView::updateGeometries`.
+    /// `QAbstractScrollArea` reserves `PM_ScrollBarExtent` for the
+    /// vertical scrollbar independently of viewport margins, so
+    /// this margin is *just* the rail width — the scrollbar sits
+    /// past the rail.
     int mReservedRightMargin = 0;
 
-    /// True while our `updateGeometries()` override is inside the
-    /// rail-margin `setViewportMargins()` call. Read by
-    /// `viewportEvent()` to swallow the viewport `Resize` event
-    /// that would otherwise cascade back into `updateGeometries`
-    /// (via `QAbstractItemView::resizeEvent`) and wipe the margin
-    /// we just applied.
+    /// True while `updateGeometries()` is inside the rail-margin
+    /// `setViewportMargins()` call. `viewportEvent()` reads this to
+    /// swallow the viewport `Resize` event that would otherwise
+    /// re-enter `updateGeometries` and wipe the margin.
     bool mApplyingRailMargin = false;
 
 #ifdef LOGAPP_BUILD_TESTING
@@ -387,15 +361,13 @@ public:
         return mAtTailEdge;
     }
     /// Test seam over the protected `updateGeometries` slot so
-    /// the rail-margin regression can force a base-class layout
-    /// pass without waiting for a resize or model-reset trigger.
+    /// tests can force a layout pass without waiting for a
+    /// resize / model-reset trigger.
     void UpdateGeometriesForTest()
     {
         updateGeometries();
     }
     /// Test seam over the protected `viewportMargins()` accessor.
-    /// Lets the same regression read the *live* margin the base
-    /// left behind so it can pin our override's re-application.
     [[nodiscard]] QMargins ViewportMarginsForTest() const
     {
         return viewportMargins();

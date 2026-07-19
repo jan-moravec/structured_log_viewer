@@ -21,17 +21,14 @@
 namespace
 {
 
-/// Coalesce cadence for the full-rebuild + `bucketsChanged`
-/// emit. Matches the histogram's 50 ms cadence and the table's
-/// live-tail batch cadence, so a per-row `rowsInserted` volley
-/// (LogFilterModel's active-sort branch) collapses to one
-/// O(rowCount) walk instead of one per row.
+/// Coalesce cadence for the full rebuild + `bucketsChanged`
+/// emit. Matches the histogram and live-tail batch cadence, so a
+/// per-row `rowsInserted` volley collapses to one O(rowCount)
+/// walk instead of one per row.
 constexpr int REBUILD_COALESCE_MS = 50;
 
-/// Severity ranking for the dominant-level tie-break. Higher
-/// value == more severe, so ties go to the row colour users are
-/// more likely to want to see. Indexed by
-/// `static_cast<size_t>(LogLevel)`.
+/// Severity ranking for the dominant-level tie-break; higher =
+/// more severe. Indexed by `static_cast<size_t>(LogLevel)`.
 constexpr std::array<int, loglib::CANONICAL_LEVEL_COUNT + 1> LEVEL_SEVERITY_RANK = {
     0, // Unknown
     1, // Trace
@@ -60,12 +57,10 @@ OverviewRailModel::OverviewRailModel(
         connect(mProxyModel, &QAbstractItemModel::rowsRemoved, this, &OverviewRailModel::OnRowsRemoved);
         connect(mProxyModel, &QAbstractItemModel::modelReset, this, &OverviewRailModel::OnModelReset);
         // A filter/sort change lands as `layoutChanged` on
-        // `LogFilterModel`; row inserts are rare after that, so we
-        // rebuild here to pick up the new proxy row set.
+        // `LogFilterModel`; rebuild to pick up the new row set.
         connect(mProxyModel, &QAbstractItemModel::layoutChanged, this, &OverviewRailModel::OnLayoutChanged);
         // Column shape changes may move the level column even
-        // when no rows insert. Not coalesced with `columnsMoved`
-        // because both funnel to the same rebuild anyway.
+        // when no rows insert.
         connect(mProxyModel, &QAbstractItemModel::columnsMoved, this, &OverviewRailModel::OnColumnsChanged);
         connect(mProxyModel, &QAbstractItemModel::columnsInserted, this, &OverviewRailModel::OnColumnsChanged);
         connect(mProxyModel, &QAbstractItemModel::columnsRemoved, this, &OverviewRailModel::OnColumnsChanged);
@@ -73,13 +68,11 @@ OverviewRailModel::OverviewRailModel(
 
     if (mSourceModel != nullptr)
     {
-        // Level column can promote / demote mid-stream. Refresh
+        // Level column can promote / demote mid-stream; refresh
         // the cache and rebuild so pre-promotion `Unknown` rows
-        // get re-attributed to their canonical level. Dictionary
-        // `Grew` events can't move the level column (only
-        // `Promoted` / `Demoted` can), so short-circuit them --
-        // otherwise every batch of a wide log pays an
-        // `O(nColumns)` scan for a null result.
+        // get re-attributed. Skip dictionary `Grew` events — they
+        // can't move the level column, and every batch of a wide
+        // log would otherwise pay an `O(nColumns)` scan.
         connect(
             mSourceModel,
             &LogModel::enumColumnsChanged,
@@ -112,33 +105,23 @@ void OverviewRailModel::SetBucketCount(std::size_t nBuckets)
     {
         return;
     }
-    // Capture whether the pre-transition state carried anything
-    // the widget could have been painting. When we're dropping
-    // to zero buckets from a state with no proxy rows, no match
-    // ticks, and no anchor bits, there is nothing new for the
-    // widget to invalidate, and we can skip the emit (which
-    // otherwise queues a paint through the widget's `update()`
-    // slot). Guarded so the hide-during-idle path costs zero
-    // downstream work.
+    // Track whether the previous state had anything the widget
+    // could have painted. Dropping to zero from an already-empty
+    // state means no repaint is needed downstream.
     const bool preStateHadContent =
         !mBuckets.empty() && (mProxyRowCount > 0 || mBucketedMatchCount > 0 || mAnchorBucketBitsSet > 0);
 
     mBuckets.assign(nBuckets, Bucket{});
-    // Zero-bucket case (rail hidden) is the fast-path the
-    // visibility toggle relies on: `RebuildInternal` short-
-    // circuits on `mBuckets.empty()` so subsequent proxy signals
-    // cost only the timer restart.
-    //
-    // Non-zero case: called from the widget's `resizeEvent`, which
-    // triggers a paint on return. Rebuild synchronously so the
-    // widget sees fresh bucket geometry on the next paint tick
-    // instead of the coalesce timer's stale buckets.
+    // Supersede any in-flight coalesced rebuild; the sync one
+    // below is fresher.
     if (mRebuildTimer != nullptr && mRebuildTimer->isActive())
     {
-        // A coalesced rebuild was in flight; the sync rebuild
-        // below supersedes it.
         mRebuildTimer->stop();
     }
+    // Synchronous so the widget's next paint sees fresh geometry.
+    // Zero-bucket state is the fast-path: `RebuildInternal`
+    // short-circuits on `mBuckets.empty()` and subsequent proxy
+    // signals stay cheap while the rail is hidden.
     RebuildInternal();
     if (nBuckets != 0 || preStateHadContent)
     {
@@ -149,83 +132,50 @@ void OverviewRailModel::SetBucketCount(std::size_t nBuckets)
 void OverviewRailModel::SetMatchProxyRows(std::vector<int> proxyRows)
 {
     mMatchProxyRows = std::move(proxyRows);
-    // Row-list path owns match state; drop any durable bucket
-    // counts so a later rebuild can't re-apply a stale fold on
-    // top of (or instead of) the rows we just installed.
+    // Row-list path owns match state; drop the durable bucket
+    // counts so a later rebuild can't re-apply a stale fold.
     mMatchBucketCounts.clear();
     mMatchBucketTotal = 0;
-    // Normalise: sort + unique. `FoldMatchTicksIntoBuckets`
-    // increments per entry, so a duplicated row would double-
-    // count into its bucket and inflate `mBucketedMatchCount`.
-    // Today's only caller (`MainWindow::UpdateFindMatchCount`)
-    // already passes a sorted-unique set, so this is O(n) in the
-    // happy path and cheap enough to keep even in the pathological
-    // case (repeated find-bar keystrokes are already debounced
-    // upstream).
+    // Sort + unique so `FoldMatchTicksIntoBuckets` (which
+    // increments per entry) doesn't double-count a duplicated row.
     std::sort(mMatchProxyRows.begin(), mMatchProxyRows.end());
     mMatchProxyRows.erase(std::unique(mMatchProxyRows.begin(), mMatchProxyRows.end()), mMatchProxyRows.end());
-    // Refresh the cached row count from the live proxy before
-    // folding. `mProxyRowCount` is otherwise only written inside
-    // `RebuildInternal` and lags reality by up to one coalesce
-    // window (~50 ms); during live-tail inserts the caller has
-    // already scanned against the current row count and passed
-    // us match rows referenced to it. Using the stale (smaller)
-    // denominator would either drop tail-row hits (proxy index
-    // >= `mProxyRowCount`) or fold them into the last bucket via
-    // a divide-by-smaller-M — both visible as ticks vanishing
-    // or bunching after a live-tail append. The level counts
-    // and anchor bits keep their old `mProxyRowCount` bucketing
-    // for one coalesce interval; that mismatch is invisible on
-    // the timescale a user perceives and self-heals on the next
-    // rebuild.
+    // Refresh `mProxyRowCount` from the live proxy — it can lag
+    // by one coalesce window under live-tail inserts, and folding
+    // with a stale (smaller) denominator would drop tail-row hits
+    // or bunch them into the last bucket.
     if (mProxyModel != nullptr)
     {
         mProxyRowCount = mProxyModel->rowCount();
     }
-    // Match ticks live in `matchCount` only; level counts and
-    // anchor bits are unaffected. Refresh just the tick field so
-    // a find-bar keystroke doesn't re-walk the whole proxy.
     RefreshMatchTicks();
-    // Only `matchesChanged` fires here: bucket geometry (levels,
-    // anchor bits) is unchanged, and the widget listens to both
-    // signals with the same `update()` slot — an extra
-    // `bucketsChanged` would only trigger a redundant repaint
-    // request that Qt would immediately coalesce out again.
+    // Only `matchesChanged`: level counts / anchor bits are
+    // unchanged, so an extra `bucketsChanged` would just queue a
+    // duplicate paint request.
     emit matchesChanged();
 }
 
 void OverviewRailModel::SetMatchBucketCounts(std::vector<uint32_t> perBucketCounts, uint32_t totalMatches)
 {
-    // Size mismatch: the rail resized (or the caller has stale
-    // bucket-count info) between the caller computing its counts
-    // and this call landing. Drop the update silently rather than
-    // half-applying a mismatched vector — the resize will trigger
-    // its own synchronous rebuild via `SetBucketCount` and the
-    // next find-bar debounce recomputes cleanly against the new
-    // bucket count. Validate BEFORE mutating any local state so a
-    // dropped update leaves the model bit-for-bit untouched (the
-    // previous ordering refreshed `mProxyRowCount` speculatively
-    // even in the drop path — harmless today but a landmine for
-    // any future consumer that reads `mProxyRowCount` between
-    // this call and the next rebuild).
+    // Size mismatch → rail resized between the caller computing
+    // counts and this call landing. Drop the update; the resize
+    // triggers its own rebuild and the next find debounce
+    // recomputes. Validate BEFORE mutating so a dropped update
+    // leaves the model untouched.
     if (perBucketCounts.size() != mBuckets.size())
     {
         return;
     }
-    // Refresh the cached row count for the same reason as
-    // `SetMatchProxyRows`: the caller has already scanned against
-    // the live proxy, and any subsequent rail math (e.g.
-    // `HasMatchTicks`, `BucketForProxyRow` on paint) needs the
-    // denominator that matches.
+    // Same reasoning as in `SetMatchProxyRows`: the caller scanned
+    // against the live proxy, and subsequent rail math needs the
+    // matching denominator.
     if (mProxyModel != nullptr)
     {
         mProxyRowCount = mProxyModel->rowCount();
     }
-    // Clear the raw-rows path so the next coalesced full rebuild
-    // doesn't double-count a stale row-list fold on top of the
-    // pre-bucketed values. Retain the counts themselves so
-    // `RebuildInternal` can re-apply them (anchor edits, hide→show
-    // at the same H) without the caller re-pushing.
+    // Clear the raw-rows path so a rebuild doesn't double-fold on
+    // top of these pre-bucketed values. Retain the counts as
+    // durable state for `RebuildInternal` to re-apply.
     mMatchProxyRows.clear();
     mMatchBucketCounts = std::move(perBucketCounts);
     mMatchBucketTotal = totalMatches;
@@ -255,14 +205,10 @@ loglib::LogLevel OverviewRailModel::DominantLevel(std::size_t bucket) const noex
         return loglib::LogLevel::Unknown;
     }
     const auto &counts = mBuckets[bucket].levels.counts;
-    // Majority-count level, tie-broken by severity (Fatal wins
-    // over Error wins over Warn, ...). Retained for callers that
-    // want a *single* colour per bucket (e.g. the anchor tick
-    // legend, tests). The widget's level histogram no longer
-    // relies on this method -- it iterates the per-level counts
-    // and paints stacked severity segments so a bucket with 200
-    // Trace + 1 Fatal shows both the grey volume *and* a visible
-    // red anomaly pixel, which majority-count alone erases.
+    // Majority-count level, tie-broken by severity. Retained for
+    // callers that want a single colour per bucket; the widget's
+    // paint pass instead stacks per-level segments so rare
+    // high-severity anomalies stay visible.
     std::size_t bestSlot = 0;
     uint32_t bestCount = 0;
     int bestSeverity = -1;
@@ -309,13 +255,9 @@ int OverviewRailModel::ProxyRowForYPixel(int y, int railHeight) const noexcept
     {
         return 0;
     }
-    // Clamp Y into the rail's usable range, then map directly to
-    // proxy rows: `row = y * rowCount / railHeight`. This gives
-    // sub-bucket precision so scrubbing a bucket that spans many
-    // rows still moves the viewport smoothly. The bucket-based
-    // mapping is only relevant to the paint pass, not to click
-    // resolution — a user clicking the middle of a bucket wants
-    // to land on the middle row, not the bucket's first row.
+    // Direct pixel-to-row map (`row = y * rowCount / railHeight`)
+    // gives sub-bucket precision, so scrubbing a bucket that spans
+    // many rows still moves smoothly. Bucket mapping is paint-only.
     const int clampedY = std::clamp(y, 0, railHeight - 1);
     const long long row = (static_cast<long long>(clampedY) * static_cast<long long>(mProxyRowCount)) /
                           static_cast<long long>(railHeight);
@@ -324,11 +266,9 @@ int OverviewRailModel::ProxyRowForYPixel(int y, int railHeight) const noexcept
 
 void OverviewRailModel::OnRowsInserted(const QModelIndex & /*parent*/, int /*first*/, int /*last*/)
 {
-    // Rebuild is coalesced through the 50 ms timer, so a burst
-    // (per-row inserts under an active sort in `LogFilterModel`)
-    // collapses to one walk. The `first` / `last` range is
-    // ignored today; keeping the slot signature intact leaves
-    // room for a tail-append fast path later.
+    // `first` / `last` are ignored today — a burst of per-row
+    // inserts coalesces via `Rebuild()`. Signature is kept intact
+    // to leave room for a future tail-append fast path.
     Rebuild();
 }
 
@@ -340,9 +280,8 @@ void OverviewRailModel::OnRowsRemoved(const QModelIndex & /*parent*/, int /*firs
 void OverviewRailModel::OnModelReset()
 {
     mLevelColumnIndex = ComputeLevelColumnIndex();
-    // A model reset may swap the terminal source or drop / add a
-    // proxy layer under us (e.g. clearAllFilters -> proxy reset).
-    // Refresh the cached chain before the next rebuild walks it.
+    // A reset may swap the terminal source or drop / add a proxy
+    // layer under us; refresh the chain cache before rebuilding.
     RebuildProxyChainCache();
     Rebuild();
 }
@@ -368,8 +307,7 @@ void OverviewRailModel::OnEnumColumnsChanged()
     const int fresh = ComputeLevelColumnIndex();
     if (fresh == mLevelColumnIndex)
     {
-        // A grow / demote of an unrelated column: skip the
-        // rebuild to keep append hot paths cheap.
+        // Unrelated column changed; skip the rebuild.
         return;
     }
     mLevelColumnIndex = fresh;
@@ -378,16 +316,10 @@ void OverviewRailModel::OnEnumColumnsChanged()
 
 void OverviewRailModel::OnAnchorChanged(const AnchorManager::Key & /*key*/)
 {
-    // Anchor edits are rare (user-driven, single-key at a time),
-    // so we rebuild in bulk rather than maintaining a per-key
-    // fold path. A targeted fold would need a source-row ->
-    // proxy-row inverse mapping we don't maintain today: given a
-    // key we can find its source row via
-    // `SourceRowForAnchorKey` (O(1)), but locating that row in
-    // the outer proxy under an active sort/filter is O(rowCount).
-    // A full rebuild is the same worst case and keeps the
-    // running popcount trivially in sync -- worth revisiting if
-    // anchor bulk-edit ever becomes hot.
+    // Anchor edits are user-driven and rare, so rebuild in bulk
+    // rather than fold per key. A targeted fold would need a
+    // source-row → proxy-row inverse mapping we don't maintain;
+    // the worst case is the same O(rowCount).
     Rebuild();
 }
 
@@ -412,11 +344,8 @@ void OverviewRailModel::RebuildInternal()
 
     if (mProxyModel == nullptr || mSourceModel == nullptr)
     {
-        // `mSourceModel` is a `QPointer`; if the underlying
-        // `LogModel` has been destroyed under us, bail cleanly
-        // instead of dereferencing a cleared pointer. The zeroed
-        // buckets already leave the rail in a well-defined "no
-        // data" state.
+        // `QPointer` may have zeroed under us; the pre-zeroed
+        // buckets already leave the rail in a "no data" state.
         mProxyRowCount = 0;
         EmitAnchorChangeIfDifferent(previousBitsSet);
         return;
@@ -431,11 +360,9 @@ void OverviewRailModel::RebuildInternal()
     const bool trackAnchors = mAnchors != nullptr && !mAnchors->Empty();
     const std::size_t nBuckets = mBuckets.size();
 
-    // One linear walk over the proxy: bucket per row, mapped
-    // to source once for the level lookup and (optionally) the
-    // anchor slot lookup. On a 1M-row session with 500 buckets
-    // this is a handful of ms — dominated by the source-mapping
-    // walk, not by the bucket increment.
+    // Single linear walk over the proxy: one source-row mapping
+    // per row for the level (and optional anchor) lookup. Cost is
+    // dominated by the source mapping, not the bucket increment.
     LogModel *const sourceModel = mSourceModel;
     for (int proxyRow = 0; proxyRow < mProxyRowCount; ++proxyRow)
     {
@@ -447,14 +374,9 @@ void OverviewRailModel::RebuildInternal()
         const int sourceRow = ProxyToSourceRow(proxyRow);
         if (sourceRow < 0)
         {
-            // The outermost proxy exposed a row whose chain walk
-            // yields no source row -- an inner proxy hiding a row
-            // the outer proxy accepted breaks the invariant that
-            // the two agree on visibility. In production the
-            // outermost proxy is `LogFilterModel`, so this
-            // branch is dead code; assert in debug and skip in
-            // release rather than painting a phantom Unknown row
-            // that hides the invariant break.
+            // Outer proxy exposes a row an inner proxy hides —
+            // breaks the visibility invariant. In production
+            // (`LogFilterModel` outermost) this is dead code.
             Q_ASSERT_X(false, "OverviewRailModel::RebuildInternal", "proxy row has no reachable source row");
             continue;
         }
@@ -476,13 +398,10 @@ void OverviewRailModel::RebuildInternal()
         }
     }
 
-    // Fold current match rows in as part of the same walk so
-    // the caller doesn't have to invoke `RefreshMatchTicks`
-    // separately. Path is O(nMatchRows) on top of the O(rowCount)
-    // proxy walk above. When the bucketed API owns match state
-    // (`mMatchProxyRows` empty, durable counts retained), re-apply
-    // those counts so anchor edits / hide→show / same-H resize
-    // don't wipe find highlights.
+    // Fold current match rows in as part of the same walk. When
+    // the bucketed API owns match state (row list empty, durable
+    // counts retained), re-apply those counts so anchor edits /
+    // hide→show / same-H resize don't wipe find highlights.
     FoldMatchTicksIntoBuckets();
     if (mMatchProxyRows.empty())
     {
@@ -499,9 +418,6 @@ void OverviewRailModel::RefreshMatchTicks()
     {
         bucket.matchCount = 0;
     }
-    // No-op when the rail has no bucket vector (hidden) or the
-    // proxy is empty — `mBucketedMatchCount` is already zero and
-    // there's nothing to fold into.
     if (mBuckets.empty() || mProxyRowCount <= 0)
     {
         return;
@@ -511,13 +427,10 @@ void OverviewRailModel::RefreshMatchTicks()
 
 void OverviewRailModel::ScheduleRebuild()
 {
-    // While the rail is hidden, `SetBucketCount(0)` drops the
-    // bucket vector; a rebuild would fully short-circuit and
-    // emit a redundant `bucketsChanged` that fans out into
-    // queued widget `update()` calls (each a no-op on the
-    // hidden widget, but not free). Skip the timer entirely
-    // instead — the next `SetBucketCount(H)` on re-show runs
-    // its own synchronous rebuild against fresh proxy state.
+    // Rail hidden → skip the timer. A rebuild would short-circuit
+    // and emit a redundant `bucketsChanged` that fans out to
+    // queued widget updates (each a no-op, but not free). The
+    // next `SetBucketCount(H)` on re-show runs its own rebuild.
     if (mBuckets.empty())
     {
         return;
@@ -585,10 +498,6 @@ int OverviewRailModel::ProxyToSourceRow(int proxyRow) const noexcept
     {
         return -1;
     }
-    // The cache is populated once from `RebuildProxyChainCache`;
-    // if the chain doesn't terminate at `mSourceModel` we can't
-    // safely resolve a source row. Short-circuit rather than
-    // silently miscount.
     if (!mProxyChainTerminatesAtSource)
     {
         return -1;
@@ -596,10 +505,9 @@ int OverviewRailModel::ProxyToSourceRow(int proxyRow) const noexcept
     QModelIndex idx = mProxyModel->index(proxyRow, 0);
     for (const QPointer<QAbstractProxyModel> &proxy : mProxyChain)
     {
-        // A `QPointer` slot can zero if the referenced proxy was
-        // destroyed under us without the outermost proxy firing
-        // `modelReset`. Short-circuit rather than dereferencing a
-        // null slot; the caller treats `-1` as "row not resolvable".
+        // A `QPointer` slot may zero if the referenced proxy was
+        // destroyed without a `modelReset`; return `-1` rather
+        // than crash.
         if (proxy.isNull())
         {
             return -1;
@@ -610,23 +518,16 @@ int OverviewRailModel::ProxyToSourceRow(int proxyRow) const noexcept
     {
         return -1;
     }
-    // Debug-only guard against chain drift: if a mid-chain proxy
-    // swaps its `sourceModel()` after our cache is populated and
-    // the outer proxy doesn't emit `modelReset`, the walk lands on
-    // an alien model and we'd fold rows from the wrong table. Cheap
-    // pointer compare so we can afford it in debug; release emits a
-    // one-shot `qWarning` (see below) so the shipped build isn't
-    // silent about it, then falls through with the (wrong) row —
-    // that's still better than crashing on a `nullptr` dereference.
+    // Chain drift: a mid-chain proxy silently swapped its source
+    // and we'd fold rows from the wrong table. Assert in debug,
+    // one-shot warn in release, and refuse the row.
     Q_ASSERT_X(
         idx.model() == mSourceModel, "OverviewRailModel::ProxyToSourceRow",
         "proxy chain no longer terminates at the cached source model"
     );
     if (idx.model() != mSourceModel)
     {
-        // Once-per-model-instance breadcrumb. `qWarning` per row
-        // would drown the log at 1M-row-scan cadence; the flag keeps
-        // it to a single line per drift event.
+        // Flag prevents log spam at scan cadence (~1 M rows).
         if (!mProxyChainDriftWarned)
         {
             mProxyChainDriftWarned = true;
@@ -643,11 +544,8 @@ void OverviewRailModel::RebuildProxyChainCache()
 {
     mProxyChain.clear();
     mProxyChainTerminatesAtSource = false;
-    // Fresh cache: arm the drift warning again so a *new* chain
-    // drift after this rebuild still surfaces its one-shot
-    // `qWarning`. Without the reset, once-warned-per-lifetime
-    // would silently swallow a second drift event after e.g. a
-    // dictionary rebuild that emitted `modelReset`.
+    // Fresh cache re-arms the one-shot drift warning so a
+    // subsequent drift after e.g. a dictionary rebuild still logs.
     mProxyChainDriftWarned = false;
     if (mProxyModel == nullptr || mSourceModel == nullptr)
     {
@@ -683,11 +581,10 @@ loglib::LogLevel OverviewRailModel::LevelForSourceRow(int sourceRow) const noexc
     {
         return loglib::LogLevel::Unknown;
     }
-    // Prefer LogTable::GetLevelForRow directly over
-    // `LogModel::LevelForRow`: the private helper caches
-    // `mFirstLevelColumnCache` inside LogModel, which self-repairs
-    // during `AppendBatch`. Reading through our own cached index
-    // sidesteps the race the histogram model documents.
+    // Read `LogTable::GetLevelForRow` directly instead of going
+    // through `LogModel::LevelForRow`; our own cached index
+    // sidesteps the `AppendBatch` cache race the histogram
+    // model documents.
     const auto level = mSourceModel->Table().GetLevelForRow(
         static_cast<std::size_t>(sourceRow), static_cast<std::size_t>(mLevelColumnIndex)
     );

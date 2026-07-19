@@ -48,144 +48,77 @@
 namespace
 {
 
-/// Vertical pixel inset on the rail. Keeps tick outlines from
-/// clipping against the widget's top / bottom edges and gives
-/// the wash a visible frame line.
+/// Vertical inset so tick outlines don't clip against the widget's
+/// top / bottom edges.
 constexpr int RAIL_VERTICAL_INSET = 2;
 
-/// Horizontal pixel inset for the level-underlay column. The
-/// wash background paints edge-to-edge; the coloured underlay
-/// steps in 1 px so the two reads as concentric bands rather
-/// than a single flat fill.
+/// Horizontal inset for the level-underlay column. Steps in 1 px
+/// from the wash so the two read as concentric bands.
 constexpr int RAIL_UNDERLAY_INSET = 1;
 
-/// Minimum bar width for a non-empty level bucket. Guarantees a
-/// 1-row bucket still paints as a visible 2-px tick, so sparse
-/// activity zones don't visually vanish in a mostly-empty log.
+/// Minimum bar width for a non-empty bucket; guarantees a single
+/// row still paints as a visible tick.
 constexpr int MIN_BAR_WIDTH_PX = 2;
 
-/// Alpha applied to the *fallback* segment colour when the
-/// theme leaves a level unstyled (see `ColorForLevel`). Keeps
-/// Info-heavy rails from washing out by compositing the
-/// neutral placeholder-text tone semi-transparently over
-/// `QPalette::Base`. Styled levels (Fatal, Error, Warn, ...)
-/// paint fully opaque and take their colour from the theme's
-/// row *background* which is designed as a subtle severity
-/// tint on Base -- see `ColorForLevel` for the rationale.
+/// Fallback alpha when the theme leaves a level unstyled.
+/// Composites over `QPalette::Base` so Info-heavy rails don't
+/// wash out.
 constexpr int LEVEL_FALLBACK_ALPHA = 96;
 
-/// Minimum horizontal width for one severity segment inside a
-/// bucket's bar. Keeps a rare-but-present level (e.g. one Fatal
-/// in a 500-row bucket) from rounding away to zero pixels. Kept
-/// tiny (1 px) so the floor doesn't manufacture a bright band
-/// on the rail's left edge -- combined with the dark row-
-/// background palette in `ColorForLevel`, even every-bucket
-/// severity segments composite to a subtle tint, not a stripe.
+/// Minimum width per severity segment. Keeps a rare level from
+/// rounding to zero; 1 px so the floor doesn't manufacture a
+/// bright band on the left edge.
 constexpr int MIN_SEGMENT_WIDTH_PX = 1;
 
-/// Alpha on the 1 px separator line drawn at the rail's left
-/// edge. Gives the rail a hard boundary against the table body
-/// so the eye can find it even when the palette Window colour
-/// is close to Base. `QPalette::Dark` (window's shadow tone)
-/// reads as a divider on both Light and Dark themes.
+/// Alpha for the 1 px separator at the rail's left edge.
 constexpr int SEPARATOR_ALPHA = 255;
 
-/// Alpha on the viewport-indicator glass fill. Higher than
-/// the wash so the indicator reads as an overlay marker;
-/// lower than opaque so the wash still shows through.
+/// Viewport-indicator fill alpha; overlay marker without erasing
+/// the underlying wash.
 constexpr int INDICATOR_FILL_ALPHA = 60;
 
-/// Alpha on the viewport-indicator outline. Solid pen with
-/// palette Highlight so the indicator reads as focused UI
-/// chrome, not a decoration.
+/// Viewport-indicator outline alpha (`QPalette::Highlight`).
 constexpr int INDICATOR_OUTLINE_ALPHA = 200;
 
-/// Corner radius (device-independent px) on the viewport
-/// indicator. Matches the platform's rounded-thumb aesthetic
-/// without pretending to be the actual scrollbar thumb.
+/// Corner radius on the viewport indicator; matches the platform's
+/// rounded-thumb look.
 constexpr int INDICATOR_CORNER_RADIUS = 3;
 
-/// Minimum viewport-indicator height. Ensures a very-tall
-/// session still exposes a hittable indicator; without this a
-/// 1 M row session would collapse the indicator to sub-pixel.
+/// Minimum indicator height so a tall session still has a hittable
+/// target.
 constexpr int INDICATOR_MIN_HEIGHT_PX = 12;
 
-/// Minimum rail width in device-independent px. Guarantees a
-/// hittable target at very small font sizes; the single-column
-/// bin section still stays readable at this width because the
-/// stacked severity segments compress down to 1 px per level
-/// (which is enough to spot a rare Fatal streak).
+/// Minimum rail width in DP; hittable at small font sizes.
 constexpr int RAIL_MIN_WIDTH_PX = 24;
 
-/// Maximum rail width in device-independent px after the
-/// width-mode scale is applied. Headroom for Wide (`2 ×` base)
-/// when accessibility themes advertise a large
-/// `PM_ScrollBarExtent` (base can already sit near 60). A lower
-/// cap (e.g. 96) would collapse Wide into Medium on those
-/// setups. Typical Win11 Wide lands around ~72 and never hits
-/// this ceiling.
+/// Maximum rail width post-scaling. Sized for `Wide × 2` on
+/// accessibility themes with a large `PM_ScrollBarExtent`.
 constexpr int RAIL_MAX_WIDTH_PX = 128;
 
-/// Scale factors applied to the DPI-fluent base width for each
-/// `OverviewRailWidthMode`. Narrow is today's unscaled formula.
+/// Scale factors per `OverviewRailWidthMode`.
 constexpr double RAIL_WIDTH_SCALE_NARROW = 1.0;
 constexpr double RAIL_WIDTH_SCALE_MEDIUM = 1.5;
 constexpr double RAIL_WIDTH_SCALE_WIDE = 2.0;
 
-/// Extra width added to the DPI-fluent metric. Nudges the
-/// rail slightly wider than the scrollbar so it doesn't merge
-/// visually with a scrollbar rendered in the same theme.
+/// Extra pixels on the DPI-fluent base so the rail doesn't visually
+/// merge with the scrollbar.
 constexpr int RAIL_WIDTH_PADDING = 2;
 
 /// Trailing-edge debounce for `SyncBucketCountToHeight()` on
-/// `resizeEvent`. A live drag-resize storm fires a resize event
-/// per pixel of height change, and each `SetBucketCount(H)` call
-/// on the model reallocates buckets, invalidates the durable
-/// per-bucket find-match counts (`ApplyStoredMatchBucketCounts`
-/// no-ops on size mismatch), and forces the `MainWindow`
-/// `bucketsChanged` -> `PushFindMatchesToOverviewRail` wiring
-/// to run a synchronous full-table find rescan. Without
-/// debouncing, dragging the window edge with the Find bar open
-/// and a moderately broad needle on a large log freezes the UI
-/// for seconds. 100 ms is above typical human-perceptible
-/// resize latency yet short enough that the rail settles into
-/// the new geometry the moment the drag stops. `showEvent`
-/// bypasses the timer so the first paint after a show is never
-/// delayed.
+/// resize. Each `SetBucketCount(H)` reallocates buckets and,
+/// with Find open, forces a full rescan; a per-pixel drag storm
+/// would freeze the UI without coalescing. `showEvent` bypasses
+/// the timer.
 constexpr int BUCKET_SYNC_DEBOUNCE_MS = 100;
 
 QColor ColorForLevel(const ThemeControl *theme, loglib::LogLevel level, const QPalette &palette)
 {
-    // Rail bars use the active theme's row *background* wash
-    // rather than its row *foreground* text tone. Foregrounds
-    // (Warn `#FCD34D`, Error `#FCA5A5`, Fatal `#FECACA` on Dark)
-    // are tuned for legible contrast against the row background
-    // and read as *bright pastels* when painted directly on Base
-    // -- multiple such bright tones stacked across the rail then
-    // composite to a washed-out "light band" (the regression the
-    // "rail is still too light" report was about). Row
-    // backgrounds are the opposite: theme designers pick them as
-    // *subtle* severity tints layered on Base, so a rail bin
-    // painted with a level's row background matches exactly what
-    // the eye sees on the corresponding table row -- a mini-map
-    // of the file's severity pattern.
-    //
-    // `ThemeControl::BackgroundFor` reads from `BuildStyleCache`,
-    // which resolves per-level styles through
-    // `StyleForLevel(theme, level, mHighContrast)` -- so this
-    // call automatically picks up the theme's
-    // `levelsHighContrast` block when the user has the
-    // Preferences "high contrast levels" checkbox on. No extra
-    // wiring is needed here; toggling the setting rebuilds the
-    // cache and repaints the rail with the loud variants.
-    //
-    // Themes intentionally leave some levels unstyled (built-in
-    // Dark / Light leave `Info` blank so Info rows read as
-    // ordinary chrome). For those, fall back to
-    // `QPalette::PlaceholderText` composited at
-    // `LEVEL_FALLBACK_ALPHA` -- a dim theme-driven grey that
-    // keeps the rail readable without overwhelming it when the
-    // unstyled level dominates the bucket totals.
+    // Row *background* wash (not foreground): foreground is tuned
+    // for contrast on top of this background and would read as a
+    // bright pastel band on the rail. Makes the rail a mini-map
+    // of the row-tinted table. `BackgroundFor` respects the
+    // "high contrast levels" preference through the style cache.
+    // Unstyled levels fall through to `QPalette::PlaceholderText`.
     if (theme != nullptr)
     {
         const QBrush brush = theme->BackgroundFor(level);
@@ -201,19 +134,9 @@ QColor ColorForLevel(const ThemeControl *theme, loglib::LogLevel level, const QP
 
 QColor ColorForAnchorSlot(const ThemeControl *theme, std::uint8_t colorIndex, const QPalette &palette)
 {
-    // Anchor colours come from the theme's per-slot anchor
-    // palette (`theme.anchorPalette` in each JSON, resolved by
-    // `ThemeControl::AnchorBrushFor`). The API accepts either
-    // `Qt::BackgroundRole` (slot fill) or `Qt::ForegroundRole`
-    // (contrast text); every other caller in the app --
-    // `log_model.cpp` (row rendering), `histogram_widget.cpp`,
-    // `anchors_dock.cpp`, and `main_window.cpp` -- passes
-    // `Qt::BackgroundRole` to get the anchor's fill colour, and
-    // the rail must do the same or `AnchorBrushFor` returns an
-    // invalid brush and every anchor collapses to the fallback
-    // `QPalette::Highlight` regardless of slot. Bug repro:
-    // set three anchors on different palette slots and observe
-    // the rail paint them all in the same accent colour.
+    // Anchor colours come from `theme.anchorPalette`. Passing
+    // `Qt::BackgroundRole` returns the slot fill; the wrong role
+    // yields an invalid brush and collapses to `Highlight`.
     if (theme != nullptr)
     {
         const QBrush brush = theme->AnchorBrushFor(colorIndex, static_cast<int>(Qt::BackgroundRole));
@@ -225,17 +148,11 @@ QColor ColorForAnchorSlot(const ThemeControl *theme, std::uint8_t colorIndex, co
     return palette.color(QPalette::Highlight);
 }
 
-/// Log-scaled intensity in [0, 1] for a bucket with @p count
-/// rows against a rail-wide max of @p maxCount. Uses
-/// `log2(count + 1) / log2(maxCount + 1)` so a 1-row bucket
-/// still returns a positive intensity (no `log2(0)` trap) and a
-/// max-count bucket saturates to 1.0. The log compresses the
-/// dynamic range so small bins stay visible next to hot spots
-/// on power-law distributions -- a bucket with 10 rows against
-/// a max of 10k still gets ~30 % of the level column instead of
-/// the ~0.1 % a linear map would give it. Log base is irrelevant
-/// to the shape; `log2` chosen for readability. Returns 0 for
-/// an empty bucket, and clamps to `[0, 1]` for defence.
+/// Log-scaled intensity in `[0, 1]` for a bucket with @p count
+/// against rail-wide max @p maxCount. `log2(count + 1) /
+/// log2(maxCount + 1)` keeps small bins visible next to hot
+/// spots on power-law distributions (10 vs 10k reads ~30 %
+/// instead of the linear 0.1 %). Returns 0 for an empty bucket.
 [[nodiscard]] double IntensityForCount(std::uint32_t count, std::uint32_t maxCount) noexcept
 {
     if (count == 0 || maxCount == 0)
@@ -251,12 +168,9 @@ QColor ColorForAnchorSlot(const ThemeControl *theme, std::uint8_t colorIndex, co
     return std::clamp(num / den, 0.0, 1.0);
 }
 
-/// Single content rect: the horizontal slot the paint passes
-/// draw into. Reflects the widget's move from a three-column
-/// layout (level / match / anchor side-by-side) to a single
-/// full-width bin section that match and anchor ticks *overlay*
-/// on top of. Returned with a zero Y span; each bucket's paint
-/// pass fills its own Y slice.
+/// Horizontal slot every paint pass draws into (bins, match
+/// overlay, anchor overlay share it). Zero Y span; each bucket
+/// fills its own slice.
 [[nodiscard]] QRect ComputeContentRect(int underlayLeft, int underlayWidth) noexcept
 {
     if (underlayWidth <= 0)
@@ -315,20 +229,11 @@ OverviewRailWidget::OverviewRailWidget(
 )
     : QWidget(parent), mModel(model), mTheme(theme), mTableView(tableView)
 {
-    // Opaque `QPalette::Base` background -- the same role the
-    // viewport and the histogram widget paint their content on.
-    // On Dark Fusion (Base #232629 vs Window #31363B) this makes
-    // the rail read as a *narrow extension of the table's data
-    // area*, not as chrome next to the scrollbar. The practical
-    // win is contrast: the per-level colours the theme returns
-    // via `ColorForLevel` are tuned for legibility on Base
-    // (that's where the row backgrounds live), so Info-heavy
-    // buckets paint a visible blue instead of a Window-blended
-    // ghost. `WA_OpaquePaintEvent` tells Qt we cover every
-    // pixel opaquely so it can skip the auto-fill call before
-    // our paintEvent -- combined with the explicit background
-    // fill at the top of paintEvent this keeps scroll-drag
-    // repaints artefact-free.
+    // Opaque `QPalette::Base` — same role the viewport and
+    // histogram paint on. Level colours are tuned for this
+    // background. `WA_OpaquePaintEvent` skips Qt's auto-fill;
+    // `paintEvent` does its own fill to avoid scroll-drag
+    // artefacts.
     setAttribute(Qt::WA_OpaquePaintEvent, true);
     setFocusPolicy(Qt::NoFocus);
     setMouseTracking(false);
@@ -353,9 +258,7 @@ OverviewRailWidget::OverviewRailWidget(
         }
     }
 
-    // Trailing-edge debounce so a drag-resize storm collapses to
-    // one `SetBucketCount(H)` call. See `BUCKET_SYNC_DEBOUNCE_MS`
-    // for the perf rationale. Object-named for tests.
+    // Debounce for drag-resize storms; see `BUCKET_SYNC_DEBOUNCE_MS`.
     mBucketSyncTimer = new QTimer(this);
     mBucketSyncTimer->setObjectName(QStringLiteral("overviewRailBucketSyncTimer"));
     mBucketSyncTimer->setSingleShot(true);
@@ -371,7 +274,7 @@ void OverviewRailWidget::SetWidthMode(OverviewRailWidthMode mode)
     }
     mWidthMode = mode;
     mCachedRailWidth = 0;
-    // Notify the layout system so `LogTableView` re-reads
+    // Nudges the layout system so `LogTableView` re-reads
     // `sizeHint()` and refreshes the reserved right margin.
     updateGeometry();
     update();
@@ -379,31 +282,15 @@ void OverviewRailWidget::SetWidthMode(OverviewRailWidthMode mode)
 
 QSize OverviewRailWidget::sizeHint() const
 {
-    // DPI-fluent base: twice the platform scrollbar extent so
-    // the rail scales with the same DPI metric users already
-    // recognise, but stays wide enough that the stacked-
-    // severity bin bar remains readable. Fall back to the
-    // font's `M` advance when the style returns a degenerate 0
-    // (offscreen QPA in tests). Floor at `RAIL_MIN_WIDTH_PX`.
-    //
-    // The 2x factor was tuned against the "invisible bars"
-    // report on Windows 11: a raw scrollbar extent of 17 px
-    // left the content strip too narrow at typical viewing
-    // distance. Doubling lands around ~36 px of base width
-    // before the width-mode scale is applied.
-    //
-    // Width mode then multiplies that base (Narrow 1.0 /
-    // Medium 1.5 / Wide 2.0) and the result is clamped into
-    // `[RAIL_MIN_WIDTH_PX, RAIL_MAX_WIDTH_PX]`.
+    // Base = `2 × max(PM_ScrollBarExtent, font 'M') + padding`,
+    // floored at `RAIL_MIN_WIDTH_PX`. Width mode scales it, then
+    // clamp into `[RAIL_MIN_WIDTH_PX, RAIL_MAX_WIDTH_PX]`.
     const QStyle *s = style();
     const int scrollbarExtent = (s != nullptr) ? s->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, this) : 0;
     const int fontExtent = fontMetrics().horizontalAdvance(QLatin1Char('M'));
     const int base = std::max({2 * scrollbarExtent, 2 * fontExtent, RAIL_MIN_WIDTH_PX}) + RAIL_WIDTH_PADDING;
     const double scaled = static_cast<double>(base) * WidthScaleForMode(mWidthMode);
     const int extent = std::clamp(static_cast<int>(std::lround(scaled)), RAIL_MIN_WIDTH_PX, RAIL_MAX_WIDTH_PX);
-    // Cache so `RailWidthForTest` (and any future non-const
-    // helper that wants the last DPI-fluent width) doesn't have
-    // to re-run the platform-metric query.
     mCachedRailWidth = extent;
     return {extent, 0};
 }
@@ -415,8 +302,7 @@ QSize OverviewRailWidget::minimumSizeHint() const
 
 int OverviewRailWidget::RailWidthForTest() const
 {
-    // Warm the cache when a test asks before the first
-    // `sizeHint()` roundtrip, then return the cached value.
+    // Warm the cache for tests that ask before the first paint.
     if (mCachedRailWidth == 0)
     {
         (void)sizeHint();
@@ -467,10 +353,8 @@ int OverviewRailWidget::YForBucketForTest(std::size_t bucket) const
 
 int OverviewRailWidget::WidthForCountForTest(std::uint32_t count, std::uint32_t maxCount, int columnWidth)
 {
-    // Mirrors the paint pass: clamp column width to non-negative,
-    // scale by the log-based intensity, then clamp into
-    // `[MIN_BAR_WIDTH_PX, columnWidth]`. An empty bucket returns
-    // zero so tests can distinguish "no bar" from "min-width bar".
+    // Mirrors the paint pass. Empty bucket returns 0 so tests
+    // can distinguish "no bar" from "min-width bar".
     if (columnWidth <= 0 || count == 0 || maxCount == 0)
     {
         return 0;
@@ -493,25 +377,14 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
     const QPalette pal = palette();
     const QRect widgetRect = rect();
 
-    // Fully repaint the widget's background on every paint pass.
-    // Qt::WA_OpaquePaintEvent (set in the ctor) tells Qt we cover
-    // every pixel, which *disables* `autoFillBackground` -- so
-    // without this explicit fill the previous paint's content
-    // would leak through (visible as smearing / trails when the
-    // user drags the scrollbar and successive paints don't fully
-    // overwrite the old level bar / viewport indicator paint).
-    // Using `QPalette::Base` matches the viewport's / histogram's
-    // background tone so the level bar colours (which are tuned
-    // for legibility on Base) show at the expected contrast.
+    // Explicit background fill: `WA_OpaquePaintEvent` disables
+    // Qt's auto-fill; without this the previous paint smears
+    // during scrollbar drags.
     painter.fillRect(widgetRect, pal.color(QPalette::Base));
 
-    // Draw a 1 px `QPalette::Dark` separator at the left edge
-    // so the rail's boundary against the viewport is crisp
-    // regardless of how close Window and Base ended up under
-    // the user's palette. Kept as a painter line rather than
-    // a stylesheet border so it survives style overrides that
-    // strip the widget's frame (Windows 11 Fusion, some
-    // accessibility themes).
+    // 1 px `Dark` separator at the left edge so the boundary
+    // against the viewport reads on any palette. Painted (not
+    // stylesheet) so it survives style overrides.
     if (widgetRect.width() > 0)
     {
         QColor sepColor = pal.color(QPalette::Dark);
@@ -543,28 +416,18 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
     const int underlayWidth = std::max(1, rail.width() - (2 * RAIL_UNDERLAY_INSET));
     const QColor highlightColor = pal.color(QPalette::Highlight);
 
-    // Single content slot: the whole underlay. Match and anchor
-    // ticks *overlay* the level bins in the same slot (previously
-    // each channel got its own sub-column, which fractured a
-    // small rail into three near-invisible strips). Paint order
-    // guarantees anchors > matches > bins so a bucket that
-    // carries all three still surfaces the user-set anchor.
+    // Single content slot shared by bins + overlays. Paint order
+    // anchors > matches > bins so a bucket with all three still
+    // surfaces the user-set anchor.
     const QRect content = ComputeContentRect(underlayLeft, underlayWidth);
     const int contentLeft = content.left();
     const int contentWidth = content.width();
 
-    // Precompute the Y coordinate of every bucket edge once.
-    // Each of the paint passes below picks the top from
-    // `yEdges[i]` and the bottom from `yEdges[i+1]` -- avoids
-    // recomputing the same integer division per bucket on tall
-    // rails and keeps the seam-rounding ("bottom == next
-    // bucket's top") consistent across passes.
-    //
-    // Cached on `(nBuckets, railTop, railHeight)` so a drag-scroll
-    // burst (many paints per second, geometry unchanged between
-    // them) reuses the same vector instead of re-allocating
-    // `nBuckets + 1` ints per paint. Invalidated implicitly on
-    // resize / bucket-count change / style-driven inset shift.
+    // Precompute every bucket-edge Y once. Each paint pass reads
+    // top from `yEdges[i]` and bottom from `yEdges[i+1]`, keeping
+    // seams consistent across passes. Cached on
+    // `(nBuckets, railTop, railHeight)` so drag-scroll bursts
+    // skip the alloc.
     if (mCachedYEdgesBuckets != nBuckets || mCachedYEdgesRailTop != railTop ||
         mCachedYEdgesRailHeight != railHeight)
     {
@@ -580,14 +443,9 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
     }
     const std::vector<int> &yEdges = mCachedYEdges;
 
-    // Rail-wide max bucket total. Drives the log-scaled bar
-    // width in Pass 1 so density is expressed as bar length
-    // relative to the busiest bucket. Computed in one linear
-    // walk over `buckets` (nBuckets = railHeight ~= 600, so
-    // trivial); recomputed on every paint because the model
-    // has no rail-wide max cache and the alternative (subscribe
-    // to a "maxChanged" signal) buys us microseconds we don't
-    // need.
+    // Rail-wide max bucket total; drives the log-scaled bar
+    // width in Pass 1. `nBuckets` ≈ 600, so recomputing per paint
+    // is trivial and cheaper than plumbing a "maxChanged" signal.
     std::uint32_t maxCount = 0;
     std::size_t nonEmptyBuckets = 0;
     for (const auto &bucket : buckets)
@@ -600,19 +458,11 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
         }
     }
 
-    // Gated diagnostic: with `LOGAPP_RAIL_TRACE=1` in the
-    // environment (paired with `QT_FORCE_STDERR_LOGGING=1` on
-    // Windows so the GUI subsystem output routes to stderr),
-    // log the rail's paint state to `qInfo`. Rate-limited to
-    // once per second so drag-repaint bursts don't flood the
-    // console. This is scaffolding for future "invisible bars"
-    // regressions -- see run_diag.ps1 for the end-to-end reproducer
-    // (launch the app, capture the window via PrintWindow, parse
-    // pixels for expected colours).
+    // Gated diagnostic: `LOGAPP_RAIL_TRACE=1` in the environment
+    // (paired with `QT_FORCE_STDERR_LOGGING=1` on Windows) logs
+    // the rail's paint state to `qInfo` at 1 Hz. Scaffolding for
+    // future "invisible bars" regressions.
     static const bool RAIL_TRACE_ENABLED = qEnvironmentVariableIntValue("LOGAPP_RAIL_TRACE") != 0;
-    // 1 Hz throttle window: fast enough to see live buckets fill in
-    // during streaming, slow enough that drag-repaint bursts don't
-    // flood the console with duplicate lines.
     constexpr int RAIL_TRACE_THROTTLE_MS = 1000;
     if (RAIL_TRACE_ENABLED)
     {
@@ -656,43 +506,21 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
         }
     }
 
-    // Pass 1 (base layer): one bin bar per non-empty bucket,
-    // split into a stack of severity segments (Fatal / Error /
-    // Warn / Info / Debug / Trace / Unknown left-to-right in
-    // severity-descending order). Bar *width* encodes total row
-    // density (log-scaled -- small bins still show a visible
-    // tick, hot spots saturate to the full content width); each
-    // segment's width inside the bar is proportional to that
-    // level's share of the bucket.
+    // Pass 1 (base): one bin bar per non-empty bucket, split into
+    // severity segments in descending order (Fatal → Unknown).
+    // Bar width = log-scaled total density; per-segment width =
+    // that level's share of the bucket. Every non-zero level gets
+    // `MIN_SEGMENT_WIDTH_PX` so a rare Fatal in a 500-Trace bucket
+    // still lights a pixel.
     //
-    // Every non-zero level gets `MIN_SEGMENT_WIDTH_PX` (1 px) so
-    // a rare Fatal in a 500-Trace bucket still lights up a
-    // pixel. This was previously the source of a "left-edge
-    // bright stripe" regression when the paint used row
-    // *foreground* colours (Warn `#FCD34D`, Fatal `#FECACA`,
-    // ...) -- one bright pixel per bucket became a continuous
-    // vertical light band on real logs. `ColorForLevel` now
-    // resolves to the row *background* wash instead, which is a
-    // subtle severity tint on Base, so even every-bucket
-    // segments composite to a soft mini-map rather than a
-    // stripe. `BackgroundFor` also respects
-    // `mHighContrast` automatically (via `BuildStyleCache`), so
-    // toggling the Preferences "high contrast levels" checkbox
-    // recolours the rail with the loud
-    // `levelsHighContrast` variants without any extra plumbing.
+    // Match ticks (Pass 2) and anchor ticks (Pass 3) overlay this
+    // base for buckets that carry them, so their signal wins over
+    // the level painting.
     //
-    // Match ticks (Pass 2) and anchor ticks (Pass 3) later
-    // *overlay* this base layer for buckets that carry them, so
-    // the "you have a match here" / "you have an anchor here"
-    // signal wins for hit-testing purposes even though the base
-    // layer painted the same slot first.
-    //
-    // Kept as a hard-coded severity-descending list (rather than
-    // reaching into the model's `LEVEL_SEVERITY_RANK`) so the
-    // widget's paint pass has no cross-file coupling. If the
-    // canonical level list ever grows the initialiser has to
-    // grow alongside `LEVEL_SEVERITY_RANK` in the model or the
-    // paint pass will silently miss the new level.
+    // Hard-coded severity list rather than reading from the model
+    // so the widget's paint has no cross-file coupling; grow this
+    // alongside `LEVEL_SEVERITY_RANK` if the canonical list ever
+    // grows.
     constexpr std::size_t SEVERITY_LEVEL_COUNT = loglib::CANONICAL_LEVEL_COUNT + 1;
     constexpr std::array<loglib::LogLevel, SEVERITY_LEVEL_COUNT> SEVERITY_DESCENDING{
         loglib::LogLevel::Fatal,
@@ -721,28 +549,13 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
             barWidth = std::clamp(barWidth, MIN_BAR_WIDTH_PX, contentWidth);
 
             // Two-pass segment sizing:
-            //   1) assign every non-zero level a
-            //      `MIN_SEGMENT_WIDTH_PX` floor and total the
-            //      reserved pixels;
-            //   2) distribute the remaining `barWidth -
-            //      reserved` proportionally to each level's
-            //      *log-weighted* share of the bucket.
-            //
-            // Weights use `log2(count + 1)` (the same
-            // transform `IntensityForCount` applies to the
-            // bar's total density). Linear proportions
-            // effectively hide rare severities: a bucket of
-            // 500 Trace + 1 Fatal gives Fatal 1/501 = 0.2 % of
-            // the bar, floored to a single pixel that reads
-            // as noise on a Trace-dominated rail. Log-weighted
-            // shares raise that Fatal slice to
-            // log2(2) / (log2(501) + log2(2)) ~= 7 %, which is
-            // a visibly readable band without letting the
-            // majority level lose its "this is the dominant
-            // one" cue. Both scales point in the same
-            // direction (bigger count -> bigger slice), just
-            // with a compressed dynamic range that matches
-            // human contrast sensitivity better.
+            //   1. Assign every non-zero level a
+            //      `MIN_SEGMENT_WIDTH_PX` floor.
+            //   2. Distribute the remainder proportionally to each
+            //      level's `log2(count + 1)` weight.
+            // Log weights compress the dynamic range so a rare
+            // Fatal in a Trace-heavy bucket gets a readable slice
+            // (~7 % vs 0.2 % linear) without erasing the majority.
             std::array<int, SEVERITY_LEVEL_COUNT> segWidths{};
             std::array<double, SEVERITY_LEVEL_COUNT> segWeights{};
             double totalWeight = 0.0;
@@ -772,11 +585,9 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
                         static_cast<int>((segWeights[s] / totalWeight) * static_cast<double>(extra));
                     segWidths[s] += share;
                 }
-                // Rounding leftovers: hand them to the level
-                // that carries the largest weight (the
-                // majority in log space), so the bar's right
-                // edge lands on `barWidth` exactly and the
-                // dominant severity gets the visual tie-break.
+                // Rounding leftovers go to the heaviest level so
+                // the bar ends exactly at `barWidth` and the
+                // dominant severity wins the visual tie-break.
                 int allocated = 0;
                 for (int w : segWidths)
                 {
@@ -820,13 +631,9 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
         }
     }
 
-    // Pass 2 (overlay): match ticks. Repaint the *entire content
-    // width* for every bucket that carries at least one match
-    // row so the "there is a match here" signal is a solid,
-    // high-contrast Highlight-colour bar that unambiguously
-    // wins over the base-layer bin painting. Full-width instead
-    // of an accent column so a search hit in an otherwise-quiet
-    // bucket still catches the eye at a glance.
+    // Pass 2 (overlay): match ticks. Repaint the full content
+    // width for every bucket with at least one match so the
+    // "there is a match here" signal is unambiguously visible.
     if (mModel->HasMatchTicks() && contentWidth > 0)
     {
         for (std::size_t i = 0; i < nBuckets; ++i)
@@ -841,13 +648,9 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
         }
     }
 
-    // Pass 3 (overlay): anchor ticks. Repaint the *entire content
-    // width* for every bucket that carries at least one anchor
-    // row. Painted after matches so a bucket that is both an
-    // anchor and a search hit reads as an anchor -- user-set
-    // markers outrank live search state. Anchor colour comes
-    // from `ThemeControl::AnchorBrushFor` (theme's
-    // `anchorPalette`).
+    // Pass 3 (overlay): anchor ticks. Full content width for
+    // every bucket with an anchor. Drawn after matches so
+    // user-set markers outrank live search state.
     if (mModel->HasAnchorTicks() && contentWidth > 0)
     {
         for (std::size_t i = 0; i < nBuckets; ++i)
@@ -860,8 +663,8 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
             const int y = yEdges[i];
             const int height = std::max(1, yEdges[i + 1] - y);
             // Paint the lowest-index set slot: multiple anchor
-            // colours in one bucket collapse to the first-set
-            // (deterministic, and rare for a small rail).
+            // colours in one bucket collapse to first-set
+            // (deterministic; rare on a small rail).
             for (std::size_t s = 0; s < mask.size(); ++s)
             {
                 if (mask.test(s))
@@ -874,9 +677,9 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
         }
     }
 
-    // Pass 4: viewport indicator. Rounded, translucent fill
-    // with a solid outline so the visible range reads as
-    // interactive chrome over the level / tick painting.
+    // Pass 4: viewport indicator. Rounded translucent fill with a
+    // solid outline so the visible range reads as interactive
+    // chrome over the level / tick painting.
     const QRect indicator = ComputeViewportIndicatorRect();
     if (!indicator.isEmpty())
     {
@@ -890,9 +693,9 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
         pen.setCosmetic(true);
         pen.setWidth(1);
         painter.setPen(pen);
-        // Inset by 0.5 px so the cosmetic pen lands on a whole
-        // pixel row and the rounded corners anti-alias cleanly.
-        const QRectF rounded(
+    // Half-pixel inset so the cosmetic pen lands on whole rows
+    // and the rounded corners anti-alias cleanly.
+    const QRectF rounded(
             indicator.left() + 0.5, indicator.top() + 0.5, indicator.width() - 1.0, indicator.height() - 1.0
         );
         painter.drawRoundedRect(rounded, INDICATOR_CORNER_RADIUS, INDICATOR_CORNER_RADIUS);
@@ -910,10 +713,9 @@ void OverviewRailWidget::mousePressEvent(QMouseEvent *event)
     }
     mDragging = true;
     mLastEmittedRow = INT_MIN;
-    // A fresh click commits the user to that row: the downstream
-    // handler is allowed to replace the current selection with
-    // just this row (matches the "click to jump" idiom used by
-    // the histogram tick strip and the anchors dock).
+    // Fresh click commits: allow the handler to replace the
+    // current selection with just this row (same idiom as the
+    // histogram tick strip and anchors dock).
     EmitProxyRowForY(static_cast<int>(event->position().y()), /*replaceSelection=*/true);
     event->accept();
 }
@@ -925,8 +727,7 @@ void OverviewRailWidget::mouseMoveEvent(QMouseEvent *event)
         QWidget::mouseMoveEvent(event);
         return;
     }
-    // Scrubbing: the user is exploring, not committing. Ask the
-    // handler to scroll without touching the selection so a
+    // Scrubbing: scroll without touching the selection so a
     // carefully-built multi-row selection survives a rail scrub.
     EmitProxyRowForY(static_cast<int>(event->position().y()), /*replaceSelection=*/false);
     event->accept();
@@ -946,10 +747,9 @@ void OverviewRailWidget::mouseReleaseEvent(QMouseEvent *event)
 
 void OverviewRailWidget::wheelEvent(QWheelEvent *event)
 {
-    // While actively dragging, swallow the wheel so a fumbled
-    // scroll doesn't fight the drag scrub. Otherwise forward
-    // by injecting a matching delta into the table's scrollbar
-    // so the rail behaves like an extension of the scrollbar.
+    // Swallow wheel during a drag so a fumbled scroll doesn't
+    // fight the scrub. Otherwise forward to the table's
+    // scrollbar so the rail behaves like an extension of it.
     if (mDragging)
     {
         event->accept();
@@ -966,38 +766,26 @@ void OverviewRailWidget::wheelEvent(QWheelEvent *event)
         event->ignore();
         return;
     }
-    // Translate the wheel event's local position into the
-    // scrollbar's coordinate space before forwarding. The
-    // original `event->position()` is in this widget's coords,
-    // which sit past the scrollbar's rect on the horizontal
-    // axis; forwarding verbatim would leave any style /
-    // accessibility layer that inspects the point looking at
-    // coordinates outside `vbar`. `QAbstractSlider::wheelEvent`
-    // currently reads only `angleDelta` (so the mismatch was
-    // invisible in production), but the translation is cheap
-    // and future-proofs the wiring against a style that ever
-    // starts caring — e.g. a hover indicator or a hit-test
-    // for click-past-thumb page behaviour. Global position
-    // stays as-is so screen-space consumers see the same
-    // point the user pointed at.
-    // Attribute the forthcoming scrollbar `valueChanged` as
-    // user-driven. Forwarding via `sendEvent` bypasses
-    // `LogTableView::wheelEvent`, which is the normal path that
-    // sets this flag. Qt's `QAbstractSlider::wheelEvent` usually
-    // goes through `triggerAction` (so `actionTriggered` would
-    // also set the flag), but attributing explicitly keeps Follow
-    // newest disengage correct even if a style / platform path
-    // calls `setValue` directly.
+    // Translate local position into the scrollbar's coord space
+    // before forwarding. `QAbstractSlider::wheelEvent` only reads
+    // `angleDelta` today, but a future style / accessibility
+    // layer inspecting the point would see coords outside `vbar`
+    // without this. Global position stays as-is.
+    //
+    // Attribute the forthcoming `valueChanged` as user-driven:
+    // `sendEvent` bypasses `LogTableView::wheelEvent` (the
+    // normal attribution path), so we set the flag explicitly to
+    // keep Follow-newest disengage correct even if a style /
+    // platform path bypasses `triggerAction`.
     auto *logView = qobject_cast<LogTableView *>(mTableView.data());
     if (logView != nullptr)
     {
         logView->AttributeNextScrollToUser();
     }
-    // Snapshot the scrollbar value so we can detect the pinned-
-    // edge case (wheel forwarded but the scrollbar was already at
-    // `minimum()` / `maximum()` in the wheel's direction, so no
-    // `valueChanged` fires and the attribution flag would survive
-    // until the next — possibly programmatic — value change).
+    // Snapshot so we can detect the pinned-edge case: wheel
+    // forwarded but scrollbar already at `minimum()` /
+    // `maximum()`, so `valueChanged` never fires and the
+    // attribution flag would survive until the next value change.
     const int valueBefore = vbar->value();
     const QPointF globalPos = event->globalPosition();
     const QPointF localPos = vbar->mapFromGlobal(globalPos.toPoint());
@@ -1014,50 +802,34 @@ void OverviewRailWidget::wheelEvent(QWheelEvent *event)
         event->pointingDevice()
     );
     QApplication::sendEvent(vbar, &translated);
-    // Pinned-edge case: value didn't move, so `OnVerticalScrollValue
-    // Changed` never fired and the user-attribution flag we set
-    // above is still true. Clear it so a later programmatic
-    // `setValue` (e.g. anchor-restore on the next batch) isn't
-    // mistakenly reported as a user scroll.
+    // Pinned-edge cleanup: value didn't move, so
+    // `OnVerticalScrollValueChanged` never fired and the flag we
+    // set is stranded. Clear it so a later programmatic
+    // `setValue` isn't misattributed as a user scroll.
     if (logView != nullptr && vbar->value() == valueBefore)
     {
         logView->ClearNextScrollUserAttribution();
     }
-    // Mark accepted so the parent scroll area doesn't double-
-    // process the wheel event.
     event->accept();
 }
 
 void OverviewRailWidget::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
-    // Debounce: an interactive window drag fires a resize event
-    // per pixel of height change, and each `SyncBucketCountToHeight`
-    // would call `SetBucketCount(H±1)` on the model, which drops
-    // the durable per-bucket find-match counts and (with the Find
-    // bar open) forces `MainWindow` to run a full synchronous
-    // find rescan through the `bucketsChanged` lambda. Coalescing
-    // through `mBucketSyncTimer` collapses the burst to one
-    // bucket update + one rescan when the drag settles.
-    //
-    // Paints during the debounce window use the previous
-    // bucket count against the current widget height, so the
-    // rail's proportions stretch slightly for up to
-    // `BUCKET_SYNC_DEBOUNCE_MS` — visually indistinguishable
-    // from the settled state given the rail is a summary
-    // strip, not a pixel-accurate view. Click / drag / wheel
-    // still resolve against the live widget height + live
-    // model row count (see `ProxyRowForYPixel`), so hit-testing
-    // stays correct.
+    // Debounce: a window drag fires one resize per pixel of
+    // height change; each `SetBucketCount(H±1)` drops the durable
+    // per-bucket match counts and forces a full find rescan.
+    // Coalescing collapses the burst to one update + one rescan
+    // when the drag settles. Paints during the window use the
+    // previous bucket count against the current height (slight
+    // stretch, visually indistinguishable); hit-testing resolves
+    // against the live widget height regardless.
     if (mBucketSyncTimer != nullptr)
     {
         mBucketSyncTimer->start();
     }
     else
     {
-        // Defensive: constructor guarantees the timer exists,
-        // but if a future refactor moves timer construction out
-        // of the ctor keep the widget functional.
         SyncBucketCountToHeight();
     }
 }
@@ -1065,13 +837,10 @@ void OverviewRailWidget::resizeEvent(QResizeEvent *event)
 void OverviewRailWidget::hideEvent(QHideEvent *event)
 {
     QWidget::hideEvent(event);
-    // Cancel any pending debounced sync. `MainWindow::
-    // SetOverviewRailVisible(false)` drops the model's bucket
-    // vector immediately after this hide fires; a queued
-    // `SyncBucketCountToHeight()` firing right after would
-    // re-populate the vector against the widget's persisted
-    // height and undo the visibility-toggle optimisation
-    // (paying rebuild cost while the rail is invisible).
+    // Cancel pending sync: `SetOverviewRailVisible(false)` drops
+    // the model's bucket vector right after; a queued
+    // `SyncBucketCountToHeight` would re-populate it and undo the
+    // hidden-rail rebuild-cost optimisation.
     if (mBucketSyncTimer != nullptr)
     {
         mBucketSyncTimer->stop();
@@ -1082,22 +851,11 @@ void OverviewRailWidget::showEvent(QShowEvent *event)
 {
     QWidget::showEvent(event);
     // Re-arm the model after a hide-toggle dropped its bucket
-    // vector. Idempotent when the height matches — `SetBucketCount`
-    // is a no-op on a matching count.
-    //
-    // Skip the call when the widget hasn't been sized yet (first
-    // show, before the hosting `LogTableView::UpdateOverviewRail
-    // Geometry` runs). Calling `SetBucketCount(0)` here would
-    // fire a redundant no-op transition; the follow-up
-    // `resizeEvent` immediately supersedes it with the real
-    // height.
-    //
-    // A show is a discrete user action (toggle, tab switch, first
-    // appearance) and must not wait on the resize debounce — the
-    // first paint after the show has to see correct bucket
-    // geometry. Cancel any pending resize-debounce so we don't
-    // double-fire `SetBucketCount` on the same H after this call
-    // returns.
+    // vector. Skip when unsized (first show before geometry
+    // runs) — `resizeEvent` supersedes with the real height.
+    // Show is a discrete user action and must not wait on the
+    // resize debounce; cancel any pending sync to avoid a
+    // double-fire on the same H.
     if (height() > 0)
     {
         if (mBucketSyncTimer != nullptr)
@@ -1111,16 +869,11 @@ void OverviewRailWidget::showEvent(QShowEvent *event)
 void OverviewRailWidget::changeEvent(QEvent *event)
 {
     QWidget::changeEvent(event);
-    // Style / palette / font change may shift the DPI-fluent
-    // width and the wash colour. Force a fresh sizeHint so the
-    // hosting `LogTableView` reserves the right margin.
-    // `ScreenChangeInternal` is a private Qt enum today; we
-    // rely on it as the most reliable cross-version proxy for a
-    // DPR change (Qt 6.6+ ships public `DevicePixelRatioChange`,
-    // but the project targets Qt 6.1+). Both events go through
-    // this switch so the newer one is picked up for free once we
-    // raise the floor. See LogTableView::changeEvent for the
-    // matching comment.
+    // Style / palette / font changes shift DPI-fluent width and
+    // the wash colour. Force a fresh sizeHint so the host view
+    // re-reserves the right margin. `ScreenChangeInternal` acts
+    // as a Qt 6.1+ proxy for DPR change; `DevicePixelRatioChange`
+    // (Qt 6.6+) will pick up automatically when the floor rises.
     switch (event->type())
     {
     case QEvent::StyleChange:
@@ -1138,22 +891,11 @@ void OverviewRailWidget::changeEvent(QEvent *event)
 
 QRect OverviewRailWidget::InteractiveRailRect() const
 {
-    // The rail is a whole-file overview: rail top = first row,
-    // rail bottom = last row, bars fill the entire widget
-    // height. Following klogg / glogg / VS Code minimap, the
-    // vertical position within the rail is a linear projection
-    // of the file's row index -- *not* of the viewport's Y
-    // range. That means the bar for row 0 sits at the top edge
-    // of the rail widget (level with the header's top edge),
-    // and the currently visible viewport is drawn as a movable
-    // highlight box (`ComputeViewportIndicatorRect`) *inside*
-    // the rail.
-    //
-    // Restricting the rail to the viewport-Y strip only was
-    // tried; users read that as "the rail is broken -- half of
-    // it is empty chrome". A whole-widget projection gives the
-    // full file overview at a glance and reserves the "where am
-    // I" answer to the highlight box.
+    // Whole-file overview: rail top = first row, rail bottom =
+    // last row, bars fill the widget height. Follows klogg /
+    // VS Code minimap — vertical position is a linear projection
+    // of file row index, not viewport Y. Restricting to viewport
+    // Y was tried; users read it as "the rail is broken".
     QRect r = rect();
     r.adjust(0, RAIL_VERTICAL_INSET, 0, -RAIL_VERTICAL_INSET);
     return r;
@@ -1197,16 +939,16 @@ QRect OverviewRailWidget::ComputeViewportIndicatorRect() const
     }
     const QRect viewport = mTableView->viewport()->rect();
     const int topRow = mTableView->indexAt(QPoint(0, 0)).row();
-    // `indexAt(bottom)` returns -1 when the bottom is past the
-    // last row; use the row count in that case so the indicator
-    // extends to the tail as the user scrolls into the last page.
+    // `indexAt(bottom)` returns -1 past the last row; fall back
+    // to the row count so the indicator extends to the tail on
+    // the last page.
     const int bottomIdxRow = mTableView->indexAt(QPoint(0, std::max(0, viewport.height() - 1))).row();
     int bottomRow = (bottomIdxRow >= 0) ? bottomIdxRow : (totalRows - 1);
 
     int visibleTop = (topRow >= 0) ? topRow : 0;
     bottomRow = std::max(bottomRow, visibleTop);
-    // Clamp into `[0, totalRows)` so the indicator never runs
-    // past the rail even under a transient row-count mismatch.
+    // Clamp so the indicator can't run past the rail under a
+    // transient row-count mismatch.
     visibleTop = std::clamp(visibleTop, 0, totalRows - 1);
     bottomRow = std::clamp(bottomRow, visibleTop, totalRows - 1);
 
@@ -1217,21 +959,14 @@ QRect OverviewRailWidget::ComputeViewportIndicatorRect() const
                               static_cast<long long>(totalRows);
     const int naturalHeight = static_cast<int>(yBottom - yTop);
     int indicatorHeight = std::max(naturalHeight, INDICATOR_MIN_HEIGHT_PX);
-    // When the natural viewport-Y span is shorter than the
-    // `INDICATOR_MIN_HEIGHT_PX` floor (the common case for tall
-    // logs -- a 50 k-row session with 20 visible rows maps to
-    // sub-pixel on the rail), expand around the *centre* of the
-    // visible range instead of pinning to the top. Otherwise a
-    // row selected in the middle of the viewport would appear
-    // at the top edge of the min-height-inflated indicator on
-    // the rail, misaligned with where the user sees the row in
-    // the table (regression report: "the anchor is showed in
-    // the middle of the tableview but the rail marks it at the
-    // top of the current-view preview").
+    // When the natural span is shorter than the min-height floor
+    // (common on tall logs), expand around the centre of the
+    // visible range so a mid-viewport row lines up with the
+    // indicator's middle rather than its top edge.
     const long long yCenter = (yTop + yBottom) / 2;
     int indicatorTop = rail.top() + static_cast<int>(yCenter) - (indicatorHeight / 2);
-    // Clamp to the rail so the centering + min-height boost
-    // don't push the indicator past either inset.
+    // Clamp so centring + min-height boost can't push the
+    // indicator past either inset.
     if (indicatorTop + indicatorHeight > rail.bottom() + 1)
     {
         indicatorTop = rail.bottom() + 1 - indicatorHeight;
@@ -1249,9 +984,9 @@ void OverviewRailWidget::SyncBucketCountToHeight()
     }
     const QRect rail = InteractiveRailRect();
     const int height = std::max(0, rail.height());
-    // One bucket per pixel row keeps the rail's paint math
-    // trivial (fillRect at each Y). SetBucketCount is a no-op
-    // when the count matches.
+    // One bucket per pixel row keeps the paint math trivial
+    // (fillRect at each Y). `SetBucketCount` is a no-op on a
+    // matching count.
     mModel->SetBucketCount(static_cast<std::size_t>(height));
 }
 
@@ -1262,8 +997,8 @@ void OverviewRailWidget::FlushPendingBucketSyncForTest()
     {
         return;
     }
-    // Stop first so the timer's own `timeout` can't race the
-    // sync we're about to run manually and double-fire.
+    // Stop first so the timer's `timeout` can't race the manual
+    // sync and double-fire.
     mBucketSyncTimer->stop();
     SyncBucketCountToHeight();
 }

@@ -188,13 +188,10 @@ FindRecordWidget::FindRecordWidget(QWidget *parent)
     connect(mButtonPrevious, &QToolButton::clicked, this, &FindRecordWidget::FindPrevious);
 
     // Return / Shift+Return on the search field are handled in
-    // `eventFilter` (not via `returnPressed`). `QLineEdit` emits
-    // `returnPressed` then *ignores* the key event, so a
-    // `returnPressed` -> FindNext hook plus the parent
-    // `keyPressEvent` FindNext path would double-advance and skip
-    // every other match. Consuming the key in the filter keeps a
-    // single jump; `keyPressEvent` still covers Enter when focus
-    // is on a toggle / arrow button.
+    // `eventFilter`, not via `returnPressed`: `QLineEdit` emits
+    // `returnPressed` then ignores the key, so wiring both would
+    // double-advance and skip every other match. `keyPressEvent`
+    // still handles Enter when focus is on a toggle / arrow button.
     mEdit->installEventFilter(this);
 
     // `objectName`s on both timers let tests probe trailing vs max-age
@@ -255,12 +252,10 @@ void FindRecordWidget::SetMatchInfo(int current, int total, bool overflowed)
         mMatchCountLabel->setToolTip(QString());
         return;
     }
-    // Locale-grouped digits; "+" suffix surfaces the parent's hit cap.
-    // Under `overflowed` the scan may have early-exited once the
-    // rail's presence fold was settled, so `total` is a lower bound;
-    // the tooltip below spells out the caveat (visible text alone
-    // used to be ambiguous — was it "at least N" or "exactly N but
-    // I can't find your cursor position"?).
+    // Locale-grouped digits; "+" suffix on `overflowed` signals
+    // that `total` is a lower bound (scan may have early-exited
+    // once every rail bucket had a hit). The tooltip below spells
+    // out the caveat about the position lookup.
     const QLocale locale = QLocale::system();
     const QString totalText =
         locale.toString(static_cast<qlonglong>(total)) + (overflowed ? QStringLiteral("+") : QString());
@@ -277,12 +272,10 @@ void FindRecordWidget::SetMatchInfo(int current, int total, bool overflowed)
         text = overflowed ? tr("%1 matches").arg(totalText) : tr("%Ln matches", nullptr, total);
     }
     mMatchCountLabel->setText(text);
-    // Tooltip: only meaningful under `overflowed`, when the "+" on
-    // its own reads as either "at least N" or "cursor position
-    // capped". Spell out both effects so a user who cares can tell
-    // whether the label undercount matters. Clear the tooltip
-    // otherwise so a stale one from a previous overflow doesn't
-    // linger after the user narrows the search.
+    // Tooltip is only meaningful under `overflowed` — the "+" alone
+    // is ambiguous between "at least N" and "position lookup capped".
+    // Clear it otherwise so a stale tooltip doesn't linger after
+    // the user narrows the search.
     if (overflowed)
     {
         mMatchCountLabel->setToolTip(
@@ -344,9 +337,8 @@ void FindRecordWidget::DismissBar()
 
 void FindRecordWidget::keyPressEvent(QKeyEvent *event)
 {
-    // Only reaches us when focus is on a toggle / arrow button. For
-    // `mEdit`, `eventFilter` consumes Return / Shift+Return so they
-    // never bubble here (a bubble would double-fire FindNext).
+    // Only reaches us when focus is on a toggle / arrow button;
+    // `eventFilter` consumes Return / Shift+Return on `mEdit`.
     if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
     {
         if (event->modifiers().testFlag(Qt::ShiftModifier))
@@ -372,12 +364,10 @@ bool FindRecordWidget::eventFilter(QObject *watched, QEvent *event)
         auto *ke = static_cast<QKeyEvent *>(event); // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
         if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter)
         {
-            // Consume before `QLineEdit::keyPressEvent`: it emits
-            // `returnPressed` then ignores the event, which would
-            // bubble into `FindRecordWidget::keyPressEvent` and
-            // fire FindNext a second time (skipping every other
-            // match). Shift+Return is find-prev; plain Return is
-            // find-next.
+            // Consume before `QLineEdit::keyPressEvent` so it
+            // can't bubble into `keyPressEvent` and double-fire
+            // FindNext. Shift+Return → find-prev; plain Return
+            // → find-next.
             if (ke->modifiers().testFlag(Qt::ShiftModifier))
             {
                 FindPrevious();
@@ -415,18 +405,10 @@ void FindRecordWidget::RequestMatchCountSoon()
     if (mEdit->text().isEmpty())
     {
         // Empty needle: clear the label immediately, cancel any
-        // in-flight debounce so a stale needle can't overwrite
-        // the cleared state, and *also* signal the parent so it
-        // can drop dependent match state that lives outside this
-        // widget (find-match cache and overview-rail tick
-        // vector). We used to skip the emit here on the
-        // reasoning that "the parent has nothing to recount",
-        // but the emit is what resets the rail highlight --
-        // without it a cleared find bar would leave the last
-        // needle's ticks stranded on the rail. `MainWindow::
-        // UpdateFindMatchCount` short-circuits on empty text
-        // and calls `InvalidateFindMatchCache`, which in turn
-        // pushes an empty match list into the rail.
+        // in-flight debounce, and signal the parent so it can drop
+        // dependent match state (find cache + overview-rail ticks).
+        // Without the emit a cleared find bar would leave the last
+        // needle's ticks stranded on the rail.
         mMatchCountTimer->stop();
         mMatchCountMaxAgeTimer->stop();
         SetMatchInfo(0, 0);

@@ -396,7 +396,7 @@ In [Stream Mode](#stream-mode-live-tail) and [Network Stream Mode](#network-stre
 
 The **Overview Rail** is a thin vertical strip along the right edge of the log table. It condenses the whole proxy-filtered stream into ~one row of pixels per bucket, so you can see where matches, anchors, and clusters of high-severity rows sit without scrolling.
 
-The rail is on by default; toggle it from **View → Overview Rail** (`Ctrl+Shift+O`) or the toolbar's rail icon. Visibility is persisted in `QSettings` so a re-opened window restores your preference.
+The rail is on by default; toggle it from **View → Overview Rail** (`Ctrl+Shift+R`) or the toolbar's rail icon. Visibility is persisted in `QSettings` so a re-opened window restores your preference.
 
 Width is DPI-fluent (anchored to the system scrollbar extent) and selectable in **Settings → Preferences** as **Narrow**, **Medium** (default), or **Wide**. Medium is about 1.5× the compact Narrow strip; Wide is 2× — useful when stacked severity bands need more room on Hi-DPI displays.
 
@@ -528,6 +528,7 @@ Open **Settings → Preferences…** to change application-wide settings. The di
 - **Active theme** — see [Themes](#themes) above.
 - **Show level icons** — render themed glyphs in the level column instead of the raw level text.
 - **High contrast levels** — use the theme's loud row tints for Warn / Error / Fatal.
+- **Overview rail width** — pick the width preset for the [Overview Rail](#match-overview-rail): *Narrow*, *Medium* (default), or *Wide*. All three scale with the system scrollbar / DPI. Applied live and persisted on **Ok**.
 
 **Streaming** — applied transactionally on **Ok**.
 
@@ -563,6 +564,7 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 | Toggle Record Details pane     | `Ctrl+I`            |
 | Toggle Anchors panel           | `Ctrl+K`            |
 | Toggle Histogram panel         | `Ctrl+H`            |
+| Toggle Overview Rail           | `Ctrl+Shift+R`      |
 | Anchor selection (colour 1..8) | `Ctrl+1` … `Ctrl+8` |
 | Remove anchor from selection   | `Ctrl+0`            |
 | Clear every anchor             | `Ctrl+Shift+A`      |

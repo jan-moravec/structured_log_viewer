@@ -256,7 +256,7 @@ Sessions already persist a single filter set. Real triage needs a small library 
 
 ### 13. ~~Match overview rail / minimap~~
 
-> **Shipped.** Vertical strip to the right of the table showing matches, anchors, and level-coloured bands over the whole proxy stream, with a click / drag / wheel viewport indicator. On by default; toggle from **View → Overview Rail** (`Ctrl+Shift+O`). See [`doc/README.md § Match overview rail`](doc/README.md#match-overview-rail).
+> **Shipped.** Vertical strip to the right of the table showing matches, anchors, and level-coloured bands over the whole proxy stream, with a click / drag / wheel viewport indicator. On by default; toggle from **View → Overview Rail** (`Ctrl+Shift+R`). See [`doc/README.md § Match overview rail`](doc/README.md#match-overview-rail).
 
 ### 14. Per-cell quick filter
 
