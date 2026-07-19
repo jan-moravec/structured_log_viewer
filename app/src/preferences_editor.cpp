@@ -38,6 +38,29 @@ constexpr char SETTINGS_SHOW_LEVEL_ICONS[] = "ui/showLevelIcons";
 /// (subtle row colours).
 constexpr char SETTINGS_HIGH_CONTRAST_LEVELS[] = "ui/highContrastLevels";
 
+/// `QSettings` key for overview-rail width mode. Values are
+/// `"narrow"` / `"medium"` / `"wide"`; default Medium.
+constexpr char SETTINGS_OVERVIEW_RAIL_WIDTH[] = "ui/overviewRailWidth";
+
+void SelectOverviewRailWidthCombo(QComboBox *combo, OverviewRailWidthMode mode)
+{
+    if (combo == nullptr)
+    {
+        return;
+    }
+    const QString key = OverviewRailWidthModeToSettingsString(mode);
+    for (int i = 0; i < combo->count(); ++i)
+    {
+        if (combo->itemData(i).toString() == key)
+        {
+            combo->setCurrentIndex(i);
+            return;
+        }
+    }
+    // Fallback: Medium is index 1 in the populated combo.
+    combo->setCurrentIndex(1);
+}
+
 /// Label for the synthetic "Auto" combo entry. The entry's user
 /// data carries `ThemeControl::AUTO_TOKEN` (an empty string) so a
 /// real theme literally named "Auto..." still round-trips.
@@ -216,6 +239,30 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
     connect(mHighContrastLevelsCheckBox, &QCheckBox::toggled, this, [this](bool on) {
         emit highContrastLevelsChanged(on);
     });
+
+    mOverviewRailWidthComboBox = new QComboBox(this);
+    mOverviewRailWidthComboBox->setObjectName(QStringLiteral("overviewRailWidthCombo"));
+    mOverviewRailWidthComboBox->setToolTip(
+        "Width of the overview rail next to the log table. All sizes scale with the system "
+        "scrollbar / DPI; Narrow is the compact strip, Medium is the default, Wide maximises "
+        "severity-band readability."
+    );
+    mOverviewRailWidthComboBox->addItem(tr("Narrow"), QStringLiteral("narrow"));
+    mOverviewRailWidthComboBox->addItem(tr("Medium"), QStringLiteral("medium"));
+    mOverviewRailWidthComboBox->addItem(tr("Wide"), QStringLiteral("wide"));
+    // Live preview: every selection fires the signal so the rail
+    // resizes immediately. Ctor / `UpdateFields` block signals
+    // while seeding.
+    connect(mOverviewRailWidthComboBox, QOverload<int>::of(&QComboBox::activated), this, [this](int idx) {
+        if (idx < 0)
+        {
+            return;
+        }
+        const OverviewRailWidthMode mode =
+            ParseOverviewRailWidthMode(mOverviewRailWidthComboBox->itemData(idx).toString());
+        emit overviewRailWidthChanged(mode);
+    });
+
     mRestoreLastSessionCheckBox = new QCheckBox("Restore last session on launch", this);
     mRestoreLastSessionCheckBox->setToolTip(
         "When enabled, the most recent auto-saved session is reopened automatically on startup. "
@@ -267,6 +314,8 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
     appearanceLayout->addLayout(themeButtonLayout);
     appearanceLayout->addWidget(mShowLevelIconsCheckBox);
     appearanceLayout->addWidget(mHighContrastLevelsCheckBox);
+    appearanceLayout->addWidget(new QLabel(tr("Overview rail width:")));
+    appearanceLayout->addWidget(mOverviewRailWidthComboBox);
     appearanceLayout->addWidget(mThemeStatusLabel);
 
     auto *streamingGroup = new QGroupBox("Streaming", this);
@@ -337,6 +386,17 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
                 settings.setValue(QString::fromLatin1(SETTINGS_HIGH_CONTRAST_LEVELS), highContrast);
             }
         }
+        {
+            QSettings settings;
+            const OverviewRailWidthMode mode =
+                ParseOverviewRailWidthMode(mOverviewRailWidthComboBox->currentData().toString());
+            if (mode != mInitialOverviewRailWidth)
+            {
+                settings.setValue(
+                    QString::fromLatin1(SETTINGS_OVERVIEW_RAIL_WIDTH), OverviewRailWidthModeToSettingsString(mode)
+                );
+            }
+        }
         emit streamingRetentionChanged(static_cast<qulonglong>(StreamingControl::RetentionLines()));
         // Only emit on a real toggle so the re-sort chain does not run
         // on every Ok click.
@@ -369,6 +429,14 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
         {
             emit highContrastLevelsChanged(mInitialHighContrastLevels);
         }
+        {
+            const OverviewRailWidthMode current =
+                ParseOverviewRailWidthMode(mOverviewRailWidthComboBox->currentData().toString());
+            if (current != mInitialOverviewRailWidth)
+            {
+                emit overviewRailWidthChanged(mInitialOverviewRailWidth);
+            }
+        }
         // Revert spinbox-edited values to persisted; on-disk unchanged.
         StreamingControl::LoadConfiguration();
         // Bypass `closeEvent`'s revert: Cancel already reverted.
@@ -393,6 +461,9 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
         const QSettings settings;
         mInitialShowLevelIcons = settings.value(QString::fromLatin1(SETTINGS_SHOW_LEVEL_ICONS), true).toBool();
         mInitialHighContrastLevels = settings.value(QString::fromLatin1(SETTINGS_HIGH_CONTRAST_LEVELS), false).toBool();
+        mInitialOverviewRailWidth = ParseOverviewRailWidthMode(
+            settings.value(QString::fromLatin1(SETTINGS_OVERVIEW_RAIL_WIDTH), QStringLiteral("medium")).toString()
+        );
         {
             const QSignalBlocker blocker(mShowLevelIconsCheckBox);
             mShowLevelIconsCheckBox->setChecked(mInitialShowLevelIcons);
@@ -400,6 +471,10 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
         {
             const QSignalBlocker blocker(mHighContrastLevelsCheckBox);
             mHighContrastLevelsCheckBox->setChecked(mInitialHighContrastLevels);
+        }
+        {
+            const QSignalBlocker blocker(mOverviewRailWidthComboBox);
+            SelectOverviewRailWidthCombo(mOverviewRailWidthComboBox, mInitialOverviewRailWidth);
         }
     }
 }
@@ -418,6 +493,9 @@ void PreferencesEditor::UpdateFields()
         const QSettings settings;
         mInitialShowLevelIcons = settings.value(QString::fromLatin1(SETTINGS_SHOW_LEVEL_ICONS), true).toBool();
         mInitialHighContrastLevels = settings.value(QString::fromLatin1(SETTINGS_HIGH_CONTRAST_LEVELS), false).toBool();
+        mInitialOverviewRailWidth = ParseOverviewRailWidthMode(
+            settings.value(QString::fromLatin1(SETTINGS_OVERVIEW_RAIL_WIDTH), QStringLiteral("medium")).toString()
+        );
         {
             const QSignalBlocker blocker(mShowLevelIconsCheckBox);
             mShowLevelIconsCheckBox->setChecked(mInitialShowLevelIcons);
@@ -425,6 +503,10 @@ void PreferencesEditor::UpdateFields()
         {
             const QSignalBlocker blocker(mHighContrastLevelsCheckBox);
             mHighContrastLevelsCheckBox->setChecked(mInitialHighContrastLevels);
+        }
+        {
+            const QSignalBlocker blocker(mOverviewRailWidthComboBox);
+            SelectOverviewRailWidthCombo(mOverviewRailWidthComboBox, mInitialOverviewRailWidth);
         }
     }
     RepopulateThemeCombo();
@@ -589,6 +671,14 @@ void PreferencesEditor::closeEvent(QCloseEvent *event)
     if (mHighContrastLevelsCheckBox->isChecked() != mInitialHighContrastLevels)
     {
         emit highContrastLevelsChanged(mInitialHighContrastLevels);
+    }
+    {
+        const OverviewRailWidthMode current =
+            ParseOverviewRailWidthMode(mOverviewRailWidthComboBox->currentData().toString());
+        if (current != mInitialOverviewRailWidth)
+        {
+            emit overviewRailWidthChanged(mInitialOverviewRailWidth);
+        }
     }
     StreamingControl::LoadConfiguration();
     QWidget::closeEvent(event);

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "overview_rail_widget.hpp"
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QLabel>
@@ -61,6 +63,11 @@ signals:
     /// `themeChanged()` repaint path.
     void highContrastLevelsChanged(bool on);
 
+    /// Fired on every combo change (live preview) and on
+    /// Cancel/close to revert. `QSettings` is only written on
+    /// Ok when the value actually changed.
+    void overviewRailWidthChanged(OverviewRailWidthMode mode);
+
 private:
     /// Refill the theme combo from `ThemeControl::AvailableThemes`
     /// and select the active entry (Auto is the first entry).
@@ -93,6 +100,7 @@ private:
     QCheckBox *mStaticNewestFirstCheckBox;
     QCheckBox *mShowLevelIconsCheckBox;
     QCheckBox *mHighContrastLevelsCheckBox;
+    QComboBox *mOverviewRailWidthComboBox;
     QCheckBox *mRestoreLastSessionCheckBox;
     QSpinBox *mRecentSessionsMaxSpinBox;
 
@@ -111,4 +119,5 @@ private:
     /// initial values.
     bool mInitialShowLevelIcons = true;
     bool mInitialHighContrastLevels = false;
+    OverviewRailWidthMode mInitialOverviewRailWidth = OverviewRailWidthMode::Medium;
 };

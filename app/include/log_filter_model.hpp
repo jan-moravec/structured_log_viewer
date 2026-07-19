@@ -14,6 +14,7 @@
 #include <QVariant>
 
 #include <cstddef>
+#include <functional>
 #include <unordered_map>
 #include <vector>
 
@@ -60,7 +61,10 @@ public:
     [[nodiscard]] static Qt::MatchFlags ComposeFindFlags(bool wildcards, bool regularExpressions);
 
     /// Find proxy-coord rows whose cell matches @p value under @p role.
-    /// Returns up to @p hits matches (all when `UNLIMITED_HITS`).
+    /// Returns up to @p hits matches. `hits` must be either
+    /// `UNLIMITED_HITS` (all) or `>= 1`; `0` is rejected via
+    /// `Q_ASSERT` because the stop-condition `size < hits` would
+    /// otherwise silently stop after the first match.
     QList<QModelIndex> MatchRow(
         const QModelIndex &start,
         int role,
@@ -69,6 +73,27 @@ public:
         Qt::MatchFlags flags = Qt::MatchStartsWith | Qt::MatchWrap,
         bool forward = true,
         int skipFirstN = 0
+    ) const;
+
+    /// Callback for `ForEachMatchingRow`, invoked once per matching
+    /// proxy-coord row. Return `true` to continue, `false` to stop.
+    /// Only the first matching column per row is reported, matching
+    /// `MatchRow`.
+    using MatchRowCallback = std::function<bool(const QModelIndex &proxyIndex)>;
+
+    /// Iterate matching proxy-coord rows via a callback instead of
+    /// building a `QList<QModelIndex>`. Same probe semantics as
+    /// `MatchRow`, but avoids the O(matches) list allocation when
+    /// the caller only accumulates aggregates. `MatchRow` is a thin
+    /// wrapper on top of this.
+    void ForEachMatchingRow(
+        const QModelIndex &start,
+        int role,
+        const QVariant &value,
+        Qt::MatchFlags flags,
+        bool forward,
+        int skipFirstN,
+        const MatchRowCallback &onMatch
     ) const;
 
     /// Replace the active predicate list and rebuild the row map.
