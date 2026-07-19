@@ -113,4 +113,8 @@ target_link_libraries(apptest_overview_rail PRIVATE Qt6::Test Qt6::Widgets logap
 
 target_include_directories(apptest_overview_rail PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
 
-add_test(NAME apptest_overview_rail COMMAND apptest_overview_rail WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_overview_rail>)
+add_test(
+    NAME apptest_overview_rail
+    COMMAND apptest_overview_rail
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_overview_rail>
+)

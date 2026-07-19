@@ -12239,9 +12239,7 @@ private slots:
         // Clear any inherited selection so the first Next starts at
         // row 0 with skipFirstN==0.
         tableView->selectionModel()->clearSelection();
-        tableView->selectionModel()->setCurrentIndex(
-            filterModel->index(0, 0), QItemSelectionModel::NoUpdate
-        );
+        tableView->selectionModel()->setCurrentIndex(filterModel->index(0, 0), QItemSelectionModel::NoUpdate);
 
         QList<int> visited;
         visited.reserve(FIXTURE_LINES);
@@ -12320,9 +12318,7 @@ private slots:
         QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
 
         tableView->selectionModel()->clearSelection();
-        tableView->selectionModel()->setCurrentIndex(
-            filterModel->index(0, 0), QItemSelectionModel::NoUpdate
-        );
+        tableView->selectionModel()->setCurrentIndex(filterModel->index(0, 0), QItemSelectionModel::NoUpdate);
 
         edit->setText(QStringLiteral("needle"));
         QSignalSpy findSpy(findRecord, &FindRecordWidget::FindRecords);
@@ -13293,17 +13289,17 @@ private slots:
         QVERIFY2(
             tooltip.contains(QStringLiteral("lower bound"), Qt::CaseInsensitive) ||
                 tooltip.contains(QStringLiteral("bails"), Qt::CaseInsensitive),
-            qPrintable(QStringLiteral(
-                           "tooltip should mention the scan's early-exit / lower-bound "
-                           "nature so the user can interpret the '+' correctly: %1"
-            )
+            qPrintable(QStringLiteral("tooltip should mention the scan's early-exit / lower-bound "
+                                      "nature so the user can interpret the '+' correctly: %1")
                            .arg(tooltip))
         );
         QVERIFY2(
             tooltip.contains(QStringLiteral("current"), Qt::CaseInsensitive) ||
                 tooltip.contains(QStringLiteral("cursor"), Qt::CaseInsensitive) ||
                 tooltip.contains(QStringLiteral("index"), Qt::CaseInsensitive),
-            qPrintable(QStringLiteral("tooltip should also mention the cursor / current-match degradation: %1").arg(tooltip))
+            qPrintable(
+                QStringLiteral("tooltip should also mention the cursor / current-match degradation: %1").arg(tooltip)
+            )
         );
 
         // Narrowing the search (overflow gone) must not leave the

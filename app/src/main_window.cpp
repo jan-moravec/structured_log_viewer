@@ -1254,22 +1254,17 @@ MainWindow::MainWindow(
     // Overview-rail width preset (live preview from Preferences).
     // Refresh the table's reserved margin after applying so the
     // viewport tracks the new sizeHint.
-    connect(
-        mPreferencesEditor,
-        &PreferencesEditor::overviewRailWidthChanged,
-        this,
-        [this](OverviewRailWidthMode mode) {
-            if (mOverviewRailWidget == nullptr)
-            {
-                return;
-            }
-            mOverviewRailWidget->SetWidthMode(mode);
-            if (mTableView != nullptr)
-            {
-                mTableView->RefreshOverviewRailMargin();
-            }
+    connect(mPreferencesEditor, &PreferencesEditor::overviewRailWidthChanged, this, [this](OverviewRailWidthMode mode) {
+        if (mOverviewRailWidget == nullptr)
+        {
+            return;
         }
-    );
+        mOverviewRailWidget->SetWidthMode(mode);
+        if (mTableView != nullptr)
+        {
+            mTableView->RefreshOverviewRailMargin();
+        }
+    });
 
     // Anchor hotkeys (programmatic so the .ui isn't bloated):
     //   Ctrl+1..8     anchor selection at colour N
@@ -5760,8 +5755,7 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
             }
         );
 
-        const bool overflowed =
-            !scanExhausted || totalMatches > static_cast<uint32_t>(MAX_FIND_MATCH_COUNT);
+        const bool overflowed = !scanExhausted || totalMatches > static_cast<uint32_t>(MAX_FIND_MATCH_COUNT);
         // Defensive sort/dedup: contract violations would silently
         // corrupt the binary search. Assert in debug, warn in
         // release, still recover so the caller doesn't see garbage.

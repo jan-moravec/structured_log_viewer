@@ -173,8 +173,7 @@ private slots:
     void initTestCase()
     {
         QVERIFY2(
-            MainWindow::InitializeTimezoneDatabase(),
-            "Failed to initialise timezone database; see qCritical above."
+            MainWindow::InitializeTimezoneDatabase(), "Failed to initialise timezone database; see qCritical above."
         );
         // Route every QSettings / QStandardPaths lookup this
         // suite makes to a throw-away location. Prevents the
@@ -518,8 +517,14 @@ private slots:
         QVERIFY(mid < COLUMN_WIDTH);
         // Monotone non-decreasing in count.
         int previous = 0;
-        for (std::uint32_t count : {std::uint32_t{1}, std::uint32_t{4}, std::uint32_t{16}, std::uint32_t{64},
-                                    std::uint32_t{256}, std::uint32_t{1024}, std::uint32_t{4096}})
+        for (std::uint32_t count :
+             {std::uint32_t{1},
+              std::uint32_t{4},
+              std::uint32_t{16},
+              std::uint32_t{64},
+              std::uint32_t{256},
+              std::uint32_t{1024},
+              std::uint32_t{4096}})
         {
             const int w = OverviewRailWidget::WidthForCountForTest(count, 4096, COLUMN_WIDTH);
             QVERIFY2(w >= previous, "bar width must be monotone non-decreasing in the bucket count");
@@ -587,8 +592,8 @@ private slots:
         const int lit = CountLitLevelPixels(widget, &bg);
         QVERIFY2(
             lit > 0,
-            qPrintable(QStringLiteral("no level-bar pixels found (bg=%1) -- bars are painting invisibly")
-                           .arg(bg.name()))
+            qPrintable(QStringLiteral("no level-bar pixels found (bg=%1) -- bars are painting invisibly").arg(bg.name())
+            )
         );
         delete widget;
     }
@@ -630,9 +635,13 @@ private slots:
         // exactly the code path the production wiring exercises.
         QCoreApplication::processEvents();
         const int railWidth = widget->width();
-        QVERIFY2(railWidth >= 24, qPrintable(QStringLiteral("rail is only %1 px wide -- narrower than the "
-                                                            "minimum, so the level column would collapse "
-                                                            "to a single pixel").arg(railWidth)));
+        QVERIFY2(
+            railWidth >= 24,
+            qPrintable(QStringLiteral("rail is only %1 px wide -- narrower than the "
+                                      "minimum, so the level column would collapse "
+                                      "to a single pixel")
+                           .arg(railWidth))
+        );
 
         QImage image(widget->size(), QImage::Format_ARGB32);
         image.fill(Qt::transparent);
@@ -863,8 +872,7 @@ private slots:
             }
         }
         QVERIFY2(
-            fatalBgPixels > 0,
-            "rare Fatal (1-in-500) must paint the Fatal row-bg tone at the 1-px severity floor"
+            fatalBgPixels > 0, "rare Fatal (1-in-500) must paint the Fatal row-bg tone at the 1-px severity floor"
         );
 
         delete widget;
@@ -1118,9 +1126,8 @@ private slots:
             )
         );
         const int yTop = widget->YForBucketForTest(matchBucket);
-        const int yBottom = matchBucket + 1 < railModel.BucketCount()
-                                ? widget->YForBucketForTest(matchBucket + 1)
-                                : image.height();
+        const int yBottom =
+            matchBucket + 1 < railModel.BucketCount() ? widget->YForBucketForTest(matchBucket + 1) : image.height();
 
         // Sample the *right* portion of the content slot (columns
         // past where the level bar could ever reach at ~20 % row
@@ -1157,12 +1164,10 @@ private slots:
         }
         QVERIFY2(
             highlightPixelsLeftHalf > 0 && highlightPixelsRightHalf > 0,
-            qPrintable(
-                QStringLiteral("match overlay must span the full content width -- found %1 Highlight px on the "
-                               "left half and %2 on the right half of the matched bucket's Y band")
-                    .arg(highlightPixelsLeftHalf)
-                    .arg(highlightPixelsRightHalf)
-            )
+            qPrintable(QStringLiteral("match overlay must span the full content width -- found %1 Highlight px on the "
+                                      "left half and %2 on the right half of the matched bucket's Y band")
+                           .arg(highlightPixelsLeftHalf)
+                           .arg(highlightPixelsRightHalf))
         );
 
         delete widget;
@@ -1392,8 +1397,7 @@ private slots:
         const std::size_t nBuckets = railModel.BucketCount();
         QVERIFY(nBuckets > 0);
         const std::size_t midRowBucket = std::min<std::size_t>(
-            nBuckets - 1,
-            (static_cast<std::size_t>(MIDDLE_ROW) * nBuckets) / static_cast<std::size_t>(ROWS)
+            nBuckets - 1, (static_cast<std::size_t>(MIDDLE_ROW) * nBuckets) / static_cast<std::size_t>(ROWS)
         );
         const int midRowY = widget->YForBucketForTest(midRowBucket);
 
@@ -1603,8 +1607,7 @@ private slots:
         if (const QScrollBar *vsb = view.verticalScrollBar(); vsb != nullptr && vsb->isVisible())
         {
             QVERIFY2(
-                railGeom.right() < vsb->geometry().left(),
-                "rail must not overlap the vertical scrollbar's paint rect"
+                railGeom.right() < vsb->geometry().left(), "rail must not overlap the vertical scrollbar's paint rect"
             );
         }
 
@@ -1742,8 +1745,7 @@ private slots:
         action->trigger();
         QVERIFY(action->isChecked());
         QVERIFY2(
-            railModel->BucketCount() > 0,
-            "re-showing the rail must re-sync the bucket count from the widget height"
+            railModel->BucketCount() > 0, "re-showing the rail must re-sync the bucket count from the widget height"
         );
     }
 
@@ -2025,7 +2027,8 @@ private slots:
         rules.emplace_back(
             std::in_place_type<loglib::CallbackStringRowPredicate>,
             /*columnIndex=*/static_cast<std::size_t>(0),
-            /*match=*/[callCount = std::make_shared<std::size_t>(0)](std::string_view) mutable {
+            /*match=*/
+            [callCount = std::make_shared<std::size_t>(0)](std::string_view) mutable {
                 return ((*callCount)++ % 2) == 0;
             }
         );
@@ -2522,10 +2525,7 @@ private slots:
 
         QCOMPARE(static_cast<int>(seenRows.size()), ROWS);
         QVERIFY2(std::ranges::is_sorted(seenRows), "ForEachMatchingRow must yield rows in ascending order");
-        QVERIFY2(
-            std::ranges::adjacent_find(seenRows) == seenRows.end(),
-            "ForEachMatchingRow must not repeat a row"
-        );
+        QVERIFY2(std::ranges::adjacent_find(seenRows) == seenRows.end(), "ForEachMatchingRow must not repeat a row");
 
         // Returning `false` stops the walk on the first hit. The
         // caller has full control over the accumulator shape.
@@ -2588,8 +2588,8 @@ private slots:
             /*skipFirstN=*/0,
             [&](const QModelIndex &proxyIndex) -> bool {
                 ++totalMatches;
-                const std::size_t bucket = (static_cast<std::size_t>(proxyIndex.row()) * BUCKETS) /
-                                           static_cast<std::size_t>(ROWS);
+                const std::size_t bucket =
+                    (static_cast<std::size_t>(proxyIndex.row()) * BUCKETS) / static_cast<std::size_t>(ROWS);
                 ++bucketCounts[std::min(bucket, BUCKETS - 1)];
                 if (static_cast<int>(cappedRows.size()) < SCAN_CAP)
                 {
@@ -2618,8 +2618,7 @@ private slots:
         {
             summedFromBuckets += bucketCounts[i];
             QVERIFY2(
-                bucketCounts[i] > 0,
-                qPrintable(QStringLiteral("bucket %1 must carry at least one match tick").arg(i))
+                bucketCounts[i] > 0, qPrintable(QStringLiteral("bucket %1 must carry at least one match tick").arg(i))
             );
         }
         QCOMPARE(summedFromBuckets, totalMatches);
@@ -2664,8 +2663,8 @@ private slots:
             [&](const QModelIndex &proxyIndex) -> bool {
                 ++callbackInvocations;
                 ++totalMatches;
-                const std::size_t bucket = (static_cast<std::size_t>(proxyIndex.row()) * BUCKETS) /
-                                           static_cast<std::size_t>(ROWS);
+                const std::size_t bucket =
+                    (static_cast<std::size_t>(proxyIndex.row()) * BUCKETS) / static_cast<std::size_t>(ROWS);
                 uint32_t &slot = bucketCounts[std::min(bucket, BUCKETS - 1)];
                 if (slot == 0)
                 {
@@ -2686,10 +2685,7 @@ private slots:
         );
 
         QVERIFY2(!scanExhausted, "dense needle must early-exit once every bucket has a tick");
-        QVERIFY2(
-            callbackInvocations < ROWS,
-            "early-exit must stop before visiting every matching row"
-        );
+        QVERIFY2(callbackInvocations < ROWS, "early-exit must stop before visiting every matching row");
         QCOMPARE(static_cast<int>(cappedRows.size()), SCAN_CAP);
         QCOMPARE(bucketsHit, BUCKETS);
         for (std::size_t i = 0; i < BUCKETS; ++i)
@@ -2784,10 +2780,7 @@ private slots:
         // Wait for the debounce interval to elapse and the
         // trailing sync to fire. Generous slack over the
         // 100 ms debounce so CI jitter doesn't flake.
-        QVERIFY2(
-            spy.wait(1000),
-            "debounced sync must land within a comfortable slack over BUCKET_SYNC_DEBOUNCE_MS"
-        );
+        QVERIFY2(spy.wait(1000), "debounced sync must land within a comfortable slack over BUCKET_SYNC_DEBOUNCE_MS");
 
         // One more event-loop spin to prove no stragglers land
         // after the trailing edge (defends against a future bug
@@ -2999,9 +2992,8 @@ private slots:
         const QPointF forwarded = spy.localPositions.first();
         QVERIFY2(
             forwarded.x() <= static_cast<qreal>(vbarRect.width()),
-            qPrintable(QStringLiteral(
-                "forwarded local X %1 must land within vbar width %2; larger value means "
-                "rail-widget coords leaked through")
+            qPrintable(QStringLiteral("forwarded local X %1 must land within vbar width %2; larger value means "
+                                      "rail-widget coords leaked through")
                            .arg(forwarded.x())
                            .arg(vbarRect.width()))
         );

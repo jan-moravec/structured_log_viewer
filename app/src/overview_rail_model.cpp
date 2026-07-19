@@ -73,19 +73,13 @@ OverviewRailModel::OverviewRailModel(
         // get re-attributed. Skip dictionary `Grew` events — they
         // can't move the level column, and every batch of a wide
         // log would otherwise pay an `O(nColumns)` scan.
-        connect(
-            mSourceModel,
-            &LogModel::enumColumnsChanged,
-            this,
-            [this](EnumColumnsChangeReason reason, int)
+        connect(mSourceModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason reason, int) {
+            if (reason == EnumColumnsChangeReason::Grew)
             {
-                if (reason == EnumColumnsChangeReason::Grew)
-                {
-                    return;
-                }
-                OnEnumColumnsChanged();
+                return;
             }
-        );
+            OnEnumColumnsChanged();
+        });
     }
 
     if (mAnchors != nullptr)
@@ -522,7 +516,8 @@ int OverviewRailModel::ProxyToSourceRow(int proxyRow) const noexcept
     // and we'd fold rows from the wrong table. Assert in debug,
     // one-shot warn in release, and refuse the row.
     Q_ASSERT_X(
-        idx.model() == mSourceModel, "OverviewRailModel::ProxyToSourceRow",
+        idx.model() == mSourceModel,
+        "OverviewRailModel::ProxyToSourceRow",
         "proxy chain no longer terminates at the cached source model"
     );
     if (idx.model() != mSourceModel)

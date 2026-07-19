@@ -1228,18 +1228,10 @@ QList<QModelIndex> LogFilterModel::MatchRow(
     {
         result.reserve(hits);
     }
-    ForEachMatchingRow(
-        start,
-        role,
-        value,
-        flags,
-        forward,
-        skipFirstN,
-        [&](const QModelIndex &proxyIndex) -> bool {
-            result.append(proxyIndex);
-            return unlimited || result.size() < hits;
-        }
-    );
+    ForEachMatchingRow(start, role, value, flags, forward, skipFirstN, [&](const QModelIndex &proxyIndex) -> bool {
+        result.append(proxyIndex);
+        return unlimited || result.size() < hits;
+    });
     return result;
 }
 

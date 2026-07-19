@@ -327,8 +327,8 @@ int OverviewRailWidget::BucketAtYForTest(int y) const
         return -1;
     }
     const int clampedY = std::clamp(y - rail.top(), 0, rail.height() - 1);
-    const std::size_t bucket = (static_cast<std::size_t>(clampedY) * mModel->BucketCount()) /
-                               static_cast<std::size_t>(rail.height());
+    const std::size_t bucket =
+        (static_cast<std::size_t>(clampedY) * mModel->BucketCount()) / static_cast<std::size_t>(rail.height());
     return static_cast<int>(std::min(bucket, mModel->BucketCount() - 1));
 }
 
@@ -345,9 +345,7 @@ int OverviewRailWidget::YForBucketForTest(std::size_t bucket) const
     }
     const std::size_t nBuckets = mModel->BucketCount();
     const std::size_t clampedBucket = std::min(bucket, nBuckets - 1);
-    const int y = rail.top() + static_cast<int>(
-                                   (clampedBucket * static_cast<std::size_t>(rail.height())) / nBuckets
-                               );
+    const int y = rail.top() + static_cast<int>((clampedBucket * static_cast<std::size_t>(rail.height())) / nBuckets);
     return y;
 }
 
@@ -428,8 +426,7 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
     // seams consistent across passes. Cached on
     // `(nBuckets, railTop, railHeight)` so drag-scroll bursts
     // skip the alloc.
-    if (mCachedYEdgesBuckets != nBuckets || mCachedYEdgesRailTop != railTop ||
-        mCachedYEdgesRailHeight != railHeight)
+    if (mCachedYEdgesBuckets != nBuckets || mCachedYEdgesRailTop != railTop || mCachedYEdgesRailHeight != railHeight)
     {
         mCachedYEdges.assign(nBuckets + 1, 0);
         for (std::size_t i = 0; i <= nBuckets; ++i)
@@ -485,24 +482,24 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
             }
             const int proxyRows = mModel->ProxyRowCount();
             const int levelColIdx = mModel->LevelColumnIndexForTest();
-            qInfo().noquote() << QStringLiteral(
-                                     "[rail-trace] widget=%1x%2 rail=%3x%4 content=%5 buckets=%6 non-empty=%7 "
-                                     "maxCount=%8 base=%9 firstBucket total=%10 dom=%11 color=%12 proxyRows=%13 "
-                                     "levelColIdx=%14")
-                                     .arg(widgetRect.width())
-                                     .arg(widgetRect.height())
-                                     .arg(rail.width())
-                                     .arg(rail.height())
-                                     .arg(contentWidth)
-                                     .arg(nBuckets)
-                                     .arg(nonEmptyBuckets)
-                                     .arg(maxCount)
-                                     .arg(pal.color(QPalette::Base).name())
-                                     .arg(firstBucketTotal)
-                                     .arg(static_cast<int>(firstDominant))
-                                     .arg(firstBarColor.name())
-                                     .arg(proxyRows)
-                                     .arg(levelColIdx);
+            qInfo().noquote(
+            ) << QStringLiteral("[rail-trace] widget=%1x%2 rail=%3x%4 content=%5 buckets=%6 non-empty=%7 "
+                                "maxCount=%8 base=%9 firstBucket total=%10 dom=%11 color=%12 proxyRows=%13 "
+                                "levelColIdx=%14")
+                     .arg(widgetRect.width())
+                     .arg(widgetRect.height())
+                     .arg(rail.width())
+                     .arg(rail.height())
+                     .arg(contentWidth)
+                     .arg(nBuckets)
+                     .arg(nonEmptyBuckets)
+                     .arg(maxCount)
+                     .arg(pal.color(QPalette::Base).name())
+                     .arg(firstBucketTotal)
+                     .arg(static_cast<int>(firstDominant))
+                     .arg(firstBarColor.name())
+                     .arg(proxyRows)
+                     .arg(levelColIdx);
         }
     }
 
@@ -581,8 +578,7 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
                     {
                         continue;
                     }
-                    const int share =
-                        static_cast<int>((segWeights[s] / totalWeight) * static_cast<double>(extra));
+                    const int share = static_cast<int>((segWeights[s] / totalWeight) * static_cast<double>(extra));
                     segWidths[s] += share;
                 }
                 // Rounding leftovers go to the heaviest level so
@@ -693,15 +689,14 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
         pen.setCosmetic(true);
         pen.setWidth(1);
         painter.setPen(pen);
-    // Half-pixel inset so the cosmetic pen lands on whole rows
-    // and the rounded corners anti-alias cleanly.
-    const QRectF rounded(
+        // Half-pixel inset so the cosmetic pen lands on whole rows
+        // and the rounded corners anti-alias cleanly.
+        const QRectF rounded(
             indicator.left() + 0.5, indicator.top() + 0.5, indicator.width() - 1.0, indicator.height() - 1.0
         );
         painter.drawRoundedRect(rounded, INDICATOR_CORNER_RADIUS, INDICATOR_CORNER_RADIUS);
         painter.restore();
     }
-
 }
 
 void OverviewRailWidget::mousePressEvent(QMouseEvent *event)
@@ -953,8 +948,8 @@ QRect OverviewRailWidget::ComputeViewportIndicatorRect() const
     bottomRow = std::clamp(bottomRow, visibleTop, totalRows - 1);
 
     const int railHeight = rail.height();
-    const long long yTop = (static_cast<long long>(visibleTop) * static_cast<long long>(railHeight)) /
-                           static_cast<long long>(totalRows);
+    const long long yTop =
+        (static_cast<long long>(visibleTop) * static_cast<long long>(railHeight)) / static_cast<long long>(totalRows);
     const long long yBottom = (static_cast<long long>(bottomRow + 1) * static_cast<long long>(railHeight)) /
                               static_cast<long long>(totalRows);
     const int naturalHeight = static_cast<int>(yBottom - yTop);

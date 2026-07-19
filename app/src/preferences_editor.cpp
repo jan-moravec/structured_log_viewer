@@ -253,20 +253,15 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
     // Live preview: every selection fires the signal so the rail
     // resizes immediately. Ctor / `UpdateFields` block signals
     // while seeding.
-    connect(
-        mOverviewRailWidthComboBox,
-        QOverload<int>::of(&QComboBox::activated),
-        this,
-        [this](int idx) {
-            if (idx < 0)
-            {
-                return;
-            }
-            const OverviewRailWidthMode mode =
-                ParseOverviewRailWidthMode(mOverviewRailWidthComboBox->itemData(idx).toString());
-            emit overviewRailWidthChanged(mode);
+    connect(mOverviewRailWidthComboBox, QOverload<int>::of(&QComboBox::activated), this, [this](int idx) {
+        if (idx < 0)
+        {
+            return;
         }
-    );
+        const OverviewRailWidthMode mode =
+            ParseOverviewRailWidthMode(mOverviewRailWidthComboBox->itemData(idx).toString());
+        emit overviewRailWidthChanged(mode);
+    });
 
     mRestoreLastSessionCheckBox = new QCheckBox("Restore last session on launch", this);
     mRestoreLastSessionCheckBox->setToolTip(
@@ -393,9 +388,8 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
         }
         {
             QSettings settings;
-            const OverviewRailWidthMode mode = ParseOverviewRailWidthMode(
-                mOverviewRailWidthComboBox->currentData().toString()
-            );
+            const OverviewRailWidthMode mode =
+                ParseOverviewRailWidthMode(mOverviewRailWidthComboBox->currentData().toString());
             if (mode != mInitialOverviewRailWidth)
             {
                 settings.setValue(
