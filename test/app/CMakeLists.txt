@@ -96,3 +96,25 @@ target_link_libraries(apptest_histogram PRIVATE Qt6::Test Qt6::Widgets logapp)
 target_include_directories(apptest_histogram PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
 
 add_test(NAME apptest_histogram COMMAND apptest_histogram WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_histogram>)
+
+# Unit tests for the match overview rail (ROADMAP item 13). Same
+# concern-per-binary pattern as `apptest_histogram`: keeps the
+# monolithic `apptest` lean and lets `ctest -R apptest_overview_rail`
+# rerun just this concern.
+#
+# Links the built-in theme JSONs from `resources.qrc` so the paint
+# tests can load the real Dark / Light themes via
+# `ThemeControl::SetActiveSelection` and assert contrast against a
+# realistic palette (not the offscreen QPA's blank fallback).
+qt_add_resources(RAIL_TEST_RESOURCES ${CMAKE_CURRENT_SOURCE_DIR}/../../resources/resources.qrc)
+qt_add_executable(apptest_overview_rail src/test_overview_rail.cpp ${RAIL_TEST_RESOURCES})
+
+target_link_libraries(apptest_overview_rail PRIVATE Qt6::Test Qt6::Widgets logapp)
+
+target_include_directories(apptest_overview_rail PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+
+add_test(
+    NAME apptest_overview_rail
+    COMMAND apptest_overview_rail
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_overview_rail>
+)

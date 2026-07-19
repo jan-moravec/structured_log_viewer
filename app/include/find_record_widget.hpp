@@ -43,8 +43,10 @@ public slots:
     ///   buttons don't jitter).
     /// - `current <= 0`: shows "*N* matches".
     /// - `current > 0`: shows "*i* of *N*".
-    /// - `overflowed`: appends "+" so the user can tell the count was
-    ///   capped rather than landing exactly at the cap.
+    /// - `overflowed`: appends "+" to `total` (count is a lower
+    ///   bound) and installs a tooltip explaining that the
+    ///   current-match index may read as 0 once the scan
+    ///   early-exits past the cursor-position cache.
     void SetMatchInfo(int current, int total, bool overflowed = false);
 
     /// Close the host `QDockWidget`. Wired to Escape; no-op when not
@@ -64,9 +66,10 @@ signals:
     void MatchCountRequested(const QString &text, bool wildcards, bool regularExpressions);
 
 public:
-    /// Catches `Shift+Return` on `mEdit` before `QLineEdit` swallows
-    /// it; `returnPressed` is modifier-agnostic and `keyPressEvent`
-    /// doesn't bubble, so the filter is the only way to wire find-prev.
+    /// Catches Return / Shift+Return on `mEdit` before `QLineEdit`
+    /// handles them. `QLineEdit` emits `returnPressed` but then
+    /// ignores the key, so without this filter the parent
+    /// `keyPressEvent` would fire FindNext a second time.
     /// Public to match `QObject::eventFilter`'s visibility.
     bool eventFilter(QObject *watched, QEvent *event) override;
 

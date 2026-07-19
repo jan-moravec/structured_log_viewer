@@ -12193,6 +12193,161 @@ private slots:
         model->EndStreaming(false);
     }
 
+    // Regression: Find Next must land on every consecutive match.
+    // A double-advance (e.g. FindRecords firing twice per Enter /
+    // click, or skipFirstN skipping a row and a match) presents as
+    // "every other hit is skipped".
+    void TestFindNextVisitsEveryConsecutiveMatch()
+    {
+        // Every row contains "needle" so matches are consecutive
+        // proxy rows 0..N-1 — the strongest repro for skip-by-two.
+        constexpr int FIXTURE_LINES = 8;
+        QStringList lines;
+        lines.reserve(FIXTURE_LINES);
+        for (int i = 0; i < FIXTURE_LINES; ++i)
+        {
+            lines.append(QStringLiteral(R"({"msg": "needle row%1"})").arg(i));
+        }
+        const TempJsonFile fixture(lines);
+
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+        QCOMPARE(model->rowCount(), FIXTURE_LINES);
+
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        QVERIFY2(tableView != nullptr, "MainWindow must own a LogTableView");
+        const LogFilterModel *filterModel = mWindow->FilterModel();
+        QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
+        QCOMPARE(filterModel->rowCount(), FIXTURE_LINES);
+
+        // Clear any inherited selection so the first Next starts at
+        // row 0 with skipFirstN==0.
+        tableView->selectionModel()->clearSelection();
+        tableView->selectionModel()->setCurrentIndex(filterModel->index(0, 0), QItemSelectionModel::NoUpdate);
+
+        QList<int> visited;
+        visited.reserve(FIXTURE_LINES);
+        for (int step = 0; step < FIXTURE_LINES; ++step)
+        {
+            QVERIFY2(
+                QMetaObject::invokeMethod(
+                    mWindow,
+                    "FindRecords",
+                    Qt::DirectConnection,
+                    Q_ARG(QString, QStringLiteral("needle")),
+                    Q_ARG(bool, true),
+                    Q_ARG(bool, false),
+                    Q_ARG(bool, false)
+                ),
+                "FindRecords slot must be invocable via meta-object"
+            );
+            const QModelIndex selected = tableView->selectionModel()->currentIndex();
+            QVERIFY2(selected.isValid(), "FindRecords must select a match");
+            visited.append(selected.row());
+        }
+
+        QList<int> expected;
+        expected.reserve(FIXTURE_LINES);
+        for (int i = 0; i < FIXTURE_LINES; ++i)
+        {
+            expected.append(i);
+        }
+        QCOMPARE(visited, expected);
+
+        model->EndStreaming(false);
+    }
+
+    // Same consecutive-match walk, but driven through the find bar's
+    // Enter / Next-button signals so a double-emit of `FindRecords`
+    // cannot hide behind direct slot invocation.
+    void TestFindNextViaUiDoesNotDoubleAdvance()
+    {
+        constexpr int FIXTURE_LINES = 6;
+        QStringList lines;
+        lines.reserve(FIXTURE_LINES);
+        for (int i = 0; i < FIXTURE_LINES; ++i)
+        {
+            lines.append(QStringLiteral(R"({"msg": "needle row%1"})").arg(i));
+        }
+        const TempJsonFile fixture(lines);
+
+        auto *model = mWindow->findChild<LogModel *>();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        const loglib::JsonParser parser;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
+
+        auto *findRecord = mWindow->findChild<FindRecordWidget *>();
+        QVERIFY2(findRecord != nullptr, "MainWindow must own a FindRecordWidget");
+        auto *edit = findRecord->findChild<QLineEdit *>(QStringLiteral("findEdit"));
+        auto *nextButton = findRecord->findChild<QToolButton *>(QStringLiteral("findNext"));
+        QVERIFY2(edit != nullptr && nextButton != nullptr, "find edit + next button must exist");
+
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        QVERIFY2(tableView != nullptr, "MainWindow must own a LogTableView");
+        const LogFilterModel *filterModel = mWindow->FilterModel();
+        QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
+
+        tableView->selectionModel()->clearSelection();
+        tableView->selectionModel()->setCurrentIndex(filterModel->index(0, 0), QItemSelectionModel::NoUpdate);
+
+        edit->setText(QStringLiteral("needle"));
+        QSignalSpy findSpy(findRecord, &FindRecordWidget::FindRecords);
+        QVERIFY(findSpy.isValid());
+
+        // Enter in the search field must emit FindRecords exactly once
+        // and advance by exactly one match.
+        edit->setFocus();
+        QTest::keyClick(edit, Qt::Key_Return);
+        QCOMPARE(findSpy.count(), 1);
+        QCOMPARE(tableView->selectionModel()->currentIndex().row(), 0);
+
+        // Next button: same single-step contract.
+        findSpy.clear();
+        QTest::mouseClick(nextButton, Qt::LeftButton);
+        QCOMPARE(findSpy.count(), 1);
+        QCOMPARE(tableView->selectionModel()->currentIndex().row(), 1);
+
+        // Enter again from the edit field after the button click
+        // (focus may have moved) — still one step, not a double jump.
+        findSpy.clear();
+        edit->setFocus();
+        QTest::keyClick(edit, Qt::Key_Return);
+        QCOMPARE(findSpy.count(), 1);
+        QCOMPARE(tableView->selectionModel()->currentIndex().row(), 2);
+
+        model->EndStreaming(false);
+    }
+
     // Regression: `FindRecords` used to OR `MatchContains` with the
     // regex / wildcard flags. `Matches` short-circuits on contains,
     // so the toggles were silently no-ops.
@@ -13097,6 +13252,62 @@ private slots:
         QCOMPARE(label->text(), QStringLiteral("sentinel-do-not-touch"));
     }
 
+    // Regression: `SetMatchInfo(overflowed=true)` used to only
+    // append "+" to the visible total, which was ambiguous
+    // between "the total is a lower bound (scan bailed)" and
+    // "the total is exact but cursor-position lookup is capped".
+    // The label now installs a tooltip that spells both effects
+    // out; `overflowed=false` must clear the tooltip so a
+    // narrower search doesn't inherit a stale hover from the
+    // previous broad one. Pins both edges.
+    void TestSetMatchInfoOverflowedInstallsTooltip()
+    {
+        auto *findRecord = mWindow->findChild<FindRecordWidget *>();
+        QVERIFY2(findRecord != nullptr, "MainWindow must own a FindRecordWidget");
+        auto *label = findRecord->findChild<QLabel *>(QStringLiteral("findMatchCount"));
+        QVERIFY2(label != nullptr, "FindRecordWidget must expose its match-count label");
+
+        // Baseline: no matches, tooltip clear.
+        findRecord->SetMatchInfo(0, 0);
+        QVERIFY2(label->toolTip().isEmpty(), "empty result must clear the tooltip");
+
+        // Exact count (not overflowed): visible text has no "+"
+        // and no tooltip.
+        findRecord->SetMatchInfo(3, 42, /*overflowed=*/false);
+        QVERIFY2(!label->text().contains(QChar('+')), "non-overflowed total must not carry a '+' suffix");
+        QVERIFY2(label->toolTip().isEmpty(), "non-overflowed match info must not install a tooltip");
+
+        // Overflowed: visible text keeps "+" (lower-bound cue),
+        // AND the tooltip explains what the "+" means and calls
+        // out the cursor-position degradation. Keyword probes
+        // rather than exact-text matches so translation drift or
+        // wording tweaks don't tank the test.
+        findRecord->SetMatchInfo(0, 25000, /*overflowed=*/true);
+        QVERIFY2(label->text().contains(QChar('+')), "overflowed total must retain the '+' lower-bound cue");
+        const QString tooltip = label->toolTip();
+        QVERIFY2(!tooltip.isEmpty(), "overflowed match info must install an explanatory tooltip");
+        QVERIFY2(
+            tooltip.contains(QStringLiteral("lower bound"), Qt::CaseInsensitive) ||
+                tooltip.contains(QStringLiteral("bails"), Qt::CaseInsensitive),
+            qPrintable(QStringLiteral("tooltip should mention the scan's early-exit / lower-bound "
+                                      "nature so the user can interpret the '+' correctly: %1")
+                           .arg(tooltip))
+        );
+        QVERIFY2(
+            tooltip.contains(QStringLiteral("current"), Qt::CaseInsensitive) ||
+                tooltip.contains(QStringLiteral("cursor"), Qt::CaseInsensitive) ||
+                tooltip.contains(QStringLiteral("index"), Qt::CaseInsensitive),
+            qPrintable(
+                QStringLiteral("tooltip should also mention the cursor / current-match degradation: %1").arg(tooltip)
+            )
+        );
+
+        // Narrowing the search (overflow gone) must not leave the
+        // previous tooltip stranded on the label.
+        findRecord->SetMatchInfo(1, 5, /*overflowed=*/false);
+        QVERIFY2(label->toolTip().isEmpty(), "narrower search must clear the stale overflow tooltip");
+    }
+
     // Regression: the status button used to total `count +
     // droppedCount`, which didn't match the dock summary ("X
     // errors; Y earlier dropped"). Now the button renders the
@@ -13370,6 +13581,7 @@ private slots:
             QStringLiteral("actionToggleRecordDetails"),
             QStringLiteral("actionToggleAnchors"),
             QStringLiteral("actionToggleHistogram"),
+            QStringLiteral("actionToggleOverviewRail"),
             QStringLiteral("__widget"), // expanding spacer
             QStringLiteral("actionPreferences"),
         };

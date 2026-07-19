@@ -8,6 +8,8 @@
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
 #include "log_table_view.hpp"
+#include "overview_rail_model.hpp"
+#include "overview_rail_widget.hpp"
 #include "parse_errors_dock.hpp"
 #include "preferences_editor.hpp"
 #include "record_detail_dock.hpp"
@@ -45,6 +47,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -346,6 +349,27 @@ public:
     /// @p bucketIndex. Wired to `HistogramDock::bucketClicked`.
     void JumpToFirstRowInBucket(std::size_t bucketIndex);
 
+    /// Scroll the table so proxy row @p proxyRow is centred.
+    /// Wired to `OverviewRailWidget::proxyRowClicked`; no-op when
+    /// the row is out of range.
+    ///
+    /// @p replaceSelection: `true` on a fresh rail click (clears
+    /// the existing selection and selects just @p proxyRow);
+    /// `false` during a drag scrub (leaves selection alone so a
+    /// multi-row selection survives a rail scroll).
+    ///
+    /// Always disengages Follow newest: rail navigation is
+    /// intentional browsing, and `scrollTo` alone wouldn't fire
+    /// `userScrolledAwayFromTail`.
+    void ScrollToProxyRow(int proxyRow, bool replaceSelection = true);
+
+    /// Attach / detach `mOverviewRailWidget` on the table view,
+    /// persist visibility to `QSettings("ui/showOverviewRail")`,
+    /// and mirror the state onto `mActionToggleOverviewRail`.
+    /// Idempotent so the load-time seed and the user toggle share
+    /// one code path.
+    void SetOverviewRailVisible(bool visible);
+
     /// Install a `Type::Time` filter on
     /// `[fromEpochMicros, toEpochMicros]` for the histogram's time
     /// column. Wired to `HistogramDock::timeRangeSelected`; no-op
@@ -548,6 +572,16 @@ private slots:
     /// Drop the cached match-row list. Wired to model resets and
     /// proxy layout changes so a stale cache cannot survive.
     void InvalidateFindMatchCache();
+
+    /// Push the current `mFindMatchCache` match state into the
+    /// overview rail. No-op when the find bar is not visible —
+    /// ticks mirror the find indicator, they must not reappear
+    /// from a stale cache after find was closed. Prefers cached
+    /// per-bucket counts (unbiased even when `sortedRows` is
+    /// capped); forces a full recount when they're missing or
+    /// size-mismatched so the rail never paints a top-biased
+    /// strip.
+    void PushFindMatchesToOverviewRail();
 
     /// Centralised invalidate + debounced re-request. Wired to every
     /// model / proxy signal that can change the match set; a sync
@@ -1203,17 +1237,27 @@ private:
     /// has entries; clicking it opens the dock.
     QPushButton *mParseErrorsStatusButton = nullptr;
 
-    /// Hard cap on the "*i* of *N*" scan. The scan runs synchronously
-    /// on the GUI thread; an unbounded walk over a million-row proxy
-    /// with a frequent needle would freeze the UI per recount. Past
-    /// the cap the indicator shows "*N*+"; Next / Previous still work.
+    /// Cap on `sortedRows` (the vector powering the "*i* of *N*"
+    /// binary search). Past this many hits the scan may early-exit
+    /// once the rail's presence fold is settled, keeping the GUI
+    /// bounded on huge tables with a common needle. When
+    /// `overflowed` is set, `totalMatches` is a lower bound and
+    /// the position lookup degrades for match `#10 001` or later.
     static constexpr int MAX_FIND_MATCH_COUNT = 10000;
 
-    /// Cached match-row list for the "*i* of *N*" indicator. Keyed by
-    /// `(needle, wildcards, regex)` so a Next / Previous click can
-    /// resolve the new `i` via binary search instead of re-scanning.
-    /// Row-deduplicated so the indicator agrees with how `FindRecords`
-    /// walks the table. `overflowed` is set when the scan hit the cap.
+    /// Cached match state for the "*i* of *N*" indicator. Keyed by
+    /// `(needle, wildcards, regex)` so Next / Previous can resolve
+    /// the new `i` via binary search instead of re-scanning.
+    ///
+    /// - `sortedRows`: deduplicated, capped at `MAX_FIND_MATCH_COUNT`.
+    /// - `totalMatches`: exact when `!overflowed`, otherwise a
+    ///   lower bound. A cursor at match `#10 001` or later resolves
+    ///   to `0` (no position highlight) under overflow.
+    /// - `bucketCounts`: per-bucket totals mirrored to the rail
+    ///   (empty when the rail had zero buckets during the scan).
+    ///   Restored on find-dock reveal so a cache-hit recount can't
+    ///   leave the rail on a top-biased strip. Presence-only —
+    ///   density may be incomplete after an early-exit.
     struct FindMatchCache
     {
         QString needle;
@@ -1221,6 +1265,8 @@ private:
         bool regularExpressions = false;
         bool overflowed = false;
         std::vector<int> sortedRows;
+        uint32_t totalMatches = 0;
+        std::vector<uint32_t> bucketCounts;
     };
     std::optional<FindMatchCache> mFindMatchCache;
     PreferencesEditor *mPreferencesEditor;
@@ -1255,6 +1301,21 @@ private:
     /// Toggle action for the Histogram dock; re-added on every
     /// `RebuildViewMenu`. Programmatic because the .ui has no entry.
     QAction *mActionToggleHistogram = nullptr;
+
+    /// Bucketed index of the outermost proxy row space that feeds
+    /// `mOverviewRailWidget`. Kept alive even when the rail is
+    /// hidden so the toggle is instant.
+    OverviewRailModel *mOverviewRailModel = nullptr;
+
+    /// Parented on `mTableView` while visible (via
+    /// `LogTableView::AttachOverviewRail`), on `this` while detached.
+    /// `QPointer` so a teardown-time delete zeroes the slot.
+    QPointer<OverviewRailWidget> mOverviewRailWidget;
+
+    /// Checkable toggle for the overview rail, mirrored onto the
+    /// primary toolbar and the View menu. Persisted through
+    /// `ui/showOverviewRail`.
+    QAction *mActionToggleOverviewRail = nullptr;
 
     /// Anchor hotkey actions: index N maps to `Ctrl+(N+1)`.
     /// `mActionClearRowAnchor` is `Ctrl+0`; jumps are `F2` /
