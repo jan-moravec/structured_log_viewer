@@ -159,7 +159,7 @@ ProxyChain BuildProxyChain(LogModel *model, QObject *parent)
     auto *filter = new LogFilterModel(parent);
     filter->setSourceModel(rowOrder);
     filter->SetLogModel(model);
-    return {rowOrder, filter};
+    return {.rowOrder = rowOrder, .filter = filter};
 }
 
 } // namespace
@@ -274,7 +274,7 @@ private slots:
         QVERIFY(!rail.HasMatchTicks());
         // Rows 5, 10, 15, plus out-of-range 999 (must be dropped
         // silently) and negative -1 (also dropped).
-        QSignalSpy matchSpy(&rail, &OverviewRailModel::matchesChanged);
+        const QSignalSpy matchSpy(&rail, &OverviewRailModel::matchesChanged);
         rail.SetMatchProxyRows({-1, 5, 10, 15, 999});
         QVERIFY(rail.HasMatchTicks());
         QCOMPARE(matchSpy.count(), 1);
@@ -822,7 +822,7 @@ private slots:
         OverviewRailModel railModel(chain.filter, &model, &anchors, &owner);
         railModel.SetBucketCount(50);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString path = dir.filePath(QStringLiteral("fatal_needle.jsonl"));
         {
@@ -906,7 +906,7 @@ private slots:
         // resizes this to the widget's rail height.
         railModel.SetBucketCount(100);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString path = dir.filePath(QStringLiteral("log_weight.jsonl"));
         {
@@ -1121,9 +1121,7 @@ private slots:
         // helper to resolve it to a Y range.
         const std::size_t matchBucket = std::min<std::size_t>(
             railModel.BucketCount() - 1,
-            static_cast<std::size_t>(
-                (static_cast<std::size_t>(50) * railModel.BucketCount()) / static_cast<std::size_t>(ROWS)
-            )
+            ((static_cast<std::size_t>(50) * railModel.BucketCount()) / static_cast<std::size_t>(ROWS))
         );
         const int yTop = widget->YForBucketForTest(matchBucket);
         const int yBottom =
@@ -1467,7 +1465,7 @@ private slots:
         QObject owner;
         const auto chain = BuildProxyChain(&model, &owner);
         OverviewRailModel rail(chain.filter, &model, &anchors, &owner);
-        OverviewRailWidget widget(&rail, /*theme=*/nullptr, /*tableView=*/nullptr);
+        const OverviewRailWidget widget(&rail, /*theme=*/nullptr, /*tableView=*/nullptr);
         // Ensure the widget has a valid style / font (offscreen QPA
         // still routes both). The DPI-fluent width should be > 0
         // and >= the minimum floor.
@@ -1710,7 +1708,7 @@ private slots:
     /// (Shortcuts dialog + toolbar tooltip) matches expectations.
     static void TestMainWindowOverviewRailShortcut()
     {
-        MainWindow window;
+        const MainWindow window;
         auto *action = window.findChild<QAction *>(QStringLiteral("actionToggleOverviewRail"));
         QVERIFY(action != nullptr);
         const QKeySequence expected(Qt::CTRL | Qt::SHIFT | Qt::Key_R);
@@ -2083,7 +2081,7 @@ private slots:
         StreamJsonPathInto(model, fixture.Path());
         WaitForBucketsChanged(rail);
 
-        QSignalSpy spy(&rail, &OverviewRailModel::bucketsChanged);
+        const QSignalSpy spy(&rail, &OverviewRailModel::bucketsChanged);
         QVERIFY(spy.isValid());
         // Fire a synthetic `Grew` on the level column (the
         // wide-log worst case). The rail's connect explicitly
@@ -2152,7 +2150,7 @@ private slots:
         counts[3] = 7;
         counts[19] = 42;
 
-        QSignalSpy matchSpy(&rail, &OverviewRailModel::matchesChanged);
+        const QSignalSpy matchSpy(&rail, &OverviewRailModel::matchesChanged);
         rail.SetMatchBucketCounts(counts, /*totalMatches=*/49);
         QCOMPARE(matchSpy.count(), 1);
         QVERIFY(rail.HasMatchTicks());
@@ -2241,7 +2239,7 @@ private slots:
         }();
         QCOMPARE(baselineTotal, static_cast<uint32_t>(3));
 
-        QSignalSpy matchSpy(&rail, &OverviewRailModel::matchesChanged);
+        const QSignalSpy matchSpy(&rail, &OverviewRailModel::matchesChanged);
         // Off-by-one on the vector size: rail has 20 buckets.
         rail.SetMatchBucketCounts(std::vector<uint32_t>(19, uint32_t{7}), /*totalMatches=*/133);
         QCOMPARE(matchSpy.count(), 0);
@@ -2824,7 +2822,7 @@ private slots:
         widget->resize(60, 150);
         QCOMPARE(static_cast<int>(railModel.BucketCount()), 0);
 
-        QSignalSpy spy(&railModel, &OverviewRailModel::bucketsChanged);
+        const QSignalSpy spy(&railModel, &OverviewRailModel::bucketsChanged);
         QVERIFY(spy.isValid());
 
         widget->show();
@@ -2874,7 +2872,7 @@ private slots:
         widget->resize(60, 140);
         // Confirm the debounce is armed post-resize: no
         // `bucketsChanged` yet.
-        QSignalSpy spy(&railModel, &OverviewRailModel::bucketsChanged);
+        const QSignalSpy spy(&railModel, &OverviewRailModel::bucketsChanged);
         QVERIFY(spy.isValid());
         widget->show();
         // Show fires exactly one emit synchronously.
@@ -2946,8 +2944,8 @@ private slots:
                 {
                     // `QEvent::Wheel` guarantees the dynamic
                     // type; Qt doesn't enable RTTI on `QEvent`.
-                    auto *w = // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
-                        static_cast<QWheelEvent *>(event);
+                    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-static-cast-downcast)
+                    auto *w = static_cast<QWheelEvent *>(event);
                     localPositions.append(w->position());
                     angleDeltas.append(w->angleDelta());
                 }
@@ -3024,7 +3022,7 @@ private slots:
         QVERIFY(model != nullptr);
         StreamJsonPathInto(*model, fixture.Path());
 
-        QAction *followAction = window.findChild<QAction *>(QStringLiteral("actionFollowTail"));
+        auto *followAction = window.findChild<QAction *>(QStringLiteral("actionFollowTail"));
         QVERIFY(followAction != nullptr);
         followAction->setEnabled(true);
         followAction->setChecked(true);
@@ -3202,7 +3200,7 @@ private slots:
         QVERIFY(railWidget != nullptr);
         QVERIFY(railWidget->isVisible());
 
-        QAction *followAction = window.findChild<QAction *>(QStringLiteral("actionFollowTail"));
+        auto *followAction = window.findChild<QAction *>(QStringLiteral("actionFollowTail"));
         QVERIFY(followAction != nullptr);
         followAction->setEnabled(true);
         followAction->setChecked(true);

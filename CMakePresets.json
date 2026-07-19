@@ -152,14 +152,14 @@
         },
         {
             "name": "clang-tsan",
-            "displayName": "TSan tests (excludes benchmarks and apptest)",
-            "description": "Runs the loglib unit tests + apptest_queue under ThreadSanitizer. Excludes apptest by name regex because Qt's internal mutexes generate false positives that drown the signal; the threading code worth testing (TBB pipeline, StreamLineSource, TailingBytesProducer, LogModel::Reset teardown, BoundedBatchQueue) lives in the tests that still run.",
+            "displayName": "TSan tests (excludes benchmarks, apptest and apptest_overview_rail)",
+            "description": "Runs the loglib unit tests + apptest_queue under ThreadSanitizer. Excludes the Qt-coupled apptest and apptest_overview_rail suites by name regex because Qt's raster thread pool and private mutexes generate false positives that drown the signal (e.g. concurrent QArrayData allocations on the pooled paint workers spawned by QWidget::show()). The threading code worth testing (TBB pipeline, StreamLineSource, TailingBytesProducer, LogModel::Reset teardown, BoundedBatchQueue) lives in the tests that still run.",
             "configurePreset": "clang-tsan",
             "inherits": "_test_base",
             "filter": {
                 "exclude": {
                     "label": "benchmark",
-                    "name": "^apptest$"
+                    "name": "^apptest(_overview_rail)?$"
                 }
             },
             "environment": {

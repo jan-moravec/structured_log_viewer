@@ -357,7 +357,7 @@ void OverviewRailModel::RebuildInternal()
     // Single linear walk over the proxy: one source-row mapping
     // per row for the level (and optional anchor) lookup. Cost is
     // dominated by the source mapping, not the bucket increment.
-    LogModel *const sourceModel = mSourceModel;
+    const LogModel *const sourceModel = mSourceModel;
     for (int proxyRow = 0; proxyRow < mProxyRowCount; ++proxyRow)
     {
         const std::size_t bucketIdx =
@@ -555,7 +555,7 @@ void OverviewRailModel::RebuildProxyChainCache()
     QAbstractItemModel *current = mProxyModel;
     while (auto *proxy = qobject_cast<QAbstractProxyModel *>(current))
     {
-        mProxyChain.push_back(QPointer<QAbstractProxyModel>(proxy));
+        mProxyChain.emplace_back(proxy);
         current = proxy->sourceModel();
         if (current == nullptr)
         {

@@ -12232,7 +12232,7 @@ private slots:
 
         auto *tableView = mWindow->findChild<LogTableView *>();
         QVERIFY2(tableView != nullptr, "MainWindow must own a LogTableView");
-        LogFilterModel *filterModel = mWindow->FilterModel();
+        const LogFilterModel *filterModel = mWindow->FilterModel();
         QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
         QCOMPARE(filterModel->rowCount(), FIXTURE_LINES);
 
@@ -12314,7 +12314,7 @@ private slots:
 
         auto *tableView = mWindow->findChild<LogTableView *>();
         QVERIFY2(tableView != nullptr, "MainWindow must own a LogTableView");
-        LogFilterModel *filterModel = mWindow->FilterModel();
+        const LogFilterModel *filterModel = mWindow->FilterModel();
         QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
 
         tableView->selectionModel()->clearSelection();

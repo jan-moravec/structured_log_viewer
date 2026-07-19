@@ -175,9 +175,9 @@ QColor ColorForAnchorSlot(const ThemeControl *theme, std::uint8_t colorIndex, co
 {
     if (underlayWidth <= 0)
     {
-        return QRect(underlayLeft, 0, 0, 0);
+        return {underlayLeft, 0, 0, 0};
     }
-    return QRect(underlayLeft, 0, underlayWidth, 0);
+    return {underlayLeft, 0, underlayWidth, 0};
 }
 
 [[nodiscard]] double WidthScaleForMode(OverviewRailWidthMode mode) noexcept
@@ -358,7 +358,7 @@ int OverviewRailWidget::WidthForCountForTest(std::uint32_t count, std::uint32_t 
         return 0;
     }
     const double intensity = IntensityForCount(count, maxCount);
-    int barWidth = static_cast<int>(std::round(intensity * static_cast<double>(columnWidth)));
+    const int barWidth = static_cast<int>(std::round(intensity * static_cast<double>(columnWidth)));
     return std::clamp(barWidth, MIN_BAR_WIDTH_PX, columnWidth);
 }
 
@@ -559,7 +559,7 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
             int reserved = 0;
             for (std::size_t s = 0; s < SEVERITY_DESCENDING.size(); ++s)
             {
-                const std::size_t levelIdx = static_cast<std::size_t>(SEVERITY_DESCENDING[s]);
+                const auto levelIdx = static_cast<std::size_t>(SEVERITY_DESCENDING[s]);
                 const std::uint32_t levelCount = bucket.levels.counts[levelIdx];
                 if (levelCount > 0)
                 {
@@ -585,7 +585,7 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
                 // the bar ends exactly at `barWidth` and the
                 // dominant severity wins the visual tie-break.
                 int allocated = 0;
-                for (int w : segWidths)
+                for (const int w : segWidths)
                 {
                     allocated += w;
                 }
@@ -953,7 +953,7 @@ QRect OverviewRailWidget::ComputeViewportIndicatorRect() const
     const long long yBottom = (static_cast<long long>(bottomRow + 1) * static_cast<long long>(railHeight)) /
                               static_cast<long long>(totalRows);
     const int naturalHeight = static_cast<int>(yBottom - yTop);
-    int indicatorHeight = std::max(naturalHeight, INDICATOR_MIN_HEIGHT_PX);
+    const int indicatorHeight = std::max(naturalHeight, INDICATOR_MIN_HEIGHT_PX);
     // When the natural span is shorter than the min-height floor
     // (common on tall logs), expand around the centre of the
     // visible range so a mid-viewport row lines up with the
@@ -968,7 +968,7 @@ QRect OverviewRailWidget::ComputeViewportIndicatorRect() const
     }
     indicatorTop = std::max(indicatorTop, rail.top());
 
-    return QRect(rail.left(), indicatorTop, rail.width(), indicatorHeight);
+    return {rail.left(), indicatorTop, rail.width(), indicatorHeight};
 }
 
 void OverviewRailWidget::SyncBucketCountToHeight()
