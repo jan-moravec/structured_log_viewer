@@ -37,12 +37,14 @@ public:
     [[nodiscard]] virtual std::string RawLine(size_t lineId) const = 0;
 
     /// Resolve a `CompactTag::MmapSlice` payload; empty if unstable.
-    [[nodiscard]] virtual std::string_view ResolveMmapBytes(uint64_t offset, uint32_t length, size_t lineId)
-        const noexcept = 0;
+    [[nodiscard]] virtual std::string_view ResolveMmapBytes(
+        uint64_t offset, uint32_t length, size_t lineId
+    ) const noexcept = 0;
 
     /// Resolve a `CompactTag::OwnedString` payload; empty if out of range.
-    [[nodiscard]] virtual std::string_view ResolveOwnedBytes(uint64_t offset, uint32_t length, size_t lineId)
-        const noexcept = 0;
+    [[nodiscard]] virtual std::string_view ResolveOwnedBytes(
+        uint64_t offset, uint32_t length, size_t lineId
+    ) const noexcept = 0;
 
     /// Bytes a parser may emit `MmapSlice` payloads against.
     /// File sources return the mmap; stream sources return empty.

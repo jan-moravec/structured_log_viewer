@@ -260,17 +260,19 @@ void JumpToTailPill::ApplyStyleSheet()
     // foreground glyph through theme changes.
     const QColor focusRing = fg;
 
-    const QString sheet = QStringLiteral("QToolButton#jumpToTailPill {"
-                                         "  background-color: %1;"
-                                         "  color: %2;"
-                                         "  border: none;"
-                                         "  border-radius: %3px;"
-                                         "  padding: %4px %5px;"
-                                         "  font-weight: 600;"
-                                         "}"
-                                         "QToolButton#jumpToTailPill:hover { background-color: %6; }"
-                                         "QToolButton#jumpToTailPill:pressed { background-color: %7; }"
-                                         "QToolButton#jumpToTailPill:focus { outline: 2px solid %8; }")
+    const QString sheet = QStringLiteral(
+                              "QToolButton#jumpToTailPill {"
+                              "  background-color: %1;"
+                              "  color: %2;"
+                              "  border: none;"
+                              "  border-radius: %3px;"
+                              "  padding: %4px %5px;"
+                              "  font-weight: 600;"
+                              "}"
+                              "QToolButton#jumpToTailPill:hover { background-color: %6; }"
+                              "QToolButton#jumpToTailPill:pressed { background-color: %7; }"
+                              "QToolButton#jumpToTailPill:focus { outline: 2px solid %8; }"
+    )
                               .arg(bg.name(QColor::HexRgb))
                               .arg(fg.name(QColor::HexRgb))
                               .arg(RADIUS_PX)

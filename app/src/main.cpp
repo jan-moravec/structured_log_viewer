@@ -231,10 +231,9 @@ int main(int argc, char *argv[])
 
         if (previouslyOpen.size() > MAX_RESTORE_PEERS)
         {
-            logapp::LogWarning(
-            ) << "Truncating restore from"
-              << previouslyOpen.size() << "to" << MAX_RESTORE_PEERS
-              << "peer windows; the surplus stays in the recents index and can be reopened manually.";
+            logapp::LogWarning()
+                << "Truncating restore from" << previouslyOpen.size() << "to" << MAX_RESTORE_PEERS
+                << "peer windows; the surplus stays in the recents index and can be reopened manually.";
             previouslyOpen = previouslyOpen.mid(0, MAX_RESTORE_PEERS);
         }
 

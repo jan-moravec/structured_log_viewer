@@ -92,12 +92,14 @@ QList<RegexTemplateRegistry::Listing> RegexTemplateRegistry::Available() const
     out.reserve(static_cast<int>(mIndex.size()));
     for (const auto &[name, entry] : mIndex)
     {
-        out.append(Listing{
-            .name = name,
-            .fromUser = entry.fromUser,
-            .priority = entry.tmpl.priority,
-            .autoDetect = entry.tmpl.autoDetect,
-        });
+        out.append(
+            Listing{
+                .name = name,
+                .fromUser = entry.fromUser,
+                .priority = entry.tmpl.priority,
+                .autoDetect = entry.tmpl.autoDetect,
+            }
+        );
     }
     return out;
 }

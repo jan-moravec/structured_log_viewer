@@ -55,10 +55,12 @@ TEST_CASE("Validate JSON-shaped first line [csv]", "[csv_parser]")
     // No commas -> rejected, so JSON wins the auto-detect race.
     const loglib::CsvParser parser;
     const TestLogFile file;
-    file.Write(R"({"key": "value"})"
-               "\n"
-               R"({"key": "value2"})"
-               "\n");
+    file.Write(
+        R"({"key": "value"})"
+        "\n"
+        R"({"key": "value2"})"
+        "\n"
+    );
     CHECK_FALSE(parser.IsValid(file.GetFilePath()));
 }
 
@@ -161,8 +163,10 @@ TEST_CASE("Parse typed bare cells [csv]", "[csv_parser]")
     // Mirrors logfmt: bool / int / uint / double classify; quoted cells stay strings.
     const loglib::CsvParser parser;
     const TestLogFile file;
-    file.Write("i,u,d,b,f,n,q\n"
-               "-12,10000000000000000000,3.14,true,false,,\"42\"\n");
+    file.Write(
+        "i,u,d,b,f,n,q\n"
+        "-12,10000000000000000000,3.14,true,false,,\"42\"\n"
+    );
 
     auto result = loglib::ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.empty());
@@ -187,9 +191,11 @@ TEST_CASE("Quoted cell with embedded comma / quote / newline [csv]", "[csv_parse
     // Embedded newlines (multi-line cells) are unsupported in v1.
     const loglib::CsvParser parser;
     const TestLogFile file;
-    file.Write("label,text\n"
-               "comma,\"a,b\"\n"
-               "quote,\"a\"\"b\"\n");
+    file.Write(
+        "label,text\n"
+        "comma,\"a,b\"\n"
+        "quote,\"a\"\"b\"\n"
+    );
 
     auto result = loglib::ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.empty());
@@ -202,9 +208,11 @@ TEST_CASE("Unterminated quoted cell surfaces as error [csv]", "[csv_parser]")
 {
     const loglib::CsvParser parser;
     const TestLogFile file;
-    file.Write("a,b\n"
-               "ok,ok\n"
-               "broken,\"unterminated\n");
+    file.Write(
+        "a,b\n"
+        "ok,ok\n"
+        "broken,\"unterminated\n"
+    );
 
     auto result = loglib::ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.size() == 1);
@@ -218,9 +226,11 @@ TEST_CASE("Ragged row with extra cells surfaces as error [csv]", "[csv_parser]")
 {
     const loglib::CsvParser parser;
     const TestLogFile file;
-    file.Write("a,b\n"
-               "1,2\n"
-               "1,2,3\n");
+    file.Write(
+        "a,b\n"
+        "1,2\n"
+        "1,2,3\n"
+    );
 
     auto result = loglib::ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.size() == 1);
@@ -235,9 +245,11 @@ TEST_CASE("Empty cells are omitted, missing trailing cells materialise as monost
     // key; both lookups yield monostate.
     const loglib::CsvParser parser;
     const TestLogFile file;
-    file.Write("a,b,c\n"
-               "1,,3\n"
-               "4,5\n");
+    file.Write(
+        "a,b,c\n"
+        "1,,3\n"
+        "4,5\n"
+    );
 
     auto result = loglib::ParseFile(parser, file.GetFilePath());
     CHECK(result.errors.empty());
@@ -319,14 +331,16 @@ TEST_CASE("LineSource::RawLine alignment skips the header [csv]", "[csv_parser]"
 TEST_CASE("ToString emits cells comma-separated, quoting where needed [csv]", "[csv_parser]")
 {
     using namespace loglib;
-    const std::string emitted = CsvParser::ToString(LogMap{
-        {"a_safe", LogValue{std::string_view{"value"}}},
-        {"b_with_comma", LogValue{std::string_view{"a,b"}}},
-        {"c_with_quote", LogValue{std::string_view{"a\"b"}}},
-        {"d_with_newline", LogValue{std::string_view{"line1\nline2"}}},
-        {"e_int", LogValue{static_cast<std::int64_t>(-42)}},
-        {"f_bool", LogValue{true}}
-    });
+    const std::string emitted = CsvParser::ToString(
+        LogMap{
+            {"a_safe", LogValue{std::string_view{"value"}}},
+            {"b_with_comma", LogValue{std::string_view{"a,b"}}},
+            {"c_with_quote", LogValue{std::string_view{"a\"b"}}},
+            {"d_with_newline", LogValue{std::string_view{"line1\nline2"}}},
+            {"e_int", LogValue{static_cast<std::int64_t>(-42)}},
+            {"f_bool", LogValue{true}}
+        }
+    );
 
     // Values only, lex-key-ordered (prefixes `a_` / `b_` / ... pin the order).
     CHECK(emitted == "value,\"a,b\",\"a\"\"b\",\"line1\nline2\",-42,true");

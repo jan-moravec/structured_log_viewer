@@ -72,7 +72,7 @@ else()
 endif()
 
 if(NOT USE_SYSTEM_FMT)
-    FetchContent_Declare(fmt GIT_REPOSITORY https://github.com/fmtlib/fmt.git GIT_TAG 12.1.0 SYSTEM EXCLUDE_FROM_ALL)
+    FetchContent_Declare(fmt GIT_REPOSITORY https://github.com/fmtlib/fmt.git GIT_TAG 12.2.0 SYSTEM EXCLUDE_FROM_ALL)
     FetchContent_MakeAvailable(fmt)
 
     # silence MSVC C4834 (discarded [[nodiscard]] in fmt/base.h) when fmt compiles itself
@@ -87,7 +87,7 @@ if(NOT USE_SYSTEM_CATCH2)
     FetchContent_Declare(
         Catch2
         GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-        GIT_TAG v3.14.0
+        GIT_TAG v3.15.2
         SYSTEM
         EXCLUDE_FROM_ALL
     )
@@ -116,7 +116,7 @@ if(NOT USE_SYSTEM_GLAZE)
     FetchContent_Declare(
         glaze
         GIT_REPOSITORY https://github.com/stephenberry/glaze.git
-        GIT_TAG v7.4.0
+        GIT_TAG v7.9.1
         SYSTEM
         EXCLUDE_FROM_ALL
     )
@@ -129,7 +129,7 @@ if(NOT USE_SYSTEM_SIMDJSON)
     FetchContent_Declare(
         simdjson
         GIT_REPOSITORY https://github.com/simdjson/simdjson.git
-        GIT_TAG v4.6.3
+        GIT_TAG v4.6.4
         SYSTEM
         EXCLUDE_FROM_ALL
     )
@@ -162,7 +162,7 @@ if(NOT USE_SYSTEM_TBB)
     FetchContent_Declare(
         tbb
         GIT_REPOSITORY https://github.com/uxlfoundation/oneTBB.git
-        GIT_TAG v2022.3.0
+        GIT_TAG v2023.1.0
         SYSTEM
         EXCLUDE_FROM_ALL
     )
@@ -172,9 +172,16 @@ if(NOT USE_SYSTEM_TBB)
         set(TBB_STRICT OFF) # don't let oneTBB's -Werror gate our build
         set(BUILD_SHARED_LIBS ON) # parallel_pipeline relies on dynamic library state; static is unsupported upstream
         set(TBB_VERIFY_DEPENDENCY_SIGNATURE OFF) # explicit value silences TBB's "disabled by default" WARNING
-        set(CMAKE_WARN_DEPRECATED OFF) # silence TBB's `cmake_policy(SET CMP0148 OLD)` deprecation
+        # CMake 4 / CMP0218 requires CMAKE_WARN_DEPRECATED / CMAKE_ERROR_DEPRECATED to
+        # be cache variables to actually take effect; a plain `set()` is silently
+        # ignored. Suppress TBB's `cmake_policy(SET CMP0148 OLD)` deprecation warning
+        # by scoping a FORCE cache write for the duration of the block, then
+        # restoring the caller's value.
+        get_property(_slv_saved_warn_deprecated CACHE CMAKE_WARN_DEPRECATED PROPERTY VALUE)
+        set(CMAKE_WARN_DEPRECATED OFF CACHE BOOL "" FORCE)
         set(CMAKE_MESSAGE_LOG_LEVEL NOTICE) # hide chatty "HWLOC target ... doesn't exist" STATUS noise
         FetchContent_MakeAvailable(tbb)
+        set(CMAKE_WARN_DEPRECATED "${_slv_saved_warn_deprecated}" CACHE BOOL "" FORCE)
     endblock()
 else()
     # 2021.5 is the first release with the oneAPI-style tbb::filter_mode / tbb::parallel_pipeline API
@@ -186,7 +193,7 @@ if(NOT USE_SYSTEM_ARGPARSE)
     FetchContent_Declare(
         argparse
         GIT_REPOSITORY https://github.com/p-ranav/argparse.git
-        GIT_TAG v3.1
+        GIT_TAG v3.2
         SYSTEM
         EXCLUDE_FROM_ALL
     )
@@ -202,7 +209,7 @@ endif()
 # stage next to the executable and the /MD vs /MT runtime-library setting
 # matches the rest of the project.
 if(NOT USE_SYSTEM_EFSW)
-    FetchContent_Declare(efsw GIT_REPOSITORY https://github.com/SpartanJ/efsw.git GIT_TAG 1.6.1 SYSTEM EXCLUDE_FROM_ALL)
+    FetchContent_Declare(efsw GIT_REPOSITORY https://github.com/SpartanJ/efsw.git GIT_TAG 1.6.3 SYSTEM EXCLUDE_FROM_ALL)
     block()
         # With BUILD_SHARED_LIBS=OFF, the bare `efsw` target is itself a
         # static library (efsw's CMakeLists uses `add_library(efsw)` without
@@ -247,7 +254,7 @@ if(NOT USE_SYSTEM_PCRE2)
     FetchContent_Declare(
         pcre2
         GIT_REPOSITORY https://github.com/PCRE2Project/pcre2.git
-        GIT_TAG pcre2-10.45
+        GIT_TAG pcre2-10.47
         SYSTEM
         EXCLUDE_FROM_ALL
     )
@@ -308,7 +315,7 @@ if(NOT USE_SYSTEM_ASIO)
     FetchContent_Declare(
         asio
         GIT_REPOSITORY https://github.com/chriskohlhoff/asio.git
-        GIT_TAG asio-1-30-2
+        GIT_TAG asio-1-38-2
         SYSTEM
         EXCLUDE_FROM_ALL
     )
@@ -316,10 +323,13 @@ if(NOT USE_SYSTEM_ASIO)
 
     # Asio's CMakeLists is non-canonical; expose an INTERFACE target
     # ourselves rather than relying on `asio::asio` from the upstream
-    # CMake (which only exists in select forks).
+    # CMake (which only exists in select forks). Since 1.36 the
+    # canonical include tree lives at `<src>/include/asio`; the older
+    # `asio/include` path only works on POSIX (a git symlink upstream)
+    # and is a plain text file on Windows checkouts.
     if(NOT TARGET asio::asio)
         add_library(asio_headers INTERFACE)
-        target_include_directories(asio_headers SYSTEM INTERFACE ${asio_SOURCE_DIR}/asio/include)
+        target_include_directories(asio_headers SYSTEM INTERFACE ${asio_SOURCE_DIR}/include)
         target_compile_definitions(asio_headers INTERFACE ASIO_STANDALONE ASIO_NO_DEPRECATED)
         # POSIX hosts need pthreads; Windows links ws2_32 / mswsock implicitly via Asio headers.
         if(UNIX)
@@ -447,7 +457,7 @@ if(NOT USE_SYSTEM_XZ)
     FetchContent_Declare(
         xz
         GIT_REPOSITORY https://github.com/tukaani-project/xz.git
-        GIT_TAG v5.6.3
+        GIT_TAG v5.8.3
         SYSTEM
         EXCLUDE_FROM_ALL
     )
@@ -515,11 +525,10 @@ if(NOT USE_SYSTEM_ZSTD)
     FetchContent_Declare(
         zstd
         GIT_REPOSITORY https://github.com/facebook/zstd.git
-        GIT_TAG v1.5.6
+        GIT_TAG v1.5.7
         SYSTEM
         EXCLUDE_FROM_ALL
-        SOURCE_SUBDIR
-        build/cmake
+        SOURCE_SUBDIR build/cmake
     )
     block()
         set(ZSTD_BUILD_PROGRAMS OFF)

@@ -281,11 +281,12 @@ private slots:
                                   .arg(static_cast<std::size_t>(table.RowCount()))
                                   .arg(Ms(predicateElapsed).count(), 0, 'f', 2)
                                   .arg(predicateHits);
-        qDebug().noquote(
-        ) << QStringLiteral("Apply enum filter (Qt proxy roundtrip) over %1 rows: %2 ms (%3 rows survived)")
-                 .arg(static_cast<std::size_t>(chain.model->rowCount()))
-                 .arg(Ms(elapsed).count(), 0, 'f', 2)
-                 .arg(filteredRows);
+        qDebug().noquote() << QStringLiteral(
+                                  "Apply enum filter (Qt proxy roundtrip) over %1 rows: %2 ms (%3 rows survived)"
+        )
+                                  .arg(static_cast<std::size_t>(chain.model->rowCount()))
+                                  .arg(Ms(elapsed).count(), 0, 'f', 2)
+                                  .arg(filteredRows);
 
         QVERIFY2(filteredRows > 0 && filteredRows < chain.model->rowCount(), "filter selectivity sanity check");
         QCOMPARE(static_cast<int>(predicateHits), filteredRows);
@@ -493,8 +494,8 @@ private:
         });
         const auto libElapsed = std::chrono::steady_clock::now() - libT0;
 
-        qDebug().noquote(
-        ) << outputLabel.arg(static_cast<std::size_t>(indices.size())).arg(Ms(libElapsed).count(), 0, 'f', 2);
+        qDebug().noquote()
+            << outputLabel.arg(static_cast<std::size_t>(indices.size())).arg(Ms(libElapsed).count(), 0, 'f', 2);
         QVERIFY2(Ms(libElapsed).count() < ceilingMs, qPrintable(regressionLabel.arg(Ms(libElapsed).count())));
     }
 
@@ -516,8 +517,7 @@ private:
         auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
         loglib::FileLineSource *fileSourcePtr = fileSource.get();
         chain.model->BeginStreaming(
-            std::move(fileSource),
-            [fileSourcePtr, sink = chain.model->Sink()](loglib::StopToken token) {
+            std::move(fileSource), [fileSourcePtr, sink = chain.model->Sink()](loglib::StopToken token) {
                 loglib::ParserOptions options;
                 options.stopToken = std::move(token);
                 const loglib::JsonParser parser;

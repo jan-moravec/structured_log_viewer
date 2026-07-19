@@ -79,9 +79,11 @@ inline test_common::TimestampPolicy DeterministicBenchmarkTimestamps()
 inline void RequireReleaseBuildForBenchmarks()
 {
 #ifndef NDEBUG
-    SKIP("Benchmarks require a release build (Debug disables IPO/LTO and "
-         "leaves assertions enabled, so numbers are not comparable). "
-         "Rebuild with: cmake --preset release  (or relwithdebinfo).");
+    SKIP(
+        "Benchmarks require a release build (Debug disables IPO/LTO and "
+        "leaves assertions enabled, so numbers are not comparable). "
+        "Rebuild with: cmake --preset release  (or relwithdebinfo)."
+    );
 #endif
 }
 

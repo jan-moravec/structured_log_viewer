@@ -531,7 +531,8 @@ void RecordDetailWidget::CopyAsKeyValueClicked() const
     {
         // Escape both sides so embedded newlines / tabs don't break
         // the one-line-per-field structure on the receiver.
-        lines.append(QStringLiteral("%1: %2").arg(EscapeForKeyValueCopy(pair.first), EscapeForKeyValueCopy(pair.second))
+        lines.append(
+            QStringLiteral("%1: %2").arg(EscapeForKeyValueCopy(pair.first), EscapeForKeyValueCopy(pair.second))
         );
     }
     QApplication::clipboard()->setText(lines.join(QLatin1Char('\n')));

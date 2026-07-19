@@ -278,10 +278,12 @@ void FindRecordWidget::SetMatchInfo(int current, int total, bool overflowed)
     // the user narrows the search.
     if (overflowed)
     {
-        mMatchCountLabel->setToolTip(tr("Match count is a lower bound (the scan bails once every rail bucket "
-                                        "has a hit and the internal cursor cache is full). The current-match "
-                                        "index may read as 0 for a match past the cache. The overview rail "
-                                        "still shows every bucket that carries a hit."));
+        mMatchCountLabel->setToolTip(
+            tr("Match count is a lower bound (the scan bails once every rail bucket "
+               "has a hit and the internal cursor cache is full). The current-match "
+               "index may read as 0 for a match past the cache. The overview rail "
+               "still shows every bucket that carries a hit.")
+        );
     }
     else
     {

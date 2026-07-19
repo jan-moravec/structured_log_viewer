@@ -46,8 +46,10 @@ TEST_CASE("Validate JSON-shaped first line [logfmt]", "[logfmt_parser]")
     // auto-detect race.
     const loglib::LogfmtParser parser;
     const TestLogFile file;
-    file.Write(R"({"key": "value"})"
-               "\n");
+    file.Write(
+        R"({"key": "value"})"
+        "\n"
+    );
     CHECK_FALSE(parser.IsValid(file.GetFilePath()));
 }
 
@@ -171,9 +173,11 @@ TEST_CASE("Multiple lines parse independently [logfmt]", "[logfmt_parser]")
 {
     const loglib::LogfmtParser parser;
     const TestLogFile file;
-    file.Write("level=info msg=\"first line\"\n"
-               "level=warn msg=\"second line\" code=42\n"
-               "level=error msg=\"third line\"\n");
+    file.Write(
+        "level=info msg=\"first line\"\n"
+        "level=warn msg=\"second line\" code=42\n"
+        "level=error msg=\"third line\"\n"
+    );
 
     auto result = loglib::ParseFile(parser, file.GetFilePath());
     CHECK(result.errors.empty());
@@ -262,12 +266,14 @@ TEST_CASE("ToString round-trips bare and quoted values [logfmt]", "[logfmt_parse
 TEST_CASE("ToString quotes values with whitespace and special bytes [logfmt]", "[logfmt_parser]")
 {
     using namespace loglib;
-    const std::string emitted = LogfmtParser::ToString(LogMap{
-        {"safe", LogValue{std::string_view{"value"}}},
-        {"spaced", LogValue{std::string_view{"hello world"}}},
-        {"with_quote", LogValue{std::string_view{"a\"b"}}},
-        {"with_newline", LogValue{std::string_view{"line1\nline2"}}}
-    });
+    const std::string emitted = LogfmtParser::ToString(
+        LogMap{
+            {"safe", LogValue{std::string_view{"value"}}},
+            {"spaced", LogValue{std::string_view{"hello world"}}},
+            {"with_quote", LogValue{std::string_view{"a\"b"}}},
+            {"with_newline", LogValue{std::string_view{"line1\nline2"}}}
+        }
+    );
 
     CHECK(emitted.contains("safe=value"));
     CHECK(emitted.contains("spaced=\"hello world\""));

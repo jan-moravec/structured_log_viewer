@@ -109,8 +109,10 @@ QString FormatHealthLine(const std::optional<loglib::LogTable::ColumnTypeHealth>
     {
         return QStringLiteral("All %1 values match the configured type.").arg(present);
     }
-    return QStringLiteral("<span style=\"color:#b04040;\">"
-                          "%1 of %2 values do not match the configured type.</span>")
+    return QStringLiteral(
+               "<span style=\"color:#b04040;\">"
+               "%1 of %2 values do not match the configured type.</span>"
+    )
         .arg(mismatched)
         .arg(present);
 }

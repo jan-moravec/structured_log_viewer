@@ -137,9 +137,11 @@ public:
 
                 if (line.front() == '!')
                 {
-                    parsed.errors.push_back(loglib::internal::ParsedLineError{
-                        .relativeLine = relativeLineNumber, .body = "injected parser failure"
-                    });
+                    parsed.errors.push_back(
+                        loglib::internal::ParsedLineError{
+                            .relativeLine = relativeLineNumber, .body = "injected parser failure"
+                        }
+                    );
                     ++relativeLineNumber;
                     continue;
                 }

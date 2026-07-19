@@ -65,10 +65,9 @@ void InsertSorted(
     }
 
     auto it = std::lower_bound(
-        out.begin(),
-        out.end(),
-        id,
-        [](const std::pair<KeyId, internal::CompactLogValue> &lhs, KeyId rhs) { return lhs.first < rhs; }
+        out.begin(), out.end(), id, [](const std::pair<KeyId, internal::CompactLogValue> &lhs, KeyId rhs) {
+            return lhs.first < rhs;
+        }
     );
     if (it != out.end() && it->first == id)
     {

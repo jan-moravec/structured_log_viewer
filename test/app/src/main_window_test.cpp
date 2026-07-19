@@ -738,8 +738,10 @@ private slots:
         QVERIFY(!L::IsSingleLineAsciiTrim("hello\rworld"));
         QVERIFY(!L::IsSingleLineAsciiTrim("hello\vworld"));
         QVERIFY(!L::IsSingleLineAsciiTrim("hello\fworld"));
-        QVERIFY(!L::IsSingleLineAsciiTrim("a\x7f"
-                                          "b")); // DEL
+        QVERIFY(!L::IsSingleLineAsciiTrim(
+            "a\x7f"
+            "b"
+        )); // DEL
 
         // Contract: accepted input is byte-equal to
         // `ConvertToSingleLineCompactQString(bytes).toUtf8()`. Pin a
@@ -780,8 +782,10 @@ private slots:
             };
             QVERIFY2(
                 convertedView != sample,
-                qPrintable(QStringLiteral("rejected sample '%1' must differ after "
-                                          "conversion to '%2'")
+                qPrintable(QStringLiteral(
+                               "rejected sample '%1' must differ after "
+                               "conversion to '%2'"
+                )
                                .arg(QString::fromUtf8(sample))
                                .arg(converted))
             );
@@ -1154,16 +1158,12 @@ private slots:
         std::vector<int> rowCountSnapshotsAtAboutToBeInserted;
         std::vector<int> columnCountSnapshotsAtAboutToBeInserted;
         QObject::connect(
-            &model,
-            &QAbstractItemModel::rowsAboutToBeInserted,
-            &model,
-            [&](const QModelIndex &, int, int) { rowCountSnapshotsAtAboutToBeInserted.push_back(model.rowCount()); }
+            &model, &QAbstractItemModel::rowsAboutToBeInserted, &model, [&](const QModelIndex &, int, int) {
+                rowCountSnapshotsAtAboutToBeInserted.push_back(model.rowCount());
+            }
         );
         QObject::connect(
-            &model,
-            &QAbstractItemModel::columnsAboutToBeInserted,
-            &model,
-            [&](const QModelIndex &, int, int) {
+            &model, &QAbstractItemModel::columnsAboutToBeInserted, &model, [&](const QModelIndex &, int, int) {
                 columnCountSnapshotsAtAboutToBeInserted.push_back(model.columnCount());
             }
         );
@@ -1452,7 +1452,8 @@ private slots:
         for (size_t batchStart = 0; batchStart < totalLines; batchStart += batchSize)
         {
             const bool declareNewKey = (batchStart == 0);
-            model.AppendBatch(MakeSyntheticBatch(streamSource, keys, valueKey, batchStart + 1, batchSize, declareNewKey)
+            model.AppendBatch(
+                MakeSyntheticBatch(streamSource, keys, valueKey, batchStart + 1, batchSize, declareNewKey)
             );
         }
 
@@ -1577,11 +1578,13 @@ private slots:
         // pointers into the file. The file's contents don't have to match
         // what we synthesise -- we never call `LogLine::GetValue()` on them
         // through the table -- but they must outlive the test.
-        const TempJsonFile fixture(QStringList{
-            QStringLiteral(R"({"a": 1})"),
-            QStringLiteral(R"({"a": 2})"),
-            QStringLiteral(R"({"a": 3})"),
-        });
+        const TempJsonFile fixture(
+            QStringList{
+                QStringLiteral(R"({"a": 1})"),
+                QStringLiteral(R"({"a": 2})"),
+                QStringLiteral(R"({"a": 3})"),
+            }
+        );
 
         LogModel model;
         const QSignalSpy lineCountSpy(&model, &LogModel::lineCountChanged);
@@ -2035,11 +2038,13 @@ private slots:
     // pre-loop snapshot).
     static void TestPausedDropCountReflectsStaticBatchOverEviction()
     {
-        const TempJsonFile fixture(QStringList{
-            QStringLiteral(R"({"a": 1})"),
-            QStringLiteral(R"({"a": 2})"),
-            QStringLiteral(R"({"a": 3})"),
-        });
+        const TempJsonFile fixture(
+            QStringList{
+                QStringLiteral(R"({"a": 1})"),
+                QStringLiteral(R"({"a": 2})"),
+                QStringLiteral(R"({"a": 3})"),
+            }
+        );
 
         LogModel model;
         auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
@@ -2571,8 +2576,10 @@ private slots:
         // this row count.
         QVERIFY2(
             elapsedMs < 200,
-            qPrintable(QStringLiteral("RowOrderProxyModel::SetReversed must be O(persistent indices), "
-                                      "not O(rows); 100 toggles over %1 rows took %2 ms (budget 200 ms)")
+            qPrintable(QStringLiteral(
+                           "RowOrderProxyModel::SetReversed must be O(persistent indices), "
+                           "not O(rows); 100 toggles over %1 rows took %2 ms (budget 200 ms)"
+            )
                            .arg(K_ROWS)
                            .arg(elapsedMs))
         );
@@ -2870,8 +2877,10 @@ private slots:
         const int valueAfter = vbar->value();
         QVERIFY2(
             valueAfter > valueBefore,
-            qPrintable(QStringLiteral("scrollbar value should advance to compensate for the new top rows; "
-                                      "before=%1 after=%2")
+            qPrintable(QStringLiteral(
+                           "scrollbar value should advance to compensate for the new top rows; "
+                           "before=%1 after=%2"
+            )
                            .arg(valueBefore)
                            .arg(valueAfter))
         );
@@ -3282,8 +3291,10 @@ private slots:
         // visual tail.
         QVERIFY2(
             vbar->value() > valueBefore,
-            qPrintable(QStringLiteral("scrollbar must move toward the visual tail when the newest source row is "
-                                      "filtered out; value stayed at %1")
+            qPrintable(QStringLiteral(
+                           "scrollbar must move toward the visual tail when the newest source row is "
+                           "filtered out; value stayed at %1"
+            )
                            .arg(vbar->value()))
         );
 
@@ -3832,7 +3843,8 @@ private slots:
         // and returns the drop count so the GUI can surface it.
         std::vector<loglib::LogConfiguration::AnchorEntry> incoming;
         incoming.push_back(loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 0});
-        incoming.push_back(loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 2, .colorIndex = 42}
+        incoming.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 2, .colorIndex = 42}
         );
         QCOMPARE(manager.Replace(incoming), std::size_t{1});
         QCOMPARE(resetSpy.count(), 2);
@@ -4767,16 +4779,20 @@ private slots:
         const int valueAfter = vbar->value();
         QVERIFY2(
             qAbs(valueAfter - parkedValue) <= 4,
-            qPrintable(QStringLiteral("static-mode batch must not move the scrollbar; "
-                                      "parked=%1 after=%2 max=%3")
+            qPrintable(QStringLiteral(
+                           "static-mode batch must not move the scrollbar; "
+                           "parked=%1 after=%2 max=%3"
+            )
                            .arg(parkedValue)
                            .arg(valueAfter)
                            .arg(vbar->maximum()))
         );
         QVERIFY2(
             valueAfter < vbar->maximum(),
-            qPrintable(QStringLiteral("static-mode batch must not snap the scrollbar to the bottom; "
-                                      "after=%1 max=%2")
+            qPrintable(QStringLiteral(
+                           "static-mode batch must not snap the scrollbar to the bottom; "
+                           "after=%1 max=%2"
+            )
                            .arg(valueAfter)
                            .arg(vbar->maximum()))
         );
@@ -5642,8 +5658,10 @@ private slots:
         const auto darkBrush = qvariant_cast<QBrush>(darkErrorBg);
         QVERIFY2(
             lightBrush.color() != darkBrush.color(),
-            qPrintable(QStringLiteral("Error row background must differ between Light and Dark themes; "
-                                      "got light=%1, dark=%2")
+            qPrintable(QStringLiteral(
+                           "Error row background must differ between Light and Dark themes; "
+                           "got light=%1, dark=%2"
+            )
                            .arg(lightBrush.color().name(), darkBrush.color().name()))
         );
 
@@ -5752,8 +5770,10 @@ private slots:
 
         QVERIFY2(
             !tableView->styleSheet().isEmpty(),
-            qPrintable(QStringLiteral("Theme switch must re-apply the body stylesheet so "
-                                      "`QStyleSheetStyle` re-resolves the new palette; got: '%1'")
+            qPrintable(QStringLiteral(
+                           "Theme switch must re-apply the body stylesheet so "
+                           "`QStyleSheetStyle` re-resolves the new palette; got: '%1'"
+            )
                            .arg(tableView->styleSheet()))
         );
         // Re-applied stylesheet must still carry the monospace rule.
@@ -7912,17 +7932,19 @@ private slots:
         // (the manager only exposes a const `Configuration()`).
         auto &mgr = model->ConfigurationManager();
         loglib::LogConfiguration configuration = mgr.Configuration();
-        configuration.filters.push_back(loglib::LogConfiguration::LogFilter{
-            .type = loglib::LogConfiguration::LogFilter::Type::Enumeration,
-            .row = levelCol,
-            .filterString = std::nullopt,
-            .matchType = std::nullopt,
-            .filterBegin = std::nullopt,
-            .filterEnd = std::nullopt,
-            .filterMinValue = std::nullopt,
-            .filterMaxValue = std::nullopt,
-            .filterValues = {"info"},
-        });
+        configuration.filters.push_back(
+            loglib::LogConfiguration::LogFilter{
+                .type = loglib::LogConfiguration::LogFilter::Type::Enumeration,
+                .row = levelCol,
+                .filterString = std::nullopt,
+                .matchType = std::nullopt,
+                .filterBegin = std::nullopt,
+                .filterEnd = std::nullopt,
+                .filterMinValue = std::nullopt,
+                .filterMaxValue = std::nullopt,
+                .filterValues = {"info"},
+            }
+        );
         const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
         const QString path = tempDir.filePath(QStringLiteral("with-filter.json"));
@@ -8572,28 +8594,32 @@ private slots:
         // format `Save` emits.
         loglib::LogConfiguration configuration = model->Configuration();
         configuration.filters.clear();
-        configuration.filters.push_back(loglib::LogConfiguration::LogFilter{
-            .type = loglib::LogConfiguration::LogFilter::Type::Enumeration,
-            .row = levelCol,
-            .filterString = std::nullopt,
-            .matchType = std::nullopt,
-            .filterBegin = std::nullopt,
-            .filterEnd = std::nullopt,
-            .filterMinValue = std::nullopt,
-            .filterMaxValue = std::nullopt,
-            .filterValues = {"info"},
-        });
-        configuration.filters.push_back(loglib::LogConfiguration::LogFilter{
-            .type = loglib::LogConfiguration::LogFilter::Type::String,
-            .row = columnCount + 5, // intentionally off the end
-            .filterString = std::string("nope"),
-            .matchType = loglib::LogConfiguration::LogFilter::Match::Contains,
-            .filterBegin = std::nullopt,
-            .filterEnd = std::nullopt,
-            .filterMinValue = std::nullopt,
-            .filterMaxValue = std::nullopt,
-            .filterValues = {},
-        });
+        configuration.filters.push_back(
+            loglib::LogConfiguration::LogFilter{
+                .type = loglib::LogConfiguration::LogFilter::Type::Enumeration,
+                .row = levelCol,
+                .filterString = std::nullopt,
+                .matchType = std::nullopt,
+                .filterBegin = std::nullopt,
+                .filterEnd = std::nullopt,
+                .filterMinValue = std::nullopt,
+                .filterMaxValue = std::nullopt,
+                .filterValues = {"info"},
+            }
+        );
+        configuration.filters.push_back(
+            loglib::LogConfiguration::LogFilter{
+                .type = loglib::LogConfiguration::LogFilter::Type::String,
+                .row = columnCount + 5, // intentionally off the end
+                .filterString = std::string("nope"),
+                .matchType = loglib::LogConfiguration::LogFilter::Match::Contains,
+                .filterBegin = std::nullopt,
+                .filterEnd = std::nullopt,
+                .filterMinValue = std::nullopt,
+                .filterMaxValue = std::nullopt,
+                .filterValues = {},
+            }
+        );
 
         const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
@@ -8804,9 +8830,11 @@ private slots:
         // -- before the fix the reset there would have wiped this
         // back to `nullopt` regardless.
         const std::string syntheticSource = "/test/source/path.log";
-        mWindow->SetCurrentSourceForTest(loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {syntheticSource}
-        });
+        mWindow->SetCurrentSourceForTest(
+            loglib::LogConfiguration::Source{
+                .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {syntheticSource}
+            }
+        );
 
         const QTemporaryDir savedDir;
         QVERIFY(savedDir.isValid());
@@ -10449,8 +10477,10 @@ private slots:
             );
             QVERIFY2(
                 fg.style() != Qt::NoBrush,
-                qPrintable(QStringLiteral("mismatched row column %1 must paint an explicit foreground "
-                                          "so it stays legible on dark themes")
+                qPrintable(QStringLiteral(
+                               "mismatched row column %1 must paint an explicit foreground "
+                               "so it stays legible on dark themes"
+                )
                                .arg(c))
             );
             // ITU-R BT.601 luma: foreground must be visibly darker
@@ -10465,14 +10495,14 @@ private slots:
             constexpr double MIN_LUMA_GAP = 80.0;
             QVERIFY2(
                 bgLuma - fgLuma >= MIN_LUMA_GAP,
-                qPrintable(
-                    QStringLiteral("mismatched row column %1 must keep a high contrast between fg (%2) and bg (%3); "
-                                   "got fgLuma=%4, bgLuma=%5")
-                        .arg(c)
-                        .arg(fgColor.name(), bgColor.name())
-                        .arg(fgLuma)
-                        .arg(bgLuma)
+                qPrintable(QStringLiteral(
+                               "mismatched row column %1 must keep a high contrast between fg (%2) and bg (%3); "
+                               "got fgLuma=%4, bgLuma=%5"
                 )
+                               .arg(c)
+                               .arg(fgColor.name(), bgColor.name())
+                               .arg(fgLuma)
+                               .arg(bgLuma))
             );
         }
     }
@@ -10571,8 +10601,10 @@ private slots:
         constexpr double MIN_LUMA_GAP = 80.0;
         QVERIFY2(
             luma(darkFg) - luma(darkBg) >= MIN_LUMA_GAP,
-            qPrintable(QStringLiteral("Dark-theme highlight must keep high contrast (fg lighter than bg); "
-                                      "got fg=%1 (luma=%2), bg=%3 (luma=%4)")
+            qPrintable(QStringLiteral(
+                           "Dark-theme highlight must keep high contrast (fg lighter than bg); "
+                           "got fg=%1 (luma=%2), bg=%3 (luma=%4)"
+            )
                            .arg(darkFg.name())
                            .arg(luma(darkFg))
                            .arg(darkBg.name())
@@ -12596,8 +12628,10 @@ private slots:
         // the bug pinned them after (or out of the chain entirely).
         QVERIFY2(
             regexIdx < prevIdx && wildcardsIdx < prevIdx,
-            qPrintable(QStringLiteral("regex/wildcards toggles must precede the arrow buttons in the tab chain "
-                                      "(regex=%1 wildcards=%2 prev=%3)")
+            qPrintable(QStringLiteral(
+                           "regex/wildcards toggles must precede the arrow buttons in the tab chain "
+                           "(regex=%1 wildcards=%2 prev=%3)"
+            )
                            .arg(regexIdx)
                            .arg(wildcardsIdx)
                            .arg(prevIdx))
@@ -13175,8 +13209,10 @@ private slots:
         QCoreApplication::processEvents();
         QVERIFY2(
             vBar->value() == parkedPosition,
-            qPrintable(QStringLiteral("Scroll position must be preserved when the user was not at the tail "
-                                      "(parked=%1, after=%2, max=%3)")
+            qPrintable(QStringLiteral(
+                           "Scroll position must be preserved when the user was not at the tail "
+                           "(parked=%1, after=%2, max=%3)"
+            )
                            .arg(parkedPosition)
                            .arg(vBar->value())
                            .arg(vBar->maximum()))
@@ -13194,8 +13230,10 @@ private slots:
         // must have moved `value` along with it.
         QVERIFY2(
             vBar->value() >= vBar->maximum() - 4,
-            qPrintable(QStringLiteral("Auto-follow must re-pin to the tail when the user was at the tail "
-                                      "(value=%1, max=%2)")
+            qPrintable(QStringLiteral(
+                           "Auto-follow must re-pin to the tail when the user was at the tail "
+                           "(value=%1, max=%2)"
+            )
                            .arg(vBar->value())
                            .arg(vBar->maximum()))
         );
@@ -13289,8 +13327,10 @@ private slots:
         QVERIFY2(
             tooltip.contains(QStringLiteral("lower bound"), Qt::CaseInsensitive) ||
                 tooltip.contains(QStringLiteral("bails"), Qt::CaseInsensitive),
-            qPrintable(QStringLiteral("tooltip should mention the scan's early-exit / lower-bound "
-                                      "nature so the user can interpret the '+' correctly: %1")
+            qPrintable(QStringLiteral(
+                           "tooltip should mention the scan's early-exit / lower-bound "
+                           "nature so the user can interpret the '+' correctly: %1"
+            )
                            .arg(tooltip))
         );
         QVERIFY2(
@@ -15152,11 +15192,12 @@ private slots:
         // not jump back near `interval()`".
         QVERIFY2(
             remainingAfter <= remainingBefore + 5,
-            qPrintable(QStringLiteral("second bump must not reset the trailing timer (before=%1, after=%2, interval=%3)"
+            qPrintable(
+                QStringLiteral("second bump must not reset the trailing timer (before=%1, after=%2, interval=%3)")
+                    .arg(remainingBefore)
+                    .arg(remainingAfter)
+                    .arg(trailing->interval())
             )
-                           .arg(remainingBefore)
-                           .arg(remainingAfter)
-                           .arg(trailing->interval()))
         );
     }
 
@@ -15346,7 +15387,8 @@ private slots:
         // Don't pin an exact count: dictionary growth may re-fire.
         QVERIFY2(
             enumSpy.count() >= 1,
-            qPrintable(QStringLiteral("enumColumnsChanged should have fired at least once; got %1").arg(enumSpy.count())
+            qPrintable(
+                QStringLiteral("enumColumnsChanged should have fired at least once; got %1").arg(enumSpy.count())
             )
         );
 
@@ -16145,8 +16187,10 @@ private slots:
 
         QVERIFY2(
             layoutChangedSpy.count() >= 1,
-            qPrintable(QStringLiteral("filter must be rebuilt on Promoted to upgrade to the fast path; "
-                                      "expected layoutChanged >= 1, got %1")
+            qPrintable(QStringLiteral(
+                           "filter must be rebuilt on Promoted to upgrade to the fast path; "
+                           "expected layoutChanged >= 1, got %1"
+            )
                            .arg(layoutChangedSpy.count()))
         );
 
@@ -16706,10 +16750,12 @@ private slots:
     // `fields`, raw JSON is single-line, formatted JSON is indented.
     void TestBuildRecordDetailContentBasic()
     {
-        const TempJsonFile fixture(QStringList{
-            QStringLiteral(R"({"timestamp": "2025-01-15T12:34:56Z", "level": "info", "message": "hello"})"),
-            QStringLiteral(R"({"timestamp": "2025-01-15T12:34:57Z", "level": "error", "message": "boom"})"),
-        });
+        const TempJsonFile fixture(
+            QStringList{
+                QStringLiteral(R"({"timestamp": "2025-01-15T12:34:56Z", "level": "info", "message": "hello"})"),
+                QStringLiteral(R"({"timestamp": "2025-01-15T12:34:57Z", "level": "error", "message": "boom"})"),
+            }
+        );
         const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.finishedCount, 1);
         QCOMPARE(run.cancelled, false);
@@ -16763,9 +16809,11 @@ private slots:
     // Out-of-range rows produce an invalid placeholder, not a crash.
     void TestBuildRecordDetailContentOutOfRange()
     {
-        const TempJsonFile fixture(QStringList{
-            QStringLiteral(R"({"a": 1})"),
-        });
+        const TempJsonFile fixture(
+            QStringList{
+                QStringLiteral(R"({"a": 1})"),
+            }
+        );
         const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.finishedCount, 1);
         QCOMPARE(run.cancelled, false);
@@ -17190,10 +17238,12 @@ private slots:
     // to the placeholder without crashing.
     void TestRecordDetailDockPinAndClear()
     {
-        const TempJsonFile fixture(QStringList{
-            QStringLiteral(R"({"k": "alpha"})"),
-            QStringLiteral(R"({"k": "beta"})"),
-        });
+        const TempJsonFile fixture(
+            QStringList{
+                QStringLiteral(R"({"k": "alpha"})"),
+                QStringLiteral(R"({"k": "beta"})"),
+            }
+        );
         const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.model->rowCount(), 2);
 
@@ -17241,9 +17291,11 @@ private slots:
     // the content was deep-copied at construction.
     void TestRecordDetailWindowSnapshotSurvivesModelDestruction()
     {
-        const TempJsonFile fixture(QStringList{
-            QStringLiteral(R"({"msg": "snapshot me"})"),
-        });
+        const TempJsonFile fixture(
+            QStringList{
+                QStringLiteral(R"({"msg": "snapshot me"})"),
+            }
+        );
         RecordDetailContent snapshot;
         {
             const StreamingRun run = RunStreaming(fixture.Path());
@@ -17284,9 +17336,9 @@ private slots:
         }
         QVERIFY(sawMsg);
         // Pop-outs hide their own "Open in new window" button.
-        const QPushButton *popOutButton =
-            window->findChild<RecordDetailWidget *>()->findChild<QPushButton *>(QStringLiteral("openInNewWindowButton")
-            );
+        const QPushButton *popOutButton = window->findChild<RecordDetailWidget *>()->findChild<QPushButton *>(
+            QStringLiteral("openInNewWindowButton")
+        );
         QVERIFY(popOutButton != nullptr);
         QVERIFY(!popOutButton->isVisibleTo(window->findChild<RecordDetailWidget *>()));
     }
@@ -17296,11 +17348,13 @@ private slots:
     // clears it back to the placeholder.
     void TestRecordDetailDockOpensOnDoubleClickAndClearsOnReset()
     {
-        const TempJsonFile fixture(QStringList{
-            QStringLiteral(R"({"k": "alpha"})"),
-            QStringLiteral(R"({"k": "beta"})"),
-            QStringLiteral(R"({"k": "gamma"})"),
-        });
+        const TempJsonFile fixture(
+            QStringList{
+                QStringLiteral(R"({"k": "alpha"})"),
+                QStringLiteral(R"({"k": "beta"})"),
+                QStringLiteral(R"({"k": "gamma"})"),
+            }
+        );
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
@@ -17414,10 +17468,12 @@ private slots:
     // multiple windows can coexist, out-of-range rows are no-ops.
     void TestOpenRecordDetailWindowSpawnsSnapshot()
     {
-        const TempJsonFile fixture(QStringList{
-            QStringLiteral(R"({"k": "one"})"),
-            QStringLiteral(R"({"k": "two"})"),
-        });
+        const TempJsonFile fixture(
+            QStringList{
+                QStringLiteral(R"({"k": "one"})"),
+                QStringLiteral(R"({"k": "two"})"),
+            }
+        );
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(model != nullptr);
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
@@ -17461,11 +17517,13 @@ private slots:
     // wired in the ctor.
     void TestRecordDetailDockOpensViaDoubleClickedSignal()
     {
-        const TempJsonFile fixture(QStringList{
-            QStringLiteral(R"({"k": "alpha"})"),
-            QStringLiteral(R"({"k": "beta"})"),
-            QStringLiteral(R"({"k": "gamma"})"),
-        });
+        const TempJsonFile fixture(
+            QStringList{
+                QStringLiteral(R"({"k": "alpha"})"),
+                QStringLiteral(R"({"k": "beta"})"),
+                QStringLiteral(R"({"k": "gamma"})"),
+            }
+        );
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(model != nullptr);
 
@@ -17618,10 +17676,12 @@ private slots:
     // without re-selecting. Fixture renames a column.
     void TestRecordDetailDockRefreshesOnDataChanged()
     {
-        const TempJsonFile fixture(QStringList{
-            QStringLiteral(R"({"k": "alpha"})"),
-            QStringLiteral(R"({"k": "beta"})"),
-        });
+        const TempJsonFile fixture(
+            QStringList{
+                QStringLiteral(R"({"k": "alpha"})"),
+                QStringLiteral(R"({"k": "beta"})"),
+            }
+        );
         const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.model->rowCount(), 2);
 
@@ -17679,9 +17739,11 @@ private slots:
     // no manual sweep required.
     void TestOpenRecordDetailWindowClearsTrackerOnClose()
     {
-        const TempJsonFile fixture(QStringList{
-            QStringLiteral(R"({"k": "one"})"),
-        });
+        const TempJsonFile fixture(
+            QStringList{
+                QStringLiteral(R"({"k": "one"})"),
+            }
+        );
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(model != nullptr);
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
@@ -17724,10 +17786,12 @@ private slots:
     // re-pin surfaces the up-to-date content.
     void TestRecordDetailDockHiddenSkipsDataChangedRefresh()
     {
-        const TempJsonFile fixture(QStringList{
-            QStringLiteral(R"({"k": "alpha"})"),
-            QStringLiteral(R"({"k": "beta"})"),
-        });
+        const TempJsonFile fixture(
+            QStringList{
+                QStringLiteral(R"({"k": "alpha"})"),
+                QStringLiteral(R"({"k": "beta"})"),
+            }
+        );
         const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.model->rowCount(), 2);
 
@@ -17789,11 +17853,13 @@ private slots:
     // either way since `SetContent` is idempotent).
     void TestRecordDetailDockSkipsDataChangedOutsidePinnedRow()
     {
-        const TempJsonFile fixture(QStringList{
-            QStringLiteral(R"({"k": "alpha"})"),
-            QStringLiteral(R"({"k": "beta"})"),
-            QStringLiteral(R"({"k": "gamma"})"),
-        });
+        const TempJsonFile fixture(
+            QStringList{
+                QStringLiteral(R"({"k": "alpha"})"),
+                QStringLiteral(R"({"k": "beta"})"),
+                QStringLiteral(R"({"k": "gamma"})"),
+            }
+        );
         const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.model->rowCount(), 3);
 
@@ -17835,11 +17901,13 @@ private slots:
     // rebuild. Observed via `RefreshCountForTest`.
     void TestUpdateRecordDetailsFromSelectionSkipsWhenAlreadyPinned()
     {
-        const TempJsonFile fixture(QStringList{
-            QStringLiteral(R"({"k": "alpha"})"),
-            QStringLiteral(R"({"k": "beta"})"),
-            QStringLiteral(R"({"k": "gamma"})"),
-        });
+        const TempJsonFile fixture(
+            QStringList{
+                QStringLiteral(R"({"k": "alpha"})"),
+                QStringLiteral(R"({"k": "beta"})"),
+                QStringLiteral(R"({"k": "gamma"})"),
+            }
+        );
         auto *model = mWindow->findChild<LogModel *>();
         QVERIFY(model != nullptr);
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
@@ -17901,10 +17969,12 @@ private slots:
     {
         // Three keys so we can move two non-zero columns and keep the
         // pinned column-0 persistent index trivially valid.
-        const TempJsonFile fixture(QStringList{
-            QStringLiteral(R"({"a": "alpha", "b": "1", "c": "x"})"),
-            QStringLiteral(R"({"a": "beta",  "b": "2", "c": "y"})"),
-        });
+        const TempJsonFile fixture(
+            QStringList{
+                QStringLiteral(R"({"a": "alpha", "b": "1", "c": "x"})"),
+                QStringLiteral(R"({"a": "beta",  "b": "2", "c": "y"})"),
+            }
+        );
         const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.model->rowCount(), 2);
         QVERIFY(run.model->columnCount() >= 3);
@@ -17938,10 +18008,12 @@ private slots:
     // `hide()`) skips refreshes; the resuming `(true)` refreshes once.
     void TestRecordDetailDockSkipsRefreshWhileTabInactiveAndCatchesUpOnResume()
     {
-        const TempJsonFile fixture(QStringList{
-            QStringLiteral(R"({"k": "alpha"})"),
-            QStringLiteral(R"({"k": "beta"})"),
-        });
+        const TempJsonFile fixture(
+            QStringList{
+                QStringLiteral(R"({"k": "alpha"})"),
+                QStringLiteral(R"({"k": "beta"})"),
+            }
+        );
         const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.model->rowCount(), 2);
 
@@ -17975,10 +18047,12 @@ private slots:
     // The dock self-clears on `modelReset` without any host help.
     void TestRecordDetailDockClearsOnModelResetStandalone()
     {
-        const TempJsonFile fixture(QStringList{
-            QStringLiteral(R"({"k": "alpha"})"),
-            QStringLiteral(R"({"k": "beta"})"),
-        });
+        const TempJsonFile fixture(
+            QStringList{
+                QStringLiteral(R"({"k": "alpha"})"),
+                QStringLiteral(R"({"k": "beta"})"),
+            }
+        );
         const StreamingRun run = RunStreaming(fixture.Path());
         QCOMPARE(run.model->rowCount(), 2);
 
@@ -18085,12 +18159,16 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
         loglib::LogConfiguration cfg;
-        cfg.columns.push_back(loglib::LogConfiguration::Column{
-            .header = "category", .keys = {"category"}, .type = loglib::LogConfiguration::Type::Enumeration
-        });
-        cfg.columns.push_back(loglib::LogConfiguration::Column{
-            .header = "msg", .keys = {"msg"}, .type = loglib::LogConfiguration::Type::String
-        });
+        cfg.columns.push_back(
+            loglib::LogConfiguration::Column{
+                .header = "category", .keys = {"category"}, .type = loglib::LogConfiguration::Type::Enumeration
+            }
+        );
+        cfg.columns.push_back(
+            loglib::LogConfiguration::Column{
+                .header = "msg", .keys = {"msg"}, .type = loglib::LogConfiguration::Type::String
+            }
+        );
         cfg.source = loglib::LogConfiguration::Source{
             .kind = loglib::LogConfiguration::Source::Kind::File,
             .locators = {"C:/logs/first.json", "C:/logs/second.json"}
@@ -20500,9 +20578,11 @@ private slots:
         // would let it through; the gate must also see `LiveTail`.
         {
             auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
-            wired->SetCurrentSourceForTest(loglib::LogConfiguration::Source{
-                .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"/tmp/live.log"}
-            });
+            wired->SetCurrentSourceForTest(
+                loglib::LogConfiguration::Source{
+                    .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"/tmp/live.log"}
+                }
+            );
             wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
 
             wired->close();
@@ -20516,9 +20596,11 @@ private slots:
         // Case B: NetworkStream source -- not re-bindable.
         {
             auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
-            wired->SetCurrentSourceForTest(loglib::LogConfiguration::Source{
-                .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
-            });
+            wired->SetCurrentSourceForTest(
+                loglib::LogConfiguration::Source{
+                    .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
+                }
+            );
             wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
 
             wired->close();
@@ -20543,9 +20625,11 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
         auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
-        wired->SetCurrentSourceForTest(loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"/tmp/livetail-finished.log"}
-        });
+        wired->SetCurrentSourceForTest(
+            loglib::LogConfiguration::Source{
+                .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {"/tmp/livetail-finished.log"}
+            }
+        );
         wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
 
         // Drive a real `streamingFinished` so the MainWindow lambda
@@ -20590,9 +20674,11 @@ private slots:
 
         loglib::LogConfigurationManager builder;
         builder.AppendKeys({"msg"});
-        builder.SetSource(loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
-        });
+        builder.SetSource(
+            loglib::LogConfiguration::Source{
+                .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
+            }
+        );
         builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
         QVERIFY(QFileInfo::exists(jsonPath));
 
@@ -20632,9 +20718,11 @@ private slots:
 
             loglib::LogConfigurationManager builder;
             builder.AppendKeys({"msg"});
-            builder.SetSource(loglib::LogConfiguration::Source{
-                .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
-            });
+            builder.SetSource(
+                loglib::LogConfiguration::Source{
+                    .kind = loglib::LogConfiguration::Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
+                }
+            );
             builder.Save(jsonPath.toStdString(), loglib::SaveScope::Full);
 
             auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
@@ -20691,9 +20779,11 @@ private slots:
 
         loglib::LogConfigurationManager builder;
         builder.AppendKeys({"msg"});
-        builder.SetSource(loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {fixture.Path().toStdString()}
-        });
+        builder.SetSource(
+            loglib::LogConfiguration::Source{
+                .kind = loglib::LogConfiguration::Source::Kind::File, .locators = {fixture.Path().toStdString()}
+            }
+        );
         const QString adhocPath = adhocDir.filePath(QStringLiteral("not-a-uuid.json"));
         builder.Save(adhocPath.toStdString(), loglib::SaveScope::Full);
 
@@ -21153,8 +21243,10 @@ private slots:
         QVERIFY2(
             status.contains(QStringLiteral("configuration"), Qt::CaseInsensitive) &&
                 status.contains(QStringLiteral("File")),
-            qPrintable(QStringLiteral("status bar should hint at File -> Open after a source-less "
-                                      "configuration load; got: %1")
+            qPrintable(QStringLiteral(
+                           "status bar should hint at File -> Open after a source-less "
+                           "configuration load; got: %1"
+            )
                            .arg(status))
         );
 
@@ -21274,8 +21366,10 @@ private slots:
         const QStringList afterQuit = SessionHistoryManager::OpenWindowsAtQuitUnlocked();
         QVERIFY2(
             afterQuit.isEmpty() || (afterQuit.size() == 1 && afterQuit.front() == origUuid),
-            qPrintable(QStringLiteral("aboutToQuit fan-flush must not resurrect the closed window via "
-                                      "a fresh uuid; got: %1")
+            qPrintable(QStringLiteral(
+                           "aboutToQuit fan-flush must not resurrect the closed window via "
+                           "a fresh uuid; got: %1"
+            )
                            .arg(afterQuit.join(QStringLiteral(", "))))
         );
 

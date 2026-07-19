@@ -119,12 +119,14 @@ NetworkStreamDialog::NetworkStreamDialog(RegexTemplateRegistry *registry, QWidge
     mFormat->addItem(tr("logfmt"), QVariant::fromValue(static_cast<int>(Format::Logfmt)));
     mFormat->addItem(tr("CSV"), QVariant::fromValue(static_cast<int>(Format::Csv)));
     mFormat->addItem(tr("Regex template"), QVariant::fromValue(static_cast<int>(Format::Regex)));
-    mFormat->setToolTip(tr("Wire format of the bytes flowing over the socket. "
-                           "For CSV, the first inbound line is treated as the header; if multiple TCP clients "
-                           "connect, the first arriving line sets the column schema for every client \u2014 "
-                           "coordinate the header across producers or restrict CSV to a single producer. "
-                           "Regex template lets you pick a built-in PCRE2 pattern (syslog, Apache/nginx access "
-                           "log, ...) or supply a custom one with named capture groups."));
+    mFormat->setToolTip(
+        tr("Wire format of the bytes flowing over the socket. "
+           "For CSV, the first inbound line is treated as the header; if multiple TCP clients "
+           "connect, the first arriving line sets the column schema for every client \u2014 "
+           "coordinate the header across producers or restrict CSV to a single producer. "
+           "Regex template lets you pick a built-in PCRE2 pattern (syslog, Apache/nginx access "
+           "log, ...) or supply a custom one with named capture groups.")
+    );
     mFormat->setAccessibleName(tr("Wire format"));
     formatLayout->addWidget(mFormat);
     formatLayout->addStretch(1);
@@ -166,17 +168,21 @@ NetworkStreamDialog::NetworkStreamDialog(RegexTemplateRegistry *registry, QWidge
         }
     }
     mRegexTemplate->addItem(tr("Custom..."), QVariant(RegexTemplateCustomData()));
-    mRegexTemplate->setToolTip(tr("Pick a built-in or user PCRE2 template, or 'Custom...' to write your own. "
-                                  "User templates live in <AppData>/regex_templates/*.json and shadow built-ins "
-                                  "with the same name."));
+    mRegexTemplate->setToolTip(
+        tr("Pick a built-in or user PCRE2 template, or 'Custom...' to write your own. "
+           "User templates live in <AppData>/regex_templates/*.json and shadow built-ins "
+           "with the same name.")
+    );
     mRegexTemplate->setAccessibleName(tr("Regex template"));
     regexLayout->addRow(tr("Template:"), mRegexTemplate);
 
     mRegexPattern = new QLineEdit(mRegexGroup);
     mRegexPattern->setPlaceholderText(tr(R"(PCRE2 pattern, e.g. ^(?<Level>\w+) (?<Message>.*)$)"));
-    mRegexPattern->setToolTip(tr("PCRE2 regex with `(?<Name>...)` named capture groups; each group becomes a column. "
-                                 "Read-only when a built-in template is selected (the pattern preview comes from "
-                                 "the registry)."));
+    mRegexPattern->setToolTip(
+        tr("PCRE2 regex with `(?<Name>...)` named capture groups; each group becomes a column. "
+           "Read-only when a built-in template is selected (the pattern preview comes from "
+           "the registry).")
+    );
     mRegexPattern->setAccessibleName(tr("Regex pattern"));
     regexLayout->addRow(tr("Pattern:"), mRegexPattern);
 
@@ -186,8 +192,10 @@ NetworkStreamDialog::NetworkStreamDialog(RegexTemplateRegistry *registry, QWidge
     // they want to save a tweaked pattern.
     auto *templatesHint =
         new QLabel(tr("Manage templates from <b>Settings &rarr; Regex templates...</b>"), mRegexGroup);
-    templatesHint->setToolTip(tr("Use the dedicated editor (Settings menu) to create, edit, validate, or delete "
-                                 "regex templates. This dialog only consumes the catalog."));
+    templatesHint->setToolTip(
+        tr("Use the dedicated editor (Settings menu) to create, edit, validate, or delete "
+           "regex templates. This dialog only consumes the catalog.")
+    );
     templatesHint->setTextFormat(Qt::RichText);
     templatesHint->setWordWrap(true);
     regexLayout->addRow(QString{}, templatesHint);

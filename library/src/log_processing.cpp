@@ -321,9 +321,11 @@ std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column 
         const std::string_view ownedArena = OwnedArenaForBackfill(line);
         if (!internal::PromoteLineTimestamps(line, specs, lastValid, bytesHits, scratch, ownedArena))
         {
-            errors.emplace_back(fmt::format(
-                "Failed to parse a timestamp for column '{}' from line number {}", column.header, line.LineId()
-            ));
+            errors.emplace_back(
+                fmt::format(
+                    "Failed to parse a timestamp for column '{}' from line number {}", column.header, line.LineId()
+                )
+            );
         }
     }
     return errors;

@@ -228,10 +228,12 @@ void AnchorsDock::RefreshAlways()
     selectedKeys.reserve(static_cast<std::size_t>(selectedItems.size()));
     for (const QListWidgetItem *selected : selectedItems)
     {
-        selectedKeys.push_back(AnchorKeyCarrier{
-            .locator = selected->data(ANCHOR_KEY_LOCATOR_ROLE).toString(),
-            .lineId = selected->data(ANCHOR_KEY_LINE_ID_ROLE).toULongLong(),
-        });
+        selectedKeys.push_back(
+            AnchorKeyCarrier{
+                .locator = selected->data(ANCHOR_KEY_LOCATOR_ROLE).toString(),
+                .lineId = selected->data(ANCHOR_KEY_LINE_ID_ROLE).toULongLong(),
+            }
+        );
     }
 
     mList->clear();

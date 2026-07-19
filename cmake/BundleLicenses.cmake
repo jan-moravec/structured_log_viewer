@@ -85,7 +85,7 @@ function(bundle_third_party_licenses target_name)
         "robin_map:LICENSE:robin_map (MIT)"
         "efsw:LICENSE:efsw (MIT)"
         "argparse:LICENSE:argparse (MIT)"
-        "asio:asio/LICENSE_1_0.txt:Asio (BSL-1.0)"
+        "asio:LICENSE_1_0.txt:Asio (BSL-1.0)"
         # PCRE2 ships its license as `LICENCE.md` (British spelling) at
         # the source root; it backs the regex-template log parser
         # (`library/src/parsers/regex_parser.cpp`) and is statically
