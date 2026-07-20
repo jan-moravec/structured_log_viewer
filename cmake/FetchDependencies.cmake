@@ -482,7 +482,11 @@ if(NOT USE_SYSTEM_XZ)
         # never linked into what we ship, but xz's top-level CMakeLists
         # runs the Landlock probe unconditionally. Turn the sandbox off
         # explicitly so `clang-ci (asan-ubsan / tsan)` configures.
+        # xz v5.8 renamed the option from `ENABLE_SANDBOX` to
+        # `XZ_SANDBOX` (accepting `no` / `auto` / a backend name); set
+        # both so older / newer xz bumps stay covered.
         set(ENABLE_SANDBOX OFF)
+        set(XZ_SANDBOX no)
         # Suppress xz's own CTest suite. xz's tests are gated on the
         # `BUILD_TESTING` cache variable which the top-level
         # `include(CTest)` promoted to ON, out-shadowing a plain
