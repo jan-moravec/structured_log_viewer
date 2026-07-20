@@ -383,13 +383,15 @@ void WriteOutput(
     decompressedSize += bytes;
     if (maxDecompressedBytes != 0 && decompressedSize > maxDecompressedBytes)
     {
-        throw DecompressionSizeCapExceeded(fmt::format(
-            "Decompressed output for '{}' exceeded the {}-byte cap "
-            "(would need at least {} bytes)",
-            sourcePath.string(),
-            maxDecompressedBytes,
-            decompressedSize
-        ));
+        throw DecompressionSizeCapExceeded(
+            fmt::format(
+                "Decompressed output for '{}' exceeded the {}-byte cap "
+                "(would need at least {} bytes)",
+                sourcePath.string(),
+                maxDecompressedBytes,
+                decompressedSize
+            )
+        );
     }
 }
 
@@ -526,9 +528,11 @@ void DecodeGzip(
             case Z_DATA_ERROR:
             case Z_MEM_ERROR:
             case Z_STREAM_ERROR:
-                throw std::runtime_error(fmt::format(
-                    "zlib inflate error on '{}' at input byte {} (code {})", sourcePath.string(), consumed, ret
-                ));
+                throw std::runtime_error(
+                    fmt::format(
+                        "zlib inflate error on '{}' at input byte {} (code {})", sourcePath.string(), consumed, ret
+                    )
+                );
             default:
                 break;
             }
@@ -648,9 +652,11 @@ void DecodeBzip2(
             ret = ::BZ2_bzDecompress(&strm);
             if (ret != BZ_OK && ret != BZ_STREAM_END)
             {
-                throw std::runtime_error(fmt::format(
-                    "bzip2 decompress error on '{}' at input byte {} (code {})", sourcePath.string(), consumed, ret
-                ));
+                throw std::runtime_error(
+                    fmt::format(
+                        "bzip2 decompress error on '{}' at input byte {} (code {})", sourcePath.string(), consumed, ret
+                    )
+                );
             }
             const std::size_t produced = outBuf.size() - strm.avail_out;
             WriteOutput(out, outBuf.data(), produced, tempPath, sourcePath, decompressedSize, maxDecompressedBytes);
@@ -794,12 +800,14 @@ void DecodeXz(
         ret = ::lzma_code(&strm, action);
         if (ret != LZMA_OK && ret != LZMA_STREAM_END)
         {
-            throw std::runtime_error(fmt::format(
-                "xz decode error on '{}' at input byte {} (code {})",
-                sourcePath.string(),
-                consumed,
-                static_cast<int>(ret)
-            ));
+            throw std::runtime_error(
+                fmt::format(
+                    "xz decode error on '{}' at input byte {} (code {})",
+                    sourcePath.string(),
+                    consumed,
+                    static_cast<int>(ret)
+                )
+            );
         }
         const std::size_t produced = outBuf.size() - strm.avail_out;
         WriteOutput(out, outBuf.data(), produced, tempPath, sourcePath, decompressedSize, maxDecompressedBytes);
@@ -879,12 +887,14 @@ void DecodeZstd(
             const std::size_t result = ::ZSTD_decompressStream(dctx, &output, &input);
             if (::ZSTD_isError(result) != 0U)
             {
-                throw std::runtime_error(fmt::format(
-                    "zstd decode error on '{}' at input byte {} ({})",
-                    sourcePath.string(),
-                    (consumed - static_cast<std::size_t>(gotSigned)) + input.pos,
-                    ::ZSTD_getErrorName(result)
-                ));
+                throw std::runtime_error(
+                    fmt::format(
+                        "zstd decode error on '{}' at input byte {} ({})",
+                        sourcePath.string(),
+                        (consumed - static_cast<std::size_t>(gotSigned)) + input.pos,
+                        ::ZSTD_getErrorName(result)
+                    )
+                );
             }
             WriteOutput(out, output.dst, output.pos, tempPath, sourcePath, decompressedSize, maxDecompressedBytes);
             lastResult = result;

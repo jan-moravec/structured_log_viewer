@@ -116,9 +116,11 @@ std::string DrainUntil(TailingBytesProducer &source, std::chrono::milliseconds d
             return accumulated;
         }
         const auto remaining = deadline - (now - start);
-        source.WaitForBytes(std::min<std::chrono::milliseconds>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(remaining), ScaledMs(25ms)
-        ));
+        source.WaitForBytes(
+            std::min<std::chrono::milliseconds>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(remaining), ScaledMs(25ms)
+            )
+        );
     }
 
     // Final drain after IsClosed.

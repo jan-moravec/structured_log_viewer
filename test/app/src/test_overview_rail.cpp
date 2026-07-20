@@ -592,7 +592,8 @@ private slots:
         const int lit = CountLitLevelPixels(widget, &bg);
         QVERIFY2(
             lit > 0,
-            qPrintable(QStringLiteral("no level-bar pixels found (bg=%1) -- bars are painting invisibly").arg(bg.name())
+            qPrintable(
+                QStringLiteral("no level-bar pixels found (bg=%1) -- bars are painting invisibly").arg(bg.name())
             )
         );
         delete widget;
@@ -637,9 +638,11 @@ private slots:
         const int railWidth = widget->width();
         QVERIFY2(
             railWidth >= 24,
-            qPrintable(QStringLiteral("rail is only %1 px wide -- narrower than the "
-                                      "minimum, so the level column would collapse "
-                                      "to a single pixel")
+            qPrintable(QStringLiteral(
+                           "rail is only %1 px wide -- narrower than the "
+                           "minimum, so the level column would collapse "
+                           "to a single pixel"
+            )
                            .arg(railWidth))
         );
 
@@ -671,8 +674,10 @@ private slots:
         }
         QVERIFY2(
             highContrastPixels > image.height() / 4,
-            qPrintable(QStringLiteral("only %1 high-contrast pixels in the content slot at production width "
-                                      "%2 px -- bars are not painting visibly against Base %3")
+            qPrintable(QStringLiteral(
+                           "only %1 high-contrast pixels in the content slot at production width "
+                           "%2 px -- bars are not painting visibly against Base %3"
+            )
                            .arg(highContrastPixels)
                            .arg(railWidth)
                            .arg(bg.name()))
@@ -787,14 +792,18 @@ private slots:
         // its 1-px floor.
         QVERIFY2(
             debugBgPixels > 0,
-            qPrintable(QStringLiteral("stacked segments must paint the Dark theme's Debug row-bg tone (#20252E); "
-                                      "found only %1 Debug-bg pixels")
+            qPrintable(QStringLiteral(
+                           "stacked segments must paint the Dark theme's Debug row-bg tone (#20252E); "
+                           "found only %1 Debug-bg pixels"
+            )
                            .arg(debugBgPixels))
         );
         QVERIFY2(
             brightFgPixels == 0,
-            qPrintable(QStringLiteral("bright foreground pastels must not appear on the rail -- their presence "
-                                      "reverts the 'rail is too light' fix; found %1 bright-fg pixels")
+            qPrintable(QStringLiteral(
+                           "bright foreground pastels must not appear on the rail -- their presence "
+                           "reverts the 'rail is too light' fix; found %1 bright-fg pixels"
+            )
                            .arg(brightFgPixels))
         );
 
@@ -977,8 +986,10 @@ private slots:
         constexpr int LINEAR_CEILING_PX = 150;
         QVERIFY2(
             fatalPixels > 2 * LINEAR_CEILING_PX,
-            qPrintable(QStringLiteral("log-weighted segments must give a 1-in-100 Fatal >%1 px on this "
-                                      "geometry (linear would give ~%2 px); got %3 px")
+            qPrintable(QStringLiteral(
+                           "log-weighted segments must give a 1-in-100 Fatal >%1 px on this "
+                           "geometry (linear would give ~%2 px); got %3 px"
+            )
                            .arg(2 * LINEAR_CEILING_PX)
                            .arg(LINEAR_CEILING_PX)
                            .arg(fatalPixels))
@@ -1162,8 +1173,10 @@ private slots:
         }
         QVERIFY2(
             highlightPixelsLeftHalf > 0 && highlightPixelsRightHalf > 0,
-            qPrintable(QStringLiteral("match overlay must span the full content width -- found %1 Highlight px on the "
-                                      "left half and %2 on the right half of the matched bucket's Y band")
+            qPrintable(QStringLiteral(
+                           "match overlay must span the full content width -- found %1 Highlight px on the "
+                           "left half and %2 on the right half of the matched bucket's Y band"
+            )
                            .arg(highlightPixelsLeftHalf)
                            .arg(highlightPixelsRightHalf))
         );
@@ -1262,8 +1275,10 @@ private slots:
         // invisible).
         QVERIFY2(
             highContrastPixels > 0,
-            qPrintable(QStringLiteral("Dark theme: no bar pixels contrast strongly against bg %1. Bars painted "
-                                      "with `ColorForLevel` are near-invisible on the widget background.")
+            qPrintable(QStringLiteral(
+                           "Dark theme: no bar pixels contrast strongly against bg %1. Bars painted "
+                           "with `ColorForLevel` are near-invisible on the widget background."
+            )
                            .arg(bg.name()))
         );
 
@@ -1411,8 +1426,10 @@ private slots:
         const int tolerance = 3;
         QVERIFY2(
             misalignment <= tolerance,
-            qPrintable(QStringLiteral("indicator midpoint (%1) must be within %2 px of the middle visible row's "
-                                      "rail-Y (%3); off by %4 px. indicator=%5x%6 at (%7,%8)")
+            qPrintable(QStringLiteral(
+                           "indicator midpoint (%1) must be within %2 px of the middle visible row's "
+                           "rail-Y (%3); off by %4 px. indicator=%5x%6 at (%7,%8)"
+            )
                            .arg(indicatorMidY)
                            .arg(tolerance)
                            .arg(midRowY)
@@ -1781,14 +1798,16 @@ private slots:
 
         // "msg" matches every fixture row — spreads ticks across
         // the whole rail when bucketed correctly.
-        QVERIFY(QMetaObject::invokeMethod(
-            &window,
-            "UpdateFindMatchCount",
-            Qt::DirectConnection,
-            Q_ARG(QString, QStringLiteral("msg")),
-            Q_ARG(bool, false),
-            Q_ARG(bool, false)
-        ));
+        QVERIFY(
+            QMetaObject::invokeMethod(
+                &window,
+                "UpdateFindMatchCount",
+                Qt::DirectConnection,
+                Q_ARG(QString, QStringLiteral("msg")),
+                Q_ARG(bool, false),
+                Q_ARG(bool, false)
+            )
+        );
         QVERIFY(railModel->HasMatchTicks());
 
         std::vector<uint32_t> baseline;
@@ -1862,14 +1881,16 @@ private slots:
 
         // Broad needle: every row is a hit, so every bucket must
         // light up when ticks are correctly installed.
-        QVERIFY(QMetaObject::invokeMethod(
-            &window,
-            "UpdateFindMatchCount",
-            Qt::DirectConnection,
-            Q_ARG(QString, QStringLiteral("msg")),
-            Q_ARG(bool, false),
-            Q_ARG(bool, false)
-        ));
+        QVERIFY(
+            QMetaObject::invokeMethod(
+                &window,
+                "UpdateFindMatchCount",
+                Qt::DirectConnection,
+                Q_ARG(QString, QStringLiteral("msg")),
+                Q_ARG(bool, false),
+                Q_ARG(bool, false)
+            )
+        );
         QVERIFY2(railModel->HasMatchTicks(), "broad find must light up rail ticks before resize");
 
         // Simulate a rail-widget height change by pushing a new
@@ -2990,8 +3011,10 @@ private slots:
         const QPointF forwarded = spy.localPositions.first();
         QVERIFY2(
             forwarded.x() <= static_cast<qreal>(vbarRect.width()),
-            qPrintable(QStringLiteral("forwarded local X %1 must land within vbar width %2; larger value means "
-                                      "rail-widget coords leaked through")
+            qPrintable(QStringLiteral(
+                           "forwarded local X %1 must land within vbar width %2; larger value means "
+                           "rail-widget coords leaked through"
+            )
                            .arg(forwarded.x())
                            .arg(vbarRect.width()))
         );
@@ -3075,14 +3098,16 @@ private slots:
         QCoreApplication::processEvents();
         QVERIFY(findDock->isVisible());
 
-        QVERIFY(QMetaObject::invokeMethod(
-            &window,
-            "UpdateFindMatchCount",
-            Qt::DirectConnection,
-            Q_ARG(QString, QStringLiteral("msg")),
-            Q_ARG(bool, false),
-            Q_ARG(bool, false)
-        ));
+        QVERIFY(
+            QMetaObject::invokeMethod(
+                &window,
+                "UpdateFindMatchCount",
+                Qt::DirectConnection,
+                Q_ARG(QString, QStringLiteral("msg")),
+                Q_ARG(bool, false),
+                Q_ARG(bool, false)
+            )
+        );
         QVERIFY(railModel->HasMatchTicks());
 
         // Genuine dismissal: ticks clear, cache survives.
@@ -3142,14 +3167,16 @@ private slots:
         QCoreApplication::processEvents();
         QVERIFY(findDock->isVisible());
 
-        QVERIFY(QMetaObject::invokeMethod(
-            &window,
-            "UpdateFindMatchCount",
-            Qt::DirectConnection,
-            Q_ARG(QString, QStringLiteral("msg")),
-            Q_ARG(bool, false),
-            Q_ARG(bool, false)
-        ));
+        QVERIFY(
+            QMetaObject::invokeMethod(
+                &window,
+                "UpdateFindMatchCount",
+                Qt::DirectConnection,
+                Q_ARG(QString, QStringLiteral("msg")),
+                Q_ARG(bool, false),
+                Q_ARG(bool, false)
+            )
+        );
         QVERIFY(railModel->HasMatchTicks());
 
         // Tab-hide path: `hide()` fires visibilityChanged(false)

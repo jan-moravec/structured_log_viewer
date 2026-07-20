@@ -954,22 +954,26 @@ TEST_CASE("Column::visible round-trips through Save/Load", "[LogConfigurationMan
 
     {
         LogConfiguration configuration;
-        configuration.columns.push_back(LogConfiguration::Column{
-            .header = "shown",
-            .keys = {"shown"},
-            .printFormat = "{}",
-            .type = LogConfiguration::Type::String,
-            .parseFormats = {},
-            .visible = true,
-        });
-        configuration.columns.push_back(LogConfiguration::Column{
-            .header = "hidden",
-            .keys = {"hidden"},
-            .printFormat = "{}",
-            .type = LogConfiguration::Type::String,
-            .parseFormats = {},
-            .visible = false,
-        });
+        configuration.columns.push_back(
+            LogConfiguration::Column{
+                .header = "shown",
+                .keys = {"shown"},
+                .printFormat = "{}",
+                .type = LogConfiguration::Type::String,
+                .parseFormats = {},
+                .visible = true,
+            }
+        );
+        configuration.columns.push_back(
+            LogConfiguration::Column{
+                .header = "hidden",
+                .keys = {"hidden"},
+                .printFormat = "{}",
+                .type = LogConfiguration::Type::String,
+                .parseFormats = {},
+                .visible = false,
+            }
+        );
         testConfiguration.Write(configuration);
     }
 
@@ -1030,17 +1034,19 @@ TEST_CASE(
         configuration.columns = manager.Configuration().columns;
         for (int row = 0; row < 4; ++row)
         {
-            configuration.filters.push_back(LogConfiguration::LogFilter{
-                .type = LogConfiguration::LogFilter::Type::String,
-                .row = row,
-                .filterString = std::string{"x"},
-                .matchType = LogConfiguration::LogFilter::Match::Contains,
-                .filterBegin = std::nullopt,
-                .filterEnd = std::nullopt,
-                .filterMinValue = std::nullopt,
-                .filterMaxValue = std::nullopt,
-                .filterValues = {},
-            });
+            configuration.filters.push_back(
+                LogConfiguration::LogFilter{
+                    .type = LogConfiguration::LogFilter::Type::String,
+                    .row = row,
+                    .filterString = std::string{"x"},
+                    .matchType = LogConfiguration::LogFilter::Match::Contains,
+                    .filterBegin = std::nullopt,
+                    .filterEnd = std::nullopt,
+                    .filterMinValue = std::nullopt,
+                    .filterMaxValue = std::nullopt,
+                    .filterValues = {},
+                }
+            );
         }
         const TestLogConfiguration testConfiguration;
         testConfiguration.Write(configuration);
@@ -1195,28 +1201,32 @@ TEST_CASE(
     {
         LogConfiguration configuration;
         configuration.columns = manager.Configuration().columns;
-        configuration.filters.push_back(LogConfiguration::LogFilter{
-            .type = LogConfiguration::LogFilter::Type::String,
-            .row = 0,
-            .filterString = std::string{"x"},
-            .matchType = LogConfiguration::LogFilter::Match::Contains,
-            .filterBegin = std::nullopt,
-            .filterEnd = std::nullopt,
-            .filterMinValue = std::nullopt,
-            .filterMaxValue = std::nullopt,
-            .filterValues = {},
-        });
-        configuration.filters.push_back(LogConfiguration::LogFilter{
-            .type = LogConfiguration::LogFilter::Type::String,
-            .row = 1,
-            .filterString = std::string{"y"},
-            .matchType = LogConfiguration::LogFilter::Match::Contains,
-            .filterBegin = std::nullopt,
-            .filterEnd = std::nullopt,
-            .filterMinValue = std::nullopt,
-            .filterMaxValue = std::nullopt,
-            .filterValues = {},
-        });
+        configuration.filters.push_back(
+            LogConfiguration::LogFilter{
+                .type = LogConfiguration::LogFilter::Type::String,
+                .row = 0,
+                .filterString = std::string{"x"},
+                .matchType = LogConfiguration::LogFilter::Match::Contains,
+                .filterBegin = std::nullopt,
+                .filterEnd = std::nullopt,
+                .filterMinValue = std::nullopt,
+                .filterMaxValue = std::nullopt,
+                .filterValues = {},
+            }
+        );
+        configuration.filters.push_back(
+            LogConfiguration::LogFilter{
+                .type = LogConfiguration::LogFilter::Type::String,
+                .row = 1,
+                .filterString = std::string{"y"},
+                .matchType = LogConfiguration::LogFilter::Match::Contains,
+                .filterBegin = std::nullopt,
+                .filterEnd = std::nullopt,
+                .filterMinValue = std::nullopt,
+                .filterMaxValue = std::nullopt,
+                .filterValues = {},
+            }
+        );
         const TestLogConfiguration testConfiguration;
         testConfiguration.Write(configuration);
         manager.Load(testConfiguration.GetFilePath());
@@ -1327,17 +1337,19 @@ TEST_CASE("BubbleLevelColumnToCanonicalPosition mirrors the Time bubble", "[LogC
 
         // Pin a filter on `level` so the remap is observable.
         LogConfiguration cfg = manager.Configuration();
-        cfg.filters.push_back(LogConfiguration::LogFilter{
-            .type = LogConfiguration::LogFilter::Type::String,
-            .row = 2,
-            .filterString = std::string{"warn"},
-            .matchType = LogConfiguration::LogFilter::Match::Contains,
-            .filterBegin = std::nullopt,
-            .filterEnd = std::nullopt,
-            .filterMinValue = std::nullopt,
-            .filterMaxValue = std::nullopt,
-            .filterValues = {},
-        });
+        cfg.filters.push_back(
+            LogConfiguration::LogFilter{
+                .type = LogConfiguration::LogFilter::Type::String,
+                .row = 2,
+                .filterString = std::string{"warn"},
+                .matchType = LogConfiguration::LogFilter::Match::Contains,
+                .filterBegin = std::nullopt,
+                .filterEnd = std::nullopt,
+                .filterMinValue = std::nullopt,
+                .filterMaxValue = std::nullopt,
+                .filterValues = {},
+            }
+        );
         manager.SetConfiguration(std::move(cfg));
 
         BubbleLevelColumnToCanonicalPosition(manager, 2);
@@ -1359,22 +1371,26 @@ TEST_CASE("Failed Load leaves the previous configuration intact", "[LogConfigura
     // Stage 1: load a known-good configuration as the baseline.
     {
         LogConfiguration good;
-        good.columns.push_back(LogConfiguration::Column{
-            .header = "good_a",
-            .keys = {"a"},
-            .printFormat = "{}",
-            .type = LogConfiguration::Type::String,
-            .parseFormats = {},
-            .visible = true,
-        });
-        good.columns.push_back(LogConfiguration::Column{
-            .header = "good_b",
-            .keys = {"b"},
-            .printFormat = "{}",
-            .type = LogConfiguration::Type::Integer,
-            .parseFormats = {},
-            .visible = false,
-        });
+        good.columns.push_back(
+            LogConfiguration::Column{
+                .header = "good_a",
+                .keys = {"a"},
+                .printFormat = "{}",
+                .type = LogConfiguration::Type::String,
+                .parseFormats = {},
+                .visible = true,
+            }
+        );
+        good.columns.push_back(
+            LogConfiguration::Column{
+                .header = "good_b",
+                .keys = {"b"},
+                .printFormat = "{}",
+                .type = LogConfiguration::Type::Integer,
+                .parseFormats = {},
+                .visible = false,
+            }
+        );
         const TestLogConfiguration goodFile;
         goodFile.Write(good);
         manager.Load(goodFile.GetFilePath());
@@ -1883,16 +1899,20 @@ TEST_CASE("LogConfiguration::anchors round-trips through Save/Load", "[log_confi
     const TestLogConfiguration testConfiguration;
     {
         LogConfiguration written;
-        written.anchors.push_back(LogConfiguration::AnchorEntry{
-            .locator = "",
-            .lineId = 17,
-            .colorIndex = 0,
-        });
-        written.anchors.push_back(LogConfiguration::AnchorEntry{
-            .locator = "c:/logs/two.json",
-            .lineId = 42,
-            .colorIndex = 5,
-        });
+        written.anchors.push_back(
+            LogConfiguration::AnchorEntry{
+                .locator = "",
+                .lineId = 17,
+                .colorIndex = 0,
+            }
+        );
+        written.anchors.push_back(
+            LogConfiguration::AnchorEntry{
+                .locator = "c:/logs/two.json",
+                .lineId = 42,
+                .colorIndex = 5,
+            }
+        );
         LogConfigurationManager::Save(written, testConfiguration.GetFilePath(), SaveScope::Full);
     }
 
@@ -1931,11 +1951,13 @@ TEST_CASE("LogConfiguration::AnchorEntry serialises with stable wire keys", "[lo
     // Wire-format snapshot: an entry rename would surface here as a
     // missing key, not as a silent shape change.
     LogConfiguration original;
-    original.anchors.push_back(LogConfiguration::AnchorEntry{
-        .locator = "c:/logs/app.jsonl",
-        .lineId = 123,
-        .colorIndex = 3,
-    });
+    original.anchors.push_back(
+        LogConfiguration::AnchorEntry{
+            .locator = "c:/logs/app.jsonl",
+            .lineId = 123,
+            .colorIndex = 3,
+        }
+    );
 
     std::string json;
     const auto writeError = glz::write_json(original, json);

@@ -194,7 +194,8 @@ TEST_CASE(
     CHECK(SignOf(CompareRows(table, 1, 3, 0)) == 1); // NaN > -inf clamp
 
     // Antisymmetry on every pair we asserted (sanity for `CompareRows is total`).
-    constexpr std::array<std::pair<size_t, size_t>, 7> PAIRS = {{{0, 6}, {1, 0}, {1, 6}, {2, 0}, {2, 4}, {3, 5}, {1, 3}}
+    constexpr std::array<std::pair<size_t, size_t>, 7> PAIRS = {
+        {{0, 6}, {1, 0}, {1, 6}, {2, 0}, {2, 4}, {3, 5}, {1, 3}}
     };
     for (const auto &[a, b] : PAIRS)
     {

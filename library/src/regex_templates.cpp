@@ -121,9 +121,9 @@ std::shared_ptr<const MergedRegistry> RebuildLocked()
         }
     }
     std::stable_sort(
-        fresh->builtins.begin(),
-        fresh->builtins.end(),
-        [](const RegexTemplate &a, const RegexTemplate &b) { return a.priority < b.priority; }
+        fresh->builtins.begin(), fresh->builtins.end(), [](const RegexTemplate &a, const RegexTemplate &b) {
+            return a.priority < b.priority;
+        }
     );
 
     fresh->extras = ExtrasSlot();

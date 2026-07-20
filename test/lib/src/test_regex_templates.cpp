@@ -84,8 +84,10 @@ TEST_CASE("DetectRegexTemplate identifies syslog samples [regex_templates]", "[r
     // as one of the other formats. The probe scans templates in
     // registry order and the first hit wins.
     const TestLogFile file{"regex_templates_detect.log"};
-    file.Write("Apr 28 04:02:03 host-a systemd: System starting\n"
-               "Jun 27 01:47:20 host-b configd[17]: network changed\n");
+    file.Write(
+        "Apr 28 04:02:03 host-a systemd: System starting\n"
+        "Jun 27 01:47:20 host-b configd[17]: network changed\n"
+    );
     const auto detected = DetectRegexTemplate(file.GetFilePath());
     REQUIRE(detected.has_value());
     CHECK(detected->name == "Syslog (RFC3164)");
@@ -94,10 +96,12 @@ TEST_CASE("DetectRegexTemplate identifies syslog samples [regex_templates]", "[r
 TEST_CASE("DetectRegexTemplate identifies Apache CLF samples [regex_templates]", "[regex_templates]")
 {
     const TestLogFile file{"regex_templates_detect_clf.log"};
-    file.Write(R"(127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /apache_pb.gif HTTP/1.0" 200 2326)"
-               "\n"
-               R"(10.1.10.51 - - [23/Dec/2014:21:20:35 +0000] "POST /api/1/rest/foo HTTP/1.1" 200 -)"
-               "\n");
+    file.Write(
+        R"(127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /apache_pb.gif HTTP/1.0" 200 2326)"
+        "\n"
+        R"(10.1.10.51 - - [23/Dec/2014:21:20:35 +0000] "POST /api/1/rest/foo HTTP/1.1" 200 -)"
+        "\n"
+    );
     const auto detected = DetectRegexTemplate(file.GetFilePath());
     REQUIRE(detected.has_value());
     CHECK(detected->name == "Apache/nginx Common Log Format");
@@ -194,8 +198,10 @@ TEST_CASE("autoDetect=false templates are excluded from the probe [regex_templat
     SetExtraRegexTemplates(extras);
 
     const TestLogFile file{"regex_templates_autodetect_off.log"};
-    file.Write("Apr 28 04:02:03 host-a systemd: System starting\n"
-               "Jun 27 01:47:20 host-b configd[17]: network changed\n");
+    file.Write(
+        "Apr 28 04:02:03 host-a systemd: System starting\n"
+        "Jun 27 01:47:20 host-b configd[17]: network changed\n"
+    );
     const auto detected = DetectRegexTemplate(file.GetFilePath());
     REQUIRE(detected.has_value());
     CHECK(detected->name == "Syslog (RFC3164)");
@@ -223,8 +229,10 @@ TEST_CASE(
     SetExtraRegexTemplates(extras);
 
     const TestLogFile file{"regex_templates_user_priority.log"};
-    file.Write("FOO 1 hello\n"
-               "FOO 2 world\n");
+    file.Write(
+        "FOO 1 hello\n"
+        "FOO 2 world\n"
+    );
     const auto detected = DetectRegexTemplate(file.GetFilePath());
     REQUIRE(detected.has_value());
     CHECK(detected->name == "User priority test");
@@ -316,8 +324,10 @@ TEST_CASE("Built-ins probe before user templates regardless of priority [regex_t
     SetExtraRegexTemplates(extras);
 
     const TestLogFile file{"regex_templates_builtins_first.log"};
-    file.Write("Apr 28 04:02:03 host-a systemd: System starting\n"
-               "Jun 27 01:47:20 host-b configd[17]: network changed\n");
+    file.Write(
+        "Apr 28 04:02:03 host-a systemd: System starting\n"
+        "Jun 27 01:47:20 host-b configd[17]: network changed\n"
+    );
     const auto detected = DetectRegexTemplate(file.GetFilePath());
     REQUIRE(detected.has_value());
     CHECK(detected->name == "Syslog (RFC3164)");
@@ -350,8 +360,10 @@ TEST_CASE("Unanchored user templates cannot substring-match the probe [regex_tem
     // probe would match. The anchored probe must refuse and let
     // syslog claim the file.
     const TestLogFile file{"regex_templates_unanchored_user.log"};
-    file.Write("Apr 28 04:02:03 host-a systemd: connect USER 42 ok\n"
-               "Jun 27 01:47:20 host-b configd[17]: reload USER 42 done\n");
+    file.Write(
+        "Apr 28 04:02:03 host-a systemd: connect USER 42 ok\n"
+        "Jun 27 01:47:20 host-b configd[17]: reload USER 42 done\n"
+    );
     const auto detected = DetectRegexTemplate(file.GetFilePath());
     REQUIRE(detected.has_value());
     CHECK(detected->name == "Syslog (RFC3164)");
@@ -392,8 +404,10 @@ TEST_CASE(
     const RegexParser parser{javaPattern};
 
     const TestLogFile file{"regex_templates_java_colon_fused.log"};
-    file.Write("2024-04-28 04:02:05.789 ERROR [pool-1-thread-3] com.example.Worker$Inner: Task failed after 3 retries\n"
-               "2024-04-28 04:02:06.123 INFO  [main] com.example.App - Application starting\n");
+    file.Write(
+        "2024-04-28 04:02:05.789 ERROR [pool-1-thread-3] com.example.Worker$Inner: Task failed after 3 retries\n"
+        "2024-04-28 04:02:06.123 INFO  [main] com.example.App - Application starting\n"
+    );
 
     const ParseResult result = ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.empty());

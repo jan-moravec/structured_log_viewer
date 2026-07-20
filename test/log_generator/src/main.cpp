@@ -615,34 +615,42 @@ std::uint64_t Rotate(
 int main(int argc, char *argv[])
 {
     argparse::ArgumentParser program("log_generator", "0.5.0");
-    program.add_description("Generate a structured log file with synthetic timestamp/level/message records. "
-                            "Pick the on-disk shape with --format: either a wire format (json|logfmt|csv) "
-                            "or a shipped regex-template synthesizer slug (e.g. syslog, apache-combined, "
-                            "apache-common, apache-error, java). Run --list-formats for the full shortlist "
-                            "with descriptions. Lines are produced until --size or --lines is reached "
-                            "(whichever comes first; 0 means unbounded on that axis). Pass --timeout to "
-                            "throttle writes and simulate a streaming feed; pass --roll-size and/or "
-                            "--roll-lines to rotate the active file in-flight (--roll-strategy controls "
-                            "how). When --output is omitted the default base name takes the format's "
-                            "extension (generated.jsonl for json, generated.logfmt for logfmt, "
-                            "generated.csv for csv, generated_<slug>.log for a regex-template slug).");
+    program.add_description(
+        "Generate a structured log file with synthetic timestamp/level/message records. "
+        "Pick the on-disk shape with --format: either a wire format (json|logfmt|csv) "
+        "or a shipped regex-template synthesizer slug (e.g. syslog, apache-combined, "
+        "apache-common, apache-error, java). Run --list-formats for the full shortlist "
+        "with descriptions. Lines are produced until --size or --lines is reached "
+        "(whichever comes first; 0 means unbounded on that axis). Pass --timeout to "
+        "throttle writes and simulate a streaming feed; pass --roll-size and/or "
+        "--roll-lines to rotate the active file in-flight (--roll-strategy controls "
+        "how). When --output is omitted the default base name takes the format's "
+        "extension (generated.jsonl for json, generated.logfmt for logfmt, "
+        "generated.csv for csv, generated_<slug>.log for a regex-template slug)."
+    );
 
     program.add_argument("-s", "--size")
         .default_value(std::string{"10MB"})
-        .help("Total output budget in bytes across all rolls. Plain bytes or with suffix B/KB/MB/GB (base 1024). 0 = "
-              "unbounded.");
+        .help(
+            "Total output budget in bytes across all rolls. Plain bytes or with suffix B/KB/MB/GB (base 1024). 0 = "
+            "unbounded."
+        );
 
     program.add_argument("-n", "--lines")
         .default_value(std::string{"0"})
-        .help("Total output budget in lines across all rolls. Plain integer or with suffix K/M/G (base 1000). 0 = "
-              "unbounded.");
+        .help(
+            "Total output budget in lines across all rolls. Plain integer or with suffix K/M/G (base 1000). 0 = "
+            "unbounded."
+        );
 
     program.add_argument("-o", "--output")
         .default_value(std::string{})
-        .help("Output file path (overwritten if it already exists, unless --append). When --output is "
-              "omitted the default base name is `generated` plus the format's extension "
-              "(generated.jsonl for --format json, generated.logfmt for --format logfmt, "
-              "generated.csv for --format csv, generated_<slug>.log for a regex-template slug).");
+        .help(
+            "Output file path (overwritten if it already exists, unless --append). When --output is "
+            "omitted the default base name is `generated` plus the format's extension "
+            "(generated.jsonl for --format json, generated.logfmt for --format logfmt, "
+            "generated.csv for --format csv, generated_<slug>.log for a regex-template slug)."
+        );
 
     // No `.choices(...)`: the regex-template shortlist is resolved at
     // runtime via `FindRegexTemplateOption` (case-insensitive, accepts
@@ -651,22 +659,28 @@ int main(int argc, char *argv[])
     // the fallback resolver.
     program.add_argument("-f", "--format")
         .default_value(std::string{"json"})
-        .help("Record serialization format. Wire formats: 'json' (one JSON object per line), 'logfmt', "
-              "'csv' (RFC 4180 strict). Regex-template synthesizers (slug or full template name, "
-              "case-insensitive): 'syslog', 'apache-combined', 'apache-common', 'apache-error', "
-              "'java'. Pass --list-formats for the shortlist with descriptions.");
+        .help(
+            "Record serialization format. Wire formats: 'json' (one JSON object per line), 'logfmt', "
+            "'csv' (RFC 4180 strict). Regex-template synthesizers (slug or full template name, "
+            "case-insensitive): 'syslog', 'apache-combined', 'apache-common', 'apache-error', "
+            "'java'. Pass --list-formats for the shortlist with descriptions."
+        );
 
     program.add_argument("--list-formats")
         .default_value(false)
         .implicit_value(true)
-        .help("Print the --format shortlist (wire formats + regex-template synthesizers with slugs, "
-              "display names, and descriptions) and exit.");
+        .help(
+            "Print the --format shortlist (wire formats + regex-template synthesizers with slugs, "
+            "display names, and descriptions) and exit."
+        );
 
     program.add_argument("-t", "--timeout")
         .default_value(std::string{"0"})
-        .help("Delay in milliseconds between line writes. Either a fixed value (e.g. 50) or a MIN-MAX range "
-              "(e.g. 10-200) sampled uniformly per line so timestamps look organically jittered. 0 disables "
-              "throttling.");
+        .help(
+            "Delay in milliseconds between line writes. Either a fixed value (e.g. 50) or a MIN-MAX range "
+            "(e.g. 10-200) sampled uniformly per line so timestamps look organically jittered. 0 disables "
+            "throttling."
+        );
 
     program.add_argument("--seed").scan<'i', int>().help(
         "Optional RNG seed for reproducible output. Defaults to std::random_device."
@@ -679,20 +693,26 @@ int main(int argc, char *argv[])
 
     program.add_argument("--roll-size")
         .default_value(std::string{"0"})
-        .help("Rotate the active file once it reaches at least this size (B/KB/MB/GB suffix supported, base 1024). 0 "
-              "disables size-triggered rotation.");
+        .help(
+            "Rotate the active file once it reaches at least this size (B/KB/MB/GB suffix supported, base 1024). 0 "
+            "disables size-triggered rotation."
+        );
 
     program.add_argument("--roll-lines")
         .default_value(std::string{"0"})
-        .help("Rotate the active file once it has at least this many lines (K/M/G suffix supported, base 1000). 0 "
-              "disables line-triggered rotation.");
+        .help(
+            "Rotate the active file once it has at least this many lines (K/M/G suffix supported, base 1000). 0 "
+            "disables line-triggered rotation."
+        );
 
     program.add_argument("--roll-strategy")
         .default_value(std::string{"rename"})
         .choices("rename", "copytruncate", "truncate")
-        .help("Rotation strategy. 'rename' (mv path -> path.1, recreate path;  identity change), "
-              "'copytruncate' (cp path path.1, then truncate path in place;  size shrunk), "
-              "'truncate' (in-place truncate, no backup;  size shrunk).");
+        .help(
+            "Rotation strategy. 'rename' (mv path -> path.1, recreate path;  identity change), "
+            "'copytruncate' (cp path path.1, then truncate path in place;  size shrunk), "
+            "'truncate' (in-place truncate, no backup;  size shrunk)."
+        );
 
     program.add_argument("--keep-rolled")
         .default_value(5)
@@ -702,11 +722,13 @@ int main(int argc, char *argv[])
         );
 
     program.add_argument("--target")
-        .help("URL-style output destination. Supersedes --output when set. "
-              "Examples: file:///tmp/foo.jsonl, tcp://127.0.0.1:5141, "
-              "tcp+tls://example:6514, udp://127.0.0.1:5142. When unset, "
-              "--output is used (file mode). The --roll-* flags require "
-              "file mode and are rejected for network targets.");
+        .help(
+            "URL-style output destination. Supersedes --output when set. "
+            "Examples: file:///tmp/foo.jsonl, tcp://127.0.0.1:5141, "
+            "tcp+tls://example:6514, udp://127.0.0.1:5142. When unset, "
+            "--output is used (file mode). The --roll-* flags require "
+            "file mode and are rejected for network targets."
+        );
 
     program.add_argument("--tls-ca")
         .help("Optional PEM CA bundle used to verify the server certificate (tcp+tls:// only).");

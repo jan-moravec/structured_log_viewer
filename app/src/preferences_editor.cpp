@@ -87,9 +87,11 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
     setMinimumWidth(PREFERENCES_MIN_WIDTH_PX);
 
     mThemeComboBox = new QComboBox(this);
-    mThemeComboBox->setToolTip("Active theme. `Auto (follow system)` picks Light or Dark based on the OS "
-                               "palette. User themes live in <AppData>/themes/*.json and shadow built-ins "
-                               "with the same name.");
+    mThemeComboBox->setToolTip(
+        "Active theme. `Auto (follow system)` picks Light or Dark based on the OS "
+        "palette. User themes live in <AppData>/themes/*.json and shadow built-ins "
+        "with the same name."
+    );
 
     mThemePreviewLabel = new QLabel(this);
     mThemePreviewLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -118,8 +120,10 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
     });
 
     auto *duplicateThemeButton = new QPushButton("Duplicate active theme...", this);
-    duplicateThemeButton->setToolTip("Copy the currently resolved theme into a new file under <AppData>/themes/ "
-                                     "as `<active>-copy.json`, then open the user themes folder so it can be edited.");
+    duplicateThemeButton->setToolTip(
+        "Copy the currently resolved theme into a new file under <AppData>/themes/ "
+        "as `<active>-copy.json`, then open the user themes folder so it can be edited."
+    );
     connect(duplicateThemeButton, &QPushButton::clicked, this, [this]() {
         if (mTheme == nullptr)
         {
@@ -158,8 +162,10 @@ PreferencesEditor::PreferencesEditor(ThemeControl *theme, QWidget *parent)
     });
 
     auto *reloadThemesButton = new QPushButton("Reload themes from disk", this);
-    reloadThemesButton->setToolTip("Re-scan the user themes folder and the built-in themes, then re-apply the "
-                                   "active theme. Use after editing a theme JSON file outside the app.");
+    reloadThemesButton->setToolTip(
+        "Re-scan the user themes folder and the built-in themes, then re-apply the "
+        "active theme. Use after editing a theme JSON file outside the app."
+    );
     connect(reloadThemesButton, &QPushButton::clicked, this, [this]() {
         if (mTheme == nullptr)
         {

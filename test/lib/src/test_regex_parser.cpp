@@ -37,8 +37,10 @@ TEST_CASE("RegexParser validates against built-in templates [regex]", "[regex_pa
     const TestLogFile file("regex_isvalid.log");
     // Two syslog lines: enough to trip `IS_VALID_MIN_MATCHES = 2`
     // and identify Syslog (RFC3164).
-    file.Write("Apr 28 04:02:03 host-a systemd: System starting\n"
-               "Jun 27 01:47:20 host-b configd[17]: network changed\n");
+    file.Write(
+        "Apr 28 04:02:03 host-a systemd: System starting\n"
+        "Jun 27 01:47:20 host-b configd[17]: network changed\n"
+    );
     CHECK(parser.IsValid(file.GetFilePath()));
 
     const auto detected = DetectRegexTemplate(file.GetFilePath());
@@ -62,10 +64,12 @@ TEST_CASE("RegexParser rejects JSON / logfmt files [regex]", "[regex_parser]")
     // also be claimed by Regex. JSON is the broadest non-regex shape.
     const RegexParser parser;
     const TestLogFile file("regex_rejects_json.log");
-    file.Write(R"({"level":"info","msg":"hello"})"
-               "\n"
-               R"({"level":"warn","msg":"world"})"
-               "\n");
+    file.Write(
+        R"({"level":"info","msg":"hello"})"
+        "\n"
+        R"({"level":"warn","msg":"world"})"
+        "\n"
+    );
     CHECK_FALSE(parser.IsValid(file.GetFilePath()));
 }
 
@@ -75,8 +79,10 @@ TEST_CASE("RegexParser default-constructed parse without pattern surfaces error 
     // Parsing must not crash; it surfaces one error and ends cleanly.
     const RegexParser parser;
     const TestLogFile file("regex_no_pattern.log");
-    file.Write("Apr 28 04:02:03 host-a systemd: System starting\n"
-               "Apr 28 04:02:04 host-a systemd: another line\n");
+    file.Write(
+        "Apr 28 04:02:03 host-a systemd: System starting\n"
+        "Apr 28 04:02:04 host-a systemd: another line\n"
+    );
 
     auto result = ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.size() == 1);
@@ -132,8 +138,10 @@ TEST_CASE("RegexParser types numeric captures [regex]", "[regex_parser]")
     // same way it does for CSV / logfmt bare cells.
     const RegexParser parser(R"(^(?<level>\w+)\s+(?<code>\d+)\s+(?<ratio>\S+)\s+(?<ok>\S+)$)");
     const TestLogFile file("regex_typing.log");
-    file.Write("info 200 0.75 true\n"
-               "warn 404 -1.5 false\n");
+    file.Write(
+        "info 200 0.75 true\n"
+        "warn 404 -1.5 false\n"
+    );
 
     auto result = ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.empty());
@@ -155,9 +163,11 @@ TEST_CASE("RegexParser non-matching lines surface as errors [regex]", "[regex_pa
     // Non-match is per-line; the rest of the file still parses.
     const RegexParser parser(R"(^(?<level>\w+):(?<message>.+)$)");
     const TestLogFile file("regex_non_matching.log");
-    file.Write("info:hello\n"
-               "this line does not match\n"
-               "error:boom\n");
+    file.Write(
+        "info:hello\n"
+        "this line does not match\n"
+        "error:boom\n"
+    );
 
     auto result = ParseFile(parser, file.GetFilePath());
     REQUIRE(result.data.Lines().size() == 2);
@@ -174,8 +184,10 @@ TEST_CASE("RegexParser optional unmatched groups -> monostate [regex]", "[regex_
     // trailing cell" behaviour.
     const RegexParser parser(R"(^(?<program>\w+)(?:\[(?<pid>\d+)\])?:\s+(?<message>.*)$)");
     const TestLogFile file("regex_optional.log");
-    file.Write("systemd: System starting\n"
-               "configd[17]: network changed\n");
+    file.Write(
+        "systemd: System starting\n"
+        "configd[17]: network changed\n"
+    );
 
     auto result = ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.empty());
@@ -197,8 +209,10 @@ TEST_CASE("RegexParser auto-detect through ParseFile picks the matched template 
     // detect loop, including the Regex special case. Two syslog-
     // shaped lines with no header.
     const TestLogFile file("regex_e2e.log");
-    file.Write("Apr 28 04:02:03 host-a systemd: System starting\n"
-               "Apr 28 04:02:04 host-b CRON[1234]: (root) CMD (test)\n");
+    file.Write(
+        "Apr 28 04:02:03 host-a systemd: System starting\n"
+        "Apr 28 04:02:04 host-b CRON[1234]: (root) CMD (test)\n"
+    );
 
     auto result = ParseFile(file.GetFilePath());
     CHECK(result.errors.empty());
@@ -218,10 +232,12 @@ TEST_CASE("RegexParser does not steal JSON / CSV files [regex]", "[regex_parser]
     // is the *last* fallback, so we'd see syslog-style columns
     // if the order ever drifted.
     const TestLogFile file("regex_precedence.log");
-    file.Write(R"({"level":"info","msg":"hello"})"
-               "\n"
-               R"({"level":"warn","msg":"world"})"
-               "\n");
+    file.Write(
+        R"({"level":"info","msg":"hello"})"
+        "\n"
+        R"({"level":"warn","msg":"world"})"
+        "\n"
+    );
 
     auto result = ParseFile(file.GetFilePath());
     CHECK(result.errors.empty());
@@ -296,9 +312,11 @@ TEST_CASE("RegexParser auto-detect and parse handle a UTF-8 BOM [regex]", "[rege
     // fix `DetectRegexTemplate` claims the file *and* the first
     // line emits a row (not a `did not match` error).
     const TestLogFile file("regex_bom.log");
-    file.Write("\xEF\xBB\xBF"
-               "Apr 28 04:02:03 host-a systemd: System starting\n"
-               "Apr 28 04:02:04 host-a systemd: another line\n");
+    file.Write(
+        "\xEF\xBB\xBF"
+        "Apr 28 04:02:03 host-a systemd: System starting\n"
+        "Apr 28 04:02:04 host-a systemd: another line\n"
+    );
 
     const auto detected = DetectRegexTemplate(file.GetFilePath());
     REQUIRE(detected.has_value());
@@ -674,8 +692,10 @@ TEST_CASE("RegexParser ToString skips monostate columns [regex]", "[regex_parser
     // fills it.
     const RegexParser parser(R"(^(?<program>\w+)(?:\[(?<pid>\d+)\])?:\s+(?<message>.*)$)");
     const TestLogFile file("regex_tostring_monostate.log");
-    file.Write("systemd: System starting\n"
-               "configd[17]: network changed\n");
+    file.Write(
+        "systemd: System starting\n"
+        "configd[17]: network changed\n"
+    );
 
     auto result = ParseFile(parser, file.GetFilePath());
     REQUIRE(result.errors.empty());

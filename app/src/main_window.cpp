@@ -510,9 +510,11 @@ QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &se
         lines << QStringLiteral("  - %1").arg(QString::fromStdString(p.string()));
     }
     lines << QString();
-    lines << QStringLiteral("Run the binary from a directory that has a sibling `tzdata/` "
-                            "(deployed installs ship one next to the executable; `cmake/FetchDependencies.cmake` "
-                            "stages it at `${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tzdata` for local builds).");
+    lines << QStringLiteral(
+        "Run the binary from a directory that has a sibling `tzdata/` "
+        "(deployed installs ship one next to the executable; `cmake/FetchDependencies.cmake` "
+        "stages it at `${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tzdata` for local builds)."
+    );
     return lines.join(QLatin1Char('\n'));
 }
 
@@ -773,10 +775,7 @@ MainWindow::MainWindow(
         // which column is "the level column". `Grew` is a no-op
         // for our purposes (dict expansion doesn't move columns).
         connect(
-            mModel,
-            &LogModel::enumColumnsChanged,
-            this,
-            [this](EnumColumnsChangeReason reason, int /*columnIndex*/) {
+            mModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason reason, int /*columnIndex*/) {
                 if (reason == EnumColumnsChangeReason::Grew)
                 {
                     return;
@@ -1039,10 +1038,7 @@ MainWindow::MainWindow(
     // rebuilds all column labels and that's wasted work
     // otherwise.
     connect(
-        mModel,
-        &QAbstractItemModel::headerDataChanged,
-        this,
-        [this](Qt::Orientation orientation, int first, int last) {
+        mModel, &QAbstractItemModel::headerDataChanged, this, [this](Qt::Orientation orientation, int first, int last) {
             if (orientation != Qt::Horizontal || mSortFilterProxyModel == nullptr)
             {
                 return;
@@ -2167,8 +2163,10 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
                 QMessageBox::information(
                     this,
                     QStringLiteral("Network Stream Session"),
-                    QStringLiteral("This recent session was a network stream; the columns and filters have been "
-                                   "restored, but the producer must be re-bound manually via 'Open Network Stream...'.")
+                    QStringLiteral(
+                        "This recent session was a network stream; the columns and filters have been "
+                        "restored, but the producer must be re-bound manually via 'Open Network Stream...'."
+                    )
                 );
             }
         }

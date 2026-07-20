@@ -436,9 +436,9 @@ The `Network Stream` dialog only consumes the picker; the `Save as template...` 
 
 Most third-party C++ dependencies (`date`, `fmt`, `Catch2`, `mio`, `glaze`, `simdjson`, `robin-map`, `efsw`, `asio`) are fetched automatically via `FetchContent`. To use system copies instead, pass the corresponding option when configuring — one of `USE_SYSTEM_DATE`, `USE_SYSTEM_FMT`, `USE_SYSTEM_CATCH2`, `USE_SYSTEM_MIO`, `USE_SYSTEM_GLAZE`, `USE_SYSTEM_SIMDJSON`, `USE_SYSTEM_ROBIN_MAP`, `USE_SYSTEM_EFSW`, `USE_SYSTEM_ASIO` (e.g. `-DUSE_SYSTEM_FMT=ON`). See [`cmake/FetchDependencies.cmake`](cmake/FetchDependencies.cmake) for the pinned versions.
 
-`loglib` also links against [oneTBB](https://github.com/uxlfoundation/oneTBB) (Intel oneAPI Threading Building Blocks) for the parallel JSON parsing pipeline and against [efsw](https://github.com/SpartanJ/efsw) for the cross-platform filesystem watcher behind Stream Mode's `TailingBytesProducer`. oneTBB is fetched at `v2022.3.0` by default; pass `-DUSE_SYSTEM_TBB=ON` to use a system installation, which must be **>= 2021.5** (the first oneAPI-style release that ships `tbb::filter_mode` / `tbb::parallel_pipeline`). efsw is fetched at `1.6.1`; the matching `USE_SYSTEM_EFSW` knob picks up a system copy. On Windows, the build copies `tbb12.dll` next to `StructuredLogViewer.exe` and the test binaries automatically (both into the build tree and the install tree) — keep it next to the executable when redistributing.
+`loglib` also links against [oneTBB](https://github.com/uxlfoundation/oneTBB) (Intel oneAPI Threading Building Blocks) for the parallel JSON parsing pipeline and against [efsw](https://github.com/SpartanJ/efsw) for the cross-platform filesystem watcher behind Stream Mode's `TailingBytesProducer`. oneTBB is fetched at `v2023.1.0` by default; pass `-DUSE_SYSTEM_TBB=ON` to use a system installation, which must be **>= 2021.5** (the first oneAPI-style release that ships `tbb::filter_mode` / `tbb::parallel_pipeline`). efsw is fetched at `1.6.3`; the matching `USE_SYSTEM_EFSW` knob picks up a system copy. On Windows, the build copies `tbb12.dll` next to `StructuredLogViewer.exe` and the test binaries automatically (both into the build tree and the install tree) — keep it next to the executable when redistributing.
 
-The TCP / UDP network producers use [standalone Asio](https://github.com/chriskohlhoff/asio) (header-only, BSL-1.0, fetched at `asio-1-30-2`). TLS for the TCP producer is gated behind the **`LOGLIB_NETWORK_TLS`** CMake option (default `ON`) and consumes system OpenSSL via `find_package(OpenSSL REQUIRED)`. Install the dev package on each platform:
+The TCP / UDP network producers use [standalone Asio](https://github.com/chriskohlhoff/asio) (header-only, BSL-1.0, fetched at `asio-1-38-2`). TLS for the TCP producer is gated behind the **`LOGLIB_NETWORK_TLS`** CMake option (default `ON`) and consumes system OpenSSL via `find_package(OpenSSL REQUIRED)`. Install the dev package on each platform:
 
 - **Linux** (Debian / Ubuntu): `sudo apt-get install libssl-dev`
 - **Windows**: `choco install openssl --yes` (default install root: `C:\Program Files\OpenSSL-Win64`); the configure step needs `OPENSSL_ROOT_DIR` set if the install is somewhere non-default.
@@ -458,14 +458,14 @@ When adding a new third-party dependency to `cmake/FetchDependencies.cmake`, app
 
 All build configurations are defined in [`CMakePresets.json`](CMakePresets.json) (CMake 3.28+). The shared presets are:
 
-| Preset             | Build type       | Purpose                                                                                                                                       |
-| ------------------ | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `release`          | `Release`        | Optimized build, used by CI and releases.                                                                                                     |
-| `debug`            | `Debug`          | Full debug info and assertions.                                                                                                               |
-| `relwithdebinfo`   | `RelWithDebInfo` | Release optimizations + debug info (perf).                                                                                                    |
-| `clang-asan-ubsan` | `RelWithDebInfo` | Clang 22 + AddressSanitizer + UndefinedBehaviorSanitizer. CI gating; see [Sanitizers and coverage](#sanitizers-and-coverage).                 |
-| `clang-tsan`       | `RelWithDebInfo` | Clang 22 + ThreadSanitizer (excludes `apptest` for Qt-internal false positives). CI gating; same section.                                     |
-| `clang-coverage`   | `RelWithDebInfo` | Clang 22 + source-based coverage. CI leg also runs `cpp-linter-action` against this build's `compile_commands.json`; no separate tidy preset. |
+| Preset             | Build type       | Purpose                                                                                                                                                   |
+| ------------------ | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `release`          | `Release`        | Optimized build, used by CI and releases.                                                                                                                 |
+| `debug`            | `Debug`          | Full debug info and assertions.                                                                                                                           |
+| `relwithdebinfo`   | `RelWithDebInfo` | Release optimizations + debug info (perf).                                                                                                                |
+| `clang-asan-ubsan` | `RelWithDebInfo` | Clang 22 + AddressSanitizer + UndefinedBehaviorSanitizer. CI gating; see [Sanitizers and coverage](#sanitizers-and-coverage).                             |
+| `clang-tsan`       | `RelWithDebInfo` | Clang 22 + ThreadSanitizer (excludes `apptest` / `apptest_overview_rail` / `apptest_histogram` for Qt-internal false positives). CI gating; same section. |
+| `clang-coverage`   | `RelWithDebInfo` | Clang 22 + source-based coverage. CI leg also runs `cpp-linter-action` against this build's `compile_commands.json`; no separate tidy preset.             |
 
 Each preset uses the **Ninja** generator and writes to `build/<presetName>/`. They also enable `CMAKE_EXPORT_COMPILE_COMMANDS` so `clangd`, `clang-tidy`, and other tools work out of the box. Matching `buildPresets`, `testPresets`, and `workflowPresets` are defined with the same names. Two extra benchmark-only test presets — `release-benchmark` and `relwithdebinfo-benchmark` — opt into the long-running parser benchmarks (see [Benchmarking](#benchmarking)).
 
@@ -546,7 +546,7 @@ Local repro is one command per preset — same shape as `release`:
 
 ```sh
 cmake --workflow --preset clang-asan-ubsan   # configure + build + test under ASan + UBSan
-cmake --workflow --preset clang-tsan         # ditto under TSan (excludes apptest by name regex)
+cmake --workflow --preset clang-tsan         # ditto under TSan (excludes apptest / apptest_overview_rail / apptest_histogram by name regex)
 cmake --workflow --preset clang-coverage     # coverage-instrumented build + test
 ```
 
@@ -556,7 +556,7 @@ The runtime knobs CI uses come from the test presets' `environment` blocks, so a
   - `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1:strict_string_checks=1:detect_stack_use_after_return=1` — the first hit aborts so CTest reports the failure.
   - `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1:abort_on_error=1`.
   - `LSAN_OPTIONS=suppressions=${sourceDir}/.ci/lsan.supp:print_suppressions=0` — Qt / fontconfig / oneTBB process-global one-shot allocations are suppressed via [`.ci/lsan.supp`](.ci/lsan.supp). Add an entry there only when the leak is in a system library you don't control; each entry should carry a one-line comment explaining where it came from.
-- **TSan:** `TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1:history_size=7:suppressions=${sourceDir}/.ci/tsan.supp`. The matching `clang-tsan` test preset excludes `apptest` (the Qt smoke test) because Qt's private mutexes generate false positives that drown the signal; `apptest_queue` (pure C++ `BoundedBatchQueue` tests) and the `loglib` unit tests cover the threading worth checking — TBB pipeline, `StreamLineSource`, `TailingBytesProducer`, and the `LogModel::Reset()` teardown sequence (`BytesProducer::Stop()` → sink `RequestStop()` → worker join). [`.ci/tsan.supp`](.ci/tsan.supp) starts empty; add entries with a rationale comment as upstream-library false positives surface.
+- **TSan:** `TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1:history_size=7:suppressions=${sourceDir}/.ci/tsan.supp`. The matching `clang-tsan` test preset excludes `apptest`, `apptest_overview_rail`, and `apptest_histogram` (the Qt-widget smoke tests) because Qt's raster thread pool and private mutexes generate false positives that drown the signal — e.g. concurrent `QArrayData` allocations on the pooled paint workers spawned by `QWidget::show()`, or the `QMetaObject::invokeMethod` queued-slot allocation that TSan flags between a parser worker posting a `QtStreamingLogSink::OnFinished` callable and the main-thread `QObject::event` dispatch. `apptest_queue` (pure C++ `BoundedBatchQueue` tests) and the `loglib` unit tests cover the threading worth checking — TBB pipeline, `StreamLineSource`, `TailingBytesProducer`, and the `LogModel::Reset()` teardown sequence (`BytesProducer::Stop()` → sink `RequestStop()` → worker join). [`.ci/tsan.supp`](.ci/tsan.supp) starts empty; add entries with a rationale comment as upstream-library false positives surface.
 - **Coverage:** `LLVM_PROFILE_FILE=${sourceDir}/build/clang-coverage/profiles/%p-%m.profraw` — one `.profraw` per (PID, binary) so the eventual `llvm-profdata-22 merge` is unambiguous. After running the tests:
 
 ```sh

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(structured_log_viewer VERSION 0.13.0 LANGUAGES CXX)
+project(structured_log_viewer VERSION 0.14.0 LANGUAGES CXX)
 
 # IPO/LTO on for Release / RelWithDebInfo, off for Debug. `NOT DEFINED` gates
 # let sanitizer presets override via the cache; a plain `set(... ON)` would

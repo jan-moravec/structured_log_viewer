@@ -101,9 +101,11 @@ TEST_CASE("Validate file with leading blank line", "[json_parser]")
     // Leading blank lines are tolerated: the first non-empty line is what determines validity.
     const loglib::JsonParser parser;
     const TestLogFile testFile;
-    testFile.Write("\n"
-                   R"({"key": "value"})"
-                   "\n");
+    testFile.Write(
+        "\n"
+        R"({"key": "value"})"
+        "\n"
+    );
     CHECK(parser.IsValid(testFile.GetFilePath()));
 }
 
@@ -127,8 +129,10 @@ TEST_CASE("Validate file with JSON line", "[json_parser]")
 {
     const loglib::JsonParser parser;
     const TestLogFile testFile;
-    testFile.Write(R"({"key": "value"})"
-                   "\n");
+    testFile.Write(
+        R"({"key": "value"})"
+        "\n"
+    );
     CHECK(parser.IsValid(testFile.GetFilePath()));
 }
 
@@ -173,9 +177,11 @@ TEST_CASE("Parse file with invalid and valid line", "[json_parser]")
 {
     const loglib::JsonParser parser;
     const TestLogFile testFile;
-    testFile.Write("invalid json\n"
-                   R"({"key": "value"})"
-                   "\n");
+    testFile.Write(
+        "invalid json\n"
+        R"({"key": "value"})"
+        "\n"
+    );
     auto result = ParseFile(parser, testFile.GetFilePath());
     CHECK(result.errors.size() == 1);
     CHECK(result.data.Lines().size() == 1);
@@ -294,8 +300,10 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
     SECTION("Null")
     {
         const TestLogFile testFile;
-        testFile.Write(R"({"key":null})"
-                       "\n");
+        testFile.Write(
+            R"({"key":null})"
+            "\n"
+        );
         auto result = ParseFile(parser, testFile.GetFilePath());
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
@@ -313,8 +321,10 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
         // use `AsStringView` so the test is agnostic to which alternative the parser
         // picks per the fast/slow path heuristic.
         const TestLogFile testFile;
-        testFile.Write(R"({"key":"value"})"
-                       "\n");
+        testFile.Write(
+            R"({"key":"value"})"
+            "\n"
+        );
         auto result = ParseFile(parser, testFile.GetFilePath());
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
@@ -329,8 +339,10 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
     SECTION("Unsigned integer")
     {
         const TestLogFile testFile;
-        testFile.Write(R"({"key":10000000000000000000})"
-                       "\n");
+        testFile.Write(
+            R"({"key":10000000000000000000})"
+            "\n"
+        );
         auto result = ParseFile(parser, testFile.GetFilePath());
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
@@ -345,8 +357,10 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
     SECTION("Integer")
     {
         const TestLogFile testFile;
-        testFile.Write(R"({"key":-12})"
-                       "\n");
+        testFile.Write(
+            R"({"key":-12})"
+            "\n"
+        );
         auto result = ParseFile(parser, testFile.GetFilePath());
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
@@ -361,8 +375,10 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
     SECTION("Double")
     {
         const TestLogFile testFile;
-        testFile.Write(R"({"key":3.14})"
-                       "\n");
+        testFile.Write(
+            R"({"key":3.14})"
+            "\n"
+        );
         auto result = ParseFile(parser, testFile.GetFilePath());
         CHECK(result.errors.empty());
         REQUIRE(result.data.Lines().size() == 1);
@@ -377,8 +393,10 @@ TEST_CASE("Parse file with single JSON object containing single JSON element", "
     SECTION("Boolean")
     {
         const TestLogFile testFile;
-        testFile.Write(R"({"key":true})"
-                       "\n");
+        testFile.Write(
+            R"({"key":true})"
+            "\n"
+        );
         auto result = ParseFile(parser, testFile.GetFilePath());
         REQUIRE(result.errors.empty());
         CHECK(result.data.Lines().size() == 1);
@@ -543,11 +561,13 @@ TEST_CASE("Parse file with multiple JSON objects and one invalid line", "[json_p
     // Invalid lines are reported as errors but do not abort the parse.
     const loglib::JsonParser parser;
     const TestLogFile testFile;
-    testFile.Write(R"({"key1":"value1"})"
-                   "\n"
-                   "invalid json\n"
-                   R"({"key2":"value2"})"
-                   "\n");
+    testFile.Write(
+        R"({"key1":"value1"})"
+        "\n"
+        "invalid json\n"
+        R"({"key2":"value2"})"
+        "\n"
+    );
 
     auto result = ParseFile(parser, testFile.GetFilePath());
     CHECK(result.errors.size() == 1);
@@ -571,12 +591,14 @@ TEST_CASE("Parse file with multiple JSON objects and multiple invalid lines", "[
     // Invalid lines accumulate as errors; valid ones still land in the result.
     const loglib::JsonParser parser;
     const TestLogFile testFile;
-    testFile.Write(R"({"key1":"value1"})"
-                   "\n"
-                   "invalid json 1\n"
-                   R"({"key2":"value2"})"
-                   "\n"
-                   "invalid json 2\n");
+    testFile.Write(
+        R"({"key1":"value1"})"
+        "\n"
+        "invalid json 1\n"
+        R"({"key2":"value2"})"
+        "\n"
+        "invalid json 2\n"
+    );
 
     auto result = ParseFile(parser, testFile.GetFilePath());
     CHECK(result.errors.size() == 2);
@@ -1001,16 +1023,18 @@ TEST_CASE(
     InitializeTimezoneData();
 
     const TestLogFile testFile;
-    testFile.Write(R"({"timestamp": "2024-01-01T12:00:00", "msg": "ok-1"})"
-                   "\n"
-                   R"({"timestamp": "not-a-timestamp", "msg": "bad-1"})"
-                   "\n"
-                   R"({"timestamp": "2024-01-02T12:00:00", "msg": "ok-2"})"
-                   "\n"
-                   R"({"timestamp": "", "msg": "empty"})"
-                   "\n"
-                   R"({"timestamp": "2024-01-03T12:00:00", "msg": "ok-3"})"
-                   "\n");
+    testFile.Write(
+        R"({"timestamp": "2024-01-01T12:00:00", "msg": "ok-1"})"
+        "\n"
+        R"({"timestamp": "not-a-timestamp", "msg": "bad-1"})"
+        "\n"
+        R"({"timestamp": "2024-01-02T12:00:00", "msg": "ok-2"})"
+        "\n"
+        R"({"timestamp": "", "msg": "empty"})"
+        "\n"
+        R"({"timestamp": "2024-01-03T12:00:00", "msg": "ok-3"})"
+        "\n"
+    );
 
     auto configuration = std::make_shared<LogConfiguration>();
     LogConfiguration::Column timestampColumn;
@@ -1137,14 +1161,16 @@ TEST_CASE("ExtractFieldKey round-trips quoted, escaped, and Unicode-escape keys"
     using namespace loglib;
 
     const TestLogFile testFile;
-    testFile.Write(R"({"plain": "v-plain"})"
-                   "\n"
-                   R"({"with\"quote": "v-quote"})" // (a) fast path; (b) escaped quote
-                   "\n"
-                   R"({"back\\slash": "v-backslash"})" // (c) escaped backslash
-                   "\n"
-                   R"({"\u0041BC": "v-unicode"})" // (d) Unicode escape
-                   "\n");
+    testFile.Write(
+        R"({"plain": "v-plain"})"
+        "\n"
+        R"({"with\"quote": "v-quote"})" // (a) fast path; (b) escaped quote
+        "\n"
+        R"({"back\\slash": "v-backslash"})" // (c) escaped backslash
+        "\n"
+        R"({"\u0041BC": "v-unicode"})" // (d) Unicode escape
+        "\n"
+    );
 
     const JsonParser parser;
     const ParseResult result = ParseFile(parser, testFile.GetFilePath());
@@ -1178,12 +1204,14 @@ TEST_CASE("Padded-tail slow path parses lines within SIMDJSON_PADDING bytes of E
     using namespace loglib;
 
     const TestLogFile testFile;
-    testFile.Write(R"({"k":"a"})" // shortest
-                   "\n"
-                   R"({"k":"abcdefghijklmnopqrstuvwx"})" // longer
-                   "\n"
-                   R"({"k":"abcdefghijklmnopqrstuvwxyz0123456789"})" // longest
-                   "\n");
+    testFile.Write(
+        R"({"k":"a"})" // shortest
+        "\n"
+        R"({"k":"abcdefghijklmnopqrstuvwx"})" // longer
+        "\n"
+        R"({"k":"abcdefghijklmnopqrstuvwxyz0123456789"})" // longest
+        "\n"
+    );
 
     const JsonParser parser;
     const ParseResult result = ParseFile(parser, testFile.GetFilePath());
@@ -1226,10 +1254,12 @@ TEST_CASE(
     //     entire line, so the linear back-scan branch handles it. Both rows must
     //     yield the same "last write wins" outcome.
     const TestLogFile testFile;
-    testFile.Write(R"({"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"dup":"first","j":11,"dup":"second"})"
-                   "\n"
-                   R"({"a":1,"dup":"first","b":2,"dup":"second"})"
-                   "\n");
+    testFile.Write(
+        R"({"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"dup":"first","j":11,"dup":"second"})"
+        "\n"
+        R"({"a":1,"dup":"first","b":2,"dup":"second"})"
+        "\n"
+    );
 
     const JsonParser parser;
     const ParseResult result = ParseFile(parser, testFile.GetFilePath());

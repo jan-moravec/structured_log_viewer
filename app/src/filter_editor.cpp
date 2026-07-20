@@ -678,8 +678,10 @@ void FilterEditor::OnOkClicked()
         // build expands them to raw dictionary entries via the rank cache.
         emit FilterEnumSubmitted(mFilterID, index, selected);
     }
-    else if (column.type == LogConfiguration::Type::Integer || column.type == LogConfiguration::Type::Floating ||
-             column.type == LogConfiguration::Type::Number)
+    else if (
+        column.type == LogConfiguration::Type::Integer || column.type == LogConfiguration::Type::Floating ||
+        column.type == LogConfiguration::Type::Number
+    )
     {
         // An empty edit means "unbounded" on that side. Insist on
         // at least one populated bound -- both empty would match

@@ -467,12 +467,14 @@ void DecodeCsvBatch(
             }
             if (raggedExtra != 0)
             {
-                parsed.errors.push_back(internal::ParsedLineError{
-                    .relativeLine = relativeLineNumber,
-                    .body = fmt::format(
-                        "Row has {} extra cell(s) beyond the {}-column header.", raggedExtra, columnKeys.size()
-                    )
-                });
+                parsed.errors.push_back(
+                    internal::ParsedLineError{
+                        .relativeLine = relativeLineNumber,
+                        .body = fmt::format(
+                            "Row has {} extra cell(s) beyond the {}-column header.", raggedExtra, columnKeys.size()
+                        )
+                    }
+                );
                 relativeLineNumber++;
                 continue;
             }

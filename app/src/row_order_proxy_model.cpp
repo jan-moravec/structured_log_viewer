@@ -127,10 +127,7 @@ void RowOrderProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
             }
         );
         mColumnsInsertedConn = connect(
-            sourceModel,
-            &QAbstractItemModel::columnsInserted,
-            this,
-            [this](const QModelIndex &parent, int, int) {
+            sourceModel, &QAbstractItemModel::columnsInserted, this, [this](const QModelIndex &parent, int, int) {
                 if (parent.isValid())
                 {
                     return;
@@ -152,10 +149,7 @@ void RowOrderProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
             }
         );
         mColumnsRemovedConn = connect(
-            sourceModel,
-            &QAbstractItemModel::columnsRemoved,
-            this,
-            [this](const QModelIndex &parent, int, int) {
+            sourceModel, &QAbstractItemModel::columnsRemoved, this, [this](const QModelIndex &parent, int, int) {
                 if (parent.isValid())
                 {
                     return;

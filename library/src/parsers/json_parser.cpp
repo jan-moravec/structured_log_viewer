@@ -102,10 +102,9 @@ void InsertSorted(
 
     // Asymmetric comparator: std::ranges::lower_bound rejects it.
     auto it = std::lower_bound(
-        out.begin(),
-        out.end(),
-        id,
-        [](const std::pair<KeyId, internal::CompactLogValue> &lhs, KeyId rhs) { return lhs.first < rhs; }
+        out.begin(), out.end(), id, [](const std::pair<KeyId, internal::CompactLogValue> &lhs, KeyId rhs) {
+            return lhs.first < rhs;
+        }
     );
     if (it != out.end() && it->first == id)
     {
@@ -573,9 +572,11 @@ void DecodeJsonBatch(
                 }();
             if (result.error())
             {
-                parsed.errors.push_back(internal::ParsedLineError{
-                    .relativeLine = relativeLineNumber, .body = std::string(simdjson::error_message(result.error()))
-                });
+                parsed.errors.push_back(
+                    internal::ParsedLineError{
+                        .relativeLine = relativeLineNumber, .body = std::string(simdjson::error_message(result.error()))
+                    }
+                );
                 relativeLineNumber++;
                 continue;
             }

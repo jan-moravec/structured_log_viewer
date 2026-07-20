@@ -94,15 +94,21 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
     // ------------------------------------------------------------
     auto *topBar = new QHBoxLayout();
     mNewButton = new QPushButton(tr("New template..."), this);
-    mNewButton->setToolTip(tr("Start a blank user template draft. Save it (or pick another row) to commit; "
-                              "discard by selecting another row."));
+    mNewButton->setToolTip(
+        tr("Start a blank user template draft. Save it (or pick another row) to commit; "
+           "discard by selecting another row.")
+    );
     mDuplicateButton = new QPushButton(tr("Duplicate selected"), this);
-    mDuplicateButton->setToolTip(tr("Copy the selected entry's pattern / samples / priority into a new draft. "
-                                    "Works for both built-in and user templates -- the duplicate becomes a user "
-                                    "template once you Save."));
+    mDuplicateButton->setToolTip(
+        tr("Copy the selected entry's pattern / samples / priority into a new draft. "
+           "Works for both built-in and user templates -- the duplicate becomes a user "
+           "template once you Save.")
+    );
     mDeleteButton = new QPushButton(tr("Delete user template"), this);
-    mDeleteButton->setToolTip(tr("Delete the selected user template's JSON file. Built-in templates cannot be "
-                                 "deleted; create a same-named user template to shadow one instead."));
+    mDeleteButton->setToolTip(
+        tr("Delete the selected user template's JSON file. Built-in templates cannot be "
+           "deleted; create a same-named user template to shadow one instead.")
+    );
     mOpenFolderButton = new QPushButton(tr("Open templates folder"), this);
     mOpenFolderButton->setToolTip(tr("Reveal the user regex templates folder in the OS file manager."));
     mReloadButton = new QPushButton(tr("Reload from disk"), this);
@@ -127,9 +133,11 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
     mListWidget->setSelectionMode(QAbstractItemView::SingleSelection);
     mListWidget->setUniformItemSizes(true);
     mListWidget->setMinimumWidth(LIST_INITIAL_WIDTH_PX / 2);
-    mListWidget->setToolTip(tr("Every template in the merged catalog (built-ins from the binary + user files "
-                               "from <AppData>/regex_templates/). The `(user)` badge marks files you can edit "
-                               "in place; built-ins are read-only and must be duplicated to customise."));
+    mListWidget->setToolTip(
+        tr("Every template in the merged catalog (built-ins from the binary + user files "
+           "from <AppData>/regex_templates/). The `(user)` badge marks files you can edit "
+           "in place; built-ins are read-only and must be duplicated to customise.")
+    );
 
     // Right-pane form. `QFormLayout` keeps the label column tight;
     // multi-line fields use `QPlainTextEdit` so they scroll on
@@ -140,9 +148,11 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
 
     mNameEdit = new QLineEdit(formContainer);
     mNameEdit->setPlaceholderText(tr("Template name (filename basename + picker label)"));
-    mNameEdit->setToolTip(tr("Human-readable picker label. Must be unique across the merged catalog; "
-                             "becomes the JSON file's basename so the same sanitisation rules as a filename "
-                             "apply (no path separators, no '..', no reserved Windows device names, etc.)."));
+    mNameEdit->setToolTip(
+        tr("Human-readable picker label. Must be unique across the merged catalog; "
+           "becomes the JSON file's basename so the same sanitisation rules as a filename "
+           "apply (no path separators, no '..', no reserved Windows device names, etc.).")
+    );
     formLayout->addRow(tr("Name:"), mNameEdit);
 
     mSourceLabel = new QLabel(formContainer);
@@ -154,9 +164,11 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
     mPatternEdit->setPlaceholderText(
         tr(R"(PCRE2 pattern with named capture groups, e.g. ^(?<Level>\w+) (?<Message>.*)$)")
     );
-    mPatternEdit->setToolTip(tr("PCRE2 regex with `(?<Name>...)` named capture groups; each group becomes a "
-                                "column. Avoid Oniguruma-only constructs (\\K, possessive quantifiers); "
-                                "PCRE2 won't compile them."));
+    mPatternEdit->setToolTip(
+        tr("PCRE2 regex with `(?<Name>...)` named capture groups; each group becomes a "
+           "column. Avoid Oniguruma-only constructs (\\K, possessive quantifiers); "
+           "PCRE2 won't compile them.")
+    );
     mPatternEdit->setLineWrapMode(QPlainTextEdit::NoWrap);
     mPatternEdit->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     mPatternEdit->setTabChangesFocus(true);
@@ -164,8 +176,10 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
 
     mSampleLinesEdit = new QPlainTextEdit(formContainer);
     mSampleLinesEdit->setPlaceholderText(tr("One sample log line per row. Used by Validate to self-test the pattern."));
-    mSampleLinesEdit->setToolTip(tr("One sample line per row. Validate will compile the pattern and check that "
-                                    "every sample matches. Empty rows are skipped."));
+    mSampleLinesEdit->setToolTip(
+        tr("One sample line per row. Validate will compile the pattern and check that "
+           "every sample matches. Empty rows are skipped.")
+    );
     mSampleLinesEdit->setLineWrapMode(QPlainTextEdit::NoWrap);
     mSampleLinesEdit->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     mSampleLinesEdit->setTabChangesFocus(true);
@@ -173,9 +187,11 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
 
     auto *flagsRow = new QHBoxLayout();
     mAutoDetectCheck = new QCheckBox(tr("Participate in auto-detect"), formContainer);
-    mAutoDetectCheck->setToolTip(tr("When checked, the template joins the parser's IsValid probe loop "
-                                    "(in priority order). Uncheck for corporate / niche templates you want "
-                                    "available in the picker but not in the auto-detect cost path."));
+    mAutoDetectCheck->setToolTip(
+        tr("When checked, the template joins the parser's IsValid probe loop "
+           "(in priority order). Uncheck for corporate / niche templates you want "
+           "available in the picker but not in the auto-detect cost path.")
+    );
     flagsRow->addWidget(mAutoDetectCheck);
     flagsRow->addSpacing(FLAGS_ROW_SPACING_PX);
     flagsRow->addWidget(new QLabel(tr("Priority:"), formContainer));
@@ -191,13 +207,17 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
     formLayout->addRow(QString{}, flagsRow);
 
     mDescriptionEdit = new QPlainTextEdit(formContainer);
-    mDescriptionEdit->setPlaceholderText(tr("Optional. Describe the format the template parses: what software emits "
-                                            "it, what the columns mean, known edge cases. For ports of upstream "
-                                            "patterns, also cite the source file path and licence."));
-    mDescriptionEdit->setToolTip(tr("Free-form, multi-line description of the format. Typically a sentence on the "
-                                    "format itself plus an optional attribution line for ported templates (e.g. "
-                                    "'Adapted from lnav src/formats/<file>.json (BSD-2-Clause)'). The licence-bundle "
-                                    "generator scans this field for recognisable licence citations."));
+    mDescriptionEdit->setPlaceholderText(
+        tr("Optional. Describe the format the template parses: what software emits "
+           "it, what the columns mean, known edge cases. For ports of upstream "
+           "patterns, also cite the source file path and licence.")
+    );
+    mDescriptionEdit->setToolTip(
+        tr("Free-form, multi-line description of the format. Typically a sentence on the "
+           "format itself plus an optional attribution line for ported templates (e.g. "
+           "'Adapted from lnav src/formats/<file>.json (BSD-2-Clause)'). The licence-bundle "
+           "generator scans this field for recognisable licence citations.")
+    );
     mDescriptionEdit->setTabChangesFocus(true);
     // Word-wrap so long descriptions stay readable without
     // making the user break lines manually.
@@ -221,11 +241,15 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
     // ------------------------------------------------------------
     auto *formButtonsRow = new QHBoxLayout();
     mValidateButton = new QPushButton(tr("Validate"), formContainer);
-    mValidateButton->setToolTip(tr("Compile the pattern and check every sample line matches. Reports first failure. "
-                                   "Does not write to disk."));
+    mValidateButton->setToolTip(
+        tr("Compile the pattern and check every sample line matches. Reports first failure. "
+           "Does not write to disk.")
+    );
     mSaveButton = new QPushButton(tr("Save"), formContainer);
-    mSaveButton->setToolTip(tr("Write the template to <AppData>/regex_templates/<name>.json and refresh the "
-                               "registry (so the parser's auto-detect probe sees it immediately)."));
+    mSaveButton->setToolTip(
+        tr("Write the template to <AppData>/regex_templates/<name>.json and refresh the "
+           "registry (so the parser's auto-detect probe sees it immediately).")
+    );
     mRevertButton = new QPushButton(tr("Revert"), formContainer);
     mRevertButton->setToolTip(tr("Discard unsaved edits and reload the form from the registry."));
     formButtonsRow->addStretch(1);

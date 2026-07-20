@@ -39,9 +39,11 @@ struct ParsedCli
 
     const QCommandLineOption newInstanceOption(
         QStringLiteral("new-instance"),
-        QStringLiteral("Run a fresh process without coordinating with the canonical primary. "
-                       "Useful for side-by-side debugging or running an alternate session "
-                       "without disturbing the running primary.")
+        QStringLiteral(
+            "Run a fresh process without coordinating with the canonical primary. "
+            "Useful for side-by-side debugging or running an alternate session "
+            "without disturbing the running primary."
+        )
     );
     parser.addOption(newInstanceOption);
     parser.addPositionalArgument(

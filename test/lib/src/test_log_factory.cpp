@@ -93,8 +93,10 @@ TEST_CASE("Parse regex log file via ParseFile auto-detect", "[log_factory]")
     // builds a parser pinned to the matched template's pattern.
     // Syslog fixture picks up the shipped RFC3164 template.
     const TestLogFile testFile("autodetect.syslog");
-    testFile.Write("Apr 28 04:02:03 host-a systemd: System starting\n"
-                   "Apr 28 04:02:04 host-a systemd: another line\n");
+    testFile.Write(
+        "Apr 28 04:02:03 host-a systemd: System starting\n"
+        "Apr 28 04:02:04 host-a systemd: another line\n"
+    );
 
     ParseResult result = ParseFile(testFile.GetFilePath());
     CHECK(result.errors.empty());

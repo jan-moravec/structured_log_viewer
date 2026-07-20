@@ -1167,8 +1167,10 @@ void ThemeControl::ApplyPalette(const loglib::Theme &theme)
          {.role = QPalette::ButtonText, .foreground = buttonText, .background = button, .mix = DISABLED_TEXT_MIX},
          // ToolTipText blends toward `toolTipBase` (its surface),
          // not `base`, per the ChromeStyle contract.
-         {.role = QPalette::ToolTipText, .foreground = toolTipText, .background = toolTipBase, .mix = DISABLED_TEXT_MIX
-         },
+         {.role = QPalette::ToolTipText,
+          .foreground = toolTipText,
+          .background = toolTipBase,
+          .mix = DISABLED_TEXT_MIX},
          {.role = QPalette::PlaceholderText, .foreground = placeholder, .background = base, .mix = DISABLED_TEXT_MIX},
          {.role = QPalette::Highlight, .foreground = highlight, .background = window, .mix = DISABLED_HIGHLIGHT_MIX},
          {.role = QPalette::HighlightedText,

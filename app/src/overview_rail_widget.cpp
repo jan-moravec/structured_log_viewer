@@ -482,24 +482,25 @@ void OverviewRailWidget::paintEvent(QPaintEvent * /*event*/)
             }
             const int proxyRows = mModel->ProxyRowCount();
             const int levelColIdx = mModel->LevelColumnIndexForTest();
-            qInfo().noquote(
-            ) << QStringLiteral("[rail-trace] widget=%1x%2 rail=%3x%4 content=%5 buckets=%6 non-empty=%7 "
-                                "maxCount=%8 base=%9 firstBucket total=%10 dom=%11 color=%12 proxyRows=%13 "
-                                "levelColIdx=%14")
-                     .arg(widgetRect.width())
-                     .arg(widgetRect.height())
-                     .arg(rail.width())
-                     .arg(rail.height())
-                     .arg(contentWidth)
-                     .arg(nBuckets)
-                     .arg(nonEmptyBuckets)
-                     .arg(maxCount)
-                     .arg(pal.color(QPalette::Base).name())
-                     .arg(firstBucketTotal)
-                     .arg(static_cast<int>(firstDominant))
-                     .arg(firstBarColor.name())
-                     .arg(proxyRows)
-                     .arg(levelColIdx);
+            qInfo().noquote() << QStringLiteral(
+                                     "[rail-trace] widget=%1x%2 rail=%3x%4 content=%5 buckets=%6 non-empty=%7 "
+                                     "maxCount=%8 base=%9 firstBucket total=%10 dom=%11 color=%12 proxyRows=%13 "
+                                     "levelColIdx=%14"
+            )
+                                     .arg(widgetRect.width())
+                                     .arg(widgetRect.height())
+                                     .arg(rail.width())
+                                     .arg(rail.height())
+                                     .arg(contentWidth)
+                                     .arg(nBuckets)
+                                     .arg(nonEmptyBuckets)
+                                     .arg(maxCount)
+                                     .arg(pal.color(QPalette::Base).name())
+                                     .arg(firstBucketTotal)
+                                     .arg(static_cast<int>(firstDominant))
+                                     .arg(firstBarColor.name())
+                                     .arg(proxyRows)
+                                     .arg(levelColIdx);
         }
     }
 

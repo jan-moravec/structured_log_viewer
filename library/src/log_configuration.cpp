@@ -267,13 +267,15 @@ void LogConfigurationManager::Update(const LogData &logData)
         {
             if (IsTimestampKey(key))
             {
-                mConfiguration.columns.push_back(LogConfiguration::Column{
-                    .header = key,
-                    .keys = {key},
-                    .printFormat = "%F %H:%M:%S",
-                    .type = LogConfiguration::Type::Time,
-                    .parseFormats = {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
-                });
+                mConfiguration.columns.push_back(
+                    LogConfiguration::Column{
+                        .header = key,
+                        .keys = {key},
+                        .printFormat = "%F %H:%M:%S",
+                        .type = LogConfiguration::Type::Time,
+                        .parseFormats = {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
+                    }
+                );
                 // Bubble the freshly-appended timestamp column to
                 // position 0. `MoveColumn` (not an inline swap chain)
                 // so persisted `filters[*].row` is remapped along
@@ -286,13 +288,15 @@ void LogConfigurationManager::Update(const LogData &logData)
             }
             else
             {
-                mConfiguration.columns.push_back(LogConfiguration::Column{
-                    .header = key,
-                    .keys = {key},
-                    .printFormat = "{}",
-                    .type = LogConfiguration::Type::Any,
-                    .parseFormats = {}
-                });
+                mConfiguration.columns.push_back(
+                    LogConfiguration::Column{
+                        .header = key,
+                        .keys = {key},
+                        .printFormat = "{}",
+                        .type = LogConfiguration::Type::Any,
+                        .parseFormats = {}
+                    }
+                );
             }
             mKeysInColumns.insert(key);
         }
@@ -311,23 +315,27 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
         }
         if (IsTimestampKey(key))
         {
-            mConfiguration.columns.push_back(LogConfiguration::Column{
-                .header = key,
-                .keys = {key},
-                .printFormat = "%F %H:%M:%S",
-                .type = LogConfiguration::Type::Time,
-                .parseFormats = {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
-            });
+            mConfiguration.columns.push_back(
+                LogConfiguration::Column{
+                    .header = key,
+                    .keys = {key},
+                    .printFormat = "%F %H:%M:%S",
+                    .type = LogConfiguration::Type::Time,
+                    .parseFormats = {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
+                }
+            );
         }
         else
         {
-            mConfiguration.columns.push_back(LogConfiguration::Column{
-                .header = key,
-                .keys = {key},
-                .printFormat = "{}",
-                .type = LogConfiguration::Type::Any,
-                .parseFormats = {}
-            });
+            mConfiguration.columns.push_back(
+                LogConfiguration::Column{
+                    .header = key,
+                    .keys = {key},
+                    .printFormat = "{}",
+                    .type = LogConfiguration::Type::Any,
+                    .parseFormats = {}
+                }
+            );
         }
         mKeysInColumns.insert(key);
     }

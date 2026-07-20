@@ -3099,7 +3099,8 @@ TEST_CASE(
     KeyIndex &keys = table.Keys();
 
     // 5 distinct values; only `"qux"` is non-canonical.
-    table.AppendBatch(BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error", "fatal", "qux"}, 1, 10, true)
+    table.AppendBatch(
+        BuildEnumBatch(keys, *sourcePtr, "level", {"info", "warn", "error", "fatal", "qux"}, 1, 10, true)
     );
 
     REQUIRE(table.RowCount() == 10);
