@@ -335,6 +335,14 @@ public:
         return mAnchors;
     }
 
+    /// Owned `HighlightRuleSet`; non-null after construction. Tests
+    /// inspect it after column moves / rule saves to verify the
+    /// rebind signal path.
+    [[nodiscard]] HighlightRuleSet *Highlights() const noexcept
+    {
+        return mHighlights;
+    }
+
     /// Select the next (forward=true) or previous anchored row in
     /// visible (proxy) order, honouring sort + filter + newest-first
     /// orientation. Wraps at the visible bounds. Surfaces a status-bar

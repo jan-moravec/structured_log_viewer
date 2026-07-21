@@ -216,9 +216,6 @@ private:
     QCheckBox *mBoolIncludeTrue = nullptr;
     QCheckBox *mBoolIncludeFalse = nullptr;
 
-    // Read-only pane for Time / Enumeration.
-    QLabel *mReadOnlyLabel = nullptr;
-
     QToolButton *mForegroundButton = nullptr;
     QToolButton *mBackgroundButton = nullptr;
     QCheckBox *mBoldCheck = nullptr;

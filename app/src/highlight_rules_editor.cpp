@@ -8,6 +8,7 @@
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -21,6 +22,7 @@
 #include <QPainter>
 #include <QPixmap>
 #include <QPushButton>
+#include <QScopeGuard>
 #include <QSpacerItem>
 #include <QSplitter>
 #include <QStackedWidget>
@@ -253,26 +255,41 @@ HighlightRulesEditor::HighlightRulesEditor(
         layout->addStretch();
     }
 
-    // Read-only pane for Time / Enumeration.
-    mReadOnlyLabel = new QLabel(
-        tr("This rule type isn't editable from the GUI in this version.\n"
-           "Time and Enumeration rules can be edited by hand in the configuration file."),
-        this
-    );
-    mReadOnlyLabel->setWordWrap(true);
-    auto *readOnlyPane = new QWidget(this);
-    {
-        auto *layout = new QVBoxLayout(readOnlyPane);
+    // Read-only panes for Time / Enumeration.
+    //
+    // Two *separate* widgets even though the message is identical: a
+    // `QStackedWidget` (like any `QLayout`) can hold each `QWidget`
+    // in at most one slot, so inserting the same pointer at both
+    // index 1 and index 2 silently reparents / moves the widget --
+    // the stack then holds only four entries and every subsequent
+    // `HighlightRule::Type` index past `Time` is off by one
+    // (Enumeration would show the Number pane, Number the Boolean
+    // pane, Boolean would render blank). Constructing a distinct
+    // pane per slot keeps `setCurrentIndex(static_cast<int>(type))`
+    // honest.
+    auto buildReadOnlyPane = [this]() -> QWidget * {
+        auto *pane = new QWidget(this);
+        auto *layout = new QVBoxLayout(pane);
         layout->setContentsMargins(0, 0, 0, 0);
-        layout->addWidget(mReadOnlyLabel);
-    }
+        auto *label = new QLabel(
+            tr("This rule type isn't editable from the GUI in this version.\n"
+               "Time and Enumeration rules still match at runtime; edit their\n"
+               "match parameters by hand in the configuration file."),
+            pane
+        );
+        label->setWordWrap(true);
+        layout->addWidget(label);
+        return pane;
+    };
+    auto *timeReadOnlyPane = buildReadOnlyPane();
+    auto *enumReadOnlyPane = buildReadOnlyPane();
 
     mMatchStack = new QStackedWidget(this);
     // Order MUST match `HighlightRule::Type` enum order:
     //   0 = String, 1 = Time, 2 = Enumeration, 3 = Number, 4 = Boolean.
     mMatchStack->insertWidget(0, stringPane);
-    mMatchStack->insertWidget(1, readOnlyPane);
-    mMatchStack->insertWidget(2, readOnlyPane);
+    mMatchStack->insertWidget(1, timeReadOnlyPane);
+    mMatchStack->insertWidget(2, enumReadOnlyPane);
     mMatchStack->insertWidget(3, numberPane);
     mMatchStack->insertWidget(4, boolPane);
 
@@ -550,15 +567,29 @@ void HighlightRulesEditor::SetColumns(std::vector<loglib::LogConfiguration::Colu
 
 void HighlightRulesEditor::SetRules(std::vector<loglib::LogConfiguration::HighlightRule> rules)
 {
-    if (!ConfirmDiscardEdits())
-    {
-        return;
-    }
+    // Deliberately no `ConfirmDiscardEdits` prompt here. The one
+    // production caller is `MainWindow::ApplyLoadedConfiguration`,
+    // which runs *after* it has already replaced the runtime
+    // `HighlightRuleSet` and the persistent `LogConfigurationManager`
+    // mirror. Prompting the user at this point could leave the
+    // editor showing the pre-load buffer while the runtime + config
+    // show the just-loaded rules: hitting Save in the editor would
+    // then clobber the freshly-loaded config with the stale buffer.
+    // Loading a new configuration is a session-wide destructive
+    // operation; the editor buffer follows it. If the user had
+    // unsaved edits we surface a hint in the status bar so the loss
+    // isn't silent; the close-event confirmation still guards the
+    // manual dismissal path.
+    const bool discardedDirtyBuffer = IsDirty();
     mLocalRules = std::move(rules);
     mBaseline = mLocalRules;
     RebuildList(mLocalRules.empty() ? -1 : 0);
     UpdateListButtons();
     UpdateFormEnabled();
+    if (discardedDirtyBuffer)
+    {
+        ShowStatus(tr("Unsaved highlight-rule edits were discarded because a new configuration was loaded."), true);
+    }
 }
 
 void HighlightRulesEditor::RebuildList(int selectRow)
@@ -897,24 +928,40 @@ void HighlightRulesEditor::GatherForm()
 
     rule.type = static_cast<loglib::LogConfiguration::HighlightRule::Type>(mTypeCombo->currentIndex());
 
-    // Reset value-holders each time; type switch means old fields
-    // are stale.
-    rule.matchType.reset();
-    rule.filterString.reset();
-    rule.filterBegin.reset();
-    rule.filterEnd.reset();
-    rule.filterMinValue.reset();
-    rule.filterMaxValue.reset();
-    rule.filterValues.clear();
-
+    // Value-holder reset is *scoped to editor-owned types*. Wiping
+    // every field unconditionally (as an earlier version did) would
+    // silently scramble hand-authored `filterBegin`/`filterEnd` on a
+    // Time rule, or `filterValues` on an Enumeration rule, the
+    // moment the user tweaked the rule's name / colour / bold flag
+    // (all of which route through `GatherForm`). The docs point
+    // users at the config file for those two match types, so the
+    // editor must preserve whatever they wrote there.
+    //
+    // Type changes are still handled correctly: flipping the combo
+    // from Time to (say) String lands us in the `String` branch
+    // below, which owns and repopulates its own fields, and the
+    // now-irrelevant Time bounds simply ride along in the rule --
+    // `CompileRule` reads only the fields relevant to `rule.type`.
     using RT = loglib::LogConfiguration::HighlightRule::Type;
     switch (rule.type)
     {
     case RT::String:
+        rule.filterBegin.reset();
+        rule.filterEnd.reset();
+        rule.filterMinValue.reset();
+        rule.filterMaxValue.reset();
+        rule.filterValues.clear();
         rule.matchType = static_cast<loglib::LogConfiguration::HighlightRule::Match>(mStringMatchCombo->currentIndex());
         rule.filterString = mStringNeedleEdit->text().toStdString();
         break;
     case RT::Number:
+        rule.matchType.reset();
+        rule.filterString.reset();
+        rule.filterBegin.reset();
+        rule.filterEnd.reset();
+        rule.filterValues.clear();
+        rule.filterMinValue.reset();
+        rule.filterMaxValue.reset();
         if (mNumberMinEnabled->isChecked())
         {
             rule.filterMinValue = mNumberMinValue->value();
@@ -925,6 +972,13 @@ void HighlightRulesEditor::GatherForm()
         }
         break;
     case RT::Boolean:
+        rule.matchType.reset();
+        rule.filterString.reset();
+        rule.filterBegin.reset();
+        rule.filterEnd.reset();
+        rule.filterMinValue.reset();
+        rule.filterMaxValue.reset();
+        rule.filterValues.clear();
         if (mBoolIncludeTrue->isChecked())
         {
             rule.filterValues.emplace_back("true");
@@ -937,10 +991,12 @@ void HighlightRulesEditor::GatherForm()
     case RT::Time:
     case RT::Enumeration:
     default:
-        // Read-only in v1: leave the value-holders empty (matches
-        // the reset above) so a user accidentally re-typing a
-        // Time/Enum rule doesn't scramble hand-authored config
-        // values. Rules stay inert until fixed via the config file.
+        // Read-only in v1: deliberately leave every match-spec
+        // field untouched so hand-authored config values survive
+        // any style/name/colour edit routed through `GatherForm`.
+        // The editor form for these types renders the "edit via
+        // config file" pane; nothing here can produce a value to
+        // write back.
         break;
     }
 

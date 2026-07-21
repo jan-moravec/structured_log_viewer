@@ -7,6 +7,7 @@
 #include "filter_editor.hpp"
 #include "find_dock.hpp"
 #include "find_record_widget.hpp"
+#include "highlight_rule_set.hpp"
 #include "jump_to_tail_pill.hpp"
 #include "level_cell_delegate.hpp"
 #include "log_filter_model.hpp"
@@ -8038,6 +8039,75 @@ private slots:
         const QAbstractItemModel *proxy = tableView->model();
         QVERIFY(proxy != nullptr);
         QVERIFY2(proxy->rowCount() > 0, "filter on level=info must keep at least one row visible after the move");
+    }
+
+    // Regression: a source-side column move (header drag or
+    // streaming bubble) must rebind `HighlightRuleSet`'s compiled
+    // predicates against the new column layout. Rules bind by
+    // `Column::keys` (stable identifier), but the compiled
+    // predicates cache the *resolved* column index at compile time;
+    // without a rebind on `columnsMoved` those cached indices now
+    // point at whichever column happens to sit at the old position
+    // and highlights would tint rows against a different field.
+    void TestSourceColumnMoveRebindsHighlights()
+    {
+        const int categoryCol = StreamFixtureForColumnTests();
+        QVERIFY2(categoryCol >= 0, "category column must exist after streaming");
+        auto *model = mWindow->Model();
+        auto *highlights = mWindow->Highlights();
+        QVERIFY2(highlights != nullptr, "MainWindow must own a HighlightRuleSet");
+        const int columnCount = model->columnCount();
+        QVERIFY2(columnCount >= 2, "fixture must yield at least two columns");
+
+        // Install a Contains rule bound to `category` via
+        // `SetRules` (production path is Save from the editor;
+        // both funnel through the same call).
+        loglib::LogConfiguration::HighlightRule rule;
+        rule.name = "hl-category-info";
+        rule.enabled = true;
+        rule.columnKeys = {"category"};
+        rule.type = loglib::LogConfiguration::HighlightRule::Type::String;
+        rule.matchType = loglib::LogConfiguration::HighlightRule::Match::Contains;
+        rule.filterString = "info";
+        rule.backgroundIndex = 1;
+        highlights->SetRules({rule}, model->Configuration().columns, &model->Table());
+
+        const auto &resolvedBefore = highlights->ResolvedColumnsForTest();
+        QCOMPARE(resolvedBefore.size(), static_cast<size_t>(1));
+        QCOMPARE(resolvedBefore[0], categoryCol);
+        // Sanity: at least one row matches before the move.
+        bool anyMatch = false;
+        for (int r = 0; r < model->rowCount() && !anyMatch; ++r)
+        {
+            anyMatch = highlights->LastMatchFor(static_cast<std::size_t>(r)).has_value();
+        }
+        QVERIFY2(anyMatch, "precondition: at least one row must match the highlight rule before the move");
+
+        // Move `category` to a different column position via the
+        // same entry point the header drag / streaming bubble uses.
+        const int src = categoryCol;
+        const int dest = (src == 0) ? columnCount - 1 : 0;
+        QVERIFY(src != dest);
+        QVERIFY2(model->MoveColumn(src, dest), "MoveColumn must succeed");
+        QCoreApplication::processEvents();
+
+        // After the move `category` sits at `dest`; the rebind must
+        // have refreshed the compiled predicate's column index.
+        const auto &resolvedAfter = highlights->ResolvedColumnsForTest();
+        QCOMPARE(resolvedAfter.size(), static_cast<size_t>(1));
+        QCOMPARE(resolvedAfter[0], dest);
+        QVERIFY(highlights->HasActiveRules());
+
+        // Row-match cache should still resolve at least one "info"
+        // row. If the rebind had been skipped the compiled predicate
+        // would be reading whichever column now sits at `src`, so
+        // matches would silently zero out.
+        bool anyMatchAfter = false;
+        for (int r = 0; r < model->rowCount() && !anyMatchAfter; ++r)
+        {
+            anyMatchAfter = highlights->LastMatchFor(static_cast<std::size_t>(r)).has_value();
+        }
+        QVERIFY2(anyMatchAfter, "highlight matches must survive a source-side column move");
     }
 
     // Regression: a source-side column move (header drag or

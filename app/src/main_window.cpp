@@ -654,6 +654,15 @@ MainWindow::MainWindow(
         {
             return;
         }
+        // Mirror the guard in the `rowsRemoved` lambda below: Qt is
+        // documented to always emit non-negative, non-inverted
+        // ranges, but the numeric cast to `std::size_t` would
+        // silently wrap negatives into huge values, so defend
+        // symmetrically.
+        if (first < 0 || last < first)
+        {
+            return;
+        }
         mHighlights->OnRowsAppended(
             mModel->Table(), static_cast<std::size_t>(first), static_cast<std::size_t>(last)
         );
@@ -7717,6 +7726,20 @@ void MainWindow::OnSourceColumnsMoved(
     if (runtimeFilterChanged)
     {
         UpdateFilters();
+    }
+    // Highlight rules bind by column keys, but the compiled
+    // predicates cache the *resolved* column index at compile time
+    // (`HighlightRuleSet::mResolvedColumn` plus each
+    // `RowPredicate`'s `mColumnIndex`). `LogTable::MoveColumn`
+    // rotates the underlying column vector, so those cached indices
+    // now point at the wrong column and highlights would silently
+    // tint rows against a different field. Rebind against the new
+    // layout to refresh both caches. Cheap: `RecompileAll` walks the
+    // rule list once and the row-match rebuild reads bytes we just
+    // touched.
+    if (mHighlights != nullptr && mModel != nullptr)
+    {
+        mHighlights->RebindColumns(mModel->Configuration().columns, &mModel->Table());
     }
     // Re-apply hidden flags after the move. Qt usually carries them
     // through `columnsMoved`, but `initializeSections()` clears them

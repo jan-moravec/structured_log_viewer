@@ -1756,7 +1756,7 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
                 const auto &rule = mHighlights->Rules()[*ruleIndex];
                 if (rule.bold || rule.italic)
                 {
-                    QFont font = (mTheme != nullptr) ? qApp->font() : qApp->font();
+                    QFont font = qApp->font();
                     // Compose on top of the level font when available
                     // so a level's bold-serif choice survives the rule.
                     if (mTheme != nullptr)
