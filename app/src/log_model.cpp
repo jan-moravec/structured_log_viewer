@@ -1,6 +1,7 @@
 #include "log_model.hpp"
 
 #include "anchor_manager.hpp"
+#include "highlight_rule_set.hpp"
 #include "icon_loader.hpp"
 #include "qt_streaming_log_sink.hpp"
 #include "streaming_control.hpp"
@@ -43,13 +44,19 @@
 #include <utility>
 #include <vector>
 
-LogModel::LogModel(QObject *parent, ThemeControl *theme, AnchorManager *anchors)
-    : LogModel(parent, QtStreamingLogSink::PENDING_CAPACITY_DEFAULT, theme, anchors)
+LogModel::LogModel(QObject *parent, ThemeControl *theme, AnchorManager *anchors, HighlightRuleSet *highlights)
+    : LogModel(parent, QtStreamingLogSink::PENDING_CAPACITY_DEFAULT, theme, anchors, highlights)
 {
 }
 
-LogModel::LogModel(QObject *parent, std::size_t pendingCapacity, ThemeControl *theme, AnchorManager *anchors)
-    : QAbstractTableModel{parent}, mTheme(theme), mAnchors(anchors)
+LogModel::LogModel(
+    QObject *parent,
+    std::size_t pendingCapacity,
+    ThemeControl *theme,
+    AnchorManager *anchors,
+    HighlightRuleSet *highlights
+)
+    : QAbstractTableModel{parent}, mTheme(theme), mAnchors(anchors), mHighlights(highlights)
 {
     qRegisterMetaType<StreamingResult>("StreamingResult");
     qRegisterMetaType<EnumColumnsChangeReason>("EnumColumnsChangeReason");
@@ -64,6 +71,20 @@ LogModel::LogModel(QObject *parent, std::size_t pendingCapacity, ThemeControl *t
         // Anchor mutations -> scoped row repaints.
         connect(mAnchors, &AnchorManager::anchorChanged, this, &LogModel::RefreshRowsForAnchor);
         connect(mAnchors, &AnchorManager::anchorsReset, this, &LogModel::RefreshAllAnchorRows);
+    }
+    if (mHighlights != nullptr)
+    {
+        // The rule set doesn't know which rows are visible; we
+        // conservatively repaint the whole table. The invalidation
+        // is coarse but fires infrequently (editor Save / config
+        // load / column bind / streaming tail).
+        connect(
+            mHighlights,
+            &HighlightRuleSet::rulesChanged,
+            this,
+            [this](std::size_t) { RefreshAllHighlightRows(); }
+        );
+        connect(mHighlights, &HighlightRuleSet::matchesChanged, this, &LogModel::RefreshAllHighlightRows);
     }
 }
 
@@ -1478,6 +1499,21 @@ void LogModel::RefreshAllAnchorRows()
     emit dataChanged(index(0, 0), index(rows - 1, cols - 1), {Qt::BackgroundRole, Qt::ForegroundRole});
 }
 
+void LogModel::RefreshAllHighlightRows()
+{
+    const int rows = rowCount();
+    const int cols = columnCount();
+    if (rows <= 0 || cols <= 0)
+    {
+        return;
+    }
+    // FontRole rides along: a highlight rule can bold / italicise a
+    // row on top of the level font, so a rule mutation needs to
+    // repaint the font layer too. Anchor-only refreshes stay on the
+    // narrower Background+Foreground pair.
+    emit dataChanged(index(0, 0), index(rows - 1, cols - 1), {Qt::BackgroundRole, Qt::ForegroundRole, Qt::FontRole});
+}
+
 void LogModel::RefreshAllRowStyles()
 {
     const int rows = rowCount();
@@ -1634,6 +1670,24 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
                 }
             }
         }
+        // Highlight rule overlay sits between anchors and the level
+        // brush: user rules can override the level tint but not the
+        // anchor's identity tag.
+        if (mHighlights != nullptr && mHighlights->HasActiveRules())
+        {
+            if (const auto ruleIndex = mHighlights->LastMatchFor(static_cast<std::size_t>(index.row())))
+            {
+                const auto &rule = mHighlights->Rules()[*ruleIndex];
+                if (rule.backgroundIndex != 0)
+                {
+                    const QBrush brush = mTheme->HighlightBrushFor(rule.backgroundIndex, Qt::BackgroundRole);
+                    if (brush.style() != Qt::NoBrush)
+                    {
+                        return QVariant(brush);
+                    }
+                }
+            }
+        }
         const std::optional<loglib::LogLevel> level = LevelForRow(index.row());
         if (!level.has_value())
         {
@@ -1665,6 +1719,22 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
                 }
             }
         }
+        // Highlight rule overlay -- mirrors the Background branch.
+        if (mHighlights != nullptr && mHighlights->HasActiveRules())
+        {
+            if (const auto ruleIndex = mHighlights->LastMatchFor(static_cast<std::size_t>(index.row())))
+            {
+                const auto &rule = mHighlights->Rules()[*ruleIndex];
+                if (rule.foregroundIndex != 0)
+                {
+                    const QBrush brush = mTheme->HighlightBrushFor(rule.foregroundIndex, Qt::ForegroundRole);
+                    if (brush.style() != Qt::NoBrush)
+                    {
+                        return QVariant(brush);
+                    }
+                }
+            }
+        }
         const std::optional<loglib::LogLevel> level = LevelForRow(index.row());
         if (!level.has_value())
         {
@@ -1676,6 +1746,38 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
 
     case Qt::FontRole:
     {
+        // Highlight rule bold/italic can apply even when no level is
+        // styled, so check highlights first (still cheap: skipped
+        // entirely on rule-free sessions).
+        if (mHighlights != nullptr && mHighlights->HasActiveRules())
+        {
+            if (const auto ruleIndex = mHighlights->LastMatchFor(static_cast<std::size_t>(index.row())))
+            {
+                const auto &rule = mHighlights->Rules()[*ruleIndex];
+                if (rule.bold || rule.italic)
+                {
+                    QFont font = (mTheme != nullptr) ? qApp->font() : qApp->font();
+                    // Compose on top of the level font when available
+                    // so a level's bold-serif choice survives the rule.
+                    if (mTheme != nullptr)
+                    {
+                        if (const auto level = LevelForRow(index.row()); level.has_value())
+                        {
+                            font = mTheme->FontFor(*level);
+                        }
+                    }
+                    if (rule.bold)
+                    {
+                        font.setBold(true);
+                    }
+                    if (rule.italic)
+                    {
+                        font.setItalic(true);
+                    }
+                    return font;
+                }
+            }
+        }
         // Skip the per-cell resolve when no level is styled.
         // Per-level check is still needed below for themes that
         // style only some levels.
