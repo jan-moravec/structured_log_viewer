@@ -48,6 +48,8 @@ set(PROJECT_SOURCES
     include/log_string_matcher.hpp
     src/highlight_rule_set.cpp
     include/highlight_rule_set.hpp
+    src/highlight_rules_editor.cpp
+    include/highlight_rules_editor.hpp
     src/parse_errors_dock.cpp
     include/parse_errors_dock.hpp
     src/log_filter_model.cpp

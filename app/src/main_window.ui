@@ -89,6 +89,7 @@
     </property>
     <addaction name="actionPreferences"/>
     <addaction name="actionRegexTemplates"/>
+    <addaction name="actionHighlightRules"/>
    </widget>
    <addaction name="menuFile"/>
    <addaction name="menuEdit"/>
@@ -246,6 +247,14 @@
    </property>
    <property name="toolTip">
     <string>Open the regex templates editor: browse the built-in catalog, duplicate built-ins to user templates, and create / edit / delete user templates stored under &lt;AppData&gt;/regex_templates/.</string>
+   </property>
+  </action>
+  <action name="actionHighlightRules">
+   <property name="text">
+    <string>Highlight rules...</string>
+   </property>
+   <property name="toolTip">
+    <string>Open the highlight-rules editor: define per-column rules that paint matching rows with a custom foreground / background from the theme palette. Rules ride along with the configuration and take effect on load.</string>
    </property>
   </action>
   <action name="actionToggleRecordDetails">

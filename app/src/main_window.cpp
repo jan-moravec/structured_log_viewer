@@ -5,6 +5,8 @@
 #include "columns_manager_dialog.hpp"
 #include "configuration_diagnostics_dialog.hpp"
 #include "filter_editor.hpp"
+#include "highlight_rule_set.hpp"
+#include "highlight_rules_editor.hpp"
 #include "histogram_model.hpp"
 #include "icon_loader.hpp"
 #include "level_cell_delegate.hpp"
@@ -636,9 +638,46 @@ MainWindow::MainWindow(
 
     // Build before the model so it can wire anchor listeners.
     mAnchors = new AnchorManager(this);
-    mModel = new LogModel(mTableView, mTheme, mAnchors);
+    mHighlights = new HighlightRuleSet(this);
+    mModel = new LogModel(mTableView, mTheme, mAnchors, mHighlights);
     mTableView->setModel(mModel);
     mTableView->SetAnchorManager(mAnchors);
+
+    // Tail-evaluate highlight rules against inserted rows. Column
+    // insertions (`columnsInserted`) also trigger a rebind so
+    // rules whose `columnKeys` newly resolve activate immediately.
+    // Full-model resets clear the row-match cache; the compiled
+    // rule state persists (it re-binds once the fresh config is
+    // installed via `ApplyLoadedConfiguration`).
+    connect(mModel, &QAbstractItemModel::rowsInserted, this, [this](const QModelIndex &, int first, int last) {
+        if (mHighlights == nullptr || mModel == nullptr)
+        {
+            return;
+        }
+        mHighlights->OnRowsAppended(
+            mModel->Table(), static_cast<std::size_t>(first), static_cast<std::size_t>(last)
+        );
+    });
+    connect(mModel, &QAbstractItemModel::columnsInserted, this, [this](const QModelIndex &, int, int) {
+        if (mHighlights == nullptr || mModel == nullptr)
+        {
+            return;
+        }
+        mHighlights->RebindColumns(mModel->Configuration().columns, &mModel->Table());
+        // Keep an open editor's column picker in lock-step with the
+        // schema so a rule authored right after a streaming grow can
+        // pick the fresh column without a reopen.
+        if (mHighlightRulesEditor != nullptr)
+        {
+            mHighlightRulesEditor->SetColumns(mModel->Configuration().columns);
+        }
+    });
+    connect(mModel, &QAbstractItemModel::modelReset, this, [this]() {
+        if (mHighlights != nullptr)
+        {
+            mHighlights->ClearMatches();
+        }
+    });
 
     mAnchorsDock = new AnchorsDock(mAnchors, mModel, mTheme, this);
     addDockWidget(Qt::RightDockWidgetArea, mAnchorsDock);
@@ -819,6 +858,18 @@ MainWindow::MainWindow(
     // mid-stream timestamp bubbling) so the runtime filter map and
     // proxy rules stay aligned with the source layout.
     connect(mModel, &QAbstractItemModel::columnsMoved, this, &MainWindow::OnSourceColumnsMoved);
+
+    // Type flips (Enumeration <-> Level, Enumeration -> String
+    // demote, dictionary grows) can activate / deactivate highlight
+    // rules whose match type depends on the column type. Rebind on
+    // every reason to keep the compiled predicates in step.
+    connect(mModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason /*reason*/, int /*columnIndex*/) {
+        if (mHighlights == nullptr || mModel == nullptr)
+        {
+            return;
+        }
+        mHighlights->RebindColumns(mModel->Configuration().columns, &mModel->Table());
+    });
 
     // Rebuild on demand. This is the only escape hatch when every
     // header section is hidden (right-click needs a visible section).
@@ -1214,6 +1265,62 @@ MainWindow::MainWindow(
             tr("Regex templates editor needs a RegexTemplateRegistry (production-only).")
         );
     }
+
+    // Settings -> Highlight rules... opens the modeless editor.
+    // Same lazy-construction pattern as the regex-templates editor:
+    // the widget tree materialises on first activation and survives
+    // close so half-typed edits carry across. Save round-trips
+    // through `HighlightRuleSet::SetRules` (runtime cache) and
+    // `LogConfigurationManager::SetHighlightRules` (persistent
+    // mirror) atomically.
+    connect(ui->actionHighlightRules, &QAction::triggered, this, [this]() {
+        if (mHighlightRulesEditor.isNull())
+        {
+            const auto &config = mModel->Configuration();
+            mHighlightRulesEditor =
+                new HighlightRulesEditor(config.highlightRules, config.columns, mTheme, this);
+            mHighlightRulesEditor->setWindowFlag(Qt::Window, true);
+            connect(
+                mHighlightRulesEditor.data(),
+                &HighlightRulesEditor::rulesSaved,
+                this,
+                [this](std::vector<loglib::LogConfiguration::HighlightRule> rules) {
+                    // Mirror to persistent config first so any
+                    // downstream signal handlers (auto-save) see
+                    // the committed state. Copy once for the
+                    // runtime rebuild; the manager takes ownership
+                    // of the incoming vector.
+                    auto forRuntime = rules;
+                    mModel->ConfigurationManager().SetHighlightRules(std::move(rules));
+                    if (mHighlights != nullptr)
+                    {
+                        mHighlights->SetRules(
+                            std::move(forRuntime), mModel->Configuration().columns, &mModel->Table()
+                        );
+                        const std::size_t inactive = mHighlights->InactiveCount();
+                        if (inactive > 0)
+                        {
+                            statusBar()->showMessage(
+                                tr("%1 highlight rule(s) inactive against current columns.")
+                                    .arg(static_cast<qulonglong>(inactive)),
+                                STATUS_BAR_MESSAGE_TIMEOUT_MS
+                            );
+                        }
+                    }
+                }
+            );
+        }
+        else
+        {
+            // Refresh column list on reopen -- schema may have grown
+            // since the editor was last shown (streaming discovered
+            // new keys, or the user pinned a type).
+            mHighlightRulesEditor->SetColumns(mModel->Configuration().columns);
+        }
+        mHighlightRulesEditor->show();
+        mHighlightRulesEditor->raise();
+        mHighlightRulesEditor->activateWindow();
+    });
     connect(mPreferencesEditor, &PreferencesEditor::streamingRetentionChanged, this, [this](qulonglong) {
         ApplyStreamingRetention();
     });
@@ -6017,6 +6124,33 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         }
 
         RebuildFiltersFromConfiguration();
+
+        // Install loaded highlight rules against the current column
+        // layout. The table is empty at this point (the reset above
+        // wiped rows) so the row-match cache seeds empty and streams
+        // populate it via the wired `rowsInserted` hook.
+        if (mHighlights != nullptr)
+        {
+            const auto &config = mModel->Configuration();
+            mHighlights->SetRules(config.highlightRules, config.columns, &mModel->Table());
+            const std::size_t inactive = mHighlights->InactiveCount();
+            if (inactive > 0)
+            {
+                statusBar()->showMessage(
+                    tr("%1 highlight rule(s) inactive against the loaded columns.")
+                        .arg(static_cast<qulonglong>(inactive)),
+                    STATUS_BAR_MESSAGE_TIMEOUT_MS
+                );
+            }
+            // Refresh the editor window's copy so a reopened
+            // editor sees the just-loaded rules instead of the
+            // pre-load buffer.
+            if (mHighlightRulesEditor != nullptr)
+            {
+                mHighlightRulesEditor->SetColumns(config.columns);
+                mHighlightRulesEditor->SetRules(config.highlightRules);
+            }
+        }
         return true;
     }
     catch (std::exception &e)
