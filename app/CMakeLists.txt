@@ -44,6 +44,10 @@ set(PROJECT_SOURCES
     include/jump_to_tail_pill.hpp
     src/level_cell_delegate.cpp
     include/level_cell_delegate.hpp
+    src/log_string_matcher.cpp
+    include/log_string_matcher.hpp
+    src/highlight_rule_set.cpp
+    include/highlight_rule_set.hpp
     src/parse_errors_dock.cpp
     include/parse_errors_dock.hpp
     src/log_filter_model.cpp
