@@ -118,3 +118,19 @@ add_test(
     COMMAND apptest_overview_rail
     WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_overview_rail>
 )
+
+# Focused tests for `HighlightRuleSet` (ROADMAP item 20). Kept out
+# of the monolithic `apptest` so `ctest -R apptest_highlight_rules`
+# reruns just this concern; mirrors the histogram / overview-rail
+# split. No theme fixture is needed (the rule set is style-neutral).
+qt_add_executable(apptest_highlight_rules src/test_highlight_rule_set.cpp)
+
+target_link_libraries(apptest_highlight_rules PRIVATE Qt6::Test Qt6::Widgets logapp)
+
+target_include_directories(apptest_highlight_rules PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+
+add_test(
+    NAME apptest_highlight_rules
+    COMMAND apptest_highlight_rules
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_highlight_rules>
+)
