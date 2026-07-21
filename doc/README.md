@@ -356,6 +356,41 @@ The anchor list is persisted as part of the [configuration](#configurations), so
 
 > Anchored rows that are FIFO-evicted from a [streaming session](#retention-cap) are dropped from the anchor list automatically — they would otherwise linger in the panel and in the saved configuration with no resolvable row to point at.
 
+## Highlight rules
+
+Highlight rules let you paint whole rows in a custom foreground / background colour when a per-column condition matches — the "colour every 5xx error crimson" or "grey out `service=cron`" idiom that log analysts reach for on day one. Rules ride along with the [configuration](#configurations), so a saved config brings its highlight scheme with it every time you open a matching log.
+
+### Opening the editor
+
+**Settings → Highlight rules…** opens a modeless editor: the rule list on the left, an inline form for the selected rule on the right, and top-bar controls for **New**, **Duplicate**, **Delete**, and **Move ↑ / ↓**. The window survives close/reopen so a half-typed rule is not lost when you flip back to the table. Only one editor exists per window; a second **Highlight rules…** invocation raises the same instance.
+
+### What a rule matches
+
+Each rule targets exactly one column, identified by its stable *key* (not by its current visual position, so [reordering columns](#column-management) never disturbs a rule). The v1 editor exposes three shapes:
+
+- **Text (string)** — Exactly, Contains, Regular expression, or Wildcard against the column's rendered value. The engine is the same string matcher the [Find bar](#searching) and [filters](#filtering) use, so a rule that finds a match on-screen also lights up here.
+- **Number** — an optional minimum and maximum. Rows whose column value falls inside the interval match; leaving a bound empty makes it unbounded on that side.
+- **Boolean** — pick whether **true** and / or **false** should highlight.
+
+Time and Enumeration columns can also carry rules (the parse and render path handles them), but the v1 editor renders them as read-only — hand-edit the JSON if you need them right now; a follow-up will lift them into the form.
+
+### Colours and text style
+
+Foreground and background are picked from a **16-slot palette** that the active theme ships with (see [Themes](#themes)). Both pickers include an **Inherit** slot that keeps the row using the level-bar's default paint, so you can highlight only the foreground, only the background, or both. Bold and italic checkboxes layer on top; anchors still overlay any highlight, so a row that is both anchored and highlighted paints the anchor swatch and the highlight text style at once.
+
+### Match precedence
+
+- **Rules are ordered.** When several rules match the same row, the *last* matching rule wins. Move a rule down with the ↓ button to give it precedence over earlier ones.
+- **Anchors override highlights.** Anchor row background always wins over the highlight's background so an anchored row stays visually attached to its swatch. Text colour and bold/italic still come from the highlight rule.
+
+### Inactive rules
+
+A rule whose target column is not present in the currently loaded log (e.g. you loaded a config saved against a different producer) is marked *inactive* in the editor and contributes nothing to painting. The status bar surfaces the count after a config load so you know a saved rule is waiting for its column. As soon as a streaming session discovers the missing key (`AppendKeys`) or the column type flips, the rule re-binds automatically without a manual reload.
+
+### Persistence and scope
+
+Highlight rules are Configuration-scope: they are saved with `File → Save Configuration…` in both the *Full* and *Columns only* [save scopes](#configurations). Two sessions that load the same configuration share the same rule set; a session that never saves its config keeps its rules only until the window closes.
+
 ## Histogram / activity-rate strip
 
 The **Histogram** dock is a bottom-of-window strip that plots the row count over time, stacked and coloured by [canonical log level](#automatic-column-detection). Use it for triage: the spike, the burst of errors, the quiet stretch — all become visible at a glance, and clicking or dragging jumps or filters the table accordingly.
@@ -500,7 +535,7 @@ Auto-saved sessions are written silently in the background as you work, so closi
 
 ## Themes
 
-Structured Log Viewer ships a built-in theme catalogue covering both Light and Dark variants, plus high-contrast triage skins. The active theme drives the palette, optional Qt style override, fonts, level row tints (subtle by default; loud when **High contrast levels** is on), the level column icon-pill (when **Show level icons** is on), and the eight [anchor](#anchors) swatches.
+Structured Log Viewer ships a built-in theme catalogue covering both Light and Dark variants, plus high-contrast triage skins. The active theme drives the palette, optional Qt style override, fonts, level row tints (subtle by default; loud when **High contrast levels** is on), the level column icon-pill (when **Show level icons** is on), the eight [anchor](#anchors) swatches, and the sixteen-slot [highlight rules](#highlight-rules) palette.
 
 Switch themes via **Settings → Preferences…** → **Theme → Active theme**:
 
