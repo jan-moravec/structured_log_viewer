@@ -206,6 +206,82 @@ struct LogConfiguration
         friend bool operator==(const AnchorEntry &, const AnchorEntry &) = default;
     };
 
+    /// A user-defined row-highlighting rule.
+    ///
+    /// Persisted alongside `columns` (Configuration-scope): a rule
+    /// bound to `service == "auth"` roams with the column schema so
+    /// opening a fresh log from the same source restores the rule.
+    /// Filters, by contrast, are session-scope (see `LogFilter`).
+    ///
+    /// Column identity uses `columnKeys` (matching `Column::keys`),
+    /// not an integer index -- rules survive `MoveColumn`, cross-
+    /// source apply, and unrelated column additions. Rules whose
+    /// keys don't resolve against the current columns are inert at
+    /// match time (the editor renders them greyed out).
+    ///
+    /// `type` / `matchType` / `filterString` / `filterBegin` /
+    /// `filterEnd` / `filterMinValue` / `filterMaxValue` /
+    /// `filterValues` mirror `LogFilter` so a matcher factory can
+    /// be shared between the two rule shapes.
+    ///
+    /// Rendering: `foregroundIndex` / `backgroundIndex` index
+    /// `Theme::highlightPalette`. `0` = inherit (falls through to
+    /// the level brush). `bold` / `italic` toggle the row font.
+    /// Rules are applied in vector order; last match wins per row.
+    struct HighlightRule
+    {
+        /// Match semantics mirror `LogFilter::Type` so the
+        /// `MakeStringMatcher` factory can be shared. Append new
+        /// alternatives at the end; never reorder or remove.
+        enum class Type
+        {
+            String,
+            Time,
+            Enumeration,
+            Number,
+            Boolean
+        };
+
+        enum class Match
+        {
+            Exactly,
+            Contains,
+            RegularExpression,
+            Wildcard
+        };
+
+        /// User-visible label. Free-form.
+        std::string name;
+
+        /// Rules can be authored, saved, and disabled without
+        /// deletion so a triage playbook survives editor round-trips.
+        bool enabled = true;
+
+        /// Column identity, in `Column::keys` shape. Empty vector
+        /// means "no column bound" (rule is inert). A rule resolves
+        /// against the first column whose `keys` contain every entry
+        /// listed here (usually a single-key vector).
+        std::vector<std::string> columnKeys;
+
+        Type type = Type::String;
+        std::optional<Match> matchType;
+        std::optional<std::string> filterString;
+        std::optional<int64_t> filterBegin;
+        std::optional<int64_t> filterEnd;
+        std::optional<double> filterMinValue;
+        std::optional<double> filterMaxValue;
+        std::vector<std::string> filterValues;
+
+        /// 0 = inherit (falls through to the level brush).
+        /// 1..`HIGHLIGHT_PALETTE_SIZE` index the theme palette.
+        uint8_t foregroundIndex = 0;
+        uint8_t backgroundIndex = 0;
+        bool bold = false;
+        bool italic = false;
+
+        friend bool operator==(const HighlightRule &, const HighlightRule &) = default;
+    };
+
     /// Required: drives the column layout for every consumer.
     std::vector<Column> columns;
 
@@ -218,6 +294,11 @@ struct LogConfiguration
     /// Persisted anchors. Sorted by `(locator, lineId)` on save
     /// for stable diffs; no ordering guarantee on read.
     std::vector<AnchorEntry> anchors;
+
+    /// Configuration-scope: written in both `SaveScope::ColumnsOnly`
+    /// and `SaveScope::Full`, so highlight rules roam with the
+    /// column schema. Order matters -- last-match-wins per row.
+    std::vector<HighlightRule> highlightRules;
 };
 
 /// Case-insensitive match against known log-level field names (`level`,
@@ -364,6 +445,12 @@ public:
 
     /// Replace `LogConfiguration::anchors`. Empty clears them all.
     void SetAnchors(std::vector<LogConfiguration::AnchorEntry> anchors);
+
+    /// Replace `LogConfiguration::highlightRules` wholesale. The app
+    /// mirrors its runtime rule set through this before `Save`.
+    /// Highlight rules bind by column keys, not by index, so unlike
+    /// `SetFilters` no `MoveColumn` remap is needed after a call.
+    void SetHighlightRules(std::vector<LogConfiguration::HighlightRule> rules);
 
     /// Apply `(srcIndex -> destIndex)` to a stored column index.
     /// Out-of-range inputs (including negative sentinels like

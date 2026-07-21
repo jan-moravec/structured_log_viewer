@@ -104,19 +104,22 @@ namespace
 // See `log_configuration_glaze_opts.hpp` for the pinned options.
 constexpr auto LOG_CONFIG_OPTS = loglib::internal::LOG_CONFIG_OPTS;
 
-/// Wire-format shim for `SaveScope::ColumnsOnly`: emits only the
-/// `columns` array, skipping the default `filters` / `sort` blocks a
-/// transient `LogConfiguration` would still serialise. Files written
-/// from this shim still parse cleanly through
+/// Wire-format shim for `SaveScope::ColumnsOnly`: emits `columns`
+/// plus the Configuration-scope `highlightRules`, skipping the
+/// default `filters` / `sort` / `source` / `anchors` blocks a
+/// transient `LogConfiguration` would still serialise. Files
+/// written from this shim still parse cleanly through
 /// `glz::read_json<LogConfiguration>` -- missing members default.
 struct ColumnsOnlyDocument
 {
     // Reference (not pointer) so the type is never default-
     // constructible and the glaze accessor can't deref null. `Save`
-    // is the only construction site and holds the source vector for
-    // the synchronous `glz::write` call.
-    // NOLINTNEXTLINE(cppcoreguidelines-avoid-const-or-ref-data-members)
+    // is the only construction site and holds the source vectors
+    // for the synchronous `glz::write` call.
+    // NOLINTBEGIN(cppcoreguidelines-avoid-const-or-ref-data-members)
     const std::vector<loglib::LogConfiguration::Column> &columns;
+    const std::vector<loglib::LogConfiguration::HighlightRule> &highlightRules;
+    // NOLINTEND(cppcoreguidelines-avoid-const-or-ref-data-members)
 };
 
 } // namespace
@@ -127,7 +130,12 @@ struct ColumnsOnlyDocument
 template <> struct glz::meta<ColumnsOnlyDocument>
 {
     using T = ColumnsOnlyDocument;
-    static constexpr auto value = object("columns", [](auto &self) -> const auto & { return self.columns; });
+    static constexpr auto value = object(
+        "columns",
+        [](auto &self) -> const auto & { return self.columns; },
+        "highlightRules",
+        [](auto &self) -> const auto & { return self.highlightRules; }
+    );
 };
 // NOLINTEND(readability-identifier-naming)
 
@@ -183,10 +191,14 @@ void LogConfigurationManager::Save(
     std::string json;
     if (scope == SaveScope::ColumnsOnly)
     {
-        // Use the glaze shim so the written JSON has only `columns`,
-        // not the default `filters` / `sort` blocks the full struct
+        // Use the glaze shim so the written JSON has only the
+        // Configuration-scope members (`columns` and
+        // `highlightRules`), not the session-scope `filters` /
+        // `sort` / `source` / `anchors` blocks the full struct
         // would emit.
-        const ColumnsOnlyDocument document{.columns = configuration.columns};
+        const ColumnsOnlyDocument document{
+            .columns = configuration.columns, .highlightRules = configuration.highlightRules
+        };
         const auto error = glz::write<LOG_CONFIG_OPTS>(document, json);
         if (error)
         {
@@ -529,6 +541,11 @@ void LogConfigurationManager::SetSource(std::optional<LogConfiguration::Source> 
 void LogConfigurationManager::SetAnchors(std::vector<LogConfiguration::AnchorEntry> anchors)
 {
     mConfiguration.anchors = std::move(anchors);
+}
+
+void LogConfigurationManager::SetHighlightRules(std::vector<LogConfiguration::HighlightRule> rules)
+{
+    mConfiguration.highlightRules = std::move(rules);
 }
 
 size_t LogConfigurationManager::CountAppendableKeys(const std::vector<std::string> &newKeys) const
