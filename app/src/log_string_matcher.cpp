@@ -119,6 +119,15 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
     // `HighlightRule::Match` mirrors `LogFilter::Match` alternative-
     // for-alternative on purpose so this cast never desyncs. The
     // wire-format enum tests pin both enums to the same string keys
-    // so a reorder would surface at build time.
-    return MakeStringMatcher(pattern, static_cast<loglib::LogConfiguration::LogFilter::Match>(match));
+    // at *load* time; the static_asserts below turn a reorder of
+    // either enum into a *build* error, which is what you actually
+    // want when someone unrelated to this feature edits either
+    // header.
+    using HR = loglib::LogConfiguration::HighlightRule::Match;
+    using LF = loglib::LogConfiguration::LogFilter::Match;
+    static_assert(static_cast<int>(HR::Exactly) == static_cast<int>(LF::Exactly));
+    static_assert(static_cast<int>(HR::Contains) == static_cast<int>(LF::Contains));
+    static_assert(static_cast<int>(HR::RegularExpression) == static_cast<int>(LF::RegularExpression));
+    static_assert(static_cast<int>(HR::Wildcard) == static_cast<int>(LF::Wildcard));
+    return MakeStringMatcher(pattern, static_cast<LF>(match));
 }

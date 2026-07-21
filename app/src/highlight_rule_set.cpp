@@ -7,6 +7,7 @@
 #include <loglib/log_level.hpp>
 #include <loglib/log_table.hpp>
 
+#include <QDebug>
 #include <QString>
 
 #include <algorithm>
@@ -288,6 +289,22 @@ std::optional<HighlightRuleSet::CompiledRule> HighlightRuleSet::CompileRule(
         {
             return std::nullopt;
         }
+        // Reject empty needles. Every string match type collapses
+        // into a degenerate case for an empty pattern:
+        //   * `Contains("")` / `RegularExpression("")` match every
+        //     row -> the rule silently paints the whole table.
+        //   * `Exactly("")` / `Wildcard("")` match only empty cells
+        //     -> almost certainly not what the user meant either.
+        // Leaving the rule inert (with the "(inactive)" badge in
+        // the editor) is safer than shipping either footgun. The
+        // editor also disables Save while any rule is in this
+        // state (see `HighlightRulesEditor::ValidateRule`) so this
+        // branch primarily defends hand-authored configs and
+        // configs loaded from other tools.
+        if (rule.filterString->empty())
+        {
+            return std::nullopt;
+        }
         return CompiledRule{loglib::RowPredicate{
             std::in_place_type<loglib::CallbackStringRowPredicate>,
             column,
@@ -301,6 +318,24 @@ void HighlightRuleSet::RecompileAll(
     const std::vector<loglib::LogConfiguration::Column> &columns, const loglib::LogTable *table
 )
 {
+    // The per-row cache (`mRowMatch`) stores match indices as
+    // `int16_t` to keep the hot-path bitmap compact. A rule set
+    // larger than `INT16_MAX` would silently wrap into the negative
+    // "no match" sentinel range and start dropping legit matches.
+    // Clamp with a `qWarning` rather than crashing: any user with
+    // more than 32k rules has bigger problems than a missed
+    // highlight, but the invariant deserves a diagnostic. The
+    // header comment already flags the practical ceiling.
+    if (mRules.size() > static_cast<std::size_t>(std::numeric_limits<std::int16_t>::max()))
+    {
+        qWarning(
+            "HighlightRuleSet: %zu rules exceeds the int16_t match-cache limit; "
+            "truncating to %d. Extra rules will be ignored.",
+            mRules.size(),
+            std::numeric_limits<std::int16_t>::max()
+        );
+        mRules.resize(static_cast<std::size_t>(std::numeric_limits<std::int16_t>::max()));
+    }
     mCompiled.clear();
     mResolvedColumn.clear();
     mCompiled.reserve(mRules.size());

@@ -28,6 +28,13 @@
 //   * Boolean predicate: rules with `type = Boolean` match rows
 //     whose value decodes to the selected side (covers the Boolean
 //     branch of `CompileRule` alongside the string-heavy tests).
+//   * Empty-needle rejection: String rules with an empty
+//     `filterString` (across all four match types) end up in
+//     `InactiveCount` -- regression against a bug where a fresh
+//     "Contains" rule in the editor lit up the whole table.
+//   * Number-range predicate: rules with `type = Number` match rows
+//     whose numeric value falls inside `[filterMinValue,
+//     filterMaxValue]`; bounds-less rules land in `InactiveCount`.
 
 #include "highlight_rule_set.hpp"
 #include "log_model.hpp"
@@ -408,6 +415,101 @@ private slots:
         QCOMPARE(rules.LastMatchFor(1), std::optional<std::size_t>{});
         QCOMPARE(rules.LastMatchFor(2), std::optional<std::size_t>{0u});
         QCOMPARE(rules.LastMatchFor(3), std::optional<std::size_t>{});
+    }
+
+    /// Regression: an editor-authored rule (or a hand-edited config)
+    /// with an empty `filterString` used to compile into a matcher
+    /// that returned true for every haystack -- `QString::contains("")`
+    /// is trivially satisfied. The whole table then lit up under a
+    /// "brand new rule" that the user hadn't finished typing. The
+    /// fix lives in `HighlightRuleSet::CompileRule`, which now
+    /// treats an empty needle the same as a missing needle (rule
+    /// marked inert, one line in `InactiveCount`).
+    void EmptyNeedleLeavesRuleInactive()
+    {
+        HighlightRuleSet rules;
+        LogModel model{/*parent=*/nullptr, /*theme=*/nullptr, /*anchors=*/nullptr, &rules};
+        const LevelFixture fixture(4, {"info", "warn"});
+        StreamJsonPathInto(model, fixture.Path());
+
+        std::vector<Rule> ruleSet;
+        // Empty needle across all four string match types. Each
+        // one used to have a different (equally wrong) failure
+        // mode; the fix collapses them into "rule inert".
+        for (const auto matchType : {Rule::Match::Exactly,
+                                     Rule::Match::Contains,
+                                     Rule::Match::RegularExpression,
+                                     Rule::Match::Wildcard})
+        {
+            Rule r;
+            r.name = "empty";
+            r.enabled = true;
+            r.columnKeys = {"level"};
+            r.type = Rule::Type::String;
+            r.matchType = matchType;
+            r.filterString = std::string{};
+            ruleSet.push_back(std::move(r));
+        }
+        rules.SetRules(std::move(ruleSet), model.Configuration().columns, &model.Table());
+
+        QCOMPARE(rules.InactiveCount(), 4u);
+        QVERIFY(!rules.HasActiveRules());
+        for (std::size_t row = 0; row < 4; ++row)
+        {
+            QCOMPARE(rules.LastMatchFor(row), std::optional<std::size_t>{});
+        }
+    }
+
+    /// Number-range predicate parity. Covers `CompileRule`'s Number
+    /// branch (`NumericRangeRowPredicate` with min-only, max-only,
+    /// and both bounds set) and its rejection of the "no bounds"
+    /// case.
+    void NumericRangeRule()
+    {
+        HighlightRuleSet rules;
+        LogModel model{/*parent=*/nullptr, /*theme=*/nullptr, /*anchors=*/nullptr, &rules};
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = dir.filePath("numbers.jsonl");
+        {
+            std::ofstream stream(path.toStdString(), std::ios::binary);
+            QVERIFY(stream.is_open());
+            for (int i = 0; i < 5; ++i)
+            {
+                stream << R"({"level": "info", "latency_ms": )" << (i * 100) << R"(, "msg": "row"})" << '\n';
+            }
+        }
+        StreamJsonPathInto(model, path);
+
+        // Min-only: highlight rows with latency >= 200 (rows 2, 3, 4).
+        Rule minOnly;
+        minOnly.name = "slow";
+        minOnly.enabled = true;
+        minOnly.columnKeys = {"latency_ms"};
+        minOnly.type = Rule::Type::Number;
+        minOnly.filterMinValue = 200.0;
+
+        // Bounds-less: rejected at compile time (no min, no max).
+        Rule empty;
+        empty.name = "no-bounds";
+        empty.enabled = true;
+        empty.columnKeys = {"latency_ms"};
+        empty.type = Rule::Type::Number;
+
+        std::vector<Rule> ruleSet;
+        ruleSet.push_back(std::move(minOnly));
+        ruleSet.push_back(std::move(empty));
+        rules.SetRules(std::move(ruleSet), model.Configuration().columns, &model.Table());
+
+        QCOMPARE(rules.InactiveCount(), 1u);
+        QVERIFY(rules.HasActiveRules());
+        // Rule index 0 matches; index 1 is inert.
+        QCOMPARE(rules.LastMatchFor(0), std::optional<std::size_t>{});
+        QCOMPARE(rules.LastMatchFor(1), std::optional<std::size_t>{});
+        QCOMPARE(rules.LastMatchFor(2), std::optional<std::size_t>{0u});
+        QCOMPARE(rules.LastMatchFor(3), std::optional<std::size_t>{0u});
+        QCOMPARE(rules.LastMatchFor(4), std::optional<std::size_t>{0u});
     }
 
     /// Rules bind by column keys, not column indices. Moving the

@@ -276,6 +276,13 @@ void WarnOnUnparsableHex(const QString &source, const loglib::Theme &theme)
     {
         check("anchorPalette[" + std::to_string(i) + "]", std::optional<std::string>(theme.anchorPalette[i]));
     }
+    for (size_t i = 0; i < theme.highlightPalette.size(); ++i)
+    {
+        const auto &slot = theme.highlightPalette[i];
+        const std::string base = "highlightPalette[" + std::to_string(i) + "].";
+        check(base + "background", slot.background);
+        check(base + "foreground", slot.foreground);
+    }
     if (theme.levelColumnOverride.has_value())
     {
         for (const auto &[key, levelOverride] : theme.levelColumnOverride->levels)

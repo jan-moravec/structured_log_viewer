@@ -5,6 +5,7 @@
 #include <QIcon>
 #include <QWidget>
 
+#include <utility>
 #include <vector>
 
 class HighlightRuleSet;
@@ -168,6 +169,23 @@ private:
 
     /// Populate the column picker combo from `mColumns`.
     void RepopulateColumnCombo();
+
+    /// Diagnose why @p rule can't be saved yet. Returns an empty
+    /// string when the rule is valid. Currently guards:
+    ///   * missing column (`columnKeys.empty()`).
+    ///   * empty needle for String rules (would collapse to
+    ///     "match every row" for `Contains`/`RegularExpression`
+    ///     or "match empty cells" for `Exactly`/`Wildcard`).
+    ///   * neither min nor max set on Number rules.
+    ///   * neither `true` nor `false` ticked on Boolean rules.
+    /// The Save button is disabled and the status bar shows the
+    /// first failure while any rule fails validation.
+    [[nodiscard]] QString ValidateRule(const loglib::LogConfiguration::HighlightRule &rule) const;
+
+    /// Scan `mLocalRules`; returns `(rowIndex, message)` for the
+    /// first invalid rule, or `(-1, "")` when all rules pass.
+    /// Used by `UpdateListButtons` to gate Save.
+    [[nodiscard]] std::pair<int, QString> FirstInvalidRule() const;
 
     std::vector<loglib::LogConfiguration::Column> mColumns;
     ThemeControl *mTheme = nullptr;

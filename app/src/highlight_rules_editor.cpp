@@ -546,13 +546,31 @@ void HighlightRulesEditor::RepopulateColumnCombo()
     const QSignalBlocker block(mColumnCombo);
     mColumnCombo->clear();
     mColumnCombo->addItem(tr("(none)"), QVariant::fromValue(QStringList{}));
+    // Item-level tooltip via `Qt::ToolTipRole`. Explains why
+    // saving a rule pinned to "(none)" is disabled: an
+    // unresolvable rule can't participate in matching (the
+    // "(inactive)" list badge flags them post-hoc, but the tooltip
+    // catches the misclick earlier).
+    mColumnCombo->setItemData(
+        0,
+        tr("Rules without a column can't match anything. Pick a column to activate this rule."),
+        Qt::ToolTipRole
+    );
     for (const auto &col : mColumns)
     {
+        // Store only the *primary* key (first entry in the column's
+        // keys vector), not the entire alias list. `ResolveColumnByKeys`
+        // uses subset-match semantics: rule keys must all be present in
+        // the target column's keys. Persisting the full alias list would
+        // require every future config load to carry every synonym, so a
+        // rule authored under a source with keys={"level","severity"}
+        // would fail to resolve against a source that emits only
+        // {"level"}. Single-key persistence keeps the rule portable
+        // across sources that share the primary key.
         QStringList keys;
-        keys.reserve(static_cast<qsizetype>(col.keys.size()));
-        for (const auto &k : col.keys)
+        if (!col.keys.empty())
         {
-            keys.push_back(QString::fromStdString(k));
+            keys.push_back(QString::fromStdString(col.keys.front()));
         }
         mColumnCombo->addItem(QString::fromStdString(col.header), QVariant::fromValue(keys));
     }
@@ -825,8 +843,114 @@ void HighlightRulesEditor::UpdateListButtons()
     mDeleteButton->setEnabled(haveSelection);
     mMoveUpButton->setEnabled(haveSelection && row > 0);
     mMoveDownButton->setEnabled(haveSelection && row < total - 1);
-    mSaveButton->setEnabled(IsDirty());
+    // Save is gated on both "dirty" and "every rule validates". A
+    // rule with an empty needle would compile away to nothing
+    // (`HighlightRuleSet::CompileRule` rejects it) but the user
+    // would be none the wiser; disabling Save + surfacing the
+    // first failure makes the requirement obvious. Revert stays
+    // enabled -- it's the escape hatch from an invalid state.
+    const auto [invalidRow, invalidMessage] = FirstInvalidRule();
+    const bool allValid = invalidRow < 0;
+    mSaveButton->setEnabled(IsDirty() && allValid);
     mRevertButton->setEnabled(IsDirty());
+    if (!allValid)
+    {
+        // Persistent (not auto-clearing) so the reason stays
+        // visible while the user fixes it. `ShowStatus` starts
+        // the auto-clear timer, which we don't want here.
+        mStatusLabel->setText(
+            tr("Rule %1: %2").arg(invalidRow + 1).arg(invalidMessage)
+        );
+        mStatusLabel->setStyleSheet(QStringLiteral("color: #B91C1C;"));
+        mStatusClearTimer->stop();
+    }
+    else if (mStatusLabel != nullptr && mStatusLabel->styleSheet().contains(QStringLiteral("#B91C1C")))
+    {
+        // Was showing a validation error; clear now that everything
+        // passes so a stale "Rule 3: ..." doesn't linger.
+        mStatusLabel->clear();
+        mStatusLabel->setStyleSheet(QString{});
+    }
+}
+
+QString HighlightRulesEditor::ValidateRule(const loglib::LogConfiguration::HighlightRule &rule) const
+{
+    if (rule.columnKeys.empty())
+    {
+        return tr("pick a column to match against.");
+    }
+    using RT = loglib::LogConfiguration::HighlightRule::Type;
+    switch (rule.type)
+    {
+    case RT::String:
+        if (!rule.matchType.has_value())
+        {
+            return tr("pick a string match type.");
+        }
+        if (!rule.filterString.has_value() || rule.filterString->empty())
+        {
+            return tr("enter a pattern or literal to match.");
+        }
+        return {};
+    case RT::Number:
+        if (!rule.filterMinValue.has_value() && !rule.filterMaxValue.has_value())
+        {
+            return tr("set a minimum or maximum value.");
+        }
+        return {};
+    case RT::Boolean:
+    {
+        bool includeTrue = false;
+        bool includeFalse = false;
+        for (const std::string &v : rule.filterValues)
+        {
+            std::string lower = v;
+            std::ranges::transform(lower, lower.begin(), [](unsigned char ch) {
+                return static_cast<char>(std::tolower(ch));
+            });
+            if (lower == "true")
+            {
+                includeTrue = true;
+            }
+            else if (lower == "false")
+            {
+                includeFalse = true;
+            }
+        }
+        if (!includeTrue && !includeFalse)
+        {
+            return tr("tick at least one of true / false.");
+        }
+        return {};
+    }
+    case RT::Time:
+        if (!rule.filterBegin.has_value() && !rule.filterEnd.has_value())
+        {
+            return tr("Time rules need begin or end bounds (edit via config file in v1).");
+        }
+        return {};
+    case RT::Enumeration:
+        if (rule.filterValues.empty())
+        {
+            return tr("Enumeration rules need at least one value (edit via config file in v1).");
+        }
+        return {};
+    default:
+        return {};
+    }
+}
+
+std::pair<int, QString> HighlightRulesEditor::FirstInvalidRule() const
+{
+    for (std::size_t i = 0; i < mLocalRules.size(); ++i)
+    {
+        const QString message = ValidateRule(mLocalRules[i]);
+        if (!message.isEmpty())
+        {
+            return {static_cast<int>(i), message};
+        }
+    }
+    return {-1, QString{}};
 }
 
 bool HighlightRulesEditor::IsDirty() const
@@ -915,7 +1039,11 @@ void HighlightRulesEditor::GatherForm()
     rule.name = mNameEdit->text().toStdString();
     rule.enabled = mEnabledCheck->isChecked();
 
-    // Column
+    // Column. `RepopulateColumnCombo` stores a single-entry
+    // `QStringList` (the column's primary key) on each combo item,
+    // and `(none)` stores an empty list -- see the rationale there.
+    // Any list length we get back is written verbatim; the
+    // one-entry-per-item convention lives in one place.
     const QVariant columnData = mColumnCombo->currentData();
     rule.columnKeys.clear();
     if (columnData.canConvert<QStringList>())
@@ -1013,10 +1141,18 @@ void HighlightRulesEditor::OnNewClicked()
     rule.enabled = true;
     rule.type = loglib::LogConfiguration::HighlightRule::Type::String;
     rule.matchType = loglib::LogConfiguration::HighlightRule::Match::Contains;
+    // Deliberately empty: `HighlightRuleSet::CompileRule` rejects
+    // empty needles (they collapse to "match every row" for
+    // Contains/RegularExpression), and `ValidateRule` disables
+    // Save until the user types something. `mStringNeedleEdit`'s
+    // placeholder ("Pattern or literal") guides them.
     rule.filterString = std::string{};
-    if (!mColumns.empty())
+    if (!mColumns.empty() && !mColumns[0].keys.empty())
     {
-        rule.columnKeys = mColumns[0].keys;
+        // Single primary key: see `RepopulateColumnCombo` for the
+        // rationale (portability across sources with different
+        // alias sets).
+        rule.columnKeys = {mColumns[0].keys.front()};
     }
     mLocalRules.push_back(std::move(rule));
     RebuildList(static_cast<int>(mLocalRules.size()) - 1);
@@ -1080,6 +1216,16 @@ void HighlightRulesEditor::OnSaveClicked()
 {
     if (!IsDirty())
     {
+        return;
+    }
+    // Belt-and-braces: `UpdateListButtons` disables Save while any
+    // rule fails validation, but a synthetic click (via test /
+    // scripting) could still land here. Refuse the emit rather
+    // than persisting a rule that would compile away to nothing
+    // downstream.
+    if (const auto [invalidRow, invalidMessage] = FirstInvalidRule(); invalidRow >= 0)
+    {
+        ShowStatus(tr("Rule %1: %2").arg(invalidRow + 1).arg(invalidMessage), /*isError=*/true);
         return;
     }
     mBaseline = mLocalRules;

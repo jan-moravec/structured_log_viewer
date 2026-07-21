@@ -78,12 +78,20 @@ LogModel::LogModel(
         // conservatively repaint the whole table. The invalidation
         // is coarse but fires infrequently (editor Save / config
         // load / column bind / streaming tail).
-        connect(
-            mHighlights,
-            &HighlightRuleSet::rulesChanged,
-            this,
-            [this](std::size_t) { RefreshAllHighlightRows(); }
-        );
+        //
+        // `matchesChanged` alone is sufficient: it fires from every
+        // code path that could change what `LastMatchFor` returns
+        // (full recompile via `SetRules` / `RebindColumns`, tail
+        // append via `OnRowsAppended`, `ClearMatches`). The earlier
+        // wiring also listened to `rulesChanged`, which duplicated
+        // the full-table `dataChanged` on every editor Save.
+        // `MainWindow` reads `InactiveCount` synchronously after
+        // `SetRules` for the status toast, so it doesn't need
+        // `rulesChanged` either. One edge case, only hit by tests:
+        // a caller invoking `RebindColumns` with `table == nullptr`
+        // emits only `rulesChanged`. Production `MainWindow` always
+        // passes a non-null table, so this branch is unreachable
+        // outside test fixtures.
         connect(mHighlights, &HighlightRuleSet::matchesChanged, this, &LogModel::RefreshAllHighlightRows);
     }
 }
