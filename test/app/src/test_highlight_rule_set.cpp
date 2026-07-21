@@ -1,9 +1,10 @@
-// Focused tests for `HighlightRuleSet` (ROADMAP item 20 --
+// Focused tests for `HighlightRuleSet` (ROADMAP item 3 --
 // user-defined highlight rules). Kept in its own binary
 // (`apptest_highlight_rules`) so a targeted `ctest -R
 // apptest_highlight_rules` runs just this concern.
 //
 // Coverage:
+//   * Baseline: empty rule set reports no matches.
 //   * Column-key resolution: rules with unresolvable `columnKeys`
 //     land in `InactiveCount()`; resolvable rules move into
 //     `HasActiveRules()`.
@@ -13,6 +14,10 @@
 //   * Tail-update via `OnRowsAppended`: streaming a second batch
 //     evaluates only the new rows against the existing rules
 //     without recomputing the seed batch.
+//   * FIFO eviction via `OnRowsEvicted`: dropping a contiguous
+//     prefix shifts the row-match cache so the survivors still
+//     report their own matches (regression guard against the
+//     retention-cap desync bug).
 //   * `RebindColumns` after `AppendKeys`: a rule whose column was
 //     missing at load activates once the schema grows to include it.
 //   * `ClearMatches`: drops the row-match cache while keeping the
@@ -20,6 +25,9 @@
 //   * Column move: rules bind by keys, so `LogModel::MoveColumn`
 //     does not disturb `mResolvedColumn` (regression guard against
 //     accidentally regressing to index-based identity).
+//   * Boolean predicate: rules with `type = Boolean` match rows
+//     whose value decodes to the selected side (covers the Boolean
+//     branch of `CompileRule` alongside the string-heavy tests).
 
 #include "highlight_rule_set.hpp"
 #include "log_model.hpp"
@@ -247,6 +255,44 @@ private slots:
         }
     }
 
+    /// Regression: FIFO retention (`LogModel::AppendBatch`) evicts a
+    /// contiguous prefix from the source model. If `HighlightRuleSet`
+    /// weren't wired to `rowsRemoved`, its per-row match cache would
+    /// keep stale prefix entries and `LastMatchFor(0)` would return
+    /// the pre-eviction match instead of the new row 0's match.
+    void EvictionShiftsRowMatchCache()
+    {
+        HighlightRuleSet rules;
+        LogModel model{/*parent=*/nullptr, /*theme=*/nullptr, /*anchors=*/nullptr, &rules};
+
+        // Alternating info/warn: even rows miss, odd rows hit.
+        const LevelFixture fixture(6, {"info", "warn"});
+        StreamJsonPathInto(model, fixture.Path());
+        std::vector<Rule> ruleSet;
+        ruleSet.push_back(MakeContainsRule("warn-hit", "level", "warn"));
+        rules.SetRules(std::move(ruleSet), model.Configuration().columns, &model.Table());
+        QCOMPARE(rules.LastMatchFor(0), std::optional<std::size_t>{});
+        QCOMPARE(rules.LastMatchFor(1), std::optional<std::size_t>{0u});
+        QCOMPARE(rules.LastMatchFor(2), std::optional<std::size_t>{});
+        QCOMPARE(rules.LastMatchFor(3), std::optional<std::size_t>{0u});
+
+        // Simulate a FIFO eviction of the first two rows. Production
+        // wires this via the `rowsRemoved` signal on `LogModel`; the
+        // test drives it directly to keep the assertion focused on
+        // the rule-set's shift semantics.
+        rules.OnRowsEvicted(0, 1);
+        // Row 0 is now what used to be row 2 (info, miss); row 1 is
+        // what used to be row 3 (warn, hit); etc. The tail must have
+        // shifted down by two.
+        QCOMPARE(rules.LastMatchFor(0), std::optional<std::size_t>{});
+        QCOMPARE(rules.LastMatchFor(1), std::optional<std::size_t>{0u});
+        QCOMPARE(rules.LastMatchFor(2), std::optional<std::size_t>{});
+        QCOMPARE(rules.LastMatchFor(3), std::optional<std::size_t>{0u});
+        // Beyond the survivor range, the cache reports no match.
+        QCOMPARE(rules.LastMatchFor(4), std::optional<std::size_t>{});
+        QCOMPARE(rules.LastMatchFor(999), std::optional<std::size_t>{});
+    }
+
     /// A rule bound to a key that appears only after the schema
     /// grows starts inactive. Once a batch carrying the new key has
     /// been ingested and `RebindColumns` is called, the rule
@@ -322,6 +368,46 @@ private slots:
         {
             QCOMPARE(rules.LastMatchFor(row), std::optional<std::size_t>{});
         }
+    }
+
+    /// Boolean predicate parity: a rule with `type = Boolean` and
+    /// `filterValues = {"true"}` accepts only the rows whose bool
+    /// column decodes to `true`. Guards `CompileRule`'s Boolean
+    /// branch (case-insensitive decode, empty-list rejection).
+    void BooleanRuleMatchesTrueRows()
+    {
+        HighlightRuleSet rules;
+        LogModel model{/*parent=*/nullptr, /*theme=*/nullptr, /*anchors=*/nullptr, &rules};
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = dir.filePath("bool.jsonl");
+        {
+            std::ofstream stream(path.toStdString(), std::ios::binary);
+            QVERIFY(stream.is_open());
+            stream << R"({"level": "info", "handled": true,  "msg": "a"})" << '\n';
+            stream << R"({"level": "info", "handled": false, "msg": "b"})" << '\n';
+            stream << R"({"level": "info", "handled": true,  "msg": "c"})" << '\n';
+            stream << R"({"level": "info", "handled": false, "msg": "d"})" << '\n';
+        }
+        StreamJsonPathInto(model, path);
+
+        Rule boolRule;
+        boolRule.name = "handled=true";
+        boolRule.enabled = true;
+        boolRule.columnKeys = {"handled"};
+        boolRule.type = Rule::Type::Boolean;
+        boolRule.filterValues = {"true"};
+        std::vector<Rule> ruleSet;
+        ruleSet.push_back(std::move(boolRule));
+        rules.SetRules(std::move(ruleSet), model.Configuration().columns, &model.Table());
+
+        QVERIFY(rules.HasActiveRules());
+        QCOMPARE(rules.InactiveCount(), 0u);
+        QCOMPARE(rules.LastMatchFor(0), std::optional<std::size_t>{0u});
+        QCOMPARE(rules.LastMatchFor(1), std::optional<std::size_t>{});
+        QCOMPARE(rules.LastMatchFor(2), std::optional<std::size_t>{0u});
+        QCOMPARE(rules.LastMatchFor(3), std::optional<std::size_t>{});
     }
 
     /// Rules bind by column keys, not column indices. Moving the

@@ -84,8 +84,15 @@ constexpr std::array<const char *, 4> STRING_MATCH_LABELS = {"Exactly", "Contain
     {
         painter.setPen(Qt::NoPen);
     }
+    // Inset the rect on all four sides so the stroke doesn't clip
+    // against the pixmap edge on Fusion (which is the default Qt
+    // style in both shipped themes). Prior versions wrote
+    // `sizePx - 1` which extended the rect from x=1 to x=sizePx and
+    // clipped the right / bottom half-pixel of the stroke on high
+    // DPI.
+    const int side = sizePx - (2 * SWATCH_PAINT_INSET);
     painter.drawRoundedRect(
-        QRectF(SWATCH_PAINT_INSET, SWATCH_PAINT_INSET, sizePx - 1, sizePx - 1),
+        QRectF(SWATCH_PAINT_INSET, SWATCH_PAINT_INSET, side, side),
         SWATCH_CORNER_RADIUS,
         SWATCH_CORNER_RADIUS
     );
@@ -187,10 +194,17 @@ HighlightRulesEditor::HighlightRulesEditor(
     mNumberMinValue = new QDoubleSpinBox(this);
     mNumberMinValue->setRange(std::numeric_limits<double>::lowest(), std::numeric_limits<double>::max());
     mNumberMinValue->setDecimals(6);
+    // AdaptiveDecimalStepType (Qt 5.12+) scales the arrow-key step
+    // by the current value's magnitude so stepping through 1e-6
+    // stays usable, and stepping through 1e6 doesn't require 1M
+    // clicks. Without this, the default step of 1.0 combined with
+    // the full-double range makes the spin buttons useless.
+    mNumberMinValue->setStepType(QDoubleSpinBox::AdaptiveDecimalStepType);
     mNumberMaxEnabled = new QCheckBox(tr("Max"), this);
     mNumberMaxValue = new QDoubleSpinBox(this);
     mNumberMaxValue->setRange(std::numeric_limits<double>::lowest(), std::numeric_limits<double>::max());
     mNumberMaxValue->setDecimals(6);
+    mNumberMaxValue->setStepType(QDoubleSpinBox::AdaptiveDecimalStepType);
     connect(mNumberMinEnabled, &QCheckBox::toggled, this, [this](bool on) {
         mNumberMinValue->setEnabled(on);
         OnFieldEdited();
@@ -336,21 +350,34 @@ HighlightRulesEditor::HighlightRulesEditor(
     mainLayout->addWidget(splitter, 1);
     mainLayout->addLayout(bottomBar);
 
-    // Repaint on theme change.
+    // Repaint on theme change. The palette moved, so:
+    //   1. rebuild the swatch popup menus (icons + action captures
+    //      close over the new brushes),
+    //   2. reload the form so the two swatch buttons repaint their
+    //      current-slot icons against the new palette,
+    //   3. refresh every list row so the paired-swatch icon on the
+    //      left of each entry matches too.
+    // The old handler deleted the menus but never rebuilt them,
+    // leaving the two buttons popup-less for the rest of the
+    // session.
     if (mTheme != nullptr)
     {
         connect(mTheme, &ThemeControl::themeChanged, this, [this]() {
-            // Palette moved; rebuild swatch menus + list icons.
-            delete mForegroundButton->menu();
-            delete mBackgroundButton->menu();
-            // Rebuild the tool button state.
-            const QPoint fgPos = mForegroundButton->pos();
-            const QPoint bgPos = mBackgroundButton->pos();
-            Q_UNUSED(fgPos);
-            Q_UNUSED(bgPos);
-            // Simplest: recreate the swatch buttons in place would
-            // require reparenting; instead just rebuild the list.
-            RebuildList(mCurrentRow);
+            if (mForegroundButton != nullptr)
+            {
+                RebuildSwatchMenu(mForegroundButton, /*isForeground=*/true);
+            }
+            if (mBackgroundButton != nullptr)
+            {
+                RebuildSwatchMenu(mBackgroundButton, /*isForeground=*/false);
+            }
+            LoadIntoForm(mCurrentRow);
+            // Refresh every list row's icon without disturbing the
+            // form (which was just reloaded above).
+            for (std::size_t i = 0; i < mLocalRules.size(); ++i)
+            {
+                RefreshListItem(static_cast<int>(i));
+            }
         });
     }
 
@@ -366,6 +393,27 @@ QToolButton *HighlightRulesEditor::BuildSwatchButton(bool isForeground)
     button->setPopupMode(QToolButton::InstantPopup);
     button->setToolButtonStyle(Qt::ToolButtonIconOnly);
     button->setIconSize(QSize(SwatchIconSizePx() + 4, SwatchIconSizePx() + 4));
+    RebuildSwatchMenu(button, isForeground);
+    // Default icon: "inherit" swatch. `LoadIntoForm` overwrites this
+    // once a rule is selected.
+    button->setIcon(RenderSwatchIcon(QBrush{}, QBrush(Qt::gray), SwatchIconSizePx(), true));
+    return button;
+}
+
+void HighlightRulesEditor::RebuildSwatchMenu(QToolButton *button, bool isForeground)
+{
+    if (button == nullptr)
+    {
+        return;
+    }
+    // Tear down the previous popup, if any. `deleteLater` (over
+    // plain `delete`) plays safe with any pending action-triggered
+    // handler that may still hold a pointer into the old menu.
+    if (QMenu *old = button->menu())
+    {
+        button->setMenu(nullptr);
+        old->deleteLater();
+    }
 
     auto *menu = new QMenu(button);
     // First entry: "Inherit" (rule.foregroundIndex / backgroundIndex = 0).
@@ -408,9 +456,6 @@ QToolButton *HighlightRulesEditor::BuildSwatchButton(bool isForeground)
         }
     }
     button->setMenu(menu);
-    // Default icon: "inherit" swatch.
-    button->setIcon(RenderSwatchIcon(QBrush{}, QBrush(Qt::gray), SwatchIconSizePx(), true));
-    return button;
 }
 
 int HighlightRulesEditor::SwatchIconSizePx() const
@@ -598,20 +643,29 @@ void HighlightRulesEditor::LoadIntoForm(int row)
     }
 
     const auto &rule = mLocalRules[row];
-    mNameEdit->setText(QString::fromStdString(rule.name));
+    // Guard `setText`: `QLineEdit::setText` unconditionally resets
+    // the cursor to position 0 and clears the selection, so blindly
+    // calling it on every field edit would erase the caret between
+    // keystrokes. Only assign when the text actually differs.
+    if (mNameEdit->text() != QString::fromStdString(rule.name))
+    {
+        mNameEdit->setText(QString::fromStdString(rule.name));
+    }
     mEnabledCheck->setChecked(rule.enabled);
 
-    // Column combo: match by keys.
+    // Column combo: match by keys using the same subset semantics
+    // as `ResolveColumnIndex` (and `HighlightRuleSet::ResolveColumnByKeys`).
+    // The prior implementation demanded a full-vector equality,
+    // which meant a rule authored under a source with keys
+    // `{"level", "severity"}` showed as `(none)` under a source
+    // that only carried `{"level"}` even though the preview / paint
+    // path still activated it. Sharing subset semantics keeps the
+    // combo and the actual match behaviour in sync.
     int comboIndex = 0; // "(none)" slot.
-    for (std::size_t i = 0; i < mColumns.size(); ++i)
+    const int resolved = ResolveColumnIndex(rule);
+    if (resolved >= 0)
     {
-        const auto &keys = mColumns[i].keys;
-        if (rule.columnKeys.size() == keys.size() &&
-            std::equal(rule.columnKeys.begin(), rule.columnKeys.end(), keys.begin()))
-        {
-            comboIndex = static_cast<int>(i) + 1;
-            break;
-        }
+        comboIndex = resolved + 1;
     }
     mColumnCombo->setCurrentIndex(comboIndex);
 
@@ -627,7 +681,14 @@ void HighlightRulesEditor::LoadIntoForm(int row)
     {
         const int matchIdx = rule.matchType.has_value() ? static_cast<int>(*rule.matchType) : 1;
         mStringMatchCombo->setCurrentIndex(matchIdx);
-        mStringNeedleEdit->setText(rule.filterString.has_value() ? QString::fromStdString(*rule.filterString) : QString{});
+        const QString needle =
+            rule.filterString.has_value() ? QString::fromStdString(*rule.filterString) : QString{};
+        // Same "keep cursor" guard as `mNameEdit` above -- see the
+        // comment there for the rationale.
+        if (mStringNeedleEdit->text() != needle)
+        {
+            mStringNeedleEdit->setText(needle);
+        }
         break;
     }
     case RT::Number:
@@ -754,7 +815,12 @@ void HighlightRulesEditor::OnFieldEdited()
         return;
     }
     GatherForm();
-    RebuildList(mCurrentRow);
+    // `RefreshListItem` (not `RebuildList`) so the form's line-edits
+    // keep their cursor position. Structural mutations (new /
+    // duplicate / delete / move) use `RebuildList` because they
+    // change the list's item count, but per-keystroke edits only
+    // affect the current row's label / icon.
+    RefreshListItem(mCurrentRow);
     MarkDirty();
 }
 
@@ -768,7 +834,7 @@ void HighlightRulesEditor::OnColumnChanged()
     // rule.type unchanged (user can still type-mismatch a rule but
     // it will silently render inert). v1 keeps this simple.
     GatherForm();
-    RebuildList(mCurrentRow);
+    RefreshListItem(mCurrentRow);
     MarkDirty();
 }
 
@@ -781,8 +847,31 @@ void HighlightRulesEditor::OnTypeChanged()
     mMatchStack->setCurrentIndex(mTypeCombo->currentIndex());
     UpdateFormEnabled();
     GatherForm();
-    RebuildList(mCurrentRow);
+    RefreshListItem(mCurrentRow);
     MarkDirty();
+}
+
+void HighlightRulesEditor::RefreshListItem(int row)
+{
+    if (mListWidget == nullptr || row < 0 || row >= static_cast<int>(mLocalRules.size()))
+    {
+        return;
+    }
+    QListWidgetItem *item = mListWidget->item(row);
+    if (item == nullptr)
+    {
+        return;
+    }
+    // Block signals so the label / icon refresh doesn't retrigger
+    // `currentRowChanged` (the item pointer is stable, but Qt's
+    // `setText` / `setIcon` don't emit a signal by themselves --
+    // this is belt-and-braces against a future item-view proxy).
+    const QSignalBlocker block(mListWidget);
+    const auto &rule = mLocalRules[static_cast<std::size_t>(row)];
+    item->setIcon(FormatListIcon(rule, SwatchIconSizePx()));
+    const QString label = FormatListLabel(rule);
+    item->setText(label);
+    item->setToolTip(label);
 }
 
 void HighlightRulesEditor::GatherForm()

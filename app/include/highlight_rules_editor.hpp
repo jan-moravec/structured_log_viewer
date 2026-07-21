@@ -106,6 +106,12 @@ private:
     /// pull their swatch icons from `ThemeControl::HighlightBrushFor`.
     [[nodiscard]] QToolButton *BuildSwatchButton(bool isForeground);
 
+    /// Rebuild the popup menu on an existing swatch button. Extracted
+    /// so `themeChanged` can refresh the palette without replacing
+    /// the `QToolButton` itself (which would need reparenting through
+    /// the layout).
+    void RebuildSwatchMenu(QToolButton *button, bool isForeground);
+
     /// Build the list row label: rule name + `(inactive)` badge when
     /// `columnKeys` doesn't resolve against the current columns.
     /// Icon is a paired fg/bg swatch.
@@ -113,8 +119,18 @@ private:
     [[nodiscard]] QIcon FormatListIcon(const loglib::LogConfiguration::HighlightRule &rule, int sizePx) const;
 
     /// Rebuild the list from `mLocalRules`, preserving @p selectRow
-    /// (or the current row when negative).
+    /// (or the current row when negative). Reloads the form from the
+    /// selected rule (`LoadIntoForm`); use `RefreshListItem` instead
+    /// when the mutation originated from the form and reloading it
+    /// would clobber the user's cursor.
     void RebuildList(int selectRow = -1);
+
+    /// Update only the label + icon for the row at @p row. Does NOT
+    /// call `LoadIntoForm`, so the current cursor position and text
+    /// selection in the form's `QLineEdit`s survive a keystroke.
+    /// No-op when @p row is out of range or the list widget's
+    /// corresponding item does not exist.
+    void RefreshListItem(int row);
 
     /// Populate the form from `mLocalRules[row]`. Empty row / -1
     /// clears the form (Delete of last rule).

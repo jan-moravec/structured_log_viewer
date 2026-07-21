@@ -26,10 +26,15 @@
 /// `mCompiled` so the enclosing `HighlightRuleSet::CompiledRule`
 /// forward declaration stays out of the public header.
 ///
-/// `predicate` is the runtime match callable. `expandedEnumStorage`
-/// backs the `EnumRowPredicate`'s string views for Level columns
-/// where the saved canonical names have to be expanded to every raw
-/// dictionary alias (same trick `MainWindow::UpdateFilters` uses).
+/// `predicate` is the runtime match callable. All backing storage
+/// (dictionary aliases for enum rules, regex objects for string
+/// rules, ...) lives *inside* the predicate itself; see
+/// `EnumRowPredicate::mSelectedStrings` and
+/// `CallbackStringRowPredicate`'s captured lambda for the two
+/// non-trivial cases. `CompileRule` builds any transient scaffolding
+/// (e.g. an expanded canonical-level alias list) on the local stack
+/// and lets the predicate's constructor copy what it needs before
+/// the scaffolding goes out of scope.
 ///
 /// Explicit constructor because `loglib::RowPredicate` (a `variant`
 /// over non-default-constructible predicates) can't be default-
@@ -37,10 +42,8 @@
 struct HighlightRuleSet::CompiledRule
 {
     loglib::RowPredicate predicate;
-    std::vector<std::string> expandedEnumStorage;
 
-    CompiledRule(loglib::RowPredicate p, std::vector<std::string> storage)
-        : predicate(std::move(p)), expandedEnumStorage(std::move(storage))
+    explicit CompiledRule(loglib::RowPredicate p) : predicate(std::move(p))
     {
     }
 };
@@ -148,15 +151,12 @@ std::optional<HighlightRuleSet::CompiledRule> HighlightRuleSet::CompileRule(
         {
             return std::nullopt;
         }
-        return CompiledRule{
-            loglib::RowPredicate{
-                std::in_place_type<loglib::TimeRangeRowPredicate>,
-                column,
-                rule.filterBegin.value_or(std::numeric_limits<std::int64_t>::min()),
-                rule.filterEnd.value_or(std::numeric_limits<std::int64_t>::max())
-            },
-            {}
-        };
+        return CompiledRule{loglib::RowPredicate{
+            std::in_place_type<loglib::TimeRangeRowPredicate>,
+            column,
+            rule.filterBegin.value_or(std::numeric_limits<std::int64_t>::min()),
+            rule.filterEnd.value_or(std::numeric_limits<std::int64_t>::max())
+        }};
     }
     case RuleType::Number:
     {
@@ -164,15 +164,12 @@ std::optional<HighlightRuleSet::CompiledRule> HighlightRuleSet::CompileRule(
         {
             return std::nullopt;
         }
-        return CompiledRule{
-            loglib::RowPredicate{
-                std::in_place_type<loglib::NumericRangeRowPredicate>,
-                column,
-                rule.filterMinValue,
-                rule.filterMaxValue
-            },
-            {}
-        };
+        return CompiledRule{loglib::RowPredicate{
+            std::in_place_type<loglib::NumericRangeRowPredicate>,
+            column,
+            rule.filterMinValue,
+            rule.filterMaxValue
+        }};
     }
     case RuleType::Boolean:
     {
@@ -203,12 +200,9 @@ std::optional<HighlightRuleSet::CompiledRule> HighlightRuleSet::CompileRule(
         {
             return std::nullopt;
         }
-        return CompiledRule{
-            loglib::RowPredicate{
-                std::in_place_type<loglib::BoolRowPredicate>, column, includeTrue, includeFalse
-            },
-            {}
-        };
+        return CompiledRule{loglib::RowPredicate{
+            std::in_place_type<loglib::BoolRowPredicate>, column, includeTrue, includeFalse
+        }};
     }
     case RuleType::Enumeration:
     {
@@ -222,6 +216,12 @@ std::optional<HighlightRuleSet::CompiledRule> HighlightRuleSet::CompileRule(
         // via the LevelRankCache so a rule saved as `Info` still
         // matches a row parsed from the raw string `INFO`. Mirrors
         // the level branch in `MainWindow::UpdateFilters`.
+        //
+        // The scaffolding (`expandedStorage` + `selectedViews`)
+        // lives on the local stack; `EnumRowPredicate`'s constructor
+        // deep-copies the string_views into its own owned storage
+        // (`mSelectedStrings` / `mSelectedIds`) before this scope
+        // exits, so there's no dangling-view hazard.
         std::vector<std::string> expandedStorage;
         std::vector<std::string_view> selectedViews;
         const bool isLevelColumn =
@@ -274,15 +274,12 @@ std::optional<HighlightRuleSet::CompiledRule> HighlightRuleSet::CompileRule(
                 selectedViews.emplace_back(v);
             }
         }
-        return CompiledRule{
-            loglib::RowPredicate{
-                std::in_place_type<loglib::EnumRowPredicate>,
-                column,
-                std::span<const std::string_view>(selectedViews),
-                dictionary
-            },
-            std::move(expandedStorage)
-        };
+        return CompiledRule{loglib::RowPredicate{
+            std::in_place_type<loglib::EnumRowPredicate>,
+            column,
+            std::span<const std::string_view>(selectedViews),
+            dictionary
+        }};
     }
     case RuleType::String:
     default:
@@ -291,14 +288,11 @@ std::optional<HighlightRuleSet::CompiledRule> HighlightRuleSet::CompileRule(
         {
             return std::nullopt;
         }
-        return CompiledRule{
-            loglib::RowPredicate{
-                std::in_place_type<loglib::CallbackStringRowPredicate>,
-                column,
-                MakeStringMatcher(QString::fromStdString(*rule.filterString), *rule.matchType)
-            },
-            {}
-        };
+        return CompiledRule{loglib::RowPredicate{
+            std::in_place_type<loglib::CallbackStringRowPredicate>,
+            column,
+            MakeStringMatcher(QString::fromStdString(*rule.filterString), *rule.matchType)
+        }};
     }
     }
 }
@@ -387,17 +381,24 @@ void HighlightRuleSet::SetRules(
 {
     mRules = std::move(rules);
     RecompileAll(columns, table);
-    emit rulesChanged(mInactiveCount);
+    // Rebuild the match cache BEFORE broadcasting `rulesChanged`.
+    // Previously the emit order was `rulesChanged` → rebuild →
+    // `matchesChanged`, which meant any synchronous slot on
+    // `rulesChanged` that touched `LastMatchFor` would observe stale
+    // per-row indices from the prior rule set. No consumer does that
+    // today, but the invariant "when `rulesChanged` fires, the
+    // per-row cache already reflects the new rules" is cheap and
+    // future-proof.
     if (table != nullptr)
     {
         RebuildAllMatches(*table);
-        emit matchesChanged();
     }
     else
     {
         mRowMatch.clear();
-        emit matchesChanged();
     }
+    emit rulesChanged(mInactiveCount);
+    emit matchesChanged();
 }
 
 void HighlightRuleSet::RebindColumns(
@@ -416,10 +417,15 @@ void HighlightRuleSet::RebindColumns(
         return;
     }
     RecompileAll(columns, table);
-    emit rulesChanged(mInactiveCount);
+    // Match cache first, then broadcast -- see `SetRules` for the
+    // ordering rationale.
     if (table != nullptr)
     {
         RebuildAllMatches(*table);
+    }
+    emit rulesChanged(mInactiveCount);
+    if (table != nullptr)
+    {
         emit matchesChanged();
     }
 }
@@ -451,6 +457,24 @@ void HighlightRuleSet::OnRowsAppended(
     }
     EvaluateRows(table, firstNewRow, lastNewRow);
     emit matchesChanged();
+}
+
+void HighlightRuleSet::OnRowsEvicted(std::size_t first, std::size_t last)
+{
+    if (first > last || mRowMatch.empty() || first >= mRowMatch.size())
+    {
+        return;
+    }
+    // Clamp against the current cache size so a spurious over-run
+    // eviction (which shouldn't happen -- `LogModel::AppendBatch`
+    // always evicts a contiguous prefix -- but we defend anyway)
+    // doesn't degenerate into a wild-erase.
+    const std::size_t clampedLast = std::min(last, mRowMatch.size() - 1);
+    mRowMatch.erase(mRowMatch.begin() + static_cast<std::ptrdiff_t>(first),
+                    mRowMatch.begin() + static_cast<std::ptrdiff_t>(clampedLast + 1));
+    // Deliberately no `matchesChanged` emit: Qt views react to the
+    // upstream `rowsRemoved` signal on their own; a redundant
+    // `dataChanged` broadcast here would just cost repaints.
 }
 
 void HighlightRuleSet::ClearMatches()

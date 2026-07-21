@@ -91,9 +91,23 @@ public:
     /// No-op if `Empty()`.
     void OnRowsAppended(const loglib::LogTable &table, std::size_t firstNewRow, std::size_t lastNewRow);
 
+    /// Erase the row-match cache entries for rows `[first, last]`
+    /// (inclusive), then shift the trailing entries down by
+    /// `(last - first + 1)`. Called from `MainWindow` in response to
+    /// `QAbstractItemModel::rowsRemoved` so the FIFO retention path
+    /// (`LogModel::AppendBatch` / streaming cap) doesn't leave stale
+    /// match indices at the front of the cache pointing at rows that
+    /// no longer exist. Does not emit `matchesChanged`: the view has
+    /// already been re-laid-out by the model's `rowsRemoved` signal.
+    void OnRowsEvicted(std::size_t first, std::size_t last);
+
     /// Drop the row-match cache. The compiled rules and resolved
     /// column indices are kept so a follow-up stream doesn't need
-    /// to re-parse the JSON.
+    /// to re-parse the JSON. Post-condition: `LastMatchFor(row)`
+    /// returns `nullopt` for every @p row (the cache is empty), but
+    /// `HasActiveRules()` continues to report `true` iff any rule
+    /// was active before the call. Callers that need to also drop
+    /// the rules themselves should call `SetRules({}, ...)`.
     void ClearMatches();
 
     /// Snapshot of the source rules (for the editor + the config

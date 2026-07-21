@@ -254,7 +254,7 @@
     <string>Highlight rules...</string>
    </property>
    <property name="toolTip">
-    <string>Open the highlight-rules editor: define per-column rules that paint matching rows with a custom foreground / background from the theme palette. Rules ride along with the configuration and take effect on load.</string>
+    <string>Open the highlight-rules editor: define per-column rules that paint matching rows with a custom foreground / background from the theme palette. Rules ride along with the configuration and take effect immediately when saved.</string>
    </property>
   </action>
   <action name="actionToggleRecordDetails">

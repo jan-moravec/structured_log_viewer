@@ -658,6 +658,20 @@ MainWindow::MainWindow(
             mModel->Table(), static_cast<std::size_t>(first), static_cast<std::size_t>(last)
         );
     });
+    // FIFO retention (`LogModel::AppendBatch`) fires `rowsRemoved`
+    // before it appends the new tail; without this hook the row-match
+    // cache would keep old prefix entries at index 0..N-1 and every
+    // subsequent `LastMatchFor` would return matches for the wrong
+    // rows. Eviction is always a contiguous prefix in practice, but
+    // the slot handles any contiguous range for future retention
+    // policies.
+    connect(mModel, &QAbstractItemModel::rowsRemoved, this, [this](const QModelIndex &, int first, int last) {
+        if (mHighlights == nullptr || first < 0 || last < first)
+        {
+            return;
+        }
+        mHighlights->OnRowsEvicted(static_cast<std::size_t>(first), static_cast<std::size_t>(last));
+    });
     connect(mModel, &QAbstractItemModel::columnsInserted, this, [this](const QModelIndex &, int, int) {
         if (mHighlights == nullptr || mModel == nullptr)
         {

@@ -32,8 +32,8 @@
     ],
     "highlightPalette": [
         { "background": "#3F1D1D", "foreground": "#FCA5A5" },
-        { "background": "#3F2A0F", "foreground": "#FCD34D" },
-        { "background": "#3B370F", "foreground": "#FDE68A" },
+        { "background": "#3B2A0A", "foreground": "#FDE68A" },
+        { "background": "#3B370F", "foreground": "#FEF08A" },
         { "background": "#1F3A1F", "foreground": "#86EFAC" },
         { "background": "#123B34", "foreground": "#5EEAD4" },
         { "background": "#1B2B4A", "foreground": "#93C5FD" },
