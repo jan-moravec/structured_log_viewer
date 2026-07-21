@@ -54,6 +54,34 @@ constexpr std::array<const char *, loglib::ANCHOR_PALETTE_SIZE> ANCHOR_FALLBACK_
     "#BE185D",
 };
 
+/// Fallback highlight-rule palette. Sixteen hue-distinct
+/// background tints; foreground is picked at bake time by
+/// BT.601 luma (see `BuildStyleCache`). Tuned to remain legible
+/// against both light and dark row chrome; users can override
+/// per-slot via `Theme::highlightPalette`.
+///
+/// Slot `i` in this array corresponds to
+/// `HighlightRule::backgroundIndex == i + 1` (the rule value `0`
+/// is reserved for "inherit / no tint").
+constexpr std::array<const char *, loglib::HIGHLIGHT_PALETTE_SIZE> HIGHLIGHT_FALLBACK_BACKGROUND_PALETTE = {
+    "#FCA5A5", // red-300
+    "#FDBA74", // orange-300
+    "#FCD34D", // amber-300
+    "#FDE047", // yellow-300
+    "#BEF264", // lime-300
+    "#86EFAC", // green-300
+    "#6EE7B7", // emerald-300
+    "#5EEAD4", // teal-300
+    "#7DD3FC", // sky-300
+    "#93C5FD", // blue-300
+    "#A5B4FC", // indigo-300
+    "#C4B5FD", // violet-300
+    "#D8B4FE", // purple-300
+    "#F0ABFC", // fuchsia-300
+    "#F9A8D4", // pink-300
+    "#D1D5DB", // gray-300 (neutral)
+};
+
 constexpr char BUILTIN_LIGHT_NAME[] = "Light";
 constexpr char BUILTIN_DARK_NAME[] = "Dark";
 
@@ -482,6 +510,27 @@ QBrush ThemeControl::AnchorBrushFor(std::uint8_t colorIndex, int role) const noe
     default:
         // Other roles have no anchor meaning; invalid brush lets
         // the caller fall through to its normal handling.
+        return {};
+    }
+}
+
+QBrush ThemeControl::HighlightBrushFor(std::uint8_t slotIndex, int role) const noexcept
+{
+    // Slot `0` is the "inherit" sentinel; positive values are
+    // 1-indexed. Reject both zero and out-of-range so callers can
+    // pass the raw `HighlightRule` field without a pre-check.
+    if (slotIndex == 0 || slotIndex > loglib::HIGHLIGHT_PALETTE_SIZE)
+    {
+        return {};
+    }
+    const std::size_t idx = static_cast<std::size_t>(slotIndex) - 1;
+    switch (role)
+    {
+    case Qt::BackgroundRole:
+        return mHighlightBackground[idx];
+    case Qt::ForegroundRole:
+        return mHighlightForeground[idx];
+    default:
         return {};
     }
 }
@@ -1244,6 +1293,39 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
         }
         mAnchorBackground[slot] = QBrush{background};
         mAnchorForeground[slot] = QBrush{ThemeControl::IsDarkColor(background) ? QColor(Qt::white) : QColor(Qt::black)};
+    }
+
+    // Cache highlight-rule brushes. Independent foreground and
+    // background per slot: a theme can pin one, both, or neither.
+    // Missing / invalid slots fall through to the built-in
+    // background palette; missing foregrounds are picked from the
+    // background luma (same rule as anchors).
+    for (size_t slot = 0; slot < loglib::HIGHLIGHT_PALETTE_SIZE; ++slot)
+    {
+        QColor background;
+        QColor foreground;
+        if (slot < theme.highlightPalette.size())
+        {
+            const loglib::HighlightSlot &themeSlot = theme.highlightPalette[slot];
+            if (themeSlot.background.has_value() && !themeSlot.background->empty())
+            {
+                background = QColor(QString::fromStdString(*themeSlot.background));
+            }
+            if (themeSlot.foreground.has_value() && !themeSlot.foreground->empty())
+            {
+                foreground = QColor(QString::fromStdString(*themeSlot.foreground));
+            }
+        }
+        if (!background.isValid())
+        {
+            background = QColor(QString::fromLatin1(HIGHLIGHT_FALLBACK_BACKGROUND_PALETTE[slot]));
+        }
+        if (!foreground.isValid())
+        {
+            foreground = ThemeControl::IsDarkColor(background) ? QColor(Qt::white) : QColor(Qt::black);
+        }
+        mHighlightBackground[slot] = QBrush{background};
+        mHighlightForeground[slot] = QBrush{foreground};
     }
 
     // Reset the level-column override caches so a theme without

@@ -364,3 +364,41 @@ TEST_CASE("Theme tolerates a sparse anchorPalette with empty slots", "[Theme][an
     CHECK(parsed.anchorPalette[4] == "#0D9488");
     CHECK(parsed.anchorPalette[7].empty());
 }
+
+TEST_CASE("Theme JSON round-trips a highlightPalette", "[Theme][highlight]")
+{
+    Theme original;
+    original.name = "Highlighted";
+    original.kind = ThemeKind::Dark;
+    original.highlightPalette = {
+        HighlightSlot{.foreground = "#111827", .background = "#FCA5A5"},
+        HighlightSlot{.foreground = std::nullopt, .background = "#93C5FD"},
+        HighlightSlot{.foreground = "#F9FAFB", .background = std::nullopt},
+    };
+
+    const std::string json = SerializeTheme(original);
+    CHECK(json.contains("\"highlightPalette\""));
+    CHECK(json.contains("\"#FCA5A5\""));
+
+    const Theme reloaded = ParseTheme(json);
+    CHECK(reloaded.highlightPalette == original.highlightPalette);
+    CHECK(reloaded == original);
+}
+
+TEST_CASE("Theme without highlightPalette decodes as an empty vector", "[Theme][highlight]")
+{
+    // Pre-feature theme JSONs must continue to parse cleanly; the app
+    // layer falls back to its built-in palette when this is empty.
+    constexpr std::string_view JSON = R"({
+        "name": "Pre-highlight",
+        "kind": "dark",
+        "levels": {},
+        "table": {},
+        "chrome": {},
+        "app": {}
+    })";
+
+    const Theme parsed = ParseTheme(JSON);
+    CHECK(parsed.name == "Pre-highlight");
+    CHECK(parsed.highlightPalette.empty());
+}

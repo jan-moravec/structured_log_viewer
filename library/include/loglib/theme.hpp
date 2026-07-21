@@ -89,6 +89,23 @@ struct AppStyle
     friend bool operator==(const AppStyle &, const AppStyle &) = default;
 };
 
+/// One entry in `Theme::highlightPalette`. Both fields optional so
+/// a slot can carry a background tint without a paired foreground
+/// (or vice versa). Colours are `#RRGGBB` / `#AARRGGBB` strings
+/// (kept Qt-free like `LevelStyle`).
+///
+/// The user-facing colour picker for highlight rules materialises
+/// one swatch per slot, driven by these entries. Missing / empty
+/// slots fall back to the app's built-in palette in
+/// `ThemeControl::HighlightBrushFor`.
+struct HighlightSlot
+{
+    std::optional<std::string> foreground;
+    std::optional<std::string> background;
+
+    friend bool operator==(const HighlightSlot &, const HighlightSlot &) = default;
+};
+
 /// Per-level icon + pill spec. All fields optional so a level can
 /// be left at the defaults. Colours are `#RRGGBB` / `#AARRGGBB`
 /// strings (kept Qt-free like `LevelStyle`).
@@ -165,6 +182,14 @@ struct Theme
     /// in `ThemeControl::AnchorBrushFor`.
     std::vector<std::string> anchorPalette;
 
+    /// Up to `HIGHLIGHT_PALETTE_SIZE` entries the highlight-rules
+    /// editor exposes as swatch picks. Missing / empty slots fall
+    /// back to the app's built-in palette in
+    /// `ThemeControl::HighlightBrushFor`. `HighlightRule` fields
+    /// `foregroundIndex` / `backgroundIndex` reference this
+    /// palette 1-indexed (0 means "inherit / no tint").
+    std::vector<HighlightSlot> highlightPalette;
+
     /// nullopt = plain-text level column. Set = icon mode (also
     /// gated on the `ui/showLevelIcons` user pref). Cell + header
     /// resolution rules live in `LogModel::data`/`headerData`.
@@ -176,6 +201,11 @@ struct Theme
 /// Number of anchor colour slots (matches the `Ctrl+1..8` hotkey
 /// block). Lives here so `loglib_test` can use it without Qt.
 inline constexpr std::size_t ANCHOR_PALETTE_SIZE = 8;
+
+/// Number of user-selectable highlight-palette slots. Referenced
+/// 1-indexed by `HighlightRule::foregroundIndex` / `backgroundIndex`
+/// (0 = inherit).
+inline constexpr std::size_t HIGHLIGHT_PALETTE_SIZE = 16;
 
 /// Returns the style for @p level, or a default-constructed
 /// `LevelStyle` when the theme has no entry for it.
