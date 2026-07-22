@@ -46,16 +46,13 @@ constexpr int SWATCH_ICON_FALLBACK_PX = 16;
 constexpr int SWATCH_PAINT_INSET = 1;
 constexpr int SWATCH_CORNER_RADIUS = 3;
 
-/// Order matches `HighlightRule::Type`. The combo shows this list;
-/// the `mMatchStack` uses the same index. Time / Enumeration land
-/// on a read-only pane in v1 (the parse / render path still
-/// handles them for hand-authored rules).
+/// Combo labels; index matches `HighlightRule::Type`. Time /
+/// Enumeration render on read-only panes in v1.
 constexpr std::array<const char *, 5> TYPE_LABELS = {
     "Text (string)", "Time", "Enumeration", "Number", "Boolean"
 };
 
-/// `HighlightRule::Match` -> combo item label. Matches the wire
-/// order pinned by the Glaze meta.
+/// Combo labels; index matches `HighlightRule::Match` wire order.
 constexpr std::array<const char *, 4> STRING_MATCH_LABELS = {"Exactly", "Contains", "Regular expression", "Wildcard"};
 
 [[nodiscard]] QIcon RenderSwatchIcon(
@@ -72,8 +69,7 @@ constexpr std::array<const char *, 4> STRING_MATCH_LABELS = {"Exactly", "Contain
     }
     else
     {
-        // "Inherit" / unset -- render a transparent tile with a
-        // diagonal slash so the empty state reads visually.
+        // "Inherit" / unset -- render a transparent tile.
         painter.setBrush(Qt::transparent);
     }
     if (paintBorder)
@@ -86,12 +82,8 @@ constexpr std::array<const char *, 4> STRING_MATCH_LABELS = {"Exactly", "Contain
     {
         painter.setPen(Qt::NoPen);
     }
-    // Inset the rect on all four sides so the stroke doesn't clip
-    // against the pixmap edge on Fusion (which is the default Qt
-    // style in both shipped themes). Prior versions wrote
-    // `sizePx - 1` which extended the rect from x=1 to x=sizePx and
-    // clipped the right / bottom half-pixel of the stroke on high
-    // DPI.
+    // Inset on all four sides so the stroke doesn't clip against
+    // the pixmap edge on Fusion (and on Hi-DPI).
     const int side = sizePx - (2 * SWATCH_PAINT_INSET);
     painter.drawRoundedRect(
         QRectF(SWATCH_PAINT_INSET, SWATCH_PAINT_INSET, side, side),
@@ -196,11 +188,8 @@ HighlightRulesEditor::HighlightRulesEditor(
     mNumberMinValue = new QDoubleSpinBox(this);
     mNumberMinValue->setRange(std::numeric_limits<double>::lowest(), std::numeric_limits<double>::max());
     mNumberMinValue->setDecimals(6);
-    // AdaptiveDecimalStepType (Qt 5.12+) scales the arrow-key step
-    // by the current value's magnitude so stepping through 1e-6
-    // stays usable, and stepping through 1e6 doesn't require 1M
-    // clicks. Without this, the default step of 1.0 combined with
-    // the full-double range makes the spin buttons useless.
+    // Scale the arrow-key step by the value's magnitude; the
+    // default step of 1.0 is unusable across the full double range.
     mNumberMinValue->setStepType(QDoubleSpinBox::AdaptiveDecimalStepType);
     mNumberMaxEnabled = new QCheckBox(tr("Max"), this);
     mNumberMaxValue = new QDoubleSpinBox(this);
@@ -255,18 +244,12 @@ HighlightRulesEditor::HighlightRulesEditor(
         layout->addStretch();
     }
 
-    // Read-only panes for Time / Enumeration.
-    //
-    // Two *separate* widgets even though the message is identical: a
-    // `QStackedWidget` (like any `QLayout`) can hold each `QWidget`
-    // in at most one slot, so inserting the same pointer at both
-    // index 1 and index 2 silently reparents / moves the widget --
-    // the stack then holds only four entries and every subsequent
-    // `HighlightRule::Type` index past `Time` is off by one
-    // (Enumeration would show the Number pane, Number the Boolean
-    // pane, Boolean would render blank). Constructing a distinct
-    // pane per slot keeps `setCurrentIndex(static_cast<int>(type))`
-    // honest.
+    // Read-only panes for Time / Enumeration. Two *separate*
+    // widgets even though the message is identical: a
+    // `QStackedWidget` only holds each `QWidget` in one slot at a
+    // time, so sharing a pointer between two slots silently
+    // shifts every `HighlightRule::Type` index past `Time` off by
+    // one.
     auto buildReadOnlyPane = [this]() -> QWidget * {
         auto *pane = new QWidget(this);
         auto *layout = new QVBoxLayout(pane);
@@ -285,8 +268,8 @@ HighlightRulesEditor::HighlightRulesEditor(
     auto *enumReadOnlyPane = buildReadOnlyPane();
 
     mMatchStack = new QStackedWidget(this);
-    // Order MUST match `HighlightRule::Type` enum order:
-    //   0 = String, 1 = Time, 2 = Enumeration, 3 = Number, 4 = Boolean.
+    // Order MUST match `HighlightRule::Type`:
+    //   0=String, 1=Time, 2=Enumeration, 3=Number, 4=Boolean.
     mMatchStack->insertWidget(0, stringPane);
     mMatchStack->insertWidget(1, timeReadOnlyPane);
     mMatchStack->insertWidget(2, enumReadOnlyPane);
@@ -367,16 +350,10 @@ HighlightRulesEditor::HighlightRulesEditor(
     mainLayout->addWidget(splitter, 1);
     mainLayout->addLayout(bottomBar);
 
-    // Repaint on theme change. The palette moved, so:
-    //   1. rebuild the swatch popup menus (icons + action captures
-    //      close over the new brushes),
-    //   2. reload the form so the two swatch buttons repaint their
-    //      current-slot icons against the new palette,
-    //   3. refresh every list row so the paired-swatch icon on the
-    //      left of each entry matches too.
-    // The old handler deleted the menus but never rebuilt them,
-    // leaving the two buttons popup-less for the rest of the
-    // session.
+    // Repaint on theme change: rebuild swatch popups (icons +
+    // captures close over the new brushes), reload the form so
+    // the current swatch button repaints, and refresh every list
+    // row's icon.
     if (mTheme != nullptr)
     {
         connect(mTheme, &ThemeControl::themeChanged, this, [this]() {
@@ -389,8 +366,7 @@ HighlightRulesEditor::HighlightRulesEditor(
                 RebuildSwatchMenu(mBackgroundButton, /*isForeground=*/false);
             }
             LoadIntoForm(mCurrentRow);
-            // Refresh every list row's icon without disturbing the
-            // form (which was just reloaded above).
+            // Refresh row icons without disturbing the form.
             for (std::size_t i = 0; i < mLocalRules.size(); ++i)
             {
                 RefreshListItem(static_cast<int>(i));
@@ -411,8 +387,7 @@ QToolButton *HighlightRulesEditor::BuildSwatchButton(bool isForeground)
     button->setToolButtonStyle(Qt::ToolButtonIconOnly);
     button->setIconSize(QSize(SwatchIconSizePx() + 4, SwatchIconSizePx() + 4));
     RebuildSwatchMenu(button, isForeground);
-    // Default icon: "inherit" swatch. `LoadIntoForm` overwrites this
-    // once a rule is selected.
+    // Default "inherit" icon; overwritten by `LoadIntoForm`.
     button->setIcon(RenderSwatchIcon(QBrush{}, QBrush(Qt::gray), SwatchIconSizePx(), true));
     return button;
 }
@@ -423,9 +398,8 @@ void HighlightRulesEditor::RebuildSwatchMenu(QToolButton *button, bool isForegro
     {
         return;
     }
-    // Tear down the previous popup, if any. `deleteLater` (over
-    // plain `delete`) plays safe with any pending action-triggered
-    // handler that may still hold a pointer into the old menu.
+    // `deleteLater` is safer than `delete` in case a pending
+    // action handler still holds a pointer into the old menu.
     if (QMenu *old = button->menu())
     {
         button->setMenu(nullptr);
@@ -433,7 +407,7 @@ void HighlightRulesEditor::RebuildSwatchMenu(QToolButton *button, bool isForegro
     }
 
     auto *menu = new QMenu(button);
-    // First entry: "Inherit" (rule.foregroundIndex / backgroundIndex = 0).
+    // Slot 0 = "Inherit".
     QAction *inherit = menu->addAction(tr("Inherit"));
     inherit->setData(0);
     connect(inherit, &QAction::triggered, this, [this, button, isForeground]() {
@@ -546,11 +520,8 @@ void HighlightRulesEditor::RepopulateColumnCombo()
     const QSignalBlocker block(mColumnCombo);
     mColumnCombo->clear();
     mColumnCombo->addItem(tr("(none)"), QVariant::fromValue(QStringList{}));
-    // Item-level tooltip via `Qt::ToolTipRole`. Explains why
-    // saving a rule pinned to "(none)" is disabled: an
-    // unresolvable rule can't participate in matching (the
-    // "(inactive)" list badge flags them post-hoc, but the tooltip
-    // catches the misclick earlier).
+    // Tooltip on the "(none)" slot: catches the misclick before
+    // the "(inactive)" list badge flags it post-hoc.
     mColumnCombo->setItemData(
         0,
         tr("Rules without a column can't match anything. Pick a column to activate this rule."),
@@ -558,15 +529,11 @@ void HighlightRulesEditor::RepopulateColumnCombo()
     );
     for (const auto &col : mColumns)
     {
-        // Store only the *primary* key (first entry in the column's
-        // keys vector), not the entire alias list. `ResolveColumnByKeys`
-        // uses subset-match semantics: rule keys must all be present in
-        // the target column's keys. Persisting the full alias list would
-        // require every future config load to carry every synonym, so a
-        // rule authored under a source with keys={"level","severity"}
-        // would fail to resolve against a source that emits only
-        // {"level"}. Single-key persistence keeps the rule portable
-        // across sources that share the primary key.
+        // Store only the *primary* key, not the full alias list.
+        // `ResolveColumnByKeys` uses subset-match semantics, so
+        // persisting a single key keeps the rule portable across
+        // sources that share the primary key but emit different
+        // alias sets.
         QStringList keys;
         if (!col.keys.empty())
         {
@@ -585,19 +552,12 @@ void HighlightRulesEditor::SetColumns(std::vector<loglib::LogConfiguration::Colu
 
 void HighlightRulesEditor::SetRules(std::vector<loglib::LogConfiguration::HighlightRule> rules)
 {
-    // Deliberately no `ConfirmDiscardEdits` prompt here. The one
-    // production caller is `MainWindow::ApplyLoadedConfiguration`,
-    // which runs *after* it has already replaced the runtime
-    // `HighlightRuleSet` and the persistent `LogConfigurationManager`
-    // mirror. Prompting the user at this point could leave the
-    // editor showing the pre-load buffer while the runtime + config
-    // show the just-loaded rules: hitting Save in the editor would
-    // then clobber the freshly-loaded config with the stale buffer.
-    // Loading a new configuration is a session-wide destructive
-    // operation; the editor buffer follows it. If the user had
-    // unsaved edits we surface a hint in the status bar so the loss
-    // isn't silent; the close-event confirmation still guards the
-    // manual dismissal path.
+    // No `ConfirmDiscardEdits` prompt: this is called from
+    // `ApplyLoadedConfiguration` after the runtime + config have
+    // already been replaced. Prompting could leave Save writing a
+    // stale buffer over the freshly-loaded config. Any dirty
+    // buffer is lost -- we surface a status-bar hint so it isn't
+    // silent. The close-event still guards manual dismissal.
     const bool discardedDirtyBuffer = IsDirty();
     mLocalRules = std::move(rules);
     mBaseline = mLocalRules;
@@ -635,9 +595,8 @@ void HighlightRulesEditor::RebuildList(int selectRow)
     }
     const int selected = std::clamp(keep, 0, rowCount - 1);
     mListWidget->setCurrentRow(selected);
-    // setCurrentRow triggers currentRowChanged -> OnSelectionChanged
-    // which calls LoadIntoForm; but currentRowChanged only fires
-    // when the row actually changes, so force it here.
+    // `currentRowChanged` only fires when the row actually
+    // changes; force the reload otherwise.
     if (mCurrentRow == selected)
     {
         LoadIntoForm(selected);
@@ -692,24 +651,17 @@ void HighlightRulesEditor::LoadIntoForm(int row)
     }
 
     const auto &rule = mLocalRules[row];
-    // Guard `setText`: `QLineEdit::setText` unconditionally resets
-    // the cursor to position 0 and clears the selection, so blindly
-    // calling it on every field edit would erase the caret between
-    // keystrokes. Only assign when the text actually differs.
+    // `QLineEdit::setText` resets the cursor and clears the
+    // selection; skip when the text already matches so the caret
+    // survives a keystroke.
     if (mNameEdit->text() != QString::fromStdString(rule.name))
     {
         mNameEdit->setText(QString::fromStdString(rule.name));
     }
     mEnabledCheck->setChecked(rule.enabled);
 
-    // Column combo: match by keys using the same subset semantics
-    // as `ResolveColumnIndex` (and `HighlightRuleSet::ResolveColumnByKeys`).
-    // The prior implementation demanded a full-vector equality,
-    // which meant a rule authored under a source with keys
-    // `{"level", "severity"}` showed as `(none)` under a source
-    // that only carried `{"level"}` even though the preview / paint
-    // path still activated it. Sharing subset semantics keeps the
-    // combo and the actual match behaviour in sync.
+    // Match by keys with the same subset semantics as
+    // `ResolveColumnIndex` so the combo agrees with the paint path.
     int comboIndex = 0; // "(none)" slot.
     const int resolved = ResolveColumnIndex(rule);
     if (resolved >= 0)
@@ -732,8 +684,7 @@ void HighlightRulesEditor::LoadIntoForm(int row)
         mStringMatchCombo->setCurrentIndex(matchIdx);
         const QString needle =
             rule.filterString.has_value() ? QString::fromStdString(*rule.filterString) : QString{};
-        // Same "keep cursor" guard as `mNameEdit` above -- see the
-        // comment there for the rationale.
+        // Keep-cursor guard, see `mNameEdit` above.
         if (mStringNeedleEdit->text() != needle)
         {
             mStringNeedleEdit->setText(needle);
@@ -820,8 +771,7 @@ void HighlightRulesEditor::UpdateFormEnabled()
             w->setEnabled(haveSelection);
         }
     }
-    // Read-only pane (Time / Enumeration in v1) grays the whole
-    // stack irrespective of `haveSelection`.
+    // Read-only pane (Time / Enumeration) grays the whole stack.
     if (haveSelection)
     {
         const auto ruleType = mLocalRules[static_cast<std::size_t>(mCurrentRow)].type;
@@ -843,21 +793,16 @@ void HighlightRulesEditor::UpdateListButtons()
     mDeleteButton->setEnabled(haveSelection);
     mMoveUpButton->setEnabled(haveSelection && row > 0);
     mMoveDownButton->setEnabled(haveSelection && row < total - 1);
-    // Save is gated on both "dirty" and "every rule validates". A
-    // rule with an empty needle would compile away to nothing
-    // (`HighlightRuleSet::CompileRule` rejects it) but the user
-    // would be none the wiser; disabling Save + surfacing the
-    // first failure makes the requirement obvious. Revert stays
-    // enabled -- it's the escape hatch from an invalid state.
+    // Save is gated on dirty + all-valid. Revert stays enabled --
+    // it's the escape hatch from an invalid state.
     const auto [invalidRow, invalidMessage] = FirstInvalidRule();
     const bool allValid = invalidRow < 0;
     mSaveButton->setEnabled(IsDirty() && allValid);
     mRevertButton->setEnabled(IsDirty());
     if (!allValid)
     {
-        // Persistent (not auto-clearing) so the reason stays
-        // visible while the user fixes it. `ShowStatus` starts
-        // the auto-clear timer, which we don't want here.
+        // Persistent (no auto-clear) so the reason stays visible
+        // while the user fixes it.
         mStatusLabel->setText(
             tr("Rule %1: %2").arg(invalidRow + 1).arg(invalidMessage)
         );
@@ -866,8 +811,7 @@ void HighlightRulesEditor::UpdateListButtons()
     }
     else if (mStatusLabel != nullptr && mStatusLabel->styleSheet().contains(QStringLiteral("#B91C1C")))
     {
-        // Was showing a validation error; clear now that everything
-        // passes so a stale "Rule 3: ..." doesn't linger.
+        // Clear a stale "Rule N: ..." message now that all pass.
         mStatusLabel->clear();
         mStatusLabel->setStyleSheet(QString{});
     }
@@ -970,11 +914,9 @@ void HighlightRulesEditor::OnFieldEdited()
         return;
     }
     GatherForm();
-    // `RefreshListItem` (not `RebuildList`) so the form's line-edits
-    // keep their cursor position. Structural mutations (new /
-    // duplicate / delete / move) use `RebuildList` because they
-    // change the list's item count, but per-keystroke edits only
-    // affect the current row's label / icon.
+    // Refresh just this row's label / icon so the form's line-
+    // edits keep their cursor. `RebuildList` is for structural
+    // mutations (new / duplicate / delete / move).
     RefreshListItem(mCurrentRow);
     MarkDirty();
 }
@@ -985,9 +927,8 @@ void HighlightRulesEditor::OnColumnChanged()
     {
         return;
     }
-    // Column type may gate the match-type combo; leave the current
-    // rule.type unchanged (user can still type-mismatch a rule but
-    // it will silently render inert). v1 keeps this simple.
+    // v1: no type gating on column change; a type-mismatched rule
+    // simply renders inert.
     GatherForm();
     RefreshListItem(mCurrentRow);
     MarkDirty();
@@ -1017,10 +958,8 @@ void HighlightRulesEditor::RefreshListItem(int row)
     {
         return;
     }
-    // Block signals so the label / icon refresh doesn't retrigger
-    // `currentRowChanged` (the item pointer is stable, but Qt's
-    // `setText` / `setIcon` don't emit a signal by themselves --
-    // this is belt-and-braces against a future item-view proxy).
+    // Belt-and-braces: `setText` / `setIcon` don't signal today,
+    // but block anyway in case a future proxy view does.
     const QSignalBlocker block(mListWidget);
     const auto &rule = mLocalRules[static_cast<std::size_t>(row)];
     item->setIcon(FormatListIcon(rule, SwatchIconSizePx()));
@@ -1039,11 +978,9 @@ void HighlightRulesEditor::GatherForm()
     rule.name = mNameEdit->text().toStdString();
     rule.enabled = mEnabledCheck->isChecked();
 
-    // Column. `RepopulateColumnCombo` stores a single-entry
-    // `QStringList` (the column's primary key) on each combo item,
-    // and `(none)` stores an empty list -- see the rationale there.
-    // Any list length we get back is written verbatim; the
-    // one-entry-per-item convention lives in one place.
+    // Column keys come from the combo item's `QStringList` (a
+    // single primary key per column; empty for "(none)" -- see
+    // `RepopulateColumnCombo`).
     const QVariant columnData = mColumnCombo->currentData();
     rule.columnKeys.clear();
     if (columnData.canConvert<QStringList>())
@@ -1056,19 +993,11 @@ void HighlightRulesEditor::GatherForm()
 
     rule.type = static_cast<loglib::LogConfiguration::HighlightRule::Type>(mTypeCombo->currentIndex());
 
-    // Value-holder reset is *scoped to editor-owned types*. Wiping
-    // every field unconditionally (as an earlier version did) would
-    // silently scramble hand-authored `filterBegin`/`filterEnd` on a
-    // Time rule, or `filterValues` on an Enumeration rule, the
-    // moment the user tweaked the rule's name / colour / bold flag
-    // (all of which route through `GatherForm`). The docs point
-    // users at the config file for those two match types, so the
-    // editor must preserve whatever they wrote there.
-    //
-    // Type changes are still handled correctly: flipping the combo
-    // from Time to (say) String lands us in the `String` branch
-    // below, which owns and repopulates its own fields, and the
-    // now-irrelevant Time bounds simply ride along in the rule --
+    // Only reset fields the editor owns. Time / Enumeration are
+    // authored via the config file, so any style / name tweak
+    // routed through here must preserve their match spec.
+    // Flipping the type to (say) String is still safe: the
+    // `String` branch owns and repopulates its own fields, and
     // `CompileRule` reads only the fields relevant to `rule.type`.
     using RT = loglib::LogConfiguration::HighlightRule::Type;
     switch (rule.type)
@@ -1119,12 +1048,8 @@ void HighlightRulesEditor::GatherForm()
     case RT::Time:
     case RT::Enumeration:
     default:
-        // Read-only in v1: deliberately leave every match-spec
-        // field untouched so hand-authored config values survive
-        // any style/name/colour edit routed through `GatherForm`.
-        // The editor form for these types renders the "edit via
-        // config file" pane; nothing here can produce a value to
-        // write back.
+        // Read-only in v1: leave the match-spec fields untouched
+        // so hand-authored config values survive editor-only edits.
         break;
     }
 
@@ -1141,17 +1066,13 @@ void HighlightRulesEditor::OnNewClicked()
     rule.enabled = true;
     rule.type = loglib::LogConfiguration::HighlightRule::Type::String;
     rule.matchType = loglib::LogConfiguration::HighlightRule::Match::Contains;
-    // Deliberately empty: `HighlightRuleSet::CompileRule` rejects
-    // empty needles (they collapse to "match every row" for
-    // Contains/RegularExpression), and `ValidateRule` disables
-    // Save until the user types something. `mStringNeedleEdit`'s
-    // placeholder ("Pattern or literal") guides them.
+    // Empty needle keeps the rule inactive until the user types
+    // (see `CompileRule` and `ValidateRule`); the line edit's
+    // placeholder guides them.
     rule.filterString = std::string{};
     if (!mColumns.empty() && !mColumns[0].keys.empty())
     {
-        // Single primary key: see `RepopulateColumnCombo` for the
-        // rationale (portability across sources with different
-        // alias sets).
+        // Single primary key -- see `RepopulateColumnCombo`.
         rule.columnKeys = {mColumns[0].keys.front()};
     }
     mLocalRules.push_back(std::move(rule));
@@ -1218,11 +1139,9 @@ void HighlightRulesEditor::OnSaveClicked()
     {
         return;
     }
-    // Belt-and-braces: `UpdateListButtons` disables Save while any
-    // rule fails validation, but a synthetic click (via test /
-    // scripting) could still land here. Refuse the emit rather
-    // than persisting a rule that would compile away to nothing
-    // downstream.
+    // Belt-and-braces: Save is disabled while any rule is invalid,
+    // but a synthetic click could still land here. Refuse rather
+    // than emitting a rule that compiles to nothing downstream.
     if (const auto [invalidRow, invalidMessage] = FirstInvalidRule(); invalidRow >= 0)
     {
         ShowStatus(tr("Rule %1: %2").arg(invalidRow + 1).arg(invalidMessage), /*isError=*/true);

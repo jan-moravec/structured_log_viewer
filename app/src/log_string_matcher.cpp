@@ -13,27 +13,17 @@
 namespace
 {
 
-/// JIT-compile @p regex eagerly so each captured copy doesn't re-JIT
-/// lazily on its first `match()`. The lazy compile is the real
-/// thread-safety footgun: a `QRegularExpressionPrivate` shared via
-/// implicit copy across threads would race on the first match.
-///
-/// `QRegularExpression` is implicitly shared (CoW), so
-/// captured-by-value copies in the matcher lambdas alias the primed
-/// private. `loglib::FilterAcceptedRows` runs the predicate from
-/// `tbb::parallel_for` workers, so these matchers do cross threads.
-/// `QRegularExpression::match()` is documented as thread-safe once
-/// compiled (which this prime guarantees), so the CoW alias is safe.
+/// JIT-prime the regex so captured copies don't race on a lazy
+/// first `match()`. `QRegularExpression` is CoW / implicitly
+/// shared, and `match()` is thread-safe once the private is
+/// compiled; the parallel filter workers rely on that guarantee.
 void PrimeRegex(QRegularExpression &regex)
 {
     (void)regex.match(QStringLiteral(""));
 }
 
-/// Materialise the haystack as `QString`, skipping the
-/// `replace` + `simplified()` walks when the bytes are already
-/// canonical. The QString allocation is unavoidable on the regex
-/// path (Qt's regex engine is UTF-16), but `QString::fromUtf8` alone
-/// is roughly a third the cost of the full conversion.
+/// Convert @p bytes to `QString`, skipping the `simplified()` walk
+/// when the bytes are already canonical.
 QString HaystackQStringFast(std::string_view bytes)
 {
     if (LogModel::IsSingleLineAsciiTrim(bytes))
@@ -54,9 +44,8 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
     {
     case Match::Exactly:
     {
-        // Capture by value: the parameter reference would dangle
-        // after return. `QString`'s implicit sharing keeps this a
-        // refcount bump.
+        // Capture by value; `QString`'s implicit sharing keeps
+        // this a refcount bump.
         const QByteArray patternUtf8 = pattern.toUtf8();
         std::string patternBytes{patternUtf8.constData(), static_cast<size_t>(patternUtf8.size())};
         if (LogModel::IsSingleLineAsciiTrim(patternBytes))
@@ -70,8 +59,8 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
                 return LogModel::ConvertToSingleLineCompactQString(bytes) == pattern;
             };
         }
-        // clang-tidy flags `QString::operator==` and the QString
-        // allocation as exception-escape; both are benign here.
+        // clang-tidy flags the QString allocation as
+        // exception-escape; benign here.
         // NOLINTNEXTLINE(bugprone-exception-escape)
         return
             [pattern](std::string_view bytes) { return LogModel::ConvertToSingleLineCompactQString(bytes) == pattern; };
@@ -116,13 +105,9 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
     const QString &pattern, loglib::LogConfiguration::HighlightRule::Match match
 )
 {
-    // `HighlightRule::Match` mirrors `LogFilter::Match` alternative-
-    // for-alternative on purpose so this cast never desyncs. The
-    // wire-format enum tests pin both enums to the same string keys
-    // at *load* time; the static_asserts below turn a reorder of
-    // either enum into a *build* error, which is what you actually
-    // want when someone unrelated to this feature edits either
-    // header.
+    // The two enums are pinned identical on purpose so this cast
+    // stays safe. The static_asserts turn any future reorder of
+    // either enum into a build error.
     using HR = loglib::LogConfiguration::HighlightRule::Match;
     using LF = loglib::LogConfiguration::LogFilter::Match;
     static_assert(static_cast<int>(HR::Exactly) == static_cast<int>(LF::Exactly));

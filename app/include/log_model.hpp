@@ -86,11 +86,8 @@ public:
     /// non-owning observer and listens for `anchorChanged` /
     /// `anchorsReset` to scope its `dataChanged` emits.
     ///
-    /// @p highlights, when non-null, paints rule-matched rows with
-    /// the rule's foreground / background / font. Anchor overlay
-    /// still takes precedence; highlights sit between anchors and
-    /// the level brush in the render cascade. The model is a
-    /// non-owning observer.
+    /// @p highlights, when non-null, paints rule-matched rows on
+    /// top of the level brush; anchors still win. Non-owning.
     explicit LogModel(
         QObject *parent = nullptr,
         ThemeControl *theme = nullptr,
@@ -466,16 +463,14 @@ private:
     /// The `data()` anchor branch and signal wiring null-check first.
     AnchorManager *mAnchors = nullptr;
 
-    /// Non-owning highlight rule set; null for legacy test fixtures.
+    /// Non-owning highlight rule set; null for legacy fixtures.
     /// The `data()` render cascade slots highlights between anchors
-    /// and level brushes. Signals (`rulesChanged` / `matchesChanged`)
-    /// are wired at construction so the model repaints when the rule
-    /// list or match cache mutates.
+    /// and level brushes. Constructor wires `matchesChanged` so
+    /// the model repaints when the cache mutates.
     HighlightRuleSet *mHighlights = nullptr;
 
     /// Emit `dataChanged` (Background + Foreground + Font) across
-    /// the whole visible table. Used on the highlight rule set's
-    /// `rulesChanged` / `matchesChanged` signals.
+    /// the whole visible table on `matchesChanged`.
     void RefreshAllHighlightRows();
 
     /// Emit `dataChanged` (Background + Foreground) on every row

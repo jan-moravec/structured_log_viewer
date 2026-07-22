@@ -104,18 +104,16 @@ namespace
 // See `log_configuration_glaze_opts.hpp` for the pinned options.
 constexpr auto LOG_CONFIG_OPTS = loglib::internal::LOG_CONFIG_OPTS;
 
-/// Wire-format shim for `SaveScope::ColumnsOnly`: emits `columns`
-/// plus the Configuration-scope `highlightRules`, skipping the
-/// default `filters` / `sort` / `source` / `anchors` blocks a
-/// transient `LogConfiguration` would still serialise. Files
-/// written from this shim still parse cleanly through
+/// Wire-format shim for `SaveScope::ColumnsOnly`: emits the two
+/// Configuration-scope vectors (`columns` + `highlightRules`) and
+/// skips the session-scope blocks (`filters` / `sort` / `source`
+/// / `anchors`). Files written this way still round-trip through
 /// `glz::read_json<LogConfiguration>` -- missing members default.
 struct ColumnsOnlyDocument
 {
-    // Reference (not pointer) so the type is never default-
-    // constructible and the glaze accessor can't deref null. `Save`
-    // is the only construction site and holds the source vectors
-    // for the synchronous `glz::write` call.
+    // References (not pointers) so the glaze accessor can't deref
+    // null; `Save` is the only construction site and holds the
+    // source vectors for the synchronous `glz::write` call.
     // NOLINTBEGIN(cppcoreguidelines-avoid-const-or-ref-data-members)
     const std::vector<loglib::LogConfiguration::Column> &columns;
     const std::vector<loglib::LogConfiguration::HighlightRule> &highlightRules;
@@ -191,11 +189,8 @@ void LogConfigurationManager::Save(
     std::string json;
     if (scope == SaveScope::ColumnsOnly)
     {
-        // Use the glaze shim so the written JSON has only the
-        // Configuration-scope members (`columns` and
-        // `highlightRules`), not the session-scope `filters` /
-        // `sort` / `source` / `anchors` blocks the full struct
-        // would emit.
+        // Use the shim so only the Configuration-scope members
+        // land in the JSON.
         const ColumnsOnlyDocument document{
             .columns = configuration.columns, .highlightRules = configuration.highlightRules
         };

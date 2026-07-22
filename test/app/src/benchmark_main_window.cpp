@@ -414,20 +414,11 @@ private slots:
         );
     }
 
-    /// Highlight-rules acceptance bar (ROADMAP item 3): 10 active
-    /// rules on a 1 M-row corpus must rebuild the row-match cache
-    /// (the hot path behind every `LogModel::data` highlight lookup)
-    /// well within one scroll-frame budget, and the per-row
-    /// `LastMatchFor` read must stay O(1). The two measurements
-    /// map to the two moments the highlight system spends time:
-    ///
-    ///   * `SetRules` / `RebindColumns`: rebuild the whole match
-    ///     cache. Dev-box ~40 ms on 1 M rows; 250 ms is the CI
-    ///     ceiling so a rebuild that regressed to `O(rules × rows)`
-    ///     without the last-match-wins short-circuit surfaces.
-    ///   * Paint-hot-path row lookup: 1 M `LastMatchFor` calls
-    ///     stand in for a full-viewport repaint. Dev-box ~2 ms;
-    ///     50 ms is the CI ceiling.
+    /// Highlight-rules acceptance bar (ROADMAP item 3): 10 rules
+    /// on a 1 M-row corpus rebuild the row-match cache, then walk
+    /// every row via `LastMatchFor`. The rebuild fires on rare
+    /// events (Save / config load / bind); `LastMatchFor` is on
+    /// the paint hot path.
     void BenchHighlightRuleSetRebuild()
     {
         using Ms = std::chrono::duration<double, std::milli>;
@@ -460,13 +451,10 @@ private slots:
             return r;
         };
 
-        // Ten rules bound to a mix of columns and match types so
-        // the rebuild covers the `Contains` fast path, regex, and
-        // the enum-column code path. Rules are ordered so several
-        // overlap on the same row (`Info` matches almost every row
-        // when the fixture is level-heavy on `info`); the last-
-        // match-wins loop then does real work per row rather than
-        // short-circuiting on the first rule.
+        // Ten rules across columns and match types so the rebuild
+        // covers the `Contains` fast path, regex, and enum-column
+        // paths. Overlaps on `info` force the last-match-wins loop
+        // to do real work per row instead of short-circuiting.
         std::vector<Rule> ruleSet;
         ruleSet.push_back(makeRule("level-info", "level", Rule::Match::Contains, "info"));
         ruleSet.push_back(makeRule("level-warn", "level", Rule::Match::Contains, "warn"));
@@ -483,16 +471,13 @@ private slots:
         }
         else
         {
-            // Fall back to more level / component rules when the
-            // fixture doesn't carry a `body` column so the total
-            // stays at 10.
+            // Keep the total at 10 when the fixture lacks `body`.
             ruleSet.push_back(makeRule("level-debug", "level", Rule::Match::Contains, "debug"));
             ruleSet.push_back(makeRule("level-any", "level", Rule::Match::RegularExpression, R"(.*)"));
         }
 
         HighlightRuleSet rules;
-        // Cold rebuild: SetRules compiles every predicate and
-        // walks every row exactly once.
+        // Cold rebuild: compile every predicate + walk every row.
         const auto rebuildStart = std::chrono::steady_clock::now();
         rules.SetRules(std::move(ruleSet), columns, &table);
         const auto rebuildElapsed = std::chrono::steady_clock::now() - rebuildStart;
@@ -500,10 +485,8 @@ private slots:
         QVERIFY(rules.HasActiveRules());
         QVERIFY(rules.InactiveCount() == 0);
 
-        // Paint-hot-path proxy: LogModel::data calls `LastMatchFor`
-        // once per Background / Foreground / Font role. Walk the
-        // whole model to stand in for a full-viewport repaint plus
-        // some scrolling.
+        // Paint-hot-path proxy: walk every row via `LastMatchFor`
+        // (called once per Background / Foreground / Font role).
         std::size_t matchCount = 0;
         const auto lookupStart = std::chrono::steady_clock::now();
         for (std::size_t row = 0; row < LINE_COUNT; ++row)
@@ -528,24 +511,17 @@ private slots:
                                   .arg(matchCount);
 
         QVERIFY2(matchCount > 0, "at least one rule should match on the corpus");
-        // Rebuild ceiling. `RebuildAllMatches` runs 10 predicates
-        // over 1 M rows sequentially (per-row inner loop, last-match-
-        // wins short-circuit). Dev-box ~280 ms, CI runners land
-        // higher; 1000 ms is a "not catastrophically broken" bar
-        // rather than a scroll-frame budget. Rebuild fires on
-        // editor Save / config load / column bind (rare events, off
-        // the scroll path), so the scroll-frame acceptance bar sits
-        // on the lookup ceiling below.
+        // Rebuild ceiling: 1000 ms is a "not catastrophically
+        // broken" bar. Rebuild is off the scroll path (rare
+        // events), so the scroll-frame budget lives on the lookup.
         QVERIFY2(
             Ms(rebuildElapsed).count() < 1000.0,
             qPrintable(QStringLiteral("HighlightRuleSet rebuild regressed: %1 ms").arg(Ms(rebuildElapsed).count()))
         );
-        // Lookup ceiling. `LastMatchFor` is a vector index into a
-        // `int16_t` cache and drives every paint of a highlighted
-        // row. Dev-box ~0.5 ms for a full corpus walk, way below
-        // one scroll frame (16 ms). 5 ms is the CI ceiling; a break
-        // means the paint path grew a container walk (e.g. an
-        // accidental `std::map` swap).
+        // Lookup ceiling: `LastMatchFor` is a vector index into
+        // an `int16_t` cache. Dev-box ~0.5 ms for a full corpus
+        // walk; 5 ms CI ceiling. A break means the paint path
+        // grew a container walk.
         QVERIFY2(
             Ms(lookupElapsed).count() < 5.0,
             qPrintable(

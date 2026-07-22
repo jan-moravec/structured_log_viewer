@@ -335,9 +335,8 @@ public:
         return mAnchors;
     }
 
-    /// Owned `HighlightRuleSet`; non-null after construction. Tests
-    /// inspect it after column moves / rule saves to verify the
-    /// rebind signal path.
+    /// Owned `HighlightRuleSet`; non-null after construction.
+    /// Exposed for test inspection of the rebind signal path.
     [[nodiscard]] HighlightRuleSet *Highlights() const noexcept
     {
         return mHighlights;
@@ -1290,10 +1289,10 @@ private:
     RegexTemplatesEditor *mRegexTemplatesEditor = nullptr;
 
     /// Modeless editor for user-defined highlight rules
-    /// (`Settings -> Highlight rules...`). Same lazy-construct /
-    /// survive-close pattern as the regex editor. `QPointer` so a
-    /// teardown-time `delete` (Qt parentage) zeroes the slot even
-    /// while queued signals from the rule set are in flight.
+    /// (`Settings -> Highlight rules...`). Lazy-construct /
+    /// survive-close, like the regex editor. `QPointer` so a
+    /// teardown-time delete zeroes the slot even while queued
+    /// signals from the rule set are in flight.
     QPointer<HighlightRulesEditor> mHighlightRulesEditor;
     /// Non-owning. Lives in `main()` (or the test fixture).
     /// `nullptr` for legacy no-args construction; theme code paths
@@ -1305,10 +1304,9 @@ private:
     AnchorManager *mAnchors = nullptr;
 
     /// Owned. Runtime companion to
-    /// `LogConfiguration::highlightRules`: compiled predicates and
-    /// per-row last-match cache. Constructed before `mModel` so the
-    /// model can hold a non-owning pointer for the paint cascade.
-    /// Non-null after construction.
+    /// `LogConfiguration::highlightRules`. Constructed before
+    /// `mModel` so the model can hold a non-owning pointer for
+    /// the paint cascade. Non-null after construction.
     HighlightRuleSet *mHighlights = nullptr;
 
     /// Owned. Hidden by default; toggled via View -> Anchors.

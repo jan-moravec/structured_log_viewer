@@ -376,12 +376,12 @@ Time and Enumeration columns can also carry rules (the parse and render path han
 
 ### Colours and text style
 
-Foreground and background are picked from a **16-slot palette** that the active theme ships with (see [Themes](#themes)). Both pickers include an **Inherit** slot that keeps the row using the level-bar's default paint, so you can highlight only the foreground, only the background, or both. Bold and italic checkboxes layer on top; anchors still overlay any highlight, so a row that is both anchored and highlighted paints the anchor swatch and the highlight text style at once.
+Foreground and background are picked from a **16-slot palette** that the active theme ships with (see [Themes](#themes)). Both pickers include an **Inherit** slot that keeps the row using the level-bar's default paint, so you can highlight only the foreground, only the background, or both. Bold and italic checkboxes layer on top.
 
 ### Match precedence
 
 - **Rules are ordered.** When several rules match the same row, the *last* matching rule wins. Move a rule down with the ↓ button to give it precedence over earlier ones.
-- **Anchors override highlights.** Anchor row background always wins over the highlight's background so an anchored row stays visually attached to its swatch. Text colour and bold/italic still come from the highlight rule.
+- **Anchors override highlights.** Anchor row background and text colour both win over the highlight rule's, so an anchored row stays visually attached to its swatch. **Bold** and *italic* still come from the highlight rule.
 
 ### Inactive rules
 

@@ -89,14 +89,10 @@ struct AppStyle
     friend bool operator==(const AppStyle &, const AppStyle &) = default;
 };
 
-/// One entry in `Theme::highlightPalette`. Both fields optional so
-/// a slot can carry a background tint without a paired foreground
-/// (or vice versa). Colours are `#RRGGBB` / `#AARRGGBB` strings
-/// (kept Qt-free like `LevelStyle`).
-///
-/// The user-facing colour picker for highlight rules materialises
-/// one swatch per slot, driven by these entries. Missing / empty
-/// slots fall back to the app's built-in palette in
+/// One entry in `Theme::highlightPalette`. Both fields optional
+/// so a slot can pin one or both. Colours are `#RRGGBB` /
+/// `#AARRGGBB` (Qt-free, like `LevelStyle`). Missing slots fall
+/// back to the app's built-in palette in
 /// `ThemeControl::HighlightBrushFor`.
 struct HighlightSlot
 {
@@ -182,12 +178,10 @@ struct Theme
     /// in `ThemeControl::AnchorBrushFor`.
     std::vector<std::string> anchorPalette;
 
-    /// Up to `HIGHLIGHT_PALETTE_SIZE` entries the highlight-rules
-    /// editor exposes as swatch picks. Missing / empty slots fall
-    /// back to the app's built-in palette in
-    /// `ThemeControl::HighlightBrushFor`. `HighlightRule` fields
-    /// `foregroundIndex` / `backgroundIndex` reference this
-    /// palette 1-indexed (0 means "inherit / no tint").
+    /// Up to `HIGHLIGHT_PALETTE_SIZE` swatches for the highlight
+    /// rules editor. Referenced 1-indexed by `HighlightRule`
+    /// `foregroundIndex` / `backgroundIndex` (0 = inherit).
+    /// Missing / empty slots fall back to the built-in palette.
     std::vector<HighlightSlot> highlightPalette;
 
     /// nullopt = plain-text level column. Set = icon mode (also
@@ -202,8 +196,8 @@ struct Theme
 /// block). Lives here so `loglib_test` can use it without Qt.
 inline constexpr std::size_t ANCHOR_PALETTE_SIZE = 8;
 
-/// Number of user-selectable highlight-palette slots. Referenced
-/// 1-indexed by `HighlightRule::foregroundIndex` / `backgroundIndex`
+/// Highlight-palette slot count. Referenced 1-indexed by
+/// `HighlightRule::foregroundIndex` / `backgroundIndex`
 /// (0 = inherit).
 inline constexpr std::size_t HIGHLIGHT_PALETTE_SIZE = 16;
 

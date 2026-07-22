@@ -8041,14 +8041,11 @@ private slots:
         QVERIFY2(proxy->rowCount() > 0, "filter on level=info must keep at least one row visible after the move");
     }
 
-    // Regression: a source-side column move (header drag or
-    // streaming bubble) must rebind `HighlightRuleSet`'s compiled
-    // predicates against the new column layout. Rules bind by
-    // `Column::keys` (stable identifier), but the compiled
-    // predicates cache the *resolved* column index at compile time;
-    // without a rebind on `columnsMoved` those cached indices now
-    // point at whichever column happens to sit at the old position
-    // and highlights would tint rows against a different field.
+    // Regression: a source-side column move must rebind
+    // `HighlightRuleSet`. Rules bind by keys, but the compiled
+    // predicates cache *resolved* column indices; without a
+    // rebind on `columnsMoved` those indices would drift and
+    // highlights would tint the wrong field.
     void TestSourceColumnMoveRebindsHighlights()
     {
         const int categoryCol = StreamFixtureForColumnTests();
@@ -8059,9 +8056,8 @@ private slots:
         const int columnCount = model->columnCount();
         QVERIFY2(columnCount >= 2, "fixture must yield at least two columns");
 
-        // Install a Contains rule bound to `category` via
-        // `SetRules` (production path is Save from the editor;
-        // both funnel through the same call).
+        // Install a Contains rule via `SetRules` (same call path
+        // as an editor Save).
         loglib::LogConfiguration::HighlightRule rule;
         rule.name = "hl-category-info";
         rule.enabled = true;
@@ -8083,25 +8079,22 @@ private slots:
         }
         QVERIFY2(anyMatch, "precondition: at least one row must match the highlight rule before the move");
 
-        // Move `category` to a different column position via the
-        // same entry point the header drag / streaming bubble uses.
+        // Move `category` via the same entry point the header
+        // drag / streaming bubble uses.
         const int src = categoryCol;
         const int dest = (src == 0) ? columnCount - 1 : 0;
         QVERIFY(src != dest);
         QVERIFY2(model->MoveColumn(src, dest), "MoveColumn must succeed");
         QCoreApplication::processEvents();
 
-        // After the move `category` sits at `dest`; the rebind must
-        // have refreshed the compiled predicate's column index.
+        // Rebind refreshed the predicate's column index.
         const auto &resolvedAfter = highlights->ResolvedColumnsForTest();
         QCOMPARE(resolvedAfter.size(), static_cast<size_t>(1));
         QCOMPARE(resolvedAfter[0], dest);
         QVERIFY(highlights->HasActiveRules());
 
-        // Row-match cache should still resolve at least one "info"
-        // row. If the rebind had been skipped the compiled predicate
-        // would be reading whichever column now sits at `src`, so
-        // matches would silently zero out.
+        // Matches survive the move; a skipped rebind would zero
+        // them out (predicate would read whatever now sits at src).
         bool anyMatchAfter = false;
         for (int r = 0; r < model->rowCount() && !anyMatchAfter; ++r)
         {

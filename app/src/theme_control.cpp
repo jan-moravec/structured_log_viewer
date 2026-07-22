@@ -55,14 +55,10 @@ constexpr std::array<const char *, loglib::ANCHOR_PALETTE_SIZE> ANCHOR_FALLBACK_
 };
 
 /// Fallback highlight-rule palette. Sixteen hue-distinct
-/// background tints; foreground is picked at bake time by
-/// BT.601 luma (see `BuildStyleCache`). Tuned to remain legible
-/// against both light and dark row chrome; users can override
-/// per-slot via `Theme::highlightPalette`.
-///
-/// Slot `i` in this array corresponds to
-/// `HighlightRule::backgroundIndex == i + 1` (the rule value `0`
-/// is reserved for "inherit / no tint").
+/// background tints; foreground is derived from luma at bake
+/// time (see `BuildStyleCache`). Overridden per-slot via
+/// `Theme::highlightPalette`. Slot `i` maps to
+/// `HighlightRule::backgroundIndex == i + 1` (0 = inherit).
 constexpr std::array<const char *, loglib::HIGHLIGHT_PALETTE_SIZE> HIGHLIGHT_FALLBACK_BACKGROUND_PALETTE = {
     "#FCA5A5", // red-300
     "#FDBA74", // orange-300
@@ -523,9 +519,8 @@ QBrush ThemeControl::AnchorBrushFor(std::uint8_t colorIndex, int role) const noe
 
 QBrush ThemeControl::HighlightBrushFor(std::uint8_t slotIndex, int role) const noexcept
 {
-    // Slot `0` is the "inherit" sentinel; positive values are
-    // 1-indexed. Reject both zero and out-of-range so callers can
-    // pass the raw `HighlightRule` field without a pre-check.
+    // Slot 0 = "inherit"; positive values are 1-indexed. Reject
+    // both so callers can pass the raw `HighlightRule` field.
     if (slotIndex == 0 || slotIndex > loglib::HIGHLIGHT_PALETTE_SIZE)
     {
         return {};
@@ -1302,11 +1297,10 @@ void ThemeControl::BuildStyleCache(const loglib::Theme &theme)
         mAnchorForeground[slot] = QBrush{ThemeControl::IsDarkColor(background) ? QColor(Qt::white) : QColor(Qt::black)};
     }
 
-    // Cache highlight-rule brushes. Independent foreground and
-    // background per slot: a theme can pin one, both, or neither.
-    // Missing / invalid slots fall through to the built-in
-    // background palette; missing foregrounds are picked from the
-    // background luma (same rule as anchors).
+    // Cache highlight-rule brushes. Each slot has independent
+    // fg / bg; missing / invalid entries fall back to the built-in
+    // background palette, and a missing foreground is picked from
+    // the background luma (same rule as anchors).
     for (size_t slot = 0; slot < loglib::HIGHLIGHT_PALETTE_SIZE; ++slot)
     {
         QColor background;

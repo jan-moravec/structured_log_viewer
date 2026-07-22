@@ -643,22 +643,16 @@ MainWindow::MainWindow(
     mTableView->setModel(mModel);
     mTableView->SetAnchorManager(mAnchors);
 
-    // Tail-evaluate highlight rules against inserted rows. Column
-    // insertions (`columnsInserted`) also trigger a rebind so
-    // rules whose `columnKeys` newly resolve activate immediately.
-    // Full-model resets clear the row-match cache; the compiled
-    // rule state persists (it re-binds once the fresh config is
-    // installed via `ApplyLoadedConfiguration`).
+    // Highlight-rule wiring: keep the runtime cache in sync with
+    // the model. Column inserts also rebind so rules whose keys
+    // newly resolve activate immediately; model reset drops the
+    // match cache (compiled rules persist for the next stream).
     connect(mModel, &QAbstractItemModel::rowsInserted, this, [this](const QModelIndex &, int first, int last) {
         if (mHighlights == nullptr || mModel == nullptr)
         {
             return;
         }
-        // Mirror the guard in the `rowsRemoved` lambda below: Qt is
-        // documented to always emit non-negative, non-inverted
-        // ranges, but the numeric cast to `std::size_t` would
-        // silently wrap negatives into huge values, so defend
-        // symmetrically.
+        // Guard against negatives before the size_t cast.
         if (first < 0 || last < first)
         {
             return;
@@ -667,13 +661,9 @@ MainWindow::MainWindow(
             mModel->Table(), static_cast<std::size_t>(first), static_cast<std::size_t>(last)
         );
     });
-    // FIFO retention (`LogModel::AppendBatch`) fires `rowsRemoved`
-    // before it appends the new tail; without this hook the row-match
-    // cache would keep old prefix entries at index 0..N-1 and every
-    // subsequent `LastMatchFor` would return matches for the wrong
-    // rows. Eviction is always a contiguous prefix in practice, but
-    // the slot handles any contiguous range for future retention
-    // policies.
+    // FIFO retention fires `rowsRemoved` before appending the new
+    // tail; without this the cache would keep stale prefix entries
+    // and misalign every subsequent `LastMatchFor`.
     connect(mModel, &QAbstractItemModel::rowsRemoved, this, [this](const QModelIndex &, int first, int last) {
         if (mHighlights == nullptr || first < 0 || last < first)
         {
@@ -687,9 +677,8 @@ MainWindow::MainWindow(
             return;
         }
         mHighlights->RebindColumns(mModel->Configuration().columns, &mModel->Table());
-        // Keep an open editor's column picker in lock-step with the
-        // schema so a rule authored right after a streaming grow can
-        // pick the fresh column without a reopen.
+        // Keep an open editor's column picker in sync so a rule
+        // authored right after streaming discovers a new key sees it.
         if (mHighlightRulesEditor != nullptr)
         {
             mHighlightRulesEditor->SetColumns(mModel->Configuration().columns);
@@ -882,10 +871,9 @@ MainWindow::MainWindow(
     // proxy rules stay aligned with the source layout.
     connect(mModel, &QAbstractItemModel::columnsMoved, this, &MainWindow::OnSourceColumnsMoved);
 
-    // Type flips (Enumeration <-> Level, Enumeration -> String
-    // demote, dictionary grows) can activate / deactivate highlight
-    // rules whose match type depends on the column type. Rebind on
-    // every reason to keep the compiled predicates in step.
+    // Enum / Level type flips and dictionary growth can
+    // activate / deactivate highlight rules; rebind on every
+    // reason to keep the compiled predicates in step.
     connect(mModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason /*reason*/, int /*columnIndex*/) {
         if (mHighlights == nullptr || mModel == nullptr)
         {
@@ -1289,13 +1277,10 @@ MainWindow::MainWindow(
         );
     }
 
-    // Settings -> Highlight rules... opens the modeless editor.
-    // Same lazy-construction pattern as the regex-templates editor:
-    // the widget tree materialises on first activation and survives
-    // close so half-typed edits carry across. Save round-trips
-    // through `HighlightRuleSet::SetRules` (runtime cache) and
-    // `LogConfigurationManager::SetHighlightRules` (persistent
-    // mirror) atomically.
+    // Settings -> Highlight rules... opens the modeless editor
+    // (lazy-construct, survive-close, like the regex editor). Save
+    // updates the runtime cache and the persistent mirror in one
+    // atomic slot.
     connect(ui->actionHighlightRules, &QAction::triggered, this, [this]() {
         if (mHighlightRulesEditor.isNull())
         {
@@ -1308,11 +1293,9 @@ MainWindow::MainWindow(
                 &HighlightRulesEditor::rulesSaved,
                 this,
                 [this](std::vector<loglib::LogConfiguration::HighlightRule> rules) {
-                    // Mirror to persistent config first so any
-                    // downstream signal handlers (auto-save) see
-                    // the committed state. Copy once for the
-                    // runtime rebuild; the manager takes ownership
-                    // of the incoming vector.
+                    // Persist first so any auto-save handler sees
+                    // the committed state; hand a copy to the
+                    // runtime rebuild.
                     auto forRuntime = rules;
                     mModel->ConfigurationManager().SetHighlightRules(std::move(rules));
                     if (mHighlights != nullptr)
@@ -1335,9 +1318,8 @@ MainWindow::MainWindow(
         }
         else
         {
-            // Refresh column list on reopen -- schema may have grown
-            // since the editor was last shown (streaming discovered
-            // new keys, or the user pinned a type).
+            // Refresh columns on reopen: streaming may have
+            // discovered new keys since last show.
             mHighlightRulesEditor->SetColumns(mModel->Configuration().columns);
         }
         mHighlightRulesEditor->show();
@@ -6148,10 +6130,10 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
 
         RebuildFiltersFromConfiguration();
 
-        // Install loaded highlight rules against the current column
-        // layout. The table is empty at this point (the reset above
-        // wiped rows) so the row-match cache seeds empty and streams
-        // populate it via the wired `rowsInserted` hook.
+        // Install loaded highlight rules against the current
+        // columns. The table is empty (reset above wiped rows), so
+        // the row-match cache seeds empty; the wired `rowsInserted`
+        // hook fills it as streams populate.
         if (mHighlights != nullptr)
         {
             const auto &config = mModel->Configuration();
@@ -6165,9 +6147,8 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
                     STATUS_BAR_MESSAGE_TIMEOUT_MS
                 );
             }
-            // Refresh the editor window's copy so a reopened
-            // editor sees the just-loaded rules instead of the
-            // pre-load buffer.
+            // Refresh any open editor so it shows the loaded rules,
+            // not the pre-load buffer.
             if (mHighlightRulesEditor != nullptr)
             {
                 mHighlightRulesEditor->SetColumns(config.columns);
@@ -7727,16 +7708,10 @@ void MainWindow::OnSourceColumnsMoved(
     {
         UpdateFilters();
     }
-    // Highlight rules bind by column keys, but the compiled
-    // predicates cache the *resolved* column index at compile time
-    // (`HighlightRuleSet::mResolvedColumn` plus each
-    // `RowPredicate`'s `mColumnIndex`). `LogTable::MoveColumn`
-    // rotates the underlying column vector, so those cached indices
-    // now point at the wrong column and highlights would silently
-    // tint rows against a different field. Rebind against the new
-    // layout to refresh both caches. Cheap: `RecompileAll` walks the
-    // rule list once and the row-match rebuild reads bytes we just
-    // touched.
+    // Highlight rules bind by keys, but the compiled predicates
+    // cache resolved column *indices*. `MoveColumn` rotates the
+    // column vector, so refresh both caches or highlights would
+    // start tinting rows against the wrong field.
     if (mHighlights != nullptr && mModel != nullptr)
     {
         mHighlights->RebindColumns(mModel->Configuration().columns, &mModel->Table());

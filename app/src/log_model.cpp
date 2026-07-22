@@ -74,24 +74,11 @@ LogModel::LogModel(
     }
     if (mHighlights != nullptr)
     {
-        // The rule set doesn't know which rows are visible; we
-        // conservatively repaint the whole table. The invalidation
-        // is coarse but fires infrequently (editor Save / config
-        // load / column bind / streaming tail).
-        //
-        // `matchesChanged` alone is sufficient: it fires from every
-        // code path that could change what `LastMatchFor` returns
-        // (full recompile via `SetRules` / `RebindColumns`, tail
-        // append via `OnRowsAppended`, `ClearMatches`). The earlier
-        // wiring also listened to `rulesChanged`, which duplicated
-        // the full-table `dataChanged` on every editor Save.
-        // `MainWindow` reads `InactiveCount` synchronously after
-        // `SetRules` for the status toast, so it doesn't need
-        // `rulesChanged` either. One edge case, only hit by tests:
-        // a caller invoking `RebindColumns` with `table == nullptr`
-        // emits only `rulesChanged`. Production `MainWindow` always
-        // passes a non-null table, so this branch is unreachable
-        // outside test fixtures.
+        // Repaint the whole table on `matchesChanged`. Coarse but
+        // fires infrequently (editor Save / config load / column
+        // bind / streaming tail). `matchesChanged` covers every
+        // path that changes `LastMatchFor`; `rulesChanged` is
+        // read synchronously by `MainWindow` for the status toast.
         connect(mHighlights, &HighlightRuleSet::matchesChanged, this, &LogModel::RefreshAllHighlightRows);
     }
 }
@@ -1515,10 +1502,9 @@ void LogModel::RefreshAllHighlightRows()
     {
         return;
     }
-    // FontRole rides along: a highlight rule can bold / italicise a
-    // row on top of the level font, so a rule mutation needs to
-    // repaint the font layer too. Anchor-only refreshes stay on the
-    // narrower Background+Foreground pair.
+    // Include FontRole: rules can bold / italicise, so a rule
+    // change needs to repaint the font layer too. Anchor-only
+    // refreshes stick to Background + Foreground.
     emit dataChanged(index(0, 0), index(rows - 1, cols - 1), {Qt::BackgroundRole, Qt::ForegroundRole, Qt::FontRole});
 }
 
@@ -1678,9 +1664,8 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
                 }
             }
         }
-        // Highlight rule overlay sits between anchors and the level
-        // brush: user rules can override the level tint but not the
-        // anchor's identity tag.
+        // Highlight overlay: sits between anchors and the level
+        // brush. Rules can override the level tint but anchors win.
         if (mHighlights != nullptr && mHighlights->HasActiveRules())
         {
             if (const auto ruleIndex = mHighlights->LastMatchFor(static_cast<std::size_t>(index.row())))
@@ -1727,7 +1712,7 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
                 }
             }
         }
-        // Highlight rule overlay -- mirrors the Background branch.
+        // Highlight overlay -- mirrors the Background branch.
         if (mHighlights != nullptr && mHighlights->HasActiveRules())
         {
             if (const auto ruleIndex = mHighlights->LastMatchFor(static_cast<std::size_t>(index.row())))
@@ -1754,9 +1739,9 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
 
     case Qt::FontRole:
     {
-        // Highlight rule bold/italic can apply even when no level is
-        // styled, so check highlights first (still cheap: skipped
-        // entirely on rule-free sessions).
+        // Highlight bold/italic applies even when no level is
+        // styled, so check highlights first (skipped entirely on
+        // rule-free sessions).
         if (mHighlights != nullptr && mHighlights->HasActiveRules())
         {
             if (const auto ruleIndex = mHighlights->LastMatchFor(static_cast<std::size_t>(index.row())))
@@ -1765,8 +1750,8 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
                 if (rule.bold || rule.italic)
                 {
                     QFont font = qApp->font();
-                    // Compose on top of the level font when available
-                    // so a level's bold-serif choice survives the rule.
+                    // Compose on top of the level font so the
+                    // level's serif/weight survives the rule.
                     if (mTheme != nullptr)
                     {
                         if (const auto level = LevelForRow(index.row()); level.has_value())

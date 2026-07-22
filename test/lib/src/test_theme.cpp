@@ -387,8 +387,8 @@ TEST_CASE("Theme JSON round-trips a highlightPalette", "[Theme][highlight]")
 
 TEST_CASE("Theme without highlightPalette decodes as an empty vector", "[Theme][highlight]")
 {
-    // Pre-feature theme JSONs must continue to parse cleanly; the app
-    // layer falls back to its built-in palette when this is empty.
+    // Pre-feature theme JSONs must still parse cleanly; the app
+    // falls back to the built-in palette when the field is empty.
     constexpr std::string_view JSON = R"({
         "name": "Pre-highlight",
         "kind": "dark",

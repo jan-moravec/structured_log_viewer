@@ -1981,14 +1981,13 @@ TEST_CASE(
     "[LogConfigurationManager][highlight_rules]"
 )
 {
-    // Two rules covering both string-match and numeric-range shapes.
-    // A full Save (session-scope) preserves the vector verbatim, in
-    // vector order (which is significant -- last-match-wins).
+    // Two rules covering string + numeric shapes. Full Save
+    // preserves the vector verbatim; order is significant
+    // (last-match-wins).
     const TestLogConfiguration testConfiguration;
     {
         LogConfiguration written;
-        // Minimum viable columns vector so the file has a schema too
-        // (Configuration files never come without one).
+        // Include a minimal columns vector alongside.
         written.columns.push_back(
             LogConfiguration::Column{.header = "service", .keys = {"service"}, .type = LogConfiguration::Type::String}
         );
@@ -2058,11 +2057,9 @@ TEST_CASE(
     "[LogConfigurationManager][highlight_rules]"
 )
 {
-    // Configuration-scope invariant: highlight rules are written in
-    // the ColumnsOnly shim so a schema file (checked into a repo for
-    // reuse across log files of the same shape) carries its rules.
-    // Session-only fields (filters / sort / source / anchors) are
-    // still stripped.
+    // Configuration-scope invariant: the ColumnsOnly shim writes
+    // highlight rules alongside columns and strips the session-
+    // scope fields (filters / sort / source / anchors).
     const TestLogConfiguration testConfiguration;
     {
         LogConfiguration written;
@@ -2106,9 +2103,9 @@ TEST_CASE(
     "[LogConfigurationManager][highlight_rules][forward_compat]"
 )
 {
-    // Pre-feature session JSON: no `highlightRules` key. Must load
-    // cleanly with an empty rule vector so existing sessions are not
-    // invalidated by this release.
+    // Pre-feature session JSON: no `highlightRules` key. Must
+    // load cleanly with an empty rule vector so existing sessions
+    // are not invalidated.
     constexpr std::string_view JSON = R"({
         "columns": [
             {
@@ -2128,8 +2125,8 @@ TEST_CASE(
     "[LogConfigurationManager][highlight_rules]"
 )
 {
-    // Wire-format snapshot: a rename would surface as a missing key
-    // here rather than as a silent shape change.
+    // Wire-format snapshot: a rename would surface here as a
+    // missing key rather than as a silent shape change.
     LogConfiguration original;
     original.highlightRules.push_back(
         LogConfiguration::HighlightRule{
@@ -2172,9 +2169,8 @@ TEST_CASE(
     "[LogConfigurationManager][highlight_rules]"
 )
 {
-    // Highlight rules bind by keys; unlike LogFilter::row, they have
-    // no `columnIndex` field that would need remapping when the user
-    // reorders columns via drag-and-drop.
+    // Highlight rules bind by keys; unlike `LogFilter::row` they
+    // have no index field to remap after `MoveColumn`.
     LogConfigurationManager manager;
     LogConfiguration seed;
     seed.columns.push_back(
@@ -2195,9 +2191,9 @@ TEST_CASE(
 
     const auto &rules = manager.Configuration().highlightRules;
     REQUIRE(rules.size() == 1);
-    // Keys are stable across MoveColumn -- no rewrite needed.
+    // Keys survive `MoveColumn` untouched.
     CHECK(rules[0].columnKeys == std::vector<std::string>{"service"});
-    // Sanity-check that MoveColumn actually happened.
+    // Sanity: the move actually happened.
     CHECK(manager.Configuration().columns[1].header == "message");
     CHECK(manager.Configuration().columns[2].header == "service");
 }

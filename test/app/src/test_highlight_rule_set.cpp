@@ -1,40 +1,13 @@
-// Focused tests for `HighlightRuleSet` (ROADMAP item 3 --
-// user-defined highlight rules). Kept in its own binary
-// (`apptest_highlight_rules`) so a targeted `ctest -R
-// apptest_highlight_rules` runs just this concern.
+// Focused tests for `HighlightRuleSet` (ROADMAP item 3). Its own
+// binary so `ctest -R apptest_highlight_rules` runs just this
+// concern.
 //
-// Coverage:
-//   * Baseline: empty rule set reports no matches.
-//   * Column-key resolution: rules with unresolvable `columnKeys`
-//     land in `InactiveCount()`; resolvable rules move into
-//     `HasActiveRules()`.
-//   * Last-match-wins semantics: `LastMatchFor(row)` returns the
-//     index of the LAST rule that accepts the row, so later rules
-//     shadow earlier ones.
-//   * Tail-update via `OnRowsAppended`: streaming a second batch
-//     evaluates only the new rows against the existing rules
-//     without recomputing the seed batch.
-//   * FIFO eviction via `OnRowsEvicted`: dropping a contiguous
-//     prefix shifts the row-match cache so the survivors still
-//     report their own matches (regression guard against the
-//     retention-cap desync bug).
-//   * `RebindColumns` after `AppendKeys`: a rule whose column was
-//     missing at load activates once the schema grows to include it.
-//   * `ClearMatches`: drops the row-match cache while keeping the
-//     compiled rules ready for the next stream.
-//   * Column move: rules bind by keys, so `LogModel::MoveColumn`
-//     does not disturb `mResolvedColumn` (regression guard against
-//     accidentally regressing to index-based identity).
-//   * Boolean predicate: rules with `type = Boolean` match rows
-//     whose value decodes to the selected side (covers the Boolean
-//     branch of `CompileRule` alongside the string-heavy tests).
-//   * Empty-needle rejection: String rules with an empty
-//     `filterString` (across all four match types) end up in
-//     `InactiveCount` -- regression against a bug where a fresh
-//     "Contains" rule in the editor lit up the whole table.
-//   * Number-range predicate: rules with `type = Number` match rows
-//     whose numeric value falls inside `[filterMinValue,
-//     filterMaxValue]`; bounds-less rules land in `InactiveCount`.
+// Covered: baseline empty set, column-key resolution +
+// active/inactive counts, last-match-wins, tail append via
+// `OnRowsAppended`, FIFO eviction shift via `OnRowsEvicted`,
+// `RebindColumns` after schema growth, `ClearMatches`, key-based
+// identity survives `MoveColumn`, Boolean / Number predicates,
+// and empty-needle rejection.
 
 #include "highlight_rule_set.hpp"
 #include "log_model.hpp"
@@ -68,9 +41,9 @@ using Rule = loglib::LogConfiguration::HighlightRule;
 namespace
 {
 
-/// Deterministic JSONL fixture: `{"level": ..., "msg": "row N"}`.
-/// @p levels cycles through the supplied entries, so a rule can
-/// select every third row (say) by picking one canonical level.
+/// JSONL fixture: `{"level": ..., "msg": "row N"}`, @p levels
+/// cycled row-by-row so tests can target a specific subset by
+/// picking a level.
 class LevelFixture
 {
 public:
@@ -98,9 +71,8 @@ private:
     QString mPath;
 };
 
-/// Feed one JSON path into @p model synchronously (mirrors the
-/// pattern in `test_histogram_dock.cpp`). Blocks on
-/// `streamingFinished`.
+/// Stream one JSON path into @p model synchronously; blocks on
+/// `streamingFinished`. Mirrors `test_histogram_dock.cpp`.
 void StreamJsonPathInto(LogModel &model, const QString &path)
 {
     QSignalSpy finishedSpy(&model, &LogModel::streamingFinished);
@@ -142,9 +114,8 @@ class HighlightRuleSetTest : public QObject
     Q_OBJECT
 
 private slots:
-    /// Baseline: an empty rule set with no active rules reports
-    /// `Empty()`, `!HasActiveRules()`, and `LastMatchFor` returns
-    /// `nullopt` for every row.
+    /// Baseline: empty set reports `Empty()`, `!HasActiveRules()`,
+    /// and `nullopt` for every row.
     void EmptyRuleSetHasNoMatches()
     {
         HighlightRuleSet rules;
@@ -160,9 +131,8 @@ private slots:
         }
     }
 
-    /// Rule with an unresolvable key lands in `InactiveCount` and
-    /// does not match any row. Rule with a resolvable key activates
-    /// and matches every row whose value contains the needle.
+    /// Unresolvable keys land in `InactiveCount`; resolvable ones
+    /// activate and match every row containing the needle.
     void ResolveByKeys()
     {
         HighlightRuleSet rules;
@@ -198,10 +168,9 @@ private slots:
         }
     }
 
-    /// Two overlapping rules: the LAST accepting rule for each row
-    /// wins. `"level contains e"` matches every row (info/warn/err
-    /// all have `e`), `"level contains warn"` matches the warn rows.
-    /// The warn-row hit should come from rule #1, not rule #0.
+    /// With two overlapping rules the LAST accepting rule per row
+    /// wins. Catch-all on `n` covers info/warn; warn-only overlays
+    /// warn rows and should surface as rule #1, not rule #0.
     void LastMatchWins()
     {
         HighlightRuleSet rules;
@@ -222,16 +191,15 @@ private slots:
         QCOMPARE(rules.LastMatchFor(3), std::optional<std::size_t>{1u});
     }
 
-    /// A rule installed against an empty model should activate
-    /// against the rows appended later. `OnRowsAppended` is invoked
-    /// per-batch by `MainWindow`; here we call it directly with the
-    /// full inserted range and verify the cache grows.
+    /// A rule installed early activates on rows appended later.
+    /// `MainWindow` calls `OnRowsAppended` per batch; the test
+    /// invokes it directly with the full inserted range.
     void TailUpdateAfterAppend()
     {
         HighlightRuleSet rules;
         LogModel model{/*parent=*/nullptr, /*theme=*/nullptr, /*anchors=*/nullptr, &rules};
 
-        // First batch to seed the schema.
+        // Seed batch.
         const LevelFixture seed(2, {"info", "warn"});
         StreamJsonPathInto(model, seed.Path());
         std::vector<Rule> ruleSet;
@@ -239,9 +207,8 @@ private slots:
         rules.SetRules(std::move(ruleSet), model.Configuration().columns, &model.Table());
         QCOMPARE(rules.LastMatchFor(1), std::optional<std::size_t>{0u});
 
-        // Second batch: streamingFinished re-fires; the tail-update
-        // hook that lives in `MainWindow` isn't wired here, so we
-        // invoke it explicitly like production would.
+        // Second batch. The `MainWindow` tail-update hook isn't
+        // wired in this fixture; invoke `OnRowsAppended` directly.
         const std::size_t priorRowCount = model.Table().RowCount();
         const LevelFixture followup(4, {"info", "warn"});
         StreamJsonPathInto(model, followup.Path());
@@ -249,9 +216,8 @@ private slots:
         QVERIFY(newRowCount > priorRowCount);
         rules.OnRowsAppended(model.Table(), priorRowCount, newRowCount - 1);
 
-        // Verify only the newly-appended rows updated. Original
-        // rows 0/1 kept their earlier match state; new odd rows
-        // pick up the rule.
+        // Seed rows 0/1 keep their earlier match state; only the
+        // new rows update.
         QCOMPARE(rules.LastMatchFor(0), std::optional<std::size_t>{});
         QCOMPARE(rules.LastMatchFor(1), std::optional<std::size_t>{0u});
         for (std::size_t row = priorRowCount; row < newRowCount; ++row)
@@ -262,11 +228,9 @@ private slots:
         }
     }
 
-    /// Regression: FIFO retention (`LogModel::AppendBatch`) evicts a
-    /// contiguous prefix from the source model. If `HighlightRuleSet`
-    /// weren't wired to `rowsRemoved`, its per-row match cache would
-    /// keep stale prefix entries and `LastMatchFor(0)` would return
-    /// the pre-eviction match instead of the new row 0's match.
+    /// Regression: FIFO retention evicts a contiguous prefix.
+    /// Without the `rowsRemoved` wiring, `LastMatchFor(0)` would
+    /// return the pre-eviction match instead of the new row 0's.
     void EvictionShiftsRowMatchCache()
     {
         HighlightRuleSet rules;
@@ -283,14 +247,12 @@ private slots:
         QCOMPARE(rules.LastMatchFor(2), std::optional<std::size_t>{});
         QCOMPARE(rules.LastMatchFor(3), std::optional<std::size_t>{0u});
 
-        // Simulate a FIFO eviction of the first two rows. Production
-        // wires this via the `rowsRemoved` signal on `LogModel`; the
-        // test drives it directly to keep the assertion focused on
-        // the rule-set's shift semantics.
+        // Simulate a two-row eviction. Production drives this via
+        // `LogModel::rowsRemoved`; the test calls directly to keep
+        // the focus on the shift semantics.
         rules.OnRowsEvicted(0, 1);
-        // Row 0 is now what used to be row 2 (info, miss); row 1 is
-        // what used to be row 3 (warn, hit); etc. The tail must have
-        // shifted down by two.
+        // Rows shift down by two: new row 0 is old row 2 (info,
+        // miss), new row 1 is old row 3 (warn, hit), etc.
         QCOMPARE(rules.LastMatchFor(0), std::optional<std::size_t>{});
         QCOMPARE(rules.LastMatchFor(1), std::optional<std::size_t>{0u});
         QCOMPARE(rules.LastMatchFor(2), std::optional<std::size_t>{});
@@ -300,22 +262,16 @@ private slots:
         QCOMPARE(rules.LastMatchFor(999), std::optional<std::size_t>{});
     }
 
-    /// A rule bound to a key that appears only after the schema
-    /// grows starts inactive. Once a batch carrying the new key has
-    /// been ingested and `RebindColumns` is called, the rule
-    /// activates and matches exactly the rows carrying the needle.
-    ///
-    /// The sync streaming helper resets the model between calls, so
-    /// the test drives the schema growth with a single file that
-    /// carries a mix of rows.
+    /// A rule bound to a key not yet in the schema starts inactive.
+    /// After a batch introduces the key and `RebindColumns` runs,
+    /// the rule activates and matches the rows carrying the needle.
     void RebindColumnsAfterSchemaGrowth()
     {
         HighlightRuleSet rules;
         LogModel model{/*parent=*/nullptr, /*theme=*/nullptr, /*anchors=*/nullptr, &rules};
 
-        // Pre-install a rule against an unknown key BEFORE any
-        // streaming: `SetRules` sees no columns, so the rule is
-        // inert. `MainWindow` walks the same code path when
+        // Pre-install a rule against an unknown key before any
+        // streaming; the rule starts inert. Mirrors `MainWindow`
         // applying a saved configuration to an empty session.
         std::vector<Rule> preLoad;
         preLoad.push_back(MakeContainsRule("service-hit", "service", "billing"));
@@ -352,8 +308,7 @@ private slots:
     }
 
     /// `ClearMatches` drops the row-match cache but keeps the
-    /// compiled rules; a follow-up `OnRowsAppended` picks up where
-    /// it left off without a full recompile.
+    /// compiled rules ready for the next stream.
     void ClearMatchesResetsCache()
     {
         HighlightRuleSet rules;
@@ -377,10 +332,9 @@ private slots:
         }
     }
 
-    /// Boolean predicate parity: a rule with `type = Boolean` and
-    /// `filterValues = {"true"}` accepts only the rows whose bool
-    /// column decodes to `true`. Guards `CompileRule`'s Boolean
-    /// branch (case-insensitive decode, empty-list rejection).
+    /// A Boolean rule with `filterValues = {"true"}` accepts only
+    /// the rows whose bool column decodes to `true`. Guards
+    /// `CompileRule`'s Boolean branch.
     void BooleanRuleMatchesTrueRows()
     {
         HighlightRuleSet rules;
@@ -417,14 +371,10 @@ private slots:
         QCOMPARE(rules.LastMatchFor(3), std::optional<std::size_t>{});
     }
 
-    /// Regression: an editor-authored rule (or a hand-edited config)
-    /// with an empty `filterString` used to compile into a matcher
-    /// that returned true for every haystack -- `QString::contains("")`
-    /// is trivially satisfied. The whole table then lit up under a
-    /// "brand new rule" that the user hadn't finished typing. The
-    /// fix lives in `HighlightRuleSet::CompileRule`, which now
-    /// treats an empty needle the same as a missing needle (rule
-    /// marked inert, one line in `InactiveCount`).
+    /// Regression: an empty `filterString` used to compile into a
+    /// matcher that returned true for every row -- the whole table
+    /// lit up on a fresh rule the user hadn't finished typing.
+    /// `CompileRule` now treats empty as inactive.
     void EmptyNeedleLeavesRuleInactive()
     {
         HighlightRuleSet rules;
@@ -433,9 +383,7 @@ private slots:
         StreamJsonPathInto(model, fixture.Path());
 
         std::vector<Rule> ruleSet;
-        // Empty needle across all four string match types. Each
-        // one used to have a different (equally wrong) failure
-        // mode; the fix collapses them into "rule inert".
+        // Empty needle across all four string match types.
         for (const auto matchType : {Rule::Match::Exactly,
                                      Rule::Match::Contains,
                                      Rule::Match::RegularExpression,
@@ -460,10 +408,8 @@ private slots:
         }
     }
 
-    /// Number-range predicate parity. Covers `CompileRule`'s Number
-    /// branch (`NumericRangeRowPredicate` with min-only, max-only,
-    /// and both bounds set) and its rejection of the "no bounds"
-    /// case.
+    /// Number-range parity: covers min-only, max-only, both
+    /// bounds, and the rejection of the bounds-less case.
     void NumericRangeRule()
     {
         HighlightRuleSet rules;
@@ -512,10 +458,9 @@ private slots:
         QCOMPARE(rules.LastMatchFor(4), std::optional<std::size_t>{0u});
     }
 
-    /// Rules bind by column keys, not column indices. Moving the
-    /// `level` column via `LogModel::MoveColumn` should not invalidate
-    /// the rule's resolved index (or rather, `RebindColumns` should
-    /// re-resolve it against the new layout).
+    /// Rules bind by keys, so `MoveColumn` + `RebindColumns`
+    /// re-resolves the rule against the new layout without losing
+    /// matches.
     void MoveColumnPreservesKeyBinding()
     {
         HighlightRuleSet rules;
