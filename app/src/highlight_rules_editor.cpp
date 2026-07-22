@@ -644,7 +644,7 @@ void HighlightRulesEditor::LoadIntoForm(int row)
         return;
     }
 
-    const auto &rule = mLocalRules[row];
+    const auto &rule = mLocalRules[static_cast<std::size_t>(row)];
     // `QLineEdit::setText` resets the cursor and clears the
     // selection; skip when the text already matches so the caret
     // survives a keystroke.
@@ -1107,7 +1107,8 @@ void HighlightRulesEditor::OnMoveUpClicked()
     {
         return;
     }
-    std::swap(mLocalRules[mCurrentRow], mLocalRules[mCurrentRow - 1]);
+    const auto row = static_cast<std::size_t>(mCurrentRow);
+    std::swap(mLocalRules[row], mLocalRules[row - 1]);
     RebuildList(mCurrentRow - 1);
     UpdateListButtons();
     MarkDirty();
@@ -1119,7 +1120,8 @@ void HighlightRulesEditor::OnMoveDownClicked()
     {
         return;
     }
-    std::swap(mLocalRules[mCurrentRow], mLocalRules[mCurrentRow + 1]);
+    const auto row = static_cast<std::size_t>(mCurrentRow);
+    std::swap(mLocalRules[row], mLocalRules[row + 1]);
     RebuildList(mCurrentRow + 1);
     UpdateListButtons();
     MarkDirty();
