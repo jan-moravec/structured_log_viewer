@@ -27,13 +27,13 @@
 /// so this type stays out of the public header. All backing
 /// storage (regex objects, dictionary aliases, ...) lives inside
 /// the predicate. Explicit constructor because `RowPredicate` is
-/// a `variant` over non-default-constructible types.
+/// a `variant` over non-default-constructible types. The `predicate`
+/// field is intentionally public: this is a private impl aggregate
+/// with no invariant to guard, and a direct field access keeps the
+/// paint-hot-path one member load away.
 struct HighlightRuleSet::CompiledRule
 {
-    // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes): plain
-    // aggregate held via `unique_ptr` inside `mCompiled`; no invariant to
-    // guard, so exposing the field directly keeps the paint-hot-path
-    // access one member load away.
+    // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
     loglib::RowPredicate predicate;
 
     explicit CompiledRule(loglib::RowPredicate p)
