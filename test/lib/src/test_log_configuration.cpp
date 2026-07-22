@@ -2078,9 +2078,7 @@ TEST_CASE(
             LogConfiguration::AnchorEntry{.locator = "c:/logs/one.json", .lineId = 42u, .colorIndex = 1u}
         );
         written.highlightRules.push_back(
-            LogConfiguration::HighlightRule{
-                .name = "auth service", .columnKeys = {"service"}, .filterString = "auth"
-            }
+            LogConfiguration::HighlightRule{.name = "auth service", .columnKeys = {"service"}, .filterString = "auth"}
         );
         LogConfigurationManager::Save(written, testConfiguration.GetFilePath(), SaveScope::ColumnsOnly);
     }
@@ -2121,8 +2119,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "LogConfiguration::HighlightRule serialises with stable wire keys",
-    "[LogConfigurationManager][highlight_rules]"
+    "LogConfiguration::HighlightRule serialises with stable wire keys", "[LogConfigurationManager][highlight_rules]"
 )
 {
     // Wire-format snapshot: a rename would surface here as a
@@ -2164,10 +2161,7 @@ TEST_CASE(
     CHECK(loaded.highlightRules[0].italic);
 }
 
-TEST_CASE(
-    "MoveColumn does not rewrite highlightRules[*].columnKeys",
-    "[LogConfigurationManager][highlight_rules]"
-)
+TEST_CASE("MoveColumn does not rewrite highlightRules[*].columnKeys", "[LogConfigurationManager][highlight_rules]")
 {
     // Highlight rules bind by keys; unlike `LogFilter::row` they
     // have no index field to remap after `MoveColumn`.

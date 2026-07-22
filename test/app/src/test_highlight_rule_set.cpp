@@ -384,10 +384,8 @@ private slots:
 
         std::vector<Rule> ruleSet;
         // Empty needle across all four string match types.
-        for (const auto matchType : {Rule::Match::Exactly,
-                                     Rule::Match::Contains,
-                                     Rule::Match::RegularExpression,
-                                     Rule::Match::Wildcard})
+        for (const auto matchType :
+             {Rule::Match::Exactly, Rule::Match::Contains, Rule::Match::RegularExpression, Rule::Match::Wildcard})
         {
             Rule r;
             r.name = "empty";

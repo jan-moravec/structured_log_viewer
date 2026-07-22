@@ -435,21 +435,19 @@ private slots:
         QVERIFY2(componentCol >= 0, "fixture must produce a `component` column");
 
         using Rule = loglib::LogConfiguration::HighlightRule;
-        auto makeRule = [](const std::string &name,
-                           const std::string &key,
-                           Rule::Match matchType,
-                           const std::string &needle) {
-            Rule r;
-            r.name = name;
-            r.enabled = true;
-            r.columnKeys = {key};
-            r.type = Rule::Type::String;
-            r.matchType = matchType;
-            r.filterString = needle;
-            r.foregroundIndex = 1;
-            r.backgroundIndex = 2;
-            return r;
-        };
+        auto makeRule =
+            [](const std::string &name, const std::string &key, Rule::Match matchType, const std::string &needle) {
+                Rule r;
+                r.name = name;
+                r.enabled = true;
+                r.columnKeys = {key};
+                r.type = Rule::Type::String;
+                r.matchType = matchType;
+                r.filterString = needle;
+                r.foregroundIndex = 1;
+                r.backgroundIndex = 2;
+                return r;
+            };
 
         // Ten rules across columns and match types so the rebuild
         // covers the `Contains` fast path, regex, and enum-column
@@ -498,14 +496,10 @@ private slots:
         }
         const auto lookupElapsed = std::chrono::steady_clock::now() - lookupStart;
 
-        qDebug().noquote() << QStringLiteral(
-                                  "HighlightRuleSet rebuild over %1 rows / 10 rules: %2 ms"
-        )
+        qDebug().noquote() << QStringLiteral("HighlightRuleSet rebuild over %1 rows / 10 rules: %2 ms")
                                   .arg(static_cast<std::size_t>(LINE_COUNT))
                                   .arg(Ms(rebuildElapsed).count(), 0, 'f', 2);
-        qDebug().noquote() << QStringLiteral(
-                                  "HighlightRuleSet paint-hot-path lookup over %1 rows: %2 ms (%3 matches)"
-        )
+        qDebug().noquote() << QStringLiteral("HighlightRuleSet paint-hot-path lookup over %1 rows: %2 ms (%3 matches)")
                                   .arg(static_cast<std::size_t>(LINE_COUNT))
                                   .arg(Ms(lookupElapsed).count(), 0, 'f', 2)
                                   .arg(matchCount);
@@ -524,9 +518,7 @@ private slots:
         // grew a container walk.
         QVERIFY2(
             Ms(lookupElapsed).count() < 5.0,
-            qPrintable(
-                QStringLiteral("HighlightRuleSet lookup path regressed: %1 ms").arg(Ms(lookupElapsed).count())
-            )
+            qPrintable(QStringLiteral("HighlightRuleSet lookup path regressed: %1 ms").arg(Ms(lookupElapsed).count()))
         );
     }
 

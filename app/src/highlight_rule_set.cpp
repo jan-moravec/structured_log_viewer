@@ -32,7 +32,8 @@ struct HighlightRuleSet::CompiledRule
 {
     loglib::RowPredicate predicate;
 
-    explicit CompiledRule(loglib::RowPredicate p) : predicate(std::move(p))
+    explicit CompiledRule(loglib::RowPredicate p)
+        : predicate(std::move(p))
     {
     }
 };
@@ -45,7 +46,8 @@ constexpr std::int16_t NO_MATCH = -1;
 
 } // namespace
 
-HighlightRuleSet::HighlightRuleSet(QObject *parent) : QObject(parent)
+HighlightRuleSet::HighlightRuleSet(QObject *parent)
+    : QObject(parent)
 {
 }
 
@@ -152,10 +154,7 @@ std::optional<HighlightRuleSet::CompiledRule> HighlightRuleSet::CompileRule(
             return std::nullopt;
         }
         return CompiledRule{loglib::RowPredicate{
-            std::in_place_type<loglib::NumericRangeRowPredicate>,
-            column,
-            rule.filterMinValue,
-            rule.filterMaxValue
+            std::in_place_type<loglib::NumericRangeRowPredicate>, column, rule.filterMinValue, rule.filterMaxValue
         }};
     }
     case RuleType::Boolean:
@@ -187,9 +186,9 @@ std::optional<HighlightRuleSet::CompiledRule> HighlightRuleSet::CompileRule(
         {
             return std::nullopt;
         }
-        return CompiledRule{loglib::RowPredicate{
-            std::in_place_type<loglib::BoolRowPredicate>, column, includeTrue, includeFalse
-        }};
+        return CompiledRule{
+            loglib::RowPredicate{std::in_place_type<loglib::BoolRowPredicate>, column, includeTrue, includeFalse}
+        };
     }
     case RuleType::Enumeration:
     {
@@ -419,9 +418,7 @@ void HighlightRuleSet::RebindColumns(
     }
 }
 
-void HighlightRuleSet::OnRowsAppended(
-    const loglib::LogTable &table, std::size_t firstNewRow, std::size_t lastNewRow
-)
+void HighlightRuleSet::OnRowsAppended(const loglib::LogTable &table, std::size_t firstNewRow, std::size_t lastNewRow)
 {
     if (mRules.empty() || mActiveCount == 0)
     {
@@ -454,8 +451,10 @@ void HighlightRuleSet::OnRowsEvicted(std::size_t first, std::size_t last)
     }
     // Clamp so a spurious over-run doesn't wild-erase.
     const std::size_t clampedLast = std::min(last, mRowMatch.size() - 1);
-    mRowMatch.erase(mRowMatch.begin() + static_cast<std::ptrdiff_t>(first),
-                    mRowMatch.begin() + static_cast<std::ptrdiff_t>(clampedLast + 1));
+    mRowMatch.erase(
+        mRowMatch.begin() + static_cast<std::ptrdiff_t>(first),
+        mRowMatch.begin() + static_cast<std::ptrdiff_t>(clampedLast + 1)
+    );
     // No `matchesChanged`: the view already repaints from the
     // upstream `rowsRemoved`.
 }

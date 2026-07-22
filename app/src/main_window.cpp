@@ -657,9 +657,7 @@ MainWindow::MainWindow(
         {
             return;
         }
-        mHighlights->OnRowsAppended(
-            mModel->Table(), static_cast<std::size_t>(first), static_cast<std::size_t>(last)
-        );
+        mHighlights->OnRowsAppended(mModel->Table(), static_cast<std::size_t>(first), static_cast<std::size_t>(last));
     });
     // FIFO retention fires `rowsRemoved` before appending the new
     // tail; without this the cache would keep stale prefix entries
@@ -874,13 +872,15 @@ MainWindow::MainWindow(
     // Enum / Level type flips and dictionary growth can
     // activate / deactivate highlight rules; rebind on every
     // reason to keep the compiled predicates in step.
-    connect(mModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason /*reason*/, int /*columnIndex*/) {
-        if (mHighlights == nullptr || mModel == nullptr)
-        {
-            return;
+    connect(
+        mModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason /*reason*/, int /*columnIndex*/) {
+            if (mHighlights == nullptr || mModel == nullptr)
+            {
+                return;
+            }
+            mHighlights->RebindColumns(mModel->Configuration().columns, &mModel->Table());
         }
-        mHighlights->RebindColumns(mModel->Configuration().columns, &mModel->Table());
-    });
+    );
 
     // Rebuild on demand. This is the only escape hatch when every
     // header section is hidden (right-click needs a visible section).
@@ -1285,8 +1285,7 @@ MainWindow::MainWindow(
         if (mHighlightRulesEditor.isNull())
         {
             const auto &config = mModel->Configuration();
-            mHighlightRulesEditor =
-                new HighlightRulesEditor(config.highlightRules, config.columns, mTheme, this);
+            mHighlightRulesEditor = new HighlightRulesEditor(config.highlightRules, config.columns, mTheme, this);
             mHighlightRulesEditor->setWindowFlag(Qt::Window, true);
             connect(
                 mHighlightRulesEditor.data(),
@@ -1300,9 +1299,7 @@ MainWindow::MainWindow(
                     mModel->ConfigurationManager().SetHighlightRules(std::move(rules));
                     if (mHighlights != nullptr)
                     {
-                        mHighlights->SetRules(
-                            std::move(forRuntime), mModel->Configuration().columns, &mModel->Table()
-                        );
+                        mHighlights->SetRules(std::move(forRuntime), mModel->Configuration().columns, &mModel->Table());
                         const std::size_t inactive = mHighlights->InactiveCount();
                         if (inactive > 0)
                         {

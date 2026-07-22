@@ -63,9 +63,7 @@ public:
     /// Called after `AppendKeys`, `SetColumnType`, or dictionary
     /// growth so a rule can activate / deactivate without reopening
     /// the editor.
-    void RebindColumns(
-        const std::vector<loglib::LogConfiguration::Column> &columns, const loglib::LogTable *table
-    );
+    void RebindColumns(const std::vector<loglib::LogConfiguration::Column> &columns, const loglib::LogTable *table);
 
     /// Evaluate rules against newly-appended rows
     /// `[firstNewRow, lastNewRow]`. @p table must already contain
@@ -141,9 +139,7 @@ private:
 
     /// Recompile every rule; refreshes `mCompiled`,
     /// `mResolvedColumn`, `mInactiveCount`, `mActiveCount`.
-    void RecompileAll(
-        const std::vector<loglib::LogConfiguration::Column> &columns, const loglib::LogTable *table
-    );
+    void RecompileAll(const std::vector<loglib::LogConfiguration::Column> &columns, const loglib::LogTable *table);
 
     /// Evaluate rows `[first, last]` into `mRowMatch`. Requires
     /// `mRowMatch.size() > last`.

@@ -48,16 +48,12 @@ constexpr int SWATCH_CORNER_RADIUS = 3;
 
 /// Combo labels; index matches `HighlightRule::Type`. Time /
 /// Enumeration render on read-only panes in v1.
-constexpr std::array<const char *, 5> TYPE_LABELS = {
-    "Text (string)", "Time", "Enumeration", "Number", "Boolean"
-};
+constexpr std::array<const char *, 5> TYPE_LABELS = {"Text (string)", "Time", "Enumeration", "Number", "Boolean"};
 
 /// Combo labels; index matches `HighlightRule::Match` wire order.
 constexpr std::array<const char *, 4> STRING_MATCH_LABELS = {"Exactly", "Contains", "Regular expression", "Wildcard"};
 
-[[nodiscard]] QIcon RenderSwatchIcon(
-    const QBrush &background, const QBrush &foreground, int sizePx, bool paintBorder
-)
+[[nodiscard]] QIcon RenderSwatchIcon(const QBrush &background, const QBrush &foreground, int sizePx, bool paintBorder)
 {
     QPixmap pix(sizePx, sizePx);
     pix.fill(Qt::transparent);
@@ -74,9 +70,7 @@ constexpr std::array<const char *, 4> STRING_MATCH_LABELS = {"Exactly", "Contain
     }
     if (paintBorder)
     {
-        painter.setPen(
-            QPen(foreground.style() != Qt::NoBrush ? foreground.color() : QColor(Qt::gray), 1)
-        );
+        painter.setPen(QPen(foreground.style() != Qt::NoBrush ? foreground.color() : QColor(Qt::gray), 1));
     }
     else
     {
@@ -86,9 +80,7 @@ constexpr std::array<const char *, 4> STRING_MATCH_LABELS = {"Exactly", "Contain
     // the pixmap edge on Fusion (and on Hi-DPI).
     const int side = sizePx - (2 * SWATCH_PAINT_INSET);
     painter.drawRoundedRect(
-        QRectF(SWATCH_PAINT_INSET, SWATCH_PAINT_INSET, side, side),
-        SWATCH_CORNER_RADIUS,
-        SWATCH_CORNER_RADIUS
+        QRectF(SWATCH_PAINT_INSET, SWATCH_PAINT_INSET, side, side), SWATCH_CORNER_RADIUS, SWATCH_CORNER_RADIUS
     );
     return QIcon{pix};
 }
@@ -154,9 +146,9 @@ HighlightRulesEditor::HighlightRulesEditor(
     }
     connect(mNameEdit, &QLineEdit::textEdited, this, [this](const QString &) { OnFieldEdited(); });
     connect(mEnabledCheck, &QCheckBox::toggled, this, [this](bool) { OnFieldEdited(); });
-    connect(
-        mColumnCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) { OnColumnChanged(); }
-    );
+    connect(mColumnCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        OnColumnChanged();
+    });
     connect(mTypeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) { OnTypeChanged(); });
 
     // String pane
@@ -167,12 +159,9 @@ HighlightRulesEditor::HighlightRulesEditor(
     }
     mStringNeedleEdit = new QLineEdit(this);
     mStringNeedleEdit->setPlaceholderText(tr("Pattern or literal"));
-    connect(
-        mStringMatchCombo,
-        QOverload<int>::of(&QComboBox::currentIndexChanged),
-        this,
-        [this](int) { OnFieldEdited(); }
-    );
+    connect(mStringMatchCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        OnFieldEdited();
+    });
     connect(mStringNeedleEdit, &QLineEdit::textEdited, this, [this](const QString &) { OnFieldEdited(); });
 
     auto *stringPane = new QWidget(this);
@@ -200,22 +189,16 @@ HighlightRulesEditor::HighlightRulesEditor(
         mNumberMinValue->setEnabled(on);
         OnFieldEdited();
     });
-    connect(
-        mNumberMinValue,
-        QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-        this,
-        [this](double) { OnFieldEdited(); }
-    );
+    connect(mNumberMinValue, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double) {
+        OnFieldEdited();
+    });
     connect(mNumberMaxEnabled, &QCheckBox::toggled, this, [this](bool on) {
         mNumberMaxValue->setEnabled(on);
         OnFieldEdited();
     });
-    connect(
-        mNumberMaxValue,
-        QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-        this,
-        [this](double) { OnFieldEdited(); }
-    );
+    connect(mNumberMaxValue, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double) {
+        OnFieldEdited();
+    });
 
     auto *numberPane = new QWidget(this);
     {
@@ -523,9 +506,7 @@ void HighlightRulesEditor::RepopulateColumnCombo()
     // Tooltip on the "(none)" slot: catches the misclick before
     // the "(inactive)" list badge flags it post-hoc.
     mColumnCombo->setItemData(
-        0,
-        tr("Rules without a column can't match anything. Pick a column to activate this rule."),
-        Qt::ToolTipRole
+        0, tr("Rules without a column can't match anything. Pick a column to activate this rule."), Qt::ToolTipRole
     );
     for (const auto &col : mColumns)
     {
@@ -682,8 +663,7 @@ void HighlightRulesEditor::LoadIntoForm(int row)
     {
         const int matchIdx = rule.matchType.has_value() ? static_cast<int>(*rule.matchType) : 1;
         mStringMatchCombo->setCurrentIndex(matchIdx);
-        const QString needle =
-            rule.filterString.has_value() ? QString::fromStdString(*rule.filterString) : QString{};
+        const QString needle = rule.filterString.has_value() ? QString::fromStdString(*rule.filterString) : QString{};
         // Keep-cursor guard, see `mNameEdit` above.
         if (mStringNeedleEdit->text() != needle)
         {
@@ -738,13 +718,13 @@ void HighlightRulesEditor::LoadIntoForm(int row)
         const QBrush fgFg = mTheme->HighlightBrushFor(rule.foregroundIndex, Qt::ForegroundRole);
         mForegroundButton->setIcon(
             rule.foregroundIndex == 0 ? RenderSwatchIcon(QBrush{}, QBrush(Qt::gray), SwatchIconSizePx(), true)
-                                       : RenderSwatchIcon(fgBg, fgFg, SwatchIconSizePx(), true)
+                                      : RenderSwatchIcon(fgBg, fgFg, SwatchIconSizePx(), true)
         );
         const QBrush bgBg = mTheme->HighlightBrushFor(rule.backgroundIndex, Qt::BackgroundRole);
         const QBrush bgFg = mTheme->HighlightBrushFor(rule.backgroundIndex, Qt::ForegroundRole);
         mBackgroundButton->setIcon(
             rule.backgroundIndex == 0 ? RenderSwatchIcon(QBrush{}, QBrush(Qt::gray), SwatchIconSizePx(), true)
-                                       : RenderSwatchIcon(bgBg, bgFg, SwatchIconSizePx(), true)
+                                      : RenderSwatchIcon(bgBg, bgFg, SwatchIconSizePx(), true)
         );
     }
     mBoldCheck->setChecked(rule.bold);
@@ -756,15 +736,16 @@ void HighlightRulesEditor::LoadIntoForm(int row)
 void HighlightRulesEditor::UpdateFormEnabled()
 {
     const bool haveSelection = mCurrentRow >= 0 && mCurrentRow < static_cast<int>(mLocalRules.size());
-    for (QWidget *w : {static_cast<QWidget *>(mNameEdit),
-                       static_cast<QWidget *>(mEnabledCheck),
-                       static_cast<QWidget *>(mColumnCombo),
-                       static_cast<QWidget *>(mTypeCombo),
-                       static_cast<QWidget *>(mForegroundButton),
-                       static_cast<QWidget *>(mBackgroundButton),
-                       static_cast<QWidget *>(mBoldCheck),
-                       static_cast<QWidget *>(mItalicCheck),
-                       static_cast<QWidget *>(mMatchStack)})
+    for (QWidget *w :
+         {static_cast<QWidget *>(mNameEdit),
+          static_cast<QWidget *>(mEnabledCheck),
+          static_cast<QWidget *>(mColumnCombo),
+          static_cast<QWidget *>(mTypeCombo),
+          static_cast<QWidget *>(mForegroundButton),
+          static_cast<QWidget *>(mBackgroundButton),
+          static_cast<QWidget *>(mBoldCheck),
+          static_cast<QWidget *>(mItalicCheck),
+          static_cast<QWidget *>(mMatchStack)})
     {
         if (w != nullptr)
         {
@@ -775,8 +756,9 @@ void HighlightRulesEditor::UpdateFormEnabled()
     if (haveSelection)
     {
         const auto ruleType = mLocalRules[static_cast<std::size_t>(mCurrentRow)].type;
-        const bool isReadOnly = (ruleType == loglib::LogConfiguration::HighlightRule::Type::Time ||
-                                 ruleType == loglib::LogConfiguration::HighlightRule::Type::Enumeration);
+        const bool isReadOnly =
+            (ruleType == loglib::LogConfiguration::HighlightRule::Type::Time ||
+             ruleType == loglib::LogConfiguration::HighlightRule::Type::Enumeration);
         if (isReadOnly)
         {
             mMatchStack->setEnabled(false);
@@ -803,9 +785,7 @@ void HighlightRulesEditor::UpdateListButtons()
     {
         // Persistent (no auto-clear) so the reason stays visible
         // while the user fixes it.
-        mStatusLabel->setText(
-            tr("Rule %1: %2").arg(invalidRow + 1).arg(invalidMessage)
-        );
+        mStatusLabel->setText(tr("Rule %1: %2").arg(invalidRow + 1).arg(invalidMessage));
         mStatusLabel->setStyleSheet(QStringLiteral("color: #B91C1C;"));
         mStatusClearTimer->stop();
     }
@@ -1102,8 +1082,7 @@ void HighlightRulesEditor::OnDeleteClicked()
         return;
     }
     mLocalRules.erase(mLocalRules.begin() + mCurrentRow);
-    const int newRow = mLocalRules.empty() ? -1
-                                            : std::min(mCurrentRow, static_cast<int>(mLocalRules.size()) - 1);
+    const int newRow = mLocalRules.empty() ? -1 : std::min(mCurrentRow, static_cast<int>(mLocalRules.size()) - 1);
     RebuildList(newRow);
     UpdateListButtons();
     MarkDirty();
