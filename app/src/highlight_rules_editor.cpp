@@ -46,6 +46,20 @@ constexpr int SWATCH_ICON_FALLBACK_PX = 16;
 constexpr int SWATCH_PAINT_INSET = 1;
 constexpr int SWATCH_CORNER_RADIUS = 3;
 
+// Default window size on first open (Qt persists user-resized geometry
+// on subsequent shows within the same session).
+constexpr int DIALOG_INITIAL_WIDTH_PX = 720;
+constexpr int DIALOG_INITIAL_HEIGHT_PX = 480;
+
+// Six fractional digits on the Number pane's spin boxes; wider than any
+// realistic latency / count / ratio the user would type into a rule.
+constexpr int NUMBER_SPIN_DECIMALS = 6;
+
+// Horizontal breathing room between adjacent form groups (Min/Max spin
+// pair on the Number pane; Background/Foreground swatch triad on the
+// Rendering pane). Reused so the two panes stay visually aligned.
+constexpr int FORM_GROUP_SPACING_PX = 12;
+
 /// Combo labels; index matches `HighlightRule::Type`. Time /
 /// Enumeration render on read-only panes in v1.
 constexpr std::array<const char *, 5> TYPE_LABELS = {"Text (string)", "Time", "Enumeration", "Number", "Boolean"};
@@ -101,7 +115,7 @@ HighlightRulesEditor::HighlightRulesEditor(
 {
     setWindowTitle(tr("Highlight rules"));
     setAttribute(Qt::WA_DeleteOnClose, false);
-    resize(720, 480);
+    resize(DIALOG_INITIAL_WIDTH_PX, DIALOG_INITIAL_HEIGHT_PX);
 
     // -- List side ---------------------------------------------------------
     mListWidget = new QListWidget(this);
@@ -176,14 +190,14 @@ HighlightRulesEditor::HighlightRulesEditor(
     mNumberMinEnabled = new QCheckBox(tr("Min"), this);
     mNumberMinValue = new QDoubleSpinBox(this);
     mNumberMinValue->setRange(std::numeric_limits<double>::lowest(), std::numeric_limits<double>::max());
-    mNumberMinValue->setDecimals(6);
+    mNumberMinValue->setDecimals(NUMBER_SPIN_DECIMALS);
     // Scale the arrow-key step by the value's magnitude; the
     // default step of 1.0 is unusable across the full double range.
     mNumberMinValue->setStepType(QDoubleSpinBox::AdaptiveDecimalStepType);
     mNumberMaxEnabled = new QCheckBox(tr("Max"), this);
     mNumberMaxValue = new QDoubleSpinBox(this);
     mNumberMaxValue->setRange(std::numeric_limits<double>::lowest(), std::numeric_limits<double>::max());
-    mNumberMaxValue->setDecimals(6);
+    mNumberMaxValue->setDecimals(NUMBER_SPIN_DECIMALS);
     mNumberMaxValue->setStepType(QDoubleSpinBox::AdaptiveDecimalStepType);
     connect(mNumberMinEnabled, &QCheckBox::toggled, this, [this](bool on) {
         mNumberMinValue->setEnabled(on);
@@ -206,7 +220,7 @@ HighlightRulesEditor::HighlightRulesEditor(
         layout->setContentsMargins(0, 0, 0, 0);
         layout->addWidget(mNumberMinEnabled);
         layout->addWidget(mNumberMinValue, 1);
-        layout->addSpacing(12);
+        layout->addSpacing(FORM_GROUP_SPACING_PX);
         layout->addWidget(mNumberMaxEnabled);
         layout->addWidget(mNumberMaxValue, 1);
     }
@@ -272,10 +286,10 @@ HighlightRulesEditor::HighlightRulesEditor(
         auto *layout = new QHBoxLayout(stylePane);
         layout->addWidget(new QLabel(tr("Background:"), this));
         layout->addWidget(mBackgroundButton);
-        layout->addSpacing(12);
+        layout->addSpacing(FORM_GROUP_SPACING_PX);
         layout->addWidget(new QLabel(tr("Foreground:"), this));
         layout->addWidget(mForegroundButton);
-        layout->addSpacing(12);
+        layout->addSpacing(FORM_GROUP_SPACING_PX);
         layout->addWidget(mBoldCheck);
         layout->addWidget(mItalicCheck);
         layout->addStretch();
@@ -560,9 +574,8 @@ void HighlightRulesEditor::RebuildList(int selectRow)
     const int keep = (selectRow >= 0) ? selectRow : mCurrentRow;
     const QSignalBlocker block(mListWidget);
     mListWidget->clear();
-    for (std::size_t i = 0; i < mLocalRules.size(); ++i)
+    for (const auto &rule : mLocalRules)
     {
-        const auto &rule = mLocalRules[i];
         auto *item = new QListWidgetItem(FormatListIcon(rule, SwatchIconSizePx()), FormatListLabel(rule));
         item->setToolTip(FormatListLabel(rule));
         mListWidget->addItem(item);
@@ -606,7 +619,7 @@ void HighlightRulesEditor::LoadIntoForm(int row)
     mSuppressDirtySignals = true;
     const auto guard = qScopeGuard([this]() { mSuppressDirtySignals = false; });
 
-    if (row < 0 || row >= static_cast<int>(mLocalRules.size()))
+    if (row < 0 || std::cmp_greater_equal(row, mLocalRules.size()))
     {
         mNameEdit->clear();
         mEnabledCheck->setChecked(true);
@@ -735,7 +748,7 @@ void HighlightRulesEditor::LoadIntoForm(int row)
 
 void HighlightRulesEditor::UpdateFormEnabled()
 {
-    const bool haveSelection = mCurrentRow >= 0 && mCurrentRow < static_cast<int>(mLocalRules.size());
+    const bool haveSelection = mCurrentRow >= 0 && std::cmp_less(mCurrentRow, mLocalRules.size());
     for (QWidget *w :
          {static_cast<QWidget *>(mNameEdit),
           static_cast<QWidget *>(mEnabledCheck),
@@ -929,7 +942,7 @@ void HighlightRulesEditor::OnTypeChanged()
 
 void HighlightRulesEditor::RefreshListItem(int row)
 {
-    if (mListWidget == nullptr || row < 0 || row >= static_cast<int>(mLocalRules.size()))
+    if (mListWidget == nullptr || row < 0 || std::cmp_greater_equal(row, mLocalRules.size()))
     {
         return;
     }
@@ -950,7 +963,7 @@ void HighlightRulesEditor::RefreshListItem(int row)
 
 void HighlightRulesEditor::GatherForm()
 {
-    if (mCurrentRow < 0 || mCurrentRow >= static_cast<int>(mLocalRules.size()))
+    if (mCurrentRow < 0 || std::cmp_greater_equal(mCurrentRow, mLocalRules.size()))
     {
         return;
     }
@@ -1063,7 +1076,7 @@ void HighlightRulesEditor::OnNewClicked()
 
 void HighlightRulesEditor::OnDuplicateClicked()
 {
-    if (mCurrentRow < 0 || mCurrentRow >= static_cast<int>(mLocalRules.size()))
+    if (mCurrentRow < 0 || std::cmp_greater_equal(mCurrentRow, mLocalRules.size()))
     {
         return;
     }
@@ -1077,7 +1090,7 @@ void HighlightRulesEditor::OnDuplicateClicked()
 
 void HighlightRulesEditor::OnDeleteClicked()
 {
-    if (mCurrentRow < 0 || mCurrentRow >= static_cast<int>(mLocalRules.size()))
+    if (mCurrentRow < 0 || std::cmp_greater_equal(mCurrentRow, mLocalRules.size()))
     {
         return;
     }
@@ -1090,7 +1103,7 @@ void HighlightRulesEditor::OnDeleteClicked()
 
 void HighlightRulesEditor::OnMoveUpClicked()
 {
-    if (mCurrentRow <= 0 || mCurrentRow >= static_cast<int>(mLocalRules.size()))
+    if (mCurrentRow <= 0 || std::cmp_greater_equal(mCurrentRow, mLocalRules.size()))
     {
         return;
     }

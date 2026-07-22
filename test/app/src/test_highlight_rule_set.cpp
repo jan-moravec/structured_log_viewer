@@ -109,6 +109,7 @@ void StreamJsonPathInto(LogModel &model, const QString &path)
 
 } // namespace
 
+// NOLINTNEXTLINE(misc-use-internal-linkage): `Q_OBJECT` QtTest fixture.
 class HighlightRuleSetTest : public QObject
 {
     Q_OBJECT
@@ -280,7 +281,7 @@ private slots:
         QVERIFY(!rules.HasActiveRules());
 
         // Now stream a file with the `service` column populated.
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString grown = dir.filePath("with_service.jsonl");
         {
@@ -340,7 +341,7 @@ private slots:
         HighlightRuleSet rules;
         LogModel model{/*parent=*/nullptr, /*theme=*/nullptr, /*anchors=*/nullptr, &rules};
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString path = dir.filePath("bool.jsonl");
         {
@@ -413,7 +414,7 @@ private slots:
         HighlightRuleSet rules;
         LogModel model{/*parent=*/nullptr, /*theme=*/nullptr, /*anchors=*/nullptr, &rules};
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString path = dir.filePath("numbers.jsonl");
         {

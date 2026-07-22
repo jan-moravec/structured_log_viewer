@@ -30,6 +30,10 @@
 /// a `variant` over non-default-constructible types.
 struct HighlightRuleSet::CompiledRule
 {
+    // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes): plain
+    // aggregate held via `unique_ptr` inside `mCompiled`; no invariant to
+    // guard, so exposing the field directly keeps the paint-hot-path
+    // access one member load away.
     loglib::RowPredicate predicate;
 
     explicit CompiledRule(loglib::RowPredicate p)
@@ -127,7 +131,7 @@ std::optional<HighlightRuleSet::CompiledRule> HighlightRuleSet::CompileRule(
     {
         return std::nullopt;
     }
-    const std::size_t column = static_cast<std::size_t>(resolvedColumn);
+    const auto column = static_cast<std::size_t>(resolvedColumn);
     using RuleType = loglib::LogConfiguration::HighlightRule::Type;
     switch (rule.type)
     {
