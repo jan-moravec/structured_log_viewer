@@ -97,3 +97,7 @@ CMakeUserPresets.json
 
 # Local working plans / scratch design docs that should stay out of the repo.
 /doc/gui_modernization.md
+
+# Transient files used to pass long commit messages through `git commit -F`
+# (PowerShell doesn't have heredoc-style multi-line quoting).
+/.commit_msg.tmp

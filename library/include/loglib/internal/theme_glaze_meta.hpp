@@ -76,6 +76,12 @@ template <> struct glz::meta<loglib::AppStyle>
         object("qtStyle", &T::qtStyle, "fontFamily", &T::fontFamily, "fontSize", &T::fontSize);
 };
 
+template <> struct glz::meta<loglib::HighlightSlot>
+{
+    using T = loglib::HighlightSlot;
+    static constexpr auto value = object("foreground", &T::foreground, "background", &T::background);
+};
+
 template <> struct glz::meta<loglib::LevelDisplayOverride>
 {
     using T = loglib::LevelDisplayOverride;
@@ -109,6 +115,8 @@ template <> struct glz::meta<loglib::Theme>
         &T::app,
         "anchorPalette",
         &T::anchorPalette,
+        "highlightPalette",
+        &T::highlightPalette,
         "levelColumnOverride",
         &T::levelColumnOverride
     );

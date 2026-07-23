@@ -12,7 +12,7 @@ For the architecture each item plugs into, see [CONTRIBUTING.md → Architecture
 - [Tier 1 — Pre-`v1` release-blocking ergonomics](#tier-1--pre-v1-release-blocking-ergonomics)
   - [1. ~~Transparent decompression of `.gz` / `.bz2` / `.xz` / `.zst`~~ (shipped)](#1-transparent-decompression-of-gz--bz2--xz--zst)
   - [2. ~~Histogram / activity-rate strip~~ (shipped)](#2-histogram--activity-rate-strip)
-  - [3. User-defined highlight rules](#3-user-defined-highlight-rules)
+  - [3. ~~User-defined highlight rules~~ (shipped)](#3-user-defined-highlight-rules)
   - [4. Bookmark notes on anchors](#4-bookmark-notes-on-anchors)
   - [5. Boolean filter expressions (AND / OR / NOT)](#5-boolean-filter-expressions-and--or--not)
   - [6. Multi-line records (stack traces and continuation lines)](#6-multi-line-records-stack-traces-and-continuation-lines)
@@ -110,7 +110,11 @@ Each of the ten items below closes a gap that reviewers and first-time users rou
 
 **Touches.** `app`: `app/include/histogram_dock.hpp` + `.cpp`, hook into `MainWindow::WireDockToggle`. `loglib`: nothing — the level mapping and time column already exist.
 
-### 3. User-defined highlight rules
+### 3. ~~User-defined highlight rules~~
+
+> **Shipped.** `Settings → Highlight rules…` opens a modeless `HighlightRulesEditor` (list + inline form, palette-swatch pickers, move up / down, dirty-guard on close). Rules are stored on `LogConfiguration::highlightRules` (Configuration-scope; ride with both `SaveScope::Full` and `SaveScope::ColumnsOnly` saves) and evaluated at runtime by `HighlightRuleSet`, which resolves columns by stable `Column::keys`, compiles predicates via the shared `MakeStringMatcher` / `RowPredicate` infrastructure, and caches per-row last-match indices. `LogModel::data` layers the highlight brush / font on top of the level palette (anchors still win). Rules re-bind automatically after `AppendKeys` / enum-type flips. Colours come from a new 16-slot `Theme::highlightPalette`. See [`doc/README.md § Highlight rules`](doc/README.md#highlight-rules) for the user-facing surface.
+>
+> **v1 scope not yet lifted into the editor.** Time and Enumeration match specs render correctly through the parse / render path but are read-only in the editor form; a follow-up will unlock them. `LogFilter::row` still uses index-based identity (Session-scope); migrating that to keys-based identity is a separate ticket now that the pattern is proven by `HighlightRuleSet::ResolveColumnByKeys`.
 
 **Why.** Standard since glogg / Klogg / LogExpert. The current app only colours rows by `LogLevel`. Power users want to tag "their" subsystem with a colour (`service=auth → blue`), highlight specific request IDs while triaging an incident, or visually mark slow requests (`duration > 500`).
 

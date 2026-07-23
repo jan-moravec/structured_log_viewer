@@ -14,6 +14,7 @@
 // ensures the per-mode wiring continues to drive the proxy correctly
 // once the `StreamingControl::Static*` accessors land in Phase 2.
 
+#include "highlight_rule_set.hpp"
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
 #include "qt_streaming_log_sink.hpp"
@@ -410,6 +411,114 @@ private slots:
         QVERIFY2(
             Ms(elapsed).count() < 1000.0,
             qPrintable(QStringLiteral("sort proxy roundtrip regressed: %1 ms").arg(Ms(elapsed).count()))
+        );
+    }
+
+    /// Highlight-rules acceptance bar (ROADMAP item 3): 10 rules
+    /// on a 1 M-row corpus rebuild the row-match cache, then walk
+    /// every row via `LastMatchFor`. The rebuild fires on rare
+    /// events (Save / config load / bind); `LastMatchFor` is on
+    /// the paint hot path.
+    void BenchHighlightRuleSetRebuild()
+    {
+        using Ms = std::chrono::duration<double, std::milli>;
+
+        const ProxyChain chain = BuildLoadedChain();
+        const auto &columns = chain.model->Configuration().columns;
+        const loglib::LogTable &table = chain.model->Table();
+        QCOMPARE(static_cast<std::size_t>(table.RowCount()), LINE_COUNT);
+
+        const int levelCol = FindColumnByKey(columns, "level");
+        const int componentCol = FindColumnByKey(columns, "component");
+        const int bodyCol = FindColumnByKey(columns, "body");
+        QVERIFY2(levelCol >= 0, "fixture must produce a `level` column");
+        QVERIFY2(componentCol >= 0, "fixture must produce a `component` column");
+
+        using Rule = loglib::LogConfiguration::HighlightRule;
+        auto makeRule =
+            [](const std::string &name, const std::string &key, Rule::Match matchType, const std::string &needle) {
+                Rule r;
+                r.name = name;
+                r.enabled = true;
+                r.columnKeys = {key};
+                r.type = Rule::Type::String;
+                r.matchType = matchType;
+                r.filterString = needle;
+                r.foregroundIndex = 1;
+                r.backgroundIndex = 2;
+                return r;
+            };
+
+        // Ten rules across columns and match types so the rebuild
+        // covers the `Contains` fast path, regex, and enum-column
+        // paths. Overlaps on `info` force the last-match-wins loop
+        // to do real work per row instead of short-circuiting.
+        std::vector<Rule> ruleSet;
+        ruleSet.push_back(makeRule("level-info", "level", Rule::Match::Contains, "info"));
+        ruleSet.push_back(makeRule("level-warn", "level", Rule::Match::Contains, "warn"));
+        ruleSet.push_back(makeRule("level-err", "level", Rule::Match::Contains, "err"));
+        ruleSet.push_back(makeRule("comp-auth", "component", Rule::Match::Contains, "auth"));
+        ruleSet.push_back(makeRule("comp-net", "component", Rule::Match::Contains, "net"));
+        ruleSet.push_back(makeRule("comp-db", "component", Rule::Match::Contains, "db"));
+        ruleSet.push_back(makeRule("comp-exact", "component", Rule::Match::Exactly, "component-2"));
+        ruleSet.push_back(makeRule("comp-wild", "component", Rule::Match::Wildcard, "component-?"));
+        if (bodyCol >= 0)
+        {
+            ruleSet.push_back(makeRule("body-oops", "body", Rule::Match::Contains, "oops"));
+            ruleSet.push_back(makeRule("body-rx", "body", Rule::Match::RegularExpression, R"(msg \d{4}$)"));
+        }
+        else
+        {
+            // Keep the total at 10 when the fixture lacks `body`.
+            ruleSet.push_back(makeRule("level-debug", "level", Rule::Match::Contains, "debug"));
+            ruleSet.push_back(makeRule("level-any", "level", Rule::Match::RegularExpression, R"(.*)"));
+        }
+
+        HighlightRuleSet rules;
+        // Cold rebuild: compile every predicate + walk every row.
+        const auto rebuildStart = std::chrono::steady_clock::now();
+        rules.SetRules(std::move(ruleSet), columns, &table);
+        const auto rebuildElapsed = std::chrono::steady_clock::now() - rebuildStart;
+
+        QVERIFY(rules.HasActiveRules());
+        QVERIFY(rules.InactiveCount() == 0);
+
+        // Paint-hot-path proxy: walk every row via `LastMatchFor`
+        // (called once per Background / Foreground / Font role).
+        std::size_t matchCount = 0;
+        const auto lookupStart = std::chrono::steady_clock::now();
+        for (std::size_t row = 0; row < LINE_COUNT; ++row)
+        {
+            if (rules.LastMatchFor(row).has_value())
+            {
+                ++matchCount;
+            }
+        }
+        const auto lookupElapsed = std::chrono::steady_clock::now() - lookupStart;
+
+        qDebug().noquote() << QStringLiteral("HighlightRuleSet rebuild over %1 rows / 10 rules: %2 ms")
+                                  .arg(static_cast<std::size_t>(LINE_COUNT))
+                                  .arg(Ms(rebuildElapsed).count(), 0, 'f', 2);
+        qDebug().noquote() << QStringLiteral("HighlightRuleSet paint-hot-path lookup over %1 rows: %2 ms (%3 matches)")
+                                  .arg(static_cast<std::size_t>(LINE_COUNT))
+                                  .arg(Ms(lookupElapsed).count(), 0, 'f', 2)
+                                  .arg(matchCount);
+
+        QVERIFY2(matchCount > 0, "at least one rule should match on the corpus");
+        // Rebuild ceiling: 1000 ms is a "not catastrophically
+        // broken" bar. Rebuild is off the scroll path (rare
+        // events), so the scroll-frame budget lives on the lookup.
+        QVERIFY2(
+            Ms(rebuildElapsed).count() < 1000.0,
+            qPrintable(QStringLiteral("HighlightRuleSet rebuild regressed: %1 ms").arg(Ms(rebuildElapsed).count()))
+        );
+        // Lookup ceiling: `LastMatchFor` is a vector index into
+        // an `int16_t` cache. Dev-box ~0.5 ms for a full corpus
+        // walk; 5 ms CI ceiling. A break means the paint path
+        // grew a container walk.
+        QVERIFY2(
+            Ms(lookupElapsed).count() < 5.0,
+            qPrintable(QStringLiteral("HighlightRuleSet lookup path regressed: %1 ms").arg(Ms(lookupElapsed).count()))
         );
     }
 
