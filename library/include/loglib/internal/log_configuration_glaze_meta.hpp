@@ -41,6 +41,20 @@ template <> struct glz::meta<loglib::LogConfiguration::LogFilter::Match>
     static constexpr std::array value{Exactly, Contains, RegularExpression, Wildcard};
 };
 
+template <> struct glz::meta<loglib::LogConfiguration::HighlightRule::Type>
+{
+    using enum loglib::LogConfiguration::HighlightRule::Type;
+    static constexpr std::array keys{"string", "time", "enumeration", "number", "boolean"};
+    static constexpr std::array value{String, Time, Enumeration, Number, Boolean};
+};
+
+template <> struct glz::meta<loglib::LogConfiguration::HighlightRule::Match>
+{
+    using enum loglib::LogConfiguration::HighlightRule::Match;
+    static constexpr std::array keys{"exactly", "contains", "regularExpression", "wildcard"};
+    static constexpr std::array value{Exactly, Contains, RegularExpression, Wildcard};
+};
+
 template <> struct glz::meta<loglib::LogConfiguration::Source::Kind>
 {
     using enum loglib::LogConfiguration::Source::Kind;
@@ -134,5 +148,42 @@ template <> struct glz::meta<loglib::LogConfiguration::AnchorEntry>
 {
     using T = loglib::LogConfiguration::AnchorEntry;
     static constexpr auto value = object("locator", &T::locator, "lineId", &T::lineId, "colorIndex", &T::colorIndex);
+};
+
+template <> struct glz::meta<loglib::LogConfiguration::HighlightRule>
+{
+    using T = loglib::LogConfiguration::HighlightRule;
+    static constexpr auto value = object(
+        "name",
+        &T::name,
+        "enabled",
+        &T::enabled,
+        "columnKeys",
+        &T::columnKeys,
+        "type",
+        &T::type,
+        "matchType",
+        &T::matchType,
+        "filterString",
+        &T::filterString,
+        "filterBegin",
+        &T::filterBegin,
+        "filterEnd",
+        &T::filterEnd,
+        "filterMinValue",
+        &T::filterMinValue,
+        "filterMaxValue",
+        &T::filterMaxValue,
+        "filterValues",
+        &T::filterValues,
+        "foregroundIndex",
+        &T::foregroundIndex,
+        "backgroundIndex",
+        &T::backgroundIndex,
+        "bold",
+        &T::bold,
+        "italic",
+        &T::italic
+    );
 };
 // NOLINTEND(readability-identifier-naming)

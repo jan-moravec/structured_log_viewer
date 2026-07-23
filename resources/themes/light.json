@@ -30,6 +30,24 @@
         "#9333EA",
         "#DB2777"
     ],
+    "highlightPalette": [
+        { "background": "#FEE2E2", "foreground": "#7F1D1D" },
+        { "background": "#FEF3C7", "foreground": "#78350F" },
+        { "background": "#FEF9C3", "foreground": "#713F12" },
+        { "background": "#DCFCE7", "foreground": "#14532D" },
+        { "background": "#CCFBF1", "foreground": "#134E4A" },
+        { "background": "#DBEAFE", "foreground": "#1E3A8A" },
+        { "background": "#EDE9FE", "foreground": "#4C1D95" },
+        { "background": "#FCE7F3", "foreground": "#831843" },
+        { "background": "#FCA5A5", "foreground": "#7F1D1D" },
+        { "background": "#FDBA74", "foreground": "#7C2D12" },
+        { "background": "#FDE68A", "foreground": "#713F12" },
+        { "background": "#86EFAC", "foreground": "#14532D" },
+        { "background": "#5EEAD4", "foreground": "#134E4A" },
+        { "background": "#93C5FD", "foreground": "#1E3A8A" },
+        { "background": "#C4B5FD", "foreground": "#4C1D95" },
+        { "background": "#F0ABFC", "foreground": "#831843" }
+    ],
     "chrome": {
         "window": "#F7F7F7",
         "windowText": "#0F172A",

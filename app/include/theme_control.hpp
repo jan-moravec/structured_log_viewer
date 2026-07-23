@@ -99,6 +99,14 @@ public:
     /// styling.
     [[nodiscard]] QBrush AnchorBrushFor(std::uint8_t colorIndex, int role) const noexcept;
 
+    /// Cached highlight-rule brush for @p slotIndex (1-indexed:
+    /// 1..`HIGHLIGHT_PALETTE_SIZE`). @p role must be
+    /// `Qt::BackgroundRole` or `Qt::ForegroundRole`. Slot 0
+    /// ("inherit") and out-of-range values return an invalid brush.
+    /// Each slot carries an independent fg/bg pair; the built-in
+    /// fallback palette fills what the theme leaves empty.
+    [[nodiscard]] QBrush HighlightBrushFor(std::uint8_t slotIndex, int role) const noexcept;
+
     /// True iff the active theme ships a `levelColumnOverride`.
     /// The single bool every consumer reads to decide "icon mode?".
     [[nodiscard]] bool HasLevelColumnOverride() const noexcept;
@@ -268,6 +276,13 @@ private:
     /// `theme.anchorPalette`, with the built-in palette filling gaps.
     std::array<QBrush, loglib::ANCHOR_PALETTE_SIZE> mAnchorBackground;
     std::array<QBrush, loglib::ANCHOR_PALETTE_SIZE> mAnchorForeground;
+
+    /// Highlight-slot brush cache; `mHighlight*[i]` corresponds to
+    /// `HighlightRule::*Index == i + 1` (slot 0 = inherit). Built
+    /// by `BuildStyleCache` with a fallback palette for missing
+    /// entries.
+    std::array<QBrush, loglib::HIGHLIGHT_PALETTE_SIZE> mHighlightBackground;
+    std::array<QBrush, loglib::HIGHLIGHT_PALETTE_SIZE> mHighlightForeground;
 
     /// Mirrors `theme.levelColumnOverride.has_value()`.
     bool mHasLevelColumnOverride = false;

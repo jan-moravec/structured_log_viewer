@@ -1975,3 +1975,219 @@ TEST_CASE("LogConfiguration::AnchorEntry serialises with stable wire keys", "[lo
     CHECK(loaded.anchors[0].lineId == 123u);
     CHECK(loaded.anchors[0].colorIndex == 3u);
 }
+
+TEST_CASE(
+    "LogConfiguration::highlightRules round-trips through Save/Load (Full)",
+    "[LogConfigurationManager][highlight_rules]"
+)
+{
+    // Two rules covering string + numeric shapes. Full Save
+    // preserves the vector verbatim; order is significant
+    // (last-match-wins).
+    const TestLogConfiguration testConfiguration;
+    {
+        LogConfiguration written;
+        // Include a minimal columns vector alongside.
+        written.columns.push_back(
+            LogConfiguration::Column{.header = "service", .keys = {"service"}, .type = LogConfiguration::Type::String}
+        );
+        written.columns.push_back(
+            LogConfiguration::Column{.header = "duration", .keys = {"duration"}, .type = LogConfiguration::Type::Number}
+        );
+        written.highlightRules.push_back(
+            LogConfiguration::HighlightRule{
+                .name = "auth service",
+                .enabled = true,
+                .columnKeys = {"service"},
+                .type = LogConfiguration::HighlightRule::Type::String,
+                .matchType = LogConfiguration::HighlightRule::Match::Exactly,
+                .filterString = "auth",
+                .foregroundIndex = 0,
+                .backgroundIndex = 3,
+                .bold = true,
+                .italic = false,
+            }
+        );
+        written.highlightRules.push_back(
+            LogConfiguration::HighlightRule{
+                .name = "slow requests",
+                .enabled = true,
+                .columnKeys = {"duration"},
+                .type = LogConfiguration::HighlightRule::Type::Number,
+                .filterMinValue = 500.0,
+                .foregroundIndex = 2,
+                .backgroundIndex = 1,
+                .bold = false,
+                .italic = false,
+            }
+        );
+        LogConfigurationManager::Save(written, testConfiguration.GetFilePath(), SaveScope::Full);
+    }
+
+    LogConfigurationManager manager;
+    manager.Load(testConfiguration.GetFilePath());
+    const auto &rules = manager.Configuration().highlightRules;
+    REQUIRE(rules.size() == 2);
+
+    CHECK(rules[0].name == "auth service");
+    CHECK(rules[0].enabled);
+    REQUIRE(rules[0].columnKeys.size() == 1);
+    CHECK(rules[0].columnKeys[0] == "service");
+    CHECK(rules[0].type == LogConfiguration::HighlightRule::Type::String);
+    REQUIRE(rules[0].matchType.has_value());
+    CHECK(*rules[0].matchType == LogConfiguration::HighlightRule::Match::Exactly);
+    REQUIRE(rules[0].filterString.has_value());
+    CHECK(*rules[0].filterString == "auth");
+    CHECK(rules[0].foregroundIndex == 0u);
+    CHECK(rules[0].backgroundIndex == 3u);
+    CHECK(rules[0].bold);
+    CHECK_FALSE(rules[0].italic);
+
+    CHECK(rules[1].name == "slow requests");
+    CHECK(rules[1].type == LogConfiguration::HighlightRule::Type::Number);
+    REQUIRE(rules[1].filterMinValue.has_value());
+    CHECK(*rules[1].filterMinValue == 500.0);
+    CHECK_FALSE(rules[1].filterMaxValue.has_value());
+    CHECK(rules[1].foregroundIndex == 2u);
+    CHECK(rules[1].backgroundIndex == 1u);
+}
+
+TEST_CASE(
+    "LogConfiguration::highlightRules round-trips through Save/Load (ColumnsOnly)",
+    "[LogConfigurationManager][highlight_rules]"
+)
+{
+    // Configuration-scope invariant: the ColumnsOnly shim writes
+    // highlight rules alongside columns and strips the session-
+    // scope fields (filters / sort / source / anchors).
+    const TestLogConfiguration testConfiguration;
+    {
+        LogConfiguration written;
+        written.columns.push_back(
+            LogConfiguration::Column{.header = "service", .keys = {"service"}, .type = LogConfiguration::Type::String}
+        );
+        written.filters.push_back(
+            LogConfiguration::LogFilter{
+                .type = LogConfiguration::LogFilter::Type::String,
+                .row = 0,
+                .filterString = "auth",
+                .matchType = LogConfiguration::LogFilter::Match::Contains,
+            }
+        );
+        written.anchors.push_back(
+            LogConfiguration::AnchorEntry{.locator = "c:/logs/one.json", .lineId = 42u, .colorIndex = 1u}
+        );
+        written.highlightRules.push_back(
+            LogConfiguration::HighlightRule{.name = "auth service", .columnKeys = {"service"}, .filterString = "auth"}
+        );
+        LogConfigurationManager::Save(written, testConfiguration.GetFilePath(), SaveScope::ColumnsOnly);
+    }
+
+    LogConfigurationManager manager;
+    manager.Load(testConfiguration.GetFilePath());
+    const auto &config = manager.Configuration();
+
+    CHECK(config.columns.size() == 1);
+    CHECK(config.highlightRules.size() == 1);
+    CHECK(config.highlightRules[0].name == "auth service");
+
+    CHECK(config.filters.empty());
+    CHECK_FALSE(config.source.has_value());
+    CHECK(config.anchors.empty());
+}
+
+TEST_CASE(
+    "LogConfiguration without highlightRules loads as empty list",
+    "[LogConfigurationManager][highlight_rules][forward_compat]"
+)
+{
+    // Pre-feature session JSON: no `highlightRules` key. Must
+    // load cleanly with an empty rule vector so existing sessions
+    // are not invalidated.
+    constexpr std::string_view JSON = R"({
+        "columns": [
+            {
+                "header": "service",
+                "keys": ["service"]
+            }
+        ]
+    })";
+    LogConfigurationManager manager;
+    manager.LoadFromString(JSON);
+    CHECK(manager.Configuration().highlightRules.empty());
+    CHECK(manager.Configuration().columns.size() == 1);
+}
+
+TEST_CASE(
+    "LogConfiguration::HighlightRule serialises with stable wire keys", "[LogConfigurationManager][highlight_rules]"
+)
+{
+    // Wire-format snapshot: a rename would surface here as a
+    // missing key rather than as a silent shape change.
+    LogConfiguration original;
+    original.highlightRules.push_back(
+        LogConfiguration::HighlightRule{
+            .name = "example",
+            .enabled = true,
+            .columnKeys = {"service"},
+            .type = LogConfiguration::HighlightRule::Type::String,
+            .matchType = LogConfiguration::HighlightRule::Match::RegularExpression,
+            .filterString = "auth.*",
+            .foregroundIndex = 1,
+            .backgroundIndex = 2,
+            .bold = true,
+            .italic = true,
+        }
+    );
+
+    std::string json;
+    const auto writeError = glz::write_json(original, json);
+    REQUIRE_FALSE(writeError);
+    CHECK(json.contains("\"highlightRules\""));
+    CHECK(json.contains("\"columnKeys\""));
+    CHECK(json.contains("\"foregroundIndex\""));
+    CHECK(json.contains("\"backgroundIndex\""));
+    CHECK(json.contains("\"regularExpression\""));
+
+    LogConfiguration loaded;
+    const auto readError = glz::read_json(loaded, json);
+    REQUIRE_FALSE(readError);
+    REQUIRE(loaded.highlightRules.size() == 1);
+    CHECK(loaded.highlightRules[0].name == "example");
+    CHECK(loaded.highlightRules[0].columnKeys == std::vector<std::string>{"service"});
+    REQUIRE(loaded.highlightRules[0].matchType.has_value());
+    CHECK(*loaded.highlightRules[0].matchType == LogConfiguration::HighlightRule::Match::RegularExpression);
+    CHECK(loaded.highlightRules[0].bold);
+    CHECK(loaded.highlightRules[0].italic);
+}
+
+TEST_CASE("MoveColumn does not rewrite highlightRules[*].columnKeys", "[LogConfigurationManager][highlight_rules]")
+{
+    // Highlight rules bind by keys; unlike `LogFilter::row` they
+    // have no index field to remap after `MoveColumn`.
+    LogConfigurationManager manager;
+    LogConfiguration seed;
+    seed.columns.push_back(
+        LogConfiguration::Column{.header = "time", .keys = {"time"}, .type = LogConfiguration::Type::Time}
+    );
+    seed.columns.push_back(
+        LogConfiguration::Column{.header = "service", .keys = {"service"}, .type = LogConfiguration::Type::String}
+    );
+    seed.columns.push_back(
+        LogConfiguration::Column{.header = "message", .keys = {"message"}, .type = LogConfiguration::Type::String}
+    );
+    seed.highlightRules.push_back(
+        LogConfiguration::HighlightRule{.name = "auth", .columnKeys = {"service"}, .filterString = "auth"}
+    );
+    manager.SetConfiguration(std::move(seed));
+
+    manager.MoveColumn(1, 2); // Move `service` from index 1 to index 2
+
+    const auto &rules = manager.Configuration().highlightRules;
+    REQUIRE(rules.size() == 1);
+    // Keys survive `MoveColumn` untouched.
+    CHECK(rules[0].columnKeys == std::vector<std::string>{"service"});
+    // Sanity: the move actually happened.
+    CHECK(manager.Configuration().columns[1].header == "message");
+    CHECK(manager.Configuration().columns[2].header == "service");
+}

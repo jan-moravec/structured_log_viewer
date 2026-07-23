@@ -5,9 +5,12 @@
 #include "columns_manager_dialog.hpp"
 #include "configuration_diagnostics_dialog.hpp"
 #include "filter_editor.hpp"
+#include "highlight_rule_set.hpp"
+#include "highlight_rules_editor.hpp"
 #include "histogram_model.hpp"
 #include "icon_loader.hpp"
 #include "level_cell_delegate.hpp"
+#include "log_string_matcher.hpp"
 #include "log_warning.hpp"
 #include "network_stream_dialog.hpp"
 #include "qt_streaming_log_sink.hpp"
@@ -635,9 +638,56 @@ MainWindow::MainWindow(
 
     // Build before the model so it can wire anchor listeners.
     mAnchors = new AnchorManager(this);
-    mModel = new LogModel(mTableView, mTheme, mAnchors);
+    mHighlights = new HighlightRuleSet(this);
+    mModel = new LogModel(mTableView, mTheme, mAnchors, mHighlights);
     mTableView->setModel(mModel);
     mTableView->SetAnchorManager(mAnchors);
+
+    // Highlight-rule wiring: keep the runtime cache in sync with
+    // the model. Column inserts also rebind so rules whose keys
+    // newly resolve activate immediately; model reset drops the
+    // match cache (compiled rules persist for the next stream).
+    connect(mModel, &QAbstractItemModel::rowsInserted, this, [this](const QModelIndex &, int first, int last) {
+        if (mHighlights == nullptr || mModel == nullptr)
+        {
+            return;
+        }
+        // Guard against negatives before the size_t cast.
+        if (first < 0 || last < first)
+        {
+            return;
+        }
+        mHighlights->OnRowsAppended(mModel->Table(), static_cast<std::size_t>(first), static_cast<std::size_t>(last));
+    });
+    // FIFO retention fires `rowsRemoved` before appending the new
+    // tail; without this the cache would keep stale prefix entries
+    // and misalign every subsequent `LastMatchFor`.
+    connect(mModel, &QAbstractItemModel::rowsRemoved, this, [this](const QModelIndex &, int first, int last) {
+        if (mHighlights == nullptr || first < 0 || last < first)
+        {
+            return;
+        }
+        mHighlights->OnRowsEvicted(static_cast<std::size_t>(first), static_cast<std::size_t>(last));
+    });
+    connect(mModel, &QAbstractItemModel::columnsInserted, this, [this](const QModelIndex &, int, int) {
+        if (mHighlights == nullptr || mModel == nullptr)
+        {
+            return;
+        }
+        mHighlights->RebindColumns(mModel->Configuration().columns, &mModel->Table());
+        // Keep an open editor's column picker in sync so a rule
+        // authored right after streaming discovers a new key sees it.
+        if (mHighlightRulesEditor != nullptr)
+        {
+            mHighlightRulesEditor->SetColumns(mModel->Configuration().columns);
+        }
+    });
+    connect(mModel, &QAbstractItemModel::modelReset, this, [this]() {
+        if (mHighlights != nullptr)
+        {
+            mHighlights->ClearMatches();
+        }
+    });
 
     mAnchorsDock = new AnchorsDock(mAnchors, mModel, mTheme, this);
     addDockWidget(Qt::RightDockWidgetArea, mAnchorsDock);
@@ -818,6 +868,19 @@ MainWindow::MainWindow(
     // mid-stream timestamp bubbling) so the runtime filter map and
     // proxy rules stay aligned with the source layout.
     connect(mModel, &QAbstractItemModel::columnsMoved, this, &MainWindow::OnSourceColumnsMoved);
+
+    // Enum / Level type flips and dictionary growth can
+    // activate / deactivate highlight rules; rebind on every
+    // reason to keep the compiled predicates in step.
+    connect(
+        mModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason /*reason*/, int /*columnIndex*/) {
+            if (mHighlights == nullptr || mModel == nullptr)
+            {
+                return;
+            }
+            mHighlights->RebindColumns(mModel->Configuration().columns, &mModel->Table());
+        }
+    );
 
     // Rebuild on demand. This is the only escape hatch when every
     // header section is hidden (right-click needs a visible section).
@@ -1213,6 +1276,53 @@ MainWindow::MainWindow(
             tr("Regex templates editor needs a RegexTemplateRegistry (production-only).")
         );
     }
+
+    // Settings -> Highlight rules... opens the modeless editor
+    // (lazy-construct, survive-close, like the regex editor). Save
+    // updates the runtime cache and the persistent mirror in one
+    // atomic slot.
+    connect(ui->actionHighlightRules, &QAction::triggered, this, [this]() {
+        if (mHighlightRulesEditor.isNull())
+        {
+            const auto &config = mModel->Configuration();
+            mHighlightRulesEditor = new HighlightRulesEditor(config.highlightRules, config.columns, mTheme, this);
+            mHighlightRulesEditor->setWindowFlag(Qt::Window, true);
+            connect(
+                mHighlightRulesEditor.data(),
+                &HighlightRulesEditor::rulesSaved,
+                this,
+                [this](std::vector<loglib::LogConfiguration::HighlightRule> rules) {
+                    // Persist first so any auto-save handler sees
+                    // the committed state; hand a copy to the
+                    // runtime rebuild.
+                    auto forRuntime = rules;
+                    mModel->ConfigurationManager().SetHighlightRules(std::move(rules));
+                    if (mHighlights != nullptr)
+                    {
+                        mHighlights->SetRules(std::move(forRuntime), mModel->Configuration().columns, &mModel->Table());
+                        const std::size_t inactive = mHighlights->InactiveCount();
+                        if (inactive > 0)
+                        {
+                            statusBar()->showMessage(
+                                tr("%1 highlight rule(s) inactive against current columns.")
+                                    .arg(static_cast<qulonglong>(inactive)),
+                                STATUS_BAR_MESSAGE_TIMEOUT_MS
+                            );
+                        }
+                    }
+                }
+            );
+        }
+        else
+        {
+            // Refresh columns on reopen: streaming may have
+            // discovered new keys since last show.
+            mHighlightRulesEditor->SetColumns(mModel->Configuration().columns);
+        }
+        mHighlightRulesEditor->show();
+        mHighlightRulesEditor->raise();
+        mHighlightRulesEditor->activateWindow();
+    });
     connect(mPreferencesEditor, &PreferencesEditor::streamingRetentionChanged, this, [this](qulonglong) {
         ApplyStreamingRetention();
     });
@@ -6016,6 +6126,32 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         }
 
         RebuildFiltersFromConfiguration();
+
+        // Install loaded highlight rules against the current
+        // columns. The table is empty (reset above wiped rows), so
+        // the row-match cache seeds empty; the wired `rowsInserted`
+        // hook fills it as streams populate.
+        if (mHighlights != nullptr)
+        {
+            const auto &config = mModel->Configuration();
+            mHighlights->SetRules(config.highlightRules, config.columns, &mModel->Table());
+            const std::size_t inactive = mHighlights->InactiveCount();
+            if (inactive > 0)
+            {
+                statusBar()->showMessage(
+                    tr("%1 highlight rule(s) inactive against the loaded columns.")
+                        .arg(static_cast<qulonglong>(inactive)),
+                    STATUS_BAR_MESSAGE_TIMEOUT_MS
+                );
+            }
+            // Refresh any open editor so it shows the loaded rules,
+            // not the pre-load buffer.
+            if (mHighlightRulesEditor != nullptr)
+            {
+                mHighlightRulesEditor->SetColumns(config.columns);
+                mHighlightRulesEditor->SetRules(config.highlightRules);
+            }
+        }
         return true;
     }
     catch (std::exception &e)
@@ -7231,127 +7367,6 @@ bool MainWindow::EnumFilterFullyResolved(const loglib::LogConfiguration::LogFilt
     });
 }
 
-namespace
-{
-
-/// JIT-compile @p regex eagerly so each captured copy doesn't re-JIT
-/// lazily on its first `match()`. The lazy compile is the real
-/// thread-safety footgun: a `QRegularExpressionPrivate` shared via
-/// implicit copy across threads would race on the first match.
-///
-/// `QRegularExpression` is implicitly shared (CoW), so
-/// captured-by-value copies in the matcher lambdas alias the primed
-/// private. `loglib::FilterAcceptedRows` runs the predicate from
-/// `tbb::parallel_for` workers, so these matchers do cross threads.
-/// `QRegularExpression::match()` is documented as thread-safe once
-/// compiled (which this prime guarantees), so the CoW alias is safe.
-void PrimeRegex(QRegularExpression &regex)
-{
-    (void)regex.match(QStringLiteral(""));
-}
-
-/// Materialise the haystack as `QString`, skipping the
-/// `replace` + `simplified()` walks when the bytes are already
-/// canonical. The QString allocation is unavoidable on the regex path
-/// (Qt's regex engine is UTF-16), but `QString::fromUtf8` alone is
-/// roughly a third the cost of the full conversion.
-QString HaystackQStringFast(std::string_view bytes)
-{
-    if (LogModel::IsSingleLineAsciiTrim(bytes))
-    {
-        return QString::fromUtf8(bytes.data(), static_cast<qsizetype>(bytes.size()));
-    }
-    return LogModel::ConvertToSingleLineCompactQString(bytes);
-}
-
-/// Build a Qt-flavoured matcher for `CallbackStringRowPredicate`.
-/// Captures the compiled regex / needle once so the inner loop avoids
-/// per-row recompilation.
-///
-/// The haystack is normalised via
-/// `LogModel::ConvertToSingleLineCompactQString` so filters match the
-/// same single-line text the user sees (and that Find applies). The
-/// needle is left as-typed -- matches pre-`RowPredicate` `SortRole`
-/// semantics so a needle with consecutive spaces stays a non-match
-/// against a simplified haystack.
-///
-/// `Exactly` / `Contains` get an ASCII fast path: when both pattern
-/// and haystack pass `LogModel::IsSingleLineAsciiTrim` (most log
-/// lines), the matcher byte-compares / byte-searches directly and
-/// skips the `QString::fromUtf8` + `simplified` round-trip. The
-/// pattern is checked once at matcher construction so the per-row
-/// cost is one early-exit walk plus the compare. Regex / wildcard
-/// still need a QString (Qt's engine is UTF-16) but skip the
-/// `replace` + `simplified` passes when the haystack is canonical.
-loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
-    const QString &pattern, loglib::LogConfiguration::LogFilter::Match match
-)
-{
-    using Match = loglib::LogConfiguration::LogFilter::Match;
-    switch (match)
-    {
-    case Match::Exactly:
-    {
-        // Capture by value: the parameter reference would dangle
-        // after return. `QString`'s implicit sharing keeps this a
-        // refcount bump.
-        const QByteArray patternUtf8 = pattern.toUtf8();
-        std::string patternBytes{patternUtf8.constData(), static_cast<size_t>(patternUtf8.size())};
-        if (LogModel::IsSingleLineAsciiTrim(patternBytes))
-        {
-            // NOLINTNEXTLINE(bugprone-exception-escape)
-            return [patternBytes = std::move(patternBytes), pattern](std::string_view bytes) {
-                if (LogModel::IsSingleLineAsciiTrim(bytes))
-                {
-                    return bytes == std::string_view{patternBytes};
-                }
-                return LogModel::ConvertToSingleLineCompactQString(bytes) == pattern;
-            };
-        }
-        // clang-tidy flags `QString::operator==` and the QString
-        // allocation as exception-escape; both are benign here.
-        // NOLINTNEXTLINE(bugprone-exception-escape)
-        return
-            [pattern](std::string_view bytes) { return LogModel::ConvertToSingleLineCompactQString(bytes) == pattern; };
-    }
-    case Match::Contains:
-    {
-        const QByteArray patternUtf8 = pattern.toUtf8();
-        std::string patternBytes{patternUtf8.constData(), static_cast<size_t>(patternUtf8.size())};
-        if (LogModel::IsSingleLineAsciiTrim(patternBytes))
-        {
-            // NOLINTNEXTLINE(bugprone-exception-escape)
-            return [patternBytes = std::move(patternBytes), pattern](std::string_view bytes) {
-                if (LogModel::IsSingleLineAsciiTrim(bytes))
-                {
-                    return bytes.contains(patternBytes);
-                }
-                return LogModel::ConvertToSingleLineCompactQString(bytes).contains(pattern);
-            };
-        }
-        // NOLINTNEXTLINE(bugprone-exception-escape)
-        return [pattern](std::string_view bytes) {
-            return LogModel::ConvertToSingleLineCompactQString(bytes).contains(pattern);
-        };
-    }
-    case Match::RegularExpression:
-    {
-        QRegularExpression regex(pattern);
-        PrimeRegex(regex);
-        return [regex](std::string_view bytes) { return regex.match(HaystackQStringFast(bytes)).hasMatch(); };
-    }
-    case Match::Wildcard:
-    {
-        QRegularExpression regex(QRegularExpression::wildcardToRegularExpression(pattern));
-        PrimeRegex(regex);
-        return [regex](std::string_view bytes) { return regex.match(HaystackQStringFast(bytes)).hasMatch(); };
-    }
-    }
-    return [](std::string_view) { return false; };
-}
-
-} // namespace
-
 void MainWindow::UpdateFilters()
 {
     // Sort filters cheapest-first so `std::ranges::all_of` short-
@@ -7689,6 +7704,14 @@ void MainWindow::OnSourceColumnsMoved(
     if (runtimeFilterChanged)
     {
         UpdateFilters();
+    }
+    // Highlight rules bind by keys, but the compiled predicates
+    // cache resolved column *indices*. `MoveColumn` rotates the
+    // column vector, so refresh both caches or highlights would
+    // start tinting rows against the wrong field.
+    if (mHighlights != nullptr && mModel != nullptr)
+    {
+        mHighlights->RebindColumns(mModel->Configuration().columns, &mModel->Table());
     }
     // Re-apply hidden flags after the move. Qt usually carries them
     // through `columnsMoved`, but `initializeSections()` clears them

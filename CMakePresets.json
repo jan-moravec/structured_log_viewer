@@ -152,14 +152,14 @@
         },
         {
             "name": "clang-tsan",
-            "displayName": "TSan tests (excludes benchmarks, apptest, apptest_overview_rail, apptest_histogram)",
-            "description": "Runs the loglib unit tests + apptest_queue under ThreadSanitizer. Excludes the Qt-coupled apptest, apptest_overview_rail, and apptest_histogram suites by name regex because Qt's raster thread pool and private mutexes generate false positives that drown the signal (e.g. concurrent QArrayData allocations on the pooled paint workers spawned by QWidget::show(), or the QMetaObject::invokeMethod queued-slot allocation race between the parser worker's QtStreamingLogSink::OnFinished callable-post and the main-thread QObject::event dispatch). The threading code worth testing (TBB pipeline, StreamLineSource, TailingBytesProducer, LogModel::Reset teardown, BoundedBatchQueue) lives in the tests that still run.",
+            "displayName": "TSan tests (excludes benchmarks, apptest, apptest_overview_rail, apptest_histogram, apptest_highlight_rules)",
+            "description": "Runs the loglib unit tests + apptest_queue under ThreadSanitizer. Excludes the Qt-coupled apptest, apptest_overview_rail, apptest_histogram, and apptest_highlight_rules suites by name regex because Qt's raster thread pool and private mutexes generate false positives that drown the signal (e.g. concurrent QArrayData allocations on the pooled paint workers spawned by QWidget::show(), or the QMetaObject::invokeMethod queued-slot allocation race between the parser worker's QtStreamingLogSink::OnFinished callable-post and the main-thread QObject::event dispatch, or the QWaitCondition destroy-vs-broadcast teardown race between the TBB parallel_pipeline global thread pool and process exit that fires from any Qt-hosted binary that drives JsonParser::ParseStreaming). The threading code worth testing (TBB pipeline, StreamLineSource, TailingBytesProducer, LogModel::Reset teardown, BoundedBatchQueue) lives in the tests that still run.",
             "configurePreset": "clang-tsan",
             "inherits": "_test_base",
             "filter": {
                 "exclude": {
                     "label": "benchmark",
-                    "name": "^apptest(_overview_rail|_histogram)?$"
+                    "name": "^apptest(_overview_rail|_histogram|_highlight_rules)?$"
                 }
             },
             "environment": {

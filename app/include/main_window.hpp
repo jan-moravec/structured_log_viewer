@@ -69,6 +69,8 @@ class SessionHistoryManager;
 class ThemeControl;
 class RegexTemplateRegistry;
 class RegexTemplatesEditor;
+class HighlightRuleSet;
+class HighlightRulesEditor;
 
 class MainWindow : public QMainWindow
 {
@@ -331,6 +333,13 @@ public:
     [[nodiscard]] AnchorManager *Anchors() const noexcept
     {
         return mAnchors;
+    }
+
+    /// Owned `HighlightRuleSet`; non-null after construction.
+    /// Exposed for test inspection of the rebind signal path.
+    [[nodiscard]] HighlightRuleSet *Highlights() const noexcept
+    {
+        return mHighlights;
     }
 
     /// Select the next (forward=true) or previous anchored row in
@@ -1278,6 +1287,13 @@ private:
     /// Stays null when `mRegexTemplateRegistry` is null (the menu
     /// action is disabled in that case).
     RegexTemplatesEditor *mRegexTemplatesEditor = nullptr;
+
+    /// Modeless editor for user-defined highlight rules
+    /// (`Settings -> Highlight rules...`). Lazy-construct /
+    /// survive-close, like the regex editor. `QPointer` so a
+    /// teardown-time delete zeroes the slot even while queued
+    /// signals from the rule set are in flight.
+    QPointer<HighlightRulesEditor> mHighlightRulesEditor;
     /// Non-owning. Lives in `main()` (or the test fixture).
     /// `nullptr` for legacy no-args construction; theme code paths
     /// in this class check before dereferencing.
@@ -1286,6 +1302,12 @@ private:
     /// Owned. Brackets the lifetime of `mModel` and `mTableView`,
     /// both of which read from it. Non-null after construction.
     AnchorManager *mAnchors = nullptr;
+
+    /// Owned. Runtime companion to
+    /// `LogConfiguration::highlightRules`. Constructed before
+    /// `mModel` so the model can hold a non-owning pointer for
+    /// the paint cascade. Non-null after construction.
+    HighlightRuleSet *mHighlights = nullptr;
 
     /// Owned. Hidden by default; toggled via View -> Anchors.
     AnchorsDock *mAnchorsDock = nullptr;
