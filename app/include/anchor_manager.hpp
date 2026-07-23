@@ -17,7 +17,8 @@
 /// Owns the user's set of anchored rows: `(file, lineId) -> (colour, note)`.
 /// One instance per `MainWindow`; `LogModel`, `LogTableView`, and
 /// `AnchorsDock` hold a non-owning pointer and react to
-/// `anchorChanged` / `anchorsReset`.
+/// `anchorChanged` (colour / add / remove), `anchorNoteChanged`
+/// (note text edits), and `anchorsReset` (bulk mutation).
 ///
 /// Key layout:
 /// - `locator`: canonical file path (matches `Source::locatorDedupKeys`).
@@ -83,9 +84,11 @@ public:
     /// colour. @p note is sanitised via `SanitiseNote` before storage
     /// (embedded CR/LF/tab collapse to a single space; edges trim),
     /// so the "one line" invariant is enforced at the manager
-    /// boundary rather than at every caller. Emits `anchorChanged`
-    /// when the stored note actually changes. Returns true iff state
-    /// changed.
+    /// boundary rather than at every caller. Emits
+    /// `anchorNoteChanged` (NOT `anchorChanged`) when the stored
+    /// note actually changes so listeners that only depend on
+    /// anchor colour (histogram tick strip, overview rail bands)
+    /// can skip the notification. Returns true iff state changed.
     bool SetAnchorNote(const Key &key, std::string note);
 
     /// Collapse CR/LF/tab into a single space and trim leading and
@@ -151,9 +154,19 @@ public:
     [[nodiscard]] bool Empty() const noexcept;
 
 signals:
-    /// One key added, recoloured, note-edited, or removed. Listeners
-    /// can scope their repaint to the matching row(s).
+    /// One key added, recoloured, or removed. Listeners can scope
+    /// their repaint to the matching row(s).
+    ///
+    /// Note edits go through the separate `anchorNoteChanged`
+    /// signal instead of this one so listeners that only care
+    /// about anchor colour / presence (histogram tick strip,
+    /// overview rail bands) don't rebuild on every keystroke.
     void anchorChanged(const AnchorManager::Key &key);
+
+    /// One key's note text changed. Listeners that surface the
+    /// note (row tooltip via `LogModel`, anchors dock, record
+    /// detail dock) refresh; colour-only listeners can skip it.
+    void anchorNoteChanged(const AnchorManager::Key &key);
 
     /// Bulk mutation (`ClearAll`, `Replace`, or a multi-key bulk op).
     /// Listeners refresh the entire visible table.
@@ -178,6 +191,7 @@ private:
     std::unordered_map<Key, Value, KeyHash> mAnchors;
 };
 
-// Required for `Qt::QueuedConnection` on `anchorChanged`: Qt copies
-// the argument into the event queue and needs the type registered.
+// Required for `Qt::QueuedConnection` on the anchor signals
+// (`anchorChanged`, `anchorNoteChanged`): Qt copies the argument
+// into the event queue and needs the type registered.
 Q_DECLARE_METATYPE(AnchorManager::Key)

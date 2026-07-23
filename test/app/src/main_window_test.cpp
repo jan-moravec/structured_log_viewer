@@ -4527,15 +4527,21 @@ private slots:
 
     // SetAnchorNote on an unknown key must be a no-op. Notes only
     // exist alongside an anchor colour, so the manager rejects a
-    // note without seeding an anchor.
+    // note without seeding an anchor. Neither `anchorChanged` (the
+    // colour-signal) nor `anchorNoteChanged` (the note-signal) may
+    // fire on a rejected write -- otherwise colour-only listeners
+    // (histogram tick strip, overview rail) would rebuild for
+    // nothing.
     void TestSetAnchorNoteRejectsUnknownKey()
     {
         AnchorManager manager;
         const QSignalSpy changedSpy(&manager, &AnchorManager::anchorChanged);
+        const QSignalSpy noteChangedSpy(&manager, &AnchorManager::anchorNoteChanged);
         const AnchorManager::Key key{.locator = "c:/logs/a.json", .lineId = 99};
 
         QVERIFY(!manager.SetAnchorNote(key, std::string{"not gonna stick"}));
         QCOMPARE(changedSpy.count(), 0);
+        QCOMPARE(noteChangedSpy.count(), 0);
         QVERIFY(!manager.NoteFor(key).has_value());
     }
 
@@ -4580,15 +4586,25 @@ private slots:
         AnchorManager manager;
         const AnchorManager::Key key{.locator = "c:/logs/a.json", .lineId = 42};
         QVERIFY(manager.SetAnchor(key, 1));
+        // Spies wrap `SetAnchorNote` so we cover both the successful
+        // write (fires `anchorNoteChanged`, not `anchorChanged`) and
+        // the idempotent no-op (fires neither).
+        const QSignalSpy changedSpy(&manager, &AnchorManager::anchorChanged);
+        const QSignalSpy noteChangedSpy(&manager, &AnchorManager::anchorNoteChanged);
         QVERIFY(manager.SetAnchorNote(key, std::string{"  raw\r\nnote\t "}));
         QCOMPARE(manager.NoteFor(key).value_or(std::string{"NO-KEY"}), std::string{"raw note"});
+        // Note edits go through `anchorNoteChanged`, NOT
+        // `anchorChanged`, so colour-only listeners (histogram tick
+        // strip, overview rail bands) don't rebuild on every keystroke.
+        QCOMPARE(changedSpy.count(), 0);
+        QCOMPARE(noteChangedSpy.count(), 1);
 
         // A second `SetAnchorNote` with the same *unsanitised* input
         // must be a no-op after the first call sanitised it: the
         // stored note equals the sanitised form, so nothing to do.
-        const QSignalSpy changedSpy(&manager, &AnchorManager::anchorChanged);
         QVERIFY(!manager.SetAnchorNote(key, std::string{"  raw\r\nnote\t "}));
         QCOMPARE(changedSpy.count(), 0);
+        QCOMPARE(noteChangedSpy.count(), 1);
     }
 
     // Config load through `Replace` sanitises notes so a hand-edited
@@ -4840,8 +4856,8 @@ private slots:
 
         // Edit the note column: setText fires `itemChanged`, which
         // the dock forwards to `SetAnchorNote`. The row-refresh
-        // triggered by `anchorChanged` runs through the suppression
-        // counter, so no re-entry occurs.
+        // triggered by `anchorNoteChanged` runs through the
+        // suppression counter, so no re-entry occurs.
         QTreeWidgetItem *item = tree->topLevelItem(0);
         QVERIFY(item != nullptr);
         item->setText(1, QStringLiteral("first error"));
@@ -5006,6 +5022,12 @@ private slots:
         anchors->ClearAll();
         QCoreApplication::processEvents();
         model->EndStreaming(false);
+        // Restore the fixture's expected hidden state so subsequent
+        // tests don't inherit a shown/active window (visibility
+        // changes paint scheduling and focus routing under offscreen
+        // QPA, which can flake unrelated assertions).
+        mWindow->hide();
+        QCoreApplication::processEvents();
     }
 
     // Row tooltip surfaces the anchor note when the anchored row

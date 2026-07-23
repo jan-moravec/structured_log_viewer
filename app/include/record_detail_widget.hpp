@@ -120,6 +120,12 @@ private slots:
 private:
     void PopulateUi();
 
+    /// Recompute the muted italic foreground for the anchor-note
+    /// subline from the current application palette. Called from
+    /// the ctor (initial paint) and from `RefreshPalette` (theme
+    /// flips) so the note colour tracks light/dark switches.
+    void ApplyAnchorNoteLabelPalette();
+
     RecordDetailContent mContent;
     QLabel *mSummaryLabel = nullptr;
     /// Italic subline directly under the summary that surfaces the

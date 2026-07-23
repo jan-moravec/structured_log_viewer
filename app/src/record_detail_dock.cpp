@@ -130,9 +130,14 @@ RecordDetailDock::RecordDetailDock(LogModel *model, AnchorManager *anchors, QWid
     // style-only). Subscribe directly so the pinned row's
     // anchor-note subline stays in step with edits from the
     // Anchors dock or the F4 shortcut.
+    //
+    // Both `anchorChanged` (colour flip / add / remove) and
+    // `anchorNoteChanged` (note text edited) matter here: the
+    // former changes whether the subline is shown at all, the
+    // latter changes what it says. Same handler for both.
     if (mAnchors != nullptr)
     {
-        connect(mAnchors, &AnchorManager::anchorChanged, this, [this](const AnchorManager::Key &changedKey) {
+        const auto onPerAnchorChange = [this](const AnchorManager::Key &changedKey) {
             if (!IsVisibleForRefresh() || !mCurrentSourceIndex.isValid() || mModel.isNull())
             {
                 return;
@@ -143,7 +148,9 @@ RecordDetailDock::RecordDetailDock(LogModel *model, AnchorManager *anchors, QWid
             {
                 RefreshFromModel();
             }
-        });
+        };
+        connect(mAnchors, &AnchorManager::anchorChanged, this, onPerAnchorChange);
+        connect(mAnchors, &AnchorManager::anchorNoteChanged, this, onPerAnchorChange);
         connect(mAnchors, &AnchorManager::anchorsReset, this, [this]() {
             if (!IsVisibleForRefresh() || !mCurrentSourceIndex.isValid())
             {

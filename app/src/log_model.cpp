@@ -70,6 +70,10 @@ LogModel::LogModel(
     {
         // Anchor mutations -> scoped row repaints.
         connect(mAnchors, &AnchorManager::anchorChanged, this, &LogModel::RefreshRowsForAnchor);
+        // Note-only edits: narrow refresh to `ToolTipRole` so
+        // style-role listeners (highlight cache, view repaint)
+        // skip the emit entirely.
+        connect(mAnchors, &AnchorManager::anchorNoteChanged, this, &LogModel::RefreshTooltipRowsForAnchor);
         connect(mAnchors, &AnchorManager::anchorsReset, this, &LogModel::RefreshAllAnchorRows);
     }
     if (mHighlights != nullptr)
@@ -1475,6 +1479,20 @@ void LogModel::PrewarmCanonicalLocatorCache()
 
 void LogModel::RefreshRowsForAnchor(const AnchorManager::Key &key)
 {
+    EmitRolesForAnchorKey(key, {Qt::BackgroundRole, Qt::ForegroundRole, Qt::ToolTipRole});
+}
+
+void LogModel::RefreshTooltipRowsForAnchor(const AnchorManager::Key &key)
+{
+    // Note-only edit: only the row tooltip re-renders. Colour /
+    // background stayed the same, so skip `Background` /
+    // `Foreground`. Both roles pass `IsStyleOnlyRoleChange`, so
+    // value listeners still short-circuit.
+    EmitRolesForAnchorKey(key, {Qt::ToolTipRole});
+}
+
+void LogModel::EmitRolesForAnchorKey(const AnchorManager::Key &key, const QList<int> &roles)
+{
     const int cols = columnCount();
     if (cols <= 0)
     {
@@ -1498,10 +1516,7 @@ void LogModel::RefreshRowsForAnchor(const AnchorManager::Key &key)
         }
         const QModelIndex topLeft = index(static_cast<int>(i), 0);
         const QModelIndex bottomRight = index(static_cast<int>(i), cols - 1);
-        // ToolTipRole rides along so a note edit re-fetches the
-        // per-row tooltip; the role is included in
-        // `IsStyleOnlyRoleChange` so listeners still short-circuit.
-        emit dataChanged(topLeft, bottomRight, {Qt::BackgroundRole, Qt::ForegroundRole, Qt::ToolTipRole});
+        emit dataChanged(topLeft, bottomRight, roles);
     }
 }
 

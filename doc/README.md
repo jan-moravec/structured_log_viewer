@@ -319,13 +319,13 @@ To pin a record for side-by-side comparison, click **Open in new window** inside
 
 ## Anchors
 
-Anchors let you mark notable rows with one of eight colours and jump between them with the keyboard. Useful when triaging a long log: pin the request that started the incident, the first error, and the final recovery, then cycle through them with `F2`.
+Anchors let you mark notable rows with one of eight colours, attach a short freeform note to each, and jump between them with the keyboard. Useful when triaging a long log: pin the request that started the incident, the first error, and the final recovery, then cycle through them with `F2`.
 
 ### Marking a row
 
 - Right-click a row → **Anchor** → "Colour N" to colour it.
 - Or press `Ctrl+1` … `Ctrl+8` with one or more rows selected to apply that slot to every selected row.
-- The same chord on an already-anchored row re-colours it.
+- The same chord on an already-anchored row re-colours it. Any [note](#anchor-notes) attached to the anchor is preserved across a recolour, so `Ctrl+1..8` is non-destructive.
 
 ### Clearing
 
@@ -338,11 +338,22 @@ Anchors let you mark notable rows with one of eight colours and jump between the
 - `Shift+F2` jumps to the previous one. Both wrap at the visible bounds.
 - Anchors filtered out of the visible table are skipped; the status bar shows an explanation if every anchor is currently filtered.
 
+### Anchor notes
+
+Each anchor carries an optional one-line note — a place to jot down *"first error of the incident"* or *"customer report starts here"* instead of relying on the swatch colour alone to carry meaning.
+
+- Right-click an anchored row → **Anchor** → **Edit note…** opens a one-line editor pre-populated with the current note. `F4` on the focused anchored row does the same. The `F4` shortcut is guarded against firing while a text editor (inline note editor, search bar, filter dialog) holds focus, so an in-flight edit is never dropped by an accidental key repeat.
+- In the [Anchors panel](#anchors-panel) each row has an inline-editable **Note** column: double-click or press `F2` on it to edit; **Enter** commits, **Escape** cancels.
+- Notes are one-liners by contract: newlines and tabs are collapsed to spaces and edge whitespace is trimmed on commit, so a multi-line paste still lands as a single tidy line.
+- User text is rendered literally throughout — a note like `retry <failed>` or `A & B` shows exactly those characters, not HTML markup.
+- The [Record Details](#inspecting-a-record) pane surfaces the note as an italic subline directly under the summary; **Copy as key/value** prepends a synthetic `anchor.note: <note>` line to the payload so the annotation travels with the record.
+- Hovering any cell in an anchored row shows the note as a tooltip.
+
 ### Anchors panel
 
-- **View → Anchors** (`Ctrl+K`) toggles a dock listing every anchored row with its colour swatch, line id, and source filename.
-- Double-click an entry (or press `Enter` on it) to jump to it.
-- Right-click for **Jump to anchor** / **Remove anchor**.
+- **View → Anchors** (`Ctrl+K`) toggles a dock listing every anchored row with its colour swatch, line id, source filename, and inline-editable [note](#anchor-notes) column.
+- Double-click an entry's **Anchor** column (or press `Enter`) to jump to it. Double-click or press `F2` on the **Note** column to start inline editing; **Enter** commits, **Escape** cancels.
+- Right-click for **Jump to anchor** / **Edit note** / **Remove anchor**.
 - The header **Clear all** button drops every anchor at once. It is disabled while no anchors exist.
 - The panel is a regular Qt dock — drag the title bar to redock it to another edge, or drop it outside the window to float it.
 
@@ -352,7 +363,7 @@ The eight slots index into the active theme's `anchorPalette`. A theme that omit
 
 ### Persistence
 
-The anchor list is persisted as part of the [configuration](#configurations), so re-opening the same session restores its colours. Anchors are keyed by `(canonical file path, lineId)`; switching to a different log source loses their resolution even when the configuration is loaded.
+The anchor list — colours *and* notes — is persisted as part of the [configuration](#configurations), so re-opening the same session restores both. Anchors are keyed by `(canonical file path, lineId)`; switching to a different log source loses their resolution even when the configuration is loaded. Anchors saved by earlier builds (pre-note) load cleanly with an empty note, so no schema migration is needed to open an old session.
 
 > Anchored rows that are FIFO-evicted from a [streaming session](#retention-cap) are dropped from the anchor list automatically — they would otherwise linger in the panel and in the saved configuration with no resolvable row to point at.
 
@@ -605,6 +616,7 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 | Clear every anchor             | `Ctrl+Shift+A`      |
 | Jump to next anchor            | `F2`                |
 | Jump to previous anchor        | `Shift+F2`          |
+| Edit anchor note on current row | `F4`               |
 | Pause / Resume stream          | `Ctrl+Shift+P`      |
 | Toggle Follow newest           | `Ctrl+Shift+T`      |
 | Stop stream                    | `Ctrl+Shift+X`      |

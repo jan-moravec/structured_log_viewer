@@ -9,7 +9,9 @@
 AnchorManager::AnchorManager(QObject *parent)
     : QObject(parent)
 {
-    // Required for `Qt::QueuedConnection` on the `anchorChanged` signal.
+    // Required for `Qt::QueuedConnection` on the anchor signals
+    // (`anchorChanged`, `anchorNoteChanged`) -- Qt copies the Key
+    // argument into the event queue and needs the type registered.
     qRegisterMetaType<AnchorManager::Key>("AnchorManager::Key");
 }
 
@@ -95,7 +97,10 @@ bool AnchorManager::SetAnchorNote(const Key &key, std::string note)
         return false;
     }
     it->second.note = std::move(sanitised);
-    emit anchorChanged(key);
+    // Distinct signal from `anchorChanged`: colour-only listeners
+    // (histogram, overview rail) don't need to rebuild on note
+    // keystrokes.
+    emit anchorNoteChanged(key);
     return true;
 }
 

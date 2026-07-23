@@ -297,6 +297,10 @@ RecordDetailWidget::RecordDetailWidget(QWidget *parent)
     // characters like `<`, `&`, or a stray `>` that QLabel's default
     // `Qt::AutoText` would parse as rich text (bold/italic/etc.),
     // shadowing what the user actually wrote.
+    //
+    // The palette override baked in here is refreshed by
+    // `RefreshPalette` on theme flips; without that the note colour
+    // would freeze at the theme in effect when the dock was built.
     mAnchorNoteLabel = new QLabel(this);
     mAnchorNoteLabel->setObjectName(QStringLiteral("anchorNoteLabel"));
     mAnchorNoteLabel->setTextFormat(Qt::PlainText);
@@ -306,10 +310,8 @@ RecordDetailWidget::RecordDetailWidget(QWidget *parent)
         QFont noteFont = mAnchorNoteLabel->font();
         noteFont.setItalic(true);
         mAnchorNoteLabel->setFont(noteFont);
-        QPalette palette = mAnchorNoteLabel->palette();
-        palette.setColor(mAnchorNoteLabel->foregroundRole(), palette.color(QPalette::PlaceholderText));
-        mAnchorNoteLabel->setPalette(palette);
     }
+    ApplyAnchorNoteLabelPalette();
     mAnchorNoteLabel->hide();
     layout->addWidget(mAnchorNoteLabel);
 
@@ -564,9 +566,28 @@ void RecordDetailWidget::RefreshPalette()
     placeholderPalette.setColor(mPlaceholderLabel->foregroundRole(), qApp->palette().color(QPalette::PlaceholderText));
     mPlaceholderLabel->setPalette(placeholderPalette);
 
+    // Same story for the anchor-note subline: its palette carries
+    // an explicit `PlaceholderText` override baked in at ctor time,
+    // so without this refresh a Light -> Dark switch leaves the
+    // note colour glued to the old theme.
+    ApplyAnchorNoteLabelPalette();
+
     // Rebuild cells so placeholder-row foregrounds re-pick the
     // theme colour. No-op when there's no displayed content.
     PopulateUi();
+}
+
+void RecordDetailWidget::ApplyAnchorNoteLabelPalette()
+{
+    if (mAnchorNoteLabel == nullptr)
+    {
+        return;
+    }
+    // Read from the app palette (not the label's own), which
+    // already carries the override we're about to overwrite.
+    QPalette palette = mAnchorNoteLabel->palette();
+    palette.setColor(mAnchorNoteLabel->foregroundRole(), qApp->palette().color(QPalette::PlaceholderText));
+    mAnchorNoteLabel->setPalette(palette);
 }
 
 void RecordDetailWidget::CopyAsJsonClicked() const

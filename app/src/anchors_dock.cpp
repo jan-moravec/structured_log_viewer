@@ -34,7 +34,9 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <functional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace
@@ -63,6 +65,38 @@ constexpr int COLUMN_NOTE = 1;
     }
     return SWATCH_ICON_FALLBACK_PX;
 }
+
+/// Snapshot of one anchor entry's identity as pulled off a
+/// `QTreeWidgetItem`'s user-role data. Used by `RefreshAlways` to
+/// remember selection + focus across a `clear()` + repopulate.
+///
+/// The type lives at file scope (not inside `RefreshAlways`) so it
+/// can be used as a key in `std::unordered_set` cleanly: MSVC's
+/// hash-set traits instantiate `_Nothrow_compare` on the key type,
+/// and locally-scoped class types trigger a known ODR-ish
+/// diagnostic path there.
+struct AnchorKeyCarrier
+{
+    QString locator;
+    qulonglong lineId = 0;
+
+    friend bool operator==(const AnchorKeyCarrier &, const AnchorKeyCarrier &) noexcept = default;
+};
+
+struct AnchorKeyCarrierHash
+{
+    std::size_t operator()(const AnchorKeyCarrier &carrier) const noexcept
+    {
+        const std::size_t locatorHash = qHash(carrier.locator);
+        const std::size_t lineIdHash = std::hash<qulonglong>{}(carrier.lineId);
+        // boost::hash_combine mix (same as `AnchorManager::KeyHash`).
+        constexpr std::size_t GOLDEN_RATIO_HASH = 0x9E3779B9U;
+        constexpr std::size_t LEFT_SHIFT = 6U;
+        constexpr std::size_t RIGHT_SHIFT = 2U;
+        return locatorHash ^
+               (lineIdHash + GOLDEN_RATIO_HASH + (locatorHash << LEFT_SHIFT) + (locatorHash >> RIGHT_SHIFT));
+    }
+};
 
 /// User-role slots carrying the `(locator, lineId)` key for each item.
 constexpr int ANCHOR_KEY_LOCATOR_ROLE = Qt::UserRole + 1;
@@ -213,10 +247,14 @@ AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *
     setWidget(host);
 
     // `Refresh()` itself gates on visibility, so every wired path
-    // short-circuits cheaply when the dock is buried.
+    // short-circuits cheaply when the dock is buried. Note edits
+    // fire the distinct `anchorNoteChanged` signal so the note
+    // column reflects live edits from F4 / the row menu even
+    // though colour didn't change.
     if (mAnchors != nullptr)
     {
         connect(mAnchors, &AnchorManager::anchorChanged, this, [this](const AnchorManager::Key &) { Refresh(); });
+        connect(mAnchors, &AnchorManager::anchorNoteChanged, this, [this](const AnchorManager::Key &) { Refresh(); });
         connect(mAnchors, &AnchorManager::anchorsReset, this, [this]() { Refresh(); });
     }
 
@@ -274,25 +312,35 @@ void AnchorsDock::RefreshAlways()
     }
     // Snapshot focus + selection by key so the user's highlight
     // survives the `clear()` + repopulate below (row order may shift).
-    struct AnchorKeyCarrier
-    {
-        QString locator;
-        qulonglong lineId = 0;
-    };
+    //
+    // `selectedKeys` goes into a hash set keyed on
+    // `(locator, lineId)` so the restore loop stays O(N) even with
+    // hundreds of anchors selected (the previous linear scan was
+    // O(N * M) and started to bite during large-incident triage).
+    // `AnchorKeyCarrier` is defined at file scope above -- MSVC's
+    // unordered_set traits choke on a locally-scoped key type.
     AnchorKeyCarrier focusedKey;
     bool hadFocus = false;
+    // Capture the current column too so an edit-in-flight on the
+    // note column doesn't teleport back to the anchor column after
+    // each refresh (jarring during a tabbed multi-row edit).
+    int focusedColumn = COLUMN_ANCHOR;
     if (const QTreeWidgetItem *focused = mTree->currentItem(); focused != nullptr)
     {
         focusedKey.locator = focused->data(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE).toString();
         focusedKey.lineId = focused->data(COLUMN_ANCHOR, ANCHOR_KEY_LINE_ID_ROLE).toULongLong();
         hadFocus = true;
+        if (const int currentColumn = mTree->currentColumn(); currentColumn == COLUMN_NOTE)
+        {
+            focusedColumn = COLUMN_NOTE;
+        }
     }
-    std::vector<AnchorKeyCarrier> selectedKeys;
+    std::unordered_set<AnchorKeyCarrier, AnchorKeyCarrierHash> selectedKeys;
     const auto selectedItems = mTree->selectedItems();
     selectedKeys.reserve(static_cast<std::size_t>(selectedItems.size()));
     for (const QTreeWidgetItem *selected : selectedItems)
     {
-        selectedKeys.push_back(
+        selectedKeys.insert(
             AnchorKeyCarrier{
                 .locator = selected->data(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE).toString(),
                 .lineId = selected->data(COLUMN_ANCHOR, ANCHOR_KEY_LINE_ID_ROLE).toULongLong(),
@@ -374,6 +422,8 @@ void AnchorsDock::RefreshAlways()
 
     // Restore selection + focus in one pass so observers see a
     // single selection-changed signal. Vanished items are dropped.
+    // Hash-set lookup keeps the loop O(N) irrespective of selection
+    // size.
     if (hadFocus || !selectedKeys.empty())
     {
         const QSignalBlocker selectionBlocker(mTree);
@@ -384,18 +434,17 @@ void AnchorsDock::RefreshAlways()
             {
                 continue;
             }
-            const QString itemLocator = item->data(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE).toString();
-            const qulonglong itemLineId = item->data(COLUMN_ANCHOR, ANCHOR_KEY_LINE_ID_ROLE).toULongLong();
-            const bool itemWasSelected = std::ranges::any_of(selectedKeys, [&](const AnchorKeyCarrier &k) {
-                return k.locator == itemLocator && k.lineId == itemLineId;
-            });
-            if (itemWasSelected)
+            const AnchorKeyCarrier itemKey{
+                .locator = item->data(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE).toString(),
+                .lineId = item->data(COLUMN_ANCHOR, ANCHOR_KEY_LINE_ID_ROLE).toULongLong(),
+            };
+            if (selectedKeys.contains(itemKey))
             {
                 item->setSelected(true);
             }
-            if (hadFocus && itemLocator == focusedKey.locator && itemLineId == focusedKey.lineId)
+            if (hadFocus && itemKey == focusedKey)
             {
-                mTree->setCurrentItem(item, COLUMN_ANCHOR, QItemSelectionModel::NoUpdate);
+                mTree->setCurrentItem(item, focusedColumn, QItemSelectionModel::NoUpdate);
             }
         }
     }
@@ -474,7 +523,7 @@ void AnchorsDock::OnItemChanged(QTreeWidgetItem *item, int column)
         item->setText(COLUMN_NOTE, sanitised);
     }
     mAnchors->SetAnchorNote(key, sanitised.toStdString());
-    // `AnchorManager::SetAnchorNote` emits `anchorChanged`; the
+    // `AnchorManager::SetAnchorNote` emits `anchorNoteChanged`; the
     // dock refreshes via that signal, which will restore selection
     // + focus around the edited item.
 }

@@ -83,8 +83,10 @@ public:
     ///
     /// @p anchors, when non-null, paints anchored rows with the
     /// anchor brush regardless of level style. The model is a
-    /// non-owning observer and listens for `anchorChanged` /
-    /// `anchorsReset` to scope its `dataChanged` emits.
+    /// non-owning observer and listens for `anchorChanged` (full
+    /// row style refresh), `anchorNoteChanged` (tooltip-only
+    /// refresh), and `anchorsReset` (all anchored rows) to scope
+    /// its `dataChanged` emits.
     ///
     /// @p highlights, when non-null, paints rule-matched rows on
     /// top of the level brush; anchors still win. Non-owning.
@@ -484,10 +486,22 @@ private:
     /// the whole visible table on `matchesChanged`.
     void RefreshAllHighlightRows();
 
-    /// Emit `dataChanged` (Background + Foreground) on every row
-    /// matching @p key. Usually one row; multi-file sessions may
-    /// have id collisions across sources.
+    /// Emit `dataChanged` (Background + Foreground + ToolTip) on
+    /// every row matching @p key. Usually one row; multi-file
+    /// sessions may have id collisions across sources. Wired to
+    /// `AnchorManager::anchorChanged` (add / recolour / remove).
     void RefreshRowsForAnchor(const AnchorManager::Key &key);
+
+    /// Emit `dataChanged` (ToolTipRole only) on every row matching
+    /// @p key. Wired to `AnchorManager::anchorNoteChanged` --
+    /// colour / background stayed the same, so a note-only edit
+    /// doesn't need the style-role emit that the full-refresh
+    /// variant produces.
+    void RefreshTooltipRowsForAnchor(const AnchorManager::Key &key);
+
+    /// Shared body of the two `Refresh*RowsForAnchor` helpers:
+    /// emit @p roles across every visible row matching @p key.
+    void EmitRolesForAnchorKey(const AnchorManager::Key &key, const QList<int> &roles);
 
     /// Drop anchors on rows `[0, dropCount)` before the table's
     /// `EvictPrefixRows` runs, so anchors can't dangle past FIFO

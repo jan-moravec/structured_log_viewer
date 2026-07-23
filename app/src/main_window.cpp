@@ -8193,34 +8193,43 @@ void MainWindow::AppendAnchorActionsToRowMenu(QMenu *menu, int sourceRow)
     anchorMenu->addSeparator();
     QAction *editNoteAction = anchorMenu->addAction(tr("Edit note\u2026"));
     editNoteAction->setEnabled(rightClickedKey.has_value() && currentColour.has_value());
-    // Capture `sourceRow` (not the key) so the trigger re-resolves
-    // the key at click time; a queued eviction between right-click
-    // and trigger could invalidate a stale key otherwise.
-    connect(editNoteAction, &QAction::triggered, this, [this, sourceRow]() { EditAnchorNoteForRow(sourceRow); });
+    // Capture the *key* (not the row index) so a queued FIFO
+    // eviction between menu build and click can't redirect the edit
+    // to a different anchor that happens to occupy the old row
+    // slot. A stale key just fails `SetAnchorNote` cleanly, which
+    // `EditAnchorNoteForKey` surfaces as a status-bar hint.
+    if (rightClickedKey.has_value())
+    {
+        const AnchorManager::Key capturedKey = *rightClickedKey;
+        connect(editNoteAction, &QAction::triggered, this, [this, capturedKey]() {
+            EditAnchorNoteForKey(capturedKey);
+        });
+    }
 
     QAction *clearAction = anchorMenu->addAction(tr("Remove anchor"));
     clearAction->setEnabled(rightClickedKey.has_value() && currentColour.has_value());
     connect(clearAction, &QAction::triggered, mTableView, &LogTableView::ClearAnchorOnSelection);
 }
 
-void MainWindow::EditAnchorNoteForRow(int sourceRow)
+void MainWindow::EditAnchorNoteForKey(const AnchorManager::Key &key)
 {
-    if (mAnchors == nullptr || mModel == nullptr)
+    if (mAnchors == nullptr)
     {
         return;
     }
-    const auto key = mModel->AnchorKeyForRow(sourceRow);
-    if (!key.has_value() || !mAnchors->ColorFor(*key).has_value())
+    if (!mAnchors->ColorFor(key).has_value())
     {
-        // Row isn't anchored -- surface a hint instead of opening
-        // an editor that can't commit anywhere useful. Mirrors the
-        // "No anchors set" / "No visible row" status-bar affordances
-        // used by `JumpToAnchor`.
+        // Anchor is no longer present -- either the caller passed a
+        // stale key (e.g. a captured row-menu key after FIFO
+        // eviction) or the user cleared the anchor via `Ctrl+0`
+        // before the trigger fired. Mirrors the "No anchors set" /
+        // "No visible row" status-bar affordances used by
+        // `JumpToAnchor`.
         statusBar()->showMessage(tr("Row is not anchored."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
         return;
     }
 
-    const auto existingNote = mAnchors->NoteFor(*key).value_or(std::string{});
+    const auto existingNote = mAnchors->NoteFor(key).value_or(std::string{});
     bool accepted = false;
     // `getText` gives us a native single-line editor with OK/Cancel;
     // no rich text, so multi-line paste is trimmed to one line by
@@ -8244,12 +8253,12 @@ void MainWindow::EditAnchorNoteForRow(int sourceRow)
     // returns false in that case; surface the same hint the guard
     // above uses so the user isn't left wondering where their text
     // went.
-    if (!mAnchors->SetAnchorNote(*key, newNote.toStdString()))
+    if (!mAnchors->SetAnchorNote(key, newNote.toStdString()))
     {
         // Distinguish "no change" (identical note) from "dropped":
         // only report when the anchor is actually gone. `NoteFor`
         // returns `nullopt` iff the key is unknown to the manager.
-        if (!mAnchors->NoteFor(*key).has_value())
+        if (!mAnchors->NoteFor(key).has_value())
         {
             statusBar()->showMessage(
                 tr("Anchor was removed while the note editor was open; note discarded."),
@@ -8257,6 +8266,21 @@ void MainWindow::EditAnchorNoteForRow(int sourceRow)
             );
         }
     }
+}
+
+void MainWindow::EditAnchorNoteForRow(int sourceRow)
+{
+    if (mAnchors == nullptr || mModel == nullptr)
+    {
+        return;
+    }
+    const auto key = mModel->AnchorKeyForRow(sourceRow);
+    if (!key.has_value())
+    {
+        statusBar()->showMessage(tr("Row is not anchored."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+    EditAnchorNoteForKey(*key);
 }
 
 #ifdef LOGAPP_BUILD_TESTING

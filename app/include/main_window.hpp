@@ -348,14 +348,22 @@ public:
     /// note when no anchored row is visible. Wired to F2 / Shift+F2.
     void JumpToAnchor(bool forward);
 
-    /// Open a one-line note editor for the anchor on source-model
-    /// row @p sourceRow. No-op when the row isn't anchored (surfaces
-    /// a status-bar hint instead of silently swallowing the input).
-    /// Committed text is sanitised to a single line and forwarded
-    /// to `AnchorManager::SetAnchorNote`.
+    /// Open a one-line note editor for the anchor identified by
+    /// @p key. No-op (with a status-bar hint) when the anchor is no
+    /// longer present -- e.g. a queued eviction or `Ctrl+0` happened
+    /// between menu build and click. Committed text is sanitised to
+    /// a single line and forwarded to `AnchorManager::SetAnchorNote`.
     ///
-    /// Used by the row context menu and by
-    /// `EditAnchorNoteOnCurrentRow` (F4).
+    /// This is the primary entry point for the row context menu:
+    /// it captures the *identity* of the anchor, not a row index,
+    /// so a mid-menu FIFO eviction can't redirect the edit to a
+    /// different row that happens to occupy the old slot.
+    void EditAnchorNoteForKey(const AnchorManager::Key &key);
+
+    /// Convenience wrapper around `EditAnchorNoteForKey`: resolves
+    /// @p sourceRow to a key first. Callers with a live row index
+    /// (F4, tests) use this; the row-menu path captures the key
+    /// directly to avoid the eviction race.
     void EditAnchorNoteForRow(int sourceRow);
 
     /// F4 handler: resolves the currently focused proxy row to a
