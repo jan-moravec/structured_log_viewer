@@ -12,15 +12,19 @@
 #include <QIcon>
 #include <QKeySequence>
 #include <QMenu>
+#include <QModelIndex>
 #include <QPainter>
 #include <QPen>
 #include <QPixmap>
 #include <QPoint>
 #include <QPushButton>
 #include <QRectF>
+#include <QScopeGuard>
 #include <QShortcut>
 #include <QStringBuilder>
 #include <QStyle>
+#include <QStyledItemDelegate>
+#include <QStyleOptionViewItem>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QVBoxLayout>
@@ -131,22 +135,35 @@ constexpr int ANCHOR_KEY_LINE_ID_ROLE = Qt::UserRole + 2;
     return QString::fromStdString(locator);
 }
 
-/// Editor commits with embedded newlines break the "one-line note"
-/// invariant. Collapse whitespace runs (including CR/LF) so the
-/// stored note is single-line by construction.
+/// Adapt `AnchorManager::SanitiseNote` (which is `std::string`-based
+/// so it can be called from non-Qt code paths) to the `QString`
+/// currency of the widget layer. Round-trip through UTF-8 keeps
+/// non-ASCII notes intact.
 [[nodiscard]] QString SanitiseNote(const QString &raw)
 {
-    QString sanitised = raw;
-    // \r\n -> space, then \r / \n / \t individually. Keep single
-    // spaces to preserve word boundaries.
-    sanitised.replace(QLatin1String("\r\n"), QStringLiteral(" "));
-    sanitised.replace(QLatin1Char('\r'), QLatin1Char(' '));
-    sanitised.replace(QLatin1Char('\n'), QLatin1Char(' '));
-    sanitised.replace(QLatin1Char('\t'), QLatin1Char(' '));
-    // Trim edges; leave interior whitespace alone so users can
-    // still write "line 1  break".
-    return sanitised.trimmed();
+    return QString::fromStdString(AnchorManager::SanitiseNote(raw.toStdString()));
 }
+
+/// Delegate installed on `COLUMN_ANCHOR` to hard-refuse editor
+/// creation. `Qt::ItemIsEditable` is an item-wide flag on
+/// `QTreeWidgetItem` (there's no per-column flag API), so without
+/// this delegate a user pressing F2 while focused on the anchor
+/// column would open an editor for the "line N - file.json" label
+/// and let them garble the display until the next refresh.
+///
+/// Painting and size-hint stay on `QStyledItemDelegate` defaults --
+/// only editor construction is blocked.
+class NoEditDelegate : public QStyledItemDelegate
+{
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    QWidget *createEditor(QWidget * /*parent*/, const QStyleOptionViewItem & /*option*/, const QModelIndex & /*index*/)
+        const override
+    {
+        return nullptr;
+    }
+};
 
 } // namespace
 
@@ -178,8 +195,14 @@ AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *
     mTree->setSelectionMode(QAbstractItemView::ExtendedSelection);
     mTree->setContextMenuPolicy(Qt::CustomContextMenu);
     // Inline note editing: double-click on the note column or press
-    // F2. Anchor column stays activate-to-jump.
+    // F2. Anchor column stays activate-to-jump. The per-column
+    // `NoEditDelegate` below blocks editor construction on
+    // `COLUMN_ANCHOR` so `F2` with focus there is a no-op instead
+    // of opening an editor for the display label.
     mTree->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
+    // `NoEditDelegate` is parented to the tree so it lives exactly
+    // as long as the column it guards; no manual delete needed.
+    mTree->setItemDelegateForColumn(COLUMN_ANCHOR, new NoEditDelegate(mTree));
     // Note column carries most of the content; give it stretch so
     // long notes don't clip.
     if (auto *headerView = mTree->header(); headerView != nullptr)
@@ -282,12 +305,15 @@ void AnchorsDock::RefreshAlways()
 
     // Suppress `itemChanged` fired by `clear()` + `setText()` during
     // repopulate; otherwise we'd re-enter `SetAnchorNote` on every
-    // row we build. Counter (not bool) survives nested emits.
+    // row we build. Counter (not bool) survives nested emits; the
+    // scope guard makes the balance exception-safe so an allocator
+    // failure inside the loop can't leave the dock permanently
+    // muted.
     ++mSuppressItemChanged;
+    const auto suppressGuard = qScopeGuard([this] { --mSuppressItemChanged; });
     mTree->clear();
     if (mAnchors == nullptr)
     {
-        --mSuppressItemChanged;
         return;
     }
 
@@ -312,34 +338,32 @@ void AnchorsDock::RefreshAlways()
         item->setData(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE, QString::fromStdString(entry.locator));
         item->setData(COLUMN_ANCHOR, ANCHOR_KEY_LINE_ID_ROLE, QVariant::fromValue<qulonglong>(entry.lineId));
 
-        // Only the note column is editable; the anchor column stays
-        // activate-to-jump and shouldn't accept inline edits.
-        item->setFlags((item->flags() | Qt::ItemIsEditable) & ~Qt::ItemNeverHasChildren);
-        // Item-level flags apply to every column; strip
-        // `ItemIsEditable` from the anchor cell via the delegate's
-        // per-column check. `QTreeWidget` has no per-column-flag API,
-        // but the item-changed handler ignores column 0 mutations,
-        // and `edit()` on column 0 does nothing because we intercept
-        // it through `editTriggers` targeting user actions on that
-        // column.
-        //
-        // (See `OnItemChanged`: mutations on `COLUMN_ANCHOR` are
-        // dropped defensively even if a future refactor makes them
-        // reachable.)
+        // `ItemIsEditable` is item-wide (Qt has no per-column flag
+        // API on `QTreeWidgetItem`); per-column editability is
+        // enforced by the `NoEditDelegate` installed on
+        // `COLUMN_ANCHOR`, which refuses to build an editor.
+        // `OnItemChanged` also drops any `COLUMN_ANCHOR` mutation as
+        // a belt-and-braces guard.
+        item->setFlags(item->flags() | Qt::ItemIsEditable);
 
-        const QString tooltipBody = displayPath.isEmpty()
+        // Qt tooltips treat their text as HTML when
+        // `Qt::mightBeRichText()` matches. User notes and file
+        // paths can carry `<`, `&`, and friends, so escape both
+        // before interpolation to keep the tooltip literal.
+        const QString escapedDisplayPath = displayPath.toHtmlEscaped();
+        const QString escapedNote = noteText.toHtmlEscaped();
+        const QString tooltipBody = escapedDisplayPath.isEmpty()
                                         ? QObject::tr("Anchor #%1, line %2").arg(entry.colorIndex + 1).arg(entry.lineId)
                                         : QObject::tr("Anchor #%1, line %2\n%3")
                                               .arg(entry.colorIndex + 1)
                                               .arg(entry.lineId)
-                                              .arg(displayPath);
-        const QString tooltipWithNote = noteText.isEmpty() ? tooltipBody
-                                                           : QObject::tr("%1\nNote: %2").arg(tooltipBody, noteText);
+                                              .arg(escapedDisplayPath);
+        const QString tooltipWithNote = escapedNote.isEmpty()
+                                            ? tooltipBody
+                                            : QObject::tr("%1\nNote: %2").arg(tooltipBody, escapedNote);
         item->setToolTip(COLUMN_ANCHOR, tooltipWithNote);
         item->setToolTip(COLUMN_NOTE, tooltipWithNote);
     }
-
-    --mSuppressItemChanged;
 
     if (mClearAllButton != nullptr)
     {
@@ -440,10 +464,12 @@ void AnchorsDock::OnItemChanged(QTreeWidgetItem *item, int column)
         // The user typed a newline or tab; reflect the sanitised
         // form back into the item text so the display matches what
         // we're about to persist. Guard against re-entry into this
-        // slot by bumping the suppress counter.
+        // slot by bumping the suppress counter under a scope guard
+        // so an exception from Qt's paint stack can't wedge the
+        // counter high.
         ++mSuppressItemChanged;
+        const auto suppressGuard = qScopeGuard([this] { --mSuppressItemChanged; });
         item->setText(COLUMN_NOTE, sanitised);
-        --mSuppressItemChanged;
     }
     mAnchors->SetAnchorNote(key, sanitised.toStdString());
     // `AnchorManager::SetAnchorNote` emits `anchorChanged`; the

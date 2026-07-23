@@ -261,7 +261,12 @@ RecordDetailContent BuildRecordDetailContent(const LogModel &model, int sourceRo
     content.anchorColorIndex = model.AnchorSlotForRow(sourceRow);
     if (content.anchorColorIndex.has_value())
     {
-        content.anchorNote = model.AnchorNoteForRow(sourceRow);
+        // `AnchorNoteForRow` returns `nullopt` when the row isn't
+        // anchored, which we've already ruled out by the branch
+        // above; a present-but-empty optional means "anchored, no
+        // note", which the widget renders as a plain "Anchored"
+        // subline.
+        content.anchorNote = model.AnchorNoteForRow(sourceRow).value_or(QString{});
     }
 
     content.valid = true;
@@ -288,8 +293,13 @@ RecordDetailWidget::RecordDetailWidget(QWidget *parent)
     // Anchor-note subline: italic + muted foreground so it reads as
     // metadata rather than record content. Hidden when the pinned
     // row has no anchor; `PopulateUi` drives visibility + text.
+    // `Qt::PlainText` is critical: user notes routinely contain
+    // characters like `<`, `&`, or a stray `>` that QLabel's default
+    // `Qt::AutoText` would parse as rich text (bold/italic/etc.),
+    // shadowing what the user actually wrote.
     mAnchorNoteLabel = new QLabel(this);
     mAnchorNoteLabel->setObjectName(QStringLiteral("anchorNoteLabel"));
+    mAnchorNoteLabel->setTextFormat(Qt::PlainText);
     mAnchorNoteLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     mAnchorNoteLabel->setWordWrap(true);
     {

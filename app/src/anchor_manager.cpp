@@ -85,13 +85,59 @@ bool AnchorManager::SetAnchorNote(const Key &key, std::string note)
         // first (`SetAnchor` seeds with an empty note).
         return false;
     }
-    if (it->second.note == note)
+    // Sanitise here so the one-line invariant is enforced at the
+    // manager boundary; UI callers still pre-sanitise for live
+    // display but a direct `SetAnchorNote(std::string{"a\nb"})`
+    // can't smuggle newlines past us.
+    std::string sanitised = SanitiseNote(std::move(note));
+    if (it->second.note == sanitised)
     {
         return false;
     }
-    it->second.note = std::move(note);
+    it->second.note = std::move(sanitised);
     emit anchorChanged(key);
     return true;
+}
+
+std::string AnchorManager::SanitiseNote(std::string note)
+{
+    // Manual single-pass rewrite:
+    //   - Collapse `\r\n` (Windows line endings) to one space so a
+    //     pasted CRLF-terminated line doesn't leave a double gap.
+    //   - Fold lone `\r`, `\n`, `\t` into single spaces.
+    //   - Trim leading/trailing spaces from the result.
+    //
+    // Interior runs of spaces are intentionally preserved so a user
+    // can still write `"foo  bar"` (two spaces) if they mean to.
+    //
+    // Doing the CRLF collapse plus per-char fold in one pass keeps
+    // the helper allocation-free on the shrink path and dodges the
+    // QString round-trip so it's safe to call from non-Qt code
+    // paths (e.g. `Replace` on config load).
+    std::string out;
+    out.reserve(note.size());
+    for (std::size_t i = 0; i < note.size(); ++i)
+    {
+        const char ch = note[i];
+        if (ch == '\r' && i + 1 < note.size() && note[i + 1] == '\n')
+        {
+            out.push_back(' ');
+            ++i; // consume the paired '\n'.
+            continue;
+        }
+        if (ch == '\r' || ch == '\n' || ch == '\t')
+        {
+            out.push_back(' ');
+            continue;
+        }
+        out.push_back(ch);
+    }
+    const auto isSpace = [](char ch) { return ch == ' '; };
+    const auto firstNonSpace = std::ranges::find_if_not(out, isSpace);
+    out.erase(out.begin(), firstNonSpace);
+    const auto lastNonSpace = std::ranges::find_if_not(out.rbegin(), out.rend(), isSpace);
+    out.erase(lastNonSpace.base(), out.end());
+    return out;
 }
 
 bool AnchorManager::RemoveAnchor(const Key &key)
@@ -175,7 +221,11 @@ std::size_t AnchorManager::Replace(const std::vector<loglib::LogConfiguration::A
         }
         mAnchors.insert_or_assign(
             Key{.locator = entry.locator, .lineId = entry.lineId},
-            Value{.colorIndex = entry.colorIndex, .note = entry.note}
+            // Sanitise on load: a hand-edited JSON with embedded
+            // newlines/tabs would otherwise break the "one line"
+            // invariant that the QLabel + tooltip rendering paths
+            // rely on.
+            Value{.colorIndex = entry.colorIndex, .note = SanitiseNote(entry.note)}
         );
     }
 

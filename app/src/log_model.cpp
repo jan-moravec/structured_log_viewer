@@ -1433,21 +1433,21 @@ std::optional<uint8_t> LogModel::AnchorSlotForRow(int row) const noexcept
     return mAnchors->ColorFor(*key);
 }
 
-QString LogModel::AnchorNoteForRow(int row) const
+std::optional<QString> LogModel::AnchorNoteForRow(int row) const
 {
     if (mAnchors == nullptr || mAnchors->Empty())
     {
-        return {};
+        return std::nullopt;
     }
     const auto key = AnchorKeyForRow(row);
     if (!key.has_value())
     {
-        return {};
+        return std::nullopt;
     }
     const auto note = mAnchors->NoteFor(*key);
     if (!note.has_value())
     {
-        return {};
+        return std::nullopt;
     }
     return QString::fromStdString(*note);
 }
@@ -1838,7 +1838,10 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
     {
         // Anchor note: if the row's anchor has a non-empty note,
         // surface it as the tooltip for every cell in the row. The
-        // `Empty()` fast-path keeps anchor-free sessions cheap.
+        // `Empty()` fast-path keeps anchor-free sessions cheap. Qt
+        // tooltips render as HTML when `mightBeRichText()` matches;
+        // escape the note so a user string like `retry <failed>`
+        // renders literally instead of being parsed as markup.
         QString anchorTooltip;
         if (mAnchors != nullptr && !mAnchors->Empty())
         {
@@ -1846,7 +1849,7 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
             {
                 if (const auto note = mAnchors->NoteFor(*key); note.has_value() && !note->empty())
                 {
-                    anchorTooltip = tr("Anchor: %1").arg(QString::fromStdString(*note));
+                    anchorTooltip = tr("Anchor: %1").arg(QString::fromStdString(*note).toHtmlEscaped());
                 }
             }
         }

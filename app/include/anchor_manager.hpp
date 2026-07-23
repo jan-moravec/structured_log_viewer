@@ -77,9 +77,22 @@ public:
 
     /// Update the one-line note on @p key. No-op (and returns false)
     /// when @p key is not anchored -- notes only exist alongside a
-    /// colour. Emits `anchorChanged` when the stored note actually
-    /// changes. Returns true iff state changed.
+    /// colour. @p note is sanitised via `SanitiseNote` before storage
+    /// (embedded CR/LF/tab collapse to a single space; edges trim),
+    /// so the "one line" invariant is enforced at the manager
+    /// boundary rather than at every caller. Emits `anchorChanged`
+    /// when the stored note actually changes. Returns true iff state
+    /// changed.
     bool SetAnchorNote(const Key &key, std::string note);
+
+    /// Collapse CR/LF/tab into a single space and trim leading and
+    /// trailing whitespace so a note stays a one-liner even if the
+    /// user pasted a multi-line block. Exposed as a static so UI
+    /// widgets can mirror the stored form into their editor before a
+    /// round-trip through `SetAnchorNote`; the manager itself always
+    /// applies it on write, so callers that don't care about live
+    /// display can pass raw text.
+    [[nodiscard]] static std::string SanitiseNote(std::string note);
 
     /// Remove an anchor (colour + note). Emits `anchorChanged` iff
     /// something was removed.
@@ -97,8 +110,9 @@ public:
     /// Entries with an out-of-range `colorIndex` (newer schema or
     /// hand-edited JSON) are dropped rather than clamped, so missing
     /// anchors stay visible to the user. Duplicate keys: last wins.
-    /// Each entry's `note` is copied verbatim from the on-disk
-    /// `AnchorEntry` (missing field defaults to empty via Glaze).
+    /// Each entry's `note` is passed through `SanitiseNote` so a
+    /// hand-edited JSON with embedded newlines can't smuggle
+    /// multi-line notes past the one-line invariant.
     ///
     /// `anchorsReset` is emitted only when the rebuilt map differs
     /// from the previous content (silent no-op on identical reload).

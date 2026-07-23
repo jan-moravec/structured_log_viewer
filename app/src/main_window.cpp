@@ -8201,24 +8201,6 @@ void MainWindow::AppendAnchorActionsToRowMenu(QMenu *menu, int sourceRow)
     connect(clearAction, &QAction::triggered, mTableView, &LogTableView::ClearAnchorOnSelection);
 }
 
-namespace
-{
-/// Collapse CR/LF/tab into a single space and trim edges so the
-/// stored note stays a one-liner even if the user pastes a
-/// multi-line block. Shared between the row-menu editor and the
-/// `SubmitAnchorNoteForRowForTest` seam; `AnchorsDock` uses a
-/// parallel implementation for the same on-commit sanitisation.
-[[nodiscard]] QString SanitiseAnchorNote(const QString &raw)
-{
-    QString sanitised = raw;
-    sanitised.replace(QLatin1String("\r\n"), QStringLiteral(" "));
-    sanitised.replace(QLatin1Char('\r'), QLatin1Char(' '));
-    sanitised.replace(QLatin1Char('\n'), QLatin1Char(' '));
-    sanitised.replace(QLatin1Char('\t'), QLatin1Char(' '));
-    return sanitised.trimmed();
-}
-} // namespace
-
 void MainWindow::EditAnchorNoteForRow(int sourceRow)
 {
     if (mAnchors == nullptr || mModel == nullptr)
@@ -8240,7 +8222,7 @@ void MainWindow::EditAnchorNoteForRow(int sourceRow)
     bool accepted = false;
     // `getText` gives us a native single-line editor with OK/Cancel;
     // no rich text, so multi-line paste is trimmed to one line by
-    // the sanitisation step below.
+    // `AnchorManager::SetAnchorNote`'s internal sanitisation.
     const QString newNote = QInputDialog::getText(
         this,
         tr("Anchor note"),
@@ -8254,7 +8236,25 @@ void MainWindow::EditAnchorNoteForRow(int sourceRow)
         return;
     }
 
-    mAnchors->SetAnchorNote(*key, SanitiseAnchorNote(newNote).toStdString());
+    // Re-check anchor presence: `getText` pumps events, so a
+    // parallel `Ctrl+0` / `Clear all` / streaming eviction may have
+    // removed the anchor while the dialog was open. `SetAnchorNote`
+    // returns false in that case; surface the same hint the guard
+    // above uses so the user isn't left wondering where their text
+    // went.
+    if (!mAnchors->SetAnchorNote(*key, newNote.toStdString()))
+    {
+        // Distinguish "no change" (identical note) from "dropped":
+        // only report when the anchor is actually gone. `NoteFor`
+        // returns `nullopt` iff the key is unknown to the manager.
+        if (!mAnchors->NoteFor(*key).has_value())
+        {
+            statusBar()->showMessage(
+                tr("Anchor was removed while the note editor was open; note discarded."),
+                STATUS_BAR_MESSAGE_TIMEOUT_MS
+            );
+        }
+    }
 }
 
 #ifdef LOGAPP_BUILD_TESTING
@@ -8270,7 +8270,10 @@ bool MainWindow::SubmitAnchorNoteForRowForTest(int sourceRow, const QString &not
         statusBar()->showMessage(tr("Row is not anchored."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
         return false;
     }
-    mAnchors->SetAnchorNote(*key, SanitiseAnchorNote(note).toStdString());
+    // Return true iff the row was anchored (matches the historical
+    // contract used by tests). The manager sanitises internally so
+    // multi-line commits collapse to a single line before storage.
+    mAnchors->SetAnchorNote(*key, note.toStdString());
     return true;
 }
 #endif

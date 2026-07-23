@@ -52,6 +52,7 @@
 
 #include <test_common/network_log_client.hpp>
 
+#include <QAbstractItemDelegate>
 #include <QAbstractItemModel>
 #include <QAction>
 #include <QBrush>
@@ -4538,6 +4539,91 @@ private slots:
         QVERIFY(!manager.NoteFor(key).has_value());
     }
 
+    // `AnchorManager::SanitiseNote` is the single source of truth
+    // for the "one line, no edge whitespace" invariant. Manager
+    // methods (`SetAnchorNote`, `Replace`) apply it internally so
+    // no caller can smuggle a multi-line note past the UI's
+    // assumptions.
+    void TestAnchorManagerSanitiseNote()
+    {
+        // Pure input: unchanged (interior spaces preserved).
+        QCOMPARE(AnchorManager::SanitiseNote(std::string{"already tidy"}), std::string{"already tidy"});
+
+        // Empty input: empty result (not `nullopt`; empty notes are
+        // legal on anchored rows).
+        QCOMPARE(AnchorManager::SanitiseNote(std::string{}), std::string{});
+        QCOMPARE(AnchorManager::SanitiseNote(std::string{"   "}), std::string{});
+
+        // Windows CRLF collapses to a single space (not two); lone
+        // CR / LF / TAB each fold to one space; edges trim.
+        QCOMPARE(
+            AnchorManager::SanitiseNote(std::string{"  a\r\nb\tc  "}), std::string{"a b c"}
+        );
+        QCOMPARE(AnchorManager::SanitiseNote(std::string{"line1\rline2"}), std::string{"line1 line2"});
+        QCOMPARE(AnchorManager::SanitiseNote(std::string{"line1\nline2"}), std::string{"line1 line2"});
+
+        // Interior double space stays put so users can write
+        // deliberate word gaps.
+        QCOMPARE(AnchorManager::SanitiseNote(std::string{"foo  bar"}), std::string{"foo  bar"});
+
+        // Non-ASCII survives byte-for-byte (UTF-8 continuation bytes
+        // are all above 0x7F, none of which match the CR/LF/TAB
+        // predicate).
+        QCOMPARE(
+            AnchorManager::SanitiseNote(std::string{"  \xc3\xa9v\xc3\xa9nement\t"}),
+            std::string{"\xc3\xa9v\xc3\xa9nement"}
+        );
+
+        // `SetAnchorNote` applies the sanitisation internally so
+        // even a direct caller that skips the UI helper can't leak
+        // newlines into the stored state.
+        AnchorManager manager;
+        const AnchorManager::Key key{.locator = "c:/logs/a.json", .lineId = 42};
+        QVERIFY(manager.SetAnchor(key, 1));
+        QVERIFY(manager.SetAnchorNote(key, std::string{"  raw\r\nnote\t "}));
+        QCOMPARE(manager.NoteFor(key).value_or(std::string{"NO-KEY"}), std::string{"raw note"});
+
+        // A second `SetAnchorNote` with the same *unsanitised* input
+        // must be a no-op after the first call sanitised it: the
+        // stored note equals the sanitised form, so nothing to do.
+        const QSignalSpy changedSpy(&manager, &AnchorManager::anchorChanged);
+        QVERIFY(!manager.SetAnchorNote(key, std::string{"  raw\r\nnote\t "}));
+        QCOMPARE(changedSpy.count(), 0);
+    }
+
+    // Config load through `Replace` sanitises notes so a hand-edited
+    // JSON with embedded newlines can't smuggle multi-line text
+    // past the QLabel / tooltip pipeline that assumes one line.
+    void TestAnchorManagerReplaceSanitisesNotes()
+    {
+        AnchorManager manager;
+        std::vector<loglib::LogConfiguration::AnchorEntry> entries;
+        entries.push_back(
+            loglib::LogConfiguration::AnchorEntry{
+                .locator = "c:/logs/a.json",
+                .lineId = 1,
+                .colorIndex = 0,
+                .note = "  first\r\nsecond\t ",
+            }
+        );
+        entries.push_back(
+            loglib::LogConfiguration::AnchorEntry{
+                .locator = "c:/logs/b.json",
+                .lineId = 2,
+                .colorIndex = 3,
+                .note = "clean",
+            }
+        );
+        (void)manager.Replace(entries);
+
+        const AnchorManager::Key key1{.locator = "c:/logs/a.json", .lineId = 1};
+        const AnchorManager::Key key2{.locator = "c:/logs/b.json", .lineId = 2};
+        QCOMPARE(
+            manager.NoteFor(key1).value_or(std::string{"NO-KEY"}), std::string{"first second"}
+        );
+        QCOMPARE(manager.NoteFor(key2).value_or(std::string{"NO-KEY"}), std::string{"clean"});
+    }
+
     // NewSession drops every anchor (rows are gone).
     void TestNewSessionClearsAnchors()
     {
@@ -4942,6 +5028,250 @@ private slots:
         emit copyBtn->clicked();
         QCoreApplication::processEvents();
         QVERIFY(!clipboard->text().contains(QStringLiteral("anchor.note")));
+
+        anchors->ClearAll();
+        QCoreApplication::processEvents();
+        model->EndStreaming(false);
+    }
+
+    // The AnchorsDock installs a per-column edit-blocking delegate
+    // on the anchor column so `F2` while focused there can't open
+    // an editor for the "line N - file.json" label. Test both the
+    // delegate contract (createEditor returns nullptr) and the
+    // observable outcome (the tree refuses to enter edit mode via
+    // `editItem` on the anchor column).
+    void TestAnchorsDockAnchorColumnRefusesEditor()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+        auto *dock = mWindow->findChild<AnchorsDock *>();
+        QVERIFY(dock != nullptr);
+        auto *tree = dock->TreeForTest();
+        QVERIFY(tree != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 1, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 1);
+
+        const auto key0 = model->AnchorKeyForRow(0);
+        QVERIFY(key0.has_value());
+        anchors->SetAnchor(*key0, 3);
+        dock->RefreshForTest();
+        QCOMPARE(tree->topLevelItemCount(), 1);
+
+        // Delegate on column 0 refuses to build an editor: even a
+        // direct `createEditor` call returns nullptr.
+        QAbstractItemDelegate *anchorDelegate = tree->itemDelegateForColumn(0);
+        QVERIFY2(anchorDelegate != nullptr, "AnchorsDock must install a delegate on the anchor column");
+        QStyleOptionViewItem opt;
+        const QModelIndex anchorIdx = tree->model()->index(0, 0);
+        QWidget *editor = anchorDelegate->createEditor(tree->viewport(), opt, anchorIdx);
+        QVERIFY2(editor == nullptr, "Anchor column delegate must refuse editor construction");
+
+        // Sanity check: the note column still has an editor. `nullptr`
+        // means Qt falls back to the default `QStyledItemDelegate`,
+        // which builds an editor from the item flags.
+        QAbstractItemDelegate *noteDelegate = tree->itemDelegateForColumn(1);
+        // Whether Qt returns the tree-wide default or a per-column
+        // delegate, `createEditor` on the editable note column must
+        // succeed (it produces a `QLineEdit`).
+        if (noteDelegate == nullptr)
+        {
+            noteDelegate = tree->itemDelegate();
+        }
+        QVERIFY(noteDelegate != nullptr);
+        const QModelIndex noteIdx = tree->model()->index(0, 1);
+        QWidget *noteEditor = noteDelegate->createEditor(tree->viewport(), opt, noteIdx);
+        QVERIFY2(noteEditor != nullptr, "Note column must accept an editor");
+        delete noteEditor;
+
+        // Observable path: even after calling `editItem` on column 0,
+        // no persistent editor is opened (no `QLineEdit` child of the
+        // viewport). Qt short-circuits internally when the delegate
+        // returns nullptr.
+        tree->setCurrentItem(tree->topLevelItem(0), /*column=*/0);
+        tree->editItem(tree->topLevelItem(0), /*column=*/0);
+        QCoreApplication::processEvents();
+        QVERIFY2(
+            tree->viewport()->findChild<QLineEdit *>() == nullptr,
+            "editItem on the anchor column must not open a QLineEdit"
+        );
+
+        // For contrast, `editItem` on the note column *does* open
+        // an editor. Close it immediately so the widget doesn't leak
+        // event-loop state across tests.
+        tree->editItem(tree->topLevelItem(0), /*column=*/1);
+        QCoreApplication::processEvents();
+        QLineEdit *noteInlineEditor = tree->viewport()->findChild<QLineEdit *>();
+        QVERIFY2(noteInlineEditor != nullptr, "editItem on the note column must open a QLineEdit");
+        // Dismiss the editor via Escape so no stale note is committed.
+        QKeyEvent escKey(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QApplication::sendEvent(noteInlineEditor, &escKey);
+        QCoreApplication::processEvents();
+
+        anchors->ClearAll();
+        QCoreApplication::processEvents();
+        model->EndStreaming(false);
+    }
+
+    // Notes may contain characters like `<`, `>`, `&` that Qt's
+    // tooltip machinery treats as rich-text markup. Both the
+    // `LogModel` row tooltip and the `AnchorsDock` item tooltip
+    // must escape the note so it renders literally.
+    void TestAnchorNotesEscapeHtmlInTooltips()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+        auto *dock = mWindow->findChild<AnchorsDock *>();
+        QVERIFY(dock != nullptr);
+        auto *tree = dock->TreeForTest();
+        QVERIFY(tree != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 1, true));
+        QCoreApplication::processEvents();
+
+        const auto key0 = model->AnchorKeyForRow(0);
+        QVERIFY(key0.has_value());
+        anchors->SetAnchor(*key0, 1);
+        // Anchor note deliberately carries markup-shaped characters
+        // that would otherwise render as bold + link + entity.
+        anchors->SetAnchorNote(*key0, std::string{"<b>foo</b> & <a href=\"x\">y</a>"});
+        QCoreApplication::processEvents();
+
+        // LogModel row tooltip: the escaped form must appear
+        // verbatim, and the raw `<b>` must NOT appear literally.
+        const QVariant modelTip = model->data(model->index(0, 0), Qt::ToolTipRole);
+        QVERIFY(modelTip.isValid());
+        const QString modelTipStr = modelTip.toString();
+        QVERIFY2(
+            modelTipStr.contains(QStringLiteral("&lt;b&gt;foo&lt;/b&gt;")),
+            qPrintable(QStringLiteral("expected escaped `<b>foo</b>`, got: %1").arg(modelTipStr))
+        );
+        QVERIFY2(
+            !modelTipStr.contains(QStringLiteral("<b>foo</b>")),
+            qPrintable(QStringLiteral("raw HTML must not survive: %1").arg(modelTipStr))
+        );
+        QVERIFY(modelTipStr.contains(QStringLiteral("&amp;")));
+
+        // AnchorsDock tree item tooltip: same escaping treatment.
+        dock->RefreshForTest();
+        QCOMPARE(tree->topLevelItemCount(), 1);
+        const QString itemTip = tree->topLevelItem(0)->toolTip(1);
+        QVERIFY2(
+            itemTip.contains(QStringLiteral("&lt;b&gt;foo&lt;/b&gt;")),
+            qPrintable(QStringLiteral("expected escaped note in AnchorsDock tooltip, got: %1").arg(itemTip))
+        );
+        QVERIFY2(
+            !itemTip.contains(QStringLiteral("<b>foo</b>")),
+            qPrintable(QStringLiteral("raw HTML must not survive in AnchorsDock tooltip: %1").arg(itemTip))
+        );
+
+        anchors->ClearAll();
+        QCoreApplication::processEvents();
+        model->EndStreaming(false);
+    }
+
+    // The RecordDetailWidget's anchor-note subline is rendered as
+    // plain text so a user-typed `<b>...</b>` reads literally
+    // instead of being interpreted as HTML markup by QLabel's
+    // default `Qt::AutoText` format.
+    void TestRecordDetailAnchorNoteRendersPlainText()
+    {
+        // Build a synthetic content with anchor markup and verify
+        // that the label's textFormat forces plain text -- this
+        // guards the fix against a future refactor that omits the
+        // `setTextFormat` call.
+        RecordDetailWidget widget;
+        RecordDetailContent content;
+        content.valid = true;
+        content.summary = QStringLiteral("row summary");
+        content.anchorColorIndex = std::uint8_t{2};
+        content.anchorNote = QStringLiteral("<b>customer 42</b> & friends");
+        widget.SetContent(content);
+
+        auto *noteLabel = widget.findChild<QLabel *>(QStringLiteral("anchorNoteLabel"));
+        QVERIFY2(noteLabel != nullptr, "RecordDetailWidget must expose an anchorNoteLabel");
+        // `isHidden()` rather than `isVisible()` because the widget
+        // is never `show()`n in this test; the assertion is that
+        // `PopulateUi` did not explicitly hide the label.
+        QVERIFY2(!noteLabel->isHidden(), "anchor-note label must be shown when the pinned row is anchored");
+        QCOMPARE(noteLabel->textFormat(), Qt::PlainText);
+        QVERIFY2(
+            noteLabel->text().contains(QStringLiteral("<b>customer 42</b>")),
+            qPrintable(QStringLiteral("expected literal `<b>` in label text, got: %1").arg(noteLabel->text()))
+        );
+    }
+
+    // `RecordDetailDock` subscribes directly to `AnchorManager`
+    // signals so a note edit while a row is pinned refreshes the
+    // subline live. Without this the `IsStyleOnlyRoleChange` filter
+    // on the `dataChanged` path would swallow the update (the model
+    // emits only `Background`/`Foreground`/`ToolTip` roles for
+    // anchor mutations, all treated as style-only).
+    void TestRecordDetailDockLiveUpdateOnAnchorNoteEdit()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+        auto *dock = mWindow->findChild<RecordDetailDock *>();
+        QVERIFY(dock != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 2, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 2);
+
+        // Force the dock visible so the subscription's
+        // `IsVisibleForRefresh()` gate passes on offscreen QPA.
+        emit dock->visibilityChanged(true);
+
+        const auto key0 = model->AnchorKeyForRow(0);
+        QVERIFY(key0.has_value());
+        anchors->SetAnchor(*key0, 3);
+        // Pin the anchored row and verify the initial "anchored,
+        // no note" state renders as "Anchored" (empty-note path).
+        dock->ShowSourceRow(0);
+        QCoreApplication::processEvents();
+        auto *widget = dock->findChild<RecordDetailWidget *>();
+        QVERIFY(widget != nullptr);
+        auto *noteLabel = widget->findChild<QLabel *>(QStringLiteral("anchorNoteLabel"));
+        QVERIFY(noteLabel != nullptr);
+        // Use `!isHidden()` (rather than `isVisible()`) because the
+        // dock's ancestor chain isn't realised under offscreen QPA
+        // -- `isVisible()` requires the whole ancestor chain to be
+        // showing, `!isHidden()` reflects only the explicit
+        // hide/show state driven by `PopulateUi`.
+        QVERIFY(!noteLabel->isHidden());
+        QCOMPARE(noteLabel->text(), QStringLiteral("Anchored"));
+
+        // Edit the note through the manager (mirrors what the
+        // AnchorsDock inline editor and the F4 shortcut do). The
+        // dock must refresh live -- no user re-selection required.
+        QVERIFY(anchors->SetAnchorNote(*key0, std::string{"customer report"}));
+        QCoreApplication::processEvents();
+        QCOMPARE(noteLabel->text(), QStringLiteral("Anchor: customer report"));
+
+        // Clearing the anchor drops the subline. Same `isHidden()`
+        // rationale as above.
+        QVERIFY(anchors->RemoveAnchor(*key0));
+        QCoreApplication::processEvents();
+        QVERIFY2(noteLabel->isHidden(), "unanchoring the pinned row must hide the anchor-note subline");
 
         anchors->ClearAll();
         QCoreApplication::processEvents();
@@ -15476,7 +15806,9 @@ private slots:
         QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::DecorationRole}));
         QVERIFY2(
             LogModel::IsStyleOnlyRoleChange({Qt::ToolTipRole}),
-            "ToolTipRole flips with `SetShowLevelIcons`; receivers must skip it"
+            "ToolTipRole flips with `SetShowLevelIcons` (level-icon mode) and with anchor note "
+            "edits; receivers that care about note text must subscribe to `AnchorManager` "
+            "directly rather than the `dataChanged` path (see `RecordDetailDock`)"
         );
         QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::BackgroundRole, Qt::ForegroundRole, Qt::FontRole}));
         QVERIFY(LogModel::IsStyleOnlyRoleChange({Qt::DecorationRole, Qt::ToolTipRole}));
