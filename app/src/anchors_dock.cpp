@@ -7,6 +7,7 @@
 #include <QApplication>
 #include <QBrush>
 #include <QCloseEvent>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QIcon>
@@ -33,7 +34,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -90,22 +90,19 @@ constexpr int ANCHOR_KEY_LINE_ID_ROLE = Qt::UserRole + 2;
     return QIcon{pix};
 }
 
-[[nodiscard]] QString FilenameFromLocator(const std::string &locator)
+/// Extract the filename portion of @p displayPath (a fully qualified
+/// path in the user's display case). `QFileInfo` stays entirely inside
+/// Qt's UTF-16 model, so non-ASCII paths (`логи/приложение.jsonl`)
+/// survive round-trips that `std::filesystem::path(std::string)`
+/// would mangle on Windows via the ANSI codepage.
+[[nodiscard]] QString FilenameFromDisplayPath(const QString &displayPath)
 {
-    if (locator.empty())
+    if (displayPath.isEmpty())
     {
         return {};
     }
-    try
-    {
-        const std::filesystem::path p(locator);
-        const std::string filename = p.filename().string();
-        return QString::fromStdString(filename.empty() ? locator : filename);
-    }
-    catch (const std::exception &)
-    {
-        return QString::fromStdString(locator);
-    }
+    const QString filename = QFileInfo(displayPath).fileName();
+    return filename.isEmpty() ? displayPath : filename;
 }
 
 /// Map @p locator (a canonical `locatorDedupKey`) back to the
@@ -326,7 +323,7 @@ void AnchorsDock::RefreshAlways()
         // Show the display-case path; keep the canonical locator in
         // the user-role data for the SourceRowForAnchorKey lookup.
         const QString displayPath = DisplayPathForLocator(mModel.data(), entry.locator);
-        const QString filename = FilenameFromLocator(displayPath.toStdString());
+        const QString filename = FilenameFromDisplayPath(displayPath);
         const QString label = filename.isEmpty() ? QObject::tr("line %1").arg(entry.lineId)
                                                  : QObject::tr("line %1 - %2").arg(entry.lineId).arg(filename);
         const QString noteText = QString::fromStdString(entry.note);
@@ -346,23 +343,28 @@ void AnchorsDock::RefreshAlways()
         // a belt-and-braces guard.
         item->setFlags(item->flags() | Qt::ItemIsEditable);
 
-        // Qt tooltips treat their text as HTML when
-        // `Qt::mightBeRichText()` matches. User notes and file
-        // paths can carry `<`, `&`, and friends, so escape both
-        // before interpolation to keep the tooltip literal.
+        // Tooltip rendering contract: wrap in `<qt>` to force
+        // Qt's rich-text mode. Without the explicit wrapper Qt's
+        // `mightBeRichText` heuristic misfires on paths / notes that
+        // contain `&` or `>` but no `<`, and the escaped entities
+        // (`&amp;`, `&gt;`) would render literally. Every
+        // user-controlled substring is `toHtmlEscaped`; line breaks
+        // are spelled `<br/>` because HTML collapses literal `\n`
+        // to whitespace.
         const QString escapedDisplayPath = displayPath.toHtmlEscaped();
         const QString escapedNote = noteText.toHtmlEscaped();
         const QString tooltipBody = escapedDisplayPath.isEmpty()
                                         ? QObject::tr("Anchor #%1, line %2").arg(entry.colorIndex + 1).arg(entry.lineId)
-                                        : QObject::tr("Anchor #%1, line %2\n%3")
+                                        : QObject::tr("Anchor #%1, line %2<br/>%3")
                                               .arg(entry.colorIndex + 1)
                                               .arg(entry.lineId)
                                               .arg(escapedDisplayPath);
-        const QString tooltipWithNote = escapedNote.isEmpty()
-                                            ? tooltipBody
-                                            : QObject::tr("%1\nNote: %2").arg(tooltipBody, escapedNote);
-        item->setToolTip(COLUMN_ANCHOR, tooltipWithNote);
-        item->setToolTip(COLUMN_NOTE, tooltipWithNote);
+        const QString tooltipBodyWithNote = escapedNote.isEmpty()
+                                                ? tooltipBody
+                                                : QObject::tr("%1<br/>Note: %2").arg(tooltipBody, escapedNote);
+        const QString tooltipHtml = QStringLiteral("<qt>%1</qt>").arg(tooltipBodyWithNote);
+        item->setToolTip(COLUMN_ANCHOR, tooltipHtml);
+        item->setToolTip(COLUMN_NOTE, tooltipHtml);
     }
 
     if (mClearAllButton != nullptr)

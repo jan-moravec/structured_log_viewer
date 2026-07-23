@@ -510,9 +510,16 @@ public:
     /// Test seam that replays the anchor-note editor's commit path
     /// without opening a modal `QInputDialog`. Applies the same
     /// row-must-be-anchored guard as `EditAnchorNoteForRow`, then
-    /// (on the anchored branch) sanitises @p note and calls
-    /// `AnchorManager::SetAnchorNote`. Returns true iff the note
-    /// was committed to the manager.
+    /// (on the anchored branch) forwards @p note to
+    /// `AnchorManager::SetAnchorNote`, which sanitises it before
+    /// storage.
+    ///
+    /// Returns true iff the row is anchored (and the note was
+    /// therefore submitted to the manager). The manager may still
+    /// no-op internally when the sanitised note matches the
+    /// currently-stored one; that case is indistinguishable from a
+    /// successful edit here. Returns false when the row isn't
+    /// anchored (no ghost anchor is spawned).
     bool SubmitAnchorNoteForRowForTest(int sourceRow, const QString &note);
 #endif
 

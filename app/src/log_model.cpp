@@ -1838,10 +1838,23 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
     {
         // Anchor note: if the row's anchor has a non-empty note,
         // surface it as the tooltip for every cell in the row. The
-        // `Empty()` fast-path keeps anchor-free sessions cheap. Qt
-        // tooltips render as HTML when `mightBeRichText()` matches;
-        // escape the note so a user string like `retry <failed>`
-        // renders literally instead of being parsed as markup.
+        // `Empty()` fast-path keeps anchor-free sessions cheap.
+        //
+        // Rendering contract: the assembled tooltip below is wrapped
+        // in `<qt>...</qt>` to force Qt's rich-text mode. Two
+        // consequences follow:
+        //   1. Every user-controlled substring must be
+        //      `toHtmlEscaped()` (else `<`, `&`, `>` typed by the
+        //      user would be parsed as markup and the raw text
+        //      would either render as HTML or corrupt the tooltip).
+        //   2. Newlines have to be spelled `<br/>` -- HTML collapses
+        //      literal `\n` to whitespace.
+        //
+        // Without the explicit `<qt>` wrapper Qt's `mightBeRichText`
+        // heuristic misfires on notes that contain `&` or `>` but
+        // no `<`, leaving the escaped entities (`&amp;`, `&gt;`)
+        // visible to the user. See `TestAnchorNotesEscapeHtmlInTooltips`
+        // and its ampersand-only companion for the regression guards.
         QString anchorTooltip;
         if (mAnchors != nullptr && !mAnchors->Empty())
         {
@@ -1869,24 +1882,28 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
                 // rather than no tooltip at all in a narrow icon column.
                 if (const auto level = DisplayLevelForRow(index.row()); level.has_value())
                 {
-                    levelTooltip = QString::fromUtf8(loglib::CanonicalLevelName(*level).data());
+                    // Canonical level names are ASCII (`Info`, `Warn`,
+                    // ...) so no HTML escape is needed today, but
+                    // stay defensive against future additions.
+                    levelTooltip = QString::fromUtf8(loglib::CanonicalLevelName(*level).data()).toHtmlEscaped();
                 }
             }
         }
 
         if (!anchorTooltip.isEmpty() && !levelTooltip.isEmpty())
         {
-            // Two lines: anchor note on top (it's the more
-            // record-specific text), level below.
-            return QStringLiteral("%1\n%2").arg(anchorTooltip, levelTooltip);
+            // Anchor note above (record-specific), level below.
+            // `<br/>` because the `<qt>` wrapper puts us in HTML
+            // mode where literal `\n` would collapse to space.
+            return QStringLiteral("<qt>%1<br/>%2</qt>").arg(anchorTooltip, levelTooltip);
         }
         if (!anchorTooltip.isEmpty())
         {
-            return anchorTooltip;
+            return QStringLiteral("<qt>%1</qt>").arg(anchorTooltip);
         }
         if (!levelTooltip.isEmpty())
         {
-            return levelTooltip;
+            return QStringLiteral("<qt>%1</qt>").arg(levelTooltip);
         }
         return {};
     }

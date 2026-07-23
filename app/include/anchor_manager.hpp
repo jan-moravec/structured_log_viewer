@@ -65,8 +65,11 @@ public:
     /// Add or update an anchor's colour. Out-of-range @p colorIndex
     /// is clamped. Any existing note on @p key is preserved (so
     /// recolouring via Ctrl+1..8 doesn't clobber user text). Emits
-    /// `anchorChanged` only when the stored colour actually changes.
-    /// Returns true iff state changed.
+    /// `anchorChanged` whenever the stored state changes -- both on
+    /// a fresh insertion (with a default-empty note) and on a
+    /// colour flip of an already-present key. A no-op call
+    /// (identical colour on the same key) returns false and
+    /// suppresses the emit. Returns true iff state changed.
     bool SetAnchor(const Key &key, uint8_t colorIndex);
 
     /// Bulk `SetAnchor`. Emits `anchorChanged(key)` for exactly one

@@ -4917,6 +4917,97 @@ private slots:
         model->EndStreaming(false);
     }
 
+    // F4 focus guard: the shortcut is `Qt::WindowShortcut` so it
+    // fires anywhere in the main window, including while the user
+    // is typing in a text editor (e.g. the AnchorsDock's inline
+    // note editor, the search bar). Stealing focus to open a modal
+    // dialog mid-edit would drop the in-flight text and target an
+    // unrelated row. `EditAnchorNoteOnCurrentRow` must bail out
+    // without opening any dialog when the focus widget is a text
+    // input. This test asserts the guard by:
+    //   1. Setting up a `QLineEdit` and forcibly promoting it to
+    //      `focusWidget()` (`show()` + `activateWindow()` +
+    //      `setFocus()` is required under offscreen QPA -- an
+    //      un-shown widget or an inactive window silently drops
+    //      focus assignment).
+    //   2. Triggering the F4 `QAction` directly (rather than
+    //      pressing the key) so no modal dialog can wedge the
+    //      test runner if the guard regresses.
+    //   3. Confirming the manager's note wasn't touched and no
+    //      modal widget was spawned.
+    void TestF4EditAnchorNoteBailsOutWhileEditorHasFocus()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 2, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 2);
+
+        const auto key0 = model->AnchorKeyForRow(0);
+        QVERIFY(key0.has_value());
+        anchors->SetAnchor(*key0, 2);
+        anchors->SetAnchorNote(*key0, std::string{"initial note"});
+        QCoreApplication::processEvents();
+
+        // Give a scratch `QLineEdit` focus and parent it to the
+        // main window so `QApplication::focusWidget()` returns it.
+        // Under offscreen QPA the widget must be `show()`n and its
+        // window must be the active window before `setFocus()`
+        // sticks -- an un-shown widget silently drops the request
+        // and leaves `focusWidget()` at `nullptr`.
+        mWindow->show();
+        mWindow->activateWindow();
+        auto scratch = std::make_unique<QLineEdit>(mWindow);
+        scratch->setObjectName(QStringLiteral("scratchForFocusGuardTest"));
+        scratch->show();
+        scratch->setText(QStringLiteral("draft edit in flight"));
+        scratch->setFocus(Qt::OtherFocusReason);
+        QCoreApplication::processEvents();
+        QVERIFY2(
+            QApplication::focusWidget() == scratch.get(),
+            qPrintable(QStringLiteral("scratch QLineEdit failed to grab focus (got %1)")
+                           .arg(QApplication::focusWidget() == nullptr
+                                    ? QStringLiteral("nullptr")
+                                    : QString::fromLatin1(QApplication::focusWidget()->metaObject()->className())))
+        );
+
+        // Trigger the F4 action. If the guard is intact, no dialog
+        // opens and the stored note is unchanged. The action is
+        // resolved by object name so this test stays honest even if
+        // the shortcut key is remapped in the future.
+        auto *editNoteAction = mWindow->findChild<QAction *>(QStringLiteral("actionEditRowAnchorNote"));
+        QVERIFY2(editNoteAction != nullptr, "MainWindow must own an actionEditRowAnchorNote QAction");
+        editNoteAction->trigger();
+        QCoreApplication::processEvents();
+
+        // The scratch line edit still has focus and its text is
+        // untouched -- the modal dialog never opened.
+        QCOMPARE(QApplication::focusWidget(), scratch.get());
+        QCOMPARE(scratch->text(), QStringLiteral("draft edit in flight"));
+        QCOMPARE(
+            anchors->NoteFor(*key0).value_or(std::string{"NO-KEY"}), std::string{"initial note"}
+        );
+        // No stray modal window was spawned (would be an
+        // `activeModalWidget` from `QInputDialog::getText`).
+        QVERIFY2(
+            QApplication::activeModalWidget() == nullptr,
+            "F4 must not open a modal editor while another editor holds focus"
+        );
+
+        scratch.reset();
+        anchors->ClearAll();
+        QCoreApplication::processEvents();
+        model->EndStreaming(false);
+    }
+
     // Row tooltip surfaces the anchor note when the anchored row
     // has a non-empty note. Empty notes fall through to whatever
     // the default tooltip would be (nothing on non-level cells).
@@ -4944,15 +5035,27 @@ private slots:
 
         // Any cell in the anchored row returns the anchor-note
         // tooltip so hovering doesn't need to hunt for the "right"
-        // column.
+        // column. The wire form is a `<qt>`-wrapped rich-text
+        // envelope so Qt renders the escaped entities correctly
+        // even for notes that lack `<` (which is the sole char
+        // `Qt::mightBeRichText()` triggers on inside entity refs);
+        // the visible body still starts with `Anchor:`.
         const QModelIndex idx = model->index(0, 0);
         const QVariant tip = model->data(idx, Qt::ToolTipRole);
         QVERIFY(tip.isValid());
+        const QString tipStr = tip.toString();
         QVERIFY2(
-            tip.toString().contains(QStringLiteral("customer 12345")),
-            qPrintable(QStringLiteral("expected anchor note in tooltip, got: %1").arg(tip.toString()))
+            tipStr.contains(QStringLiteral("customer 12345")),
+            qPrintable(QStringLiteral("expected anchor note in tooltip, got: %1").arg(tipStr))
         );
-        QVERIFY(tip.toString().startsWith(QStringLiteral("Anchor:")));
+        QVERIFY2(
+            tipStr.startsWith(QStringLiteral("<qt>Anchor:")),
+            qPrintable(QStringLiteral("expected <qt>-wrapped `Anchor:` prefix, got: %1").arg(tipStr))
+        );
+        QVERIFY2(
+            tipStr.endsWith(QStringLiteral("</qt>")),
+            qPrintable(QStringLiteral("expected closing </qt> tag, got: %1").arg(tipStr))
+        );
 
         // Row 1 has no anchor: no tooltip.
         const QModelIndex idx1 = model->index(1, 0);
@@ -5176,6 +5279,94 @@ private slots:
         QVERIFY2(
             !itemTip.contains(QStringLiteral("<b>foo</b>")),
             qPrintable(QStringLiteral("raw HTML must not survive in AnchorsDock tooltip: %1").arg(itemTip))
+        );
+
+        anchors->ClearAll();
+        QCoreApplication::processEvents();
+        model->EndStreaming(false);
+    }
+
+    // Regression for the ampersand-only tooltip rendering bug: notes
+    // that contain `&` or `>` but no `<` must still render literally,
+    // not as `&amp;`/`&gt;` entity strings. `Qt::mightBeRichText()`
+    // only auto-detects HTML on `&lt;` and real tags, so the fix
+    // wraps the tooltip in an explicit `<qt>...</qt>` envelope
+    // (forcing rich-text mode) and spells newlines as `<br/>`
+    // (because HTML collapses literal `\n` to whitespace).
+    //
+    // Both surfaces (`LogModel` row tooltip and `AnchorsDock` item
+    // tooltip) share this contract, so the test asserts:
+    //   1. The output starts with `<qt>` (HTML envelope present).
+    //   2. Newlines are `<br/>`, not raw `\n`.
+    //   3. Escaped `&amp;`/`&gt;` are still present in the string
+    //      form (so Qt decodes them when it renders).
+    void TestAnchorNoteTooltipWrappedInQtEnvelope()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+        auto *dock = mWindow->findChild<AnchorsDock *>();
+        QVERIFY(dock != nullptr);
+        auto *tree = dock->TreeForTest();
+        QVERIFY(tree != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 1, true));
+        QCoreApplication::processEvents();
+
+        const auto key0 = model->AnchorKeyForRow(0);
+        QVERIFY(key0.has_value());
+        anchors->SetAnchor(*key0, 1);
+        // No `<` in this note: pre-fix, Qt's `mightBeRichText`
+        // heuristic would return false and the escaped `&amp;` /
+        // `&gt;` would render literally to the user.
+        anchors->SetAnchorNote(*key0, std::string{"retry > 3 & fail"});
+        QCoreApplication::processEvents();
+
+        const QVariant modelTip = model->data(model->index(0, 0), Qt::ToolTipRole);
+        QVERIFY(modelTip.isValid());
+        const QString modelTipStr = modelTip.toString();
+        QVERIFY2(
+            modelTipStr.startsWith(QStringLiteral("<qt>")) && modelTipStr.endsWith(QStringLiteral("</qt>")),
+            qPrintable(QStringLiteral("expected <qt>-wrapped tooltip, got: %1").arg(modelTipStr))
+        );
+        QVERIFY2(
+            modelTipStr.contains(QStringLiteral("&amp;")),
+            qPrintable(QStringLiteral("expected escaped `&`, got: %1").arg(modelTipStr))
+        );
+        QVERIFY2(
+            modelTipStr.contains(QStringLiteral("&gt;")),
+            qPrintable(QStringLiteral("expected escaped `>`, got: %1").arg(modelTipStr))
+        );
+        // No literal newlines inside the envelope -- they'd collapse
+        // to whitespace in HTML rendering.
+        QVERIFY2(
+            !modelTipStr.contains(QLatin1Char('\n')),
+            qPrintable(QStringLiteral("literal `\\n` must be replaced with <br/>, got: %1").arg(modelTipStr))
+        );
+
+        dock->RefreshForTest();
+        QCOMPARE(tree->topLevelItemCount(), 1);
+        const QString itemTip = tree->topLevelItem(0)->toolTip(1);
+        QVERIFY2(
+            itemTip.startsWith(QStringLiteral("<qt>")) && itemTip.endsWith(QStringLiteral("</qt>")),
+            qPrintable(QStringLiteral("expected <qt>-wrapped AnchorsDock tooltip, got: %1").arg(itemTip))
+        );
+        QVERIFY(itemTip.contains(QStringLiteral("&amp;")));
+        QVERIFY(itemTip.contains(QStringLiteral("&gt;")));
+        QVERIFY2(
+            !itemTip.contains(QLatin1Char('\n')),
+            qPrintable(QStringLiteral("AnchorsDock tooltip must use <br/> not `\\n`, got: %1").arg(itemTip))
+        );
+        // Sanity: the note payload still appears escaped inside the
+        // envelope. `&amp;` and `&gt;` surround the literal word.
+        QVERIFY2(
+            itemTip.contains(QStringLiteral("retry &gt; 3 &amp; fail")),
+            qPrintable(QStringLiteral("escaped note payload missing from tooltip: %1").arg(itemTip))
         );
 
         anchors->ClearAll();

@@ -69,6 +69,7 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QPixmap>
+#include <QPlainTextEdit>
 #include <QProgressDialog>
 #include <QScopeGuard>
 #include <QSettings>
@@ -80,6 +81,7 @@
 #include <QStringList>
 #include <QStyle>
 #include <QTableView>
+#include <QTextEdit>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
@@ -8281,6 +8283,23 @@ bool MainWindow::SubmitAnchorNoteForRowForTest(int sourceRow, const QString &not
 void MainWindow::EditAnchorNoteOnCurrentRow()
 {
     if (mTableView == nullptr || mSortFilterProxyModel == nullptr || mRowOrderProxyModel == nullptr)
+    {
+        return;
+    }
+    // The F4 shortcut is `Qt::WindowShortcut`, so it fires anywhere
+    // in the main window -- including while the user is typing in a
+    // text editor (e.g. the AnchorsDock's inline note editor, the
+    // search bar, or a filter dialog's line edit). Stealing focus to
+    // open a modal `QInputDialog` mid-edit would drop the in-flight
+    // text and target an unrelated row. Bail out if the focus widget
+    // is a text-input surface, letting the editor keep the key
+    // event (Qt still delivers the shortcut *action* here, but the
+    // focus widget's `keyPressEvent` decides the visible behaviour).
+    if (const QWidget *focused = QApplication::focusWidget();
+        focused != nullptr &&
+        (qobject_cast<const QLineEdit *>(focused) != nullptr ||
+         qobject_cast<const QTextEdit *>(focused) != nullptr ||
+         qobject_cast<const QPlainTextEdit *>(focused) != nullptr))
     {
         return;
     }
