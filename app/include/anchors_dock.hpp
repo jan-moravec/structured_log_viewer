@@ -8,14 +8,16 @@
 class LogModel;
 class ThemeControl;
 class QCloseEvent;
-class QListWidget;
-class QListWidgetItem;
+class QTreeWidget;
+class QTreeWidgetItem;
 class QPushButton;
 
 /// Dockable list of every anchored row. Each entry shows a colour
-/// swatch, the row's `lineId`, and the source filename (when known).
-/// Double-click jumps to the row via `jumpToAnchorRequested`;
-/// right-click offers Jump / Remove. A header button clears everything.
+/// swatch, the row's `lineId`, and the source filename (when known),
+/// plus an inline-editable one-line note. Double-click on the anchor
+/// column jumps to the row via `jumpToAnchorRequested`; double-click
+/// or `F2` on the note column starts inline editing. Right-click
+/// offers Jump / Edit note / Remove. A header button clears everything.
 ///
 /// Stays in sync with `AnchorManager` and `ThemeControl` through
 /// signals. Refresh work is gated on visibility so a buried dock pays
@@ -52,9 +54,9 @@ protected:
 
 #ifdef LOGAPP_BUILD_TESTING
 public:
-    [[nodiscard]] QListWidget *ListForTest() const noexcept
+    [[nodiscard]] QTreeWidget *TreeForTest() const noexcept
     {
-        return mList;
+        return mTree;
     }
 
     [[nodiscard]] QPushButton *ClearAllButtonForTest() const noexcept
@@ -68,17 +70,22 @@ public:
     {
         RefreshAlways();
     }
+
+    /// Trigger the inline note editor on the currently focused item,
+    /// bypassing the F2 shortcut path (which needs an event loop).
+    void BeginEditNoteForTest();
 #endif
 
 private:
     /// Resolve @p item's key back to a `LogModel` source-row index, or
     /// -1 if the anchor outlived its row.
-    [[nodiscard]] int SourceRowForItem(const QListWidgetItem *item) const;
+    [[nodiscard]] int SourceRowForItem(const QTreeWidgetItem *item) const;
 
     /// Rebuild from `AnchorManager::Entries()` unconditionally.
     void RefreshAlways();
 
-    void OnItemActivated(QListWidgetItem *item);
+    void OnItemActivated(QTreeWidgetItem *item, int column);
+    void OnItemChanged(QTreeWidgetItem *item, int column);
     void OnContextMenuRequested(const QPoint &pos);
     void OnClearAllClicked();
 
@@ -86,11 +93,17 @@ private:
     QPointer<LogModel> mModel;
     QPointer<ThemeControl> mTheme;
 
-    QListWidget *mList = nullptr;
+    QTreeWidget *mTree = nullptr;
     QPushButton *mClearAllButton = nullptr;
 
     /// Tracks `visibilityChanged` so a buried tabified dock also skips
     /// signal-driven refreshes. Starts false because the dock is added
     /// hidden; flipped by the first `visibilityChanged(true)`.
     bool mPerceivedVisible = false;
+
+    /// Suppresses the `itemChanged -> SetAnchorNote` round trip during
+    /// `RefreshAlways`, which mutates item text to rebuild the list.
+    /// Guarded with an int (not bool) because Qt can nest signals if
+    /// a delegate close-editor fires while a refresh is still walking.
+    int mSuppressItemChanged = 0;
 };

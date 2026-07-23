@@ -6,6 +6,9 @@
 #include <QWidget>
 #include <Qt>
 
+#include <cstdint>
+#include <optional>
+
 class LogModel;
 class QGroupBox;
 class QLabel;
@@ -28,6 +31,16 @@ constexpr int RECORD_DETAIL_EMPTY_PLACEHOLDER_ROLE = Qt::UserRole + 1;
 /// JSON" pushes this verbatim. `formattedJson` is the pretty-printed
 /// rendering shown in the widget.
 ///
+/// `anchorColorIndex` / `anchorNote` describe an anchor on the row
+/// (if any). Both are captured at snapshot time so a frozen
+/// `RecordDetailContent` sent to a snapshot window keeps rendering
+/// even after the anchor is edited or cleared in the source model.
+///   - `anchorColorIndex == nullopt` : row has no anchor.
+///   - `anchorColorIndex.value()`     : palette slot in
+///                                       `[0, ANCHOR_PALETTE_SIZE)`.
+///   - `anchorNote`                   : one-line note (empty when the
+///                                       anchor has no note attached).
+///
 /// All strings are owned, so a snapshot keeps rendering after the
 /// underlying `LogModel` mutates or goes away.
 struct RecordDetailContent
@@ -38,6 +51,8 @@ struct RecordDetailContent
     QString formattedJson;
     bool valid = false;
     QString placeholderText;
+    std::optional<std::uint8_t> anchorColorIndex;
+    QString anchorNote;
 };
 
 /// Snapshot @p sourceRow of @p model. Out-of-range rows produce an
@@ -107,6 +122,11 @@ private:
 
     RecordDetailContent mContent;
     QLabel *mSummaryLabel = nullptr;
+    /// Italic subline directly under the summary that surfaces the
+    /// anchor note (if any). Hidden when the pinned row is not
+    /// anchored. When the row is anchored but has no note we still
+    /// show a low-key "Anchored" so the record's status is legible.
+    QLabel *mAnchorNoteLabel = nullptr;
     QLabel *mPlaceholderLabel = nullptr;
     QTableWidget *mFieldsTable = nullptr;
     QGroupBox *mRawGroup = nullptr;

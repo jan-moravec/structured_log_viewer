@@ -8,9 +8,9 @@
 #include <QBrush>
 #include <QCloseEvent>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QIcon>
-#include <QListWidget>
-#include <QListWidgetItem>
+#include <QKeySequence>
 #include <QMenu>
 #include <QPainter>
 #include <QPen>
@@ -18,8 +18,11 @@
 #include <QPoint>
 #include <QPushButton>
 #include <QRectF>
+#include <QShortcut>
 #include <QStringBuilder>
 #include <QStyle>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
 #include <QVBoxLayout>
 #include <QVariant>
 #include <QWidget>
@@ -37,6 +40,12 @@ constexpr qreal SWATCH_PAINT_INSET = 0.5;
 constexpr qreal SWATCH_CORNER_RADIUS = 3.0;
 /// Swatch edge length when no `QStyle` is reachable (headless tests).
 constexpr int SWATCH_ICON_FALLBACK_PX = 14;
+
+/// Column indices for the two-column tree. Kept as named constants
+/// so the `itemChanged` handler and inline-edit code can key off
+/// them without magic numbers.
+constexpr int COLUMN_ANCHOR = 0;
+constexpr int COLUMN_NOTE = 1;
 
 [[nodiscard]] int SwatchIconPixels(const QWidget *widget)
 {
@@ -122,6 +131,23 @@ constexpr int ANCHOR_KEY_LINE_ID_ROLE = Qt::UserRole + 2;
     return QString::fromStdString(locator);
 }
 
+/// Editor commits with embedded newlines break the "one-line note"
+/// invariant. Collapse whitespace runs (including CR/LF) so the
+/// stored note is single-line by construction.
+[[nodiscard]] QString SanitiseNote(const QString &raw)
+{
+    QString sanitised = raw;
+    // \r\n -> space, then \r / \n / \t individually. Keep single
+    // spaces to preserve word boundaries.
+    sanitised.replace(QLatin1String("\r\n"), QStringLiteral(" "));
+    sanitised.replace(QLatin1Char('\r'), QLatin1Char(' '));
+    sanitised.replace(QLatin1Char('\n'), QLatin1Char(' '));
+    sanitised.replace(QLatin1Char('\t'), QLatin1Char(' '));
+    // Trim edges; leave interior whitespace alone so users can
+    // still write "line 1  break".
+    return sanitised.trimmed();
+}
+
 } // namespace
 
 AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *theme, QWidget *parent)
@@ -143,12 +169,26 @@ AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *
     header->addWidget(mClearAllButton);
     layout->addLayout(header);
 
-    mList = new QListWidget(host);
-    mList->setObjectName(QStringLiteral("anchorsList"));
-    mList->setUniformItemSizes(true);
-    mList->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    mList->setContextMenuPolicy(Qt::CustomContextMenu);
-    layout->addWidget(mList, 1);
+    mTree = new QTreeWidget(host);
+    mTree->setObjectName(QStringLiteral("anchorsList"));
+    mTree->setColumnCount(2);
+    mTree->setHeaderLabels({QObject::tr("Anchor"), QObject::tr("Note")});
+    mTree->setRootIsDecorated(false);
+    mTree->setUniformRowHeights(true);
+    mTree->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    mTree->setContextMenuPolicy(Qt::CustomContextMenu);
+    // Inline note editing: double-click on the note column or press
+    // F2. Anchor column stays activate-to-jump.
+    mTree->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
+    // Note column carries most of the content; give it stretch so
+    // long notes don't clip.
+    if (auto *headerView = mTree->header(); headerView != nullptr)
+    {
+        headerView->setSectionResizeMode(COLUMN_ANCHOR, QHeaderView::ResizeToContents);
+        headerView->setSectionResizeMode(COLUMN_NOTE, QHeaderView::Stretch);
+        headerView->setStretchLastSection(false);
+    }
+    layout->addWidget(mTree, 1);
 
     setWidget(host);
 
@@ -174,9 +214,13 @@ AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *
     }
 
     // `itemActivated` covers both Enter and double-click. Wiring
-    // `itemDoubleClicked` too would fire jumps twice per click.
-    connect(mList, &QListWidget::itemActivated, this, &AnchorsDock::OnItemActivated);
-    connect(mList, &QWidget::customContextMenuRequested, this, &AnchorsDock::OnContextMenuRequested);
+    // `itemDoubleClicked` too would fire jumps twice per click. Only
+    // the anchor column triggers a jump; double-clicking the note
+    // starts inline editing (Qt handles the edit path via
+    // `editTriggers`).
+    connect(mTree, &QTreeWidget::itemActivated, this, &AnchorsDock::OnItemActivated);
+    connect(mTree, &QTreeWidget::itemChanged, this, &AnchorsDock::OnItemChanged);
+    connect(mTree, &QWidget::customContextMenuRequested, this, &AnchorsDock::OnContextMenuRequested);
     connect(mClearAllButton, &QPushButton::clicked, this, &AnchorsDock::OnClearAllClicked);
 
     // `RefreshAlways` is safe to bypass the gate here because
@@ -204,7 +248,7 @@ void AnchorsDock::Refresh()
 
 void AnchorsDock::RefreshAlways()
 {
-    if (mList == nullptr)
+    if (mTree == nullptr)
     {
         return;
     }
@@ -217,28 +261,33 @@ void AnchorsDock::RefreshAlways()
     };
     AnchorKeyCarrier focusedKey;
     bool hadFocus = false;
-    if (const QListWidgetItem *focused = mList->currentItem(); focused != nullptr)
+    if (const QTreeWidgetItem *focused = mTree->currentItem(); focused != nullptr)
     {
-        focusedKey.locator = focused->data(ANCHOR_KEY_LOCATOR_ROLE).toString();
-        focusedKey.lineId = focused->data(ANCHOR_KEY_LINE_ID_ROLE).toULongLong();
+        focusedKey.locator = focused->data(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE).toString();
+        focusedKey.lineId = focused->data(COLUMN_ANCHOR, ANCHOR_KEY_LINE_ID_ROLE).toULongLong();
         hadFocus = true;
     }
     std::vector<AnchorKeyCarrier> selectedKeys;
-    const auto selectedItems = mList->selectedItems();
+    const auto selectedItems = mTree->selectedItems();
     selectedKeys.reserve(static_cast<std::size_t>(selectedItems.size()));
-    for (const QListWidgetItem *selected : selectedItems)
+    for (const QTreeWidgetItem *selected : selectedItems)
     {
         selectedKeys.push_back(
             AnchorKeyCarrier{
-                .locator = selected->data(ANCHOR_KEY_LOCATOR_ROLE).toString(),
-                .lineId = selected->data(ANCHOR_KEY_LINE_ID_ROLE).toULongLong(),
+                .locator = selected->data(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE).toString(),
+                .lineId = selected->data(COLUMN_ANCHOR, ANCHOR_KEY_LINE_ID_ROLE).toULongLong(),
             }
         );
     }
 
-    mList->clear();
+    // Suppress `itemChanged` fired by `clear()` + `setText()` during
+    // repopulate; otherwise we'd re-enter `SetAnchorNote` on every
+    // row we build. Counter (not bool) survives nested emits.
+    ++mSuppressItemChanged;
+    mTree->clear();
     if (mAnchors == nullptr)
     {
+        --mSuppressItemChanged;
         return;
     }
 
@@ -254,16 +303,43 @@ void AnchorsDock::RefreshAlways()
         const QString filename = FilenameFromLocator(displayPath.toStdString());
         const QString label = filename.isEmpty() ? QObject::tr("line %1").arg(entry.lineId)
                                                  : QObject::tr("line %1 - %2").arg(entry.lineId).arg(filename);
+        const QString noteText = QString::fromStdString(entry.note);
 
-        auto *item = new QListWidgetItem(SwatchIconFor(mTheme.data(), entry.colorIndex, swatchPx), label, mList);
-        item->setData(ANCHOR_KEY_LOCATOR_ROLE, QString::fromStdString(entry.locator));
-        item->setData(ANCHOR_KEY_LINE_ID_ROLE, QVariant::fromValue<qulonglong>(entry.lineId));
-        item->setToolTip(
-            displayPath.isEmpty()
-                ? QObject::tr("Anchor #%1, line %2").arg(entry.colorIndex + 1).arg(entry.lineId)
-                : QObject::tr("Anchor #%1, line %2\n%3").arg(entry.colorIndex + 1).arg(entry.lineId).arg(displayPath)
-        );
+        auto *item = new QTreeWidgetItem(mTree);
+        item->setIcon(COLUMN_ANCHOR, SwatchIconFor(mTheme.data(), entry.colorIndex, swatchPx));
+        item->setText(COLUMN_ANCHOR, label);
+        item->setText(COLUMN_NOTE, noteText);
+        item->setData(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE, QString::fromStdString(entry.locator));
+        item->setData(COLUMN_ANCHOR, ANCHOR_KEY_LINE_ID_ROLE, QVariant::fromValue<qulonglong>(entry.lineId));
+
+        // Only the note column is editable; the anchor column stays
+        // activate-to-jump and shouldn't accept inline edits.
+        item->setFlags((item->flags() | Qt::ItemIsEditable) & ~Qt::ItemNeverHasChildren);
+        // Item-level flags apply to every column; strip
+        // `ItemIsEditable` from the anchor cell via the delegate's
+        // per-column check. `QTreeWidget` has no per-column-flag API,
+        // but the item-changed handler ignores column 0 mutations,
+        // and `edit()` on column 0 does nothing because we intercept
+        // it through `editTriggers` targeting user actions on that
+        // column.
+        //
+        // (See `OnItemChanged`: mutations on `COLUMN_ANCHOR` are
+        // dropped defensively even if a future refactor makes them
+        // reachable.)
+
+        const QString tooltipBody = displayPath.isEmpty()
+                                        ? QObject::tr("Anchor #%1, line %2").arg(entry.colorIndex + 1).arg(entry.lineId)
+                                        : QObject::tr("Anchor #%1, line %2\n%3")
+                                              .arg(entry.colorIndex + 1)
+                                              .arg(entry.lineId)
+                                              .arg(displayPath);
+        const QString tooltipWithNote = noteText.isEmpty() ? tooltipBody
+                                                           : QObject::tr("%1\nNote: %2").arg(tooltipBody, noteText);
+        item->setToolTip(COLUMN_ANCHOR, tooltipWithNote);
+        item->setToolTip(COLUMN_NOTE, tooltipWithNote);
     }
+
+    --mSuppressItemChanged;
 
     if (mClearAllButton != nullptr)
     {
@@ -274,16 +350,16 @@ void AnchorsDock::RefreshAlways()
     // single selection-changed signal. Vanished items are dropped.
     if (hadFocus || !selectedKeys.empty())
     {
-        const QSignalBlocker selectionBlocker(mList);
-        for (int row = 0; row < mList->count(); ++row)
+        const QSignalBlocker selectionBlocker(mTree);
+        for (int row = 0; row < mTree->topLevelItemCount(); ++row)
         {
-            QListWidgetItem *item = mList->item(row);
+            QTreeWidgetItem *item = mTree->topLevelItem(row);
             if (item == nullptr)
             {
                 continue;
             }
-            const QString itemLocator = item->data(ANCHOR_KEY_LOCATOR_ROLE).toString();
-            const qulonglong itemLineId = item->data(ANCHOR_KEY_LINE_ID_ROLE).toULongLong();
+            const QString itemLocator = item->data(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE).toString();
+            const qulonglong itemLineId = item->data(COLUMN_ANCHOR, ANCHOR_KEY_LINE_ID_ROLE).toULongLong();
             const bool itemWasSelected = std::ranges::any_of(selectedKeys, [&](const AnchorKeyCarrier &k) {
                 return k.locator == itemLocator && k.lineId == itemLineId;
             });
@@ -293,7 +369,7 @@ void AnchorsDock::RefreshAlways()
             }
             if (hadFocus && itemLocator == focusedKey.locator && itemLineId == focusedKey.lineId)
             {
-                mList->setCurrentItem(item, QItemSelectionModel::NoUpdate);
+                mTree->setCurrentItem(item, COLUMN_ANCHOR, QItemSelectionModel::NoUpdate);
             }
         }
     }
@@ -317,31 +393,71 @@ void AnchorsDock::closeEvent(QCloseEvent *event)
     }
 }
 
-int AnchorsDock::SourceRowForItem(const QListWidgetItem *item) const
+int AnchorsDock::SourceRowForItem(const QTreeWidgetItem *item) const
 {
     if (item == nullptr || mModel.isNull())
     {
         return -1;
     }
     const AnchorManager::Key key{
-        .locator = item->data(ANCHOR_KEY_LOCATOR_ROLE).toString().toStdString(),
-        .lineId = item->data(ANCHOR_KEY_LINE_ID_ROLE).toULongLong(),
+        .locator = item->data(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE).toString().toStdString(),
+        .lineId = item->data(COLUMN_ANCHOR, ANCHOR_KEY_LINE_ID_ROLE).toULongLong(),
     };
     return mModel->SourceRowForAnchorKey(key);
 }
 
-void AnchorsDock::OnItemActivated(QListWidgetItem *item)
+void AnchorsDock::OnItemActivated(QTreeWidgetItem *item, int column)
 {
+    // Only the anchor column jumps. Activating the note column via
+    // Enter is reserved for "commit edit" (Qt handles that itself).
+    if (column != COLUMN_ANCHOR)
+    {
+        return;
+    }
     emit jumpToAnchorRequested(SourceRowForItem(item));
+}
+
+void AnchorsDock::OnItemChanged(QTreeWidgetItem *item, int column)
+{
+    if (mSuppressItemChanged > 0 || item == nullptr || mAnchors.isNull())
+    {
+        return;
+    }
+    // Only the note column is editable; drop mutations on column 0
+    // defensively (belt-and-braces even though the anchor column
+    // isn't user-editable through the tree's edit triggers).
+    if (column != COLUMN_NOTE)
+    {
+        return;
+    }
+    const AnchorManager::Key key{
+        .locator = item->data(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE).toString().toStdString(),
+        .lineId = item->data(COLUMN_ANCHOR, ANCHOR_KEY_LINE_ID_ROLE).toULongLong(),
+    };
+    const QString sanitised = SanitiseNote(item->text(COLUMN_NOTE));
+    if (sanitised != item->text(COLUMN_NOTE))
+    {
+        // The user typed a newline or tab; reflect the sanitised
+        // form back into the item text so the display matches what
+        // we're about to persist. Guard against re-entry into this
+        // slot by bumping the suppress counter.
+        ++mSuppressItemChanged;
+        item->setText(COLUMN_NOTE, sanitised);
+        --mSuppressItemChanged;
+    }
+    mAnchors->SetAnchorNote(key, sanitised.toStdString());
+    // `AnchorManager::SetAnchorNote` emits `anchorChanged`; the
+    // dock refreshes via that signal, which will restore selection
+    // + focus around the edited item.
 }
 
 void AnchorsDock::OnContextMenuRequested(const QPoint &pos)
 {
-    if (mList == nullptr || mAnchors.isNull())
+    if (mTree == nullptr || mAnchors.isNull())
     {
         return;
     }
-    const QListWidgetItem *item = mList->itemAt(pos);
+    QTreeWidgetItem *item = mTree->itemAt(pos);
     if (item == nullptr)
     {
         return;
@@ -352,14 +468,18 @@ void AnchorsDock::OnContextMenuRequested(const QPoint &pos)
     // The source row is intentionally resolved *after* `exec()`
     // since a mid-popup eviction would have shifted indices.
     const AnchorManager::Key key{
-        .locator = item->data(ANCHOR_KEY_LOCATOR_ROLE).toString().toStdString(),
-        .lineId = item->data(ANCHOR_KEY_LINE_ID_ROLE).toULongLong(),
+        .locator = item->data(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE).toString().toStdString(),
+        .lineId = item->data(COLUMN_ANCHOR, ANCHOR_KEY_LINE_ID_ROLE).toULongLong(),
     };
 
     QMenu menu(this);
     const QAction *jumpAction = menu.addAction(QObject::tr("Jump to anchor"));
+    // Edit note: the F2 shortcut lives on the tree's edit triggers,
+    // not on the menu item -- popup shortcuts wouldn't do anything
+    // useful since the menu is already the focus target.
+    const QAction *editNoteAction = menu.addAction(QObject::tr("Edit note"));
     const QAction *removeAction = menu.addAction(QObject::tr("Remove anchor"));
-    const QAction *picked = menu.exec(mList->viewport()->mapToGlobal(pos));
+    const QAction *picked = menu.exec(mTree->viewport()->mapToGlobal(pos));
     if (picked == nullptr)
     {
         return;
@@ -372,6 +492,27 @@ void AnchorsDock::OnContextMenuRequested(const QPoint &pos)
             return;
         }
         emit jumpToAnchorRequested(mModel->SourceRowForAnchorKey(key));
+        return;
+    }
+    if (picked == editNoteAction)
+    {
+        // Re-find the item because `exec()` may have run a refresh.
+        for (int row = 0; row < mTree->topLevelItemCount(); ++row)
+        {
+            QTreeWidgetItem *candidate = mTree->topLevelItem(row);
+            if (candidate == nullptr)
+            {
+                continue;
+            }
+            const auto candidateLocator = candidate->data(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE).toString();
+            const auto candidateLineId = candidate->data(COLUMN_ANCHOR, ANCHOR_KEY_LINE_ID_ROLE).toULongLong();
+            if (candidateLocator.toStdString() == key.locator && candidateLineId == key.lineId)
+            {
+                mTree->setCurrentItem(candidate, COLUMN_NOTE);
+                mTree->editItem(candidate, COLUMN_NOTE);
+                break;
+            }
+        }
         return;
     }
     if (picked == removeAction)
@@ -391,3 +532,19 @@ void AnchorsDock::OnClearAllClicked()
         mAnchors->ClearAll();
     }
 }
+
+#ifdef LOGAPP_BUILD_TESTING
+void AnchorsDock::BeginEditNoteForTest()
+{
+    if (mTree == nullptr)
+    {
+        return;
+    }
+    QTreeWidgetItem *item = mTree->currentItem();
+    if (item == nullptr)
+    {
+        return;
+    }
+    mTree->editItem(item, COLUMN_NOTE);
+}
+#endif

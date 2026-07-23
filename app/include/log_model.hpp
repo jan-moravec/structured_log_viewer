@@ -124,6 +124,12 @@ public:
     /// anchor-free sessions pay ~nothing.
     [[nodiscard]] std::optional<uint8_t> AnchorSlotForRow(int row) const noexcept;
 
+    /// Anchor note for @p row, or empty when the row has no anchor
+    /// or the anchor has no note. Same fast-path as `AnchorSlotForRow`
+    /// so anchor-free sessions pay ~nothing. Used by the row tooltip
+    /// path in `data(Qt::ToolTipRole)` and by `RecordDetailDock`.
+    [[nodiscard]] QString AnchorNoteForRow(int row) const;
+
     /// Full teardown followed by a model reset. Emits `lineCountChanged(0)`,
     /// `errorCountChanged(0)`, and a compensating `streamingFinished` if
     /// a session was still active.

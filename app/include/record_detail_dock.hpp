@@ -4,6 +4,7 @@
 #include <QPersistentModelIndex>
 #include <QPointer>
 
+class AnchorManager;
 class LogModel;
 class RecordDetailWidget;
 class QCloseEvent;
@@ -33,8 +34,13 @@ class RecordDetailDock : public QDockWidget
     Q_OBJECT
 
 public:
-    /// `model` is borrowed and must outlive the dock.
-    RecordDetailDock(LogModel *model, QWidget *parent = nullptr);
+    /// `model` is borrowed and must outlive the dock. `anchors` is
+    /// optional; when supplied, the dock rebuilds its snapshot on
+    /// anchor mutations so the anchor-note subline stays live.
+    /// Passing nullptr keeps the dock functional without the
+    /// anchor subline (used by fixture code that skips the anchor
+    /// manager).
+    RecordDetailDock(LogModel *model, AnchorManager *anchors = nullptr, QWidget *parent = nullptr);
 
     /// Pin to @p sourceRow and refresh. Out-of-range rows clear the
     /// view.
@@ -95,6 +101,7 @@ private:
     void ShowEvictedPlaceholder();
 
     QPointer<LogModel> mModel;
+    QPointer<AnchorManager> mAnchors;
     RecordDetailWidget *mWidget = nullptr;
     /// Persistent pin against the source model. Invalid means no
     /// pin, or the pinned row was evicted.

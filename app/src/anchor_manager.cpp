@@ -17,14 +17,15 @@ bool AnchorManager::SetAnchor(const Key &key, uint8_t colorIndex)
 {
     const auto clamped = static_cast<uint8_t>(std::min<std::size_t>(colorIndex, loglib::ANCHOR_PALETTE_SIZE - 1));
 
-    const auto [it, inserted] = mAnchors.try_emplace(key, clamped);
+    const auto [it, inserted] = mAnchors.try_emplace(key, Value{.colorIndex = clamped, .note = {}});
     if (!inserted)
     {
-        if (it->second == clamped)
+        if (it->second.colorIndex == clamped)
         {
             return false;
         }
-        it->second = clamped;
+        // Preserve any existing note: recolour must not clobber it.
+        it->second.colorIndex = clamped;
     }
     emit anchorChanged(key);
     return true;
@@ -43,16 +44,17 @@ bool AnchorManager::SetAnchors(std::span<const Key> keys, uint8_t colorIndex)
     const Key *lastChangedKey = nullptr;
     for (const Key &key : keys)
     {
-        const auto [it, inserted] = mAnchors.try_emplace(key, clamped);
+        const auto [it, inserted] = mAnchors.try_emplace(key, Value{.colorIndex = clamped, .note = {}});
         if (inserted)
         {
             ++changeCount;
             lastChangedKey = &it->first;
             continue;
         }
-        if (it->second != clamped)
+        if (it->second.colorIndex != clamped)
         {
-            it->second = clamped;
+            // Preserve existing note; only the colour flips.
+            it->second.colorIndex = clamped;
             ++changeCount;
             lastChangedKey = &it->first;
         }
@@ -70,6 +72,25 @@ bool AnchorManager::SetAnchors(std::span<const Key> keys, uint8_t colorIndex)
     {
         emit anchorsReset();
     }
+    return true;
+}
+
+bool AnchorManager::SetAnchorNote(const Key &key, std::string note)
+{
+    const auto it = mAnchors.find(key);
+    if (it == mAnchors.end())
+    {
+        // Notes only exist alongside an anchor colour. Callers that
+        // want to attach a note to an unanchored row must anchor it
+        // first (`SetAnchor` seeds with an empty note).
+        return false;
+    }
+    if (it->second.note == note)
+    {
+        return false;
+    }
+    it->second.note = std::move(note);
+    emit anchorChanged(key);
     return true;
 }
 
@@ -139,7 +160,7 @@ bool AnchorManager::ClearAll()
 std::size_t AnchorManager::Replace(const std::vector<loglib::LogConfiguration::AnchorEntry> &entries)
 {
     // Snapshot the previous state so an identical reload stays silent.
-    std::unordered_map<Key, uint8_t, KeyHash> previous;
+    std::unordered_map<Key, Value, KeyHash> previous;
     previous.swap(mAnchors);
 
     std::size_t droppedCount = 0;
@@ -152,7 +173,10 @@ std::size_t AnchorManager::Replace(const std::vector<loglib::LogConfiguration::A
             ++droppedCount;
             continue;
         }
-        mAnchors.insert_or_assign(Key{.locator = entry.locator, .lineId = entry.lineId}, entry.colorIndex);
+        mAnchors.insert_or_assign(
+            Key{.locator = entry.locator, .lineId = entry.lineId},
+            Value{.colorIndex = entry.colorIndex, .note = entry.note}
+        );
     }
 
     if (mAnchors != previous)
@@ -169,14 +193,24 @@ std::optional<uint8_t> AnchorManager::ColorFor(const Key &key) const noexcept
     {
         return std::nullopt;
     }
-    return it->second;
+    return it->second.colorIndex;
+}
+
+std::optional<std::string> AnchorManager::NoteFor(const Key &key) const
+{
+    const auto it = mAnchors.find(key);
+    if (it == mAnchors.end())
+    {
+        return std::nullopt;
+    }
+    return it->second.note;
 }
 
 std::vector<loglib::LogConfiguration::AnchorEntry> AnchorManager::Entries() const
 {
     std::vector<loglib::LogConfiguration::AnchorEntry> out;
     out.reserve(mAnchors.size());
-    for (const auto &[key, colorIndex] : mAnchors)
+    for (const auto &[key, value] : mAnchors)
     {
         // Drop runtime-only anchors (empty locator); their lineId
         // isn't stable across sessions.
@@ -188,7 +222,8 @@ std::vector<loglib::LogConfiguration::AnchorEntry> AnchorManager::Entries() cons
             loglib::LogConfiguration::AnchorEntry{
                 .locator = key.locator,
                 .lineId = key.lineId,
-                .colorIndex = colorIndex,
+                .colorIndex = value.colorIndex,
+                .note = value.note,
             }
         );
     }
@@ -209,13 +244,14 @@ std::vector<loglib::LogConfiguration::AnchorEntry> AnchorManager::EntriesIncludi
 {
     std::vector<loglib::LogConfiguration::AnchorEntry> out;
     out.reserve(mAnchors.size());
-    for (const auto &[key, colorIndex] : mAnchors)
+    for (const auto &[key, value] : mAnchors)
     {
         out.push_back(
             loglib::LogConfiguration::AnchorEntry{
                 .locator = key.locator,
                 .lineId = key.lineId,
-                .colorIndex = colorIndex,
+                .colorIndex = value.colorIndex,
+                .note = value.note,
             }
         );
     }

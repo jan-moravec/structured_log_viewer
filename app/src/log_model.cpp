@@ -1433,6 +1433,25 @@ std::optional<uint8_t> LogModel::AnchorSlotForRow(int row) const noexcept
     return mAnchors->ColorFor(*key);
 }
 
+QString LogModel::AnchorNoteForRow(int row) const
+{
+    if (mAnchors == nullptr || mAnchors->Empty())
+    {
+        return {};
+    }
+    const auto key = AnchorKeyForRow(row);
+    if (!key.has_value())
+    {
+        return {};
+    }
+    const auto note = mAnchors->NoteFor(*key);
+    if (!note.has_value())
+    {
+        return {};
+    }
+    return QString::fromStdString(*note);
+}
+
 void LogModel::PrewarmCanonicalLocatorCache()
 {
     // Idempotent: existing entries are skipped, only new sources
@@ -1479,7 +1498,10 @@ void LogModel::RefreshRowsForAnchor(const AnchorManager::Key &key)
         }
         const QModelIndex topLeft = index(static_cast<int>(i), 0);
         const QModelIndex bottomRight = index(static_cast<int>(i), cols - 1);
-        emit dataChanged(topLeft, bottomRight, {Qt::BackgroundRole, Qt::ForegroundRole});
+        // ToolTipRole rides along so a note edit re-fetches the
+        // per-row tooltip; the role is included in
+        // `IsStyleOnlyRoleChange` so listeners still short-circuit.
+        emit dataChanged(topLeft, bottomRight, {Qt::BackgroundRole, Qt::ForegroundRole, Qt::ToolTipRole});
     }
 }
 
@@ -1491,7 +1513,9 @@ void LogModel::RefreshAllAnchorRows()
     {
         return;
     }
-    emit dataChanged(index(0, 0), index(rows - 1, cols - 1), {Qt::BackgroundRole, Qt::ForegroundRole});
+    emit dataChanged(
+        index(0, 0), index(rows - 1, cols - 1), {Qt::BackgroundRole, Qt::ForegroundRole, Qt::ToolTipRole}
+    );
 }
 
 void LogModel::RefreshAllHighlightRows()
@@ -1812,28 +1836,56 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
 
     case Qt::ToolTipRole:
     {
-        // Only synthesise a tooltip in icon mode -- the glyph
-        // carries no text, so the canonical name is the only way
-        // to spell out the level. In text mode the cell already
+        // Anchor note: if the row's anchor has a non-empty note,
+        // surface it as the tooltip for every cell in the row. The
+        // `Empty()` fast-path keeps anchor-free sessions cheap.
+        QString anchorTooltip;
+        if (mAnchors != nullptr && !mAnchors->Empty())
+        {
+            if (const auto key = AnchorKeyForRow(index.row()); key.has_value())
+            {
+                if (const auto note = mAnchors->NoteFor(*key); note.has_value() && !note->empty())
+                {
+                    anchorTooltip = tr("Anchor: %1").arg(QString::fromStdString(*note));
+                }
+            }
+        }
+
+        // Level-icon tooltip: only synthesised in icon mode -- the
+        // glyph carries no text, so the canonical name is the only
+        // way to spell out the level. In text mode the cell already
         // shows the raw value; returning the canonical name here
         // would shadow it with different casing/spelling.
-        if (!IsLevelIconModeActive())
+        QString levelTooltip;
+        if (IsLevelIconModeActive())
         {
-            return {};
+            const int levelCol = FirstLevelColumnIndex();
+            if (levelCol >= 0 && index.column() == levelCol)
+            {
+                // `DisplayLevelForRow` so unmapped values get "Unknown"
+                // rather than no tooltip at all in a narrow icon column.
+                if (const auto level = DisplayLevelForRow(index.row()); level.has_value())
+                {
+                    levelTooltip = QString::fromUtf8(loglib::CanonicalLevelName(*level).data());
+                }
+            }
         }
-        const int levelCol = FirstLevelColumnIndex();
-        if (levelCol < 0 || index.column() != levelCol)
+
+        if (!anchorTooltip.isEmpty() && !levelTooltip.isEmpty())
         {
-            return {};
+            // Two lines: anchor note on top (it's the more
+            // record-specific text), level below.
+            return QStringLiteral("%1\n%2").arg(anchorTooltip, levelTooltip);
         }
-        // `DisplayLevelForRow` so unmapped values get "Unknown"
-        // rather than no tooltip at all in a narrow icon column.
-        const auto level = DisplayLevelForRow(index.row());
-        if (!level.has_value())
+        if (!anchorTooltip.isEmpty())
         {
-            return {};
+            return anchorTooltip;
         }
-        return QString::fromUtf8(loglib::CanonicalLevelName(*level).data());
+        if (!levelTooltip.isEmpty())
+        {
+            return levelTooltip;
+        }
+        return {};
     }
 
     case LogModelItemDataRole::SortRole:

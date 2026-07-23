@@ -1,5 +1,6 @@
 #include "record_detail_dock.hpp"
 
+#include "anchor_manager.hpp"
 #include "log_model.hpp"
 #include "record_detail_widget.hpp"
 
@@ -16,8 +17,8 @@ namespace
 constexpr int DOCK_MIN_WIDTH = 280;
 } // namespace
 
-RecordDetailDock::RecordDetailDock(LogModel *model, QWidget *parent)
-    : QDockWidget(tr("Record Details"), parent), mModel(model)
+RecordDetailDock::RecordDetailDock(LogModel *model, AnchorManager *anchors, QWidget *parent)
+    : QDockWidget(tr("Record Details"), parent), mModel(model), mAnchors(anchors)
 {
     setObjectName(QStringLiteral("recordDetailDock"));
     setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea | Qt::BottomDockWidgetArea);
@@ -121,6 +122,38 @@ RecordDetailDock::RecordDetailDock(LogModel *model, QWidget *parent)
         };
         connect(mModel, &QAbstractItemModel::columnsMoved, this, columnsLayoutChanged);
         connect(mModel, &QAbstractItemModel::columnsInserted, this, columnsLayoutChanged);
+    }
+
+    // Anchor mutations don't fire `dataChanged` roles that survive
+    // `IsStyleOnlyRoleChange` (the model emits Background /
+    // Foreground / ToolTip roles, all of which are treated as
+    // style-only). Subscribe directly so the pinned row's
+    // anchor-note subline stays in step with edits from the
+    // Anchors dock or the F4 shortcut.
+    if (mAnchors != nullptr)
+    {
+        connect(mAnchors, &AnchorManager::anchorChanged, this, [this](const AnchorManager::Key &changedKey) {
+            if (!IsVisibleForRefresh() || !mCurrentSourceIndex.isValid() || mModel.isNull())
+            {
+                return;
+            }
+            const int pinnedRow = mCurrentSourceIndex.row();
+            const auto pinnedKey = mModel->AnchorKeyForRow(pinnedRow);
+            if (pinnedKey.has_value() && *pinnedKey == changedKey)
+            {
+                RefreshFromModel();
+            }
+        });
+        connect(mAnchors, &AnchorManager::anchorsReset, this, [this]() {
+            if (!IsVisibleForRefresh() || !mCurrentSourceIndex.isValid())
+            {
+                return;
+            }
+            // Bulk mutation (`ClearAll`, `Replace`, streaming
+            // eviction). Refresh unconditionally: the pinned row's
+            // anchor state may have changed even if the key didn't.
+            RefreshFromModel();
+        });
     }
 
     Clear();

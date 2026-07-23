@@ -59,6 +59,7 @@
 #include <QFutureWatcher>
 #include <QGuiApplication>
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
@@ -1203,7 +1204,7 @@ MainWindow::MainWindow(
 
     // Record-detail dock: hidden by default; the View menu's Ctrl+I
     // toggle and row double-click both surface it.
-    mRecordDetailDock = new RecordDetailDock(mModel, this);
+    mRecordDetailDock = new RecordDetailDock(mModel, mAnchors, this);
     addDockWidget(Qt::RightDockWidgetArea, mRecordDetailDock);
     mRecordDetailDock->hide();
 
@@ -1377,6 +1378,7 @@ MainWindow::MainWindow(
     //   Ctrl+0        clear anchor on selection
     //   Ctrl+Shift+A  clear every anchor
     //   F2 / Shift+F2 jump to next / previous visible anchor
+    //   F4            edit note on the current anchored row
     for (std::size_t i = 0; i < mAnchorColorActions.size(); ++i)
     {
         auto *action = new QAction(this);
@@ -1403,6 +1405,12 @@ MainWindow::MainWindow(
     mActionJumpPrevAnchor->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F2));
     addAction(mActionJumpPrevAnchor);
     connect(mActionJumpPrevAnchor, &QAction::triggered, this, [this]() { JumpToAnchor(false); });
+
+    mActionEditRowAnchorNote = new QAction(tr("Edit anchor note on current row"), this);
+    mActionEditRowAnchorNote->setObjectName(QStringLiteral("actionEditRowAnchorNote"));
+    mActionEditRowAnchorNote->setShortcut(QKeySequence(Qt::Key_F4));
+    addAction(mActionEditRowAnchorNote);
+    connect(mActionEditRowAnchorNote, &QAction::triggered, this, &MainWindow::EditAnchorNoteOnCurrentRow);
 
     mActionClearAllAnchors = new QAction(tr("Clear all anchors"), this);
     mActionClearAllAnchors->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_A));
@@ -8181,9 +8189,111 @@ void MainWindow::AppendAnchorActionsToRowMenu(QMenu *menu, int sourceRow)
         });
     }
     anchorMenu->addSeparator();
+    QAction *editNoteAction = anchorMenu->addAction(tr("Edit note\u2026"));
+    editNoteAction->setEnabled(rightClickedKey.has_value() && currentColour.has_value());
+    // Capture `sourceRow` (not the key) so the trigger re-resolves
+    // the key at click time; a queued eviction between right-click
+    // and trigger could invalidate a stale key otherwise.
+    connect(editNoteAction, &QAction::triggered, this, [this, sourceRow]() { EditAnchorNoteForRow(sourceRow); });
+
     QAction *clearAction = anchorMenu->addAction(tr("Remove anchor"));
     clearAction->setEnabled(rightClickedKey.has_value() && currentColour.has_value());
     connect(clearAction, &QAction::triggered, mTableView, &LogTableView::ClearAnchorOnSelection);
+}
+
+namespace
+{
+/// Collapse CR/LF/tab into a single space and trim edges so the
+/// stored note stays a one-liner even if the user pastes a
+/// multi-line block. Shared between the row-menu editor and the
+/// `SubmitAnchorNoteForRowForTest` seam; `AnchorsDock` uses a
+/// parallel implementation for the same on-commit sanitisation.
+[[nodiscard]] QString SanitiseAnchorNote(const QString &raw)
+{
+    QString sanitised = raw;
+    sanitised.replace(QLatin1String("\r\n"), QStringLiteral(" "));
+    sanitised.replace(QLatin1Char('\r'), QLatin1Char(' '));
+    sanitised.replace(QLatin1Char('\n'), QLatin1Char(' '));
+    sanitised.replace(QLatin1Char('\t'), QLatin1Char(' '));
+    return sanitised.trimmed();
+}
+} // namespace
+
+void MainWindow::EditAnchorNoteForRow(int sourceRow)
+{
+    if (mAnchors == nullptr || mModel == nullptr)
+    {
+        return;
+    }
+    const auto key = mModel->AnchorKeyForRow(sourceRow);
+    if (!key.has_value() || !mAnchors->ColorFor(*key).has_value())
+    {
+        // Row isn't anchored -- surface a hint instead of opening
+        // an editor that can't commit anywhere useful. Mirrors the
+        // "No anchors set" / "No visible row" status-bar affordances
+        // used by `JumpToAnchor`.
+        statusBar()->showMessage(tr("Row is not anchored."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+
+    const auto existingNote = mAnchors->NoteFor(*key).value_or(std::string{});
+    bool accepted = false;
+    // `getText` gives us a native single-line editor with OK/Cancel;
+    // no rich text, so multi-line paste is trimmed to one line by
+    // the sanitisation step below.
+    const QString newNote = QInputDialog::getText(
+        this,
+        tr("Anchor note"),
+        tr("Note for this anchor:"),
+        QLineEdit::Normal,
+        QString::fromStdString(existingNote),
+        &accepted
+    );
+    if (!accepted)
+    {
+        return;
+    }
+
+    mAnchors->SetAnchorNote(*key, SanitiseAnchorNote(newNote).toStdString());
+}
+
+#ifdef LOGAPP_BUILD_TESTING
+bool MainWindow::SubmitAnchorNoteForRowForTest(int sourceRow, const QString &note)
+{
+    if (mAnchors == nullptr || mModel == nullptr)
+    {
+        return false;
+    }
+    const auto key = mModel->AnchorKeyForRow(sourceRow);
+    if (!key.has_value() || !mAnchors->ColorFor(*key).has_value())
+    {
+        statusBar()->showMessage(tr("Row is not anchored."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return false;
+    }
+    mAnchors->SetAnchorNote(*key, SanitiseAnchorNote(note).toStdString());
+    return true;
+}
+#endif
+
+void MainWindow::EditAnchorNoteOnCurrentRow()
+{
+    if (mTableView == nullptr || mSortFilterProxyModel == nullptr || mRowOrderProxyModel == nullptr)
+    {
+        return;
+    }
+    const QModelIndex current = mTableView->currentIndex();
+    if (!current.isValid())
+    {
+        statusBar()->showMessage(tr("No row is currently selected."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+    const int sourceRow = MapProxyIndexToSourceRow(current, mSortFilterProxyModel, mRowOrderProxyModel);
+    if (sourceRow < 0)
+    {
+        statusBar()->showMessage(tr("No row is currently selected."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+    EditAnchorNoteForRow(sourceRow);
 }
 
 void MainWindow::SetColumnVisible(int logicalIndex, bool visible)

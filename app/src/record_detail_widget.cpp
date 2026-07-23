@@ -253,6 +253,17 @@ RecordDetailContent BuildRecordDetailContent(const LogModel &model, int sourceRo
         }
     }
     content.summary = summary;
+
+    // Anchor snapshot. Captured on the content so the widget can
+    // render a subline even after the pinned row is evicted or the
+    // anchor is edited from another surface; the frozen copy is
+    // faithful to the state at pin time.
+    content.anchorColorIndex = model.AnchorSlotForRow(sourceRow);
+    if (content.anchorColorIndex.has_value())
+    {
+        content.anchorNote = model.AnchorNoteForRow(sourceRow);
+    }
+
     content.valid = true;
     return content;
 }
@@ -273,6 +284,24 @@ RecordDetailWidget::RecordDetailWidget(QWidget *parent)
     summaryFont.setBold(true);
     mSummaryLabel->setFont(summaryFont);
     layout->addWidget(mSummaryLabel);
+
+    // Anchor-note subline: italic + muted foreground so it reads as
+    // metadata rather than record content. Hidden when the pinned
+    // row has no anchor; `PopulateUi` drives visibility + text.
+    mAnchorNoteLabel = new QLabel(this);
+    mAnchorNoteLabel->setObjectName(QStringLiteral("anchorNoteLabel"));
+    mAnchorNoteLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    mAnchorNoteLabel->setWordWrap(true);
+    {
+        QFont noteFont = mAnchorNoteLabel->font();
+        noteFont.setItalic(true);
+        mAnchorNoteLabel->setFont(noteFont);
+        QPalette palette = mAnchorNoteLabel->palette();
+        palette.setColor(mAnchorNoteLabel->foregroundRole(), palette.color(QPalette::PlaceholderText));
+        mAnchorNoteLabel->setPalette(palette);
+    }
+    mAnchorNoteLabel->hide();
+    layout->addWidget(mAnchorNoteLabel);
 
     mPlaceholderLabel = new QLabel(this);
     mPlaceholderLabel->setObjectName(QStringLiteral("placeholderLabel"));
@@ -405,6 +434,28 @@ void RecordDetailWidget::PopulateUi()
     mOpenInNewWindowButton->setEnabled(hasContent);
     mPlaceholderLabel->setVisible(!hasContent);
 
+    // Anchor subline is only visible when the row is both content-
+    // valid AND anchored. Empty-note anchored rows still show a
+    // low-key "Anchored" line so the record's status is legible.
+    const bool showAnchorLine = hasContent && mContent.anchorColorIndex.has_value();
+    mAnchorNoteLabel->setVisible(showAnchorLine);
+    if (showAnchorLine)
+    {
+        const QString noteText = mContent.anchorNote.trimmed();
+        if (noteText.isEmpty())
+        {
+            mAnchorNoteLabel->setText(tr("Anchored"));
+        }
+        else
+        {
+            mAnchorNoteLabel->setText(tr("Anchor: %1").arg(noteText));
+        }
+    }
+    else
+    {
+        mAnchorNoteLabel->clear();
+    }
+
     if (!hasContent)
     {
         mPlaceholderLabel->setText(
@@ -526,7 +577,21 @@ void RecordDetailWidget::CopyAsKeyValueClicked() const
         return;
     }
     QStringList lines;
-    lines.reserve(static_cast<int>(mContent.fields.size()));
+    // Reserve for fields plus one synthetic `anchor.note` line so
+    // the reallocation is a single amortised step.
+    lines.reserve(static_cast<int>(mContent.fields.size()) + 1);
+    // Prepend a synthetic `anchor.note` line when the pinned row is
+    // anchored and has a non-empty note. Sits at the top so a
+    // downstream consumer sees the annotation before the record
+    // fields (matches the reading order in the widget itself).
+    if (mContent.anchorColorIndex.has_value() && !mContent.anchorNote.isEmpty())
+    {
+        lines.append(
+            QStringLiteral("%1: %2").arg(
+                EscapeForKeyValueCopy(QStringLiteral("anchor.note")), EscapeForKeyValueCopy(mContent.anchorNote)
+            )
+        );
+    }
     for (const auto &pair : mContent.fields)
     {
         // Escape both sides so embedded newlines / tabs don't break

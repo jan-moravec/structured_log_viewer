@@ -348,6 +348,22 @@ public:
     /// note when no anchored row is visible. Wired to F2 / Shift+F2.
     void JumpToAnchor(bool forward);
 
+    /// Open a one-line note editor for the anchor on source-model
+    /// row @p sourceRow. No-op when the row isn't anchored (surfaces
+    /// a status-bar hint instead of silently swallowing the input).
+    /// Committed text is sanitised to a single line and forwarded
+    /// to `AnchorManager::SetAnchorNote`.
+    ///
+    /// Used by the row context menu and by
+    /// `EditAnchorNoteOnCurrentRow` (F4).
+    void EditAnchorNoteForRow(int sourceRow);
+
+    /// F4 handler: resolves the currently focused proxy row to a
+    /// source row, then dispatches to `EditAnchorNoteForRow`. Shows
+    /// a status-bar hint when no row is focused or the row isn't
+    /// anchored.
+    void EditAnchorNoteOnCurrentRow();
+
     /// Scroll to source row @p sourceRow and make it the sole
     /// selection. No-op on a negative row, unready model, or a row
     /// that is currently filtered out (the latter shows a status bar
@@ -490,6 +506,14 @@ public:
             mDecompressionStopSource.request_stop();
         }
     }
+
+    /// Test seam that replays the anchor-note editor's commit path
+    /// without opening a modal `QInputDialog`. Applies the same
+    /// row-must-be-anchored guard as `EditAnchorNoteForRow`, then
+    /// (on the anchored branch) sanitises @p note and calls
+    /// `AnchorManager::SetAnchorNote`. Returns true iff the note
+    /// was committed to the manager.
+    bool SubmitAnchorNoteForRowForTest(int sourceRow, const QString &note);
 #endif
 
 protected:
@@ -1341,12 +1365,14 @@ private:
 
     /// Anchor hotkey actions: index N maps to `Ctrl+(N+1)`.
     /// `mActionClearRowAnchor` is `Ctrl+0`; jumps are `F2` /
-    /// `Shift+F2`; clear-all is `Ctrl+Shift+A`. Registered via
-    /// `addAction` so they fire even without menu placement.
+    /// `Shift+F2`; edit-note is `F4`; clear-all is `Ctrl+Shift+A`.
+    /// Registered via `addAction` so they fire even without menu
+    /// placement.
     std::array<QAction *, loglib::ANCHOR_PALETTE_SIZE> mAnchorColorActions{};
     QAction *mActionClearRowAnchor = nullptr;
     QAction *mActionJumpNextAnchor = nullptr;
     QAction *mActionJumpPrevAnchor = nullptr;
+    QAction *mActionEditRowAnchorNote = nullptr;
     QAction *mActionClearAllAnchors = nullptr;
     std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> mFilters;
 

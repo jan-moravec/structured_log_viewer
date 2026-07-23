@@ -104,6 +104,8 @@
 #include <QTemporaryDir>
 #include <QToolBar>
 #include <QToolButton>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
 #include <QUuid>
 #include <QVariant>
 #include <QWheelEvent>
@@ -4307,8 +4309,8 @@ private slots:
         auto *model = mWindow->Model();
         auto *dock = mWindow->findChild<AnchorsDock *>();
         QVERIFY2(dock != nullptr, "MainWindow must own an AnchorsDock");
-        auto *list = dock->ListForTest();
-        QVERIFY(list != nullptr);
+        auto *tree = dock->TreeForTest();
+        QVERIFY(tree != nullptr);
         auto *clearBtn = dock->ClearAllButtonForTest();
         QVERIFY(clearBtn != nullptr);
 
@@ -4332,23 +4334,25 @@ private slots:
         // Offscreen QPA keeps the dock hidden so refresh signals
         // elide; invoke explicitly.
         dock->RefreshForTest();
-        QCOMPARE(list->count(), 2);
+        QCOMPARE(tree->topLevelItemCount(), 2);
 
-        // `itemActivated` -> `jumpToAnchorRequested(sourceRow)`.
+        // `itemActivated` on the anchor column -> jump. The signal
+        // gates on column 0 so wiring double-click on the note
+        // column doesn't spuriously request a jump.
         QSignalSpy jumpSpy(dock, &AnchorsDock::jumpToAnchorRequested);
         QVERIFY(jumpSpy.isValid());
 
-        QListWidgetItem *firstItem = list->item(0);
+        QTreeWidgetItem *firstItem = tree->topLevelItem(0);
         QVERIFY(firstItem != nullptr);
-        emit list->itemActivated(firstItem);
+        emit tree->itemActivated(firstItem, /*column=*/0);
         QCoreApplication::processEvents();
         QCOMPARE(jumpSpy.count(), 1);
         // Both keys resolve back to a non-negative source row.
         QVERIFY(jumpSpy.last().at(0).toInt() >= 0);
 
-        QListWidgetItem *secondItem = list->item(1);
+        QTreeWidgetItem *secondItem = tree->topLevelItem(1);
         QVERIFY(secondItem != nullptr);
-        emit list->itemActivated(secondItem);
+        emit tree->itemActivated(secondItem, /*column=*/0);
         QCoreApplication::processEvents();
         QCOMPARE(jumpSpy.count(), 2);
         QVERIFY(jumpSpy.last().at(0).toInt() >= 0);
@@ -4357,11 +4361,19 @@ private slots:
         // so item 0 -> lineId 1 / row 0, item 1 -> lineId 3 / row 2).
         QVERIFY(jumpSpy.at(0).at(0).toInt() != jumpSpy.at(1).at(0).toInt());
 
+        // Activation on the note column must not issue a jump: only
+        // the anchor column is activate-to-jump; the note column is
+        // activate-to-commit-edit (Qt handles that internally).
+        const int jumpCountBeforeNoteActivate = jumpSpy.count();
+        emit tree->itemActivated(firstItem, /*column=*/1);
+        QCoreApplication::processEvents();
+        QCOMPARE(jumpSpy.count(), jumpCountBeforeNoteActivate);
+
         emit clearBtn->clicked();
         QCoreApplication::processEvents();
         QVERIFY2(anchors->Empty(), "Clear all button must wipe every anchor");
         dock->RefreshForTest();
-        QCOMPARE(list->count(), 0);
+        QCOMPARE(tree->topLevelItemCount(), 0);
 
         model->EndStreaming(false);
     }
@@ -4428,6 +4440,10 @@ private slots:
         QVERIFY(key2.has_value());
         anchors->SetAnchor(*key0, 2);
         anchors->SetAnchor(*key2, 6);
+        // Attach a note to one anchor so the round-trip also
+        // covers the on-disk `note` field. Leaving the other note
+        // empty keeps the default-value branch covered too.
+        QVERIFY(anchors->SetAnchorNote(*key2, std::string{"first error of the incident"}));
         QCOMPARE(anchors->Count(), static_cast<std::size_t>(2));
 
         // Save via the test seam (mirror -> serialise).
@@ -4437,12 +4453,17 @@ private slots:
         mWindow->SaveConfigurationToPathForTest(cfgPath);
         QCoreApplication::processEvents();
 
-        // On-disk JSON must contain an `anchors` key.
+        // On-disk JSON must contain an `anchors` key and the
+        // populated `note` payload.
         QFile saved(cfgPath);
         QVERIFY(saved.open(QIODevice::ReadOnly | QIODevice::Text));
         const QString savedJson = QString::fromUtf8(saved.readAll());
         saved.close();
         QVERIFY2(savedJson.contains(QStringLiteral("\"anchors\"")), "saved JSON must carry an anchors key");
+        QVERIFY2(
+            savedJson.contains(QStringLiteral("first error of the incident")),
+            "saved JSON must carry the anchor note payload"
+        );
 
         // Wipe live state so the load is observable.
         auto *newSessionAction = mWindow->findChild<QAction *>(QStringLiteral("actionNewSession"));
@@ -4459,6 +4480,62 @@ private slots:
         QCOMPARE(anchors->Count(), static_cast<std::size_t>(2));
         QCOMPARE(anchors->ColorFor(*key0).value_or(255U), uint8_t{2});
         QCOMPARE(anchors->ColorFor(*key2).value_or(255U), uint8_t{6});
+        // Notes come back exactly as saved -- populated for key2,
+        // empty (default-constructed) for key0.
+        QCOMPARE(anchors->NoteFor(*key0).value_or(std::string{"NO-KEY"}), std::string{});
+        QCOMPARE(
+            anchors->NoteFor(*key2).value_or(std::string{"NO-KEY"}), std::string{"first error of the incident"}
+        );
+    }
+
+    // SetAnchor on an already-anchored key must preserve any note
+    // attached to it. Ctrl+1..8 must not clobber user text.
+    void TestSetAnchorPreservesExistingNote()
+    {
+        AnchorManager manager;
+        const AnchorManager::Key key{.locator = "c:/logs/a.json", .lineId = 11};
+
+        QVERIFY(manager.SetAnchor(key, 2));
+        QVERIFY(manager.SetAnchorNote(key, std::string{"escalated to on-call"}));
+        QCOMPARE(
+            manager.NoteFor(key).value_or(std::string{"NO-KEY"}), std::string{"escalated to on-call"}
+        );
+
+        // Recolour: the note must survive so Ctrl+1..8 stays
+        // non-destructive.
+        QVERIFY(manager.SetAnchor(key, 4));
+        QCOMPARE(manager.ColorFor(key).value_or(255U), uint8_t{4});
+        QCOMPARE(
+            manager.NoteFor(key).value_or(std::string{"NO-KEY"}), std::string{"escalated to on-call"}
+        );
+
+        // Bulk recolour (Ctrl+1..8 on a multi-row selection) must
+        // preserve the note too.
+        const std::array keys{key};
+        QVERIFY(manager.SetAnchors(keys, 6));
+        QCOMPARE(manager.ColorFor(key).value_or(255U), uint8_t{6});
+        QCOMPARE(
+            manager.NoteFor(key).value_or(std::string{"NO-KEY"}), std::string{"escalated to on-call"}
+        );
+
+        // Removing the anchor drops the note (notes only exist
+        // alongside an anchor colour).
+        QVERIFY(manager.RemoveAnchor(key));
+        QVERIFY(!manager.NoteFor(key).has_value());
+    }
+
+    // SetAnchorNote on an unknown key must be a no-op. Notes only
+    // exist alongside an anchor colour, so the manager rejects a
+    // note without seeding an anchor.
+    void TestSetAnchorNoteRejectsUnknownKey()
+    {
+        AnchorManager manager;
+        const QSignalSpy changedSpy(&manager, &AnchorManager::anchorChanged);
+        const AnchorManager::Key key{.locator = "c:/logs/a.json", .lineId = 99};
+
+        QVERIFY(!manager.SetAnchorNote(key, std::string{"not gonna stick"}));
+        QCOMPARE(changedSpy.count(), 0);
+        QVERIFY(!manager.NoteFor(key).has_value());
     }
 
     // NewSession drops every anchor (rows are gone).
@@ -4592,8 +4669,8 @@ private slots:
         auto *model = mWindow->Model();
         auto *dock = mWindow->findChild<AnchorsDock *>();
         QVERIFY(dock != nullptr);
-        auto *list = dock->ListForTest();
-        QVERIFY(list != nullptr);
+        auto *tree = dock->TreeForTest();
+        QVERIFY(tree != nullptr);
 
         loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
         QtStreamingLogSink *sink = model->Sink();
@@ -4616,16 +4693,16 @@ private slots:
         anchors->SetAnchor(*key1, 1);
         anchors->SetAnchor(*key2, 2);
         dock->RefreshForTest();
-        QCOMPARE(list->count(), 3);
+        QCOMPARE(tree->topLevelItemCount(), 3);
 
         // Middle item current + selected; then re-run Refresh.
-        // Without snapshot/restore, `mList->clear()` would wipe it.
-        QListWidgetItem *middle = list->item(1);
+        // Without snapshot/restore, `mTree->clear()` would wipe it.
+        QTreeWidgetItem *middle = tree->topLevelItem(1);
         QVERIFY(middle != nullptr);
-        list->setCurrentItem(middle);
+        tree->setCurrentItem(middle);
         middle->setSelected(true);
-        QCOMPARE(list->selectedItems().count(), 1);
-        QVERIFY(list->currentItem() == middle);
+        QCOMPARE(tree->selectedItems().count(), 1);
+        QVERIFY(tree->currentItem() == middle);
 
         // Touch key0 -> `anchorChanged` -> `Refresh()`. Offscreen
         // QPA gates Refresh, so call the test seam directly.
@@ -4634,11 +4711,237 @@ private slots:
         dock->RefreshForTest();
 
         // Three anchors, middle still selected + current.
-        QCOMPARE(list->count(), 3);
-        QCOMPARE(list->selectedItems().count(), 1);
-        const QListWidgetItem *restoredCurrent = list->currentItem();
+        QCOMPARE(tree->topLevelItemCount(), 3);
+        QCOMPARE(tree->selectedItems().count(), 1);
+        const QTreeWidgetItem *restoredCurrent = tree->currentItem();
         QVERIFY2(restoredCurrent != nullptr, "current item must survive Refresh");
-        QCOMPARE(restoredCurrent->data(Qt::UserRole + 2).toULongLong(), static_cast<qulonglong>(key1->lineId));
+        QCOMPARE(restoredCurrent->data(0, Qt::UserRole + 2).toULongLong(), static_cast<qulonglong>(key1->lineId));
+
+        anchors->ClearAll();
+        QCoreApplication::processEvents();
+        model->EndStreaming(false);
+    }
+
+    // Editing the note column in the AnchorsDock commits back to
+    // `AnchorManager::SetAnchorNote`. Covers the item-changed
+    // sanitisation path (embedded newlines are collapsed) and
+    // guards against re-entry when the dock's own refresh rewrites
+    // the item text.
+    void TestAnchorsDockInlineEditCommitsNote()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+        auto *dock = mWindow->findChild<AnchorsDock *>();
+        QVERIFY(dock != nullptr);
+        auto *tree = dock->TreeForTest();
+        QVERIFY(tree != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 3);
+
+        const auto key0 = model->AnchorKeyForRow(0);
+        QVERIFY(key0.has_value());
+        anchors->SetAnchor(*key0, 2);
+        dock->RefreshForTest();
+        QCOMPARE(tree->topLevelItemCount(), 1);
+
+        // Edit the note column: setText fires `itemChanged`, which
+        // the dock forwards to `SetAnchorNote`. The row-refresh
+        // triggered by `anchorChanged` runs through the suppression
+        // counter, so no re-entry occurs.
+        QTreeWidgetItem *item = tree->topLevelItem(0);
+        QVERIFY(item != nullptr);
+        item->setText(1, QStringLiteral("first error"));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(
+            anchors->NoteFor(*key0).value_or(std::string{"NO-KEY"}), std::string{"first error"}
+        );
+
+        // Multi-line paste: the commit path collapses newlines and
+        // trims edges so the on-disk note stays a one-liner.
+        item->setText(1, QStringLiteral("  line one\nline two\t "));
+        QCoreApplication::processEvents();
+        QCOMPARE(
+            anchors->NoteFor(*key0).value_or(std::string{"NO-KEY"}), std::string{"line one line two"}
+        );
+        // The displayed text is sanitised in place too so the item
+        // shows the same one-line form the manager stores.
+        QCOMPARE(item->text(1), QStringLiteral("line one line two"));
+
+        anchors->ClearAll();
+        QCoreApplication::processEvents();
+        model->EndStreaming(false);
+    }
+
+    // F4 / row-menu editor commit path: anchored rows accept a note,
+    // unanchored rows surface a status-bar hint instead of touching
+    // the manager. Uses the `SubmitAnchorNoteForRowForTest` seam so
+    // the modal `QInputDialog` doesn't block the headless runner.
+    void TestEditAnchorNoteForRowGuardsUnanchored()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 3);
+
+        const auto key0 = model->AnchorKeyForRow(0);
+        const auto key1 = model->AnchorKeyForRow(1);
+        QVERIFY(key0.has_value());
+        QVERIFY(key1.has_value());
+        anchors->SetAnchor(*key0, 3);
+        QCoreApplication::processEvents();
+
+        // Row 0 is anchored: commit succeeds and reaches the manager.
+        QVERIFY(mWindow->SubmitAnchorNoteForRowForTest(0, QStringLiteral("customer report starts here")));
+        QCOMPARE(
+            anchors->NoteFor(*key0).value_or(std::string{"NO-KEY"}),
+            std::string{"customer report starts here"}
+        );
+
+        // Row 1 is not anchored: commit rejects and the manager is
+        // untouched (no ghost anchor spawned by a stray note edit).
+        QVERIFY(!mWindow->SubmitAnchorNoteForRowForTest(1, QStringLiteral("shouldn't stick")));
+        QVERIFY(!anchors->NoteFor(*key1).has_value());
+        QVERIFY(!anchors->ColorFor(*key1).has_value());
+
+        // Sanitisation still applies to the anchored branch: CR/LF
+        // and tabs collapse to spaces.
+        QVERIFY(mWindow->SubmitAnchorNoteForRowForTest(0, QStringLiteral("  a\r\nb\tc  ")));
+        QCOMPARE(anchors->NoteFor(*key0).value_or(std::string{"NO-KEY"}), std::string{"a b c"});
+
+        anchors->ClearAll();
+        QCoreApplication::processEvents();
+        model->EndStreaming(false);
+    }
+
+    // Row tooltip surfaces the anchor note when the anchored row
+    // has a non-empty note. Empty notes fall through to whatever
+    // the default tooltip would be (nothing on non-level cells).
+    void TestLogModelToolTipRoleSurfacesAnchorNote()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 2, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 2);
+
+        const auto key0 = model->AnchorKeyForRow(0);
+        QVERIFY(key0.has_value());
+        anchors->SetAnchor(*key0, 4);
+        anchors->SetAnchorNote(*key0, std::string{"customer 12345"});
+        QCoreApplication::processEvents();
+
+        // Any cell in the anchored row returns the anchor-note
+        // tooltip so hovering doesn't need to hunt for the "right"
+        // column.
+        const QModelIndex idx = model->index(0, 0);
+        const QVariant tip = model->data(idx, Qt::ToolTipRole);
+        QVERIFY(tip.isValid());
+        QVERIFY2(
+            tip.toString().contains(QStringLiteral("customer 12345")),
+            qPrintable(QStringLiteral("expected anchor note in tooltip, got: %1").arg(tip.toString()))
+        );
+        QVERIFY(tip.toString().startsWith(QStringLiteral("Anchor:")));
+
+        // Row 1 has no anchor: no tooltip.
+        const QModelIndex idx1 = model->index(1, 0);
+        QVERIFY(!model->data(idx1, Qt::ToolTipRole).isValid());
+
+        // Clearing the note drops the tooltip back to the default.
+        anchors->SetAnchorNote(*key0, std::string{});
+        QCoreApplication::processEvents();
+        QVERIFY(!model->data(idx, Qt::ToolTipRole).isValid());
+
+        anchors->ClearAll();
+        QCoreApplication::processEvents();
+        model->EndStreaming(false);
+    }
+
+    // RecordDetail Copy as key/value: the anchor note (when
+    // non-empty) rides at the top of the copied payload as a
+    // synthetic `anchor.note` line.
+    void TestRecordDetailCopyAsKeyValueIncludesAnchorNote()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 2, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 2);
+
+        const auto key0 = model->AnchorKeyForRow(0);
+        QVERIFY(key0.has_value());
+        anchors->SetAnchor(*key0, 2);
+        anchors->SetAnchorNote(*key0, std::string{"anchor-tag-42"});
+        QCoreApplication::processEvents();
+
+        // Build the content directly (avoids the RecordDetailDock's
+        // visibility gating and matches what the widget snapshot
+        // would carry).
+        const RecordDetailContent content = BuildRecordDetailContent(*model, 0);
+        QVERIFY(content.valid);
+        QVERIFY(content.anchorColorIndex.has_value());
+        QCOMPARE(*content.anchorColorIndex, std::uint8_t{2});
+        QCOMPARE(content.anchorNote, QStringLiteral("anchor-tag-42"));
+
+        // Drive the copy path through the actual widget so the
+        // clipboard layout is exercised end-to-end.
+        RecordDetailWidget widget;
+        widget.SetContent(content);
+        QClipboard *clipboard = QApplication::clipboard();
+        clipboard->clear();
+        auto *copyBtn = widget.findChild<QPushButton *>(QStringLiteral("copyKeyValueButton"));
+        QVERIFY(copyBtn != nullptr);
+        emit copyBtn->clicked();
+        QCoreApplication::processEvents();
+
+        const QString copied = clipboard->text();
+        QVERIFY2(
+            copied.startsWith(QStringLiteral("anchor.note: anchor-tag-42")),
+            qPrintable(QStringLiteral("expected anchor.note prefix, got: %1").arg(copied.left(100)))
+        );
+
+        // Un-anchored row: no anchor.note line is emitted.
+        const RecordDetailContent unanchored = BuildRecordDetailContent(*model, 1);
+        QVERIFY(unanchored.valid);
+        QVERIFY(!unanchored.anchorColorIndex.has_value());
+        widget.SetContent(unanchored);
+        clipboard->clear();
+        emit copyBtn->clicked();
+        QCoreApplication::processEvents();
+        QVERIFY(!clipboard->text().contains(QStringLiteral("anchor.note")));
 
         anchors->ClearAll();
         QCoreApplication::processEvents();

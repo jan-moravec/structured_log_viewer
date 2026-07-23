@@ -14,7 +14,7 @@
 #include <unordered_map>
 #include <vector>
 
-/// Owns the user's set of anchored rows: `(file, lineId) -> colour-index`.
+/// Owns the user's set of anchored rows: `(file, lineId) -> (colour, note)`.
 /// One instance per `MainWindow`; `LogModel`, `LogTableView`, and
 /// `AnchorsDock` hold a non-owning pointer and react to
 /// `anchorChanged` / `anchorsReset`.
@@ -25,7 +25,9 @@
 /// - `lineId`: monotonic id from the parser, unique within a `LineSource`.
 ///
 /// `colorIndex` indexes `Theme::anchorPalette` (range
-/// `[0, loglib::ANCHOR_PALETTE_SIZE)`).
+/// `[0, loglib::ANCHOR_PALETTE_SIZE)`); `note` is a free-form
+/// one-liner (empty by default). Recolouring an existing anchor
+/// preserves its note so Ctrl+1..8 is non-destructive.
 class AnchorManager : public QObject
 {
     Q_OBJECT
@@ -41,6 +43,17 @@ public:
         friend bool operator==(const Key &, const Key &) = default;
     };
 
+    /// Value carried alongside a `Key`. Kept in a struct (not a
+    /// `pair<uint8_t, std::string>`) so future per-anchor bits can be
+    /// added without churning every call site.
+    struct Value
+    {
+        uint8_t colorIndex = 0;
+        std::string note;
+
+        friend bool operator==(const Value &, const Value &) = default;
+    };
+
     explicit AnchorManager(QObject *parent = nullptr);
     ~AnchorManager() override = default;
 
@@ -49,18 +62,27 @@ public:
     AnchorManager(AnchorManager &&) = delete;
     AnchorManager &operator=(AnchorManager &&) = delete;
 
-    /// Add or update an anchor. Out-of-range @p colorIndex is clamped.
-    /// Emits `anchorChanged` only when the stored colour actually changes.
+    /// Add or update an anchor's colour. Out-of-range @p colorIndex
+    /// is clamped. Any existing note on @p key is preserved (so
+    /// recolouring via Ctrl+1..8 doesn't clobber user text). Emits
+    /// `anchorChanged` only when the stored colour actually changes.
     /// Returns true iff state changed.
     bool SetAnchor(const Key &key, uint8_t colorIndex);
 
     /// Bulk `SetAnchor`. Emits `anchorChanged(key)` for exactly one
     /// mutation; `anchorsReset()` for two or more. Empty @p keys is a
-    /// no-op. Same clamping as `SetAnchor`. Returns true iff anything
-    /// changed.
+    /// no-op. Same clamping and note-preservation semantics as
+    /// `SetAnchor`. Returns true iff anything changed.
     bool SetAnchors(std::span<const Key> keys, uint8_t colorIndex);
 
-    /// Remove an anchor. Emits `anchorChanged` iff something was removed.
+    /// Update the one-line note on @p key. No-op (and returns false)
+    /// when @p key is not anchored -- notes only exist alongside a
+    /// colour. Emits `anchorChanged` when the stored note actually
+    /// changes. Returns true iff state changed.
+    bool SetAnchorNote(const Key &key, std::string note);
+
+    /// Remove an anchor (colour + note). Emits `anchorChanged` iff
+    /// something was removed.
     bool RemoveAnchor(const Key &key);
 
     /// Bulk `RemoveAnchor`. Signal routing mirrors `SetAnchors`.
@@ -75,6 +97,8 @@ public:
     /// Entries with an out-of-range `colorIndex` (newer schema or
     /// hand-edited JSON) are dropped rather than clamped, so missing
     /// anchors stay visible to the user. Duplicate keys: last wins.
+    /// Each entry's `note` is copied verbatim from the on-disk
+    /// `AnchorEntry` (missing field defaults to empty via Glaze).
     ///
     /// `anchorsReset` is emitted only when the rebuilt map differs
     /// from the previous content (silent no-op on identical reload).
@@ -86,8 +110,13 @@ public:
     /// Anchor colour for @p key, or nullopt if not anchored.
     [[nodiscard]] std::optional<uint8_t> ColorFor(const Key &key) const noexcept;
 
+    /// Anchor note for @p key, or nullopt if not anchored. Returns
+    /// an empty string when the anchor exists but has no note.
+    [[nodiscard]] std::optional<std::string> NoteFor(const Key &key) const;
+
     /// Snapshot for `LogConfiguration::anchors`, sorted by
-    /// `(locator, lineId)` so saved JSON is byte-stable.
+    /// `(locator, lineId)` so saved JSON is byte-stable. Each entry
+    /// carries the paired note.
     ///
     /// Runtime-only anchors (empty locator) are dropped: their
     /// `lineId` is not stable across sessions, so persisting them
@@ -105,8 +134,8 @@ public:
     [[nodiscard]] bool Empty() const noexcept;
 
 signals:
-    /// One key added, recoloured, or removed. Listeners can scope
-    /// their repaint to the matching row(s).
+    /// One key added, recoloured, note-edited, or removed. Listeners
+    /// can scope their repaint to the matching row(s).
     void anchorChanged(const AnchorManager::Key &key);
 
     /// Bulk mutation (`ClearAll`, `Replace`, or a multi-key bulk op).
@@ -129,7 +158,7 @@ private:
         }
     };
 
-    std::unordered_map<Key, uint8_t, KeyHash> mAnchors;
+    std::unordered_map<Key, Value, KeyHash> mAnchors;
 };
 
 // Required for `Qt::QueuedConnection` on `anchorChanged`: Qt copies
