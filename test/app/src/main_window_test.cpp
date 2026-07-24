@@ -3849,12 +3849,14 @@ private slots:
         // value counts the remapped entries so the GUI can surface
         // the colour drift.
         std::vector<loglib::LogConfiguration::AnchorEntry> incoming;
-        incoming.push_back(loglib::LogConfiguration::AnchorEntry{
-            .locator = "c:/x.json", .lineId = 1, .colorIndex = 0, .note = "keep"
-        });
-        incoming.push_back(loglib::LogConfiguration::AnchorEntry{
-            .locator = "c:/x.json", .lineId = 2, .colorIndex = 42, .note = "future-slot"
-        });
+        incoming.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 0, .note = "keep"}
+        );
+        incoming.push_back(
+            loglib::LogConfiguration::AnchorEntry{
+                .locator = "c:/x.json", .lineId = 2, .colorIndex = 42, .note = "future-slot"
+            }
+        );
         QCOMPARE(manager.Replace(incoming), std::size_t{1});
         QCOMPARE(resetSpy.count(), 2);
         // Both anchors are present now -- the clamp preserves the row.
@@ -4566,9 +4568,7 @@ private slots:
         // Notes come back exactly as saved -- populated for key2,
         // empty (default-constructed) for key0.
         QCOMPARE(anchors->NoteFor(*key0).value_or(std::string{"NO-KEY"}), std::string{});
-        QCOMPARE(
-            anchors->NoteFor(*key2).value_or(std::string{"NO-KEY"}), std::string{"first error of the incident"}
-        );
+        QCOMPARE(anchors->NoteFor(*key2).value_or(std::string{"NO-KEY"}), std::string{"first error of the incident"});
     }
 
     // SetAnchor on an already-anchored key must preserve any note
@@ -4580,26 +4580,20 @@ private slots:
 
         QVERIFY(manager.SetAnchor(key, 2));
         QVERIFY(manager.SetAnchorNote(key, std::string{"escalated to on-call"}));
-        QCOMPARE(
-            manager.NoteFor(key).value_or(std::string{"NO-KEY"}), std::string{"escalated to on-call"}
-        );
+        QCOMPARE(manager.NoteFor(key).value_or(std::string{"NO-KEY"}), std::string{"escalated to on-call"});
 
         // Recolour: the note must survive so Ctrl+1..8 stays
         // non-destructive.
         QVERIFY(manager.SetAnchor(key, 4));
         QCOMPARE(manager.ColorFor(key).value_or(255U), uint8_t{4});
-        QCOMPARE(
-            manager.NoteFor(key).value_or(std::string{"NO-KEY"}), std::string{"escalated to on-call"}
-        );
+        QCOMPARE(manager.NoteFor(key).value_or(std::string{"NO-KEY"}), std::string{"escalated to on-call"});
 
         // Bulk recolour (Ctrl+1..8 on a multi-row selection) must
         // preserve the note too.
         const std::array keys{key};
         QVERIFY(manager.SetAnchors(keys, 6));
         QCOMPARE(manager.ColorFor(key).value_or(255U), uint8_t{6});
-        QCOMPARE(
-            manager.NoteFor(key).value_or(std::string{"NO-KEY"}), std::string{"escalated to on-call"}
-        );
+        QCOMPARE(manager.NoteFor(key).value_or(std::string{"NO-KEY"}), std::string{"escalated to on-call"});
 
         // Removing the anchor drops the note (notes only exist
         // alongside an anchor colour).
@@ -4644,9 +4638,7 @@ private slots:
 
         // Windows CRLF collapses to a single space (not two); lone
         // CR / LF / TAB each fold to one space; edges trim.
-        QCOMPARE(
-            AnchorManager::SanitiseNote(std::string{"  a\r\nb\tc  "}), std::string{"a b c"}
-        );
+        QCOMPARE(AnchorManager::SanitiseNote(std::string{"  a\r\nb\tc  "}), std::string{"a b c"});
         QCOMPARE(AnchorManager::SanitiseNote(std::string{"line1\rline2"}), std::string{"line1 line2"});
         QCOMPARE(AnchorManager::SanitiseNote(std::string{"line1\nline2"}), std::string{"line1 line2"});
 
@@ -4670,9 +4662,7 @@ private slots:
         // paths, clipboard payload assembly), so folding it here
         // means we never store one in the first place.
         QCOMPARE(AnchorManager::SanitiseNote(std::string{"a\vb\fc"}), std::string{"a b c"});
-        QCOMPARE(
-            AnchorManager::SanitiseNote(std::string{"a\0b", 3}), std::string{"a b"}
-        );
+        QCOMPARE(AnchorManager::SanitiseNote(std::string{"a\0b", 3}), std::string{"a b"});
 
         // Unicode line separators fold too. U+2028 (LINE SEPARATOR)
         // and U+2029 (PARAGRAPH SEPARATOR) are 3-byte sequences that
@@ -4681,7 +4671,11 @@ private slots:
         // and matches the promise on the one-line invariant.
         // U+2028 = E2 80 A8; U+2029 = E2 80 A9.
         QCOMPARE(
-            AnchorManager::SanitiseNote(std::string{"a\xe2\x80\xa8" "b\xe2\x80\xa9" "c"}),
+            AnchorManager::SanitiseNote(
+                std::string{"a\xe2\x80\xa8"
+                            "b\xe2\x80\xa9"
+                            "c"}
+            ),
             std::string{"a b c"}
         );
 
@@ -4753,8 +4747,9 @@ private slots:
                                .arg(static_cast<qulonglong>(out.size())))
             );
             QVERIFY2(
-                out.back() == 'a', qPrintable(QStringLiteral("last byte should be ASCII 'a', got 0x%1")
-                                                  .arg(static_cast<int>(static_cast<unsigned char>(out.back())), 2, 16))
+                out.back() == 'a',
+                qPrintable(QStringLiteral("last byte should be ASCII 'a', got 0x%1")
+                               .arg(static_cast<int>(static_cast<unsigned char>(out.back())), 2, 16))
             );
         }
         // Trailing whitespace exposed by the truncation cut is
@@ -4765,8 +4760,7 @@ private slots:
             padded.append("tail"); // pushes past cap; walkback lands after the space
             const auto out = AnchorManager::SanitiseNote(std::move(padded));
             QVERIFY2(
-                out.empty() || out.back() != ' ',
-                "trailing space produced by the truncation cut must be stripped"
+                out.empty() || out.back() != ' ', "trailing space produced by the truncation cut must be stripped"
             );
         }
         // Regression for the lead-byte-at-cap edge case: a 2-byte
@@ -4791,8 +4785,10 @@ private slots:
             const auto lastByte = static_cast<unsigned char>(out.back());
             QVERIFY2(
                 (lastByte & 0xC0U) != 0xC0U,
-                qPrintable(QStringLiteral("output must not end with an incomplete UTF-8 sequence, "
-                                          "last byte was 0x%1")
+                qPrintable(QStringLiteral(
+                               "output must not end with an incomplete UTF-8 sequence, "
+                               "last byte was 0x%1"
+                )
                                .arg(static_cast<int>(lastByte), 2, 16, QChar('0')))
             );
             // Every kept byte should be ASCII 'a' (the multi-byte
@@ -4858,9 +4854,7 @@ private slots:
 
         const AnchorManager::Key key1{.locator = "c:/logs/a.json", .lineId = 1};
         const AnchorManager::Key key2{.locator = "c:/logs/b.json", .lineId = 2};
-        QCOMPARE(
-            manager.NoteFor(key1).value_or(std::string{"NO-KEY"}), std::string{"first second"}
-        );
+        QCOMPARE(manager.NoteFor(key1).value_or(std::string{"NO-KEY"}), std::string{"first second"});
         QCOMPARE(manager.NoteFor(key2).value_or(std::string{"NO-KEY"}), std::string{"clean"});
     }
 
@@ -5087,17 +5081,13 @@ private slots:
         item->setText(1, QStringLiteral("first error"));
         QCoreApplication::processEvents();
 
-        QCOMPARE(
-            anchors->NoteFor(*key0).value_or(std::string{"NO-KEY"}), std::string{"first error"}
-        );
+        QCOMPARE(anchors->NoteFor(*key0).value_or(std::string{"NO-KEY"}), std::string{"first error"});
 
         // Multi-line paste: the commit path collapses newlines and
         // trims edges so the on-disk note stays a one-liner.
         item->setText(1, QStringLiteral("  line one\nline two\t "));
         QCoreApplication::processEvents();
-        QCOMPARE(
-            anchors->NoteFor(*key0).value_or(std::string{"NO-KEY"}), std::string{"line one line two"}
-        );
+        QCOMPARE(anchors->NoteFor(*key0).value_or(std::string{"NO-KEY"}), std::string{"line one line two"});
         // The displayed text is sanitised in place too so the item
         // shows the same one-line form the manager stores.
         QCOMPARE(item->text(1), QStringLiteral("line one line two"));
@@ -5136,10 +5126,7 @@ private slots:
 
         // Row 0 is anchored: commit succeeds and reaches the manager.
         QVERIFY(mWindow->SubmitAnchorNoteForRowForTest(0, QStringLiteral("customer report starts here")));
-        QCOMPARE(
-            anchors->NoteFor(*key0).value_or(std::string{"NO-KEY"}),
-            std::string{"customer report starts here"}
-        );
+        QCOMPARE(anchors->NoteFor(*key0).value_or(std::string{"NO-KEY"}), std::string{"customer report starts here"});
 
         // Row 1 is not anchored: commit rejects and the manager is
         // untouched (no ghost anchor spawned by a stray note edit).
@@ -5214,9 +5201,11 @@ private slots:
         QVERIFY2(
             QApplication::focusWidget() == scratch.get(),
             qPrintable(QStringLiteral("scratch QLineEdit failed to grab focus (got %1)")
-                           .arg(QApplication::focusWidget() == nullptr
-                                    ? QStringLiteral("nullptr")
-                                    : QString::fromLatin1(QApplication::focusWidget()->metaObject()->className())))
+                           .arg(
+                               QApplication::focusWidget() == nullptr
+                                   ? QStringLiteral("nullptr")
+                                   : QString::fromLatin1(QApplication::focusWidget()->metaObject()->className())
+                           ))
         );
 
         // Trigger the F4 action. If the guard is intact, no dialog
@@ -5232,9 +5221,7 @@ private slots:
         // untouched -- the modal dialog never opened.
         QCOMPARE(QApplication::focusWidget(), scratch.get());
         QCOMPARE(scratch->text(), QStringLiteral("draft edit in flight"));
-        QCOMPARE(
-            anchors->NoteFor(*key0).value_or(std::string{"NO-KEY"}), std::string{"initial note"}
-        );
+        QCOMPARE(anchors->NoteFor(*key0).value_or(std::string{"NO-KEY"}), std::string{"initial note"});
         // No stray modal window was spawned (would be an
         // `activeModalWidget` from `QInputDialog::getText`).
         QVERIFY2(
@@ -5542,8 +5529,7 @@ private slots:
         QKeyEvent ctrlFOverride(QEvent::ShortcutOverride, Qt::Key_F, Qt::ControlModifier);
         QApplication::sendEvent(tree, &ctrlFOverride);
         QVERIFY2(
-            !ctrlFOverride.isAccepted(),
-            "AnchorsDock event filter must only shadow plain F2, not arbitrary shortcuts"
+            !ctrlFOverride.isAccepted(), "AnchorsDock event filter must only shadow plain F2, not arbitrary shortcuts"
         );
 
         // Restore hidden state so subsequent tests inherit the
@@ -5738,28 +5724,31 @@ private slots:
         // Case A: same key twice, out-of-range first, valid second.
         // Final persisted colour is valid, so `clampedCount` = 0.
         std::vector<loglib::LogConfiguration::AnchorEntry> aInput;
-        aInput.push_back(loglib::LogConfiguration::AnchorEntry{
-            .locator = "c:/x.json", .lineId = 1, .colorIndex = 99, .note = "first"
-        });
-        aInput.push_back(loglib::LogConfiguration::AnchorEntry{
-            .locator = "c:/x.json", .lineId = 1, .colorIndex = 3, .note = "second"
-        });
+        aInput.push_back(
+            loglib::LogConfiguration::AnchorEntry{
+                .locator = "c:/x.json", .lineId = 1, .colorIndex = 99, .note = "first"
+            }
+        );
+        aInput.push_back(
+            loglib::LogConfiguration::AnchorEntry{
+                .locator = "c:/x.json", .lineId = 1, .colorIndex = 3, .note = "second"
+            }
+        );
         QCOMPARE(manager.Replace(aInput), std::size_t{0});
         QCOMPARE(manager.Count(), std::size_t{1});
-        QCOMPARE(
-            manager.ColorFor({.locator = "c:/x.json", .lineId = 1}).value_or(255U),
-            static_cast<std::uint8_t>(3)
-        );
+        QCOMPARE(manager.ColorFor({.locator = "c:/x.json", .lineId = 1}).value_or(255U), static_cast<std::uint8_t>(3));
 
         // Case B: same key twice, valid first, out-of-range second.
         // Final persisted colour is the clamped one, so count = 1.
         std::vector<loglib::LogConfiguration::AnchorEntry> bInput;
-        bInput.push_back(loglib::LogConfiguration::AnchorEntry{
-            .locator = "c:/x.json", .lineId = 1, .colorIndex = 3, .note = "first"
-        });
-        bInput.push_back(loglib::LogConfiguration::AnchorEntry{
-            .locator = "c:/x.json", .lineId = 1, .colorIndex = 99, .note = "second"
-        });
+        bInput.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 3, .note = "first"}
+        );
+        bInput.push_back(
+            loglib::LogConfiguration::AnchorEntry{
+                .locator = "c:/x.json", .lineId = 1, .colorIndex = 99, .note = "second"
+            }
+        );
         QCOMPARE(manager.Replace(bInput), std::size_t{1});
         QCOMPARE(manager.Count(), std::size_t{1});
         QCOMPARE(
@@ -5770,26 +5759,26 @@ private slots:
         // Case C: three duplicates: valid, out-of-range, valid.
         // Only the final state counts (valid), so count = 0.
         std::vector<loglib::LogConfiguration::AnchorEntry> cInput;
-        cInput.push_back(loglib::LogConfiguration::AnchorEntry{
-            .locator = "c:/x.json", .lineId = 1, .colorIndex = 1, .note = ""
-        });
-        cInput.push_back(loglib::LogConfiguration::AnchorEntry{
-            .locator = "c:/x.json", .lineId = 1, .colorIndex = 42, .note = ""
-        });
-        cInput.push_back(loglib::LogConfiguration::AnchorEntry{
-            .locator = "c:/x.json", .lineId = 1, .colorIndex = 4, .note = ""
-        });
+        cInput.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 1, .note = ""}
+        );
+        cInput.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 42, .note = ""}
+        );
+        cInput.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 4, .note = ""}
+        );
         QCOMPARE(manager.Replace(cInput), std::size_t{0});
 
         // Case D: two distinct keys, both clamped -> count = 2
         // (proves we still count per-key, not just once).
         std::vector<loglib::LogConfiguration::AnchorEntry> dInput;
-        dInput.push_back(loglib::LogConfiguration::AnchorEntry{
-            .locator = "c:/x.json", .lineId = 1, .colorIndex = 50, .note = ""
-        });
-        dInput.push_back(loglib::LogConfiguration::AnchorEntry{
-            .locator = "c:/x.json", .lineId = 2, .colorIndex = 51, .note = ""
-        });
+        dInput.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 50, .note = ""}
+        );
+        dInput.push_back(
+            loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 2, .colorIndex = 51, .note = ""}
+        );
         QCOMPARE(manager.Replace(dInput), std::size_t{2});
     }
 
@@ -5841,9 +5830,7 @@ private slots:
         QVERIFY(manager.SetAnchorNote(runtimeKey, std::string{"session note"}));
 
         // Note is present in the runtime map...
-        QCOMPARE(
-            manager.NoteFor(runtimeKey).value_or(std::string{"MISSING"}), std::string{"session note"}
-        );
+        QCOMPARE(manager.NoteFor(runtimeKey).value_or(std::string{"MISSING"}), std::string{"session note"});
 
         // ...but `Entries()` drops the whole anchor, so the note
         // never reaches the save file. This is what the MainWindow
@@ -5851,8 +5838,7 @@ private slots:
         const auto persistable = manager.Entries();
         QVERIFY2(
             std::ranges::none_of(
-                persistable,
-                [](const loglib::LogConfiguration::AnchorEntry &e) { return e.locator.empty(); }
+                persistable, [](const loglib::LogConfiguration::AnchorEntry &e) { return e.locator.empty(); }
             ),
             "Entries() must not persist runtime-only anchors (or their notes)"
         );
@@ -6030,20 +6016,14 @@ private slots:
         // must NOT be intercepted -- we only shadow F4.
         QKeyEvent f5Override(QEvent::ShortcutOverride, Qt::Key_F5, Qt::NoModifier);
         QApplication::sendEvent(mWindow, &f5Override);
-        QVERIFY2(
-            !f5Override.isAccepted(),
-            "MainWindow must only intercept F4 ShortcutOverride, not arbitrary keys"
-        );
+        QVERIFY2(!f5Override.isAccepted(), "MainWindow must only intercept F4 ShortcutOverride, not arbitrary keys");
 
         // Modifier variants pass through too: Ctrl+F4 is a common
         // "close tab" shortcut in other apps; we must not swallow
         // it just because the base key matches.
         QKeyEvent ctrlF4Override(QEvent::ShortcutOverride, Qt::Key_F4, Qt::ControlModifier);
         QApplication::sendEvent(mWindow, &ctrlF4Override);
-        QVERIFY2(
-            !ctrlF4Override.isAccepted(),
-            "MainWindow must not intercept modified F4 ShortcutOverride"
-        );
+        QVERIFY2(!ctrlF4Override.isAccepted(), "MainWindow must not intercept modified F4 ShortcutOverride");
 
         // Move focus off the QLineEdit (main window itself). F4
         // must now pass through so the QAction shortcut can fire.

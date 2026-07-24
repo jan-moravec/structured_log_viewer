@@ -8298,8 +8298,7 @@ void MainWindow::EditAnchorNoteForKey(const AnchorManager::Key &key)
         if (!mAnchors->ColorFor(key).has_value())
         {
             statusBar()->showMessage(
-                tr("Anchor was removed while the note editor was open; note discarded."),
-                STATUS_BAR_MESSAGE_TIMEOUT_MS
+                tr("Anchor was removed while the note editor was open; note discarded."), STATUS_BAR_MESSAGE_TIMEOUT_MS
             );
         }
         return;
@@ -8390,8 +8389,7 @@ void MainWindow::EditAnchorNoteOnCurrentRow()
     // `QAbstractSpinBox` covers spin boxes and `QDateTimeEdit`;
     // `QComboBox` covers editable combos.
     if (focused != nullptr &&
-        (qobject_cast<const QLineEdit *>(focused) != nullptr ||
-         qobject_cast<const QTextEdit *>(focused) != nullptr ||
+        (qobject_cast<const QLineEdit *>(focused) != nullptr || qobject_cast<const QTextEdit *>(focused) != nullptr ||
          qobject_cast<const QPlainTextEdit *>(focused) != nullptr ||
          qobject_cast<const QAbstractSpinBox *>(focused) != nullptr ||
          qobject_cast<const QComboBox *>(focused) != nullptr))

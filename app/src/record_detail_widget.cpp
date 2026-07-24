@@ -602,11 +602,9 @@ void RecordDetailWidget::CopyAsKeyValueClicked() const
     // matches the visual reading order (subline above fields).
     if (mContent.anchorColorIndex.has_value() && !mContent.anchorNote.isEmpty())
     {
-        lines.append(
-            QStringLiteral("%1: %2").arg(
-                EscapeForKeyValueCopy(QStringLiteral("anchor.note")), EscapeForKeyValueCopy(mContent.anchorNote)
-            )
-        );
+        lines.append(QStringLiteral("%1: %2").arg(
+            EscapeForKeyValueCopy(QStringLiteral("anchor.note")), EscapeForKeyValueCopy(mContent.anchorNote)
+        ));
     }
     for (const auto &pair : mContent.fields)
     {

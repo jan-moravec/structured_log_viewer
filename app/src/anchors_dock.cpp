@@ -26,8 +26,8 @@
 #include <QShortcut>
 #include <QStringBuilder>
 #include <QStyle>
-#include <QStyledItemDelegate>
 #include <QStyleOptionViewItem>
+#include <QStyledItemDelegate>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QVBoxLayout>
@@ -181,12 +181,10 @@ constexpr int ANCHOR_KEY_LINE_ID_ROLE = Qt::UserRole + 2;
     const QString escapedNote = noteText.toHtmlEscaped();
     // `AnchorsDock::tr` (not `QObject::tr`) so Linguist groups
     // the dock's user-visible strings together.
-    const QString tooltipBody = escapedDisplayPath.isEmpty()
-                                    ? AnchorsDock::tr("Anchor #%1, line %2").arg(colorIndex + 1).arg(lineId)
-                                    : AnchorsDock::tr("Anchor #%1, line %2<br/>%3")
-                                          .arg(colorIndex + 1)
-                                          .arg(lineId)
-                                          .arg(escapedDisplayPath);
+    const QString tooltipBody =
+        escapedDisplayPath.isEmpty()
+            ? AnchorsDock::tr("Anchor #%1, line %2").arg(colorIndex + 1).arg(lineId)
+            : AnchorsDock::tr("Anchor #%1, line %2<br/>%3").arg(colorIndex + 1).arg(lineId).arg(escapedDisplayPath);
     const QString tooltipBodyWithNote =
         escapedNote.isEmpty() ? tooltipBody : AnchorsDock::tr("%1<br/>Note: %2").arg(tooltipBody, escapedNote);
     return QStringLiteral("<qt>%1</qt>").arg(tooltipBodyWithNote);
@@ -202,8 +200,9 @@ class NoEditDelegate : public QStyledItemDelegate
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
 
-    QWidget *createEditor(QWidget * /*parent*/, const QStyleOptionViewItem & /*option*/, const QModelIndex & /*index*/)
-        const override
+    QWidget *createEditor(
+        QWidget * /*parent*/, const QStyleOptionViewItem & /*option*/, const QModelIndex & /*index*/
+    ) const override
     {
         return nullptr;
     }
@@ -617,9 +616,8 @@ void AnchorsDock::OnContextMenuRequested(const QPoint &pos)
     const QAction *editNoteAction = menu.addAction(tr("Edit note"));
     // Retitle for a multi-select bulk-remove so the fan-out is
     // visible up front.
-    const QAction *removeAction = menu.addAction(
-        multiRemove ? tr("Remove %1 anchors").arg(selectedKeys.size()) : tr("Remove anchor")
-    );
+    const QAction *removeAction =
+        menu.addAction(multiRemove ? tr("Remove %1 anchors").arg(selectedKeys.size()) : tr("Remove anchor"));
     const QAction *picked = menu.exec(mTree->viewport()->mapToGlobal(pos));
     if (picked == nullptr)
     {

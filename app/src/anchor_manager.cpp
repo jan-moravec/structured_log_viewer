@@ -137,8 +137,7 @@ std::string AnchorManager::SanitiseNote(std::string note)
         constexpr unsigned char UTF8_2028_CONT1 = 0x80;
         constexpr unsigned char UTF8_2028_CONT2 = 0xA8;
         constexpr unsigned char UTF8_2029_CONT2 = 0xA9;
-        if (ch == UTF8_2028_LEAD && i + 2 < note.size() &&
-            static_cast<unsigned char>(note[i + 1]) == UTF8_2028_CONT1 &&
+        if (ch == UTF8_2028_LEAD && i + 2 < note.size() && static_cast<unsigned char>(note[i + 1]) == UTF8_2028_CONT1 &&
             (static_cast<unsigned char>(note[i + 2]) == UTF8_2028_CONT2 ||
              static_cast<unsigned char>(note[i + 2]) == UTF8_2029_CONT2))
         {
@@ -169,8 +168,7 @@ std::string AnchorManager::SanitiseNote(std::string note)
         constexpr unsigned char UTF8_CONT_MARKER = 0x80;
         constexpr unsigned char UTF8_LEAD_MARKER = 0xC0;
         std::size_t truncateAt = MAX_NOTE_BYTES;
-        while (truncateAt > 0 &&
-               (static_cast<unsigned char>(out[truncateAt]) & UTF8_TOP_TWO_MASK) == UTF8_CONT_MARKER)
+        while (truncateAt > 0 && (static_cast<unsigned char>(out[truncateAt]) & UTF8_TOP_TWO_MASK) == UTF8_CONT_MARKER)
         {
             --truncateAt;
         }
@@ -280,9 +278,7 @@ std::size_t AnchorManager::Replace(const std::vector<loglib::LogConfiguration::A
         clampedByKey.insert_or_assign(key, clamped);
         // Sanitise on load so hand-edited JSON can't smuggle
         // multi-line notes past the one-line invariant.
-        mAnchors.insert_or_assign(
-            std::move(key), Value{.colorIndex = colorIndex, .note = SanitiseNote(entry.note)}
-        );
+        mAnchors.insert_or_assign(std::move(key), Value{.colorIndex = colorIndex, .note = SanitiseNote(entry.note)});
     }
     const auto clampedCount =
         static_cast<std::size_t>(std::ranges::count_if(clampedByKey, [](const auto &pair) { return pair.second; }));

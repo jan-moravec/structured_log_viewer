@@ -1545,9 +1545,7 @@ void LogModel::RefreshAllAnchorRows()
     {
         return;
     }
-    emit dataChanged(
-        index(0, 0), index(rows - 1, cols - 1), {Qt::BackgroundRole, Qt::ForegroundRole, Qt::ToolTipRole}
-    );
+    emit dataChanged(index(0, 0), index(rows - 1, cols - 1), {Qt::BackgroundRole, Qt::ForegroundRole, Qt::ToolTipRole});
 }
 
 void LogModel::RefreshAllHighlightRows()
@@ -2122,8 +2120,7 @@ void LogModel::SetRetentionCap(size_t cap)
             const size_t dropCount = visible - cap;
             // Same collect-before / emit-after choreography as
             // `AppendBatch`.
-            std::vector<AnchorManager::Key> evictedAnchorKeys =
-                CollectAnchorKeysInPrefix(static_cast<int>(dropCount));
+            std::vector<AnchorManager::Key> evictedAnchorKeys = CollectAnchorKeysInPrefix(static_cast<int>(dropCount));
             beginRemoveRows(QModelIndex(), 0, static_cast<int>(dropCount) - 1);
             mLogTable.EvictPrefixRows(dropCount);
             endRemoveRows();
