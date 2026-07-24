@@ -142,6 +142,30 @@ std::string AnchorManager::SanitiseNote(std::string note)
     out.erase(out.begin(), firstNonSpace);
     const auto lastNonSpace = std::ranges::find_if_not(out.rbegin(), out.rend(), isSpace);
     out.erase(lastNonSpace.base(), out.end());
+
+    // Length cap. Truncation walks back to a UTF-8 lead byte so a
+    // note ending in a multi-byte code point (`é`, `→`, `🌱`) can't
+    // be sliced through the continuation bytes. The magic mask
+    // `0xC0`==`0x80` matches continuation bytes (top two bits `10`);
+    // ASCII bytes and lead bytes both fall outside that pattern.
+    // Bounded loop: at most 3 walkback steps for a maximal 4-byte
+    // UTF-8 sequence.
+    if (out.size() > MAX_NOTE_BYTES)
+    {
+        std::size_t truncateAt = MAX_NOTE_BYTES;
+        constexpr unsigned char UTF8_CONT_MASK = 0xC0;
+        constexpr unsigned char UTF8_CONT_MARKER = 0x80;
+        while (truncateAt > 0 &&
+               (static_cast<unsigned char>(out[truncateAt]) & UTF8_CONT_MASK) == UTF8_CONT_MARKER)
+        {
+            --truncateAt;
+        }
+        out.resize(truncateAt);
+        // A trailing space could be exposed by the truncation cut;
+        // trim it so the "no trailing whitespace" invariant survives.
+        const auto lastNonSpaceAfterCut = std::ranges::find_if_not(out.rbegin(), out.rend(), isSpace);
+        out.erase(lastNonSpaceAfterCut.base(), out.end());
+    }
     return out;
 }
 
@@ -214,15 +238,20 @@ std::size_t AnchorManager::Replace(const std::vector<loglib::LogConfiguration::A
     std::unordered_map<Key, Value, KeyHash> previous;
     previous.swap(mAnchors);
 
-    std::size_t droppedCount = 0;
+    std::size_t clampedCount = 0;
     mAnchors.reserve(entries.size());
     for (const loglib::LogConfiguration::AnchorEntry &entry : entries)
     {
-        if (entry.colorIndex >= loglib::ANCHOR_PALETTE_SIZE)
+        // Clamp unknown palette slots (newer schema / hand-edited)
+        // instead of dropping the row: the bookmark position and
+        // the note are the parts the user cares about; the exact
+        // colour is trivially reassignable via `Ctrl+1..8`. Count
+        // the remap so callers can surface a "downgraded" hint.
+        auto colorIndex = entry.colorIndex;
+        if (colorIndex >= loglib::ANCHOR_PALETTE_SIZE)
         {
-            // Drop unknown-slot entries (newer schema / hand-edited).
-            ++droppedCount;
-            continue;
+            colorIndex = static_cast<uint8_t>(loglib::ANCHOR_PALETTE_SIZE - 1);
+            ++clampedCount;
         }
         mAnchors.insert_or_assign(
             Key{.locator = entry.locator, .lineId = entry.lineId},
@@ -230,7 +259,7 @@ std::size_t AnchorManager::Replace(const std::vector<loglib::LogConfiguration::A
             // newlines/tabs would otherwise break the "one line"
             // invariant that the QLabel + tooltip rendering paths
             // rely on.
-            Value{.colorIndex = entry.colorIndex, .note = SanitiseNote(entry.note)}
+            Value{.colorIndex = colorIndex, .note = SanitiseNote(entry.note)}
         );
     }
 
@@ -238,7 +267,7 @@ std::size_t AnchorManager::Replace(const std::vector<loglib::LogConfiguration::A
     {
         emit anchorsReset();
     }
-    return droppedCount;
+    return clampedCount;
 }
 
 std::optional<uint8_t> AnchorManager::ColorFor(const Key &key) const noexcept

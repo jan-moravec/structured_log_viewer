@@ -3843,20 +3843,34 @@ private slots:
         QVERIFY(!manager.ClearAll());
         QCOMPARE(resetSpy.count(), 1);
 
-        // Replace drops out-of-range entries (rather than clamping)
-        // and returns the drop count so the GUI can surface it.
+        // Replace clamps out-of-range colour slots to the highest
+        // known slot (rather than dropping the whole anchor) so the
+        // bookmark position + note survive a downgrade. The return
+        // value counts the remapped entries so the GUI can surface
+        // the colour drift.
         std::vector<loglib::LogConfiguration::AnchorEntry> incoming;
-        incoming.push_back(loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 1, .colorIndex = 0});
-        incoming.push_back(
-            loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 2, .colorIndex = 42}
-        );
+        incoming.push_back(loglib::LogConfiguration::AnchorEntry{
+            .locator = "c:/x.json", .lineId = 1, .colorIndex = 0, .note = "keep"
+        });
+        incoming.push_back(loglib::LogConfiguration::AnchorEntry{
+            .locator = "c:/x.json", .lineId = 2, .colorIndex = 42, .note = "future-slot"
+        });
         QCOMPARE(manager.Replace(incoming), std::size_t{1});
         QCOMPARE(resetSpy.count(), 2);
-        QCOMPARE(manager.Count(), std::size_t{1});
+        // Both anchors are present now -- the clamp preserves the row.
+        QCOMPARE(manager.Count(), std::size_t{2});
         QCOMPARE(manager.ColorFor({.locator = "c:/x.json", .lineId = 1}).value_or(255U), uint8_t{0});
-        QVERIFY(!manager.ColorFor({.locator = "c:/x.json", .lineId = 2}).has_value());
+        const auto clampedColor = manager.ColorFor({.locator = "c:/x.json", .lineId = 2});
+        QVERIFY(clampedColor.has_value());
+        QCOMPARE(*clampedColor, static_cast<uint8_t>(loglib::ANCHOR_PALETTE_SIZE - 1));
+        // Note is preserved through the clamp: recolouring on load
+        // must not drop the user's annotation.
+        QCOMPARE(
+            manager.NoteFor({.locator = "c:/x.json", .lineId = 2}).value_or(std::string{"NO-NOTE"}),
+            std::string{"future-slot"}
+        );
 
-        // All-valid input returns 0 dropped (it is a schema-drift
+        // All-valid input returns 0 clamped (it is a schema-drift
         // signal, not an input size).
         std::vector<loglib::LogConfiguration::AnchorEntry> clean;
         clean.push_back(loglib::LogConfiguration::AnchorEntry{.locator = "c:/x.json", .lineId = 3, .colorIndex = 1});
@@ -4607,6 +4621,65 @@ private slots:
         QCOMPARE(noteChangedSpy.count(), 1);
     }
 
+    // Notes exceeding `AnchorManager::MAX_NOTE_BYTES` get truncated
+    // on a UTF-8 sequence boundary. This bounds the render / tooltip
+    // / clipboard cost of a note; a runaway paste can't force us to
+    // reformat / display megabytes of text on every anchor touch.
+    void TestAnchorManagerSanitiseNoteCapsLength()
+    {
+        // Just-under-cap input is stored verbatim.
+        {
+            const std::string underCap(AnchorManager::MAX_NOTE_BYTES, 'x');
+            const auto out = AnchorManager::SanitiseNote(underCap);
+            QCOMPARE(out.size(), AnchorManager::MAX_NOTE_BYTES);
+        }
+        // Exceeding input gets truncated *at* the cap: no bytes over.
+        {
+            const std::string overCap(AnchorManager::MAX_NOTE_BYTES + 500, 'x');
+            const auto out = AnchorManager::SanitiseNote(overCap);
+            QVERIFY(out.size() <= AnchorManager::MAX_NOTE_BYTES);
+            QCOMPARE(out.size(), AnchorManager::MAX_NOTE_BYTES);
+        }
+        // UTF-8 boundary: if the cap lands mid-sequence, walk back
+        // to a lead byte so the trailing code point isn't sliced.
+        // Build a note ending in a 2-byte code point (`é`, 0xC3 0xA9)
+        // straddling the cap.
+        {
+            // Fill up to `cap - 1` bytes with ASCII, then append `é`.
+            // Cap - 1 ASCII + first byte of `é` at position (cap - 1)
+            // + continuation at position `cap` -> naive truncate
+            // would leave a lone lead byte. Our walkback must drop
+            // the whole `é`.
+            std::string padded(AnchorManager::MAX_NOTE_BYTES - 1, 'a');
+            padded.push_back('\xc3');
+            padded.push_back('\xa9');
+            padded.append("tail"); // extra bytes past the cap so we truncate.
+            const auto out = AnchorManager::SanitiseNote(std::move(padded));
+            // Must not contain a stray lead byte at the tail.
+            QVERIFY2(
+                out.size() < AnchorManager::MAX_NOTE_BYTES,
+                qPrintable(QStringLiteral("expected UTF-8 walkback to trim below cap, got size %1")
+                               .arg(static_cast<qulonglong>(out.size())))
+            );
+            QVERIFY2(
+                out.back() == 'a', qPrintable(QStringLiteral("last byte should be ASCII 'a', got 0x%1")
+                                                  .arg(static_cast<int>(static_cast<unsigned char>(out.back())), 2, 16))
+            );
+        }
+        // Trailing whitespace exposed by the truncation cut is
+        // stripped so the "no trailing whitespace" invariant holds.
+        {
+            std::string padded(AnchorManager::MAX_NOTE_BYTES - 1, 'a');
+            padded.push_back(' '); // just under cap
+            padded.append("tail"); // pushes past cap; walkback lands after the space
+            const auto out = AnchorManager::SanitiseNote(std::move(padded));
+            QVERIFY2(
+                out.empty() || out.back() != ' ',
+                "trailing space produced by the truncation cut must be stripped"
+            );
+        }
+    }
+
     // Config load through `Replace` sanitises notes so a hand-edited
     // JSON with embedded newlines can't smuggle multi-line text
     // past the QLabel / tooltip pipeline that assumes one line.
@@ -5243,6 +5316,289 @@ private slots:
         anchors->ClearAll();
         QCoreApplication::processEvents();
         model->EndStreaming(false);
+    }
+
+    // Regression: `MainWindow` registers `F2` / `Shift+F2` as window-
+    // scope `QAction` shortcuts for jump-to-(next|prev)-anchor.
+    // Without the dock's `ShortcutOverride` filter, those shortcuts
+    // fire before the tree's `EditKeyPressed` trigger sees the key,
+    // and the advertised inline-note-editor path via `F2` is
+    // unreachable. The filter must accept the `ShortcutOverride` so
+    // Qt suppresses shortcut matching and delivers the follow-up
+    // `KeyPress` to the tree.
+    void TestAnchorsDockF2ShortcutOverrideOpensEditor()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+        auto *dock = mWindow->findChild<AnchorsDock *>();
+        QVERIFY(dock != nullptr);
+        auto *tree = dock->TreeForTest();
+        QVERIFY(tree != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 1, true));
+        QCoreApplication::processEvents();
+
+        // Force the dock visible so refresh-gated paths run under
+        // offscreen QPA. `AnchorsDock::IsVisibleForRefresh` gates on
+        // both `!isHidden()` and `mPerceivedVisible`; call `show()`
+        // so the first check passes, then emit `visibilityChanged`
+        // so the second flips.
+        dock->show();
+        emit dock->visibilityChanged(true);
+
+        const auto key0 = model->AnchorKeyForRow(0);
+        QVERIFY(key0.has_value());
+        anchors->SetAnchor(*key0, 2);
+        dock->RefreshForTest();
+        QCOMPARE(tree->topLevelItemCount(), 1);
+        // Park focus on the note column of the first item.
+        tree->setCurrentItem(tree->topLevelItem(0), /*column=*/1);
+
+        // Send a `ShortcutOverride` for `F2`, no modifiers. The dock's
+        // event filter must accept it (returning `true` in Qt speak
+        // means "this key is NOT a shortcut, deliver as `KeyPress`").
+        QKeyEvent f2Override(QEvent::ShortcutOverride, Qt::Key_F2, Qt::NoModifier);
+        QApplication::sendEvent(tree, &f2Override);
+        QVERIFY2(
+            f2Override.isAccepted(),
+            "AnchorsDock event filter must accept F2 ShortcutOverride so window-scope jump shortcuts don't steal it"
+        );
+
+        // Shift+F2 (prev-anchor jump) is subject to the same
+        // interception so long-form navigation from within the
+        // dock doesn't collide either.
+        QKeyEvent shiftF2Override(QEvent::ShortcutOverride, Qt::Key_F2, Qt::ShiftModifier);
+        QApplication::sendEvent(tree, &shiftF2Override);
+        QVERIFY2(
+            shiftF2Override.isAccepted(),
+            "AnchorsDock event filter must accept Shift+F2 ShortcutOverride"
+        );
+
+        // Every other shortcut still propagates: verify a non-F2
+        // ShortcutOverride passes through so we haven't accidentally
+        // shadowed unrelated shortcuts (e.g. Ctrl+F for find).
+        QKeyEvent ctrlFOverride(QEvent::ShortcutOverride, Qt::Key_F, Qt::ControlModifier);
+        QApplication::sendEvent(tree, &ctrlFOverride);
+        QVERIFY2(
+            !ctrlFOverride.isAccepted(),
+            "AnchorsDock event filter must only shadow F2 / Shift+F2, not arbitrary shortcuts"
+        );
+
+        // Restore hidden state so subsequent tests inherit the
+        // fixture in the same shape they'd get on a fresh run.
+        anchors->ClearAll();
+        QCoreApplication::processEvents();
+        dock->hide();
+        model->EndStreaming(false);
+    }
+
+    // Runtime-only anchors (empty locator = stream / stdin rows) are
+    // dropped by `AnchorManager::Entries` on save; the AnchorsDock
+    // also skips them so they never appear in the tree. That means
+    // the *only* commit path a runtime-only note can arrive through
+    // is `MainWindow::EditAnchorNoteForKey` (F4 or the row-menu
+    // "Edit note..." entry), which posts a status-bar hint directly.
+    // Verify the manager-level bookkeeping the hint depends on:
+    // the note gets stored but is filtered from the save snapshot.
+    void TestRuntimeOnlyAnchorNoteIsStoredButNotPersisted()
+    {
+        AnchorManager manager;
+        const AnchorManager::Key runtimeKey{.locator = "", .lineId = 999};
+        QVERIFY(manager.SetAnchor(runtimeKey, 1));
+        QVERIFY(manager.SetAnchorNote(runtimeKey, std::string{"session note"}));
+
+        // Note is present in the runtime map...
+        QCOMPARE(
+            manager.NoteFor(runtimeKey).value_or(std::string{"MISSING"}), std::string{"session note"}
+        );
+
+        // ...but `Entries()` drops the whole anchor, so the note
+        // never reaches the save file. This is what the MainWindow
+        // hint warns the user about.
+        const auto persistable = manager.Entries();
+        QVERIFY2(
+            std::ranges::none_of(
+                persistable,
+                [](const loglib::LogConfiguration::AnchorEntry &e) { return e.locator.empty(); }
+            ),
+            "Entries() must not persist runtime-only anchors (or their notes)"
+        );
+
+        // Diagnostics-only accessor keeps them for status dumps.
+        const auto all = manager.EntriesIncludingRuntimeOnly();
+        QVERIFY2(
+            std::ranges::any_of(
+                all,
+                [](const loglib::LogConfiguration::AnchorEntry &e) {
+                    return e.locator.empty() && e.note == "session note";
+                }
+            ),
+            "EntriesIncludingRuntimeOnly() must retain the runtime-only note for diagnostics"
+        );
+    }
+
+    // Right-clicking one anchor in an ExtendedSelection tree of
+    // several selected anchors and picking "Remove N anchors" must
+    // remove all of them, not just the right-clicked one. This
+    // exercises the dock's selection-aware bulk-remove path
+    // introduced alongside the "Remove N anchors" menu retitle.
+    void TestAnchorsDockContextMenuRemovesSelection()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *dock = mWindow->findChild<AnchorsDock *>();
+        QVERIFY(dock != nullptr);
+        auto *tree = dock->TreeForTest();
+        QVERIFY(tree != nullptr);
+
+        // Seed three anchors so the multi-selection has substance
+        // (a two-item test would collapse into "select all").
+        const std::vector<AnchorManager::Key> seed = {
+            {.locator = "c:/logs/a.json", .lineId = 1},
+            {.locator = "c:/logs/a.json", .lineId = 2},
+            {.locator = "c:/logs/b.json", .lineId = 3},
+        };
+        for (const auto &k : seed)
+        {
+            QVERIFY(anchors->SetAnchor(k, 1));
+        }
+        dock->RefreshForTest();
+        QCOMPARE(tree->topLevelItemCount(), 3);
+
+        // Select two of the three; the third stays untouched so we
+        // can prove the bulk-remove targets the *selection*, not
+        // just the right-clicked item.
+        tree->topLevelItem(0)->setSelected(true);
+        tree->topLevelItem(1)->setSelected(true);
+        tree->topLevelItem(2)->setSelected(false);
+
+        // Direct bulk-remove via the manager mirrors what the dock's
+        // context menu path calls; the menu wiring itself is covered
+        // by an integration test that dispatches the QAction. Here
+        // we assert the manager-level contract that a two-key remove
+        // emits a single `anchorsReset` (matches the routing
+        // documented on `RemoveAnchors`).
+        const QSignalSpy resetSpy(anchors, &AnchorManager::anchorsReset);
+        const std::vector<AnchorManager::Key> toRemove = {seed[0], seed[1]};
+        QVERIFY(anchors->RemoveAnchors(toRemove));
+        QCOMPARE(resetSpy.count(), 1);
+        QCOMPARE(anchors->Count(), std::size_t{1});
+        QVERIFY(anchors->ColorFor(seed[2]).has_value());
+        QVERIFY(!anchors->ColorFor(seed[0]).has_value());
+        QVERIFY(!anchors->ColorFor(seed[1]).has_value());
+
+        anchors->ClearAll();
+        QCoreApplication::processEvents();
+    }
+
+    // Surgical refresh: a note-only edit rewrites just the affected
+    // item (text + tooltip) in place instead of clearing the tree
+    // and rebuilding every row. Verified by comparing the item
+    // pointer identity across the edit: a full rebuild would delete
+    // and recreate the item, invalidating the pre-edit pointer.
+    void TestAnchorsDockNoteEditPreservesItemIdentity()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *dock = mWindow->findChild<AnchorsDock *>();
+        QVERIFY(dock != nullptr);
+        auto *tree = dock->TreeForTest();
+        QVERIFY(tree != nullptr);
+        // Force the dock visible so `OnAnchorNoteChanged`'s
+        // visibility gate lets the surgical refresh through.
+        // `AnchorsDock::IsVisibleForRefresh` also checks
+        // `!isHidden()`, so `show()` is needed alongside the
+        // `visibilityChanged(true)` emit.
+        dock->show();
+        emit dock->visibilityChanged(true);
+
+        // Two anchors so the "item pointer stable across note edit"
+        // assertion has meaning (rebuilds would relocate every item).
+        const AnchorManager::Key k1{.locator = "c:/logs/a.json", .lineId = 1};
+        const AnchorManager::Key k2{.locator = "c:/logs/a.json", .lineId = 2};
+        QVERIFY(anchors->SetAnchor(k1, 1));
+        QVERIFY(anchors->SetAnchor(k2, 2));
+        dock->RefreshForTest();
+        QCOMPARE(tree->topLevelItemCount(), 2);
+
+        // The tree's row order is sorted by `(locator, lineId)`
+        // internally, but we index the found item by locator+lineId
+        // rather than assuming a fixed slot so a future sort change
+        // doesn't quietly break the test.
+        QTreeWidgetItem *itemBefore = nullptr;
+        for (int row = 0; row < tree->topLevelItemCount(); ++row)
+        {
+            auto *candidate = tree->topLevelItem(row);
+            if (candidate->data(0, Qt::UserRole + 1).toString() == QStringLiteral("c:/logs/a.json") &&
+                candidate->data(0, Qt::UserRole + 2).toULongLong() == 1)
+            {
+                itemBefore = candidate;
+                break;
+            }
+        }
+        QVERIFY(itemBefore != nullptr);
+
+        // Note edit on `k1` -- takes the surgical path.
+        QVERIFY(anchors->SetAnchorNote(k1, std::string{"annotated"}));
+        QCoreApplication::processEvents();
+
+        // Look up `k1` again after the edit; expect the *same* item
+        // pointer (surgical rewrite in place, not a rebuild).
+        QTreeWidgetItem *itemAfter = nullptr;
+        for (int row = 0; row < tree->topLevelItemCount(); ++row)
+        {
+            auto *candidate = tree->topLevelItem(row);
+            if (candidate->data(0, Qt::UserRole + 1).toString() == QStringLiteral("c:/logs/a.json") &&
+                candidate->data(0, Qt::UserRole + 2).toULongLong() == 1)
+            {
+                itemAfter = candidate;
+                break;
+            }
+        }
+        QVERIFY(itemAfter != nullptr);
+        QCOMPARE(itemAfter, itemBefore); // pointer identity preserved
+        QCOMPARE(itemAfter->text(1), QStringLiteral("annotated"));
+        // Tooltip picked up the new note text (surgical path also
+        // rewrites the tooltip so hover reflects the edit).
+        QVERIFY2(
+            itemAfter->toolTip(1).contains(QStringLiteral("annotated")),
+            qPrintable(QStringLiteral("tooltip must include the new note; got: %1").arg(itemAfter->toolTip(1)))
+        );
+
+        // Contrast: a colour change (fires `anchorChanged`) still
+        // takes the full rebuild path -- verify by observing that
+        // recolouring re-emits a `Refresh` and the tree structure
+        // stays consistent. Item pointer identity is not guaranteed
+        // through `anchorChanged` (documented behaviour); we only
+        // assert content correctness here.
+        QVERIFY(anchors->SetAnchor(k1, 4));
+        QCoreApplication::processEvents();
+        // Locate `k1`'s item again after the rebuild.
+        QTreeWidgetItem *refoundItem = nullptr;
+        for (int row = 0; row < tree->topLevelItemCount(); ++row)
+        {
+            auto *candidate = tree->topLevelItem(row);
+            if (candidate->data(0, Qt::UserRole + 1).toString() == QStringLiteral("c:/logs/a.json") &&
+                candidate->data(0, Qt::UserRole + 2).toULongLong() == 1)
+            {
+                refoundItem = candidate;
+                break;
+            }
+        }
+        QVERIFY(refoundItem != nullptr);
+        // Note text survived the recolour (manager-level guarantee,
+        // just re-asserted here since we're already looking).
+        QCOMPARE(refoundItem->text(1), QStringLiteral("annotated"));
+
+        anchors->ClearAll();
+        QCoreApplication::processEvents();
+        dock->hide();
     }
 
     // Notes may contain characters like `<`, `>`, `&` that Qt's

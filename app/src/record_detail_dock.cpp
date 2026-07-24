@@ -131,13 +131,47 @@ RecordDetailDock::RecordDetailDock(LogModel *model, AnchorManager *anchors, QWid
     // anchor-note subline stays in step with edits from the
     // Anchors dock or the F4 shortcut.
     //
-    // Both `anchorChanged` (colour flip / add / remove) and
-    // `anchorNoteChanged` (note text edited) matter here: the
-    // former changes whether the subline is shown at all, the
-    // latter changes what it says. Same handler for both.
+    // Split into two handlers because their triggers differ:
+    //   - `anchorChanged` fires on add / remove / recolour. The
+    //     widget shows an "Anchored" / "Anchor: <note>" subline
+    //     whose *visibility* depends on whether the row is
+    //     anchored at all -- so a recolour on an already-anchored
+    //     row changes nothing the widget renders. Skip the rebuild
+    //     in that case; RefreshFromModel is not free (raw-line
+    //     read from `LineSource`, JSON pretty-print, field cell
+    //     rebuild). Add / remove flips visibility so it does
+    //     rebuild.
+    //   - `anchorNoteChanged` always changes the visible text.
+    //     Rebuild unconditionally.
     if (mAnchors != nullptr)
     {
-        const auto onPerAnchorChange = [this](const AnchorManager::Key &changedKey) {
+        connect(mAnchors, &AnchorManager::anchorChanged, this, [this](const AnchorManager::Key &changedKey) {
+            if (!IsVisibleForRefresh() || !mCurrentSourceIndex.isValid() || mModel.isNull())
+            {
+                return;
+            }
+            const int pinnedRow = mCurrentSourceIndex.row();
+            const auto pinnedKey = mModel->AnchorKeyForRow(pinnedRow);
+            if (!pinnedKey.has_value() || *pinnedKey != changedKey)
+            {
+                return;
+            }
+            // Compare pre-signal cache vs. post-signal state. The
+            // widget's `Content().anchorColorIndex.has_value()`
+            // reflects the pre-signal state (this handler runs
+            // before `RefreshFromModel`); `AnchorSlotForRow`
+            // reflects the post-signal truth. A colour flip on an
+            // already-anchored row leaves both `true` and produces
+            // no visible change; skip the rebuild.
+            const bool wasAnchored = mWidget->Content().anchorColorIndex.has_value();
+            const bool nowAnchored = mModel->AnchorSlotForRow(pinnedRow).has_value();
+            if (wasAnchored == nowAnchored)
+            {
+                return;
+            }
+            RefreshFromModel();
+        });
+        connect(mAnchors, &AnchorManager::anchorNoteChanged, this, [this](const AnchorManager::Key &changedKey) {
             if (!IsVisibleForRefresh() || !mCurrentSourceIndex.isValid() || mModel.isNull())
             {
                 return;
@@ -148,9 +182,7 @@ RecordDetailDock::RecordDetailDock(LogModel *model, AnchorManager *anchors, QWid
             {
                 RefreshFromModel();
             }
-        };
-        connect(mAnchors, &AnchorManager::anchorChanged, this, onPerAnchorChange);
-        connect(mAnchors, &AnchorManager::anchorNoteChanged, this, onPerAnchorChange);
+        });
         connect(mAnchors, &AnchorManager::anchorsReset, this, [this]() {
             if (!IsVisibleForRefresh() || !mCurrentSourceIndex.isValid())
             {

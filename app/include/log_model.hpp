@@ -135,7 +135,12 @@ public:
     /// `AnchorSlotForRow` so anchor-free sessions pay ~nothing.
     /// Used by the row tooltip path in `data(Qt::ToolTipRole)` and
     /// by `RecordDetailDock`.
-    [[nodiscard]] std::optional<QString> AnchorNoteForRow(int row) const;
+    ///
+    /// `noexcept` because the tooltip path invokes this from Qt's
+    /// paint stack; allocation failures inside `NoteFor` /
+    /// `QString::fromStdString` are swallowed and reported as
+    /// `nullopt` rather than propagated.
+    [[nodiscard]] std::optional<QString> AnchorNoteForRow(int row) const noexcept;
 
     /// Full teardown followed by a model reset. Emits `lineCountChanged(0)`,
     /// `errorCountChanged(0)`, and a compensating `streamingFinished` if

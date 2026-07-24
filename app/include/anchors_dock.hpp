@@ -49,8 +49,23 @@ signals:
     /// tab inactivation in a tabified group.
     void closed();
 
+    // (No `runtimeOnlyNoteCommitted` here: runtime-only anchors
+    // (empty locator) are dropped by `AnchorManager::Entries()`, so
+    // they never appear in this dock's tree and `OnItemChanged` can
+    // never fire for one. The persistence warning lives on the
+    // `MainWindow::EditAnchorNoteForKey` path (F4 / row-menu edit),
+    // which is the *only* way a runtime-only note can be committed.)
+
 protected:
     void closeEvent(QCloseEvent *event) override;
+
+    /// Intercepts `ShortcutOverride` for `F2` / `Shift+F2` on `mTree`
+    /// so the tree's own `EditKeyPressed` trigger opens the inline
+    /// note editor instead of the window-scope "Jump to (next|prev)
+    /// anchor" `QAction` shortcuts firing first and stealing the key.
+    /// Only shadows those two keys; every other shortcut still
+    /// propagates normally.
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 #ifdef LOGAPP_BUILD_TESTING
 public:
@@ -88,6 +103,15 @@ private:
     void OnItemChanged(QTreeWidgetItem *item, int column);
     void OnContextMenuRequested(const QPoint &pos);
     void OnClearAllClicked();
+
+    /// Surgical note-only refresh: find the item matching @p key and
+    /// rewrite just its note column (text + tooltip) in place. Skips
+    /// the full `RefreshAlways` rebuild path that a colour change /
+    /// bulk reset needs, so a per-keystroke note edit doesn't churn
+    /// the whole tree for sessions with many anchors. Falls through
+    /// to `Refresh()` when the key isn't currently displayed (the
+    /// item was evicted / never rendered while the dock was hidden).
+    void OnAnchorNoteChanged(const AnchorManager::Key &key);
 
     QPointer<AnchorManager> mAnchors;
     QPointer<LogModel> mModel;

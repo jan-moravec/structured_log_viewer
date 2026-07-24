@@ -2480,15 +2480,17 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
 
         // Bulk-replace anchors before RebuildFiltersFromConfiguration
         // mirrors the now-empty `AnchorManager` back onto disk. Any
-        // dropped (future-schema) entries are surfaced to the user.
+        // future-schema colour slots get clamped to the highest
+        // known slot rather than dropped so the bookmark + note
+        // survive a downgrade; we tell the user about the remap.
         if (mAnchors != nullptr)
         {
-            const std::size_t droppedAnchorCount = mAnchors->Replace(mModel->Configuration().anchors);
-            if (droppedAnchorCount > 0)
+            const std::size_t clampedAnchorCount = mAnchors->Replace(mModel->Configuration().anchors);
+            if (clampedAnchorCount > 0)
             {
                 statusBar()->showMessage(
-                    tr("%1 anchor(s) from a newer schema were dropped.")
-                        .arg(static_cast<qulonglong>(droppedAnchorCount)),
+                    tr("%1 anchor(s) from a newer schema had their colour clamped to a known slot.")
+                        .arg(static_cast<qulonglong>(clampedAnchorCount)),
                     STATUS_BAR_MESSAGE_TIMEOUT_MS
                 );
             }
@@ -6120,16 +6122,17 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         logapp::BackfillLocatorDedupKeys(mCurrentSource);
 
         // Bulk-replace anchors from the loaded vector. Future-schema
-        // colour slots are reported back so the user knows about
-        // anchors that didn't survive.
+        // colour slots get clamped (not dropped) so bookmark
+        // positions + notes survive a downgrade; the count is
+        // surfaced to the user so a colour remap isn't invisible.
         if (mAnchors != nullptr)
         {
-            const std::size_t droppedAnchorCount = mAnchors->Replace(mModel->Configuration().anchors);
-            if (droppedAnchorCount > 0)
+            const std::size_t clampedAnchorCount = mAnchors->Replace(mModel->Configuration().anchors);
+            if (clampedAnchorCount > 0)
             {
                 statusBar()->showMessage(
-                    tr("%1 anchor(s) from a newer schema were dropped.")
-                        .arg(static_cast<qulonglong>(droppedAnchorCount)),
+                    tr("%1 anchor(s) from a newer schema had their colour clamped to a known slot.")
+                        .arg(static_cast<qulonglong>(clampedAnchorCount)),
                     STATUS_BAR_MESSAGE_TIMEOUT_MS
                 );
             }
@@ -8265,6 +8268,22 @@ void MainWindow::EditAnchorNoteForKey(const AnchorManager::Key &key)
                 STATUS_BAR_MESSAGE_TIMEOUT_MS
             );
         }
+        return;
+    }
+    // Runtime-only anchors (empty locator = stream / stdin rows)
+    // aren't persisted -- `AnchorManager::Entries` drops them from
+    // the save snapshot. Warn only when the user actually typed a
+    // note; a cleared / empty commit isn't a surprise.
+    //
+    // Reads `newNote` after `SetAnchorNote` sanitises input so an
+    // all-whitespace paste (which sanitises to "") also doesn't
+    // trigger a spurious hint.
+    if (key.locator.empty() && !newNote.trimmed().isEmpty())
+    {
+        statusBar()->showMessage(
+            tr("Note stored for this session -- streaming anchors are not persisted across sessions."),
+            STATUS_BAR_MESSAGE_TIMEOUT_MS
+        );
     }
 }
 

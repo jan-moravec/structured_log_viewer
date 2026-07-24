@@ -91,13 +91,30 @@ public:
     /// can skip the notification. Returns true iff state changed.
     bool SetAnchorNote(const Key &key, std::string note);
 
-    /// Collapse CR/LF/tab into a single space and trim leading and
-    /// trailing whitespace so a note stays a one-liner even if the
-    /// user pasted a multi-line block. Exposed as a static so UI
-    /// widgets can mirror the stored form into their editor before a
-    /// round-trip through `SetAnchorNote`; the manager itself always
-    /// applies it on write, so callers that don't care about live
-    /// display can pass raw text.
+    /// Upper bound on the stored size of a single note, in bytes
+    /// (UTF-8). Chosen to be generous for the "one-line annotation"
+    /// use case while capping the worst-case cost of rendering the
+    /// note as a QLabel / QToolTip / clipboard payload on every
+    /// interaction (tooltip resolves on hover; copy-as-KV walks the
+    /// whole record on every click). A malicious or careless paste
+    /// of megabytes of text would otherwise trickle through the UI
+    /// on every anchor touch.
+    ///
+    /// Truncation happens at a UTF-8 sequence boundary so a
+    /// two- or three-byte code point can't be sliced through the
+    /// middle. The user-visible effect is that a note pasted longer
+    /// than this gets silently cut; not surfaced as an error since
+    /// the note is a decorative annotation, not primary data.
+    static constexpr std::size_t MAX_NOTE_BYTES = 1024;
+
+    /// Collapse CR/LF/tab into a single space, trim leading and
+    /// trailing whitespace, and truncate to `MAX_NOTE_BYTES` at a
+    /// UTF-8 sequence boundary so a note stays a one-liner even if
+    /// the user pasted a multi-line block or a wall of text.
+    /// Exposed as a static so UI widgets can mirror the stored form
+    /// into their editor before a round-trip through `SetAnchorNote`;
+    /// the manager itself always applies it on write, so callers
+    /// that don't care about live display can pass raw text.
     [[nodiscard]] static std::string SanitiseNote(std::string note);
 
     /// Remove an anchor (colour + note). Emits `anchorChanged` iff
@@ -114,17 +131,20 @@ public:
     /// Replace the entire state from @p entries.
     ///
     /// Entries with an out-of-range `colorIndex` (newer schema or
-    /// hand-edited JSON) are dropped rather than clamped, so missing
-    /// anchors stay visible to the user. Duplicate keys: last wins.
-    /// Each entry's `note` is passed through `SanitiseNote` so a
-    /// hand-edited JSON with embedded newlines can't smuggle
-    /// multi-line notes past the one-line invariant.
+    /// hand-edited JSON) are clamped to the highest known palette
+    /// slot rather than dropped: preserving the bookmark position
+    /// and the user's note is more valuable than round-tripping the
+    /// exact colour, which the user can always reassign. Duplicate
+    /// keys: last wins. Each entry's `note` is passed through
+    /// `SanitiseNote` so a hand-edited JSON with embedded newlines
+    /// can't smuggle multi-line notes past the one-line invariant.
     ///
     /// `anchorsReset` is emitted only when the rebuilt map differs
     /// from the previous content (silent no-op on identical reload).
     ///
-    /// @returns the number of dropped entries; surfaced to the user
-    /// by `MainWindow::TryLoadAsConfiguration` via the status bar.
+    /// @returns the number of clamped (colour-remapped) entries;
+    /// surfaced to the user by `MainWindow::TryLoadAsConfiguration`
+    /// via the status bar so a downgrade is visible.
     [[nodiscard]] std::size_t Replace(const std::vector<loglib::LogConfiguration::AnchorEntry> &entries);
 
     /// Anchor colour for @p key, or nullopt if not anchored.

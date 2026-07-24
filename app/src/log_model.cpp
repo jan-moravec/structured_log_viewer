@@ -1437,23 +1437,34 @@ std::optional<uint8_t> LogModel::AnchorSlotForRow(int row) const noexcept
     return mAnchors->ColorFor(*key);
 }
 
-std::optional<QString> LogModel::AnchorNoteForRow(int row) const
+std::optional<QString> LogModel::AnchorNoteForRow(int row) const noexcept
 {
+    // Called from the paint stack via `data()` (`Qt::ToolTipRole`);
+    // Qt can't unwind through a `bad_alloc` there. `NoteFor` and
+    // `QString::fromStdString` both allocate. Mirror the swallow
+    // pattern from `AnchorKeyForRow`.
     if (mAnchors == nullptr || mAnchors->Empty())
     {
         return std::nullopt;
     }
-    const auto key = AnchorKeyForRow(row);
-    if (!key.has_value())
+    try
+    {
+        const auto key = AnchorKeyForRow(row);
+        if (!key.has_value())
+        {
+            return std::nullopt;
+        }
+        const auto note = mAnchors->NoteFor(*key);
+        if (!note.has_value())
+        {
+            return std::nullopt;
+        }
+        return QString::fromStdString(*note);
+    }
+    catch (...)
     {
         return std::nullopt;
     }
-    const auto note = mAnchors->NoteFor(*key);
-    if (!note.has_value())
-    {
-        return std::nullopt;
-    }
-    return QString::fromStdString(*note);
 }
 
 void LogModel::PrewarmCanonicalLocatorCache()
@@ -1873,12 +1884,25 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         QString anchorTooltip;
         if (mAnchors != nullptr && !mAnchors->Empty())
         {
-            if (const auto key = AnchorKeyForRow(index.row()); key.has_value())
+            // Belt-and-braces try/catch: `NoteFor`,
+            // `QString::fromStdString`, and `toHtmlEscaped` all
+            // allocate. Qt's paint stack calls this via
+            // `Qt::ToolTipRole` and can't unwind through a
+            // `bad_alloc`; swallow allocation failures and render
+            // no anchor tooltip rather than tearing down the paint.
+            try
             {
-                if (const auto note = mAnchors->NoteFor(*key); note.has_value() && !note->empty())
+                if (const auto key = AnchorKeyForRow(index.row()); key.has_value())
                 {
-                    anchorTooltip = tr("Anchor: %1").arg(QString::fromStdString(*note).toHtmlEscaped());
+                    if (const auto note = mAnchors->NoteFor(*key); note.has_value() && !note->empty())
+                    {
+                        anchorTooltip = tr("Anchor: %1").arg(QString::fromStdString(*note).toHtmlEscaped());
+                    }
                 }
+            }
+            catch (...)
+            {
+                anchorTooltip.clear();
             }
         }
 
