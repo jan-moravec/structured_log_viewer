@@ -570,7 +570,7 @@ void AnchorsDock::OnContextMenuRequested(const QPoint &pos)
     {
         return;
     }
-    QTreeWidgetItem *item = mTree->itemAt(pos);
+    const QTreeWidgetItem *item = mTree->itemAt(pos);
     if (item == nullptr)
     {
         return;
@@ -746,7 +746,7 @@ void AnchorsDock::OnAnchorChanged(const AnchorManager::Key &key)
     // changed, on insert the new item starts empty (matching what
     // `SetAnchor` seeds); the note flow goes through
     // `OnAnchorNoteChanged` instead.
-    loglib::LogConfiguration::AnchorEntry entry{
+    const loglib::LogConfiguration::AnchorEntry entry{
         .locator = key.locator,
         .lineId = key.lineId,
         .colorIndex = *colourOpt,
@@ -778,7 +778,7 @@ void AnchorsDock::OnAnchorChanged(const AnchorManager::Key &key)
     int insertPos = mTree->topLevelItemCount();
     for (int row = 0; row < mTree->topLevelItemCount(); ++row)
     {
-        QTreeWidgetItem *candidate = mTree->topLevelItem(row);
+        const QTreeWidgetItem *candidate = mTree->topLevelItem(row);
         if (candidate == nullptr)
         {
             continue;

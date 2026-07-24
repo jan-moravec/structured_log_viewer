@@ -284,7 +284,7 @@ std::size_t AnchorManager::Replace(const std::vector<loglib::LogConfiguration::A
             std::move(key), Value{.colorIndex = colorIndex, .note = SanitiseNote(entry.note)}
         );
     }
-    const std::size_t clampedCount =
+    const auto clampedCount =
         static_cast<std::size_t>(std::ranges::count_if(clampedByKey, [](const auto &pair) { return pair.second; }));
 
     if (mAnchors != previous)

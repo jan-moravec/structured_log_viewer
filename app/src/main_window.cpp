@@ -8242,6 +8242,7 @@ void MainWindow::AppendAnchorActionsToRowMenu(QMenu *menu, int sourceRow)
         // for `performance-unnecessary-copy-initialization` on a
         // named temporary; the closure still holds an owned copy.
         const AnchorManager::Key &capturedKey = *rightClickedKey;
+        // NOLINTNEXTLINE(bugprone-exception-escape) - Key's std::string capture copy can technically throw bad_alloc.
         connect(editNoteAction, &QAction::triggered, this, [this, capturedKey]() {
             EditAnchorNoteForKey(capturedKey);
         });

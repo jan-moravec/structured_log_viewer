@@ -4379,7 +4379,7 @@ private slots:
         // Activation on the note column must not issue a jump: only
         // the anchor column is activate-to-jump; the note column is
         // activate-to-commit-edit (Qt handles that internally).
-        const int jumpCountBeforeNoteActivate = jumpSpy.count();
+        const auto jumpCountBeforeNoteActivate = jumpSpy.count();
         emit tree->itemActivated(firstItem, /*column=*/1);
         QCoreApplication::processEvents();
         QCOMPARE(jumpSpy.count(), jumpCountBeforeNoteActivate);
@@ -4442,7 +4442,7 @@ private slots:
 
         // Double-click on the note column must NOT jump: that
         // gesture opens the inline editor.
-        const int jumpsBeforeNote = jumpSpy.count();
+        const auto jumpsBeforeNote = jumpSpy.count();
         emit tree->itemDoubleClicked(firstItem, /*column=*/1);
         QCoreApplication::processEvents();
         QCOMPARE(jumpSpy.count(), jumpsBeforeNote);
@@ -5416,17 +5416,18 @@ private slots:
 
         // Delegate on column 0 refuses to build an editor: even a
         // direct `createEditor` call returns nullptr.
-        QAbstractItemDelegate *anchorDelegate = tree->itemDelegateForColumn(0);
+        const QAbstractItemDelegate *anchorDelegate = tree->itemDelegateForColumn(0);
         QVERIFY2(anchorDelegate != nullptr, "AnchorsDock must install a delegate on the anchor column");
-        QStyleOptionViewItem opt;
+        const QStyleOptionViewItem opt;
         const QModelIndex anchorIdx = tree->model()->index(0, 0);
-        QWidget *editor = anchorDelegate->createEditor(tree->viewport(), opt, anchorIdx);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
+        const QWidget *editor = anchorDelegate->createEditor(tree->viewport(), opt, anchorIdx);
         QVERIFY2(editor == nullptr, "Anchor column delegate must refuse editor construction");
 
         // Sanity check: the note column still has an editor. `nullptr`
         // means Qt falls back to the default `QStyledItemDelegate`,
         // which builds an editor from the item flags.
-        QAbstractItemDelegate *noteDelegate = tree->itemDelegateForColumn(1);
+        const QAbstractItemDelegate *noteDelegate = tree->itemDelegateForColumn(1);
         // Whether Qt returns the tree-wide default or a per-column
         // delegate, `createEditor` on the editable note column must
         // succeed (it produces a `QLineEdit`).
@@ -5436,7 +5437,8 @@ private slots:
         }
         QVERIFY(noteDelegate != nullptr);
         const QModelIndex noteIdx = tree->model()->index(0, 1);
-        QWidget *noteEditor = noteDelegate->createEditor(tree->viewport(), opt, noteIdx);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
+        const QWidget *noteEditor = noteDelegate->createEditor(tree->viewport(), opt, noteIdx);
         QVERIFY2(noteEditor != nullptr, "Note column must accept an editor");
         delete noteEditor;
 
@@ -5457,7 +5459,7 @@ private slots:
         // event-loop state across tests.
         tree->editItem(tree->topLevelItem(0), /*column=*/1);
         QCoreApplication::processEvents();
-        QLineEdit *noteInlineEditor = tree->viewport()->findChild<QLineEdit *>();
+        auto *noteInlineEditor = tree->viewport()->findChild<QLineEdit *>();
         QVERIFY2(noteInlineEditor != nullptr, "editItem on the note column must open a QLineEdit");
         // Dismiss the editor via Escape so no stale note is committed.
         QKeyEvent escKey(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
@@ -5569,6 +5571,7 @@ private slots:
         emit dock->visibilityChanged(true);
 
         const AnchorManager::Key k{.locator = "c:/logs/a.json", .lineId = 1};
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         QVERIFY(anchors->SetAnchor(k, 1));
         dock->RefreshForTest();
         QCOMPARE(tree->topLevelItemCount(), 1);
@@ -5621,6 +5624,7 @@ private slots:
 
         const AnchorManager::Key k1{.locator = "c:/logs/a.json", .lineId = 1};
         const AnchorManager::Key k2{.locator = "c:/logs/a.json", .lineId = 2};
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         QVERIFY(anchors->SetAnchor(k1, 1));
         QVERIFY(anchors->SetAnchor(k2, 2));
         dock->RefreshForTest();
@@ -5684,6 +5688,7 @@ private slots:
         emit dock->visibilityChanged(true);
 
         const AnchorManager::Key k{.locator = "c:/logs/a.json", .lineId = 42};
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         QVERIFY(anchors->SetAnchor(k, 1));
         dock->RefreshForTest();
         QCOMPARE(tree->topLevelItemCount(), 1);
@@ -5888,6 +5893,7 @@ private slots:
         };
         for (const auto &k : seed)
         {
+            // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
             QVERIFY(anchors->SetAnchor(k, 1));
         }
         dock->RefreshForTest();
@@ -5908,6 +5914,7 @@ private slots:
         // documented on `RemoveAnchors`).
         const QSignalSpy resetSpy(anchors, &AnchorManager::anchorsReset);
         const std::vector<AnchorManager::Key> toRemove = {seed[0], seed[1]};
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         QVERIFY(anchors->RemoveAnchors(toRemove));
         QCOMPARE(resetSpy.count(), 1);
         QCOMPARE(anchors->Count(), std::size_t{1});
@@ -5948,7 +5955,9 @@ private slots:
         emit dock->visibilityChanged(true);
 
         // Precondition: no anchors, button disabled.
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         QVERIFY(anchors->Empty());
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         QVERIFY(!clearBtn->isEnabled());
 
         // Add a runtime-only anchor (empty locator). The tree stays
@@ -6079,6 +6088,7 @@ private slots:
         // assertion has meaning (rebuilds would relocate every item).
         const AnchorManager::Key k1{.locator = "c:/logs/a.json", .lineId = 1};
         const AnchorManager::Key k2{.locator = "c:/logs/a.json", .lineId = 2};
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         QVERIFY(anchors->SetAnchor(k1, 1));
         QVERIFY(anchors->SetAnchor(k2, 2));
         dock->RefreshForTest();
@@ -6120,6 +6130,7 @@ private slots:
         }
         QVERIFY(itemAfter != nullptr);
         QCOMPARE(itemAfter, itemBefore); // pointer identity preserved
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         QCOMPARE(itemAfter->text(1), QStringLiteral("annotated"));
         // Tooltip picked up the new note text (surgical path also
         // rewrites the tooltip so hover reflects the edit).
@@ -6137,7 +6148,7 @@ private slots:
         QVERIFY(anchors->SetAnchor(k1, 4));
         QCoreApplication::processEvents();
         // Locate `k1`'s item again after the rebuild.
-        QTreeWidgetItem *refoundItem = nullptr;
+        const QTreeWidgetItem *refoundItem = nullptr;
         for (int row = 0; row < tree->topLevelItemCount(); ++row)
         {
             auto *candidate = tree->topLevelItem(row);
@@ -6151,6 +6162,7 @@ private slots:
         QVERIFY(refoundItem != nullptr);
         // Note text survived the recolour (manager-level guarantee,
         // just re-asserted here since we're already looking).
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         QCOMPARE(refoundItem->text(1), QStringLiteral("annotated"));
 
         anchors->ClearAll();
@@ -6332,6 +6344,7 @@ private slots:
         // `isHidden()` rather than `isVisible()` because the widget
         // is never `show()`n in this test; the assertion is that
         // `PopulateUi` did not explicitly hide the label.
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
         QVERIFY2(!noteLabel->isHidden(), "anchor-note label must be shown when the pinned row is anchored");
         QCOMPARE(noteLabel->textFormat(), Qt::PlainText);
         QVERIFY2(
@@ -15129,6 +15142,7 @@ private slots:
 
         // Baseline: no matches, tooltip clear.
         findRecord->SetMatchInfo(0, 0);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
         QVERIFY2(label->toolTip().isEmpty(), "empty result must clear the tooltip");
 
         // Exact count (not overflowed): visible text has no "+"

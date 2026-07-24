@@ -1751,6 +1751,7 @@ private slots:
         auto *railModel = window.findChild<OverviewRailModel *>();
         QVERIFY2(railModel != nullptr, "OverviewRailModel must be a QObject child of MainWindow");
         QVERIFY2(action->isChecked(), "rail should be on by default");
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY2 aborts on null.
         QVERIFY2(railModel->BucketCount() > 0, "model must be armed while the rail is visible");
 
         action->trigger();
@@ -1788,6 +1789,7 @@ private slots:
 
         auto *railModel = window.findChild<OverviewRailModel *>();
         QVERIFY(railModel != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         QVERIFY(railModel->BucketCount() > 0);
 
         auto *findDock = window.findChild<FindDock *>();
@@ -3090,6 +3092,7 @@ private slots:
 
         auto *railModel = window.findChild<OverviewRailModel *>();
         QVERIFY(railModel != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         QVERIFY(railModel->BucketCount() > 0);
 
         auto *findDock = window.findChild<FindDock *>();
@@ -3225,6 +3228,7 @@ private slots:
         QVERIFY(view != nullptr);
         auto *railWidget = window.findChild<OverviewRailWidget *>();
         QVERIFY(railWidget != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior QVERIFY aborts on null.
         QVERIFY(railWidget->isVisible());
 
         auto *followAction = window.findChild<QAction *>(QStringLiteral("actionFollowTail"));
