@@ -45,6 +45,12 @@ public:
     /// dock's own F2 / double-click gesture.
     void BeginEditingCurrentNote();
 
+    /// Vetoes the window-scope `F2` shortcut when the tree's note
+    /// column has focus, so the inline editor opens instead of
+    /// "Jump to next anchor" firing. Everything else propagates
+    /// normally. Public to match `QObject::eventFilter`'s visibility.
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 signals:
     /// User asked to navigate to source-model row @p sourceRow.
     /// Argument is -1 when the anchor key has no live row.
@@ -61,12 +67,6 @@ signals:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
-
-    /// Vetoes the window-scope `F2` shortcut when the tree's note
-    /// column has focus, so the inline editor opens instead of
-    /// "Jump to next anchor" firing. Everything else propagates
-    /// normally.
-    bool eventFilter(QObject *watched, QEvent *event) override;
 
 #ifdef LOGAPP_BUILD_TESTING
 public:
