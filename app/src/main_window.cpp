@@ -1935,32 +1935,21 @@ bool MainWindow::event(QEvent *event)
     {
     case QEvent::ShortcutOverride:
     {
-        // Vet the `F4` window-scope shortcut before Qt fires the
-        // "Edit anchor note on current row" action. `F4` is a common
-        // in-widget key on `QComboBox` (open drop-down) and
-        // `QAbstractSpinBox` (step field on some styles); those
-        // widgets don't send a `ShortcutOverride` themselves for F4,
-        // so without this handler the shortcut would fire and
-        // `EditAnchorNoteOnCurrentRow` would silently bail on the
-        // focus-widget check -- and, worse, the key press would
-        // never reach the focus widget to do its native thing.
+        // Veto the window-scope F4 shortcut when a text-editing
+        // widget has focus. Accepting `ShortcutOverride` tells Qt
+        // "the focus widget wants this key", and it delivers a
+        // plain `KeyPress` instead of firing the shortcut. Without
+        // this, F4 on a `QComboBox` (open drop-down) or spin box
+        // (step) would fire the "Edit anchor note" action and the
+        // key would never reach the widget for its native use.
         //
-        // Bubble-up ordering: `ShortcutOverride` is delivered to the
-        // focus widget first and propagates up the parent chain
-        // until someone accepts it or it reaches this window. If we
-        // accept it here, Qt treats the shortcut as vetoed and
-        // dispatches a normal `KeyPress` to the focus widget
-        // instead. `QLineEdit`/`QAbstractSpinBox`/`QComboBox` see
-        // the F4 KeyPress natively; `QTextEdit`/`QPlainTextEdit` do
-        // nothing with F4 by default, which is the same visible
-        // outcome as the previous focus-widget bail-out.
+        // `AnchorsDock` is excluded because its own QAction slot
+        // routes F4 to `BeginEditingCurrentNote`; letting the
+        // shortcut fire there is correct.
         auto *keyEvent = static_cast<QKeyEvent *>(event); // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
         if (keyEvent->key() == Qt::Key_F4 && keyEvent->modifiers() == Qt::NoModifier)
         {
             const QWidget *focused = QApplication::focusWidget();
-            // AnchorsDock focus is handled by the QAction slot's
-            // redirect to `BeginEditingCurrentNote`; let the
-            // shortcut fire in that case.
             const bool focusInAnchorsDock =
                 (mAnchorsDock != nullptr && focused != nullptr && mAnchorsDock->isAncestorOf(focused));
             if (!focusInAnchorsDock && focused != nullptr &&
@@ -2525,10 +2514,10 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         logapp::BackfillLocatorDedupKeys(mCurrentSource);
 
         // Bulk-replace anchors before RebuildFiltersFromConfiguration
-        // mirrors the now-empty `AnchorManager` back onto disk. Any
-        // future-schema colour slots get clamped to the highest
-        // known slot rather than dropped so the bookmark + note
-        // survive a downgrade; we tell the user about the remap.
+        // mirrors the (now empty) `AnchorManager` back onto disk.
+        // Future-schema colour slots are clamped (not dropped) so
+        // the bookmark + note survive a downgrade; the remap count
+        // is surfaced to the user.
         if (mAnchors != nullptr)
         {
             const std::size_t clampedAnchorCount = mAnchors->Replace(mModel->Configuration().anchors);
@@ -6169,9 +6158,9 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         logapp::BackfillLocatorDedupKeys(mCurrentSource);
 
         // Bulk-replace anchors from the loaded vector. Future-schema
-        // colour slots get clamped (not dropped) so bookmark
+        // colour slots are clamped (not dropped) so bookmark
         // positions + notes survive a downgrade; the count is
-        // surfaced to the user so a colour remap isn't invisible.
+        // surfaced to the user.
         if (mAnchors != nullptr)
         {
             const std::size_t clampedAnchorCount = mAnchors->Replace(mModel->Configuration().anchors);
@@ -8244,19 +8233,14 @@ void MainWindow::AppendAnchorActionsToRowMenu(QMenu *menu, int sourceRow)
     anchorMenu->addSeparator();
     QAction *editNoteAction = anchorMenu->addAction(tr("Edit note\u2026"));
     editNoteAction->setEnabled(rightClickedKey.has_value() && currentColour.has_value());
-    // Capture the *key* (not the row index) so a queued FIFO
-    // eviction between menu build and click can't redirect the edit
-    // to a different anchor that happens to occupy the old row
-    // slot. A stale key just fails `SetAnchorNote` cleanly, which
-    // `EditAnchorNoteForKey` surfaces as a status-bar hint.
+    // Capture the key (not the row index) so a queued FIFO eviction
+    // between menu build and click can't redirect the edit to a
+    // different anchor at the old row slot.
     if (rightClickedKey.has_value())
     {
-        // Bind by reference into the lambda's by-value capture so
-        // clang-tidy sees the copy happen at capture time; a
-        // separate `const AnchorManager::Key capturedKey = ...`
-        // temporary trips `performance-unnecessary-copy-initialization`
-        // even though the intent (copy into the closure so the
-        // action outlives `rightClickedKey`) is identical.
+        // Reference-binding into the by-value capture is a workaround
+        // for `performance-unnecessary-copy-initialization` on a
+        // named temporary; the closure still holds an owned copy.
         const AnchorManager::Key &capturedKey = *rightClickedKey;
         connect(editNoteAction, &QAction::triggered, this, [this, capturedKey]() {
             EditAnchorNoteForKey(capturedKey);
@@ -8276,37 +8260,24 @@ void MainWindow::EditAnchorNoteForKey(const AnchorManager::Key &key)
     }
     if (!mAnchors->ColorFor(key).has_value())
     {
-        // Anchor is no longer present -- either the caller passed a
-        // stale key (e.g. a captured row-menu key after FIFO
-        // eviction) or the user cleared the anchor via `Ctrl+0`
-        // before the trigger fired. Mirrors the "No anchors set" /
-        // "No visible row" status-bar affordances used by
-        // `JumpToAnchor`.
+        // Stale key (row-menu after FIFO eviction) or the user
+        // cleared the anchor via `Ctrl+0` before the trigger fired.
         statusBar()->showMessage(tr("Row is not anchored."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
         return;
     }
 
     const auto existingNote = mAnchors->NoteFor(key).value_or(std::string{});
 
-    // Use an instantiated `QInputDialog` rather than the static
-    // `getText` helper so we can reach the internal `QLineEdit` and
-    // set `maxLength`. The cap is expressed in UTF-16 code units
-    // (what `QLineEdit::maxLength` counts) using `MAX_NOTE_BYTES` as
-    // the ceiling -- non-ASCII text will be capped in code units,
-    // while `SanitiseNote` still enforces the true UTF-8 byte cap
-    // downstream. The two caps agree exactly for ASCII (one byte /
-    // one code unit) and give the user visible feedback in the
-    // dialog while typing.
+    // Instantiated `QInputDialog` (not the static `getText` helper)
+    // so we can reach the internal line edit and pin `maxLength`.
+    // Cap is in UTF-16 code units; `SanitiseNote` still enforces
+    // the true UTF-8 byte cap downstream. Caps agree for ASCII.
     QInputDialog dialog(this);
     dialog.setWindowTitle(tr("Anchor note"));
     dialog.setLabelText(tr("Note for this anchor:"));
     dialog.setInputMode(QInputDialog::TextInput);
     dialog.setTextEchoMode(QLineEdit::Normal);
     dialog.setTextValue(QString::fromStdString(existingNote));
-    // `findChild` locates the dialog's line edit so we can pin the
-    // soft length cap. The child is guaranteed to exist for
-    // `TextInput` mode, but we still guard to keep this defensive
-    // against Qt internals changes.
     if (auto *dialogEditor = dialog.findChild<QLineEdit *>())
     {
         dialogEditor->setMaxLength(static_cast<int>(AnchorManager::MAX_NOTE_BYTES));
@@ -8317,19 +8288,12 @@ void MainWindow::EditAnchorNoteForKey(const AnchorManager::Key &key)
     }
     const QString newNote = dialog.textValue();
 
-    // Re-check anchor presence: the dialog pumps events, so a
-    // parallel `Ctrl+0` / `Clear all` / streaming eviction may have
-    // removed the anchor while the dialog was open. `SetAnchorNote`
-    // returns false in that case; surface the same hint the guard
-    // above uses so the user isn't left wondering where their text
-    // went.
+    // Re-check presence: the dialog pumps events, so a parallel
+    // `Ctrl+0` / `Clear all` / streaming eviction can remove the
+    // anchor while it's open. `SetAnchorNote` returns false either
+    // way (identical note or gone); only report the "gone" case.
     if (!mAnchors->SetAnchorNote(key, newNote.toStdString()))
     {
-        // Distinguish "no change" (identical note) from "dropped":
-        // only report when the anchor itself is gone. `ColorFor`
-        // returns `nullopt` iff the key is unknown to the manager,
-        // which reads more like the intent ("is the anchor still
-        // there?") than the equivalent `NoteFor` check would.
         if (!mAnchors->ColorFor(key).has_value())
         {
             statusBar()->showMessage(
@@ -8340,14 +8304,10 @@ void MainWindow::EditAnchorNoteForKey(const AnchorManager::Key &key)
         return;
     }
 
-    // Truncation hint: `SanitiseNote` caps stored notes at
-    // `MAX_NOTE_BYTES` bytes (UTF-8) and walks back to a code-point
-    // boundary. The `QLineEdit::maxLength` above hard-limits code
-    // *units* to the same number so the visible cap during typing
-    // matches for ASCII; a paste of multi-byte text can still land
-    // over the byte cap and get trimmed by the sanitiser. Compare
-    // the committed byte length against the stored form; hint when
-    // they differ so a silent trim isn't invisible.
+    // Truncation hint: `QLineEdit::maxLength` caps code units for
+    // live feedback, but a multi-byte paste can still exceed the
+    // UTF-8 byte cap enforced by `SanitiseNote`. Compare committed
+    // vs. stored size so a silent trim isn't invisible.
     if (const auto stored = mAnchors->NoteFor(key); stored.has_value())
     {
         const auto committedBytes = static_cast<std::size_t>(newNote.toUtf8().size());
@@ -8360,14 +8320,10 @@ void MainWindow::EditAnchorNoteForKey(const AnchorManager::Key &key)
         }
     }
 
-    // Runtime-only anchors (empty locator = stream / stdin rows)
-    // aren't persisted -- `AnchorManager::Entries` drops them from
-    // the save snapshot. Warn only when the user actually typed a
-    // note; a cleared / empty commit isn't a surprise.
-    //
-    // Reads `newNote` after `SetAnchorNote` sanitises input so an
-    // all-whitespace paste (which sanitises to "") also doesn't
-    // trigger a spurious hint.
+    // Runtime-only anchors (empty locator) aren't persisted --
+    // `Entries()` drops them from the save snapshot. Warn only for
+    // actual content: an all-whitespace paste sanitises to "" and
+    // shouldn't trigger the hint.
     if (key.locator.empty() && !newNote.trimmed().isEmpty())
     {
         statusBar()->showMessage(
@@ -8405,9 +8361,8 @@ bool MainWindow::SubmitAnchorNoteForRowForTest(int sourceRow, const QString &not
         statusBar()->showMessage(tr("Row is not anchored."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
         return false;
     }
-    // Return true iff the row was anchored (matches the historical
-    // contract used by tests). The manager sanitises internally so
-    // multi-line commits collapse to a single line before storage.
+    // Return true iff the row was anchored; the manager sanitises
+    // internally so multi-line input collapses to one line.
     mAnchors->SetAnchorNote(*key, note.toStdString());
     return true;
 }
@@ -8415,19 +8370,11 @@ bool MainWindow::SubmitAnchorNoteForRowForTest(int sourceRow, const QString &not
 
 void MainWindow::EditAnchorNoteOnCurrentRow()
 {
-    // AnchorsDock redirect runs FIRST, before any check that depends
-    // on the main-table proxies. F4 while focus is inside the dock
-    // (its tree, the "Clear all" button, ...) opens the dock's own
-    // inline editor rather than popping a modal `QInputDialog` on
-    // the main table's current row -- those two rows can differ,
-    // and popping a modal for the *other* row is a jarring UX. The
-    // dock's F2 / double-click gesture already opens the same
-    // editor; F4 here is the keyboard alternative that works from
-    // any column of the dock.
-    //
-    // Placed before the `mTableView`/proxy null check so a
-    // partially-constructed window that owns an `AnchorsDock` but
-    // hasn't wired the table proxies yet still honours the redirect.
+    // AnchorsDock redirect first: F4 with focus inside the dock
+    // opens the dock's own inline editor. The dock's current row
+    // can differ from the main table's, and popping a modal for
+    // the "other" row would be jarring. Placed before the proxy
+    // null check so a partially-constructed window still honours it.
     const QWidget *focused = QApplication::focusWidget();
     if (mAnchorsDock != nullptr && focused != nullptr && mAnchorsDock->isAncestorOf(focused))
     {
@@ -8435,18 +8382,12 @@ void MainWindow::EditAnchorNoteOnCurrentRow()
         return;
     }
 
-    // Belt-and-braces guard for text-input focus. The primary line
-    // of defence is `MainWindow::event()` intercepting the F4
-    // `ShortcutOverride` and vetoing the shortcut so the focus
-    // widget gets a plain `KeyPress` -- but this slot is also
-    // reachable via `mActionEditRowAnchorNote->trigger()`
-    // (programmatic invocation, tests, future menu placements).
-    // Bail out here so an accidental trigger during an in-flight
-    // text edit doesn't clobber it. Text-input rooted classes
-    // (`QLineEdit`, `QTextEdit`, `QPlainTextEdit`) plus the two
-    // container widgets that host a line edit internally
-    // (`QAbstractSpinBox` covers `QSpinBox` / `QDoubleSpinBox` /
-    // `QDateTimeEdit`; `QComboBox` covers editable combos).
+    // Belt-and-braces text-input guard. The primary defence is the
+    // F4 `ShortcutOverride` handler in `MainWindow::event()`, but
+    // this slot is also reachable via `trigger()` (tests, future
+    // menu placements) where no shortcut dispatch runs.
+    // `QAbstractSpinBox` covers spin boxes and `QDateTimeEdit`;
+    // `QComboBox` covers editable combos.
     if (focused != nullptr &&
         (qobject_cast<const QLineEdit *>(focused) != nullptr ||
          qobject_cast<const QTextEdit *>(focused) != nullptr ||

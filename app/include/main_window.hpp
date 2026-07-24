@@ -348,28 +348,25 @@ public:
     /// note when no anchored row is visible. Wired to F2 / Shift+F2.
     void JumpToAnchor(bool forward);
 
-    /// Open a one-line note editor for the anchor identified by
-    /// @p key. No-op (with a status-bar hint) when the anchor is no
-    /// longer present -- e.g. a queued eviction or `Ctrl+0` happened
-    /// between menu build and click. Committed text is sanitised to
-    /// a single line and forwarded to `AnchorManager::SetAnchorNote`.
+    /// Open a one-line note editor for the anchor at @p key. No-op
+    /// (with a status-bar hint) when the anchor is gone -- e.g. a
+    /// queued eviction or `Ctrl+0` between menu build and click.
+    /// Committed text is sanitised and forwarded to
+    /// `AnchorManager::SetAnchorNote`.
     ///
-    /// This is the primary entry point for the row context menu:
-    /// it captures the *identity* of the anchor, not a row index,
-    /// so a mid-menu FIFO eviction can't redirect the edit to a
-    /// different row that happens to occupy the old slot.
+    /// Row context menu uses this path so it captures the anchor
+    /// *identity* (not a row index), preventing a mid-menu FIFO
+    /// eviction from redirecting the edit to a different row.
     void EditAnchorNoteForKey(const AnchorManager::Key &key);
 
-    /// Convenience wrapper around `EditAnchorNoteForKey`: resolves
-    /// @p sourceRow to a key first. Callers with a live row index
-    /// (F4, tests) use this; the row-menu path captures the key
-    /// directly to avoid the eviction race.
+    /// Row-index wrapper around `EditAnchorNoteForKey`. Used by F4
+    /// and tests; the row-menu path captures a key directly to
+    /// avoid the eviction race.
     void EditAnchorNoteForRow(int sourceRow);
 
-    /// F4 handler: resolves the currently focused proxy row to a
-    /// source row, then dispatches to `EditAnchorNoteForRow`. Shows
-    /// a status-bar hint when no row is focused or the row isn't
-    /// anchored.
+    /// F4 handler: resolves the focused proxy row to a source row
+    /// and calls `EditAnchorNoteForRow`. Shows a status-bar hint
+    /// when no row is focused or the row isn't anchored.
     void EditAnchorNoteOnCurrentRow();
 
     /// Scroll to source row @p sourceRow and make it the sole
@@ -515,19 +512,12 @@ public:
         }
     }
 
-    /// Test seam that replays the anchor-note editor's commit path
-    /// without opening a modal `QInputDialog`. Applies the same
-    /// row-must-be-anchored guard as `EditAnchorNoteForRow`, then
-    /// (on the anchored branch) forwards @p note to
-    /// `AnchorManager::SetAnchorNote`, which sanitises it before
-    /// storage.
-    ///
-    /// Returns true iff the row is anchored (and the note was
-    /// therefore submitted to the manager). The manager may still
-    /// no-op internally when the sanitised note matches the
-    /// currently-stored one; that case is indistinguishable from a
-    /// successful edit here. Returns false when the row isn't
-    /// anchored (no ghost anchor is spawned).
+    /// Test seam replaying the anchor-note commit path without a
+    /// modal `QInputDialog`. Applies the same row-must-be-anchored
+    /// guard, then forwards @p note to `SetAnchorNote` (which
+    /// sanitises before storage). Returns true iff the row was
+    /// anchored (identical-note no-ops still return true). Returns
+    /// false on an unanchored row -- no ghost anchor is spawned.
     bool SubmitAnchorNoteForRowForTest(int sourceRow, const QString &note);
 #endif
 

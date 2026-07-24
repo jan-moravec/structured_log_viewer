@@ -68,11 +68,10 @@ LogModel::LogModel(
 
     if (mAnchors != nullptr)
     {
-        // Anchor mutations -> scoped row repaints.
+        // Anchor mutations -> scoped row repaints. Note-only edits
+        // narrow to `ToolTipRole` so style-role listeners (highlight
+        // cache, view repaint) skip the emit.
         connect(mAnchors, &AnchorManager::anchorChanged, this, &LogModel::RefreshRowsForAnchor);
-        // Note-only edits: narrow refresh to `ToolTipRole` so
-        // style-role listeners (highlight cache, view repaint)
-        // skip the emit entirely.
         connect(mAnchors, &AnchorManager::anchorNoteChanged, this, &LogModel::RefreshTooltipRowsForAnchor);
         connect(mAnchors, &AnchorManager::anchorsReset, this, &LogModel::RefreshAllAnchorRows);
     }
@@ -492,13 +491,11 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
 
     if (dropCount > 0)
     {
-        // Collect anchor keys BEFORE `beginRemoveRows`: we need the
-        // rows alive to resolve `(locator, lineId)`. But defer the
-        // actual `RemoveAnchors` (which emits `anchorsReset`) until
-        // AFTER `endRemoveRows` so listeners (record-detail dock,
-        // overview rail) never see a `dataChanged`-across-the-visible-
-        // table for rows that are one microsecond away from
-        // disappearing.
+        // Collect keys BEFORE `beginRemoveRows` (need rows alive to
+        // resolve `(locator, lineId)`), but defer the actual
+        // `RemoveAnchors` until AFTER `endRemoveRows` so the
+        // `anchorsReset` fan-out doesn't drive listeners to read
+        // rows that are one microsecond away from disappearing.
         std::vector<AnchorManager::Key> evictedAnchorKeys = CollectAnchorKeysInPrefix(dropCount);
         beginRemoveRows(QModelIndex(), 0, dropCount - 1);
         mLogTable.EvictPrefixRows(static_cast<size_t>(dropCount));
@@ -1450,10 +1447,10 @@ std::optional<uint8_t> LogModel::AnchorSlotForRow(int row) const noexcept
 
 std::optional<QString> LogModel::AnchorNoteForRow(int row) const noexcept
 {
-    // Called from the paint stack via `data()` (`Qt::ToolTipRole`);
-    // Qt can't unwind through a `bad_alloc` there. `NoteFor` and
-    // `QString::fromStdString` both allocate. Mirror the swallow
-    // pattern from `AnchorKeyForRow`.
+    // Called from the paint stack via `Qt::ToolTipRole` -- Qt can't
+    // unwind through a `bad_alloc`, so mirror `AnchorKeyForRow` and
+    // swallow allocation failures from `NoteFor` /
+    // `QString::fromStdString`.
     if (mAnchors == nullptr || mAnchors->Empty())
     {
         return std::nullopt;
@@ -1506,10 +1503,8 @@ void LogModel::RefreshRowsForAnchor(const AnchorManager::Key &key)
 
 void LogModel::RefreshTooltipRowsForAnchor(const AnchorManager::Key &key)
 {
-    // Note-only edit: only the row tooltip re-renders. Colour /
-    // background stayed the same, so skip `Background` /
-    // `Foreground`. Both roles pass `IsStyleOnlyRoleChange`, so
-    // value listeners still short-circuit.
+    // Note-only edit: only the tooltip re-renders. Both roles pass
+    // `IsStyleOnlyRoleChange`, so value listeners still short-circuit.
     EmitRolesForAnchorKey(key, {Qt::ToolTipRole});
 }
 
@@ -1866,34 +1861,17 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
 
     case Qt::ToolTipRole:
     {
-        // Anchor note: if the row's anchor has a non-empty note,
-        // surface it as the tooltip for every cell in the row. The
-        // `Empty()` fast-path keeps anchor-free sessions cheap.
-        //
-        // Rendering contract: the assembled tooltip below is wrapped
-        // in `<qt>...</qt>` to force Qt's rich-text mode. Two
-        // consequences follow:
-        //   1. Every user-controlled substring must be
-        //      `toHtmlEscaped()` (else `<`, `&`, `>` typed by the
-        //      user would be parsed as markup and the raw text
-        //      would either render as HTML or corrupt the tooltip).
-        //   2. Newlines have to be spelled `<br/>` -- HTML collapses
-        //      literal `\n` to whitespace.
-        //
-        // Without the explicit `<qt>` wrapper Qt's `mightBeRichText`
-        // heuristic misfires on notes that contain `&` or `>` but
-        // no `<`, leaving the escaped entities (`&amp;`, `&gt;`)
-        // visible to the user. See `TestAnchorNotesEscapeHtmlInTooltips`
-        // and its ampersand-only companion for the regression guards.
+        // The assembled tooltip is wrapped in `<qt>...</qt>` to force
+        // Qt's rich-text mode -- without it the `mightBeRichText`
+        // heuristic misfires on notes containing `&` or `>` but no
+        // `<`, leaking `&amp;` / `&gt;` to the user. Consequence:
+        // every user-controlled substring must be `toHtmlEscaped()`.
         QString anchorTooltip;
         if (mAnchors != nullptr && !mAnchors->Empty())
         {
-            // Belt-and-braces try/catch: `NoteFor`,
-            // `QString::fromStdString`, and `toHtmlEscaped` all
-            // allocate. Qt's paint stack calls this via
-            // `Qt::ToolTipRole` and can't unwind through a
-            // `bad_alloc`; swallow allocation failures and render
-            // no anchor tooltip rather than tearing down the paint.
+            // Qt's paint stack calls this via `Qt::ToolTipRole` and
+            // can't unwind through a `bad_alloc`; swallow allocation
+            // failures rather than tearing down the paint.
             try
             {
                 if (const auto key = AnchorKeyForRow(index.row()); key.has_value())
@@ -1910,24 +1888,21 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
             }
         }
 
-        // Level-icon tooltip: only synthesised in icon mode -- the
-        // glyph carries no text, so the canonical name is the only
-        // way to spell out the level. In text mode the cell already
-        // shows the raw value; returning the canonical name here
-        // would shadow it with different casing/spelling.
+        // Level tooltip: only in icon mode (in text mode the cell
+        // already shows the raw value; a canonical name would just
+        // shadow it with different casing).
         QString levelTooltip;
         if (IsLevelIconModeActive())
         {
             const int levelCol = FirstLevelColumnIndex();
             if (levelCol >= 0 && index.column() == levelCol)
             {
-                // `DisplayLevelForRow` so unmapped values get "Unknown"
-                // rather than no tooltip at all in a narrow icon column.
+                // `DisplayLevelForRow` maps unknowns to "Unknown"
+                // rather than leaving the icon column tooltip empty.
                 if (const auto level = DisplayLevelForRow(index.row()); level.has_value())
                 {
-                    // Canonical level names are ASCII (`Info`, `Warn`,
-                    // ...) so no HTML escape is needed today, but
-                    // stay defensive against future additions.
+                    // Canonical level names are ASCII today; escape
+                    // defensively so future additions stay safe.
                     levelTooltip = QString::fromUtf8(loglib::CanonicalLevelName(*level).data()).toHtmlEscaped();
                 }
             }
@@ -1936,8 +1911,7 @@ QVariant LogModel::data(const QModelIndex &index, int role) const
         if (!anchorTooltip.isEmpty() && !levelTooltip.isEmpty())
         {
             // Anchor note above (record-specific), level below.
-            // `<br/>` because the `<qt>` wrapper puts us in HTML
-            // mode where literal `\n` would collapse to space.
+            // `<br/>` because we're already in HTML mode.
             return QStringLiteral("<qt>%1<br/>%2</qt>").arg(anchorTooltip, levelTooltip);
         }
         if (!anchorTooltip.isEmpty())
@@ -2147,8 +2121,7 @@ void LogModel::SetRetentionCap(size_t cap)
         {
             const size_t dropCount = visible - cap;
             // Same collect-before / emit-after choreography as
-            // `AppendBatch`: keep anchor signals from firing until
-            // the rows are actually gone.
+            // `AppendBatch`.
             std::vector<AnchorManager::Key> evictedAnchorKeys =
                 CollectAnchorKeysInPrefix(static_cast<int>(dropCount));
             beginRemoveRows(QModelIndex(), 0, static_cast<int>(dropCount) - 1);

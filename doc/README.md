@@ -616,7 +616,7 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 | Clear every anchor             | `Ctrl+Shift+A`      |
 | Jump to next anchor            | `F2`                |
 | Jump to previous anchor        | `Shift+F2`          |
-| Edit anchor note on current row | `F4`               |
+| Edit anchor note               | `F4`                |
 | Pause / Resume stream          | `Ctrl+Shift+P`      |
 | Toggle Follow newest           | `Ctrl+Shift+T`      |
 | Stop stream                    | `Ctrl+Shift+X`      |

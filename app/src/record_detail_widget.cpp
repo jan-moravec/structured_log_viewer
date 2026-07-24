@@ -254,18 +254,14 @@ RecordDetailContent BuildRecordDetailContent(const LogModel &model, int sourceRo
     }
     content.summary = summary;
 
-    // Anchor snapshot. Captured on the content so the widget can
-    // render a subline even after the pinned row is evicted or the
-    // anchor is edited from another surface; the frozen copy is
-    // faithful to the state at pin time.
+    // Anchor snapshot captured on the content so a frozen copy
+    // (snapshot window) keeps rendering after the source anchor is
+    // edited or the row is evicted.
     content.anchorColorIndex = model.AnchorSlotForRow(sourceRow);
     if (content.anchorColorIndex.has_value())
     {
-        // `AnchorNoteForRow` returns `nullopt` when the row isn't
-        // anchored, which we've already ruled out by the branch
-        // above; a present-but-empty optional means "anchored, no
-        // note", which the widget renders as a plain "Anchored"
-        // subline.
+        // Present-but-empty optional == "anchored, no note" -- the
+        // widget renders that as a plain "Anchored" subline.
         content.anchorNote = model.AnchorNoteForRow(sourceRow).value_or(QString{});
     }
 
@@ -290,17 +286,11 @@ RecordDetailWidget::RecordDetailWidget(QWidget *parent)
     mSummaryLabel->setFont(summaryFont);
     layout->addWidget(mSummaryLabel);
 
-    // Anchor-note subline: italic + muted foreground so it reads as
-    // metadata rather than record content. Hidden when the pinned
-    // row has no anchor; `PopulateUi` drives visibility + text.
-    // `Qt::PlainText` is critical: user notes routinely contain
-    // characters like `<`, `&`, or a stray `>` that QLabel's default
-    // `Qt::AutoText` would parse as rich text (bold/italic/etc.),
-    // shadowing what the user actually wrote.
-    //
-    // The palette override baked in here is refreshed by
-    // `RefreshPalette` on theme flips; without that the note colour
-    // would freeze at the theme in effect when the dock was built.
+    // Anchor-note subline: italic + muted foreground so it reads
+    // as metadata. `Qt::PlainText` is critical -- user notes
+    // routinely contain `<`, `&`, `>`, which `Qt::AutoText` would
+    // parse as rich-text markup. Palette override is baked in
+    // here and refreshed on theme flips via `RefreshPalette`.
     mAnchorNoteLabel = new QLabel(this);
     mAnchorNoteLabel->setObjectName(QStringLiteral("anchorNoteLabel"));
     mAnchorNoteLabel->setTextFormat(Qt::PlainText);
@@ -446,9 +436,9 @@ void RecordDetailWidget::PopulateUi()
     mOpenInNewWindowButton->setEnabled(hasContent);
     mPlaceholderLabel->setVisible(!hasContent);
 
-    // Anchor subline is only visible when the row is both content-
-    // valid AND anchored. Empty-note anchored rows still show a
-    // low-key "Anchored" line so the record's status is legible.
+    // Anchor subline visible only when content-valid AND anchored.
+    // Empty-note anchored rows show a low-key "Anchored" so the
+    // record's status stays legible.
     const bool showAnchorLine = hasContent && mContent.anchorColorIndex.has_value();
     mAnchorNoteLabel->setVisible(showAnchorLine);
     if (showAnchorLine)
@@ -566,10 +556,8 @@ void RecordDetailWidget::RefreshPalette()
     placeholderPalette.setColor(mPlaceholderLabel->foregroundRole(), qApp->palette().color(QPalette::PlaceholderText));
     mPlaceholderLabel->setPalette(placeholderPalette);
 
-    // Same story for the anchor-note subline: its palette carries
-    // an explicit `PlaceholderText` override baked in at ctor time,
-    // so without this refresh a Light -> Dark switch leaves the
-    // note colour glued to the old theme.
+    // Anchor-note subline needs the same treatment -- its palette
+    // carries a `PlaceholderText` override baked in at ctor time.
     ApplyAnchorNoteLabelPalette();
 
     // Rebuild cells so placeholder-row foregrounds re-pick the
@@ -583,8 +571,8 @@ void RecordDetailWidget::ApplyAnchorNoteLabelPalette()
     {
         return;
     }
-    // Read from the app palette (not the label's own), which
-    // already carries the override we're about to overwrite.
+    // Source colour from the app palette (the label's own already
+    // carries the override we're about to overwrite).
     QPalette palette = mAnchorNoteLabel->palette();
     palette.setColor(mAnchorNoteLabel->foregroundRole(), qApp->palette().color(QPalette::PlaceholderText));
     mAnchorNoteLabel->setPalette(palette);
@@ -608,13 +596,10 @@ void RecordDetailWidget::CopyAsKeyValueClicked() const
         return;
     }
     QStringList lines;
-    // Reserve for fields plus one synthetic `anchor.note` line so
-    // the reallocation is a single amortised step.
+    // Reserve fields + one synthetic `anchor.note` line.
     lines.reserve(static_cast<int>(mContent.fields.size()) + 1);
-    // Prepend a synthetic `anchor.note` line when the pinned row is
-    // anchored and has a non-empty note. Sits at the top so a
-    // downstream consumer sees the annotation before the record
-    // fields (matches the reading order in the widget itself).
+    // Prepend `anchor.note` when the row is anchored with a note --
+    // matches the visual reading order (subline above fields).
     if (mContent.anchorColorIndex.has_value() && !mContent.anchorNote.isEmpty())
     {
         lines.append(

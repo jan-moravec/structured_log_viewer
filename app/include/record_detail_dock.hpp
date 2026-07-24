@@ -35,11 +35,9 @@ class RecordDetailDock : public QDockWidget
 
 public:
     /// `model` is borrowed and must outlive the dock. `anchors` is
-    /// optional; when supplied, the dock rebuilds its snapshot on
+    /// optional -- when supplied, the dock rebuilds its snapshot on
     /// anchor mutations so the anchor-note subline stays live.
-    /// Passing nullptr keeps the dock functional without the
-    /// anchor subline (used by fixture code that skips the anchor
-    /// manager).
+    /// nullptr keeps the dock functional without the subline.
     RecordDetailDock(LogModel *model, AnchorManager *anchors = nullptr, QWidget *parent = nullptr);
 
     /// Pin to @p sourceRow and refresh. Out-of-range rows clear the

@@ -32,26 +32,17 @@ constexpr int RECORD_DETAIL_EMPTY_PLACEHOLDER_ROLE = Qt::UserRole + 1;
 /// rendering shown in the widget.
 ///
 /// `anchorColorIndex` / `anchorNote` describe an anchor on the row
-/// (if any). Both are captured at snapshot time so a frozen
-/// `RecordDetailContent` sent to a snapshot window keeps rendering
-/// even after the anchor is edited or cleared in the source model.
+/// (if any). Both are captured at snapshot time:
 ///   - `anchorColorIndex == nullopt` : row has no anchor.
-///   - `anchorColorIndex.value()`     : palette slot in
-///                                       `[0, ANCHOR_PALETTE_SIZE)`.
-///   - `anchorNote`                   : one-line note (empty when the
-///                                       anchor has no note attached).
+///   - `anchorColorIndex.value()`    : palette slot.
+///   - `anchorNote`                  : one-line note (empty if unset).
 ///
-/// Live-view contract: the on-screen `RecordDetailDock` re-runs
-/// `BuildRecordDetailContent` on every `AnchorManager` signal
-/// (`anchorChanged`, `anchorNoteChanged`, `anchorsReset`), so its
-/// anchor subline / "Copy as key/value" payload track the manager
-/// in real time. Popped-out **snapshot windows** hold a frozen
-/// `RecordDetailContent` by design (they're for side-by-side
-/// comparison, so re-reading the source would defeat the point);
-/// their anchor subline reflects the anchor state at *pin* time,
-/// not the current state. Users editing a note in the main window
-/// should re-open the snapshot to refresh it -- there is no live
-/// subscription in the snapshot path.
+/// Live vs. snapshot: the on-screen dock re-runs
+/// `BuildRecordDetailContent` on every anchor signal, so its
+/// subline and "Copy as key/value" payload track the manager in
+/// real time. Popped-out snapshot windows hold a frozen copy by
+/// design (they're for side-by-side comparison), so their subline
+/// reflects pin-time state -- re-open to refresh.
 ///
 /// All strings are owned, so a snapshot keeps rendering after the
 /// underlying `LogModel` mutates or goes away.
@@ -133,17 +124,15 @@ private:
     void PopulateUi();
 
     /// Recompute the muted italic foreground for the anchor-note
-    /// subline from the current application palette. Called from
-    /// the ctor (initial paint) and from `RefreshPalette` (theme
-    /// flips) so the note colour tracks light/dark switches.
+    /// subline from the current app palette. Called from the ctor
+    /// and from `RefreshPalette` so the colour tracks theme flips.
     void ApplyAnchorNoteLabelPalette();
 
     RecordDetailContent mContent;
     QLabel *mSummaryLabel = nullptr;
-    /// Italic subline directly under the summary that surfaces the
-    /// anchor note (if any). Hidden when the pinned row is not
-    /// anchored. When the row is anchored but has no note we still
-    /// show a low-key "Anchored" so the record's status is legible.
+    /// Italic subline under the summary that shows the anchor note.
+    /// Hidden when the pinned row isn't anchored; anchored-without-
+    /// note shows a low-key "Anchored" so the status is legible.
     QLabel *mAnchorNoteLabel = nullptr;
     QLabel *mPlaceholderLabel = nullptr;
     QTableWidget *mFieldsTable = nullptr;

@@ -124,27 +124,16 @@ RecordDetailDock::RecordDetailDock(LogModel *model, AnchorManager *anchors, QWid
         connect(mModel, &QAbstractItemModel::columnsInserted, this, columnsLayoutChanged);
     }
 
-    // Anchor mutations don't fire `dataChanged` roles that survive
-    // `IsStyleOnlyRoleChange` (the model emits Background /
-    // Foreground / ToolTip roles, all of which are treated as
-    // style-only). Subscribe directly so the pinned row's
-    // anchor-note subline stays in step with edits from the
-    // Anchors dock or the F4 shortcut.
-    //
-    // Split into two handlers because their triggers differ:
-    //   - `anchorChanged` fires on add / remove / recolour. The
-    //     widget shows an "Anchored" / "Anchor: <note>" subline
-    //     whose *visibility* depends on whether the row is
-    //     anchored at all -- so a recolour on an already-anchored
-    //     row changes nothing the widget renders. Skip the rebuild
-    //     in that case; RefreshFromModel is not free (raw-line
-    //     read from `LineSource`, JSON pretty-print, field cell
-    //     rebuild). Add / remove flips visibility so it does
-    //     rebuild.
-    //   - `anchorNoteChanged` always changes the visible text.
-    //     Rebuild unconditionally.
+    // Subscribe directly to anchor signals so the pinned row's note
+    // subline tracks edits from the Anchors dock / F4 shortcut. The
+    // model's `dataChanged` emits pass `IsStyleOnlyRoleChange`, so
+    // `RefreshFromModel` (raw-line read + JSON pretty-print + cell
+    // rebuild) won't fire off them.
     if (mAnchors != nullptr)
     {
+        // `anchorChanged`: add / remove flips subline visibility;
+        // a pure recolour on an already-anchored row changes
+        // nothing the widget renders, so skip the rebuild.
         connect(mAnchors, &AnchorManager::anchorChanged, this, [this](const AnchorManager::Key &changedKey) {
             if (!IsVisibleForRefresh() || !mCurrentSourceIndex.isValid() || mModel.isNull())
             {
@@ -156,13 +145,6 @@ RecordDetailDock::RecordDetailDock(LogModel *model, AnchorManager *anchors, QWid
             {
                 return;
             }
-            // Compare pre-signal cache vs. post-signal state. The
-            // widget's `Content().anchorColorIndex.has_value()`
-            // reflects the pre-signal state (this handler runs
-            // before `RefreshFromModel`); `AnchorSlotForRow`
-            // reflects the post-signal truth. A colour flip on an
-            // already-anchored row leaves both `true` and produces
-            // no visible change; skip the rebuild.
             const bool wasAnchored = mWidget->Content().anchorColorIndex.has_value();
             const bool nowAnchored = mModel->AnchorSlotForRow(pinnedRow).has_value();
             if (wasAnchored == nowAnchored)
@@ -171,6 +153,7 @@ RecordDetailDock::RecordDetailDock(LogModel *model, AnchorManager *anchors, QWid
             }
             RefreshFromModel();
         });
+        // `anchorNoteChanged`: always changes visible text.
         connect(mAnchors, &AnchorManager::anchorNoteChanged, this, [this](const AnchorManager::Key &changedKey) {
             if (!IsVisibleForRefresh() || !mCurrentSourceIndex.isValid() || mModel.isNull())
             {
@@ -183,14 +166,13 @@ RecordDetailDock::RecordDetailDock(LogModel *model, AnchorManager *anchors, QWid
                 RefreshFromModel();
             }
         });
+        // Bulk mutation: refresh unconditionally, the pinned row's
+        // anchor state may have changed even if the key didn't.
         connect(mAnchors, &AnchorManager::anchorsReset, this, [this]() {
             if (!IsVisibleForRefresh() || !mCurrentSourceIndex.isValid())
             {
                 return;
             }
-            // Bulk mutation (`ClearAll`, `Replace`, streaming
-            // eviction). Refresh unconditionally: the pinned row's
-            // anchor state may have changed even if the key didn't.
             RefreshFromModel();
         });
     }

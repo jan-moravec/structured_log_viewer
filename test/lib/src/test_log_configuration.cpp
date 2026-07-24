@@ -1893,11 +1893,9 @@ TEST_CASE("HasLocators predicate exhaustively handles every Source state", "[log
 
 TEST_CASE("LogConfiguration::anchors round-trips through Save/Load", "[log_configuration][session][anchors]")
 {
-    // Two anchors in different palette slots; one carries a locator
-    // (multi-file session), the other doesn't. Notes ride along
-    // (one empty, one populated) so the wire schema covers both
-    // populated and default `note` fields. The list is preserved
-    // verbatim across a full Save / Load cycle.
+    // Two anchors: one with a locator + populated note, one runtime-
+    // only with an empty note -- covers both `note` shapes on the
+    // wire. The list must round-trip verbatim through Save / Load.
     const TestLogConfiguration testConfiguration;
     {
         LogConfiguration written;
@@ -1939,11 +1937,10 @@ TEST_CASE(
     "[log_configuration][session][anchors][forward_compat]"
 )
 {
-    // Pre-note session JSON: the `note` field is missing. Glaze's
-    // `error_on_unknown_keys=false` (paired with default-on-missing)
-    // loads the anchor with an empty note so existing users' saved
-    // sessions don't need a schema migration. See
-    // `library/include/loglib/internal/log_configuration_glaze_opts.hpp`.
+    // Pre-notes session JSON: `note` is absent. Glaze's
+    // default-on-missing + `error_on_unknown_keys=false` load it as
+    // an empty note so existing saved sessions don't need a schema
+    // migration.
     constexpr std::string_view JSON = R"({
         "columns": [],
         "filters": [],

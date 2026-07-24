@@ -83,10 +83,9 @@ public:
     ///
     /// @p anchors, when non-null, paints anchored rows with the
     /// anchor brush regardless of level style. The model is a
-    /// non-owning observer and listens for `anchorChanged` (full
-    /// row style refresh), `anchorNoteChanged` (tooltip-only
-    /// refresh), and `anchorsReset` (all anchored rows) to scope
-    /// its `dataChanged` emits.
+    /// non-owning observer of `anchorChanged` (row style refresh),
+    /// `anchorNoteChanged` (tooltip-only refresh), and
+    /// `anchorsReset` (all rows) to scope its `dataChanged` emits.
     ///
     /// @p highlights, when non-null, paints rule-matched rows on
     /// top of the level brush; anchors still win. Non-owning.
@@ -127,19 +126,13 @@ public:
     [[nodiscard]] std::optional<uint8_t> AnchorSlotForRow(int row) const noexcept;
 
     /// Anchor note for @p row, or nullopt when the row has no
-    /// anchor. Returns an empty `QString` (i.e. `optional` with a
-    /// value) when the anchor exists but has no note; the two
-    /// states are distinct because the record-detail dock renders
-    /// an anchored-without-note row as "Anchored" while an
-    /// unanchored row shows no subline at all. Same fast-path as
-    /// `AnchorSlotForRow` so anchor-free sessions pay ~nothing.
-    /// Used by the row tooltip path in `data(Qt::ToolTipRole)` and
-    /// by `RecordDetailDock`.
-    ///
-    /// `noexcept` because the tooltip path invokes this from Qt's
-    /// paint stack; allocation failures inside `NoteFor` /
-    /// `QString::fromStdString` are swallowed and reported as
-    /// `nullopt` rather than propagated.
+    /// anchor. Returns an empty `QString` (present optional) when
+    /// the anchor exists with no note -- distinct from "no anchor"
+    /// so the record-detail dock can render "Anchored" vs. no
+    /// subline. Same anchor-free fast-path as `AnchorSlotForRow`.
+    /// `noexcept` because the tooltip path calls this from Qt's
+    /// paint stack; allocation failures return `nullopt` instead
+    /// of propagating.
     [[nodiscard]] std::optional<QString> AnchorNoteForRow(int row) const noexcept;
 
     /// Full teardown followed by a model reset. Emits `lineCountChanged(0)`,
@@ -497,28 +490,21 @@ private:
     /// `AnchorManager::anchorChanged` (add / recolour / remove).
     void RefreshRowsForAnchor(const AnchorManager::Key &key);
 
-    /// Emit `dataChanged` (ToolTipRole only) on every row matching
+    /// Emit `dataChanged` (ToolTipRole only) on rows matching
     /// @p key. Wired to `AnchorManager::anchorNoteChanged` --
-    /// colour / background stayed the same, so a note-only edit
-    /// doesn't need the style-role emit that the full-refresh
-    /// variant produces.
+    /// colour / background stayed the same, so a note edit skips
+    /// the style-role emit.
     void RefreshTooltipRowsForAnchor(const AnchorManager::Key &key);
 
-    /// Shared body of the two `Refresh*RowsForAnchor` helpers:
-    /// emit @p roles across every visible row matching @p key.
+    /// Shared body: emit @p roles on every visible row matching @p key.
     void EmitRolesForAnchorKey(const AnchorManager::Key &key, const QList<int> &roles);
 
     /// Collect the anchor keys pinned to rows `[0, dropCount)`
     /// while those rows still exist. Callers apply the returned
-    /// keys to `AnchorManager::RemoveAnchors` *after* the rows have
-    /// been evicted -- emitting `anchorsReset` before the
-    /// `endRemoveRows` would drive listeners (record-detail dock,
-    /// overview rail) to read data from rows that are one step
-    /// away from disappearing.
-    ///
-    /// `noexcept`: `AnchorKeyForRow` itself is `noexcept`; the
-    /// only allocating step (the vector's push_back) is safe to
-    /// let terminate on OOM since we're on the paint / batch path.
+    /// keys to `AnchorManager::RemoveAnchors` *after* the rows are
+    /// evicted -- emitting `anchorsReset` before `endRemoveRows`
+    /// would drive listeners (record-detail dock, overview rail)
+    /// to read data from about-to-disappear rows.
     [[nodiscard]] std::vector<AnchorManager::Key> CollectAnchorKeysInPrefix(int dropCount) const;
 
     /// Emit `dataChanged` (Background + Foreground) across the whole

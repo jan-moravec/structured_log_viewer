@@ -198,14 +198,13 @@ struct LogConfiguration
     /// `colorIndex` indexes `Theme::anchorPalette`; out-of-range
     /// values are dropped on load.
     ///
-    /// `note` is a one-line free-form annotation shown next to the
-    /// anchor in the Anchors dock, in row tooltips, and in the record
-    /// detail view. Empty for anchors saved by older builds that
-    /// predate the field; the schema loads them cleanly courtesy of
-    /// `error_on_unknown_keys=false` + default-on-missing Glaze
-    /// semantics. Multi-line values are legal on disk but the editors
-    /// strip newlines on commit, so the on-disk shape is a single
-    /// line by construction.
+    /// `note` is a one-line free-form annotation surfaced in the
+    /// Anchors dock, row tooltips, and the record-detail view.
+    /// Empty for anchors saved by older builds -- Glaze's
+    /// `error_on_unknown_keys=false` + default-on-missing lets
+    /// them load cleanly. Multi-line values are legal on disk but
+    /// the editors sanitise on commit, so the on-disk shape is a
+    /// single line by construction.
     struct AnchorEntry
     {
         std::string locator;

@@ -19,9 +19,8 @@ class QPushButton;
 /// or `F2` on the note column starts inline editing. Right-click
 /// offers Jump / Edit note / Remove. A header button clears everything.
 ///
-/// Stays in sync with `AnchorManager` and `ThemeControl` through
-/// signals. Refresh work is gated on visibility so a buried dock pays
-/// nothing.
+/// Stays in sync with `AnchorManager` and `ThemeControl` via signals.
+/// Refresh work is gated on visibility so a buried dock pays nothing.
 ///
 /// All three collaborators are borrowed (non-owning) and must outlive
 /// the dock.
@@ -40,11 +39,10 @@ public:
     [[nodiscard]] bool IsVisibleForRefresh() const noexcept;
 
     /// Open the inline note editor on the current tree item's note
-    /// column. No-op when the tree has no current item. Used by
-    /// `MainWindow::EditAnchorNoteOnCurrentRow` to redirect F4 while
-    /// focus lives in the dock -- opening a modal `QInputDialog`
-    /// there would be inconsistent with the inline-edit gesture
-    /// (F2 / double-click) that the dock already advertises.
+    /// column. No-op when the tree has no current item. Called by
+    /// `MainWindow::EditAnchorNoteOnCurrentRow` to redirect F4 to
+    /// the inline editor when focus is in the dock, matching the
+    /// dock's own F2 / double-click gesture.
     void BeginEditingCurrentNote();
 
 signals:
@@ -57,22 +55,17 @@ signals:
     /// tab inactivation in a tabified group.
     void closed();
 
-    // (No `runtimeOnlyNoteCommitted` here: runtime-only anchors
-    // (empty locator) are dropped by `AnchorManager::Entries()`, so
-    // they never appear in this dock's tree and `OnItemChanged` can
-    // never fire for one. The persistence warning lives on the
-    // `MainWindow::EditAnchorNoteForKey` path (F4 / row-menu edit),
-    // which is the *only* way a runtime-only note can be committed.)
+    // No runtime-only-note signal here: `AnchorManager::Entries()`
+    // filters those out, so they never appear in the tree. The
+    // "session-only" warning lives on the F4 / row-menu path.
 
 protected:
     void closeEvent(QCloseEvent *event) override;
 
-    /// Intercepts `ShortcutOverride` for `F2` / `Shift+F2` on `mTree`
-    /// so the tree's own `EditKeyPressed` trigger opens the inline
-    /// note editor instead of the window-scope "Jump to (next|prev)
-    /// anchor" `QAction` shortcuts firing first and stealing the key.
-    /// Only shadows those two keys; every other shortcut still
-    /// propagates normally.
+    /// Vetoes the window-scope `F2` shortcut when the tree's note
+    /// column has focus, so the inline editor opens instead of
+    /// "Jump to next anchor" firing. Everything else propagates
+    /// normally.
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 #ifdef LOGAPP_BUILD_TESTING
@@ -94,10 +87,8 @@ public:
         RefreshAlways();
     }
 
-    /// Trigger the inline note editor on the currently focused item,
-    /// bypassing the F2 shortcut path (which needs an event loop).
-    /// Kept as a thin forwarder to `BeginEditingCurrentNote` so
-    /// existing tests keep compiling.
+    /// Thin forwarder to `BeginEditingCurrentNote` for tests that
+    /// can't drive the F2 shortcut through a real event loop.
     void BeginEditNoteForTest()
     {
         BeginEditingCurrentNote();
@@ -117,35 +108,18 @@ private:
     void OnContextMenuRequested(const QPoint &pos);
     void OnClearAllClicked();
 
-    /// Surgical single-key refresh for `anchorChanged`. Handles the
-    /// three transitions in place:
-    ///   * add    -- new anchor, no matching item yet: insert one at
-    ///               the sorted position `Entries()` would use.
-    ///   * remove -- anchor gone, item still present: remove that
-    ///               item; leave every other row (and any in-flight
-    ///               inline note editor on them) untouched.
-    ///   * update -- anchor still present, item still present:
-    ///               refresh the swatch icon, label, tooltip, and
-    ///               key-role data. The `COLUMN_NOTE` text is NOT
-    ///               touched -- notes flow through the separate
-    ///               `OnAnchorNoteChanged` path so a colour flip on
-    ///               a row whose note is being edited can't clobber
-    ///               the user's in-flight text.
-    ///
-    /// Replaces the previous wiring that unconditionally called
-    /// `Refresh()` (which clears + rebuilds the whole tree and
-    /// destroys any open editor) so unrelated anchor mutations
-    /// (streaming FIFO eviction of another row, Ctrl+1..8 on the
-    /// main table, ...) don't drop the currently-focused note edit.
+    /// Surgical single-key refresh for `anchorChanged`. Handles add
+    /// (insert at the sorted position), remove (delete the item),
+    /// and update (refresh swatch + label + tooltip + key data) in
+    /// place. The note cell is intentionally left alone -- notes
+    /// flow through `OnAnchorNoteChanged` so a colour flip elsewhere
+    /// doesn't clobber an in-flight inline note edit.
     void OnAnchorChanged(const AnchorManager::Key &key);
 
-    /// Surgical note-only refresh: find the item matching @p key and
-    /// rewrite just its note column (text + tooltip) in place. Skips
-    /// the full `RefreshAlways` rebuild path that a colour change /
-    /// bulk reset needs, so a per-keystroke note edit doesn't churn
-    /// the whole tree for sessions with many anchors. Falls through
-    /// to `Refresh()` when the key isn't currently displayed (the
-    /// item was evicted / never rendered while the dock was hidden).
+    /// Surgical note-only refresh: rewrite the matching item's note
+    /// cell and tooltip in place. Falls back to `RefreshAlways`
+    /// when the key isn't currently displayed (dock was hidden, or
+    /// a race with a bulk reset dropped the item).
     void OnAnchorNoteChanged(const AnchorManager::Key &key);
 
     QPointer<AnchorManager> mAnchors;
@@ -160,9 +134,9 @@ private:
     /// hidden; flipped by the first `visibilityChanged(true)`.
     bool mPerceivedVisible = false;
 
-    /// Suppresses the `itemChanged -> SetAnchorNote` round trip during
-    /// `RefreshAlways`, which mutates item text to rebuild the list.
-    /// Guarded with an int (not bool) because Qt can nest signals if
-    /// a delegate close-editor fires while a refresh is still walking.
+    /// Suppresses the `itemChanged -> SetAnchorNote` round trip
+    /// while `RefreshAlways` / `OnAnchor*Changed` are mutating item
+    /// text. A counter (not a bool) because Qt can nest the
+    /// signals if a delegate close-editor fires mid-refresh.
     int mSuppressItemChanged = 0;
 };

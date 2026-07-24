@@ -9,9 +9,7 @@
 AnchorManager::AnchorManager(QObject *parent)
     : QObject(parent)
 {
-    // Required for `Qt::QueuedConnection` on the anchor signals
-    // (`anchorChanged`, `anchorNoteChanged`) -- Qt copies the Key
-    // argument into the event queue and needs the type registered.
+    // Required so `Qt::QueuedConnection` can copy Key across threads.
     qRegisterMetaType<AnchorManager::Key>("AnchorManager::Key");
 }
 
@@ -26,7 +24,7 @@ bool AnchorManager::SetAnchor(const Key &key, uint8_t colorIndex)
         {
             return false;
         }
-        // Preserve any existing note: recolour must not clobber it.
+        // Preserve any existing note; only the colour flips.
         it->second.colorIndex = clamped;
     }
     emit anchorChanged(key);
@@ -55,7 +53,7 @@ bool AnchorManager::SetAnchors(std::span<const Key> keys, uint8_t colorIndex)
         }
         if (it->second.colorIndex != clamped)
         {
-            // Preserve existing note; only the colour flips.
+            // Preserve the note; only the colour flips.
             it->second.colorIndex = clamped;
             ++changeCount;
             lastChangedKey = &it->first;
@@ -82,56 +80,39 @@ bool AnchorManager::SetAnchorNote(const Key &key, std::string note)
     const auto it = mAnchors.find(key);
     if (it == mAnchors.end())
     {
-        // Notes only exist alongside an anchor colour. Callers that
-        // want to attach a note to an unanchored row must anchor it
-        // first (`SetAnchor` seeds with an empty note).
+        // Notes only exist alongside an anchor colour; anchor the
+        // row first if you want to attach a note.
         return false;
     }
-    // Sanitise here so the one-line invariant is enforced at the
-    // manager boundary; UI callers still pre-sanitise for live
-    // display but a direct `SetAnchorNote(std::string{"a\nb"})`
-    // can't smuggle newlines past us.
+    // Sanitise at the manager boundary so a direct
+    // `SetAnchorNote("a\nb")` can't smuggle newlines past us.
     std::string sanitised = SanitiseNote(std::move(note));
     if (it->second.note == sanitised)
     {
         return false;
     }
     it->second.note = std::move(sanitised);
-    // Distinct signal from `anchorChanged`: colour-only listeners
-    // (histogram, overview rail) don't need to rebuild on note
-    // keystrokes.
+    // Distinct from `anchorChanged` so colour-only listeners
+    // (histogram, overview rail) skip note keystrokes.
     emit anchorNoteChanged(key);
     return true;
 }
 
 std::string AnchorManager::SanitiseNote(std::string note)
 {
-    // Manual single-pass rewrite:
-    //   - Collapse `\r\n` (Windows line endings) to one space so a
-    //     pasted CRLF-terminated line doesn't leave a double gap.
-    //   - Fold every C0 control byte (0x00-0x1F) and DEL (0x7F) into
-    //     a single space. That includes the obvious offenders
-    //     (`\r`, `\n`, `\t`, `\v`, `\f`, `\0`) plus the less-obvious
-    //     ones (`\a` = BEL, `\b` = backspace, `ESC`, ...). None of
-    //     these belong in a one-line annotation, and `\0` in
-    //     particular would silently truncate any downstream
-    //     C-string conversion (some tooltip paths, clipboard
-    //     payload assembly).
-    //   - Fold UTF-8 encodings of U+2028 (LINE SEPARATOR,
-    //     `E2 80 A8`) and U+2029 (PARAGRAPH SEPARATOR, `E2 80 A9`)
-    //     into single spaces: `QLabel` with `Qt::PlainText` +
-    //     `wordWrap` renders them as line breaks in the record-
-    //     detail subline.
-    //   - Trim leading/trailing spaces from the result.
+    // Single-pass rewrite that:
+    //   - collapses `\r\n` and every C0 control byte (0x00..0x1F,
+    //     plus DEL 0x7F) to one space -- covers `\n`, `\t`, `\0`,
+    //     BEL, ESC, ... none of which belong in a one-line note;
+    //   - folds U+2028 (LINE SEPARATOR) and U+2029 (PARAGRAPH
+    //     SEPARATOR) UTF-8 sequences to a space so `QLabel` with
+    //     `Qt::PlainText` + `wordWrap` doesn't break on them;
+    //   - trims leading and trailing spaces.
     //
-    // Interior runs of spaces are intentionally preserved so a user
-    // can still write `"foo  bar"` (two spaces) if they mean to.
-    //
-    // Doing the CRLF collapse plus per-char fold in one pass keeps
-    // the helper allocation-free on the shrink path and dodges the
-    // QString round-trip so it's safe to call from non-Qt code
-    // paths (e.g. `Replace` on config load).
-    constexpr unsigned char C0_UPPER_BOUND = 0x1F; // last C0 control byte.
+    // Interior runs of spaces are preserved so `"foo  bar"` still
+    // works. Purely `std::string` so `Replace` can call this on
+    // config load without a Qt round-trip.
+    constexpr unsigned char C0_UPPER_BOUND = 0x1F;
     constexpr unsigned char ASCII_DEL = 0x7F;
     std::string out;
     out.reserve(note.size());
@@ -141,7 +122,7 @@ std::string AnchorManager::SanitiseNote(std::string note)
         if (ch == '\r' && i + 1 < note.size() && note[i + 1] == '\n')
         {
             out.push_back(' ');
-            ++i; // consume the paired '\n'.
+            ++i;
             continue;
         }
         if (ch <= C0_UPPER_BOUND || ch == ASCII_DEL)
@@ -150,10 +131,8 @@ std::string AnchorManager::SanitiseNote(std::string note)
             continue;
         }
         // U+2028 / U+2029: 3-byte sequences `E2 80 A8` / `E2 80 A9`.
-        // Fold before appending the lead byte so we can consume the
-        // whole sequence in one step; a truncated sequence at the
-        // tail falls through to the default push_back and is later
-        // dropped by the UTF-8 walkback in the length-cap branch.
+        // A truncated tail sequence falls through to `push_back` and
+        // is cleaned up by the UTF-8 walkback in the length cap.
         constexpr unsigned char UTF8_2028_LEAD = 0xE2;
         constexpr unsigned char UTF8_2028_CONT1 = 0x80;
         constexpr unsigned char UTF8_2028_CONT2 = 0xA8;
@@ -164,7 +143,7 @@ std::string AnchorManager::SanitiseNote(std::string note)
              static_cast<unsigned char>(note[i + 2]) == UTF8_2029_CONT2))
         {
             out.push_back(' ');
-            i += 2; // consume the two continuation bytes.
+            i += 2;
             continue;
         }
         out.push_back(static_cast<char>(ch));
@@ -175,24 +154,15 @@ std::string AnchorManager::SanitiseNote(std::string note)
     const auto lastNonSpace = std::ranges::find_if_not(out.rbegin(), out.rend(), isSpace);
     out.erase(lastNonSpace.base(), out.end());
 
-    // Length cap. Truncation walks back to a UTF-8 sequence boundary
-    // so a note ending in a multi-byte code point (`é`, `→`, `🌱`)
-    // can't be sliced through the continuation bytes -- and cannot
-    // leave a lone lead byte at the tail either.
-    //
-    // Two-step walk:
-    //   1. If the first byte *outside* the cap (`out[MAX_NOTE_BYTES]`)
-    //      is a continuation byte, walk `truncateAt` back until it
-    //      points at a lead byte -- everything from that lead byte
-    //      onwards belongs to a sequence that would be truncated.
-    //   2. If the last kept byte (`out[truncateAt - 1]`) is itself
-    //      a lead byte (top two bits `11`), the sequence it starts
-    //      isn't complete within the cap; drop it too.
-    //
-    // Continuation-byte mask: `0xC0` == `0x80` (top two bits `10`).
-    // Lead-byte mask: `0xC0` == `0xC0` (top two bits `11`); ASCII
-    // bytes have top bit `0` and fall outside both patterns.
-    // Bounded: at most 3 walkback steps for a maximal 4-byte sequence.
+    // Length cap. Truncation walks back to a UTF-8 boundary so a
+    // multi-byte code point (`é`, `→`, `🌱`) can't be sliced and no
+    // lone lead byte is left at the tail:
+    //   1. if the byte at `out[MAX_NOTE_BYTES]` is a continuation
+    //      byte (top bits `10`), walk `truncateAt` back to the lead
+    //      of that sequence;
+    //   2. if the last kept byte is itself a lead (top bits `11`),
+    //      its sequence extends past the cap -- drop the lead too.
+    // Bounded to at most 3 walkback steps (max 4-byte sequence).
     if (out.size() > MAX_NOTE_BYTES)
     {
         constexpr unsigned char UTF8_TOP_TWO_MASK = 0xC0;
@@ -204,8 +174,6 @@ std::string AnchorManager::SanitiseNote(std::string note)
         {
             --truncateAt;
         }
-        // Step 2: if the last byte we're about to keep is a lead byte,
-        // its sequence continues past the cap -- drop the lead too.
         if (truncateAt > 0)
         {
             const auto lastKept = static_cast<unsigned char>(out[truncateAt - 1]);
@@ -215,8 +183,8 @@ std::string AnchorManager::SanitiseNote(std::string note)
             }
         }
         out.resize(truncateAt);
-        // A trailing space could be exposed by the truncation cut;
-        // trim it so the "no trailing whitespace" invariant survives.
+        // Truncation can expose a trailing space; re-trim so the
+        // "no trailing whitespace" invariant survives.
         const auto lastNonSpaceAfterCut = std::ranges::find_if_not(out.rbegin(), out.rend(), isSpace);
         out.erase(lastNonSpaceAfterCut.base(), out.end());
     }
@@ -230,8 +198,8 @@ bool AnchorManager::RemoveAnchor(const Key &key)
     {
         return false;
     }
-    // Copy before erase: listeners need a live string after `it`
-    // is invalidated.
+    // Copy before erase so the signal argument survives `it`
+    // being invalidated.
     const Key removed = it->first;
     mAnchors.erase(it);
     emit anchorChanged(removed);
@@ -245,11 +213,10 @@ bool AnchorManager::RemoveAnchors(std::span<const Key> keys)
         return false;
     }
     int removedCount = 0;
-    // Own a copy so the single-change signal survives the caller's
-    // span going out of scope. Default-constructed; only read when
-    // `removedCount == 1`, which only the same `if` that updates it
-    // makes possible -- bypassing `std::optional` keeps clang-tidy's
-    // `bugprone-unchecked-optional-access` quiet without an assertion.
+    // Own a copy so the single-change signal outlives the caller's
+    // span. Only read when `removedCount == 1`, so
+    // default-constructed is fine (and avoids clang-tidy's
+    // unchecked-optional-access lint on a `std::optional` variant).
     Key lastRemovedKey;
     for (const Key &key : keys)
     {
@@ -288,26 +255,21 @@ bool AnchorManager::ClearAll()
 
 std::size_t AnchorManager::Replace(const std::vector<loglib::LogConfiguration::AnchorEntry> &entries)
 {
-    // Snapshot the previous state so an identical reload stays silent.
+    // Snapshot previous state so an identical reload stays silent.
     std::unordered_map<Key, Value, KeyHash> previous;
     previous.swap(mAnchors);
 
-    // Track per-key clamp status so the returned count matches the
-    // final (last-wins) persisted state. A duplicate-key JSON with
-    // an out-of-range colour followed by a valid one must NOT be
-    // reported as clamped: the anchor that ends up in `mAnchors`
-    // has a valid slot. Symmetrically, a valid entry followed by
-    // an out-of-range one still counts as clamped.
+    // Track clamp status per key so the returned count matches the
+    // final (last-wins) state on duplicates: a valid entry followed
+    // by an out-of-range one counts as clamped, and vice versa.
     std::unordered_map<Key, bool, KeyHash> clampedByKey;
     mAnchors.reserve(entries.size());
     clampedByKey.reserve(entries.size());
     for (const loglib::LogConfiguration::AnchorEntry &entry : entries)
     {
-        // Clamp unknown palette slots (newer schema / hand-edited)
-        // instead of dropping the row: the bookmark position and
-        // the note are the parts the user cares about; the exact
-        // colour is trivially reassignable via `Ctrl+1..8`. Count
-        // the remap so callers can surface a "downgraded" hint.
+        // Clamp unknown palette slots instead of dropping the
+        // anchor: the bookmark + note are what the user cares
+        // about; colour is trivially reassignable via `Ctrl+1..8`.
         auto colorIndex = entry.colorIndex;
         const bool clamped = colorIndex >= loglib::ANCHOR_PALETTE_SIZE;
         if (clamped)
@@ -315,16 +277,11 @@ std::size_t AnchorManager::Replace(const std::vector<loglib::LogConfiguration::A
             colorIndex = static_cast<uint8_t>(loglib::ANCHOR_PALETTE_SIZE - 1);
         }
         Key key{.locator = entry.locator, .lineId = entry.lineId};
-        // `insert_or_assign` mirrors last-wins for the map; the
-        // parallel `clampedByKey` map mirrors it for the counter.
         clampedByKey.insert_or_assign(key, clamped);
+        // Sanitise on load so hand-edited JSON can't smuggle
+        // multi-line notes past the one-line invariant.
         mAnchors.insert_or_assign(
-            std::move(key),
-            // Sanitise on load: a hand-edited JSON with embedded
-            // newlines/tabs would otherwise break the "one line"
-            // invariant that the QLabel + tooltip rendering paths
-            // rely on.
-            Value{.colorIndex = colorIndex, .note = SanitiseNote(entry.note)}
+            std::move(key), Value{.colorIndex = colorIndex, .note = SanitiseNote(entry.note)}
         );
     }
     const std::size_t clampedCount =

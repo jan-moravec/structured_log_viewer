@@ -17,18 +17,18 @@
 /// Owns the user's set of anchored rows: `(file, lineId) -> (colour, note)`.
 /// One instance per `MainWindow`; `LogModel`, `LogTableView`, and
 /// `AnchorsDock` hold a non-owning pointer and react to
-/// `anchorChanged` (colour / add / remove), `anchorNoteChanged`
+/// `anchorChanged` (add / recolour / remove), `anchorNoteChanged`
 /// (note text edits), and `anchorsReset` (bulk mutation).
 ///
 /// Key layout:
-/// - `locator`: canonical file path (matches `Source::locatorDedupKeys`).
-///   Empty for in-memory streams.
-/// - `lineId`: monotonic id from the parser, unique within a `LineSource`.
+/// - `locator`: canonical file path (matches `Source::locatorDedupKeys`);
+///   empty for in-memory streams.
+/// - `lineId`: monotonic parser id, unique within a `LineSource`.
 ///
 /// `colorIndex` indexes `Theme::anchorPalette` (range
 /// `[0, loglib::ANCHOR_PALETTE_SIZE)`); `note` is a free-form
-/// one-liner (empty by default). Recolouring an existing anchor
-/// preserves its note so Ctrl+1..8 is non-destructive.
+/// one-liner (empty by default). Recolouring preserves the note, so
+/// `Ctrl+1..8` is non-destructive.
 class AnchorManager : public QObject
 {
     Q_OBJECT
@@ -44,9 +44,9 @@ public:
         friend bool operator==(const Key &, const Key &) = default;
     };
 
-    /// Value carried alongside a `Key`. Kept in a struct (not a
-    /// `pair<uint8_t, std::string>`) so future per-anchor bits can be
-    /// added without churning every call site.
+    /// Value carried alongside a `Key`. A struct (not a
+    /// `pair<uint8_t, std::string>`) so future per-anchor fields can
+    /// be added without churning every call site.
     struct Value
     {
         uint8_t colorIndex = 0;
@@ -65,56 +65,41 @@ public:
 
     /// Add or update an anchor's colour. Out-of-range @p colorIndex
     /// is clamped. Any existing note on @p key is preserved (so
-    /// recolouring via Ctrl+1..8 doesn't clobber user text). Emits
-    /// `anchorChanged` whenever the stored state changes -- both on
-    /// a fresh insertion (with a default-empty note) and on a
-    /// colour flip of an already-present key. A no-op call
-    /// (identical colour on the same key) returns false and
-    /// suppresses the emit. Returns true iff state changed.
+    /// `Ctrl+1..8` doesn't clobber user text). Emits `anchorChanged`
+    /// on any state change (fresh insert or colour flip); a no-op
+    /// call (identical colour) returns false and suppresses the emit.
+    /// Returns true iff state changed.
     bool SetAnchor(const Key &key, uint8_t colorIndex);
 
     /// Bulk `SetAnchor`. Emits `anchorChanged(key)` for exactly one
-    /// mutation; `anchorsReset()` for two or more. Empty @p keys is a
-    /// no-op. Same clamping and note-preservation semantics as
-    /// `SetAnchor`. Returns true iff anything changed.
+    /// mutation, `anchorsReset()` for two or more. Empty @p keys is
+    /// a no-op. Same clamping and note-preservation as `SetAnchor`.
+    /// Returns true iff anything changed.
     bool SetAnchors(std::span<const Key> keys, uint8_t colorIndex);
 
-    /// Update the one-line note on @p key. No-op (and returns false)
-    /// when @p key is not anchored -- notes only exist alongside a
-    /// colour. @p note is sanitised via `SanitiseNote` before storage
-    /// (embedded CR/LF/tab collapse to a single space; edges trim),
-    /// so the "one line" invariant is enforced at the manager
-    /// boundary rather than at every caller. Emits
-    /// `anchorNoteChanged` (NOT `anchorChanged`) when the stored
-    /// note actually changes so listeners that only depend on
-    /// anchor colour (histogram tick strip, overview rail bands)
+    /// Update the one-line note on @p key. No-op (returns false)
+    /// when @p key isn't anchored -- notes only exist alongside a
+    /// colour. @p note is passed through `SanitiseNote` before
+    /// storage so the one-line invariant holds even for direct
+    /// callers. Emits `anchorNoteChanged` (not `anchorChanged`) so
+    /// colour-only listeners (histogram tick strip, overview rail)
     /// can skip the notification. Returns true iff state changed.
     bool SetAnchorNote(const Key &key, std::string note);
 
-    /// Upper bound on the stored size of a single note, in bytes
-    /// (UTF-8). Chosen to be generous for the "one-line annotation"
-    /// use case while capping the worst-case cost of rendering the
-    /// note as a QLabel / QToolTip / clipboard payload on every
-    /// interaction (tooltip resolves on hover; copy-as-KV walks the
-    /// whole record on every click). A malicious or careless paste
-    /// of megabytes of text would otherwise trickle through the UI
-    /// on every anchor touch.
-    ///
-    /// Truncation happens at a UTF-8 sequence boundary so a
-    /// two- or three-byte code point can't be sliced through the
-    /// middle. The user-visible effect is that a note pasted longer
-    /// than this gets silently cut; not surfaced as an error since
-    /// the note is a decorative annotation, not primary data.
+    /// Byte cap (UTF-8) for a single note. Generous for a one-line
+    /// annotation, but bounds the worst-case cost of rendering the
+    /// note into every tooltip / clipboard payload / dock label so
+    /// a megabyte paste can't trickle through the UI. Truncation in
+    /// `SanitiseNote` walks back to a UTF-8 sequence boundary; the
+    /// silent trim is fine because notes are decorative, not data.
     static constexpr std::size_t MAX_NOTE_BYTES = 1024;
 
-    /// Collapse CR/LF/tab into a single space, trim leading and
-    /// trailing whitespace, and truncate to `MAX_NOTE_BYTES` at a
-    /// UTF-8 sequence boundary so a note stays a one-liner even if
-    /// the user pasted a multi-line block or a wall of text.
+    /// Collapse control characters (CR/LF/tab/...) to spaces, trim
+    /// edges, and truncate to `MAX_NOTE_BYTES` at a UTF-8 boundary
+    /// so a pasted multi-line block still lands as one tidy line.
     /// Exposed as a static so UI widgets can mirror the stored form
-    /// into their editor before a round-trip through `SetAnchorNote`;
-    /// the manager itself always applies it on write, so callers
-    /// that don't care about live display can pass raw text.
+    /// into their editor; the manager applies it on every write, so
+    /// callers that don't care about live display can pass raw text.
     [[nodiscard]] static std::string SanitiseNote(std::string note);
 
     /// Remove an anchor (colour + note). Emits `anchorChanged` iff
@@ -130,21 +115,20 @@ public:
 
     /// Replace the entire state from @p entries.
     ///
-    /// Entries with an out-of-range `colorIndex` (newer schema or
-    /// hand-edited JSON) are clamped to the highest known palette
-    /// slot rather than dropped: preserving the bookmark position
-    /// and the user's note is more valuable than round-tripping the
-    /// exact colour, which the user can always reassign. Duplicate
-    /// keys: last wins. Each entry's `note` is passed through
-    /// `SanitiseNote` so a hand-edited JSON with embedded newlines
-    /// can't smuggle multi-line notes past the one-line invariant.
+    /// Out-of-range `colorIndex` values (newer schema or hand-edited
+    /// JSON) are clamped to the highest known palette slot rather
+    /// than dropped: the bookmark + note are worth keeping, and the
+    /// user can reassign the colour trivially. Duplicate keys:
+    /// last wins. Each `note` runs through `SanitiseNote` so a
+    /// hand-edited JSON can't smuggle multi-line notes past the
+    /// one-line invariant.
     ///
     /// `anchorsReset` is emitted only when the rebuilt map differs
-    /// from the previous content (silent no-op on identical reload).
+    /// from the previous state (silent no-op on identical reload).
     ///
-    /// @returns the number of clamped (colour-remapped) entries;
-    /// surfaced to the user by `MainWindow::TryLoadAsConfiguration`
-    /// via the status bar so a downgrade is visible.
+    /// @returns the number of colour-clamped entries, surfaced to
+    /// the user by `MainWindow::TryLoadAsConfiguration` via the
+    /// status bar so a downgrade is visible.
     [[nodiscard]] std::size_t Replace(const std::vector<loglib::LogConfiguration::AnchorEntry> &entries);
 
     /// Anchor colour for @p key, or nullopt if not anchored.
@@ -156,11 +140,11 @@ public:
 
     /// Snapshot for `LogConfiguration::anchors`, sorted by
     /// `(locator, lineId)` so saved JSON is byte-stable. Each entry
-    /// carries the paired note.
+    /// carries its paired note.
     ///
     /// Runtime-only anchors (empty locator) are dropped: their
-    /// `lineId` is not stable across sessions, so persisting them
-    /// would later collide with unrelated ids. Use
+    /// `lineId` is not stable across sessions and would collide
+    /// with unrelated ids on reload. Use
     /// `EntriesIncludingRuntimeOnly` for diagnostics.
     [[nodiscard]] std::vector<loglib::LogConfiguration::AnchorEntry> Entries() const;
 
@@ -174,18 +158,15 @@ public:
     [[nodiscard]] bool Empty() const noexcept;
 
 signals:
-    /// One key added, recoloured, or removed. Listeners can scope
-    /// their repaint to the matching row(s).
-    ///
-    /// Note edits go through the separate `anchorNoteChanged`
-    /// signal instead of this one so listeners that only care
-    /// about anchor colour / presence (histogram tick strip,
-    /// overview rail bands) don't rebuild on every keystroke.
+    /// One key added, recoloured, or removed. Listeners scope
+    /// their repaint to the matching row(s). Note edits go through
+    /// `anchorNoteChanged` instead, so colour-only listeners
+    /// (histogram, overview rail) can skip this signal.
     void anchorChanged(const AnchorManager::Key &key);
 
     /// One key's note text changed. Listeners that surface the
     /// note (row tooltip via `LogModel`, anchors dock, record
-    /// detail dock) refresh; colour-only listeners can skip it.
+    /// detail dock) refresh; colour-only listeners skip it.
     void anchorNoteChanged(const AnchorManager::Key &key);
 
     /// Bulk mutation (`ClearAll`, `Replace`, or a multi-key bulk op).
@@ -208,18 +189,15 @@ private:
         }
     };
 
-    /// Shared body of `Entries()` (save path) and
-    /// `EntriesIncludingRuntimeOnly()` (diagnostics / tests). When
-    /// @p dropRuntimeOnly is true, entries with an empty `locator`
-    /// are excluded; sort key is `(locator, lineId)` so on-disk
-    /// JSON stays byte-stable irrespective of hash-map iteration
-    /// order.
+    /// Shared body of `Entries()` and `EntriesIncludingRuntimeOnly()`.
+    /// When @p dropRuntimeOnly is true, entries with an empty
+    /// `locator` are excluded. Sort key is `(locator, lineId)` so
+    /// on-disk JSON stays byte-stable regardless of hash-map order.
     [[nodiscard]] std::vector<loglib::LogConfiguration::AnchorEntry> BuildSortedEntries(bool dropRuntimeOnly) const;
 
     std::unordered_map<Key, Value, KeyHash> mAnchors;
 };
 
-// Required for `Qt::QueuedConnection` on the anchor signals
-// (`anchorChanged`, `anchorNoteChanged`): Qt copies the argument
-// into the event queue and needs the type registered.
+// Registered so `Qt::QueuedConnection` on the anchor signals can
+// copy the Key argument into the event queue.
 Q_DECLARE_METATYPE(AnchorManager::Key)
