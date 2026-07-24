@@ -144,6 +144,22 @@ template <> struct glz::meta<loglib::LogConfiguration::Sort>
     static constexpr auto value = object("columnIndex", &T::columnIndex, "descending", &T::descending);
 };
 
+// Wire schema for a single anchor entry. On-disk JSON shape:
+//   { "locator": "...",       // stable per-source id (file path, stream key)
+//     "lineId":  1234,        // provider-assigned line identifier
+//     "colorIndex": 0,        // palette slot (0..N-1)
+//     "note":    "..." }      // optional user note, sanitised and byte-
+//                             // capped by `AnchorManager::SanitiseNote`;
+//                             // absent on configs saved before the
+//                             // "anchor bookmark notes" feature landed
+//                             // and decoded as an empty string by
+//                             // glaze's default-init on missing keys.
+//
+// Add new fields to the end of the `object(...)` call and give them a
+// sensible default in `AnchorEntry` so older configs still round-trip;
+// `LogConfiguration`'s loader runs with `error_on_unknown_keys=false`
+// so newer configs opened by an older build silently drop unknown
+// keys instead of failing the load.
 template <> struct glz::meta<loglib::LogConfiguration::AnchorEntry>
 {
     using T = loglib::LogConfiguration::AnchorEntry;

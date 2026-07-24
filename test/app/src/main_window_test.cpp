@@ -4393,6 +4393,74 @@ private slots:
         model->EndStreaming(false);
     }
 
+    // Double-clicking the anchor column jumps to the anchored row.
+    // Regression for the new gesture: `itemActivated` alone isn't
+    // reliable across every Qt style (some route double-click via
+    // `SH_ItemView_ActivateItemOnSingleClick`), so the dock wires
+    // `itemDoubleClicked` explicitly. Double-clicking the note
+    // column must NOT jump -- that gesture is reserved for opening
+    // the inline editor.
+    void TestAnchorsDockDoubleClickAnchorColumnJumps()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *model = mWindow->Model();
+        auto *dock = mWindow->findChild<AnchorsDock *>();
+        QVERIFY(dock != nullptr);
+        auto *tree = dock->TreeForTest();
+        QVERIFY(tree != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 3);
+
+        const auto key0 = model->AnchorKeyForRow(0);
+        const auto key1 = model->AnchorKeyForRow(1);
+        QVERIFY(key0.has_value());
+        QVERIFY(key1.has_value());
+        anchors->SetAnchor(*key0, 0);
+        anchors->SetAnchor(*key1, 3);
+        QCoreApplication::processEvents();
+        dock->RefreshForTest();
+        QCOMPARE(tree->topLevelItemCount(), 2);
+
+        QSignalSpy jumpSpy(dock, &AnchorsDock::jumpToAnchorRequested);
+        QVERIFY(jumpSpy.isValid());
+
+        // Double-click on the anchor column of the first row.
+        QTreeWidgetItem *firstItem = tree->topLevelItem(0);
+        QVERIFY(firstItem != nullptr);
+        emit tree->itemDoubleClicked(firstItem, /*column=*/0);
+        QCoreApplication::processEvents();
+        QCOMPARE(jumpSpy.count(), 1);
+        QVERIFY(jumpSpy.last().at(0).toInt() >= 0);
+
+        // Double-click on the note column must NOT jump: that
+        // gesture opens the inline editor.
+        const int jumpsBeforeNote = jumpSpy.count();
+        emit tree->itemDoubleClicked(firstItem, /*column=*/1);
+        QCoreApplication::processEvents();
+        QCOMPARE(jumpSpy.count(), jumpsBeforeNote);
+
+        // Double-clicking a second anchor row jumps to its source
+        // row -- distinct from the first row's source row so we're
+        // sure the item -> row resolution isn't stuck.
+        QTreeWidgetItem *secondItem = tree->topLevelItem(1);
+        QVERIFY(secondItem != nullptr);
+        emit tree->itemDoubleClicked(secondItem, /*column=*/0);
+        QCoreApplication::processEvents();
+        QCOMPARE(jumpSpy.count(), jumpsBeforeNote + 1);
+        QVERIFY(jumpSpy.last().at(0).toInt() >= 0);
+        QVERIFY(jumpSpy.at(0).at(0).toInt() != jumpSpy.last().at(0).toInt());
+
+        model->EndStreaming(false);
+    }
+
     // SelectSourceRow scrolls + selects the source row through the
     // proxy chain and moves the current index there. Negative rows
     // no-op.
@@ -4594,6 +4662,29 @@ private slots:
             std::string{"\xc3\xa9v\xc3\xa9nement"}
         );
 
+        // Extended whitespace fold: `\v` (vertical tab), `\f` (form
+        // feed), and `\0` (NUL) all collapse to single spaces so a
+        // pasted control-character run can't break the "one line"
+        // invariant. NUL is particularly load-bearing: it silently
+        // truncates downstream C-string conversions (some tooltip
+        // paths, clipboard payload assembly), so folding it here
+        // means we never store one in the first place.
+        QCOMPARE(AnchorManager::SanitiseNote(std::string{"a\vb\fc"}), std::string{"a b c"});
+        QCOMPARE(
+            AnchorManager::SanitiseNote(std::string{"a\0b", 3}), std::string{"a b"}
+        );
+
+        // Unicode line separators fold too. U+2028 (LINE SEPARATOR)
+        // and U+2029 (PARAGRAPH SEPARATOR) are 3-byte sequences that
+        // `QLabel` with `Qt::PlainText` + `wordWrap` renders as line
+        // breaks in the record-detail subline. Folding avoids that
+        // and matches the promise on the one-line invariant.
+        // U+2028 = E2 80 A8; U+2029 = E2 80 A9.
+        QCOMPARE(
+            AnchorManager::SanitiseNote(std::string{"a\xe2\x80\xa8" "b\xe2\x80\xa9" "c"}),
+            std::string{"a b c"}
+        );
+
         // `SetAnchorNote` applies the sanitisation internally so
         // even a direct caller that skips the UI helper can't leak
         // newlines into the stored state.
@@ -4678,6 +4769,66 @@ private slots:
                 "trailing space produced by the truncation cut must be stripped"
             );
         }
+        // Regression for the lead-byte-at-cap edge case: a 2-byte
+        // code point (`é` = C3 A9) that starts exactly at position
+        // `MAX_NOTE_BYTES - 1` and continues into position
+        // `MAX_NOTE_BYTES`. A naive walkback that inspects
+        // `out[MAX_NOTE_BYTES]` sees the lead byte at
+        // `MAX_NOTE_BYTES - 1` as a "stop, this is a good boundary"
+        // and would leave a stray `C3` at the tail (an incomplete
+        // UTF-8 sequence). The fix also drops the lead byte when
+        // it starts a sequence that wouldn't be complete within
+        // the cap.
+        {
+            std::string padded(AnchorManager::MAX_NOTE_BYTES - 1, 'a');
+            padded.push_back('\xc3'); // lead byte of `é` at cap-1
+            padded.push_back('\xa9'); // continuation at cap
+            padded.append("more");    // push past the cap so the truncation branch runs
+            const auto out = AnchorManager::SanitiseNote(std::move(padded));
+            // Result must NOT end with a lone lead byte. Lead byte
+            // pattern is (byte & 0xC0) == 0xC0.
+            QVERIFY2(!out.empty(), "output must not be empty");
+            const auto lastByte = static_cast<unsigned char>(out.back());
+            QVERIFY2(
+                (lastByte & 0xC0U) != 0xC0U,
+                qPrintable(QStringLiteral("output must not end with an incomplete UTF-8 sequence, "
+                                          "last byte was 0x%1")
+                               .arg(static_cast<int>(lastByte), 2, 16, QChar('0')))
+            );
+            // Every kept byte should be ASCII 'a' (the multi-byte
+            // sequence and everything after it was dropped).
+            for (const char ch : out)
+            {
+                QCOMPARE(ch, 'a');
+            }
+        }
+    }
+
+    // `AnchorManager::SetAnchorNote` must never fire `anchorChanged`
+    // -- the whole point of the recent signal split is to keep
+    // colour-only listeners (histogram, overview rail) from
+    // rebuilding on every keystroke of a note edit. Item #14 / #18
+    // of the code review flagged the invariant as load-bearing but
+    // implicit; this test pins it explicitly so a future refactor
+    // that collapses the two signals breaks a red bar first.
+    void TestAnchorManagerSetAnchorNoteDoesNotEmitAnchorChanged()
+    {
+        AnchorManager manager;
+        const AnchorManager::Key key{.locator = "c:/logs/x.json", .lineId = 7};
+        QVERIFY(manager.SetAnchor(key, 2));
+
+        const QSignalSpy changedSpy(&manager, &AnchorManager::anchorChanged);
+        const QSignalSpy noteChangedSpy(&manager, &AnchorManager::anchorNoteChanged);
+
+        QVERIFY(manager.SetAnchorNote(key, std::string{"first note"}));
+        QCOMPARE(changedSpy.count(), 0);
+        QCOMPARE(noteChangedSpy.count(), 1);
+
+        // Clearing to empty is still a note change, not a colour
+        // change: `anchorChanged` stays quiet.
+        QVERIFY(manager.SetAnchorNote(key, std::string{}));
+        QCOMPARE(changedSpy.count(), 0);
+        QCOMPARE(noteChangedSpy.count(), 2);
     }
 
     // Config load through `Replace` sanitises notes so a hand-edited
@@ -5370,14 +5521,17 @@ private slots:
             "AnchorsDock event filter must accept F2 ShortcutOverride so window-scope jump shortcuts don't steal it"
         );
 
-        // Shift+F2 (prev-anchor jump) is subject to the same
-        // interception so long-form navigation from within the
-        // dock doesn't collide either.
+        // Shift+F2 (prev-anchor jump) must NOT be intercepted. The
+        // tree's edit trigger only matches plain `F2` for
+        // `EditKeyPressed`, so shadowing `Shift+F2` here would
+        // silently swallow the window-scope "Jump to previous
+        // anchor" shortcut whenever focus lives in the dock.
         QKeyEvent shiftF2Override(QEvent::ShortcutOverride, Qt::Key_F2, Qt::ShiftModifier);
         QApplication::sendEvent(tree, &shiftF2Override);
         QVERIFY2(
-            shiftF2Override.isAccepted(),
-            "AnchorsDock event filter must accept Shift+F2 ShortcutOverride"
+            !shiftF2Override.isAccepted(),
+            "AnchorsDock event filter must let Shift+F2 pass through so the prev-anchor "
+            "shortcut still fires from within the dock"
         );
 
         // Every other shortcut still propagates: verify a non-F2
@@ -5387,7 +5541,7 @@ private slots:
         QApplication::sendEvent(tree, &ctrlFOverride);
         QVERIFY2(
             !ctrlFOverride.isAccepted(),
-            "AnchorsDock event filter must only shadow F2 / Shift+F2, not arbitrary shortcuts"
+            "AnchorsDock event filter must only shadow plain F2, not arbitrary shortcuts"
         );
 
         // Restore hidden state so subsequent tests inherit the

@@ -492,11 +492,22 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
 
     if (dropCount > 0)
     {
-        // Resolve evicted anchors while their rows still exist.
-        DropAnchorsForEvictionPrefix(dropCount);
+        // Collect anchor keys BEFORE `beginRemoveRows`: we need the
+        // rows alive to resolve `(locator, lineId)`. But defer the
+        // actual `RemoveAnchors` (which emits `anchorsReset`) until
+        // AFTER `endRemoveRows` so listeners (record-detail dock,
+        // overview rail) never see a `dataChanged`-across-the-visible-
+        // table for rows that are one microsecond away from
+        // disappearing.
+        std::vector<AnchorManager::Key> evictedAnchorKeys = CollectAnchorKeysInPrefix(dropCount);
         beginRemoveRows(QModelIndex(), 0, dropCount - 1);
         mLogTable.EvictPrefixRows(static_cast<size_t>(dropCount));
         endRemoveRows();
+        if (!evictedAnchorKeys.empty() && mAnchors != nullptr)
+        {
+            // Bulk path collapses to a single `anchorsReset`.
+            mAnchors->RemoveAnchors(evictedAnchorKeys);
+        }
         newRowCount -= dropCount;
     }
 
@@ -1589,29 +1600,22 @@ bool LogModel::IsStyleOnlyRoleChange(const QList<int> &roles) noexcept
     });
 }
 
-void LogModel::DropAnchorsForEvictionPrefix(int dropCount)
+std::vector<AnchorManager::Key> LogModel::CollectAnchorKeysInPrefix(int dropCount) const
 {
+    std::vector<AnchorManager::Key> keys;
     if (mAnchors == nullptr || dropCount <= 0 || mAnchors->Empty())
     {
-        return;
+        return keys;
     }
-    // Collect first, mutate second: `RemoveAnchors` re-enters
-    // `RefreshAllAnchorRows`, so we must finish walking the rows
-    // before they're evicted.
-    std::vector<AnchorManager::Key> evictedKeys;
-    evictedKeys.reserve(static_cast<std::size_t>(dropCount));
+    keys.reserve(static_cast<std::size_t>(dropCount));
     for (int row = 0; row < dropCount; ++row)
     {
         if (auto key = AnchorKeyForRow(row); key.has_value())
         {
-            evictedKeys.push_back(std::move(*key));
+            keys.push_back(std::move(*key));
         }
     }
-    if (!evictedKeys.empty())
-    {
-        // Bulk path collapses to a single `anchorsReset`.
-        mAnchors->RemoveAnchors(evictedKeys);
-    }
+    return keys;
 }
 
 std::optional<loglib::LogLevel> LogModel::LevelForRow(int row) const noexcept
@@ -2142,11 +2146,18 @@ void LogModel::SetRetentionCap(size_t cap)
         if (visible > cap)
         {
             const size_t dropCount = visible - cap;
-            // Resolve evicted anchors before the rows go away.
-            DropAnchorsForEvictionPrefix(static_cast<int>(dropCount));
+            // Same collect-before / emit-after choreography as
+            // `AppendBatch`: keep anchor signals from firing until
+            // the rows are actually gone.
+            std::vector<AnchorManager::Key> evictedAnchorKeys =
+                CollectAnchorKeysInPrefix(static_cast<int>(dropCount));
             beginRemoveRows(QModelIndex(), 0, static_cast<int>(dropCount) - 1);
             mLogTable.EvictPrefixRows(dropCount);
             endRemoveRows();
+            if (!evictedAnchorKeys.empty() && mAnchors != nullptr)
+            {
+                mAnchors->RemoveAnchors(evictedAnchorKeys);
+            }
             emit lineCountChanged(static_cast<qsizetype>(mLogTable.RowCount()));
         }
         return;

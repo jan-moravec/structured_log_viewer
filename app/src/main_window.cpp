@@ -59,6 +59,8 @@
 #include <QFutureWatcher>
 #include <QGuiApplication>
 #include <QHeaderView>
+#include <QAbstractSpinBox>
+#include <QComboBox>
 #include <QInputDialog>
 #include <QKeySequence>
 #include <QLabel>
@@ -8338,11 +8340,22 @@ void MainWindow::EditAnchorNoteOnCurrentRow()
     // is a text-input surface, letting the editor keep the key
     // event (Qt still delivers the shortcut *action* here, but the
     // focus widget's `keyPressEvent` decides the visible behaviour).
+    //
+    // Casts cover the four Qt text-input roots plus the two
+    // container widgets that host a line edit internally
+    // (`QAbstractSpinBox` covers `QSpinBox` / `QDoubleSpinBox` /
+    // `QDateTimeEdit`; `QComboBox` covers editable combos). When
+    // those container widgets have a raised line edit, focus lands
+    // on the internal `QLineEdit` and the first check catches it;
+    // this branch is the belt-and-braces path for styles that grant
+    // focus to the container itself.
     if (const QWidget *focused = QApplication::focusWidget();
         focused != nullptr &&
         (qobject_cast<const QLineEdit *>(focused) != nullptr ||
          qobject_cast<const QTextEdit *>(focused) != nullptr ||
-         qobject_cast<const QPlainTextEdit *>(focused) != nullptr))
+         qobject_cast<const QPlainTextEdit *>(focused) != nullptr ||
+         qobject_cast<const QAbstractSpinBox *>(focused) != nullptr ||
+         qobject_cast<const QComboBox *>(focused) != nullptr))
     {
         return;
     }

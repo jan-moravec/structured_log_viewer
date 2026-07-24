@@ -187,14 +187,17 @@ constexpr int ANCHOR_KEY_LINE_ID_ROLE = Qt::UserRole + 2;
 {
     const QString escapedDisplayPath = displayPath.toHtmlEscaped();
     const QString escapedNote = noteText.toHtmlEscaped();
+    // Scope translations to `AnchorsDock` so Linguist groups the
+    // dock's user-visible strings together instead of scattering
+    // them under the untargetable `QObject` context.
     const QString tooltipBody = escapedDisplayPath.isEmpty()
-                                    ? QObject::tr("Anchor #%1, line %2").arg(colorIndex + 1).arg(lineId)
-                                    : QObject::tr("Anchor #%1, line %2<br/>%3")
+                                    ? AnchorsDock::tr("Anchor #%1, line %2").arg(colorIndex + 1).arg(lineId)
+                                    : AnchorsDock::tr("Anchor #%1, line %2<br/>%3")
                                           .arg(colorIndex + 1)
                                           .arg(lineId)
                                           .arg(escapedDisplayPath);
     const QString tooltipBodyWithNote =
-        escapedNote.isEmpty() ? tooltipBody : QObject::tr("%1<br/>Note: %2").arg(tooltipBody, escapedNote);
+        escapedNote.isEmpty() ? tooltipBody : AnchorsDock::tr("%1<br/>Note: %2").arg(tooltipBody, escapedNote);
     return QStringLiteral("<qt>%1</qt>").arg(tooltipBodyWithNote);
 }
 
@@ -222,7 +225,7 @@ public:
 } // namespace
 
 AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *theme, QWidget *parent)
-    : QDockWidget(QObject::tr("Anchors"), parent), mAnchors(anchors), mModel(model), mTheme(theme)
+    : QDockWidget(tr("Anchors"), parent), mAnchors(anchors), mModel(model), mTheme(theme)
 {
     setObjectName(QStringLiteral("anchorsDock"));
 
@@ -232,7 +235,7 @@ AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *
     layout->setSpacing(4);
 
     auto *header = new QHBoxLayout();
-    mClearAllButton = new QPushButton(QObject::tr("Clear all"), host);
+    mClearAllButton = new QPushButton(tr("Clear all"), host);
     mClearAllButton->setObjectName(QStringLiteral("anchorsClearAll"));
     // `Refresh()` enables this once there is something to clear.
     mClearAllButton->setEnabled(false);
@@ -243,7 +246,7 @@ AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *
     mTree = new QTreeWidget(host);
     mTree->setObjectName(QStringLiteral("anchorsList"));
     mTree->setColumnCount(2);
-    mTree->setHeaderLabels({QObject::tr("Anchor"), QObject::tr("Note")});
+    mTree->setHeaderLabels({tr("Anchor"), tr("Note")});
     mTree->setRootIsDecorated(false);
     mTree->setUniformRowHeights(true);
     mTree->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -298,11 +301,21 @@ AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *
         connect(mTheme, &ThemeControl::themeChanged, this, [this]() { Refresh(); });
     }
 
-    // `itemActivated` covers both Enter and double-click. Wiring
-    // `itemDoubleClicked` too would fire jumps twice per click. Only
-    // the anchor column triggers a jump; double-clicking the note
-    // starts inline editing (Qt handles the edit path via
-    // `editTriggers`).
+    // Two paths into the "jump to anchor" handler:
+    //   - `itemDoubleClicked` always fires on a left-button double
+    //     click, regardless of the platform's
+    //     `SH_ItemView_ActivateItemOnSingleClick` style hint. This is
+    //     the primary mouse gesture -- double-click the anchor
+    //     column to jump. The note column double-click opens the
+    //     inline editor via the tree's `DoubleClicked` edit trigger;
+    //     `OnItemActivated` filters double-clicks on the note column
+    //     out so a keyboard-repeat double-emit is a no-op there.
+    //   - `itemActivated` covers keyboard activation (Enter / Return
+    //     on the selected item) and, on some Qt styles, also fires
+    //     on double-click. `SelectSourceRow` is idempotent so a
+    //     duplicate emit from a style that routes both signals is a
+    //     harmless second navigate to the same row.
+    connect(mTree, &QTreeWidget::itemDoubleClicked, this, &AnchorsDock::OnItemActivated);
     connect(mTree, &QTreeWidget::itemActivated, this, &AnchorsDock::OnItemActivated);
     connect(mTree, &QTreeWidget::itemChanged, this, &AnchorsDock::OnItemChanged);
     connect(mTree, &QWidget::customContextMenuRequested, this, &AnchorsDock::OnContextMenuRequested);
@@ -405,8 +418,8 @@ void AnchorsDock::RefreshAlways()
         // the user-role data for the SourceRowForAnchorKey lookup.
         const QString displayPath = DisplayPathForLocator(mModel.data(), entry.locator);
         const QString filename = FilenameFromDisplayPath(displayPath);
-        const QString label = filename.isEmpty() ? QObject::tr("line %1").arg(entry.lineId)
-                                                 : QObject::tr("line %1 - %2").arg(entry.lineId).arg(filename);
+        const QString label = filename.isEmpty() ? tr("line %1").arg(entry.lineId)
+                                                 : tr("line %1 - %2").arg(entry.lineId).arg(filename);
         const QString noteText = QString::fromStdString(entry.note);
 
         auto *item = new QTreeWidgetItem(mTree);
@@ -498,14 +511,16 @@ bool AnchorsDock::eventFilter(QObject *watched, QEvent *event)
     // Qt "handle this as a normal key event, not a shortcut" -- which
     // makes the follow-up `KeyPress` land in `QAbstractItemView`'s
     // key handler, where `F2` triggers `EditKeyPressed`. Without this
-    // filter, `MainWindow`'s window-scope `Qt::Key_F2` /
-    // `Qt::SHIFT | Qt::Key_F2` actions ("Jump to (next|prev) anchor")
-    // would consume the event first and the inline editor advertised
-    // in the tree's edit triggers would never open.
+    // filter, `MainWindow`'s window-scope `Qt::Key_F2` action ("Jump
+    // to next anchor") would consume the event first and the inline
+    // editor advertised in the tree's edit triggers would never open.
     //
-    // Only shadow those two exact key combinations: every other
-    // shortcut still fires from within the dock (e.g. `Ctrl+F` for
-    // find, `Ctrl+Shift+A` for clear all anchors).
+    // Only shadow plain `F2`: every other shortcut still fires from
+    // within the dock. In particular `Shift+F2` ("Jump to previous
+    // anchor") is left alone so the user can jump backwards while
+    // focus lives in the tree; the tree's key handler doesn't do
+    // anything with `Shift+F2` on its own (`EditKeyPressed` matches
+    // plain `F2` only), so nothing is stolen.
     if (watched == mTree && event->type() == QEvent::ShortcutOverride)
     {
         // `static_cast` is the standard Qt idiom after a `type()`
@@ -514,8 +529,7 @@ bool AnchorsDock::eventFilter(QObject *watched, QEvent *event)
         // event-dispatch contract. NOLINT silences the generic
         // downcast lint without weakening the surrounding gate.
         auto *keyEvent = static_cast<QKeyEvent *>(event); // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
-        if (keyEvent->key() == Qt::Key_F2 &&
-            (keyEvent->modifiers() == Qt::NoModifier || keyEvent->modifiers() == Qt::ShiftModifier))
+        if (keyEvent->key() == Qt::Key_F2 && keyEvent->modifiers() == Qt::NoModifier)
         {
             keyEvent->accept();
             // Fall through so Qt still delivers the follow-up
@@ -542,8 +556,13 @@ int AnchorsDock::SourceRowForItem(const QTreeWidgetItem *item) const
 
 void AnchorsDock::OnItemActivated(QTreeWidgetItem *item, int column)
 {
-    // Only the anchor column jumps. Activating the note column via
-    // Enter is reserved for "commit edit" (Qt handles that itself).
+    // Wired to both `itemDoubleClicked` (primary mouse gesture) and
+    // `itemActivated` (keyboard Enter, plus some styles' double-
+    // click). Only the anchor column jumps: activating the note
+    // column via Enter is reserved for "commit edit" and a double-
+    // click on the note column opens the inline editor via the
+    // tree's `DoubleClicked` edit trigger -- rerouting that gesture
+    // to a jump would silently swallow the user's intent to type.
     if (column != COLUMN_ANCHOR)
     {
         return;
@@ -652,19 +671,19 @@ void AnchorsDock::OnContextMenuRequested(const QPoint &pos)
     const bool multiRemove = selectedKeys.size() > 1;
 
     QMenu menu(this);
-    const QAction *jumpAction = menu.addAction(QObject::tr("Jump to anchor"));
+    const QAction *jumpAction = menu.addAction(tr("Jump to anchor"));
     // Edit note: the F2 shortcut lives on the tree's edit triggers,
     // not on the menu item -- popup shortcuts wouldn't do anything
     // useful since the menu is already the focus target. Editing is
     // per-anchor (there's no meaningful "bulk edit note"); the label
     // always refers to the right-clicked row regardless of selection.
-    const QAction *editNoteAction = menu.addAction(QObject::tr("Edit note"));
+    const QAction *editNoteAction = menu.addAction(tr("Edit note"));
     // Retitle "Remove anchor" -> "Remove N anchors" when the click
     // targets a multi-selection so the user can see up front that
     // the action will fan out.
-    const QAction *removeAction =
-        menu.addAction(multiRemove ? QObject::tr("Remove %1 anchors").arg(selectedKeys.size())
-                                   : QObject::tr("Remove anchor"));
+    const QAction *removeAction = menu.addAction(
+        multiRemove ? tr("Remove %1 anchors").arg(selectedKeys.size()) : tr("Remove anchor")
+    );
     const QAction *picked = menu.exec(mTree->viewport()->mapToGlobal(pos));
     if (picked == nullptr)
     {

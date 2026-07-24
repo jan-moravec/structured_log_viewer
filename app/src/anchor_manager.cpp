@@ -109,7 +109,15 @@ std::string AnchorManager::SanitiseNote(std::string note)
     // Manual single-pass rewrite:
     //   - Collapse `\r\n` (Windows line endings) to one space so a
     //     pasted CRLF-terminated line doesn't leave a double gap.
-    //   - Fold lone `\r`, `\n`, `\t` into single spaces.
+    //   - Fold lone `\r`, `\n`, `\t`, `\v`, `\f`, and `\0` into
+    //     single spaces so pasted binary garbage or a stray form
+    //     feed can't break the one-line invariant / truncate the
+    //     downstream C-string conversion at the null.
+    //   - Fold UTF-8 encodings of U+2028 (LINE SEPARATOR,
+    //     `E2 80 A8`) and U+2029 (PARAGRAPH SEPARATOR, `E2 80 A9`)
+    //     into single spaces: `QLabel` with `Qt::PlainText` +
+    //     `wordWrap` renders them as line breaks in the record-
+    //     detail subline.
     //   - Trim leading/trailing spaces from the result.
     //
     // Interior runs of spaces are intentionally preserved so a user
@@ -130,9 +138,27 @@ std::string AnchorManager::SanitiseNote(std::string note)
             ++i; // consume the paired '\n'.
             continue;
         }
-        if (ch == '\r' || ch == '\n' || ch == '\t')
+        if (ch == '\r' || ch == '\n' || ch == '\t' || ch == '\v' || ch == '\f' || ch == '\0')
         {
             out.push_back(' ');
+            continue;
+        }
+        // U+2028 / U+2029: 3-byte sequences `E2 80 A8` / `E2 80 A9`.
+        // Fold before appending the lead byte so we can consume the
+        // whole sequence in one step; a truncated sequence at the
+        // tail falls through to the default push_back and is later
+        // dropped by the UTF-8 walkback in the length-cap branch.
+        constexpr unsigned char UTF8_2028_LEAD = 0xE2;
+        constexpr unsigned char UTF8_2028_CONT1 = 0x80;
+        constexpr unsigned char UTF8_2028_CONT2 = 0xA8;
+        constexpr unsigned char UTF8_2029_CONT2 = 0xA9;
+        if (static_cast<unsigned char>(ch) == UTF8_2028_LEAD && i + 2 < note.size() &&
+            static_cast<unsigned char>(note[i + 1]) == UTF8_2028_CONT1 &&
+            (static_cast<unsigned char>(note[i + 2]) == UTF8_2028_CONT2 ||
+             static_cast<unsigned char>(note[i + 2]) == UTF8_2029_CONT2))
+        {
+            out.push_back(' ');
+            i += 2; // consume the two continuation bytes.
             continue;
         }
         out.push_back(ch);
@@ -143,22 +169,44 @@ std::string AnchorManager::SanitiseNote(std::string note)
     const auto lastNonSpace = std::ranges::find_if_not(out.rbegin(), out.rend(), isSpace);
     out.erase(lastNonSpace.base(), out.end());
 
-    // Length cap. Truncation walks back to a UTF-8 lead byte so a
-    // note ending in a multi-byte code point (`é`, `→`, `🌱`) can't
-    // be sliced through the continuation bytes. The magic mask
-    // `0xC0`==`0x80` matches continuation bytes (top two bits `10`);
-    // ASCII bytes and lead bytes both fall outside that pattern.
-    // Bounded loop: at most 3 walkback steps for a maximal 4-byte
-    // UTF-8 sequence.
+    // Length cap. Truncation walks back to a UTF-8 sequence boundary
+    // so a note ending in a multi-byte code point (`é`, `→`, `🌱`)
+    // can't be sliced through the continuation bytes -- and cannot
+    // leave a lone lead byte at the tail either.
+    //
+    // Two-step walk:
+    //   1. If the first byte *outside* the cap (`out[MAX_NOTE_BYTES]`)
+    //      is a continuation byte, walk `truncateAt` back until it
+    //      points at a lead byte -- everything from that lead byte
+    //      onwards belongs to a sequence that would be truncated.
+    //   2. If the last kept byte (`out[truncateAt - 1]`) is itself
+    //      a lead byte (top two bits `11`), the sequence it starts
+    //      isn't complete within the cap; drop it too.
+    //
+    // Continuation-byte mask: `0xC0` == `0x80` (top two bits `10`).
+    // Lead-byte mask: `0xC0` == `0xC0` (top two bits `11`); ASCII
+    // bytes have top bit `0` and fall outside both patterns.
+    // Bounded: at most 3 walkback steps for a maximal 4-byte sequence.
     if (out.size() > MAX_NOTE_BYTES)
     {
-        std::size_t truncateAt = MAX_NOTE_BYTES;
-        constexpr unsigned char UTF8_CONT_MASK = 0xC0;
+        constexpr unsigned char UTF8_TOP_TWO_MASK = 0xC0;
         constexpr unsigned char UTF8_CONT_MARKER = 0x80;
+        constexpr unsigned char UTF8_LEAD_MARKER = 0xC0;
+        std::size_t truncateAt = MAX_NOTE_BYTES;
         while (truncateAt > 0 &&
-               (static_cast<unsigned char>(out[truncateAt]) & UTF8_CONT_MASK) == UTF8_CONT_MARKER)
+               (static_cast<unsigned char>(out[truncateAt]) & UTF8_TOP_TWO_MASK) == UTF8_CONT_MARKER)
         {
             --truncateAt;
+        }
+        // Step 2: if the last byte we're about to keep is a lead byte,
+        // its sequence continues past the cap -- drop the lead too.
+        if (truncateAt > 0)
+        {
+            const auto lastKept = static_cast<unsigned char>(out[truncateAt - 1]);
+            if ((lastKept & UTF8_TOP_TWO_MASK) == UTF8_LEAD_MARKER)
+            {
+                --truncateAt;
+            }
         }
         out.resize(truncateAt);
         // A trailing space could be exposed by the truncation cut;
@@ -290,15 +338,13 @@ std::optional<std::string> AnchorManager::NoteFor(const Key &key) const
     return it->second.note;
 }
 
-std::vector<loglib::LogConfiguration::AnchorEntry> AnchorManager::Entries() const
+std::vector<loglib::LogConfiguration::AnchorEntry> AnchorManager::BuildSortedEntries(bool dropRuntimeOnly) const
 {
     std::vector<loglib::LogConfiguration::AnchorEntry> out;
     out.reserve(mAnchors.size());
     for (const auto &[key, value] : mAnchors)
     {
-        // Drop runtime-only anchors (empty locator); their lineId
-        // isn't stable across sessions.
-        if (key.locator.empty())
+        if (dropRuntimeOnly && key.locator.empty())
         {
             continue;
         }
@@ -311,7 +357,6 @@ std::vector<loglib::LogConfiguration::AnchorEntry> AnchorManager::Entries() cons
             }
         );
     }
-    // Byte-stable on-disk order.
     std::ranges::sort(
         out, [](const loglib::LogConfiguration::AnchorEntry &lhs, const loglib::LogConfiguration::AnchorEntry &rhs) {
             if (lhs.locator != rhs.locator)
@@ -324,31 +369,14 @@ std::vector<loglib::LogConfiguration::AnchorEntry> AnchorManager::Entries() cons
     return out;
 }
 
+std::vector<loglib::LogConfiguration::AnchorEntry> AnchorManager::Entries() const
+{
+    return BuildSortedEntries(/*dropRuntimeOnly=*/true);
+}
+
 std::vector<loglib::LogConfiguration::AnchorEntry> AnchorManager::EntriesIncludingRuntimeOnly() const
 {
-    std::vector<loglib::LogConfiguration::AnchorEntry> out;
-    out.reserve(mAnchors.size());
-    for (const auto &[key, value] : mAnchors)
-    {
-        out.push_back(
-            loglib::LogConfiguration::AnchorEntry{
-                .locator = key.locator,
-                .lineId = key.lineId,
-                .colorIndex = value.colorIndex,
-                .note = value.note,
-            }
-        );
-    }
-    std::ranges::sort(
-        out, [](const loglib::LogConfiguration::AnchorEntry &lhs, const loglib::LogConfiguration::AnchorEntry &rhs) {
-            if (lhs.locator != rhs.locator)
-            {
-                return lhs.locator < rhs.locator;
-            }
-            return lhs.lineId < rhs.lineId;
-        }
-    );
-    return out;
+    return BuildSortedEntries(/*dropRuntimeOnly=*/false);
 }
 
 std::size_t AnchorManager::Count() const noexcept

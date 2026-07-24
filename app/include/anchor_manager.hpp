@@ -208,6 +208,14 @@ private:
         }
     };
 
+    /// Shared body of `Entries()` (save path) and
+    /// `EntriesIncludingRuntimeOnly()` (diagnostics / tests). When
+    /// @p dropRuntimeOnly is true, entries with an empty `locator`
+    /// are excluded; sort key is `(locator, lineId)` so on-disk
+    /// JSON stays byte-stable irrespective of hash-map iteration
+    /// order.
+    [[nodiscard]] std::vector<loglib::LogConfiguration::AnchorEntry> BuildSortedEntries(bool dropRuntimeOnly) const;
+
     std::unordered_map<Key, Value, KeyHash> mAnchors;
 };
 

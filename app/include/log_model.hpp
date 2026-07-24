@@ -508,10 +508,18 @@ private:
     /// emit @p roles across every visible row matching @p key.
     void EmitRolesForAnchorKey(const AnchorManager::Key &key, const QList<int> &roles);
 
-    /// Drop anchors on rows `[0, dropCount)` before the table's
-    /// `EvictPrefixRows` runs, so anchors can't dangle past FIFO
-    /// retention.
-    void DropAnchorsForEvictionPrefix(int dropCount);
+    /// Collect the anchor keys pinned to rows `[0, dropCount)`
+    /// while those rows still exist. Callers apply the returned
+    /// keys to `AnchorManager::RemoveAnchors` *after* the rows have
+    /// been evicted -- emitting `anchorsReset` before the
+    /// `endRemoveRows` would drive listeners (record-detail dock,
+    /// overview rail) to read data from rows that are one step
+    /// away from disappearing.
+    ///
+    /// `noexcept`: `AnchorKeyForRow` itself is `noexcept`; the
+    /// only allocating step (the vector's push_back) is safe to
+    /// let terminate on OOM since we're on the paint / batch path.
+    [[nodiscard]] std::vector<AnchorManager::Key> CollectAnchorKeysInPrefix(int dropCount) const;
 
     /// Emit `dataChanged` (Background + Foreground) across the whole
     /// visible table. Used on `anchorsReset`.
