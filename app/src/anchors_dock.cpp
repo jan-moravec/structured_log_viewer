@@ -222,6 +222,47 @@ public:
     }
 };
 
+/// Populate the anchor column (icon + label + key-carrying user-role
+/// data) and both column tooltips of @p item from @p entry. The
+/// note column text is deliberately NOT touched here: surgical
+/// callers (`OnAnchorChanged`) invoke this on items whose note may
+/// be under active inline edit, and rewriting `COLUMN_NOTE` would
+/// clobber the in-flight text. The full-rebuild path
+/// (`RefreshAlways`) sets the note cell separately, immediately
+/// after this call.
+void PopulateAnchorCellForEntry(
+    QTreeWidgetItem *item,
+    const loglib::LogConfiguration::AnchorEntry &entry,
+    const LogModel *model,
+    ThemeControl *theme,
+    int swatchPx
+)
+{
+    const QString displayPath = DisplayPathForLocator(model, entry.locator);
+    const QString filename = FilenameFromDisplayPath(displayPath);
+    const QString label = filename.isEmpty() ? AnchorsDock::tr("line %1").arg(entry.lineId)
+                                             : AnchorsDock::tr("line %1 - %2").arg(entry.lineId).arg(filename);
+    const QString noteText = QString::fromStdString(entry.note);
+
+    item->setIcon(COLUMN_ANCHOR, SwatchIconFor(theme, entry.colorIndex, swatchPx));
+    item->setText(COLUMN_ANCHOR, label);
+    item->setData(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE, QString::fromStdString(entry.locator));
+    item->setData(COLUMN_ANCHOR, ANCHOR_KEY_LINE_ID_ROLE, QVariant::fromValue<qulonglong>(entry.lineId));
+
+    // `ItemIsEditable` is item-wide (Qt has no per-column flag API
+    // on `QTreeWidgetItem`); per-column editability is enforced by
+    // the `NoEditDelegate` installed on `COLUMN_ANCHOR`.
+    item->setFlags(item->flags() | Qt::ItemIsEditable);
+
+    // Tooltip rendering contract: wrap in `<qt>` to force Qt's
+    // rich-text mode. Without the explicit wrapper Qt's
+    // `mightBeRichText` heuristic misfires on paths / notes that
+    // contain `&` or `>` but no `<`.
+    const QString tooltipHtml = BuildAnchorTooltipHtml(entry.colorIndex, entry.lineId, displayPath, noteText);
+    item->setToolTip(COLUMN_ANCHOR, tooltipHtml);
+    item->setToolTip(COLUMN_NOTE, tooltipHtml);
+}
+
 } // namespace
 
 AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *theme, QWidget *parent)
@@ -279,12 +320,24 @@ AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *
     // though colour didn't change.
     if (mAnchors != nullptr)
     {
-        connect(mAnchors, &AnchorManager::anchorChanged, this, [this](const AnchorManager::Key &) { Refresh(); });
+        // `anchorChanged` -- add / remove / recolour on a single
+        // key -- takes the surgical `OnAnchorChanged` path so an
+        // unrelated mutation (streaming FIFO evicting *another*
+        // anchor, Ctrl+1..8 on the main table, ...) doesn't clear
+        // the tree and drop an in-flight inline note edit on some
+        // other row.
+        connect(mAnchors, &AnchorManager::anchorChanged, this, &AnchorsDock::OnAnchorChanged);
         // `anchorNoteChanged` gets its own scoped handler so a note
         // keystroke commit rewrites just the affected row rather
         // than rebuilding the whole tree (`RefreshAlways` is O(N)
         // per commit -- fine at ten anchors, less fine at hundreds).
         connect(mAnchors, &AnchorManager::anchorNoteChanged, this, &AnchorsDock::OnAnchorNoteChanged);
+        // Bulk mutations (`ClearAll`, `Replace`, multi-key
+        // set/remove) still take the full-rebuild path. If the user
+        // was editing a note when a bulk reset arrives their edit
+        // is lost, but bulk resets are user-initiated (Clear all,
+        // config load) or coarse-grained (multi-anchor FIFO
+        // eviction) -- rare during active editing.
         connect(mAnchors, &AnchorManager::anchorsReset, this, [this]() { Refresh(); });
     }
 
@@ -414,41 +467,11 @@ void AnchorsDock::RefreshAlways()
     const auto entries = mAnchors->Entries();
     for (const auto &entry : entries)
     {
-        // Show the display-case path; keep the canonical locator in
-        // the user-role data for the SourceRowForAnchorKey lookup.
-        const QString displayPath = DisplayPathForLocator(mModel.data(), entry.locator);
-        const QString filename = FilenameFromDisplayPath(displayPath);
-        const QString label = filename.isEmpty() ? tr("line %1").arg(entry.lineId)
-                                                 : tr("line %1 - %2").arg(entry.lineId).arg(filename);
-        const QString noteText = QString::fromStdString(entry.note);
-
         auto *item = new QTreeWidgetItem(mTree);
-        item->setIcon(COLUMN_ANCHOR, SwatchIconFor(mTheme.data(), entry.colorIndex, swatchPx));
-        item->setText(COLUMN_ANCHOR, label);
-        item->setText(COLUMN_NOTE, noteText);
-        item->setData(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE, QString::fromStdString(entry.locator));
-        item->setData(COLUMN_ANCHOR, ANCHOR_KEY_LINE_ID_ROLE, QVariant::fromValue<qulonglong>(entry.lineId));
-
-        // `ItemIsEditable` is item-wide (Qt has no per-column flag
-        // API on `QTreeWidgetItem`); per-column editability is
-        // enforced by the `NoEditDelegate` installed on
-        // `COLUMN_ANCHOR`, which refuses to build an editor.
-        // `OnItemChanged` also drops any `COLUMN_ANCHOR` mutation as
-        // a belt-and-braces guard.
-        item->setFlags(item->flags() | Qt::ItemIsEditable);
-
-        // Tooltip rendering contract: wrap in `<qt>` to force
-        // Qt's rich-text mode. Without the explicit wrapper Qt's
-        // `mightBeRichText` heuristic misfires on paths / notes that
-        // contain `&` or `>` but no `<`, and the escaped entities
-        // (`&amp;`, `&gt;`) would render literally. Every
-        // user-controlled substring is `toHtmlEscaped`; line breaks
-        // are spelled `<br/>` because HTML collapses literal `\n`
-        // to whitespace. Shared with `OnAnchorNoteChanged`'s surgical
-        // path via `BuildAnchorTooltipHtml`.
-        const QString tooltipHtml = BuildAnchorTooltipHtml(entry.colorIndex, entry.lineId, displayPath, noteText);
-        item->setToolTip(COLUMN_ANCHOR, tooltipHtml);
-        item->setToolTip(COLUMN_NOTE, tooltipHtml);
+        PopulateAnchorCellForEntry(item, entry, mModel.data(), mTheme.data(), swatchPx);
+        // Full rebuild path owns the note cell too (no in-flight
+        // edit can exist -- we just cleared the tree).
+        item->setText(COLUMN_NOTE, QString::fromStdString(entry.note));
     }
 
     if (mClearAllButton != nullptr)
@@ -515,12 +538,16 @@ bool AnchorsDock::eventFilter(QObject *watched, QEvent *event)
     // to next anchor") would consume the event first and the inline
     // editor advertised in the tree's edit triggers would never open.
     //
-    // Only shadow plain `F2`: every other shortcut still fires from
-    // within the dock. In particular `Shift+F2` ("Jump to previous
-    // anchor") is left alone so the user can jump backwards while
-    // focus lives in the tree; the tree's key handler doesn't do
-    // anything with `Shift+F2` on its own (`EditKeyPressed` matches
-    // plain `F2` only), so nothing is stolen.
+    // Only shadow plain `F2`, and only when the note column is the
+    // current column: focus on the anchor column has no editor to
+    // open (the `NoEditDelegate` refuses), so the user's F2 should
+    // still fire the window-scope "Jump to next anchor" shortcut
+    // rather than being silently swallowed. `Shift+F2` ("Jump to
+    // previous anchor") is left alone regardless of column so the
+    // user can always jump backwards while focus lives in the tree;
+    // the tree's key handler doesn't do anything with `Shift+F2`
+    // (`EditKeyPressed` matches plain `F2` only), so nothing is
+    // stolen.
     if (watched == mTree && event->type() == QEvent::ShortcutOverride)
     {
         // `static_cast` is the standard Qt idiom after a `type()`
@@ -529,7 +556,8 @@ bool AnchorsDock::eventFilter(QObject *watched, QEvent *event)
         // event-dispatch contract. NOLINT silences the generic
         // downcast lint without weakening the surrounding gate.
         auto *keyEvent = static_cast<QKeyEvent *>(event); // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
-        if (keyEvent->key() == Qt::Key_F2 && keyEvent->modifiers() == Qt::NoModifier)
+        if (keyEvent->key() == Qt::Key_F2 && keyEvent->modifiers() == Qt::NoModifier &&
+            mTree->currentColumn() == COLUMN_NOTE)
         {
             keyEvent->accept();
             // Fall through so Qt still delivers the follow-up
@@ -740,6 +768,152 @@ void AnchorsDock::OnClearAllClicked()
     }
 }
 
+void AnchorsDock::OnAnchorChanged(const AnchorManager::Key &key)
+{
+    // Buried docks skip the update; a visibility flip drives a full
+    // `RefreshAlways`, so we don't need to catch up here.
+    if (!IsVisibleForRefresh() || mTree == nullptr || mAnchors.isNull())
+    {
+        return;
+    }
+
+    // Locate the currently-rendered item for @p key (linear scan;
+    // same rationale as `OnAnchorNoteChanged`). Row index is
+    // recomputed via `indexOfTopLevelItem` only if we actually
+    // need to remove it, so the common update / insert branches
+    // stay off the second scan.
+    QTreeWidgetItem *existing = nullptr;
+    const QString keyLocator = QString::fromStdString(key.locator);
+    const auto keyLineId = static_cast<qulonglong>(key.lineId);
+    for (int row = 0; row < mTree->topLevelItemCount(); ++row)
+    {
+        QTreeWidgetItem *candidate = mTree->topLevelItem(row);
+        if (candidate == nullptr)
+        {
+            continue;
+        }
+        if (candidate->data(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE).toString() == keyLocator &&
+            candidate->data(COLUMN_ANCHOR, ANCHOR_KEY_LINE_ID_ROLE).toULongLong() == keyLineId)
+        {
+            existing = candidate;
+            break;
+        }
+    }
+
+    const auto colourOpt = mAnchors->ColorFor(key);
+
+    // Removal branch: anchor is gone. Delete the tree item if we
+    // have one; leave every other row alone so an in-flight inline
+    // note edit on some *other* item survives an unrelated eviction.
+    if (!colourOpt.has_value())
+    {
+        if (existing != nullptr)
+        {
+            // Suppress the `itemChanged` cascade that `takeTopLevelItem`
+            // can emit; we're removing the row, not editing it.
+            ++mSuppressItemChanged;
+            const auto suppressGuard = qScopeGuard([this] { --mSuppressItemChanged; });
+            const int idx = mTree->indexOfTopLevelItem(existing);
+            if (idx >= 0)
+            {
+                delete mTree->takeTopLevelItem(idx);
+            }
+        }
+        if (mClearAllButton != nullptr)
+        {
+            mClearAllButton->setEnabled(!mAnchors->Empty());
+        }
+        return;
+    }
+
+    // Runtime-only anchors (empty locator = stream / stdin rows) are
+    // dropped from the tree by `Entries()`, so mirror the filter here
+    // too. Ensures a runtime-only anchor added via `SetAnchor` never
+    // shows up via the surgical path either.
+    if (key.locator.empty())
+    {
+        return;
+    }
+
+    // Build a synthetic entry so `PopulateAnchorCellForEntry` can
+    // do the icon / label / tooltip work without duplicating it.
+    // The note text stays out of this update on purpose (see
+    // `PopulateAnchorCellForEntry`'s doc): on a recolour the note
+    // hasn't changed, and on an add the new item starts with an
+    // empty note cell by default -- exactly what `SetAnchor` seeds.
+    loglib::LogConfiguration::AnchorEntry entry{
+        .locator = key.locator,
+        .lineId = key.lineId,
+        .colorIndex = *colourOpt,
+        .note = mAnchors->NoteFor(key).value_or(std::string{}),
+    };
+
+    // Suppress `itemChanged` re-entry during our writes: the
+    // `setText` / `setIcon` calls below can fire it, and without
+    // suppression we'd feed the new label back into `SetAnchorNote`.
+    ++mSuppressItemChanged;
+    const auto suppressGuard = qScopeGuard([this] { --mSuppressItemChanged; });
+
+    const int swatchPx = SwatchIconPixels(this);
+
+    if (existing != nullptr)
+    {
+        // Update branch: refresh icon + label + key data + tooltip
+        // in place. Note cell text is intentionally left alone so
+        // an in-flight inline edit on this row survives a colour
+        // flip fired from elsewhere (Ctrl+1..8 on the main table,
+        // theme change, ...). The note text stays in sync with the
+        // manager via the separate `OnAnchorNoteChanged` path.
+        PopulateAnchorCellForEntry(existing, entry, mModel.data(), mTheme.data(), swatchPx);
+        if (mClearAllButton != nullptr)
+        {
+            mClearAllButton->setEnabled(!mAnchors->Empty());
+        }
+        return;
+    }
+
+    // Insert branch: build a fresh item and drop it at the sorted
+    // position `Entries()` would use (`(locator, lineId)` ascending)
+    // so the tree order stays consistent with the save file layout
+    // and with what a follow-up full rebuild would produce.
+    //
+    // Comparison uses `std::string` on the canonical locator (same
+    // as `BuildSortedEntries`) rather than the QString stored in
+    // the user role, because the two orderings diverge on non-BMP
+    // code points. `QString::compare` walks UTF-16 code units;
+    // `std::string::operator<` walks UTF-8 bytes.
+    int insertPos = mTree->topLevelItemCount();
+    for (int row = 0; row < mTree->topLevelItemCount(); ++row)
+    {
+        QTreeWidgetItem *candidate = mTree->topLevelItem(row);
+        if (candidate == nullptr)
+        {
+            continue;
+        }
+        const std::string candLocator =
+            candidate->data(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE).toString().toStdString();
+        const auto candLineId = candidate->data(COLUMN_ANCHOR, ANCHOR_KEY_LINE_ID_ROLE).toULongLong();
+        const bool candGreater = (candLocator > key.locator) ||
+                                 (candLocator == key.locator && candLineId > static_cast<qulonglong>(key.lineId));
+        if (candGreater)
+        {
+            insertPos = row;
+            break;
+        }
+    }
+    auto *newItem = new QTreeWidgetItem();
+    PopulateAnchorCellForEntry(newItem, entry, mModel.data(), mTheme.data(), swatchPx);
+    // On the insert path we own the note cell too (there can't be
+    // an in-flight editor on a row that doesn't exist yet).
+    newItem->setText(COLUMN_NOTE, QString::fromStdString(entry.note));
+    mTree->insertTopLevelItem(insertPos, newItem);
+
+    if (mClearAllButton != nullptr)
+    {
+        mClearAllButton->setEnabled(!mAnchors->Empty());
+    }
+}
+
 void AnchorsDock::OnAnchorNoteChanged(const AnchorManager::Key &key)
 {
     // Buried docks skip the update; a visibility flip drives a full
@@ -808,8 +982,7 @@ void AnchorsDock::OnAnchorNoteChanged(const AnchorManager::Key &key)
     target->setToolTip(COLUMN_NOTE, tooltipHtml);
 }
 
-#ifdef LOGAPP_BUILD_TESTING
-void AnchorsDock::BeginEditNoteForTest()
+void AnchorsDock::BeginEditingCurrentNote()
 {
     if (mTree == nullptr)
     {
@@ -820,6 +993,11 @@ void AnchorsDock::BeginEditNoteForTest()
     {
         return;
     }
+    // Force the current column to `COLUMN_NOTE`: F4 can be triggered
+    // with focus on either column, and `editItem` on `COLUMN_ANCHOR`
+    // silently no-ops (the `NoEditDelegate` refuses to build an
+    // editor). Explicitly retargeting the column mirrors what a
+    // user's double-click / F2 on the note column would do.
+    mTree->setCurrentItem(item, COLUMN_NOTE);
     mTree->editItem(item, COLUMN_NOTE);
 }
-#endif

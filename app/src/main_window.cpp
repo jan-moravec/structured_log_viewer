@@ -45,10 +45,12 @@
 #include <loglib/udp_server_producer.hpp>
 
 #include <QAbstractProxyModel>
+#include <QAbstractSpinBox>
 #include <QApplication>
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QCollator>
+#include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QFileDialog>
@@ -59,8 +61,6 @@
 #include <QFutureWatcher>
 #include <QGuiApplication>
 #include <QHeaderView>
-#include <QAbstractSpinBox>
-#include <QComboBox>
 #include <QInputDialog>
 #include <QKeySequence>
 #include <QLabel>
@@ -8205,7 +8205,13 @@ void MainWindow::AppendAnchorActionsToRowMenu(QMenu *menu, int sourceRow)
     // `EditAnchorNoteForKey` surfaces as a status-bar hint.
     if (rightClickedKey.has_value())
     {
-        const AnchorManager::Key capturedKey = *rightClickedKey;
+        // Bind by reference into the lambda's by-value capture so
+        // clang-tidy sees the copy happen at capture time; a
+        // separate `const AnchorManager::Key capturedKey = ...`
+        // temporary trips `performance-unnecessary-copy-initialization`
+        // even though the intent (copy into the closure so the
+        // action outlives `rightClickedKey`) is identical.
+        const AnchorManager::Key &capturedKey = *rightClickedKey;
         connect(editNoteAction, &QAction::triggered, this, [this, capturedKey]() {
             EditAnchorNoteForKey(capturedKey);
         });
@@ -8349,14 +8355,26 @@ void MainWindow::EditAnchorNoteOnCurrentRow()
     // on the internal `QLineEdit` and the first check catches it;
     // this branch is the belt-and-braces path for styles that grant
     // focus to the container itself.
-    if (const QWidget *focused = QApplication::focusWidget();
-        focused != nullptr &&
+    const QWidget *focused = QApplication::focusWidget();
+    if (focused != nullptr &&
         (qobject_cast<const QLineEdit *>(focused) != nullptr ||
          qobject_cast<const QTextEdit *>(focused) != nullptr ||
          qobject_cast<const QPlainTextEdit *>(focused) != nullptr ||
          qobject_cast<const QAbstractSpinBox *>(focused) != nullptr ||
          qobject_cast<const QComboBox *>(focused) != nullptr))
     {
+        return;
+    }
+    // When focus lives inside the AnchorsDock (its tree, the "Clear
+    // all" button, ...), redirect F4 to the dock's own inline
+    // editor rather than opening a modal `QInputDialog` on the main
+    // table's current row -- those two rows can differ, and popping
+    // a modal for the *other* row is a jarring UX. The dock's F2 /
+    // double-click gesture already opens the same editor; F4 here
+    // is the keyboard alternative that works from any column.
+    if (mAnchorsDock != nullptr && focused != nullptr && mAnchorsDock->isAncestorOf(focused))
+    {
+        mAnchorsDock->BeginEditingCurrentNote();
         return;
     }
     const QModelIndex current = mTableView->currentIndex();

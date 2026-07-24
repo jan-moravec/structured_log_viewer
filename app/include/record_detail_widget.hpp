@@ -41,6 +41,18 @@ constexpr int RECORD_DETAIL_EMPTY_PLACEHOLDER_ROLE = Qt::UserRole + 1;
 ///   - `anchorNote`                   : one-line note (empty when the
 ///                                       anchor has no note attached).
 ///
+/// Live-view contract: the on-screen `RecordDetailDock` re-runs
+/// `BuildRecordDetailContent` on every `AnchorManager` signal
+/// (`anchorChanged`, `anchorNoteChanged`, `anchorsReset`), so its
+/// anchor subline / "Copy as key/value" payload track the manager
+/// in real time. Popped-out **snapshot windows** hold a frozen
+/// `RecordDetailContent` by design (they're for side-by-side
+/// comparison, so re-reading the source would defeat the point);
+/// their anchor subline reflects the anchor state at *pin* time,
+/// not the current state. Users editing a note in the main window
+/// should re-open the snapshot to refresh it -- there is no live
+/// subscription in the snapshot path.
+///
 /// All strings are owned, so a snapshot keeps rendering after the
 /// underlying `LogModel` mutates or goes away.
 struct RecordDetailContent

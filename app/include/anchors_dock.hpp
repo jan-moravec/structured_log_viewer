@@ -39,6 +39,14 @@ public:
     /// QPA fixtures never get a `visibilityChanged` and default to false.
     [[nodiscard]] bool IsVisibleForRefresh() const noexcept;
 
+    /// Open the inline note editor on the current tree item's note
+    /// column. No-op when the tree has no current item. Used by
+    /// `MainWindow::EditAnchorNoteOnCurrentRow` to redirect F4 while
+    /// focus lives in the dock -- opening a modal `QInputDialog`
+    /// there would be inconsistent with the inline-edit gesture
+    /// (F2 / double-click) that the dock already advertises.
+    void BeginEditingCurrentNote();
+
 signals:
     /// User asked to navigate to source-model row @p sourceRow.
     /// Argument is -1 when the anchor key has no live row.
@@ -88,7 +96,12 @@ public:
 
     /// Trigger the inline note editor on the currently focused item,
     /// bypassing the F2 shortcut path (which needs an event loop).
-    void BeginEditNoteForTest();
+    /// Kept as a thin forwarder to `BeginEditingCurrentNote` so
+    /// existing tests keep compiling.
+    void BeginEditNoteForTest()
+    {
+        BeginEditingCurrentNote();
+    }
 #endif
 
 private:
@@ -103,6 +116,28 @@ private:
     void OnItemChanged(QTreeWidgetItem *item, int column);
     void OnContextMenuRequested(const QPoint &pos);
     void OnClearAllClicked();
+
+    /// Surgical single-key refresh for `anchorChanged`. Handles the
+    /// three transitions in place:
+    ///   * add    -- new anchor, no matching item yet: insert one at
+    ///               the sorted position `Entries()` would use.
+    ///   * remove -- anchor gone, item still present: remove that
+    ///               item; leave every other row (and any in-flight
+    ///               inline note editor on them) untouched.
+    ///   * update -- anchor still present, item still present:
+    ///               refresh the swatch icon, label, tooltip, and
+    ///               key-role data. The `COLUMN_NOTE` text is NOT
+    ///               touched -- notes flow through the separate
+    ///               `OnAnchorNoteChanged` path so a colour flip on
+    ///               a row whose note is being edited can't clobber
+    ///               the user's in-flight text.
+    ///
+    /// Replaces the previous wiring that unconditionally called
+    /// `Refresh()` (which clears + rebuilds the whole tree and
+    /// destroys any open editor) so unrelated anchor mutations
+    /// (streaming FIFO eviction of another row, Ctrl+1..8 on the
+    /// main table, ...) don't drop the currently-focused note edit.
+    void OnAnchorChanged(const AnchorManager::Key &key);
 
     /// Surgical note-only refresh: find the item matching @p key and
     /// rewrite just its note column (text + tooltip) in place. Skips

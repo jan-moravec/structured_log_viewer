@@ -109,10 +109,14 @@ std::string AnchorManager::SanitiseNote(std::string note)
     // Manual single-pass rewrite:
     //   - Collapse `\r\n` (Windows line endings) to one space so a
     //     pasted CRLF-terminated line doesn't leave a double gap.
-    //   - Fold lone `\r`, `\n`, `\t`, `\v`, `\f`, and `\0` into
-    //     single spaces so pasted binary garbage or a stray form
-    //     feed can't break the one-line invariant / truncate the
-    //     downstream C-string conversion at the null.
+    //   - Fold every C0 control byte (0x00-0x1F) and DEL (0x7F) into
+    //     a single space. That includes the obvious offenders
+    //     (`\r`, `\n`, `\t`, `\v`, `\f`, `\0`) plus the less-obvious
+    //     ones (`\a` = BEL, `\b` = backspace, `ESC`, ...). None of
+    //     these belong in a one-line annotation, and `\0` in
+    //     particular would silently truncate any downstream
+    //     C-string conversion (some tooltip paths, clipboard
+    //     payload assembly).
     //   - Fold UTF-8 encodings of U+2028 (LINE SEPARATOR,
     //     `E2 80 A8`) and U+2029 (PARAGRAPH SEPARATOR, `E2 80 A9`)
     //     into single spaces: `QLabel` with `Qt::PlainText` +
@@ -127,18 +131,20 @@ std::string AnchorManager::SanitiseNote(std::string note)
     // the helper allocation-free on the shrink path and dodges the
     // QString round-trip so it's safe to call from non-Qt code
     // paths (e.g. `Replace` on config load).
+    constexpr unsigned char C0_UPPER_BOUND = 0x1F; // last C0 control byte.
+    constexpr unsigned char ASCII_DEL = 0x7F;
     std::string out;
     out.reserve(note.size());
     for (std::size_t i = 0; i < note.size(); ++i)
     {
-        const char ch = note[i];
+        const auto ch = static_cast<unsigned char>(note[i]);
         if (ch == '\r' && i + 1 < note.size() && note[i + 1] == '\n')
         {
             out.push_back(' ');
             ++i; // consume the paired '\n'.
             continue;
         }
-        if (ch == '\r' || ch == '\n' || ch == '\t' || ch == '\v' || ch == '\f' || ch == '\0')
+        if (ch <= C0_UPPER_BOUND || ch == ASCII_DEL)
         {
             out.push_back(' ');
             continue;
@@ -152,7 +158,7 @@ std::string AnchorManager::SanitiseNote(std::string note)
         constexpr unsigned char UTF8_2028_CONT1 = 0x80;
         constexpr unsigned char UTF8_2028_CONT2 = 0xA8;
         constexpr unsigned char UTF8_2029_CONT2 = 0xA9;
-        if (static_cast<unsigned char>(ch) == UTF8_2028_LEAD && i + 2 < note.size() &&
+        if (ch == UTF8_2028_LEAD && i + 2 < note.size() &&
             static_cast<unsigned char>(note[i + 1]) == UTF8_2028_CONT1 &&
             (static_cast<unsigned char>(note[i + 2]) == UTF8_2028_CONT2 ||
              static_cast<unsigned char>(note[i + 2]) == UTF8_2029_CONT2))
@@ -161,7 +167,7 @@ std::string AnchorManager::SanitiseNote(std::string note)
             i += 2; // consume the two continuation bytes.
             continue;
         }
-        out.push_back(ch);
+        out.push_back(static_cast<char>(ch));
     }
     const auto isSpace = [](char ch) { return ch == ' '; };
     const auto firstNonSpace = std::ranges::find_if_not(out, isSpace);
@@ -286,8 +292,15 @@ std::size_t AnchorManager::Replace(const std::vector<loglib::LogConfiguration::A
     std::unordered_map<Key, Value, KeyHash> previous;
     previous.swap(mAnchors);
 
-    std::size_t clampedCount = 0;
+    // Track per-key clamp status so the returned count matches the
+    // final (last-wins) persisted state. A duplicate-key JSON with
+    // an out-of-range colour followed by a valid one must NOT be
+    // reported as clamped: the anchor that ends up in `mAnchors`
+    // has a valid slot. Symmetrically, a valid entry followed by
+    // an out-of-range one still counts as clamped.
+    std::unordered_map<Key, bool, KeyHash> clampedByKey;
     mAnchors.reserve(entries.size());
+    clampedByKey.reserve(entries.size());
     for (const loglib::LogConfiguration::AnchorEntry &entry : entries)
     {
         // Clamp unknown palette slots (newer schema / hand-edited)
@@ -296,13 +309,17 @@ std::size_t AnchorManager::Replace(const std::vector<loglib::LogConfiguration::A
         // colour is trivially reassignable via `Ctrl+1..8`. Count
         // the remap so callers can surface a "downgraded" hint.
         auto colorIndex = entry.colorIndex;
-        if (colorIndex >= loglib::ANCHOR_PALETTE_SIZE)
+        const bool clamped = colorIndex >= loglib::ANCHOR_PALETTE_SIZE;
+        if (clamped)
         {
             colorIndex = static_cast<uint8_t>(loglib::ANCHOR_PALETTE_SIZE - 1);
-            ++clampedCount;
         }
+        Key key{.locator = entry.locator, .lineId = entry.lineId};
+        // `insert_or_assign` mirrors last-wins for the map; the
+        // parallel `clampedByKey` map mirrors it for the counter.
+        clampedByKey.insert_or_assign(key, clamped);
         mAnchors.insert_or_assign(
-            Key{.locator = entry.locator, .lineId = entry.lineId},
+            std::move(key),
             // Sanitise on load: a hand-edited JSON with embedded
             // newlines/tabs would otherwise break the "one line"
             // invariant that the QLabel + tooltip rendering paths
@@ -310,6 +327,8 @@ std::size_t AnchorManager::Replace(const std::vector<loglib::LogConfiguration::A
             Value{.colorIndex = colorIndex, .note = SanitiseNote(entry.note)}
         );
     }
+    const std::size_t clampedCount =
+        static_cast<std::size_t>(std::ranges::count_if(clampedByKey, [](const auto &pair) { return pair.second; }));
 
     if (mAnchors != previous)
     {

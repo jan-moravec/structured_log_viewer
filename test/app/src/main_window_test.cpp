@@ -5552,6 +5552,274 @@ private slots:
         model->EndStreaming(false);
     }
 
+    // Regression for the "F2 swallowed on anchor column" issue:
+    // the event filter only intercepts plain F2 when the current
+    // column is the note column. On the anchor column there's no
+    // editor to open (the `NoEditDelegate` refuses), so the window-
+    // scope "Jump to next anchor" shortcut must be free to fire.
+    void TestAnchorsDockF2ShortcutOverridePassesThroughOnAnchorColumn()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *dock = mWindow->findChild<AnchorsDock *>();
+        QVERIFY(dock != nullptr);
+        auto *tree = dock->TreeForTest();
+        QVERIFY(tree != nullptr);
+        dock->show();
+        emit dock->visibilityChanged(true);
+
+        const AnchorManager::Key k{.locator = "c:/logs/a.json", .lineId = 1};
+        QVERIFY(anchors->SetAnchor(k, 1));
+        dock->RefreshForTest();
+        QCOMPARE(tree->topLevelItemCount(), 1);
+
+        // Park focus on the anchor column (0). The event filter
+        // should let plain F2 propagate to the window-scope shortcut
+        // rather than accepting it and shadowing the jump action.
+        tree->setCurrentItem(tree->topLevelItem(0), /*column=*/0);
+        QKeyEvent f2AnchorCol(QEvent::ShortcutOverride, Qt::Key_F2, Qt::NoModifier);
+        QApplication::sendEvent(tree, &f2AnchorCol);
+        QVERIFY2(
+            !f2AnchorCol.isAccepted(),
+            "F2 must NOT be intercepted on the anchor column -- the NoEditDelegate refuses to build "
+            "an editor there, so shadowing the shortcut would silently swallow 'Jump to next anchor'"
+        );
+
+        // Flip to the note column and verify F2 IS intercepted so
+        // the inline editor still opens. Together these two checks
+        // prove the column-gated behaviour.
+        tree->setCurrentItem(tree->topLevelItem(0), /*column=*/1);
+        QKeyEvent f2NoteCol(QEvent::ShortcutOverride, Qt::Key_F2, Qt::NoModifier);
+        QApplication::sendEvent(tree, &f2NoteCol);
+        QVERIFY2(
+            f2NoteCol.isAccepted(),
+            "F2 must be intercepted on the note column so the tree's edit trigger runs instead of "
+            "the window-scope jump shortcut"
+        );
+
+        anchors->ClearAll();
+        QCoreApplication::processEvents();
+        dock->hide();
+    }
+
+    // Regression for the "in-flight inline edit clobbered by
+    // unrelated anchor mutation" issue: `anchorChanged` on some
+    // *other* anchor must not clear the tree or invalidate the
+    // item currently under edit. The surgical `OnAnchorChanged`
+    // path leaves untouched rows alone; a full-rebuild path would
+    // relocate every item and destroy any open editor.
+    void TestAnchorsDockUnrelatedAnchorChangeDoesNotRebuildTree()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *dock = mWindow->findChild<AnchorsDock *>();
+        QVERIFY(dock != nullptr);
+        auto *tree = dock->TreeForTest();
+        QVERIFY(tree != nullptr);
+        dock->show();
+        emit dock->visibilityChanged(true);
+
+        const AnchorManager::Key k1{.locator = "c:/logs/a.json", .lineId = 1};
+        const AnchorManager::Key k2{.locator = "c:/logs/a.json", .lineId = 2};
+        QVERIFY(anchors->SetAnchor(k1, 1));
+        QVERIFY(anchors->SetAnchor(k2, 2));
+        dock->RefreshForTest();
+        QCOMPARE(tree->topLevelItemCount(), 2);
+
+        // Snapshot the item pointers so we can prove they survive
+        // unrelated mutations.
+        QTreeWidgetItem *item1Before = tree->topLevelItem(0);
+        QTreeWidgetItem *item2Before = tree->topLevelItem(1);
+        QVERIFY(item1Before != nullptr && item2Before != nullptr);
+
+        // Recolour k2 -- an unrelated single-anchor mutation. This
+        // used to call the full-rebuild path and drop both items
+        // in favour of freshly-allocated ones.
+        QVERIFY(anchors->SetAnchor(k2, 5));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(tree->topLevelItemCount(), 2);
+        QCOMPARE(tree->topLevelItem(0), item1Before);
+        QCOMPARE(tree->topLevelItem(1), item2Before);
+
+        // Now remove k2. Again single-key -> surgical path. Item 1
+        // (unrelated) must keep its identity.
+        QVERIFY(anchors->RemoveAnchor(k2));
+        QCoreApplication::processEvents();
+        QCOMPARE(tree->topLevelItemCount(), 1);
+        QCOMPARE(tree->topLevelItem(0), item1Before);
+
+        // Add a new anchor -- surgical insert path. Item 1 must
+        // still keep its identity across the insert.
+        const AnchorManager::Key k3{.locator = "c:/logs/b.json", .lineId = 3};
+        QVERIFY(anchors->SetAnchor(k3, 3));
+        QCoreApplication::processEvents();
+        QCOMPARE(tree->topLevelItemCount(), 2);
+        // Sorted insert: `a.json` < `b.json`, so item1 stays at row 0.
+        QCOMPARE(tree->topLevelItem(0), item1Before);
+
+        anchors->ClearAll();
+        QCoreApplication::processEvents();
+        dock->hide();
+    }
+
+    // Regression for the F4-in-AnchorsDock redirect: pressing F4
+    // while focus lives inside the dock must open the dock's inline
+    // editor on the currently-selected item, not pop a modal
+    // `QInputDialog` for whatever row the main table happens to
+    // have selected. The two rows can differ, and the modal path
+    // is inconsistent with the F2 / double-click gesture the dock
+    // already advertises.
+    void TestF4WhileFocusInAnchorsDockOpensInlineEditor()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *dock = mWindow->findChild<AnchorsDock *>();
+        QVERIFY(dock != nullptr);
+        auto *tree = dock->TreeForTest();
+        QVERIFY(tree != nullptr);
+        mWindow->show();
+        mWindow->activateWindow();
+        dock->show();
+        emit dock->visibilityChanged(true);
+
+        const AnchorManager::Key k{.locator = "c:/logs/a.json", .lineId = 42};
+        QVERIFY(anchors->SetAnchor(k, 1));
+        dock->RefreshForTest();
+        QCOMPARE(tree->topLevelItemCount(), 1);
+        tree->setCurrentItem(tree->topLevelItem(0), /*column=*/0);
+        tree->setFocus(Qt::OtherFocusReason);
+        QCoreApplication::processEvents();
+        QVERIFY(tree->hasFocus() || dock->isAncestorOf(QApplication::focusWidget()));
+
+        auto *editNoteAction = mWindow->findChild<QAction *>(QStringLiteral("actionEditRowAnchorNote"));
+        QVERIFY(editNoteAction != nullptr);
+        editNoteAction->trigger();
+        QCoreApplication::processEvents();
+
+        // No modal dialog spawned -- the redirect happened.
+        QVERIFY2(
+            QApplication::activeModalWidget() == nullptr,
+            "F4 in AnchorsDock must not open a modal QInputDialog on the main table's row"
+        );
+        // The tree's state should be `EditingState` (editor open on
+        // the note column) or the current column should have been
+        // retargeted to `COLUMN_NOTE` for the follow-up edit.
+        QCOMPARE(tree->currentColumn(), /*COLUMN_NOTE=*/1);
+
+        // Close the editor without committing so subsequent tests
+        // inherit a quiescent tree.
+        tree->setCurrentItem(nullptr);
+        QCoreApplication::processEvents();
+
+        anchors->ClearAll();
+        QCoreApplication::processEvents();
+        dock->hide();
+        mWindow->hide();
+        QCoreApplication::processEvents();
+    }
+
+    // Regression for the `AnchorManager::Replace` clamp counter
+    // double-count on duplicate keys. `Replace` runs `insert_or_assign`
+    // (last-wins) but used to `++clampedCount` unconditionally per
+    // entry, so a JSON payload with the *same* key appearing twice
+    // -- once out-of-range, once valid -- would report a clamp
+    // even though the persisted final state is valid. Symmetrically,
+    // a valid-then-clamped duplicate must still count as clamped.
+    void TestAnchorManagerReplaceClampCountDedupesByKey()
+    {
+        AnchorManager manager;
+
+        // Case A: same key twice, out-of-range first, valid second.
+        // Final persisted colour is valid, so `clampedCount` = 0.
+        std::vector<loglib::LogConfiguration::AnchorEntry> aInput;
+        aInput.push_back(loglib::LogConfiguration::AnchorEntry{
+            .locator = "c:/x.json", .lineId = 1, .colorIndex = 99, .note = "first"
+        });
+        aInput.push_back(loglib::LogConfiguration::AnchorEntry{
+            .locator = "c:/x.json", .lineId = 1, .colorIndex = 3, .note = "second"
+        });
+        QCOMPARE(manager.Replace(aInput), std::size_t{0});
+        QCOMPARE(manager.Count(), std::size_t{1});
+        QCOMPARE(
+            manager.ColorFor({.locator = "c:/x.json", .lineId = 1}).value_or(255U),
+            static_cast<std::uint8_t>(3)
+        );
+
+        // Case B: same key twice, valid first, out-of-range second.
+        // Final persisted colour is the clamped one, so count = 1.
+        std::vector<loglib::LogConfiguration::AnchorEntry> bInput;
+        bInput.push_back(loglib::LogConfiguration::AnchorEntry{
+            .locator = "c:/x.json", .lineId = 1, .colorIndex = 3, .note = "first"
+        });
+        bInput.push_back(loglib::LogConfiguration::AnchorEntry{
+            .locator = "c:/x.json", .lineId = 1, .colorIndex = 99, .note = "second"
+        });
+        QCOMPARE(manager.Replace(bInput), std::size_t{1});
+        QCOMPARE(manager.Count(), std::size_t{1});
+        QCOMPARE(
+            manager.ColorFor({.locator = "c:/x.json", .lineId = 1}).value_or(255U),
+            static_cast<std::uint8_t>(loglib::ANCHOR_PALETTE_SIZE - 1)
+        );
+
+        // Case C: three duplicates: valid, out-of-range, valid.
+        // Only the final state counts (valid), so count = 0.
+        std::vector<loglib::LogConfiguration::AnchorEntry> cInput;
+        cInput.push_back(loglib::LogConfiguration::AnchorEntry{
+            .locator = "c:/x.json", .lineId = 1, .colorIndex = 1, .note = ""
+        });
+        cInput.push_back(loglib::LogConfiguration::AnchorEntry{
+            .locator = "c:/x.json", .lineId = 1, .colorIndex = 42, .note = ""
+        });
+        cInput.push_back(loglib::LogConfiguration::AnchorEntry{
+            .locator = "c:/x.json", .lineId = 1, .colorIndex = 4, .note = ""
+        });
+        QCOMPARE(manager.Replace(cInput), std::size_t{0});
+
+        // Case D: two distinct keys, both clamped -> count = 2
+        // (proves we still count per-key, not just once).
+        std::vector<loglib::LogConfiguration::AnchorEntry> dInput;
+        dInput.push_back(loglib::LogConfiguration::AnchorEntry{
+            .locator = "c:/x.json", .lineId = 1, .colorIndex = 50, .note = ""
+        });
+        dInput.push_back(loglib::LogConfiguration::AnchorEntry{
+            .locator = "c:/x.json", .lineId = 2, .colorIndex = 51, .note = ""
+        });
+        QCOMPARE(manager.Replace(dInput), std::size_t{2});
+    }
+
+    // Regression for the broadened `SanitiseNote` control-byte
+    // fold. The v1 implementation only folded the "obvious"
+    // whitespace controls (`\r`, `\n`, `\t`, `\v`, `\f`, `\0`);
+    // arbitrary C0 bytes (BEL, backspace, ESC, ...) and DEL fell
+    // through unchanged and could produce invisible garbage in the
+    // one-line label. The new fold covers all of `[0x00-0x1F, 0x7F]`.
+    void TestSanitiseNoteFoldsAllC0AndDelBytes()
+    {
+        // BEL (0x07), backspace (0x08), ESC (0x1B), unit separator
+        // (0x1F), and DEL (0x7F) are the interesting cases.
+        std::string input = "a\x07"
+                            "b\x08"
+                            "c\x1B"
+                            "d\x1F"
+                            "e\x7F"
+                            "f";
+        const auto out = AnchorManager::SanitiseNote(std::move(input));
+        QCOMPARE(out, std::string{"a b c d e f"});
+
+        // Printable ASCII must pass through untouched even though
+        // some codepoints (0x20-0x7E) sit adjacent to the folded
+        // ranges.
+        QCOMPARE(AnchorManager::SanitiseNote(std::string{" ~!\"#$%&'"}), std::string{"~!\"#$%&'"});
+
+        // High bytes (0x80+) are UTF-8 continuation bytes; they
+        // must not be folded so multi-byte characters survive.
+        // Cyrillic "тест" is a good check: no ASCII escape hatches
+        // to accidentally match.
+        const std::string cyrillic = "\xd1\x82\xd0\xb5\xd1\x81\xd1\x82";
+        QCOMPARE(AnchorManager::SanitiseNote(cyrillic), cyrillic);
+    }
+
     // Runtime-only anchors (empty locator = stream / stdin rows) are
     // dropped by `AnchorManager::Entries` on save; the AnchorsDock
     // also skips them so they never appear in the tree. That means
