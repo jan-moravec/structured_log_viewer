@@ -5919,6 +5919,141 @@ private slots:
         QCoreApplication::processEvents();
     }
 
+    // Regression: the AnchorsDock "Clear all" button must enable
+    // itself as soon as the manager becomes non-empty -- including
+    // when the very first anchor added is *runtime-only* (empty
+    // locator, i.e. a streaming / stdin row). Runtime-only anchors
+    // are filtered out of the tree by `Entries()`, so the surgical
+    // `OnAnchorChanged` insert path takes an early `return`. That
+    // early return used to skip the button-state update, leaving
+    // the button stuck at "disabled" even though `AnchorManager::
+    // ClearAll` would still fire and wipe the anchor. The fix
+    // refreshes `mClearAllButton->setEnabled(!Empty())` before the
+    // early return; this test pins the invariant.
+    void TestAnchorsDockClearAllButtonEnablesForRuntimeOnlyAnchor()
+    {
+        auto *anchors = mWindow->Anchors();
+        QVERIFY(anchors != nullptr);
+        auto *dock = mWindow->findChild<AnchorsDock *>();
+        QVERIFY(dock != nullptr);
+        auto *tree = dock->TreeForTest();
+        QVERIFY(tree != nullptr);
+        auto *clearBtn = dock->ClearAllButtonForTest();
+        QVERIFY(clearBtn != nullptr);
+
+        // Force the dock visible so the surgical `OnAnchorChanged`
+        // path runs (buried docks skip the update and rely on a
+        // later `visibilityChanged` flip to catch up).
+        dock->show();
+        emit dock->visibilityChanged(true);
+
+        // Precondition: no anchors, button disabled.
+        QVERIFY(anchors->Empty());
+        QVERIFY(!clearBtn->isEnabled());
+
+        // Add a runtime-only anchor (empty locator). The tree stays
+        // empty by design -- but the button MUST enable because
+        // `!Empty()` is now true and `Ctrl+Shift+A` / clicking the
+        // button will clear the runtime anchor via `ClearAll`.
+        const AnchorManager::Key runtimeKey{.locator = "", .lineId = 4242};
+        QVERIFY(anchors->SetAnchor(runtimeKey, 1));
+        QCoreApplication::processEvents();
+        QCOMPARE(tree->topLevelItemCount(), 0);
+        QVERIFY2(
+            clearBtn->isEnabled(),
+            "Clear all button must enable when the first anchor added is runtime-only "
+            "(empty locator) so the user has a UI path to clear it"
+        );
+
+        // Removing the runtime anchor drops the button back to
+        // disabled -- same code path that handles regular anchors.
+        QVERIFY(anchors->RemoveAnchor(runtimeKey));
+        QCoreApplication::processEvents();
+        QCOMPARE(tree->topLevelItemCount(), 0);
+        QVERIFY(!clearBtn->isEnabled());
+
+        dock->hide();
+    }
+
+    // Regression for #2 of the review: `F4` (Edit anchor note on
+    // current row) is a `Qt::WindowShortcut` and must not clobber
+    // native F4 behaviour in embedded text-input widgets such as
+    // `QComboBox` (F4 opens the drop-down on Windows) or
+    // `QAbstractSpinBox` (F4 steps a field on some styles).
+    //
+    // The fix intercepts `QEvent::ShortcutOverride` in
+    // `MainWindow::event()` and accepts it when the focus widget is
+    // a text-input surface. That vetoes the shortcut so Qt sends a
+    // normal `KeyPress` to the focus widget instead of firing the
+    // "Edit anchor note" action. This test drives the mechanism
+    // directly (sending a synthetic ShortcutOverride event via
+    // `QApplication::sendEvent`) rather than relying on Qt's
+    // internal shortcut dispatcher, which is finicky under
+    // offscreen QPA.
+    void TestF4ShortcutOverrideAcceptedOnTextInputFocus()
+    {
+        // Show the window so focus assignment sticks under
+        // offscreen QPA (an un-shown widget's focus request is a
+        // silent no-op).
+        mWindow->show();
+        mWindow->activateWindow();
+        QCoreApplication::processEvents();
+
+        // Scratch QLineEdit as the text-input focus target.
+        auto scratch = std::make_unique<QLineEdit>(mWindow);
+        scratch->show();
+        scratch->setFocus(Qt::OtherFocusReason);
+        QCoreApplication::processEvents();
+        QVERIFY(QApplication::focusWidget() == scratch.get());
+
+        // Dispatch a ShortcutOverride for F4 no-modifier to the
+        // main window (mimicking Qt's bubble-up path from the
+        // focus widget). The handler must accept it.
+        QKeyEvent f4Override(QEvent::ShortcutOverride, Qt::Key_F4, Qt::NoModifier);
+        QApplication::sendEvent(mWindow, &f4Override);
+        QVERIFY2(
+            f4Override.isAccepted(),
+            "MainWindow must accept F4 ShortcutOverride while focus is on a QLineEdit so the "
+            "shortcut is vetoed and the focus widget gets a plain KeyPress"
+        );
+
+        // Other keys pass through unchanged: F5 (or any random key)
+        // must NOT be intercepted -- we only shadow F4.
+        QKeyEvent f5Override(QEvent::ShortcutOverride, Qt::Key_F5, Qt::NoModifier);
+        QApplication::sendEvent(mWindow, &f5Override);
+        QVERIFY2(
+            !f5Override.isAccepted(),
+            "MainWindow must only intercept F4 ShortcutOverride, not arbitrary keys"
+        );
+
+        // Modifier variants pass through too: Ctrl+F4 is a common
+        // "close tab" shortcut in other apps; we must not swallow
+        // it just because the base key matches.
+        QKeyEvent ctrlF4Override(QEvent::ShortcutOverride, Qt::Key_F4, Qt::ControlModifier);
+        QApplication::sendEvent(mWindow, &ctrlF4Override);
+        QVERIFY2(
+            !ctrlF4Override.isAccepted(),
+            "MainWindow must not intercept modified F4 ShortcutOverride"
+        );
+
+        // Move focus off the QLineEdit (main window itself). F4
+        // must now pass through so the QAction shortcut can fire.
+        scratch->clearFocus();
+        mWindow->setFocus(Qt::OtherFocusReason);
+        QCoreApplication::processEvents();
+        QKeyEvent f4OnWindow(QEvent::ShortcutOverride, Qt::Key_F4, Qt::NoModifier);
+        QApplication::sendEvent(mWindow, &f4OnWindow);
+        QVERIFY2(
+            !f4OnWindow.isAccepted(),
+            "MainWindow must not intercept F4 ShortcutOverride when focus is not a text input -- "
+            "the F4 QAction must be free to fire"
+        );
+
+        scratch.reset();
+        mWindow->hide();
+        QCoreApplication::processEvents();
+    }
+
     // Surgical refresh: a note-only edit rewrites just the affected
     // item (text + tooltip) in place instead of clearing the tree
     // and rebuilding every row. Verified by comparing the item

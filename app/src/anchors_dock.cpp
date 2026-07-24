@@ -531,12 +531,26 @@ bool AnchorsDock::eventFilter(QObject *watched, QEvent *event)
 {
     // Qt dispatches a `ShortcutOverride` to the focused widget before
     // matching a shortcut. `event->accept()` on that dispatch tells
-    // Qt "handle this as a normal key event, not a shortcut" -- which
-    // makes the follow-up `KeyPress` land in `QAbstractItemView`'s
-    // key handler, where `F2` triggers `EditKeyPressed`. Without this
-    // filter, `MainWindow`'s window-scope `Qt::Key_F2` action ("Jump
-    // to next anchor") would consume the event first and the inline
-    // editor advertised in the tree's edit triggers would never open.
+    // Qt "the focus widget wants this key, don't fire the shortcut"
+    // -- which makes Qt send a follow-up standalone `KeyPress` to the
+    // focus widget instead. In `QAbstractItemView`'s key handler,
+    // that `KeyPress` triggers `EditKeyPressed` (F2 -> open editor).
+    //
+    // Without this filter, `MainWindow`'s window-scope `Qt::Key_F2`
+    // action ("Jump to next anchor") would consume the event via the
+    // shortcut path and the inline editor advertised in the tree's
+    // edit triggers would never open.
+    //
+    // Return value: `true` means "the filter handled this event; the
+    // watched object does NOT receive this specific event". That is
+    // safe here because the *shortcut-matching decision* is driven by
+    // `event->isAccepted()`, not by whether the watched received the
+    // ShortcutOverride: once we've flipped the accepted flag, Qt's
+    // shortcut dispatcher sees the veto and delivers a fresh
+    // `KeyPress` to the focus widget. We could equally `return false`
+    // -- both paths work because `accept()` is what matters -- but
+    // `true` matches the convention that a filter which acted on the
+    // event stops further processing at this level.
     //
     // Only shadow plain `F2`, and only when the note column is the
     // current column: focus on the anchor column has no editor to
@@ -560,9 +574,6 @@ bool AnchorsDock::eventFilter(QObject *watched, QEvent *event)
             mTree->currentColumn() == COLUMN_NOTE)
         {
             keyEvent->accept();
-            // Fall through so Qt still delivers the follow-up
-            // `KeyPress` to the tree; we've only vetoed the shortcut
-            // interpretation.
             return true;
         }
     }
@@ -829,9 +840,20 @@ void AnchorsDock::OnAnchorChanged(const AnchorManager::Key &key)
     // Runtime-only anchors (empty locator = stream / stdin rows) are
     // dropped from the tree by `Entries()`, so mirror the filter here
     // too. Ensures a runtime-only anchor added via `SetAnchor` never
-    // shows up via the surgical path either.
+    // shows up via the surgical path either. We still refresh the
+    // "Clear all" enable state: `mAnchors->Empty()` counts runtime-
+    // only anchors too, and the button drives `AnchorManager::ClearAll`
+    // (which wipes them). Skipping this update leaves the button
+    // stuck at its previous state -- notably disabled when the very
+    // first anchor added to an otherwise-empty manager is runtime-
+    // only, which is exactly the streaming / stdin case where
+    // `Ctrl+Shift+A` is the only other way out.
     if (key.locator.empty())
     {
+        if (mClearAllButton != nullptr)
+        {
+            mClearAllButton->setEnabled(!mAnchors->Empty());
+        }
         return;
     }
 
@@ -993,6 +1015,14 @@ void AnchorsDock::BeginEditingCurrentNote()
     {
         return;
     }
+    // Force focus onto the tree before opening the editor. F4 can
+    // reach this from the "Clear all" button or the tree header, in
+    // which case Qt would open the inline editor without giving it
+    // keyboard focus on some styles -- the editor appears but every
+    // keystroke goes to the previous focus target. Explicit
+    // `setFocus` guarantees the editor grabs the keyboard on all
+    // platforms.
+    mTree->setFocus(Qt::ShortcutFocusReason);
     // Force the current column to `COLUMN_NOTE`: F4 can be triggered
     // with focus on either column, and `editItem` on `COLUMN_ANCHOR`
     // silently no-ops (the `NoEditDelegate` refuses to build an
