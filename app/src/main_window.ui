@@ -54,6 +54,9 @@
     </property>
     <addaction name="actionCopy"/>
     <addaction name="actionFind"/>
+    <addaction name="separator"/>
+    <addaction name="actionGotoLine"/>
+    <addaction name="actionGotoTimestamp"/>
    </widget>
    <widget class="QMenu" name="menuView">
     <property name="title">
@@ -177,6 +180,28 @@
    </property>
    <property name="shortcut">
     <string>Ctrl+F</string>
+   </property>
+  </action>
+  <action name="actionGotoLine">
+   <property name="text">
+    <string>Go to Line...</string>
+   </property>
+   <property name="toolTip">
+    <string>Jump to a source-model row number (1-based; the first line in the file is line 1).</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+G</string>
+   </property>
+  </action>
+  <action name="actionGotoTimestamp">
+   <property name="text">
+    <string>Go to Timestamp...</string>
+   </property>
+   <property name="toolTip">
+    <string>Jump to the first row at or after a given timestamp. Accepts formats the timestamp column already parses, plus relative shortcuts like &quot;-1h&quot; or &quot;-30m&quot;.</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+Shift+G</string>
    </property>
   </action>
   <action name="actionAddFilter">

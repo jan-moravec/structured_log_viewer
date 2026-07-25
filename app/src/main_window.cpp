@@ -62,6 +62,7 @@
 #include <QGuiApplication>
 #include <QHeaderView>
 #include <QInputDialog>
+#include <QIntValidator>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
@@ -74,6 +75,7 @@
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QProgressDialog>
+#include <QRegularExpression>
 #include <QScopeGuard>
 #include <QSettings>
 #include <QSignalBlocker>
@@ -929,6 +931,11 @@ MainWindow::MainWindow(
     // Tooltip reflects `Find`'s smart toggle behaviour.
     ui->actionFind->setToolTip(tr("Find in logs. Press again to close."));
     connect(ui->actionFind, &QAction::triggered, this, &MainWindow::Find);
+
+    // Goto Line / Goto Timestamp. Both actions live in the Edit
+    // menu (`Ctrl+G` and `Ctrl+Shift+G`); see item 8 in `ROADMAP.md`.
+    connect(ui->actionGotoLine, &QAction::triggered, this, &MainWindow::GotoLine);
+    connect(ui->actionGotoTimestamp, &QAction::triggered, this, &MainWindow::GotoTimestamp);
 
     connect(ui->actionAddFilter, &QAction::triggered, this, [this]() { AddFilter(QUuid::createUuid().toString()); });
     connect(ui->actionClearAllFilters, &QAction::triggered, this, &MainWindow::ClearAllFilters);
@@ -6334,6 +6341,264 @@ void MainWindow::SelectSourceRow(int sourceRow)
     mTableView->scrollTo(proxyIdx, QAbstractItemView::PositionAtCenter);
     mTableView->selectionModel()->select(proxyIdx, QItemSelectionModel::Select | QItemSelectionModel::Rows);
     mTableView->selectionModel()->setCurrentIndex(proxyIdx, QItemSelectionModel::NoUpdate);
+}
+
+void MainWindow::GotoLine()
+{
+    if (mModel == nullptr || mModel->rowCount() == 0)
+    {
+        statusBar()->showMessage(tr("No log loaded."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+
+    const int rowCount = mModel->rowCount();
+
+    // Instantiated `QInputDialog` (not the static `getInt` helper)
+    // so we can attach a `QIntValidator` to the line edit and lean
+    // on Qt's built-in accept-blocking rather than re-validating
+    // after `exec`. Range is 1..rowCount; lines are 1-based for
+    // parity with every editor's "Go to Line" dialog.
+    QInputDialog dialog(this);
+    dialog.setWindowTitle(tr("Go to Line"));
+    dialog.setLabelText(
+        tr("Line number (1 - %1):").arg(QLocale::system().toString(rowCount))
+    );
+    dialog.setInputMode(QInputDialog::TextInput);
+    dialog.setTextEchoMode(QLineEdit::Normal);
+    if (auto *editor = dialog.findChild<QLineEdit *>())
+    {
+        editor->setValidator(new QIntValidator(1, rowCount, &dialog));
+        editor->setPlaceholderText(tr("e.g. 12345"));
+    }
+    if (dialog.exec() != QDialog::Accepted)
+    {
+        return;
+    }
+
+    bool ok = false;
+    const int oneBased = dialog.textValue().toInt(&ok);
+    if (!ok || oneBased < 1 || oneBased > rowCount)
+    {
+        // The validator normally blocks Accept on out-of-range
+        // input, but paranoia: if the model shrank while the modal
+        // was open (streaming eviction, session swap), surface it
+        // instead of silently no-oping.
+        statusBar()->showMessage(
+            tr("Line %1 is out of range (1 - %2).")
+                .arg(dialog.textValue(), QLocale::system().toString(rowCount)),
+            STATUS_BAR_MESSAGE_TIMEOUT_MS
+        );
+        return;
+    }
+
+    SelectSourceRow(oneBased - 1);
+}
+
+std::optional<int64_t> MainWindow::ParseGotoTimestampInput(
+    const QString &input,
+    const std::vector<std::string> &columnParseFormats,
+    std::chrono::system_clock::time_point now
+)
+{
+    const QString trimmed = input.trimmed();
+    if (trimmed.isEmpty())
+    {
+        return std::nullopt;
+    }
+
+    // Relative shortcut first: `-Nh` / `-Nm` (case-insensitive,
+    // whitespace-tolerant). Evaluated against @p now so tests can
+    // pin the clock; production wires `system_clock::now()`.
+    // ROADMAP item 8 spells out these two units explicitly; adding
+    // more (like `-Ns`, `-Nd`) is left for future contributions.
+    static const QRegularExpression RELATIVE_SHORTCUT_RE(
+        QStringLiteral(R"(^-\s*(\d+)\s*([hm])\s*$)"), QRegularExpression::CaseInsensitiveOption
+    );
+    const auto relMatch = RELATIVE_SHORTCUT_RE.match(trimmed);
+    if (relMatch.hasMatch())
+    {
+        bool ok = false;
+        const qulonglong n = relMatch.captured(1).toULongLong(&ok);
+        if (!ok)
+        {
+            return std::nullopt;
+        }
+        const QChar unit = relMatch.captured(2).at(0).toLower();
+        const int64_t nSigned = static_cast<int64_t>(n);
+        // Common type for the ternary: convert both branches to
+        // microseconds so `std::chrono::hours` and `minutes` share
+        // a representation.
+        const auto offset = unit == QLatin1Char('h')
+                                ? std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::hours(nSigned))
+                                : std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::minutes(nSigned));
+        const auto target = now - offset;
+        return std::chrono::duration_cast<std::chrono::microseconds>(target.time_since_epoch()).count();
+    }
+
+    // Absolute path: try every parse format the column itself
+    // accepts, then two ISO fallbacks so a column with an empty
+    // `parseFormats` list (auto-detected `Type::Time`) still
+    // resolves the two forms users routinely paste.
+    const std::string stdInput = trimmed.toStdString();
+    std::vector<std::string> candidates;
+    candidates.reserve(columnParseFormats.size() + 2);
+    for (const auto &fmt : columnParseFormats)
+    {
+        candidates.push_back(fmt);
+    }
+    for (const auto *fallback : {"%FT%T", "%F %T"})
+    {
+        if (std::find(candidates.begin(), candidates.end(), std::string{fallback}) == candidates.end())
+        {
+            candidates.emplace_back(fallback);
+        }
+    }
+
+    loglib::TimestampParseScratch scratch;
+    for (const auto &fmt : candidates)
+    {
+        loglib::TimeStamp parsed{};
+        if (loglib::TryParseTimestamp(stdInput, fmt, loglib::ClassifyTimestampFormat(fmt), scratch, parsed))
+        {
+            return parsed.time_since_epoch().count();
+        }
+    }
+    return std::nullopt;
+}
+
+void MainWindow::GotoTimestamp()
+{
+    if (mModel == nullptr || mModel->rowCount() == 0)
+    {
+        statusBar()->showMessage(tr("No log loaded."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+
+    const auto &config = mModel->Configuration();
+    const int timeCol = loglib::FirstTimeColumnIndex(config);
+    if (timeCol < 0)
+    {
+        statusBar()->showMessage(tr("This log has no timestamp column."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+
+    QInputDialog dialog(this);
+    dialog.setWindowTitle(tr("Go to Timestamp"));
+    dialog.setLabelText(tr("Timestamp:"));
+    dialog.setInputMode(QInputDialog::TextInput);
+    dialog.setTextEchoMode(QLineEdit::Normal);
+    if (auto *editor = dialog.findChild<QLineEdit *>())
+    {
+        editor->setPlaceholderText(tr("YYYY-MM-DD HH:MM:SS or -1h / -30m"));
+    }
+    if (dialog.exec() != QDialog::Accepted)
+    {
+        return;
+    }
+
+    const std::optional<int64_t> targetMicros = ParseGotoTimestampInput(
+        dialog.textValue(),
+        config.columns[static_cast<std::size_t>(timeCol)].parseFormats,
+        std::chrono::system_clock::now()
+    );
+    if (!targetMicros.has_value())
+    {
+        statusBar()->showMessage(tr("Could not parse timestamp."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+
+    const int sourceRow = FindFirstRowAtOrAfter(timeCol, *targetMicros);
+    if (sourceRow < 0)
+    {
+        statusBar()->showMessage(tr("No row at or after that time."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+    SelectSourceRow(sourceRow);
+}
+
+int MainWindow::FindFirstRowAtOrAfter(int timeCol, int64_t targetMicros) const
+{
+    if (mModel == nullptr || mSortFilterProxyModel == nullptr || mRowOrderProxyModel == nullptr)
+    {
+        return -1;
+    }
+    const int sourceRowCount = mModel->rowCount();
+    if (timeCol < 0 || sourceRowCount == 0)
+    {
+        return -1;
+    }
+
+    // Cell -> epoch µs. Missing / unpromoted timestamps sort as
+    // `-inf` so `lower_bound` stays monotonic and a linear scan
+    // never picks them as "first at or after".
+    const auto tsFor = [this, timeCol](int sourceRow) -> std::optional<int64_t>
+    {
+        return loglib::AsEpochMicroseconds(
+            mModel->Table().GetValue(static_cast<std::size_t>(sourceRow), static_cast<std::size_t>(timeCol))
+        );
+    };
+
+    if (mSortFilterProxyModel->SortColumn() < 0)
+    {
+        // Binary-search source rows in place -- allocating an
+        // `iota`d indices vector for a 10M-row file would burn
+        // 40 MiB and blow the ROADMAP `< 100 ms` budget. File
+        // order is (practically always) timestamp-ordered; ROADMAP
+        // item 8 declares this the fast path.
+        //
+        // Invariant: `hi` is the first row known to satisfy
+        // `ts >= target`, or `sourceRowCount` if none does yet.
+        // Rows with missing timestamps are treated as `-inf`
+        // (they stay left of every real timestamp, preserving
+        // monotonicity).
+        int lo = 0;
+        int hi = sourceRowCount;
+        while (lo < hi)
+        {
+            const int mid = lo + ((hi - lo) / 2);
+            const auto ts = tsFor(mid);
+            if (!ts.has_value() || *ts < targetMicros)
+            {
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid;
+            }
+        }
+        if (lo >= sourceRowCount)
+        {
+            return -1;
+        }
+        return lo;
+    }
+
+    // User sort active on a different (or the same) column. Do a
+    // linear scan in display order and return the first proxy
+    // row whose source timestamp qualifies -- respects the user's
+    // chosen "first".
+    const int proxyRowCount = mSortFilterProxyModel->rowCount();
+    for (int proxyRow = 0; proxyRow < proxyRowCount; ++proxyRow)
+    {
+        const QModelIndex proxyIdx = mSortFilterProxyModel->index(proxyRow, 0);
+        const QModelIndex midIdx = mSortFilterProxyModel->mapToSource(proxyIdx);
+        if (!midIdx.isValid())
+        {
+            continue;
+        }
+        const QModelIndex sourceIdx = mRowOrderProxyModel->mapToSource(midIdx);
+        if (!sourceIdx.isValid())
+        {
+            continue;
+        }
+        const int sourceRow = sourceIdx.row();
+        const auto ts = tsFor(sourceRow);
+        if (ts.has_value() && *ts >= targetMicros)
+        {
+            return sourceRow;
+        }
+    }
+    return -1;
 }
 
 void MainWindow::JumpToFirstRowInBucket(std::size_t bucketIndex)

@@ -124,6 +124,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -4496,6 +4497,166 @@ private slots:
         QCOMPARE(view->currentIndex().row(), 3);
 
         model->EndStreaming(false);
+    }
+
+    // Goto Line: `ParseGotoTimestampInput` is exercised by the
+    // dedicated parser tests below; here we assert only that
+    // `SelectSourceRow` reaches the requested row when the caller
+    // arrives via the same 1-based path the modal takes. Line 12
+    // (1-based) maps to source row 11.
+    void TestMainWindowGotoLineJumpsToRequestedSourceRow()
+    {
+        auto *model = mWindow->Model();
+        auto *view = mWindow->findChild<LogTableView *>();
+        QVERIFY(view != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 20, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 20);
+
+        view->selectionModel()->clearSelection();
+        view->setCurrentIndex(QModelIndex{});
+
+        // Same 1-based -> 0-based flip the slot performs on the
+        // dialog's textValue().
+        const int oneBased = 12;
+        mWindow->SelectSourceRow(oneBased - 1);
+        QCoreApplication::processEvents();
+        QCOMPARE(view->currentIndex().row(), 11);
+        QCOMPARE(view->selectionModel()->selectedRows().count(), 1);
+        QCOMPARE(view->selectionModel()->selectedRows().first().row(), 11);
+
+        model->EndStreaming(false);
+    }
+
+    // Pure parser: relative shortcuts `-Nh` and `-Nm` (case-
+    // insensitive, whitespace-tolerant) resolve against the pinned
+    // `now`. The unit chart lives in ROADMAP item 8; longer/shorter
+    // units are explicitly out of scope for v1.
+    void TestParseGotoTimestampInputAcceptsRelativeShortcuts()
+    {
+        const std::chrono::system_clock::time_point kNow =
+            std::chrono::system_clock::time_point{std::chrono::microseconds{1'700'000'000'000'000LL}};
+        const int64_t kNowMicros = 1'700'000'000'000'000LL;
+
+        const std::vector<std::string> noFormats;
+
+        const auto oneHourAgo = MainWindow::ParseGotoTimestampInput(QStringLiteral("-1h"), noFormats, kNow);
+        QVERIFY(oneHourAgo.has_value());
+        QCOMPARE(*oneHourAgo, kNowMicros - (3600LL * 1'000'000LL));
+
+        const auto thirtyMinAgo = MainWindow::ParseGotoTimestampInput(QStringLiteral("-30m"), noFormats, kNow);
+        QVERIFY(thirtyMinAgo.has_value());
+        QCOMPARE(*thirtyMinAgo, kNowMicros - (30LL * 60LL * 1'000'000LL));
+
+        // Case-insensitive, tolerant of internal whitespace.
+        const auto capitalH = MainWindow::ParseGotoTimestampInput(QStringLiteral("- 2 H"), noFormats, kNow);
+        QVERIFY(capitalH.has_value());
+        QCOMPARE(*capitalH, kNowMicros - (2LL * 3600LL * 1'000'000LL));
+    }
+
+    // Pure parser: the column's own `parseFormats` are tried first;
+    // this covers the ROADMAP acceptance bar "every format the
+    // table's timestamp column already parses".
+    void TestParseGotoTimestampInputHonoursColumnParseFormats()
+    {
+        const std::chrono::system_clock::time_point kNow =
+            std::chrono::system_clock::time_point{std::chrono::microseconds{1'700'000'000'000'000LL}};
+
+        // Slash-separated custom format that would fail the ISO
+        // fallbacks. `%FT%T` = "%Y-%m-%dT%H:%M:%S" and `%F %T` =
+        // "%Y-%m-%d %H:%M:%S".
+        const std::vector<std::string> columnFormats{"%Y/%m/%d %H:%M:%S"};
+        const auto parsed =
+            MainWindow::ParseGotoTimestampInput(QStringLiteral("2024/04/28 12:34:56"), columnFormats, kNow);
+        QVERIFY(parsed.has_value());
+        QVERIFY(*parsed > 0);
+
+        // ISO fallback works even with no column formats.
+        const auto isoT = MainWindow::ParseGotoTimestampInput(QStringLiteral("2024-04-28T12:34:56"), {}, kNow);
+        QVERIFY(isoT.has_value());
+        QVERIFY(*isoT > 0);
+
+        const auto isoSpace = MainWindow::ParseGotoTimestampInput(QStringLiteral("2024-04-28 12:34:56"), {}, kNow);
+        QVERIFY(isoSpace.has_value());
+        QCOMPARE(*isoT, *isoSpace);
+    }
+
+    // Pure parser: empty and garbage strings return nullopt; the
+    // slot surfaces a status-bar hint on the same signal.
+    void TestParseGotoTimestampInputRejectsGarbage()
+    {
+        const std::chrono::system_clock::time_point kNow = std::chrono::system_clock::now();
+
+        QVERIFY(!MainWindow::ParseGotoTimestampInput(QString{}, {}, kNow).has_value());
+        QVERIFY(!MainWindow::ParseGotoTimestampInput(QStringLiteral("   "), {}, kNow).has_value());
+        QVERIFY(!MainWindow::ParseGotoTimestampInput(QStringLiteral("not a timestamp"), {}, kNow).has_value());
+        // Positive-offset (`+1h`) is not a shortcut we accept for v1.
+        QVERIFY(!MainWindow::ParseGotoTimestampInput(QStringLiteral("+1h"), {}, kNow).has_value());
+    }
+
+    // Goto Timestamp binary search: no user sort active. The
+    // fixture streams three timestamps 1 s apart; the query
+    // targets the middle row exactly.
+    void TestFindFirstRowAtOrAfterBinarySearchesWhenUnsorted()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+        auto *proxy = mWindow->FilterModel();
+        QVERIFY(proxy != nullptr);
+        QCOMPARE(proxy->SortColumn(), -1);
+
+        // Middle row's exact timestamp: 2024-04-28T10:00:02+00:00.
+        // Feed epoch micros directly so the test is timezone-agnostic.
+        const auto *table = &mWindow->Model()->Table();
+        const auto midMicros = loglib::AsEpochMicroseconds(table->GetValue(1, static_cast<std::size_t>(timeCol)));
+        QVERIFY(midMicros.has_value());
+
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *midMicros), 1);
+
+        // A tick earlier still lands on the middle row.
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *midMicros - 1), 1);
+
+        // Way past the last timestamp: no row qualifies.
+        const auto lastMicros = loglib::AsEpochMicroseconds(table->GetValue(2, static_cast<std::size_t>(timeCol)));
+        QVERIFY(lastMicros.has_value());
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *lastMicros + 1), -1);
+    }
+
+    // Goto Timestamp linear scan: a user sort on a non-time column
+    // (the `msg` column, alphabetical) reorders the display
+    // ("first" < "second" < "third" happens to match file order,
+    // so use descending to force a real permutation). The scan
+    // walks proxy rows in display order and picks the first whose
+    // source timestamp qualifies -- which under a descending
+    // alphabetical sort is the last-in-file row ("third", source
+    // row 2).
+    void TestFindFirstRowAtOrAfterLinearScansWhenUserSortActive()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+        const int msgCol = ColumnByHeader(*mWindow->Model(), QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        auto *view = mWindow->findChild<LogTableView *>();
+        QVERIFY(view != nullptr);
+        view->sortByColumn(msgCol, Qt::DescendingOrder);
+        QCoreApplication::processEvents();
+
+        auto *proxy = mWindow->FilterModel();
+        QVERIFY(proxy != nullptr);
+        QCOMPARE(proxy->SortColumn(), msgCol);
+
+        // Earliest possible target (INT64_MIN) still picks the
+        // *first* row in display order, which under `msg DESC` is
+        // source row 2 ("third").
+        const int found = mWindow->FindFirstRowAtOrAfter(timeCol, std::numeric_limits<int64_t>::min());
+        QCOMPARE(found, 2);
     }
 
     // Anchors round-trip: live AnchorManager -> saved JSON ->

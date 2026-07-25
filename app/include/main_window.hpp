@@ -375,6 +375,50 @@ public:
     /// note). Used by the Anchors dock for jump targets.
     void SelectSourceRow(int sourceRow);
 
+    /// Pop the "Go to Line..." modal (`actionGotoLine`, `Ctrl+G`).
+    /// Line numbers are 1-based over the source model (line 1 is the
+    /// first line in the file, unaffected by newest-first display
+    /// reversal). Invalid input / no active model surfaces a
+    /// status-bar hint; a valid row hands off to `SelectSourceRow`.
+    void GotoLine();
+
+    /// Pop the "Go to Timestamp..." modal (`actionGotoTimestamp`,
+    /// `Ctrl+Shift+G`). Accepts the current time column's own
+    /// `parseFormats` plus two ISO fallbacks and the relative
+    /// shortcuts `-Nh` / `-Nm`. Binary-searches the source model
+    /// when no user sort is active; falls back to a linear proxy
+    /// scan otherwise. Lands on the first row at or after the
+    /// requested time via `SelectSourceRow`, or surfaces a
+    /// status-bar hint when no such row exists.
+    void GotoTimestamp();
+
+    /// Pure helper for `GotoTimestamp`; returns epoch microseconds
+    /// on success. Tries the relative shortcut `^-\s*(\d+)\s*([hm])\s*$`
+    /// first (case-insensitive, evaluated against @p now), then each
+    /// entry of @p columnParseFormats via `loglib::TryParseTimestamp`,
+    /// then the two ISO fallbacks `"%FT%T"` and `"%F %T"`. Returns
+    /// `std::nullopt` on failure. Kept out of any class member state
+    /// so unit tests can drive it without a `MainWindow` instance.
+    [[nodiscard]] static std::optional<int64_t> ParseGotoTimestampInput(
+        const QString &input,
+        const std::vector<std::string> &columnParseFormats,
+        std::chrono::system_clock::time_point now
+    );
+
+    /// Locate the first row whose timestamp on @p timeCol is at or
+    /// after @p targetMicros. Uses an in-place binary search over
+    /// the source model when no user sort is active
+    /// (`LogFilterModel::SortColumn() < 0`); falls back to a linear
+    /// scan over the visible proxy rows otherwise so the "first"
+    /// row honours the user's chosen display order (see ROADMAP
+    /// item 8). Returns the source-model row index, or `-1` when
+    /// no live row qualifies. Rows with an unpromoted / missing
+    /// timestamp sort as `-inf` (keeps the binary search partition
+    /// monotonic and prevents the linear scan from ever picking
+    /// them as "first at or after"). Public so tests can exercise
+    /// both search branches without popping the modal.
+    [[nodiscard]] int FindFirstRowAtOrAfter(int timeCol, int64_t targetMicros) const;
+
     /// Jump the table to the first row in histogram bucket
     /// @p bucketIndex. Wired to `HistogramDock::bucketClicked`.
     void JumpToFirstRowInBucket(std::size_t bucketIndex);
