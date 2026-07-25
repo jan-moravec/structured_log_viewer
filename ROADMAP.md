@@ -13,7 +13,7 @@ For the architecture each item plugs into, see [CONTRIBUTING.md → Architecture
   - [1. ~~Transparent decompression of `.gz` / `.bz2` / `.xz` / `.zst`~~ (shipped)](#1-transparent-decompression-of-gz--bz2--xz--zst)
   - [2. ~~Histogram / activity-rate strip~~ (shipped)](#2-histogram--activity-rate-strip)
   - [3. ~~User-defined highlight rules~~ (shipped)](#3-user-defined-highlight-rules)
-  - [4. Bookmark notes on anchors](#4-bookmark-notes-on-anchors)
+  - [4. ~~Bookmark notes on anchors~~ (shipped)](#4-bookmark-notes-on-anchors)
   - [5. Boolean filter expressions (AND / OR / NOT)](#5-boolean-filter-expressions-and--or--not)
   - [6. Multi-line records (stack traces and continuation lines)](#6-multi-line-records-stack-traces-and-continuation-lines)
   - [7. Export filtered rows](#7-export-filtered-rows)
@@ -130,17 +130,7 @@ Each of the ten items below closes a gap that reviewers and first-time users rou
 
 ### 4. Bookmark notes on anchors
 
-**Why.** [Anchors](doc/README.md#anchors) today are eight colour swatches with no text. Every comparable tool (lnav, Klogg, LogExpert, LogViewPlus, OtrosLogViewer, Logan) lets you write a one-line note on a marked row: *"first error of the incident"*, *"customer report starts here"*. The persistence and navigation infrastructure (`AnchorManager`, `AnchorsDock`, `F2` / `Shift+F2`, configuration round-trip) already exists; only the note text is missing.
-
-**Scope.** Add an optional `note` string to each anchor. Surface it in `AnchorsDock` as a second column, in `RecordDetailDock` as a small italic line below the anchor swatch, and in the row's tooltip. A row right-click → **Anchor → Add note…** opens a one-line editor; pressing `F4` on a focused anchored row does the same. Notes round-trip through the existing configuration save / load.
-
-**Non-goals (v1).** Rich-text notes, multi-paragraph notes, attaching files / images, exporting notes as a separate document (item 18 / 27 cover the export side).
-
-**Approach.** Extend `loglib::Anchor` with a `std::string note`. The Glaze meta already round-trips the struct; adding an optional field is backwards-compatible. Update `AnchorsDock` to a two-column view and add the inline editor. `BuildRowContextMenu` already has the `Anchor` sub-menu — add an **Add note…** entry.
-
-**Acceptance bar.** Notes survive a save / load cycle. Anchors saved by an older version (no `note` field) load with empty notes. Note text is included in the **Copy as key/value** shape from the `RecordDetailDock`.
-
-**Touches.** `loglib`: `anchor.hpp` / `.cpp`, Glaze meta. `app`: `AnchorsDock`, `RecordDetailDock`, `MainWindow::AppendAnchorActionsToRowMenu`.
+**Status: shipped.** Each anchor now carries an optional one-line `note` alongside its colour. Surfaces: the `AnchorsDock` second column (inline-editable, `F2` / double-click), the `RecordDetailDock` italic subline (with the note included in **Copy as key/value** as a synthetic `anchor.note:` prefix line), and the row tooltip. The row right-click **Anchor** sub-menu gains an **Edit note…** entry; `F4` on a focused anchored row opens the same editor (guarded against firing while a text editor holds focus so an in-flight edit is never dropped). Notes round-trip through `LogConfiguration::AnchorEntry` (a new `note` field), and `error_on_unknown_keys=false` keeps sessions saved by pre-note builds loading cleanly with empty notes. Notes are one-line by contract — CR / LF / tab collapse to a single space and edge whitespace is trimmed on write, enforced by `AnchorManager::SanitiseNote`. See [doc/README.md → Anchor notes](doc/README.md#anchor-notes) for the user-facing shape.
 
 ### 5. Boolean filter expressions (AND / OR / NOT)
 
@@ -372,7 +362,7 @@ Reference snapshot from the survey that informed the roadmap (June 2026). `✓` 
 | stdin / pipe input                          |                  |     ✓     |   ✓   |           |             |         |              |           |   ~   |
 | Per-row colouring by level                  |        ✓         |     ✓     |       |     ~     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
 | User-defined highlight rules                |                  |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |           |   ✓   |
-| Bookmarks with notes / comments             |  ~ anchors only  |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |     ~     |   ✓   |
+| Bookmarks with notes / comments             |        ✓         |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |     ~     |   ✓   |
 | Boolean filter expressions (AND / OR / NOT) |  partial (AND)   |     ✓     |   ✓   |     ✓     |      ✓      |         |      ✓       |     ~     |   ✓   |
 | Per-column / per-cell scoped filters        |        ✓         |     ✓     |       |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
 | Saved / named filter or query presets       |  ~ session only  |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |

@@ -45,10 +45,12 @@
 #include <loglib/udp_server_producer.hpp>
 
 #include <QAbstractProxyModel>
+#include <QAbstractSpinBox>
 #include <QApplication>
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QCollator>
+#include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QFileDialog>
@@ -59,6 +61,8 @@
 #include <QFutureWatcher>
 #include <QGuiApplication>
 #include <QHeaderView>
+#include <QInputDialog>
+#include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
@@ -68,6 +72,7 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QPixmap>
+#include <QPlainTextEdit>
 #include <QProgressDialog>
 #include <QScopeGuard>
 #include <QSettings>
@@ -79,6 +84,7 @@
 #include <QStringList>
 #include <QStyle>
 #include <QTableView>
+#include <QTextEdit>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
@@ -1203,7 +1209,7 @@ MainWindow::MainWindow(
 
     // Record-detail dock: hidden by default; the View menu's Ctrl+I
     // toggle and row double-click both surface it.
-    mRecordDetailDock = new RecordDetailDock(mModel, this);
+    mRecordDetailDock = new RecordDetailDock(mModel, mAnchors, this);
     addDockWidget(Qt::RightDockWidgetArea, mRecordDetailDock);
     mRecordDetailDock->hide();
 
@@ -1377,6 +1383,7 @@ MainWindow::MainWindow(
     //   Ctrl+0        clear anchor on selection
     //   Ctrl+Shift+A  clear every anchor
     //   F2 / Shift+F2 jump to next / previous visible anchor
+    //   F4            edit note on the current anchored row
     for (std::size_t i = 0; i < mAnchorColorActions.size(); ++i)
     {
         auto *action = new QAction(this);
@@ -1403,6 +1410,12 @@ MainWindow::MainWindow(
     mActionJumpPrevAnchor->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F2));
     addAction(mActionJumpPrevAnchor);
     connect(mActionJumpPrevAnchor, &QAction::triggered, this, [this]() { JumpToAnchor(false); });
+
+    mActionEditRowAnchorNote = new QAction(tr("Edit anchor note on current row"), this);
+    mActionEditRowAnchorNote->setObjectName(QStringLiteral("actionEditRowAnchorNote"));
+    mActionEditRowAnchorNote->setShortcut(QKeySequence(Qt::Key_F4));
+    addAction(mActionEditRowAnchorNote);
+    connect(mActionEditRowAnchorNote, &QAction::triggered, this, &MainWindow::EditAnchorNoteOnCurrentRow);
 
     mActionClearAllAnchors = new QAction(tr("Clear all anchors"), this);
     mActionClearAllAnchors->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_A));
@@ -1920,6 +1933,38 @@ bool MainWindow::event(QEvent *event)
 {
     switch (event->type())
     {
+    case QEvent::ShortcutOverride:
+    {
+        // Veto the window-scope F4 shortcut when a text-editing
+        // widget has focus. Accepting `ShortcutOverride` tells Qt
+        // "the focus widget wants this key", and it delivers a
+        // plain `KeyPress` instead of firing the shortcut. Without
+        // this, F4 on a `QComboBox` (open drop-down) or spin box
+        // (step) would fire the "Edit anchor note" action and the
+        // key would never reach the widget for its native use.
+        //
+        // `AnchorsDock` is excluded because its own QAction slot
+        // routes F4 to `BeginEditingCurrentNote`; letting the
+        // shortcut fire there is correct.
+        auto *keyEvent = static_cast<QKeyEvent *>(event); // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
+        if (keyEvent->key() == Qt::Key_F4 && keyEvent->modifiers() == Qt::NoModifier)
+        {
+            const QWidget *focused = QApplication::focusWidget();
+            const bool focusInAnchorsDock =
+                (mAnchorsDock != nullptr && focused != nullptr && mAnchorsDock->isAncestorOf(focused));
+            if (!focusInAnchorsDock && focused != nullptr &&
+                (qobject_cast<const QLineEdit *>(focused) != nullptr ||
+                 qobject_cast<const QTextEdit *>(focused) != nullptr ||
+                 qobject_cast<const QPlainTextEdit *>(focused) != nullptr ||
+                 qobject_cast<const QAbstractSpinBox *>(focused) != nullptr ||
+                 qobject_cast<const QComboBox *>(focused) != nullptr))
+            {
+                event->accept();
+                return true;
+            }
+        }
+        break;
+    }
     case QEvent::ApplicationFontChange:
     {
         QFont applicationFont = qApp->font();
@@ -2469,16 +2514,19 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         logapp::BackfillLocatorDedupKeys(mCurrentSource);
 
         // Bulk-replace anchors before RebuildFiltersFromConfiguration
-        // mirrors the now-empty `AnchorManager` back onto disk. Any
-        // dropped (future-schema) entries are surfaced to the user.
+        // mirrors the (now empty) `AnchorManager` back onto disk.
+        // Future-schema colour slots are clamped (not dropped) so
+        // the bookmark + note survive a downgrade; the remap count
+        // is surfaced to the user.
         if (mAnchors != nullptr)
         {
-            const std::size_t droppedAnchorCount = mAnchors->Replace(mModel->Configuration().anchors);
-            if (droppedAnchorCount > 0)
+            const std::size_t clampedAnchorCount = mAnchors->Replace(mModel->Configuration().anchors);
+            if (clampedAnchorCount > 0)
             {
                 statusBar()->showMessage(
-                    tr("%1 anchor(s) from a newer schema were dropped.")
-                        .arg(static_cast<qulonglong>(droppedAnchorCount)),
+                    tr("%1 anchor(s) from a newer schema had their colour clamped to slot %2.")
+                        .arg(static_cast<qulonglong>(clampedAnchorCount))
+                        .arg(static_cast<qulonglong>(loglib::ANCHOR_PALETTE_SIZE)),
                     STATUS_BAR_MESSAGE_TIMEOUT_MS
                 );
             }
@@ -6110,16 +6158,18 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         logapp::BackfillLocatorDedupKeys(mCurrentSource);
 
         // Bulk-replace anchors from the loaded vector. Future-schema
-        // colour slots are reported back so the user knows about
-        // anchors that didn't survive.
+        // colour slots are clamped (not dropped) so bookmark
+        // positions + notes survive a downgrade; the count is
+        // surfaced to the user.
         if (mAnchors != nullptr)
         {
-            const std::size_t droppedAnchorCount = mAnchors->Replace(mModel->Configuration().anchors);
-            if (droppedAnchorCount > 0)
+            const std::size_t clampedAnchorCount = mAnchors->Replace(mModel->Configuration().anchors);
+            if (clampedAnchorCount > 0)
             {
                 statusBar()->showMessage(
-                    tr("%1 anchor(s) from a newer schema were dropped.")
-                        .arg(static_cast<qulonglong>(droppedAnchorCount)),
+                    tr("%1 anchor(s) from a newer schema had their colour clamped to slot %2.")
+                        .arg(static_cast<qulonglong>(clampedAnchorCount))
+                        .arg(static_cast<qulonglong>(loglib::ANCHOR_PALETTE_SIZE)),
                     STATUS_BAR_MESSAGE_TIMEOUT_MS
                 );
             }
@@ -8181,9 +8231,189 @@ void MainWindow::AppendAnchorActionsToRowMenu(QMenu *menu, int sourceRow)
         });
     }
     anchorMenu->addSeparator();
+    QAction *editNoteAction = anchorMenu->addAction(tr("Edit note\u2026"));
+    editNoteAction->setEnabled(rightClickedKey.has_value() && currentColour.has_value());
+    // Capture the key (not the row index) so a queued FIFO eviction
+    // between menu build and click can't redirect the edit to a
+    // different anchor at the old row slot.
+    if (rightClickedKey.has_value())
+    {
+        // Reference-binding into the by-value capture is a workaround
+        // for `performance-unnecessary-copy-initialization` on a
+        // named temporary; the closure still holds an owned copy.
+        const AnchorManager::Key &capturedKey = *rightClickedKey;
+        // NOLINTNEXTLINE(bugprone-exception-escape) - Key's std::string capture copy can technically throw bad_alloc.
+        connect(editNoteAction, &QAction::triggered, this, [this, capturedKey]() {
+            EditAnchorNoteForKey(capturedKey);
+        });
+    }
+
     QAction *clearAction = anchorMenu->addAction(tr("Remove anchor"));
     clearAction->setEnabled(rightClickedKey.has_value() && currentColour.has_value());
     connect(clearAction, &QAction::triggered, mTableView, &LogTableView::ClearAnchorOnSelection);
+}
+
+void MainWindow::EditAnchorNoteForKey(const AnchorManager::Key &key)
+{
+    if (mAnchors == nullptr)
+    {
+        return;
+    }
+    if (!mAnchors->ColorFor(key).has_value())
+    {
+        // Stale key (row-menu after FIFO eviction) or the user
+        // cleared the anchor via `Ctrl+0` before the trigger fired.
+        statusBar()->showMessage(tr("Row is not anchored."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+
+    const auto existingNote = mAnchors->NoteFor(key).value_or(std::string{});
+
+    // Instantiated `QInputDialog` (not the static `getText` helper)
+    // so we can reach the internal line edit and pin `maxLength`.
+    // Cap is in UTF-16 code units; `SanitiseNote` still enforces
+    // the true UTF-8 byte cap downstream. Caps agree for ASCII.
+    QInputDialog dialog(this);
+    dialog.setWindowTitle(tr("Anchor note"));
+    dialog.setLabelText(tr("Note for this anchor:"));
+    dialog.setInputMode(QInputDialog::TextInput);
+    dialog.setTextEchoMode(QLineEdit::Normal);
+    dialog.setTextValue(QString::fromStdString(existingNote));
+    if (auto *dialogEditor = dialog.findChild<QLineEdit *>())
+    {
+        dialogEditor->setMaxLength(static_cast<int>(AnchorManager::MAX_NOTE_BYTES));
+    }
+    if (dialog.exec() != QDialog::Accepted)
+    {
+        return;
+    }
+    const QString newNote = dialog.textValue();
+
+    // Re-check presence: the dialog pumps events, so a parallel
+    // `Ctrl+0` / `Clear all` / streaming eviction can remove the
+    // anchor while it's open. `SetAnchorNote` returns false either
+    // way (identical note or gone); only report the "gone" case.
+    if (!mAnchors->SetAnchorNote(key, newNote.toStdString()))
+    {
+        if (!mAnchors->ColorFor(key).has_value())
+        {
+            statusBar()->showMessage(
+                tr("Anchor was removed while the note editor was open; note discarded."), STATUS_BAR_MESSAGE_TIMEOUT_MS
+            );
+        }
+        return;
+    }
+
+    // Truncation hint: `QLineEdit::maxLength` caps code units for
+    // live feedback, but a multi-byte paste can still exceed the
+    // UTF-8 byte cap enforced by `SanitiseNote`. Compare committed
+    // vs. stored size so a silent trim isn't invisible.
+    if (const auto stored = mAnchors->NoteFor(key); stored.has_value())
+    {
+        const auto committedBytes = static_cast<std::size_t>(newNote.toUtf8().size());
+        if (stored->size() < committedBytes)
+        {
+            statusBar()->showMessage(
+                tr("Note truncated to %1 bytes.").arg(static_cast<qulonglong>(AnchorManager::MAX_NOTE_BYTES)),
+                STATUS_BAR_MESSAGE_TIMEOUT_MS
+            );
+        }
+    }
+
+    // Runtime-only anchors (empty locator) aren't persisted --
+    // `Entries()` drops them from the save snapshot. Warn only for
+    // actual content: an all-whitespace paste sanitises to "" and
+    // shouldn't trigger the hint.
+    if (key.locator.empty() && !newNote.trimmed().isEmpty())
+    {
+        statusBar()->showMessage(
+            tr("Note stored for this session -- streaming anchors are not persisted across sessions."),
+            STATUS_BAR_MESSAGE_TIMEOUT_MS
+        );
+    }
+}
+
+void MainWindow::EditAnchorNoteForRow(int sourceRow)
+{
+    if (mAnchors == nullptr || mModel == nullptr)
+    {
+        return;
+    }
+    const auto key = mModel->AnchorKeyForRow(sourceRow);
+    if (!key.has_value())
+    {
+        statusBar()->showMessage(tr("Row is not anchored."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+    EditAnchorNoteForKey(*key);
+}
+
+#ifdef LOGAPP_BUILD_TESTING
+bool MainWindow::SubmitAnchorNoteForRowForTest(int sourceRow, const QString &note)
+{
+    if (mAnchors == nullptr || mModel == nullptr)
+    {
+        return false;
+    }
+    const auto key = mModel->AnchorKeyForRow(sourceRow);
+    if (!key.has_value() || !mAnchors->ColorFor(*key).has_value())
+    {
+        statusBar()->showMessage(tr("Row is not anchored."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return false;
+    }
+    // Return true iff the row was anchored; the manager sanitises
+    // internally so multi-line input collapses to one line.
+    mAnchors->SetAnchorNote(*key, note.toStdString());
+    return true;
+}
+#endif
+
+void MainWindow::EditAnchorNoteOnCurrentRow()
+{
+    // AnchorsDock redirect first: F4 with focus inside the dock
+    // opens the dock's own inline editor. The dock's current row
+    // can differ from the main table's, and popping a modal for
+    // the "other" row would be jarring. Placed before the proxy
+    // null check so a partially-constructed window still honours it.
+    const QWidget *focused = QApplication::focusWidget();
+    if (mAnchorsDock != nullptr && focused != nullptr && mAnchorsDock->isAncestorOf(focused))
+    {
+        mAnchorsDock->BeginEditingCurrentNote();
+        return;
+    }
+
+    // Belt-and-braces text-input guard. The primary defence is the
+    // F4 `ShortcutOverride` handler in `MainWindow::event()`, but
+    // this slot is also reachable via `trigger()` (tests, future
+    // menu placements) where no shortcut dispatch runs.
+    // `QAbstractSpinBox` covers spin boxes and `QDateTimeEdit`;
+    // `QComboBox` covers editable combos.
+    if (focused != nullptr &&
+        (qobject_cast<const QLineEdit *>(focused) != nullptr || qobject_cast<const QTextEdit *>(focused) != nullptr ||
+         qobject_cast<const QPlainTextEdit *>(focused) != nullptr ||
+         qobject_cast<const QAbstractSpinBox *>(focused) != nullptr ||
+         qobject_cast<const QComboBox *>(focused) != nullptr))
+    {
+        return;
+    }
+
+    if (mTableView == nullptr || mSortFilterProxyModel == nullptr || mRowOrderProxyModel == nullptr)
+    {
+        return;
+    }
+    const QModelIndex current = mTableView->currentIndex();
+    if (!current.isValid())
+    {
+        statusBar()->showMessage(tr("No row is currently selected."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+    const int sourceRow = MapProxyIndexToSourceRow(current, mSortFilterProxyModel, mRowOrderProxyModel);
+    if (sourceRow < 0)
+    {
+        statusBar()->showMessage(tr("No row is currently selected."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+    EditAnchorNoteForRow(sourceRow);
 }
 
 void MainWindow::SetColumnVisible(int logicalIndex, bool visible)

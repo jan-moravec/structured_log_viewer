@@ -83,8 +83,9 @@ public:
     ///
     /// @p anchors, when non-null, paints anchored rows with the
     /// anchor brush regardless of level style. The model is a
-    /// non-owning observer and listens for `anchorChanged` /
-    /// `anchorsReset` to scope its `dataChanged` emits.
+    /// non-owning observer of `anchorChanged` (row style refresh),
+    /// `anchorNoteChanged` (tooltip-only refresh), and
+    /// `anchorsReset` (all rows) to scope its `dataChanged` emits.
     ///
     /// @p highlights, when non-null, paints rule-matched rows on
     /// top of the level brush; anchors still win. Non-owning.
@@ -123,6 +124,16 @@ public:
     /// call for overlay callers. Fast-paths through `Empty()` so
     /// anchor-free sessions pay ~nothing.
     [[nodiscard]] std::optional<uint8_t> AnchorSlotForRow(int row) const noexcept;
+
+    /// Anchor note for @p row, or nullopt when the row has no
+    /// anchor. Returns an empty `QString` (present optional) when
+    /// the anchor exists with no note -- distinct from "no anchor"
+    /// so the record-detail dock can render "Anchored" vs. no
+    /// subline. Same anchor-free fast-path as `AnchorSlotForRow`.
+    /// `noexcept` because the tooltip path calls this from Qt's
+    /// paint stack; allocation failures return `nullopt` instead
+    /// of propagating.
+    [[nodiscard]] std::optional<QString> AnchorNoteForRow(int row) const noexcept;
 
     /// Full teardown followed by a model reset. Emits `lineCountChanged(0)`,
     /// `errorCountChanged(0)`, and a compensating `streamingFinished` if
@@ -473,15 +484,28 @@ private:
     /// the whole visible table on `matchesChanged`.
     void RefreshAllHighlightRows();
 
-    /// Emit `dataChanged` (Background + Foreground) on every row
-    /// matching @p key. Usually one row; multi-file sessions may
-    /// have id collisions across sources.
+    /// Emit `dataChanged` (Background + Foreground + ToolTip) on
+    /// every row matching @p key. Usually one row; multi-file
+    /// sessions may have id collisions across sources. Wired to
+    /// `AnchorManager::anchorChanged` (add / recolour / remove).
     void RefreshRowsForAnchor(const AnchorManager::Key &key);
 
-    /// Drop anchors on rows `[0, dropCount)` before the table's
-    /// `EvictPrefixRows` runs, so anchors can't dangle past FIFO
-    /// retention.
-    void DropAnchorsForEvictionPrefix(int dropCount);
+    /// Emit `dataChanged` (ToolTipRole only) on rows matching
+    /// @p key. Wired to `AnchorManager::anchorNoteChanged` --
+    /// colour / background stayed the same, so a note edit skips
+    /// the style-role emit.
+    void RefreshTooltipRowsForAnchor(const AnchorManager::Key &key);
+
+    /// Shared body: emit @p roles on every visible row matching @p key.
+    void EmitRolesForAnchorKey(const AnchorManager::Key &key, const QList<int> &roles);
+
+    /// Collect the anchor keys pinned to rows `[0, dropCount)`
+    /// while those rows still exist. Callers apply the returned
+    /// keys to `AnchorManager::RemoveAnchors` *after* the rows are
+    /// evicted -- emitting `anchorsReset` before `endRemoveRows`
+    /// would drive listeners (record-detail dock, overview rail)
+    /// to read data from about-to-disappear rows.
+    [[nodiscard]] std::vector<AnchorManager::Key> CollectAnchorKeysInPrefix(int dropCount) const;
 
     /// Emit `dataChanged` (Background + Foreground) across the whole
     /// visible table. Used on `anchorsReset`.

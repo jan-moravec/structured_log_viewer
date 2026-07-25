@@ -253,6 +253,18 @@ RecordDetailContent BuildRecordDetailContent(const LogModel &model, int sourceRo
         }
     }
     content.summary = summary;
+
+    // Anchor snapshot captured on the content so a frozen copy
+    // (snapshot window) keeps rendering after the source anchor is
+    // edited or the row is evicted.
+    content.anchorColorIndex = model.AnchorSlotForRow(sourceRow);
+    if (content.anchorColorIndex.has_value())
+    {
+        // Present-but-empty optional == "anchored, no note" -- the
+        // widget renders that as a plain "Anchored" subline.
+        content.anchorNote = model.AnchorNoteForRow(sourceRow).value_or(QString{});
+    }
+
     content.valid = true;
     return content;
 }
@@ -273,6 +285,25 @@ RecordDetailWidget::RecordDetailWidget(QWidget *parent)
     summaryFont.setBold(true);
     mSummaryLabel->setFont(summaryFont);
     layout->addWidget(mSummaryLabel);
+
+    // Anchor-note subline: italic + muted foreground so it reads
+    // as metadata. `Qt::PlainText` is critical -- user notes
+    // routinely contain `<`, `&`, `>`, which `Qt::AutoText` would
+    // parse as rich-text markup. Palette override is baked in
+    // here and refreshed on theme flips via `RefreshPalette`.
+    mAnchorNoteLabel = new QLabel(this);
+    mAnchorNoteLabel->setObjectName(QStringLiteral("anchorNoteLabel"));
+    mAnchorNoteLabel->setTextFormat(Qt::PlainText);
+    mAnchorNoteLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    mAnchorNoteLabel->setWordWrap(true);
+    {
+        QFont noteFont = mAnchorNoteLabel->font();
+        noteFont.setItalic(true);
+        mAnchorNoteLabel->setFont(noteFont);
+    }
+    ApplyAnchorNoteLabelPalette();
+    mAnchorNoteLabel->hide();
+    layout->addWidget(mAnchorNoteLabel);
 
     mPlaceholderLabel = new QLabel(this);
     mPlaceholderLabel->setObjectName(QStringLiteral("placeholderLabel"));
@@ -405,6 +436,28 @@ void RecordDetailWidget::PopulateUi()
     mOpenInNewWindowButton->setEnabled(hasContent);
     mPlaceholderLabel->setVisible(!hasContent);
 
+    // Anchor subline visible only when content-valid AND anchored.
+    // Empty-note anchored rows show a low-key "Anchored" so the
+    // record's status stays legible.
+    const bool showAnchorLine = hasContent && mContent.anchorColorIndex.has_value();
+    mAnchorNoteLabel->setVisible(showAnchorLine);
+    if (showAnchorLine)
+    {
+        const QString noteText = mContent.anchorNote.trimmed();
+        if (noteText.isEmpty())
+        {
+            mAnchorNoteLabel->setText(tr("Anchored"));
+        }
+        else
+        {
+            mAnchorNoteLabel->setText(tr("Anchor: %1").arg(noteText));
+        }
+    }
+    else
+    {
+        mAnchorNoteLabel->clear();
+    }
+
     if (!hasContent)
     {
         mPlaceholderLabel->setText(
@@ -503,9 +556,26 @@ void RecordDetailWidget::RefreshPalette()
     placeholderPalette.setColor(mPlaceholderLabel->foregroundRole(), qApp->palette().color(QPalette::PlaceholderText));
     mPlaceholderLabel->setPalette(placeholderPalette);
 
+    // Anchor-note subline needs the same treatment -- its palette
+    // carries a `PlaceholderText` override baked in at ctor time.
+    ApplyAnchorNoteLabelPalette();
+
     // Rebuild cells so placeholder-row foregrounds re-pick the
     // theme colour. No-op when there's no displayed content.
     PopulateUi();
+}
+
+void RecordDetailWidget::ApplyAnchorNoteLabelPalette()
+{
+    if (mAnchorNoteLabel == nullptr)
+    {
+        return;
+    }
+    // Source colour from the app palette (the label's own already
+    // carries the override we're about to overwrite).
+    QPalette palette = mAnchorNoteLabel->palette();
+    palette.setColor(mAnchorNoteLabel->foregroundRole(), qApp->palette().color(QPalette::PlaceholderText));
+    mAnchorNoteLabel->setPalette(palette);
 }
 
 void RecordDetailWidget::CopyAsJsonClicked() const
@@ -526,7 +596,16 @@ void RecordDetailWidget::CopyAsKeyValueClicked() const
         return;
     }
     QStringList lines;
-    lines.reserve(static_cast<int>(mContent.fields.size()));
+    // Reserve fields + one synthetic `anchor.note` line.
+    lines.reserve(static_cast<int>(mContent.fields.size()) + 1);
+    // Prepend `anchor.note` when the row is anchored with a note --
+    // matches the visual reading order (subline above fields).
+    if (mContent.anchorColorIndex.has_value() && !mContent.anchorNote.isEmpty())
+    {
+        lines.append(QStringLiteral("%1: %2").arg(
+            EscapeForKeyValueCopy(QStringLiteral("anchor.note")), EscapeForKeyValueCopy(mContent.anchorNote)
+        ));
+    }
     for (const auto &pair : mContent.fields)
     {
         // Escape both sides so embedded newlines / tabs don't break

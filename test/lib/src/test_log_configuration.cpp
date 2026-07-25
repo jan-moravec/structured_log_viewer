@@ -1893,9 +1893,9 @@ TEST_CASE("HasLocators predicate exhaustively handles every Source state", "[log
 
 TEST_CASE("LogConfiguration::anchors round-trips through Save/Load", "[log_configuration][session][anchors]")
 {
-    // Two anchors in different palette slots; one carries a locator
-    // (multi-file session), the other doesn't. The list is preserved
-    // verbatim across a full Save / Load cycle.
+    // Two anchors: one with a locator + populated note, one runtime-
+    // only with an empty note -- covers both `note` shapes on the
+    // wire. The list must round-trip verbatim through Save / Load.
     const TestLogConfiguration testConfiguration;
     {
         LogConfiguration written;
@@ -1904,6 +1904,7 @@ TEST_CASE("LogConfiguration::anchors round-trips through Save/Load", "[log_confi
                 .locator = "",
                 .lineId = 17,
                 .colorIndex = 0,
+                .note = "",
             }
         );
         written.anchors.push_back(
@@ -1911,6 +1912,7 @@ TEST_CASE("LogConfiguration::anchors round-trips through Save/Load", "[log_confi
                 .locator = "c:/logs/two.json",
                 .lineId = 42,
                 .colorIndex = 5,
+                .note = "first error of the incident",
             }
         );
         LogConfigurationManager::Save(written, testConfiguration.GetFilePath(), SaveScope::Full);
@@ -1923,9 +1925,38 @@ TEST_CASE("LogConfiguration::anchors round-trips through Save/Load", "[log_confi
     CHECK(anchors[0].locator.empty());
     CHECK(anchors[0].lineId == 17u);
     CHECK(anchors[0].colorIndex == 0u);
+    CHECK(anchors[0].note.empty());
     CHECK(anchors[1].locator == "c:/logs/two.json");
     CHECK(anchors[1].lineId == 42u);
     CHECK(anchors[1].colorIndex == 5u);
+    CHECK(anchors[1].note == "first error of the incident");
+}
+
+TEST_CASE(
+    "LogConfiguration::AnchorEntry without note loads with empty note",
+    "[log_configuration][session][anchors][forward_compat]"
+)
+{
+    // Pre-notes session JSON: `note` is absent. Glaze's
+    // default-on-missing + `error_on_unknown_keys=false` load it as
+    // an empty note so existing saved sessions don't need a schema
+    // migration.
+    constexpr std::string_view JSON = R"({
+        "columns": [],
+        "filters": [],
+        "sort": { "columnIndex": -1, "descending": false },
+        "anchors": [
+            { "locator": "c:/logs/legacy.json", "lineId": 7, "colorIndex": 2 }
+        ]
+    })";
+
+    LogConfigurationManager manager;
+    manager.LoadFromString(JSON);
+    REQUIRE(manager.Configuration().anchors.size() == 1);
+    CHECK(manager.Configuration().anchors[0].locator == "c:/logs/legacy.json");
+    CHECK(manager.Configuration().anchors[0].lineId == 7u);
+    CHECK(manager.Configuration().anchors[0].colorIndex == 2u);
+    CHECK(manager.Configuration().anchors[0].note.empty());
 }
 
 TEST_CASE(
@@ -1956,6 +1987,7 @@ TEST_CASE("LogConfiguration::AnchorEntry serialises with stable wire keys", "[lo
             .locator = "c:/logs/app.jsonl",
             .lineId = 123,
             .colorIndex = 3,
+            .note = "customer report starts here",
         }
     );
 
@@ -1966,6 +1998,7 @@ TEST_CASE("LogConfiguration::AnchorEntry serialises with stable wire keys", "[lo
     CHECK(json.contains("\"locator\""));
     CHECK(json.contains("\"lineId\""));
     CHECK(json.contains("\"colorIndex\""));
+    CHECK(json.contains("\"note\""));
 
     LogConfiguration loaded;
     const auto readError = glz::read_json(loaded, json);
@@ -1974,6 +2007,7 @@ TEST_CASE("LogConfiguration::AnchorEntry serialises with stable wire keys", "[lo
     CHECK(loaded.anchors[0].locator == "c:/logs/app.jsonl");
     CHECK(loaded.anchors[0].lineId == 123u);
     CHECK(loaded.anchors[0].colorIndex == 3u);
+    CHECK(loaded.anchors[0].note == "customer report starts here");
 }
 
 TEST_CASE(

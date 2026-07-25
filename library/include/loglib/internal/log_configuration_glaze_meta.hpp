@@ -144,10 +144,22 @@ template <> struct glz::meta<loglib::LogConfiguration::Sort>
     static constexpr auto value = object("columnIndex", &T::columnIndex, "descending", &T::descending);
 };
 
+// Wire schema for one anchor. On-disk JSON:
+//   { "locator": "...",    // stable per-source id (file path, stream)
+//     "lineId":  1234,     // provider-assigned line id
+//     "colorIndex": 0,     // palette slot
+//     "note":    "..." }   // optional; sanitised + byte-capped by
+//                          // `AnchorManager::SanitiseNote`. Absent
+//                          // on pre-notes configs; loads as "".
+//
+// Add new fields at the end of `object(...)` with defaults in
+// `AnchorEntry` so old configs still round-trip.
+// `error_on_unknown_keys=false` lets old builds tolerate new keys.
 template <> struct glz::meta<loglib::LogConfiguration::AnchorEntry>
 {
     using T = loglib::LogConfiguration::AnchorEntry;
-    static constexpr auto value = object("locator", &T::locator, "lineId", &T::lineId, "colorIndex", &T::colorIndex);
+    static constexpr auto value =
+        object("locator", &T::locator, "lineId", &T::lineId, "colorIndex", &T::colorIndex, "note", &T::note);
 };
 
 template <> struct glz::meta<loglib::LogConfiguration::HighlightRule>
