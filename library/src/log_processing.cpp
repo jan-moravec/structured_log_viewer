@@ -397,6 +397,33 @@ TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds)
     return std::chrono::time_point_cast<std::chrono::microseconds>(systemTime);
 }
 
+int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds)
+{
+    const date::time_zone *zone = CurrentZone();
+    if (zone == nullptr)
+    {
+        return localMicroseconds;
+    }
+    const date::local_time<std::chrono::microseconds> localTime{std::chrono::microseconds{localMicroseconds}};
+    try
+    {
+        // Default overload throws on both DST edge cases; use
+        // `choose::earliest` for the ambiguous fall-back hour and
+        // catch the spring-forward `nonexistent_local_time` below.
+        const auto systemTime = zone->to_sys(localTime, date::choose::earliest);
+        return systemTime.time_since_epoch().count();
+    }
+    catch (const date::nonexistent_local_time &)
+    {
+        // Spring-forward gap: the wall-clock instant the user typed
+        // never occurred. Falling back to the naive value keeps the
+        // Goto Timestamp modal from throwing out of a slot; the
+        // resulting jump is off by (at most) the DST shift, which
+        // is a v1-acceptable degradation.
+        return localMicroseconds;
+    }
+}
+
 std::string UtcMicrosecondsToDateTimeString(int64_t microseconds)
 {
     const std::chrono::time_point<std::chrono::system_clock, std::chrono::microseconds> utcTime{

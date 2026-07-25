@@ -39,6 +39,7 @@
 #include <loglib/log_level.hpp>
 #include <loglib/log_line.hpp>
 #include <loglib/log_parse_sink.hpp>
+#include <loglib/log_processing.hpp>
 #include <loglib/log_value.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/parsers/json_parser.hpp>
@@ -4537,7 +4538,8 @@ private slots:
     // Pure parser: relative shortcuts `-Nh` and `-Nm` (case-
     // insensitive, whitespace-tolerant) resolve against the pinned
     // `now`. The unit chart lives in ROADMAP item 8; longer/shorter
-    // units are explicitly out of scope for v1.
+    // units are explicitly out of scope for v1. `isNaive == false`
+    // on this path because `now` is already UTC micros.
     void TestParseGotoTimestampInputAcceptsRelativeShortcuts()
     {
         const std::chrono::system_clock::time_point kNow =
@@ -4548,21 +4550,66 @@ private slots:
 
         const auto oneHourAgo = MainWindow::ParseGotoTimestampInput(QStringLiteral("-1h"), noFormats, kNow);
         QVERIFY(oneHourAgo.has_value());
-        QCOMPARE(*oneHourAgo, kNowMicros - (3600LL * 1'000'000LL));
+        QCOMPARE(oneHourAgo->micros, kNowMicros - (3600LL * 1'000'000LL));
+        QVERIFY(!oneHourAgo->isNaive);
 
         const auto thirtyMinAgo = MainWindow::ParseGotoTimestampInput(QStringLiteral("-30m"), noFormats, kNow);
         QVERIFY(thirtyMinAgo.has_value());
-        QCOMPARE(*thirtyMinAgo, kNowMicros - (30LL * 60LL * 1'000'000LL));
+        QCOMPARE(thirtyMinAgo->micros, kNowMicros - (30LL * 60LL * 1'000'000LL));
+        QVERIFY(!thirtyMinAgo->isNaive);
 
         // Case-insensitive, tolerant of internal whitespace.
         const auto capitalH = MainWindow::ParseGotoTimestampInput(QStringLiteral("- 2 H"), noFormats, kNow);
         QVERIFY(capitalH.has_value());
-        QCOMPARE(*capitalH, kNowMicros - (2LL * 3600LL * 1'000'000LL));
+        QCOMPARE(capitalH->micros, kNowMicros - (2LL * 3600LL * 1'000'000LL));
+
+        // The `+N` and bare-`N` variants also mean "N units ago"
+        // (parity with lnav / less). A log viewer's "future" cursor
+        // is nonsensical, so the sign is treated as decorative.
+        const auto plusOneHour = MainWindow::ParseGotoTimestampInput(QStringLiteral("+1h"), noFormats, kNow);
+        QVERIFY(plusOneHour.has_value());
+        QCOMPARE(plusOneHour->micros, kNowMicros - (3600LL * 1'000'000LL));
+
+        const auto bareOneHour = MainWindow::ParseGotoTimestampInput(QStringLiteral("1h"), noFormats, kNow);
+        QVERIFY(bareOneHour.has_value());
+        QCOMPARE(bareOneHour->micros, kNowMicros - (3600LL * 1'000'000LL));
+    }
+
+    // Pure parser: relative shortcuts reject values that would
+    // overflow `int64_t` microseconds rather than silently wrap
+    // (a wrap would jump the user forward instead of backward).
+    // 2^63 / (3600 * 10^6) ~= 2'562'047'788'015 hours; anything
+    // over that must be rejected.
+    void TestParseGotoTimestampInputRejectsOverflowingRelativeShortcut()
+    {
+        const std::chrono::system_clock::time_point kNow = std::chrono::system_clock::now();
+        const std::vector<std::string> noFormats;
+
+        // 10^19 hours -- above both the int64 hour cap and 2^63.
+        QVERIFY(!MainWindow::ParseGotoTimestampInput(
+                     QStringLiteral("-10000000000000000000h"), noFormats, kNow
+        )
+                     .has_value());
+
+        // 2^63 microseconds in hours (~2.56T) is exactly the cap;
+        // one past it must be rejected.
+        const qulonglong hourCap =
+            static_cast<qulonglong>(std::numeric_limits<int64_t>::max() / (3600LL * 1'000'000LL));
+        const auto overCap =
+            MainWindow::ParseGotoTimestampInput(QString::number(hourCap + 1) + QStringLiteral("h"), noFormats, kNow);
+        QVERIFY(!overCap.has_value());
+
+        // ... and the cap itself must still parse (boundary check).
+        const auto atCap =
+            MainWindow::ParseGotoTimestampInput(QString::number(hourCap) + QStringLiteral("h"), noFormats, kNow);
+        QVERIFY(atCap.has_value());
     }
 
     // Pure parser: the column's own `parseFormats` are tried first;
     // this covers the ROADMAP acceptance bar "every format the
-    // table's timestamp column already parses".
+    // table's timestamp column already parses". Formats without a
+    // zone specifier (`%z` / `%Ez` / `%Z`) yield `isNaive == true`
+    // so the caller knows to shift the value through the display TZ.
     void TestParseGotoTimestampInputHonoursColumnParseFormats()
     {
         const std::chrono::system_clock::time_point kNow =
@@ -4575,16 +4622,26 @@ private slots:
         const auto parsed =
             MainWindow::ParseGotoTimestampInput(QStringLiteral("2024/04/28 12:34:56"), columnFormats, kNow);
         QVERIFY(parsed.has_value());
-        QVERIFY(*parsed > 0);
+        QVERIFY(parsed->micros > 0);
+        QVERIFY2(parsed->isNaive, "column format has no %z, result must be flagged naive");
 
         // ISO fallback works even with no column formats.
         const auto isoT = MainWindow::ParseGotoTimestampInput(QStringLiteral("2024-04-28T12:34:56"), {}, kNow);
         QVERIFY(isoT.has_value());
-        QVERIFY(*isoT > 0);
+        QVERIFY(isoT->micros > 0);
+        QVERIFY2(isoT->isNaive, "ISO fallback lacks %z, result must be flagged naive");
 
         const auto isoSpace = MainWindow::ParseGotoTimestampInput(QStringLiteral("2024-04-28 12:34:56"), {}, kNow);
         QVERIFY(isoSpace.has_value());
-        QCOMPARE(*isoT, *isoSpace);
+        QCOMPARE(isoT->micros, isoSpace->micros);
+
+        // A format WITH `%Ez` marks the result as TZ-aware -- the
+        // slot must not double-shift.
+        const std::vector<std::string> zonedFormats{"%FT%T%Ez"};
+        const auto zoned =
+            MainWindow::ParseGotoTimestampInput(QStringLiteral("2024-04-28T12:34:56+02:00"), zonedFormats, kNow);
+        QVERIFY(zoned.has_value());
+        QVERIFY2(!zoned->isNaive, "format contains %Ez, result must NOT be flagged naive");
     }
 
     // Pure parser: empty and garbage strings return nullopt; the
@@ -4596,8 +4653,47 @@ private slots:
         QVERIFY(!MainWindow::ParseGotoTimestampInput(QString{}, {}, kNow).has_value());
         QVERIFY(!MainWindow::ParseGotoTimestampInput(QStringLiteral("   "), {}, kNow).has_value());
         QVERIFY(!MainWindow::ParseGotoTimestampInput(QStringLiteral("not a timestamp"), {}, kNow).has_value());
-        // Positive-offset (`+1h`) is not a shortcut we accept for v1.
-        QVERIFY(!MainWindow::ParseGotoTimestampInput(QStringLiteral("+1h"), {}, kNow).has_value());
+        // Mixed sign / letters in the relative shortcut still fail.
+        QVERIFY(!MainWindow::ParseGotoTimestampInput(QStringLiteral("-1x"), {}, kNow).has_value());
+        QVERIFY(!MainWindow::ParseGotoTimestampInput(QStringLiteral("--1h"), {}, kNow).has_value());
+    }
+
+    // Local -> UTC shift is applied end-to-end when the parser flags
+    // the winning format as naive. `loglib::LocalMicrosecondsSince
+    // EpochToUtc` uses `CurrentZone()`, so we assert only the *sign*
+    // of the shift relative to the naive value: at a fixed local
+    // instant `t`, the corresponding UTC instant is `t - offset(t)`
+    // (positive offset for zones east of UTC, negative for west).
+    // If the test host is UTC the delta is 0 and the equality below
+    // trivially holds -- still a valid assertion.
+    void TestGotoTimestampAppliesDisplayTimeZoneShift()
+    {
+        const std::chrono::system_clock::time_point kNow =
+            std::chrono::system_clock::time_point{std::chrono::microseconds{1'700'000'000'000'000LL}};
+
+        const auto naiveParse =
+            MainWindow::ParseGotoTimestampInput(QStringLiteral("2024-04-28T12:00:00"), {}, kNow);
+        QVERIFY(naiveParse.has_value());
+        QVERIFY(naiveParse->isNaive);
+
+        const int64_t naiveMicros = naiveParse->micros;
+        const int64_t shiftedMicros = loglib::LocalMicrosecondsSinceEpochToUtc(naiveMicros);
+
+        // Shift is exactly the UTC offset at that instant. Bound it
+        // to +/-14 h (max real-world offset today) so the assertion
+        // catches an accidental "shift by seconds since epoch"
+        // regression regardless of the host TZ.
+        const int64_t deltaMicros = shiftedMicros - naiveMicros;
+        constexpr int64_t MAX_TZ_OFFSET_MICROS = 14LL * 3600LL * 1'000'000LL;
+        QVERIFY2(std::llabs(deltaMicros) <= MAX_TZ_OFFSET_MICROS, "TZ shift must be within +/-14 h");
+
+        // Zoned input must NOT shift (double-shift regression pin).
+        const std::vector<std::string> zonedFormats{"%FT%T%Ez"};
+        const auto zonedParse = MainWindow::ParseGotoTimestampInput(
+            QStringLiteral("2024-04-28T12:00:00+00:00"), zonedFormats, kNow
+        );
+        QVERIFY(zonedParse.has_value());
+        QVERIFY(!zonedParse->isNaive);
     }
 
     // Goto Timestamp binary search: no user sort active. The
@@ -4626,6 +4722,125 @@ private slots:
         const auto lastMicros = loglib::AsEpochMicroseconds(table->GetValue(2, static_cast<std::size_t>(timeCol)));
         QVERIFY(lastMicros.has_value());
         QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *lastMicros + 1), -1);
+    }
+
+    // Regression pin: rows with a mid-file *missing* timestamp
+    // don't break the fast-path binary search. Fixture has three
+    // rows where the middle row lacks the `timestamp` key entirely
+    // (`monostate` slot). Targets tests every valid boundary:
+    //   * before-earliest -> row 0 (row 1 skipped over)
+    //   * exactly-first -> row 0
+    //   * just-past-first -> row 2 (skip 1)
+    //   * exactly-last -> row 2
+    //   * past-last -> -1
+    void TestFindFirstRowAtOrAfterHandlesInterleavedMissingTimestamps()
+    {
+        auto *model = mWindow->Model();
+        Q_ASSERT(model != nullptr);
+
+        const QStringList lines{
+            QStringLiteral(R"({"timestamp":"2024-04-28T10:00:01+00:00","msg":"first"})"),
+            QStringLiteral(R"({"msg":"middle has no timestamp"})"),
+            QStringLiteral(R"({"timestamp":"2024-04-28T10:00:03+00:00","msg":"third"})"),
+        };
+        const TempJsonFile fixture(lines);
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        if (finishedSpy.count() == 0)
+        {
+            finishedSpy.wait(5000);
+        }
+        QCoreApplication::processEvents();
+
+        const int timeCol = ColumnByHeader(*model, QStringLiteral("timestamp"));
+        QVERIFY2(timeCol >= 0, "timestamp column must exist");
+        QCOMPARE(model->rowCount(), 3);
+
+        const auto *table = &model->Table();
+        const auto firstMicros = loglib::AsEpochMicroseconds(table->GetValue(0, static_cast<std::size_t>(timeCol)));
+        const auto lastMicros = loglib::AsEpochMicroseconds(table->GetValue(2, static_cast<std::size_t>(timeCol)));
+        QVERIFY(firstMicros.has_value());
+        QVERIFY(lastMicros.has_value());
+
+        // Before the earliest timestamp -> row 0 (row 1 is missing
+        // and must be skipped over, not treated as a match).
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *firstMicros - 1'000'000), 0);
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *firstMicros), 0);
+
+        // Between the two valid timestamps -> row 2 (row 1 is
+        // missing; must NOT be returned).
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *firstMicros + 1), 2);
+
+        // Exactly-last / past-last.
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *lastMicros), 2);
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *lastMicros + 1), -1);
+    }
+
+    // Regression pin: with a filter that hides source rows 0 and 1
+    // (keeps only row 2), the fast path must NOT return a hidden
+    // row -- previously it did, and `SelectSourceRow` then printed
+    // "Row is not currently visible" while a visible qualifying
+    // row existed further down.
+    void TestFindFirstRowAtOrAfterSkipsFilterHiddenRowsInFastPath()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+        auto *model = mWindow->Model();
+        auto *proxy = mWindow->FilterModel();
+        QVERIFY(model != nullptr);
+        QVERIFY(proxy != nullptr);
+        QCOMPARE(model->rowCount(), 3);
+
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist");
+
+        // Callback string predicate that keeps only the row whose
+        // `msg` slot equals "third" (source row 2). The concrete
+        // `CallbackStringRowPredicate` is the same variant arm the
+        // Filters dock uses for regex / wildcard rules; a bare
+        // equality predicate keeps the fixture minimal.
+        loglib::CallbackStringRowPredicate keepThird(
+            static_cast<std::size_t>(msgCol), [](std::string_view value) { return value == std::string_view{"third"}; }
+        );
+
+        std::vector<loglib::RowPredicate> rules;
+        rules.emplace_back(std::move(keepThird));
+        proxy->SetFilterRules(std::move(rules));
+        QCoreApplication::processEvents();
+        QCOMPARE(proxy->rowCount(), 1);
+        QCOMPARE(proxy->SortColumn(), -1);
+
+        // Target well before every row's timestamp: without the
+        // visibility step the fast path would return source row 0
+        // ("first", filtered out); with it, it must jump forward
+        // to source row 2 ("third", visible).
+        const auto *table = &model->Table();
+        const auto firstMicros = loglib::AsEpochMicroseconds(table->GetValue(0, static_cast<std::size_t>(timeCol)));
+        QVERIFY(firstMicros.has_value());
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *firstMicros - 1'000'000), 2);
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *firstMicros), 2);
+
+        // If the target sits AFTER the only visible row's timestamp,
+        // no live row qualifies -- must be -1 rather than a hidden
+        // row further down (there aren't any here, but the
+        // "return -1" branch is on the same code path).
+        const auto lastMicros = loglib::AsEpochMicroseconds(table->GetValue(2, static_cast<std::size_t>(timeCol)));
+        QVERIFY(lastMicros.has_value());
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *lastMicros + 1), -1);
+
+        // Restore the pristine "no filter" state so downstream
+        // tests in this suite see the fixture unchanged.
+        proxy->SetFilterRules({});
+        QCoreApplication::processEvents();
     }
 
     // Goto Timestamp linear scan: a user sort on a non-time column
@@ -4657,6 +4872,56 @@ private slots:
         // source row 2 ("third").
         const int found = mWindow->FindFirstRowAtOrAfter(timeCol, std::numeric_limits<int64_t>::min());
         QCOMPARE(found, 2);
+    }
+
+    // Regression pin: newest-first display reversal is a mid-proxy
+    // concern; the fast-path binary search operates on source rows
+    // in file order, so the returned source row must be unchanged.
+    // `SelectSourceRow` then maps that source row through the
+    // reversed mid-proxy and lands the view at the display position
+    // corresponding to the reversed row.
+    void TestFindFirstRowAtOrAfterHonoursNewestFirstDisplay()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+        auto *model = mWindow->Model();
+        auto *rowOrder = mWindow->findChild<RowOrderProxyModel *>();
+        auto *view = mWindow->findChild<LogTableView *>();
+        QVERIFY(model != nullptr);
+        QVERIFY(rowOrder != nullptr);
+        QVERIFY(view != nullptr);
+        QCOMPARE(model->rowCount(), 3);
+
+        // Flip into newest-first mode. Save the original so we can
+        // restore it (this is process-wide global state).
+        const bool wasReversed = rowOrder->IsReversed();
+        rowOrder->SetReversed(true);
+        QCoreApplication::processEvents();
+        QVERIFY(rowOrder->IsReversed());
+
+        // Fast path must still return the earliest-in-file row that
+        // qualifies (source row 1 for the middle timestamp).
+        const auto *table = &model->Table();
+        const auto midMicros = loglib::AsEpochMicroseconds(table->GetValue(1, static_cast<std::size_t>(timeCol)));
+        QVERIFY(midMicros.has_value());
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *midMicros), 1);
+
+        // And `SelectSourceRow` must land the view on the reversed
+        // proxy position (source row 1 in a 3-row reversed view
+        // is proxy row `3 - 1 - 1 == 1`; middle stays middle).
+        view->selectionModel()->clearSelection();
+        view->setCurrentIndex(QModelIndex{});
+        mWindow->SelectSourceRow(1);
+        QCoreApplication::processEvents();
+        QCOMPARE(view->currentIndex().row(), 1);
+
+        // Source row 0 (earliest) -> reversed proxy row 2 (bottom).
+        mWindow->SelectSourceRow(0);
+        QCoreApplication::processEvents();
+        QCOMPARE(view->currentIndex().row(), 2);
+
+        rowOrder->SetReversed(wasReversed);
+        QCoreApplication::processEvents();
     }
 
     // Anchors round-trip: live AnchorManager -> saved JSON ->

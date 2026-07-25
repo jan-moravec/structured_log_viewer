@@ -99,6 +99,16 @@ int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds);
 
 TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds);
 
+/// Convert @p localMicroseconds -- interpreted as a wall-clock instant
+/// in `CurrentZone()` -- to UTC microseconds since epoch. Returns the
+/// naive value unchanged when no zone is installed. Handles the two
+/// DST edge cases gracefully: an ambiguous local time (the "fall-back"
+/// hour) resolves to the earlier of the two candidates; a nonexistent
+/// local time (the "spring-forward" hour) resolves to the naive value.
+/// Used by the Goto Timestamp modal to align user-typed wall-clock
+/// timestamps with the UTC-normalised values stored in the log table.
+int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds);
+
 /// Formats UTC microseconds since epoch as a `%F %T`-style local-time string.
 std::string UtcMicrosecondsToDateTimeString(int64_t microseconds);
 

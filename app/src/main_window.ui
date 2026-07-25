@@ -187,7 +187,7 @@
     <string>Go to Line...</string>
    </property>
    <property name="toolTip">
-    <string>Jump to a source-model row number (1-based; the first line in the file is line 1).</string>
+    <string>Jump to a row by number. Line 1 is the earliest row currently in the model; streaming eviction may have dropped older rows so numbers need not match the source file.</string>
    </property>
    <property name="shortcut">
     <string>Ctrl+G</string>

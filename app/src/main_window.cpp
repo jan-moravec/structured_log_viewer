@@ -6357,12 +6357,15 @@ void MainWindow::GotoLine()
     // so we can attach a `QIntValidator` to the line edit and lean
     // on Qt's built-in accept-blocking rather than re-validating
     // after `exec`. Range is 1..rowCount; lines are 1-based for
-    // parity with every editor's "Go to Line" dialog.
+    // parity with every editor's "Go to Line" dialog. `QIntValidator`
+    // parses without a group separator by default, so the label
+    // uses `QString::number` (also separator-free) rather than
+    // `QLocale::system().toString(...)` -- the two would otherwise
+    // disagree in locales like `en_US` that group with commas,
+    // presenting the user with a range they cannot actually type.
     QInputDialog dialog(this);
     dialog.setWindowTitle(tr("Go to Line"));
-    dialog.setLabelText(
-        tr("Line number (1 - %1):").arg(QLocale::system().toString(rowCount))
-    );
+    dialog.setLabelText(tr("Line number (1 - %1):").arg(QString::number(rowCount)));
     dialog.setInputMode(QInputDialog::TextInput);
     dialog.setTextEchoMode(QLineEdit::Normal);
     if (auto *editor = dialog.findChild<QLineEdit *>())
@@ -6384,17 +6387,80 @@ void MainWindow::GotoLine()
         // was open (streaming eviction, session swap), surface it
         // instead of silently no-oping.
         statusBar()->showMessage(
-            tr("Line %1 is out of range (1 - %2).")
-                .arg(dialog.textValue(), QLocale::system().toString(rowCount)),
+            tr("Line %1 is out of range (1 - %2).").arg(dialog.textValue(), QString::number(rowCount)),
             STATUS_BAR_MESSAGE_TIMEOUT_MS
         );
         return;
     }
 
-    SelectSourceRow(oneBased - 1);
+    // `SelectSourceRow` prints a generic "Row is not currently
+    // visible" hint when the target is filtered out; the caller
+    // knows more context (this is a Goto Line jump, not an anchor
+    // seek), so front-run a filter-visibility probe and print the
+    // more specific message before deferring.
+    const int sourceRow = oneBased - 1;
+    if (mSortFilterProxyModel != nullptr && mRowOrderProxyModel != nullptr)
+    {
+        const QModelIndex sourceIdx = mModel->index(sourceRow, 0);
+        const QModelIndex midIdx = mRowOrderProxyModel->mapFromSource(sourceIdx);
+        const bool visible = midIdx.isValid() && mSortFilterProxyModel->mapFromSource(midIdx).isValid();
+        if (!visible)
+        {
+            statusBar()->showMessage(
+                tr("Line %1 is currently filtered out.").arg(QString::number(oneBased)),
+                STATUS_BAR_MESSAGE_TIMEOUT_MS
+            );
+            return;
+        }
+    }
+
+    SelectSourceRow(sourceRow);
 }
 
-std::optional<int64_t> MainWindow::ParseGotoTimestampInput(
+namespace
+{
+
+/// True if @p fmt contains a `date::parse` zone specifier -- `%z`,
+/// `%Z`, `%Ez`, or `%Oz` -- so a successful parse produces a
+/// UTC-normalised value that must NOT be TZ-shifted again.
+/// `%%` is skipped so literal `"%%z"` in a format string doesn't
+/// register as a zone specifier. Kept adjacent to
+/// `ParseGotoTimestampInput` because that is its only caller.
+[[nodiscard]] bool FormatHasZoneSpecifier(std::string_view fmt) noexcept
+{
+    for (std::size_t i = 0; i < fmt.size();)
+    {
+        if (fmt[i] != '%')
+        {
+            ++i;
+            continue;
+        }
+        if (i + 1 >= fmt.size())
+        {
+            break;
+        }
+        if (fmt[i + 1] == '%')
+        {
+            i += 2;
+            continue;
+        }
+        std::size_t j = i + 1;
+        if (fmt[j] == 'E' || fmt[j] == 'O')
+        {
+            ++j;
+        }
+        if (j < fmt.size() && (fmt[j] == 'z' || fmt[j] == 'Z'))
+        {
+            return true;
+        }
+        i = j + 1;
+    }
+    return false;
+}
+
+} // namespace
+
+std::optional<MainWindow::GotoTimestampParse> MainWindow::ParseGotoTimestampInput(
     const QString &input,
     const std::vector<std::string> &columnParseFormats,
     std::chrono::system_clock::time_point now
@@ -6406,13 +6472,16 @@ std::optional<int64_t> MainWindow::ParseGotoTimestampInput(
         return std::nullopt;
     }
 
-    // Relative shortcut first: `-Nh` / `-Nm` (case-insensitive,
-    // whitespace-tolerant). Evaluated against @p now so tests can
+    // Relative shortcut: `[+-]?N[hm]` (case-insensitive, whitespace-
+    // tolerant). All three sign variants (`-1h`, `+1h`, `1h`) mean
+    // "one hour before @p now" -- users almost never mean "an hour
+    // in the future" in a log viewer, and lnav / less resolve the
+    // ambiguity the same way. Evaluated against @p now so tests can
     // pin the clock; production wires `system_clock::now()`.
-    // ROADMAP item 8 spells out these two units explicitly; adding
-    // more (like `-Ns`, `-Nd`) is left for future contributions.
+    // ROADMAP item 8 spells out `-Nh` / `-Nm` as the required units;
+    // seconds / days are left for future contributions.
     static const QRegularExpression RELATIVE_SHORTCUT_RE(
-        QStringLiteral(R"(^-\s*(\d+)\s*([hm])\s*$)"), QRegularExpression::CaseInsensitiveOption
+        QStringLiteral(R"(^[+-]?\s*(\d+)\s*([hm])\s*$)"), QRegularExpression::CaseInsensitiveOption
     );
     const auto relMatch = RELATIVE_SHORTCUT_RE.match(trimmed);
     if (relMatch.hasMatch())
@@ -6424,15 +6493,25 @@ std::optional<int64_t> MainWindow::ParseGotoTimestampInput(
             return std::nullopt;
         }
         const QChar unit = relMatch.captured(2).at(0).toLower();
-        const int64_t nSigned = static_cast<int64_t>(n);
-        // Common type for the ternary: convert both branches to
-        // microseconds so `std::chrono::hours` and `minutes` share
-        // a representation.
-        const auto offset = unit == QLatin1Char('h')
-                                ? std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::hours(nSigned))
-                                : std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::minutes(nSigned));
-        const auto target = now - offset;
-        return std::chrono::duration_cast<std::chrono::microseconds>(target.time_since_epoch()).count();
+        // Overflow guard: cap `N` at whatever fits in `int64_t`
+        // microseconds for the chosen unit. Anything larger is
+        // rejected rather than wrapped -- silently subtracting a
+        // negative duration would jump the user forward in time
+        // rather than backward, which is worse than an error hint.
+        constexpr int64_t MICROS_PER_HOUR = 3'600LL * 1'000'000LL;
+        constexpr int64_t MICROS_PER_MINUTE = 60LL * 1'000'000LL;
+        const int64_t microsPerUnit = (unit == QLatin1Char('h')) ? MICROS_PER_HOUR : MICROS_PER_MINUTE;
+        const auto maxN = static_cast<qulonglong>(std::numeric_limits<int64_t>::max() / microsPerUnit);
+        if (n > maxN)
+        {
+            return std::nullopt;
+        }
+        const int64_t offsetMicros = static_cast<int64_t>(n) * microsPerUnit;
+        const auto nowMicros =
+            std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+        // `nowMicros` is >= 0 for post-1970 clocks; subtraction of a
+        // non-negative bounded `offsetMicros` cannot overflow.
+        return GotoTimestampParse{nowMicros - offsetMicros, /*isNaive=*/false};
     }
 
     // Absolute path: try every parse format the column itself
@@ -6460,7 +6539,7 @@ std::optional<int64_t> MainWindow::ParseGotoTimestampInput(
         loglib::TimeStamp parsed{};
         if (loglib::TryParseTimestamp(stdInput, fmt, loglib::ClassifyTimestampFormat(fmt), scratch, parsed))
         {
-            return parsed.time_since_epoch().count();
+            return GotoTimestampParse{parsed.time_since_epoch().count(), /*isNaive=*/!FormatHasZoneSpecifier(fmt)};
         }
     }
     return std::nullopt;
@@ -6496,21 +6575,29 @@ void MainWindow::GotoTimestamp()
         return;
     }
 
-    const std::optional<int64_t> targetMicros = ParseGotoTimestampInput(
+    const std::optional<GotoTimestampParse> parsed = ParseGotoTimestampInput(
         dialog.textValue(),
         config.columns[static_cast<std::size_t>(timeCol)].parseFormats,
         std::chrono::system_clock::now()
     );
-    if (!targetMicros.has_value())
+    if (!parsed.has_value())
     {
         statusBar()->showMessage(tr("Could not parse timestamp."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
         return;
     }
+    // Stored cell timestamps are always UTC micros (columns with
+    // `%z` / `%Ez` format specifiers, and the ISO fast path, both
+    // normalise to UTC). A naive user input needs the same shift
+    // through the *display* zone -- otherwise a user in UTC+2 who
+    // types "12:00" jumps to the row two hours off. The library
+    // helper handles DST edge cases so we don't have to catch here.
+    const int64_t targetMicros =
+        parsed->isNaive ? loglib::LocalMicrosecondsSinceEpochToUtc(parsed->micros) : parsed->micros;
 
-    const int sourceRow = FindFirstRowAtOrAfter(timeCol, *targetMicros);
+    const int sourceRow = FindFirstRowAtOrAfter(timeCol, targetMicros);
     if (sourceRow < 0)
     {
-        statusBar()->showMessage(tr("No row at or after that time."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        statusBar()->showMessage(tr("No visible row at or after that time."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
         return;
     }
     SelectSourceRow(sourceRow);
@@ -6528,9 +6615,12 @@ int MainWindow::FindFirstRowAtOrAfter(int timeCol, int64_t targetMicros) const
         return -1;
     }
 
-    // Cell -> epoch µs. Missing / unpromoted timestamps sort as
-    // `-inf` so `lower_bound` stays monotonic and a linear scan
-    // never picks them as "first at or after".
+    // Cell -> epoch µs. Returns `nullopt` for rows whose timestamp
+    // slot is missing / unpromoted -- the two searches below both
+    // need to handle that gap explicitly rather than pretend such
+    // rows sort at `-inf` (that assumption breaks binary-search
+    // monotonicity as soon as one interleaved gap appears; see the
+    // fast-path comment for details).
     const auto tsFor = [this, timeCol](int sourceRow) -> std::optional<int64_t>
     {
         return loglib::AsEpochMicroseconds(
@@ -6538,45 +6628,104 @@ int MainWindow::FindFirstRowAtOrAfter(int timeCol, int64_t targetMicros) const
         );
     };
 
+    // Source row -> outermost proxy row (respects the mid-proxy's
+    // newest-first reversal *and* the outer proxy's active filter).
+    // Returns `nullopt` when the row is currently hidden. Cached in
+    // a lambda so both branches use the same visibility rule.
+    const auto isVisible = [this](int sourceRow) -> bool
+    {
+        const QModelIndex sourceIdx = mModel->index(sourceRow, 0);
+        const QModelIndex midIdx = mRowOrderProxyModel->mapFromSource(sourceIdx);
+        if (!midIdx.isValid())
+        {
+            return false;
+        }
+        return mSortFilterProxyModel->mapFromSource(midIdx).isValid();
+    };
+
     if (mSortFilterProxyModel->SortColumn() < 0)
     {
-        // Binary-search source rows in place -- allocating an
-        // `iota`d indices vector for a 10M-row file would burn
-        // 40 MiB and blow the ROADMAP `< 100 ms` budget. File
-        // order is (practically always) timestamp-ordered; ROADMAP
-        // item 8 declares this the fast path.
+        // Fast path: no user sort. File order is (practically always)
+        // timestamp-ordered, so we binary-search source rows in place
+        // -- allocating an `iota`d indices vector for a 10M-row file
+        // would burn 40 MiB and blow the ROADMAP `< 100 ms` budget.
         //
-        // Invariant: `hi` is the first row known to satisfy
-        // `ts >= target`, or `sourceRowCount` if none does yet.
-        // Rows with missing timestamps are treated as `-inf`
-        // (they stay left of every real timestamp, preserving
-        // monotonicity).
+        // Missing timestamps must be handled explicitly rather than
+        // treated as `-inf`: they can appear anywhere in the middle
+        // of a file (JSON rows that omit the timestamp key) and any
+        // "assign to -inf" or "assign to +inf" rule breaks the
+        // monotonicity that `lower_bound` requires. Instead, each
+        // probe walks forward from `mid` to the first row with a
+        // valid timestamp before making a decision. Worst case (all
+        // rows missing) degrades to O(N); common case (rare gaps)
+        // stays O(log N).
+        //
+        // Invariants:
+        //   * `[0, lo)`  -- every row has "missing OR ts < target".
+        //   * `[hi, sourceRowCount)` -- either empty, or extendable
+        //     to satisfy "missing OR ts >= target" (see the
+        //     `hi = mid` branch, which uses the fact that the range
+        //     probed was all-missing).
+        // Terminal `lo == hi`; the answer, if any, is the first row
+        // in `[lo, sourceRowCount)` whose ts is valid and >= target.
         int lo = 0;
         int hi = sourceRowCount;
         while (lo < hi)
         {
             const int mid = lo + ((hi - lo) / 2);
-            const auto ts = tsFor(mid);
-            if (!ts.has_value() || *ts < targetMicros)
+            int probe = mid;
+            std::optional<int64_t> probeTs;
+            while (probe < hi && !(probeTs = tsFor(probe)).has_value())
             {
-                lo = mid + 1;
+                ++probe;
+            }
+            if (probe >= hi)
+            {
+                // `[mid, hi)` all missing -- no candidate on this
+                // half. Shrink the search window to the left half.
+                hi = mid;
+            }
+            else if (*probeTs < targetMicros)
+            {
+                lo = probe + 1;
             }
             else
             {
-                hi = mid;
+                hi = probe;
             }
         }
-        if (lo >= sourceRowCount)
+
+        // Walk forward from `lo` to the first row that both carries
+        // a valid timestamp >= `target` AND is currently visible via
+        // the outer proxy. The visibility step matters when a filter
+        // is active: without it, the fast path can return a source
+        // row that's filtered out and `SelectSourceRow` then prints
+        // "Row is not currently visible" -- which looks like a bug
+        // to the user when there IS a visible qualifying row further
+        // down.
+        for (int row = lo; row < sourceRowCount; ++row)
         {
-            return -1;
+            const auto ts = tsFor(row);
+            if (!ts.has_value() || *ts < targetMicros)
+            {
+                // The binary-search invariant guarantees no `ts <
+                // target` past `lo`, but a missing-ts row can appear
+                // here (the invariant only pins the answer, not the
+                // gaps between it and the tail).
+                continue;
+            }
+            if (isVisible(row))
+            {
+                return row;
+            }
         }
-        return lo;
+        return -1;
     }
 
-    // User sort active on a different (or the same) column. Do a
-    // linear scan in display order and return the first proxy
-    // row whose source timestamp qualifies -- respects the user's
-    // chosen "first".
+    // Slow path: user sort active. Linear scan in display order and
+    // return the first proxy row whose source timestamp qualifies
+    // -- respects the user's chosen "first" (top of the sorted
+    // view, which may not be the earliest chronologically).
     const int proxyRowCount = mSortFilterProxyModel->rowCount();
     for (int proxyRow = 0; proxyRow < proxyRowCount; ++proxyRow)
     {

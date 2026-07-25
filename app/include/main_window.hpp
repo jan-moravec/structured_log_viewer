@@ -21,6 +21,16 @@
 #include <loglib/stop_token.hpp>
 #include <loglib/theme.hpp>
 
+// `ParseGotoTimestampInput` takes an optional display time zone so
+// callers can convert naive absolute inputs (`YYYY-MM-DD HH:MM:SS`)
+// from the user's wall-clock frame into UTC micros comparable with
+// the table's stored timestamps. Forward declared to avoid pulling
+// `<date/tz.h>` into every translation unit that includes this header.
+namespace date
+{
+class time_zone;
+} // namespace date
+
 // `loglib::EnumDictionary` is referenced via `ResolveEnumDictionary` below;
 // the full type comes in transitively through `log_filter_model.hpp`.
 
@@ -376,47 +386,82 @@ public:
     void SelectSourceRow(int sourceRow);
 
     /// Pop the "Go to Line..." modal (`actionGotoLine`, `Ctrl+G`).
-    /// Line numbers are 1-based over the source model (line 1 is the
-    /// first line in the file, unaffected by newest-first display
-    /// reversal). Invalid input / no active model surfaces a
-    /// status-bar hint; a valid row hands off to `SelectSourceRow`.
+    /// Line numbers are 1-based over the source model as it exists
+    /// now: line 1 is the earliest row currently retained (streaming
+    /// FIFO eviction may have dropped older rows, so line numbers
+    /// are **not** guaranteed to match the source file's line
+    /// numbering). Newest-first display reversal only affects
+    /// rendering, not the number the user types. Invalid input /
+    /// no active model surfaces a status-bar hint; a valid row hands
+    /// off to `SelectSourceRow`.
     void GotoLine();
 
     /// Pop the "Go to Timestamp..." modal (`actionGotoTimestamp`,
     /// `Ctrl+Shift+G`). Accepts the current time column's own
     /// `parseFormats` plus two ISO fallbacks and the relative
-    /// shortcuts `-Nh` / `-Nm`. Binary-searches the source model
-    /// when no user sort is active; falls back to a linear proxy
-    /// scan otherwise. Lands on the first row at or after the
-    /// requested time via `SelectSourceRow`, or surfaces a
-    /// status-bar hint when no such row exists.
+    /// shortcuts `-Nh` / `-Nm`. Naive absolute inputs (no `%z` /
+    /// `%Z` in the winning format) are interpreted in the table's
+    /// display time zone (`loglib::CurrentZone()`) and shifted to
+    /// UTC before the search. Binary-searches the source model in
+    /// file order when no user sort is active (also respects the
+    /// active row filter), and falls back to a linear scan over
+    /// visible proxy rows otherwise so the "first" row honours the
+    /// user's chosen display order. Lands via `SelectSourceRow`, or
+    /// surfaces a status-bar hint when no such row exists.
     void GotoTimestamp();
 
-    /// Pure helper for `GotoTimestamp`; returns epoch microseconds
-    /// on success. Tries the relative shortcut `^-\s*(\d+)\s*([hm])\s*$`
-    /// first (case-insensitive, evaluated against @p now), then each
-    /// entry of @p columnParseFormats via `loglib::TryParseTimestamp`,
-    /// then the two ISO fallbacks `"%FT%T"` and `"%F %T"`. Returns
-    /// `std::nullopt` on failure. Kept out of any class member state
-    /// so unit tests can drive it without a `MainWindow` instance.
-    [[nodiscard]] static std::optional<int64_t> ParseGotoTimestampInput(
+    /// Result of `ParseGotoTimestampInput`.
+    ///
+    /// `micros` is epoch microseconds. `isNaive` is `true` when the
+    /// winning format lacked a `%z` / `%Ez` / `%Z` specifier so the
+    /// value should be interpreted in the caller's display time zone
+    /// before comparing against stored (UTC-normalised) timestamps.
+    /// The relative shortcut path returns `isNaive == false` because
+    /// it derives `micros` from a `std::chrono::system_clock::time_point`
+    /// which is already UTC.
+    struct GotoTimestampParse
+    {
+        int64_t micros = 0;
+        bool isNaive = false;
+    };
+
+    /// Pure helper for `GotoTimestamp`. Tries the relative shortcut
+    /// `^[+-]?\s*(\d+)\s*([hm])\s*$` first (case-insensitive; the
+    /// `+` / no-sign variants also mean "N units ago" for parity
+    /// with lnav / less), then each entry of @p columnParseFormats
+    /// via `loglib::TryParseTimestamp`, then the two ISO fallbacks
+    /// `"%FT%T"` and `"%F %T"`. When @p displayZone is non-null and
+    /// the winning format is naive, the returned `micros` is *not*
+    /// pre-shifted -- callers apply the shift via
+    /// `loglib::LocalMicrosecondsSinceEpochToUtc` after inspecting
+    /// `isNaive`. Overflow in the relative shortcut (`-Nh` /
+    /// `-Nm` with an `N` that would overrun `int64_t` microseconds)
+    /// returns `std::nullopt` rather than wrapping. Kept out of any
+    /// class member state so unit tests can drive it without a
+    /// `MainWindow` instance.
+    [[nodiscard]] static std::optional<GotoTimestampParse> ParseGotoTimestampInput(
         const QString &input,
         const std::vector<std::string> &columnParseFormats,
         std::chrono::system_clock::time_point now
     );
 
     /// Locate the first row whose timestamp on @p timeCol is at or
-    /// after @p targetMicros. Uses an in-place binary search over
-    /// the source model when no user sort is active
-    /// (`LogFilterModel::SortColumn() < 0`); falls back to a linear
-    /// scan over the visible proxy rows otherwise so the "first"
-    /// row honours the user's chosen display order (see ROADMAP
-    /// item 8). Returns the source-model row index, or `-1` when
-    /// no live row qualifies. Rows with an unpromoted / missing
-    /// timestamp sort as `-inf` (keeps the binary search partition
-    /// monotonic and prevents the linear scan from ever picking
-    /// them as "first at or after"). Public so tests can exercise
-    /// both search branches without popping the modal.
+    /// after @p targetMicros **and** is currently visible through
+    /// the outer proxy (respects the active row filter).
+    ///
+    /// Fast path (no user sort): binary-searches source rows in file
+    /// order, tolerating interleaved missing / unpromoted timestamps
+    /// by skipping forward past them during each probe, then walks
+    /// forward from the binary-search result to skip any filtered-
+    /// out rows.
+    ///
+    /// Slow path (user sort active): linear scan over visible proxy
+    /// rows in display order so the "first" row honours the user's
+    /// chosen sort direction (see ROADMAP item 8).
+    ///
+    /// Returns the source-model row index, or `-1` when no live
+    /// row qualifies. Public so tests can exercise both branches
+    /// without popping the modal.
     [[nodiscard]] int FindFirstRowAtOrAfter(int timeCol, int64_t targetMicros) const;
 
     /// Jump the table to the first row in histogram bucket
