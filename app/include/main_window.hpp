@@ -394,6 +394,10 @@ public:
     /// rendering, not the number the user types. Invalid input /
     /// no active model surfaces a status-bar hint; a valid row hands
     /// off to `SelectSourceRow`.
+    ///
+    /// Post-dialog work is factored into `ExecuteGotoLine` so tests
+    /// (and any future non-modal entry) can drive it without a
+    /// blocking `QInputDialog::exec`.
     void GotoLine();
 
     /// Pop the "Go to Timestamp..." modal (`actionGotoTimestamp`,
@@ -455,9 +459,24 @@ public:
     /// forward from the binary-search result to skip any filtered-
     /// out rows.
     ///
+    /// **Precondition (fast path):** source rows are assumed to be
+    /// monotonic in @p timeCol (times increase with row index).
+    /// This is the common case for single-source logs, but can be
+    /// violated by multi-file `Append` opens spanning overlapping
+    /// wall-clock ranges, multi-producer network streams, and clock
+    /// skew around rotation. When the invariant is broken, the fast
+    /// path may return `-1` even when a qualifying row exists earlier
+    /// in the file, or land past an earlier candidate. There is no
+    /// runtime guard: enforcing monotonicity would require an O(N)
+    /// pre-scan on every call which defeats the point of the fast
+    /// path. If this becomes a real complaint, gate the branch on a
+    /// `mModel->TimestampsAreMonotonic()` flag maintained on the
+    /// streaming path.
+    ///
     /// Slow path (user sort active): linear scan over visible proxy
     /// rows in display order so the "first" row honours the user's
-    /// chosen sort direction (see ROADMAP item 8).
+    /// chosen sort direction (see ROADMAP item 8). Not sensitive to
+    /// the monotonicity caveat above.
     ///
     /// Returns the source-model row index, or `-1` when no live
     /// row qualifies. Public so tests can exercise both branches
@@ -608,6 +627,14 @@ public:
     /// anchored (identical-note no-ops still return true). Returns
     /// false on an unanchored row -- no ghost anchor is spawned.
     bool SubmitAnchorNoteForRowForTest(int sourceRow, const QString &note);
+
+    /// Test seam replaying the post-`exec` body of `GotoLine`
+    /// without a modal `QInputDialog`. @p input is the raw text
+    /// value the dialog would have returned. Lets tests drive both
+    /// the current-row-count range check (shrink-while-modal-open
+    /// simulation: pass a line > `mModel->rowCount()`) and the
+    /// filter-visibility hint without popping a dialog.
+    void ExecuteGotoLineForTest(const QString &input);
 #endif
 
 protected:
@@ -843,6 +870,17 @@ private:
     /// on the current selection (same as the `Ctrl+1..8` hotkeys).
     /// No-op if model, theme, or anchor manager is missing.
     void AppendAnchorActionsToRowMenu(QMenu *menu, int sourceRow);
+
+    /// Shared post-`exec` body of `GotoLine`. Given the raw text @p
+    /// input the dialog collected, validates against the *current*
+    /// `mModel->rowCount()` (so a shrink between open and accept --
+    /// FIFO eviction, session swap -- is caught rather than trusted
+    /// to the stale `QIntValidator` range), then probes filter
+    /// visibility, then hands off to `SelectSourceRow`. Emits the
+    /// user-facing status hint for every rejection branch. Kept
+    /// separate from the modal-owning slot so tests can drive both
+    /// branches through `ExecuteGotoLineForTest`.
+    void ExecuteGotoLine(const QString &input);
 
     /// Logical index of the column whose `keys` match @p keys, or
     /// `-1` if none. `keys` is the only identifier that survives a
@@ -1776,6 +1814,14 @@ private:
     /// signal against half-updated state. The outer call finishes
     /// its rebuild and the queued re-entry becomes a no-op.
     bool mApplyingEnumRebuild = false;
+
+    /// Last text the user typed into the Goto Timestamp dialog,
+    /// pre-populated on the next open. Users often want to jump
+    /// several times around the same instant; making the dialog
+    /// remember the last input saves the retype. Cleared on
+    /// session switch to avoid leaking a stale reference from a
+    /// closed file into a fresh one.
+    QString mLastGotoTimestampInput;
 
     /// Latch: a loaded session's sort is pending, to be applied
     /// once streaming finishes. Avoids the O(N^2) per-row insert

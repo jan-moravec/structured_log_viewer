@@ -397,9 +397,8 @@ TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds)
     return std::chrono::time_point_cast<std::chrono::microseconds>(systemTime);
 }
 
-int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds)
+int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds, const date::time_zone *zone)
 {
-    const date::time_zone *zone = CurrentZone();
     if (zone == nullptr)
     {
         return localMicroseconds;
@@ -407,21 +406,45 @@ int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds)
     const date::local_time<std::chrono::microseconds> localTime{std::chrono::microseconds{localMicroseconds}};
     try
     {
-        // Default overload throws on both DST edge cases; use
-        // `choose::earliest` for the ambiguous fall-back hour and
-        // catch the spring-forward `nonexistent_local_time` below.
+        // `choose::earliest` resolves both DST edge cases without
+        // throwing:
+        //   * ambiguous fall-back hour -> earlier of the two
+        //     candidates (per the `choose` semantics).
+        //   * spring-forward gap -> the sys_time transition
+        //     boundary between the two offsets (i.e., the instant
+        //     clocks jumped forward). Note: this is NOT the naive
+        //     value; if a caller wanted "naive fallback for gaps"
+        //     they would need to call `get_info(localTime)` first
+        //     and branch on `local_info::nonexistent`. The
+        //     transition-boundary outcome is a fine Goto Timestamp
+        //     target (the first real instant after the gap) so we
+        //     accept it.
+        //
+        // The DST exceptions are only thrown by the no-`choose`
+        // overload of `to_sys`, so we deliberately don't catch
+        // `nonexistent_local_time` / `ambiguous_local_time` here --
+        // doing so would be unreachable code and would encourage
+        // the "naive fallback" mental model that the current
+        // implementation does not actually provide.
         const auto systemTime = zone->to_sys(localTime, date::choose::earliest);
         return systemTime.time_since_epoch().count();
     }
-    catch (const date::nonexistent_local_time &)
+    catch (const std::exception &)
     {
-        // Spring-forward gap: the wall-clock instant the user typed
-        // never occurred. Falling back to the naive value keeps the
-        // Goto Timestamp modal from throwing out of a slot; the
-        // resulting jump is off by (at most) the DST shift, which
-        // is a v1-acceptable degradation.
+        // Reachable for inputs past the tzdata transition table
+        // (far-future / far-past dates) and for corrupt zone
+        // entries; the `choose` overload forwards these as plain
+        // `runtime_error` derivations rather than the DST-specific
+        // exceptions. Falling back to the naive value keeps the
+        // Goto Timestamp slot exception-safe: worst case, the jump
+        // is off by the zone offset rather than crashing the app.
         return localMicroseconds;
     }
+}
+
+int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds)
+{
+    return LocalMicrosecondsSinceEpochToUtc(localMicroseconds, CurrentZone());
 }
 
 std::string UtcMicrosecondsToDateTimeString(int64_t microseconds)

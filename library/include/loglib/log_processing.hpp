@@ -100,13 +100,34 @@ int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds);
 TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds);
 
 /// Convert @p localMicroseconds -- interpreted as a wall-clock instant
-/// in `CurrentZone()` -- to UTC microseconds since epoch. Returns the
-/// naive value unchanged when no zone is installed. Handles the two
-/// DST edge cases gracefully: an ambiguous local time (the "fall-back"
-/// hour) resolves to the earlier of the two candidates; a nonexistent
-/// local time (the "spring-forward" hour) resolves to the naive value.
-/// Used by the Goto Timestamp modal to align user-typed wall-clock
-/// timestamps with the UTC-normalised values stored in the log table.
+/// in @p zone -- to UTC microseconds since epoch. Returns the naive
+/// value unchanged when @p zone is `nullptr`. Uses
+/// `date::to_sys(local, choose::earliest)` so DST edge cases resolve
+/// without throwing:
+///   * an ambiguous local time (the "fall-back" hour) yields the
+///     earlier of the two candidates.
+///   * a nonexistent local time (the "spring-forward" gap) snaps to
+///     the sys_time transition boundary between the two offsets --
+///     i.e., the first real instant *after* the gap. Callers that
+///     require a naive-value fallback for gaps would need to probe
+///     `zone->get_info(local)` up-front; the Goto Timestamp caller
+///     accepts the transition-boundary outcome as the natural
+///     "nearest existing instant" target.
+///
+/// Non-DST exceptions from the underlying zone lookup (e.g. inputs
+/// past the tzdata transition table, or a corrupt zone entry) are
+/// caught and yield the naive value so the Goto Timestamp slot
+/// stays exception-safe.
+///
+/// The zone parameter exists so tests can pin `America/New_York` /
+/// `Europe/Berlin` DST transitions deterministically across CI
+/// hosts. Production callers use the no-argument overload below,
+/// which resolves to `CurrentZone()`.
+int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds, const date::time_zone *zone);
+
+/// Production overload: convert against `CurrentZone()`. Equivalent
+/// to `LocalMicrosecondsSinceEpochToUtc(local, CurrentZone())` and
+/// preserves the pre-existing call-site shape.
 int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds);
 
 /// Formats UTC microseconds since epoch as a `%F %T`-style local-time string.

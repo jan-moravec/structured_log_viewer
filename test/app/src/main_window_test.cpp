@@ -4500,11 +4500,11 @@ private slots:
         model->EndStreaming(false);
     }
 
-    // Goto Line: `ParseGotoTimestampInput` is exercised by the
-    // dedicated parser tests below; here we assert only that
-    // `SelectSourceRow` reaches the requested row when the caller
-    // arrives via the same 1-based path the modal takes. Line 12
-    // (1-based) maps to source row 11.
+    // Goto Line happy path: drive the post-dialog body through the
+    // `ExecuteGotoLineForTest` seam so the 1-based-to-0-based flip
+    // AND the visibility probe are both exercised end-to-end (the
+    // dedicated shrink / filtered-out tests below cover the two
+    // rejection branches). Line 12 (1-based) maps to source row 11.
     void TestMainWindowGotoLineJumpsToRequestedSourceRow()
     {
         auto *model = mWindow->Model();
@@ -4523,16 +4523,153 @@ private slots:
         view->selectionModel()->clearSelection();
         view->setCurrentIndex(QModelIndex{});
 
-        // Same 1-based -> 0-based flip the slot performs on the
-        // dialog's textValue().
-        const int oneBased = 12;
-        mWindow->SelectSourceRow(oneBased - 1);
+        mWindow->ExecuteGotoLineForTest(QStringLiteral("12"));
         QCoreApplication::processEvents();
         QCOMPARE(view->currentIndex().row(), 11);
         QCOMPARE(view->selectionModel()->selectedRows().count(), 1);
         QCOMPARE(view->selectionModel()->selectedRows().first().row(), 11);
 
         model->EndStreaming(false);
+    }
+
+    // Regression pin: the post-dialog range check reads the *live*
+    // `mModel->rowCount()`, not a value captured before the modal
+    // opened. Otherwise a FIFO eviction / session swap during the
+    // modal would let an evicted line pass the check, land on
+    // `SelectSourceRow`'s generic "Row is not currently visible"
+    // hint, AND display a range in the error string that no longer
+    // exists. Simulated here by driving the seam with an input
+    // larger than the current row count -- a valid model that
+    // shrank while the modal was open would look identical to the
+    // seam's caller.
+    void TestGotoLineOutOfRangeAfterShrinkSurfacesLiveRange()
+    {
+        auto *model = mWindow->Model();
+        auto *view = mWindow->findChild<LogTableView *>();
+        QVERIFY(view != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 10, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 10);
+
+        view->selectionModel()->clearSelection();
+        view->setCurrentIndex(QModelIndex{});
+        mWindow->statusBar()->clearMessage();
+
+        // Line 999 is well past the current 10-row model. The seam
+        // must reject with a specific "out of range (1 - 10)" hint,
+        // NOT jump the view.
+        mWindow->ExecuteGotoLineForTest(QStringLiteral("999"));
+        QCoreApplication::processEvents();
+
+        const QString message = mWindow->statusBar()->currentMessage();
+        QVERIFY2(
+            message.contains(QStringLiteral("out of range"), Qt::CaseInsensitive),
+            qUtf8Printable(QStringLiteral("Expected out-of-range hint, got: '%1'").arg(message))
+        );
+        // The bracketed range must reflect the *current* row count,
+        // not the value captured before a hypothetical modal open.
+        // If someone regresses to a stale captured value the range
+        // would be wrong and this substring check would fail.
+        QVERIFY2(
+            message.contains(QStringLiteral("1 - 10")),
+            qUtf8Printable(QStringLiteral("Expected live range '1 - 10' in hint, got: '%1'").arg(message))
+        );
+        // View selection unchanged (no accidental jump).
+        QVERIFY(view->selectionModel()->selectedRows().isEmpty());
+
+        model->EndStreaming(false);
+    }
+
+    // Regression pin: after a valid in-range line, the visibility
+    // probe reports a filter-hidden target with the caller-specific
+    // "Line %1 is currently filtered out." message (not the anchor-
+    // oriented "Row is not currently visible" fallback that
+    // `SelectSourceRow` would otherwise print). Uses the shared
+    // three-row fixture and filters down to only "third" so lines
+    // 1 and 2 are hidden while line 3 remains reachable.
+    void TestGotoLineFilteredOutRowSurfacesSpecificHint()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+        auto *model = mWindow->Model();
+        auto *proxy = mWindow->FilterModel();
+        auto *view = mWindow->findChild<LogTableView *>();
+        QVERIFY(model != nullptr);
+        QVERIFY(proxy != nullptr);
+        QVERIFY(view != nullptr);
+        QCOMPARE(model->rowCount(), 3);
+
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist");
+
+        // Keep only "third" (source row 2). Lines 1 and 2 become
+        // filter-hidden targets; line 3 stays reachable.
+        loglib::CallbackStringRowPredicate keepThird(
+            static_cast<std::size_t>(msgCol), [](std::string_view value) { return value == std::string_view{"third"}; }
+        );
+        std::vector<loglib::RowPredicate> rules;
+        rules.emplace_back(std::move(keepThird));
+        proxy->SetFilterRules(std::move(rules));
+        QCoreApplication::processEvents();
+        QCOMPARE(proxy->rowCount(), 1);
+
+        // Line 1 is filter-hidden -> specific hint, no jump.
+        view->selectionModel()->clearSelection();
+        view->setCurrentIndex(QModelIndex{});
+        mWindow->statusBar()->clearMessage();
+        mWindow->ExecuteGotoLineForTest(QStringLiteral("1"));
+        QCoreApplication::processEvents();
+
+        const QString hiddenMessage = mWindow->statusBar()->currentMessage();
+        QVERIFY2(
+            hiddenMessage.contains(QStringLiteral("filtered out"), Qt::CaseInsensitive),
+            qUtf8Printable(QStringLiteral("Expected 'filtered out' hint, got: '%1'").arg(hiddenMessage))
+        );
+        QVERIFY2(
+            hiddenMessage.contains(QStringLiteral("Line 1")),
+            qUtf8Printable(QStringLiteral("Expected 'Line 1' in hint, got: '%1'").arg(hiddenMessage))
+        );
+        QVERIFY(view->selectionModel()->selectedRows().isEmpty());
+
+        // Line 3 is visible -> jump succeeds and the "filtered out"
+        // hint is NOT re-printed. Under the single-row visible
+        // filter, source row 2 maps to proxy row 0.
+        mWindow->statusBar()->clearMessage();
+        mWindow->ExecuteGotoLineForTest(QStringLiteral("3"));
+        QCoreApplication::processEvents();
+        QCOMPARE(view->currentIndex().row(), 0);
+        QCOMPARE(view->selectionModel()->selectedRows().count(), 1);
+
+        // Restore the pristine "no filter" state so downstream tests
+        // see the fixture unchanged.
+        proxy->SetFilterRules({});
+        QCoreApplication::processEvents();
+    }
+
+    // No-log-loaded / empty-model early bail: the seam surfaces
+    // "No log loaded." and does nothing else. Pins the same
+    // early guard the modal-opening slot uses.
+    void TestGotoLineNoLogLoadedSurfacesHint()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+        QCOMPARE(model->rowCount(), 0);
+
+        mWindow->statusBar()->clearMessage();
+        mWindow->ExecuteGotoLineForTest(QStringLiteral("1"));
+        QCoreApplication::processEvents();
+
+        const QString message = mWindow->statusBar()->currentMessage();
+        QVERIFY2(
+            message.contains(QStringLiteral("No log loaded"), Qt::CaseInsensitive),
+            qUtf8Printable(QStringLiteral("Expected 'No log loaded' hint, got: '%1'").arg(message))
+        );
     }
 
     // Pure parser: relative shortcuts `-Nh` and `-Nm` (case-

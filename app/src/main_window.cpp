@@ -2416,6 +2416,11 @@ void MainWindow::NewSession()
     mPendingDecompressionErrors.clear();
     // The configuration that requested the deferred sort is gone.
     mPendingApplySortFromConfig = false;
+    // Drop the "last Goto Timestamp input" carry-over: a
+    // string that made sense in the outgoing session's zone /
+    // format can be nonsense in the new one, and pre-populating
+    // a fresh dialog with it would just annoy the user.
+    mLastGotoTimestampInput.clear();
     // Drop the pinned uuid + open-windows membership so the next
     // AutoSave creates a fresh entry and a crash before then
     // doesn't re-restore the discarded session.
@@ -6378,16 +6383,36 @@ void MainWindow::GotoLine()
         return;
     }
 
-    bool ok = false;
-    const int oneBased = dialog.textValue().toInt(&ok);
-    if (!ok || oneBased < 1 || oneBased > rowCount)
+    ExecuteGotoLine(dialog.textValue());
+}
+
+void MainWindow::ExecuteGotoLine(const QString &input)
+{
+    // Re-read `rowCount` here (not before the modal) so a shrink
+    // while the dialog was open -- streaming FIFO eviction, session
+    // swap -- is reflected in both the range check and the error
+    // hint. Using a stale captured value would (a) let an evicted
+    // line pass the check and land on the misleading generic
+    // `SelectSourceRow` hint, and (b) show the user a range that
+    // no longer exists.
+    if (mModel == nullptr)
     {
-        // The validator normally blocks Accept on out-of-range
-        // input, but paranoia: if the model shrank while the modal
-        // was open (streaming eviction, session swap), surface it
-        // instead of silently no-oping.
+        statusBar()->showMessage(tr("No log loaded."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+    const int currentRowCount = mModel->rowCount();
+    if (currentRowCount == 0)
+    {
+        statusBar()->showMessage(tr("No log loaded."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+
+    bool ok = false;
+    const int oneBased = input.toInt(&ok);
+    if (!ok || oneBased < 1 || oneBased > currentRowCount)
+    {
         statusBar()->showMessage(
-            tr("Line %1 is out of range (1 - %2).").arg(dialog.textValue(), QString::number(rowCount)),
+            tr("Line %1 is out of range (1 - %2).").arg(input, QString::number(currentRowCount)),
             STATUS_BAR_MESSAGE_TIMEOUT_MS
         );
         return;
@@ -6397,7 +6422,10 @@ void MainWindow::GotoLine()
     // visible" hint when the target is filtered out; the caller
     // knows more context (this is a Goto Line jump, not an anchor
     // seek), so front-run a filter-visibility probe and print the
-    // more specific message before deferring.
+    // more specific message before deferring. Safe now that the
+    // range check above guarantees `sourceRow` is in-model, so an
+    // invalid `mapFromSource` result really does mean "filter",
+    // not "evicted".
     const int sourceRow = oneBased - 1;
     if (mSortFilterProxyModel != nullptr && mRowOrderProxyModel != nullptr)
     {
@@ -6423,37 +6451,54 @@ namespace
 /// True if @p fmt contains a `date::parse` zone specifier -- `%z`,
 /// `%Z`, `%Ez`, or `%Oz` -- so a successful parse produces a
 /// UTC-normalised value that must NOT be TZ-shifted again.
-/// `%%` is skipped so literal `"%%z"` in a format string doesn't
-/// register as a zone specifier. Kept adjacent to
-/// `ParseGotoTimestampInput` because that is its only caller.
+/// `%%` is treated as a literal percent (not the start of a
+/// specifier), so `"%%z"` in a format string does NOT register.
+/// Kept adjacent to `ParseGotoTimestampInput` because that is its
+/// only caller.
+///
+/// The scan advances one byte at a time on non-match branches
+/// (rather than skipping past the tentative specifier) so a
+/// malformed prefix like `"%E%z"` still detects the inner `%z`
+/// on a re-scan starting at the `%`. `date::parse` would reject
+/// such a format anyway, but a false negative here would flag
+/// the parsed value as naive and double-shift it downstream --
+/// worse than false-positive-recognising a bad format.
 [[nodiscard]] bool FormatHasZoneSpecifier(std::string_view fmt) noexcept
 {
-    for (std::size_t i = 0; i < fmt.size();)
+    for (std::size_t i = 0; i < fmt.size(); ++i)
     {
         if (fmt[i] != '%')
         {
-            ++i;
             continue;
         }
-        if (i + 1 >= fmt.size())
+        const std::size_t next = i + 1;
+        if (next >= fmt.size())
         {
             break;
         }
-        if (fmt[i + 1] == '%')
+        if (fmt[next] == '%')
         {
-            i += 2;
+            // `%%` is a literal percent -- consume both and keep
+            // scanning. The outer `++i` moves past the first `%`;
+            // this `++i` moves past the second, so we resume at
+            // the byte after `%%`.
+            ++i;
             continue;
         }
-        std::size_t j = i + 1;
-        if (fmt[j] == 'E' || fmt[j] == 'O')
+        std::size_t specifier = next;
+        if ((fmt[specifier] == 'E' || fmt[specifier] == 'O') && specifier + 1 < fmt.size())
         {
-            ++j;
+            ++specifier;
         }
-        if (j < fmt.size() && (fmt[j] == 'z' || fmt[j] == 'Z'))
+        if (fmt[specifier] == 'z' || fmt[specifier] == 'Z')
         {
             return true;
         }
-        i = j + 1;
+        // Fall through with only the outer `++i` moving forward
+        // one byte. Deliberately do NOT jump past `specifier`:
+        // that would swallow a subsequent `%z` in malformed
+        // formats like `"%E%z"`, producing the double-shift
+        // regression noted in the comment above.
     }
     return false;
 }
@@ -6566,31 +6611,46 @@ void MainWindow::GotoTimestamp()
     dialog.setLabelText(tr("Timestamp:"));
     dialog.setInputMode(QInputDialog::TextInput);
     dialog.setTextEchoMode(QLineEdit::Normal);
+    // Pre-populate with the previous input so successive jumps
+    // around the same instant don't require a retype. Cleared on
+    // session boundaries (see `mLastGotoTimestampInput` field
+    // comment) to avoid leaking a stale reference into a fresh log.
+    dialog.setTextValue(mLastGotoTimestampInput);
     if (auto *editor = dialog.findChild<QLineEdit *>())
     {
         editor->setPlaceholderText(tr("YYYY-MM-DD HH:MM:SS or -1h / -30m"));
+        editor->selectAll();
     }
     if (dialog.exec() != QDialog::Accepted)
     {
         return;
     }
 
+    const QString rawInput = dialog.textValue();
+    mLastGotoTimestampInput = rawInput;
     const std::optional<GotoTimestampParse> parsed = ParseGotoTimestampInput(
-        dialog.textValue(),
-        config.columns[static_cast<std::size_t>(timeCol)].parseFormats,
-        std::chrono::system_clock::now()
+        rawInput, config.columns[static_cast<std::size_t>(timeCol)].parseFormats, std::chrono::system_clock::now()
     );
     if (!parsed.has_value())
     {
         statusBar()->showMessage(tr("Could not parse timestamp."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
         return;
     }
-    // Stored cell timestamps are always UTC micros (columns with
-    // `%z` / `%Ez` format specifiers, and the ISO fast path, both
-    // normalise to UTC). A naive user input needs the same shift
-    // through the *display* zone -- otherwise a user in UTC+2 who
-    // types "12:00" jumps to the row two hours off. The library
-    // helper handles DST edge cases so we don't have to catch here.
+    // Stored cell timestamps live in the same numeric space the
+    // table's TZ-shifted display uses: columns with a `%z` / `%Ez`
+    // / `%Z` specifier land as true UTC micros; naive columns
+    // (including the ISO fast path and any `parseFormats` without
+    // a zone specifier) store the wall-clock digits *as-if UTC*,
+    // which then get TZ-shifted again for display. Either way, a
+    // naive user input represents a display-zone wall-clock
+    // instant and needs the same local -> UTC shift to line up
+    // with what the table shows on-screen. Users who paste a raw
+    // (naive) log value from the file rather than the displayed
+    // value will land off by the display-zone offset; that's a
+    // documented caveat, not a bug -- the dialog's canonical
+    // meaning is "the wall-clock time the user reads in the row".
+    // `LocalMicrosecondsSinceEpochToUtc` handles the DST edge
+    // cases so we don't have to catch here.
     const int64_t targetMicros =
         parsed->isNaive ? loglib::LocalMicrosecondsSinceEpochToUtc(parsed->micros) : parsed->micros;
 
@@ -8779,6 +8839,14 @@ bool MainWindow::SubmitAnchorNoteForRowForTest(int sourceRow, const QString &not
     // internally so multi-line input collapses to one line.
     mAnchors->SetAnchorNote(*key, note.toStdString());
     return true;
+}
+
+void MainWindow::ExecuteGotoLineForTest(const QString &input)
+{
+    // Thin forwarder to the production body. Kept trivial so a
+    // regression in the modal-owning `GotoLine` slot cannot mask a
+    // regression in the validation branches (and vice versa).
+    ExecuteGotoLine(input);
 }
 #endif
 
