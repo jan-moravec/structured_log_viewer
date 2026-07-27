@@ -4732,7 +4732,7 @@ private slots:
 
         // 2^63 microseconds in hours (~2.56T) is exactly the cap;
         // one past it must be rejected.
-        const qulonglong hourCap =
+        const auto hourCap =
             static_cast<qulonglong>(std::numeric_limits<int64_t>::max() / (3600LL * 1'000'000LL));
         const auto overHourCap =
             MainWindow::ParseGotoTimestampInput(QString::number(hourCap + 1) + QStringLiteral("h"), noFormats, kNow);
@@ -4748,7 +4748,7 @@ private slots:
         // (`60 * 1e6` here vs `3600 * 1e6` above), so a regression
         // that swapped the two branches would pass the hour test
         // above and fail here. `2^63 / (60 * 1e6) ~= 1.53e11`.
-        const qulonglong minuteCap =
+        const auto minuteCap =
             static_cast<qulonglong>(std::numeric_limits<int64_t>::max() / (60LL * 1'000'000LL));
         const auto overMinuteCap = MainWindow::ParseGotoTimestampInput(
             QString::number(minuteCap + 1) + QStringLiteral("m"), noFormats, kNow
@@ -5309,6 +5309,7 @@ private slots:
     {
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY` aborts on null.
         QVERIFY(model->TimestampsAreMonotonic());
 
         // Batch 1: three rows at 2024-04-28T10:00:0{1,2,3}Z.
@@ -5377,6 +5378,7 @@ private slots:
         QVERIFY(model != nullptr);
 
         mWindow->ForceTimestampsNonMonotonicForTest();
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY` aborts on null.
         QVERIFY(!model->TimestampsAreMonotonic());
 
         auto *action = mWindow->findChild<QAction *>(QStringLiteral("actionNewSession"));

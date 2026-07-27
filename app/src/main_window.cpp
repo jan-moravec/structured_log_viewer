@@ -6574,7 +6574,7 @@ std::optional<MainWindow::GotoTimestampParse> MainWindow::ParseGotoTimestampInpu
             std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
         // `nowMicros` is >= 0 for post-1970 clocks; subtraction of a
         // non-negative bounded `offsetMicros` cannot overflow.
-        return GotoTimestampParse{nowMicros - offsetMicros, /*isNaive=*/false};
+        return GotoTimestampParse{.micros = nowMicros - offsetMicros, .isNaive = false};
     }
 
     // Absolute path: try every parse format the column itself
@@ -6602,7 +6602,9 @@ std::optional<MainWindow::GotoTimestampParse> MainWindow::ParseGotoTimestampInpu
         loglib::TimeStamp parsed{};
         if (loglib::TryParseTimestamp(stdInput, fmt, loglib::ClassifyTimestampFormat(fmt), scratch, parsed))
         {
-            return GotoTimestampParse{parsed.time_since_epoch().count(), /*isNaive=*/!FormatHasZoneSpecifier(fmt)};
+            return GotoTimestampParse{
+                .micros = parsed.time_since_epoch().count(),
+                .isNaive = !FormatHasZoneSpecifier(fmt)};
         }
     }
     return std::nullopt;
