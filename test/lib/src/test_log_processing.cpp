@@ -385,37 +385,26 @@ TEST_CASE("LocalMillisecondsSinceEpochToTimeStamp", "[log_processing]")
     }
 }
 
-// `LocalMicrosecondsSinceEpochToUtc` under a pinned zone. Using a
-// specific IANA zone (rather than `CurrentZone()`) keeps the
-// assertion deterministic across CI hosts. Verifies the three
-// interesting inputs of each transition kind:
-//   * the "normal" hour (unique local instant), which round-trips.
-//   * the "spring-forward" gap hour, which the helper documents as
-//     "return the naive value" for graceful degradation.
-//   * the "fall-back" ambiguous hour, which resolves to the earlier
-//     candidate via `choose::earliest`.
+// `LocalMicrosecondsSinceEpochToUtc` under `Europe/Berlin` (a
+// pinned IANA zone rather than `CurrentZone()` for deterministic
+// CI). Covers ordinary, fall-back, spring-forward, null-zone,
+// and far-future inputs.
 TEST_CASE("LocalMicrosecondsSinceEpochToUtc handles DST transitions", "[log_processing]")
 {
     InitializeTimezoneData();
 
-    // Berlin: last Sunday of March / October each year.
-    //   * Spring forward 2024: 2024-03-31 02:00 -> 03:00 CEST.
-    //     02:30 wall-clock never happens.
-    //   * Fall back 2024: 2024-10-27 03:00 -> 02:00 CET.
-    //     02:30 wall-clock happens twice (CEST offset +02:00 and
-    //     the later CET offset +01:00).
+    // Berlin DST 2024: spring forward 2024-03-31 02:00 -> 03:00
+    // CEST (02:30 does not exist); fall back 2024-10-27 03:00 ->
+    // 02:00 CET (02:30 exists twice).
     const date::time_zone *berlin = date::locate_zone("Europe/Berlin");
     REQUIRE(berlin != nullptr);
 
-    // Helper: build a naive-UTC-as-if-local micros value from a
-    // year-month-day-hour-minute-second tuple. Mirrors what the
-    // Goto Timestamp seam produces after a naive `date::parse`.
+    // Build a naive-as-if-UTC micros value from Y-M-D H:M:S,
+    // mirroring what the Goto Timestamp seam produces after a
+    // naive `date::parse`. Explicit `date::month{}` / `date::day{}`
+    // silences a clang-tidy narrowing warning.
     const auto naiveLocalMicros = [](int year, unsigned month, unsigned day, int hour, int minute, int second)
     {
-        // Explicit `date::month{...}` / `date::day{...}` (rather than
-        // relying on `operator/`'s implicit conversion from `unsigned`)
-        // silences the clang-tidy narrowing-conversion warning on the
-        // hosted `year / unsigned / unsigned` overload.
         const auto ymd = date::year{year} / date::month{month} / date::day{day};
         const auto sysDays = date::sys_days{ymd};
         const auto wallClock = sysDays + std::chrono::hours{hour} + std::chrono::minutes{minute} +
@@ -425,8 +414,7 @@ TEST_CASE("LocalMicrosecondsSinceEpochToUtc handles DST transitions", "[log_proc
 
     SECTION("Ordinary hour round-trips through the zone offset")
     {
-        // 2024-04-01 12:00:00 in Berlin (well past the spring
-        // transition) is CEST (+02:00) -> 10:00:00 UTC.
+        // 2024-04-01 12:00 Berlin (CEST +02:00) -> 10:00 UTC.
         const int64_t localMicros = naiveLocalMicros(2024, 4, 1, 12, 0, 0);
         const int64_t expectedUtcMicros = naiveLocalMicros(2024, 4, 1, 10, 0, 0);
         const int64_t got = LocalMicrosecondsSinceEpochToUtc(localMicros, berlin);
@@ -435,10 +423,8 @@ TEST_CASE("LocalMicrosecondsSinceEpochToUtc handles DST transitions", "[log_proc
 
     SECTION("Fall-back ambiguous hour resolves to the earlier candidate")
     {
-        // 2024-10-27 02:30:00 in Berlin occurs twice; the "earliest"
-        // resolution is CEST (+02:00) -> 00:30:00 UTC (the earlier
-        // of the two candidates -- the later resolution would be
-        // CET, +01:00 -> 01:30:00 UTC).
+        // 2024-10-27 02:30 Berlin occurs twice; `choose::earliest`
+        // picks CEST (+02:00) -> 00:30 UTC.
         const int64_t localMicros = naiveLocalMicros(2024, 10, 27, 2, 30, 0);
         const int64_t earlierUtcMicros = naiveLocalMicros(2024, 10, 27, 0, 30, 0);
         const int64_t got = LocalMicrosecondsSinceEpochToUtc(localMicros, berlin);
@@ -447,17 +433,11 @@ TEST_CASE("LocalMicrosecondsSinceEpochToUtc handles DST transitions", "[log_proc
 
     SECTION("Spring-forward gap hour snaps to the transition boundary")
     {
-        // 2024-03-31 02:30:00 in Berlin never occurs (clocks skip
-        // 02:00 CET -> 03:00 CEST). `to_sys(local, choose::earliest)`
-        // resolves the gap by returning the sys_time transition
-        // boundary (01:00 UTC = the moment clocks jumped), NOT by
-        // throwing `nonexistent_local_time` -- that exception only
-        // fires from the no-`choose` overload. This is a fine
-        // Goto Timestamp landing: the first real instant after the
-        // gap. Pinning the exact boundary value guards against a
-        // silent behaviour change (e.g. a future date library
-        // release adopting `choose::latest`-style semantics, or a
-        // switch to the throwing overload with a naive fallback).
+        // 2024-03-31 02:30 Berlin does not exist. `choose::earliest`
+        // returns the transition boundary (01:00 UTC = the instant
+        // clocks jumped forward), not `nonexistent_local_time`.
+        // Pinning the exact value guards against a future date
+        // library changing this semantic.
         const int64_t localMicros = naiveLocalMicros(2024, 3, 31, 2, 30, 0);
         const int64_t transitionBoundaryUtc = naiveLocalMicros(2024, 3, 31, 1, 0, 0);
         const int64_t got = LocalMicrosecondsSinceEpochToUtc(localMicros, berlin);
@@ -473,15 +453,12 @@ TEST_CASE("LocalMicrosecondsSinceEpochToUtc handles DST transitions", "[log_proc
 
     SECTION("Far-future / far-past instants degrade gracefully")
     {
-        // Push well past the tzdata transition table (~2500 CE
-        // depending on the vintage). `to_sys` may throw a
-        // non-DST exception here; the broadened catch keeps the
-        // helper exception-safe and yields the naive value.
+        // Well past the tzdata transition table. `to_sys` may
+        // throw a non-DST exception; the catch keeps the helper
+        // exception-safe by yielding the naive value. Either way
+        // the shift stays within +/-14 h.
         const int64_t farFutureMicros = naiveLocalMicros(9999, 12, 31, 23, 59, 59);
         const int64_t gotFuture = LocalMicrosecondsSinceEpochToUtc(farFutureMicros, berlin);
-        // Success case: shift stays within the offset bounds
-        // (Berlin's largest historical offset is well under 3h).
-        // Degradation case: value equals the naive input.
         constexpr int64_t MAX_ZONE_OFFSET_MICROS = 14LL * 3600LL * 1'000'000LL;
         CHECK(std::llabs(gotFuture - farFutureMicros) <= MAX_ZONE_OFFSET_MICROS);
     }

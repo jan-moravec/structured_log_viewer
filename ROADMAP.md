@@ -17,7 +17,7 @@ For the architecture each item plugs into, see [CONTRIBUTING.md → Architecture
   - [5. Boolean filter expressions (AND / OR / NOT)](#5-boolean-filter-expressions-and--or--not)
   - [6. Multi-line records (stack traces and continuation lines)](#6-multi-line-records-stack-traces-and-continuation-lines)
   - [7. Export filtered rows](#7-export-filtered-rows)
-  - [8. Goto line / Goto timestamp](#8-goto-line--goto-timestamp)
+  - [8. ~~Goto line / Goto timestamp~~ (shipped)](#8-goto-line--goto-timestamp)
   - [9. Stdin / pipe input](#9-stdin--pipe-input)
   - [10. Headless / scriptable CLI mode](#10-headless--scriptable-cli-mode)
 - [Tier 2 — `v1.x` strong differentiators](#tier-2--v1x-strong-differentiators)
@@ -185,19 +185,9 @@ Exports respect the current filter set and sort order; an explicit "Export selec
 
 **Touches.** `app`: new `app/include/export_dialog.hpp` + `.cpp`, `MainWindow::SaveConfiguration` neighbourhood for menu wiring.
 
-### 8. Goto line / Goto timestamp
+### 8. ~~Goto line / Goto timestamp~~
 
-**Why.** Trivial UX gap; every alternative has it. `Ctrl+G` jumps to a source-model row number; an adjacent **Goto Timestamp…** dialog accepts `"2024-04-28 12:34:56"` or a relative `"-1h"` and lands the table on the first row at or after that time.
-
-**Scope.** Two menu entries under **Edit** (`Ctrl+G` and `Ctrl+Shift+G`), each opens a small modal with a single input.
-
-**Non-goals (v1).** Bookmarks in the goto history (item 24 covers history), per-second slider widget, time-zone selector on the goto box (it uses the same display TZ as the table).
-
-**Approach.** `SelectSourceRow` already exists. Goto Timestamp binary-searches the first `Type::Time` column (already sorted in file order) and falls back to a linear scan when a user sort is active on a different column.
-
-**Acceptance bar.** Both jumps land in `< 100 ms` on a 10 M-row file. Goto Timestamp accepts every format the table's timestamp column already parses, plus the relative `-Nh` / `-Nm` shortcuts.
-
-**Touches.** `app`: `MainWindow` (two new slots, two new actions), `app/src/main_window.ui` (menu entries).
+> **Shipped.** **Edit → Go to Line…** (`Ctrl+G`) jumps to a 1-based source-model row (line 1 is the earliest retained row; streaming FIFO eviction may have dropped older rows so numbers need not match the source file). **Edit → Go to Timestamp…** (`Ctrl+Shift+G`) accepts every format the timestamp column already parses, two ISO 8601 fallbacks (`%FT%T` and `%F %T`), and the relative shortcuts `-Nh` / `-Nm` (case-insensitive; `+N` and bare `N` also mean "N ago", matching lnav / less). Naive inputs (no `%z` / `%Z`) are interpreted in the display TZ (`loglib::CurrentZone()`) and shifted to UTC via `loglib::LocalMicrosecondsSinceEpochToUtc`. Search takes one of three branches: an O(log N) source-row binary search when the timestamps are monotonic and no user sort is active (guarded by `LogModel::TimestampsAreMonotonic()`, which flips false on multi-file `Append` / rotation / clock skew); an O(N_visible) outer-proxy walk when monotonicity has broken; an O(N_visible) display-order scan under a user sort. See [`doc/README.md § Jumping to a Line or Timestamp`](doc/README.md#jumping-to-a-line-or-timestamp).
 
 ### 9. Stdin / pipe input
 
@@ -370,7 +360,7 @@ Reference snapshot from the survey that informed the roadmap (June 2026). `✓` 
 | Match overview rail / minimap               |                  |           |   ✓   |           |             |         |              |           |   ✓   |
 | Pretty-print JSON / XML inline              | ~ Record Details |     ✓     |       |           |      ✓      |    ✓    |      ✓       |           |   ✓   |
 | Multi-line records (stack traces)           |                  |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
-| Goto line / Goto timestamp                  |                  |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
+| Goto line / Goto timestamp                  |        ✓         |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
 | Time-range zoom / jump-by-N-min             |  ~ time filter   |     ✓     |       |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
 | Timeshift (per-file clock offset)           |                  |           |       |     ✓     |             |         |              |           |       |
 | Encoding auto-detect (UTF-16, cp125x)       |                  |           |   ✓   |     ✓     |      ✓      |    ✓    |              |           |       |

@@ -406,38 +406,20 @@ int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds, const date::
     const date::local_time<std::chrono::microseconds> localTime{std::chrono::microseconds{localMicroseconds}};
     try
     {
-        // `choose::earliest` resolves both DST edge cases without
-        // throwing:
-        //   * ambiguous fall-back hour -> earlier of the two
-        //     candidates (per the `choose` semantics).
-        //   * spring-forward gap -> the sys_time transition
-        //     boundary between the two offsets (i.e., the instant
-        //     clocks jumped forward). Note: this is NOT the naive
-        //     value; if a caller wanted "naive fallback for gaps"
-        //     they would need to call `get_info(localTime)` first
-        //     and branch on `local_info::nonexistent`. The
-        //     transition-boundary outcome is a fine Goto Timestamp
-        //     target (the first real instant after the gap) so we
-        //     accept it.
-        //
-        // The DST exceptions are only thrown by the no-`choose`
-        // overload of `to_sys`, so we deliberately don't catch
-        // `nonexistent_local_time` / `ambiguous_local_time` here --
-        // doing so would be unreachable code and would encourage
-        // the "naive fallback" mental model that the current
-        // implementation does not actually provide.
+        // `choose::earliest` resolves DST edge cases without
+        // throwing: ambiguous fall-back hour -> earlier candidate;
+        // spring-forward gap -> the transition boundary. We do
+        // NOT catch `nonexistent_local_time` /
+        // `ambiguous_local_time` because the `choose` overload
+        // never throws them.
         const auto systemTime = zone->to_sys(localTime, date::choose::earliest);
         return systemTime.time_since_epoch().count();
     }
     catch (const std::exception &)
     {
-        // Reachable for inputs past the tzdata transition table
-        // (far-future / far-past dates) and for corrupt zone
-        // entries; the `choose` overload forwards these as plain
-        // `runtime_error` derivations rather than the DST-specific
-        // exceptions. Falling back to the naive value keeps the
-        // Goto Timestamp slot exception-safe: worst case, the jump
-        // is off by the zone offset rather than crashing the app.
+        // Reachable for far-future dates past the tzdata table
+        // and corrupt zone entries. Falling back to the naive
+        // value keeps the Goto Timestamp slot exception-safe.
         return localMicroseconds;
     }
 }

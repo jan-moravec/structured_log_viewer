@@ -180,9 +180,8 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
         mErrorCount = 0;
         mStreamingErrors.clear();
         mLastReportedShutdownDropCount = 0;
-        // Wipe the Goto Timestamp fast-path guards so a fresh
-        // session doesn't inherit a previous session's "non-
-        // monotonic" verdict or its last-seen timestamp reference.
+        // Reset the Goto Timestamp fast-path guards so a fresh
+        // session does not inherit a prior "non-monotonic" verdict.
         mTimestampsMonotonic = true;
         mLastAppendedTimestampMicros.reset();
         // Drop the per-batch capture alongside the table's rank cache
@@ -247,9 +246,8 @@ void LogModel::BeginStreamingShared(std::unique_ptr<loglib::LineSource> source)
     mErrorCount = 0;
     mStreamingErrors.clear();
     mLastReportedShutdownDropCount = 0;
-    // Fresh session: reset the Goto Timestamp fast-path guards so
-    // a prior session's "non-monotonic" verdict doesn't leak into
-    // a fresh (potentially well-ordered) log.
+    // Reset the Goto Timestamp fast-path guards -- see the
+    // matching block in `TeardownStreamingSessionInternal`.
     mTimestampsMonotonic = true;
     mLastAppendedTimestampMicros.reset();
 
@@ -629,11 +627,9 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
 
     mLogTable.AppendBatch(std::move(batch));
 
-    // Cheap monotonicity guard for the Goto Timestamp fast path:
-    // scan the just-inserted rows' timestamp column for a
-    // batch-boundary or intra-batch inversion. Piggybacks on the
-    // O(N_batch) work the append already did. Skipped once the flag
-    // has already flipped false -- it's irreversible for the session.
+    // Monotonicity guard for the Goto Timestamp fast path. Cheap
+    // (piggybacks on the O(N_batch) append) and no-op once the
+    // flag has already flipped false.
     if (rowsGrew)
     {
         UpdateTimestampMonotonicity(currentRowCount, static_cast<int>(mLogTable.RowCount()));
@@ -2183,12 +2179,8 @@ void LogModel::SetTimestampsMonotonicForTest(bool monotonic) noexcept
 
 void LogModel::UpdateTimestampMonotonicity(int firstNewRow, int endNewRow)
 {
-    // Early-exit branches ordered cheapest-first so the common
-    // "already flipped" / "no time column" cases pay nothing per
-    // batch. `mTimestampsMonotonic` is intentionally irreversible
-    // -- there is no cheap heal path, and the fast-path caller
-    // degrades to O(N_visible) proxy iteration for the remainder
-    // of the session (see `TimestampsAreMonotonic` doc).
+    // Cheapest guards first so the common "already flipped" / "no
+    // time column" paths add nothing per batch.
     if (!mTimestampsMonotonic)
     {
         return;
@@ -2203,15 +2195,12 @@ void LogModel::UpdateTimestampMonotonicity(int firstNewRow, int endNewRow)
         return;
     }
 
-    // Single pass: track a running max of valid ts values in the
-    // batch (catches intra-batch inversions) AND compare the first
-    // valid ts to `mLastAppendedTimestampMicros` (catches
-    // batch-boundary inversions -- multi-file `Append`, rotation,
-    // clock skew). Missing-ts rows are ignored rather than treated
-    // as `-inf`; a batch of all-missing rows leaves the tracker
-    // unchanged so the next batch compares against the same
-    // reference point. Bails out early on the first violation
-    // because a single inversion is terminal.
+    // Single pass over the new rows: `runningMax` catches intra-
+    // batch inversions; the first valid ts is compared against
+    // `mLastAppendedTimestampMicros` for the boundary case.
+    // Missing-ts rows are skipped (a batch of all-missing rows
+    // leaves the tracker untouched). One inversion is terminal, so
+    // we bail out immediately.
     const auto colIdx = static_cast<std::size_t>(timeCol);
     std::optional<int64_t> lastValidInBatch;
     int64_t runningMax = std::numeric_limits<int64_t>::min();
@@ -2224,8 +2213,8 @@ void LogModel::UpdateTimestampMonotonicity(int firstNewRow, int endNewRow)
         }
         if (!lastValidInBatch.has_value())
         {
-            // First valid ts -- do the batch-boundary check now,
-            // before the running max absorbs it.
+            // Boundary check on the first valid ts, before
+            // `runningMax` absorbs it.
             if (mLastAppendedTimestampMicros.has_value() && *ts < *mLastAppendedTimestampMicros)
             {
                 mTimestampsMonotonic = false;
@@ -2235,7 +2224,6 @@ void LogModel::UpdateTimestampMonotonicity(int firstNewRow, int endNewRow)
         }
         else if (*ts < runningMax)
         {
-            // Intra-batch inversion.
             mTimestampsMonotonic = false;
             mLastAppendedTimestampMicros = *ts;
             return;

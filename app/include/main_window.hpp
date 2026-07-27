@@ -21,11 +21,8 @@
 #include <loglib/stop_token.hpp>
 #include <loglib/theme.hpp>
 
-// `ParseGotoTimestampInput` takes an optional display time zone so
-// callers can convert naive absolute inputs (`YYYY-MM-DD HH:MM:SS`)
-// from the user's wall-clock frame into UTC micros comparable with
-// the table's stored timestamps. Forward declared to avoid pulling
-// `<date/tz.h>` into every translation unit that includes this header.
+// Forward-declared so this header does not pull in `<date/tz.h>`
+// just for the Goto Timestamp helpers' zone argument.
 namespace date
 {
 class time_zone;
@@ -385,112 +382,78 @@ public:
     /// note). Used by the Anchors dock for jump targets.
     void SelectSourceRow(int sourceRow);
 
-    /// Pop the "Go to Line..." modal (`actionGotoLine`, `Ctrl+G`).
-    /// Line numbers are 1-based over the source model as it exists
-    /// now: line 1 is the earliest row currently retained (streaming
-    /// FIFO eviction may have dropped older rows, so line numbers
-    /// are **not** guaranteed to match the source file's line
-    /// numbering). Newest-first display reversal only affects
-    /// rendering, not the number the user types. Invalid input /
-    /// no active model surfaces a status-bar hint; a valid row hands
-    /// off to `SelectSourceRow`.
-    ///
-    /// Post-dialog work is factored into `ExecuteGotoLine` so tests
-    /// (and any future non-modal entry) can drive it without a
-    /// blocking `QInputDialog::exec`.
+    /// Pop the "Go to Line..." modal (`Ctrl+G`). Line numbers are
+    /// 1-based over the source model as it currently is; line 1 is
+    /// always the earliest retained row (streaming FIFO eviction
+    /// may have dropped older rows, so numbers need not match the
+    /// source file's numbering). Newest-first display reversal only
+    /// affects rendering, not the number the user types. Rejects
+    /// and status-bar-hints on any error; a valid row hands off to
+    /// `SelectSourceRow`. Post-dialog work lives in
+    /// `ExecuteGotoLine` so tests can drive it without a modal.
     void GotoLine();
 
-    /// Pop the "Go to Timestamp..." modal (`actionGotoTimestamp`,
-    /// `Ctrl+Shift+G`). Accepts the current time column's own
-    /// `parseFormats` plus two ISO fallbacks and the relative
-    /// shortcuts `-Nh` / `-Nm`. Naive absolute inputs (no `%z` /
-    /// `%Z` in the winning format) are interpreted in the table's
-    /// display time zone (`loglib::CurrentZone()`) and shifted to
-    /// UTC before the search. Binary-searches the source model in
-    /// file order when no user sort is active (also respects the
-    /// active row filter), and falls back to a linear scan over
-    /// visible proxy rows otherwise so the "first" row honours the
-    /// user's chosen display order. Lands via `SelectSourceRow`, or
-    /// surfaces a status-bar hint when no such row exists.
+    /// Pop the "Go to Timestamp..." modal (`Ctrl+Shift+G`). Accepts
+    /// the current time column's `parseFormats`, two ISO fallbacks
+    /// (`%FT%T`, `%F %T`), and the relative shortcuts `-Nh` /
+    /// `-Nm`. Naive inputs (no `%z` / `%Z` in the winning format)
+    /// are shifted from the table's display time zone
+    /// (`loglib::CurrentZone()`) to UTC before the search. Lands
+    /// on the first matching row via `FindFirstRowAtOrAfter` +
+    /// `SelectSourceRow`, or status-bar-hints if none qualifies.
     void GotoTimestamp();
 
-    /// Result of `ParseGotoTimestampInput`.
-    ///
-    /// `micros` is epoch microseconds. `isNaive` is `true` when the
-    /// winning format lacked a `%z` / `%Ez` / `%Z` specifier so the
-    /// value should be interpreted in the caller's display time zone
-    /// before comparing against stored (UTC-normalised) timestamps.
-    /// The relative shortcut path returns `isNaive == false` because
-    /// it derives `micros` from a `std::chrono::system_clock::time_point`
-    /// which is already UTC.
+    /// Result of `ParseGotoTimestampInput`. `micros` is epoch
+    /// microseconds; `isNaive` is true when the winning format had
+    /// no zone specifier (`%z` / `%Ez` / `%Z`) and the caller must
+    /// therefore shift `micros` through the display TZ before
+    /// comparing against stored (UTC-normalised) timestamps. The
+    /// relative-shortcut path always returns `isNaive == false`
+    /// since it derives from `system_clock::now()` (already UTC).
     struct GotoTimestampParse
     {
         int64_t micros = 0;
         bool isNaive = false;
     };
 
-    /// Pure helper for `GotoTimestamp`. Tries the relative shortcut
-    /// `^[+-]?\s*(\d+)\s*([hm])\s*$` first (case-insensitive; the
-    /// `+` / no-sign variants also mean "N units ago" for parity
-    /// with lnav / less), then each entry of @p columnParseFormats
-    /// via `loglib::TryParseTimestamp`, then the two ISO fallbacks
-    /// `"%FT%T"` and `"%F %T"`. When @p displayZone is non-null and
-    /// the winning format is naive, the returned `micros` is *not*
-    /// pre-shifted -- callers apply the shift via
-    /// `loglib::LocalMicrosecondsSinceEpochToUtc` after inspecting
-    /// `isNaive`. Overflow in the relative shortcut (`-Nh` /
-    /// `-Nm` with an `N` that would overrun `int64_t` microseconds)
-    /// returns `std::nullopt` rather than wrapping. Kept out of any
-    /// class member state so unit tests can drive it without a
-    /// `MainWindow` instance.
+    /// Pure parser for `GotoTimestamp`. Tries, in order: the
+    /// relative shortcut `^[+-]?\s*(\d+)\s*([hm])\s*$` (case-
+    /// insensitive; `+` / no-sign also mean "N units ago", matching
+    /// lnav / less); each entry of @p columnParseFormats via
+    /// `loglib::TryParseTimestamp`; the ISO fallbacks `%FT%T` and
+    /// `%F %T`. Returns `std::nullopt` on no match or on relative-
+    /// shortcut overflow (silent wrap would jump the user forward,
+    /// which is worse than a hint). Static so unit tests can drive
+    /// it without a `MainWindow` instance.
     [[nodiscard]] static std::optional<GotoTimestampParse> ParseGotoTimestampInput(
         const QString &input,
         const std::vector<std::string> &columnParseFormats,
         std::chrono::system_clock::time_point now
     );
 
-    /// Locate the first row whose timestamp on @p timeCol is at or
-    /// after @p targetMicros **and** is currently visible through
-    /// the outer proxy (respects the active row filter).
+    /// First row whose timestamp on @p timeCol is `>= targetMicros`
+    /// AND is currently visible through the outer proxy (respects
+    /// the active row filter). Returns the source-model row index
+    /// or `-1` when nothing qualifies.
     ///
-    /// Three internal branches, one for each interesting combination
-    /// of (user-sort, monotonicity):
+    /// Three branches, picked from (user-sort, monotonicity):
     ///
-    /// * **Fast path** -- no user sort AND
-    ///   `LogModel::TimestampsAreMonotonic()`. Binary-searches
-    ///   source rows in file order (O(log N)), tolerating
-    ///   interleaved missing / unpromoted timestamps by skipping
-    ///   forward during each probe. After the search returns a
-    ///   candidate row `lo`, the visibility check runs against `lo`
-    ///   directly (happy path: O(1)); on a miss it walks the
-    ///   *outer proxy* -- not the source -- to find the smallest
-    ///   visible source row `>= lo` with a valid ts, yielding
-    ///   O(N_visible) worst case rather than O(N_source). This
-    ///   matters when a heavy filter hides most of the tail: the
-    ///   old source-walk was O(10M) on a 10M-row file with a
-    ///   1-in-a-million filter, well past the ROADMAP `< 100 ms`
-    ///   budget.
+    /// * **Fast path** -- no user sort, `TimestampsAreMonotonic()`
+    ///   true. Binary-search source rows (O(log N)); on a filter
+    ///   miss, walk the outer proxy for the smallest visible row
+    ///   with a valid ts `>= lo` (O(N_visible) worst case, not
+    ///   O(N_source)). Missing timestamps are skipped, not
+    ///   `-inf`-treated.
+    /// * **Non-monotonic path** -- no user sort, monotonicity
+    ///   false (multi-file `Append`, rotation, clock skew). Walk
+    ///   the outer proxy and pick the visible row with the
+    ///   smallest ts satisfying `>= target` (chronologically
+    ///   earliest match).
+    /// * **User-sort path** -- header sort active. Linear scan in
+    ///   display order and return the first proxy row whose source
+    ///   ts qualifies, so "first" honours the user's sort.
     ///
-    /// * **Non-monotonic path** -- no user sort AND
-    ///   `TimestampsAreMonotonic()` is false (multi-file `Append`,
-    ///   rotation, clock skew). The binary search would silently
-    ///   return a wrong row, so we fall back to an O(N_visible)
-    ///   walk over the outer proxy and pick the visible row with
-    ///   the SMALLEST ts that still satisfies `ts >= target` --
-    ///   the chronologically earliest match. Monotonicity is
-    ///   tracked cheaply on the streaming path
-    ///   (`LogModel::UpdateTimestampMonotonicity`); no per-call
-    ///   scan is required to decide which branch to take.
-    ///
-    /// * **User-sort path** -- user has clicked a header. Linear
-    ///   scan over visible proxy rows in display order and return
-    ///   the first row whose source ts qualifies, so "first"
-    ///   honours the user's chosen sort direction (see ROADMAP
-    ///   item 8).
-    ///
-    /// Returns the source-model row index, or `-1` when no live
-    /// row qualifies. Public so tests can exercise all three
-    /// branches without popping the modal.
+    /// Public so tests can drive all three branches directly.
     [[nodiscard]] int FindFirstRowAtOrAfter(int timeCol, int64_t targetMicros) const;
 
     /// Jump the table to the first row in histogram bucket
@@ -639,34 +602,25 @@ public:
     bool SubmitAnchorNoteForRowForTest(int sourceRow, const QString &note);
 
     /// Test seam replaying the post-`exec` body of `GotoLine`
-    /// without a modal `QInputDialog`. @p input is the raw text
-    /// value the dialog would have returned. Lets tests drive both
-    /// the current-row-count range check (shrink-while-modal-open
-    /// simulation: pass a line > `mModel->rowCount()`) and the
-    /// filter-visibility hint without popping a dialog.
+    /// without a modal dialog. Lets tests drive the range check
+    /// (shrink-while-modal-open simulation: pass a line larger
+    /// than the current row count) and the filter-visibility hint.
     void ExecuteGotoLineForTest(const QString &input);
 
     /// Test seam replaying the post-`exec` body of `GotoTimestamp`
-    /// without a modal `QInputDialog`. @p input is the raw text
-    /// value the dialog would have returned; @p now pins the clock
-    /// so relative shortcuts (`-1h`) are deterministic. Exercises
-    /// the naive-vs-zoned dispatch, the `mLastGotoTimestampInput`
-    /// sticky-input update, the "no time column" / "could not
-    /// parse" hints, and the `FindFirstRowAtOrAfter` handoff --
-    /// none of which are reachable through `ParseGotoTimestampInput`
-    /// alone.
+    /// without a modal dialog. @p now pins the clock so relative
+    /// shortcuts (`-1h`) are deterministic. Covers the sticky-
+    /// input update, error hints, and `FindFirstRowAtOrAfter`
+    /// handoff -- none reachable through `ParseGotoTimestampInput`.
     void ExecuteGotoTimestampForTest(const QString &input, std::chrono::system_clock::time_point now);
 
     /// Test-only accessor for the sticky Goto Timestamp input so
-    /// the session-boundary clear (`NewSession()` -> `.clear()`)
-    /// can be pinned end-to-end.
+    /// tests can pin the session-boundary clear.
     [[nodiscard]] QString LastGotoTimestampInputForTest() const;
 
-    /// Test seam: force `LogModel::TimestampsAreMonotonic()` to
-    /// return false so `FindFirstRowAtOrAfter` takes the non-
-    /// monotonic branch even in fixtures where the streaming
-    /// path's guard has not observed an inversion. Idempotent;
-    /// no way back once tripped (mirrors production semantics).
+    /// Test seam: force `LogModel::TimestampsAreMonotonic()` false
+    /// so `FindFirstRowAtOrAfter` takes its non-monotonic branch
+    /// without a real inversion. Irreversible.
     void ForceTimestampsNonMonotonicForTest();
 #endif
 
@@ -904,28 +858,18 @@ private:
     /// No-op if model, theme, or anchor manager is missing.
     void AppendAnchorActionsToRowMenu(QMenu *menu, int sourceRow);
 
-    /// Shared post-`exec` body of `GotoLine`. Given the raw text @p
-    /// input the dialog collected, validates against the *current*
-    /// `mModel->rowCount()` (so a shrink between open and accept --
-    /// FIFO eviction, session swap -- is caught rather than trusted
-    /// to the stale `QIntValidator` range), then probes filter
-    /// visibility, then hands off to `SelectSourceRow`. Emits the
-    /// user-facing status hint for every rejection branch. Kept
-    /// separate from the modal-owning slot so tests can drive both
-    /// branches through `ExecuteGotoLineForTest`.
+    /// Shared post-`exec` body of `GotoLine`. Re-checks the live
+    /// row count (catches a shrink while the modal was open),
+    /// probes filter visibility, then hands off to
+    /// `SelectSourceRow`. Emits a status hint on every rejection.
     void ExecuteGotoLine(const QString &input);
 
-    /// Shared post-`exec` body of `GotoTimestamp`. Given the raw
-    /// text @p input the dialog collected and @p now (pinned by
-    /// tests, `system_clock::now()` in production), updates the
-    /// sticky-input mirror, invokes `ParseGotoTimestampInput`,
-    /// shifts naive results through `LocalMicrosecondsSinceEpochToUtc`,
-    /// then hands off to `FindFirstRowAtOrAfter` + `SelectSourceRow`.
-    /// Emits the user-facing status hint for every rejection
-    /// branch. Kept separate from the modal-owning slot so tests
-    /// can drive naive-vs-zoned dispatch and the various error
-    /// branches through `ExecuteGotoTimestampForTest` without
-    /// popping a dialog.
+    /// Shared post-`exec` body of `GotoTimestamp`. Updates the
+    /// sticky-input mirror, parses via `ParseGotoTimestampInput`,
+    /// shifts naive results through
+    /// `LocalMicrosecondsSinceEpochToUtc`, then hands off to
+    /// `FindFirstRowAtOrAfter` + `SelectSourceRow`. @p now is
+    /// pinned in tests, `system_clock::now()` in production.
     void ExecuteGotoTimestamp(const QString &input, std::chrono::system_clock::time_point now);
 
     /// Logical index of the column whose `keys` match @p keys, or
@@ -1861,21 +1805,16 @@ private:
     /// its rebuild and the queued re-entry becomes a no-op.
     bool mApplyingEnumRebuild = false;
 
-    /// Last text the user typed into the Goto Timestamp dialog,
-    /// pre-populated on the next open. Users often want to jump
-    /// several times around the same instant; making the dialog
-    /// remember the last input saves the retype. Cleared on
-    /// session switch to avoid leaking a stale reference from a
-    /// closed file into a fresh one.
+    /// Last text typed into the Goto Timestamp dialog, pre-
+    /// populated on the next open so successive jumps around the
+    /// same instant do not need retyping. Cleared on session
+    /// switch to avoid leaking a stale reference into a new file.
     QString mLastGotoTimestampInput;
 
-    /// Last text the user typed into the Goto Line dialog. Same
-    /// UX rationale as `mLastGotoTimestampInput`: users walking a
-    /// stack trace or diffing two runs re-open the dialog with an
-    /// adjacent line number, and retyping is friction. Cleared on
-    /// session switch alongside the timestamp mirror; validated
-    /// against the *current* row count on re-open so an out-of-
-    /// range carry-over from a smaller session no longer applies.
+    /// Last text typed into the Goto Line dialog. Same UX
+    /// rationale as `mLastGotoTimestampInput`. Cleared on session
+    /// switch; re-validated against the current row count on open
+    /// so a carry-over from a larger session no longer applies.
     QString mLastGotoLineInput;
 
     /// Latch: a loaded session's sort is pending, to be applied
