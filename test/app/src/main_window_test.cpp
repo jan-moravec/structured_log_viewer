@@ -4598,9 +4598,9 @@ private slots:
 
         // Keep only "third" (source row 2). Lines 1 and 2 become
         // filter-hidden targets; line 3 stays reachable.
-        loglib::CallbackStringRowPredicate keepThird(
-            static_cast<std::size_t>(msgCol), [](std::string_view value) { return value == std::string_view{"third"}; }
-        );
+        loglib::CallbackStringRowPredicate keepThird(static_cast<std::size_t>(msgCol), [](std::string_view value) {
+            return value == std::string_view{"third"};
+        });
         std::vector<loglib::RowPredicate> rules;
         rules.emplace_back(std::move(keepThird));
         proxy->SetFilterRules(std::move(rules));
@@ -4706,14 +4706,12 @@ private slots:
         const std::vector<std::string> noFormats;
 
         // 10^19 hours -- above both the int64 hour cap and 2^63.
-        QVERIFY(!MainWindow::ParseGotoTimestampInput(
-                     QStringLiteral("-10000000000000000000h"), noFormats, kNow
-        )
-                     .has_value());
+        QVERIFY(
+            !MainWindow::ParseGotoTimestampInput(QStringLiteral("-10000000000000000000h"), noFormats, kNow).has_value()
+        );
 
         // Hour boundary: cap itself parses, cap+1 rejects.
-        const auto hourCap =
-            static_cast<qulonglong>(std::numeric_limits<int64_t>::max() / (3600LL * 1'000'000LL));
+        const auto hourCap = static_cast<qulonglong>(std::numeric_limits<int64_t>::max() / (3600LL * 1'000'000LL));
         const auto overHourCap =
             MainWindow::ParseGotoTimestampInput(QString::number(hourCap + 1) + QStringLiteral("h"), noFormats, kNow);
         QVERIFY(!overHourCap.has_value());
@@ -4725,11 +4723,9 @@ private slots:
         // Minute boundary: distinct code path (different
         // `microsPerUnit`), so a branch-swap regression would
         // pass the hour test above and fail here.
-        const auto minuteCap =
-            static_cast<qulonglong>(std::numeric_limits<int64_t>::max() / (60LL * 1'000'000LL));
-        const auto overMinuteCap = MainWindow::ParseGotoTimestampInput(
-            QString::number(minuteCap + 1) + QStringLiteral("m"), noFormats, kNow
-        );
+        const auto minuteCap = static_cast<qulonglong>(std::numeric_limits<int64_t>::max() / (60LL * 1'000'000LL));
+        const auto overMinuteCap =
+            MainWindow::ParseGotoTimestampInput(QString::number(minuteCap + 1) + QStringLiteral("m"), noFormats, kNow);
         QVERIFY(!overMinuteCap.has_value());
 
         const auto atMinuteCap =
@@ -4797,8 +4793,7 @@ private slots:
         const std::chrono::system_clock::time_point kNow =
             std::chrono::system_clock::time_point{std::chrono::microseconds{1'700'000'000'000'000LL}};
 
-        const auto naiveParse =
-            MainWindow::ParseGotoTimestampInput(QStringLiteral("2024-04-28T12:00:00"), {}, kNow);
+        const auto naiveParse = MainWindow::ParseGotoTimestampInput(QStringLiteral("2024-04-28T12:00:00"), {}, kNow);
         QVERIFY(naiveParse.has_value());
         QVERIFY(naiveParse->isNaive);
 
@@ -4815,9 +4810,8 @@ private slots:
 
         // Zoned input must NOT shift (double-shift regression pin).
         const std::vector<std::string> zonedFormats{"%FT%T%Ez"};
-        const auto zonedParse = MainWindow::ParseGotoTimestampInput(
-            QStringLiteral("2024-04-28T12:00:00+00:00"), zonedFormats, kNow
-        );
+        const auto zonedParse =
+            MainWindow::ParseGotoTimestampInput(QStringLiteral("2024-04-28T12:00:00+00:00"), zonedFormats, kNow);
         QVERIFY(zonedParse.has_value());
         QVERIFY(!zonedParse->isNaive);
     }
@@ -4926,9 +4920,9 @@ private slots:
         // Keep only the row whose `msg` equals "third" (source
         // row 2). `CallbackStringRowPredicate` is the same variant
         // arm the Filters dock uses.
-        loglib::CallbackStringRowPredicate keepThird(
-            static_cast<std::size_t>(msgCol), [](std::string_view value) { return value == std::string_view{"third"}; }
-        );
+        loglib::CallbackStringRowPredicate keepThird(static_cast<std::size_t>(msgCol), [](std::string_view value) {
+            return value == std::string_view{"third"};
+        });
 
         std::vector<loglib::RowPredicate> rules;
         rules.emplace_back(std::move(keepThird));

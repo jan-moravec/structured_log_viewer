@@ -322,7 +322,9 @@ To pin a record for side-by-side comparison, click **Open in new window** inside
 Two entries in the **Edit** menu let you jump to a specific row without scrolling or searching:
 
 - **Edit → Go to Line…** (`Ctrl+G`) — enter a 1-based row number and land on that row. Line 1 is always the earliest row currently retained by the model; in newest-first display mode it sits at the bottom of the visible list, not the top. Line numbers do **not** always match the source file's line numbers because streaming-mode FIFO eviction may have dropped older rows. The dialog validates the input against the *live* row count, so a value that was in-range while the dialog was open but that has since been evicted is rejected with an "out of range" hint. Filtered-out targets surface a specific "line N is currently filtered out" message rather than a generic "row not visible" fallback. The last-entered value is pre-populated on the next open (cleared on **File → New Session**).
+
 - **Edit → Go to Timestamp…** (`Ctrl+Shift+G`) — enter an absolute or relative time and land on the first row at or after it. Accepted forms:
+
   - Any format the timestamp column already parses (see [`parseFormats`](#configurations)).
   - ISO 8601 fallbacks (`YYYY-MM-DDTHH:MM:SS` and `YYYY-MM-DD HH:MM:SS`), even for columns whose own list is empty.
   - Zoned inputs with an explicit offset (`…+02:00`) or `Z` suffix.

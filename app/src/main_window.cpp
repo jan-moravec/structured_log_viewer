@@ -6430,8 +6430,7 @@ void MainWindow::ExecuteGotoLine(const QString &input)
     if (!visible)
     {
         statusBar()->showMessage(
-            tr("Line %1 is currently filtered out.").arg(QString::number(oneBased)),
-            STATUS_BAR_MESSAGE_TIMEOUT_MS
+            tr("Line %1 is currently filtered out.").arg(QString::number(oneBased)), STATUS_BAR_MESSAGE_TIMEOUT_MS
         );
         return;
     }
@@ -6486,9 +6485,7 @@ namespace
 } // namespace
 
 std::optional<MainWindow::GotoTimestampParse> MainWindow::ParseGotoTimestampInput(
-    const QString &input,
-    const std::vector<std::string> &columnParseFormats,
-    std::chrono::system_clock::time_point now
+    const QString &input, const std::vector<std::string> &columnParseFormats, std::chrono::system_clock::time_point now
 )
 {
     const QString trimmed = input.trimmed();
@@ -6525,8 +6522,7 @@ std::optional<MainWindow::GotoTimestampParse> MainWindow::ParseGotoTimestampInpu
             return std::nullopt;
         }
         const int64_t offsetMicros = static_cast<int64_t>(n) * microsPerUnit;
-        const auto nowMicros =
-            std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+        const auto nowMicros = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
         return GotoTimestampParse{.micros = nowMicros - offsetMicros, .isNaive = false};
     }
 
@@ -6555,8 +6551,8 @@ std::optional<MainWindow::GotoTimestampParse> MainWindow::ParseGotoTimestampInpu
         if (loglib::TryParseTimestamp(stdInput, fmt, loglib::ClassifyTimestampFormat(fmt), scratch, parsed))
         {
             return GotoTimestampParse{
-                .micros = parsed.time_since_epoch().count(),
-                .isNaive = !FormatHasZoneSpecifier(fmt)};
+                .micros = parsed.time_since_epoch().count(), .isNaive = !FormatHasZoneSpecifier(fmt)
+            };
         }
     }
     return std::nullopt;
@@ -6661,8 +6657,7 @@ int MainWindow::FindFirstRowAtOrAfter(int timeCol, int64_t targetMicros) const
     // slot is missing / unpromoted; both searches below skip such
     // rows explicitly (treating them as `-inf` would break the
     // fast-path binary search's monotonicity invariant).
-    const auto tsFor = [this, timeCol](int sourceRow) -> std::optional<int64_t>
-    {
+    const auto tsFor = [this, timeCol](int sourceRow) -> std::optional<int64_t> {
         return loglib::AsEpochMicroseconds(
             mModel->Table().GetValue(static_cast<std::size_t>(sourceRow), static_cast<std::size_t>(timeCol))
         );
@@ -6670,8 +6665,7 @@ int MainWindow::FindFirstRowAtOrAfter(int timeCol, int64_t targetMicros) const
 
     // Source row -> visible through the outer proxy? Respects the
     // mid-proxy's newest-first reversal and the active row filter.
-    const auto isVisible = [this](int sourceRow) -> bool
-    {
+    const auto isVisible = [this](int sourceRow) -> bool {
         const QModelIndex sourceIdx = mModel->index(sourceRow, 0);
         const QModelIndex midIdx = mRowOrderProxyModel->mapFromSource(sourceIdx);
         if (!midIdx.isValid())
@@ -6683,8 +6677,7 @@ int MainWindow::FindFirstRowAtOrAfter(int timeCol, int64_t targetMicros) const
 
     // Outer proxy row -> source row, or `-1` when the mapping is
     // transiently broken (proxy layout change in flight).
-    const auto proxyRowToSource = [this](int proxyRow) -> int
-    {
+    const auto proxyRowToSource = [this](int proxyRow) -> int {
         const QModelIndex proxyIdx = mSortFilterProxyModel->index(proxyRow, 0);
         const QModelIndex midIdx = mSortFilterProxyModel->mapToSource(proxyIdx);
         if (!midIdx.isValid())

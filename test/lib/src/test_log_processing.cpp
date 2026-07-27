@@ -403,12 +403,11 @@ TEST_CASE("LocalMicrosecondsSinceEpochToUtc handles DST transitions", "[log_proc
     // mirroring what the Goto Timestamp seam produces after a
     // naive `date::parse`. Explicit `date::month{}` / `date::day{}`
     // silences a clang-tidy narrowing warning.
-    const auto naiveLocalMicros = [](int year, unsigned month, unsigned day, int hour, int minute, int second)
-    {
+    const auto naiveLocalMicros = [](int year, unsigned month, unsigned day, int hour, int minute, int second) {
         const auto ymd = date::year{year} / date::month{month} / date::day{day};
         const auto sysDays = date::sys_days{ymd};
-        const auto wallClock = sysDays + std::chrono::hours{hour} + std::chrono::minutes{minute} +
-                               std::chrono::seconds{second};
+        const auto wallClock =
+            sysDays + std::chrono::hours{hour} + std::chrono::minutes{minute} + std::chrono::seconds{second};
         return std::chrono::duration_cast<std::chrono::microseconds>(wallClock.time_since_epoch()).count();
     };
 
