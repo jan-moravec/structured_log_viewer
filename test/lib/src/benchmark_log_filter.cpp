@@ -755,3 +755,191 @@ TEST_CASE(
         }
     }
 }
+
+// --- Boolean-expression benchmarks --------------------------------------
+//
+// These exercise `FilterAcceptedRows` on trees more interesting than a
+// single leaf. Two shapes:
+//
+//   1. **Deep AND** -- four enum leaves conjoined. Historically this is
+//      what "multiple simple filters" produce; the visit path evaluates
+//      it row-by-row with a natural short-circuit at the first
+//      rejecting leaf.
+//   2. **AND(OR, NOT)** -- the shape a `level in {...} AND NOT
+//      path:health` query compiles to. It has both `Or` and `Not`, so
+//      the bitset-materialisation heuristic in `FilterAcceptedRows`
+//      engages: each unique leaf becomes a `RowBitset`, then the tree
+//      collapses via word-parallel `&` / `|` / `~`.
+//
+// Numbers are `WARN`-reported so CI logs surface the run-to-run
+// distribution; the `CHECK` is a coarse regression guard.
+
+namespace
+{
+
+/// Build the same enum leaf shape the `TEST_CASE` helpers do, but
+/// laid out inline so the benchmark file stays self-contained.
+[[nodiscard]] CompiledFilterExpression MakeEnumLeaf(
+    const LogTable &table, size_t columnIndex, const std::vector<std::string> &selectedOwned
+)
+{
+    const KeyId key = table.Keys().Find(table.Configuration().Configuration().columns[columnIndex].keys.front());
+    const EnumDictionary *dict = table.EnumDictionaries().Find(key);
+    std::vector<std::string_view> views;
+    views.reserve(selectedOwned.size());
+    for (const auto &v : selectedOwned)
+    {
+        views.emplace_back(v);
+    }
+    CompiledFilterExpression expr;
+    expr.node = CompiledFilterExpression::Leaf{
+        RowPredicate{std::in_place_type<EnumRowPredicate>, columnIndex, std::span<const std::string_view>(views), dict}
+    };
+    expr.referencedColumns.push_back(columnIndex);
+    return expr;
+}
+
+} // namespace
+
+TEST_CASE(
+    "loglib::FilterAcceptedRows AND of four enum leaves stays under 200ms",
+    "[.][benchmark][log_filter][expression][large]"
+)
+{
+    RequireReleaseBuildForBenchmarks();
+
+    constexpr size_t ROW_COUNT = 1'000'000;
+    const TestLogFile fixture("benchmark_log_filter_and.json");
+    fixture.Write("");
+    // `region` keeps the column Enumeration (no auto-promotion).
+    LargeTable owned = BuildLargeEnumTable(fixture, ROW_COUNT, "region");
+    LogTable &table = owned.table;
+    REQUIRE(table.RowCount() == ROW_COUNT);
+
+    // Four disjoint-value AND leaves. Each of the four canonical
+    // values (`info` / `warn` / `error` / `debug`) is inclusive,
+    // and the fixture cycles over exactly those four -- so the
+    // intersection is empty. Purpose is timing shape, not the
+    // accepted count; short-circuiting after the first leaf will
+    // dominate, which is precisely what we want to measure.
+    std::vector<CompiledFilterExpression> children;
+    children.push_back(MakeEnumLeaf(table, 0, {"info"}));
+    children.push_back(MakeEnumLeaf(table, 0, {"warn"}));
+    children.push_back(MakeEnumLeaf(table, 0, {"error"}));
+    children.push_back(MakeEnumLeaf(table, 0, {"debug"}));
+    CompiledFilterExpression expr;
+    CompiledFilterExpression::And andNode;
+    andNode.children = std::move(children);
+    expr.node = std::move(andNode);
+    expr.referencedColumns.push_back(0);
+
+    constexpr int SAMPLES = 5;
+    std::vector<std::chrono::nanoseconds> elapsed;
+    elapsed.reserve(SAMPLES);
+    size_t accepted = 0;
+    for (int s = 0; s < SAMPLES; ++s)
+    {
+        std::vector<size_t> result;
+        elapsed.push_back(TimeOnce([&]() { result = FilterAcceptedRows(table, expr); }));
+        accepted = result.size();
+    }
+    // Disjoint AND -- no row can be all four values simultaneously.
+    CHECK(accepted == 0);
+
+    using Ms = std::chrono::duration<double, std::milli>;
+    const auto mean = std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero()) /
+                      static_cast<long long>(SAMPLES);
+    const auto low = *std::ranges::min_element(elapsed);
+    const auto high = *std::ranges::max_element(elapsed);
+
+    WARN(
+        "FilterAcceptedRows AND(4 enum leaves) over " << ROW_COUNT << " rows: mean=" << Ms(mean).count()
+                                                      << " ms (low=" << Ms(low).count()
+                                                      << ", high=" << Ms(high).count() << "), accepted=" << accepted
+    );
+
+    // Four-leaf trees pull the bitset heuristic in
+    // `ShouldUseBitsetPath` (>=4 unique leaves), so the timing
+    // envelope is dominated by four `RowBitset` builds + one AND
+    // fold. Historical numbers on the dev box are ~40 ms; 200 ms
+    // gives CI runners room without hiding a regression.
+    CHECK(Ms(low).count() < 200.0);
+}
+
+TEST_CASE(
+    "loglib::FilterAcceptedRows AND(OR, NOT) forces bitset materialisation under 200ms",
+    "[.][benchmark][log_filter][expression][bitset][large]"
+)
+{
+    RequireReleaseBuildForBenchmarks();
+
+    constexpr size_t ROW_COUNT = 1'000'000;
+    const TestLogFile fixture("benchmark_log_filter_or_not.json");
+    fixture.Write("");
+    LargeTable owned = BuildLargeEnumTable(fixture, ROW_COUNT, "region");
+    LogTable &table = owned.table;
+    REQUIRE(table.RowCount() == ROW_COUNT);
+
+    // Shape: (region in {warn, error, debug}) AND NOT region=debug.
+    // The heuristic in `ShouldUseBitsetPath` fires on `hasOr` +
+    // `hasNot` with >=2 unique leaves, so this trees drives the
+    // bitset path deterministically.
+    std::vector<CompiledFilterExpression> orChildren;
+    orChildren.push_back(MakeEnumLeaf(table, 0, {"warn"}));
+    orChildren.push_back(MakeEnumLeaf(table, 0, {"error"}));
+    orChildren.push_back(MakeEnumLeaf(table, 0, {"debug"}));
+
+    CompiledFilterExpression orExpr;
+    CompiledFilterExpression::Or orNode;
+    orNode.children = std::move(orChildren);
+    orExpr.node = std::move(orNode);
+    orExpr.referencedColumns.push_back(0);
+
+    CompiledFilterExpression notExpr;
+    notExpr.node = CompiledFilterExpression::Not{MakeEnumLeaf(table, 0, {"debug"})};
+    notExpr.referencedColumns.push_back(0);
+
+    std::vector<CompiledFilterExpression> andChildren;
+    andChildren.push_back(std::move(orExpr));
+    andChildren.push_back(std::move(notExpr));
+    CompiledFilterExpression expr;
+    CompiledFilterExpression::And andNode;
+    andNode.children = std::move(andChildren);
+    expr.node = std::move(andNode);
+    expr.referencedColumns.push_back(0);
+
+    constexpr int SAMPLES = 5;
+    std::vector<std::chrono::nanoseconds> elapsed;
+    elapsed.reserve(SAMPLES);
+    size_t accepted = 0;
+    for (int s = 0; s < SAMPLES; ++s)
+    {
+        std::vector<size_t> result;
+        elapsed.push_back(TimeOnce([&]() { result = FilterAcceptedRows(table, expr); }));
+        accepted = result.size();
+    }
+    // Fixture cycles [info, warn, error, debug]; expected accept
+    // count is #warn + #error = 2/4 of the rows.
+    REQUIRE(accepted > ROW_COUNT / 4);
+    REQUIRE(accepted < ROW_COUNT);
+
+    using Ms = std::chrono::duration<double, std::milli>;
+    const auto mean = std::accumulate(elapsed.begin(), elapsed.end(), std::chrono::nanoseconds::zero()) /
+                      static_cast<long long>(SAMPLES);
+    const auto low = *std::ranges::min_element(elapsed);
+    const auto high = *std::ranges::max_element(elapsed);
+
+    WARN(
+        "FilterAcceptedRows AND(OR, NOT) [bitset path] over " << ROW_COUNT << " rows: mean=" << Ms(mean).count()
+                                                              << " ms (low=" << Ms(low).count()
+                                                              << ", high=" << Ms(high).count()
+                                                              << "), accepted=" << accepted
+    );
+
+    // Bitset path is where the OR-heavy workload's headline win
+    // comes from: word-parallel AND/OR of packed bitsets. 200 ms
+    // leaves ~5x headroom over the observed ~40 ms on the dev
+    // box; regressing past it usually means the bitset path fell
+    // back to visit or the leaf-materialisation lost concurrency.
+    CHECK(Ms(low).count() < 200.0);
+}

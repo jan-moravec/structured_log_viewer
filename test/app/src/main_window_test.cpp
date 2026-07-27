@@ -1,3 +1,4 @@
+#include "advanced_filter_editor.hpp"
 #include "anchor_manager.hpp"
 #include "anchors_dock.hpp"
 #include "cli_parser.hpp"
@@ -45,6 +46,7 @@
 #include <loglib/parser_options.hpp>
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/parsers/logfmt_parser.hpp>
+#include <loglib/query_parser.hpp>
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
@@ -7732,6 +7734,87 @@ private slots:
         searchBox->clear();
         QCoreApplication::processEvents();
         QCOMPARE(proxy->rowCount(), 5);
+    }
+
+    // AdvancedFilterEditor: a well-formed query parses cleanly,
+    // enables the OK button, and round-trips through `Result()`.
+    void TestAdvancedFilterEditorAcceptsWellFormedQuery()
+    {
+        AdvancedFilterEditor editor;
+        editor.SetQueryText(QStringLiteral("service:auth AND level:error"));
+        QCoreApplication::processEvents();
+
+        const auto result = editor.Result();
+        QVERIFY2(result.has_value(), "well-formed query must parse successfully");
+        // The parsed tree must be a two-leaf AND (implicit-AND merges
+        // with the explicit AND at the same precedence level).
+        const auto *andNode = std::get_if<loglib::FilterExpression::And>(&result->node);
+        QVERIFY2(andNode != nullptr, "top-level node must be AND");
+        QCOMPARE(static_cast<int>(andNode->children.size()), 2);
+
+        // OK is exposed via the QDialogButtonBox; find and confirm
+        // it's enabled so the user can commit.
+        auto *ok = editor.findChild<QDialogButtonBox *>(QStringLiteral("advancedFilterButtonBox"));
+        QVERIFY2(ok != nullptr, "AdvancedFilterEditor must expose its button box");
+        auto *okBtn = ok->button(QDialogButtonBox::Ok);
+        QVERIFY2(okBtn != nullptr && okBtn->isEnabled(), "OK must be enabled on a valid query");
+    }
+
+    // AdvancedFilterEditor: a syntactically invalid query clears the
+    // result and disables the OK button.
+    void TestAdvancedFilterEditorDisablesOkOnParseError()
+    {
+        AdvancedFilterEditor editor;
+        // Leading operator without a column is a lex error at the
+        // very first character; the parser produces a diagnostic
+        // with an offset >= 0.
+        editor.SetQueryText(QStringLiteral("service:"));
+        QCoreApplication::processEvents();
+
+        QVERIFY2(!editor.Result().has_value(), "malformed query must not yield a Result()");
+        auto *box = editor.findChild<QDialogButtonBox *>(QStringLiteral("advancedFilterButtonBox"));
+        QVERIFY2(box != nullptr, "AdvancedFilterEditor must expose its button box");
+        auto *okBtn = box->button(QDialogButtonBox::Ok);
+        QVERIFY2(okBtn != nullptr && !okBtn->isEnabled(), "OK must be disabled on a parse error");
+
+        // Recovering to a valid query re-enables OK -- this proves
+        // the reparse-on-change wiring survives round-trips through
+        // an error state.
+        editor.SetQueryText(QStringLiteral("service:auth"));
+        QCoreApplication::processEvents();
+        QVERIFY(editor.Result().has_value());
+        QVERIFY(okBtn->isEnabled());
+    }
+
+    // AdvancedFilterEditor: `LoadFromExpression` seeds the text field
+    // from an existing tree via `FormatExpression`, and `Result()`
+    // round-trips back to an equivalent AST. Match-all seeds as an
+    // empty field (users start on a clean slate).
+    void TestAdvancedFilterEditorRoundTripsThroughFormatAndParse()
+    {
+        AdvancedFilterEditor editor;
+
+        // Default-constructed = match all -> empty field.
+        loglib::FilterExpression matchAll;
+        editor.LoadFromExpression(matchAll);
+        QCoreApplication::processEvents();
+        QCOMPARE(editor.QueryText(), QString());
+        const auto matchAllResult = editor.Result();
+        QVERIFY(matchAllResult.has_value());
+        QVERIFY(loglib::IsMatchAll(*matchAllResult));
+
+        // Non-trivial expression built via the loglib parser (which is
+        // the wire the editor uses internally). `LoadFromExpression`
+        // must render it back to a form the parser accepts as
+        // equivalent.
+        const auto seeded = loglib::ParseQuery("service:auth AND NOT level:info");
+        QVERIFY2(seeded.has_value(), "seed query must parse");
+        editor.LoadFromExpression(*seeded);
+        QCoreApplication::processEvents();
+        QVERIFY2(!editor.QueryText().isEmpty(), "non-empty tree must seed a non-empty field");
+        const auto result = editor.Result();
+        QVERIFY2(result.has_value(), "seeded tree must reparse cleanly");
+        QVERIFY(*result == *seeded);
     }
 
     // End-to-end: a JSON `level` column with canonical names auto-

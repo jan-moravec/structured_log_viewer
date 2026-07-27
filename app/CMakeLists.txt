@@ -60,6 +60,8 @@ set(PROJECT_SOURCES
     include/row_order_proxy_model.hpp
     src/filter_editor.cpp
     include/filter_editor.hpp
+    src/advanced_filter_editor.cpp
+    include/advanced_filter_editor.hpp
     src/preferences_editor.cpp
     include/preferences_editor.hpp
     src/theme_control.cpp

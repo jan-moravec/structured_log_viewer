@@ -748,6 +748,12 @@ private slots:
         int initialColumn = -1
     );
     void ClearAllFilters();
+    /// Open the modal Advanced Filter editor seeded with the
+    /// current `LogConfiguration::expression`. On accept, replaces
+    /// the entire expression tree wholesale -- simple-mode
+    /// `mSimpleLeaves` is cleared because the Advanced editor owns
+    /// the full tree once opened. Bound to `actionAdvancedFilter`.
+    void OpenAdvancedFilter();
     /// Drop the active column sort via
     /// `mTableView->sortByColumn(-1, ...)` so proxy, header, and
     /// persisted config stay in lockstep. Bound to

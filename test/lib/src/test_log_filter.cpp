@@ -862,3 +862,371 @@ TEST_CASE(
         CHECK_FALSE(predicate.MatchesRow(table, 4)); // Warning
     }
 }
+
+// -----------------------------------------------------------------------
+// Boolean-expression evaluator tests.
+//
+// These exercise the semantic contract of `CompiledFilterExpression`:
+// the visit-path evaluator (`EvaluateExpression`) and the parallel
+// `FilterAcceptedRows` walker. Bitset materialisation is covered by
+// the "large" test at the end, which forces the fast path via a
+// four-leaf tree and cross-checks its output against the visit path.
+// -----------------------------------------------------------------------
+
+namespace
+{
+
+/// Build a compiled leaf that accepts every row where column 0's
+/// enum value is one of @p selectedValues. Wraps the boilerplate of
+/// stitching a `RowPredicate` (which is move-only for
+/// `EnumRowPredicate`) into a `CompiledFilterExpression::Leaf`.
+CompiledFilterExpression MakeEnumLeaf(
+    const LogTable &table, size_t columnIndex, const std::vector<std::string> &selectedValues
+)
+{
+    const KeyId key = table.Keys().Find(table.Configuration().Configuration().columns[columnIndex].keys.front());
+    REQUIRE(key != INVALID_KEY_ID);
+    const EnumDictionary *dict = table.EnumDictionaries().Find(key);
+    REQUIRE(dict != nullptr);
+
+    std::vector<std::string_view> views;
+    views.reserve(selectedValues.size());
+    for (const auto &v : selectedValues)
+    {
+        views.emplace_back(v);
+    }
+
+    CompiledFilterExpression expr;
+    expr.node = CompiledFilterExpression::Leaf{
+        RowPredicate{
+            std::in_place_type<EnumRowPredicate>, columnIndex, std::span<const std::string_view>(views), dict
+        }
+    };
+    expr.referencedColumns.push_back(columnIndex);
+    return expr;
+}
+
+CompiledFilterExpression MakeCompiledAnd(std::vector<CompiledFilterExpression> children)
+{
+    CompiledFilterExpression expr;
+    CompiledFilterExpression::And andNode;
+    andNode.children = std::move(children);
+    expr.node = std::move(andNode);
+    return expr;
+}
+
+CompiledFilterExpression MakeCompiledOr(std::vector<CompiledFilterExpression> children)
+{
+    CompiledFilterExpression expr;
+    CompiledFilterExpression::Or orNode;
+    orNode.children = std::move(children);
+    expr.node = std::move(orNode);
+    return expr;
+}
+
+CompiledFilterExpression MakeCompiledNot(CompiledFilterExpression child)
+{
+    CompiledFilterExpression expr;
+    expr.node = CompiledFilterExpression::Not{std::move(child)};
+    return expr;
+}
+
+} // namespace
+
+TEST_CASE("EvaluateExpression: default expression matches every row", "[log_filter][expression]")
+{
+    const TestLogFile fixture("log_filter_expr_matchall.json");
+    fixture.Write("");
+    const LogTable table = BuildEnumTable(fixture, "category", {"a", "b"}, 4);
+
+    const CompiledFilterExpression matchAll;
+    REQUIRE(IsMatchAllCompiled(matchAll));
+    for (size_t row = 0; row < table.RowCount(); ++row)
+    {
+        CHECK(EvaluateExpression(matchAll, table, row));
+    }
+}
+
+TEST_CASE("EvaluateExpression: empty Or rejects every row", "[log_filter][expression]")
+{
+    const TestLogFile fixture("log_filter_expr_empty_or.json");
+    fixture.Write("");
+    const LogTable table = BuildEnumTable(fixture, "category", {"a", "b"}, 4);
+
+    const CompiledFilterExpression emptyOr = MakeCompiledOr({});
+    for (size_t row = 0; row < table.RowCount(); ++row)
+    {
+        CHECK_FALSE(EvaluateExpression(emptyOr, table, row));
+    }
+}
+
+TEST_CASE("EvaluateExpression: default Not (null child) matches every row", "[log_filter][expression]")
+{
+    // A `Not` with a null child is only reachable via test / editor
+    // code paths; the compile factory always seeds `child`. The
+    // evaluator still needs to be well-defined: an empty NOT is
+    // "NOT (match-none)" = match-all.
+    const TestLogFile fixture("log_filter_expr_empty_not.json");
+    fixture.Write("");
+    const LogTable table = BuildEnumTable(fixture, "category", {"a", "b"}, 4);
+
+    CompiledFilterExpression emptyNot;
+    emptyNot.node = CompiledFilterExpression::Not{};
+    for (size_t row = 0; row < table.RowCount(); ++row)
+    {
+        CHECK(EvaluateExpression(emptyNot, table, row));
+    }
+}
+
+TEST_CASE("EvaluateExpression: AND short-circuits when a child rejects", "[log_filter][expression]")
+{
+    // Two-column enum table: col 0 is "category" (a/b), col 1 is
+    // "region" (x/y). A row is accepted iff category=a AND region=x.
+    const TestLogFile fixture("log_filter_expr_and.json");
+    fixture.Write("");
+    auto source = fixture.CreateFileLineSource();
+    FileLineSource *sourcePtr = source.get();
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "category",
+         .keys = {"category"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::Enumeration,
+         .parseFormats = {}}
+    );
+    cfg.columns.push_back(
+        {.header = "region",
+         .keys = {"region"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::Enumeration,
+         .parseFormats = {}}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+
+    KeyIndex &keys = table.Keys();
+    StreamedBatch batch;
+    batch.firstLineNumber = 1;
+    // 4 rows: (a,x) (a,y) (b,x) (b,y). Only row 0 satisfies both leaves.
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"category", std::string("a")}, {"region", std::string("x")}}));
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"category", std::string("a")}, {"region", std::string("y")}}));
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"category", std::string("b")}, {"region", std::string("x")}}));
+    batch.lines.push_back(MakeLine(keys, *sourcePtr, {{"category", std::string("b")}, {"region", std::string("y")}}));
+    batch.newKeys.emplace_back("category");
+    batch.newKeys.emplace_back("region");
+    table.AppendBatch(std::move(batch));
+
+    std::vector<CompiledFilterExpression> children;
+    children.push_back(MakeEnumLeaf(table, 0, {"a"}));
+    children.push_back(MakeEnumLeaf(table, 1, {"x"}));
+    const CompiledFilterExpression andExpr = MakeCompiledAnd(std::move(children));
+
+    CHECK(EvaluateExpression(andExpr, table, 0));       // a,x
+    CHECK_FALSE(EvaluateExpression(andExpr, table, 1)); // a,y (region rejects)
+    CHECK_FALSE(EvaluateExpression(andExpr, table, 2)); // b,x (category rejects)
+    CHECK_FALSE(EvaluateExpression(andExpr, table, 3)); // b,y (both reject)
+}
+
+TEST_CASE("EvaluateExpression: OR short-circuits when a child accepts", "[log_filter][expression]")
+{
+    const TestLogFile fixture("log_filter_expr_or.json");
+    fixture.Write("");
+    const LogTable table = BuildEnumTable(fixture, "category", {"a", "b", "c", "d"}, 12);
+
+    std::vector<CompiledFilterExpression> children;
+    children.push_back(MakeEnumLeaf(table, 0, {"a"}));
+    children.push_back(MakeEnumLeaf(table, 0, {"c"}));
+    const CompiledFilterExpression orExpr = MakeCompiledOr(std::move(children));
+
+    // Rows cycle [a, b, c, d, a, b, c, d, ...]; OR accepts a and c.
+    for (size_t row = 0; row < table.RowCount(); ++row)
+    {
+        const auto value = row % 4;
+        const bool expected = (value == 0 || value == 2);
+        INFO("row=" << row);
+        CHECK(EvaluateExpression(orExpr, table, row) == expected);
+    }
+}
+
+TEST_CASE("EvaluateExpression: NOT inverts its child", "[log_filter][expression]")
+{
+    const TestLogFile fixture("log_filter_expr_not.json");
+    fixture.Write("");
+    const LogTable table = BuildEnumTable(fixture, "category", {"a", "b", "c"}, 9);
+
+    const CompiledFilterExpression notExpr = MakeCompiledNot(MakeEnumLeaf(table, 0, {"a"}));
+
+    // NOT(category=a) accepts b and c.
+    for (size_t row = 0; row < table.RowCount(); ++row)
+    {
+        const bool isA = (row % 3 == 0);
+        INFO("row=" << row);
+        CHECK(EvaluateExpression(notExpr, table, row) == !isA);
+    }
+}
+
+TEST_CASE("EvaluateExpression: composite (A OR B) AND NOT C", "[log_filter][expression]")
+{
+    // Same 2-column shape as the AND short-circuit test above.
+    const TestLogFile fixture("log_filter_expr_composite.json");
+    fixture.Write("");
+    auto source = fixture.CreateFileLineSource();
+    FileLineSource *sourcePtr = source.get();
+    LogConfiguration cfg;
+    cfg.columns.push_back(
+        {.header = "category",
+         .keys = {"category"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::Enumeration,
+         .parseFormats = {}}
+    );
+    cfg.columns.push_back(
+        {.header = "region",
+         .keys = {"region"},
+         .printFormat = "{}",
+         .type = LogConfiguration::Type::Enumeration,
+         .parseFormats = {}}
+    );
+    const TestLogConfiguration cfgFile;
+    cfgFile.Write(cfg);
+    LogConfigurationManager mgr;
+    mgr.Load(cfgFile.GetFilePath());
+    LogTable table({}, std::move(mgr));
+    table.BeginStreaming(std::move(source));
+
+    KeyIndex &keys = table.Keys();
+    StreamedBatch batch;
+    batch.firstLineNumber = 1;
+    // (a,x), (a,y), (b,x), (b,y), (c,x), (c,y).
+    for (const auto *cat : {"a", "b", "c"})
+    {
+        for (const auto *reg : {"x", "y"})
+        {
+            batch.lines.push_back(
+                MakeLine(keys, *sourcePtr, {{"category", std::string(cat)}, {"region", std::string(reg)}})
+            );
+        }
+    }
+    batch.newKeys.emplace_back("category");
+    batch.newKeys.emplace_back("region");
+    table.AppendBatch(std::move(batch));
+
+    // (category in {a,b}) AND NOT(region=y)
+    std::vector<CompiledFilterExpression> orChildren;
+    orChildren.push_back(MakeEnumLeaf(table, 0, {"a"}));
+    orChildren.push_back(MakeEnumLeaf(table, 0, {"b"}));
+    std::vector<CompiledFilterExpression> andChildren;
+    andChildren.push_back(MakeCompiledOr(std::move(orChildren)));
+    andChildren.push_back(MakeCompiledNot(MakeEnumLeaf(table, 1, {"y"})));
+    const CompiledFilterExpression expr = MakeCompiledAnd(std::move(andChildren));
+
+    CHECK(EvaluateExpression(expr, table, 0));       // (a,x)
+    CHECK_FALSE(EvaluateExpression(expr, table, 1)); // (a,y) - NOT y rejects
+    CHECK(EvaluateExpression(expr, table, 2));       // (b,x)
+    CHECK_FALSE(EvaluateExpression(expr, table, 3)); // (b,y)
+    CHECK_FALSE(EvaluateExpression(expr, table, 4)); // (c,x) - c not in {a,b}
+    CHECK_FALSE(EvaluateExpression(expr, table, 5)); // (c,y)
+}
+
+TEST_CASE("FilterAcceptedRows: visit-path result matches sequential reference", "[log_filter][expression]")
+{
+    const TestLogFile fixture("log_filter_accepted_visit.json");
+    fixture.Write("");
+    const LogTable table = BuildEnumTable(fixture, "category", {"a", "b", "c"}, 2'000);
+
+    std::vector<CompiledFilterExpression> orChildren;
+    orChildren.push_back(MakeEnumLeaf(table, 0, {"a"}));
+    orChildren.push_back(MakeEnumLeaf(table, 0, {"c"}));
+    const CompiledFilterExpression expr = MakeCompiledOr(std::move(orChildren));
+
+    const std::vector<size_t> parallel = FilterAcceptedRows(table, expr);
+
+    std::vector<size_t> sequential;
+    sequential.reserve(table.RowCount() / 2);
+    for (size_t row = 0; row < table.RowCount(); ++row)
+    {
+        if (EvaluateExpression(expr, table, row))
+        {
+            sequential.push_back(row);
+        }
+    }
+    CHECK(parallel == sequential);
+}
+
+TEST_CASE(
+    "FilterAcceptedRows: bitset materialisation matches visit-path output on complex trees",
+    "[log_filter][expression][bitset]"
+)
+{
+    // Force the bitset path: >=4 unique leaves over enough rows that
+    // the memory cap allows it, on a shape that includes OR + NOT so
+    // the eligibility heuristic engages. `BuildEnumTable` cycles the
+    // vocabulary, so an OR of four disjoint values covers the whole
+    // vocabulary, and the NOT then trims it back down.
+    const TestLogFile fixture("log_filter_accepted_bitset.json");
+    fixture.Write("");
+    const LogTable table = BuildEnumTable(fixture, "category", {"a", "b", "c", "d", "e"}, 4'000);
+
+    std::vector<CompiledFilterExpression> orChildren;
+    orChildren.push_back(MakeEnumLeaf(table, 0, {"a"}));
+    orChildren.push_back(MakeEnumLeaf(table, 0, {"b"}));
+    orChildren.push_back(MakeEnumLeaf(table, 0, {"c"}));
+    orChildren.push_back(MakeEnumLeaf(table, 0, {"d"}));
+
+    std::vector<CompiledFilterExpression> andChildren;
+    andChildren.push_back(MakeCompiledOr(std::move(orChildren)));
+    andChildren.push_back(MakeCompiledNot(MakeEnumLeaf(table, 0, {"a"})));
+    const CompiledFilterExpression expr = MakeCompiledAnd(std::move(andChildren));
+
+    // The evaluator picks the path internally; we verify agreement
+    // against a hand-rolled sequential reference so a regression in
+    // either path is caught (and the bitset path is very much what
+    // this test targets given the tree shape).
+    const std::vector<size_t> parallel = FilterAcceptedRows(table, expr);
+
+    std::vector<size_t> sequential;
+    sequential.reserve(table.RowCount());
+    for (size_t row = 0; row < table.RowCount(); ++row)
+    {
+        // Expected: category in {a,b,c,d} AND NOT category=a. Rows
+        // cycle [a,b,c,d,e], so accepted iff the value is one of
+        // {b,c,d}.
+        const auto value = row % 5;
+        if (value == 1 || value == 2 || value == 3)
+        {
+            sequential.push_back(row);
+        }
+    }
+    CHECK(parallel == sequential);
+}
+
+TEST_CASE("EstimatedLeafCost: cheaper predicates rank below string predicates", "[log_filter][expression]")
+{
+    // Ordering is monotonic (relative to observed benchmark cost);
+    // exact numbers don't matter but the ranks matter because
+    // `CompileExpression` uses them to reorder children.
+    const RowPredicate boolPred{std::in_place_type<BoolRowPredicate>, size_t{0}, /*includeTrue=*/true,
+                                /*includeFalse=*/false};
+    const RowPredicate timePred{std::in_place_type<TimeRangeRowPredicate>, size_t{0}, int64_t{0}, int64_t{1}};
+    const RowPredicate numericPred{
+        std::in_place_type<NumericRangeRowPredicate>, size_t{0}, std::optional<double>{0.0}, std::optional<double>{1.0}
+    };
+    const RowPredicate stringPred{
+        std::in_place_type<CallbackStringRowPredicate>,
+        size_t{0},
+        CallbackStringRowPredicate::MatchFn{[](std::string_view) { return true; }},
+    };
+
+    const int boolCost = EstimatedLeafCost(boolPred);
+    const int timeCost = EstimatedLeafCost(timePred);
+    const int numericCost = EstimatedLeafCost(numericPred);
+    const int stringCost = EstimatedLeafCost(stringPred);
+
+    CHECK(boolCost < timeCost);
+    CHECK(timeCost < numericCost);
+    CHECK(numericCost < stringCost);
+}

@@ -1,6 +1,7 @@
 #include "main_window.hpp"
 #include "./ui_main_window.h"
 
+#include "advanced_filter_editor.hpp"
 #include "column_editor.hpp"
 #include "columns_manager_dialog.hpp"
 #include "configuration_diagnostics_dialog.hpp"
@@ -961,6 +962,7 @@ MainWindow::MainWindow(
     connect(ui->actionGotoTimestamp, &QAction::triggered, this, &MainWindow::GotoTimestamp);
 
     connect(ui->actionAddFilter, &QAction::triggered, this, [this]() { AddFilter(QUuid::createUuid().toString()); });
+    connect(ui->actionAdvancedFilter, &QAction::triggered, this, &MainWindow::OpenAdvancedFilter);
     connect(ui->actionClearAllFilters, &QAction::triggered, this, &MainWindow::ClearAllFilters);
     ui->actionClearAllFilters->setDisabled(true);
 
@@ -7412,6 +7414,60 @@ void MainWindow::ClearAllFilters()
     }
 
     ui->actionClearAllFilters->setDisabled(true);
+    MarkFiltersDirty();
+    SyncColumnFilterIndicators();
+}
+
+void MainWindow::OpenAdvancedFilter()
+{
+    // The Advanced editor owns the entire `expression` tree while
+    // open. Seed it from the live configuration so simple-mode
+    // leaves round-trip through the pretty-printer. On accept we
+    // clear `mSimpleLeaves` / `mSimpleLeafOrder` and drop the
+    // per-filter menu entries: the tree may now include OR / NOT
+    // branches that the simple-mode UI cannot represent, so the
+    // "one entry per leaf" indicator is no longer meaningful.
+    AdvancedFilterEditor editor(this);
+    editor.LoadFromExpression(mModel->Configuration().expression);
+    if (editor.exec() != QDialog::Accepted)
+    {
+        return;
+    }
+    auto result = editor.Result();
+    if (!result.has_value())
+    {
+        // Guard against accept-with-error (shouldn't happen -- the
+        // OK button disables when the query fails to parse).
+        return;
+    }
+
+    // Wipe the simple-mode bookkeeping: the tree may now contain
+    // structure (OR / NOT) that the simple-mode UI can't roundtrip.
+    // The header funnel + Filters menu below refresh from the empty
+    // set. Users who want to switch back to simple mode can
+    // `ClearAllFilters` and re-add.
+    mSimpleLeaves.clear();
+    mSimpleLeafOrder.clear();
+    for (QAction *action : ui->menuFilters->actions())
+    {
+        if (!action->data().toString().isNull())
+        {
+            ui->menuFilters->removeAction(action);
+            delete action;
+        }
+    }
+    // Advanced edit implicitly commits a new expression; the
+    // per-action menu entries below rebuild from the empty set.
+
+    // Push the new expression straight onto the configuration and
+    // recompile. `MirrorSessionStateToConfiguration` won't help
+    // here -- it only writes the simple-mode subset -- so we set
+    // the expression via the manager directly.
+    mModel->ConfigurationManager().SetExpression(std::move(*result));
+    UpdateFilters();
+
+    const bool isMatchAll = loglib::IsMatchAll(mModel->Configuration().expression);
+    ui->actionClearAllFilters->setDisabled(isMatchAll);
     MarkFiltersDirty();
     SyncColumnFilterIndicators();
 }
