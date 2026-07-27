@@ -859,13 +859,14 @@ TEST_CASE(
             {"header":"h","keys":["h"],"printFormat":"{}","type":"enumeration","parseFormats":[]}
         ],
         "expression": {
-            "and": [
-                {"leaf": {"type":"string","columnKeys":["b"],"filterString":"foo","matchType":"exactly","filterValues":[]}},
-                {"leaf": {"type":"string","columnKeys":["c"],"filterString":"bar","matchType":"contains","filterValues":[]}},
-                {"leaf": {"type":"string","columnKeys":["d"],"filterString":"^baz$","matchType":"regularExpression","filterValues":[]}},
-                {"leaf": {"type":"string","columnKeys":["e"],"filterString":"qux*","matchType":"wildcard","filterValues":[]}},
-                {"leaf": {"type":"time","columnKeys":["g"],"filterBegin":1000,"filterEnd":2000,"filterValues":[]}},
-                {"leaf": {"type":"enumeration","columnKeys":["h"],"filterValues":["info","warn"]}}
+            "kind": "and",
+            "children": [
+                {"kind": "leaf", "rule": {"type":"string","columnKeys":["b"],"filterString":"foo","matchType":"exactly","filterValues":[]}},
+                {"kind": "leaf", "rule": {"type":"string","columnKeys":["c"],"filterString":"bar","matchType":"contains","filterValues":[]}},
+                {"kind": "leaf", "rule": {"type":"string","columnKeys":["d"],"filterString":"^baz$","matchType":"regularExpression","filterValues":[]}},
+                {"kind": "leaf", "rule": {"type":"string","columnKeys":["e"],"filterString":"qux*","matchType":"wildcard","filterValues":[]}},
+                {"kind": "leaf", "rule": {"type":"time","columnKeys":["g"],"filterBegin":1000,"filterEnd":2000,"filterValues":[]}},
+                {"kind": "leaf", "rule": {"type":"enumeration","columnKeys":["h"],"filterValues":["info","warn"]}}
             ]
         }
     })";
@@ -925,9 +926,10 @@ TEST_CASE(
             {"header":"flag","keys":["flag"],"printFormat":"{}","type":"boolean","parseFormats":[]}
         ],
         "expression": {
-            "and": [
-                {"leaf": {"type":"number","columnKeys":["value"],"filterMinValue":1.5,"filterMaxValue":5.0,"filterValues":[]}},
-                {"leaf": {"type":"boolean","columnKeys":["flag"],"filterValues":["true","false"]}}
+            "kind": "and",
+            "children": [
+                {"kind": "leaf", "rule": {"type":"number","columnKeys":["value"],"filterMinValue":1.5,"filterMaxValue":5.0,"filterValues":[]}},
+                {"kind": "leaf", "rule": {"type":"boolean","columnKeys":["flag"],"filterValues":["true","false"]}}
             ]
         }
     })";
@@ -1094,8 +1096,7 @@ TEST_CASE(
     constexpr std::string_view LEGACY_JSON = R"({
         "columns": [
             {"header":"a","keys":["a"],"printFormat":"{}","type":"any","parseFormats":[]}
-        ],
-        "filters": []
+        ]
     })";
 
     LogConfiguration loaded;
@@ -1826,8 +1827,9 @@ TEST_CASE(
       }
    ],
    "expression": {
-      "and": [
-         {"leaf": {"type":"string","columnKeys":["msg"],"filterString":"boot","matchType":"contains"}}
+      "kind": "and",
+      "children": [
+         {"kind": "leaf", "rule": {"type":"string","columnKeys":["msg"],"filterString":"boot","matchType":"contains"}}
       ]
    },
    "sort": {

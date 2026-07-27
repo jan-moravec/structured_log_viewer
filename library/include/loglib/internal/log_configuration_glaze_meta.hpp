@@ -134,11 +134,16 @@ template <> struct glz::meta<loglib::LeafRule>
 
 // Wire-format shape for the tagged boolean expression tree.
 //
-// The `variant<Leaf, And, Or, Not>` serialises as an object whose
-// key is the discriminator (`"leaf"` / `"and"` / `"or"` / `"not"`)
-// and whose value is the corresponding node payload. Glaze picks
-// this shape when the variant has meta specialisations for both
-// the variant itself and each alternative.
+// On disk each node looks like:
+//   { "kind": "and", "children": [ ... ] }
+//   { "kind": "or",  "children": [ ... ] }
+//   { "kind": "not", "child": <sub-expression> }
+//   { "kind": "leaf", "rule": <LeafRule> }
+//
+// The discriminator lives on the `"kind"` field chosen by
+// `glz::meta<std::variant<...>>::tag` below. Each node struct
+// exposes only its payload field so the tag sits alongside it at
+// the same level.
 template <> struct glz::meta<loglib::FilterExpression::Leaf>
 {
     using T = loglib::FilterExpression::Leaf;
@@ -167,10 +172,23 @@ template <> struct glz::meta<loglib::FilterExpression::Not>
     static constexpr auto value = object("child", &T::child);
 };
 
+// Internally-tagged variant: the discriminator `"kind"` lives on
+// the same object as the payload fields. Names are stable on disk;
+// append new alternatives at the end, never reorder.
+template <> struct glz::meta<std::variant<
+                       loglib::FilterExpression::Leaf,
+                       loglib::FilterExpression::And,
+                       loglib::FilterExpression::Or,
+                       loglib::FilterExpression::Not>>
+{
+    static constexpr std::string_view tag = "kind";
+    static constexpr auto ids = std::array{"leaf", "and", "or", "not"};
+};
+
 template <> struct glz::meta<loglib::FilterExpression>
 {
     using T = loglib::FilterExpression;
-    static constexpr auto value = object("node", &T::node);
+    static constexpr auto value = &T::node;
 };
 
 template <> struct glz::meta<loglib::LogConfiguration::Sort>
