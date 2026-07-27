@@ -2218,23 +2218,23 @@ void LogModel::UpdateTimestampMonotonicity(int firstNewRow, int endNewRow)
             if (mLastAppendedTimestampMicros.has_value() && *ts < *mLastAppendedTimestampMicros)
             {
                 mTimestampsMonotonic = false;
-                mLastAppendedTimestampMicros = *ts;
+                mLastAppendedTimestampMicros = ts;
                 return;
             }
         }
         else if (*ts < runningMax)
         {
             mTimestampsMonotonic = false;
-            mLastAppendedTimestampMicros = *ts;
+            mLastAppendedTimestampMicros = ts;
             return;
         }
         runningMax = *ts;
-        lastValidInBatch = *ts;
+        lastValidInBatch = ts;
     }
 
     if (lastValidInBatch.has_value())
     {
-        mLastAppendedTimestampMicros = *lastValidInBatch;
+        mLastAppendedTimestampMicros = lastValidInBatch;
     }
 }
 

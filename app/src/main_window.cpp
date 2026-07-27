@@ -6716,17 +6716,23 @@ int MainWindow::FindFirstRowAtOrAfter(int timeCol, int64_t targetMicros) const
         {
             const int mid = lo + ((hi - lo) / 2);
             int probe = mid;
-            std::optional<int64_t> probeTs;
-            while (probe < hi && !(probeTs = tsFor(probe)).has_value())
+            int64_t probeTsValue = 0;
+            bool probeHasTs = false;
+            for (; probe < hi; ++probe)
             {
-                ++probe;
+                if (const auto probeTs = tsFor(probe); probeTs.has_value())
+                {
+                    probeTsValue = *probeTs;
+                    probeHasTs = true;
+                    break;
+                }
             }
-            if (probe >= hi)
+            if (!probeHasTs)
             {
                 // `[mid, hi)` is all missing -- shrink to the left.
                 hi = mid;
             }
-            else if (*probeTs < targetMicros)
+            else if (probeTsValue < targetMicros)
             {
                 lo = probe + 1;
             }
