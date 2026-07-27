@@ -453,34 +453,44 @@ public:
     /// after @p targetMicros **and** is currently visible through
     /// the outer proxy (respects the active row filter).
     ///
-    /// Fast path (no user sort): binary-searches source rows in file
-    /// order, tolerating interleaved missing / unpromoted timestamps
-    /// by skipping forward past them during each probe, then walks
-    /// forward from the binary-search result to skip any filtered-
-    /// out rows.
+    /// Three internal branches, one for each interesting combination
+    /// of (user-sort, monotonicity):
     ///
-    /// **Precondition (fast path):** source rows are assumed to be
-    /// monotonic in @p timeCol (times increase with row index).
-    /// This is the common case for single-source logs, but can be
-    /// violated by multi-file `Append` opens spanning overlapping
-    /// wall-clock ranges, multi-producer network streams, and clock
-    /// skew around rotation. When the invariant is broken, the fast
-    /// path may return `-1` even when a qualifying row exists earlier
-    /// in the file, or land past an earlier candidate. There is no
-    /// runtime guard: enforcing monotonicity would require an O(N)
-    /// pre-scan on every call which defeats the point of the fast
-    /// path. If this becomes a real complaint, gate the branch on a
-    /// `mModel->TimestampsAreMonotonic()` flag maintained on the
-    /// streaming path.
+    /// * **Fast path** -- no user sort AND
+    ///   `LogModel::TimestampsAreMonotonic()`. Binary-searches
+    ///   source rows in file order (O(log N)), tolerating
+    ///   interleaved missing / unpromoted timestamps by skipping
+    ///   forward during each probe. After the search returns a
+    ///   candidate row `lo`, the visibility check runs against `lo`
+    ///   directly (happy path: O(1)); on a miss it walks the
+    ///   *outer proxy* -- not the source -- to find the smallest
+    ///   visible source row `>= lo` with a valid ts, yielding
+    ///   O(N_visible) worst case rather than O(N_source). This
+    ///   matters when a heavy filter hides most of the tail: the
+    ///   old source-walk was O(10M) on a 10M-row file with a
+    ///   1-in-a-million filter, well past the ROADMAP `< 100 ms`
+    ///   budget.
     ///
-    /// Slow path (user sort active): linear scan over visible proxy
-    /// rows in display order so the "first" row honours the user's
-    /// chosen sort direction (see ROADMAP item 8). Not sensitive to
-    /// the monotonicity caveat above.
+    /// * **Non-monotonic path** -- no user sort AND
+    ///   `TimestampsAreMonotonic()` is false (multi-file `Append`,
+    ///   rotation, clock skew). The binary search would silently
+    ///   return a wrong row, so we fall back to an O(N_visible)
+    ///   walk over the outer proxy and pick the visible row with
+    ///   the SMALLEST ts that still satisfies `ts >= target` --
+    ///   the chronologically earliest match. Monotonicity is
+    ///   tracked cheaply on the streaming path
+    ///   (`LogModel::UpdateTimestampMonotonicity`); no per-call
+    ///   scan is required to decide which branch to take.
+    ///
+    /// * **User-sort path** -- user has clicked a header. Linear
+    ///   scan over visible proxy rows in display order and return
+    ///   the first row whose source ts qualifies, so "first"
+    ///   honours the user's chosen sort direction (see ROADMAP
+    ///   item 8).
     ///
     /// Returns the source-model row index, or `-1` when no live
-    /// row qualifies. Public so tests can exercise both branches
-    /// without popping the modal.
+    /// row qualifies. Public so tests can exercise all three
+    /// branches without popping the modal.
     [[nodiscard]] int FindFirstRowAtOrAfter(int timeCol, int64_t targetMicros) const;
 
     /// Jump the table to the first row in histogram bucket
@@ -635,6 +645,29 @@ public:
     /// simulation: pass a line > `mModel->rowCount()`) and the
     /// filter-visibility hint without popping a dialog.
     void ExecuteGotoLineForTest(const QString &input);
+
+    /// Test seam replaying the post-`exec` body of `GotoTimestamp`
+    /// without a modal `QInputDialog`. @p input is the raw text
+    /// value the dialog would have returned; @p now pins the clock
+    /// so relative shortcuts (`-1h`) are deterministic. Exercises
+    /// the naive-vs-zoned dispatch, the `mLastGotoTimestampInput`
+    /// sticky-input update, the "no time column" / "could not
+    /// parse" hints, and the `FindFirstRowAtOrAfter` handoff --
+    /// none of which are reachable through `ParseGotoTimestampInput`
+    /// alone.
+    void ExecuteGotoTimestampForTest(const QString &input, std::chrono::system_clock::time_point now);
+
+    /// Test-only accessor for the sticky Goto Timestamp input so
+    /// the session-boundary clear (`NewSession()` -> `.clear()`)
+    /// can be pinned end-to-end.
+    [[nodiscard]] QString LastGotoTimestampInputForTest() const;
+
+    /// Test seam: force `LogModel::TimestampsAreMonotonic()` to
+    /// return false so `FindFirstRowAtOrAfter` takes the non-
+    /// monotonic branch even in fixtures where the streaming
+    /// path's guard has not observed an inversion. Idempotent;
+    /// no way back once tripped (mirrors production semantics).
+    void ForceTimestampsNonMonotonicForTest();
 #endif
 
 protected:
@@ -881,6 +914,19 @@ private:
     /// separate from the modal-owning slot so tests can drive both
     /// branches through `ExecuteGotoLineForTest`.
     void ExecuteGotoLine(const QString &input);
+
+    /// Shared post-`exec` body of `GotoTimestamp`. Given the raw
+    /// text @p input the dialog collected and @p now (pinned by
+    /// tests, `system_clock::now()` in production), updates the
+    /// sticky-input mirror, invokes `ParseGotoTimestampInput`,
+    /// shifts naive results through `LocalMicrosecondsSinceEpochToUtc`,
+    /// then hands off to `FindFirstRowAtOrAfter` + `SelectSourceRow`.
+    /// Emits the user-facing status hint for every rejection
+    /// branch. Kept separate from the modal-owning slot so tests
+    /// can drive naive-vs-zoned dispatch and the various error
+    /// branches through `ExecuteGotoTimestampForTest` without
+    /// popping a dialog.
+    void ExecuteGotoTimestamp(const QString &input, std::chrono::system_clock::time_point now);
 
     /// Logical index of the column whose `keys` match @p keys, or
     /// `-1` if none. `keys` is the only identifier that survives a
@@ -1822,6 +1868,15 @@ private:
     /// session switch to avoid leaking a stale reference from a
     /// closed file into a fresh one.
     QString mLastGotoTimestampInput;
+
+    /// Last text the user typed into the Goto Line dialog. Same
+    /// UX rationale as `mLastGotoTimestampInput`: users walking a
+    /// stack trace or diffing two runs re-open the dialog with an
+    /// adjacent line number, and retyping is friction. Cleared on
+    /// session switch alongside the timestamp mirror; validated
+    /// against the *current* row count on re-open so an out-of-
+    /// range carry-over from a smaller session no longer applies.
+    QString mLastGotoLineInput;
 
     /// Latch: a loaded session's sort is pending, to be applied
     /// once streaming finishes. Avoids the O(N^2) per-row insert

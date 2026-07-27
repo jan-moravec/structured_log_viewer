@@ -225,6 +225,33 @@ public:
     /// Current retention cap (`0` means unbounded). GUI thread only.
     [[nodiscard]] size_t RetentionCap() const noexcept;
 
+    /// True while every batch we've appended so far has landed with
+    /// its first valid timestamp `>=` the last valid timestamp of
+    /// the previous batch (i.e. source-row order matches wall-clock
+    /// order across batch boundaries). Reset to `true` on
+    /// `Reset()` / `BeginStreaming*` and flipped irreversibly to
+    /// `false` the first time we detect an out-of-order boundary in
+    /// `AppendBatch`. Used by `MainWindow::FindFirstRowAtOrAfter` to
+    /// gate its `lower_bound`-on-source-rows fast path: the search
+    /// requires monotonicity to be correct, and multi-file `Append`
+    /// / rotation / clock skew can violate it. Intra-batch
+    /// inversions are not observed by this cheap check -- the
+    /// caller degrades to an O(N_visible) proxy walk when this
+    /// returns `false`, so a false-positive "monotonic" answer is
+    /// what we optimise away, not correctness. Rows without a
+    /// resolvable timestamp are skipped rather than treated as
+    /// `-inf` (same rationale as the fast-path binary search).
+    [[nodiscard]] bool TimestampsAreMonotonic() const noexcept;
+
+    /// Test seam: force `TimestampsAreMonotonic()` to return false
+    /// so `MainWindow::FindFirstRowAtOrAfter` takes its non-
+    /// monotonic branch even in single-batch fixtures where the
+    /// streaming-path detector has nothing to trip on. Idempotent
+    /// (there's no cheap way back, mirroring production semantics).
+    /// Not gated behind `LOGAPP_BUILD_TESTING` because the header
+    /// has no such guard; the name makes intent clear at call sites.
+    void SetTimestampsMonotonicForTest(bool monotonic) noexcept;
+
     /// UTF-8 bytes -> single-line, simplified `QString` (the
     /// `Qt::DisplayRole` representation). Public so `MatchRow` and
     /// `MainWindow::MakeStringMatcher` apply the same normalisation
@@ -382,6 +409,17 @@ private:
     /// Shared implementation of `Reset()` / `StopAndKeepRows()`.
     void TeardownStreamingSessionInternal(bool resetTable);
 
+    /// Scan the source rows `[firstNewRow, endNewRow)` we've just
+    /// appended for the first & last valid timestamp value, and
+    /// update `mTimestampsMonotonic` / `mLastAppendedTimestampMicros`
+    /// accordingly. Bails out early if the flag is already false
+    /// (irreversible) or the configuration has no `Type::Time`
+    /// column. Missing-timestamp rows are ignored rather than
+    /// treated as `-inf`; a batch consisting entirely of
+    /// missing-ts rows leaves the tracker unchanged. Called from
+    /// `AppendBatch` while row insertion is already O(N_batch).
+    void UpdateTimestampMonotonicity(int firstNewRow, int endNewRow);
+
     /// Canonical level for @p row via the first `Type::Level`
     /// column. Returns nullopt when there's no level column or the
     /// row has no resolvable level. Drives the Background /
@@ -423,6 +461,25 @@ private:
 
     /// Retention cap; `0` means unbounded.
     size_t mRetentionCap = 0;
+
+    /// See `TimestampsAreMonotonic()`. Starts true on every fresh
+    /// streaming / static session and only ever flips to false --
+    /// there's no cheap way to prove a previously-broken sequence
+    /// has healed. The Goto Timestamp fast path reads this to
+    /// decide between a source-row `lower_bound` (O(log N)) and a
+    /// visible-proxy walk (O(N_visible)).
+    bool mTimestampsMonotonic = true;
+
+    /// Last valid timestamp value (epoch micros) observed in an
+    /// appended batch, or nullopt when no batch with a valid
+    /// timestamp has landed yet in the current session. Compared
+    /// against the FIRST valid timestamp of every subsequent batch
+    /// to detect boundary inversions (multi-file `Append`,
+    /// rotation, clock skew). Prefix eviction leaves this untouched
+    /// -- the invariant we care about is "later batch's first ts
+    /// >= earlier batch's last ts", which is preserved when older
+    /// rows drop out.
+    std::optional<int64_t> mLastAppendedTimestampMicros;
 
     /// Per-batch capture: column -> (canonical level -> raw dictionary
     /// bytes), recorded when a `Type::Level` column demotes during the

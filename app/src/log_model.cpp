@@ -13,6 +13,8 @@
 #include <loglib/line_source.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_parse_sink.hpp>
+#include <loglib/log_processing.hpp>
+#include <loglib/log_value.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/stream_line_source.hpp>
@@ -37,6 +39,8 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -176,6 +180,11 @@ void LogModel::TeardownStreamingSessionInternal(bool resetTable)
         mErrorCount = 0;
         mStreamingErrors.clear();
         mLastReportedShutdownDropCount = 0;
+        // Wipe the Goto Timestamp fast-path guards so a fresh
+        // session doesn't inherit a previous session's "non-
+        // monotonic" verdict or its last-seen timestamp reference.
+        mTimestampsMonotonic = true;
+        mLastAppendedTimestampMicros.reset();
         // Drop the per-batch capture alongside the table's rank cache
         // so the next session doesn't see stale demote mappings.
         mLastBatchLevelDemoteMapping.clear();
@@ -238,6 +247,11 @@ void LogModel::BeginStreamingShared(std::unique_ptr<loglib::LineSource> source)
     mErrorCount = 0;
     mStreamingErrors.clear();
     mLastReportedShutdownDropCount = 0;
+    // Fresh session: reset the Goto Timestamp fast-path guards so
+    // a prior session's "non-monotonic" verdict doesn't leak into
+    // a fresh (potentially well-ordered) log.
+    mTimestampsMonotonic = true;
+    mLastAppendedTimestampMicros.reset();
 
     // Every new session starts unbounded. Live-tail re-applies its
     // retention cap after returning; static paths leave it at 0.
@@ -614,6 +628,16 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
     }
 
     mLogTable.AppendBatch(std::move(batch));
+
+    // Cheap monotonicity guard for the Goto Timestamp fast path:
+    // scan the just-inserted rows' timestamp column for a
+    // batch-boundary or intra-batch inversion. Piggybacks on the
+    // O(N_batch) work the append already did. Skipped once the flag
+    // has already flipped false -- it's irreversible for the session.
+    if (rowsGrew)
+    {
+        UpdateTimestampMonotonicity(currentRowCount, static_cast<int>(mLogTable.RowCount()));
+    }
 
     // Defensive: today batches only add rows, but a future source-
     // bearing batch path must still see a warm cache.
@@ -2145,6 +2169,85 @@ void LogModel::SetRetentionCap(size_t cap)
 size_t LogModel::RetentionCap() const noexcept
 {
     return mRetentionCap;
+}
+
+bool LogModel::TimestampsAreMonotonic() const noexcept
+{
+    return mTimestampsMonotonic;
+}
+
+void LogModel::SetTimestampsMonotonicForTest(bool monotonic) noexcept
+{
+    mTimestampsMonotonic = monotonic;
+}
+
+void LogModel::UpdateTimestampMonotonicity(int firstNewRow, int endNewRow)
+{
+    // Early-exit branches ordered cheapest-first so the common
+    // "already flipped" / "no time column" cases pay nothing per
+    // batch. `mTimestampsMonotonic` is intentionally irreversible
+    // -- there is no cheap heal path, and the fast-path caller
+    // degrades to O(N_visible) proxy iteration for the remainder
+    // of the session (see `TimestampsAreMonotonic` doc).
+    if (!mTimestampsMonotonic)
+    {
+        return;
+    }
+    if (firstNewRow >= endNewRow)
+    {
+        return;
+    }
+    const int timeCol = loglib::FirstTimeColumnIndex(Configuration());
+    if (timeCol < 0)
+    {
+        return;
+    }
+
+    // Single pass: track a running max of valid ts values in the
+    // batch (catches intra-batch inversions) AND compare the first
+    // valid ts to `mLastAppendedTimestampMicros` (catches
+    // batch-boundary inversions -- multi-file `Append`, rotation,
+    // clock skew). Missing-ts rows are ignored rather than treated
+    // as `-inf`; a batch of all-missing rows leaves the tracker
+    // unchanged so the next batch compares against the same
+    // reference point. Bails out early on the first violation
+    // because a single inversion is terminal.
+    const auto colIdx = static_cast<std::size_t>(timeCol);
+    std::optional<int64_t> lastValidInBatch;
+    int64_t runningMax = std::numeric_limits<int64_t>::min();
+    for (int row = firstNewRow; row < endNewRow; ++row)
+    {
+        const auto ts = loglib::AsEpochMicroseconds(mLogTable.GetValue(static_cast<std::size_t>(row), colIdx));
+        if (!ts.has_value())
+        {
+            continue;
+        }
+        if (!lastValidInBatch.has_value())
+        {
+            // First valid ts -- do the batch-boundary check now,
+            // before the running max absorbs it.
+            if (mLastAppendedTimestampMicros.has_value() && *ts < *mLastAppendedTimestampMicros)
+            {
+                mTimestampsMonotonic = false;
+                mLastAppendedTimestampMicros = *ts;
+                return;
+            }
+        }
+        else if (*ts < runningMax)
+        {
+            // Intra-batch inversion.
+            mTimestampsMonotonic = false;
+            mLastAppendedTimestampMicros = *ts;
+            return;
+        }
+        runningMax = *ts;
+        lastValidInBatch = *ts;
+    }
+
+    if (lastValidInBatch.has_value())
+    {
+        mLastAppendedTimestampMicros = *lastValidInBatch;
+    }
 }
 
 QString LogModel::ConvertToSingleLineCompactQString(std::string_view bytes)

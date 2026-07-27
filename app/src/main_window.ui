@@ -187,7 +187,7 @@
     <string>Go to Line...</string>
    </property>
    <property name="toolTip">
-    <string>Jump to a row by number. Line 1 is the earliest row currently in the model; streaming eviction may have dropped older rows so numbers need not match the source file.</string>
+    <string>Jump to a row by number. Line 1 is always the earliest row currently in the model (bottom-of-screen in newest-first mode); streaming eviction may have dropped older rows so numbers need not match the source file.</string>
    </property>
    <property name="shortcut">
     <string>Ctrl+G</string>
@@ -198,7 +198,7 @@
     <string>Go to Timestamp...</string>
    </property>
    <property name="toolTip">
-    <string>Jump to the first row at or after a given timestamp. Accepts formats the timestamp column already parses, plus relative shortcuts like &quot;-1h&quot; or &quot;-30m&quot;.</string>
+    <string>Jump to the first row at or after a given timestamp. Naive timestamps (no offset / no &quot;Z&quot;) are interpreted in the display time zone (local time). Accepts formats the timestamp column already parses, plus ISO 8601 and relative shortcuts like &quot;-1h&quot; or &quot;-30m&quot;.</string>
    </property>
    <property name="shortcut">
     <string>Ctrl+Shift+G</string>

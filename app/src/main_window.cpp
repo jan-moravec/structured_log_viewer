@@ -2420,7 +2420,10 @@ void MainWindow::NewSession()
     // string that made sense in the outgoing session's zone /
     // format can be nonsense in the new one, and pre-populating
     // a fresh dialog with it would just annoy the user.
+    // Same rationale for the Goto Line mirror: a valid line
+    // number in a 10M-row log is out-of-range in an empty one.
     mLastGotoTimestampInput.clear();
+    mLastGotoLineInput.clear();
     // Drop the pinned uuid + open-windows membership so the next
     // AutoSave creates a fresh entry and a crash before then
     // doesn't re-restore the discarded session.
@@ -6370,20 +6373,38 @@ void MainWindow::GotoLine()
     // presenting the user with a range they cannot actually type.
     QInputDialog dialog(this);
     dialog.setWindowTitle(tr("Go to Line"));
-    dialog.setLabelText(tr("Line number (1 - %1):").arg(QString::number(rowCount)));
+    // Semantics reminder alongside the range: with newest-first
+    // display active, "line 1" is still the earliest row (the one
+    // at the bottom of the visible list), not the top. See
+    // `GotoLine` docstring; also spelled out in the `.ui` tooltip.
+    dialog.setLabelText(tr("Line number (1 = earliest row; 1 - %1):").arg(QString::number(rowCount)));
     dialog.setInputMode(QInputDialog::TextInput);
     dialog.setTextEchoMode(QLineEdit::Normal);
+    // Pre-populate with the previous input so a user walking a
+    // stack trace doesn't retype every line number. Clamped to
+    // the current row range because a value that was in-range in
+    // a prior session can be out-of-range now. Cleared on session
+    // switch (see `mLastGotoLineInput`).
+    if (!mLastGotoLineInput.isEmpty())
+    {
+        dialog.setTextValue(mLastGotoLineInput);
+    }
     if (auto *editor = dialog.findChild<QLineEdit *>())
     {
         editor->setValidator(new QIntValidator(1, rowCount, &dialog));
         editor->setPlaceholderText(tr("e.g. 12345"));
+        // `selectAll` on the pre-populated text lets the user
+        // overwrite by typing, matching the `GotoTimestamp` UX.
+        editor->selectAll();
     }
     if (dialog.exec() != QDialog::Accepted)
     {
         return;
     }
 
-    ExecuteGotoLine(dialog.textValue());
+    const QString rawInput = dialog.textValue();
+    mLastGotoLineInput = rawInput;
+    ExecuteGotoLine(rawInput);
 }
 
 void MainWindow::ExecuteGotoLine(const QString &input)
@@ -6395,7 +6416,7 @@ void MainWindow::ExecuteGotoLine(const QString &input)
     // line pass the check and land on the misleading generic
     // `SelectSourceRow` hint, and (b) show the user a range that
     // no longer exists.
-    if (mModel == nullptr)
+    if (mModel == nullptr || mSortFilterProxyModel == nullptr || mRowOrderProxyModel == nullptr)
     {
         statusBar()->showMessage(tr("No log loaded."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
         return;
@@ -6427,19 +6448,16 @@ void MainWindow::ExecuteGotoLine(const QString &input)
     // invalid `mapFromSource` result really does mean "filter",
     // not "evicted".
     const int sourceRow = oneBased - 1;
-    if (mSortFilterProxyModel != nullptr && mRowOrderProxyModel != nullptr)
+    const QModelIndex sourceIdx = mModel->index(sourceRow, 0);
+    const QModelIndex midIdx = mRowOrderProxyModel->mapFromSource(sourceIdx);
+    const bool visible = midIdx.isValid() && mSortFilterProxyModel->mapFromSource(midIdx).isValid();
+    if (!visible)
     {
-        const QModelIndex sourceIdx = mModel->index(sourceRow, 0);
-        const QModelIndex midIdx = mRowOrderProxyModel->mapFromSource(sourceIdx);
-        const bool visible = midIdx.isValid() && mSortFilterProxyModel->mapFromSource(midIdx).isValid();
-        if (!visible)
-        {
-            statusBar()->showMessage(
-                tr("Line %1 is currently filtered out.").arg(QString::number(oneBased)),
-                STATUS_BAR_MESSAGE_TIMEOUT_MS
-            );
-            return;
-        }
+        statusBar()->showMessage(
+            tr("Line %1 is currently filtered out.").arg(QString::number(oneBased)),
+            STATUS_BAR_MESSAGE_TIMEOUT_MS
+        );
+        return;
     }
 
     SelectSourceRow(sourceRow);
@@ -6598,8 +6616,7 @@ void MainWindow::GotoTimestamp()
         return;
     }
 
-    const auto &config = mModel->Configuration();
-    const int timeCol = loglib::FirstTimeColumnIndex(config);
+    const int timeCol = loglib::FirstTimeColumnIndex(mModel->Configuration());
     if (timeCol < 0)
     {
         statusBar()->showMessage(tr("This log has no timestamp column."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
@@ -6608,7 +6625,14 @@ void MainWindow::GotoTimestamp()
 
     QInputDialog dialog(this);
     dialog.setWindowTitle(tr("Go to Timestamp"));
-    dialog.setLabelText(tr("Timestamp:"));
+    // Label mentions "local time" so users understand that a bare
+    // `YYYY-MM-DD HH:MM:SS` (no offset) is interpreted in the
+    // display time zone, not UTC. The `parseFormats`-fed table
+    // already displays in local time; the dialog matches. Users
+    // who paste a raw `Z`-suffixed value from the file get the
+    // zoned parser branch (`%Ez` / `%Z` in `parseFormats`), which
+    // does NOT shift.
+    dialog.setLabelText(tr("Timestamp (local time; ISO 8601 or -Nh / -Nm):"));
     dialog.setInputMode(QInputDialog::TextInput);
     dialog.setTextEchoMode(QLineEdit::Normal);
     // Pre-populate with the previous input so successive jumps
@@ -6618,7 +6642,7 @@ void MainWindow::GotoTimestamp()
     dialog.setTextValue(mLastGotoTimestampInput);
     if (auto *editor = dialog.findChild<QLineEdit *>())
     {
-        editor->setPlaceholderText(tr("YYYY-MM-DD HH:MM:SS or -1h / -30m"));
+        editor->setPlaceholderText(tr("e.g. 2024-04-28 12:34:56 (local) or -1h / -30m"));
         editor->selectAll();
     }
     if (dialog.exec() != QDialog::Accepted)
@@ -6626,11 +6650,35 @@ void MainWindow::GotoTimestamp()
         return;
     }
 
-    const QString rawInput = dialog.textValue();
-    mLastGotoTimestampInput = rawInput;
-    const std::optional<GotoTimestampParse> parsed = ParseGotoTimestampInput(
-        rawInput, config.columns[static_cast<std::size_t>(timeCol)].parseFormats, std::chrono::system_clock::now()
-    );
+    ExecuteGotoTimestamp(dialog.textValue(), std::chrono::system_clock::now());
+}
+
+void MainWindow::ExecuteGotoTimestamp(const QString &input, std::chrono::system_clock::time_point now)
+{
+    // Re-read model + config here (not before the modal) so a
+    // session swap or column edit while the dialog was open is
+    // reflected in the error paths. Mirrors `ExecuteGotoLine`'s
+    // "read live state, never a captured snapshot" pattern.
+    if (mModel == nullptr || mModel->rowCount() == 0)
+    {
+        statusBar()->showMessage(tr("No log loaded."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+    const auto &config = mModel->Configuration();
+    const int timeCol = loglib::FirstTimeColumnIndex(config);
+    if (timeCol < 0)
+    {
+        statusBar()->showMessage(tr("This log has no timestamp column."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        return;
+    }
+
+    // Sticky-input update happens before the parse so a garbage
+    // input the user wants to correct is retained on the next open.
+    // A parse failure below doesn't roll this back.
+    mLastGotoTimestampInput = input;
+
+    const std::optional<GotoTimestampParse> parsed =
+        ParseGotoTimestampInput(input, config.columns[static_cast<std::size_t>(timeCol)].parseFormats, now);
     if (!parsed.has_value())
     {
         statusBar()->showMessage(tr("Could not parse timestamp."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
@@ -6646,11 +6694,10 @@ void MainWindow::GotoTimestamp()
     // instant and needs the same local -> UTC shift to line up
     // with what the table shows on-screen. Users who paste a raw
     // (naive) log value from the file rather than the displayed
-    // value will land off by the display-zone offset; that's a
-    // documented caveat, not a bug -- the dialog's canonical
-    // meaning is "the wall-clock time the user reads in the row".
-    // `LocalMicrosecondsSinceEpochToUtc` handles the DST edge
-    // cases so we don't have to catch here.
+    // value will land off by the display-zone offset; the dialog
+    // label ("local time") flags this. `LocalMicrosecondsSinceEpoch
+    // ToUtc` handles the DST edge cases so we don't have to catch
+    // here.
     const int64_t targetMicros =
         parsed->isNaive ? loglib::LocalMicrosecondsSinceEpochToUtc(parsed->micros) : parsed->micros;
 
@@ -6703,22 +6750,47 @@ int MainWindow::FindFirstRowAtOrAfter(int timeCol, int64_t targetMicros) const
         return mSortFilterProxyModel->mapFromSource(midIdx).isValid();
     };
 
-    if (mSortFilterProxyModel->SortColumn() < 0)
+    // Outer proxy row -> source row, or `-1` when the mapping breaks
+    // (transient state during a proxy layout change). Factored out
+    // so the three branches below share one traversal skeleton.
+    const auto proxyRowToSource = [this](int proxyRow) -> int
     {
-        // Fast path: no user sort. File order is (practically always)
-        // timestamp-ordered, so we binary-search source rows in place
-        // -- allocating an `iota`d indices vector for a 10M-row file
+        const QModelIndex proxyIdx = mSortFilterProxyModel->index(proxyRow, 0);
+        const QModelIndex midIdx = mSortFilterProxyModel->mapToSource(proxyIdx);
+        if (!midIdx.isValid())
+        {
+            return -1;
+        }
+        const QModelIndex sourceIdx = mRowOrderProxyModel->mapToSource(midIdx);
+        return sourceIdx.isValid() ? sourceIdx.row() : -1;
+    };
+
+    const int userSortColumn = mSortFilterProxyModel->SortColumn();
+    const bool timestampsMonotonic = mModel->TimestampsAreMonotonic();
+
+    if (userSortColumn < 0 && timestampsMonotonic)
+    {
+        // Fast path: no user sort + source rows are monotonic in
+        // the time column. Binary-search source rows in place --
+        // allocating an `iota`d indices vector for a 10M-row file
         // would burn 40 MiB and blow the ROADMAP `< 100 ms` budget.
+        //
+        // Monotonicity is guarded by
+        // `LogModel::TimestampsAreMonotonic()`, which the streaming
+        // path flips to false on the first batch-boundary or intra-
+        // batch inversion (multi-file `Append`, rotation, clock
+        // skew). Once false we drop into the O(N_visible) branch
+        // below, which is correct for arbitrary orders.
         //
         // Missing timestamps must be handled explicitly rather than
         // treated as `-inf`: they can appear anywhere in the middle
         // of a file (JSON rows that omit the timestamp key) and any
         // "assign to -inf" or "assign to +inf" rule breaks the
-        // monotonicity that `lower_bound` requires. Instead, each
-        // probe walks forward from `mid` to the first row with a
-        // valid timestamp before making a decision. Worst case (all
-        // rows missing) degrades to O(N); common case (rare gaps)
-        // stays O(log N).
+        // monotonicity that `lower_bound` requires. Each probe
+        // walks forward from `mid` to the first row with a valid
+        // timestamp before making a decision. Worst case (all rows
+        // missing) degrades to O(N); common case (rare gaps) stays
+        // O(log N).
         //
         // Invariants:
         //   * `[0, lo)`  -- every row has "missing OR ts < target".
@@ -6755,31 +6827,92 @@ int MainWindow::FindFirstRowAtOrAfter(int timeCol, int64_t targetMicros) const
             }
         }
 
-        // Walk forward from `lo` to the first row that both carries
-        // a valid timestamp >= `target` AND is currently visible via
-        // the outer proxy. The visibility step matters when a filter
-        // is active: without it, the fast path can return a source
-        // row that's filtered out and `SelectSourceRow` then prints
-        // "Row is not currently visible" -- which looks like a bug
-        // to the user when there IS a visible qualifying row further
-        // down.
-        for (int row = lo; row < sourceRowCount; ++row)
+        if (lo >= sourceRowCount)
         {
-            const auto ts = tsFor(row);
-            if (!ts.has_value() || *ts < targetMicros)
+            return -1;
+        }
+
+        // Happy path: row `lo` itself is visible and carries a
+        // valid ts. Skips both the proxy walk below and its
+        // `mapFromSource` overhead in the common "no filter" case,
+        // where the fast path is O(log N) end-to-end.
+        {
+            const auto ts = tsFor(lo);
+            if (ts.has_value() && *ts >= targetMicros && isVisible(lo))
             {
-                // The binary-search invariant guarantees no `ts <
-                // target` past `lo`, but a missing-ts row can appear
-                // here (the invariant only pins the answer, not the
-                // gaps between it and the tail).
-                continue;
-            }
-            if (isVisible(row))
-            {
-                return row;
+                return lo;
             }
         }
-        return -1;
+
+        // Fallback: walk the OUTER PROXY (not the source) to find
+        // the smallest visible source row `>= lo` that carries a
+        // valid ts. This is O(N_visible) rather than O(N_source);
+        // the old source-walk degraded to O(N_source) when a heavy
+        // filter hid most of `[lo, sourceRowCount)`, blowing the
+        // ROADMAP budget on huge files.
+        //
+        // Correctness: by the binary-search invariant, every source
+        // row in `[lo, sourceRowCount)` either has a valid ts >=
+        // target or is missing. So any visible source row `>= lo`
+        // with a valid ts is a qualifying answer, and the SMALLEST
+        // such row is the one we want (earliest chronologically,
+        // by monotonicity).
+        int best = -1;
+        const int proxyRowCount = mSortFilterProxyModel->rowCount();
+        for (int proxyRow = 0; proxyRow < proxyRowCount; ++proxyRow)
+        {
+            const int sourceRow = proxyRowToSource(proxyRow);
+            if (sourceRow < lo)
+            {
+                continue;
+            }
+            const auto ts = tsFor(sourceRow);
+            if (!ts.has_value() || *ts < targetMicros)
+            {
+                continue;
+            }
+            if (best < 0 || sourceRow < best)
+            {
+                best = sourceRow;
+            }
+        }
+        return best;
+    }
+
+    if (userSortColumn < 0)
+    {
+        // No user sort, but the source is not monotonic in time
+        // (multi-file `Append`, rotation, clock skew observed via
+        // `LogModel::TimestampsAreMonotonic()`). The fast path
+        // above is unsafe: `lower_bound` would silently return a
+        // wrong row. Fall back to an O(N_visible) walk over the
+        // outer proxy and pick the visible row with the SMALLEST
+        // ts that still satisfies `ts >= target`. That is the
+        // chronologically earliest match, matching the natural
+        // "at or after" semantic even when source order is not
+        // wall-clock order.
+        int best = -1;
+        int64_t bestTs = std::numeric_limits<int64_t>::max();
+        const int proxyRowCount = mSortFilterProxyModel->rowCount();
+        for (int proxyRow = 0; proxyRow < proxyRowCount; ++proxyRow)
+        {
+            const int sourceRow = proxyRowToSource(proxyRow);
+            if (sourceRow < 0)
+            {
+                continue;
+            }
+            const auto ts = tsFor(sourceRow);
+            if (!ts.has_value() || *ts < targetMicros)
+            {
+                continue;
+            }
+            if (*ts < bestTs)
+            {
+                bestTs = *ts;
+                best = sourceRow;
+            }
+        }
+        return best;
     }
 
     // Slow path: user sort active. Linear scan in display order and
@@ -6789,18 +6922,11 @@ int MainWindow::FindFirstRowAtOrAfter(int timeCol, int64_t targetMicros) const
     const int proxyRowCount = mSortFilterProxyModel->rowCount();
     for (int proxyRow = 0; proxyRow < proxyRowCount; ++proxyRow)
     {
-        const QModelIndex proxyIdx = mSortFilterProxyModel->index(proxyRow, 0);
-        const QModelIndex midIdx = mSortFilterProxyModel->mapToSource(proxyIdx);
-        if (!midIdx.isValid())
+        const int sourceRow = proxyRowToSource(proxyRow);
+        if (sourceRow < 0)
         {
             continue;
         }
-        const QModelIndex sourceIdx = mRowOrderProxyModel->mapToSource(midIdx);
-        if (!sourceIdx.isValid())
-        {
-            continue;
-        }
-        const int sourceRow = sourceIdx.row();
         const auto ts = tsFor(sourceRow);
         if (ts.has_value() && *ts >= targetMicros)
         {
@@ -8847,6 +8973,25 @@ void MainWindow::ExecuteGotoLineForTest(const QString &input)
     // regression in the modal-owning `GotoLine` slot cannot mask a
     // regression in the validation branches (and vice versa).
     ExecuteGotoLine(input);
+}
+
+void MainWindow::ExecuteGotoTimestampForTest(const QString &input, std::chrono::system_clock::time_point now)
+{
+    // Thin forwarder; same rationale as `ExecuteGotoLineForTest`.
+    ExecuteGotoTimestamp(input, now);
+}
+
+QString MainWindow::LastGotoTimestampInputForTest() const
+{
+    return mLastGotoTimestampInput;
+}
+
+void MainWindow::ForceTimestampsNonMonotonicForTest()
+{
+    if (mModel != nullptr)
+    {
+        mModel->SetTimestampsMonotonicForTest(false);
+    }
 }
 #endif
 
