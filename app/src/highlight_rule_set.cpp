@@ -1,26 +1,20 @@
 #include "highlight_rule_set.hpp"
 
-#include "log_string_matcher.hpp"
+#include "leaf_rule_compile.hpp"
 
+#include <loglib/filter_expression.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_filter.hpp>
-#include <loglib/log_level.hpp>
 #include <loglib/log_table.hpp>
 
 #include <QDebug>
-#include <QString>
 
 #include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <optional>
-#include <span>
-#include <string>
-#include <string_view>
-#include <unordered_set>
 #include <utility>
-#include <variant>
 #include <vector>
 
 /// One rule's compiled state. Held via `unique_ptr` in `mCompiled`
@@ -100,24 +94,9 @@ int HighlightRuleSet::ResolveColumnByKeys(
     const std::vector<std::string> &keys, const std::vector<loglib::LogConfiguration::Column> &columns
 ) noexcept
 {
-    if (keys.empty())
-    {
-        return -1;
-    }
-    // Subset match: every rule key must appear in the column's
-    // keys. Rules usually carry a single key.
-    for (std::size_t i = 0; i < columns.size(); ++i)
-    {
-        const auto &columnKeys = columns[i].keys;
-        const bool allPresent = std::ranges::all_of(keys, [&columnKeys](const std::string &k) {
-            return std::ranges::find(columnKeys, k) != columnKeys.end();
-        });
-        if (allPresent)
-        {
-            return static_cast<int>(i);
-        }
-    }
-    return -1;
+    // Thin wrapper over the shared factory helper so the public
+    // static entry point stays stable for callers / tests.
+    return ResolveLeafColumnByKeys(keys, columns);
 }
 
 std::optional<HighlightRuleSet::CompiledRule> HighlightRuleSet::CompileRule(
@@ -131,163 +110,15 @@ std::optional<HighlightRuleSet::CompiledRule> HighlightRuleSet::CompileRule(
     {
         return std::nullopt;
     }
-    const auto column = static_cast<std::size_t>(resolvedColumn);
-    using RuleType = loglib::LogConfiguration::HighlightRule::Type;
-    switch (rule.type)
+    // Delegate to the shared `CompileLeaf` factory so filter and
+    // highlight paths use identical predicate construction (Level
+    // expansion, empty-needle rejection, boolean decoding, ...).
+    auto predicate = CompileLeaf(ToLeafRule(rule), resolvedColumn, columns, table);
+    if (!predicate.has_value())
     {
-    case RuleType::Time:
-    {
-        // Same convention as filters: `nullopt` bound = unbounded
-        // (fed as an int64 sentinel). At least one bound must be
-        // finite for the rule to be meaningful.
-        if (!rule.filterBegin.has_value() && !rule.filterEnd.has_value())
-        {
-            return std::nullopt;
-        }
-        return CompiledRule{loglib::RowPredicate{
-            std::in_place_type<loglib::TimeRangeRowPredicate>,
-            column,
-            rule.filterBegin.value_or(std::numeric_limits<std::int64_t>::min()),
-            rule.filterEnd.value_or(std::numeric_limits<std::int64_t>::max())
-        }};
+        return std::nullopt;
     }
-    case RuleType::Number:
-    {
-        if (!rule.filterMinValue.has_value() && !rule.filterMaxValue.has_value())
-        {
-            return std::nullopt;
-        }
-        return CompiledRule{loglib::RowPredicate{
-            std::in_place_type<loglib::NumericRangeRowPredicate>, column, rule.filterMinValue, rule.filterMaxValue
-        }};
-    }
-    case RuleType::Boolean:
-    {
-        if (rule.filterValues.empty())
-        {
-            return std::nullopt;
-        }
-        // Case-insensitive decode (mirrors
-        // `DecodeBooleanFilterSides` in `main_window.cpp`).
-        bool includeTrue = false;
-        bool includeFalse = false;
-        for (const std::string &v : rule.filterValues)
-        {
-            std::string lower = v;
-            std::ranges::transform(lower, lower.begin(), [](unsigned char ch) {
-                return static_cast<char>(std::tolower(ch));
-            });
-            if (lower == "true")
-            {
-                includeTrue = true;
-            }
-            else if (lower == "false")
-            {
-                includeFalse = true;
-            }
-        }
-        if (!includeTrue && !includeFalse)
-        {
-            return std::nullopt;
-        }
-        return CompiledRule{
-            loglib::RowPredicate{std::in_place_type<loglib::BoolRowPredicate>, column, includeTrue, includeFalse}
-        };
-    }
-    case RuleType::Enumeration:
-    {
-        if (rule.filterValues.empty() || table == nullptr)
-        {
-            return std::nullopt;
-        }
-        const loglib::EnumDictionary *dictionary = table->ResolveEnumColumn(column).dictionary;
-        // Level columns store canonical names (`"Info"`, ...);
-        // expand them to every raw dictionary alias via
-        // `LevelRankCache` so a rule saved as `Info` still matches
-        // a row parsed from `INFO`. Mirrors the level branch in
-        // `MainWindow::UpdateFilters`. `EnumRowPredicate`'s
-        // constructor deep-copies the views before the scaffolding
-        // vectors go out of scope.
-        std::vector<std::string> expandedStorage;
-        std::vector<std::string_view> selectedViews;
-        const bool isLevelColumn =
-            column < columns.size() && columns[column].type == loglib::LogConfiguration::Type::Level;
-        if (isLevelColumn)
-        {
-            const std::vector<loglib::LogLevel> *ranks = table->LevelRankCache(column);
-            if (ranks == nullptr || dictionary == nullptr)
-            {
-                // Not populated yet; the next `RebindColumns` will
-                // retry once the dictionary is ready.
-                return std::nullopt;
-            }
-            std::unordered_set<loglib::LogLevel> selectedLevels;
-            selectedLevels.reserve(rule.filterValues.size());
-            for (const std::string &name : rule.filterValues)
-            {
-                if (auto level = loglib::ResolveLevel(name, columns[column].levelMapping); level.has_value())
-                {
-                    selectedLevels.insert(*level);
-                }
-            }
-            expandedStorage.reserve(ranks->size());
-            for (std::size_t valueId = 0; valueId < ranks->size(); ++valueId)
-            {
-                if (selectedLevels.contains((*ranks)[valueId]))
-                {
-                    expandedStorage.emplace_back(dictionary->Resolve(static_cast<loglib::EnumValueId>(valueId)));
-                }
-            }
-            if (expandedStorage.empty())
-            {
-                // e.g. rule targets `Trace` but dict has only
-                // `Info`/`Warn`. Rule matches nothing -- inert.
-                return std::nullopt;
-            }
-            selectedViews.reserve(expandedStorage.size());
-            for (const std::string &v : expandedStorage)
-            {
-                selectedViews.emplace_back(v);
-            }
-        }
-        else
-        {
-            selectedViews.reserve(rule.filterValues.size());
-            for (const std::string &v : rule.filterValues)
-            {
-                selectedViews.emplace_back(v);
-            }
-        }
-        return CompiledRule{loglib::RowPredicate{
-            std::in_place_type<loglib::EnumRowPredicate>,
-            column,
-            std::span<const std::string_view>(selectedViews),
-            dictionary
-        }};
-    }
-    case RuleType::String:
-    default:
-    {
-        if (!rule.filterString.has_value() || !rule.matchType.has_value())
-        {
-            return std::nullopt;
-        }
-        // Reject empty needles: `Contains("")` / `RegExp("")` would
-        // paint every row, `Exactly("")` / `Wildcard("")` only empty
-        // cells -- both are almost certainly unintended. The editor
-        // gates Save on the same check; this branch defends
-        // hand-authored configs.
-        if (rule.filterString->empty())
-        {
-            return std::nullopt;
-        }
-        return CompiledRule{loglib::RowPredicate{
-            std::in_place_type<loglib::CallbackStringRowPredicate>,
-            column,
-            MakeStringMatcher(QString::fromStdString(*rule.filterString), *rule.matchType)
-        }};
-    }
-    }
+    return CompiledRule{std::move(*predicate)};
 }
 
 void HighlightRuleSet::RecompileAll(

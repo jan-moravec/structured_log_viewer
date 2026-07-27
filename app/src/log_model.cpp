@@ -2350,8 +2350,8 @@ bool LogModel::MoveColumn(int srcIndex, int destIndex)
     {
         return false;
     }
-    // `LogTable::MoveColumn` rotates `columns` and remaps every
-    // `LogFilter::row` via the configuration manager.
+    // `LogTable::MoveColumn` rotates `columns`. Filters bind by
+    // `columnKeys`, so no explicit predicate remap is needed.
     mLogTable.MoveColumn(static_cast<size_t>(srcIndex), static_cast<size_t>(destIndex));
     mFirstLevelColumnCache = LEVEL_COLUMN_UNCACHED;
     endMoveColumns();

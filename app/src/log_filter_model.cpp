@@ -47,7 +47,7 @@ void LogFilterModel::setSourceModel(QAbstractItemModel *sourceModel)
     // Wipe filter state before rewiring: predicates baked against the
     // old table's dictionary must not leak into the new chain. Caller
     // re-binds via `SetLogModel` before installing rules.
-    mFilterRules.clear();
+    mCompiledExpression = loglib::CompiledFilterExpression{};
     mLogModel = nullptr;
     mEnumRanks.clear();
     mAcceptedSourceRows.clear();
@@ -128,14 +128,57 @@ void LogFilterModel::RewireSourceConnections()
     );
 }
 
-void LogFilterModel::SetFilterRules(std::vector<loglib::RowPredicate> &&filterRules)
+void LogFilterModel::SetFilterExpression(loglib::CompiledFilterExpression expression)
 {
-    if (mFilterRules.empty() && filterRules.empty())
+    const bool wasMatchAll = loglib::IsMatchAllCompiled(mCompiledExpression);
+    const bool nowMatchAll = loglib::IsMatchAllCompiled(expression);
+    if (wasMatchAll && nowMatchAll)
     {
+        // Both trees match every row; skip the rebuild churn.
+        mCompiledExpression = std::move(expression);
         return;
     }
-    mFilterRules = std::move(filterRules);
+    mCompiledExpression = std::move(expression);
     RebuildAcceptedRows();
+}
+
+void LogFilterModel::SetFilterRules(std::vector<loglib::RowPredicate> rules)
+{
+    // Convenience shim: wrap the rule list in a flat `And`
+    // `CompiledFilterExpression`. Empty list becomes the identity
+    // element (match all). Collects `referencedColumns` from each
+    // leaf so the live-tail path can re-evaluate cheaply.
+    loglib::CompiledFilterExpression compiled;
+    if (rules.empty())
+    {
+        // Default node is `And{}` -- explicit for readability.
+        compiled.node = loglib::CompiledFilterExpression::And{};
+        mCompiledExpression = std::move(compiled);
+        // Skip the rebuild if the previous expression also matched
+        // every row; otherwise fall through to the normal path.
+        if (loglib::IsMatchAllCompiled(mCompiledExpression))
+        {
+            RebuildAcceptedRows();
+        }
+        return;
+    }
+
+    loglib::CompiledFilterExpression::And andNode;
+    andNode.children.reserve(rules.size());
+    for (auto &predicate : rules)
+    {
+        compiled.referencedColumns.push_back(loglib::RowPredicateColumn(predicate));
+        loglib::CompiledFilterExpression child;
+        child.node = loglib::CompiledFilterExpression::Leaf{std::move(predicate)};
+        andNode.children.push_back(std::move(child));
+    }
+    // Keep `referencedColumns` deduped so the append-path filter
+    // stays cheap.
+    std::ranges::sort(compiled.referencedColumns);
+    const auto dupTail = std::ranges::unique(compiled.referencedColumns);
+    compiled.referencedColumns.erase(dupTail.begin(), dupTail.end());
+    compiled.node = std::move(andNode);
+    SetFilterExpression(std::move(compiled));
 }
 
 void LogFilterModel::InvalidateEnumRanks()
@@ -437,7 +480,7 @@ void LogFilterModel::RebuildProxyChainCache()
 
 bool LogFilterModel::MatchesRulesAtSourceRow(int sourceRow) const
 {
-    if (mFilterRules.empty())
+    if (loglib::IsMatchAllCompiled(mCompiledExpression))
     {
         return true;
     }
@@ -448,11 +491,11 @@ bool LogFilterModel::MatchesRulesAtSourceRow(int sourceRow) const
         Q_ASSERT_X(
             mLogModel != nullptr,
             "LogFilterModel::MatchesRulesAtSourceRow",
-            "filter rules set without a LogModel; call SetLogModel before SetFilterRules"
+            "filter expression set without a LogModel; call SetLogModel before SetFilterExpression"
         );
         static std::once_flag warnedNoLogModelFlag;
         std::call_once(warnedNoLogModelFlag, [] {
-            qWarning() << "LogFilterModel: filter rules present but mLogModel is null; rejecting every row";
+            qWarning() << "LogFilterModel: filter expression present but mLogModel is null; rejecting every row";
         });
         return false;
     }
@@ -463,9 +506,7 @@ bool LogFilterModel::MatchesRulesAtSourceRow(int sourceRow) const
     }
     const auto row = static_cast<size_t>(logRow);
     const loglib::LogTable &table = mLogModel->Table();
-    return std::ranges::all_of(mFilterRules, [&table, row](const auto &rule) {
-        return loglib::MatchesRow(rule, table, row);
-    });
+    return loglib::EvaluateExpression(mCompiledExpression, table, row);
 }
 
 void LogFilterModel::RecomputeAcceptedRows()
@@ -479,9 +520,9 @@ void LogFilterModel::RecomputeAcceptedRows()
 
     const int n = src->rowCount();
     mAcceptedSourceRows.reserve(static_cast<size_t>(n));
-    if (mFilterRules.empty())
+    if (loglib::IsMatchAllCompiled(mCompiledExpression))
     {
-        // No rules: every row passes, even without a `LogModel`.
+        // Match-all: every row passes, even without a `LogModel`.
         for (int i = 0; i < n; ++i)
         {
             mAcceptedSourceRows.push_back(i);
@@ -490,27 +531,29 @@ void LogFilterModel::RecomputeAcceptedRows()
     }
     if (mLogModel == nullptr)
     {
-        // Rules without a `LogModel`: predicates can't evaluate. Assert
-        // in debug, reject every row in release (loud failure beats
-        // silent accept). Pinned by `TestFilterAcceptsRowRejectsAllWithoutLogModel`.
+        // Expression without a `LogModel`: predicates can't evaluate.
+        // Assert in debug, reject every row in release (loud failure
+        // beats silent accept). Pinned by
+        // `TestFilterAcceptsRowRejectsAllWithoutLogModel`.
         Q_ASSERT_X(
             false,
             "LogFilterModel::RecomputeAcceptedRows",
-            "filter rules set without a LogModel; call SetLogModel before SetFilterRules"
+            "filter expression set without a LogModel; call SetLogModel before SetFilterExpression"
         );
         static std::once_flag warnedNoLogModelFlag;
         std::call_once(warnedNoLogModelFlag, [] {
-            qWarning() << "LogFilterModel: filter rules present but mLogModel is null; rejecting every row";
+            qWarning() << "LogFilterModel: filter expression present but mLogModel is null; rejecting every row";
         });
         return;
     }
 
     // Hot path: hand predicate evaluation off to
-    // `loglib::FilterAcceptedRows`, which runs `tbb::parallel_for` over
-    // `LogTable` rows directly. The lib has no Qt dependency and no
-    // proxy-chain awareness, so we map each surviving log row back to
-    // source coords here.
-    const auto acceptedLogRows = loglib::FilterAcceptedRows(mLogModel->Table(), std::span{mFilterRules});
+    // `loglib::FilterAcceptedRows`, which picks between the visit
+    // path and the bitset-materialisation path per rebuild and runs
+    // `tbb::parallel_for` over `LogTable` rows directly. The lib
+    // has no Qt dependency and no proxy-chain awareness, so we map
+    // each surviving log row back to source coords here.
+    const auto acceptedLogRows = loglib::FilterAcceptedRows(mLogModel->Table(), mCompiledExpression);
     mAcceptedSourceRows.reserve(acceptedLogRows.size());
     for (const size_t logRow : acceptedLogRows)
     {
@@ -844,16 +887,16 @@ void LogFilterModel::OnSourceDataChanged(
     }
 
     // Forward as a proxy `dataChanged` over the proxy rows in the
-    // affected source range. Conservative: if any active rule targets
-    // a column in the changed range, rebuild the row map so newly
-    // accepted / rejected rows take effect.
+    // affected source range. Conservative: if any active leaf
+    // targets a column in the changed range, rebuild the row map so
+    // newly accepted / rejected rows take effect.
     const int srcColFirst = topLeft.column();
     const int srcColLast = bottomRight.column();
     bool filterTargetsChangedColumn = false;
-    for (const auto &rule : mFilterRules)
+    for (const size_t column : mCompiledExpression.referencedColumns)
     {
-        const auto column = static_cast<int>(loglib::RowPredicateColumn(rule));
-        if (column >= srcColFirst && column <= srcColLast)
+        const auto col = static_cast<int>(column);
+        if (col >= srcColFirst && col <= srcColLast)
         {
             filterTargetsChangedColumn = true;
             break;

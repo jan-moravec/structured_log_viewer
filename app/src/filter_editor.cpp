@@ -157,12 +157,12 @@ FilterEditor::FilterEditor(const LogModel &model, QString filterID, ThemeControl
         mRowComboBox->addItem(QString::fromStdString(column.header));
     }
 
-    mMatchTypeComboBox->addItem("Exactly", static_cast<int>(LogConfiguration::LogFilter::Match::Exactly));
-    mMatchTypeComboBox->addItem("Contains", static_cast<int>(LogConfiguration::LogFilter::Match::Contains));
+    mMatchTypeComboBox->addItem("Exactly", static_cast<int>(loglib::LeafRule::Match::Exactly));
+    mMatchTypeComboBox->addItem("Contains", static_cast<int>(loglib::LeafRule::Match::Contains));
     mMatchTypeComboBox->addItem(
-        "Regular Expression", static_cast<int>(LogConfiguration::LogFilter::Match::RegularExpression)
+        "Regular Expression", static_cast<int>(loglib::LeafRule::Match::RegularExpression)
     );
-    mMatchTypeComboBox->addItem("Wildcards", static_cast<int>(LogConfiguration::LogFilter::Match::Wildcard));
+    mMatchTypeComboBox->addItem("Wildcards", static_cast<int>(loglib::LeafRule::Match::Wildcard));
 
     SetupLayout();
 

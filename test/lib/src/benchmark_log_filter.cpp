@@ -492,10 +492,13 @@ TEST_CASE("loglib::FilterAcceptedRows over 1'000'000 enum rows stays under 100ms
     {
         selected.emplace_back(v);
     }
-    std::vector<RowPredicate> predicates;
-    predicates.emplace_back(
-        std::in_place_type<EnumRowPredicate>, size_t{0}, std::span<const std::string_view>(selected), dict
-    );
+    // Wrap the single predicate in a `CompiledFilterExpression::Leaf`
+    // so the benchmark exercises the same evaluator the app takes.
+    CompiledFilterExpression compiled;
+    compiled.node = CompiledFilterExpression::Leaf{
+        RowPredicate{std::in_place_type<EnumRowPredicate>, size_t{0}, std::span<const std::string_view>(selected), dict}
+    };
+    compiled.referencedColumns.push_back(size_t{0});
 
     constexpr int SAMPLES = 5;
     std::vector<std::chrono::nanoseconds> elapsed;
@@ -504,9 +507,7 @@ TEST_CASE("loglib::FilterAcceptedRows over 1'000'000 enum rows stays under 100ms
     for (int s = 0; s < SAMPLES; ++s)
     {
         std::vector<size_t> result;
-        elapsed.push_back(TimeOnce([&]() {
-            result = FilterAcceptedRows(table, std::span<const RowPredicate>{predicates});
-        }));
+        elapsed.push_back(TimeOnce([&]() { result = FilterAcceptedRows(table, compiled); }));
         accepted = result.size();
     }
     REQUIRE(accepted > 0);

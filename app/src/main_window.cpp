@@ -9,6 +9,7 @@
 #include "highlight_rules_editor.hpp"
 #include "histogram_model.hpp"
 #include "icon_loader.hpp"
+#include "leaf_rule_compile.hpp"
 #include "level_cell_delegate.hpp"
 #include "log_string_matcher.hpp"
 #include "log_warning.hpp"
@@ -375,8 +376,8 @@ BooleanFilterSides DecodeBooleanFilterSides(const std::vector<std::string> &filt
     return sides;
 }
 
-/// Why a saved `LogFilter` could not be revived. The load-side
-/// validator uses this to summarise drops in one dialog.
+/// Why a saved leaf could not be revived. The load-side validator
+/// uses this to summarise drops in one dialog.
 enum class FilterValidationReason
 {
     OutOfRangeRow,
@@ -392,7 +393,8 @@ struct FilterValidationFailure
 {
     FilterValidationReason reason;
     int row;
-    /// The filter's column header, or empty when `row` is out of range.
+    /// The leaf's column header, or empty when the column keys
+    /// don't resolve.
     std::string columnHeader;
 };
 
@@ -401,7 +403,7 @@ QString FilterValidationReasonString(FilterValidationReason reason)
     switch (reason)
     {
     case FilterValidationReason::OutOfRangeRow:
-        return QStringLiteral("column index out of range");
+        return QStringLiteral("column keys did not resolve to any column");
     case FilterValidationReason::EmptyEnumSelection:
         return QStringLiteral("enumeration selection was empty (would hide every row)");
     case FilterValidationReason::TypeMismatch:
@@ -418,96 +420,117 @@ QString FilterValidationReasonString(FilterValidationReason reason)
     return QStringLiteral("unknown");
 }
 
-/// Check whether a saved filter still fits the current column
-/// layout. Called from configuration load (drops failures into a
-/// summary dialog) and from `MainWindow::AddFilter`'s pre-guard.
-/// Returns `nullopt` on success.
+/// Check whether a saved leaf still fits the current column layout.
+/// Called from configuration load (drops failures into a summary
+/// dialog) and from `MainWindow::AddFilter`'s pre-guard. Returns
+/// `nullopt` on success.
 std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
-    const loglib::LogConfiguration::LogFilter &filter, const std::vector<loglib::LogConfiguration::Column> &columns
+    const loglib::LeafRule &filter, const std::vector<loglib::LogConfiguration::Column> &columns
 )
 {
-    using LogFilter = loglib::LogConfiguration::LogFilter;
+    using LeafType = loglib::LeafRule::Type;
     using ColumnType = loglib::LogConfiguration::Type;
 
-    if (filter.row < 0 || static_cast<size_t>(filter.row) >= columns.size())
+    const int resolvedRow = ResolveLeafColumnByKeys(filter.columnKeys, columns);
+    if (resolvedRow < 0)
     {
         return FilterValidationFailure{
-            .reason = FilterValidationReason::OutOfRangeRow, .row = filter.row, .columnHeader = std::string{}
+            .reason = FilterValidationReason::OutOfRangeRow, .row = -1, .columnHeader = std::string{}
         };
     }
 
-    const auto &column = columns[static_cast<size_t>(filter.row)];
+    const auto &column = columns[static_cast<size_t>(resolvedRow)];
 
-    if (filter.type == LogFilter::Type::Enumeration && filter.filterValues.empty())
+    if (filter.type == LeafType::Enumeration && filter.filterValues.empty())
     {
         return FilterValidationFailure{
-            .reason = FilterValidationReason::EmptyEnumSelection, .row = filter.row, .columnHeader = column.header
+            .reason = FilterValidationReason::EmptyEnumSelection, .row = resolvedRow, .columnHeader = column.header
         };
     }
 
     const bool isNumericColumn =
         column.type == ColumnType::Integer || column.type == ColumnType::Floating || column.type == ColumnType::Number;
     const bool isEnumLikeColumn = column.type == ColumnType::Enumeration || column.type == ColumnType::Level;
-    const bool typesMatch = (filter.type == LogFilter::Type::Time && column.type == ColumnType::Time) ||
-                            (filter.type == LogFilter::Type::Enumeration && isEnumLikeColumn) ||
-                            (filter.type == LogFilter::Type::Boolean && column.type == ColumnType::Boolean) ||
-                            (filter.type == LogFilter::Type::Number && isNumericColumn) ||
-                            (filter.type == LogFilter::Type::String && column.type != ColumnType::Time &&
+    const bool typesMatch = (filter.type == LeafType::Time && column.type == ColumnType::Time) ||
+                            (filter.type == LeafType::Enumeration && isEnumLikeColumn) ||
+                            (filter.type == LeafType::Boolean && column.type == ColumnType::Boolean) ||
+                            (filter.type == LeafType::Number && isNumericColumn) ||
+                            (filter.type == LeafType::String && column.type != ColumnType::Time &&
                              !isEnumLikeColumn && column.type != ColumnType::Boolean && !isNumericColumn);
     if (!typesMatch)
     {
         return FilterValidationFailure{
-            .reason = FilterValidationReason::TypeMismatch, .row = filter.row, .columnHeader = column.header
+            .reason = FilterValidationReason::TypeMismatch, .row = resolvedRow, .columnHeader = column.header
         };
     }
 
     switch (filter.type)
     {
-    case LogFilter::Type::Time:
+    case LeafType::Time:
         // At least one bound must be set; `nullopt` on the other side is
         // fed to the predicate as INT64_MIN / INT64_MAX at construction.
         if (!filter.filterBegin.has_value() && !filter.filterEnd.has_value())
         {
             return FilterValidationFailure{
-                .reason = FilterValidationReason::MissingTimeRange, .row = filter.row, .columnHeader = column.header
+                .reason = FilterValidationReason::MissingTimeRange,
+                .row = resolvedRow,
+                .columnHeader = column.header
             };
         }
         break;
-    case LogFilter::Type::Number:
+    case LeafType::Number:
         if (!filter.filterMinValue.has_value() && !filter.filterMaxValue.has_value())
         {
             return FilterValidationFailure{
-                .reason = FilterValidationReason::MissingNumericRange, .row = filter.row, .columnHeader = column.header
+                .reason = FilterValidationReason::MissingNumericRange,
+                .row = resolvedRow,
+                .columnHeader = column.header
             };
         }
         break;
-    case LogFilter::Type::Boolean:
+    case LeafType::Boolean:
     {
         const BooleanFilterSides sides = DecodeBooleanFilterSides(filter.filterValues);
         if (!sides.includeTrue && !sides.includeFalse)
         {
             return FilterValidationFailure{
                 .reason = FilterValidationReason::MissingBooleanSelection,
-                .row = filter.row,
+                .row = resolvedRow,
                 .columnHeader = column.header
             };
         }
         break;
     }
-    case LogFilter::Type::String:
+    case LeafType::String:
         if (!filter.filterString.has_value() || !filter.matchType.has_value())
         {
             return FilterValidationFailure{
-                .reason = FilterValidationReason::MissingStringMatch, .row = filter.row, .columnHeader = column.header
+                .reason = FilterValidationReason::MissingStringMatch,
+                .row = resolvedRow,
+                .columnHeader = column.header
             };
         }
         break;
-    case LogFilter::Type::Enumeration:
+    case LeafType::Enumeration:
         // Empty-selection already handled above.
         break;
     }
 
     return std::nullopt;
+}
+
+/// Extract `LeafRule::columnKeys` for the column at @p rowIndex.
+/// Returns empty when out of range, which makes the resulting
+/// leaf inert (guarded by the caller).
+[[nodiscard]] std::vector<std::string> ColumnKeysForRow(
+    int rowIndex, const std::vector<loglib::LogConfiguration::Column> &columns
+)
+{
+    if (rowIndex < 0 || static_cast<size_t>(rowIndex) >= columns.size())
+    {
+        return {};
+    }
+    return columns[static_cast<size_t>(rowIndex)].keys;
 }
 
 // Diagnostic for "no tzdata found" matching common.cpp's shape.
@@ -1598,9 +1621,10 @@ MainWindow::MainWindow(
                     levelMapping != nullptr)
                 {
                     // Re-entrancy guard: the rewrite + downstream
-                    // sync calls walk `mFilters`, so a transitive
-                    // re-emit of `enumColumnsChanged` for the same
-                    // column would see half-rewritten state.
+                    // sync calls walk `mSimpleLeaves`, so a
+                    // transitive re-emit of `enumColumnsChanged`
+                    // for the same column would see half-rewritten
+                    // state.
                     if (mApplyingEnumRebuild)
                     {
                         return;
@@ -1611,14 +1635,15 @@ MainWindow::MainWindow(
                     const loglib::LogConfiguration::Column *demotedColumn =
                         std::cmp_less(columnIndex, columnsCfg.size()) ? &columnsCfg[static_cast<size_t>(columnIndex)]
                                                                       : nullptr;
-                    for (auto &kv : mFilters)
+                    for (auto &kv : mSimpleLeaves)
                     {
-                        loglib::LogConfiguration::LogFilter &filter = kv.second;
-                        if (filter.row != columnIndex)
+                        loglib::LeafRule &filter = kv.second;
+                        const int resolvedRow = ResolveLeafColumnByKeys(filter.columnKeys, columnsCfg);
+                        if (resolvedRow != columnIndex)
                         {
                             continue;
                         }
-                        if (filter.type != loglib::LogConfiguration::LogFilter::Type::Enumeration)
+                        if (filter.type != loglib::LeafRule::Type::Enumeration)
                         {
                             continue;
                         }
@@ -1663,8 +1688,8 @@ MainWindow::MainWindow(
                         // semantics.
                         filter.filterValues = std::move(expanded);
                     }
-                    // Mirror once after the loop; the wire vector is
-                    // snapshotted whole, so per-filter mirroring would
+                    // Mirror once after the loop; the wire tree is
+                    // snapshotted whole, so per-leaf mirroring would
                     // redo the same work.
                     MirrorSessionStateToConfiguration();
                     // Resync the tooltip cache: it was built from
@@ -1676,28 +1701,31 @@ MainWindow::MainWindow(
         }
         // `columnIndex == -1` means "scope unknown" -- treat as
         // matches-anything to keep the safe broad behaviour.
-        const auto matchesAffectedColumn = [columnIndex](const auto &kv) {
-            return columnIndex < 0 || kv.second.row == columnIndex;
+        const auto &columnsForResolve = mModel->Configuration().columns;
+        const auto matchesAffectedColumn = [columnIndex, &columnsForResolve](const auto &kv) {
+            if (columnIndex < 0)
+            {
+                return true;
+            }
+            return ResolveLeafColumnByKeys(kv.second.columnKeys, columnsForResolve) == columnIndex;
         };
         bool rebuild = false;
         switch (reason)
         {
         case EnumColumnsChangeReason::Demoted:
-            rebuild = std::ranges::any_of(mFilters, [&matchesAffectedColumn](const auto &kv) {
-                return kv.second.type == loglib::LogConfiguration::LogFilter::Type::Enumeration &&
-                       matchesAffectedColumn(kv);
+            rebuild = std::ranges::any_of(mSimpleLeaves, [&matchesAffectedColumn](const auto &kv) {
+                return kv.second.type == loglib::LeafRule::Type::Enumeration && matchesAffectedColumn(kv);
             });
             break;
         case EnumColumnsChangeReason::Promoted:
-            rebuild = std::ranges::any_of(mFilters, [&matchesAffectedColumn](const auto &kv) {
-                return kv.second.type == loglib::LogConfiguration::LogFilter::Type::Enumeration &&
-                       matchesAffectedColumn(kv);
+            rebuild = std::ranges::any_of(mSimpleLeaves, [&matchesAffectedColumn](const auto &kv) {
+                return kv.second.type == loglib::LeafRule::Type::Enumeration && matchesAffectedColumn(kv);
             });
             break;
         case EnumColumnsChangeReason::Grew:
-            rebuild = std::ranges::any_of(mFilters, [this, &matchesAffectedColumn](const auto &kv) {
-                return kv.second.type == loglib::LogConfiguration::LogFilter::Type::Enumeration &&
-                       matchesAffectedColumn(kv) && !EnumFilterFullyResolved(kv.second);
+            rebuild = std::ranges::any_of(mSimpleLeaves, [this, &matchesAffectedColumn](const auto &kv) {
+                return kv.second.type == loglib::LeafRule::Type::Enumeration && matchesAffectedColumn(kv) &&
+                       !EnumFilterFullyResolved(kv.second);
             });
             break;
         }
@@ -2361,7 +2389,7 @@ void MainWindow::NewSession()
     // handler can briefly evaluate against indices that become
     // dangling once `columns` is empty.
     mTableView->sortByColumn(-1, Qt::AscendingOrder);
-    mSortFilterProxyModel->SetFilterRules({});
+    mSortFilterProxyModel->SetFilterExpression(loglib::CompiledFilterExpression{});
 
     // RAII latch so the synchronous `streamingFinished(Cancelled)`
     // emitted by `mModel->Reset()` doesn't run
@@ -2494,7 +2522,7 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         // Drop proxy rules + sort before `Load` rewrites the
         // configuration so they don't evaluate against the old
         // column layout under the upcoming reset.
-        mSortFilterProxyModel->SetFilterRules({});
+        mSortFilterProxyModel->SetFilterExpression(loglib::CompiledFilterExpression{});
         mTableView->sortByColumn(-1, Qt::AscendingOrder);
 
         mModel->ConfigurationManager().Load(file.toStdString());
@@ -4205,9 +4233,9 @@ void MainWindow::UpdateRowsShownStatus()
     mRowsShownLabel->show();
 
     // Decoupled from `proxyRows < sourceRows`: a filter that matches
-    // every row leaves the counts equal but `mFilters` populated,
+    // every row leaves the counts equal but `mSimpleLeaves` populated,
     // and the user still wants the affordance to clear it.
-    mClearFiltersStatusButton->setVisible(!mFilters.empty());
+    mClearFiltersStatusButton->setVisible(!mSimpleLeaves.empty());
 }
 
 void MainWindow::StartLiveTailTicker()
@@ -4415,7 +4443,7 @@ void MainWindow::BuildMainToolbar()
     // dive into the Filters menu's per-filter submenu.
     //
     // `actionClearAllFilters` is gated by `setDisabled(true)`
-    // when `mFilters` is empty, which on most styles disables
+    // when `mSimpleLeaves` is empty, which on most styles disables
     // the arrow too. That's intentional: there's nothing to
     // remove either way, so the disabled arrow honestly reports
     // "nothing to do" instead of opening to a placeholder.
@@ -4658,7 +4686,7 @@ void MainWindow::RebuildClearFiltersMenu(QMenu *menu)
     }
     menu->clear();
 
-    if (mFilters.empty())
+    if (mSimpleLeaves.empty())
     {
         QAction *placeholder = menu->addAction(tr("(no filters)"));
         placeholder->setEnabled(false);
@@ -4671,7 +4699,7 @@ void MainWindow::RebuildClearFiltersMenu(QMenu *menu)
     const std::vector<QString> labels = BuildAllColumnMenuLabels();
 
     // Flatten + sort so the menu order is deterministic.
-    // `mFilters` is an unordered_map keyed by UUID, so without
+    // `mSimpleLeaves` is an unordered_map keyed by UUID, so without
     // sorting the visible order would change every time Qt's
     // hash seed changes.
     struct Entry
@@ -4682,10 +4710,10 @@ void MainWindow::RebuildClearFiltersMenu(QMenu *menu)
         int columnRow = -1;
     };
     std::vector<Entry> entries;
-    entries.reserve(mFilters.size());
-    for (const auto &[id, filter] : mFilters)
+    entries.reserve(mSimpleLeaves.size());
+    for (const auto &[id, filter] : mSimpleLeaves)
     {
-        const int row = filter.row;
+        const int row = ResolveLeafColumnByKeys(filter.columnKeys, mModel->Configuration().columns);
         QString columnLabel = (row >= 0 && static_cast<size_t>(row) < labels.size())
                                   ? labels[static_cast<size_t>(row)]
                                   // Filter pointing at a column that no
@@ -5210,52 +5238,48 @@ void MainWindow::ShowDroppedFiltersDialog(int droppedCount, const QString &messa
 
 void MainWindow::MirrorSessionStateToConfiguration()
 {
-    // Snapshot the runtime filter map into the wire-format vector so
-    // `Save` and the lib-side `MoveColumn` row-remap see the live
-    // set. UUIDs are GUI-internal and regenerated on load.
+    // Snapshot the simple-mode leaves into a top-level `And`
+    // expression so `Save` and the compile step in `UpdateFilters`
+    // see the live set. Preserves `mSimpleLeafOrder` (insertion
+    // order) so the Filters-menu order on the round-trip is
+    // stable. UUIDs are GUI-internal and regenerated on load.
     //
-    // Sort by (row, type, payload) so two consecutive saves write
-    // byte-identical JSON and the Filters-menu order on the
-    // round-trip is stable.
-    std::vector<loglib::LogConfiguration::LogFilter> snapshot;
-    snapshot.reserve(mFilters.size());
-    for (const auto &[id, f] : mFilters)
+    // The Advanced editor (Phase 5) will produce non-Leaf top-level
+    // children; those get stored on the configuration expression
+    // directly and roundtrip separately. Here we only mirror the
+    // simple-mode subset back into the top-level `And`, preserving
+    // any pre-existing non-Leaf siblings so an Advanced clause
+    // isn't clobbered by a simple-mode edit.
+    loglib::FilterExpression::And newAnd;
+    newAnd.children.reserve(mSimpleLeafOrder.size());
+    for (const auto &id : mSimpleLeafOrder)
     {
-        snapshot.push_back(f);
+        const auto it = mSimpleLeaves.find(id);
+        if (it == mSimpleLeaves.end())
+        {
+            continue;
+        }
+        loglib::FilterExpression leaf;
+        leaf.node = loglib::FilterExpression::Leaf{it->second};
+        newAnd.children.push_back(std::move(leaf));
     }
-    using LogFilter = loglib::LogConfiguration::LogFilter;
-    std::ranges::sort(snapshot, [](const LogFilter &a, const LogFilter &b) {
-        // `(row, type)` head-on to avoid aliasing an `enum class`
-        // value as an int reference; the tail uses `std::tie` for a
-        // byte-identical lexicographic ordering.
-        if (a.row != b.row)
+    // Preserve any non-Leaf top-level `And` siblings from the
+    // existing configuration (produced by the Advanced editor).
+    const auto &existing = mModel->Configuration().expression;
+    if (const auto *existingAnd = std::get_if<loglib::FilterExpression::And>(&existing.node);
+        existingAnd != nullptr)
+    {
+        for (const auto &child : existingAnd->children)
         {
-            return a.row < b.row;
+            if (!std::holds_alternative<loglib::FilterExpression::Leaf>(child.node))
+            {
+                newAnd.children.push_back(child);
+            }
         }
-        if (a.type != b.type)
-        {
-            return static_cast<int>(a.type) < static_cast<int>(b.type);
-        }
-        return std::tie(
-                   a.filterString,
-                   a.matchType,
-                   a.filterBegin,
-                   a.filterEnd,
-                   a.filterMinValue,
-                   a.filterMaxValue,
-                   a.filterValues
-               ) <
-               std::tie(
-                   b.filterString,
-                   b.matchType,
-                   b.filterBegin,
-                   b.filterEnd,
-                   b.filterMinValue,
-                   b.filterMaxValue,
-                   b.filterValues
-               );
-    });
-    mModel->ConfigurationManager().SetFilters(std::move(snapshot));
+    }
+    loglib::FilterExpression rootExpression;
+    rootExpression.node = std::move(newAnd);
+    mModel->ConfigurationManager().SetExpression(std::move(rootExpression));
 
     // Sort: read live from the proxy so the persisted value matches
     // what the user sees. *Exception:* while a deferred sort is
@@ -6096,7 +6120,7 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
 
         // Drop proxy rules + sort before the model reset so they
         // don't briefly evaluate against the old column layout.
-        mSortFilterProxyModel->SetFilterRules({});
+        mSortFilterProxyModel->SetFilterExpression(loglib::CompiledFilterExpression{});
         mTableView->sortByColumn(-1, Qt::AscendingOrder);
 
         // See `NewSession` for the session-switch latch rationale.
@@ -6230,11 +6254,35 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
 
 void MainWindow::RebuildFiltersFromConfiguration()
 {
-    // Copy the loaded vector out, wipe runtime + menu state, then
-    // walk the copy. Re-entering `AddLogFilter` rebuilds `mFilters`,
-    // the Filters menu, and the wire-format vector. UUIDs are GUI-
-    // only and regenerated here.
-    const std::vector<loglib::LogConfiguration::LogFilter> loadedFilters = mModel->Configuration().filters;
+    // Extract the simple-mode subset (top-level `And` -> `Leaf`
+    // children) from the loaded expression, then wipe runtime +
+    // menu state and re-add each leaf. Re-entering `AddLogFilter`
+    // rebuilds `mSimpleLeaves` / `mSimpleLeafOrder`, the Filters
+    // menu, and the wire-format expression. Anything under a
+    // non-`And` root, or non-Leaf children, are treated as
+    // Advanced clauses and preserved by
+    // `MirrorSessionStateToConfiguration`. UUIDs are GUI-only and
+    // regenerated here.
+    std::vector<loglib::LeafRule> loadedFilters;
+    const auto &loadedExpression = mModel->Configuration().expression;
+    if (const auto *rootAnd = std::get_if<loglib::FilterExpression::And>(&loadedExpression.node);
+        rootAnd != nullptr)
+    {
+        loadedFilters.reserve(rootAnd->children.size());
+        for (const auto &child : rootAnd->children)
+        {
+            if (const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&child.node);
+                leaf != nullptr)
+            {
+                loadedFilters.push_back(leaf->rule);
+            }
+        }
+    }
+    else if (const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&loadedExpression.node);
+             leaf != nullptr)
+    {
+        loadedFilters.push_back(leaf->rule);
+    }
 
     // Suppress per-filter dirty/title updates; emit one consolidated state
     // on scope exit.
@@ -7140,7 +7188,7 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
 
 void MainWindow::AddFilter(
     const QString &filterId,
-    const std::optional<loglib::LogConfiguration::LogFilter> &filter,
+    const std::optional<loglib::LeafRule> &filter,
     bool openEditor,
     int initialColumn
 )
@@ -7165,7 +7213,7 @@ void MainWindow::AddFilter(
     // this pre-guard adapts its result to the legacy status-bar UX.
     // The post-editor "missing payload" guards remain inline because
     // they need to delete the editor on failure.
-    std::optional<loglib::LogConfiguration::LogFilter> resolvedFilter = filter;
+    std::optional<loglib::LeafRule> resolvedFilter = filter;
     if (resolvedFilter.has_value())
     {
         const auto &columns = mModel->Configuration().columns;
@@ -7200,7 +7248,7 @@ void MainWindow::AddFilter(
             case FilterValidationReason::OutOfRangeRow:
                 // Should not reach `AddFilter` in normal flow (the
                 // load path validates separately, and the Edit menu
-                // re-reads the live `mFilters`). Guard anyway: a stale
+                // re-reads the live `mSimpleLeaves`). Guard anyway: a stale
                 // row would crash or mis-bind `FilterEditor::Load`.
                 // Recovery shape mirrors `TypeMismatch`.
                 ClearFilter(filterId);
@@ -7229,7 +7277,7 @@ void MainWindow::AddFilter(
 
     if (!openEditor)
     {
-        // Configuration-load path: filter is already in `mFilters`.
+        // Configuration-load path: filter is already in `mSimpleLeaves`.
         return;
     }
 
@@ -7258,7 +7306,11 @@ void MainWindow::AddFilter(
     }
     if (resolvedFilter.has_value())
     {
-        if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Time)
+        // Column keys are the wire identity; the editor needs a
+        // live column index, so resolve once here and forward.
+        const int editorRow =
+            ResolveLeafColumnByKeys(resolvedFilter->columnKeys, mModel->Configuration().columns);
+        if (resolvedFilter->type == loglib::LeafRule::Type::Time)
         {
             // At least one bound must be set; the other side may be
             // `nullopt` (shown as "No begin/end limit" in the editor).
@@ -7280,9 +7332,9 @@ void MainWindow::AddFilter(
                 resolvedFilter->filterEnd.has_value()
                     ? std::optional<qint64>{static_cast<qint64>(*resolvedFilter->filterEnd)}
                     : std::nullopt;
-            filterEditor->Load(resolvedFilter->row, begin, end);
+            filterEditor->Load(editorRow, begin, end);
         }
-        else if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Enumeration)
+        else if (resolvedFilter->type == loglib::LeafRule::Type::Enumeration)
         {
             QStringList values;
             values.reserve(static_cast<qsizetype>(resolvedFilter->filterValues.size()));
@@ -7290,9 +7342,9 @@ void MainWindow::AddFilter(
             {
                 values.append(QString::fromStdString(v));
             }
-            filterEditor->Load(resolvedFilter->row, values);
+            filterEditor->Load(editorRow, values);
         }
-        else if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Number)
+        else if (resolvedFilter->type == loglib::LeafRule::Type::Number)
         {
             if (!resolvedFilter->filterMinValue.has_value() && !resolvedFilter->filterMaxValue.has_value())
             {
@@ -7304,9 +7356,9 @@ void MainWindow::AddFilter(
                 delete filterEditor;
                 return;
             }
-            filterEditor->Load(resolvedFilter->row, resolvedFilter->filterMinValue, resolvedFilter->filterMaxValue);
+            filterEditor->Load(editorRow, resolvedFilter->filterMinValue, resolvedFilter->filterMaxValue);
         }
-        else if (resolvedFilter->type == loglib::LogConfiguration::LogFilter::Type::Boolean)
+        else if (resolvedFilter->type == loglib::LeafRule::Type::Boolean)
         {
             const BooleanFilterSides sides = DecodeBooleanFilterSides(resolvedFilter->filterValues);
             if (!sides.includeTrue && !sides.includeFalse)
@@ -7319,7 +7371,7 @@ void MainWindow::AddFilter(
                 delete filterEditor;
                 return;
             }
-            filterEditor->Load(resolvedFilter->row, sides.includeTrue, sides.includeFalse);
+            filterEditor->Load(editorRow, sides.includeTrue, sides.includeFalse);
         }
         else
         {
@@ -7334,7 +7386,7 @@ void MainWindow::AddFilter(
                 return;
             }
             filterEditor->Load(
-                resolvedFilter->row,
+                editorRow,
                 QString::fromStdString(*resolvedFilter->filterString),
                 static_cast<int>(*resolvedFilter->matchType)
             );
@@ -7345,9 +7397,10 @@ void MainWindow::AddFilter(
 
 void MainWindow::ClearAllFilters()
 {
-    mFilters.clear();
+    mSimpleLeaves.clear();
+    mSimpleLeafOrder.clear();
     MirrorSessionStateToConfiguration();
-    mSortFilterProxyModel->SetFilterRules({});
+    UpdateFilters();
 
     for (QAction *action : ui->menuFilters->actions())
     {
@@ -7365,7 +7418,12 @@ void MainWindow::ClearAllFilters()
 
 void MainWindow::ClearFilter(const QString &filterID, bool deferSync)
 {
-    mFilters.erase(filterID.toStdString());
+    const std::string idKey = filterID.toStdString();
+    mSimpleLeaves.erase(idKey);
+    if (const auto it = std::ranges::find(mSimpleLeafOrder, idKey); it != mSimpleLeafOrder.end())
+    {
+        mSimpleLeafOrder.erase(it);
+    }
     if (!deferSync)
     {
         MirrorSessionStateToConfiguration();
@@ -7403,12 +7461,12 @@ void MainWindow::ClearFilter(const QString &filterID, bool deferSync)
 
 void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString &filterString, int matchType)
 {
-    const auto match = static_cast<loglib::LogConfiguration::LogFilter::Match>(matchType);
+    const auto match = static_cast<loglib::LeafRule::Match>(matchType);
 
     // Reject an invalid regex up front; the downstream
     // `QRegularExpression` would otherwise compile to an invalid
     // object and silently hide every row. Wildcards always compile.
-    if (match == loglib::LogConfiguration::LogFilter::Match::RegularExpression)
+    if (match == loglib::LeafRule::Match::RegularExpression)
     {
         const QRegularExpression probe(filterString);
         if (!probe.isValid())
@@ -7426,9 +7484,9 @@ void MainWindow::FilterSubmitted(const QString &filterID, int row, const QString
     // (pathological on large logs).
     ClearFilter(filterID, /*deferSync=*/true);
 
-    loglib::LogConfiguration::LogFilter filter;
-    filter.type = loglib::LogConfiguration::LogFilter::Type::String;
-    filter.row = row;
+    loglib::LeafRule filter;
+    filter.type = loglib::LeafRule::Type::String;
+    filter.columnKeys = ColumnKeysForRow(row, mModel->Configuration().columns);
     filter.filterString = filterString.toStdString();
     filter.matchType = match;
 
@@ -7464,9 +7522,9 @@ void MainWindow::FilterTimeStampSubmitted(
 
     ClearFilter(filterID, /*deferSync=*/true);
 
-    loglib::LogConfiguration::LogFilter filter;
-    filter.type = loglib::LogConfiguration::LogFilter::Type::Time;
-    filter.row = row;
+    loglib::LeafRule filter;
+    filter.type = loglib::LeafRule::Type::Time;
+    filter.columnKeys = ColumnKeysForRow(row, mModel->Configuration().columns);
     filter.filterBegin = beginTimeStamp;
     filter.filterEnd = endTimeStamp;
 
@@ -7477,9 +7535,9 @@ void MainWindow::FilterEnumSubmitted(const QString &filterID, int row, const QSt
 {
     ClearFilter(filterID, /*deferSync=*/true);
 
-    loglib::LogConfiguration::LogFilter filter;
-    filter.type = loglib::LogConfiguration::LogFilter::Type::Enumeration;
-    filter.row = row;
+    loglib::LeafRule filter;
+    filter.type = loglib::LeafRule::Type::Enumeration;
+    filter.columnKeys = ColumnKeysForRow(row, mModel->Configuration().columns);
     filter.filterValues.reserve(static_cast<size_t>(selectedValues.size()));
     for (const QString &v : selectedValues)
     {
@@ -7522,9 +7580,9 @@ void MainWindow::FilterNumericRangeSubmitted(
 
     ClearFilter(filterID, /*deferSync=*/true);
 
-    loglib::LogConfiguration::LogFilter filter;
-    filter.type = loglib::LogConfiguration::LogFilter::Type::Number;
-    filter.row = row;
+    loglib::LeafRule filter;
+    filter.type = loglib::LeafRule::Type::Number;
+    filter.columnKeys = ColumnKeysForRow(row, mModel->Configuration().columns);
     filter.filterMinValue = minValue;
     filter.filterMaxValue = maxValue;
 
@@ -7545,9 +7603,9 @@ void MainWindow::FilterBooleanSubmitted(const QString &filterID, int row, bool i
 
     ClearFilter(filterID, /*deferSync=*/true);
 
-    loglib::LogConfiguration::LogFilter filter;
-    filter.type = loglib::LogConfiguration::LogFilter::Type::Boolean;
-    filter.row = row;
+    loglib::LeafRule filter;
+    filter.type = loglib::LeafRule::Type::Boolean;
+    filter.columnKeys = ColumnKeysForRow(row, mModel->Configuration().columns);
     if (includeTrue)
     {
         filter.filterValues.emplace_back("true");
@@ -7560,16 +7618,16 @@ void MainWindow::FilterBooleanSubmitted(const QString &filterID, int row, bool i
     AddLogFilter(filterID, filter);
 }
 
-QString MainWindow::BuildFilterTitle(const loglib::LogConfiguration::LogFilter &filter) const
+QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
 {
-    // No `default:`: a new `LogFilter::Type` must trip `-Wswitch`
+    // No `default:`: a new `LeafRule::Type` must trip `-Wswitch`
     // rather than silently fall through and deref a `nullopt`.
     // The Q_ASSERTs below catch un-validated inserts in debug;
-    // every filter in `mFilters` is supposed to have a fully-
+    // every filter in `mSimpleLeaves` is supposed to have a fully-
     // populated payload (enforced by `ValidateFilterAgainstColumns`).
     switch (filter.type)
     {
-    case loglib::LogConfiguration::LogFilter::Type::Time:
+    case loglib::LeafRule::Type::Time:
     {
         // `nullopt` renders as "any" rather than formatting the INT64
         // sentinels (which produced absurd 294247 AD / 292277 BC dates).
@@ -7582,7 +7640,7 @@ QString MainWindow::BuildFilterTitle(const loglib::LogConfiguration::LogFilter &
             filter.filterEnd.has_value() ? loglib::UtcMicrosecondsToDateTimeString(*filter.filterEnd) : "any";
         return QString::fromStdString(beginStr + " - " + endStr);
     }
-    case loglib::LogConfiguration::LogFilter::Type::Enumeration:
+    case loglib::LeafRule::Type::Enumeration:
     {
         Q_ASSERT(!filter.filterValues.empty());
         QStringList values;
@@ -7593,7 +7651,7 @@ QString MainWindow::BuildFilterTitle(const loglib::LogConfiguration::LogFilter &
         }
         return values.join(QStringLiteral(", "));
     }
-    case loglib::LogConfiguration::LogFilter::Type::Number:
+    case loglib::LeafRule::Type::Number:
     {
         Q_ASSERT(filter.filterMinValue.has_value() || filter.filterMaxValue.has_value());
         // Same C-locale, max-digits10 formatting as
@@ -7611,7 +7669,7 @@ QString MainWindow::BuildFilterTitle(const loglib::LogConfiguration::LogFilter &
                 : QStringLiteral("+inf");
         return QStringLiteral("[%1, %2]").arg(minStr, maxStr);
     }
-    case loglib::LogConfiguration::LogFilter::Type::Boolean:
+    case loglib::LeafRule::Type::Boolean:
     {
         // Canonicalise to "true, false" order regardless of how
         // `filter.filterValues` is laid out (the submit slot always
@@ -7629,18 +7687,28 @@ QString MainWindow::BuildFilterTitle(const loglib::LogConfiguration::LogFilter &
         }
         return values.join(QStringLiteral(", "));
     }
-    case loglib::LogConfiguration::LogFilter::Type::String:
+    case loglib::LeafRule::Type::String:
         Q_ASSERT(filter.filterString.has_value());
         // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         return QString::fromStdString(*filter.filterString);
     }
-    Q_ASSERT_X(false, "MainWindow::BuildFilterTitle", "unhandled LogFilter::Type");
+    Q_ASSERT_X(false, "MainWindow::BuildFilterTitle", "unhandled LeafRule::Type");
     return {};
 }
 
-void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter, bool deferSync)
+void MainWindow::AddLogFilter(const QString &id, const loglib::LeafRule &filter, bool deferSync)
 {
-    mFilters[id.toStdString()] = filter;
+    const std::string idKey = id.toStdString();
+    // Preserve insertion order in `mSimpleLeafOrder` so the mirror
+    // step can rebuild the top-level `And` deterministically.
+    // Update-in-place edits (Edit -> OK re-adds under the same
+    // UUID) shouldn't append a second entry; the linear scan is
+    // cheap for realistic filter counts.
+    if (std::ranges::find(mSimpleLeafOrder, idKey) == mSimpleLeafOrder.end())
+    {
+        mSimpleLeafOrder.push_back(idKey);
+    }
+    mSimpleLeaves[idKey] = filter;
     if (!deferSync)
     {
         MirrorSessionStateToConfiguration();
@@ -7662,15 +7730,15 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LogConfiguration:
     // targets the right row. Regression:
     // `TestEditFilterAfterColumnReorderUsesCurrentRow`.
     //
-    // The lint suppression below covers `mFilters.find` / `LogFilter`
+    // The lint suppression below covers `mSimpleLeaves.find` / `LeafRule`
     // copy, which can technically throw. The body has no real source
     // of exceptions (no user input, no I/O), so wrapping it in
     // try/catch would be pure noise. Same applies to the matching
     // Edit lambda in `BuildHeaderContextMenu`.
     // NOLINTNEXTLINE(bugprone-exception-escape)
     connect(editAction, &QAction::triggered, this, [this, id]() {
-        const auto it = mFilters.find(id.toStdString());
-        if (it == mFilters.end())
+        const auto it = mSimpleLeaves.find(id.toStdString());
+        if (it == mSimpleLeaves.end())
         {
             AddFilter(id);
             return;
@@ -7702,18 +7770,21 @@ void MainWindow::SyncColumnFilterIndicators()
     if (cols > 0)
     {
         perColumnTitles.resize(static_cast<size_t>(cols));
-        for (const auto &[id, filter] : mFilters)
+        const auto &columns = mModel->Configuration().columns;
+        for (const auto &[id, filter] : mSimpleLeaves)
         {
-            if (filter.row < 0 || filter.row >= cols)
+            const int row = ResolveLeafColumnByKeys(filter.columnKeys, columns);
+            if (row < 0 || row >= cols)
             {
-                // Stale row from a concurrent column drop; the
-                // next filter mutation will remap or evict it.
+                // Keys don't resolve (column was dropped or renamed);
+                // hide the tooltip entry until the user removes the
+                // filter or the missing column reappears.
                 continue;
             }
-            perColumnTitles[static_cast<size_t>(filter.row)].append(BuildFilterTitle(filter));
+            perColumnTitles[static_cast<size_t>(row)].append(BuildFilterTitle(filter));
         }
         // Sort titles so tooltip ordering is stable across
-        // `mFilters`'s unordered iteration. Use `QCollator` for
+        // `mSimpleLeaves`'s unordered iteration. Use `QCollator` for
         // locale-aware, case-insensitive ordering with numeric
         // mode (so "9" sorts before "10").
         QCollator collator;
@@ -7895,13 +7966,21 @@ void MainWindow::ApplyDeferredSortFromConfig()
     mTableView->sortByColumn(cfgSort.columnIndex, cfgSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder);
 }
 
-bool MainWindow::EnumFilterFullyResolved(const loglib::LogConfiguration::LogFilter &filter) const
+bool MainWindow::EnumFilterFullyResolved(const loglib::LeafRule &filter) const
 {
-    if (filter.type != loglib::LogConfiguration::LogFilter::Type::Enumeration)
+    if (filter.type != loglib::LeafRule::Type::Enumeration)
     {
         return true;
     }
-    const loglib::EnumDictionary *dictionary = ResolveEnumDictionary(filter.row);
+    const auto &columnsCfg = mModel->Configuration().columns;
+    const int resolvedRow = ResolveLeafColumnByKeys(filter.columnKeys, columnsCfg);
+    if (resolvedRow < 0)
+    {
+        // Column keys don't resolve; leaf is inert and doesn't
+        // need rebuilding either.
+        return true;
+    }
+    const loglib::EnumDictionary *dictionary = ResolveEnumDictionary(resolvedRow);
     if (dictionary == nullptr)
     {
         // Column not yet promoted: defer resolution until first growth.
@@ -7911,9 +7990,7 @@ bool MainWindow::EnumFilterFullyResolved(const loglib::LogConfiguration::LogFilt
     // expand them to raw entries at predicate-build time. Dictionary
     // growth can surface entries matching a selected level, so treat
     // these as never fully resolved and rebuild on every `Grew`.
-    const auto &columnsCfg = mModel->Configuration().columns;
-    if (filter.row >= 0 && static_cast<size_t>(filter.row) < columnsCfg.size() &&
-        columnsCfg[static_cast<size_t>(filter.row)].type == loglib::LogConfiguration::Type::Level)
+    if (columnsCfg[static_cast<size_t>(resolvedRow)].type == loglib::LogConfiguration::Type::Level)
     {
         return false;
     }
@@ -7924,190 +8001,17 @@ bool MainWindow::EnumFilterFullyResolved(const loglib::LogConfiguration::LogFilt
 
 void MainWindow::UpdateFilters()
 {
-    // Sort filters cheapest-first so `std::ranges::all_of` short-
-    // circuits on the cheapest rejecting test:
-    //   1. BoolRowPredicate           - GetValue + alternative test
-    //   2. EnumRowPredicate           - GetEnumValueId + bitset test
-    //   3. TimeRangeRowPredicate      - GetValue + int compare
-    //   4. NumericRangeRowPredicate   - GetValue + double compare
-    //   5. CallbackStringRowPredicate - regex / UTF-8 walk
-    // Bool and Enum are effectively tied; Bool wins under the
-    // assumption that bool columns reject more aggressively in
-    // practice. Tie-break on column index for deterministic ordering.
-    using LogFilterType = loglib::LogConfiguration::LogFilter::Type;
-    auto costOf = [](LogFilterType t) -> int {
-        switch (t)
-        {
-        case LogFilterType::Boolean:
-            return 0;
-        case LogFilterType::Enumeration:
-            return 1;
-        case LogFilterType::Time:
-            return 2;
-        case LogFilterType::Number:
-            return 3;
-        case LogFilterType::String:
-        default:
-            return 4;
-        }
-    };
-    std::vector<const loglib::LogConfiguration::LogFilter *> ordered;
-    ordered.reserve(mFilters.size());
-    for (const auto &filter : mFilters)
-    {
-        ordered.push_back(&filter.second);
-    }
-    std::ranges::sort(ordered, [&costOf](const auto *a, const auto *b) {
-        const int costA = costOf(a->type);
-        const int costB = costOf(b->type);
-        if (costA != costB)
-        {
-            return costA < costB;
-        }
-        return a->row < b->row;
-    });
-
-    std::vector<loglib::RowPredicate> rules;
-    rules.reserve(ordered.size());
-    for (const loglib::LogConfiguration::LogFilter *filterPtr : ordered)
-    {
-        const loglib::LogConfiguration::LogFilter &filter = *filterPtr;
-        const auto column = static_cast<size_t>(filter.row);
-        switch (filter.type)
-        {
-        case LogFilterType::Time:
-            // `nullopt` = unbounded; `value_or` feeds INT64 sentinels so
-            // the per-row visitor stays a simple `>=` / `<=` pair while
-            // the title and FilterEditor keep `nullopt` as canonical.
-            // Validation guarantees at least one side is bounded.
-            rules.emplace_back(
-                std::in_place_type<loglib::TimeRangeRowPredicate>,
-                column,
-                filter.filterBegin.value_or(std::numeric_limits<int64_t>::min()),
-                filter.filterEnd.value_or(std::numeric_limits<int64_t>::max())
-            );
-            break;
-        case LogFilterType::Enumeration:
-        {
-            // `filter` aliases `mFilters`, so the underlying strings
-            // outlive the views. `EnumRowPredicate`'s constructor
-            // copies/indexes them and keeps no reference back into the
-            // span (pinned by the lifetime test in `test_log_filter.cpp`).
-            //
-            // Level columns reuse the same predicate: expand the saved
-            // canonical names (`"Info"`, ...) to every raw dictionary
-            // entry that maps to a selected level via the
-            // `LevelRankCache`. `expandedStorage` owns the strings
-            // because dictionary `Resolve` returns views.
-            std::vector<std::string_view> selectedViews;
-            std::vector<std::string> expandedStorage;
-            const auto &columnsCfg = mModel->Configuration().columns;
-            const bool isLevelColumn =
-                static_cast<size_t>(filter.row) < columnsCfg.size() &&
-                columnsCfg[static_cast<size_t>(filter.row)].type == loglib::LogConfiguration::Type::Level;
-            if (isLevelColumn)
-            {
-                const auto &lvlColumn = columnsCfg[static_cast<size_t>(filter.row)];
-                const std::vector<loglib::LogLevel> *ranks =
-                    mModel->Table().LevelRankCache(static_cast<size_t>(filter.row));
-                const loglib::EnumDictionary *dictionary = ResolveEnumDictionary(filter.row);
-                if (ranks == nullptr || dictionary == nullptr)
-                {
-                    // `Type::Level` column with no data yet: skip the
-                    // rule. `EnumFilterFullyResolved` returns false for
-                    // Level filters, so the next `Grew` rebuild will
-                    // install the predicate. Rejecting every row here
-                    // would hide unrelated rows.
-                    break;
-                }
-                // Use `ResolveLevel` (not `ParseLevelName`) so custom
-                // aliases saved while the column was Enumeration --
-                // and any `levelMapping` overrides -- still resolve.
-                // Matches `FilterEditor::Load`.
-                std::unordered_set<loglib::LogLevel> selectedLevels;
-                selectedLevels.reserve(filter.filterValues.size());
-                for (const std::string &name : filter.filterValues)
-                {
-                    if (auto level = loglib::ResolveLevel(name, lvlColumn.levelMapping); level.has_value())
-                    {
-                        selectedLevels.insert(*level);
-                    }
-                }
-                expandedStorage.reserve(ranks->size());
-                for (size_t valueId = 0; valueId < ranks->size(); ++valueId)
-                {
-                    if (selectedLevels.contains((*ranks)[valueId]))
-                    {
-                        const std::string_view bytes = dictionary->Resolve(static_cast<loglib::EnumValueId>(valueId));
-                        expandedStorage.emplace_back(bytes);
-                    }
-                }
-                selectedViews.reserve(expandedStorage.size());
-                for (const std::string &v : expandedStorage)
-                {
-                    selectedViews.emplace_back(v);
-                }
-                // Empty `selectedViews` is legitimate (e.g. user
-                // picked `Trace` but only `Info`/`Warn` slots exist).
-                // Matches the enum branch: reject every row.
-                rules.emplace_back(
-                    std::in_place_type<loglib::EnumRowPredicate>,
-                    column,
-                    std::span<const std::string_view>(selectedViews),
-                    dictionary
-                );
-                break;
-            }
-            selectedViews.reserve(filter.filterValues.size());
-            for (const std::string &v : filter.filterValues)
-            {
-                selectedViews.emplace_back(v);
-            }
-            const loglib::EnumDictionary *dictionary = ResolveEnumDictionary(filter.row);
-            rules.emplace_back(
-                std::in_place_type<loglib::EnumRowPredicate>,
-                column,
-                std::span<const std::string_view>(selectedViews),
-                dictionary
-            );
-            break;
-        }
-        case LogFilterType::Number:
-            // `FilterNumericRangeSubmitted` rejects all-unbounded and
-            // inverted ranges upstream; at least one bound is set here.
-            rules.emplace_back(
-                std::in_place_type<loglib::NumericRangeRowPredicate>,
-                column,
-                filter.filterMinValue,
-                filter.filterMaxValue
-            );
-            break;
-        case LogFilterType::Boolean:
-        {
-            // `FilterBooleanSubmitted` already rejects the all-off
-            // case upstream. Case-insensitive decode tolerates
-            // hand-edited configs (e.g. `"True"` / `"FALSE"`).
-            const BooleanFilterSides sides = DecodeBooleanFilterSides(filter.filterValues);
-            rules.emplace_back(
-                std::in_place_type<loglib::BoolRowPredicate>, column, sides.includeTrue, sides.includeFalse
-            );
-            break;
-        }
-        case LogFilterType::String:
-        default:
-            // `FilterSubmitted` populates both fields before the filter
-            // ever reaches `mFilters`, and the switch case pins
-            // `type == String`, so the optionals are engaged here.
-            rules.emplace_back(
-                std::in_place_type<loglib::CallbackStringRowPredicate>,
-                column,
-                // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
-                MakeStringMatcher(QString::fromStdString(*filter.filterString), *filter.matchType)
-            );
-            break;
-        }
-    }
-    mSortFilterProxyModel->SetFilterRules(std::move(rules));
+    // Compile the configuration's `FilterExpression` (already
+    // mirrored from `mSimpleLeaves` + `mSimpleLeafOrder` and any
+    // Advanced clauses) into a `CompiledFilterExpression` via the
+    // shared `CompileExpression` factory. The factory owns
+    // predicate construction, level-column expansion, and
+    // cost-based ordering; keeping this call thin means Advanced
+    // editor writes reuse the exact same code path.
+    loglib::CompiledFilterExpression compiled = CompileExpression(
+        mModel->Configuration().expression, mModel->Configuration().columns, &mModel->Table()
+    );
+    mSortFilterProxyModel->SetFilterExpression(std::move(compiled));
 }
 
 void MainWindow::OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int newVisualIndex)
@@ -8178,7 +8082,7 @@ void MainWindow::OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int 
     try
     {
         // `MoveColumn` emits `columnsMoved` synchronously; the
-        // connected `OnSourceColumnsMoved` slot remaps `mFilters`,
+        // connected `OnSourceColumnsMoved` slot remaps `mSimpleLeaves`,
         // re-applies visibility, and refreshes the proxy rules.
         (void)mModel->MoveColumn(src, dest);
 
@@ -8233,33 +8137,13 @@ void MainWindow::OnSourceColumnsMoved(
     {
         return;
     }
-    // The lib-side `MoveColumn` already rotated
-    // `mConfiguration.filters[*].row`. Replay the same permutation
-    // onto the runtime `mFilters` so both stores agree, then rebuild
-    // the proxy rules. Deliberately not mirroring back here: that
-    // would clobber the lib-side wire-format with a snapshot of the
-    // runtime map, which is wrong in the (test-only) case where the
-    // wire-format was populated via a direct `mgr.Load` that bypassed
-    // `MainWindow::RebuildFiltersFromConfiguration` -- the runtime
-    // map is empty there and a mirror would silently delete the
-    // loaded filters. The mirror is already invoked at every
-    // `mFilters` mutation point and again on every `Save`, so the
-    // two stores remain consistent across the application lifecycle
-    // without one being needed here.
-    bool runtimeFilterChanged = false;
-    for (auto &[id, filter] : mFilters)
-    {
-        const int remapped = loglib::LogConfigurationManager::RemapColumnIndexAfterMove(filter.row, src, finalDest);
-        if (remapped != filter.row)
-        {
-            filter.row = remapped;
-            runtimeFilterChanged = true;
-        }
-    }
-    if (runtimeFilterChanged)
-    {
-        UpdateFilters();
-    }
+    // Filters and highlight rules both bind by column keys, so the
+    // stored payload survives the move unchanged. The compiled
+    // expression, however, caches resolved column indices, so it
+    // must be rebuilt against the freshly rotated column vector.
+    (void)src;
+    (void)finalDest;
+    UpdateFilters();
     // Highlight rules bind by keys, but the compiled predicates
     // cache resolved column *indices*. `MoveColumn` rotates the
     // column vector, so refresh both caches or highlights would
@@ -8424,19 +8308,20 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
     }
 
     // Existing filters on this column, sorted by display title.
-    // `mFilters` is an unordered_map keyed by UUID, so without
+    // `mSimpleLeaves` is an unordered_map keyed by UUID, so without
     // sorting the menu order would be effectively random.
     struct FilterEntry
     {
         std::string id;
         QString title;
-        loglib::LogConfiguration::LogFilter::Type type;
+        loglib::LeafRule::Type type;
     };
     std::vector<FilterEntry> filtersForColumn;
-    filtersForColumn.reserve(mFilters.size());
-    for (const auto &entry : mFilters)
+    filtersForColumn.reserve(mSimpleLeaves.size());
+    const auto &columnsForResolve = mModel->Configuration().columns;
+    for (const auto &entry : mSimpleLeaves)
     {
-        if (entry.second.row == logicalColumn)
+        if (ResolveLeafColumnByKeys(entry.second.columnKeys, columnsForResolve) == logicalColumn)
         {
             filtersForColumn.push_back(
                 {.id = entry.first, .title = BuildFilterTitle(entry.second), .type = entry.second.type}
@@ -8468,8 +8353,8 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
         // Edit action; see `AddLogFilter` for the lint suppression.
         // NOLINTNEXTLINE(bugprone-exception-escape)
         connect(editAction, &QAction::triggered, this, [this, filterId]() {
-            const auto it = mFilters.find(filterId.toStdString());
-            if (it == mFilters.end())
+            const auto it = mSimpleLeaves.find(filterId.toStdString());
+            if (it == mSimpleLeaves.end())
             {
                 AddFilter(filterId);
                 return;
@@ -8972,8 +8857,8 @@ void MainWindow::SetColumnVisible(int logicalIndex, bool visible)
     // to. Invalidate explicitly so the indicator can't strand a
     // count that still includes hits from hidden columns.
     OnFindCacheInvalidated();
-    // Hide/show doesn't change `filter.row`, so this sync is
-    // usually a model-side no-op. Kept for symmetry with
+    // Hide/show doesn't change a leaf's column keys, so this sync
+    // is usually a model-side no-op. Kept for symmetry with
     // `ApplyColumnVisibility`.
     SyncColumnFilterIndicators();
 }

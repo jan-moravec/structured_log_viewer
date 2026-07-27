@@ -35,11 +35,9 @@ QString HaystackQStringFast(std::string_view bytes)
 
 } // namespace
 
-loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
-    const QString &pattern, loglib::LogConfiguration::LogFilter::Match match
-)
+loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(const QString &pattern, loglib::LeafRule::Match match)
 {
-    using Match = loglib::LogConfiguration::LogFilter::Match;
+    using Match = loglib::LeafRule::Match;
     switch (match)
     {
     case Match::Exactly:
@@ -101,18 +99,3 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
     return [](std::string_view) { return false; };
 }
 
-loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
-    const QString &pattern, loglib::LogConfiguration::HighlightRule::Match match
-)
-{
-    // The two enums are pinned identical on purpose so this cast
-    // stays safe. The static_asserts turn any future reorder of
-    // either enum into a build error.
-    using HR = loglib::LogConfiguration::HighlightRule::Match;
-    using LF = loglib::LogConfiguration::LogFilter::Match;
-    static_assert(static_cast<int>(HR::Exactly) == static_cast<int>(LF::Exactly));
-    static_assert(static_cast<int>(HR::Contains) == static_cast<int>(LF::Contains));
-    static_assert(static_cast<int>(HR::RegularExpression) == static_cast<int>(LF::RegularExpression));
-    static_assert(static_cast<int>(HR::Wildcard) == static_cast<int>(LF::Wildcard));
-    return MakeStringMatcher(pattern, static_cast<LF>(match));
-}

@@ -10,10 +10,12 @@
 #include <oneapi/tbb/parallel_for.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <optional>
 #include <span>
@@ -290,16 +292,464 @@ bool CallbackStringRowPredicate::MatchesRow(const LogTable &table, size_t row) c
     return mMatch(bytes);
 }
 
-std::vector<size_t> FilterAcceptedRows(const LogTable &table, std::span<const RowPredicate> predicates)
+int EstimatedLeafCost(const RowPredicate &predicate) noexcept
+{
+    // Numbers are relative -- see the header table. Bool is
+    // cheapest so its short-circuit reject fires first in AND;
+    // string / regex is most expensive so it's tried last.
+    return std::visit(
+        [](const auto &concrete) noexcept -> int {
+            using T = std::decay_t<decltype(concrete)>;
+            if constexpr (std::is_same_v<T, BoolRowPredicate>)
+            {
+                return 1;
+            }
+            else if constexpr (std::is_same_v<T, EnumRowPredicate>)
+            {
+                return 2;
+            }
+            else if constexpr (std::is_same_v<T, TimeRangeRowPredicate>)
+            {
+                return 3;
+            }
+            else if constexpr (std::is_same_v<T, NumericRangeRowPredicate>)
+            {
+                return 4;
+            }
+            else
+            {
+                // CallbackStringRowPredicate -- regex / UTF-8 walk.
+                return 10;
+            }
+        },
+        predicate
+    );
+}
+
+CompiledFilterExpression::Leaf::Leaf(RowPredicate p)
+    : predicate(std::move(p)), estimatedCost(EstimatedLeafCost(predicate))
+{
+}
+
+CompiledFilterExpression::Not::Not(CompiledFilterExpression c)
+    : child(std::make_unique<CompiledFilterExpression>(std::move(c)))
+{
+    estimatedCost = child ? child->EstimatedCost() + 1 : 1;
+}
+
+int CompiledFilterExpression::EstimatedCost() const noexcept
+{
+    return std::visit(
+        [](const auto &n) noexcept -> int {
+            using T = std::decay_t<decltype(n)>;
+            if constexpr (std::is_same_v<T, Leaf>)
+            {
+                return n.estimatedCost;
+            }
+            else if constexpr (std::is_same_v<T, Not>)
+            {
+                return n.estimatedCost;
+            }
+            else
+            {
+                // And / Or: prebaked at compile time.
+                return n.estimatedCost;
+            }
+        },
+        node
+    );
+}
+
+bool IsMatchAllCompiled(const CompiledFilterExpression &expression) noexcept
+{
+    const auto *asAnd = std::get_if<CompiledFilterExpression::And>(&expression.node);
+    return asAnd != nullptr && asAnd->children.empty();
+}
+
+bool EvaluateExpression(const CompiledFilterExpression &expression, const LogTable &table, size_t row)
+{
+    return std::visit(
+        [&table, row](const auto &node) -> bool {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, CompiledFilterExpression::Leaf>)
+            {
+                return MatchesRow(node.predicate, table, row);
+            }
+            else if constexpr (std::is_same_v<T, CompiledFilterExpression::And>)
+            {
+                // Empty `And` is the identity element -- match all.
+                for (const auto &child : node.children)
+                {
+                    if (!EvaluateExpression(child, table, row))
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            else if constexpr (std::is_same_v<T, CompiledFilterExpression::Or>)
+            {
+                // Empty `Or` is the identity element -- match none.
+                for (const auto &child : node.children)
+                {
+                    if (EvaluateExpression(child, table, row))
+                    {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            else
+            {
+                // Not.
+                if (node.child == nullptr)
+                {
+                    // Empty `Not` = NOT (match-none) = match-all.
+                    return true;
+                }
+                return !EvaluateExpression(*node.child, table, row);
+            }
+        },
+        expression.node
+    );
+}
+
+namespace
+{
+
+/// Walk @p node's tree and count the unique leaves + whether any
+/// regex / wildcard / OR / NOT is present. Used to gate the bitset
+/// path below.
+struct TreeShape
+{
+    size_t leafCount = 0;
+    bool hasRegexOrWildcard = false;
+    bool hasOr = false;
+    bool hasNot = false;
+};
+
+void CollectShape(const CompiledFilterExpression &expr, TreeShape &shape)
+{
+    std::visit(
+        [&shape](const auto &node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, CompiledFilterExpression::Leaf>)
+            {
+                ++shape.leafCount;
+                if (std::holds_alternative<CallbackStringRowPredicate>(node.predicate))
+                {
+                    shape.hasRegexOrWildcard = true;
+                }
+            }
+            else if constexpr (std::is_same_v<T, CompiledFilterExpression::And>)
+            {
+                for (const auto &child : node.children)
+                {
+                    CollectShape(child, shape);
+                }
+            }
+            else if constexpr (std::is_same_v<T, CompiledFilterExpression::Or>)
+            {
+                shape.hasOr = true;
+                for (const auto &child : node.children)
+                {
+                    CollectShape(child, shape);
+                }
+            }
+            else
+            {
+                shape.hasNot = true;
+                if (node.child != nullptr)
+                {
+                    CollectShape(*node.child, shape);
+                }
+            }
+        },
+        expr.node
+    );
+}
+
+/// Bitset-materialisation eligibility. Trees that would waste the
+/// bitset (flat `And` of one or two cheap leaves) stay on the visit
+/// path; complex or OR-heavy trees switch. The memory cap is
+/// generous but hard -- catastrophic bitsets fall back to visit.
+constexpr size_t BITSET_MEMORY_CAP_BYTES = size_t{512} * 1024 * 1024;
+
+[[nodiscard]] bool ShouldUseBitsetPath(const TreeShape &shape, size_t rowCount) noexcept
+{
+    if (rowCount == 0 || shape.leafCount == 0)
+    {
+        return false;
+    }
+    const bool complexShape = (shape.leafCount >= 2 && (shape.hasRegexOrWildcard || shape.hasOr || shape.hasNot)) ||
+                              shape.leafCount >= 4;
+    if (!complexShape)
+    {
+        return false;
+    }
+    const size_t bytes = (rowCount / 8 + 1) * shape.leafCount;
+    return bytes <= BITSET_MEMORY_CAP_BYTES;
+}
+
+/// Packed word-sized bitset over `[0, rowCount)`. Bit-set / test /
+/// AND / OR / NOT are all inline.
+class RowBitset
+{
+public:
+    RowBitset() = default;
+    explicit RowBitset(size_t rowCount) : mRowCount(rowCount), mWords(WordCount(rowCount), 0U)
+    {
+    }
+
+    [[nodiscard]] size_t RowCount() const noexcept
+    {
+        return mRowCount;
+    }
+    [[nodiscard]] size_t WordSize() const noexcept
+    {
+        return mWords.size();
+    }
+
+    void Set(size_t row) noexcept
+    {
+        mWords[row / WORD_BITS] |= (uint64_t{1} << (row % WORD_BITS));
+    }
+
+    [[nodiscard]] bool Test(size_t row) const noexcept
+    {
+        return (mWords[row / WORD_BITS] & (uint64_t{1} << (row % WORD_BITS))) != 0U;
+    }
+
+    void OrInPlace(const RowBitset &other) noexcept
+    {
+        for (size_t i = 0; i < mWords.size(); ++i)
+        {
+            mWords[i] |= other.mWords[i];
+        }
+    }
+
+    void AndInPlace(const RowBitset &other) noexcept
+    {
+        for (size_t i = 0; i < mWords.size(); ++i)
+        {
+            mWords[i] &= other.mWords[i];
+        }
+    }
+
+    void FillTrue() noexcept
+    {
+        std::ranges::fill(mWords, ~uint64_t{0});
+        // Mask off the tail bits past `mRowCount`.
+        MaskTail();
+    }
+
+    void InvertInPlace() noexcept
+    {
+        for (auto &w : mWords)
+        {
+            w = ~w;
+        }
+        MaskTail();
+    }
+
+    /// Extract accepted rows in ascending order.
+    void CollectInto(std::vector<size_t> &out) const
+    {
+        out.reserve(out.size() + mRowCount);
+        for (size_t wi = 0; wi < mWords.size(); ++wi)
+        {
+            uint64_t word = mWords[wi];
+            while (word != 0U)
+            {
+                const auto bit = static_cast<unsigned int>(std::countr_zero(word));
+                const size_t row = wi * WORD_BITS + bit;
+                if (row >= mRowCount)
+                {
+                    break;
+                }
+                out.push_back(row);
+                word &= word - 1U;
+            }
+        }
+    }
+
+private:
+    static constexpr size_t WORD_BITS = 64U;
+
+    [[nodiscard]] static size_t WordCount(size_t rowCount) noexcept
+    {
+        return (rowCount + WORD_BITS - 1U) / WORD_BITS;
+    }
+
+    void MaskTail() noexcept
+    {
+        if (mWords.empty())
+        {
+            return;
+        }
+        const size_t tail = mRowCount % WORD_BITS;
+        if (tail == 0)
+        {
+            return;
+        }
+        const uint64_t mask = (uint64_t{1} << tail) - 1U;
+        mWords.back() &= mask;
+    }
+
+    size_t mRowCount = 0;
+    std::vector<uint64_t> mWords;
+};
+
+/// Materialise @p predicate's accept-set into a packed bitset in
+/// parallel. Each worker owns a private bitset; the main thread
+/// OR-coalesces at the end.
+RowBitset MaterialiseLeafBitset(const RowPredicate &predicate, const LogTable &table, size_t rowCount)
+{
+    tbb::enumerable_thread_specific<RowBitset> workerBitsets{[rowCount] { return RowBitset(rowCount); }};
+    tbb::parallel_for(
+        tbb::blocked_range<size_t>(0, rowCount),
+        [&predicate, &table, &workerBitsets](const tbb::blocked_range<size_t> &range) {
+            auto &local = workerBitsets.local();
+            for (size_t row = range.begin(); row != range.end(); ++row)
+            {
+                if (MatchesRow(predicate, table, row))
+                {
+                    local.Set(row);
+                }
+            }
+        }
+    );
+
+    RowBitset combined(rowCount);
+    for (const auto &worker : workerBitsets)
+    {
+        combined.OrInPlace(worker);
+    }
+    return combined;
+}
+
+/// Evaluate @p expr against the pre-materialised leaf bitsets in
+/// @p leafBitsets, in the order returned by
+/// `CollectLeafsInVisitOrder`. Recurses over And / Or / Not.
+RowBitset EvaluateExpressionBitset(
+    const CompiledFilterExpression &expr, const std::vector<RowBitset> &leafBitsets, size_t &leafCursor, size_t rowCount
+)
+{
+    return std::visit(
+        [&leafBitsets, &leafCursor, rowCount](const auto &node) -> RowBitset {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, CompiledFilterExpression::Leaf>)
+            {
+                RowBitset copy(rowCount);
+                copy.OrInPlace(leafBitsets[leafCursor]);
+                ++leafCursor;
+                return copy;
+            }
+            else if constexpr (std::is_same_v<T, CompiledFilterExpression::And>)
+            {
+                if (node.children.empty())
+                {
+                    // Empty And = match-all: fill and return.
+                    RowBitset all(rowCount);
+                    all.FillTrue();
+                    return all;
+                }
+                RowBitset acc = EvaluateExpressionBitset(node.children.front(), leafBitsets, leafCursor, rowCount);
+                for (size_t i = 1; i < node.children.size(); ++i)
+                {
+                    const RowBitset next =
+                        EvaluateExpressionBitset(node.children[i], leafBitsets, leafCursor, rowCount);
+                    acc.AndInPlace(next);
+                }
+                return acc;
+            }
+            else if constexpr (std::is_same_v<T, CompiledFilterExpression::Or>)
+            {
+                if (node.children.empty())
+                {
+                    // Empty Or = match-none: zero-initialised.
+                    return RowBitset(rowCount);
+                }
+                RowBitset acc = EvaluateExpressionBitset(node.children.front(), leafBitsets, leafCursor, rowCount);
+                for (size_t i = 1; i < node.children.size(); ++i)
+                {
+                    const RowBitset next =
+                        EvaluateExpressionBitset(node.children[i], leafBitsets, leafCursor, rowCount);
+                    acc.OrInPlace(next);
+                }
+                return acc;
+            }
+            else
+            {
+                // Not.
+                if (node.child == nullptr)
+                {
+                    // Empty Not = match-all.
+                    RowBitset all(rowCount);
+                    all.FillTrue();
+                    return all;
+                }
+                RowBitset inner = EvaluateExpressionBitset(*node.child, leafBitsets, leafCursor, rowCount);
+                inner.InvertInPlace();
+                return inner;
+            }
+        },
+        expr.node
+    );
+}
+
+/// Walk the tree in the same order `EvaluateExpressionBitset` will
+/// consume leaves and append pointers to the leaf `RowPredicate`s.
+/// Simpler than deduplicating leaves at compile time; the caller
+/// then materialises one bitset per pointer, potentially
+/// duplicating work if the same leaf appears twice. Leaf dedup is
+/// a follow-up optimisation.
+void CollectLeafsInVisitOrder(const CompiledFilterExpression &expr, std::vector<const RowPredicate *> &out)
+{
+    std::visit(
+        [&out](const auto &node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, CompiledFilterExpression::Leaf>)
+            {
+                out.push_back(&node.predicate);
+            }
+            else if constexpr (std::is_same_v<T, CompiledFilterExpression::And>)
+            {
+                for (const auto &child : node.children)
+                {
+                    CollectLeafsInVisitOrder(child, out);
+                }
+            }
+            else if constexpr (std::is_same_v<T, CompiledFilterExpression::Or>)
+            {
+                for (const auto &child : node.children)
+                {
+                    CollectLeafsInVisitOrder(child, out);
+                }
+            }
+            else
+            {
+                if (node.child != nullptr)
+                {
+                    CollectLeafsInVisitOrder(*node.child, out);
+                }
+            }
+        },
+        expr.node
+    );
+}
+
+} // namespace
+
+std::vector<size_t> FilterAcceptedRows(const LogTable &table, const CompiledFilterExpression &expression)
 {
     const size_t rowCount = table.RowCount();
     std::vector<size_t> accepted;
 
-    if (predicates.empty())
+    if (IsMatchAllCompiled(expression))
     {
         // Identity case: hand back `[0, rowCount)` so callers can
-        // share one code path with the filtered case. The bottleneck
-        // is filter + predicate, so the sequential fill is cheap.
+        // share one code path with the filtered case.
         accepted.resize(rowCount);
         std::iota(accepted.begin(), accepted.end(), size_t{0});
         return accepted;
@@ -310,23 +760,42 @@ std::vector<size_t> FilterAcceptedRows(const LogTable &table, std::span<const Ro
         return accepted;
     }
 
-    // Parallel filter pass: each TBB worker drains a `blocked_range`
-    // into its thread-local bucket. We coalesce the buckets and sort
-    // the result so callers get rows in ascending order. Buckets grow
-    // proportional to `rowCount / num_threads`, so the final
-    // single-threaded sort is cheap.
+    // Shape analysis picks the evaluator per rebuild. The visit
+    // path is always safe; the bitset path is a perf win for
+    // complex trees.
+    TreeShape shape;
+    CollectShape(expression, shape);
+
+    if (ShouldUseBitsetPath(shape, rowCount))
+    {
+        // Bitset-materialisation path.
+        std::vector<const RowPredicate *> orderedLeaves;
+        orderedLeaves.reserve(shape.leafCount);
+        CollectLeafsInVisitOrder(expression, orderedLeaves);
+
+        std::vector<RowBitset> leafBitsets;
+        leafBitsets.reserve(orderedLeaves.size());
+        for (const RowPredicate *predicate : orderedLeaves)
+        {
+            leafBitsets.push_back(MaterialiseLeafBitset(*predicate, table, rowCount));
+        }
+
+        size_t leafCursor = 0;
+        const RowBitset resultBitset = EvaluateExpressionBitset(expression, leafBitsets, leafCursor, rowCount);
+        resultBitset.CollectInto(accepted);
+        return accepted;
+    }
+
+    // Visit path: parallel-for over rows, each row walks the tree.
     tbb::enumerable_thread_specific<std::vector<size_t>> buckets;
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, rowCount),
-        [&table, predicates, &buckets](const tbb::blocked_range<size_t> &range) {
+        [&table, &expression, &buckets](const tbb::blocked_range<size_t> &range) {
             auto &local = buckets.local();
             local.reserve(local.size() + range.size());
             for (size_t row = range.begin(); row != range.end(); ++row)
             {
-                const bool keep = std::ranges::all_of(predicates, [&table, row](const RowPredicate &predicate) {
-                    return MatchesRow(predicate, table, row);
-                });
-                if (keep)
+                if (EvaluateExpression(expression, table, row))
                 {
                     local.push_back(row);
                 }

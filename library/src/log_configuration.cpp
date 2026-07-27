@@ -106,7 +106,7 @@ constexpr auto LOG_CONFIG_OPTS = loglib::internal::LOG_CONFIG_OPTS;
 
 /// Wire-format shim for `SaveScope::ColumnsOnly`: emits the two
 /// Configuration-scope vectors (`columns` + `highlightRules`) and
-/// skips the session-scope blocks (`filters` / `sort` / `source`
+/// skips the session-scope blocks (`expression` / `sort` / `source`
 /// / `anchors`). Files written this way still round-trip through
 /// `glz::read_json<LogConfiguration>` -- missing members default.
 struct ColumnsOnlyDocument
@@ -285,9 +285,8 @@ void LogConfigurationManager::Update(const LogData &logData)
                 );
                 // Bubble the freshly-appended timestamp column to
                 // position 0. `MoveColumn` (not an inline swap chain)
-                // so persisted `filters[*].row` is remapped along
-                // with the rotation. No-op when this is the only
-                // column.
+                // so persisted `sort.columnIndex` follows the
+                // rotation. No-op when this is the only column.
                 if (mConfiguration.columns.size() > 1)
                 {
                     MoveColumn(mConfiguration.columns.size() - 1, 0);
@@ -409,16 +408,12 @@ void LogConfigurationManager::MoveColumn(size_t srcIndex, size_t destIndex)
             std::next(begin, static_cast<Diff>(destIndex + 1))
         );
     }
-    // Run every persisted `LogFilter::row` and `sort.columnIndex`
-    // through the same permutation so they follow their column even
-    // when callers read `Configuration()` directly without first
-    // re-mirroring from a runtime proxy.
+    // Filters bind to columns by `LeafRule::columnKeys` (durable
+    // across reorders), so no filter remap is required here.
+    // `sort.columnIndex` still tracks the moved column by index,
+    // so run it through the same permutation.
     const int src = static_cast<int>(srcIndex);
     const int dest = static_cast<int>(destIndex);
-    for (LogConfiguration::LogFilter &filter : mConfiguration.filters)
-    {
-        filter.row = LogConfigurationManager::RemapColumnIndexAfterMove(filter.row, src, dest);
-    }
     mConfiguration.sort.columnIndex =
         LogConfigurationManager::RemapColumnIndexAfterMove(mConfiguration.sort.columnIndex, src, dest);
     // Pure reorder; key cache is unchanged.
@@ -518,9 +513,9 @@ void LogConfigurationManager::SetColumnParseFormats(size_t columnIndex, std::vec
     mConfiguration.columns[columnIndex].parseFormats = std::move(parseFormats);
 }
 
-void LogConfigurationManager::SetFilters(std::vector<LogConfiguration::LogFilter> filters)
+void LogConfigurationManager::SetExpression(FilterExpression expression)
 {
-    mConfiguration.filters = std::move(filters);
+    mConfiguration.expression = std::move(expression);
 }
 
 void LogConfigurationManager::SetSort(LogConfiguration::Sort sort)

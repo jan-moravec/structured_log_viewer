@@ -1,11 +1,13 @@
 #pragma once
 
 #include "loglib/enum_dictionary.hpp"
+#include "loglib/filter_expression.hpp"
 #include "loglib/internal/transparent_string_hash.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -238,15 +240,124 @@ using RowPredicate = std::variant<
     return std::visit([](const auto &concrete) noexcept { return concrete.ColumnIndex(); }, predicate);
 }
 
-/// Evaluate @p predicates against every row of @p table in parallel
-/// and return the surviving rows in ascending order. Empty
-/// @p predicates returns `[0, table.RowCount())`.
+/// Estimated relative cost of evaluating a single leaf predicate.
+/// Used to order children in `And` / `Or` nodes so short-circuit
+/// evaluation fires the cheapest rejecting / accepting leaf first.
+/// Values are relative (there is no unit -- just monotonic ordering
+/// vs. observed benchmark cost); tune per benchmark numbers.
 ///
-/// Threading: per-worker thread-local buckets via `tbb::parallel_for`,
-/// coalesced and sorted on the caller thread. `MatchesRow` must be
-/// thread-safe read-only against @p table; every predicate in this
-/// file qualifies. Lives in `loglib` so callers don't need a TBB
-/// include.
-[[nodiscard]] std::vector<size_t> FilterAcceptedRows(const LogTable &table, std::span<const RowPredicate> predicates);
+///   Bool          -- 1  (single alt-check on a decoded slot)
+///   Enum          -- 2  (id lookup + bitset test)
+///   Time          -- 3  (int64 compare)
+///   Numeric       -- 4  (double compare with type coercion)
+///   String        -- 10 (regex / UTF-8 walk / callback)
+[[nodiscard]] int EstimatedLeafCost(const RowPredicate &predicate) noexcept;
+
+/// Compiled expression tree -- the "resolved" mirror of
+/// `FilterExpression`. Leaves hold pre-built `RowPredicate`s;
+/// `And` / `Or` / `Not` combinators own their children. Each node
+/// carries a cached `estimatedCost` used to order children
+/// cheap-first at compile time.
+///
+/// Trees are movable and copyable (the copy walks the tree and
+/// clones each `RowPredicate`; the underlying predicate types are
+/// copyable except `EnumRowPredicate`, which is move-only, so
+/// callers currently favour move over copy). Threading:
+/// evaluation is read-only, safe under `tbb::parallel_for` in
+/// `FilterAcceptedRows`.
+struct CompiledFilterExpression
+{
+    struct Leaf
+    {
+        RowPredicate predicate;
+        int estimatedCost = 0;
+
+        Leaf() = delete;
+        explicit Leaf(RowPredicate p);
+    };
+
+    struct And
+    {
+        std::vector<CompiledFilterExpression> children;
+        int estimatedCost = 0;
+    };
+
+    struct Or
+    {
+        std::vector<CompiledFilterExpression> children;
+        int estimatedCost = 0;
+    };
+
+    struct Not
+    {
+        std::unique_ptr<CompiledFilterExpression> child;
+        int estimatedCost = 0;
+
+        Not() = default;
+        explicit Not(CompiledFilterExpression c);
+        Not(const Not &) = delete;
+        Not &operator=(const Not &) = delete;
+        Not(Not &&) noexcept = default;
+        Not &operator=(Not &&) noexcept = default;
+        ~Not() = default;
+    };
+
+    using Node = std::variant<Leaf, And, Or, Not>;
+
+    /// Default-constructed = empty `And` (match every row).
+    Node node = And{};
+
+    /// Column indices referenced by any leaf in the tree, in
+    /// ascending order and deduplicated. Used by `LogFilterModel`
+    /// to decide whether a source `dataChanged` requires a full
+    /// rebuild.
+    std::vector<size_t> referencedColumns;
+
+    [[nodiscard]] int EstimatedCost() const noexcept;
+
+    CompiledFilterExpression() = default;
+    CompiledFilterExpression(const CompiledFilterExpression &) = delete;
+    CompiledFilterExpression &operator=(const CompiledFilterExpression &) = delete;
+    CompiledFilterExpression(CompiledFilterExpression &&) noexcept = default;
+    CompiledFilterExpression &operator=(CompiledFilterExpression &&) noexcept = default;
+    ~CompiledFilterExpression() = default;
+};
+
+/// Evaluate @p expression against @p table row @p row. Uses the
+/// short-circuiting visit path: an empty `And` returns `true`, an
+/// empty `Or` returns `false`, `Not` inverts, `And` / `Or` stop at
+/// the first decisive child. The per-node cheap-first ordering is
+/// baked in at compile time (`CompileExpression` sorts children).
+[[nodiscard]] bool EvaluateExpression(const CompiledFilterExpression &expression, const LogTable &table, size_t row);
+
+/// True iff @p expression's tree is an empty `And` node -- i.e.
+/// matches every row.
+[[nodiscard]] bool IsMatchAllCompiled(const CompiledFilterExpression &expression) noexcept;
+
+/// Evaluate @p expression against every row of @p table in parallel
+/// and return the surviving rows in ascending order.
+///
+/// Chooses between two evaluators per rebuild:
+///
+/// - **Visit path** -- the default. `tbb::parallel_for` over rows,
+///   each row calling `EvaluateExpression`. Same shape as the
+///   previous `span<RowPredicate>` overload; identical performance
+///   envelope for flat `And` trees.
+/// - **Bitset materialisation path** -- kicks in when the tree is
+///   complex (has OR / NOT / regex leaves and >=2 unique leaves,
+///   or >=4 unique leaves overall) and the memory budget allows
+///   (`row_count * unique_leaves / 8 <= 512 MiB`). Materialises
+///   each unique leaf's accept-set into a packed bitset once,
+///   then walks the tree with word-parallel AND / OR / NOT ops.
+///   Wins on OR-heavy queries and regex leaves reused across
+///   branches. Memory allocation is proportional to
+///   `row_count * unique_leaves`, so the heuristic caps it.
+///
+/// Threading: per-worker thread-local buckets / bitsets; the caller
+/// thread coalesces + sorts. `EvaluateExpression` must be
+/// thread-safe read-only against @p table; every predicate qualifies.
+[[nodiscard]] std::vector<size_t> FilterAcceptedRows(
+    const LogTable &table, const CompiledFilterExpression &expression
+);
 
 } // namespace loglib
