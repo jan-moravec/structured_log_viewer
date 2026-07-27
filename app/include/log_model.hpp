@@ -225,6 +225,23 @@ public:
     /// Current retention cap (`0` means unbounded). GUI thread only.
     [[nodiscard]] size_t RetentionCap() const noexcept;
 
+    /// True while source-row order matches wall-clock order across
+    /// every appended batch boundary. Reset on session start; flips
+    /// irreversibly to false on the first inversion seen by
+    /// `AppendBatch` (multi-file `Append`, rotation, clock skew).
+    /// Gates the `MainWindow::FindFirstRowAtOrAfter` binary-search
+    /// fast path; a false answer degrades that caller to an
+    /// O(N_visible) proxy walk (still correct, just slower).
+    /// Intra-batch inversions and rows without a timestamp are not
+    /// checked here -- only the batch boundary.
+    [[nodiscard]] bool TimestampsAreMonotonic() const noexcept;
+
+    /// Test seam: force `TimestampsAreMonotonic()` to return false
+    /// so `MainWindow::FindFirstRowAtOrAfter` exercises its non-
+    /// monotonic branch without a real inversion. Irreversible,
+    /// matching production semantics.
+    void SetTimestampsMonotonicForTest(bool monotonic) noexcept;
+
     /// UTF-8 bytes -> single-line, simplified `QString` (the
     /// `Qt::DisplayRole` representation). Public so `MatchRow` and
     /// `MainWindow::MakeStringMatcher` apply the same normalisation
@@ -382,6 +399,15 @@ private:
     /// Shared implementation of `Reset()` / `StopAndKeepRows()`.
     void TeardownStreamingSessionInternal(bool resetTable);
 
+    /// Scan the freshly appended rows `[firstNewRow, endNewRow)`
+    /// and update `mTimestampsMonotonic` /
+    /// `mLastAppendedTimestampMicros`. No-op once the flag has
+    /// flipped false or when the configuration has no `Type::Time`
+    /// column. Missing-timestamp rows are skipped, not treated as
+    /// `-inf`. Piggybacks on the O(N_batch) work `AppendBatch`
+    /// already does.
+    void UpdateTimestampMonotonicity(int firstNewRow, int endNewRow);
+
     /// Canonical level for @p row via the first `Type::Level`
     /// column. Returns nullopt when there's no level column or the
     /// row has no resolvable level. Drives the Background /
@@ -423,6 +449,18 @@ private:
 
     /// Retention cap; `0` means unbounded.
     size_t mRetentionCap = 0;
+
+    /// Backing store for `TimestampsAreMonotonic()`. True at
+    /// session start, only ever flips false (no cheap heal path).
+    bool mTimestampsMonotonic = true;
+
+    /// Last valid timestamp (epoch micros) seen in an appended
+    /// batch, or nullopt before the first valid timestamp lands.
+    /// Compared against the FIRST valid timestamp of each new
+    /// batch to detect boundary inversions. Prefix eviction leaves
+    /// this untouched -- the "next batch's first ts >= previous
+    /// batch's last ts" invariant survives dropping older rows.
+    std::optional<int64_t> mLastAppendedTimestampMicros;
 
     /// Per-batch capture: column -> (canonical level -> raw dictionary
     /// bytes), recorded when a `Type::Level` column demotes during the

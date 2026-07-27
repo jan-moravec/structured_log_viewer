@@ -99,6 +99,24 @@ int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds);
 
 TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds);
 
+/// Convert @p localMicroseconds -- interpreted as a wall-clock
+/// instant in @p zone -- to UTC epoch microseconds. Returns the
+/// input unchanged if @p zone is null. DST edge cases resolve via
+/// `date::to_sys(local, choose::earliest)`:
+///   * Ambiguous "fall-back" hour: the earlier candidate.
+///   * Non-existent "spring-forward" gap: the transition boundary
+///     (the first real instant after the gap).
+/// Non-DST exceptions (far-future dates past the tzdata table,
+/// corrupt zone entries) are caught and yield the naive value so
+/// the Goto Timestamp slot stays exception-safe. The @p zone
+/// argument exists for deterministic tests; production uses the
+/// overload below.
+int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds, const date::time_zone *zone);
+
+/// Convenience overload equivalent to
+/// `LocalMicrosecondsSinceEpochToUtc(local, CurrentZone())`.
+int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds);
+
 /// Formats UTC microseconds since epoch as a `%F %T`-style local-time string.
 std::string UtcMicrosecondsToDateTimeString(int64_t microseconds);
 

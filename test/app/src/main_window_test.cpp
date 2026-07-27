@@ -39,6 +39,7 @@
 #include <loglib/log_level.hpp>
 #include <loglib/log_line.hpp>
 #include <loglib/log_parse_sink.hpp>
+#include <loglib/log_processing.hpp>
 #include <loglib/log_value.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/parsers/json_parser.hpp>
@@ -124,6 +125,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -4496,6 +4498,810 @@ private slots:
         QCOMPARE(view->currentIndex().row(), 3);
 
         model->EndStreaming(false);
+    }
+
+    // Goto Line happy path: drive the post-dialog body via the
+    // test seam so both the 1-based-to-0-based flip and the
+    // visibility probe run end-to-end. Line 12 -> source row 11.
+    void TestMainWindowGotoLineJumpsToRequestedSourceRow()
+    {
+        auto *model = mWindow->Model();
+        auto *view = mWindow->findChild<LogTableView *>();
+        QVERIFY(view != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 20, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 20);
+
+        view->selectionModel()->clearSelection();
+        view->setCurrentIndex(QModelIndex{});
+
+        mWindow->ExecuteGotoLineForTest(QStringLiteral("12"));
+        QCoreApplication::processEvents();
+        QCOMPARE(view->currentIndex().row(), 11);
+        QCOMPARE(view->selectionModel()->selectedRows().count(), 1);
+        QCOMPARE(view->selectionModel()->selectedRows().first().row(), 11);
+
+        model->EndStreaming(false);
+    }
+
+    // Regression pin: the range check reads the live row count,
+    // not a value captured before the modal. Driving the seam with
+    // an oversize input simulates the shrink-during-modal case;
+    // the hint must show the current range, not the stale one.
+    void TestGotoLineOutOfRangeAfterShrinkSurfacesLiveRange()
+    {
+        auto *model = mWindow->Model();
+        auto *view = mWindow->findChild<LogTableView *>();
+        QVERIFY(view != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 10, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 10);
+
+        view->selectionModel()->clearSelection();
+        view->setCurrentIndex(QModelIndex{});
+        mWindow->statusBar()->clearMessage();
+
+        // Line 999 is well past the current 10-row model. The seam
+        // must reject with a specific "out of range (1 - 10)" hint,
+        // NOT jump the view.
+        mWindow->ExecuteGotoLineForTest(QStringLiteral("999"));
+        QCoreApplication::processEvents();
+
+        const QString message = mWindow->statusBar()->currentMessage();
+        QVERIFY2(
+            message.contains(QStringLiteral("out of range"), Qt::CaseInsensitive),
+            qUtf8Printable(QStringLiteral("Expected out-of-range hint, got: '%1'").arg(message))
+        );
+        // The bracketed range must reflect the *current* row count,
+        // not the value captured before a hypothetical modal open.
+        // If someone regresses to a stale captured value the range
+        // would be wrong and this substring check would fail.
+        QVERIFY2(
+            message.contains(QStringLiteral("1 - 10")),
+            qUtf8Printable(QStringLiteral("Expected live range '1 - 10' in hint, got: '%1'").arg(message))
+        );
+        // View selection unchanged (no accidental jump).
+        QVERIFY(view->selectionModel()->selectedRows().isEmpty());
+
+        model->EndStreaming(false);
+    }
+
+    // Regression pin: a filter-hidden target must surface the
+    // caller-specific "Line %1 is currently filtered out." hint
+    // instead of `SelectSourceRow`'s generic fallback.
+    void TestGotoLineFilteredOutRowSurfacesSpecificHint()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+        auto *model = mWindow->Model();
+        auto *proxy = mWindow->FilterModel();
+        auto *view = mWindow->findChild<LogTableView *>();
+        QVERIFY(model != nullptr);
+        QVERIFY(proxy != nullptr);
+        QVERIFY(view != nullptr);
+        QCOMPARE(model->rowCount(), 3);
+
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist");
+
+        // Keep only "third" (source row 2). Lines 1 and 2 become
+        // filter-hidden targets; line 3 stays reachable.
+        loglib::CallbackStringRowPredicate keepThird(static_cast<std::size_t>(msgCol), [](std::string_view value) {
+            return value == std::string_view{"third"};
+        });
+        std::vector<loglib::RowPredicate> rules;
+        rules.emplace_back(std::move(keepThird));
+        proxy->SetFilterRules(std::move(rules));
+        QCoreApplication::processEvents();
+        QCOMPARE(proxy->rowCount(), 1);
+
+        // Line 1 is filter-hidden -> specific hint, no jump.
+        view->selectionModel()->clearSelection();
+        view->setCurrentIndex(QModelIndex{});
+        mWindow->statusBar()->clearMessage();
+        mWindow->ExecuteGotoLineForTest(QStringLiteral("1"));
+        QCoreApplication::processEvents();
+
+        const QString hiddenMessage = mWindow->statusBar()->currentMessage();
+        QVERIFY2(
+            hiddenMessage.contains(QStringLiteral("filtered out"), Qt::CaseInsensitive),
+            qUtf8Printable(QStringLiteral("Expected 'filtered out' hint, got: '%1'").arg(hiddenMessage))
+        );
+        QVERIFY2(
+            hiddenMessage.contains(QStringLiteral("Line 1")),
+            qUtf8Printable(QStringLiteral("Expected 'Line 1' in hint, got: '%1'").arg(hiddenMessage))
+        );
+        QVERIFY(view->selectionModel()->selectedRows().isEmpty());
+
+        // Line 3 is visible -> jump succeeds and the "filtered out"
+        // hint is NOT re-printed. Under the single-row visible
+        // filter, source row 2 maps to proxy row 0.
+        mWindow->statusBar()->clearMessage();
+        mWindow->ExecuteGotoLineForTest(QStringLiteral("3"));
+        QCoreApplication::processEvents();
+        QCOMPARE(view->currentIndex().row(), 0);
+        QCOMPARE(view->selectionModel()->selectedRows().count(), 1);
+
+        // Restore the pristine "no filter" state so downstream tests
+        // see the fixture unchanged.
+        proxy->SetFilterRules({});
+        QCoreApplication::processEvents();
+    }
+
+    // Empty-model early bail: the seam surfaces "No log loaded."
+    // and does nothing else.
+    void TestGotoLineNoLogLoadedSurfacesHint()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+        QCOMPARE(model->rowCount(), 0);
+
+        mWindow->statusBar()->clearMessage();
+        mWindow->ExecuteGotoLineForTest(QStringLiteral("1"));
+        QCoreApplication::processEvents();
+
+        const QString message = mWindow->statusBar()->currentMessage();
+        QVERIFY2(
+            message.contains(QStringLiteral("No log loaded"), Qt::CaseInsensitive),
+            qUtf8Printable(QStringLiteral("Expected 'No log loaded' hint, got: '%1'").arg(message))
+        );
+    }
+
+    // Parser: relative `-Nh` / `-Nm` shortcuts (case-insensitive,
+    // whitespace-tolerant) resolve against the pinned @p now.
+    // `isNaive == false` since @p now is already UTC.
+    void TestParseGotoTimestampInputAcceptsRelativeShortcuts()
+    {
+        const std::chrono::system_clock::time_point kNow =
+            std::chrono::system_clock::time_point{std::chrono::microseconds{1'700'000'000'000'000LL}};
+        const int64_t kNowMicros = 1'700'000'000'000'000LL;
+
+        const std::vector<std::string> noFormats;
+
+        const auto oneHourAgo = MainWindow::ParseGotoTimestampInput(QStringLiteral("-1h"), noFormats, kNow);
+        QVERIFY(oneHourAgo.has_value());
+        QCOMPARE(oneHourAgo->micros, kNowMicros - (3600LL * 1'000'000LL));
+        QVERIFY(!oneHourAgo->isNaive);
+
+        const auto thirtyMinAgo = MainWindow::ParseGotoTimestampInput(QStringLiteral("-30m"), noFormats, kNow);
+        QVERIFY(thirtyMinAgo.has_value());
+        QCOMPARE(thirtyMinAgo->micros, kNowMicros - (30LL * 60LL * 1'000'000LL));
+        QVERIFY(!thirtyMinAgo->isNaive);
+
+        // Case-insensitive, tolerant of internal whitespace.
+        const auto capitalH = MainWindow::ParseGotoTimestampInput(QStringLiteral("- 2 H"), noFormats, kNow);
+        QVERIFY(capitalH.has_value());
+        QCOMPARE(capitalH->micros, kNowMicros - (2LL * 3600LL * 1'000'000LL));
+
+        // `+N` and bare `N` also mean "N units ago" (parity with
+        // lnav / less; "future" is meaningless in a log viewer).
+        const auto plusOneHour = MainWindow::ParseGotoTimestampInput(QStringLiteral("+1h"), noFormats, kNow);
+        QVERIFY(plusOneHour.has_value());
+        QCOMPARE(plusOneHour->micros, kNowMicros - (3600LL * 1'000'000LL));
+
+        const auto bareOneHour = MainWindow::ParseGotoTimestampInput(QStringLiteral("1h"), noFormats, kNow);
+        QVERIFY(bareOneHour.has_value());
+        QCOMPARE(bareOneHour->micros, kNowMicros - (3600LL * 1'000'000LL));
+    }
+
+    // Parser: relative shortcuts must reject over-`int64_t`
+    // micros rather than wrap (a wrap would jump the user
+    // forward). Both units are covered since the cap arithmetic
+    // uses a per-unit `microsPerUnit`.
+    void TestParseGotoTimestampInputRejectsOverflowingRelativeShortcut()
+    {
+        const std::chrono::system_clock::time_point kNow = std::chrono::system_clock::now();
+        const std::vector<std::string> noFormats;
+
+        // 10^19 hours -- above both the int64 hour cap and 2^63.
+        QVERIFY(
+            !MainWindow::ParseGotoTimestampInput(QStringLiteral("-10000000000000000000h"), noFormats, kNow).has_value()
+        );
+
+        // Hour boundary: cap itself parses, cap+1 rejects.
+        const auto hourCap = static_cast<qulonglong>(std::numeric_limits<int64_t>::max() / (3600LL * 1'000'000LL));
+        const auto overHourCap =
+            MainWindow::ParseGotoTimestampInput(QString::number(hourCap + 1) + QStringLiteral("h"), noFormats, kNow);
+        QVERIFY(!overHourCap.has_value());
+
+        const auto atHourCap =
+            MainWindow::ParseGotoTimestampInput(QString::number(hourCap) + QStringLiteral("h"), noFormats, kNow);
+        QVERIFY(atHourCap.has_value());
+
+        // Minute boundary: distinct code path (different
+        // `microsPerUnit`), so a branch-swap regression would
+        // pass the hour test above and fail here.
+        const auto minuteCap = static_cast<qulonglong>(std::numeric_limits<int64_t>::max() / (60LL * 1'000'000LL));
+        const auto overMinuteCap =
+            MainWindow::ParseGotoTimestampInput(QString::number(minuteCap + 1) + QStringLiteral("m"), noFormats, kNow);
+        QVERIFY(!overMinuteCap.has_value());
+
+        const auto atMinuteCap =
+            MainWindow::ParseGotoTimestampInput(QString::number(minuteCap) + QStringLiteral("m"), noFormats, kNow);
+        QVERIFY(atMinuteCap.has_value());
+    }
+
+    // Parser: the column's own `parseFormats` are tried first
+    // (ROADMAP acceptance bar). Naive formats (no `%z` / `%Ez` /
+    // `%Z`) yield `isNaive == true` so the caller knows to
+    // TZ-shift the value.
+    void TestParseGotoTimestampInputHonoursColumnParseFormats()
+    {
+        const std::chrono::system_clock::time_point kNow =
+            std::chrono::system_clock::time_point{std::chrono::microseconds{1'700'000'000'000'000LL}};
+
+        // Slash-separated custom format that would fail the ISO
+        // fallbacks. `%FT%T` = "%Y-%m-%dT%H:%M:%S" and `%F %T` =
+        // "%Y-%m-%d %H:%M:%S".
+        const std::vector<std::string> columnFormats{"%Y/%m/%d %H:%M:%S"};
+        const auto parsed =
+            MainWindow::ParseGotoTimestampInput(QStringLiteral("2024/04/28 12:34:56"), columnFormats, kNow);
+        QVERIFY(parsed.has_value());
+        QVERIFY(parsed->micros > 0);
+        QVERIFY2(parsed->isNaive, "column format has no %z, result must be flagged naive");
+
+        // ISO fallback works even with no column formats.
+        const auto isoT = MainWindow::ParseGotoTimestampInput(QStringLiteral("2024-04-28T12:34:56"), {}, kNow);
+        QVERIFY(isoT.has_value());
+        QVERIFY(isoT->micros > 0);
+        QVERIFY2(isoT->isNaive, "ISO fallback lacks %z, result must be flagged naive");
+
+        const auto isoSpace = MainWindow::ParseGotoTimestampInput(QStringLiteral("2024-04-28 12:34:56"), {}, kNow);
+        QVERIFY(isoSpace.has_value());
+        QCOMPARE(isoT->micros, isoSpace->micros);
+
+        // A format WITH `%Ez` marks the result as TZ-aware -- the
+        // slot must not double-shift.
+        const std::vector<std::string> zonedFormats{"%FT%T%Ez"};
+        const auto zoned =
+            MainWindow::ParseGotoTimestampInput(QStringLiteral("2024-04-28T12:34:56+02:00"), zonedFormats, kNow);
+        QVERIFY(zoned.has_value());
+        QVERIFY2(!zoned->isNaive, "format contains %Ez, result must NOT be flagged naive");
+    }
+
+    // Parser: empty and garbage strings return nullopt.
+    void TestParseGotoTimestampInputRejectsGarbage()
+    {
+        const std::chrono::system_clock::time_point kNow = std::chrono::system_clock::now();
+
+        QVERIFY(!MainWindow::ParseGotoTimestampInput(QString{}, {}, kNow).has_value());
+        QVERIFY(!MainWindow::ParseGotoTimestampInput(QStringLiteral("   "), {}, kNow).has_value());
+        QVERIFY(!MainWindow::ParseGotoTimestampInput(QStringLiteral("not a timestamp"), {}, kNow).has_value());
+        // Mixed sign / letters in the relative shortcut still fail.
+        QVERIFY(!MainWindow::ParseGotoTimestampInput(QStringLiteral("-1x"), {}, kNow).has_value());
+        QVERIFY(!MainWindow::ParseGotoTimestampInput(QStringLiteral("--1h"), {}, kNow).has_value());
+    }
+
+    // `ParseGotoTimestampInput` + `LocalMicrosecondsSinceEpochToUtc`
+    // compose correctly: naive parses get TZ-shifted, zoned ones
+    // do NOT (double-shift regression pin). Shift bound is +/-14h
+    // to stay TZ-agnostic across CI hosts.
+    void TestParseAndLocalShiftHelpersComposeForNaiveInput()
+    {
+        const std::chrono::system_clock::time_point kNow =
+            std::chrono::system_clock::time_point{std::chrono::microseconds{1'700'000'000'000'000LL}};
+
+        const auto naiveParse = MainWindow::ParseGotoTimestampInput(QStringLiteral("2024-04-28T12:00:00"), {}, kNow);
+        QVERIFY(naiveParse.has_value());
+        QVERIFY(naiveParse->isNaive);
+
+        const int64_t naiveMicros = naiveParse->micros;
+        const int64_t shiftedMicros = loglib::LocalMicrosecondsSinceEpochToUtc(naiveMicros);
+
+        // Shift is exactly the UTC offset at that instant. Bound it
+        // to +/-14 h (max real-world offset today) so the assertion
+        // catches an accidental "shift by seconds since epoch"
+        // regression regardless of the host TZ.
+        const int64_t deltaMicros = shiftedMicros - naiveMicros;
+        constexpr int64_t MAX_TZ_OFFSET_MICROS = 14LL * 3600LL * 1'000'000LL;
+        QVERIFY2(std::llabs(deltaMicros) <= MAX_TZ_OFFSET_MICROS, "TZ shift must be within +/-14 h");
+
+        // Zoned input must NOT shift (double-shift regression pin).
+        const std::vector<std::string> zonedFormats{"%FT%T%Ez"};
+        const auto zonedParse =
+            MainWindow::ParseGotoTimestampInput(QStringLiteral("2024-04-28T12:00:00+00:00"), zonedFormats, kNow);
+        QVERIFY(zonedParse.has_value());
+        QVERIFY(!zonedParse->isNaive);
+    }
+
+    // Goto Timestamp binary search: no user sort active. The
+    // fixture streams three timestamps 1 s apart; the query
+    // targets the middle row exactly.
+    void TestFindFirstRowAtOrAfterBinarySearchesWhenUnsorted()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+        auto *proxy = mWindow->FilterModel();
+        QVERIFY(proxy != nullptr);
+        QCOMPARE(proxy->SortColumn(), -1);
+
+        // Middle row's exact timestamp: 2024-04-28T10:00:02+00:00.
+        // Feed epoch micros directly so the test is timezone-agnostic.
+        const auto *table = &mWindow->Model()->Table();
+        const auto midMicros = loglib::AsEpochMicroseconds(table->GetValue(1, static_cast<std::size_t>(timeCol)));
+        QVERIFY(midMicros.has_value());
+
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *midMicros), 1);
+
+        // A tick earlier still lands on the middle row.
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *midMicros - 1), 1);
+
+        // Way past the last timestamp: no row qualifies.
+        const auto lastMicros = loglib::AsEpochMicroseconds(table->GetValue(2, static_cast<std::size_t>(timeCol)));
+        QVERIFY(lastMicros.has_value());
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *lastMicros + 1), -1);
+    }
+
+    // Regression pin: a mid-file *missing* timestamp must not
+    // break the fast-path binary search. Middle row omits the
+    // `timestamp` key entirely. Covers every boundary: before /
+    // at-first, between valid rows (skip the missing one), at /
+    // past last.
+    void TestFindFirstRowAtOrAfterHandlesInterleavedMissingTimestamps()
+    {
+        auto *model = mWindow->Model();
+        Q_ASSERT(model != nullptr);
+
+        const QStringList lines{
+            QStringLiteral(R"({"timestamp":"2024-04-28T10:00:01+00:00","msg":"first"})"),
+            QStringLiteral(R"({"msg":"middle has no timestamp"})"),
+            QStringLiteral(R"({"timestamp":"2024-04-28T10:00:03+00:00","msg":"third"})"),
+        };
+        const TempJsonFile fixture(lines);
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        auto file = std::make_unique<loglib::LogFile>(fixture.Path().toStdString());
+        auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(file));
+        loglib::FileLineSource *fileSourcePtr = fileSource.get();
+        const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
+        loglib::ParserOptions options;
+        options.stopToken = stopToken;
+        loglib::internal::AdvancedParserOptions advanced;
+        advanced.threads = 1;
+        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        if (finishedSpy.count() == 0)
+        {
+            finishedSpy.wait(5000);
+        }
+        QCoreApplication::processEvents();
+
+        const int timeCol = ColumnByHeader(*model, QStringLiteral("timestamp"));
+        QVERIFY2(timeCol >= 0, "timestamp column must exist");
+        QCOMPARE(model->rowCount(), 3);
+
+        const auto *table = &model->Table();
+        const auto firstMicros = loglib::AsEpochMicroseconds(table->GetValue(0, static_cast<std::size_t>(timeCol)));
+        const auto lastMicros = loglib::AsEpochMicroseconds(table->GetValue(2, static_cast<std::size_t>(timeCol)));
+        QVERIFY(firstMicros.has_value());
+        QVERIFY(lastMicros.has_value());
+
+        // Before the earliest timestamp -> row 0 (row 1 is missing
+        // and must be skipped over, not treated as a match).
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *firstMicros - 1'000'000), 0);
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *firstMicros), 0);
+
+        // Between the two valid timestamps -> row 2 (row 1 is
+        // missing; must NOT be returned).
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *firstMicros + 1), 2);
+
+        // Exactly-last / past-last.
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *lastMicros), 2);
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *lastMicros + 1), -1);
+    }
+
+    // Regression pin: with a filter that hides source rows 0 and 1
+    // (keeps only row 2), the fast path must jump forward to the
+    // visible row rather than returning the hidden one.
+    void TestFindFirstRowAtOrAfterSkipsFilterHiddenRowsInFastPath()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+        auto *model = mWindow->Model();
+        auto *proxy = mWindow->FilterModel();
+        QVERIFY(model != nullptr);
+        QVERIFY(proxy != nullptr);
+        QCOMPARE(model->rowCount(), 3);
+
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist");
+
+        // Keep only the row whose `msg` equals "third" (source
+        // row 2). `CallbackStringRowPredicate` is the same variant
+        // arm the Filters dock uses.
+        loglib::CallbackStringRowPredicate keepThird(static_cast<std::size_t>(msgCol), [](std::string_view value) {
+            return value == std::string_view{"third"};
+        });
+
+        std::vector<loglib::RowPredicate> rules;
+        rules.emplace_back(std::move(keepThird));
+        proxy->SetFilterRules(std::move(rules));
+        QCoreApplication::processEvents();
+        QCOMPARE(proxy->rowCount(), 1);
+        QCOMPARE(proxy->SortColumn(), -1);
+
+        // Target before every row's ts: without the visibility
+        // step this would return row 0 (filtered out); with it,
+        // it must jump forward to visible row 2 ("third").
+        const auto *table = &model->Table();
+        const auto firstMicros = loglib::AsEpochMicroseconds(table->GetValue(0, static_cast<std::size_t>(timeCol)));
+        QVERIFY(firstMicros.has_value());
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *firstMicros - 1'000'000), 2);
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *firstMicros), 2);
+
+        // Target past the only visible row's ts: no live row
+        // qualifies -- must be -1, not a hidden row further down.
+        const auto lastMicros = loglib::AsEpochMicroseconds(table->GetValue(2, static_cast<std::size_t>(timeCol)));
+        QVERIFY(lastMicros.has_value());
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *lastMicros + 1), -1);
+
+        // Restore the pristine "no filter" state so downstream
+        // tests in this suite see the fixture unchanged.
+        proxy->SetFilterRules({});
+        QCoreApplication::processEvents();
+    }
+
+    // User-sort path: descending `msg` sort forces a real
+    // permutation. The scan walks proxy rows in display order,
+    // so the "first" qualifying row is the last-in-file
+    // ("third", source row 2).
+    void TestFindFirstRowAtOrAfterLinearScansWhenUserSortActive()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+        const int msgCol = ColumnByHeader(*mWindow->Model(), QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        auto *view = mWindow->findChild<LogTableView *>();
+        QVERIFY(view != nullptr);
+        view->sortByColumn(msgCol, Qt::DescendingOrder);
+        QCoreApplication::processEvents();
+
+        auto *proxy = mWindow->FilterModel();
+        QVERIFY(proxy != nullptr);
+        QCOMPARE(proxy->SortColumn(), msgCol);
+
+        // Earliest possible target (INT64_MIN) still picks the
+        // *first* row in display order, which under `msg DESC` is
+        // source row 2 ("third").
+        const int found = mWindow->FindFirstRowAtOrAfter(timeCol, std::numeric_limits<int64_t>::min());
+        QCOMPARE(found, 2);
+    }
+
+    // Regression pin: newest-first display reversal is a mid-
+    // proxy concern; the binary search still returns the source
+    // row in file order. `SelectSourceRow` handles the mapping
+    // to the reversed display position.
+    void TestFindFirstRowAtOrAfterHonoursNewestFirstDisplay()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+        auto *model = mWindow->Model();
+        auto *rowOrder = mWindow->findChild<RowOrderProxyModel *>();
+        auto *view = mWindow->findChild<LogTableView *>();
+        QVERIFY(model != nullptr);
+        QVERIFY(rowOrder != nullptr);
+        QVERIFY(view != nullptr);
+        QCOMPARE(model->rowCount(), 3);
+
+        // Flip into newest-first mode. Save the original so we can
+        // restore it (this is process-wide global state).
+        const bool wasReversed = rowOrder->IsReversed();
+        rowOrder->SetReversed(true);
+        QCoreApplication::processEvents();
+        QVERIFY(rowOrder->IsReversed());
+
+        // Fast path must still return the earliest-in-file row that
+        // qualifies (source row 1 for the middle timestamp).
+        const auto *table = &model->Table();
+        const auto midMicros = loglib::AsEpochMicroseconds(table->GetValue(1, static_cast<std::size_t>(timeCol)));
+        QVERIFY(midMicros.has_value());
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *midMicros), 1);
+
+        // And `SelectSourceRow` must land the view on the reversed
+        // proxy position (source row 1 in a 3-row reversed view
+        // is proxy row `3 - 1 - 1 == 1`; middle stays middle).
+        view->selectionModel()->clearSelection();
+        view->setCurrentIndex(QModelIndex{});
+        mWindow->SelectSourceRow(1);
+        QCoreApplication::processEvents();
+        QCOMPARE(view->currentIndex().row(), 1);
+
+        // Source row 0 (earliest) -> reversed proxy row 2 (bottom).
+        mWindow->SelectSourceRow(0);
+        QCoreApplication::processEvents();
+        QCOMPARE(view->currentIndex().row(), 2);
+
+        rowOrder->SetReversed(wasReversed);
+        QCoreApplication::processEvents();
+    }
+
+    // Seam: post-`exec` body dispatches naive-vs-zoned, updates
+    // the sticky-input mirror BEFORE the parse (so a garbage
+    // input the user wants to correct survives), and lands on
+    // the qualifying source row.
+    void TestExecuteGotoTimestampSeamJumpsAndRemembersInput()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+        auto *model = mWindow->Model();
+        auto *view = mWindow->findChild<LogTableView *>();
+        QVERIFY(model != nullptr);
+        QVERIFY(view != nullptr);
+        QCOMPARE(model->rowCount(), 3);
+
+        const std::chrono::system_clock::time_point kNow =
+            std::chrono::system_clock::time_point{std::chrono::microseconds{1'700'000'000'000'000LL}};
+
+        view->selectionModel()->clearSelection();
+        view->setCurrentIndex(QModelIndex{});
+        mWindow->statusBar()->clearMessage();
+
+        // Zoned ISO input matching the fixture's middle row. The
+        // zoned parse skips the naive -> UTC shift (double-shift
+        // regression pin) so the row lands regardless of host TZ.
+        mWindow->ExecuteGotoTimestampForTest(QStringLiteral("2024-04-28T10:00:02+00:00"), kNow);
+        QCoreApplication::processEvents();
+        QCOMPARE(view->currentIndex().row(), 1);
+
+        // Sticky mirror keeps the raw string, not a canonicalised
+        // form.
+        QCOMPARE(mWindow->LastGotoTimestampInputForTest(), QStringLiteral("2024-04-28T10:00:02+00:00"));
+
+        // Garbage input: parse fails, sticky mirror still updates
+        // so the user can correct without retyping the whole
+        // string.
+        mWindow->ExecuteGotoTimestampForTest(QStringLiteral("not a timestamp"), kNow);
+        QCoreApplication::processEvents();
+        QCOMPARE(mWindow->LastGotoTimestampInputForTest(), QStringLiteral("not a timestamp"));
+        const QString hint = mWindow->statusBar()->currentMessage();
+        QVERIFY2(
+            hint.contains(QStringLiteral("Could not parse"), Qt::CaseInsensitive),
+            qUtf8Printable(QStringLiteral("Expected parse-error hint, got: '%1'").arg(hint))
+        );
+    }
+
+    // Seam: an out-of-range target surfaces the "no visible row
+    // at or after that time" hint without moving the selection.
+    void TestExecuteGotoTimestampSeamHintsWhenNoRowQualifies()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+        auto *view = mWindow->findChild<LogTableView *>();
+        QVERIFY(view != nullptr);
+
+        const std::chrono::system_clock::time_point kNow =
+            std::chrono::system_clock::time_point{std::chrono::microseconds{1'700'000'000'000'000LL}};
+
+        view->selectionModel()->clearSelection();
+        view->setCurrentIndex(QModelIndex{});
+        mWindow->statusBar()->clearMessage();
+
+        // 2099 is well past the fixture's 2024 rows.
+        mWindow->ExecuteGotoTimestampForTest(QStringLiteral("2099-01-01T00:00:00+00:00"), kNow);
+        QCoreApplication::processEvents();
+
+        const QString hint = mWindow->statusBar()->currentMessage();
+        QVERIFY2(
+            hint.contains(QStringLiteral("No visible row"), Qt::CaseInsensitive),
+            qUtf8Printable(QStringLiteral("Expected 'No visible row' hint, got: '%1'").arg(hint))
+        );
+        QVERIFY(view->selectionModel()->selectedRows().isEmpty());
+    }
+
+    // `NewSession()` wipes the sticky Goto Timestamp mirror so
+    // a stale reference doesn't pre-populate the next dialog.
+    void TestGotoTimestampStickyInputClearsOnNewSession()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+
+        const std::chrono::system_clock::time_point kNow =
+            std::chrono::system_clock::time_point{std::chrono::microseconds{1'700'000'000'000'000LL}};
+
+        mWindow->ExecuteGotoTimestampForTest(QStringLiteral("2024-04-28T10:00:02+00:00"), kNow);
+        QCoreApplication::processEvents();
+        QCOMPARE(mWindow->LastGotoTimestampInputForTest(), QStringLiteral("2024-04-28T10:00:02+00:00"));
+
+        // Trigger via the wired action so the private slot is
+        // reached the same way `Ctrl+N` reaches it in the app.
+        auto *action = mWindow->findChild<QAction *>(QStringLiteral("actionNewSession"));
+        QVERIFY2(action != nullptr, "actionNewSession must be reachable via objectName");
+        action->trigger();
+        QCoreApplication::processEvents();
+        QCOMPARE(mWindow->LastGotoTimestampInputForTest(), QString{});
+    }
+
+    // Seam: relative shortcut resolves against the pinned @p now
+    // (not `system_clock::now()`) and lands on the qualifying
+    // row. `-1h` from `midMicros + 1h` lands on the middle row.
+    void TestExecuteGotoTimestampSeamResolvesRelativeShortcutAgainstPinnedNow()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+        auto *model = mWindow->Model();
+        auto *view = mWindow->findChild<LogTableView *>();
+        QVERIFY(model != nullptr);
+        QVERIFY(view != nullptr);
+
+        // Middle row's stored ts is the "target" the shortcut
+        // will resolve to when `now` sits exactly one hour later.
+        const auto *table = &model->Table();
+        const auto midMicros = loglib::AsEpochMicroseconds(table->GetValue(1, static_cast<std::size_t>(timeCol)));
+        QVERIFY(midMicros.has_value());
+        const std::chrono::system_clock::time_point pinnedNow{
+            std::chrono::microseconds{*midMicros + (3600LL * 1'000'000LL)}
+        };
+
+        view->selectionModel()->clearSelection();
+        view->setCurrentIndex(QModelIndex{});
+
+        mWindow->ExecuteGotoTimestampForTest(QStringLiteral("-1h"), pinnedNow);
+        QCoreApplication::processEvents();
+
+        // `-1h` from `midMicros + 1h` == `midMicros` -> row 1.
+        QCOMPARE(view->currentIndex().row(), 1);
+    }
+
+    // Seam: bail-out branch when the log has no time column.
+    void TestExecuteGotoTimestampSeamHintsWhenNoTimeColumn()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        // Synthetic rows carry only a `value` key -- no time col.
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 3, true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 3);
+        QCOMPARE(loglib::FirstTimeColumnIndex(model->Configuration()), -1);
+
+        mWindow->statusBar()->clearMessage();
+        mWindow->ExecuteGotoTimestampForTest(
+            QStringLiteral("2024-04-28T10:00:02+00:00"), std::chrono::system_clock::now()
+        );
+        QCoreApplication::processEvents();
+
+        const QString hint = mWindow->statusBar()->currentMessage();
+        QVERIFY2(
+            hint.contains(QStringLiteral("no timestamp column"), Qt::CaseInsensitive),
+            qUtf8Printable(QStringLiteral("Expected 'no timestamp column' hint, got: '%1'").arg(hint))
+        );
+
+        model->EndStreaming(false);
+    }
+
+    // Non-monotonic branch: with monotonicity forced false, the
+    // fast path is unsafe. Fall back to a proxy walk that picks
+    // the visible row with the smallest ts >= target. The fixture
+    // is monotonic, so the ANSWER is unchanged; the point is that
+    // the alternate code path runs and still returns correctly.
+    void TestFindFirstRowAtOrAfterUsesProxyIterationWhenNonMonotonic()
+    {
+        const int timeCol = StreamFixtureWithTimeColumnForRowMenuTests();
+        QVERIFY2(timeCol >= 0, "timestamp column must exist after streaming");
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        // Baseline: fast path returns the middle row exactly.
+        const auto *table = &model->Table();
+        const auto midMicros = loglib::AsEpochMicroseconds(table->GetValue(1, static_cast<std::size_t>(timeCol)));
+        QVERIFY(midMicros.has_value());
+        QVERIFY(model->TimestampsAreMonotonic());
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *midMicros), 1);
+
+        mWindow->ForceTimestampsNonMonotonicForTest();
+        QVERIFY(!model->TimestampsAreMonotonic());
+
+        // Same query, different branch, same answer.
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *midMicros), 1);
+
+        // A tick before the middle row still picks the middle row
+        // (proxy iteration returns the min ts satisfying >=).
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *midMicros - 1), 1);
+
+        // Past the last row -> -1.
+        const auto lastMicros = loglib::AsEpochMicroseconds(table->GetValue(2, static_cast<std::size_t>(timeCol)));
+        QVERIFY(lastMicros.has_value());
+        QCOMPARE(mWindow->FindFirstRowAtOrAfter(timeCol, *lastMicros + 1), -1);
+    }
+
+    // Streaming path: the monotonicity flag flips false when a
+    // second batch's first valid ts predates the first batch's
+    // last (multi-file `Append` / rotation). Pinned end-to-end
+    // through `LogModel::AppendBatch`.
+    void TestLogModelTimestampsMonotonicFlipsOnBatchBoundaryInversion()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY` aborts on null.
+        QVERIFY(model->TimestampsAreMonotonic());
+
+        // Batch 1: three rows at 2024-04-28T10:00:0{1,2,3}Z.
+        const QStringList firstBatchLines{
+            QStringLiteral(R"({"timestamp":"2024-04-28T10:00:01+00:00","msg":"first"})"),
+            QStringLiteral(R"({"timestamp":"2024-04-28T10:00:02+00:00","msg":"second"})"),
+            QStringLiteral(R"({"timestamp":"2024-04-28T10:00:03+00:00","msg":"third"})"),
+        };
+        const TempJsonFile firstFixture(firstBatchLines);
+        QSignalSpy firstFinishedSpy(model, &LogModel::streamingFinished);
+        auto firstFile = std::make_unique<loglib::LogFile>(firstFixture.Path().toStdString());
+        auto firstSource = std::make_unique<loglib::FileLineSource>(std::move(firstFile));
+        loglib::FileLineSource *firstPtr = firstSource.get();
+        const loglib::StopToken firstToken = model->BeginStreamingForSyncTest(std::move(firstSource));
+        loglib::ParserOptions firstOpts;
+        firstOpts.stopToken = firstToken;
+        loglib::internal::AdvancedParserOptions firstAdvanced;
+        firstAdvanced.threads = 1;
+        loglib::JsonParser::ParseStreaming(*firstPtr, *model->Sink(), firstOpts, firstAdvanced);
+        if (firstFinishedSpy.count() == 0)
+        {
+            firstFinishedSpy.wait(5000);
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 3);
+        // Still monotonic after a well-ordered batch.
+        QVERIFY(model->TimestampsAreMonotonic());
+
+        // Batch 2 (via `AppendStreaming`): rows dated BEFORE the
+        // first batch -- the multi-file `Append` scenario.
+        const QStringList secondBatchLines{
+            QStringLiteral(R"({"timestamp":"2024-04-28T09:00:01+00:00","msg":"older-a"})"),
+            QStringLiteral(R"({"timestamp":"2024-04-28T09:00:02+00:00","msg":"older-b"})"),
+        };
+        const TempJsonFile secondFixture(secondBatchLines);
+        QSignalSpy secondFinishedSpy(model, &LogModel::streamingFinished);
+        auto secondFile = std::make_unique<loglib::LogFile>(secondFixture.Path().toStdString());
+        auto secondSource = std::make_unique<loglib::FileLineSource>(std::move(secondFile));
+        loglib::FileLineSource *secondPtr = secondSource.get();
+        const loglib::StopToken secondToken = model->AppendStreaming(std::move(secondSource), {});
+        loglib::ParserOptions secondOpts;
+        secondOpts.stopToken = secondToken;
+        loglib::internal::AdvancedParserOptions secondAdvanced;
+        secondAdvanced.threads = 1;
+        loglib::JsonParser::ParseStreaming(*secondPtr, *model->Sink(), secondOpts, secondAdvanced);
+        if (secondFinishedSpy.count() == 0)
+        {
+            secondFinishedSpy.wait(5000);
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 5);
+        // Flag flipped false and does NOT self-heal.
+        QVERIFY(!model->TimestampsAreMonotonic());
+    }
+
+    // `NewSession()` restores the monotonicity flag so a fresh
+    // well-ordered log doesn't inherit a prior "non-monotonic"
+    // verdict.
+    void TestLogModelTimestampsMonotonicResetsOnNewSession()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        mWindow->ForceTimestampsNonMonotonicForTest();
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY` aborts on null.
+        QVERIFY(!model->TimestampsAreMonotonic());
+
+        auto *action = mWindow->findChild<QAction *>(QStringLiteral("actionNewSession"));
+        QVERIFY2(action != nullptr, "actionNewSession must be reachable via objectName");
+        action->trigger();
+        QCoreApplication::processEvents();
+        QVERIFY(model->TimestampsAreMonotonic());
     }
 
     // Anchors round-trip: live AnchorManager -> saved JSON ->

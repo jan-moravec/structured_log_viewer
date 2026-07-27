@@ -385,6 +385,84 @@ TEST_CASE("LocalMillisecondsSinceEpochToTimeStamp", "[log_processing]")
     }
 }
 
+// `LocalMicrosecondsSinceEpochToUtc` under `Europe/Berlin` (a
+// pinned IANA zone rather than `CurrentZone()` for deterministic
+// CI). Covers ordinary, fall-back, spring-forward, null-zone,
+// and far-future inputs.
+TEST_CASE("LocalMicrosecondsSinceEpochToUtc handles DST transitions", "[log_processing]")
+{
+    InitializeTimezoneData();
+
+    // Berlin DST 2024: spring forward 2024-03-31 02:00 -> 03:00
+    // CEST (02:30 does not exist); fall back 2024-10-27 03:00 ->
+    // 02:00 CET (02:30 exists twice).
+    const date::time_zone *berlin = date::locate_zone("Europe/Berlin");
+    REQUIRE(berlin != nullptr);
+
+    // Build a naive-as-if-UTC micros value from Y-M-D H:M:S,
+    // mirroring what the Goto Timestamp seam produces after a
+    // naive `date::parse`. Explicit `date::month{}` / `date::day{}`
+    // silences a clang-tidy narrowing warning.
+    const auto naiveLocalMicros = [](int year, unsigned month, unsigned day, int hour, int minute, int second) {
+        const auto ymd = date::year{year} / date::month{month} / date::day{day};
+        const auto sysDays = date::sys_days{ymd};
+        const auto wallClock =
+            sysDays + std::chrono::hours{hour} + std::chrono::minutes{minute} + std::chrono::seconds{second};
+        return std::chrono::duration_cast<std::chrono::microseconds>(wallClock.time_since_epoch()).count();
+    };
+
+    SECTION("Ordinary hour round-trips through the zone offset")
+    {
+        // 2024-04-01 12:00 Berlin (CEST +02:00) -> 10:00 UTC.
+        const int64_t localMicros = naiveLocalMicros(2024, 4, 1, 12, 0, 0);
+        const int64_t expectedUtcMicros = naiveLocalMicros(2024, 4, 1, 10, 0, 0);
+        const int64_t got = LocalMicrosecondsSinceEpochToUtc(localMicros, berlin);
+        CHECK(got == expectedUtcMicros);
+    }
+
+    SECTION("Fall-back ambiguous hour resolves to the earlier candidate")
+    {
+        // 2024-10-27 02:30 Berlin occurs twice; `choose::earliest`
+        // picks CEST (+02:00) -> 00:30 UTC.
+        const int64_t localMicros = naiveLocalMicros(2024, 10, 27, 2, 30, 0);
+        const int64_t earlierUtcMicros = naiveLocalMicros(2024, 10, 27, 0, 30, 0);
+        const int64_t got = LocalMicrosecondsSinceEpochToUtc(localMicros, berlin);
+        CHECK(got == earlierUtcMicros);
+    }
+
+    SECTION("Spring-forward gap hour snaps to the transition boundary")
+    {
+        // 2024-03-31 02:30 Berlin does not exist. `choose::earliest`
+        // returns the transition boundary (01:00 UTC = the instant
+        // clocks jumped forward), not `nonexistent_local_time`.
+        // Pinning the exact value guards against a future date
+        // library changing this semantic.
+        const int64_t localMicros = naiveLocalMicros(2024, 3, 31, 2, 30, 0);
+        const int64_t transitionBoundaryUtc = naiveLocalMicros(2024, 3, 31, 1, 0, 0);
+        const int64_t got = LocalMicrosecondsSinceEpochToUtc(localMicros, berlin);
+        CHECK(got == transitionBoundaryUtc);
+    }
+
+    SECTION("Null zone passes the value through unchanged")
+    {
+        const int64_t localMicros = naiveLocalMicros(2024, 4, 1, 12, 0, 0);
+        const int64_t got = LocalMicrosecondsSinceEpochToUtc(localMicros, nullptr);
+        CHECK(got == localMicros);
+    }
+
+    SECTION("Far-future / far-past instants degrade gracefully")
+    {
+        // Well past the tzdata transition table. `to_sys` may
+        // throw a non-DST exception; the catch keeps the helper
+        // exception-safe by yielding the naive value. Either way
+        // the shift stays within +/-14 h.
+        const int64_t farFutureMicros = naiveLocalMicros(9999, 12, 31, 23, 59, 59);
+        const int64_t gotFuture = LocalMicrosecondsSinceEpochToUtc(farFutureMicros, berlin);
+        constexpr int64_t MAX_ZONE_OFFSET_MICROS = 14LL * 3600LL * 1'000'000LL;
+        CHECK(std::llabs(gotFuture - farFutureMicros) <= MAX_ZONE_OFFSET_MICROS);
+    }
+}
+
 TEST_CASE("UtcMicrosecondsToDateTimeString", "[log_processing]")
 {
     InitializeTimezoneData();
