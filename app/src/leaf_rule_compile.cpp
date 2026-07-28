@@ -211,7 +211,6 @@ std::optional<loglib::RowPredicate> CompileLeaf(
         };
     }
     case T::String:
-    default:
     {
         if (!rule.filterString.has_value() || !rule.matchType.has_value())
         {
@@ -231,17 +230,46 @@ std::optional<loglib::RowPredicate> CompileLeaf(
         };
     }
     }
+    // Unreachable: the switch above is exhaustive and carries no
+    // `default:`, so adding a `LeafRule::Type` is a `-Wswitch` error
+    // here rather than a silent reinterpretation of the new type as
+    // a `String` leaf (which is what the old `case T::String:
+    // default:` fallthrough did).
+    return std::nullopt;
 }
 
 namespace
 {
 
 /// Recursive compile step. Returns `std::nullopt` when the sub-tree
-/// collapses to inert (e.g. every leaf was unresolved). The caller
-/// then treats a `nullopt` And-child as "match all" (drop) and a
-/// `nullopt` Or-child as "match none" (drop). Empty `And` becomes
-/// match-all and empty `Or` becomes match-none, which the runtime
-/// evaluator handles directly.
+/// is **absent** -- it carries no constraint the evaluator can apply.
+///
+/// "Absent" is a single, uniform rule rather than a truth value, and
+/// every parent applies it the same way: drop the child, and if that
+/// leaves the parent with nothing of its own, report the parent as
+/// absent too. So `And` drops absent children (its identity is
+/// match-all), `Or` drops them and goes absent when *all* of its
+/// children did, and `Not` goes absent when its child did.
+///
+/// The alternative -- treating an unresolvable leaf as match-none and
+/// propagating that through the tree -- is rejected deliberately. A
+/// leaf goes absent for reasons that are routine and usually
+/// temporary: column keys that don't resolve yet, a `Level` column
+/// that hasn't been promoted, an empty payload from a hand-edited
+/// config. Folding match-none upwards would blank the table mid-
+/// stream and give the user no cue as to why, whereas dropping the
+/// clause over-accepts for a moment and then self-corrects on the
+/// next `enumColumnsChanged` rebuild. Over-accepting is recoverable;
+/// an empty view that looks like data loss is not.
+///
+/// Note the asymmetry this creates on purpose: `NOT <absent>` is
+/// absent, *not* match-all. Reading `NOT` as "invert match-none" and
+/// widening to match-all would discard every sibling constraint in
+/// the enclosing `And` -- `svc:auth AND NOT missing:x` would show the
+/// whole log rather than just the `svc:auth` rows.
+///
+/// Independently of all this, an empty `And` is match-all and an
+/// empty `Or` is match-none; the runtime evaluator handles both.
 std::optional<loglib::CompiledFilterExpression> CompileNode(
     const loglib::FilterExpression &expr,
     const std::vector<loglib::LogConfiguration::Column> &columns,
@@ -277,7 +305,7 @@ std::optional<loglib::CompiledFilterExpression> CompileNode(
                     {
                         andNode.children.push_back(std::move(*compiledChild));
                     }
-                    // Inert child in AND -> drop (match-all identity).
+                    // Absent child -> drop; `And`'s identity is match-all.
                 }
                 // Cost-order children cheap-first so short-circuit
                 // rejects fire ASAP.
@@ -310,14 +338,16 @@ std::optional<loglib::CompiledFilterExpression> CompileNode(
                         orNode.children.push_back(std::move(*compiledChild));
                         anyChild = true;
                     }
-                    // Inert child in OR -> drop (match-none identity).
+                    // Absent child -> drop, keeping the surviving
+                    // alternatives. Note this narrows the `Or`: the
+                    // dropped branch can no longer admit rows.
                 }
                 if (!anyChild)
                 {
-                    // Every child collapsed to inert. In an OR that's
-                    // "match none" -- treat the whole OR as inert so
-                    // the enclosing AND drops it (a match-none OR
-                    // inside an AND would blank the view).
+                    // Nothing left to disjoin, so the `Or` carries no
+                    // constraint of its own and is absent in turn.
+                    // Reporting match-none here instead would blank
+                    // the view (see the note on `CompileNode`).
                     return std::nullopt;
                 }
                 // Cost-order children cheap-first so short-circuit
@@ -349,30 +379,15 @@ std::optional<loglib::CompiledFilterExpression> CompileNode(
                     // Defensive: `MakeNot`'s constructors enforce
                     // non-null; only a hand-edited config that
                     // survived Glaze validation could land here.
-                    // Drop so the parent AND treats us as match-all
-                    // rather than propagating the degenerate node.
+                    // Nothing to invert, so the node is absent.
                     return std::nullopt;
                 }
                 auto compiledChild = CompileNode(*n.child, columns, table, referencedColumns);
                 if (!compiledChild.has_value())
                 {
-                    // `Not(inert)` conflates a few causes:
-                    //   * unresolved column keys (rule targets a
-                    //     column that doesn't exist) -- match-all
-                    //     is the correct semantic here anyway
-                    //     (no row can match the missing column, so
-                    //     NOT matches every row);
-                    //   * empty payload (e.g. time with no bounds)
-                    //     -- also correctly match-all
-                    //     (NOT match-none = match-all);
-                    //   * level column not yet promoted -- we
-                    //     over-accept until the next `Grew` fires
-                    //     `enumColumnsChanged` and rebuilds. The
-                    //     transient over-acceptance is preferable
-                    //     to blanking every row during streaming.
-                    // Dropping the whole Not is match-all in the
-                    // enclosing AND, which matches all three cases
-                    // to the desired steady state.
+                    // There is no constraint to invert, so the `Not`
+                    // is absent as well. Deliberately *not* match-all
+                    // -- see the asymmetry note on `CompileNode`.
                     return std::nullopt;
                 }
                 loglib::CompiledFilterExpression compiled;

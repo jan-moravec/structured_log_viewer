@@ -424,8 +424,8 @@ namespace
 {
 
 /// Walk @p node's tree and count leaves (both total-visit and
-/// unique-predicate) plus whether any regex / wildcard / OR / NOT
-/// is present. Used to gate the bitset path below.
+/// unique-predicate) plus whether any OR / NOT is present. Used to
+/// gate the bitset path below.
 struct TreeShape
 {
     /// Total leaf occurrences (a duplicate leaf counts each time).
@@ -434,7 +434,6 @@ struct TreeShape
     /// estimate below since `FilterAcceptedRows` dedups on the
     /// bitset path.
     size_t uniqueLeafCount = 0;
-    bool hasRegexOrWildcard = false;
     bool hasOr = false;
     bool hasNot = false;
 };
@@ -453,10 +452,6 @@ void CollectShape(
                 {
                     seenPredicates.push_back(&node.predicate);
                     ++shape.uniqueLeafCount;
-                }
-                if (std::holds_alternative<CallbackStringRowPredicate>(node.predicate))
-                {
-                    shape.hasRegexOrWildcard = true;
                 }
             }
             else if constexpr (std::is_same_v<T, CompiledFilterExpression::And>)
@@ -487,22 +482,40 @@ void CollectShape(
     );
 }
 
-/// Bitset-materialisation eligibility. Trees that would waste the
-/// bitset (flat `And` of one or two cheap leaves) stay on the visit
-/// path; complex or OR-heavy trees switch. The memory cap is
-/// generous but hard -- catastrophic bitsets fall back to visit.
+/// Bitset-materialisation eligibility. The memory cap is generous
+/// but hard -- catastrophic bitsets fall back to visit.
 constexpr size_t BITSET_MEMORY_CAP_BYTES = size_t{512} * 1024 * 1024;
 
+/// True when materialising leaf bitsets is expected to beat the
+/// short-circuiting visit path.
+///
+/// The decisive property is whether short-circuit evaluation can
+/// skip work. In a **flat `And`** it always can: the visit path
+/// evaluates child N only on the rows that survived children
+/// 1..N-1, so it performs a subset of the work the bitset path
+/// performs (which materialises every leaf over every row). A flat
+/// `And` therefore never qualifies, regardless of leaf count or
+/// leaf cost -- an earlier revision of this heuristic also
+/// admitted any tree with >= 4 leaves, or >= 2 leaves where one
+/// was a string predicate, which sent the extremely common
+/// `svc:auth AND msg:timeout` shape down the bitset path and paid
+/// two full-table string scans where one plus a survivor pass
+/// would do.
+///
+/// `Or` / `Not` are where materialisation wins: an `Or` has to
+/// touch every leaf for every row it ultimately rejects, a `Not`
+/// inverts a whole column of results at once, and a leaf repeated
+/// across branches is materialised once and shared. Those shapes
+/// also benefit from word-parallel folding.
 [[nodiscard]] bool ShouldUseBitsetPath(const TreeShape &shape, size_t rowCount) noexcept
 {
-    if (rowCount == 0 || shape.leafCount == 0)
+    if (rowCount == 0 || shape.leafCount < 2)
     {
         return false;
     }
-    const bool complexShape = (shape.leafCount >= 2 && (shape.hasRegexOrWildcard || shape.hasOr || shape.hasNot)) ||
-                              shape.leafCount >= 4;
-    if (!complexShape)
+    if (!shape.hasOr && !shape.hasNot)
     {
+        // Flat `And`: short-circuit evaluation strictly dominates.
         return false;
     }
     // Memory scales with unique leaves after dedup, not total
@@ -578,10 +591,26 @@ public:
         MaskTail();
     }
 
+    /// Number of set bits. Tail bits past `mRowCount` are always
+    /// masked off, so this is exactly the accepted-row count.
+    [[nodiscard]] size_t Count() const noexcept
+    {
+        size_t total = 0;
+        for (const uint64_t word : mWords)
+        {
+            total += static_cast<size_t>(std::popcount(word));
+        }
+        return total;
+    }
+
     /// Extract accepted rows in ascending order.
     void CollectInto(std::vector<size_t> &out) const
     {
-        out.reserve(out.size() + mRowCount);
+        // Size from the popcount rather than `mRowCount`: a
+        // selective filter over a large log would otherwise reserve
+        // one slot per *row* (8 bytes each, so ~800 MB on a 100 M-row
+        // table) to hold a handful of matches.
+        out.reserve(out.size() + Count());
         for (size_t wi = 0; wi < mWords.size(); ++wi)
         {
             uint64_t word = mWords[wi];

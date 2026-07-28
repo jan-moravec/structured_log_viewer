@@ -30,13 +30,6 @@
 namespace
 {
 
-/// Concise one-line hint below the query field. Shows the operator
-/// summary without leaving the dialog.
-constexpr auto HELP_TEXT =
-    "Operators: col:contains, col=\"exact\", col~/regex/, col%\"wild\", col>N, col<=N,\n"
-    "col in [a,b,c] (enum) or col in [min..max] (numeric / ISO time range).\n"
-    "Combine with AND / OR / NOT and parentheses. Leave empty to match all rows.";
-
 /// `FormatExpression` renders match-all as the empty string
 /// already, so this is currently equivalent to a direct call --
 /// keep the wrapper for readability and to pin the dialog's
@@ -154,7 +147,17 @@ void AdvancedFilterEditor::SetupLayout()
     mQueryEdit->setMinimumHeight(approxRowHeight * 4);
     layout->addWidget(mQueryEdit);
 
-    mHelpLabel = new QLabel(tr(HELP_TEXT), this);
+    // Concise operator summary so the user doesn't have to leave the
+    // dialog. Spelled out inline rather than hoisted into a
+    // `constexpr` string: `lupdate` only extracts `tr()` arguments
+    // that are literals, so `tr(HELP_TEXT)` compiled fine but left
+    // the block permanently untranslatable.
+    mHelpLabel = new QLabel(
+        tr("Operators: col:contains, col=\"exact\", col~/regex/, col%\"wild\", col>N, col<=N,\n"
+           "col in [a,b,c] (enum) or col in [min..max] (numeric / ISO time range).\n"
+           "Combine with AND / OR / NOT and parentheses. Leave empty to match all rows."),
+        this
+    );
     mHelpLabel->setObjectName(QStringLiteral("advancedFilterHelpLabel"));
     mHelpLabel->setWordWrap(true);
     mHelpLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -172,7 +175,6 @@ void AdvancedFilterEditor::SetupLayout()
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     buttons->setObjectName(QStringLiteral("advancedFilterButtonBox"));
     mOkButton = buttons->button(QDialogButtonBox::Ok);
-    mCancelButton = buttons->button(QDialogButtonBox::Cancel);
     layout->addWidget(buttons);
 
     connect(mQueryEdit, &QPlainTextEdit::textChanged, this, &AdvancedFilterEditor::ReparseAndUpdate);
@@ -225,8 +227,11 @@ void AdvancedFilterEditor::ReparseAndUpdate()
             mStatusLabel->setStyleSheet(QStringLiteral("color: %1;").arg(ErrorColorHex(this)));
             // No caret offset is available for individual regex leaves
             // (the parser doesn't record per-leaf source positions),
-            // so leave any prior underline in place -- the pattern
-            // itself is visible in the status label.
+            // but the query *did* parse, so any underline still on
+            // screen belongs to a previous, now-fixed syntax error and
+            // would point the user at the wrong character. Clear it and
+            // let the status label name the offending pattern.
+            ClearErrorHighlight();
             mOkButton->setEnabled(false);
             return;
         }

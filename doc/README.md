@@ -522,7 +522,7 @@ Multiple simple-mode filters combine with **AND** — a row shows only if every 
 
 | Operator     | Meaning                                                   | Example                                          |
 | ------------ | --------------------------------------------------------- | ------------------------------------------------ |
-| `col:value`  | *Contains* (case-insensitive substring match) for strings | `service:auth`                                   |
+| `col:value`  | *Contains* — substring match for strings                  | `service:auth`                                   |
 | `col="..."`  | *Exactly* — quoted string, exact match                    | `service="auth-service"`                         |
 | `col~/.../`  | *Regular expression* (Qt regex flavour)                   | `msg ~ /err(or)?/`                               |
 | `col%"..."`  | *Wildcard* (`*` / `?` glob)                               | `path % "*.log"`                                 |
@@ -534,6 +534,10 @@ Multiple simple-mode filters combine with **AND** — a row shows only if every 
 | `col >= ISO` | Time comparison against an ISO-8601 literal               | `ts >= 2024-01-02T00:00:00Z`                     |
 
 Column names are bare identifiers by default; wrap in double quotes to preserve whitespace (`"span id":"abc def"`). Regex delimiters are literal `/` — no escaping needed inside them apart from `\/`.
+
+String **values are matched case-sensitively** (`:`, `=`, `%`, and `~` alike), the same as the simple-mode filter dialog. Use a regex with an inline flag when you need to ignore case — `msg ~ /(?i)timeout/`. Keywords, column-name resolution, and enum value aliases are all case-insensitive; only the value comparison is not.
+
+Value lists and ranges must carry a payload: `col in []` and `col in [..]` are parse errors rather than silently matching everything, as is an inverted range like `latency in [100..10]`.
 
 **Combining leaves.** Use `AND`, `OR`, `NOT` (case-insensitive) or their symbolic aliases `&&`, `||`, `!`. Parentheses group. Adjacent leaves without an explicit operator combine as implicit **AND** — so `service:auth level:error` is shorthand for `service:auth AND level:error`, matching simple-mode behaviour. Precedence is the usual `NOT` > `AND` > `OR`, so `a AND b OR c` parses as `(a AND b) OR c`.
 

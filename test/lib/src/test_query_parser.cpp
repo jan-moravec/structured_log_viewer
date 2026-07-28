@@ -3,9 +3,11 @@
 
 #include <catch2/catch_all.hpp>
 
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <variant>
 
 using namespace loglib;
@@ -496,6 +498,138 @@ TEST_CASE("ParseQuery: numeric literal with dangling exponent errors at the 'e'"
     {
         const auto parsed = ParseQuery("latency=1e2");
         REQUIRE(parsed.has_value());
+    }
+}
+
+// Regression: `FormatTimestampMicros` used to delegate to
+// `gmtime_s` / `gmtime_r`. MSVC's `gmtime_s` returns `EINVAL` for
+// every `time_t` below `-43200`, so *any* bound more than twelve
+// hours before the epoch hit the `epoch_micros:<n>` fallback -- and
+// that marker is not part of the grammar, so the round-trip through
+// the Advanced editor turned into a parse error. The formatter now
+// does the civil-date arithmetic itself, exactly inverting
+// `ParseIsoTimestamp`.
+TEST_CASE("FormatExpression: pre-epoch timestamps round-trip", "[query_parser][pretty][regression]")
+{
+    struct Case
+    {
+        std::int64_t micros;
+        std::string_view expectedIso;
+    };
+    // `-43'200'000'001` is one microsecond past the point where
+    // `gmtime_s` starts failing; the rest walk further back through a
+    // leap day and a century boundary (1900 is *not* a leap year, so
+    // a formatter that got the rule wrong lands on the wrong day).
+    const std::array<Case, 5> cases{
+        Case{.micros = -43'200'000'001, .expectedIso = "1969-12-31T11:59:59.999999Z"},
+        Case{.micros = -86'400'000'000, .expectedIso = "1969-12-31T00:00:00.000000Z"},
+        Case{.micros = -31'536'000'000'000, .expectedIso = "1969-01-01T00:00:00.000000Z"},
+        Case{.micros = -2'208'988'800'000'000, .expectedIso = "1900-01-01T00:00:00.000000Z"},
+        Case{.micros = 951'782'400'000'000, .expectedIso = "2000-02-29T00:00:00.000000Z"},
+    };
+    for (const auto &c : cases)
+    {
+        CAPTURE(c.micros);
+        FilterExpression source;
+        LeafRule rule;
+        rule.type = LeafRule::Type::Time;
+        rule.columnKeys = {"ts"};
+        rule.filterBegin = c.micros;
+        source.node = FilterExpression::Leaf{rule};
+
+        const std::string formatted = FormatExpression(source);
+        CAPTURE(formatted);
+        CHECK(formatted.contains(c.expectedIso));
+        CHECK_FALSE(formatted.contains("epoch_micros"));
+
+        // The load-bearing invariant: the printed form re-parses to
+        // the identical tree.
+        const auto reparsed = ParseQuery(formatted);
+        REQUIRE(reparsed.has_value());
+        CHECK(source == *reparsed);
+    }
+}
+
+// `ParseIsoTimestamp` fed its fields straight into the civil-days
+// formula, which silently rolls over out-of-range values --
+// `2024-13-45` became 2025-02-14. A typo in a bound therefore became
+// a wrong filter instead of an error the editor could underline.
+TEST_CASE("ParseQuery: out-of-range calendar fields are parse errors", "[query_parser][regression]")
+{
+    SECTION("rejected")
+    {
+        const std::array<std::string_view, 7> queries{
+            "ts >= 2024-13-01T00:00:00Z", // month 13
+            "ts >= 2024-00-01T00:00:00Z", // month 0
+            "ts >= 2024-01-32T00:00:00Z", // day 32
+            "ts >= 2024-01-00T00:00:00Z", // day 0
+            "ts >= 2023-02-29T00:00:00Z", // 2023 is not a leap year
+            "ts >= 2024-01-01T25:00:00Z", // hour 25
+            "ts >= 2024-01-01T00:61:00Z", // minute 61
+        };
+        for (const auto &q : queries)
+        {
+            CAPTURE(q);
+            // A rejected timestamp falls back to the numeric branch,
+            // which also refuses it -- either way the query must not
+            // parse into a Time leaf with a rolled-over bound.
+            const auto parsed = ParseQuery(q);
+            CHECK_FALSE(parsed.has_value());
+        }
+    }
+    SECTION("genuine leap day still parses")
+    {
+        const auto expr = ParseOrFail("ts >= 2024-02-29T00:00:00Z");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(leaf->type == LeafRule::Type::Time);
+        REQUIRE(leaf->filterBegin.has_value());
+    }
+}
+
+// `col in []` and `col in [..]` used to parse into a leaf with no
+// payload. `CompileLeaf` then reported it absent, so the clause
+// silently became match-all, and the app's Filters-menu title
+// builder tripped a `Q_ASSERT` on the empty payload in Debug. An
+// inverted range is the same class of problem from the other side:
+// it can never accept a row, so the view goes blank while the editor
+// reports "Parsed OK".
+TEST_CASE("ParseQuery: payload-less and inverted value lists are errors", "[query_parser][regression]")
+{
+    SECTION("empty list")
+    {
+        const auto parsed = ParseQuery("level in []");
+        REQUIRE_FALSE(parsed.has_value());
+        CHECK(parsed.error().message.contains("empty"));
+        // Caret lands on the `]`.
+        CHECK(parsed.error().offset == 10);
+    }
+    SECTION("range with neither bound")
+    {
+        const auto parsed = ParseQuery("latency in [..]");
+        REQUIRE_FALSE(parsed.has_value());
+        CHECK(parsed.error().message.contains("bound"));
+    }
+    SECTION("inverted numeric range")
+    {
+        const auto parsed = ParseQuery("latency in [100..10]");
+        REQUIRE_FALSE(parsed.has_value());
+        CHECK(parsed.error().message.contains("below the lower bound"));
+    }
+    SECTION("inverted time range")
+    {
+        const auto parsed = ParseQuery("ts in [2024-02-01T00:00:00Z..2024-01-01T00:00:00Z]");
+        REQUIRE_FALSE(parsed.has_value());
+        CHECK(parsed.error().message.contains("below the lower bound"));
+    }
+    SECTION("single-sided and equal-bound ranges still parse")
+    {
+        for (const std::string_view q : {"latency in [10..]", "latency in [..100]", "latency in [10..10]"})
+        {
+            CAPTURE(q);
+            const auto parsed = ParseQuery(q);
+            CHECK(parsed.has_value());
+        }
     }
 }
 

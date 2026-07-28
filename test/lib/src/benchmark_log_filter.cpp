@@ -761,10 +761,11 @@ TEST_CASE(
 // These exercise `FilterAcceptedRows` on trees more interesting than a
 // single leaf. Two shapes:
 //
-//   1. **Deep AND** -- four enum leaves conjoined. Historically this is
-//      what "multiple simple filters" produce; the visit path evaluates
-//      it row-by-row with a natural short-circuit at the first
-//      rejecting leaf.
+//   1. **Deep AND** -- four enum leaves conjoined. This is what
+//      "multiple simple filters" produce; the visit path evaluates it
+//      row-by-row with a natural short-circuit at the first rejecting
+//      leaf, which is why `ShouldUseBitsetPath` deliberately leaves
+//      flat `And` trees alone no matter how many leaves they carry.
 //   2. **AND(OR, NOT)** -- the shape a `level in {...} AND NOT
 //      path:health` query compiles to. It has both `Or` and `Not`, so
 //      the bitset-materialisation heuristic in `FilterAcceptedRows`
@@ -858,11 +859,13 @@ TEST_CASE(
                                                       << ", high=" << Ms(high).count() << "), accepted=" << accepted
     );
 
-    // Four-leaf trees pull the bitset heuristic in
-    // `ShouldUseBitsetPath` (>=4 unique leaves), so the timing
-    // envelope is dominated by four `RowBitset` builds + one AND
-    // fold. Historical numbers on the dev box are ~40 ms; 200 ms
-    // gives CI runners room without hiding a regression.
+    // A flat `And` stays on the visit path -- `ShouldUseBitsetPath`
+    // requires an `Or` or a `Not`, because short-circuit evaluation
+    // strictly dominates materialising four bitsets here. The
+    // envelope is therefore one enum leaf over every row plus a
+    // rapidly-shrinking tail. Historical numbers on the dev box are
+    // ~40 ms; 200 ms gives CI runners room without hiding a
+    // regression.
     CHECK(Ms(low).count() < 200.0);
 }
 

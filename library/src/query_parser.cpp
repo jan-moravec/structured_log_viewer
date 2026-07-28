@@ -6,13 +6,11 @@
 #include <array>
 #include <cctype>
 #include <charconv>
-#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <ctime>
 #include <expected>
 #include <limits>
 #include <memory>
@@ -625,10 +623,27 @@ private:
     return true;
 }
 
+/// Proleptic-Gregorian length of @p month (1-based) in @p year.
+[[nodiscard]] int DaysInMonth(int year, int month) noexcept
+{
+    constexpr std::array<int, 12> LENGTHS{31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (month < 1 || month > 12)
+    {
+        return 0;
+    }
+    if (month == 2)
+    {
+        const bool leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+        return leap ? 29 : 28;
+    }
+    return LENGTHS[static_cast<std::size_t>(month - 1)];
+}
+
 /// Try to parse an ISO-8601 timestamp (with or without a fractional
 /// part / timezone suffix) as microseconds since the UNIX epoch.
-/// Returns `nullopt` for anything the format doesn't match. Kept
-/// permissive on the calendar side and strict on the shape.
+/// Returns `nullopt` for anything the format doesn't match: strict
+/// on both the shape and the calendar ranges, so a mistyped bound
+/// surfaces as a parse error rather than a rolled-over date.
 [[nodiscard]] std::optional<std::int64_t> ParseIsoTimestamp(std::string_view text)
 {
     // Fast-reject: ISO timestamps start with `YYYY` and contain
@@ -679,17 +694,23 @@ private:
     {
         return std::nullopt;
     }
+    // The civil-from-fields formula below happily absorbs
+    // out-of-range fields by rolling over (`2024-13-45` became
+    // 2025-02-14), which turns a typo into a silently wrong filter
+    // bound instead of a parse error the editor can underline.
+    if (*month < 1 || *month > 12 || *day < 1 || *day > DaysInMonth(*year, *month))
+    {
+        return std::nullopt;
+    }
 
     int hour = 0;
     int minute = 0;
     int second = 0;
     std::int64_t fractionalMicros = 0;
     std::int64_t offsetSeconds = 0;
-    bool hasTime = false;
     std::size_t cursor = 10;
     if (cursor < text.size() && (text[cursor] == 'T' || text[cursor] == ' '))
     {
-        hasTime = true;
         ++cursor;
         const auto h = readInt(text, cursor, 2);
         if (!h.has_value() || cursor + 2 >= text.size() || text[cursor + 2] != ':')
@@ -715,6 +736,13 @@ private:
             }
             second = *s;
             cursor += 2;
+        }
+        // `24:00:00` is a legal ISO end-of-day spelling; `60` is a
+        // leap second. Both roll over cleanly in the arithmetic
+        // below, so they are accepted -- anything beyond is a typo.
+        if (hour > 24 || minute > 59 || second > 60)
+        {
+            return std::nullopt;
         }
         if (cursor < text.size() && (text[cursor] == '.' || text[cursor] == ','))
         {
@@ -769,6 +797,10 @@ private:
                     tzM = *tzMinutes;
                     cursor += 2;
                 }
+                if (*tzH > 23 || tzM > 59)
+                {
+                    return std::nullopt;
+                }
                 offsetSeconds = sign * ((*tzH * 3600) + (tzM * 60));
             }
         }
@@ -793,10 +825,8 @@ private:
                                         (static_cast<long long>(hour) * 3600LL) +
                                         (static_cast<long long>(minute) * 60LL) + static_cast<long long>(second) -
                                         offsetSeconds;
-    if (!hasTime)
-    {
-        // Bare date -> midnight UTC of that day.
-    }
+    // A bare date needs no special case: `hour` / `minute` / `second`
+    // stay zero, which is midnight UTC of that day.
     const std::int64_t micros = (secondsSinceEpoch * 1'000'000LL) + fractionalMicros;
     return micros;
 }
@@ -888,9 +918,58 @@ private:
     return std::string(buffer.data(), static_cast<std::size_t>(result.ptr - buffer.data()));
 }
 
+/// Calendar fields for a day count relative to the UNIX epoch.
+struct CivilDate
+{
+    std::int64_t year = 0;
+    unsigned month = 1;
+    unsigned day = 1;
+};
+
+/// `civil_from_days` (Howard Hinnant's date algorithms) -- the exact
+/// inverse of the `days_from_civil` arithmetic `ParseIsoTimestamp`
+/// uses. Valid for the whole `int64_t` day range and, crucially,
+/// for negative day counts.
+[[nodiscard]] CivilDate CivilFromDays(std::int64_t z) noexcept
+{
+    z += 719468;
+    const std::int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+    const auto doe = static_cast<std::uint64_t>(z - (era * 146097));           // [0, 146096]
+    const std::uint64_t yoe =                                                  // [0, 399]
+        (doe - (doe / 1460) + (doe / 36524) - (doe / 146096)) / 365;
+    const std::int64_t y = static_cast<std::int64_t>(yoe) + (era * 400);
+    const std::uint64_t doy = doe - ((365 * yoe) + (yoe / 4) - (yoe / 100));    // [0, 365]
+    const std::uint64_t mp = ((5 * doy) + 2) / 153;                             // [0, 11]
+    const auto d = static_cast<unsigned>(doy - (((153 * mp) + 2) / 5) + 1);     // [1, 31]
+    // `mp` counts months from March, so shift it back to a January-
+    // based month. Done in signed arithmetic: the canonical
+    // `mp + (mp < 10 ? 3 : -9)` relies on unsigned wraparound to
+    // subtract, which is correct but needlessly subtle.
+    const auto marchBased = static_cast<int>(mp);
+    const auto m = static_cast<unsigned>(marchBased + (marchBased < 10 ? 3 : -9)); // [1, 12]
+    return CivilDate{.year = y + (m <= 2 ? 1 : 0), .month = m, .day = d};
+}
+
 /// Render a `TimeStamp` field back to an ISO-8601 microsecond
-/// literal (`YYYY-MM-DDTHH:MM:SS.uuuuuu`). Complement of
+/// literal (`YYYY-MM-DDTHH:MM:SS.uuuuuuZ`). Complement of
 /// `ParseIsoTimestamp` for the pretty-printer.
+///
+/// Deliberately does *not* use `gmtime_s` / `gmtime_r`: both fail
+/// outside the platform's representable range, and MSVC's
+/// `gmtime_s` in particular returns `EINVAL` for any `time_t` below
+/// `-43200` (i.e. anything before 1969-12-31T12:00:00Z). Routing
+/// through the same civil-date arithmetic `ParseIsoTimestamp` uses
+/// keeps the two exact inverses of each other on every platform and
+/// for every pre-epoch value, so the round-trip contract in the
+/// header holds.
+///
+/// The one shape with no ISO-8601 spelling in this grammar is a
+/// year outside `[0, 9999]` (ISO expanded years like `+12024-…`
+/// aren't lexed). Those fall back to an `epoch_micros:<n>` marker,
+/// which is intentionally *not* re-parseable -- it only shows up
+/// for corrupt or synthetic bounds ~8000 years out, and a visible
+/// non-round-tripping marker beats silently rendering the wrong
+/// date.
 [[nodiscard]] std::string FormatTimestampMicros(std::int64_t micros)
 {
     // C++ integer division truncates towards zero, so a negative
@@ -899,47 +978,53 @@ private:
     // this borrow, `-500'000` (500ms before epoch) rendered as
     // `1970-01-01T00:00:00.500000Z` instead of the correct
     // `1969-12-31T23:59:59.500000Z`.
-    std::int64_t whole = micros / 1'000'000;
-    std::int64_t remainder = micros % 1'000'000;
-    if (remainder < 0)
+    std::int64_t totalSeconds = micros / 1'000'000;
+    std::int64_t microRemainder = micros % 1'000'000;
+    if (microRemainder < 0)
     {
-        whole -= 1;
-        remainder += 1'000'000;
+        totalSeconds -= 1;
+        microRemainder += 1'000'000;
     }
-    const auto frac = static_cast<int>(remainder);
-    std::time_t t = static_cast<std::time_t>(whole);
-    std::tm utc{};
-    // `gmtime_s` (Windows) / `gmtime_r` (POSIX) both fail on times
-    // outside the platform's representable range. Windows in
-    // particular rejects year > 9999 with `EINVAL` and leaves `utc`
-    // zeroed; `strftime` then emits "0000-00-00T00:00:00", which
-    // would silently mis-render. Detect the failure and fall back
-    // to the raw microsecond count so the roundtrip stays lossy but
-    // non-misleading.
-#ifdef _WIN32
-    const bool gmtOk = (gmtime_s(&utc, &t) == 0);
-#else
-    const bool gmtOk = (gmtime_r(&t, &utc) != nullptr);
-#endif
-    if (!gmtOk)
+
+    // Floor-divide into days + seconds-of-day so pre-epoch values
+    // land on the previous day rather than truncating towards zero.
+    constexpr std::int64_t SECONDS_PER_DAY = 86'400;
+    std::int64_t days = totalSeconds / SECONDS_PER_DAY;
+    std::int64_t secondOfDay = totalSeconds % SECONDS_PER_DAY;
+    if (secondOfDay < 0)
+    {
+        days -= 1;
+        secondOfDay += SECONDS_PER_DAY;
+    }
+
+    const CivilDate date = CivilFromDays(days);
+    if (date.year < 0 || date.year > 9999)
     {
         return "epoch_micros:" + std::to_string(micros);
     }
-    std::array<char, 32> buffer{};
-    const std::size_t n = std::strftime(buffer.data(), buffer.size(), "%Y-%m-%dT%H:%M:%S", &utc);
-    if (n == 0)
+
+    const auto hour = static_cast<int>(secondOfDay / 3600);
+    const auto minute = static_cast<int>((secondOfDay % 3600) / 60);
+    const auto second = static_cast<int>(secondOfDay % 60);
+
+    std::array<char, 40> buffer{};
+    const int written = std::snprintf(
+        buffer.data(),
+        buffer.size(),
+        "%04d-%02u-%02uT%02d:%02d:%02d.%06dZ",
+        static_cast<int>(date.year),
+        date.month,
+        date.day,
+        hour,
+        minute,
+        second,
+        static_cast<int>(microRemainder)
+    );
+    if (written <= 0)
     {
         return "epoch_micros:" + std::to_string(micros);
     }
-    std::string out(buffer.data(), n);
-    std::array<char, 16> fracBuffer{};
-    const int written = std::snprintf(fracBuffer.data(), fracBuffer.size(), ".%06d", frac);
-    if (written > 0)
-    {
-        out.append(fracBuffer.data(), static_cast<std::size_t>(written));
-    }
-    out.push_back('Z');
-    return out;
+    return std::string(buffer.data(), static_cast<std::size_t>(written));
 }
 
 // ---- Parser ----------------------------------------------------------------
@@ -1238,7 +1323,7 @@ private:
             {
                 return std::unexpected(ok.error());
             }
-            return FinishInLeaf(std::move(rule), opTok);
+            return FinishInLeaf(std::move(rule));
         default:
         {
             QueryParseError err;
@@ -1417,7 +1502,7 @@ private:
         return MakeLeaf(std::move(rule));
     }
 
-    [[nodiscard]] std::expected<FilterExpression, QueryParseError> FinishInLeaf(LeafRule rule, const Token &opTok)
+    [[nodiscard]] std::expected<FilterExpression, QueryParseError> FinishInLeaf(LeafRule rule)
     {
         if (mLookahead.kind != TokenKind::LBracket)
         {
@@ -1460,13 +1545,16 @@ private:
         }
         else if (mLookahead.kind == TokenKind::RBracket)
         {
-            // Empty list -> inert leaf; caller drops.
-            if (auto ok = Advance(); !ok.has_value())
-            {
-                return std::unexpected(ok.error());
-            }
-            rule.type = LeafRule::Type::Enumeration;
-            return MakeLeaf(std::move(rule));
+            // `col in []` used to yield an Enumeration leaf with no
+            // selected values. That leaf compiles to nothing, so the
+            // query silently became match-all, and it also reached
+            // the UI's title builder with an empty payload. Reject it
+            // here so there is exactly one answer for the user: an
+            // underlined parse error.
+            QueryParseError err;
+            err.offset = mLookahead.offset;
+            err.message = "value list cannot be empty";
+            return std::unexpected(err);
         }
         else
         {
@@ -1486,7 +1574,7 @@ private:
             return FinishRangeUpper(std::move(rule), firstTok);
         }
         // List form: gather the rest.
-        return FinishListLeaf(std::move(rule), firstTok, opTok);
+        return FinishListLeaf(std::move(rule), firstTok);
     }
 
     [[nodiscard]] std::expected<FilterExpression, QueryParseError>
@@ -1507,6 +1595,17 @@ private:
             QueryParseError err;
             err.offset = mLookahead.offset;
             err.message = "expected ']' to close range";
+            return std::unexpected(err);
+        }
+        // `col in [..]` carries neither bound, so it compiles to
+        // nothing (silently match-all) and reaches the UI's title
+        // builder with an empty payload. Reject it for the same
+        // reason as the empty list form.
+        if (!firstTok.has_value() && !secondTok.has_value())
+        {
+            QueryParseError err;
+            err.offset = mLookahead.offset;
+            err.message = "range needs at least a lower or an upper bound";
             return std::unexpected(err);
         }
         if (auto ok = Advance(); !ok.has_value())
@@ -1549,6 +1648,18 @@ private:
             err.message = "range upper bound must be a number or ISO timestamp";
             return std::unexpected(err);
         }
+        // An inverted range can never accept a row. Reporting it as a
+        // parse error is far kinder than "Parsed OK" followed by an
+        // empty table with no explanation.
+        const bool invertedTime = tsMin.has_value() && tsMax.has_value() && *tsMin > *tsMax;
+        const bool invertedNumber = numMin.has_value() && numMax.has_value() && *numMin > *numMax;
+        if (invertedTime || invertedNumber)
+        {
+            QueryParseError err;
+            err.offset = secondTok->offset;
+            err.message = "range upper bound is below the lower bound";
+            return std::unexpected(err);
+        }
         if (tsMin.has_value() || tsMax.has_value())
         {
             rule.type = LeafRule::Type::Time;
@@ -1565,7 +1676,7 @@ private:
     }
 
     [[nodiscard]] std::expected<FilterExpression, QueryParseError>
-    FinishListLeaf(LeafRule rule, const Token &firstTok, const Token &opTok)
+    FinishListLeaf(LeafRule rule, const Token &firstTok)
     {
         // A list of exclusively `true` / `false` tokens is the wire
         // form the pretty printer emits for `LeafRule::Type::Boolean`
@@ -1613,7 +1724,6 @@ private:
         {
             return std::unexpected(ok.error());
         }
-        (void)opTok;
         if (allBool)
         {
             rule.type = LeafRule::Type::Boolean;

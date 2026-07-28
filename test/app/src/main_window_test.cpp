@@ -168,6 +168,43 @@ namespace
     return out;
 }
 
+/// Collect every `LeafRule` in the tree, at any depth. Needed where
+/// `WireLeavesOf`'s top-level-only view is too shallow -- e.g. a leaf
+/// the simple editor can't represent, which
+/// `ApplyAdvancedFilterResult` nests one level down to keep it out of
+/// `mSimpleLeaves`.
+[[nodiscard]] inline std::vector<loglib::LeafRule> AllLeavesOf(const loglib::FilterExpression &expression)
+{
+    std::vector<loglib::LeafRule> out;
+    const auto visit = [&out](const loglib::FilterExpression &node, const auto &self) -> void {
+        if (const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&node.node); leaf != nullptr)
+        {
+            out.push_back(leaf->rule);
+        }
+        else if (const auto *asAnd = std::get_if<loglib::FilterExpression::And>(&node.node); asAnd != nullptr)
+        {
+            for (const auto &child : asAnd->children)
+            {
+                self(child, self);
+            }
+        }
+        else if (const auto *asOr = std::get_if<loglib::FilterExpression::Or>(&node.node); asOr != nullptr)
+        {
+            for (const auto &child : asOr->children)
+            {
+                self(child, self);
+            }
+        }
+        else if (const auto *asNot = std::get_if<loglib::FilterExpression::Not>(&node.node);
+                 asNot != nullptr && asNot->child != nullptr)
+        {
+            self(*asNot->child, self);
+        }
+    };
+    visit(expression, visit);
+    return out;
+}
+
 /// Install @p leaves as a top-level `And` expression.
 [[nodiscard]] inline loglib::FilterExpression WireLeavesAsExpression(std::vector<loglib::LeafRule> leaves)
 {
@@ -11628,6 +11665,171 @@ private slots:
             *advanced == advancedTree,
             "Advanced Or/Not tree must survive Save/Load exactly (structure + payload)"
         );
+    }
+
+    // Regression: `RebuildFiltersFromConfiguration` opens with
+    // `ResetSimpleFilterState`, which disables
+    // `actionClearAllFilters`, and only `AddLogFilter` re-enables it.
+    // Loading a session whose saved expression is Advanced-only adds
+    // no simple leaves, so the action stayed disabled while rows were
+    // actively being filtered -- and the status-bar clear button
+    // triggers that same action, so it sat visible but inert. There
+    // was no route back to an unfiltered view short of a restart.
+    void TestAdvancedOnlyLoadEnablesClearAllFilters()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+        const std::vector<std::string> msgKeys = model->Configuration().columns[static_cast<size_t>(msgCol)].keys;
+
+        auto *clearAction = mWindow->findChild<QAction *>(QStringLiteral("actionClearAllFilters"));
+        QVERIFY2(clearAction != nullptr, "MainWindow must own actionClearAllFilters");
+
+        // `msg:m1 OR msg:m2` -- an `Or` root, so the load path finds
+        // no top-level Leaf to extract into `mSimpleLeaves`.
+        std::vector<loglib::FilterExpression> orChildren;
+        orChildren.push_back(loglib::MakeLeaf(loglib::LeafRule{
+            .type = loglib::LeafRule::Type::String,
+            .columnKeys = msgKeys,
+            .matchType = loglib::LeafRule::Match::Contains,
+            .filterString = std::string("m1"),
+        }));
+        orChildren.push_back(loglib::MakeLeaf(loglib::LeafRule{
+            .type = loglib::LeafRule::Type::String,
+            .columnKeys = msgKeys,
+            .matchType = loglib::LeafRule::Match::Contains,
+            .filterString = std::string("m2"),
+        }));
+        model->ConfigurationManager().SetExpression(loglib::MakeOr(std::move(orChildren)));
+
+        const QTemporaryDir savedDir;
+        QVERIFY(savedDir.isValid());
+        const QString savedPath = savedDir.filePath(QStringLiteral("advanced-only.json"));
+        mWindow->SaveConfigurationToPathForTest(savedPath);
+
+        // Wipe the runtime expression so the load is the only source
+        // of truth. Setting it through the manager leaves the action
+        // in its pristine disabled state, which is exactly the
+        // pre-load condition that used to survive the load.
+        model->ConfigurationManager().SetExpression(loglib::FilterExpression{});
+        QCoreApplication::processEvents();
+        QVERIFY2(!clearAction->isEnabled(), "precondition: action starts disabled with no simple filters");
+
+        mWindow->SetSuppressDialogsForTest(true);
+        mWindow->LoadConfigurationFromPathForTest(savedPath);
+        QCoreApplication::processEvents();
+
+        QVERIFY2(mWindow->Filters().empty(), "an Advanced-only expression must not populate mSimpleLeaves");
+        QVERIFY2(
+            !loglib::IsMatchAll(model->Configuration().expression),
+            "precondition: the loaded Advanced tree must still be filtering rows"
+        );
+        QVERIFY2(
+            clearAction->isEnabled(),
+            "Clear All Filters must be enabled after loading an Advanced-only session"
+        );
+        // The status-bar twin isn't asserted here: a configuration
+        // load resets the model, and with no rows to count the whole
+        // "N of M rows" status group (button included) is correctly
+        // hidden. `TestStatusBarClearButtonVisibleForAdvancedOnlyExpression`
+        // covers the button against a populated session.
+
+        // And the affordance must actually work, not just look live.
+        clearAction->trigger();
+        QCoreApplication::processEvents();
+        QVERIFY2(
+            loglib::IsMatchAll(model->Configuration().expression),
+            "triggering the re-enabled action must clear the loaded Advanced tree"
+        );
+    }
+
+    // Regression: the query grammar types `category:info` as a
+    // `String` / `Contains` leaf whatever the column's type is, and
+    // that matches correctly at runtime because
+    // `CallbackStringRowPredicate` compares the *formatted* value.
+    // But `ApplyAdvancedFilterResult` used to extract every top-level
+    // Leaf into `mSimpleLeaves`, and `ValidateFilterAgainstColumns`
+    // rejects a String leaf on an Enumeration column (the simple
+    // editor is type-driven and cannot load one). The clause worked
+    // for the rest of the session and was then dropped on the next
+    // load with a "column type changed" notice -- the query silently
+    // lost a term between sessions. Leaves the simple editor can't
+    // represent must stay in the Advanced subtree instead.
+    void TestAdvancedStringLeafOnEnumColumnSurvivesReload()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        const auto &columns = model->Configuration().columns;
+        const auto levelType = columns[static_cast<size_t>(levelCol)].type;
+        QVERIFY2(
+            levelType == loglib::LogConfiguration::Type::Enumeration ||
+                levelType == loglib::LogConfiguration::Type::Level,
+            "precondition: streaming must have promoted the level column to an enum-like type"
+        );
+        const std::vector<std::string> levelKeys = columns[static_cast<size_t>(levelCol)].keys;
+        const std::vector<std::string> msgKeys = columns[static_cast<size_t>(msgCol)].keys;
+
+        // What `category:info AND msg:m1` parses to: two String
+        // leaves, but only the one on the String column is
+        // representable in simple mode.
+        std::vector<loglib::FilterExpression> andChildren;
+        andChildren.push_back(loglib::MakeLeaf(loglib::LeafRule{
+            .type = loglib::LeafRule::Type::String,
+            .columnKeys = levelKeys,
+            .matchType = loglib::LeafRule::Match::Contains,
+            .filterString = std::string("info"),
+        }));
+        andChildren.push_back(loglib::MakeLeaf(loglib::LeafRule{
+            .type = loglib::LeafRule::Type::String,
+            .columnKeys = msgKeys,
+            .matchType = loglib::LeafRule::Match::Contains,
+            .filterString = std::string("m1"),
+        }));
+        mWindow->CommitAdvancedFilterForTest(loglib::MakeAnd(std::move(andChildren)));
+        QCoreApplication::processEvents();
+
+        // Only the `msg` leaf reaches the simple surface.
+        QCOMPARE(static_cast<int>(mWindow->Filters().size()), 1);
+        QCOMPARE(mWindow->Filters().begin()->second.columnKeys, msgKeys);
+
+        const auto findEnumStringLeaf = [&levelKeys](const loglib::FilterExpression &expression) {
+            const auto leaves = AllLeavesOf(expression);
+            return std::ranges::any_of(leaves, [&levelKeys](const loglib::LeafRule &rule) {
+                return rule.type == loglib::LeafRule::Type::String && rule.columnKeys == levelKeys &&
+                       rule.filterString.has_value() && *rule.filterString == "info";
+            });
+        };
+        QVERIFY2(
+            findEnumStringLeaf(model->Configuration().expression),
+            "the un-representable leaf must stay on the wire expression"
+        );
+
+        const QTemporaryDir savedDir;
+        QVERIFY(savedDir.isValid());
+        const QString savedPath = savedDir.filePath(QStringLiteral("string-on-enum.json"));
+        mWindow->SaveConfigurationToPathForTest(savedPath);
+
+        model->ConfigurationManager().SetExpression(loglib::FilterExpression{});
+        QCoreApplication::processEvents();
+
+        mWindow->SetSuppressDialogsForTest(true);
+        mWindow->LoadConfigurationFromPathForTest(savedPath);
+        QCoreApplication::processEvents();
+
+        QCOMPARE(mWindow->LastDroppedFilterCountForTest(), 0);
+        QVERIFY2(
+            findEnumStringLeaf(model->Configuration().expression),
+            "a String leaf on an enum column must survive Save/Load instead of being dropped"
+        );
+        // The representable sibling still round-trips into simple mode.
+        QCOMPARE(static_cast<int>(mWindow->Filters().size()), 1);
+        QCOMPARE(mWindow->Filters().begin()->second.columnKeys, msgKeys);
     }
 
     // Regression: a follow-up simple-mode edit after the user commits

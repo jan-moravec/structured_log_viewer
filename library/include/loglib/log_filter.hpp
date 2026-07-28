@@ -343,13 +343,15 @@ struct CompiledFilterExpression
 ///   each row calling `EvaluateExpression`. Same shape as the
 ///   previous `span<RowPredicate>` overload; identical performance
 ///   envelope for flat `And` trees.
-/// - **Bitset materialisation path** -- kicks in when the tree is
-///   complex (has OR / NOT / regex leaves and >=2 total leaves,
-///   or >=4 total leaves overall) and the memory budget allows
-///   (`row_count * unique_leaves / 8 <= 512 MiB`). Materialises
-///   each *unique* leaf's accept-set into a packed bitset once
-///   (repeated leaves share the same bitset), then walks the tree
-///   with word-parallel AND / OR / NOT ops. Wins on OR-heavy
+/// - **Bitset materialisation path** -- kicks in when the tree has
+///   an OR or a NOT plus >=2 total leaves, and the memory budget
+///   allows (`row_count * unique_leaves / 8 <= 512 MiB`). A flat
+///   `And` never qualifies, however many leaves it has: the visit
+///   path's short-circuiting strictly dominates materialising every
+///   leaf over every row. On the shapes that do qualify, this
+///   materialises each *unique* leaf's accept-set into a packed
+///   bitset once (repeated leaves share the same bitset), then walks
+///   the tree with word-parallel AND / OR / NOT ops. Wins on OR-heavy
 ///   queries and regex leaves reused across branches. Memory
 ///   allocation is proportional to `row_count * unique_leaves`,
 ///   so the heuristic caps it.

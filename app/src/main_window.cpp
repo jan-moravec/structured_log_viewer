@@ -6364,6 +6364,12 @@ void MainWindow::RebuildFiltersFromConfiguration()
     }
     MirrorSessionStateToConfiguration();
     UpdateFilters();
+    // `ResetSimpleFilterState` above left Clear-All disabled, and
+    // only `AddLogFilter` re-enables it. A session whose saved
+    // expression is Advanced-only (or whose every simple leaf just
+    // failed validation) adds no leaves, so without this the loaded
+    // filter is active with no way to clear it.
+    SyncClearAllFiltersEnabled();
     SyncColumnFilterIndicators();
 
     if (!dropped.empty())
@@ -7461,6 +7467,19 @@ void MainWindow::ResetSimpleFilterState()
     ui->actionClearAllFilters->setDisabled(true);
 }
 
+void MainWindow::SyncClearAllFiltersEnabled()
+{
+    ui->actionClearAllFilters->setDisabled(loglib::IsMatchAll(mModel->Configuration().expression));
+    // The status-bar button triggers this same action, so the two
+    // must agree or a visible button is a no-op on click. Its
+    // visibility otherwise refreshes only from source / proxy row
+    // signals, which say nothing about a filter that changed but
+    // happens to accept the same rows. `UpdateRowsShownStatus` owns
+    // the gate, so route through it rather than duplicating the
+    // condition here.
+    UpdateRowsShownStatus();
+}
+
 void MainWindow::ClearAllFilters()
 {
     ResetSimpleFilterState();
@@ -7523,39 +7542,80 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
     //     with match-all.
     ResetSimpleFilterState();
 
+    const auto &columns = mModel->Configuration().columns;
+    // A leaf only belongs in `mSimpleLeaves` if `FilterEditor` can
+    // actually load it, which is exactly what
+    // `ValidateFilterAgainstColumns` decides. The query grammar is
+    // deliberately looser: `level:error` is a `Type::String` leaf
+    // against a `Type::Enumeration` column, which the runtime matches
+    // happily (`CallbackStringRowPredicate` compares the formatted
+    // value) but the type-driven simple editor cannot represent.
+    // Extracting such a leaf used to hand it to the simple surface
+    // anyway, and the next load then dropped it as a column-type
+    // mismatch -- the query silently lost a clause between sessions.
+    const auto isSimpleRepresentable = [&columns](const loglib::LeafRule &rule) {
+        return !ValidateFilterAgainstColumns(rule, columns).has_value();
+    };
+
     std::vector<loglib::LeafRule> extractedLeaves;
-    loglib::FilterExpression remainder;
+    loglib::FilterExpression::And rest;
+    // Anything kept as Advanced must not be a *bare* `Leaf` child of
+    // the remainder: `MirrorSessionStateToConfiguration` drops
+    // top-level `Leaf` children on the assumption that
+    // `mSimpleLeaves` already carries them, and
+    // `RebuildFiltersFromConfiguration` would extract and then
+    // validate them on the next load. Wrapping in a single-child
+    // `And` sidesteps both -- it evaluates identically (an `And` of
+    // one child is that child) and `FormatExpression` prints it
+    // without added parentheses, so the editor still round-trips the
+    // original query text.
+    const auto keepAsAdvanced = [&rest](loglib::FilterExpression node) {
+        if (std::holds_alternative<loglib::FilterExpression::Leaf>(node.node))
+        {
+            std::vector<loglib::FilterExpression> wrapped;
+            wrapped.push_back(std::move(node));
+            rest.children.push_back(loglib::MakeAnd(std::move(wrapped)));
+            return;
+        }
+        rest.children.push_back(std::move(node));
+    };
+
     if (const auto *rootLeaf = std::get_if<loglib::FilterExpression::Leaf>(&result.node);
         rootLeaf != nullptr)
     {
-        extractedLeaves.push_back(rootLeaf->rule);
-        // `remainder` stays default-constructed = empty `And` = match-all.
+        if (isSimpleRepresentable(rootLeaf->rule))
+        {
+            extractedLeaves.push_back(rootLeaf->rule);
+        }
+        else
+        {
+            keepAsAdvanced(std::move(result));
+        }
     }
     else if (auto *rootAnd = std::get_if<loglib::FilterExpression::And>(&result.node);
              rootAnd != nullptr)
     {
-        loglib::FilterExpression::And rest;
         rest.children.reserve(rootAnd->children.size());
         for (auto &child : rootAnd->children)
         {
-            if (const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&child.node);
-                leaf != nullptr)
+            const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&child.node);
+            if (leaf != nullptr && isSimpleRepresentable(leaf->rule))
             {
                 extractedLeaves.push_back(leaf->rule);
             }
             else
             {
-                rest.children.push_back(std::move(child));
+                keepAsAdvanced(std::move(child));
             }
         }
-        remainder.node = std::move(rest);
     }
     else
     {
-        // Bare `Or` / `Not`: preserved verbatim. Mirror's Or/Not
-        // branch will wrap it as the sole child of the emitted And.
-        remainder = std::move(result);
+        // Bare `Or` / `Not`: preserved verbatim.
+        keepAsAdvanced(std::move(result));
     }
+    loglib::FilterExpression remainder;
+    remainder.node = std::move(rest);
 
     // Install the non-Leaf remainder first so Mirror sees it as the
     // existing structure to preserve, then re-add the extracted
@@ -7568,9 +7628,7 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
     }
     MirrorSessionStateToConfiguration();
     UpdateFilters();
-
-    const bool isMatchAll = loglib::IsMatchAll(mModel->Configuration().expression);
-    ui->actionClearAllFilters->setDisabled(isMatchAll);
+    SyncClearAllFiltersEnabled();
     MarkFiltersDirty();
     SyncColumnFilterIndicators();
 }
@@ -7599,22 +7657,13 @@ void MainWindow::ClearFilter(const QString &filterID, bool deferSync)
         }
     }
 
-    // Sync the Clear-All action to the freshly-mirrored expression
-    // rather than counting simple-mode menu entries: counting only
-    // simple leaves misses any Advanced subtree still installed on
-    // `LogConfiguration::expression` (Or / Not roots, or the non-Leaf
-    // remainder of a mixed tree preserved by
-    // `ApplyAdvancedFilterResult`). Ignoring that would disable the
-    // action -- and, via the shared trigger, silently break the
-    // status-bar clear button -- while rows stay filtered.
-    // Only run under `!deferSync` because that's when Mirror has
-    // updated `Configuration().expression`; the deferSync=true
-    // paths are always followed by an `AddLogFilter` that re-enables
-    // the action unconditionally, so leaving it alone is safe.
+    // Only sync under `!deferSync`: that's when Mirror has published
+    // a fresh `Configuration().expression`. The deferSync=true paths
+    // are always followed by an `AddLogFilter` that re-enables the
+    // action unconditionally, so leaving it alone is safe.
     if (!deferSync)
     {
-        const bool isMatchAll = loglib::IsMatchAll(mModel->Configuration().expression);
-        ui->actionClearAllFilters->setDisabled(isMatchAll);
+        SyncClearAllFiltersEnabled();
         SyncColumnFilterIndicators();
     }
 }
@@ -7782,9 +7831,20 @@ QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
 {
     // No `default:`: a new `LeafRule::Type` must trip `-Wswitch`
     // rather than silently fall through and deref a `nullopt`.
-    // The Q_ASSERTs below catch un-validated inserts in debug;
-    // every filter in `mSimpleLeaves` is supposed to have a fully-
-    // populated payload (enforced by `ValidateFilterAgainstColumns`).
+    //
+    // Every leaf in `mSimpleLeaves` is supposed to carry a fully
+    // populated payload -- `ValidateFilterAgainstColumns` gates both
+    // the load path and the Advanced-commit path. An empty payload
+    // therefore means something upstream is wrong, but this is a
+    // *display* helper reached while building menus and tooltips, so
+    // it renders a visible placeholder rather than asserting: a
+    // hand-edited config should not take the Debug build down, and
+    // "(unset)" in the Filters menu points at the problem far better
+    // than a crash. (The `Time` case has always worked this way; the
+    // other branches used to `Q_ASSERT`.) The placeholder is spelled
+    // out at each site rather than hoisted into a local so the return
+    // can move it; `lupdate` folds the identical literals into one
+    // translatable entry.
     switch (filter.type)
     {
     case loglib::LeafRule::Type::Time:
@@ -7802,7 +7862,10 @@ QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
     }
     case loglib::LeafRule::Type::Enumeration:
     {
-        Q_ASSERT(!filter.filterValues.empty());
+        if (filter.filterValues.empty())
+        {
+            return tr("(unset)");
+        }
         QStringList values;
         values.reserve(static_cast<qsizetype>(filter.filterValues.size()));
         for (const std::string &v : filter.filterValues)
@@ -7813,7 +7876,9 @@ QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
     }
     case loglib::LeafRule::Type::Number:
     {
-        Q_ASSERT(filter.filterMinValue.has_value() || filter.filterMaxValue.has_value());
+        // Unbounded on both sides renders as `[-inf, +inf]` below,
+        // which reads as "matches anything" -- accurate, and the same
+        // treatment the `Time` case gives `any - any`.
         // Same C-locale, max-digits10 formatting as
         // `FilterEditor::Load` so the menu title and reopened editor
         // bounds match byte-for-byte. Default precision-6 would
@@ -7835,7 +7900,10 @@ QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
         // `filter.filterValues` is laid out (the submit slot always
         // writes "true" first, but a hand-edited config might not).
         const BooleanFilterSides sides = DecodeBooleanFilterSides(filter.filterValues);
-        Q_ASSERT(sides.includeTrue || sides.includeFalse);
+        if (!sides.includeTrue && !sides.includeFalse)
+        {
+            return tr("(unset)");
+        }
         QStringList values;
         if (sides.includeTrue)
         {
@@ -7848,12 +7916,14 @@ QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
         return values.join(QStringLiteral(", "));
     }
     case loglib::LeafRule::Type::String:
-        Q_ASSERT(filter.filterString.has_value());
-        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        if (!filter.filterString.has_value() || filter.filterString->empty())
+        {
+            return tr("(unset)");
+        }
         return QString::fromStdString(*filter.filterString);
     }
     Q_ASSERT_X(false, "MainWindow::BuildFilterTitle", "unhandled LeafRule::Type");
-    return {};
+    return tr("(unset)");
 }
 
 void MainWindow::AddLogFilter(const QString &id, const loglib::LeafRule &filter, bool deferSync)

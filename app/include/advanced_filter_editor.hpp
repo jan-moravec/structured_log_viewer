@@ -76,7 +76,8 @@ private:
     QPlainTextEdit *mQueryEdit = nullptr;
     QLabel *mStatusLabel = nullptr;
     QLabel *mHelpLabel = nullptr;
+    /// Only OK is tracked: Cancel needs no state changes, so it is
+    /// wired straight to `QDialog::reject` at construction.
     QPushButton *mOkButton = nullptr;
-    QPushButton *mCancelButton = nullptr;
     std::optional<loglib::FilterExpression> mCachedResult;
 };

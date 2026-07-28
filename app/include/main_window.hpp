@@ -1141,6 +1141,17 @@ private:
     /// expression tree (dropping Advanced-mode Or/Not subtrees)
     /// while the load path preserves the just-loaded expression.
     void ResetSimpleFilterState();
+
+    /// Gate "Clear All Filters" -- both the action and the
+    /// status-bar button that triggers it -- on the freshly-mirrored
+    /// `LogConfiguration::expression` rather than on `mSimpleLeaves`.
+    /// An Advanced-only tree (an `Or` / `Not` root, or the non-Leaf
+    /// remainder of a mixed tree) filters rows while leaving
+    /// `mSimpleLeaves` empty, so counting simple leaves would leave
+    /// the user with no way back to an unfiltered view. Must be
+    /// called after `MirrorSessionStateToConfiguration`, since that
+    /// is what publishes the expression this reads.
+    void SyncClearAllFiltersEnabled();
     void ApplyTableStyleSheet();
 
     /// Pick the light- or dark-variant title-bar icon to match the
