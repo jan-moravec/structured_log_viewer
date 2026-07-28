@@ -587,6 +587,135 @@ TEST_CASE("ParseQuery: out-of-range calendar fields are parse errors", "[query_p
     }
 }
 
+// The previous `hour > 24 || minute > 59 || second > 60` check let
+// `24:59:59` roll over into the next day's `00:59:59` -- a silent
+// off-by-one for anyone who typed a full-second time with `hour==24`.
+// ISO-8601 only allows `24:00:00` (start of the next day); everything
+// else with `hour == 24` should be a parse error the editor can
+// underline.
+TEST_CASE(
+    "ParseQuery: hour==24 is only valid at midnight", "[query_parser][regression]"
+)
+{
+    SECTION("24:00:00 accepted as end-of-day spelling")
+    {
+        // `24:00:00Z` on 2024-01-01 is midnight of 2024-01-02.
+        const auto expr = ParseOrFail("ts >= 2024-01-01T24:00:00Z");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        REQUIRE(leaf->filterBegin.has_value());
+        // Same instant as `2024-01-02T00:00:00Z`.
+        const auto reference = ParseOrFail("ts >= 2024-01-02T00:00:00Z");
+        const LeafRule *refLeaf = AsLeaf(reference);
+        REQUIRE(refLeaf != nullptr);
+        REQUIRE(refLeaf->filterBegin.has_value());
+        CHECK(*leaf->filterBegin == *refLeaf->filterBegin);
+    }
+    SECTION("24:xx:yy with non-zero minute/second/fraction rejected")
+    {
+        const std::array<std::string_view, 4> queries{
+            "ts >= 2024-01-01T24:00:01Z",     // second != 0
+            "ts >= 2024-01-01T24:01:00Z",     // minute != 0
+            "ts >= 2024-01-01T24:59:59Z",     // both
+            "ts >= 2024-01-01T24:00:00.5Z",   // fractional != 0
+        };
+        for (const auto &q : queries)
+        {
+            CAPTURE(q);
+            const auto parsed = ParseQuery(q);
+            CHECK_FALSE(parsed.has_value());
+        }
+    }
+}
+
+// Mixed-type range bounds (one ISO timestamp, one plain number) used
+// to silently drop the number bound: the "Time or Number" branch in
+// `FinishRangeUpper` picked Time whenever either side classified as
+// timestamp and copied only the `ts*` fields, so
+// `col in [2024-01-01T00:00:00Z..42]` became "on or after 2024-01-01"
+// with the upper bound gone. Users had no cue.
+TEST_CASE(
+    "ParseQuery: mixed-type range bounds are parse errors", "[query_parser][regression]"
+)
+{
+    SECTION("timestamp then number")
+    {
+        const auto parsed = ParseQuery("latency in [2024-01-01T00:00:00Z..42]");
+        REQUIRE_FALSE(parsed.has_value());
+        CHECK(parsed.error().message.contains("numeric or both"));
+    }
+    SECTION("number then timestamp")
+    {
+        const auto parsed = ParseQuery("latency in [42..2024-01-01T00:00:00Z]");
+        REQUIRE_FALSE(parsed.has_value());
+        CHECK(parsed.error().message.contains("numeric or both"));
+    }
+    SECTION("both timestamps still parse")
+    {
+        const auto parsed = ParseQuery(
+            "ts in [2024-01-01T00:00:00Z..2024-02-01T00:00:00Z]"
+        );
+        REQUIRE(parsed.has_value());
+    }
+    SECTION("both numeric still parse")
+    {
+        const auto parsed = ParseQuery("latency in [10..100]");
+        REQUIRE(parsed.has_value());
+    }
+}
+
+// `MirrorSessionStateToConfiguration` wraps Advanced-only subtrees
+// (bare `Or` / `Not` roots produced by the Advanced editor) in a
+// top-level `And` so the "top-level Leaf children are already in
+// `mSimpleLeaves`" invariant holds. `FormatExpression` used to
+// print that wrapper faithfully, so `a OR b` came back through the
+// editor as `(a OR b)` -- the parens were harmless but visibly
+// jittered on every accept/reopen cycle. Peeling a single-child
+// `And` at the root removes the noise.
+TEST_CASE(
+    "FormatExpression: peels a single-child And wrapper at the root",
+    "[query_parser][pretty][regression]"
+)
+{
+    SECTION("And([Or([...])]) renders without redundant parens")
+    {
+        // Build the tree by hand so the wrapping is unambiguous
+        // (the parser doesn't produce this shape directly).
+        FilterExpression inner = ParseOrFail("service:auth OR level:error");
+        std::vector<FilterExpression> children;
+        children.push_back(std::move(inner));
+        const FilterExpression wrapped = MakeAnd(std::move(children));
+
+        const std::string formatted = FormatExpression(wrapped);
+        CAPTURE(formatted);
+        CHECK_FALSE(formatted.starts_with("("));
+        CHECK_FALSE(formatted.ends_with(")"));
+        CHECK(formatted.contains(" OR "));
+    }
+    SECTION("Semantic round-trip preserved")
+    {
+        // The AST equality check is the load-bearing invariant --
+        // unwrapping is a display concern, not a semantics change.
+        const auto original = ParseOrFail("service:auth OR level:error");
+        std::vector<FilterExpression> children;
+        children.push_back(original);
+        const FilterExpression wrapped = MakeAnd(std::move(children));
+
+        const std::string formatted = FormatExpression(wrapped);
+        const auto reparsed = ParseQuery(formatted);
+        REQUIRE(reparsed.has_value());
+        // Reparse yields the bare `Or` (matching what we'd get for
+        // the naked query `a OR b`), which equals `original`.
+        CHECK(*reparsed == original);
+    }
+    SECTION("Multi-child And still uses `AND` separators")
+    {
+        const auto expr = ParseOrFail("service:auth AND level:error");
+        const std::string formatted = FormatExpression(expr);
+        CHECK(formatted.contains(" AND "));
+    }
+}
+
 // `col in []` and `col in [..]` used to parse into a leaf with no
 // payload. `CompileLeaf` then reported it absent, so the clause
 // silently became match-all, and the app's Filters-menu title

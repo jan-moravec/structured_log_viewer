@@ -7,6 +7,7 @@
 
 #include <oneapi/tbb/blocked_range.h>
 #include <oneapi/tbb/enumerable_thread_specific.h>
+#include <oneapi/tbb/global_control.h>
 #include <oneapi/tbb/parallel_for.h>
 
 #include <algorithm>
@@ -518,9 +519,27 @@ constexpr size_t BITSET_MEMORY_CAP_BYTES = size_t{512} * 1024 * 1024;
         // Flat `And`: short-circuit evaluation strictly dominates.
         return false;
     }
-    // Memory scales with unique leaves after dedup, not total
-    // visit-count.
-    const size_t bytes = (rowCount / 8 + 1) * shape.uniqueLeafCount;
+    // Two memory contributions have to fit inside the cap:
+    //   1. `leafBitsets` -- one bitset per unique leaf, held for the
+    //      entire evaluation.
+    //   2. The `enumerable_thread_specific<RowBitset>` fan-out inside
+    //      `MaterialiseLeafBitset` -- one bitset per active TBB
+    //      worker, torn down before the next leaf materialises.
+    // Peak memory is therefore `unique * bytesPerBitset` plus the
+    // transient `workers * bytesPerBitset` during the *current* leaf.
+    // Skipping the worker term (the old accounting) let a
+    // `unique * bytesPerBitset` right at the cap allocate an
+    // additional `workers * bytesPerBitset` on top, potentially
+    // several hundred megabytes on a many-core box.
+    const size_t bytesPerBitset = (rowCount / 8) + 1;
+    // `active_value` reads the live parallelism ceiling set by the
+    // pipeline's `global_control`; falls back to hardware concurrency
+    // when nothing has been pinned. Cap at 1 to keep the estimate
+    // meaningful on single-thread test runs.
+    const size_t workers =
+        std::max<size_t>(1, oneapi::tbb::global_control::active_value(
+                                oneapi::tbb::global_control::max_allowed_parallelism));
+    const size_t bytes = (shape.uniqueLeafCount + workers) * bytesPerBitset;
     return bytes <= BITSET_MEMORY_CAP_BYTES;
 }
 
@@ -545,6 +564,13 @@ public:
 
     void Set(size_t row) noexcept
     {
+        // Debug-only bounds check: every production caller iterates
+        // over `tbb::blocked_range<size_t>(0, rowCount)`, so an
+        // out-of-range `row` here would clobber a tail bit past
+        // `mRowCount` (breaking the `MaskTail` invariant that every
+        // Op depends on) or the next word entirely. Match the same
+        // shape as the size asserts on `AndInPlace` / `OrInPlace`.
+        assert(row < mRowCount);
         mWords[row / WORD_BITS] |= (uint64_t{1} << (row % WORD_BITS));
     }
 
@@ -618,10 +644,12 @@ public:
             {
                 const auto bit = static_cast<unsigned int>(std::countr_zero(word));
                 const size_t row = wi * WORD_BITS + bit;
-                if (row >= mRowCount)
-                {
-                    break;
-                }
+                // `MaskTail` clears every bit past `mRowCount` on
+                // every mutating op, so a set bit here must be a
+                // real row. Debug-assert the invariant so a future
+                // op that forgets `MaskTail` fails loudly rather
+                // than emitting phantom rows.
+                assert(row < mRowCount);
                 out.push_back(row);
                 word &= word - 1U;
             }

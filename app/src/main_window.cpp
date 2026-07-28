@@ -5293,7 +5293,15 @@ void MainWindow::MirrorSessionStateToConfiguration()
     //     one child of `newAnd`) unless the same rule is already in
     //     `mSimpleLeaves`; without this a subsequent mirror would
     //     clobber the rule with match-all.
-    const auto &existing = mModel->Configuration().expression;
+    // Copy the current expression by value up-front. `SetExpression`
+    // below overwrites the manager's stored expression, and a stale
+    // reference into `mModel->Configuration().expression` would
+    // become a use-after-free the instant any code between here and
+    // the `SetExpression` call decided to read it. The tree is small
+    // (top-level `And` plus a handful of leaves or one advanced
+    // subtree), so the copy is cheap; correctness beats the elided
+    // allocation.
+    const loglib::FilterExpression existing = mModel->Configuration().expression;
     if (const auto *existingAnd = std::get_if<loglib::FilterExpression::And>(&existing.node);
         existingAnd != nullptr)
     {

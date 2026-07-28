@@ -553,7 +553,7 @@ NOT service:auth
 **Performance.** The evaluator picks between two internal paths per rebuild:
 
 - **Visit path** (default) — walks the tree per row with short-circuit evaluation. Children of `AND` and `OR` are sorted cheap-first at compile time (Boolean < Enum < Time < Numeric < String), so the cheapest rejecting / accepting leaf fires first.
-- **Bitset materialisation path** — kicks in for complex trees (OR / NOT / regex leaves with ≥ 2 unique leaves, or ≥ 4 unique leaves overall). Each unique leaf's accept-set is precomputed into a packed bitset once, then the tree collapses via word-parallel `AND` / `OR` / `NOT`. Wins on OR-heavy queries and regex leaves reused across branches. The heuristic caps memory at 512 MiB; catastrophic bitsets fall back to the visit path automatically.
+- **Bitset materialisation path** — kicks in when the tree contains an `OR` or a `NOT` and has at least two leaves (a flat `AND` stays on the visit path because short-circuit evaluation strictly dominates). Each unique leaf's accept-set is precomputed into a packed bitset once, then the tree collapses via word-parallel `AND` / `OR` / `NOT`. Wins on OR-heavy queries and regex leaves reused across branches. The heuristic caps memory at 512 MiB; catastrophic bitsets fall back to the visit path automatically.
 
 Both paths run in parallel across rows via TBB. On a 1 M-row fixture, a four-leaf `AND` or an `AND(OR, NOT)` shape lands under ~15 ms on the dev box.
 

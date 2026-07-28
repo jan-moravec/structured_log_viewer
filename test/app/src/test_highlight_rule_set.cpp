@@ -372,10 +372,14 @@ private slots:
         QCOMPARE(rules.LastMatchFor(3), std::optional<std::size_t>{});
     }
 
-    /// Regression: an empty `filterString` used to compile into a
+    /// Regression: an empty `filterString` on `Contains` /
+    /// `RegularExpression` / `Wildcard` used to compile into a
     /// matcher that returned true for every row -- the whole table
     /// lit up on a fresh rule the user hadn't finished typing.
-    /// `CompileRule` now treats empty as inactive.
+    /// `CompileRule` now treats those three as inactive, but
+    /// `Exactly ""` is a legitimate "column is genuinely empty"
+    /// query and stays active (it just fails to match any row here
+    /// because every `level` in the fixture is non-empty).
     void EmptyNeedleLeavesRuleInactive()
     {
         HighlightRuleSet rules;
@@ -399,12 +403,57 @@ private slots:
         }
         rules.SetRules(std::move(ruleSet), model.Configuration().columns, &model.Table());
 
-        QCOMPARE(rules.InactiveCount(), 4u);
-        QVERIFY(!rules.HasActiveRules());
+        // Contains / Regex / Wildcard rejected up-front. Exactly
+        // compiled, so the set has one active rule -- but no row in
+        // the fixture has an empty `level`, so nothing matches.
+        QCOMPARE(rules.InactiveCount(), 3u);
+        QVERIFY(rules.HasActiveRules());
         for (std::size_t row = 0; row < 4; ++row)
         {
             QCOMPARE(rules.LastMatchFor(row), std::optional<std::size_t>{});
         }
+    }
+
+    /// `Exactly ""` positive test: rows with a genuinely empty
+    /// column value should highlight. Complements the mixed-batch
+    /// test above (which only proves the rule compiled).
+    void ExactlyEmptyStringMatchesEmptyColumnValue()
+    {
+        HighlightRuleSet rules;
+        LogModel model{/*parent=*/nullptr, /*theme=*/nullptr, /*anchors=*/nullptr, &rules};
+
+        // Hand-roll a fixture with a mix of populated and empty
+        // `note` values so the highlight boundary is unambiguous.
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = dir.filePath("exact_empty.jsonl");
+        {
+            std::ofstream stream(path.toStdString(), std::ios::binary);
+            QVERIFY(stream.is_open());
+            stream << R"({"level": "info", "note": "hello"})" << '\n';
+            stream << R"({"level": "info", "note": ""})" << '\n';
+            stream << R"({"level": "info", "note": "world"})" << '\n';
+            stream << R"({"level": "info", "note": ""})" << '\n';
+        }
+        StreamJsonPathInto(model, path);
+
+        Rule r;
+        r.name = "blank-note";
+        r.enabled = true;
+        r.columnKeys = {"note"};
+        r.type = Rule::Type::String;
+        r.matchType = Rule::Match::Exactly;
+        r.filterString = std::string{};
+        std::vector<Rule> ruleSet;
+        ruleSet.push_back(std::move(r));
+        rules.SetRules(std::move(ruleSet), model.Configuration().columns, &model.Table());
+
+        QCOMPARE(rules.InactiveCount(), 0u);
+        QVERIFY(rules.HasActiveRules());
+        QCOMPARE(rules.LastMatchFor(0), std::optional<std::size_t>{});
+        QCOMPARE(rules.LastMatchFor(1), std::optional<std::size_t>{0u});
+        QCOMPARE(rules.LastMatchFor(2), std::optional<std::size_t>{});
+        QCOMPARE(rules.LastMatchFor(3), std::optional<std::size_t>{0u});
     }
 
     /// Number-range parity: covers min-only, max-only, both

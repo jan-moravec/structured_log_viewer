@@ -216,10 +216,17 @@ std::optional<loglib::RowPredicate> CompileLeaf(
         {
             return std::nullopt;
         }
-        // Empty needles paint / hide everything -- almost never
-        // intentional. Reject here so hand-authored configs don't
-        // silently blank the view.
-        if (rule.filterString->empty())
+        // Empty needles: whether this is meaningful depends on the
+        // match kind.
+        //   - `Contains` matches every string, `Wildcard` (with a
+        //     glob) and `RegularExpression` (with a pattern) either
+        //     match every string or degenerate to trivial matchers.
+        //     Rejecting them keeps a hand-authored `col:""` from
+        //     silently painting / hiding every row.
+        //   - `Exactly ""` is a specific, useful query -- match
+        //     genuinely empty column values. Rejecting it would
+        //     silently drop the leaf on load, so let it through.
+        if (rule.filterString->empty() && *rule.matchType != loglib::LeafRule::Match::Exactly)
         {
             return std::nullopt;
         }

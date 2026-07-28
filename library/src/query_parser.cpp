@@ -21,7 +21,6 @@
 #include <string_view>
 #include <system_error>
 #include <type_traits>
-#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -740,7 +739,12 @@ private:
         // `24:00:00` is a legal ISO end-of-day spelling; `60` is a
         // leap second. Both roll over cleanly in the arithmetic
         // below, so they are accepted -- anything beyond is a typo.
-        if (hour > 24 || minute > 59 || second > 60)
+        // The `hour == 24` spelling only means "midnight of the next
+        // day", so anything past `24:00:00` (non-zero minute /
+        // second / fractional) is rejected up-front rather than
+        // silently rolling over into e.g. tomorrow's `00:59:59`.
+        if (hour > 24 || minute > 59 || second > 60 ||
+            (hour == 24 && (minute != 0 || second != 0)))
         {
             return std::nullopt;
         }
@@ -763,6 +767,13 @@ private:
             }
             // Scale fractional up to microseconds: fractional / denom * 1e6.
             fractionalMicros = (fractional * 1'000'000) / denom;
+            // Complements the `hour == 24 && (minute|second) != 0`
+            // reject above: `24:00:00.5` also rolls over into the
+            // next day if we accept it, so pin it here too.
+            if (hour == 24 && fractionalMicros != 0)
+            {
+                return std::nullopt;
+            }
         }
         // Optional timezone: `Z`, `+HH:MM`, `+HHMM`, `-HH:MM`, `-HHMM`.
         if (cursor < text.size())
@@ -831,6 +842,27 @@ private:
     return micros;
 }
 
+/// ASCII-only case-insensitive equality. Local so we don't need to
+/// pull `loglib/internal/ascii_case.hpp` into the parser -- the
+/// keyword set is closed and lives entirely on the ASCII plane.
+[[nodiscard]] bool EqualsIgnoreCaseAscii(std::string_view lhs, std::string_view rhs) noexcept
+{
+    if (lhs.size() != rhs.size())
+    {
+        return false;
+    }
+    for (std::size_t i = 0; i < lhs.size(); ++i)
+    {
+        const auto lc = std::tolower(static_cast<unsigned char>(lhs[i]));
+        const auto rc = std::tolower(static_cast<unsigned char>(rhs[i]));
+        if (lc != rc)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 /// Bareword classifier used by the pretty-printer. When the value
 /// happens to look like a keyword, number, contains whitespace or
 /// operator characters, we quote it in the output so the round-trip
@@ -853,15 +885,16 @@ private:
         }
     }
     // Reserved keywords must be quoted when used as identifiers /
-    // values so they don't turn back into keyword tokens.
-    static const std::unordered_set<std::string> reserved{"and", "or", "not", "in", "true", "false"};
-    std::string lower;
-    lower.reserve(text.size());
-    for (const char ch : text)
-    {
-        lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
-    }
-    return reserved.contains(lower);
+    // values so they don't turn back into keyword tokens. Small
+    // closed set + case-insensitive linear compare avoids the
+    // `std::unordered_set<std::string>` allocations the previous
+    // implementation paid on the very first call.
+    static constexpr std::array<std::string_view, 6> RESERVED{
+        "and", "or", "not", "in", "true", "false"
+    };
+    return std::ranges::any_of(RESERVED, [text](std::string_view keyword) {
+        return EqualsIgnoreCaseAscii(text, keyword);
+    });
 }
 
 [[nodiscard]] std::string QuoteString(std::string_view text)
@@ -1648,6 +1681,26 @@ private:
             err.message = "range upper bound must be a number or ISO timestamp";
             return std::unexpected(err);
         }
+        // Mixed-type bounds (one side ISO timestamp, other side
+        // number) silently dropped a bound in the previous
+        // implementation: the "Time or Number" branch below picks
+        // Time whenever *either* side classifies as timestamp, then
+        // copies only `tsMin` / `tsMax`, discarding the numeric side.
+        // Reject up-front so a typo like `[2024-01-01T00:00:00Z..42]`
+        // surfaces as a parse error rather than a half-open range
+        // with no obvious cause.
+        if ((tsMin.has_value() && numMax.has_value()) ||
+            (numMin.has_value() && tsMax.has_value()))
+        {
+            QueryParseError err;
+            // The second bound is the one that "conflicts" with the
+            // first, so anchor the caret on it. Both `secondTok` and
+            // (via the invariants above) at least one of `tsMax` /
+            // `numMax` are set when this fires.
+            err.offset = secondTok->offset;
+            err.message = "range bounds must both be numeric or both be ISO timestamps";
+            return std::unexpected(err);
+        }
         // An inverted range can never accept a row. Reporting it as a
         // parse error is far kinder than "Parsed OK" followed by an
         // empty table with no explanation.
@@ -2047,8 +2100,32 @@ std::string FormatExpression(const FilterExpression &expression)
     {
         return {};
     }
+    // Peel single-child `And` wrappers at the root before printing.
+    // `MirrorSessionStateToConfiguration` and
+    // `ApplyAdvancedFilterResult` deliberately wrap Advanced-only
+    // subtrees in a top-level `And` so the "top-level Leaf children
+    // live in `mSimpleLeaves`" invariant holds; that wrapping adds
+    // an extra layer of parens (`(a OR b)` for what the user
+    // originally typed as `a OR b`) when the outer `And` reads at a
+    // tighter precedence than its child. `And([X])` is semantically
+    // identical to `X`, so unwrap it here to keep the editor
+    // round-trip visibly stable. The unwrap stops as soon as it
+    // would produce match-all, so an accidental nested `And([And{}])`
+    // still renders through the placeholder path in `AppendAnd`
+    // rather than degenerating into a silent empty string.
+    const FilterExpression *effective = &expression;
+    while (true)
+    {
+        const auto *andNode = std::get_if<FilterExpression::And>(&effective->node);
+        if (andNode == nullptr || andNode->children.size() != 1 ||
+            IsMatchAll(andNode->children.front()))
+        {
+            break;
+        }
+        effective = &andNode->children.front();
+    }
     std::string out;
-    AppendExpression(expression, Precedence::Or, out);
+    AppendExpression(*effective, Precedence::Or, out);
     return out;
 }
 
