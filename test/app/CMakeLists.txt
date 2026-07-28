@@ -17,6 +17,13 @@ qt_add_resources(RESOURCES
 )
 qt_add_executable(apptest src/main_window_test.cpp ${RESOURCES})
 
+# `main_window_test.cpp` is a monolithic ~20k line TU; MSVC's COFF
+# object files hit the 65536-section limit without `/bigobj`. GCC /
+# clang cost nothing here.
+if(MSVC)
+    target_compile_options(apptest PRIVATE /bigobj)
+endif()
+
 # `test_common` provides Tcp/UdpLogClient used by the network-stream
 # open-path tests. Qt::Test stays first so generated MOC integrates
 # normally; logapp pulls in the GUI under test.

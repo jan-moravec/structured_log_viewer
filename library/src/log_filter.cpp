@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -417,25 +418,37 @@ bool EvaluateExpression(const CompiledFilterExpression &expression, const LogTab
 namespace
 {
 
-/// Walk @p node's tree and count the unique leaves + whether any
-/// regex / wildcard / OR / NOT is present. Used to gate the bitset
-/// path below.
+/// Walk @p node's tree and count leaves (both total-visit and
+/// unique-predicate) plus whether any regex / wildcard / OR / NOT
+/// is present. Used to gate the bitset path below.
 struct TreeShape
 {
+    /// Total leaf occurrences (a duplicate leaf counts each time).
     size_t leafCount = 0;
+    /// Unique leaves by predicate identity. Drives the memory-cap
+    /// estimate below since `FilterAcceptedRows` dedups on the
+    /// bitset path.
+    size_t uniqueLeafCount = 0;
     bool hasRegexOrWildcard = false;
     bool hasOr = false;
     bool hasNot = false;
 };
 
-void CollectShape(const CompiledFilterExpression &expr, TreeShape &shape)
+void CollectShape(
+    const CompiledFilterExpression &expr, TreeShape &shape, std::vector<const RowPredicate *> &seenPredicates
+)
 {
     std::visit(
-        [&shape](const auto &node) {
+        [&shape, &seenPredicates](const auto &node) {
             using T = std::decay_t<decltype(node)>;
             if constexpr (std::is_same_v<T, CompiledFilterExpression::Leaf>)
             {
                 ++shape.leafCount;
+                if (std::ranges::find(seenPredicates, &node.predicate) == seenPredicates.end())
+                {
+                    seenPredicates.push_back(&node.predicate);
+                    ++shape.uniqueLeafCount;
+                }
                 if (std::holds_alternative<CallbackStringRowPredicate>(node.predicate))
                 {
                     shape.hasRegexOrWildcard = true;
@@ -445,7 +458,7 @@ void CollectShape(const CompiledFilterExpression &expr, TreeShape &shape)
             {
                 for (const auto &child : node.children)
                 {
-                    CollectShape(child, shape);
+                    CollectShape(child, shape, seenPredicates);
                 }
             }
             else if constexpr (std::is_same_v<T, CompiledFilterExpression::Or>)
@@ -453,7 +466,7 @@ void CollectShape(const CompiledFilterExpression &expr, TreeShape &shape)
                 shape.hasOr = true;
                 for (const auto &child : node.children)
                 {
-                    CollectShape(child, shape);
+                    CollectShape(child, shape, seenPredicates);
                 }
             }
             else
@@ -461,7 +474,7 @@ void CollectShape(const CompiledFilterExpression &expr, TreeShape &shape)
                 shape.hasNot = true;
                 if (node.child != nullptr)
                 {
-                    CollectShape(*node.child, shape);
+                    CollectShape(*node.child, shape, seenPredicates);
                 }
             }
         },
@@ -487,7 +500,9 @@ constexpr size_t BITSET_MEMORY_CAP_BYTES = size_t{512} * 1024 * 1024;
     {
         return false;
     }
-    const size_t bytes = (rowCount / 8 + 1) * shape.leafCount;
+    // Memory scales with unique leaves after dedup, not total
+    // visit-count.
+    const size_t bytes = (rowCount / 8 + 1) * shape.uniqueLeafCount;
     return bytes <= BITSET_MEMORY_CAP_BYTES;
 }
 
@@ -522,6 +537,11 @@ public:
 
     void OrInPlace(const RowBitset &other) noexcept
     {
+        // Invariant: every bitset in a given evaluation is
+        // constructed with the same `rowCount`, so word arrays line
+        // up. Assert defensively so a future misuse fails loudly in
+        // debug rather than silently reading garbage.
+        assert(mWords.size() == other.mWords.size());
         for (size_t i = 0; i < mWords.size(); ++i)
         {
             mWords[i] |= other.mWords[i];
@@ -530,6 +550,7 @@ public:
 
     void AndInPlace(const RowBitset &other) noexcept
     {
+        assert(mWords.size() == other.mWords.size());
         for (size_t i = 0; i < mWords.size(); ++i)
         {
             mWords[i] &= other.mWords[i];
@@ -620,30 +641,55 @@ RowBitset MaterialiseLeafBitset(const RowPredicate &predicate, const LogTable &t
         }
     );
 
-    RowBitset combined(rowCount);
-    for (const auto &worker : workerBitsets)
+    // Seed the coalesce from the first worker (move to skip a
+    // fresh zero-init + a full-array OR) and fold the rest in.
+    // No workers means no rows were processed: return an empty
+    // (all-zero) bitset.
+    RowBitset combined;
+    bool seeded = false;
+    for (auto &worker : workerBitsets)
     {
-        combined.OrInPlace(worker);
+        if (!seeded)
+        {
+            combined = std::move(worker);
+            seeded = true;
+        }
+        else
+        {
+            combined.OrInPlace(worker);
+        }
+    }
+    if (!seeded)
+    {
+        combined = RowBitset(rowCount);
     }
     return combined;
 }
 
 /// Evaluate @p expr against the pre-materialised leaf bitsets in
-/// @p leafBitsets, in the order returned by
-/// `CollectLeafsInVisitOrder`. Recurses over And / Or / Not.
+/// @p leafBitsets, indexed by the mapping in @p leafSlots (built
+/// by `CollectLeafsInVisitOrder`). Recurses over And / Or / Not.
 RowBitset EvaluateExpressionBitset(
-    const CompiledFilterExpression &expr, const std::vector<RowBitset> &leafBitsets, size_t &leafCursor, size_t rowCount
+    const CompiledFilterExpression &expr,
+    const std::vector<RowBitset> &leafBitsets,
+    const std::vector<std::size_t> &leafSlots,
+    size_t &leafCursor,
+    size_t rowCount
 )
 {
     return std::visit(
-        [&leafBitsets, &leafCursor, rowCount](const auto &node) -> RowBitset {
+        [&leafBitsets, &leafSlots, &leafCursor, rowCount](const auto &node) -> RowBitset {
             using T = std::decay_t<decltype(node)>;
             if constexpr (std::is_same_v<T, CompiledFilterExpression::Leaf>)
             {
-                RowBitset copy(rowCount);
-                copy.OrInPlace(leafBitsets[leafCursor]);
+                // A leaf can appear multiple times in the tree (e.g.
+                // `svc:x AND (svc:x OR level:err)`); `leafSlots`
+                // maps each visit-position to the physical bitset
+                // slot so we materialise + store one bitset per
+                // unique predicate, not per occurrence.
+                const std::size_t slot = leafSlots[leafCursor];
                 ++leafCursor;
-                return copy;
+                return leafBitsets[slot];
             }
             else if constexpr (std::is_same_v<T, CompiledFilterExpression::And>)
             {
@@ -654,11 +700,12 @@ RowBitset EvaluateExpressionBitset(
                     all.FillTrue();
                     return all;
                 }
-                RowBitset acc = EvaluateExpressionBitset(node.children.front(), leafBitsets, leafCursor, rowCount);
+                RowBitset acc =
+                    EvaluateExpressionBitset(node.children.front(), leafBitsets, leafSlots, leafCursor, rowCount);
                 for (size_t i = 1; i < node.children.size(); ++i)
                 {
                     const RowBitset next =
-                        EvaluateExpressionBitset(node.children[i], leafBitsets, leafCursor, rowCount);
+                        EvaluateExpressionBitset(node.children[i], leafBitsets, leafSlots, leafCursor, rowCount);
                     acc.AndInPlace(next);
                 }
                 return acc;
@@ -670,11 +717,12 @@ RowBitset EvaluateExpressionBitset(
                     // Empty Or = match-none: zero-initialised.
                     return RowBitset(rowCount);
                 }
-                RowBitset acc = EvaluateExpressionBitset(node.children.front(), leafBitsets, leafCursor, rowCount);
+                RowBitset acc =
+                    EvaluateExpressionBitset(node.children.front(), leafBitsets, leafSlots, leafCursor, rowCount);
                 for (size_t i = 1; i < node.children.size(); ++i)
                 {
                     const RowBitset next =
-                        EvaluateExpressionBitset(node.children[i], leafBitsets, leafCursor, rowCount);
+                        EvaluateExpressionBitset(node.children[i], leafBitsets, leafSlots, leafCursor, rowCount);
                     acc.OrInPlace(next);
                 }
                 return acc;
@@ -689,7 +737,8 @@ RowBitset EvaluateExpressionBitset(
                     all.FillTrue();
                     return all;
                 }
-                RowBitset inner = EvaluateExpressionBitset(*node.child, leafBitsets, leafCursor, rowCount);
+                RowBitset inner =
+                    EvaluateExpressionBitset(*node.child, leafBitsets, leafSlots, leafCursor, rowCount);
                 inner.InvertInPlace();
                 return inner;
             }
@@ -698,12 +747,15 @@ RowBitset EvaluateExpressionBitset(
     );
 }
 
-/// Walk the tree in the same order `EvaluateExpressionBitset` will
-/// consume leaves and append pointers to the leaf `RowPredicate`s.
-/// Simpler than deduplicating leaves at compile time; the caller
-/// then materialises one bitset per pointer, potentially
-/// duplicating work if the same leaf appears twice. Leaf dedup is
-/// a follow-up optimisation.
+/// Walk the tree in the same order `EvaluateExpressionBitset`
+/// consumes leaves and append pointers to the leaf `RowPredicate`s.
+/// The caller then maps identical predicate pointers to a shared
+/// physical bitset (`FilterAcceptedRows` below) so a leaf that
+/// appears N times in the tree is only materialised once. Predicate
+/// identity is by pointer, which is stable for the lifetime of the
+/// `CompiledFilterExpression` -- structurally identical leaves that
+/// were compiled independently still cost one bitset each; that's a
+/// follow-up if it ever matters.
 void CollectLeafsInVisitOrder(const CompiledFilterExpression &expr, std::vector<const RowPredicate *> &out)
 {
     std::visit(
@@ -764,7 +816,8 @@ std::vector<size_t> FilterAcceptedRows(const LogTable &table, const CompiledFilt
     // path is always safe; the bitset path is a perf win for
     // complex trees.
     TreeShape shape;
-    CollectShape(expression, shape);
+    std::vector<const RowPredicate *> seenPredicates;
+    CollectShape(expression, shape, seenPredicates);
 
     if (ShouldUseBitsetPath(shape, rowCount))
     {
@@ -773,15 +826,40 @@ std::vector<size_t> FilterAcceptedRows(const LogTable &table, const CompiledFilt
         orderedLeaves.reserve(shape.leafCount);
         CollectLeafsInVisitOrder(expression, orderedLeaves);
 
-        std::vector<RowBitset> leafBitsets;
-        leafBitsets.reserve(orderedLeaves.size());
+        // Dedup by predicate pointer: a leaf appearing N times in
+        // the tree costs one physical bitset and one materialisation
+        // pass. `leafSlots` translates visit-position -> physical
+        // slot for `EvaluateExpressionBitset`.
+        std::vector<std::size_t> leafSlots;
+        leafSlots.reserve(orderedLeaves.size());
+        std::vector<const RowPredicate *> uniquePredicates;
+        uniquePredicates.reserve(orderedLeaves.size());
         for (const RowPredicate *predicate : orderedLeaves)
+        {
+            const auto it = std::ranges::find(uniquePredicates, predicate);
+            if (it == uniquePredicates.end())
+            {
+                leafSlots.push_back(uniquePredicates.size());
+                uniquePredicates.push_back(predicate);
+            }
+            else
+            {
+                leafSlots.push_back(
+                    static_cast<std::size_t>(std::distance(uniquePredicates.begin(), it))
+                );
+            }
+        }
+
+        std::vector<RowBitset> leafBitsets;
+        leafBitsets.reserve(uniquePredicates.size());
+        for (const RowPredicate *predicate : uniquePredicates)
         {
             leafBitsets.push_back(MaterialiseLeafBitset(*predicate, table, rowCount));
         }
 
         size_t leafCursor = 0;
-        const RowBitset resultBitset = EvaluateExpressionBitset(expression, leafBitsets, leafCursor, rowCount);
+        const RowBitset resultBitset =
+            EvaluateExpressionBitset(expression, leafBitsets, leafSlots, leafCursor, rowCount);
         resultBitset.CollectInto(accepted);
         return accepted;
     }

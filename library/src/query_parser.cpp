@@ -880,8 +880,20 @@ private:
 /// `ParseIsoTimestamp` for the pretty-printer.
 [[nodiscard]] std::string FormatTimestampMicros(std::int64_t micros)
 {
-    const std::int64_t whole = micros / 1'000'000;
-    const auto frac = static_cast<int>(std::abs(micros % 1'000'000));
+    // C++ integer division truncates towards zero, so a negative
+    // `micros` with a non-zero remainder must borrow one whole
+    // second and reflect the frac from the previous second. Without
+    // this borrow, `-500'000` (500ms before epoch) rendered as
+    // `1970-01-01T00:00:00.500000Z` instead of the correct
+    // `1969-12-31T23:59:59.500000Z`.
+    std::int64_t whole = micros / 1'000'000;
+    std::int64_t remainder = micros % 1'000'000;
+    if (remainder < 0)
+    {
+        whole -= 1;
+        remainder += 1'000'000;
+    }
+    const auto frac = static_cast<int>(remainder);
     std::time_t t = static_cast<std::time_t>(whole);
     std::tm utc{};
 #ifdef _WIN32
@@ -1529,7 +1541,18 @@ private:
     [[nodiscard]] std::expected<FilterExpression, QueryParseError>
     FinishListLeaf(LeafRule rule, const Token &firstTok, const Token &opTok)
     {
-        rule.type = LeafRule::Type::Enumeration;
+        // A list of exclusively `true` / `false` tokens is the wire
+        // form the pretty printer emits for `LeafRule::Type::Boolean`
+        // (`col in [true, false]`). Detect that shape so the round
+        // trip preserves the type; otherwise the compiled predicate
+        // walks the `Enumeration` path against a `Boolean` column,
+        // falls back to string-set matching, and never accepts a row.
+        // Mixed lists (`[true, "x"]`) stay `Enumeration` so hand-typed
+        // heterogeneous lists aren't silently misclassified.
+        const auto isBoolKind = [](TokenKind k) {
+            return k == TokenKind::True || k == TokenKind::False;
+        };
+        bool allBool = isBoolKind(firstTok.kind);
         rule.filterValues.push_back(firstTok.text);
         while (mLookahead.kind == TokenKind::Comma)
         {
@@ -1546,6 +1569,7 @@ private:
                 err.message = "expected a value after ','";
                 return std::unexpected(err);
             }
+            allBool = allBool && isBoolKind(mLookahead.kind);
             rule.filterValues.push_back(mLookahead.text);
             if (auto ok = Advance(); !ok.has_value())
             {
@@ -1564,6 +1588,24 @@ private:
             return std::unexpected(ok.error());
         }
         (void)opTok;
+        if (allBool)
+        {
+            rule.type = LeafRule::Type::Boolean;
+            // Normalise to lowercase so hand-typed `True` / `FALSE`
+            // still round-trip cleanly through `FormatExpression`
+            // (which emits lowercase) and match the compiled
+            // predicate's canonical form.
+            for (std::string &v : rule.filterValues)
+            {
+                std::ranges::transform(v, v.begin(), [](unsigned char ch) {
+                    return static_cast<char>(std::tolower(ch));
+                });
+            }
+        }
+        else
+        {
+            rule.type = LeafRule::Type::Enumeration;
+        }
         return MakeLeaf(std::move(rule));
     }
 

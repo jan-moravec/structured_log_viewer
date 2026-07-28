@@ -5250,10 +5250,10 @@ void MainWindow::MirrorSessionStateToConfiguration()
     // children; those get stored on the configuration expression
     // directly and roundtrip separately. Here we only mirror the
     // simple-mode subset back into the top-level `And`, preserving
-    // any pre-existing non-Leaf siblings so an Advanced clause
+    // any pre-existing Advanced structure so an Advanced clause
     // isn't clobbered by a simple-mode edit.
     loglib::FilterExpression::And newAnd;
-    newAnd.children.reserve(mSimpleLeafOrder.size());
+    newAnd.children.reserve(mSimpleLeafOrder.size() + 1);
     for (const auto &id : mSimpleLeafOrder)
     {
         const auto it = mSimpleLeaves.find(id);
@@ -5265,8 +5265,19 @@ void MainWindow::MirrorSessionStateToConfiguration()
         leaf.node = loglib::FilterExpression::Leaf{it->second};
         newAnd.children.push_back(std::move(leaf));
     }
-    // Preserve any non-Leaf top-level `And` siblings from the
-    // existing configuration (produced by the Advanced editor).
+    // Preserve the Advanced-mode structure from the existing tree:
+    //   - Existing `And`: append its non-Leaf children. Simple-mode
+    //     leaves already come from `mSimpleLeaves`, so we drop
+    //     `Leaf` children here to avoid duplication.
+    //   - Existing `Or` / `Not`: the Advanced editor produced a root
+    //     the simple-mode UI can't roundtrip; keep the whole subtree
+    //     as one non-Leaf child of `newAnd` so it survives further
+    //     simple-mode edits and session Save/Load. Without this the
+    //     tree is silently overwritten by the next mirror.
+    //   - Existing bare `Leaf`: it's already represented in
+    //     `mSimpleLeaves` (`RebuildFiltersFromConfiguration` extracts
+    //     a leaf root into the simple-mode collection), so we skip
+    //     it here to avoid duplicating the same rule.
     const auto &existing = mModel->Configuration().expression;
     if (const auto *existingAnd = std::get_if<loglib::FilterExpression::And>(&existing.node);
         existingAnd != nullptr)
@@ -5278,6 +5289,11 @@ void MainWindow::MirrorSessionStateToConfiguration()
                 newAnd.children.push_back(child);
             }
         }
+    }
+    else if (std::holds_alternative<loglib::FilterExpression::Or>(existing.node) ||
+             std::holds_alternative<loglib::FilterExpression::Not>(existing.node))
+    {
+        newAnd.children.push_back(existing);
     }
     loglib::FilterExpression rootExpression;
     rootExpression.node = std::move(newAnd);

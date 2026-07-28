@@ -345,3 +345,104 @@ TEST_CASE("FormatExpression: numeric range renders as in [..]", "[query_parser][
     CHECK(out.find("in [") != std::string::npos);
     CHECK(out.find("..") != std::string::npos);
 }
+
+// Regression: `col in [true, false]` is the wire form the pretty
+// printer emits for `LeafRule::Type::Boolean` (multi-value bool).
+// Before the fix `FinishListLeaf` unconditionally stamped the leaf
+// as `Enumeration`, so the compiled predicate walked the string-set
+// fallback against a `Boolean` column and matched zero rows.
+TEST_CASE("ParseQuery: bool-only in-list becomes Type::Boolean", "[query_parser]")
+{
+    SECTION("both values")
+    {
+        const auto expr = ParseOrFail("succeeded in [true, false]");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(leaf->type == LeafRule::Type::Boolean);
+        REQUIRE(leaf->filterValues.size() == 2);
+        CHECK(leaf->filterValues[0] == "true");
+        CHECK(leaf->filterValues[1] == "false");
+    }
+    SECTION("single true")
+    {
+        const auto expr = ParseOrFail("succeeded in [true]");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(leaf->type == LeafRule::Type::Boolean);
+        REQUIRE(leaf->filterValues.size() == 1);
+        CHECK(leaf->filterValues.front() == "true");
+    }
+    SECTION("case-preserved input normalises to lowercase")
+    {
+        // Boolean rules canonicalise to lowercase so the round-trip
+        // through `FormatExpression` (which emits lowercase) matches.
+        const auto expr = ParseOrFail("succeeded in [True, FALSE]");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(leaf->type == LeafRule::Type::Boolean);
+        REQUIRE(leaf->filterValues.size() == 2);
+        CHECK(leaf->filterValues[0] == "true");
+        CHECK(leaf->filterValues[1] == "false");
+    }
+    SECTION("mixed list stays Enumeration")
+    {
+        // `[true, "yes"]` isn't a canonical Boolean spelling — keep it
+        // on the Enumeration path so hand-typed heterogeneous lists
+        // aren't silently misclassified.
+        const auto expr = ParseOrFail("field in [true, \"yes\"]");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(leaf->type == LeafRule::Type::Enumeration);
+    }
+}
+
+// Regression: a Boolean multi-value leaf must round-trip through
+// `FormatExpression` -> `ParseQuery` back to the same AST. The wire
+// form is `col in [true, false]`; before the parser fix it came
+// back as `Enumeration`, so the ASTs no longer compared equal and
+// the compiled predicate matched zero rows.
+TEST_CASE("FormatExpression: boolean multi-value round-trips through the parser", "[query_parser][pretty]")
+{
+    FilterExpression source;
+    LeafRule rule;
+    rule.type = LeafRule::Type::Boolean;
+    rule.columnKeys = {"succeeded"};
+    rule.filterValues = {"true", "false"};
+    source.node = FilterExpression::Leaf{rule};
+
+    const std::string formatted = FormatExpression(source);
+    const auto reparsed = ParseQuery(formatted);
+    REQUIRE(reparsed.has_value());
+    CHECK(source == *reparsed);
+}
+
+// Regression: `FormatTimestampMicros` used C++ truncation on the
+// second/fraction split, so a negative sub-second value (e.g.
+// `-500'000` = 500ms before epoch) rendered on the wrong side of
+// the epoch. The correct pretty-print borrows one whole second and
+// reflects the fraction, so `-500'000` -> `1969-12-31T23:59:59...`.
+TEST_CASE(
+    "FormatExpression: sub-second negative timestamp borrows a whole second", "[query_parser][pretty][regression]"
+)
+{
+    // Build a Time leaf directly against a known negative
+    // begin-bound so we can eyeball the pretty-print output. The
+    // parser round-trips ISO strings back to microseconds, so the
+    // AST equality below is the load-bearing invariant.
+    FilterExpression source;
+    LeafRule rule;
+    rule.type = LeafRule::Type::Time;
+    rule.columnKeys = {"ts"};
+    rule.filterBegin = static_cast<std::int64_t>(-500'000);
+    source.node = FilterExpression::Leaf{rule};
+
+    const std::string formatted = FormatExpression(source);
+    // Expect the borrowed second (23:59:59.500000Z) in the output;
+    // the previous buggy path emitted the epoch itself.
+    CHECK(formatted.contains("1969-12-31T23:59:59.500000Z"));
+    CHECK_FALSE(formatted.contains("1970-01-01T00:00:00.500000Z"));
+
+    const auto reparsed = ParseQuery(formatted);
+    REQUIRE(reparsed.has_value());
+    CHECK(source == *reparsed);
+}

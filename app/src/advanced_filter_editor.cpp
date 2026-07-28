@@ -3,15 +3,22 @@
 #include <loglib/filter_expression.hpp>
 #include <loglib/query_parser.hpp>
 
+#include <QColor>
 #include <QDialogButtonBox>
 #include <QFont>
 #include <QFontMetrics>
 #include <QLabel>
+#include <QList>
+#include <QPalette>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QString>
+#include <QTextCharFormat>
+#include <QTextCursor>
+#include <QTextEdit>
 #include <QVBoxLayout>
 
+#include <cstddef>
 #include <string>
 #include <utility>
 
@@ -116,7 +123,8 @@ std::optional<loglib::FilterExpression> AdvancedFilterEditor::Result() const
 
 void AdvancedFilterEditor::ReparseAndUpdate()
 {
-    const std::string source = mQueryEdit->toPlainText().toStdString();
+    const QString queryText = mQueryEdit->toPlainText();
+    const std::string source = queryText.toStdString();
     auto parsed = loglib::ParseQuery(source);
     if (parsed.has_value())
     {
@@ -132,6 +140,9 @@ void AdvancedFilterEditor::ReparseAndUpdate()
         }
         // Reset any warning styling from prior parse errors.
         mStatusLabel->setStyleSheet(QString());
+        // Drop any prior underline so the query field is clean when
+        // the user recovers.
+        ClearErrorHighlight();
         mOkButton->setEnabled(true);
     }
     else
@@ -147,6 +158,68 @@ void AdvancedFilterEditor::ReparseAndUpdate()
             tr("Parse error at position %1: %2").arg(offset).arg(QString::fromStdString(err.message))
         );
         mStatusLabel->setStyleSheet(QStringLiteral("color: palette(highlight);"));
+        // Convert the byte offset into a UTF-16 code-unit offset so
+        // Qt's `QTextCursor` (which counts code units) lands on the
+        // right character even when earlier bytes were multi-byte
+        // UTF-8. Clamp to the current text length so trailing-EOF
+        // errors highlight the last visible character.
+        HighlightErrorAt(queryText, static_cast<std::size_t>(err.offset));
         mOkButton->setEnabled(false);
     }
+}
+
+void AdvancedFilterEditor::HighlightErrorAt(const QString &queryText, std::size_t byteOffset)
+{
+    if (mQueryEdit == nullptr)
+    {
+        return;
+    }
+    // Translate byte-offset -> UTF-16 code-unit index by re-encoding
+    // the prefix. Fine to walk the string here -- queries are short
+    // and this only runs on `textChanged`.
+    const QByteArray utf8 = queryText.toUtf8();
+    const auto clampedByteOffset = std::min(byteOffset, static_cast<std::size_t>(utf8.size()));
+    const int codeUnitOffset =
+        QString::fromUtf8(utf8.constData(), static_cast<qsizetype>(clampedByteOffset)).size();
+    const int textSize = queryText.size();
+    const int selectStart = std::min(codeUnitOffset, textSize);
+    // Highlight at least one character so a caret-at-EOF error is
+    // still visible. If the error is past end-of-text, back up one
+    // character so we underline the last real glyph.
+    QTextEdit::ExtraSelection selection;
+    QTextCursor cursor(mQueryEdit->document());
+    if (selectStart >= textSize && textSize > 0)
+    {
+        cursor.setPosition(textSize - 1);
+        cursor.setPosition(textSize, QTextCursor::KeepAnchor);
+    }
+    else if (textSize > 0)
+    {
+        cursor.setPosition(selectStart);
+        cursor.setPosition(std::min(selectStart + 1, textSize), QTextCursor::KeepAnchor);
+    }
+    else
+    {
+        // Empty text — no visible glyph to underline; leave the
+        // status-label offset as the sole cue.
+        ClearErrorHighlight();
+        return;
+    }
+    QTextCharFormat fmt;
+    fmt.setUnderlineStyle(QTextCharFormat::WaveUnderline);
+    // Prefer the palette's highlight colour so the wavy line remains
+    // legible on both light and dark themes.
+    fmt.setUnderlineColor(mQueryEdit->palette().color(QPalette::Highlight));
+    selection.cursor = cursor;
+    selection.format = fmt;
+    mQueryEdit->setExtraSelections({selection});
+}
+
+void AdvancedFilterEditor::ClearErrorHighlight()
+{
+    if (mQueryEdit == nullptr)
+    {
+        return;
+    }
+    mQueryEdit->setExtraSelections({});
 }

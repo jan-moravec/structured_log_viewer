@@ -11504,6 +11504,146 @@ private slots:
         QCOMPARE(bytesC, bytesA);
     }
 
+    // Regression: an Advanced-editor tree whose root is `Or` / `Not`
+    // (i.e. cannot be represented by simple-mode leaves) must survive
+    // a Save / Load round-trip. Before the fix the load path called
+    // `MirrorSessionStateToConfiguration` after `ClearAllFilters` and
+    // that helper only preserved non-Leaf siblings of an `And` root
+    // -- an `Or` / `Not` root was silently overwritten with the
+    // empty simple-mode `And` (match-all), losing the user's tree.
+    void TestFilterPersistenceAdvancedRootRoundTrips()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+
+        const std::vector<std::string> msgKeys = model->Configuration().columns[static_cast<size_t>(msgCol)].keys;
+        const std::vector<std::string> levelKeys =
+            model->Configuration().columns[static_cast<size_t>(levelCol)].keys;
+
+        // Build `NOT msg:m1 OR level in [info]` -- a two-node
+        // Advanced tree whose root is `Or` and one branch is a
+        // `Not` (both shapes trigger the fixed preservation path).
+        loglib::FilterExpression notLeaf = loglib::MakeNot(loglib::MakeLeaf(loglib::LeafRule{
+            .type = loglib::LeafRule::Type::String,
+            .columnKeys = msgKeys,
+            .matchType = loglib::LeafRule::Match::Contains,
+            .filterString = std::string("m1"),
+        }));
+        loglib::FilterExpression enumLeaf = loglib::MakeLeaf(loglib::LeafRule{
+            .type = loglib::LeafRule::Type::Enumeration,
+            .columnKeys = levelKeys,
+            .filterValues = {"info"},
+        });
+        std::vector<loglib::FilterExpression> orChildren;
+        orChildren.push_back(std::move(notLeaf));
+        orChildren.push_back(std::move(enumLeaf));
+        loglib::FilterExpression advancedTree = loglib::MakeOr(std::move(orChildren));
+
+        // Install the Advanced tree exactly as `OpenAdvancedFilter`
+        // would after the user clicks OK.
+        model->ConfigurationManager().SetExpression(advancedTree);
+
+        const QTemporaryDir savedDir;
+        QVERIFY(savedDir.isValid());
+        const QString savedPath = savedDir.filePath(QStringLiteral("advanced-root.json"));
+        mWindow->SaveConfigurationToPathForTest(savedPath);
+
+        // Wipe the runtime expression directly so the load path is
+        // the only remaining source of truth. `ClearAllFilters` now
+        // preserves the Advanced tree (by design; see
+        // `TestSimpleFilterEditPreservesAdvancedRoot`), so we go
+        // through the manager to reach true match-all in memory.
+        model->ConfigurationManager().SetExpression(loglib::FilterExpression{});
+        QCoreApplication::processEvents();
+        QVERIFY(loglib::IsMatchAll(model->Configuration().expression));
+
+        mWindow->SetSuppressDialogsForTest(true);
+        mWindow->LoadConfigurationFromPathForTest(savedPath);
+        QCoreApplication::processEvents();
+
+        // Locate the preserved Advanced subtree. The mirror wraps a
+        // pure-Advanced root in a single-child `And` for uniform
+        // simple-mode-plus-Advanced siblings; both shapes are
+        // semantically equivalent, so accept either.
+        const auto &reloaded = model->Configuration().expression;
+        const loglib::FilterExpression *advanced = &reloaded;
+        if (const auto *asAnd = std::get_if<loglib::FilterExpression::And>(&reloaded.node); asAnd != nullptr)
+        {
+            QCOMPARE(static_cast<int>(asAnd->children.size()), 1);
+            advanced = &asAnd->children.front();
+        }
+        QVERIFY2(
+            *advanced == advancedTree,
+            "Advanced Or/Not tree must survive Save/Load exactly (structure + payload)"
+        );
+    }
+
+    // Regression: a follow-up simple-mode edit after the user commits
+    // an Advanced `Or` / `Not` tree must not clobber that tree. The
+    // trigger is `MirrorSessionStateToConfiguration`, which runs on
+    // every `AddLogFilter` / `ClearFilter`; before the fix it read
+    // the existing root, saw non-`And`, and dropped the whole subtree.
+    void TestSimpleFilterEditPreservesAdvancedRoot()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+        const std::vector<std::string> msgKeys = model->Configuration().columns[static_cast<size_t>(msgCol)].keys;
+
+        // Install a `NOT msg:m1` Advanced tree exactly as
+        // `OpenAdvancedFilter` would after user commit.
+        loglib::FilterExpression advancedTree = loglib::MakeNot(loglib::MakeLeaf(loglib::LeafRule{
+            .type = loglib::LeafRule::Type::String,
+            .columnKeys = msgKeys,
+            .matchType = loglib::LeafRule::Match::Contains,
+            .filterString = std::string("m1"),
+        }));
+        model->ConfigurationManager().SetExpression(advancedTree);
+
+        // A simple-mode leaf submission funnels through `AddLogFilter`
+        // -> `MirrorSessionStateToConfiguration`. The Advanced tree
+        // must still be reachable in the resulting configuration.
+        QMetaObject::invokeMethod(
+            mWindow,
+            "FilterSubmitted",
+            Qt::DirectConnection,
+            Q_ARG(QString, QStringLiteral("simple-after-advanced")),
+            Q_ARG(int, msgCol),
+            Q_ARG(QString, QStringLiteral("m2")),
+            Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+        );
+        QCoreApplication::processEvents();
+
+        const auto &current = model->Configuration().expression;
+        const auto *asAnd = std::get_if<loglib::FilterExpression::And>(&current.node);
+        QVERIFY2(asAnd != nullptr, "root must be And after simple-mode edit");
+        bool sawAdvancedNot = false;
+        bool sawSimpleLeaf = false;
+        for (const auto &child : asAnd->children)
+        {
+            if (const auto *notNode = std::get_if<loglib::FilterExpression::Not>(&child.node); notNode != nullptr)
+            {
+                QVERIFY(notNode->child != nullptr);
+                QVERIFY(*notNode->child == *std::get<loglib::FilterExpression::Not>(advancedTree.node).child);
+                sawAdvancedNot = true;
+            }
+            else if (const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&child.node);
+                     leaf != nullptr)
+            {
+                sawSimpleLeaf = true;
+                QVERIFY(leaf->rule.filterString.has_value());
+                QCOMPARE(*leaf->rule.filterString, std::string("m2"));
+            }
+        }
+        QVERIFY2(sawAdvancedNot, "Advanced NOT subtree must be preserved through the mirror");
+        QVERIFY2(sawSimpleLeaf, "Newly submitted simple leaf must be present alongside it");
+    }
+
     // `Save Configuration...` (SaveScope::ColumnsOnly) writes a
     // portable layout: columns survive, session-only state
     // (filters, sort) is omitted from the file on purpose so the

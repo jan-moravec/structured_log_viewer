@@ -5,6 +5,7 @@
 #include <QDialog>
 #include <QString>
 
+#include <cstddef>
 #include <optional>
 
 class QLabel;
@@ -65,6 +66,12 @@ private:
     /// Reparse the current text and update the status label + OK
     /// button. Called from the text edit's `textChanged` slot.
     void ReparseAndUpdate();
+    /// Underline the character at @p byteOffset (byte-offset from
+    /// `QueryParseError::offset`) with a wavy squiggle so the parse
+    /// error is visible in the text field, not just the status line.
+    void HighlightErrorAt(const QString &queryText, std::size_t byteOffset);
+    /// Remove any prior parse-error underline.
+    void ClearErrorHighlight();
 
     QPlainTextEdit *mQueryEdit = nullptr;
     QLabel *mStatusLabel = nullptr;
