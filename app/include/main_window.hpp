@@ -625,6 +625,17 @@ public:
     /// so `FindFirstRowAtOrAfter` takes its non-monotonic branch
     /// without a real inversion. Irreversible.
     void ForceTimestampsNonMonotonicForTest();
+
+    /// Test seam replaying the post-`exec` body of `OpenAdvancedFilter`
+    /// without a modal `QDialog::exec`. Runs the same
+    /// leaf-extraction + mirror + recompile pipeline the production
+    /// slot uses, so tests can pin the leaf-into-simple-mode
+    /// invariant that keeps `MirrorSessionStateToConfiguration` from
+    /// clobbering the Advanced result on a later autosave.
+    void CommitAdvancedFilterForTest(loglib::FilterExpression expression)
+    {
+        ApplyAdvancedFilterResult(std::move(expression));
+    }
 #endif
 
 protected:
@@ -749,11 +760,21 @@ private slots:
     );
     void ClearAllFilters();
     /// Open the modal Advanced Filter editor seeded with the
-    /// current `LogConfiguration::expression`. On accept, replaces
-    /// the entire expression tree wholesale -- simple-mode
-    /// `mSimpleLeaves` is cleared because the Advanced editor owns
-    /// the full tree once opened. Bound to `actionAdvancedFilter`.
+    /// current `LogConfiguration::expression`. On accept, dispatches
+    /// to `ApplyAdvancedFilterResult`. Bound to `actionAdvancedFilter`.
     void OpenAdvancedFilter();
+
+    /// Post-dialog body of `OpenAdvancedFilter`: rebuild the
+    /// simple-mode surface + expression from a parsed tree the
+    /// Advanced editor already validated. Extracts top-level Leaves
+    /// into `mSimpleLeaves` (mirroring the load path in
+    /// `RebuildFiltersFromConfiguration`) so a mixed tree like
+    /// `svc:x AND NOT lvl:info AND path~/foo/` still shows one
+    /// Filters-menu entry per representable leaf while the non-Leaf
+    /// remainder survives a follow-up simple-mode edit. Callers own
+    /// dialog lifecycle; exposed via `CommitAdvancedFilterForTest`
+    /// so tests can bypass the modal exec.
+    void ApplyAdvancedFilterResult(loglib::FilterExpression result);
     /// Drop the active column sort via
     /// `mTableView->sortByColumn(-1, ...)` so proxy, header, and
     /// persisted config stay in lockstep. Bound to

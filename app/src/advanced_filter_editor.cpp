@@ -14,6 +14,7 @@
 #include <QPalette>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QString>
 #include <QTextCharFormat>
 #include <QTextCursor>
@@ -21,8 +22,10 @@
 #include <QVBoxLayout>
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 
 namespace
 {
@@ -55,6 +58,69 @@ constexpr auto HELP_TEXT =
     const QPalette palette = (widget != nullptr) ? widget->palette() : QPalette{};
     const bool dark = ThemeControl::IsDarkColor(palette.color(QPalette::Base));
     return dark ? QStringLiteral("#FF8A80") : QStringLiteral("#D32F2F");
+}
+
+/// Diagnostic returned by `FindInvalidRegex`: the offending pattern
+/// (for the status message) and the QRegularExpression error text.
+struct RegexIssue
+{
+    QString pattern;
+    QString errorText;
+};
+
+/// Depth-first walk over @p expression looking for the first
+/// `Type::String` leaf whose match kind is `RegularExpression` and
+/// whose pattern fails `QRegularExpression::isValid()`. Wildcard
+/// patterns are always accepted (`wildcardToRegularExpression`
+/// escapes special characters). Returns `nullopt` when every regex
+/// leaf compiles; short-circuits on the first failure so the status
+/// message pins one actionable pattern instead of a summary list.
+[[nodiscard]] std::optional<RegexIssue> FindInvalidRegex(const loglib::FilterExpression &expression)
+{
+    return std::visit(
+        [](const auto &node) -> std::optional<RegexIssue> {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, loglib::FilterExpression::Leaf>)
+            {
+                const auto &rule = node.rule;
+                if (rule.type != loglib::LeafRule::Type::String ||
+                    rule.matchType != loglib::LeafRule::Match::RegularExpression ||
+                    !rule.filterString.has_value())
+                {
+                    return std::nullopt;
+                }
+                const QString pattern = QString::fromStdString(*rule.filterString);
+                const QRegularExpression probe(pattern);
+                if (probe.isValid())
+                {
+                    return std::nullopt;
+                }
+                return RegexIssue{pattern, probe.errorString()};
+            }
+            else if constexpr (std::is_same_v<T, loglib::FilterExpression::And> ||
+                               std::is_same_v<T, loglib::FilterExpression::Or>)
+            {
+                for (const auto &child : node.children)
+                {
+                    if (auto issue = FindInvalidRegex(child); issue.has_value())
+                    {
+                        return issue;
+                    }
+                }
+                return std::nullopt;
+            }
+            else
+            {
+                // Not.
+                if (node.child == nullptr)
+                {
+                    return std::nullopt;
+                }
+                return FindInvalidRegex(*node.child);
+            }
+        },
+        expression.node
+    );
 }
 
 } // namespace
@@ -141,6 +207,29 @@ void AdvancedFilterEditor::ReparseAndUpdate()
     auto parsed = loglib::ParseQuery(source);
     if (parsed.has_value())
     {
+        // Regex validity is a second-stage check: `ParseQuery` only
+        // extracts the pattern between `/.../` delimiters, so a
+        // syntactically valid query can still carry an invalid
+        // `QRegularExpression` payload. Without this gate an
+        // accepted expression like `msg~/*[bad/` compiles into a
+        // matcher that silently rejects every row -- the log view
+        // goes blank with no cue. Surface the failure here so the
+        // OK button stays disabled and the status label explains
+        // which pattern to fix.
+        if (auto regexIssue = FindInvalidRegex(*parsed); regexIssue.has_value())
+        {
+            mCachedResult.reset();
+            mStatusLabel->setText(
+                tr("Invalid regular expression /%1/: %2").arg(regexIssue->pattern, regexIssue->errorText)
+            );
+            mStatusLabel->setStyleSheet(QStringLiteral("color: %1;").arg(ErrorColorHex(this)));
+            // No caret offset is available for individual regex leaves
+            // (the parser doesn't record per-leaf source positions),
+            // so leave any prior underline in place -- the pattern
+            // itself is visible in the status label.
+            mOkButton->setEnabled(false);
+            return;
+        }
         mCachedResult = std::move(*parsed);
         if (loglib::IsMatchAll(*mCachedResult))
         {

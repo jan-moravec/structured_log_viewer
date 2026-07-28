@@ -346,14 +346,33 @@ std::optional<loglib::CompiledFilterExpression> CompileNode(
                 // Not.
                 if (n.child == nullptr)
                 {
-                    // Empty Not = NOT (match-none) = match-all. Drop.
+                    // Defensive: `MakeNot`'s constructors enforce
+                    // non-null; only a hand-edited config that
+                    // survived Glaze validation could land here.
+                    // Drop so the parent AND treats us as match-all
+                    // rather than propagating the degenerate node.
                     return std::nullopt;
                 }
                 auto compiledChild = CompileNode(*n.child, columns, table, referencedColumns);
                 if (!compiledChild.has_value())
                 {
-                    // Not(inert): inert children in a Not could
-                    // mean anything -- treat as inert to drop.
+                    // `Not(inert)` conflates a few causes:
+                    //   * unresolved column keys (rule targets a
+                    //     column that doesn't exist) -- match-all
+                    //     is the correct semantic here anyway
+                    //     (no row can match the missing column, so
+                    //     NOT matches every row);
+                    //   * empty payload (e.g. time with no bounds)
+                    //     -- also correctly match-all
+                    //     (NOT match-none = match-all);
+                    //   * level column not yet promoted -- we
+                    //     over-accept until the next `Grew` fires
+                    //     `enumColumnsChanged` and rebuilds. The
+                    //     transient over-acceptance is preferable
+                    //     to blanking every row during streaming.
+                    // Dropping the whole Not is match-all in the
+                    // enclosing AND, which matches all three cases
+                    // to the desired steady state.
                     return std::nullopt;
                 }
                 loglib::CompiledFilterExpression compiled;

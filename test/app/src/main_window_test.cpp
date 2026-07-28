@@ -7817,6 +7817,54 @@ private slots:
         QVERIFY(*result == *seeded);
     }
 
+    // Regression: `ParseQuery` only extracts the pattern between the
+    // `/.../` delimiters; it does not compile the regex. Without a
+    // second-stage `QRegularExpression::isValid()` check the Advanced
+    // editor would accept a query like `msg~/*[bad/`, hand it to
+    // `MakeStringMatcher`, and silently reject every row. Confirm the
+    // editor now surfaces the failure and keeps OK disabled.
+    void TestAdvancedFilterEditorRejectsInvalidRegex()
+    {
+        AdvancedFilterEditor editor;
+        editor.SetQueryText(QStringLiteral("msg ~ /*[bad/"));
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            !editor.Result().has_value(),
+            "invalid regex must invalidate the cached Result so OpenAdvancedFilter can't commit it"
+        );
+        auto *box = editor.findChild<QDialogButtonBox *>(QStringLiteral("advancedFilterButtonBox"));
+        QVERIFY2(box != nullptr, "AdvancedFilterEditor must expose its button box");
+        auto *okBtn = box->button(QDialogButtonBox::Ok);
+        QVERIFY2(
+            okBtn != nullptr && !okBtn->isEnabled(),
+            "OK must be disabled when a regex leaf fails to compile"
+        );
+
+        // The status label must name the offending pattern so the
+        // user can fix it. The exact QRegularExpression error text
+        // is Qt-version-dependent; assert on our stable prefix and
+        // the pattern only.
+        auto *status = editor.findChild<QLabel *>(QStringLiteral("advancedFilterStatusLabel"));
+        QVERIFY2(status != nullptr, "AdvancedFilterEditor must expose its status label");
+        const QString msg = status->text();
+        QVERIFY2(
+            msg.contains(QStringLiteral("Invalid regular expression"), Qt::CaseSensitive),
+            qPrintable(QStringLiteral("status must explain the rejection; got '%1'").arg(msg))
+        );
+        QVERIFY2(
+            msg.contains(QStringLiteral("*[bad")),
+            qPrintable(QStringLiteral("status must name the offending pattern; got '%1'").arg(msg))
+        );
+
+        // Recovering to a valid regex re-enables OK (mirrors the
+        // parse-error recovery in `TestAdvancedFilterEditorDisablesOkOnParseError`).
+        editor.SetQueryText(QStringLiteral("msg ~ /good.+/"));
+        QCoreApplication::processEvents();
+        QVERIFY(editor.Result().has_value());
+        QVERIFY(okBtn->isEnabled());
+    }
+
     // End-to-end: a JSON `level` column with canonical names auto-
     // promotes through `Type::Enumeration` to `Type::Level`, and
     // `GetLevelForRow` then reports the canonical rank per row.
@@ -11643,6 +11691,299 @@ private slots:
         }
         QVERIFY2(sawAdvancedNot, "Advanced NOT subtree must be preserved through the mirror");
         QVERIFY2(sawSimpleLeaf, "Newly submitted simple leaf must be present alongside it");
+    }
+
+    // Regression: an Advanced-editor commit whose parsed result is a
+    // bare `Leaf` (user typed a single `service:auth`-style query in
+    // the empty editor) must not be silently dropped by a subsequent
+    // mirror. Before the fix, `OpenAdvancedFilter` wrote the bare
+    // Leaf onto the configuration and cleared `mSimpleLeaves`. Any
+    // later trigger of `MirrorSessionStateToConfiguration`
+    // (`AddLogFilter`, `ClearFilter`, `AutoSaveSessionSnapshot` on
+    // close) rebuilt the expression from the empty simple set, saw
+    // the existing bare Leaf, matched neither the And / Or / Not
+    // preservation branch, and wrote back match-all -- the user's
+    // rule disappeared without warning. The fix extracts the Leaf
+    // into `mSimpleLeaves` on commit so the mirror's "existing And
+    // with Leaf children skipped" branch handles it uniformly.
+    void TestAdvancedFilterBareLeafSurvivesFollowUpMirror()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+        const std::vector<std::string> msgKeys = model->Configuration().columns[static_cast<size_t>(msgCol)].keys;
+
+        // Simulate the user typing `msg:m1` and clicking OK. `Result`
+        // is a bare `Leaf` -- the shape the pre-fix branch dropped.
+        loglib::FilterExpression bareLeaf = loglib::MakeLeaf(loglib::LeafRule{
+            .type = loglib::LeafRule::Type::String,
+            .columnKeys = msgKeys,
+            .matchType = loglib::LeafRule::Match::Contains,
+            .filterString = std::string("m1"),
+        });
+        mWindow->CommitAdvancedFilterForTest(bareLeaf);
+        QCoreApplication::processEvents();
+
+        // After the commit, the leaf must be visible in the simple-mode
+        // surface (Filters menu entry + `mSimpleLeaves`), and the wire
+        // expression must be `And{[Leaf]}` -- not match-all.
+        QCOMPARE(static_cast<int>(mWindow->Filters().size()), 1);
+        {
+            const auto &current = model->Configuration().expression;
+            const auto *asAnd = std::get_if<loglib::FilterExpression::And>(&current.node);
+            QVERIFY2(asAnd != nullptr, "root must be And after Advanced commit of a bare Leaf");
+            QCOMPARE(static_cast<int>(asAnd->children.size()), 1);
+            const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&asAnd->children.front().node);
+            QVERIFY2(leaf != nullptr, "the sole child must be the leaf we just committed");
+            QVERIFY(leaf->rule.filterString.has_value());
+            QCOMPARE(*leaf->rule.filterString, std::string("m1"));
+        }
+
+        // Now trigger a follow-up mirror through `FilterSubmitted`
+        // (identical to any other simple-mode edit path). The
+        // Advanced leaf must survive alongside the new simple leaf.
+        QMetaObject::invokeMethod(
+            mWindow,
+            "FilterSubmitted",
+            Qt::DirectConnection,
+            Q_ARG(QString, QStringLiteral("second-simple")),
+            Q_ARG(int, msgCol),
+            Q_ARG(QString, QStringLiteral("m2")),
+            Q_ARG(int, static_cast<int>(loglib::LeafRule::Match::Contains))
+        );
+        QCoreApplication::processEvents();
+
+        const auto &current = model->Configuration().expression;
+        const auto *asAnd = std::get_if<loglib::FilterExpression::And>(&current.node);
+        QVERIFY2(asAnd != nullptr, "root must remain And after the follow-up simple edit");
+        QCOMPARE(static_cast<int>(asAnd->children.size()), 2);
+        bool sawM1 = false;
+        bool sawM2 = false;
+        for (const auto &child : asAnd->children)
+        {
+            const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&child.node);
+            QVERIFY2(leaf != nullptr, "both children must remain Leaves");
+            QVERIFY(leaf->rule.filterString.has_value());
+            if (*leaf->rule.filterString == "m1") { sawM1 = true; }
+            if (*leaf->rule.filterString == "m2") { sawM2 = true; }
+        }
+        QVERIFY2(sawM1, "the Advanced-committed bare-Leaf rule must survive the mirror");
+        QVERIFY2(sawM2, "the follow-up simple-mode rule must be present");
+    }
+
+    // Companion to the bare-Leaf case above: an Advanced commit whose
+    // root is `And{[Leaf, Leaf, Or{...}]}` must extract the Leaves
+    // into `mSimpleLeaves` and keep only the Or subtree as the
+    // non-Leaf remainder, so the Filters-menu entry count matches
+    // the extracted-leaf count and Mirror preserves the Or on a
+    // follow-up edit.
+    void TestAdvancedFilterMixedTreeExtractsSimpleLeaves()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+        const std::vector<std::string> msgKeys = model->Configuration().columns[static_cast<size_t>(msgCol)].keys;
+        const std::vector<std::string> levelKeys =
+            model->Configuration().columns[static_cast<size_t>(levelCol)].keys;
+
+        // Build `msg:m1 AND msg:m2 AND (msg:m3 OR msg:m4)` -- two
+        // representable-as-simple leaves plus one non-Leaf child.
+        loglib::FilterExpression leafM1 = loglib::MakeLeaf(loglib::LeafRule{
+            .type = loglib::LeafRule::Type::String,
+            .columnKeys = msgKeys,
+            .matchType = loglib::LeafRule::Match::Contains,
+            .filterString = std::string("m1"),
+        });
+        loglib::FilterExpression leafM2 = loglib::MakeLeaf(loglib::LeafRule{
+            .type = loglib::LeafRule::Type::String,
+            .columnKeys = msgKeys,
+            .matchType = loglib::LeafRule::Match::Contains,
+            .filterString = std::string("m2"),
+        });
+        std::vector<loglib::FilterExpression> orChildren;
+        orChildren.push_back(loglib::MakeLeaf(loglib::LeafRule{
+            .type = loglib::LeafRule::Type::String,
+            .columnKeys = msgKeys,
+            .matchType = loglib::LeafRule::Match::Contains,
+            .filterString = std::string("m3"),
+        }));
+        orChildren.push_back(loglib::MakeLeaf(loglib::LeafRule{
+            .type = loglib::LeafRule::Type::String,
+            .columnKeys = msgKeys,
+            .matchType = loglib::LeafRule::Match::Contains,
+            .filterString = std::string("m4"),
+        }));
+        loglib::FilterExpression orNode = loglib::MakeOr(std::move(orChildren));
+        std::vector<loglib::FilterExpression> andChildren;
+        andChildren.push_back(std::move(leafM1));
+        andChildren.push_back(std::move(leafM2));
+        andChildren.push_back(std::move(orNode));
+
+        mWindow->CommitAdvancedFilterForTest(loglib::MakeAnd(std::move(andChildren)));
+        QCoreApplication::processEvents();
+
+        // Two Filters-menu entries (the extracted Leaves); the Or
+        // stays under the wire as a non-Leaf child.
+        QCOMPARE(static_cast<int>(mWindow->Filters().size()), 2);
+
+        const auto &current = model->Configuration().expression;
+        const auto *asAnd = std::get_if<loglib::FilterExpression::And>(&current.node);
+        QVERIFY2(asAnd != nullptr, "root must be And after Advanced commit of a mixed tree");
+        QCOMPARE(static_cast<int>(asAnd->children.size()), 3);
+        int seenLeaves = 0;
+        int seenOr = 0;
+        for (const auto &child : asAnd->children)
+        {
+            if (std::holds_alternative<loglib::FilterExpression::Leaf>(child.node)) { ++seenLeaves; }
+            else if (std::holds_alternative<loglib::FilterExpression::Or>(child.node)) { ++seenOr; }
+        }
+        QCOMPARE(seenLeaves, 2);
+        QCOMPARE(seenOr, 1);
+    }
+
+    // Regression: after `ApplyAdvancedFilterResult` commits a tree
+    // whose root is not a Leaf / And-of-Leaves (e.g. `NOT msg:m1`,
+    // `msg:a OR msg:b`), `mSimpleLeaves` is empty but the expression
+    // is non-match-all -- rows are actively being filtered.
+    // `actionClearAllFilters` correctly stays enabled (its gate is
+    // `IsMatchAll(expression)`), but the status-bar button used to
+    // gate on `!mSimpleLeaves.empty()` and hide itself, leaving the
+    // user with no visible affordance to clear the filter. Both must
+    // now agree: button visible + action enabled whenever the
+    // expression is non-match-all.
+    void TestStatusBarClearButtonVisibleForAdvancedOnlyExpression()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+        const std::vector<std::string> msgKeys = model->Configuration().columns[static_cast<size_t>(msgCol)].keys;
+
+        auto *button = mWindow->findChild<QPushButton *>(QStringLiteral("clearFiltersStatusButton"));
+        QVERIFY2(button != nullptr, "MainWindow must own the clear-filters status button");
+        auto *clearAction = mWindow->findChild<QAction *>(QStringLiteral("actionClearAllFilters"));
+        QVERIFY2(clearAction != nullptr, "MainWindow must own actionClearAllFilters");
+
+        // Precondition: button hidden, action disabled with no filter.
+        QCoreApplication::processEvents();
+        QVERIFY2(button->isHidden(), "clear-filters button must start hidden");
+        QVERIFY2(!clearAction->isEnabled(), "clear-all action must start disabled");
+
+        // Commit a `NOT msg:m1` Advanced tree. Root is `Not`, so
+        // `ApplyAdvancedFilterResult` extracts zero top-level Leaves
+        // and installs the whole tree as the non-Leaf remainder.
+        loglib::FilterExpression advancedTree = loglib::MakeNot(loglib::MakeLeaf(loglib::LeafRule{
+            .type = loglib::LeafRule::Type::String,
+            .columnKeys = msgKeys,
+            .matchType = loglib::LeafRule::Match::Contains,
+            .filterString = std::string("m1"),
+        }));
+        mWindow->CommitAdvancedFilterForTest(std::move(advancedTree));
+        QCoreApplication::processEvents();
+
+        // The invariant this test pins: even with `mSimpleLeaves`
+        // empty, the button follows the compiled expression like the
+        // action does.
+        QVERIFY2(mWindow->Filters().empty(), "Advanced-only commit must not populate mSimpleLeaves");
+        QVERIFY2(
+            !loglib::IsMatchAll(model->Configuration().expression),
+            "Advanced NOT tree must produce a non-match-all expression"
+        );
+        QVERIFY2(clearAction->isEnabled(), "clear-all action must be enabled with an active Advanced tree");
+        QVERIFY2(
+            !button->isHidden(),
+            "clear-filters status button must stay visible while an Advanced tree is filtering rows"
+        );
+
+        // Symmetry: triggering the action must hide the button again.
+        clearAction->trigger();
+        QCoreApplication::processEvents();
+        QVERIFY2(button->isHidden(), "clear-filters button must re-hide after clearing an Advanced tree");
+        QVERIFY2(!clearAction->isEnabled(), "clear-all action must disable after clearing an Advanced tree");
+    }
+
+    // Companion to the button-visibility fix: removing the last
+    // simple-mode leaf via `ClearFilter` used to count Filters-menu
+    // entries and disable `actionClearAllFilters` when the count hit
+    // zero, ignoring any Advanced-mode subtree still installed on
+    // `LogConfiguration::expression`. That left the action disabled
+    // (and, via the shared trigger, the status-bar button wired to a
+    // no-op) even though rows stayed filtered by the Advanced Or/Not
+    // remainder. The fix gates on `IsMatchAll(expression)` post-Mirror.
+    void TestClearFilterKeepsActionEnabledWithAdvancedRemainder()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+        const std::vector<std::string> msgKeys = model->Configuration().columns[static_cast<size_t>(msgCol)].keys;
+
+        auto *clearAction = mWindow->findChild<QAction *>(QStringLiteral("actionClearAllFilters"));
+        QVERIFY2(clearAction != nullptr, "MainWindow must own actionClearAllFilters");
+        auto *button = mWindow->findChild<QPushButton *>(QStringLiteral("clearFiltersStatusButton"));
+        QVERIFY2(button != nullptr, "MainWindow must own the clear-filters status button");
+
+        // Commit a mixed tree: one simple leaf + one Or subtree.
+        // After `ApplyAdvancedFilterResult` this is one entry in
+        // `mSimpleLeaves` (the Leaf) plus one Or child on the wire
+        // expression -- the same shape a user would produce by
+        // typing `msg:m1 AND (msg:m2 OR msg:m3)` in the editor.
+        std::vector<loglib::FilterExpression> orChildren;
+        orChildren.push_back(loglib::MakeLeaf(loglib::LeafRule{
+            .type = loglib::LeafRule::Type::String,
+            .columnKeys = msgKeys,
+            .matchType = loglib::LeafRule::Match::Contains,
+            .filterString = std::string("m2"),
+        }));
+        orChildren.push_back(loglib::MakeLeaf(loglib::LeafRule{
+            .type = loglib::LeafRule::Type::String,
+            .columnKeys = msgKeys,
+            .matchType = loglib::LeafRule::Match::Contains,
+            .filterString = std::string("m3"),
+        }));
+        std::vector<loglib::FilterExpression> andChildren;
+        andChildren.push_back(loglib::MakeLeaf(loglib::LeafRule{
+            .type = loglib::LeafRule::Type::String,
+            .columnKeys = msgKeys,
+            .matchType = loglib::LeafRule::Match::Contains,
+            .filterString = std::string("m1"),
+        }));
+        andChildren.push_back(loglib::MakeOr(std::move(orChildren)));
+        mWindow->CommitAdvancedFilterForTest(loglib::MakeAnd(std::move(andChildren)));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(static_cast<int>(mWindow->Filters().size()), 1);
+        QVERIFY2(clearAction->isEnabled(), "precondition: action must be enabled with a mixed Advanced tree");
+        QVERIFY2(!button->isHidden(), "precondition: button must be visible with a mixed Advanced tree");
+
+        // Remove the sole simple leaf. `mSimpleLeaves` empties, but
+        // the Or child stays on the expression -- the action / button
+        // must not react as if all filters are gone.
+        const QString simpleLeafId = QString::fromStdString(mWindow->Filters().begin()->first);
+        QMetaObject::invokeMethod(
+            mWindow, "ClearFilter", Qt::DirectConnection, Q_ARG(QString, simpleLeafId), Q_ARG(bool, false)
+        );
+        QCoreApplication::processEvents();
+
+        QVERIFY2(mWindow->Filters().empty(), "simple leaf must be gone after ClearFilter");
+        QVERIFY2(
+            !loglib::IsMatchAll(model->Configuration().expression),
+            "the Advanced Or subtree must survive ClearFilter of the sibling simple leaf"
+        );
+        QVERIFY2(
+            clearAction->isEnabled(),
+            "actionClearAllFilters must stay enabled while the Advanced Or subtree is still filtering rows"
+        );
+        QVERIFY2(
+            !button->isHidden(),
+            "clear-filters status button must stay visible while the Advanced Or subtree is still filtering rows"
+        );
     }
 
     // Regression: `Clear All Filters` is the user's explicit signal

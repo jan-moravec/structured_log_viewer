@@ -3,12 +3,15 @@
 #include "log_model.hpp"
 
 #include <QByteArray>
+#include <QLoggingCategory>
 #include <QRegularExpression>
 #include <QString>
 
 #include <string>
 #include <string_view>
 #include <utility>
+
+Q_LOGGING_CATEGORY(logMatcher, "logapp.matcher")
 
 namespace
 {
@@ -86,11 +89,33 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(const QString &pat
     case Match::RegularExpression:
     {
         QRegularExpression regex(pattern);
+        if (!regex.isValid())
+        {
+            // Callers are expected to validate patterns up-front
+            // (`MainWindow::FilterSubmitted`, `AdvancedFilterEditor`),
+            // so reaching this branch means either a hand-edited
+            // config or a code path that bypassed validation.
+            // Surface via qWarning so the failure is visible in the
+            // debug log; return an always-false matcher so the
+            // downstream row loop doesn't crash on an invalid
+            // `QRegularExpression`. Match-none (instead of match-all)
+            // errs on the side of "user's filter didn't do what they
+            // meant" being visibly wrong rather than silently
+            // permissive.
+            qCWarning(logMatcher).noquote()
+                << "MakeStringMatcher: invalid regular expression"
+                << pattern
+                << "-"
+                << regex.errorString();
+            return [](std::string_view) { return false; };
+        }
         PrimeRegex(regex);
         return [regex](std::string_view bytes) { return regex.match(HaystackQStringFast(bytes)).hasMatch(); };
     }
     case Match::Wildcard:
     {
+        // `wildcardToRegularExpression` always emits a syntactically
+        // valid regex; no isValid gate needed here.
         QRegularExpression regex(QRegularExpression::wildcardToRegularExpression(pattern));
         PrimeRegex(regex);
         return [regex](std::string_view bytes) { return regex.match(HaystackQStringFast(bytes)).hasMatch(); };

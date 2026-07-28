@@ -405,7 +405,12 @@ bool EvaluateExpression(const CompiledFilterExpression &expression, const LogTab
                 // Not.
                 if (node.child == nullptr)
                 {
-                    // Empty `Not` = NOT (match-none) = match-all.
+                    // Degenerate state -- `FilterExpression::Not`'s
+                    // constructors and `CompileExpression` both keep
+                    // `child` non-null. If we ever see a null here
+                    // it's a hand-edited config; accept every row so
+                    // the view stays visible (loud fallback beats
+                    // silent blank-screen).
                     return true;
                 }
                 return !EvaluateExpression(*node.child, table, row);
@@ -732,7 +737,8 @@ RowBitset EvaluateExpressionBitset(
                 // Not.
                 if (node.child == nullptr)
                 {
-                    // Empty Not = match-all.
+                    // See the visit path above: degenerate state,
+                    // accept every row for consistency.
                     RowBitset all(rowCount);
                     all.FillTrue();
                     return all;
