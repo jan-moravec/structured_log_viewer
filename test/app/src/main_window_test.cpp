@@ -11551,11 +11551,12 @@ private slots:
         const QString savedPath = savedDir.filePath(QStringLiteral("advanced-root.json"));
         mWindow->SaveConfigurationToPathForTest(savedPath);
 
-        // Wipe the runtime expression directly so the load path is
-        // the only remaining source of truth. `ClearAllFilters` now
-        // preserves the Advanced tree (by design; see
-        // `TestSimpleFilterEditPreservesAdvancedRoot`), so we go
-        // through the manager to reach true match-all in memory.
+        // Wipe the runtime expression directly. This bypasses the
+        // simple-mode UI plumbing so the load path is the only
+        // remaining source of truth for the reload assertion --
+        // `ClearAllFilters` would work equally well here (it also
+        // resets to match-all; see `TestClearAllFiltersDropsAdvancedTree`),
+        // but going through the manager keeps the intent explicit.
         model->ConfigurationManager().SetExpression(loglib::FilterExpression{});
         QCoreApplication::processEvents();
         QVERIFY(loglib::IsMatchAll(model->Configuration().expression));
@@ -11642,6 +11643,51 @@ private slots:
         }
         QVERIFY2(sawAdvancedNot, "Advanced NOT subtree must be preserved through the mirror");
         QVERIFY2(sawSimpleLeaf, "Newly submitted simple leaf must be present alongside it");
+    }
+
+    // Regression: `Clear All Filters` is the user's explicit signal
+    // that they want every row visible. Before the fix,
+    // `ClearAllFilters` cleared `mSimpleLeaves` and then called
+    // `MirrorSessionStateToConfiguration`, which preserves any
+    // pre-existing Advanced-mode Or/Not root -- so an Advanced tree
+    // committed via the editor stayed active with no UI cue (menu
+    // showed "(no filters)", funnel decorations were gone, yet rows
+    // were still being filtered out). The fix resets the whole
+    // expression before mirroring; the Advanced editor must be
+    // reopened to reintroduce a boolean tree.
+    void TestClearAllFiltersDropsAdvancedTree()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+        const std::vector<std::string> msgKeys = model->Configuration().columns[static_cast<size_t>(msgCol)].keys;
+
+        // Install a `NOT msg:m1` Advanced tree exactly as
+        // `OpenAdvancedFilter` would after user commit.
+        loglib::FilterExpression advancedTree = loglib::MakeNot(loglib::MakeLeaf(loglib::LeafRule{
+            .type = loglib::LeafRule::Type::String,
+            .columnKeys = msgKeys,
+            .matchType = loglib::LeafRule::Match::Contains,
+            .filterString = std::string("m1"),
+        }));
+        model->ConfigurationManager().SetExpression(advancedTree);
+        QCoreApplication::processEvents();
+        QVERIFY2(
+            !loglib::IsMatchAll(model->Configuration().expression),
+            "precondition: Advanced tree must be live before ClearAllFilters"
+        );
+
+        QMetaObject::invokeMethod(mWindow, "ClearAllFilters", Qt::DirectConnection);
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            loglib::IsMatchAll(model->Configuration().expression),
+            "ClearAllFilters must reset the expression to match-all even when the "
+            "root is an Advanced Or/Not/And-with-non-Leaf subtree"
+        );
+        QVERIFY2(mWindow->Filters().empty(), "simple-mode leaves must be drained too");
     }
 
     // `Save Configuration...` (SaveScope::ColumnsOnly) writes a

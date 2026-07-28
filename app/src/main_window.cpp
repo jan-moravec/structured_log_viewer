@@ -6312,7 +6312,13 @@ void MainWindow::RebuildFiltersFromConfiguration()
         UpdateWindowTitle();
     });
 
-    ClearAllFilters();
+    // Reset the simple-mode surface only; leave the just-loaded
+    // expression on the manager so `MirrorSessionStateToConfiguration`
+    // below can preserve any Advanced Or/Not/And-with-non-Leaf
+    // subtree alongside the re-added simple leaves. `ClearAllFilters`
+    // would drop the whole expression (see `TestClearAllFiltersDropsAdvancedTree`),
+    // silently losing the Advanced clause on load.
+    ResetSimpleFilterState();
 #ifdef LOGAPP_BUILD_TESTING
     mLastDroppedFilterCountForTest = 0;
 #endif
@@ -7413,13 +7419,10 @@ void MainWindow::AddFilter(
     filterEditor->show();
 }
 
-void MainWindow::ClearAllFilters()
+void MainWindow::ResetSimpleFilterState()
 {
     mSimpleLeaves.clear();
     mSimpleLeafOrder.clear();
-    MirrorSessionStateToConfiguration();
-    UpdateFilters();
-
     for (QAction *action : ui->menuFilters->actions())
     {
         if (!action->data().toString().isNull())
@@ -7428,8 +7431,25 @@ void MainWindow::ClearAllFilters()
             delete action;
         }
     }
-
     ui->actionClearAllFilters->setDisabled(true);
+}
+
+void MainWindow::ClearAllFilters()
+{
+    ResetSimpleFilterState();
+    // Reset the full expression tree before mirroring.
+    // `MirrorSessionStateToConfiguration` preserves any pre-existing
+    // Advanced-mode Or/Not root (or non-Leaf children of an And root)
+    // so that a follow-up *simple*-mode edit doesn't clobber the
+    // user's Advanced tree -- but "Clear All Filters" is the user's
+    // explicit signal that they want a clean slate. Without this
+    // reset the Advanced tree stays active with no UI cue (the menu
+    // shows "(no filters)", the funnel indicators are gone, yet
+    // rows are still being filtered out). The Advanced editor must
+    // be reopened to reintroduce a boolean tree.
+    mModel->ConfigurationManager().SetExpression(loglib::FilterExpression{});
+    MirrorSessionStateToConfiguration();
+    UpdateFilters();
     MarkFiltersDirty();
     SyncColumnFilterIndicators();
 }

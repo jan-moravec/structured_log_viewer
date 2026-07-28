@@ -1109,6 +1109,17 @@ private:
     /// columns and revive survivors via `AddLogFilter`. Shared by
     /// `DoLoadConfiguration` and `TryLoadAsConfiguration`.
     void RebuildFiltersFromConfiguration();
+
+    /// Drop simple-mode leaves, per-filter menu entries, and the
+    /// "Clear All Filters" gating action. Does *not* touch
+    /// `LogConfiguration::expression`, `MarkFiltersDirty`, or the
+    /// mirror/indicator refresh -- callers own those (bulk load
+    /// runs one consolidated mirror at the end;
+    /// `ClearAllFilters` runs its own reset + refresh). Extracted
+    /// so `ClearAllFilters` can additionally reset the whole
+    /// expression tree (dropping Advanced-mode Or/Not subtrees)
+    /// while the load path preserves the just-loaded expression.
+    void ResetSimpleFilterState();
     void ApplyTableStyleSheet();
 
     /// Pick the light- or dark-variant title-bar icon to match the

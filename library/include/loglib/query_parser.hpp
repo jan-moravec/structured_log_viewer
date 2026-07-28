@@ -79,10 +79,19 @@ struct QueryParseError
 ///                 Bareword columns / values are quoted when they
 ///                 contain whitespace, operator chars, or start
 ///                 with a digit; regex leaves always use `/.../`.
-///   - `And`    -- children joined with ` AND `. Empty `And` -> `*`
-///                 (canonical "match all" spelling).
+///   - `And`    -- children joined with ` AND `. Top-level empty
+///                 `And` (match-all) renders as the empty string,
+///                 which parses back to the same match-all tree.
+///                 Nested empty `And` subtrees are debug-rendered
+///                 as `*` -- the parser doesn't accept `*`, so a
+///                 hand-constructed nested empty `And` won't
+///                 round-trip. The parser never produces such trees.
 ///   - `Or`     -- children joined with ` OR `. Enclosed in `(...)`
-///                 when nested under an `And` or `Not`.
+///                 when nested under an `And` or `Not`. An empty
+///                 `Or` (match-none) has no grammar spelling and
+///                 is debug-rendered as `()`; the parser never
+///                 produces this shape, so round-trip is
+///                 vacuously preserved for parser output.
 ///   - `Not`    -- `NOT <child>`; `<child>` parenthesised unless it's
 ///                 a leaf or another `Not`.
 [[nodiscard]] std::string FormatExpression(const FilterExpression &expression);

@@ -505,14 +505,27 @@ private:
         }
         if (mPos < mInput.size() && (mInput[mPos] == 'e' || mInput[mPos] == 'E'))
         {
+            const std::size_t expStart = mPos;
             ++mPos;
             if (mPos < mInput.size() && (mInput[mPos] == '+' || mInput[mPos] == '-'))
             {
                 ++mPos;
             }
+            const std::size_t digitsStart = mPos;
             while (mPos < mInput.size() && (std::isdigit(static_cast<unsigned char>(mInput[mPos])) != 0))
             {
                 ++mPos;
+            }
+            // Reject a stripped-down exponent like `1e`, `1e+`, `1e-`
+            // at the lexer -- otherwise `std::from_chars` fails later
+            // against the whole token and the diagnostic points at the
+            // token start rather than the offending 'e'.
+            if (mPos == digitsStart)
+            {
+                QueryParseError err;
+                err.offset = expStart;
+                err.message = "exponent in numeric literal must include at least one digit";
+                return std::unexpected(err);
             }
         }
         tok.text = std::string(mInput.substr(start, mPos - start));
@@ -896,13 +909,28 @@ private:
     const auto frac = static_cast<int>(remainder);
     std::time_t t = static_cast<std::time_t>(whole);
     std::tm utc{};
+    // `gmtime_s` (Windows) / `gmtime_r` (POSIX) both fail on times
+    // outside the platform's representable range. Windows in
+    // particular rejects year > 9999 with `EINVAL` and leaves `utc`
+    // zeroed; `strftime` then emits "0000-00-00T00:00:00", which
+    // would silently mis-render. Detect the failure and fall back
+    // to the raw microsecond count so the roundtrip stays lossy but
+    // non-misleading.
 #ifdef _WIN32
-    gmtime_s(&utc, &t);
+    const bool gmtOk = (gmtime_s(&utc, &t) == 0);
 #else
-    gmtime_r(&t, &utc);
+    const bool gmtOk = (gmtime_r(&t, &utc) != nullptr);
 #endif
+    if (!gmtOk)
+    {
+        return "epoch_micros:" + std::to_string(micros);
+    }
     std::array<char, 32> buffer{};
     const std::size_t n = std::strftime(buffer.data(), buffer.size(), "%Y-%m-%dT%H:%M:%S", &utc);
+    if (n == 0)
+    {
+        return "epoch_micros:" + std::to_string(micros);
+    }
     std::string out(buffer.data(), n);
     std::array<char, 16> fracBuffer{};
     const int written = std::snprintf(fracBuffer.data(), fracBuffer.size(), ".%06d", frac);
@@ -1145,13 +1173,13 @@ private:
             {
                 return std::unexpected(ok.error());
             }
-            return FinishStringLeaf(std::move(rule), LeafRule::Match::Contains, opTok);
+            return FinishStringLeaf(std::move(rule), LeafRule::Match::Contains);
         case TokenKind::Eq:
             if (auto ok = Advance(); !ok.has_value())
             {
                 return std::unexpected(ok.error());
             }
-            return FinishEqLeaf(std::move(rule), opTok);
+            return FinishEqLeaf(std::move(rule));
         case TokenKind::Tilde:
         {
             if (auto ok = AdvanceRegex(); !ok.has_value())
@@ -1222,7 +1250,7 @@ private:
     }
 
     [[nodiscard]] std::expected<FilterExpression, QueryParseError>
-    FinishStringLeaf(LeafRule rule, LeafRule::Match matchType, const Token &opTok)
+    FinishStringLeaf(LeafRule rule, LeafRule::Match matchType)
     {
         if (mLookahead.kind != TokenKind::Quoted && mLookahead.kind != TokenKind::Ident &&
             mLookahead.kind != TokenKind::Number && mLookahead.kind != TokenKind::True &&
@@ -1240,11 +1268,10 @@ private:
         {
             return std::unexpected(ok.error());
         }
-        (void)opTok;
         return MakeLeaf(std::move(rule));
     }
 
-    [[nodiscard]] std::expected<FilterExpression, QueryParseError> FinishEqLeaf(LeafRule rule, const Token &opTok)
+    [[nodiscard]] std::expected<FilterExpression, QueryParseError> FinishEqLeaf(LeafRule rule)
     {
         // Payload type-drives here:
         //   `col = "text"`   -> String Exactly
@@ -1306,7 +1333,6 @@ private:
             return std::unexpected(err);
         }
         }
-        (void)opTok;
     }
 
     [[nodiscard]] std::expected<FilterExpression, QueryParseError> FinishCompareLeaf(LeafRule rule, const Token &opTok)
@@ -1901,6 +1927,16 @@ std::expected<FilterExpression, QueryParseError> ParseQuery(std::string_view inp
 
 std::string FormatExpression(const FilterExpression &expression)
 {
+    // Match-all round-trips as the empty string (see `ParseQuery`:
+    // empty / whitespace-only input yields the default match-all
+    // `FilterExpression`). Emitting anything for the top-level
+    // empty `And` -- including the debug placeholder `*` used by
+    // `AppendAnd` -- would break the header's round-trip contract,
+    // since `*` is not in the grammar.
+    if (IsMatchAll(expression))
+    {
+        return {};
+    }
     std::string out;
     AppendExpression(expression, Precedence::Or, out);
     return out;

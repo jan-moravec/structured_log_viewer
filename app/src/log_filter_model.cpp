@@ -148,21 +148,19 @@ void LogFilterModel::SetFilterRules(std::vector<loglib::RowPredicate> rules)
     // `CompiledFilterExpression`. Empty list becomes the identity
     // element (match all). Collects `referencedColumns` from each
     // leaf so the live-tail path can re-evaluate cheaply.
-    loglib::CompiledFilterExpression compiled;
     if (rules.empty())
     {
-        // Default node is `And{}` -- explicit for readability.
-        compiled.node = loglib::CompiledFilterExpression::And{};
-        mCompiledExpression = std::move(compiled);
-        // Skip the rebuild if the previous expression also matched
-        // every row; otherwise fall through to the normal path.
-        if (loglib::IsMatchAllCompiled(mCompiledExpression))
-        {
-            RebuildAcceptedRows();
-        }
+        // Delegate to `SetFilterExpression` so the "both trees match
+        // all -> skip rebuild" fast path fires. Doing the compare
+        // ourselves against `mCompiledExpression` after assignment
+        // would be a tautology (we'd have just installed match-all).
+        loglib::CompiledFilterExpression matchAll;
+        matchAll.node = loglib::CompiledFilterExpression::And{};
+        SetFilterExpression(std::move(matchAll));
         return;
     }
 
+    loglib::CompiledFilterExpression compiled;
     loglib::CompiledFilterExpression::And andNode;
     andNode.children.reserve(rules.size());
     for (auto &predicate : rules)

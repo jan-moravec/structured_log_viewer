@@ -4,6 +4,7 @@
 #include <catch2/catch_all.hpp>
 
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <variant>
 
@@ -445,4 +446,82 @@ TEST_CASE(
     const auto reparsed = ParseQuery(formatted);
     REQUIRE(reparsed.has_value());
     CHECK(source == *reparsed);
+}
+
+// Regression: the top-level match-all tree (`And{}`) must render
+// as the empty string so it round-trips through `ParseQuery`.
+// Before the fix, `FormatExpression(FilterExpression{})` emitted
+// `*` -- which is not in the grammar and reparses to a
+// `unexpected character '*'` error, silently breaking the
+// header's advertised round-trip guarantee.
+TEST_CASE("FormatExpression: match-all round-trips as empty string", "[query_parser][pretty][regression]")
+{
+    const FilterExpression matchAll{};
+    REQUIRE(IsMatchAll(matchAll));
+
+    const std::string formatted = FormatExpression(matchAll);
+    CHECK(formatted.empty());
+
+    const auto reparsed = ParseQuery(formatted);
+    REQUIRE(reparsed.has_value());
+    CHECK(IsMatchAll(*reparsed));
+}
+
+// Regression: `LexNumber` used to accept a dangling exponent like
+// `1e` or `1e+` as a valid Number token, deferring the diagnostic
+// to `std::from_chars` at leaf-payload parsing time. The message
+// then pointed at the whole token instead of the offending 'e',
+// hiding the true cause. The lexer now rejects the token up front
+// so the caret lands on the `e`.
+TEST_CASE("ParseQuery: numeric literal with dangling exponent errors at the 'e'", "[query_parser][regression]")
+{
+    SECTION("bare `1e`")
+    {
+        const auto parsed = ParseQuery("latency=1e");
+        REQUIRE_FALSE(parsed.has_value());
+        // "latency=1e" -- the `e` sits at offset 9 (0-based).
+        CHECK(parsed.error().offset == 9);
+        CHECK(parsed.error().message.contains("exponent"));
+    }
+    SECTION("signed `1e+` and `1e-` both fail")
+    {
+        for (const std::string_view q : {"latency=1e+", "latency=1e-"})
+        {
+            CAPTURE(q);
+            const auto parsed = ParseQuery(q);
+            REQUIRE_FALSE(parsed.has_value());
+        }
+    }
+    SECTION("valid `1e2` still parses")
+    {
+        const auto parsed = ParseQuery("latency=1e2");
+        REQUIRE(parsed.has_value());
+    }
+}
+
+// Regression: `FormatTimestampMicros` did not check the return of
+// `gmtime_s` / `strftime`. Windows `gmtime_s` returns `EINVAL` for
+// times outside `[0000, 9999]` and leaves the `std::tm` zeroed,
+// which `strftime` then rendered as `0000-00-00T00:00:00` -- a
+// silently wrong roundtrip. The guarded path falls back to an
+// `epoch_micros:<n>` marker instead.
+TEST_CASE("FormatExpression: extreme timestamp does not silently render as the epoch", "[query_parser][pretty][regression]")
+{
+    FilterExpression source;
+    LeafRule rule;
+    rule.type = LeafRule::Type::Time;
+    rule.columnKeys = {"ts"};
+    // Well past year 9999 -- Windows `gmtime_s` returns EINVAL for
+    // this. POSIX `gmtime_r` clamps or fails depending on libc;
+    // either way we want the guarded fallback to fire rather than
+    // rendering as the epoch or 0000-00-00. `int64_t::max() / 2`
+    // in microseconds sits ~146'000 years past the epoch, well
+    // outside anything `gmtime` accepts.
+    rule.filterBegin = std::numeric_limits<std::int64_t>::max() / 2;
+    source.node = FilterExpression::Leaf{rule};
+
+    const std::string formatted = FormatExpression(source);
+    CAPTURE(formatted);
+    CHECK_FALSE(formatted.contains("1970-01-01T00:00:00.000000Z"));
+    CHECK_FALSE(formatted.contains("0000-00-00T00:00:00"));
 }

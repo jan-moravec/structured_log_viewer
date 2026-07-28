@@ -1,5 +1,7 @@
 #include "advanced_filter_editor.hpp"
 
+#include "theme_control.hpp"
+
 #include <loglib/filter_expression.hpp>
 #include <loglib/query_parser.hpp>
 
@@ -32,16 +34,27 @@ constexpr auto HELP_TEXT =
     "col in [a,b,c] (enum) or col in [min..max] (numeric / ISO time range).\n"
     "Combine with AND / OR / NOT and parentheses. Leave empty to match all rows.";
 
-/// Empty tree = "match all". `FormatExpression` renders this as
-/// `*`, but the editor wants a truly empty text field so the user
-/// starts on a clean slate rather than seeing a placeholder token.
+/// `FormatExpression` renders match-all as the empty string
+/// already, so this is currently equivalent to a direct call --
+/// keep the wrapper for readability and to pin the dialog's
+/// "empty field means match all" invariant if the pretty printer
+/// ever changes.
 [[nodiscard]] QString ExpressionToQueryText(const loglib::FilterExpression &expression)
 {
-    if (loglib::IsMatchAll(expression))
-    {
-        return {};
-    }
     return QString::fromStdString(loglib::FormatExpression(expression));
+}
+
+/// Palette-aware error colour, legible on both light and dark
+/// backgrounds. Mirrors `filter_editor.cpp`'s local
+/// `WarningColorHex` so the two dialogs share their validation
+/// vocabulary. `palette(highlight)` (the previous choice) reads as
+/// a hyperlink on many themes because it's the selection colour,
+/// not a semantic error tint.
+[[nodiscard]] QString ErrorColorHex(const QWidget *widget)
+{
+    const QPalette palette = (widget != nullptr) ? widget->palette() : QPalette{};
+    const bool dark = ThemeControl::IsDarkColor(palette.color(QPalette::Base));
+    return dark ? QStringLiteral("#FF8A80") : QStringLiteral("#D32F2F");
 }
 
 } // namespace
@@ -151,13 +164,16 @@ void AdvancedFilterEditor::ReparseAndUpdate()
         const auto &err = parsed.error();
         // Report the caret offset in 1-based column form so it
         // aligns with the user's mental model of the text they
-        // just typed. The absolute byte offset stays visible for
-        // longer expressions where line-column would drift.
-        const auto offset = static_cast<qsizetype>(err.offset);
+        // just typed (position 1 for the first character). The raw
+        // byte offset is 0-based; `+ 1` shifts it to the display
+        // form. `HighlightErrorAt` below still consumes the raw
+        // 0-based offset, so the underline stays on the exact
+        // offending byte.
+        const auto displayOffset = static_cast<qsizetype>(err.offset) + 1;
         mStatusLabel->setText(
-            tr("Parse error at position %1: %2").arg(offset).arg(QString::fromStdString(err.message))
+            tr("Parse error at position %1: %2").arg(displayOffset).arg(QString::fromStdString(err.message))
         );
-        mStatusLabel->setStyleSheet(QStringLiteral("color: palette(highlight);"));
+        mStatusLabel->setStyleSheet(QStringLiteral("color: %1;").arg(ErrorColorHex(this)));
         // Convert the byte offset into a UTF-16 code-unit offset so
         // Qt's `QTextCursor` (which counts code units) lands on the
         // right character even when earlier bytes were multi-byte
@@ -207,9 +223,12 @@ void AdvancedFilterEditor::HighlightErrorAt(const QString &queryText, std::size_
     }
     QTextCharFormat fmt;
     fmt.setUnderlineStyle(QTextCharFormat::WaveUnderline);
-    // Prefer the palette's highlight colour so the wavy line remains
-    // legible on both light and dark themes.
-    fmt.setUnderlineColor(mQueryEdit->palette().color(QPalette::Highlight));
+    // Use the same palette-aware error tint as the status label
+    // (matches `filter_editor`'s validation vocabulary). The
+    // previous `QPalette::Highlight` picked up the selection colour
+    // -- typically a bright blue that reads as a hyperlink rather
+    // than a validation error on most themes.
+    fmt.setUnderlineColor(QColor(ErrorColorHex(this)));
     selection.cursor = cursor;
     selection.format = fmt;
     mQueryEdit->setExtraSelections({selection});
