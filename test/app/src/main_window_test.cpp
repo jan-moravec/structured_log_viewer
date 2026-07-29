@@ -12090,6 +12090,87 @@ private slots:
         QCOMPARE(seenOr, 1);
     }
 
+    // Regression: the query parser records exactly one column key
+    // per leaf (the identifier the user typed), but real columns
+    // often carry an alias vector -- e.g. a `svc` column configured
+    // as `keys = {"svc", "service", "svcname"}` so any of those
+    // JSON fields feed the same logical column. Simple-mode leaves
+    // built via the FilterEditor bind the *full* alias vector so
+    // the rule survives future edits (rename, alias drop). Before
+    // the fix, `ApplyAdvancedFilterResult` extracted the parser's
+    // single-key binding verbatim into `mSimpleLeaves`, silently
+    // narrowing the rule to the typed alias only. Now the
+    // extractor promotes each leaf's `columnKeys` to the resolved
+    // column's canonical vector, matching what the FilterEditor
+    // would install.
+    void TestAdvancedFilterExtractionPromotesToFullColumnKeys()
+    {
+        // Seed a config with a single multi-key `svc` column so
+        // the promotion is observable. Loading through
+        // `TryLoadAsConfigurationForTest` mirrors the on-disk load
+        // path used by the production entry point.
+        loglib::LogConfiguration cfg;
+        loglib::LogConfiguration::Column svcCol;
+        svcCol.header = "svc";
+        svcCol.keys = {"svc", "service", "svcname"};
+        svcCol.printFormat = "{}";
+        svcCol.type = loglib::LogConfiguration::Type::String;
+        svcCol.parseFormats = {};
+        cfg.columns.push_back(svcCol);
+
+        const QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString cfgPath = tempDir.filePath(QStringLiteral("multi-key.json"));
+        {
+            std::string json;
+            QVERIFY(!glz::write_json(cfg, json));
+            QFile out(cfgPath);
+            QVERIFY(out.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            out.write(QByteArray::fromStdString(json));
+        }
+        QVERIFY2(mWindow->TryLoadAsConfigurationForTest(cfgPath), "TryLoadAsConfiguration must succeed");
+        QCoreApplication::processEvents();
+
+        auto *model = mWindow->Model();
+        QVERIFY2(model != nullptr, "MainWindow must own a LogModel");
+        const int svcColIndex = ColumnByHeader(*model, QStringLiteral("svc"));
+        QVERIFY2(svcColIndex >= 0, "svc column must exist after configuration load");
+        const auto &svcColumn = model->Configuration().columns[static_cast<size_t>(svcColIndex)];
+        QCOMPARE(static_cast<int>(svcColumn.keys.size()), 3);
+
+        // Parse `svc:auth` -- ParseQuery emits a single-key
+        // binding matching the identifier the user typed.
+        auto parsed = loglib::ParseQuery("svc:auth");
+        QVERIFY2(parsed.has_value(), "ParseQuery must accept a well-formed simple leaf");
+        const auto *parsedLeaf = std::get_if<loglib::FilterExpression::Leaf>(&parsed->node);
+        QVERIFY2(parsedLeaf != nullptr, "parsed root must be a Leaf");
+        QCOMPARE(static_cast<int>(parsedLeaf->rule.columnKeys.size()), 1);
+        QCOMPARE(QString::fromStdString(parsedLeaf->rule.columnKeys.front()), QStringLiteral("svc"));
+
+        mWindow->CommitAdvancedFilterForTest(std::move(*parsed));
+        QCoreApplication::processEvents();
+
+        // One extracted simple leaf; its `columnKeys` now covers
+        // the full alias vector, not just the typed alias.
+        QCOMPARE(static_cast<int>(mWindow->Filters().size()), 1);
+        const auto &extracted = mWindow->Filters().begin()->second;
+        QCOMPARE(static_cast<int>(extracted.columnKeys.size()), 3);
+        QCOMPARE(QString::fromStdString(extracted.columnKeys[0]), QStringLiteral("svc"));
+        QCOMPARE(QString::fromStdString(extracted.columnKeys[1]), QStringLiteral("service"));
+        QCOMPARE(QString::fromStdString(extracted.columnKeys[2]), QStringLiteral("svcname"));
+
+        // Mirror consistency: the persisted expression carries
+        // the same promoted key set, so a follow-up load / mirror
+        // won't silently narrow the rule.
+        const auto &mirrored = model->Configuration().expression;
+        const auto *mirroredAnd = std::get_if<loglib::FilterExpression::And>(&mirrored.node);
+        QVERIFY2(mirroredAnd != nullptr, "mirror wraps a single leaf in And so it survives future mirrors");
+        QCOMPARE(static_cast<int>(mirroredAnd->children.size()), 1);
+        const auto *mirroredLeaf = std::get_if<loglib::FilterExpression::Leaf>(&mirroredAnd->children.front().node);
+        QVERIFY2(mirroredLeaf != nullptr, "mirrored child must be the promoted Leaf");
+        QCOMPARE(static_cast<int>(mirroredLeaf->rule.columnKeys.size()), 3);
+    }
+
     // Regression: after `ApplyAdvancedFilterResult` commits a tree
     // whose root is not a Leaf / And-of-Leaves (e.g. `NOT msg:m1`,
     // `msg:a OR msg:b`), `mSimpleLeaves` is empty but the expression

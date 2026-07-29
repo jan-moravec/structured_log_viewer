@@ -7516,6 +7516,24 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
         return !ValidateFilterAgainstColumns(rule, columns).has_value();
     };
 
+    // The query parser records exactly one key on each leaf (the
+    // typed column name). Real columns often carry aliases -- e.g.
+    // a Level column with `keys = {"level", "severity", "lvl"}` --
+    // and simple-mode leaves built via the FilterEditor path bind
+    // the full alias vector so the rule survives rename / alias-drop
+    // edits later. Promote the parser's single-key binding to the
+    // resolved column's full `keys` vector when extracting into
+    // `mSimpleLeaves`; safe because `isSimpleRepresentable` already
+    // proved the resolve.
+    const auto promoteToColumnKeys = [&columns](loglib::LeafRule rule) {
+        const int resolved = ResolveLeafColumnByKeys(rule.columnKeys, columns);
+        if (resolved >= 0)
+        {
+            rule.columnKeys = columns[static_cast<std::size_t>(resolved)].keys;
+        }
+        return rule;
+    };
+
     std::vector<loglib::LeafRule> extractedLeaves;
     loglib::FilterExpression::And rest;
     // Wrap a bare `Leaf` remainder in a single-child `And`:
@@ -7539,7 +7557,7 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
     {
         if (isSimpleRepresentable(rootLeaf->rule))
         {
-            extractedLeaves.push_back(rootLeaf->rule);
+            extractedLeaves.push_back(promoteToColumnKeys(rootLeaf->rule));
         }
         else
         {
@@ -7555,7 +7573,7 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
             const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&child.node);
             if (leaf != nullptr && isSimpleRepresentable(leaf->rule))
             {
-                extractedLeaves.push_back(leaf->rule);
+                extractedLeaves.push_back(promoteToColumnKeys(leaf->rule));
             }
             else
             {

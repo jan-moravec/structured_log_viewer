@@ -629,6 +629,72 @@ private slots:
         QCOMPARE(rootAnd->children.size(), std::size_t{1});
         QCOMPARE(compiled.referencedColumns.size(), std::size_t{1});
     }
+
+    /// Regression: a hand-edited `FilterExpression::Not{child=null}`
+    /// (only reachable via a config file the user pasted, since
+    /// `MakeNot` enforces non-null) used to compile to `nullopt`
+    /// (absent), while `EvaluateExpression` on the same node
+    /// returned `true` (match-all). Callers that later hand-built
+    /// a compiled `Not{}` for tests / benches would see the
+    /// visit-path verdict, while any real query would see the
+    /// compile-path drop -- two different verdicts for the same
+    /// input, differing when the null-NOT sits under an `Or`.
+    ///
+    /// New contract: both paths agree. `Not{child=null}` compiles
+    /// to a match-all node, so the compiled tree stays consistent
+    /// with the per-row visit semantics documented in
+    /// `EvaluateExpression`.
+    void NotWithNullChildCompilesToMatchAll()
+    {
+        loglib::LogConfiguration::Column svcCol;
+        svcCol.header = "svc";
+        svcCol.keys = {"svc"};
+        svcCol.type = loglib::LogConfiguration::Type::String;
+        const std::vector<loglib::LogConfiguration::Column> columns{svcCol};
+
+        // Top-level `Not{child=nullptr}` -> match-all.
+        loglib::FilterExpression bareNullNot;
+        bareNullNot.node = loglib::FilterExpression::Not{};
+        const loglib::CompiledFilterExpression compiledBare =
+            CompileExpression(bareNullNot, columns, /*table=*/nullptr);
+        QVERIFY2(
+            loglib::IsMatchAllCompiled(compiledBare),
+            "`Not{child=null}` at the root must compile to match-all, matching `EvaluateExpression`"
+        );
+
+        // Sibling under `Or`: the whole `Or` must reduce to
+        // match-all too (Not{null} = match-all short-circuits the
+        // Or), not to just the surviving leaf.
+        loglib::LeafRule svcLeaf;
+        svcLeaf.type = loglib::LeafRule::Type::String;
+        svcLeaf.matchType = loglib::LeafRule::Match::Contains;
+        svcLeaf.columnKeys = {"svc"};
+        svcLeaf.filterString = "auth";
+
+        std::vector<loglib::FilterExpression> orChildren;
+        loglib::FilterExpression innerNullNot;
+        innerNullNot.node = loglib::FilterExpression::Not{};
+        orChildren.push_back(std::move(innerNullNot));
+        orChildren.push_back(loglib::MakeLeaf(std::move(svcLeaf)));
+        const loglib::FilterExpression orExpr = loglib::MakeOr(std::move(orChildren));
+
+        const loglib::CompiledFilterExpression compiledOr =
+            CompileExpression(orExpr, columns, /*table=*/nullptr);
+        // Cheap-first ordering plus short-circuit accept means the
+        // Or contains a match-all child; `IsMatchAllCompiled` only
+        // catches the fully-collapsed shape, so assert the
+        // structural presence of match-all inside the Or instead.
+        const auto *rootOr = std::get_if<loglib::CompiledFilterExpression::Or>(&compiledOr.node);
+        QVERIFY2(rootOr != nullptr, "root must remain an `Or` after compiling `Or([Not{null}, leaf])`");
+        bool sawMatchAll = false;
+        for (const auto &child : rootOr->children)
+        {
+            if (loglib::IsMatchAllCompiled(child)) { sawMatchAll = true; }
+        }
+        QVERIFY2(
+            sawMatchAll, "`Not{child=null}` inside an `Or` must materialise as a match-all child, not vanish"
+        );
+    }
 };
 
 QTEST_MAIN(HighlightRuleSetTest)

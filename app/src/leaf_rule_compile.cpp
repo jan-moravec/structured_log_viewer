@@ -368,9 +368,22 @@ std::optional<loglib::CompiledFilterExpression> CompileNode(
                 // Not.
                 if (n.child == nullptr)
                 {
-                    // Defensive: `MakeNot` enforces non-null; only a
-                    // hand-edited config could land here.
-                    return std::nullopt;
+                    // Explicit empty NOT (hand-edited config; the
+                    // `MakeNot` factory always seeds `child`).
+                    // Semantics: NOT of an empty tree = NOT
+                    // (match-none) = match-all. Matches the visit
+                    // path's own null-child handling in
+                    // `EvaluateExpression`, so callers that build
+                    // a compiled `Not{}` directly (tests, benches)
+                    // see the same per-row verdict as callers that
+                    // go through `CompileExpression`. Crucially
+                    // this is *not* the same case as the branch
+                    // below: a null child is a structural anomaly
+                    // (user wrote nothing), while an absent child
+                    // is a temporarily-unresolvable leaf where
+                    // folding to match-all would over-accept
+                    // inside a sibling `Or`.
+                    return loglib::CompiledFilterExpression{};
                 }
                 auto compiledChild = CompileNode(*n.child, columns, table, referencedColumns);
                 if (!compiledChild.has_value())
