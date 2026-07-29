@@ -5,23 +5,15 @@
 
 #include <QString>
 
-/// Build a matcher lambda for `loglib::CallbackStringRowPredicate`,
-/// shared by session-scope filter leaves and Configuration-scope
-/// highlight rules.
+/// Build a matcher lambda for `CallbackStringRowPredicate`,
+/// shared by filter leaves and highlight rules
+/// (`HighlightRule::Match` aliases `LeafRule::Match`).
 ///
-/// The pattern is compiled once and captured; the inner loop just
-/// runs the compare. `Exactly` / `Contains` take an ASCII fast path
-/// that byte-compares directly and skips the `QString::fromUtf8` +
-/// `simplified()` round-trip when both sides are canonical.
-/// Regex / Wildcard need a `QString` (Qt's engine is UTF-16) but
-/// still skip the `simplified()` pass on canonical haystacks.
-///
-/// The regex is JIT-primed eagerly so captured copies don't race on
-/// a lazy first `match()` from parallel filter workers.
-///
-/// `LeafRule::Match` is the canonical match enum -- filter and
-/// highlight-rule paths both consume it (highlight rules alias it
-/// as `HighlightRule::Match`).
+/// Pattern is compiled and captured once. `Exactly`/`Contains` take
+/// an ASCII fast path (byte compare, no `QString`/`simplified()`
+/// round-trip). Regex/Wildcard need Qt's UTF-16 engine but still
+/// skip `simplified()` on canonical haystacks. The regex is
+/// JIT-primed so parallel workers don't race on a lazy first match.
 [[nodiscard]] loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
     const QString &pattern, loglib::LeafRule::Match match
 );

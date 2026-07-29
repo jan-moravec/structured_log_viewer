@@ -296,9 +296,8 @@ bool CallbackStringRowPredicate::MatchesRow(const LogTable &table, size_t row) c
 
 int EstimatedLeafCost(const RowPredicate &predicate) noexcept
 {
-    // Numbers are relative -- see the header table. Bool is
-    // cheapest so its short-circuit reject fires first in AND;
-    // string / regex is most expensive so it's tried last.
+    // Relative weights (see header). Bool first (cheapest reject
+    // fires first in `And`); string / regex last (most expensive).
     return std::visit(
         [](const auto &concrete) noexcept -> int {
             using T = std::decay_t<decltype(concrete)>;
@@ -320,7 +319,7 @@ int EstimatedLeafCost(const RowPredicate &predicate) noexcept
             }
             else
             {
-                // CallbackStringRowPredicate -- regex / UTF-8 walk.
+                // CallbackString: regex / UTF-8 walk.
                 return 10;
             }
         },
@@ -406,12 +405,10 @@ bool EvaluateExpression(const CompiledFilterExpression &expression, const LogTab
                 // Not.
                 if (node.child == nullptr)
                 {
-                    // Degenerate state -- `FilterExpression::Not`'s
-                    // constructors and `CompileExpression` both keep
-                    // `child` non-null. If we ever see a null here
-                    // it's a hand-edited config; accept every row so
-                    // the view stays visible (loud fallback beats
-                    // silent blank-screen).
+                    // Degenerate: `MakeNot`/`CompileExpression` keep
+                    // `child` non-null; only a hand-edited config
+                    // could land here. Accept every row so the view
+                    // stays visible instead of going blank.
                     return true;
                 }
                 return !EvaluateExpression(*node.child, table, row);
@@ -424,16 +421,13 @@ bool EvaluateExpression(const CompiledFilterExpression &expression, const LogTab
 namespace
 {
 
-/// Walk @p node's tree and count leaves (both total-visit and
-/// unique-predicate) plus whether any OR / NOT is present. Used to
-/// gate the bitset path below.
+/// Tree summary consumed by `ShouldUseBitsetPath`.
 struct TreeShape
 {
-    /// Total leaf occurrences (a duplicate leaf counts each time).
+    /// Total leaf occurrences (duplicates counted).
     size_t leafCount = 0;
-    /// Unique leaves by predicate identity. Drives the memory-cap
-    /// estimate below since `FilterAcceptedRows` dedups on the
-    /// bitset path.
+    /// Unique leaves by predicate identity; drives the bitset
+    /// memory estimate (the path dedups by predicate).
     size_t uniqueLeafCount = 0;
     bool hasOr = false;
     bool hasNot = false;
@@ -483,31 +477,18 @@ void CollectShape(
     );
 }
 
-/// Bitset-materialisation eligibility. The memory cap is generous
-/// but hard -- catastrophic bitsets fall back to visit.
+/// Hard cap on bitset memory; over-cap trees fall back to visit.
 constexpr size_t BITSET_MEMORY_CAP_BYTES = size_t{512} * 1024 * 1024;
 
-/// True when materialising leaf bitsets is expected to beat the
-/// short-circuiting visit path.
+/// Pick between the bitset and visit paths for @p shape over
+/// @p rowCount rows.
 ///
-/// The decisive property is whether short-circuit evaluation can
-/// skip work. In a **flat `And`** it always can: the visit path
-/// evaluates child N only on the rows that survived children
-/// 1..N-1, so it performs a subset of the work the bitset path
-/// performs (which materialises every leaf over every row). A flat
-/// `And` therefore never qualifies, regardless of leaf count or
-/// leaf cost -- an earlier revision of this heuristic also
-/// admitted any tree with >= 4 leaves, or >= 2 leaves where one
-/// was a string predicate, which sent the extremely common
-/// `svc:auth AND msg:timeout` shape down the bitset path and paid
-/// two full-table string scans where one plus a survivor pass
-/// would do.
-///
-/// `Or` / `Not` are where materialisation wins: an `Or` has to
-/// touch every leaf for every row it ultimately rejects, a `Not`
-/// inverts a whole column of results at once, and a leaf repeated
-/// across branches is materialised once and shared. Those shapes
-/// also benefit from word-parallel folding.
+/// Flat `And` stays on visit: short-circuit only evaluates child N
+/// on rows that passed 1..N-1, strictly less work than materialising
+/// every leaf. `Or`/`Not` flip the trade -- `Or` still visits every
+/// leaf on rejected rows, `Not` inverts a whole column at once, and
+/// repeated leaves cost one shared bitset -- and both benefit from
+/// word-parallel folding.
 [[nodiscard]] bool ShouldUseBitsetPath(const TreeShape &shape, size_t rowCount) noexcept
 {
     if (rowCount == 0 || shape.leafCount < 2)
@@ -519,23 +500,12 @@ constexpr size_t BITSET_MEMORY_CAP_BYTES = size_t{512} * 1024 * 1024;
         // Flat `And`: short-circuit evaluation strictly dominates.
         return false;
     }
-    // Two memory contributions have to fit inside the cap:
-    //   1. `leafBitsets` -- one bitset per unique leaf, held for the
-    //      entire evaluation.
-    //   2. The `enumerable_thread_specific<RowBitset>` fan-out inside
-    //      `MaterialiseLeafBitset` -- one bitset per active TBB
-    //      worker, torn down before the next leaf materialises.
-    // Peak memory is therefore `unique * bytesPerBitset` plus the
-    // transient `workers * bytesPerBitset` during the *current* leaf.
-    // Skipping the worker term (the old accounting) let a
-    // `unique * bytesPerBitset` right at the cap allocate an
-    // additional `workers * bytesPerBitset` on top, potentially
-    // several hundred megabytes on a many-core box.
+    // Peak memory = `unique * bytesPerBitset` (kept for the whole
+    // evaluation) + `workers * bytesPerBitset` (per-worker bitsets
+    // inside `MaterialiseLeafBitset`, torn down between leaves).
     const size_t bytesPerBitset = (rowCount / 8) + 1;
-    // `active_value` reads the live parallelism ceiling set by the
-    // pipeline's `global_control`; falls back to hardware concurrency
-    // when nothing has been pinned. Cap at 1 to keep the estimate
-    // meaningful on single-thread test runs.
+    // `active_value` reads the live parallelism ceiling; floor at 1
+    // for single-thread test runs.
     const size_t workers =
         std::max<size_t>(1, oneapi::tbb::global_control::active_value(
                                 oneapi::tbb::global_control::max_allowed_parallelism));
@@ -564,12 +534,8 @@ public:
 
     void Set(size_t row) noexcept
     {
-        // Debug-only bounds check: every production caller iterates
-        // over `tbb::blocked_range<size_t>(0, rowCount)`, so an
-        // out-of-range `row` here would clobber a tail bit past
-        // `mRowCount` (breaking the `MaskTail` invariant that every
-        // Op depends on) or the next word entirely. Match the same
-        // shape as the size asserts on `AndInPlace` / `OrInPlace`.
+        // Out-of-range writes would clobber tail bits and break
+        // the `MaskTail` invariant every op relies on.
         assert(row < mRowCount);
         mWords[row / WORD_BITS] |= (uint64_t{1} << (row % WORD_BITS));
     }
@@ -581,10 +547,7 @@ public:
 
     void OrInPlace(const RowBitset &other) noexcept
     {
-        // Invariant: every bitset in a given evaluation is
-        // constructed with the same `rowCount`, so word arrays line
-        // up. Assert defensively so a future misuse fails loudly in
-        // debug rather than silently reading garbage.
+        // All bitsets in one evaluation share a `rowCount`.
         assert(mWords.size() == other.mWords.size());
         for (size_t i = 0; i < mWords.size(); ++i)
         {
@@ -632,10 +595,9 @@ public:
     /// Extract accepted rows in ascending order.
     void CollectInto(std::vector<size_t> &out) const
     {
-        // Size from the popcount rather than `mRowCount`: a
-        // selective filter over a large log would otherwise reserve
-        // one slot per *row* (8 bytes each, so ~800 MB on a 100 M-row
-        // table) to hold a handful of matches.
+        // Reserve by popcount, not `mRowCount`: reserving per-row
+        // would allocate ~800 MB per 100 M-row table for a
+        // handful of matches.
         out.reserve(out.size() + Count());
         for (size_t wi = 0; wi < mWords.size(); ++wi)
         {
@@ -644,11 +606,8 @@ public:
             {
                 const auto bit = static_cast<unsigned int>(std::countr_zero(word));
                 const size_t row = wi * WORD_BITS + bit;
-                // `MaskTail` clears every bit past `mRowCount` on
-                // every mutating op, so a set bit here must be a
-                // real row. Debug-assert the invariant so a future
-                // op that forgets `MaskTail` fails loudly rather
-                // than emitting phantom rows.
+                // Every mutating op must call `MaskTail`, so a set
+                // bit past `mRowCount` here would be a bug.
                 assert(row < mRowCount);
                 out.push_back(row);
                 word &= word - 1U;
@@ -703,10 +662,8 @@ RowBitset MaterialiseLeafBitset(const RowPredicate &predicate, const LogTable &t
         }
     );
 
-    // Seed the coalesce from the first worker (move to skip a
-    // fresh zero-init + a full-array OR) and fold the rest in.
-    // No workers means no rows were processed: return an empty
-    // (all-zero) bitset.
+    // Seed from the first worker (move: skip zero-init + full OR),
+    // fold the rest. No workers = no rows, return empty.
     RowBitset combined;
     bool seeded = false;
     for (auto &worker : workerBitsets)
@@ -744,11 +701,9 @@ RowBitset EvaluateExpressionBitset(
             using T = std::decay_t<decltype(node)>;
             if constexpr (std::is_same_v<T, CompiledFilterExpression::Leaf>)
             {
-                // A leaf can appear multiple times in the tree (e.g.
-                // `svc:x AND (svc:x OR level:err)`); `leafSlots`
-                // maps each visit-position to the physical bitset
-                // slot so we materialise + store one bitset per
-                // unique predicate, not per occurrence.
+                // `leafSlots` maps each visit-position to a shared
+                // physical bitset slot so a leaf appearing multiple
+                // times materialises once.
                 const std::size_t slot = leafSlots[leafCursor];
                 ++leafCursor;
                 return leafBitsets[slot];
@@ -810,15 +765,12 @@ RowBitset EvaluateExpressionBitset(
     );
 }
 
-/// Walk the tree in the same order `EvaluateExpressionBitset`
-/// consumes leaves and append pointers to the leaf `RowPredicate`s.
-/// The caller then maps identical predicate pointers to a shared
-/// physical bitset (`FilterAcceptedRows` below) so a leaf that
-/// appears N times in the tree is only materialised once. Predicate
-/// identity is by pointer, which is stable for the lifetime of the
-/// `CompiledFilterExpression` -- structurally identical leaves that
-/// were compiled independently still cost one bitset each; that's a
-/// follow-up if it ever matters.
+/// Walk @p expr in the same order `EvaluateExpressionBitset`
+/// consumes leaves and append pointers to leaf predicates. The
+/// caller dedups by pointer (identity is stable for the tree's
+/// lifetime) so a repeated leaf materialises once. Structurally
+/// identical leaves compiled independently still cost one bitset
+/// each -- follow-up if it ever matters.
 void CollectLeafsInVisitOrder(const CompiledFilterExpression &expr, std::vector<const RowPredicate *> &out)
 {
     std::visit(
@@ -863,8 +815,8 @@ std::vector<size_t> FilterAcceptedRows(const LogTable &table, const CompiledFilt
 
     if (IsMatchAllCompiled(expression))
     {
-        // Identity case: hand back `[0, rowCount)` so callers can
-        // share one code path with the filtered case.
+        // Identity case: hand back every row so callers share one
+        // code path with the filtered case.
         accepted.resize(rowCount);
         std::iota(accepted.begin(), accepted.end(), size_t{0});
         return accepted;
@@ -875,24 +827,20 @@ std::vector<size_t> FilterAcceptedRows(const LogTable &table, const CompiledFilt
         return accepted;
     }
 
-    // Shape analysis picks the evaluator per rebuild. The visit
-    // path is always safe; the bitset path is a perf win for
-    // complex trees.
+    // Shape drives evaluator choice. Visit is always safe; bitset
+    // is the perf win on complex trees.
     TreeShape shape;
     std::vector<const RowPredicate *> seenPredicates;
     CollectShape(expression, shape, seenPredicates);
 
     if (ShouldUseBitsetPath(shape, rowCount))
     {
-        // Bitset-materialisation path.
         std::vector<const RowPredicate *> orderedLeaves;
         orderedLeaves.reserve(shape.leafCount);
         CollectLeafsInVisitOrder(expression, orderedLeaves);
 
-        // Dedup by predicate pointer: a leaf appearing N times in
-        // the tree costs one physical bitset and one materialisation
-        // pass. `leafSlots` translates visit-position -> physical
-        // slot for `EvaluateExpressionBitset`.
+        // Dedup by predicate pointer: one bitset per unique
+        // predicate. `leafSlots` maps visit-position -> physical slot.
         std::vector<std::size_t> leafSlots;
         leafSlots.reserve(orderedLeaves.size());
         std::vector<const RowPredicate *> uniquePredicates;

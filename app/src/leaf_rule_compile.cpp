@@ -32,8 +32,7 @@ int ResolveLeafColumnByKeys(
     {
         return -1;
     }
-    // Subset match: every rule key must appear in the column's
-    // keys. Rules usually carry a single key.
+    // Subset match: every rule key must appear in the column's keys.
     for (std::size_t i = 0; i < columns.size(); ++i)
     {
         const auto &columnKeys = columns[i].keys;
@@ -50,10 +49,8 @@ int ResolveLeafColumnByKeys(
 
 loglib::LeafRule ToLeafRule(const loglib::LogConfiguration::HighlightRule &rule)
 {
-    // `HighlightRule::Type` / `HighlightRule::Match` are aliases of
-    // `LeafRule::Type` / `LeafRule::Match`, so this is a plain copy
-    // of the shared payload -- rendering fields (name, enabled,
-    // colours, bold/italic) live on `HighlightRule` and stay behind.
+    // Plain copy of shared payload; rendering fields (name,
+    // enabled, colours, bold/italic) stay on `HighlightRule`.
     loglib::LeafRule leaf;
     leaf.type = rule.type;
     leaf.columnKeys = rule.columnKeys;
@@ -84,9 +81,8 @@ std::optional<loglib::RowPredicate> CompileLeaf(
     {
     case T::Time:
     {
-        // At least one bound must be finite for the rule to be
-        // meaningful. Feed INT64 sentinels for the open side so
-        // the per-row visitor stays a simple `>=` / `<=` pair.
+        // At least one bound required; INT64 sentinels fill the
+        // open side so the visitor stays a simple `>=` / `<=` pair.
         if (!rule.filterBegin.has_value() && !rule.filterEnd.has_value())
         {
             return std::nullopt;
@@ -114,8 +110,7 @@ std::optional<loglib::RowPredicate> CompileLeaf(
         {
             return std::nullopt;
         }
-        // Case-insensitive decode tolerates hand-edited configs
-        // (e.g. `"True"`, `"FALSE"`).
+        // Case-insensitive decode tolerates hand-edited `"True"` / `"FALSE"`.
         bool includeTrue = false;
         bool includeFalse = false;
         for (const std::string &v : rule.filterValues)
@@ -148,12 +143,11 @@ std::optional<loglib::RowPredicate> CompileLeaf(
             return std::nullopt;
         }
         const loglib::EnumDictionary *dictionary = table->ResolveEnumColumn(column).dictionary;
-        // Level columns store canonical names (`"Info"`, ...);
-        // expand them to every raw dictionary alias via
-        // `LevelRankCache` so a rule saved as `Info` still matches
-        // a row parsed from `INFO` or a custom `levelMapping`
-        // alias. `EnumRowPredicate`'s constructor deep-copies the
-        // views before the scaffolding vectors go out of scope.
+        // Level columns store canonical names (`"Info"`, ...); expand
+        // via `LevelRankCache` so a rule saved as `Info` matches
+        // `INFO`, `warning`, or any `levelMapping` alias.
+        // `EnumRowPredicate` deep-copies the views before these
+        // scaffolding vectors go out of scope.
         std::vector<std::string> expandedStorage;
         std::vector<std::string_view> selectedViews;
         const bool isLevelColumn =
@@ -163,7 +157,7 @@ std::optional<loglib::RowPredicate> CompileLeaf(
             const std::vector<loglib::LogLevel> *ranks = table->LevelRankCache(column);
             if (ranks == nullptr || dictionary == nullptr)
             {
-                // Column not yet promoted -- rebuild on next `Grew`.
+                // Column not promoted yet; rebuild on next `Grew`.
                 return std::nullopt;
             }
             std::unordered_set<loglib::LogLevel> selectedLevels;
@@ -185,8 +179,8 @@ std::optional<loglib::RowPredicate> CompileLeaf(
             }
             if (expandedStorage.empty())
             {
-                // e.g. rule targets `Trace` but dict has only
-                // `Info`/`Warn`. Rule matches nothing -- inert.
+                // No dictionary entry matches (e.g. rule targets
+                // `Trace` but dict has only `Info`/`Warn`).
                 return std::nullopt;
             }
             selectedViews.reserve(expandedStorage.size());
@@ -216,16 +210,11 @@ std::optional<loglib::RowPredicate> CompileLeaf(
         {
             return std::nullopt;
         }
-        // Empty needles: whether this is meaningful depends on the
-        // match kind.
-        //   - `Contains` matches every string, `Wildcard` (with a
-        //     glob) and `RegularExpression` (with a pattern) either
-        //     match every string or degenerate to trivial matchers.
-        //     Rejecting them keeps a hand-authored `col:""` from
-        //     silently painting / hiding every row.
-        //   - `Exactly ""` is a specific, useful query -- match
-        //     genuinely empty column values. Rejecting it would
-        //     silently drop the leaf on load, so let it through.
+        // Reject empty needles for non-`Exactly` match kinds: an
+        // empty `Contains` / `Wildcard` / `RegularExpression`
+        // matches every row and would silently blank / paint the
+        // whole view. `Exactly ""` is genuinely useful (match
+        // empty column values), so allow it.
         if (rule.filterString->empty() && *rule.matchType != loglib::LeafRule::Match::Exactly)
         {
             return std::nullopt;
@@ -237,46 +226,32 @@ std::optional<loglib::RowPredicate> CompileLeaf(
         };
     }
     }
-    // Unreachable: the switch above is exhaustive and carries no
-    // `default:`, so adding a `LeafRule::Type` is a `-Wswitch` error
-    // here rather than a silent reinterpretation of the new type as
-    // a `String` leaf (which is what the old `case T::String:
-    // default:` fallthrough did).
+    // Unreachable: `switch` is exhaustive with no `default`, so a
+    // new `LeafRule::Type` triggers `-Wswitch` here.
     return std::nullopt;
 }
 
 namespace
 {
 
-/// Recursive compile step. Returns `std::nullopt` when the sub-tree
-/// is **absent** -- it carries no constraint the evaluator can apply.
+/// Recursive compile step. Returns `nullopt` when the sub-tree is
+/// **absent** (carries no constraint).
 ///
-/// "Absent" is a single, uniform rule rather than a truth value, and
-/// every parent applies it the same way: drop the child, and if that
-/// leaves the parent with nothing of its own, report the parent as
-/// absent too. So `And` drops absent children (its identity is
-/// match-all), `Or` drops them and goes absent when *all* of its
-/// children did, and `Not` goes absent when its child did.
+/// Absence propagates uniformly: `And` drops absent children (its
+/// identity is match-all); `Or` drops them and goes absent when
+/// **all** children did; `Not` goes absent when its child did.
 ///
-/// The alternative -- treating an unresolvable leaf as match-none and
-/// propagating that through the tree -- is rejected deliberately. A
-/// leaf goes absent for reasons that are routine and usually
-/// temporary: column keys that don't resolve yet, a `Level` column
-/// that hasn't been promoted, an empty payload from a hand-edited
-/// config. Folding match-none upwards would blank the table mid-
-/// stream and give the user no cue as to why, whereas dropping the
-/// clause over-accepts for a moment and then self-corrects on the
-/// next `enumColumnsChanged` rebuild. Over-accepting is recoverable;
-/// an empty view that looks like data loss is not.
+/// We deliberately treat unresolvable leaves as absent rather than
+/// match-none. A leaf goes absent for routine, usually-temporary
+/// reasons (column keys not resolved yet, level column not
+/// promoted, hand-edited empty payload); folding match-none upwards
+/// would blank the view mid-stream with no cue, whereas dropping
+/// the clause over-accepts briefly and self-corrects on the next
+/// `enumColumnsChanged` rebuild.
 ///
-/// Note the asymmetry this creates on purpose: `NOT <absent>` is
-/// absent, *not* match-all. Reading `NOT` as "invert match-none" and
-/// widening to match-all would discard every sibling constraint in
-/// the enclosing `And` -- `svc:auth AND NOT missing:x` would show the
-/// whole log rather than just the `svc:auth` rows.
-///
-/// Independently of all this, an empty `And` is match-all and an
-/// empty `Or` is match-none; the runtime evaluator handles both.
+/// Note the deliberate asymmetry: `NOT <absent>` is absent, not
+/// match-all -- otherwise a stale `NOT` would discard every sibling
+/// constraint (`svc:auth AND NOT missing:x` would show the whole log).
 std::optional<loglib::CompiledFilterExpression> CompileNode(
     const loglib::FilterExpression &expr,
     const std::vector<loglib::LogConfiguration::Column> &columns,
@@ -312,10 +287,9 @@ std::optional<loglib::CompiledFilterExpression> CompileNode(
                     {
                         andNode.children.push_back(std::move(*compiledChild));
                     }
-                    // Absent child -> drop; `And`'s identity is match-all.
+                    // Absent -> drop (identity of `And` is match-all).
                 }
-                // Cost-order children cheap-first so short-circuit
-                // rejects fire ASAP.
+                // Cheap-first: short-circuit reject fires ASAP.
                 std::ranges::sort(
                     andNode.children,
                     [](const loglib::CompiledFilterExpression &a, const loglib::CompiledFilterExpression &b) {
@@ -345,29 +319,24 @@ std::optional<loglib::CompiledFilterExpression> CompileNode(
                         orNode.children.push_back(std::move(*compiledChild));
                         anyChild = true;
                     }
-                    // Absent child -> drop, keeping the surviving
-                    // alternatives. Note this narrows the `Or`: the
-                    // dropped branch can no longer admit rows.
+                    // Absent -> drop; narrows the `Or` (dropped
+                    // branch can no longer admit rows).
                 }
                 if (!anyChild)
                 {
-                    // Nothing left to disjoin, so the `Or` carries no
-                    // constraint of its own and is absent in turn.
-                    // Reporting match-none here instead would blank
-                    // the view (see the note on `CompileNode`).
+                    // Nothing to disjoin -> `Or` is absent too. See
+                    // note above; do not fold to match-none.
                     return std::nullopt;
                 }
-                // Cost-order children cheap-first so short-circuit
-                // accepts fire ASAP.
+                // Cheap-first: short-circuit accept fires ASAP.
                 std::ranges::sort(
                     orNode.children,
                     [](const loglib::CompiledFilterExpression &a, const loglib::CompiledFilterExpression &b) {
                         return a.EstimatedCost() < b.EstimatedCost();
                     }
                 );
-                // OR cost is pessimistic: min-of-children (assume
-                // early exit on the cheapest accepting leaf). Doesn't
-                // affect correctness -- only sibling ordering.
+                // OR cost = min-of-children (early exit on the
+                // cheapest accepting leaf). Ordering hint only.
                 int cost = std::numeric_limits<int>::max();
                 for (const auto &child : orNode.children)
                 {
@@ -383,18 +352,15 @@ std::optional<loglib::CompiledFilterExpression> CompileNode(
                 // Not.
                 if (n.child == nullptr)
                 {
-                    // Defensive: `MakeNot`'s constructors enforce
-                    // non-null; only a hand-edited config that
-                    // survived Glaze validation could land here.
-                    // Nothing to invert, so the node is absent.
+                    // Defensive: `MakeNot` enforces non-null; only a
+                    // hand-edited config could land here.
                     return std::nullopt;
                 }
                 auto compiledChild = CompileNode(*n.child, columns, table, referencedColumns);
                 if (!compiledChild.has_value())
                 {
-                    // There is no constraint to invert, so the `Not`
-                    // is absent as well. Deliberately *not* match-all
-                    // -- see the asymmetry note on `CompileNode`.
+                    // Nothing to invert -> absent. NOT absent = absent
+                    // (see note above; deliberately not match-all).
                     return std::nullopt;
                 }
                 loglib::CompiledFilterExpression compiled;

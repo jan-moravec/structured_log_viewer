@@ -96,20 +96,16 @@ public:
         const MatchRowCallback &onMatch
     ) const;
 
-    /// Replace the active filter expression and rebuild the row map.
-    /// Ownership transfers into the proxy; callers rebuild via a
-    /// fresh `CompileExpression` on every mutation.
+    /// Replace the active filter expression and rebuild the row
+    /// map. Callers own recompilation on every mutation.
     void SetFilterExpression(loglib::CompiledFilterExpression expression);
 
-    /// Test-only convenience: wrap a flat rule list in a top-level
-    /// `And` `CompiledFilterExpression` and install it. Empty list
-    /// installs a match-all expression. Kept so existing tests
-    /// that predate the boolean-expression rewrite keep compiling.
+    /// Test-only: install a flat rule list as a top-level `And`.
+    /// Empty list installs match-all. Kept for tests predating the
+    /// boolean-expression rewrite.
     void SetFilterRules(std::vector<loglib::RowPredicate> rules);
 
-    /// Test-only inspection of the compiled tree's referenced
-    /// columns. Live-tail append path uses this to decide whether a
-    /// new row needs re-evaluation.
+    /// Test-only inspection of the compiled expression.
     [[nodiscard]] const loglib::CompiledFilterExpression &FilterExpressionForTest() const noexcept
     {
         return mCompiledExpression;

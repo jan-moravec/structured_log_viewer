@@ -110,9 +110,9 @@ std::optional<HighlightRuleSet::CompiledRule> HighlightRuleSet::CompileRule(
     {
         return std::nullopt;
     }
-    // Delegate to the shared `CompileLeaf` factory so filter and
-    // highlight paths use identical predicate construction (Level
-    // expansion, empty-needle rejection, boolean decoding, ...).
+    // Shared `CompileLeaf` factory so filter and highlight paths
+    // build predicates identically (Level expansion, empty-needle
+    // rejection, boolean decoding, ...).
     auto predicate = CompileLeaf(ToLeafRule(rule), resolvedColumn, columns, table);
     if (!predicate.has_value())
     {

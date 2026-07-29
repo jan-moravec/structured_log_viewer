@@ -91,17 +91,10 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(const QString &pat
         QRegularExpression regex(pattern);
         if (!regex.isValid())
         {
-            // Callers are expected to validate patterns up-front
-            // (`MainWindow::FilterSubmitted`, `AdvancedFilterEditor`),
-            // so reaching this branch means either a hand-edited
-            // config or a code path that bypassed validation.
-            // Surface via qWarning so the failure is visible in the
-            // debug log; return an always-false matcher so the
-            // downstream row loop doesn't crash on an invalid
-            // `QRegularExpression`. Match-none (instead of match-all)
-            // errs on the side of "user's filter didn't do what they
-            // meant" being visibly wrong rather than silently
-            // permissive.
+            // Callers validate up front (`FilterSubmitted`,
+            // `AdvancedFilterEditor`); reaching here means a
+            // hand-edited config or a bypass. Warn and return
+            // match-none: visibly wrong beats silently permissive.
             qCWarning(logMatcher).noquote()
                 << "MakeStringMatcher: invalid regular expression"
                 << pattern
@@ -114,8 +107,7 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(const QString &pat
     }
     case Match::Wildcard:
     {
-        // `wildcardToRegularExpression` always emits a syntactically
-        // valid regex; no isValid gate needed here.
+        // `wildcardToRegularExpression` always emits valid regex.
         QRegularExpression regex(QRegularExpression::wildcardToRegularExpression(pattern));
         PrimeRegex(regex);
         return [regex](std::string_view bytes) { return regex.match(HaystackQStringFast(bytes)).hasMatch(); };

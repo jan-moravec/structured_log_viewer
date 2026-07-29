@@ -144,16 +144,10 @@ void LogFilterModel::SetFilterExpression(loglib::CompiledFilterExpression expres
 
 void LogFilterModel::SetFilterRules(std::vector<loglib::RowPredicate> rules)
 {
-    // Convenience shim: wrap the rule list in a flat `And`
-    // `CompiledFilterExpression`. Empty list becomes the identity
-    // element (match all). Collects `referencedColumns` from each
-    // leaf so the live-tail path can re-evaluate cheaply.
+    // Wrap the flat rule list in a top-level `And`. Empty list
+    // installs match-all via the fast path in `SetFilterExpression`.
     if (rules.empty())
     {
-        // Delegate to `SetFilterExpression` so the "both trees match
-        // all -> skip rebuild" fast path fires. Doing the compare
-        // ourselves against `mCompiledExpression` after assignment
-        // would be a tautology (we'd have just installed match-all).
         loglib::CompiledFilterExpression matchAll;
         matchAll.node = loglib::CompiledFilterExpression::And{};
         SetFilterExpression(std::move(matchAll));
@@ -170,8 +164,7 @@ void LogFilterModel::SetFilterRules(std::vector<loglib::RowPredicate> rules)
         child.node = loglib::CompiledFilterExpression::Leaf{std::move(predicate)};
         andNode.children.push_back(std::move(child));
     }
-    // Keep `referencedColumns` deduped so the append-path filter
-    // stays cheap.
+    // Dedupe referenced columns so the live-tail path stays cheap.
     std::ranges::sort(compiled.referencedColumns);
     const auto dupTail = std::ranges::unique(compiled.referencedColumns);
     compiled.referencedColumns.erase(dupTail.begin(), dupTail.end());
@@ -437,10 +430,8 @@ int LogFilterModel::LogRowToSourceRow(int logRow) const
     {
         return -1;
     }
-    // Empty chain: `sourceModel() == mLogModel`. The "log row" is
-    // already the "source row" -- no proxy hop required.
-    // Empty chain (`sourceModel() == mLogModel`): the log row is the
-    // source row.
+    // Empty chain (`sourceModel() == mLogModel`): the log row is
+    // already the source row -- no proxy hop required.
     if (mProxyChainAbove.empty())
     {
         return logRow;
@@ -545,12 +536,10 @@ void LogFilterModel::RecomputeAcceptedRows()
         return;
     }
 
-    // Hot path: hand predicate evaluation off to
-    // `loglib::FilterAcceptedRows`, which picks between the visit
-    // path and the bitset-materialisation path per rebuild and runs
-    // `tbb::parallel_for` over `LogTable` rows directly. The lib
-    // has no Qt dependency and no proxy-chain awareness, so we map
-    // each surviving log row back to source coords here.
+    // Hot path: `loglib::FilterAcceptedRows` picks between the visit
+    // and bitset paths and parallelises over `LogTable` rows. It has
+    // no Qt/proxy awareness, so we map log rows back to source
+    // coords here.
     const auto acceptedLogRows = loglib::FilterAcceptedRows(mLogModel->Table(), mCompiledExpression);
     mAcceptedSourceRows.reserve(acceptedLogRows.size());
     for (const size_t logRow : acceptedLogRows)

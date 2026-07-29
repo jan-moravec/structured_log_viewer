@@ -10,24 +10,16 @@ class QTextDocument;
 
 /// Live syntax highlighter for the Advanced Filter query editor.
 ///
-/// Applies four palette-aware categories to `QTextDocument` blocks so
-/// the user gets a running "what did I type?" signal while composing:
-///   - **Keywords** (`AND` / `OR` / `NOT` / `IN`, whole-word,
-///     case-insensitive) render bold + `QPalette::Link` colour so
-///     they read as connectives rather than column names.
-///   - **Operator punctuation** (`:` `~` `%` `>=` `<=` `>` `<` `=`)
-///     renders bold so the column-vs-value boundary is visible even
-///     without extra whitespace.
-///   - **Quoted string literals** (`"..."`) and **regex literals**
-///     (`/.../` following `~`) render italic + `QPalette::
-///     PlaceholderText` so the "this text isn't parsed as syntax"
-///     regions stand out.
+/// Applies four palette-aware categories:
+///   - **Keywords** (`AND` / `OR` / `NOT` / `IN`, case-insensitive):
+///     bold + link colour.
+///   - **Operator punctuation** (`:` `~` `%` `>=` `<=` `>` `<` `=`):
+///     bold, so the column/value boundary is visible.
+///   - **Quoted strings** (`"..."`) and **regex literals** (`/.../`
+///     following `~`): italic + placeholder-text colour.
 ///
-/// The wavy parse-error underline installed via
-/// `QPlainTextEdit::setExtraSelections` layers on top independently
-/// (extra selections and character formats live in disjoint
-/// rendering channels), so both cues coexist without either erasing
-/// the other.
+/// Layers cleanly under the wavy parse-error underline set via
+/// `QPlainTextEdit::setExtraSelections` (disjoint rendering channels).
 class AdvancedFilterHighlighter : public QSyntaxHighlighter
 {
     Q_OBJECT
@@ -45,10 +37,8 @@ protected:
     void highlightBlock(const QString &text) override;
 
 private:
-    /// One rule per category. `captureGroup` picks which submatch to
-    /// style: `0` = whole match (keywords / operators / strings),
-    /// `1` = a specific capture group (used for regex literals so
-    /// only the `/.../` body is styled, not the leading `~`).
+    /// One highlight rule. `captureGroup` picks which submatch to
+    /// style (0 = whole match; 1 = e.g. the regex-literal body only).
     struct Rule
     {
         QRegularExpression pattern;
@@ -56,18 +46,13 @@ private:
         int captureGroup = 0;
     };
 
-    /// Rebuild `mBaseRules` and `mOverlayRules` from the current
-    /// application palette. Called from the constructor; palette
-    /// changes on modal dialogs are rare enough that we don't hook
-    /// `QEvent::PaletteChange` for now.
+    /// Rebuild rule sets from the current application palette.
     void RebuildRules();
 
-    /// Rules applied first (keywords + operator punctuation). Later
-    /// rules overwrite earlier ones for overlapping ranges.
+    /// Applied first (keywords + operator punctuation).
     std::vector<Rule> mBaseRules;
 
-    /// Rules applied last (quoted strings + regex literals). These
-    /// win over keywords / operators inside quoted or regex spans so
-    /// e.g. `msg ~ /OR/` doesn't paint the inner `OR` as a keyword.
+    /// Applied last, overriding base rules inside literals so e.g.
+    /// `msg ~ /OR/` doesn't paint the inner `OR` as a keyword.
     std::vector<Rule> mOverlayRules;
 };

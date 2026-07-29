@@ -515,7 +515,7 @@ Multiple simple-mode filters combine with **AND** — a row shows only if every 
 **Filters → Advanced Filter…** opens a text editor for boolean filter expressions. Compared to the simple-mode entry that only combines rules with AND, the advanced editor accepts `AND` / `OR` / `NOT` in any nesting, plus a small query language that mirrors what you would type in a Kibana / Grafana / lnav filter box.
 
 - Every keystroke re-parses. The status label beneath the field shows either **Parsed OK.** (or **Parsed OK — will save as: …** when the pretty-printer normalises the input, e.g. lower-cases `in` to `IN` or trims whitespace), or **Parse error at position N: …** with a caret offset into the text.
-- **OK** is enabled only when the query parses. On accept the expression replaces the current filter tree wholesale; the per-column simple-mode entries in the Filters menu are cleared (the new tree may contain OR / NOT structure that the simple menu cannot represent one entry at a time).
+- **OK** is enabled only when the query parses. On accept the expression replaces the current filter tree wholesale. Top-level leaves the simple editor can represent (a plain per-column rule) reappear as individual entries in the Filters menu, so Edit / Remove still work on them; any `OR` / `NOT` structure that the simple menu can't represent stays under **Advanced Filter…** and roundtrips through save/load.
 - Leave the field empty to match every row (equivalent to **Filters → Clear All**).
 
 **Leaves** — the atoms of a query — pair a column with an operator and a value:

@@ -31,17 +31,15 @@ namespace loglib
 namespace
 {
 
-/// Tokens emitted by the lexer. Kept small; operator strings share
-/// one enum entry per fixed spelling so the parser can pattern-match
-/// on `kind` rather than re-checking `text`.
+/// Tokens emitted by the lexer.
 enum class TokenKind : std::uint8_t
 {
     Ident,      ///< bareword identifier (column or value)
-    Quoted,     ///< "quoted string" -- `text` holds the decoded body
+    Quoted,     ///< "quoted string" (`text` = decoded body)
     Regex,      ///< /regex body/ (only produced after `~`)
-    Number,     ///< numeric literal -- `text` holds the raw digits
-    True,       ///< the bareword `true`
-    False,      ///< the bareword `false`
+    Number,     ///< numeric literal (`text` = raw digits)
+    True,
+    False,
     KwAnd,
     KwOr,
     KwNot,
@@ -60,22 +58,20 @@ enum class TokenKind : std::uint8_t
     RBracket,   ///< `]`
     Comma,      ///< `,`
     DotDot,     ///< `..`
-    End,        ///< end-of-input sentinel
+    End,
 };
 
 struct Token
 {
     TokenKind kind = TokenKind::End;
-    /// Decoded text (for Ident/Quoted/Regex/Number). Empty otherwise.
+    /// Decoded text (Ident/Quoted/Regex/Number).
     std::string text;
-    /// Byte offset into the input where this token started. Used
-    /// for error reporting.
+    /// Byte offset into the input; used for error reporting.
     std::size_t offset = 0;
 };
 
-/// True iff @p ch may appear inside a bareword identifier. The set
-/// deliberately excludes operator characters and brackets so the
-/// lexer doesn't have to backtrack.
+/// Ident-body character set; excludes operator/bracket chars so
+/// the lexer never needs to backtrack.
 [[nodiscard]] bool IsIdentChar(char ch) noexcept
 {
     return (std::isalnum(static_cast<unsigned char>(ch)) != 0) || ch == '_' || ch == '.' || ch == '-';
@@ -93,8 +89,8 @@ public:
     {
     }
 
-    /// Consume the next token. Returns `Token::End` after the
-    /// last real token so callers can peek without special-casing.
+    /// Consume the next token; keeps returning `End` past EOI so
+    /// callers can peek without special-casing.
     [[nodiscard]] std::expected<Token, QueryParseError> Next()
     {
         SkipWhitespace();
@@ -216,13 +212,9 @@ public:
             tok.kind = TokenKind::KwNot;
             return tok;
         }
-        // Number literal -- signed, optional decimal + exponent. We
-        // treat a leading `+` or `-` followed by a digit as the start
-        // of a number so range bounds like `[-1..1]` parse cleanly.
-        // ISO-8601 timestamp bareword takes precedence over plain
-        // number when the shape matches (`YYYY-MM-DD` prefix) so a
-        // bareword like `2024-01-02T00:00:00Z` doesn't split at the
-        // first `-`.
+        // Signed number literal (leading `+`/`-` with a digit) so
+        // ranges like `[-1..1]` parse cleanly. ISO-8601 shape takes
+        // precedence so `2024-01-02T00:00:00Z` isn't split at `-`.
         if ((std::isdigit(static_cast<unsigned char>(ch)) != 0) ||
             ((ch == '+' || ch == '-') && mPos + 1 < mInput.size() &&
              std::isdigit(static_cast<unsigned char>(mInput[mPos + 1])) != 0))
@@ -243,11 +235,9 @@ public:
         return std::unexpected(err);
     }
 
-    /// Regex literals are only recognised in this dedicated entry
-    /// point (called by the parser after it consumes a `~`). This
-    /// keeps `/` free to disambiguate: inside a regex it is a
-    /// literal, outside it is a syntax error until we grow another
-    /// operator that needs it.
+    /// Dedicated entry called after the parser sees a `~`. Keeps
+    /// `/` free to mean "regex delimiter" here and stay a syntax
+    /// error everywhere else.
     [[nodiscard]] std::expected<Token, QueryParseError> NextRegex()
     {
         SkipWhitespace();
@@ -267,10 +257,8 @@ public:
             const char ch = mInput[mPos];
             if (ch == '\\' && mPos + 1 < mInput.size())
             {
-                // Preserve every backslash escape verbatim; the
-                // regex engine decides what `\d`, `\s`, `\.` mean.
-                // Only `\/` collapses to `/` so the closing slash
-                // stays unambiguous.
+                // Preserve escapes verbatim (the regex engine
+                // decodes them). Only `\/` collapses to `/`.
                 const char next = mInput[mPos + 1];
                 if (next == '/')
                 {
@@ -366,12 +354,10 @@ private:
         return std::unexpected(err);
     }
 
-    /// Try to lex an ISO-8601 timestamp bareword starting at
-    /// `mPos`. Recognises the same shape family `ParseIsoTimestamp`
-    /// accepts (bare date, date+T+time, optional fraction / TZ)
-    /// so bareword timestamps parse as one Ident token instead
-    /// of splitting at the first `-`. Returns `nullopt` when the
-    /// input doesn't match (caller falls back to `LexNumber`).
+    /// Try to consume an ISO-8601 timestamp as a single Ident token.
+    /// Same shape family as `ParseIsoTimestamp` (bare date,
+    /// date+T+time, optional fraction / TZ). Returns `nullopt` when
+    /// no match, so the caller falls back to `LexNumber`.
     [[nodiscard]] std::optional<Token> TryLexIsoTimestamp() noexcept
     {
         // Need at least `YYYY-MM-DD` = 10 bytes.
@@ -421,9 +407,7 @@ private:
                 std::isdigit(static_cast<unsigned char>(mInput[cursor + 3])) == 0 ||
                 std::isdigit(static_cast<unsigned char>(mInput[cursor + 4])) == 0)
             {
-                // Not a time -- rewind so bare-date form still
-                // matches (a trailing `T` would otherwise consume
-                // the marker without content).
+                // No time part; rewind so bare-date form still matches.
                 cursor = timeStart;
             }
             else
@@ -462,8 +446,7 @@ private:
                 }
             }
         }
-        // Reject if the token bleeds into another identifier /
-        // number character we didn't intend to consume.
+        // Reject if the token bleeds into another ident/number char.
         if (cursor < mInput.size() && IsIdentChar(mInput[cursor]) && mInput[cursor] != '-' && mInput[cursor] != '.')
         {
             return std::nullopt;
@@ -513,10 +496,8 @@ private:
             {
                 ++mPos;
             }
-            // Reject a stripped-down exponent like `1e`, `1e+`, `1e-`
-            // at the lexer -- otherwise `std::from_chars` fails later
-            // against the whole token and the diagnostic points at the
-            // token start rather than the offending 'e'.
+            // Reject `1e` / `1e+` / `1e-` here so the error points
+            // at the exponent, not at the start of the token.
             if (mPos == digitsStart)
             {
                 QueryParseError err;
@@ -539,9 +520,7 @@ private:
             ++mPos;
         }
         tok.text = std::string(mInput.substr(start, mPos - start));
-        // Case-insensitive keyword mapping. `and`, `or`, `not`, `in`,
-        // `true`, `false` are reserved; everything else is a plain
-        // Ident.
+        // Case-insensitive keyword mapping.
         std::string lower = tok.text;
         std::ranges::transform(lower, lower.begin(), [](unsigned char c) {
             return static_cast<char>(std::tolower(c));
@@ -581,18 +560,14 @@ private:
     std::size_t mPos = 0;
 };
 
-/// Try to parse @p text as an inclusive numeric bound in the
-/// `[..]` range grammar. Returns `nullopt` when the input isn't
-/// a well-formed number (the range-parser then falls back to
-/// treating the bound as a Time / ISO literal).
+/// Parse @p text as a numeric range bound. `nullopt` when malformed;
+/// the range-parser then re-tries the bound as an ISO timestamp.
 [[nodiscard]] std::optional<double> ParseDouble(std::string_view text) noexcept
 {
     if (text.empty())
     {
         return std::nullopt;
     }
-    // `std::from_chars` for `double` is available on MSVC, libc++,
-    // and libstdc++ >= 11. It's the fastest allocation-free path.
     double value = 0.0;
     const char *first = text.data();
     const char *last = text.data() + text.size();
@@ -604,8 +579,7 @@ private:
     return value;
 }
 
-/// Case-insensitive `str.starts_with` for the tiny prefix set used
-/// by the ISO-timestamp detector.
+/// True iff @p text starts with four ASCII digits (an ISO year).
 [[nodiscard]] bool StartsWithDigitYear(std::string_view text) noexcept
 {
     if (text.size() < 4)
@@ -638,15 +612,11 @@ private:
     return LENGTHS[static_cast<std::size_t>(month - 1)];
 }
 
-/// Try to parse an ISO-8601 timestamp (with or without a fractional
-/// part / timezone suffix) as microseconds since the UNIX epoch.
-/// Returns `nullopt` for anything the format doesn't match: strict
-/// on both the shape and the calendar ranges, so a mistyped bound
-/// surfaces as a parse error rather than a rolled-over date.
+/// Parse an ISO-8601 timestamp (optional fraction and TZ) into
+/// microseconds since the UNIX epoch. Strict on shape and calendar
+/// ranges so typos surface as parse errors, not rolled-over dates.
 [[nodiscard]] std::optional<std::int64_t> ParseIsoTimestamp(std::string_view text)
 {
-    // Fast-reject: ISO timestamps start with `YYYY` and contain
-    // either `-` or `T` in the first ten bytes.
     if (!StartsWithDigitYear(text))
     {
         return std::nullopt;
@@ -693,10 +663,8 @@ private:
     {
         return std::nullopt;
     }
-    // The civil-from-fields formula below happily absorbs
-    // out-of-range fields by rolling over (`2024-13-45` became
-    // 2025-02-14), which turns a typo into a silently wrong filter
-    // bound instead of a parse error the editor can underline.
+    // Reject out-of-range fields; the civil-from-fields formula
+    // below would silently roll `2024-13-45` over to `2025-02-14`.
     if (*month < 1 || *month > 12 || *day < 1 || *day > DaysInMonth(*year, *month))
     {
         return std::nullopt;
@@ -736,13 +704,10 @@ private:
             second = *s;
             cursor += 2;
         }
-        // `24:00:00` is a legal ISO end-of-day spelling; `60` is a
-        // leap second. Both roll over cleanly in the arithmetic
-        // below, so they are accepted -- anything beyond is a typo.
-        // The `hour == 24` spelling only means "midnight of the next
-        // day", so anything past `24:00:00` (non-zero minute /
-        // second / fractional) is rejected up-front rather than
-        // silently rolling over into e.g. tomorrow's `00:59:59`.
+        // Accept ISO end-of-day (`24:00:00`) and leap-second
+        // (`:60`) -- both roll over cleanly below. Reject anything
+        // past `24:00:00` so `24:00:00.5` doesn't silently become
+        // `00:00:00.5` of the next day.
         if (hour > 24 || minute > 59 || second > 60 ||
             (hour == 24 && (minute != 0 || second != 0)))
         {
@@ -765,11 +730,9 @@ private:
             {
                 ++cursor;
             }
-            // Scale fractional up to microseconds: fractional / denom * 1e6.
+            // Scale fractional up to microseconds.
             fractionalMicros = (fractional * 1'000'000) / denom;
-            // Complements the `hour == 24 && (minute|second) != 0`
-            // reject above: `24:00:00.5` also rolls over into the
-            // next day if we accept it, so pin it here too.
+            // Same reason as above: reject `24:00:00.5`.
             if (hour == 24 && fractionalMicros != 0)
             {
                 return std::nullopt;
@@ -820,10 +783,8 @@ private:
     {
         return std::nullopt;
     }
-    // Convert `(year, month, day, hour, minute, second)` to
-    // days-since-epoch via the civil-from-fields formula (Howard
-    // Hinnant's date algorithms). Avoids pulling `<chrono>` field
-    // conversions that require a system TZ database.
+    // Civil-from-fields via Howard Hinnant's date algorithms; no
+    // TZ database dependency.
     const long long y = *year - ((*month <= 2) ? 1 : 0);
     const long long era = (y >= 0 ? y : y - 399) / 400;
     const auto yoe = static_cast<unsigned long long>(y - (era * 400));
@@ -836,15 +797,13 @@ private:
                                         (static_cast<long long>(hour) * 3600LL) +
                                         (static_cast<long long>(minute) * 60LL) + static_cast<long long>(second) -
                                         offsetSeconds;
-    // A bare date needs no special case: `hour` / `minute` / `second`
-    // stay zero, which is midnight UTC of that day.
+    // Bare-date: `hour`/`minute`/`second` stay 0 = midnight UTC.
     const std::int64_t micros = (secondsSinceEpoch * 1'000'000LL) + fractionalMicros;
     return micros;
 }
 
-/// ASCII-only case-insensitive equality. Local so we don't need to
-/// pull `loglib/internal/ascii_case.hpp` into the parser -- the
-/// keyword set is closed and lives entirely on the ASCII plane.
+/// ASCII-only case-insensitive equality; the keyword set is closed
+/// and stays on the ASCII plane.
 [[nodiscard]] bool EqualsIgnoreCaseAscii(std::string_view lhs, std::string_view rhs) noexcept
 {
     if (lhs.size() != rhs.size())
@@ -863,10 +822,9 @@ private:
     return true;
 }
 
-/// Bareword classifier used by the pretty-printer. When the value
-/// happens to look like a keyword, number, contains whitespace or
-/// operator characters, we quote it in the output so the round-trip
-/// re-parses to the same tree.
+/// True iff @p text needs quoting to survive the round-trip
+/// (starts with a non-ident char, contains operator chars, or
+/// happens to be a reserved keyword).
 [[nodiscard]] bool NeedsQuoting(std::string_view text) noexcept
 {
     if (text.empty())
@@ -884,11 +842,7 @@ private:
             return true;
         }
     }
-    // Reserved keywords must be quoted when used as identifiers /
-    // values so they don't turn back into keyword tokens. Small
-    // closed set + case-insensitive linear compare avoids the
-    // `std::unordered_set<std::string>` allocations the previous
-    // implementation paid on the very first call.
+    // Reserved keywords must be quoted so they don't relex as tokens.
     static constexpr std::array<std::string_view, 6> RESERVED{
         "and", "or", "not", "in", "true", "false"
     };
@@ -935,13 +889,10 @@ private:
     return NeedsQuoting(text) ? QuoteString(text) : std::string(text);
 }
 
-/// Emit a numeric bound so the round-trip parses back to the
-/// exact double. `%.17g`-style rendering keeps precision at the
-/// cost of a couple of extra digits; that's fine for filter UX.
+/// Emit a numeric bound with round-trip precision (via
+/// `std::to_chars`, locale-free).
 [[nodiscard]] std::string FormatNumber(double value)
 {
-    // `std::to_chars` gives round-trip precision and is locale-free.
-    // 32 bytes covers every double.
     std::array<char, 32> buffer{};
     const auto result = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
     if (result.ec != std::errc{})
@@ -959,10 +910,9 @@ struct CivilDate
     unsigned day = 1;
 };
 
-/// `civil_from_days` (Howard Hinnant's date algorithms) -- the exact
-/// inverse of the `days_from_civil` arithmetic `ParseIsoTimestamp`
-/// uses. Valid for the whole `int64_t` day range and, crucially,
-/// for negative day counts.
+/// `civil_from_days` (Howard Hinnant's date algorithms): exact
+/// inverse of the `days_from_civil` arithmetic used above, valid
+/// across the whole `int64_t` range including negative days.
 [[nodiscard]] CivilDate CivilFromDays(std::int64_t z) noexcept
 {
     z += 719468;
@@ -974,41 +924,29 @@ struct CivilDate
     const std::uint64_t doy = doe - ((365 * yoe) + (yoe / 4) - (yoe / 100));    // [0, 365]
     const std::uint64_t mp = ((5 * doy) + 2) / 153;                             // [0, 11]
     const auto d = static_cast<unsigned>(doy - (((153 * mp) + 2) / 5) + 1);     // [1, 31]
-    // `mp` counts months from March, so shift it back to a January-
-    // based month. Done in signed arithmetic: the canonical
-    // `mp + (mp < 10 ? 3 : -9)` relies on unsigned wraparound to
-    // subtract, which is correct but needlessly subtle.
+    // Shift `mp` (March-based) back to a January-based month.
+    // Signed arithmetic; the canonical unsigned-wrap form works but
+    // is subtle.
     const auto marchBased = static_cast<int>(mp);
     const auto m = static_cast<unsigned>(marchBased + (marchBased < 10 ? 3 : -9)); // [1, 12]
     return CivilDate{.year = y + (m <= 2 ? 1 : 0), .month = m, .day = d};
 }
 
-/// Render a `TimeStamp` field back to an ISO-8601 microsecond
-/// literal (`YYYY-MM-DDTHH:MM:SS.uuuuuuZ`). Complement of
-/// `ParseIsoTimestamp` for the pretty-printer.
+/// Render epoch microseconds as `YYYY-MM-DDTHH:MM:SS.uuuuuuZ`.
+/// Uses the same civil-date arithmetic as `ParseIsoTimestamp` so
+/// the two are exact inverses on every platform, including
+/// pre-epoch values (MSVC `gmtime_s` returns `EINVAL` below
+/// 1969-12-31T12:00:00Z, hence the manual arithmetic).
 ///
-/// Deliberately does *not* use `gmtime_s` / `gmtime_r`: both fail
-/// outside the platform's representable range, and MSVC's
-/// `gmtime_s` in particular returns `EINVAL` for any `time_t` below
-/// `-43200` (i.e. anything before 1969-12-31T12:00:00Z). Routing
-/// through the same civil-date arithmetic `ParseIsoTimestamp` uses
-/// keeps the two exact inverses of each other on every platform and
-/// for every pre-epoch value, so the round-trip contract in the
-/// header holds.
-///
-/// The one shape with no ISO-8601 spelling in this grammar is a
-/// year outside `[0, 9999]` (ISO expanded years like `+12024-…`
-/// aren't lexed). Those fall back to an `epoch_micros:<n>` marker,
-/// which is intentionally *not* re-parseable -- it only shows up
-/// for corrupt or synthetic bounds ~8000 years out, and a visible
-/// non-round-tripping marker beats silently rendering the wrong
-/// date.
+/// Years outside `[0, 9999]` (no plain ISO spelling in this
+/// grammar) fall back to an `epoch_micros:<n>` marker. That
+/// marker is deliberately not re-parseable, so a corrupt/synthetic
+/// far-out bound is visible instead of silently mis-rendered.
 [[nodiscard]] std::string FormatTimestampMicros(std::int64_t micros)
 {
-    // C++ integer division truncates towards zero, so a negative
-    // `micros` with a non-zero remainder must borrow one whole
-    // second and reflect the frac from the previous second. Without
-    // this borrow, `-500'000` (500ms before epoch) rendered as
+    // C++ integer division truncates towards zero, so negative
+    // `micros` with a non-zero remainder need to borrow a whole
+    // second (otherwise `-500'000` renders as
     // `1970-01-01T00:00:00.500000Z` instead of the correct
     // `1969-12-31T23:59:59.500000Z`.
     std::int64_t totalSeconds = micros / 1'000'000;
@@ -1156,9 +1094,7 @@ private:
     }
 
     /// `and_expr := not_expr ( ('AND' | epsilon) not_expr )*`
-    ///
-    /// Implicit-AND fires when the next token can start a new
-    /// leaf / group and no `OR` / closing token is pending.
+    /// Implicit-AND fires when the next token can start a new atom.
     [[nodiscard]] std::expected<FilterExpression, QueryParseError> ParseAnd()
     {
         auto first = ParseNot();
@@ -1184,9 +1120,8 @@ private:
                 children.push_back(std::move(*next));
                 continue;
             }
-            // Implicit AND: peek at whether the next token can
-            // start a fresh atom. Terminators (RParen, RBracket,
-            // Comma, End, KwOr) close the AND chain.
+            // Implicit-AND: only if the next token can start an atom.
+            // Terminators (`)` `]` `,` End `OR`) close the chain.
             switch (mLookahead.kind)
             {
             case TokenKind::Ident:
@@ -1391,11 +1326,10 @@ private:
 
     [[nodiscard]] std::expected<FilterExpression, QueryParseError> FinishEqLeaf(LeafRule rule)
     {
-        // Payload type-drives here:
-        //   `col = "text"`   -> String Exactly
-        //   `col = 42`       -> Numeric equal (min = max = 42)
-        //   `col = true`     -> Boolean true
-        //   `col = ident`    -> String Exactly (bareword)
+        // Payload picks the concrete leaf type:
+        //   "text"    -> String Exactly    (also bareword ident)
+        //   42        -> Numeric equal (min = max = 42)
+        //   true/false-> Boolean
         switch (mLookahead.kind)
         {
         case TokenKind::Quoted:
@@ -1455,9 +1389,8 @@ private:
 
     [[nodiscard]] std::expected<FilterExpression, QueryParseError> FinishCompareLeaf(LeafRule rule, const Token &opTok)
     {
-        // `col > N`, `col >= N`, `col < N`, `col <= N`.
-        // Time (ISO literal) and Numeric supported; picks type from
-        // the literal shape.
+        // `col {>,>=,<,<=} <ISO timestamp | number>`. Type picked
+        // from the literal shape.
         std::string valueText;
         if (mLookahead.kind == TokenKind::Number || mLookahead.kind == TokenKind::Ident ||
             mLookahead.kind == TokenKind::Quoted)
@@ -1510,10 +1443,9 @@ private:
         else
         {
             rule.type = LeafRule::Type::Number;
-            // Numeric strict-vs-inclusive: we use ULP-adjacent
-            // doubles for `>`/`<` so the range still expresses
-            // "strictly greater / less". `nextafter` returns the
-            // next representable double toward +inf / -inf.
+            // Strict `>`/`<` -> use the ULP-adjacent double via
+            // `nextafter` so the inclusive-range predicate still
+            // expresses "strictly greater / less".
             switch (opTok.kind)
             {
             case TokenKind::Gt:
@@ -1548,9 +1480,9 @@ private:
         {
             return std::unexpected(ok.error());
         }
-        // Two shapes: `[a, b, c]` (list -> Enumeration) or
-        // `[min..max]` (range -> Numeric / Time). Distinguish
-        // by peeking for `..` after the (optional) first bound.
+        // Two shapes: `[a, b, c]` (Enumeration/Boolean list) or
+        // `[min..max]` (Numeric/Time range). Peek for `..` to
+        // pick between them.
         if (mLookahead.kind == TokenKind::DotDot)
         {
             // `[..max]`
@@ -1578,12 +1510,9 @@ private:
         }
         else if (mLookahead.kind == TokenKind::RBracket)
         {
-            // `col in []` used to yield an Enumeration leaf with no
-            // selected values. That leaf compiles to nothing, so the
-            // query silently became match-all, and it also reached
-            // the UI's title builder with an empty payload. Reject it
-            // here so there is exactly one answer for the user: an
-            // underlined parse error.
+            // Reject `col in []`: it used to compile to nothing
+            // (silent match-all) and hit the UI with an empty
+            // payload. Surface it as an underlined parse error.
             QueryParseError err;
             err.offset = mLookahead.offset;
             err.message = "value list cannot be empty";
@@ -1630,10 +1559,7 @@ private:
             err.message = "expected ']' to close range";
             return std::unexpected(err);
         }
-        // `col in [..]` carries neither bound, so it compiles to
-        // nothing (silently match-all) and reaches the UI's title
-        // builder with an empty payload. Reject it for the same
-        // reason as the empty list form.
+        // Reject `col in [..]` for the same reason as `[]`.
         if (!firstTok.has_value() && !secondTok.has_value())
         {
             QueryParseError err;
@@ -1681,29 +1607,19 @@ private:
             err.message = "range upper bound must be a number or ISO timestamp";
             return std::unexpected(err);
         }
-        // Mixed-type bounds (one side ISO timestamp, other side
-        // number) silently dropped a bound in the previous
-        // implementation: the "Time or Number" branch below picks
-        // Time whenever *either* side classifies as timestamp, then
-        // copies only `tsMin` / `tsMax`, discarding the numeric side.
-        // Reject up-front so a typo like `[2024-01-01T00:00:00Z..42]`
-        // surfaces as a parse error rather than a half-open range
-        // with no obvious cause.
+        // Reject mixed-type bounds up-front. Otherwise the "Time or
+        // Number" branch below picks Time and silently drops the
+        // numeric bound (a hidden half-open range).
         if ((tsMin.has_value() && numMax.has_value()) ||
             (numMin.has_value() && tsMax.has_value()))
         {
             QueryParseError err;
-            // The second bound is the one that "conflicts" with the
-            // first, so anchor the caret on it. Both `secondTok` and
-            // (via the invariants above) at least one of `tsMax` /
-            // `numMax` are set when this fires.
             err.offset = secondTok->offset;
             err.message = "range bounds must both be numeric or both be ISO timestamps";
             return std::unexpected(err);
         }
-        // An inverted range can never accept a row. Reporting it as a
-        // parse error is far kinder than "Parsed OK" followed by an
-        // empty table with no explanation.
+        // Reject inverted ranges: they can never accept a row, and
+        // "Parsed OK" + empty table gives no cue.
         const bool invertedTime = tsMin.has_value() && tsMax.has_value() && *tsMin > *tsMax;
         const bool invertedNumber = numMin.has_value() && numMax.has_value() && *numMin > *numMax;
         if (invertedTime || invertedNumber)
@@ -1731,14 +1647,9 @@ private:
     [[nodiscard]] std::expected<FilterExpression, QueryParseError>
     FinishListLeaf(LeafRule rule, const Token &firstTok)
     {
-        // A list of exclusively `true` / `false` tokens is the wire
-        // form the pretty printer emits for `LeafRule::Type::Boolean`
-        // (`col in [true, false]`). Detect that shape so the round
-        // trip preserves the type; otherwise the compiled predicate
-        // walks the `Enumeration` path against a `Boolean` column,
-        // falls back to string-set matching, and never accepts a row.
-        // Mixed lists (`[true, "x"]`) stay `Enumeration` so hand-typed
-        // heterogeneous lists aren't silently misclassified.
+        // All-boolean list (`[true, false]`) is the printer's wire
+        // form for `Type::Boolean`; detect that so the round-trip
+        // preserves the type. Mixed lists stay `Enumeration`.
         const auto isBoolKind = [](TokenKind k) {
             return k == TokenKind::True || k == TokenKind::False;
         };
@@ -1780,10 +1691,8 @@ private:
         if (allBool)
         {
             rule.type = LeafRule::Type::Boolean;
-            // Normalise to lowercase so hand-typed `True` / `FALSE`
-            // still round-trip cleanly through `FormatExpression`
-            // (which emits lowercase) and match the compiled
-            // predicate's canonical form.
+            // Lowercase so `True`/`FALSE` still round-trip through
+            // the pretty printer's lowercase output.
             for (std::string &v : rule.filterValues)
             {
                 std::ranges::transform(v, v.begin(), [](unsigned char ch) {
@@ -1807,17 +1716,16 @@ private:
 
 enum class Precedence : std::uint8_t
 {
-    Or,   ///< lowest -- printed unparenthesised at the root
-    And,  ///< middle
-    Not,  ///< above And
-    Atom  ///< leaves and parenthesised subexpressions
+    Or,
+    And,
+    Not,
+    Atom
 };
 
 void AppendExpression(const FilterExpression &expr, Precedence parent, std::string &out);
 
-/// Emit one leaf. Bareword-friendly for common cases; falls back
-/// to quoted forms when the payload would collide with a keyword,
-/// operator, or number.
+/// Emit one leaf. Barewords for common cases; quoted forms when
+/// the payload would collide with a keyword / operator / number.
 void AppendLeaf(const LeafRule &rule, std::string &out)
 {
     const std::string columnText = rule.columnKeys.empty() ? std::string() : FormatIdent(rule.columnKeys.front());
@@ -1836,8 +1744,8 @@ void AppendLeaf(const LeafRule &rule, std::string &out)
             break;
         case LeafRule::Match::Exactly:
             out.push_back('=');
-            // Force quoted output so the round-trip disambiguates
-            // from a numeric or boolean `=` literal.
+            // Always quoted so the round-trip stays unambiguous
+            // vs. numeric / boolean `=` literals.
             out.append(QuoteString(value));
             break;
         case LeafRule::Match::RegularExpression:
@@ -1865,8 +1773,8 @@ void AppendLeaf(const LeafRule &rule, std::string &out)
     }
     case LeafRule::Type::Number:
     {
-        // Single value -> `col = N`; one-sided -> `col > / >= / < / <= N`;
-        // full range -> `col in [min..max]`.
+        // Single value -> `=N`; one-sided -> `>=N` / `<=N`;
+        // both sides -> `IN [min..max]`.
         const bool hasMin = rule.filterMinValue.has_value();
         const bool hasMax = rule.filterMaxValue.has_value();
         if (hasMin && hasMax && *rule.filterMinValue == *rule.filterMaxValue)
@@ -1894,9 +1802,8 @@ void AppendLeaf(const LeafRule &rule, std::string &out)
         }
         else
         {
-            // No bounds -> inert. Emit a canonical placeholder so
-            // the round-trip re-produces the same tree; the compile
-            // step drops the leaf.
+            // No bounds -> inert. Placeholder round-trips as the
+            // same tree; the compile step drops the leaf.
             out.append(" IN []");
         }
         break;
@@ -1931,8 +1838,7 @@ void AppendLeaf(const LeafRule &rule, std::string &out)
     }
     case LeafRule::Type::Boolean:
     {
-        // Multi-value bool collapses to `col=true`, `col=false`, or
-        // `col in [true, false]`.
+        // Collapse to `=true` / `=false` / `IN [true, false]`.
         bool hasTrue = false;
         bool hasFalse = false;
         for (const std::string &v : rule.filterValues)
@@ -1989,10 +1895,9 @@ void AppendAnd(const FilterExpression::And &node, Precedence parent, std::string
 {
     if (node.children.empty())
     {
-        // Empty And = match all. Canonical spelling: `*` isn't in
-        // the grammar; we emit a comment placeholder instead. Empty
-        // trees round-trip through `ParseQuery("")`, so callers
-        // usually short-circuit on `IsMatchAll` before formatting.
+        // Empty And = match-all. The top-level case renders as the
+        // empty string in `FormatExpression`; a nested empty And is
+        // not in the grammar, so emit `*` as a debug placeholder.
         out.append("*");
         return;
     }
@@ -2019,8 +1924,7 @@ void AppendOr(const FilterExpression::Or &node, Precedence parent, std::string &
 {
     if (node.children.empty())
     {
-        // Empty Or = match none. No first-class spelling; emit an
-        // always-false placeholder so the round-trip preserves shape.
+        // Empty Or = match-none. No grammar spelling; debug placeholder.
         out.append("()");
         return;
     }
@@ -2090,29 +1994,17 @@ std::expected<FilterExpression, QueryParseError> ParseQuery(std::string_view inp
 
 std::string FormatExpression(const FilterExpression &expression)
 {
-    // Match-all round-trips as the empty string (see `ParseQuery`:
-    // empty / whitespace-only input yields the default match-all
-    // `FilterExpression`). Emitting anything for the top-level
-    // empty `And` -- including the debug placeholder `*` used by
-    // `AppendAnd` -- would break the header's round-trip contract,
-    // since `*` is not in the grammar.
+    // Match-all -> empty string (round-trip contract in the header).
     if (IsMatchAll(expression))
     {
         return {};
     }
-    // Peel single-child `And` wrappers at the root before printing.
-    // `MirrorSessionStateToConfiguration` and
-    // `ApplyAdvancedFilterResult` deliberately wrap Advanced-only
-    // subtrees in a top-level `And` so the "top-level Leaf children
-    // live in `mSimpleLeaves`" invariant holds; that wrapping adds
-    // an extra layer of parens (`(a OR b)` for what the user
-    // originally typed as `a OR b`) when the outer `And` reads at a
-    // tighter precedence than its child. `And([X])` is semantically
-    // identical to `X`, so unwrap it here to keep the editor
-    // round-trip visibly stable. The unwrap stops as soon as it
-    // would produce match-all, so an accidental nested `And([And{}])`
-    // still renders through the placeholder path in `AppendAnd`
-    // rather than degenerating into a silent empty string.
+    // Peel single-child `And` wrappers at the root:
+    // `MirrorSessionStateToConfiguration` / `ApplyAdvancedFilterResult`
+    // wrap Advanced-only subtrees in `And([X])` to keep the "top-level
+    // Leaf children live in `mSimpleLeaves`" invariant. Unwrapping keeps
+    // the editor round-trip visibly stable. Stops before producing
+    // match-all so nested empty `And` still hits the placeholder path.
     const FilterExpression *effective = &expression;
     while (true)
     {

@@ -324,10 +324,9 @@ public:
     /// `mTableView` if null).
     [[nodiscard]] QMenu *BuildRowContextMenu(int sourceRow, QWidget *parent = nullptr);
 
-    /// Live simple-mode filter leaves keyed by UUID; tests inspect
-    /// it after a reorder. The UUID is a UI concept for menu
-    /// identification; the persisted `LogConfiguration::expression`
-    /// is the source of truth.
+    /// Live simple-mode filter leaves keyed by UUID (UI-only
+    /// identifier for menu wiring). Persisted state lives on
+    /// `LogConfiguration::expression`.
     [[nodiscard]] const std::unordered_map<std::string, loglib::LeafRule> &Filters() const
     {
         return mSimpleLeaves;
@@ -626,12 +625,10 @@ public:
     /// without a real inversion. Irreversible.
     void ForceTimestampsNonMonotonicForTest();
 
-    /// Test seam replaying the post-`exec` body of `OpenAdvancedFilter`
-    /// without a modal `QDialog::exec`. Runs the same
-    /// leaf-extraction + mirror + recompile pipeline the production
-    /// slot uses, so tests can pin the leaf-into-simple-mode
-    /// invariant that keeps `MirrorSessionStateToConfiguration` from
-    /// clobbering the Advanced result on a later autosave.
+    /// Test seam replaying `OpenAdvancedFilter`'s post-`exec` body
+    /// without a modal dialog. Runs the full leaf-extraction +
+    /// mirror + recompile pipeline so tests can pin the simple/
+    /// advanced split behaviour end-to-end.
     void CommitAdvancedFilterForTest(loglib::FilterExpression expression)
     {
         ApplyAdvancedFilterResult(std::move(expression));
@@ -761,19 +758,14 @@ private slots:
     void ClearAllFilters();
     /// Open the modal Advanced Filter editor seeded with the
     /// current `LogConfiguration::expression`. On accept, dispatches
-    /// to `ApplyAdvancedFilterResult`. Bound to `actionAdvancedFilter`.
+    /// to `ApplyAdvancedFilterResult`.
     void OpenAdvancedFilter();
 
-    /// Post-dialog body of `OpenAdvancedFilter`: rebuild the
-    /// simple-mode surface + expression from a parsed tree the
-    /// Advanced editor already validated. Extracts top-level Leaves
-    /// into `mSimpleLeaves` (mirroring the load path in
-    /// `RebuildFiltersFromConfiguration`) so a mixed tree like
-    /// `svc:x AND NOT lvl:info AND path~/foo/` still shows one
-    /// Filters-menu entry per representable leaf while the non-Leaf
-    /// remainder survives a follow-up simple-mode edit. Callers own
-    /// dialog lifecycle; exposed via `CommitAdvancedFilterForTest`
-    /// so tests can bypass the modal exec.
+    /// Post-dialog body of `OpenAdvancedFilter`. Extracts top-level
+    /// Leaves back into `mSimpleLeaves` (mirroring load) so a mixed
+    /// tree like `svc:x AND NOT lvl:info` still shows a Filters-menu
+    /// entry per representable leaf; the non-Leaf remainder stays
+    /// on the expression. Exposed via `CommitAdvancedFilterForTest`.
     void ApplyAdvancedFilterResult(loglib::FilterExpression result);
     /// Drop the active column sort via
     /// `mTableView->sortByColumn(-1, ...)` so proxy, header, and
@@ -823,14 +815,12 @@ private slots:
     void OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int newVisualIndex);
 
     /// `LogModel::columnsMoved` slot: re-apply `Column::visible`
-    /// and refresh the proxy rules. Leaves bind by `columnKeys`
-    /// and don't need remapping; the compiled expression is
-    /// rebuilt because it caches resolved column indices.
-    /// Single source of truth for both header-drag and streaming-
-    /// induced column moves (the latter is the timestamp bubble in
-    /// `LogModel::AppendBatch`). The visibility re-apply is needed
-    /// because Qt clears hidden flags via `initializeSections()`
-    /// when the source has zero rows.
+    /// and rebuild the compiled filter (which caches resolved
+    /// column indices; leaves themselves bind by `columnKeys`).
+    /// Handles both header-drag and streaming-induced column moves
+    /// (the timestamp bubble in `LogModel::AppendBatch`). Qt
+    /// clears hidden flags via `initializeSections()` on a
+    /// zero-row source, hence the visibility re-apply.
     void OnSourceColumnsMoved(
         const QModelIndex &parent, int first, int last, const QModelIndex &destParent, int destColumn
     );
@@ -1059,20 +1049,18 @@ private:
     void ShowDroppedFiltersDialog(int droppedCount, const QString &message);
 
     /// Add @p filter to `mSimpleLeaves` and build its menu entry.
-    /// Pass `deferSync = true` from bulk callers
-    /// (`RebuildFiltersFromConfiguration`) and run a single
-    /// trailing mirror + `UpdateFilters` after the loop.
+    /// Bulk callers pass `deferSync = true` and run one trailing
+    /// mirror + `UpdateFilters` after the loop.
     void AddLogFilter(const QString &id, const loglib::LeafRule &filter, bool deferSync = false);
 
-    /// Display title for @p filter (e.g. `info, warn` for an enum
-    /// filter, `[1.5, 2.0]` for a numeric range). Shared between
-    /// the Filters menu and the column-header right-click menu.
+    /// Display title for @p filter (e.g. `info, warn` for enum,
+    /// `[1.5, 2.0]` for a numeric range). Shared by the Filters
+    /// menu and the column-header right-click menu.
     [[nodiscard]] QString BuildFilterTitle(const loglib::LeafRule &filter) const;
 
-    /// Compile `LogConfiguration::expression` against the current
-    /// column layout and hand it to the filter proxy. Called after
-    /// every filter mutation and on `enumColumnsChanged` / column
-    /// reorder.
+    /// Recompile `LogConfiguration::expression` against the
+    /// current column layout and install it on the proxy. Called
+    /// after every mutation and on column/enum-column changes.
     void UpdateFilters();
 
     /// True iff the window is worth auto-saving: history manager
@@ -1091,12 +1079,11 @@ private:
     void DetachAutoSaveUuid();
 
     /// Snapshot `mSimpleLeaves` (ordered by `mSimpleLeafOrder`),
-    /// the proxy's sort, and `mCurrentSource` into the wire-format
-    /// fields on the configuration. Simple-mode leaves become a
-    /// top-level `And` node on `LogConfiguration::expression`;
-    /// pre-existing non-Leaf siblings (produced by the Advanced
-    /// editor) are preserved. Bulk callers should `deferSync =
-    /// true` and mirror once at the end.
+    /// proxy sort, and `mCurrentSource` into the configuration.
+    /// Simple-mode leaves become the top-level `And` children;
+    /// pre-existing non-Leaf siblings (Advanced-editor output) are
+    /// preserved. Bulk callers set `deferSync = true` and mirror
+    /// once at the end.
     void MirrorSessionStateToConfiguration();
 
     /// Shared tail of `OpenLogStream` and `OpenLogStreamForTest`:
@@ -1132,25 +1119,18 @@ private:
     void RebuildFiltersFromConfiguration();
 
     /// Drop simple-mode leaves, per-filter menu entries, and the
-    /// "Clear All Filters" gating action. Does *not* touch
-    /// `LogConfiguration::expression`, `MarkFiltersDirty`, or the
-    /// mirror/indicator refresh -- callers own those (bulk load
-    /// runs one consolidated mirror at the end;
-    /// `ClearAllFilters` runs its own reset + refresh). Extracted
-    /// so `ClearAllFilters` can additionally reset the whole
-    /// expression tree (dropping Advanced-mode Or/Not subtrees)
-    /// while the load path preserves the just-loaded expression.
+    /// "Clear All Filters" gate. Does *not* touch
+    /// `LogConfiguration::expression`, mark dirty, or refresh the
+    /// mirror/indicators -- callers handle those (bulk load runs one
+    /// mirror at the end; `ClearAllFilters` runs its own refresh).
+    /// Split out so `ClearAllFilters` can additionally reset the
+    /// expression tree while the load path preserves it.
     void ResetSimpleFilterState();
 
-    /// Gate "Clear All Filters" -- both the action and the
-    /// status-bar button that triggers it -- on the freshly-mirrored
-    /// `LogConfiguration::expression` rather than on `mSimpleLeaves`.
-    /// An Advanced-only tree (an `Or` / `Not` root, or the non-Leaf
-    /// remainder of a mixed tree) filters rows while leaving
-    /// `mSimpleLeaves` empty, so counting simple leaves would leave
-    /// the user with no way back to an unfiltered view. Must be
-    /// called after `MirrorSessionStateToConfiguration`, since that
-    /// is what publishes the expression this reads.
+    /// Gate "Clear All Filters" on
+    /// `LogConfiguration::expression` (not `mSimpleLeaves`) so an
+    /// Advanced-only tree still enables the escape hatch. Must run
+    /// after `MirrorSessionStateToConfiguration`.
     void SyncClearAllFiltersEnabled();
     void ApplyTableStyleSheet();
 
@@ -1557,13 +1537,11 @@ private:
     QAction *mActionJumpPrevAnchor = nullptr;
     QAction *mActionEditRowAnchorNote = nullptr;
     QAction *mActionClearAllAnchors = nullptr;
-    /// Simple-mode filter leaves, keyed by UUID. Each entry
-    /// corresponds to one top-level `And` child (a `Leaf` node) in
-    /// `LogConfiguration::expression`. `mSimpleLeafOrder` runs
-    /// parallel and preserves insertion / display order (the map's
-    /// iteration order isn't stable). Advanced-mode sub-trees are
-    /// stored directly on the configuration expression and don't
-    /// show up here.
+    /// Simple-mode leaves keyed by UUID; each = one top-level
+    /// `Leaf` child of `LogConfiguration::expression`.
+    /// `mSimpleLeafOrder` preserves display order (map iteration
+    /// isn't stable). Advanced-only sub-trees live on the
+    /// configuration expression, not here.
     std::unordered_map<std::string, loglib::LeafRule> mSimpleLeaves;
     std::vector<std::string> mSimpleLeafOrder;
 

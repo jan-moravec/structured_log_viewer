@@ -5249,18 +5249,19 @@ void MainWindow::ShowDroppedFiltersDialog(int droppedCount, const QString &messa
 
 void MainWindow::MirrorSessionStateToConfiguration()
 {
-    // Snapshot the simple-mode leaves into a top-level `And`
-    // expression so `Save` and the compile step in `UpdateFilters`
-    // see the live set. Preserves `mSimpleLeafOrder` (insertion
-    // order) so the Filters-menu order on the round-trip is
-    // stable. UUIDs are GUI-internal and regenerated on load.
-    //
-    // The Advanced editor (Phase 5) will produce non-Leaf top-level
-    // children; those get stored on the configuration expression
-    // directly and roundtrip separately. Here we only mirror the
-    // simple-mode subset back into the top-level `And`, preserving
-    // any pre-existing Advanced structure so an Advanced clause
-    // isn't clobbered by a simple-mode edit.
+    // Rebuild `LogConfiguration::expression` from the live state:
+    // top-level `And` of the simple-mode leaves (order from
+    // `mSimpleLeafOrder`) plus any Advanced-mode structure carried
+    // over from the existing expression:
+    //   - Existing `And`: keep the non-Leaf children only; Leaves
+    //     are already covered by `mSimpleLeaves` (the load and
+    //     accept paths extract top-level leaves into it).
+    //   - Existing `Or`/`Not` at the root: keep the whole subtree
+    //     as one non-Leaf child so the Advanced tree survives a
+    //     later simple-mode edit.
+    //   - Existing bare `Leaf` at the root: only reachable via a
+    //     legacy config or direct expression set. Preserve unless
+    //     the same rule is already in `mSimpleLeaves`.
     loglib::FilterExpression::And newAnd;
     newAnd.children.reserve(mSimpleLeafOrder.size() + 1);
     for (const auto &id : mSimpleLeafOrder)
@@ -5274,33 +5275,8 @@ void MainWindow::MirrorSessionStateToConfiguration()
         leaf.node = loglib::FilterExpression::Leaf{it->second};
         newAnd.children.push_back(std::move(leaf));
     }
-    // Preserve the Advanced-mode structure from the existing tree:
-    //   - Existing `And`: append its non-Leaf children. Simple-mode
-    //     leaves already come from `mSimpleLeaves`, so we drop
-    //     `Leaf` children here to avoid duplication (the load path
-    //     in `RebuildFiltersFromConfiguration` and the accept path
-    //     in `OpenAdvancedFilter` both extract top-level Leaves into
-    //     `mSimpleLeaves`, so no rule is lost).
-    //   - Existing `Or` / `Not`: the Advanced editor produced a root
-    //     the simple-mode UI can't roundtrip; keep the whole subtree
-    //     as one non-Leaf child of `newAnd` so it survives further
-    //     simple-mode edits and session Save/Load. Without this the
-    //     tree is silently overwritten by the next mirror.
-    //   - Existing bare `Leaf`: this shape is only produced by a
-    //     freshly-loaded config that predates the extraction step,
-    //     or by a code path that set the expression directly without
-    //     going through the extraction. Defensively preserve it (as
-    //     one child of `newAnd`) unless the same rule is already in
-    //     `mSimpleLeaves`; without this a subsequent mirror would
-    //     clobber the rule with match-all.
-    // Copy the current expression by value up-front. `SetExpression`
-    // below overwrites the manager's stored expression, and a stale
-    // reference into `mModel->Configuration().expression` would
-    // become a use-after-free the instant any code between here and
-    // the `SetExpression` call decided to read it. The tree is small
-    // (top-level `And` plus a handful of leaves or one advanced
-    // subtree), so the copy is cheap; correctness beats the elided
-    // allocation.
+    // Copy by value: `SetExpression` below invalidates references
+    // into `mModel->Configuration().expression`.
     const loglib::FilterExpression existing = mModel->Configuration().expression;
     if (const auto *existingAnd = std::get_if<loglib::FilterExpression::And>(&existing.node);
         existingAnd != nullptr)
@@ -6307,15 +6283,12 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
 
 void MainWindow::RebuildFiltersFromConfiguration()
 {
-    // Extract the simple-mode subset (top-level `And` -> `Leaf`
-    // children) from the loaded expression, then wipe runtime +
-    // menu state and re-add each leaf. Re-entering `AddLogFilter`
-    // rebuilds `mSimpleLeaves` / `mSimpleLeafOrder`, the Filters
-    // menu, and the wire-format expression. Anything under a
-    // non-`And` root, or non-Leaf children, are treated as
-    // Advanced clauses and preserved by
-    // `MirrorSessionStateToConfiguration`. UUIDs are GUI-only and
-    // regenerated here.
+    // Extract the simple-mode subset (top-level `Leaf` children of
+    // the root `And`, or a bare-`Leaf` root) from the loaded
+    // expression and re-add each via `AddLogFilter`. Non-Leaf
+    // children and non-`And` roots are Advanced clauses and are
+    // preserved by `MirrorSessionStateToConfiguration`. UUIDs are
+    // GUI-only and regenerated here.
     std::vector<loglib::LeafRule> loadedFilters;
     const auto &loadedExpression = mModel->Configuration().expression;
     if (const auto *rootAnd = std::get_if<loglib::FilterExpression::And>(&loadedExpression.node);
@@ -6347,12 +6320,10 @@ void MainWindow::RebuildFiltersFromConfiguration()
         UpdateWindowTitle();
     });
 
-    // Reset the simple-mode surface only; leave the just-loaded
-    // expression on the manager so `MirrorSessionStateToConfiguration`
-    // below can preserve any Advanced Or/Not/And-with-non-Leaf
-    // subtree alongside the re-added simple leaves. `ClearAllFilters`
-    // would drop the whole expression (see `TestClearAllFiltersDropsAdvancedTree`),
-    // silently losing the Advanced clause on load.
+    // Reset simple-mode surface only; keep the loaded expression on
+    // the manager so Mirror preserves any Advanced subtree.
+    // (`ClearAllFilters` would drop the whole expression -- see
+    // `TestClearAllFiltersDropsAdvancedTree`.)
     ResetSimpleFilterState();
 #ifdef LOGAPP_BUILD_TESTING
     mLastDroppedFilterCountForTest = 0;
@@ -6372,11 +6343,8 @@ void MainWindow::RebuildFiltersFromConfiguration()
     }
     MirrorSessionStateToConfiguration();
     UpdateFilters();
-    // `ResetSimpleFilterState` above left Clear-All disabled, and
-    // only `AddLogFilter` re-enables it. A session whose saved
-    // expression is Advanced-only (or whose every simple leaf just
-    // failed validation) adds no leaves, so without this the loaded
-    // filter is active with no way to clear it.
+    // Re-enable Clear-All for the Advanced-only / all-leaves-dropped
+    // cases where no `AddLogFilter` fired but rows are still filtered.
     SyncClearAllFiltersEnabled();
     SyncColumnFilterIndicators();
 
@@ -7478,29 +7446,19 @@ void MainWindow::ResetSimpleFilterState()
 void MainWindow::SyncClearAllFiltersEnabled()
 {
     ui->actionClearAllFilters->setDisabled(loglib::IsMatchAll(mModel->Configuration().expression));
-    // The status-bar button triggers this same action, so the two
-    // must agree or a visible button is a no-op on click. Its
-    // visibility otherwise refreshes only from source / proxy row
-    // signals, which say nothing about a filter that changed but
-    // happens to accept the same rows. `UpdateRowsShownStatus` owns
-    // the gate, so route through it rather than duplicating the
-    // condition here.
+    // Status-bar button gates on the same condition via
+    // `UpdateRowsShownStatus`; route through it so the two stay in
+    // lockstep on filter changes that don't shift row counts.
     UpdateRowsShownStatus();
 }
 
 void MainWindow::ClearAllFilters()
 {
     ResetSimpleFilterState();
-    // Reset the full expression tree before mirroring.
-    // `MirrorSessionStateToConfiguration` preserves any pre-existing
-    // Advanced-mode Or/Not root (or non-Leaf children of an And root)
-    // so that a follow-up *simple*-mode edit doesn't clobber the
-    // user's Advanced tree -- but "Clear All Filters" is the user's
-    // explicit signal that they want a clean slate. Without this
-    // reset the Advanced tree stays active with no UI cue (the menu
-    // shows "(no filters)", the funnel indicators are gone, yet
-    // rows are still being filtered out). The Advanced editor must
-    // be reopened to reintroduce a boolean tree.
+    // Reset the full expression before mirroring: the user asked
+    // for a clean slate, so drop any Advanced-mode tree too. The
+    // mirror otherwise preserves non-Leaf Advanced subtrees, which
+    // would leave filtering active with no UI cue.
     mModel->ConfigurationManager().SetExpression(loglib::FilterExpression{});
     MirrorSessionStateToConfiguration();
     UpdateFilters();
@@ -7510,9 +7468,8 @@ void MainWindow::ClearAllFilters()
 
 void MainWindow::OpenAdvancedFilter()
 {
-    // The Advanced editor owns the entire `expression` tree while
-    // open. Seed it from the live configuration so simple-mode
-    // leaves round-trip through the pretty-printer.
+    // Seed from the live configuration so simple-mode leaves
+    // round-trip through the pretty-printer.
     AdvancedFilterEditor editor(this);
     editor.LoadFromExpression(mModel->Configuration().expression);
     if (editor.exec() != QDialog::Accepted)
@@ -7522,8 +7479,8 @@ void MainWindow::OpenAdvancedFilter()
     auto result = editor.Result();
     if (!result.has_value())
     {
-        // Guard against accept-with-error (shouldn't happen -- the
-        // OK button disables when the query fails to parse).
+        // Defensive: the OK button disables on parse error, but
+        // don't crash if that invariant is ever broken.
         return;
     }
     ApplyAdvancedFilterResult(std::move(*result));
@@ -7531,52 +7488,36 @@ void MainWindow::OpenAdvancedFilter()
 
 void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
 {
-    // Split the parser output into (simple leaves, non-Leaf remainder)
-    // so we keep the same invariant as the load path
-    // (`RebuildFiltersFromConfiguration`):
+    // Split the parsed tree into (simple leaves, non-Leaf remainder)
+    // so it obeys the same shape as the load path:
     //
-    //   configuration.expression =
-    //     And([mSimpleLeaves...], non-Leaf-Advanced-subtree...)
+    //   expression = And([mSimpleLeaves...], non-Leaf remainder...)
     //
-    // Extracting top-level Leaves back into `mSimpleLeaves` matters
-    // for two reasons:
-    //  1. The Filters menu shows one entry per leaf so the user can
-    //     Edit / Remove leaves after using Advanced; this matches how
-    //     a leaf-only saved config presents on the next launch.
-    //  2. `MirrorSessionStateToConfiguration` treats a bare `Leaf`
-    //     root as "already represented in mSimpleLeaves" and skips
-    //     it. Without this extraction a follow-up simple edit (or
-    //     any autosave) would clobber a bare-`Leaf` Advanced result
-    //     with match-all.
+    // Extracting the simple leaves lets the Filters menu show one
+    // entry per leaf (so Edit/Remove keep working post-Advanced),
+    // and prevents `MirrorSessionStateToConfiguration` from later
+    // dropping a bare `Leaf` root under the "already in simple"
+    // rule.
     ResetSimpleFilterState();
 
     const auto &columns = mModel->Configuration().columns;
-    // A leaf only belongs in `mSimpleLeaves` if `FilterEditor` can
-    // actually load it, which is exactly what
-    // `ValidateFilterAgainstColumns` decides. The query grammar is
-    // deliberately looser: `level:error` is a `Type::String` leaf
-    // against a `Type::Enumeration` column, which the runtime matches
-    // happily (`CallbackStringRowPredicate` compares the formatted
-    // value) but the type-driven simple editor cannot represent.
-    // Extracting such a leaf used to hand it to the simple surface
-    // anyway, and the next load then dropped it as a column-type
-    // mismatch -- the query silently lost a clause between sessions.
+    // Only leaves the simple editor can actually load belong in
+    // `mSimpleLeaves`: `ValidateFilterAgainstColumns` is what
+    // `FilterEditor` uses. The grammar accepts looser leaves
+    // (e.g. `level:error` as String vs. an Enumeration column) --
+    // those need to stay Advanced so the next load doesn't drop
+    // them as a column-type mismatch.
     const auto isSimpleRepresentable = [&columns](const loglib::LeafRule &rule) {
         return !ValidateFilterAgainstColumns(rule, columns).has_value();
     };
 
     std::vector<loglib::LeafRule> extractedLeaves;
     loglib::FilterExpression::And rest;
-    // Anything kept as Advanced must not be a *bare* `Leaf` child of
-    // the remainder: `MirrorSessionStateToConfiguration` drops
-    // top-level `Leaf` children on the assumption that
-    // `mSimpleLeaves` already carries them, and
-    // `RebuildFiltersFromConfiguration` would extract and then
-    // validate them on the next load. Wrapping in a single-child
-    // `And` sidesteps both -- it evaluates identically (an `And` of
-    // one child is that child) and `FormatExpression` prints it
-    // without added parentheses, so the editor still round-trips the
-    // original query text.
+    // Wrap a bare `Leaf` remainder in a single-child `And`:
+    // `MirrorSessionStateToConfiguration` drops top-level Leaves
+    // (they should live in `mSimpleLeaves`), so unwrapped it would
+    // silently vanish on the next mirror. The wrap is a no-op for
+    // evaluation and formatting.
     const auto keepAsAdvanced = [&rest](loglib::FilterExpression node) {
         if (std::holds_alternative<loglib::FilterExpression::Leaf>(node.node))
         {
@@ -7625,10 +7566,9 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
     loglib::FilterExpression remainder;
     remainder.node = std::move(rest);
 
-    // Install the non-Leaf remainder first so Mirror sees it as the
-    // existing structure to preserve, then re-add the extracted
-    // leaves through `AddLogFilter` (deferring the per-call mirror
-    // so we sync once at the end).
+    // Install the non-Leaf remainder first so the mirror preserves
+    // it, then re-add the extracted leaves through `AddLogFilter`
+    // with deferred sync (one Mirror at the end).
     mModel->ConfigurationManager().SetExpression(std::move(remainder));
     for (const auto &leaf : extractedLeaves)
     {
@@ -7665,10 +7605,9 @@ void MainWindow::ClearFilter(const QString &filterID, bool deferSync)
         }
     }
 
-    // Only sync under `!deferSync`: that's when Mirror has published
-    // a fresh `Configuration().expression`. The deferSync=true paths
-    // are always followed by an `AddLogFilter` that re-enables the
-    // action unconditionally, so leaving it alone is safe.
+    // Only sync when Mirror has just published a fresh expression;
+    // deferSync paths always follow up with `AddLogFilter` which
+    // re-enables the action.
     if (!deferSync)
     {
         SyncClearAllFiltersEnabled();
@@ -7978,11 +7917,10 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LeafRule &filter,
     // targets the right row. Regression:
     // `TestEditFilterAfterColumnReorderUsesCurrentRow`.
     //
-    // The lint suppression below covers `mSimpleLeaves.find` / `LeafRule`
-    // copy, which can technically throw. The body has no real source
-    // of exceptions (no user input, no I/O), so wrapping it in
-    // try/catch would be pure noise. Same applies to the matching
-    // Edit lambda in `BuildHeaderContextMenu`.
+    // Lint suppression: `mSimpleLeaves.find` and `LeafRule` copy
+    // can technically throw, but the body has no real source of
+    // exceptions. Same for the matching lambda in
+    // `BuildHeaderContextMenu`.
     // NOLINTNEXTLINE(bugprone-exception-escape)
     connect(editAction, &QAction::triggered, this, [this, id]() {
         const auto it = mSimpleLeaves.find(id.toStdString());
@@ -8024,17 +7962,14 @@ void MainWindow::SyncColumnFilterIndicators()
             const int row = ResolveLeafColumnByKeys(filter.columnKeys, columns);
             if (row < 0 || row >= cols)
             {
-                // Keys don't resolve (column was dropped or renamed);
-                // hide the tooltip entry until the user removes the
-                // filter or the missing column reappears.
+                // Column keys don't resolve (dropped/renamed); hide
+                // the tooltip entry until the column reappears.
                 continue;
             }
             perColumnTitles[static_cast<size_t>(row)].append(BuildFilterTitle(filter));
         }
-        // Sort titles so tooltip ordering is stable across
-        // `mSimpleLeaves`'s unordered iteration. Use `QCollator` for
-        // locale-aware, case-insensitive ordering with numeric
-        // mode (so "9" sorts before "10").
+        // Sort titles for stable tooltip ordering. `QCollator` gives
+        // locale-aware case-insensitive numeric ordering (`9` < `10`).
         QCollator collator;
         collator.setCaseSensitivity(Qt::CaseInsensitive);
         collator.setNumericMode(true);
@@ -8249,13 +8184,10 @@ bool MainWindow::EnumFilterFullyResolved(const loglib::LeafRule &filter) const
 
 void MainWindow::UpdateFilters()
 {
-    // Compile the configuration's `FilterExpression` (already
-    // mirrored from `mSimpleLeaves` + `mSimpleLeafOrder` and any
-    // Advanced clauses) into a `CompiledFilterExpression` via the
-    // shared `CompileExpression` factory. The factory owns
+    // Compile the mirrored `FilterExpression` into a
+    // `CompiledFilterExpression` via the shared factory (handles
     // predicate construction, level-column expansion, and
-    // cost-based ordering; keeping this call thin means Advanced
-    // editor writes reuse the exact same code path.
+    // cost-based ordering).
     loglib::CompiledFilterExpression compiled = CompileExpression(
         mModel->Configuration().expression, mModel->Configuration().columns, &mModel->Table()
     );
@@ -8330,8 +8262,8 @@ void MainWindow::OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int 
     try
     {
         // `MoveColumn` emits `columnsMoved` synchronously; the
-        // connected `OnSourceColumnsMoved` slot remaps `mSimpleLeaves`,
-        // re-applies visibility, and refreshes the proxy rules.
+        // slot re-applies visibility and recompiles the filter
+        // expression (leaves bind by `columnKeys`, no remap needed).
         (void)mModel->MoveColumn(src, dest);
 
         // Qt usually restores visual == logical for shifted columns

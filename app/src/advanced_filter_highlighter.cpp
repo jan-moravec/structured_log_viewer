@@ -16,9 +16,8 @@ void AdvancedFilterHighlighter::RebuildRules()
 
     QTextCharFormat keywordFormat;
     keywordFormat.setFontWeight(QFont::Bold);
-    // `QPalette::Link` reads as an accent on both light and dark
-    // themes without competing with the wavy error underline (which
-    // uses the app's error-tint colour).
+    // Accent that reads on light/dark themes without clashing with
+    // the error underline (which uses the error-tint colour).
     keywordFormat.setForeground(pal.color(QPalette::Link));
 
     QTextCharFormat operatorFormat;
@@ -26,41 +25,32 @@ void AdvancedFilterHighlighter::RebuildRules()
 
     QTextCharFormat literalFormat;
     literalFormat.setFontItalic(true);
-    // Dimmed foreground signals "opaque payload -- don't try to
-    // parse this as syntax". Matches the palette role the help
-    // label uses for its own gloss text.
+    // Dimmed: signals "opaque payload, not syntax".
     literalFormat.setForeground(pal.color(QPalette::PlaceholderText));
 
     mBaseRules.clear();
     mOverlayRules.clear();
 
-    // Keywords: `\b` on either side rejects `AND` inside identifiers
-    // like `service:command` or `handle_or_fail`. Case-insensitive
-    // because the grammar accepts any casing (see `LexIdent`).
+    // Keywords: `\b` bounds reject `AND` inside identifiers like
+    // `handle_or_fail`. Case-insensitive to match the grammar.
     mBaseRules.push_back(Rule{
         QRegularExpression(QStringLiteral("\\b(?:and|or|not|in)\\b"), QRegularExpression::CaseInsensitiveOption),
         keywordFormat,
         0
     });
 
-    // Operator punctuation. Two-char forms (`>=`, `<=`) come first
-    // in the alternation so `>=` doesn't get half-consumed as `>`.
+    // Two-char operators come first so `>=` isn't half-consumed as `>`.
     mBaseRules.push_back(Rule{QRegularExpression(QStringLiteral(">=|<=|[:~%><=]")), operatorFormat, 0});
 
-    // Double-quoted string literals with `\\.` escapes. The
-    // alternation is `\\.` OR `[^"\\]` so we stop at the first
-    // unescaped closing quote.
+    // Double-quoted strings with `\\.` escapes.
     mOverlayRules.push_back(Rule{
         QRegularExpression(QStringLiteral("\"(?:\\\\.|[^\"\\\\])*\"")),
         literalFormat,
         0
     });
 
-    // Regex literals only follow `~`. Anchoring on the tilde avoids
-    // painting the `/` characters in a bareword like `path:/var/log`
-    // as a regex delimiter. Capture group 1 is the `/.../` body so
-    // `setFormat` styles only the regex, not the leading tilde /
-    // whitespace.
+    // Regex literals only after `~`, so `path:/var/log` stays plain.
+    // Capture group 1 = `/.../` body, so leading `~` isn't styled.
     mOverlayRules.push_back(Rule{
         QRegularExpression(QStringLiteral("~\\s*(/(?:\\\\.|[^/\\\\])*/)")),
         literalFormat,
@@ -77,11 +67,7 @@ void AdvancedFilterHighlighter::highlightBlock(const QString &text)
             while (it.hasNext())
             {
                 const auto match = it.next();
-                // `capturedStart` / `capturedLength` return
-                // `qsizetype` (64-bit) but `setFormat` takes `int`.
-                // Query text is short (a user-typed filter, not a
-                // document body), so the cast is safe; explicit
-                // form silences clang-tidy narrowing warnings.
+                // qsizetype -> int cast: query text is short.
                 const qsizetype start = match.capturedStart(rule.captureGroup);
                 const qsizetype length = match.capturedLength(rule.captureGroup);
                 if (start < 0 || length <= 0)
@@ -93,9 +79,6 @@ void AdvancedFilterHighlighter::highlightBlock(const QString &text)
         }
     };
     apply(mBaseRules);
-    // Overlay rules run second so quoted / regex bodies overwrite
-    // any keyword or operator formatting picked up on the first
-    // pass (`msg ~ /OR/` must not render the inner `OR` as bold /
-    // accent-coloured).
+    // Overlay second: literal spans win over keyword/operator formatting.
     apply(mOverlayRules);
 }

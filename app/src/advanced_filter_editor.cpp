@@ -31,37 +31,23 @@
 namespace
 {
 
-/// Initial dialog geometry. Wider than Qt's default `sizeHint` so
-/// the help table plus a realistic query -- e.g. a full ISO
-/// timestamp range or an `OR` chain of several leaves -- fit on
-/// one line without wrapping. Matches the width used by the
-/// sibling `ConfigurationDiagnosticsDialog`.
+/// Initial dialog geometry, sized so the help table and a typical
+/// query fit on one line without wrapping.
 constexpr int DIALOG_INITIAL_WIDTH_PX = 720;
 constexpr int DIALOG_INITIAL_HEIGHT_PX = 380;
-/// Prevent the user from shrinking the dialog below the point
-/// where the help table starts wrapping. The value keeps the
-/// widest table row (`latency > 100` + its gloss) on a single
-/// line while still allowing a reasonably compact layout on
-/// small displays.
+/// Floor below which the help table starts wrapping.
 constexpr int DIALOG_MINIMUM_WIDTH_PX = 480;
 constexpr int DIALOG_MINIMUM_HEIGHT_PX = 300;
 
-/// `FormatExpression` renders match-all as the empty string
-/// already, so this is currently equivalent to a direct call --
-/// keep the wrapper for readability and to pin the dialog's
-/// "empty field means match all" invariant if the pretty printer
-/// ever changes.
+/// Pretty-print @p expression. Match-all renders as the empty
+/// string, which the caller shows as an empty text field.
 [[nodiscard]] QString ExpressionToQueryText(const loglib::FilterExpression &expression)
 {
     return QString::fromStdString(loglib::FormatExpression(expression));
 }
 
-/// Palette-aware error colour, legible on both light and dark
-/// backgrounds. Mirrors `filter_editor.cpp`'s local
-/// `WarningColorHex` so the two dialogs share their validation
-/// vocabulary. `palette(highlight)` (the previous choice) reads as
-/// a hyperlink on many themes because it's the selection colour,
-/// not a semantic error tint.
+/// Palette-aware error tint, legible on light and dark themes.
+/// Matches `filter_editor.cpp`'s local `WarningColorHex`.
 [[nodiscard]] QString ErrorColorHex(const QWidget *widget)
 {
     const QPalette palette = (widget != nullptr) ? widget->palette() : QPalette{};
@@ -69,21 +55,19 @@ constexpr int DIALOG_MINIMUM_HEIGHT_PX = 300;
     return dark ? QStringLiteral("#FF8A80") : QStringLiteral("#D32F2F");
 }
 
-/// Diagnostic returned by `FindInvalidRegex`: the offending pattern
-/// (for the status message) and the QRegularExpression error text.
+/// The first invalid regex found in an expression tree: pattern
+/// text (for the status message) and Qt's error text.
 struct RegexIssue
 {
     QString pattern;
     QString errorText;
 };
 
-/// Depth-first walk over @p expression looking for the first
-/// `Type::String` leaf whose match kind is `RegularExpression` and
-/// whose pattern fails `QRegularExpression::isValid()`. Wildcard
-/// patterns are always accepted (`wildcardToRegularExpression`
-/// escapes special characters). Returns `nullopt` when every regex
-/// leaf compiles; short-circuits on the first failure so the status
-/// message pins one actionable pattern instead of a summary list.
+/// Return the first regex `Leaf` whose pattern fails
+/// `QRegularExpression::isValid()`, or `nullopt` when all compile.
+/// Short-circuits so the status message pins one actionable
+/// pattern rather than a summary list. Wildcard leaves are always
+/// valid (they go through `wildcardToRegularExpression`).
 [[nodiscard]] std::optional<RegexIssue> FindInvalidRegex(const loglib::FilterExpression &expression)
 {
     return std::visit(
@@ -138,11 +122,7 @@ AdvancedFilterEditor::AdvancedFilterEditor(QWidget *parent) : QDialog(parent)
 {
     setObjectName(QStringLiteral("advancedFilterEditor"));
     setWindowTitle(tr("Advanced Filter"));
-    // Explicit initial size + floor so the help table and typical
-    // queries fit without immediate wrapping. Without this the
-    // dialog defaulted to `sizeHint`, which packed the tallest
-    // widget (the four-row query editor) tightly and produced a
-    // ~370 px wide window that wrapped every help-table row.
+    // Explicit size + floor: `sizeHint` alone wraps every help-table row.
     resize(DIALOG_INITIAL_WIDTH_PX, DIALOG_INITIAL_HEIGHT_PX);
     setMinimumSize(DIALOG_MINIMUM_WIDTH_PX, DIALOG_MINIMUM_HEIGHT_PX);
     SetupLayout();
@@ -159,42 +139,21 @@ void AdvancedFilterEditor::SetupLayout()
 
     mQueryEdit = new QPlainTextEdit(this);
     mQueryEdit->setObjectName(QStringLiteral("advancedFilterQueryEdit"));
-    // Monospace so operators / brackets line up predictably; matches
-    // how users see the same syntax in the record-detail dock.
+    // Monospace: operators / brackets line up predictably.
     QFont mono(QStringLiteral("Consolas"));
     mono.setStyleHint(QFont::Monospace);
     mQueryEdit->setFont(mono);
-    // Leave the editor a bit taller than one line so long queries
-    // wrap into a readable block instead of scrolling horizontally.
+    // Four visible lines so long queries wrap into a readable block.
     const int approxRowHeight = QFontMetrics(mQueryEdit->font()).lineSpacing();
     mQueryEdit->setMinimumHeight(approxRowHeight * 4);
-    // Live syntax highlighting -- keywords, operator punctuation,
-    // and quoted / regex literals get their own formats so the
-    // user can tell a keyword from a column name at a glance.
-    // Parented to the document; Qt manages the lifetime.
+    // Live syntax highlighting; parented to the document, Qt owns it.
     new AdvancedFilterHighlighter(mQueryEdit->document());
     layout->addWidget(mQueryEdit);
 
-    // Concise operator summary so the user doesn't have to leave the
-    // dialog. Spelled out inline rather than hoisted into a
-    // `constexpr` string: `lupdate` only extracts `tr()` arguments
-    // that are literals, so `tr(HELP_TEXT)` compiled fine but left
-    // the block permanently untranslatable. Uses Qt rich text --
-    // `QLabel` auto-detects the HTML tags and renders bold /
-    // monospace / italic accordingly.
-    //
-    // Two-column HTML table so the italic gloss aligns vertically
-    // regardless of how wide each concrete example is (the previous
-    // inline `<br>` layout let each row's gloss start at a
-    // different horizontal position, which read as "all over the
-    // place"). The example column is monospace so operators /
-    // brackets align; the gloss column is italic so the reader can
-    // tell "what the operator does" from "what you actually type".
-    // The intro / grammar sentence sits *above* the table -- a
-    // single line that answers "what am I looking at?" (leaves
-    // combined by boolean connectives) and "what happens if I
-    // leave it blank?", so the reader gets one paragraph of
-    // context, then a scannable reference table underneath.
+    // Concise operator cheat-sheet. The literal is inlined (not
+    // hoisted into a constexpr) so `lupdate` can extract it for
+    // translation. Two-column table keeps the italic gloss
+    // vertically aligned regardless of example width.
     mHelpLabel = new QLabel(
         tr("Combine <b>leaves</b> (column, operator, value &mdash; see below) with "
            "<b>AND</b> / <b>OR</b> / <b>NOT</b> / <b>IN</b> (case-insensitive) and parentheses. "
@@ -221,7 +180,7 @@ void AdvancedFilterEditor::SetupLayout()
     mHelpLabel->setTextFormat(Qt::RichText);
     mHelpLabel->setWordWrap(true);
     mHelpLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    // Dim slightly so the help block reads as tertiary content.
+    // Dim so the help reads as tertiary content.
     QPalette dimPalette = mHelpLabel->palette();
     dimPalette.setColor(QPalette::WindowText, dimPalette.color(QPalette::Disabled, QPalette::WindowText));
     mHelpLabel->setPalette(dimPalette);
@@ -269,15 +228,10 @@ void AdvancedFilterEditor::ReparseAndUpdate()
     auto parsed = loglib::ParseQuery(source);
     if (parsed.has_value())
     {
-        // Regex validity is a second-stage check: `ParseQuery` only
-        // extracts the pattern between `/.../` delimiters, so a
-        // syntactically valid query can still carry an invalid
-        // `QRegularExpression` payload. Without this gate an
-        // accepted expression like `msg~/*[bad/` compiles into a
-        // matcher that silently rejects every row -- the log view
-        // goes blank with no cue. Surface the failure here so the
-        // OK button stays disabled and the status label explains
-        // which pattern to fix.
+        // Second-stage regex validity check: `ParseQuery` extracts
+        // the `/.../` body verbatim, so a valid query can still
+        // carry a broken pattern that would silently reject every
+        // row. Gate OK on it and name the offending pattern.
         if (auto regexIssue = FindInvalidRegex(*parsed); regexIssue.has_value())
         {
             mCachedResult.reset();
@@ -285,12 +239,8 @@ void AdvancedFilterEditor::ReparseAndUpdate()
                 tr("Invalid regular expression /%1/: %2").arg(regexIssue->pattern, regexIssue->errorText)
             );
             mStatusLabel->setStyleSheet(QStringLiteral("color: %1;").arg(ErrorColorHex(this)));
-            // No caret offset is available for individual regex leaves
-            // (the parser doesn't record per-leaf source positions),
-            // but the query *did* parse, so any underline still on
-            // screen belongs to a previous, now-fixed syntax error and
-            // would point the user at the wrong character. Clear it and
-            // let the status label name the offending pattern.
+            // Query parsed, so any stale syntax-error underline
+            // would point at the wrong spot -- clear it.
             ClearErrorHighlight();
             mOkButton->setEnabled(false);
             return;
@@ -302,13 +252,9 @@ void AdvancedFilterEditor::ReparseAndUpdate()
         }
         else
         {
-            // Only surface the canonical form when it differs from
-            // what the user typed (whitespace-insensitive) -- the
-            // previous "Parsed OK: <same text>" echo was a redundant
-            // repetition of the editor's contents. When casing /
-            // spacing normalises (e.g. `level in [warn]` -> `level
-            // IN [Warn]`), show the delta so the user can see what
-            // will actually be saved.
+            // Show the canonical form only when it differs from the
+            // typed text (whitespace-insensitive), so the user sees
+            // what will be saved when casing/spacing normalises.
             const std::string formatted = loglib::FormatExpression(*mCachedResult);
             const QString canonical = QString::fromStdString(formatted);
             const QString typedTrimmed = queryText.simplified();
@@ -322,10 +268,7 @@ void AdvancedFilterEditor::ReparseAndUpdate()
                 mStatusLabel->setText(tr("Parsed OK \u2014 will save as: %1").arg(canonical));
             }
         }
-        // Reset any warning styling from prior parse errors.
         mStatusLabel->setStyleSheet(QString());
-        // Drop any prior underline so the query field is clean when
-        // the user recovers.
         ClearErrorHighlight();
         mOkButton->setEnabled(true);
     }
@@ -333,23 +276,13 @@ void AdvancedFilterEditor::ReparseAndUpdate()
     {
         mCachedResult.reset();
         const auto &err = parsed.error();
-        // Report the caret offset in 1-based column form so it
-        // aligns with the user's mental model of the text they
-        // just typed (position 1 for the first character). The raw
-        // byte offset is 0-based; `+ 1` shifts it to the display
-        // form. `HighlightErrorAt` below still consumes the raw
-        // 0-based offset, so the underline stays on the exact
-        // offending byte.
+        // Display column is 1-based; the raw offset is 0-based and
+        // stays 0-based for the underline call below.
         const auto displayOffset = static_cast<qsizetype>(err.offset) + 1;
         mStatusLabel->setText(
             tr("Parse error at position %1: %2").arg(displayOffset).arg(QString::fromStdString(err.message))
         );
         mStatusLabel->setStyleSheet(QStringLiteral("color: %1;").arg(ErrorColorHex(this)));
-        // Convert the byte offset into a UTF-16 code-unit offset so
-        // Qt's `QTextCursor` (which counts code units) lands on the
-        // right character even when earlier bytes were multi-byte
-        // UTF-8. Clamp to the current text length so trailing-EOF
-        // errors highlight the last visible character.
         HighlightErrorAt(queryText, static_cast<std::size_t>(err.offset));
         mOkButton->setEnabled(false);
     }
@@ -361,18 +294,16 @@ void AdvancedFilterEditor::HighlightErrorAt(const QString &queryText, std::size_
     {
         return;
     }
-    // Translate byte-offset -> UTF-16 code-unit index by re-encoding
-    // the prefix. Fine to walk the string here -- queries are short
-    // and this only runs on `textChanged`.
+    // Byte-offset -> UTF-16 code-unit index for QTextCursor.
+    // Walking the prefix is fine: queries are short.
     const QByteArray utf8 = queryText.toUtf8();
     const auto clampedByteOffset = std::min(byteOffset, static_cast<std::size_t>(utf8.size()));
     const int codeUnitOffset =
         QString::fromUtf8(utf8.constData(), static_cast<qsizetype>(clampedByteOffset)).size();
     const int textSize = queryText.size();
     const int selectStart = std::min(codeUnitOffset, textSize);
-    // Highlight at least one character so a caret-at-EOF error is
-    // still visible. If the error is past end-of-text, back up one
-    // character so we underline the last real glyph.
+    // For a caret at EOF, back up one glyph so at least one
+    // character is underlined and visible.
     QTextEdit::ExtraSelection selection;
     QTextCursor cursor(mQueryEdit->document());
     if (selectStart >= textSize && textSize > 0)
@@ -387,18 +318,12 @@ void AdvancedFilterEditor::HighlightErrorAt(const QString &queryText, std::size_
     }
     else
     {
-        // Empty text — no visible glyph to underline; leave the
-        // status-label offset as the sole cue.
+        // Empty text: nothing to underline. Status label carries the cue.
         ClearErrorHighlight();
         return;
     }
     QTextCharFormat fmt;
     fmt.setUnderlineStyle(QTextCharFormat::WaveUnderline);
-    // Use the same palette-aware error tint as the status label
-    // (matches `filter_editor`'s validation vocabulary). The
-    // previous `QPalette::Highlight` picked up the selection colour
-    // -- typically a bright blue that reads as a hyperlink rather
-    // than a validation error on most themes.
     fmt.setUnderlineColor(QColor(ErrorColorHex(this)));
     selection.cursor = cursor;
     selection.format = fmt;

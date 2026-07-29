@@ -17,23 +17,13 @@ namespace loglib
 struct LogConfiguration;
 }
 
-/// Modal editor for boolean filter expressions.
+/// Modal text editor for boolean filter expressions
+/// (`loglib::ParseQuery` grammar).
 ///
-/// Presents a single-line-ish text query the user can type, backed
-/// by `loglib::ParseQuery`. Every keystroke re-parses and either
-/// updates the "resolved expression" preview or displays a
-/// one-line error with a caret offset.
-///
-/// The dialog is intentionally text-first: the visual tree editor
-/// (drag-and-drop AND/OR/NOT nodes) is a follow-up; this v1 wants to
-/// unblock users who prefer typing (`level in [Warn, Error] AND
-/// NOT service:health`) and to serve as the round-trip surface for
-/// pretty-printed expressions coming back from the simple-mode
-/// dropdowns.
-///
-/// The caller is expected to seed the editor with the current
-/// `LogConfiguration::expression` via `LoadFromExpression` before
-/// `exec()`, then read back `Result()` on `Accepted`.
+/// Every keystroke re-parses; the status label reports "Parsed OK"
+/// or a one-line error with a caret offset, and OK is enabled only
+/// on a clean parse. Callers seed the field via `LoadFromExpression`
+/// before `exec()` and read `Result()` on `Accepted`.
 class AdvancedFilterEditor : public QDialog
 {
     Q_OBJECT
@@ -47,37 +37,31 @@ public:
     AdvancedFilterEditor(AdvancedFilterEditor &&) = delete;
     AdvancedFilterEditor &operator=(AdvancedFilterEditor &&) = delete;
 
-    /// Pretty-prints @p expression via `loglib::FormatExpression`
-    /// and seeds the text field. Match-all is rendered as an empty
-    /// field so the user starts from a clean slate.
+    /// Seed the field from @p expression via `FormatExpression`.
+    /// Match-all renders as the empty string.
     void LoadFromExpression(const loglib::FilterExpression &expression);
 
-    /// The parsed expression that produced the last "OK" state.
-    /// `nullopt` before the user has committed a valid query.
+    /// Last successfully-parsed expression, or `nullopt` before any
+    /// clean parse.
     [[nodiscard]] std::optional<loglib::FilterExpression> Result() const;
 
-    /// Set the initial query text directly. Useful for tests and
-    /// for callers that have already stringified an expression.
+    /// Direct text setter/getter for tests and pre-stringified callers.
     void SetQueryText(const QString &text);
     [[nodiscard]] QString QueryText() const;
 
 private:
     void SetupLayout();
-    /// Reparse the current text and update the status label + OK
-    /// button. Called from the text edit's `textChanged` slot.
+    /// `textChanged` slot: reparse and refresh status label + OK button.
     void ReparseAndUpdate();
-    /// Underline the character at @p byteOffset (byte-offset from
-    /// `QueryParseError::offset`) with a wavy squiggle so the parse
-    /// error is visible in the text field, not just the status line.
+    /// Wavy-underline the character at @p byteOffset (a
+    /// `QueryParseError::offset`) so the offender is visible in the
+    /// text field, not just the status line.
     void HighlightErrorAt(const QString &queryText, std::size_t byteOffset);
-    /// Remove any prior parse-error underline.
     void ClearErrorHighlight();
 
     QPlainTextEdit *mQueryEdit = nullptr;
     QLabel *mStatusLabel = nullptr;
     QLabel *mHelpLabel = nullptr;
-    /// Only OK is tracked: Cancel needs no state changes, so it is
-    /// wired straight to `QDialog::reject` at construction.
     QPushButton *mOkButton = nullptr;
     std::optional<loglib::FilterExpression> mCachedResult;
 };
