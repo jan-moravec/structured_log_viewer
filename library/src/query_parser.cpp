@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cerrno>
 #include <charconv>
 #include <cmath>
 #include <cstddef>
@@ -622,17 +623,48 @@ private:
 
 /// Parse @p text as a numeric range bound. `nullopt` when malformed;
 /// the range-parser then re-tries the bound as an ISO timestamp.
+///
+/// Uses `std::strtod` (not `std::from_chars(double)`) because Apple
+/// Clang's libc++ does not implement the floating-point overload of
+/// `std::from_chars` yet. `std::strtod` accepts C locale-independent
+/// leading whitespace / signs / hex; we reject leading whitespace
+/// and hex prefixes up front so the grammar stays what the parser
+/// tests pin (`col > 42`, `col = -1.5`, `col IN [1e3..2e3]`).
 [[nodiscard]] std::optional<double> ParseDouble(std::string_view text) noexcept
 {
     if (text.empty())
     {
         return std::nullopt;
     }
-    double value = 0.0;
-    const char *first = text.data();
-    const char *last = text.data() + text.size();
-    const auto result = std::from_chars(first, last, value);
-    if (result.ec != std::errc{} || result.ptr != last)
+    // Guard against `std::strtod`'s permissive prefixes: bare
+    // whitespace, hex (`0x` / `0X`), or a trailing null in the middle
+    // of the range must all fail parse, matching the previous
+    // `std::from_chars` semantics.
+    const unsigned char firstChar = static_cast<unsigned char>(text.front());
+    if (std::isspace(firstChar) != 0)
+    {
+        return std::nullopt;
+    }
+    if (text.size() >= 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X'))
+    {
+        return std::nullopt;
+    }
+    if (text.contains('\0'))
+    {
+        return std::nullopt;
+    }
+    // `std::strtod` requires a NUL-terminated buffer; copy into a
+    // stack `std::string` (short in every realistic parser input).
+    const std::string nulTerminated(text);
+    const char *first = nulTerminated.c_str();
+    char *end = nullptr;
+    errno = 0;
+    const double value = std::strtod(first, &end);
+    if (end == nullptr || end != first + nulTerminated.size())
+    {
+        return std::nullopt;
+    }
+    if (errno == ERANGE)
     {
         return std::nullopt;
     }
@@ -1459,8 +1491,8 @@ private:
                 return std::unexpected(err);
             }
             rule.type = LeafRule::Type::Number;
-            rule.filterMinValue = *value;
-            rule.filterMaxValue = *value;
+            rule.filterMinValue = value;
+            rule.filterMaxValue = value;
             if (auto ok = Advance(); !ok.has_value())
             {
                 return std::unexpected(ok.error());
@@ -1534,13 +1566,13 @@ private:
                 rule.filterBegin = *asTimestamp + 1;
                 break;
             case TokenKind::GtEq:
-                rule.filterBegin = *asTimestamp;
+                rule.filterBegin = asTimestamp;
                 break;
             case TokenKind::Lt:
                 rule.filterEnd = *asTimestamp - 1;
                 break;
             case TokenKind::LtEq:
-                rule.filterEnd = *asTimestamp;
+                rule.filterEnd = asTimestamp;
                 break;
             default:
                 break;
@@ -1558,13 +1590,13 @@ private:
                 rule.filterMinValue = std::nextafter(*asNumber, std::numeric_limits<double>::infinity());
                 break;
             case TokenKind::GtEq:
-                rule.filterMinValue = *asNumber;
+                rule.filterMinValue = asNumber;
                 break;
             case TokenKind::Lt:
                 rule.filterMaxValue = std::nextafter(*asNumber, -std::numeric_limits<double>::infinity());
                 break;
             case TokenKind::LtEq:
-                rule.filterMaxValue = *asNumber;
+                rule.filterMaxValue = asNumber;
                 break;
             default:
                 break;
@@ -1689,13 +1721,13 @@ private:
             const auto asTs = ParseIsoTimestamp(tok.text);
             if (asTs.has_value())
             {
-                ts = *asTs;
+                ts = asTs;
                 return true;
             }
             const auto asNum = ParseDouble(tok.text);
             if (asNum.has_value())
             {
-                num = *asNum;
+                num = asNum;
                 return true;
             }
             return false;
@@ -1821,15 +1853,15 @@ private:
             if (const auto asTs = ParseIsoTimestamp(only); asTs.has_value())
             {
                 rule.type = LeafRule::Type::Time;
-                rule.filterBegin = *asTs;
-                rule.filterEnd = *asTs;
+                rule.filterBegin = asTs;
+                rule.filterEnd = asTs;
                 rule.filterValues.clear();
             }
             else if (const auto asNum = ParseDouble(only); asNum.has_value())
             {
                 rule.type = LeafRule::Type::Number;
-                rule.filterMinValue = *asNum;
-                rule.filterMaxValue = *asNum;
+                rule.filterMinValue = asNum;
+                rule.filterMaxValue = asNum;
                 rule.filterValues.clear();
             }
             else

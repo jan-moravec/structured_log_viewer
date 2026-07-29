@@ -241,6 +241,12 @@ using RowPredicate = std::variant<
 /// Move-only in practice (`EnumRowPredicate` is move-only, so
 /// callers move rather than copy). Evaluation is read-only, safe
 /// from `tbb::parallel_for` in `FilterAcceptedRows`.
+///
+/// clang-tidy suppression: `misc-non-private-member-variables-in-classes`
+/// -- the alternatives are transparent data holders that the
+/// evaluator, compiler, and tests read / write directly by field
+/// name. Same treatment as `FilterExpression`.
+// NOLINTBEGIN(misc-non-private-member-variables-in-classes)
 struct CompiledFilterExpression
 {
     struct Leaf
@@ -297,6 +303,7 @@ struct CompiledFilterExpression
     CompiledFilterExpression &operator=(CompiledFilterExpression &&) noexcept = default;
     ~CompiledFilterExpression() = default;
 };
+// NOLINTEND(misc-non-private-member-variables-in-classes)
 
 /// Short-circuiting per-row evaluator. Empty `And` = true, empty
 /// `Or` = false, `Not` inverts, `And`/`Or` stop at the first

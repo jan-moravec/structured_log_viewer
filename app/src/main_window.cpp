@@ -115,6 +115,57 @@
 namespace
 {
 
+/// Walk @p expression and return true iff any leaf's `columnKeys`
+/// currently fails to resolve against @p columns. Used as a gate
+/// on `columnsInserted`: a new column can never *change* a leaf's
+/// resolution (`ResolveLeafColumnByKeys` returns the first match
+/// and columns are append-only), so a rebuild is only necessary
+/// when some leaf was previously inert and might newly bind.
+///
+/// A leaf with empty `columnKeys` counts as unresolved (it will
+/// stay unresolved regardless), but the `columnsInserted` slot
+/// still short-circuits on the same "no bind change possible"
+/// invariant -- we err on the safe side and treat any inert leaf
+/// as a reason to recompile, matching the pre-existing behaviour
+/// on config load.
+// NOLINTNEXTLINE(misc-no-recursion): mutually recursive with std::visit lambdas below.
+[[nodiscard]] bool FilterHasUnresolvedLeaves(
+    const loglib::FilterExpression &expression, const std::vector<loglib::LogConfiguration::Column> &columns
+)
+{
+    return std::visit(
+        [&columns]<class N>(const N &node) -> bool {
+            if constexpr (std::is_same_v<N, loglib::FilterExpression::Leaf>)
+            {
+                return ResolveLeafColumnByKeys(node.rule.columnKeys, columns) < 0;
+            }
+            else if constexpr (
+                std::is_same_v<N, loglib::FilterExpression::And> || std::is_same_v<N, loglib::FilterExpression::Or>
+            )
+            {
+                // NOLINTNEXTLINE(misc-no-recursion)
+                return std::ranges::any_of(node.children, [&columns](const loglib::FilterExpression &child) {
+                    return FilterHasUnresolvedLeaves(child, columns);
+                });
+            }
+            else if constexpr (std::is_same_v<N, loglib::FilterExpression::Not>)
+            {
+                if (node.child == nullptr)
+                {
+                    return false;
+                }
+                // NOLINTNEXTLINE(misc-no-recursion)
+                return FilterHasUnresolvedLeaves(*node.child, columns);
+            }
+            else
+            {
+                return false;
+            }
+        },
+        expression.node
+    );
+}
+
 /// Format a millisecond-epoch timestamp as a "N time ago" string
 /// for the Recent Sessions tooltip. Empty for non-positive
 /// timestamps (legacy entries written before stamping was added).
@@ -649,8 +700,8 @@ MainWindow::MainWindow(
 )
     : QMainWindow(parent),
       ui(new Ui::MainWindow),
-      mHistoryManager(historyManager),
       mTheme(theme),
+      mHistoryManager(historyManager),
       mRegexTemplateRegistry(regexTemplateRegistry)
 {
     ui->setupUi(this);
@@ -707,11 +758,18 @@ MainWindow::MainWindow(
         {
             mHighlightRulesEditor->SetColumns(mModel->Configuration().columns);
         }
-        // Recompile the filter tree against the new column vector.
-        // A leaf whose keys just resolved (or whose stored column
-        // index shifted) needs `mCompiledExpression.referencedColumns`
-        // refreshed for the `dataChanged` fast-path to fire.
-        UpdateFilters();
+        // Only recompile the filter tree when a leaf's resolution
+        // could actually change. Column additions are append-only
+        // in the streaming path, and `ResolveLeafColumnByKeys`
+        // returns the first match, so previously-resolved leaves
+        // stay resolved to the same column index. The gate skips
+        // an otherwise-guaranteed `layoutChanged` rebuild on filter
+        // models whose leaves are all already bound; pinned by
+        // `TestEnumPromotedOnUnrelatedColumnDoesNotRebuildFilters`.
+        if (FilterHasUnresolvedLeaves(mModel->Configuration().expression, mModel->Configuration().columns))
+        {
+            UpdateFilters();
+        }
     });
     connect(mModel, &QAbstractItemModel::modelReset, this, [this]() {
         if (mHighlights != nullptr)
@@ -8725,20 +8783,19 @@ QMenu *MainWindow::BuildRowContextMenu(int sourceRow, QWidget *parent)
         // `timeKeys` is captured by reference here (the local outlives
         // every synchronous call below), then copied into the connect
         // lambda which is invoked asynchronously.
-        auto addRangeAction = [this, menu, &timeKeys, boundary](
-                                  const QString &label, std::optional<qint64> begin, std::optional<qint64> end
-                              ) {
-            const QAction *action = menu->addAction(label);
-            // NOLINTNEXTLINE(bugprone-exception-escape)
-            connect(action, &QAction::triggered, this, [this, timeKeys, begin, end]() {
-                const int col = FindColumnIndexByKeys(timeKeys);
-                if (col < 0)
-                {
-                    return;
-                }
-                FilterTimeStampSubmitted(QUuid::createUuid().toString(), col, begin, end);
-            });
-        };
+        auto addRangeAction =
+            [this, menu, &timeKeys](const QString &label, std::optional<qint64> begin, std::optional<qint64> end) {
+                const QAction *action = menu->addAction(label);
+                // NOLINTNEXTLINE(bugprone-exception-escape)
+                connect(action, &QAction::triggered, this, [this, timeKeys, begin, end]() {
+                    const int col = FindColumnIndexByKeys(timeKeys);
+                    if (col < 0)
+                    {
+                        return;
+                    }
+                    FilterTimeStampSubmitted(QUuid::createUuid().toString(), col, begin, end);
+                });
+            };
 
         addRangeAction(tr("Show only newer logs (%1)").arg(colLabel), boundary, std::nullopt);
         addRangeAction(tr("Show only older logs (%1)").arg(colLabel), std::nullopt, boundary);

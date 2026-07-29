@@ -92,6 +92,18 @@ struct LeafRule
 ///
 /// `Not::child` is a `unique_ptr` so the type is complete at
 /// instantiation time and stays movable.
+///
+/// clang-tidy suppressions:
+///   * `misc-non-private-member-variables-in-classes` -- the four
+///     alternatives are transparent data holders; Glaze meta and
+///     every consumer reads / writes fields by name.
+///   * `misc-no-recursion` -- `FilterExpression` recursively contains
+///     `And{children}`, `Or{children}`, `Not{child}`, so every
+///     defaulted `operator==` and the `Not` copy ctor/assign chain
+///     through themselves. That is the desired behaviour; the check
+///     has no per-file gate we can use to distinguish "structural
+///     recursion" from "unbounded stack recursion".
+// NOLINTBEGIN(misc-non-private-member-variables-in-classes,misc-no-recursion)
 struct FilterExpression
 {
     struct Leaf
@@ -162,6 +174,7 @@ struct FilterExpression
 
     friend bool operator==(const FilterExpression &, const FilterExpression &) = default;
 };
+// NOLINTEND(misc-non-private-member-variables-in-classes,misc-no-recursion)
 
 /// True iff @p expr is an empty `And` (matches every row).
 [[nodiscard]] inline bool IsMatchAll(const FilterExpression &expr) noexcept
