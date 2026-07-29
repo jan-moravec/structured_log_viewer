@@ -176,6 +176,10 @@ namespace
 [[nodiscard]] inline std::vector<loglib::LeafRule> AllLeavesOf(const loglib::FilterExpression &expression)
 {
     std::vector<loglib::LeafRule> out;
+    // The lambda calls itself via the `self`-parameter trick to
+    // walk the boolean AST recursively; misc-no-recursion has no
+    // way to reason about `auto` self-parameters, hence the NOLINT.
+    // NOLINTNEXTLINE(misc-no-recursion)
     const auto visit = [&out](const loglib::FilterExpression &node, const auto &self) -> void {
         if (const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&node.node); leaf != nullptr)
         {
@@ -7832,7 +7836,7 @@ private slots:
         AdvancedFilterEditor editor;
 
         // Default-constructed = match all -> empty field.
-        loglib::FilterExpression matchAll;
+        const loglib::FilterExpression matchAll;
         editor.LoadFromExpression(matchAll);
         QCoreApplication::processEvents();
         QCOMPARE(editor.QueryText(), QString());
@@ -11625,7 +11629,7 @@ private slots:
         std::vector<loglib::FilterExpression> orChildren;
         orChildren.push_back(std::move(notLeaf));
         orChildren.push_back(std::move(enumLeaf));
-        loglib::FilterExpression advancedTree = loglib::MakeOr(std::move(orChildren));
+        const loglib::FilterExpression advancedTree = loglib::MakeOr(std::move(orChildren));
 
         // Install the Advanced tree exactly as `OpenAdvancedFilter`
         // would after the user clicks OK.
@@ -11848,7 +11852,7 @@ private slots:
 
         // Install a `NOT msg:m1` Advanced tree exactly as
         // `OpenAdvancedFilter` would after user commit.
-        loglib::FilterExpression advancedTree = loglib::MakeNot(loglib::MakeLeaf(loglib::LeafRule{
+        const loglib::FilterExpression advancedTree = loglib::MakeNot(loglib::MakeLeaf(loglib::LeafRule{
             .type = loglib::LeafRule::Type::String,
             .columnKeys = msgKeys,
             .matchType = loglib::LeafRule::Match::Contains,
@@ -11919,7 +11923,7 @@ private slots:
 
         // Simulate the user typing `msg:m1` and clicking OK. `Result`
         // is a bare `Leaf` -- the shape the pre-fix branch dropped.
-        loglib::FilterExpression bareLeaf = loglib::MakeLeaf(loglib::LeafRule{
+        const loglib::FilterExpression bareLeaf = loglib::MakeLeaf(loglib::LeafRule{
             .type = loglib::LeafRule::Type::String,
             .columnKeys = msgKeys,
             .matchType = loglib::LeafRule::Match::Contains,
@@ -12196,7 +12200,15 @@ private slots:
         QVERIFY2(clearAction != nullptr, "MainWindow must own actionClearAllFilters");
 
         // Precondition: button hidden, action disabled with no filter.
+        //
+        // clang-analyzer-core.CallAndMessage sees `button` reach
+        // this line while still `nullptr` (the preceding QVERIFY2
+        // is a macro that expands to an early-return, but the
+        // analyzer models both branches). Suppressed because the
+        // macro's contract is "return on failure" and the test
+        // would abort long before the deref otherwise.
         QCoreApplication::processEvents();
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage)
         QVERIFY2(button->isHidden(), "clear-filters button must start hidden");
         QVERIFY2(!clearAction->isEnabled(), "clear-all action must start disabled");
 
@@ -12333,7 +12345,7 @@ private slots:
 
         // Install a `NOT msg:m1` Advanced tree exactly as
         // `OpenAdvancedFilter` would after user commit.
-        loglib::FilterExpression advancedTree = loglib::MakeNot(loglib::MakeLeaf(loglib::LeafRule{
+        const loglib::FilterExpression advancedTree = loglib::MakeNot(loglib::MakeLeaf(loglib::LeafRule{
             .type = loglib::LeafRule::Type::String,
             .columnKeys = msgKeys,
             .matchType = loglib::LeafRule::Match::Contains,

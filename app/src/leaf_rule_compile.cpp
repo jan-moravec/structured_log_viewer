@@ -255,6 +255,10 @@ namespace
 /// accept set -- `svc:auth OR NOT missing:x` would show every row.
 /// Sibling `And` cases collapse to the same result either way, so
 /// the `Or` case is the one that pins the choice.
+// Recursive AST compiler; misc-no-recursion is suppressed on both
+// the entry point and the visitor lambda so each per-arm
+// specialisation (And / Or / Not) doesn't get flagged individually.
+// NOLINTNEXTLINE(misc-no-recursion)
 std::optional<loglib::CompiledFilterExpression> CompileNode(
     const loglib::FilterExpression &expr,
     const std::vector<loglib::LogConfiguration::Column> &columns,
@@ -264,6 +268,7 @@ std::optional<loglib::CompiledFilterExpression> CompileNode(
 {
     using Node = loglib::FilterExpression;
     return std::visit(
+        // NOLINTNEXTLINE(misc-no-recursion)
         [&columns, &table, &referencedColumns](const auto &n) -> std::optional<loglib::CompiledFilterExpression> {
             using T = std::decay_t<decltype(n)>;
             if constexpr (std::is_same_v<T, Node::Leaf>)

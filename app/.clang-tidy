@@ -26,6 +26,15 @@
 #        `readability-*` and `cppcoreguidelines-*`.
 #   -readability-convert-member-functions-to-static:
 #        Qt slots / signals / overrides must stay non-static for moc.
+#   -clang-analyzer-optin.core.EnumCastOutOfRange:
+#        Fires transitively through MSVC's `<filesystem>` internals
+#        (`_BITMASK_OPS(__std_fs_stats_flags)` performs a cast that
+#        is out-of-range for the four named enumerators). The bug is
+#        in the STL's own bitmask macro, header-filter's negative
+#        lookahead isn't supported by llvm::Regex, and NOLINT can't
+#        annotate lines inside `<xfilesystem_abi.h>`. Any user code
+#        touching `std::filesystem` (decompression, file-open, etc.)
+#        reproduces the trace, so the whole check is disabled here.
 
 InheritParentConfig: true
 
@@ -34,7 +43,8 @@ Checks: >
   -cppcoreguidelines-prefer-member-initializer,
   -readability-redundant-access-specifiers,
   -cppcoreguidelines-redundant-access-specifiers,
-  -readability-convert-member-functions-to-static
+  -readability-convert-member-functions-to-static,
+  -clang-analyzer-optin.core.EnumCastOutOfRange
 
 CheckOptions:
   - { key: readability-identifier-naming.PublicMethodCase, value: aNy_CasE }

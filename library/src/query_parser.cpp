@@ -9,9 +9,9 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <cstdlib>
 #include <expected>
+#include <format>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -30,6 +30,59 @@ namespace loglib
 
 namespace
 {
+
+// ---- ISO-8601 / calendar-arithmetic constants -----------------------------
+//
+// Extracted so the surrounding parse / format helpers stop
+// tripping cppcoreguidelines-avoid-magic-numbers on every digit
+// position, month index, or scale factor. Grouped by the concept
+// they describe rather than by the literal value.
+
+/// Length of the bare `YYYY-MM-DD` prefix and character positions
+/// of the mandatory separators / digit fields inside it.
+constexpr std::size_t ISO_DATE_LEN = 10;
+constexpr std::size_t ISO_YEAR_LEN = 4;
+constexpr std::size_t ISO_MONTH_DIGIT_POS = 5;
+constexpr std::size_t ISO_MONTH_LAST_DIGIT_POS = 6;
+constexpr std::size_t ISO_MONTH_DAY_DASH_POS = 7;
+constexpr std::size_t ISO_DAY_DIGIT_POS = 8;
+constexpr std::size_t ISO_DAY_LAST_DIGIT_POS = 9;
+/// Length of `HH:MM` -- the minimum shape of a time-of-day tail
+/// after the `T`/space separator.
+constexpr std::size_t ISO_TIME_HHMM_LEN = 5;
+
+/// Calendar / clock ranges (upper bound is inclusive unless noted).
+constexpr int MONTHS_PER_YEAR = 12;
+constexpr int FEB_DAYS_LEAP = 29;
+constexpr int FEB_DAYS_NORMAL = 28;
+constexpr int HOUR_MAX_INCLUSIVE = 24;   // ISO end-of-day `24:00:00`
+constexpr int MINUTE_MAX_INCLUSIVE = 59;
+constexpr int SECOND_MAX_INCLUSIVE = 60; // ISO leap second `:60`
+constexpr int TZ_HOUR_MAX_INCLUSIVE = 23;
+
+/// Time-unit conversions and civil-date arithmetic.
+constexpr int DECIMAL_BASE = 10;
+constexpr int SECONDS_PER_MINUTE = 60;
+constexpr int SECONDS_PER_HOUR = 3600;
+constexpr std::int64_t MICROS_PER_SECOND = 1'000'000;
+/// Upper bound on the fractional-seconds `denom` accumulator; once
+/// crossed we've already captured >= microsecond precision and any
+/// further digits are dropped without changing the result.
+constexpr std::int64_t MICROS_DENOM_CAP = 10'000'000;
+
+/// Range accepted by the pretty printer -- outside `[0, 9999]`
+/// there's no plain ISO spelling in this grammar, so the printer
+/// falls back to the `epoch_micros:N` marker.
+constexpr int ISO_YEAR_MAX = 9999;
+
+/// `days_from_civil` / `civil_from_days` epoch constant from Howard
+/// Hinnant's date algorithms (days between 0000-03-01 and the UNIX
+/// epoch 1970-01-01).
+constexpr std::int64_t CIVIL_DAYS_EPOCH_OFFSET = 719468;
+
+/// Scratch buffer for `std::to_chars(double)`: 64 bytes fits every
+/// shortest-form output with slack.
+constexpr std::size_t NUMBER_TO_CHARS_BUFFER_SIZE = 64;
 
 /// Tokens emitted by the lexer.
 enum class TokenKind : std::uint8_t
@@ -358,36 +411,42 @@ private:
     /// Same shape family as `ParseIsoTimestamp` (bare date,
     /// date+T+time, optional fraction / TZ). Returns `nullopt` when
     /// no match, so the caller falls back to `LexNumber`.
-    [[nodiscard]] std::optional<Token> TryLexIsoTimestamp() noexcept
+    ///
+    /// Not `noexcept`: the successful path constructs a
+    /// `std::string` from the matched substring, which can throw
+    /// `bad_alloc`. Caller (`NextToken`) is not `noexcept` either,
+    /// so the exception propagates naturally to the parser's
+    /// error surface.
+    [[nodiscard]] std::optional<Token> TryLexIsoTimestamp()
     {
         // Need at least `YYYY-MM-DD` = 10 bytes.
-        if (mPos + 10 > mInput.size())
+        if (mPos + ISO_DATE_LEN > mInput.size())
         {
             return std::nullopt;
         }
-        for (std::size_t i = 0; i < 4; ++i)
+        for (std::size_t i = 0; i < ISO_YEAR_LEN; ++i)
         {
             if (std::isdigit(static_cast<unsigned char>(mInput[mPos + i])) == 0)
             {
                 return std::nullopt;
             }
         }
-        if (mInput[mPos + 4] != '-')
+        if (mInput[mPos + ISO_YEAR_LEN] != '-')
         {
             return std::nullopt;
         }
-        for (std::size_t i = 5; i <= 6; ++i)
+        for (std::size_t i = ISO_MONTH_DIGIT_POS; i <= ISO_MONTH_LAST_DIGIT_POS; ++i)
         {
             if (std::isdigit(static_cast<unsigned char>(mInput[mPos + i])) == 0)
             {
                 return std::nullopt;
             }
         }
-        if (mInput[mPos + 7] != '-')
+        if (mInput[mPos + ISO_MONTH_DAY_DASH_POS] != '-')
         {
             return std::nullopt;
         }
-        for (std::size_t i = 8; i <= 9; ++i)
+        for (std::size_t i = ISO_DAY_DIGIT_POS; i <= ISO_DAY_LAST_DIGIT_POS; ++i)
         {
             if (std::isdigit(static_cast<unsigned char>(mInput[mPos + i])) == 0)
             {
@@ -395,13 +454,13 @@ private:
             }
         }
         const std::size_t start = mPos;
-        std::size_t cursor = mPos + 10;
+        std::size_t cursor = mPos + ISO_DATE_LEN;
         // Optional time part: `T` or ` ` followed by `HH:MM(:SS)?(.frac)?(TZ)?`.
         if (cursor < mInput.size() && (mInput[cursor] == 'T' || mInput[cursor] == ' '))
         {
             const std::size_t timeStart = cursor;
             ++cursor;
-            if (cursor + 5 > mInput.size() ||
+            if (cursor + ISO_TIME_HHMM_LEN > mInput.size() ||
                 std::isdigit(static_cast<unsigned char>(mInput[cursor])) == 0 ||
                 std::isdigit(static_cast<unsigned char>(mInput[cursor + 1])) == 0 || mInput[cursor + 2] != ':' ||
                 std::isdigit(static_cast<unsigned char>(mInput[cursor + 3])) == 0 ||
@@ -412,7 +471,7 @@ private:
             }
             else
             {
-                cursor += 5;
+                cursor += ISO_TIME_HHMM_LEN;
                 if (cursor + 2 < mInput.size() && mInput[cursor] == ':' &&
                     std::isdigit(static_cast<unsigned char>(mInput[cursor + 1])) != 0 &&
                     std::isdigit(static_cast<unsigned char>(mInput[cursor + 2])) != 0)
@@ -599,15 +658,21 @@ private:
 /// Proleptic-Gregorian length of @p month (1-based) in @p year.
 [[nodiscard]] int DaysInMonth(int year, int month) noexcept
 {
-    constexpr std::array<int, 12> LENGTHS{31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-    if (month < 1 || month > 12)
+    // Days per month for the non-February cases; February varies
+    // with the leap-year check below.
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
+    constexpr std::array<int, MONTHS_PER_YEAR> LENGTHS{31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (month < 1 || month > MONTHS_PER_YEAR)
     {
         return 0;
     }
     if (month == 2)
     {
+        // Gregorian leap-year rule: divisible by 4 except centuries
+        // that aren't divisible by 400.
+        // NOLINTNEXTLINE(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
         const bool leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
-        return leap ? 29 : 28;
+        return leap ? FEB_DAYS_LEAP : FEB_DAYS_NORMAL;
     }
     return LENGTHS[static_cast<std::size_t>(month - 1)];
 }
@@ -621,11 +686,11 @@ private:
     {
         return std::nullopt;
     }
-    if (text.size() < 10)
+    if (text.size() < ISO_DATE_LEN)
     {
         return std::nullopt;
     }
-    if (text[4] != '-')
+    if (text[ISO_YEAR_LEN] != '-')
     {
         return std::nullopt;
     }
@@ -643,29 +708,29 @@ private:
             {
                 return std::nullopt;
             }
-            out = (out * 10) + (ch - '0');
+            out = (out * DECIMAL_BASE) + (ch - '0');
         }
         return out;
     };
 
-    const auto year = readInt(text, 0, 4);
-    const auto month = readInt(text, 5, 2);
+    const auto year = readInt(text, 0, ISO_YEAR_LEN);
+    const auto month = readInt(text, ISO_MONTH_DIGIT_POS, 2);
     if (!year.has_value() || !month.has_value())
     {
         return std::nullopt;
     }
-    if (text.size() < 10 || text[7] != '-')
+    if (text.size() < ISO_DATE_LEN || text[ISO_MONTH_DAY_DASH_POS] != '-')
     {
         return std::nullopt;
     }
-    const auto day = readInt(text, 8, 2);
+    const auto day = readInt(text, ISO_DAY_DIGIT_POS, 2);
     if (!day.has_value())
     {
         return std::nullopt;
     }
     // Reject out-of-range fields; the civil-from-fields formula
     // below would silently roll `2024-13-45` over to `2025-02-14`.
-    if (*month < 1 || *month > 12 || *day < 1 || *day > DaysInMonth(*year, *month))
+    if (*month < 1 || *month > MONTHS_PER_YEAR || *day < 1 || *day > DaysInMonth(*year, *month))
     {
         return std::nullopt;
     }
@@ -675,7 +740,7 @@ private:
     int second = 0;
     std::int64_t fractionalMicros = 0;
     std::int64_t offsetSeconds = 0;
-    std::size_t cursor = 10;
+    std::size_t cursor = ISO_DATE_LEN;
     if (cursor < text.size() && (text[cursor] == 'T' || text[cursor] == ' '))
     {
         ++cursor;
@@ -708,8 +773,8 @@ private:
         // (`:60`) -- both roll over cleanly below. Reject anything
         // past `24:00:00` so `24:00:00.5` doesn't silently become
         // `00:00:00.5` of the next day.
-        if (hour > 24 || minute > 59 || second > 60 ||
-            (hour == 24 && (minute != 0 || second != 0)))
+        if (hour > HOUR_MAX_INCLUSIVE || minute > MINUTE_MAX_INCLUSIVE || second > SECOND_MAX_INCLUSIVE ||
+            (hour == HOUR_MAX_INCLUSIVE && (minute != 0 || second != 0)))
         {
             return std::nullopt;
         }
@@ -719,10 +784,10 @@ private:
             std::int64_t fractional = 0;
             std::int64_t denom = 1;
             while (cursor < text.size() && (std::isdigit(static_cast<unsigned char>(text[cursor])) != 0) &&
-                   denom < 10'000'000)
+                   denom < MICROS_DENOM_CAP)
             {
-                fractional = (fractional * 10) + (text[cursor] - '0');
-                denom *= 10;
+                fractional = (fractional * DECIMAL_BASE) + (text[cursor] - '0');
+                denom *= DECIMAL_BASE;
                 ++cursor;
             }
             // Ignore any trailing digits past microsecond precision.
@@ -731,9 +796,9 @@ private:
                 ++cursor;
             }
             // Scale fractional up to microseconds.
-            fractionalMicros = (fractional * 1'000'000) / denom;
+            fractionalMicros = (fractional * MICROS_PER_SECOND) / denom;
             // Same reason as above: reject `24:00:00.5`.
-            if (hour == 24 && fractionalMicros != 0)
+            if (hour == HOUR_MAX_INCLUSIVE && fractionalMicros != 0)
             {
                 return std::nullopt;
             }
@@ -782,11 +847,11 @@ private:
                     tzM = *tzMinutes;
                     cursor += 2;
                 }
-                if (*tzH > 23 || tzM > 59)
+                if (*tzH > TZ_HOUR_MAX_INCLUSIVE || tzM > MINUTE_MAX_INCLUSIVE)
                 {
                     return std::nullopt;
                 }
-                offsetSeconds = sign * ((*tzH * 3600) + (tzM * 60));
+                offsetSeconds = sign * ((*tzH * SECONDS_PER_HOUR) + (tzM * SECONDS_PER_MINUTE));
             }
         }
     }
@@ -800,7 +865,7 @@ private:
     const long long era = (y >= 0 ? y : y - 399) / 400;
     const auto yoe = static_cast<unsigned long long>(y - (era * 400));
     const long long m = *month;
-    const unsigned long long doy =
+    const auto doy =
         static_cast<unsigned long long>((((153LL * (m + ((m > 2) ? -3 : 9))) + 2) / 5) + (*day - 1));
     const unsigned long long doe = (yoe * 365) + (yoe / 4) - (yoe / 100) + doy;
     const long long daysSinceEpoch = (era * 146097) + static_cast<long long>(doe) - 719468;
@@ -904,14 +969,13 @@ private:
 /// `std::to_chars`, locale-free).
 [[nodiscard]] std::string FormatNumber(double value)
 {
-    // 64 bytes fits any `to_chars(double)` shortest form with slack.
-    std::array<char, 64> buffer{};
+    std::array<char, NUMBER_TO_CHARS_BUFFER_SIZE> buffer{};
     const auto result = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
     if (result.ec != std::errc{})
     {
         return std::to_string(value);
     }
-    return std::string(buffer.data(), static_cast<std::size_t>(result.ptr - buffer.data()));
+    return {buffer.data(), static_cast<std::size_t>(result.ptr - buffer.data())};
 }
 
 /// Calendar fields for a day count relative to the UNIX epoch.
@@ -927,7 +991,7 @@ struct CivilDate
 /// across the whole `int64_t` range including negative days.
 [[nodiscard]] CivilDate CivilFromDays(std::int64_t z) noexcept
 {
-    z += 719468;
+    z += CIVIL_DAYS_EPOCH_OFFSET;
     const std::int64_t era = (z >= 0 ? z : z - 146096) / 146097;
     const auto doe = static_cast<std::uint64_t>(z - (era * 146097));           // [0, 146096]
     const std::uint64_t yoe =                                                  // [0, 399]
@@ -961,12 +1025,12 @@ struct CivilDate
     // second (otherwise `-500'000` renders as
     // `1970-01-01T00:00:00.500000Z` instead of the correct
     // `1969-12-31T23:59:59.500000Z`.
-    std::int64_t totalSeconds = micros / 1'000'000;
-    std::int64_t microRemainder = micros % 1'000'000;
+    std::int64_t totalSeconds = micros / MICROS_PER_SECOND;
+    std::int64_t microRemainder = micros % MICROS_PER_SECOND;
     if (microRemainder < 0)
     {
         totalSeconds -= 1;
-        microRemainder += 1'000'000;
+        microRemainder += MICROS_PER_SECOND;
     }
 
     // Floor-divide into days + seconds-of-day so pre-epoch values
@@ -981,20 +1045,20 @@ struct CivilDate
     }
 
     const CivilDate date = CivilFromDays(days);
-    if (date.year < 0 || date.year > 9999)
+    if (date.year < 0 || date.year > ISO_YEAR_MAX)
     {
         return "epoch_micros:" + std::to_string(micros);
     }
 
-    const auto hour = static_cast<int>(secondOfDay / 3600);
-    const auto minute = static_cast<int>((secondOfDay % 3600) / 60);
-    const auto second = static_cast<int>(secondOfDay % 60);
+    const auto hour = static_cast<int>(secondOfDay / SECONDS_PER_HOUR);
+    const auto minute = static_cast<int>((secondOfDay % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE);
+    const auto second = static_cast<int>(secondOfDay % SECONDS_PER_MINUTE);
 
-    std::array<char, 40> buffer{};
-    const int written = std::snprintf(
-        buffer.data(),
-        buffer.size(),
-        "%04d-%02u-%02uT%02d:%02d:%02d.%06dZ",
+    // `std::format` avoids the C-varargs `snprintf` (silences
+    // cppcoreguidelines-pro-type-vararg) and hard-caps the buffer
+    // to whatever `[0, ISO_YEAR_MAX]` produces.
+    return std::format(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}Z",
         static_cast<int>(date.year),
         date.month,
         date.day,
@@ -1003,11 +1067,6 @@ struct CivilDate
         second,
         static_cast<int>(microRemainder)
     );
-    if (written <= 0)
-    {
-        return "epoch_micros:" + std::to_string(micros);
-    }
-    return std::string(buffer.data(), static_cast<std::size_t>(written));
 }
 
 // ---- Parser ----------------------------------------------------------------
@@ -1076,6 +1135,13 @@ private:
     }
 
     /// `or_expr := and_expr ( 'OR' and_expr )*`
+    ///
+    /// The four `ParseOr` / `ParseAnd` / `ParseNot` / `ParseAtom`
+    /// members form a mutually-recursive descent parser; the
+    /// misc-no-recursion suppression is here (and on the three
+    /// members below) rather than at the parser entry point so the
+    /// grammar shape stays obvious.
+    // NOLINTNEXTLINE(misc-no-recursion)
     [[nodiscard]] std::expected<FilterExpression, QueryParseError> ParseOr()
     {
         auto first = ParseAnd();
@@ -1107,6 +1173,7 @@ private:
 
     /// `and_expr := not_expr ( ('AND' | epsilon) not_expr )*`
     /// Implicit-AND fires when the next token can start a new atom.
+    // NOLINTNEXTLINE(misc-no-recursion)
     [[nodiscard]] std::expected<FilterExpression, QueryParseError> ParseAnd()
     {
         auto first = ParseNot();
@@ -1162,6 +1229,7 @@ private:
     }
 
     /// `not_expr := 'NOT' not_expr | atom`
+    // NOLINTNEXTLINE(misc-no-recursion)
     [[nodiscard]] std::expected<FilterExpression, QueryParseError> ParseNot()
     {
         if (mLookahead.kind == TokenKind::KwNot)
@@ -1181,6 +1249,7 @@ private:
     }
 
     /// `atom := '(' or_expr ')' | leaf`
+    // NOLINTNEXTLINE(misc-no-recursion)
     [[nodiscard]] std::expected<FilterExpression, QueryParseError> ParseAtom()
     {
         if (mLookahead.kind == TokenKind::LParen)
@@ -1646,6 +1715,13 @@ private:
             err.message = "range upper bound must be a number or ISO timestamp";
             return std::unexpected(err);
         }
+        // Both diagnostics below fire only when `secondTok` was
+        // successfully classified (its parsed value populated
+        // `tsMax` / `numMax`), so its offset is always available.
+        // `value_or` keeps clang-tidy's bugprone-unchecked-optional
+        // -access analysis happy without adding a branch clang can
+        // constant-fold away.
+        const auto secondOffset = secondTok.has_value() ? secondTok->offset : std::size_t{0};
         // Reject mixed-type bounds up-front. Otherwise the "Time or
         // Number" branch below picks Time and silently drops the
         // numeric bound (a hidden half-open range).
@@ -1653,7 +1729,7 @@ private:
             (numMin.has_value() && tsMax.has_value()))
         {
             QueryParseError err;
-            err.offset = secondTok->offset;
+            err.offset = secondOffset;
             err.message = "range bounds must both be numeric or both be ISO timestamps";
             return std::unexpected(err);
         }
@@ -1664,7 +1740,7 @@ private:
         if (invertedTime || invertedNumber)
         {
             QueryParseError err;
-            err.offset = secondTok->offset;
+            err.offset = secondOffset;
             err.message = "range upper bound is below the lower bound";
             return std::unexpected(err);
         }
@@ -1957,6 +2033,11 @@ void AppendLeaf(const LeafRule &rule, std::string &out)
     }
 }
 
+// `AppendAnd` / `AppendOr` / `AppendNot` / `AppendExpression` form
+// a mutually-recursive AST walker; misc-no-recursion is silenced on
+// each entry point so the visitor lambda specialisations don't get
+// individually flagged.
+// NOLINTNEXTLINE(misc-no-recursion)
 void AppendAnd(const FilterExpression::And &node, Precedence parent, std::string &out)
 {
     if (node.children.empty())
@@ -1986,6 +2067,7 @@ void AppendAnd(const FilterExpression::And &node, Precedence parent, std::string
     }
 }
 
+// NOLINTNEXTLINE(misc-no-recursion)
 void AppendOr(const FilterExpression::Or &node, Precedence parent, std::string &out)
 {
     if (node.children.empty())
@@ -2013,6 +2095,7 @@ void AppendOr(const FilterExpression::Or &node, Precedence parent, std::string &
     }
 }
 
+// NOLINTNEXTLINE(misc-no-recursion)
 void AppendNot(const FilterExpression::Not &node, std::string &out)
 {
     out.append("NOT ");
@@ -2024,9 +2107,11 @@ void AppendNot(const FilterExpression::Not &node, std::string &out)
     AppendExpression(*node.child, Precedence::Not, out);
 }
 
+// NOLINTNEXTLINE(misc-no-recursion)
 void AppendExpression(const FilterExpression &expr, Precedence parent, std::string &out)
 {
     std::visit(
+        // NOLINTNEXTLINE(misc-no-recursion)
         [&out, parent](const auto &node) {
             using T = std::decay_t<decltype(node)>;
             if constexpr (std::is_same_v<T, FilterExpression::Leaf>)

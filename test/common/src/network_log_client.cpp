@@ -347,8 +347,6 @@ void TcpLogClient::Close()
 }
 
 UdpLogClient::UdpLogClient(const std::string &host, uint16_t port)
-    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDelete,clang-analyzer-optin.cplusplus.VirtualCall): Asio internals
-    // virtual-dispatch during service teardown false positive under MSVC headers.
     : mImpl(std::make_unique<internal::UdpLogClientImpl>(host, port))
 {
 }

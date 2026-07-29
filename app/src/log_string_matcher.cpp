@@ -11,6 +11,19 @@
 #include <string_view>
 #include <utility>
 
+// Q_LOGGING_CATEGORY expands to a Qt-mandated global `<name>()`
+// accessor plus a translation-unit-local storage variable.  The
+// name has to be `camelBack` (that's the identifier `qCInfo(<name>)`
+// callers use), and Qt intentionally keeps the accessor at namespace
+// scope so it participates in the loader-side deduplication of
+// category instances. Both concerns collide with clang-tidy's
+// preferred style:
+//   * misc-use-internal-linkage -- Qt's design; we cannot move it
+//     into an anonymous namespace without breaking the macro.
+//   * readability-identifier-naming -- the CamelCase suggestion
+//     would rename the macro's generated function, silently changing
+//     the ABI-visible symbol callers reference.
+// NOLINTNEXTLINE(misc-use-internal-linkage, readability-identifier-naming)
 Q_LOGGING_CATEGORY(logMatcher, "logapp.matcher")
 
 namespace

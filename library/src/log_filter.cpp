@@ -294,6 +294,18 @@ bool CallbackStringRowPredicate::MatchesRow(const LogTable &table, size_t row) c
     return mMatch(bytes);
 }
 
+// Relative weight for the regex / UTF-8 string branch.  Kept as a
+// named constant so cppcoreguidelines-avoid-magic-numbers doesn't
+// flag the visit lambda below.
+constexpr int STRING_LEAF_COST = 10;
+
+// The `noexcept` on this function is a design guarantee: the
+// variant is always populated by construction (predicate
+// factories never leave it valueless_by_exception), so
+// `std::visit` cannot actually throw `bad_variant_access`.
+// clang-tidy's bugprone-exception-escape check can't see that
+// invariant; the NOLINT records the argument explicitly.
+// NOLINTNEXTLINE(bugprone-exception-escape)
 int EstimatedLeafCost(const RowPredicate &predicate) noexcept
 {
     // Relative weights (see header). Bool first (cheapest reject
@@ -320,7 +332,7 @@ int EstimatedLeafCost(const RowPredicate &predicate) noexcept
             else
             {
                 // CallbackString: regex / UTF-8 walk.
-                return 10;
+                return STRING_LEAF_COST;
             }
         },
         predicate
@@ -333,32 +345,20 @@ CompiledFilterExpression::Leaf::Leaf(RowPredicate p)
 }
 
 CompiledFilterExpression::Not::Not(CompiledFilterExpression c)
-    : child(std::make_unique<CompiledFilterExpression>(std::move(c)))
+    : child(std::make_unique<CompiledFilterExpression>(std::move(c))),
+      estimatedCost(child ? child->EstimatedCost() + 1 : 1)
 {
-    estimatedCost = child ? child->EstimatedCost() + 1 : 1;
 }
 
+// Same reasoning as `EstimatedLeafCost`: the node variant is always
+// populated, so `std::visit` never throws in practice.  The
+// arms Leaf/And/Or/Not all return the same `n.estimatedCost` field,
+// which trips readability-branch-clone -- collapsed into a single
+// generic path to remove the duplication.
+// NOLINTNEXTLINE(bugprone-exception-escape)
 int CompiledFilterExpression::EstimatedCost() const noexcept
 {
-    return std::visit(
-        [](const auto &n) noexcept -> int {
-            using T = std::decay_t<decltype(n)>;
-            if constexpr (std::is_same_v<T, Leaf>)
-            {
-                return n.estimatedCost;
-            }
-            else if constexpr (std::is_same_v<T, Not>)
-            {
-                return n.estimatedCost;
-            }
-            else
-            {
-                // And / Or: prebaked at compile time.
-                return n.estimatedCost;
-            }
-        },
-        node
-    );
+    return std::visit([](const auto &n) noexcept -> int { return n.estimatedCost; }, node);
 }
 
 bool IsMatchAllCompiled(const CompiledFilterExpression &expression) noexcept
@@ -367,9 +367,14 @@ bool IsMatchAllCompiled(const CompiledFilterExpression &expression) noexcept
     return asAnd != nullptr && asAnd->children.empty();
 }
 
+// Recursive AST walker; misc-no-recursion is suppressed on both the
+// entry point and the visitor lambda so the boolean short-circuit
+// structure stays legible.
+// NOLINTNEXTLINE(misc-no-recursion)
 bool EvaluateExpression(const CompiledFilterExpression &expression, const LogTable &table, size_t row)
 {
     return std::visit(
+        // NOLINTNEXTLINE(misc-no-recursion)
         [&table, row](const auto &node) -> bool {
             using T = std::decay_t<decltype(node)>;
             if constexpr (std::is_same_v<T, CompiledFilterExpression::Leaf>)
@@ -378,27 +383,23 @@ bool EvaluateExpression(const CompiledFilterExpression &expression, const LogTab
             }
             else if constexpr (std::is_same_v<T, CompiledFilterExpression::And>)
             {
-                // Empty `And` is the identity element -- match all.
-                for (const auto &child : node.children)
-                {
-                    if (!EvaluateExpression(child, table, row))
-                    {
-                        return false;
-                    }
-                }
-                return true;
+                // Empty `And` is the identity element -- match all
+                // (`std::ranges::all_of` returns true for an empty
+                // range, which matches the semantics).
+                // NOLINTNEXTLINE(misc-no-recursion)
+                return std::ranges::all_of(node.children, [&table, row](const auto &child) {
+                    return EvaluateExpression(child, table, row);
+                });
             }
             else if constexpr (std::is_same_v<T, CompiledFilterExpression::Or>)
             {
-                // Empty `Or` is the identity element -- match none.
-                for (const auto &child : node.children)
-                {
-                    if (EvaluateExpression(child, table, row))
-                    {
-                        return true;
-                    }
-                }
-                return false;
+                // Empty `Or` is the identity element -- match none
+                // (`std::ranges::any_of` returns false for an empty
+                // range, which matches the semantics).
+                // NOLINTNEXTLINE(misc-no-recursion)
+                return std::ranges::any_of(node.children, [&table, row](const auto &child) {
+                    return EvaluateExpression(child, table, row);
+                });
             }
             else
             {
@@ -433,11 +434,13 @@ struct TreeShape
     bool hasNot = false;
 };
 
+// NOLINTNEXTLINE(misc-no-recursion)
 void CollectShape(
     const CompiledFilterExpression &expr, TreeShape &shape, std::vector<const RowPredicate *> &seenPredicates
 )
 {
     std::visit(
+        // NOLINTNEXTLINE(misc-no-recursion)
         [&shape, &seenPredicates](const auto &node) {
             using T = std::decay_t<decltype(node)>;
             if constexpr (std::is_same_v<T, CompiledFilterExpression::Leaf>)
@@ -605,7 +608,7 @@ public:
             while (word != 0U)
             {
                 const auto bit = static_cast<unsigned int>(std::countr_zero(word));
-                const size_t row = wi * WORD_BITS + bit;
+                const size_t row = (wi * WORD_BITS) + bit;
                 // Every mutating op must call `MaskTail`, so a set
                 // bit past `mRowCount` here would be a bug.
                 assert(row < mRowCount);
@@ -688,6 +691,7 @@ RowBitset MaterialiseLeafBitset(const RowPredicate &predicate, const LogTable &t
 /// Evaluate @p expr against the pre-materialised leaf bitsets in
 /// @p leafBitsets, indexed by the mapping in @p leafSlots (built
 /// by `CollectLeafsInVisitOrder`). Recurses over And / Or / Not.
+// NOLINTNEXTLINE(misc-no-recursion)
 RowBitset EvaluateExpressionBitset(
     const CompiledFilterExpression &expr,
     const std::vector<RowBitset> &leafBitsets,
@@ -697,6 +701,7 @@ RowBitset EvaluateExpressionBitset(
 )
 {
     return std::visit(
+        // NOLINTNEXTLINE(misc-no-recursion)
         [&leafBitsets, &leafSlots, &leafCursor, rowCount](const auto &node) -> RowBitset {
             using T = std::decay_t<decltype(node)>;
             if constexpr (std::is_same_v<T, CompiledFilterExpression::Leaf>)
@@ -771,9 +776,11 @@ RowBitset EvaluateExpressionBitset(
 /// lifetime) so a repeated leaf materialises once. Structurally
 /// identical leaves compiled independently still cost one bitset
 /// each -- follow-up if it ever matters.
+// NOLINTNEXTLINE(misc-no-recursion)
 void CollectLeafsInVisitOrder(const CompiledFilterExpression &expr, std::vector<const RowPredicate *> &out)
 {
     std::visit(
+        // NOLINTNEXTLINE(misc-no-recursion)
         [&out](const auto &node) {
             using T = std::decay_t<decltype(node)>;
             if constexpr (std::is_same_v<T, CompiledFilterExpression::Leaf>)

@@ -68,9 +68,16 @@ struct RegexIssue
 /// Short-circuits so the status message pins one actionable
 /// pattern rather than a summary list. Wildcard leaves are always
 /// valid (they go through `wildcardToRegularExpression`).
+///
+/// clang-tidy misc-no-recursion fires on the visitor lambdas even
+/// though the recursion is intentional (walking the boolean AST);
+/// silenced with a NOLINT on the entry point rather than on each
+/// synthesised visitor specialisation.
+// NOLINTNEXTLINE(misc-no-recursion)
 [[nodiscard]] std::optional<RegexIssue> FindInvalidRegex(const loglib::FilterExpression &expression)
 {
     return std::visit(
+        // NOLINTNEXTLINE(misc-no-recursion)
         [](const auto &node) -> std::optional<RegexIssue> {
             using T = std::decay_t<decltype(node)>;
             if constexpr (std::is_same_v<T, loglib::FilterExpression::Leaf>)
@@ -88,7 +95,7 @@ struct RegexIssue
                 {
                     return std::nullopt;
                 }
-                return RegexIssue{pattern, probe.errorString()};
+                return RegexIssue{.pattern = pattern, .errorText = probe.errorString()};
             }
             else if constexpr (std::is_same_v<T, loglib::FilterExpression::And> ||
                                std::is_same_v<T, loglib::FilterExpression::Or>)
@@ -298,9 +305,13 @@ void AdvancedFilterEditor::HighlightErrorAt(const QString &queryText, std::size_
     // Walking the prefix is fine: queries are short.
     const QByteArray utf8 = queryText.toUtf8();
     const auto clampedByteOffset = std::min(byteOffset, static_cast<std::size_t>(utf8.size()));
-    const int codeUnitOffset =
-        QString::fromUtf8(utf8.constData(), static_cast<qsizetype>(clampedByteOffset)).size();
-    const int textSize = queryText.size();
+    // Query text is UI-bounded (a single dialog input); narrowing
+    // the code-unit count to `int` is safe and matches Qt's
+    // `QTextCursor::setPosition` argument type.
+    const int codeUnitOffset = static_cast<int>(
+        QString::fromUtf8(utf8.constData(), static_cast<qsizetype>(clampedByteOffset)).size()
+    );
+    const int textSize = static_cast<int>(queryText.size());
     const int selectStart = std::min(codeUnitOffset, textSize);
     // For a caret at EOF, back up one glyph so at least one
     // character is underlined and visible.

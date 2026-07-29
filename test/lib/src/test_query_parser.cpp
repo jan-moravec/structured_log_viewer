@@ -262,7 +262,7 @@ TEST_CASE("ParseQuery: symbolic operators &&, ||, !", "[query_parser]")
 
 TEST_CASE("ParseQuery: quoted column preserves whitespace", "[query_parser]")
 {
-    const auto expr = ParseOrFail("\"span id\":\"abc def\"");
+    const auto expr = ParseOrFail(R"("span id":"abc def")");
     const LeafRule *leaf = AsLeaf(expr);
     REQUIRE(leaf != nullptr);
     REQUIRE(leaf->columnKeys.size() == 1);
@@ -348,8 +348,8 @@ TEST_CASE("FormatExpression: numeric range renders as IN [..]", "[query_parser][
     // `FormatExpression` canonicalises the keyword to uppercase; the
     // lowercase input still parses (grammar is case-insensitive) but
     // the round-trip output must carry the canonical form.
-    CHECK(out.find("IN [") != std::string::npos);
-    CHECK(out.find("..") != std::string::npos);
+    CHECK(out.contains("IN ["));
+    CHECK(out.contains(".."));
 }
 
 // Regression: `col in [true, false]` is the wire form the pretty
