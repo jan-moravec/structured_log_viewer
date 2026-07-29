@@ -158,8 +158,7 @@ namespace
     {
         for (const auto &child : asAnd->children)
         {
-            if (const auto *childLeaf = std::get_if<loglib::FilterExpression::Leaf>(&child.node);
-                childLeaf != nullptr)
+            if (const auto *childLeaf = std::get_if<loglib::FilterExpression::Leaf>(&child.node); childLeaf != nullptr)
             {
                 out.push_back(childLeaf->rule);
             }
@@ -199,8 +198,10 @@ namespace
                 self(child, self);
             }
         }
-        else if (const auto *asNot = std::get_if<loglib::FilterExpression::Not>(&node.node);
-                 asNot != nullptr && asNot->child != nullptr)
+        else if (
+            const auto *asNot = std::get_if<loglib::FilterExpression::Not>(&node.node);
+            asNot != nullptr && asNot->child != nullptr
+        )
         {
             self(*asNot->child, self);
         }
@@ -7877,10 +7878,7 @@ private slots:
         auto *box = editor.findChild<QDialogButtonBox *>(QStringLiteral("advancedFilterButtonBox"));
         QVERIFY2(box != nullptr, "AdvancedFilterEditor must expose its button box");
         auto *okBtn = box->button(QDialogButtonBox::Ok);
-        QVERIFY2(
-            okBtn != nullptr && !okBtn->isEnabled(),
-            "OK must be disabled when a regex leaf fails to compile"
-        );
+        QVERIFY2(okBtn != nullptr && !okBtn->isEnabled(), "OK must be disabled when a regex leaf fails to compile");
 
         // The status label must name the offending pattern so the
         // user can fix it. The exact QRegularExpression error text
@@ -10712,19 +10710,17 @@ private slots:
         const std::vector<std::string> levelKeys = configuration.columns[static_cast<size_t>(levelCol)].keys;
         loglib::FilterExpression::And andRoot;
         loglib::FilterExpression leafExpr;
-        leafExpr.node = loglib::FilterExpression::Leaf{
-            loglib::LeafRule{
-                .type = loglib::LeafRule::Type::Enumeration,
-                .columnKeys = levelKeys,
-                .matchType = std::nullopt,
-                .filterString = std::nullopt,
-                .filterBegin = std::nullopt,
-                .filterEnd = std::nullopt,
-                .filterMinValue = std::nullopt,
-                .filterMaxValue = std::nullopt,
-                .filterValues = {"info"},
-            }
-        };
+        leafExpr.node = loglib::FilterExpression::Leaf{loglib::LeafRule{
+            .type = loglib::LeafRule::Type::Enumeration,
+            .columnKeys = levelKeys,
+            .matchType = std::nullopt,
+            .filterString = std::nullopt,
+            .filterBegin = std::nullopt,
+            .filterEnd = std::nullopt,
+            .filterMinValue = std::nullopt,
+            .filterMaxValue = std::nullopt,
+            .filterValues = {"info"},
+        }};
         andRoot.children.push_back(std::move(leafExpr));
         configuration.expression.node = std::move(andRoot);
 
@@ -11465,8 +11461,7 @@ private slots:
         // `Save` emits.
         (void)columnCount;
         loglib::LogConfiguration configuration = model->Configuration();
-        const std::vector<std::string> levelKeys =
-            configuration.columns[static_cast<size_t>(levelCol)].keys;
+        const std::vector<std::string> levelKeys = configuration.columns[static_cast<size_t>(levelCol)].keys;
         configuration.expression = WireLeavesAsExpression({
             loglib::LeafRule{
                 .type = loglib::LeafRule::Type::Enumeration,
@@ -11609,23 +11604,28 @@ private slots:
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
 
         const std::vector<std::string> msgKeys = model->Configuration().columns[static_cast<size_t>(msgCol)].keys;
-        const std::vector<std::string> levelKeys =
-            model->Configuration().columns[static_cast<size_t>(levelCol)].keys;
+        const std::vector<std::string> levelKeys = model->Configuration().columns[static_cast<size_t>(levelCol)].keys;
 
         // Build `NOT msg:m1 OR level in [info]` -- a two-node
         // Advanced tree whose root is `Or` and one branch is a
         // `Not` (both shapes trigger the fixed preservation path).
-        loglib::FilterExpression notLeaf = loglib::MakeNot(loglib::MakeLeaf(loglib::LeafRule{
-            .type = loglib::LeafRule::Type::String,
-            .columnKeys = msgKeys,
-            .matchType = loglib::LeafRule::Match::Contains,
-            .filterString = std::string("m1"),
-        }));
-        loglib::FilterExpression enumLeaf = loglib::MakeLeaf(loglib::LeafRule{
-            .type = loglib::LeafRule::Type::Enumeration,
-            .columnKeys = levelKeys,
-            .filterValues = {"info"},
-        });
+        loglib::FilterExpression notLeaf = loglib::MakeNot(
+            loglib::MakeLeaf(
+                loglib::LeafRule{
+                    .type = loglib::LeafRule::Type::String,
+                    .columnKeys = msgKeys,
+                    .matchType = loglib::LeafRule::Match::Contains,
+                    .filterString = std::string("m1"),
+                }
+            )
+        );
+        loglib::FilterExpression enumLeaf = loglib::MakeLeaf(
+            loglib::LeafRule{
+                .type = loglib::LeafRule::Type::Enumeration,
+                .columnKeys = levelKeys,
+                .filterValues = {"info"},
+            }
+        );
         std::vector<loglib::FilterExpression> orChildren;
         orChildren.push_back(std::move(notLeaf));
         orChildren.push_back(std::move(enumLeaf));
@@ -11666,8 +11666,7 @@ private slots:
             advanced = &asAnd->children.front();
         }
         QVERIFY2(
-            *advanced == advancedTree,
-            "Advanced Or/Not tree must survive Save/Load exactly (structure + payload)"
+            *advanced == advancedTree, "Advanced Or/Not tree must survive Save/Load exactly (structure + payload)"
         );
     }
 
@@ -11694,18 +11693,26 @@ private slots:
         // `msg:m1 OR msg:m2` -- an `Or` root, so the load path finds
         // no top-level Leaf to extract into `mSimpleLeaves`.
         std::vector<loglib::FilterExpression> orChildren;
-        orChildren.push_back(loglib::MakeLeaf(loglib::LeafRule{
-            .type = loglib::LeafRule::Type::String,
-            .columnKeys = msgKeys,
-            .matchType = loglib::LeafRule::Match::Contains,
-            .filterString = std::string("m1"),
-        }));
-        orChildren.push_back(loglib::MakeLeaf(loglib::LeafRule{
-            .type = loglib::LeafRule::Type::String,
-            .columnKeys = msgKeys,
-            .matchType = loglib::LeafRule::Match::Contains,
-            .filterString = std::string("m2"),
-        }));
+        orChildren.push_back(
+            loglib::MakeLeaf(
+                loglib::LeafRule{
+                    .type = loglib::LeafRule::Type::String,
+                    .columnKeys = msgKeys,
+                    .matchType = loglib::LeafRule::Match::Contains,
+                    .filterString = std::string("m1"),
+                }
+            )
+        );
+        orChildren.push_back(
+            loglib::MakeLeaf(
+                loglib::LeafRule{
+                    .type = loglib::LeafRule::Type::String,
+                    .columnKeys = msgKeys,
+                    .matchType = loglib::LeafRule::Match::Contains,
+                    .filterString = std::string("m2"),
+                }
+            )
+        );
         model->ConfigurationManager().SetExpression(loglib::MakeOr(std::move(orChildren)));
 
         const QTemporaryDir savedDir;
@@ -11730,10 +11737,7 @@ private slots:
             !loglib::IsMatchAll(model->Configuration().expression),
             "precondition: the loaded Advanced tree must still be filtering rows"
         );
-        QVERIFY2(
-            clearAction->isEnabled(),
-            "Clear All Filters must be enabled after loading an Advanced-only session"
-        );
+        QVERIFY2(clearAction->isEnabled(), "Clear All Filters must be enabled after loading an Advanced-only session");
         // The status-bar twin isn't asserted here: a configuration
         // load resets the model, and with no rows to count the whole
         // "N of M rows" status group (button included) is correctly
@@ -11783,18 +11787,26 @@ private slots:
         // leaves, but only the one on the String column is
         // representable in simple mode.
         std::vector<loglib::FilterExpression> andChildren;
-        andChildren.push_back(loglib::MakeLeaf(loglib::LeafRule{
-            .type = loglib::LeafRule::Type::String,
-            .columnKeys = levelKeys,
-            .matchType = loglib::LeafRule::Match::Contains,
-            .filterString = std::string("info"),
-        }));
-        andChildren.push_back(loglib::MakeLeaf(loglib::LeafRule{
-            .type = loglib::LeafRule::Type::String,
-            .columnKeys = msgKeys,
-            .matchType = loglib::LeafRule::Match::Contains,
-            .filterString = std::string("m1"),
-        }));
+        andChildren.push_back(
+            loglib::MakeLeaf(
+                loglib::LeafRule{
+                    .type = loglib::LeafRule::Type::String,
+                    .columnKeys = levelKeys,
+                    .matchType = loglib::LeafRule::Match::Contains,
+                    .filterString = std::string("info"),
+                }
+            )
+        );
+        andChildren.push_back(
+            loglib::MakeLeaf(
+                loglib::LeafRule{
+                    .type = loglib::LeafRule::Type::String,
+                    .columnKeys = msgKeys,
+                    .matchType = loglib::LeafRule::Match::Contains,
+                    .filterString = std::string("m1"),
+                }
+            )
+        );
         mWindow->CommitAdvancedFilterForTest(loglib::MakeAnd(std::move(andChildren)));
         QCoreApplication::processEvents();
 
@@ -11852,12 +11864,16 @@ private slots:
 
         // Install a `NOT msg:m1` Advanced tree exactly as
         // `OpenAdvancedFilter` would after user commit.
-        const loglib::FilterExpression advancedTree = loglib::MakeNot(loglib::MakeLeaf(loglib::LeafRule{
-            .type = loglib::LeafRule::Type::String,
-            .columnKeys = msgKeys,
-            .matchType = loglib::LeafRule::Match::Contains,
-            .filterString = std::string("m1"),
-        }));
+        const loglib::FilterExpression advancedTree = loglib::MakeNot(
+            loglib::MakeLeaf(
+                loglib::LeafRule{
+                    .type = loglib::LeafRule::Type::String,
+                    .columnKeys = msgKeys,
+                    .matchType = loglib::LeafRule::Match::Contains,
+                    .filterString = std::string("m1"),
+                }
+            )
+        );
         model->ConfigurationManager().SetExpression(advancedTree);
 
         // A simple-mode leaf submission funnels through `AddLogFilter`
@@ -11887,8 +11903,7 @@ private slots:
                 QVERIFY(*notNode->child == *std::get<loglib::FilterExpression::Not>(advancedTree.node).child);
                 sawAdvancedNot = true;
             }
-            else if (const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&child.node);
-                     leaf != nullptr)
+            else if (const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&child.node); leaf != nullptr)
             {
                 sawSimpleLeaf = true;
                 QVERIFY(leaf->rule.filterString.has_value());
@@ -11923,12 +11938,14 @@ private slots:
 
         // Simulate the user typing `msg:m1` and clicking OK. `Result`
         // is a bare `Leaf` -- the shape the pre-fix branch dropped.
-        const loglib::FilterExpression bareLeaf = loglib::MakeLeaf(loglib::LeafRule{
-            .type = loglib::LeafRule::Type::String,
-            .columnKeys = msgKeys,
-            .matchType = loglib::LeafRule::Match::Contains,
-            .filterString = std::string("m1"),
-        });
+        const loglib::FilterExpression bareLeaf = loglib::MakeLeaf(
+            loglib::LeafRule{
+                .type = loglib::LeafRule::Type::String,
+                .columnKeys = msgKeys,
+                .matchType = loglib::LeafRule::Match::Contains,
+                .filterString = std::string("m1"),
+            }
+        );
         mWindow->CommitAdvancedFilterForTest(bareLeaf);
         QCoreApplication::processEvents();
 
@@ -11972,8 +11989,14 @@ private slots:
             const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&child.node);
             QVERIFY2(leaf != nullptr, "both children must remain Leaves");
             QVERIFY(leaf->rule.filterString.has_value());
-            if (*leaf->rule.filterString == "m1") { sawM1 = true; }
-            if (*leaf->rule.filterString == "m2") { sawM2 = true; }
+            if (*leaf->rule.filterString == "m1")
+            {
+                sawM1 = true;
+            }
+            if (*leaf->rule.filterString == "m2")
+            {
+                sawM2 = true;
+            }
         }
         QVERIFY2(sawM1, "the Advanced-committed bare-Leaf rule must survive the mirror");
         QVERIFY2(sawM2, "the follow-up simple-mode rule must be present");
@@ -12019,7 +12042,9 @@ private slots:
             tooltip.contains(QStringLiteral("&quot;&quot;")),
             "column tooltip must contain the HTML-escaped exact-empty title"
         );
-        QVERIFY2(!tooltip.contains(QStringLiteral("(unset)")), "exact-empty filter must not look like a missing payload");
+        QVERIFY2(
+            !tooltip.contains(QStringLiteral("(unset)")), "exact-empty filter must not look like a missing payload"
+        );
     }
 
     // Companion to the bare-Leaf case above: an Advanced commit whose
@@ -12036,36 +12061,47 @@ private slots:
         const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
         QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
         const std::vector<std::string> msgKeys = model->Configuration().columns[static_cast<size_t>(msgCol)].keys;
-        const std::vector<std::string> levelKeys =
-            model->Configuration().columns[static_cast<size_t>(levelCol)].keys;
+        const std::vector<std::string> levelKeys = model->Configuration().columns[static_cast<size_t>(levelCol)].keys;
 
         // Build `msg:m1 AND msg:m2 AND (msg:m3 OR msg:m4)` -- two
         // representable-as-simple leaves plus one non-Leaf child.
-        loglib::FilterExpression leafM1 = loglib::MakeLeaf(loglib::LeafRule{
-            .type = loglib::LeafRule::Type::String,
-            .columnKeys = msgKeys,
-            .matchType = loglib::LeafRule::Match::Contains,
-            .filterString = std::string("m1"),
-        });
-        loglib::FilterExpression leafM2 = loglib::MakeLeaf(loglib::LeafRule{
-            .type = loglib::LeafRule::Type::String,
-            .columnKeys = msgKeys,
-            .matchType = loglib::LeafRule::Match::Contains,
-            .filterString = std::string("m2"),
-        });
+        loglib::FilterExpression leafM1 = loglib::MakeLeaf(
+            loglib::LeafRule{
+                .type = loglib::LeafRule::Type::String,
+                .columnKeys = msgKeys,
+                .matchType = loglib::LeafRule::Match::Contains,
+                .filterString = std::string("m1"),
+            }
+        );
+        loglib::FilterExpression leafM2 = loglib::MakeLeaf(
+            loglib::LeafRule{
+                .type = loglib::LeafRule::Type::String,
+                .columnKeys = msgKeys,
+                .matchType = loglib::LeafRule::Match::Contains,
+                .filterString = std::string("m2"),
+            }
+        );
         std::vector<loglib::FilterExpression> orChildren;
-        orChildren.push_back(loglib::MakeLeaf(loglib::LeafRule{
-            .type = loglib::LeafRule::Type::String,
-            .columnKeys = msgKeys,
-            .matchType = loglib::LeafRule::Match::Contains,
-            .filterString = std::string("m3"),
-        }));
-        orChildren.push_back(loglib::MakeLeaf(loglib::LeafRule{
-            .type = loglib::LeafRule::Type::String,
-            .columnKeys = msgKeys,
-            .matchType = loglib::LeafRule::Match::Contains,
-            .filterString = std::string("m4"),
-        }));
+        orChildren.push_back(
+            loglib::MakeLeaf(
+                loglib::LeafRule{
+                    .type = loglib::LeafRule::Type::String,
+                    .columnKeys = msgKeys,
+                    .matchType = loglib::LeafRule::Match::Contains,
+                    .filterString = std::string("m3"),
+                }
+            )
+        );
+        orChildren.push_back(
+            loglib::MakeLeaf(
+                loglib::LeafRule{
+                    .type = loglib::LeafRule::Type::String,
+                    .columnKeys = msgKeys,
+                    .matchType = loglib::LeafRule::Match::Contains,
+                    .filterString = std::string("m4"),
+                }
+            )
+        );
         loglib::FilterExpression orNode = loglib::MakeOr(std::move(orChildren));
         std::vector<loglib::FilterExpression> andChildren;
         andChildren.push_back(std::move(leafM1));
@@ -12087,8 +12123,14 @@ private slots:
         int seenOr = 0;
         for (const auto &child : asAnd->children)
         {
-            if (std::holds_alternative<loglib::FilterExpression::Leaf>(child.node)) { ++seenLeaves; }
-            else if (std::holds_alternative<loglib::FilterExpression::Or>(child.node)) { ++seenOr; }
+            if (std::holds_alternative<loglib::FilterExpression::Leaf>(child.node))
+            {
+                ++seenLeaves;
+            }
+            else if (std::holds_alternative<loglib::FilterExpression::Or>(child.node))
+            {
+                ++seenOr;
+            }
         }
         QCOMPARE(seenLeaves, 2);
         QCOMPARE(seenOr, 1);
@@ -12215,12 +12257,16 @@ private slots:
         // Commit a `NOT msg:m1` Advanced tree. Root is `Not`, so
         // `ApplyAdvancedFilterResult` extracts zero top-level Leaves
         // and installs the whole tree as the non-Leaf remainder.
-        loglib::FilterExpression advancedTree = loglib::MakeNot(loglib::MakeLeaf(loglib::LeafRule{
-            .type = loglib::LeafRule::Type::String,
-            .columnKeys = msgKeys,
-            .matchType = loglib::LeafRule::Match::Contains,
-            .filterString = std::string("m1"),
-        }));
+        loglib::FilterExpression advancedTree = loglib::MakeNot(
+            loglib::MakeLeaf(
+                loglib::LeafRule{
+                    .type = loglib::LeafRule::Type::String,
+                    .columnKeys = msgKeys,
+                    .matchType = loglib::LeafRule::Match::Contains,
+                    .filterString = std::string("m1"),
+                }
+            )
+        );
         mWindow->CommitAdvancedFilterForTest(std::move(advancedTree));
         QCoreApplication::processEvents();
 
@@ -12273,25 +12319,37 @@ private slots:
         // expression -- the same shape a user would produce by
         // typing `msg:m1 AND (msg:m2 OR msg:m3)` in the editor.
         std::vector<loglib::FilterExpression> orChildren;
-        orChildren.push_back(loglib::MakeLeaf(loglib::LeafRule{
-            .type = loglib::LeafRule::Type::String,
-            .columnKeys = msgKeys,
-            .matchType = loglib::LeafRule::Match::Contains,
-            .filterString = std::string("m2"),
-        }));
-        orChildren.push_back(loglib::MakeLeaf(loglib::LeafRule{
-            .type = loglib::LeafRule::Type::String,
-            .columnKeys = msgKeys,
-            .matchType = loglib::LeafRule::Match::Contains,
-            .filterString = std::string("m3"),
-        }));
+        orChildren.push_back(
+            loglib::MakeLeaf(
+                loglib::LeafRule{
+                    .type = loglib::LeafRule::Type::String,
+                    .columnKeys = msgKeys,
+                    .matchType = loglib::LeafRule::Match::Contains,
+                    .filterString = std::string("m2"),
+                }
+            )
+        );
+        orChildren.push_back(
+            loglib::MakeLeaf(
+                loglib::LeafRule{
+                    .type = loglib::LeafRule::Type::String,
+                    .columnKeys = msgKeys,
+                    .matchType = loglib::LeafRule::Match::Contains,
+                    .filterString = std::string("m3"),
+                }
+            )
+        );
         std::vector<loglib::FilterExpression> andChildren;
-        andChildren.push_back(loglib::MakeLeaf(loglib::LeafRule{
-            .type = loglib::LeafRule::Type::String,
-            .columnKeys = msgKeys,
-            .matchType = loglib::LeafRule::Match::Contains,
-            .filterString = std::string("m1"),
-        }));
+        andChildren.push_back(
+            loglib::MakeLeaf(
+                loglib::LeafRule{
+                    .type = loglib::LeafRule::Type::String,
+                    .columnKeys = msgKeys,
+                    .matchType = loglib::LeafRule::Match::Contains,
+                    .filterString = std::string("m1"),
+                }
+            )
+        );
         andChildren.push_back(loglib::MakeOr(std::move(orChildren)));
         mWindow->CommitAdvancedFilterForTest(loglib::MakeAnd(std::move(andChildren)));
         QCoreApplication::processEvents();
@@ -12345,12 +12403,16 @@ private slots:
 
         // Install a `NOT msg:m1` Advanced tree exactly as
         // `OpenAdvancedFilter` would after user commit.
-        const loglib::FilterExpression advancedTree = loglib::MakeNot(loglib::MakeLeaf(loglib::LeafRule{
-            .type = loglib::LeafRule::Type::String,
-            .columnKeys = msgKeys,
-            .matchType = loglib::LeafRule::Match::Contains,
-            .filterString = std::string("m1"),
-        }));
+        const loglib::FilterExpression advancedTree = loglib::MakeNot(
+            loglib::MakeLeaf(
+                loglib::LeafRule{
+                    .type = loglib::LeafRule::Type::String,
+                    .columnKeys = msgKeys,
+                    .matchType = loglib::LeafRule::Match::Contains,
+                    .filterString = std::string("m1"),
+                }
+            )
+        );
         model->ConfigurationManager().SetExpression(advancedTree);
         QCoreApplication::processEvents();
         QVERIFY2(
@@ -13346,7 +13408,8 @@ private slots:
         QVERIFY2(!probe.Configuration().source.has_value(), "New Session must clear the source descriptor");
         QVERIFY2(probe.Configuration().columns.empty(), "New Session saved JSON must have no columns");
         QVERIFY2(
-            loglib::IsMatchAll(probe.Configuration().expression), "New Session saved JSON must have no filter expression"
+            loglib::IsMatchAll(probe.Configuration().expression),
+            "New Session saved JSON must have no filter expression"
         );
         QCOMPARE(probe.Configuration().sort.columnIndex, -1);
     }
@@ -15597,22 +15660,21 @@ private slots:
         const LogFilterModel *filterModel = mWindow->FilterModel();
         QVERIFY2(filterModel != nullptr, "MainWindow must own a LogFilterModel proxy");
 
-        const auto submitFilter =
-            [&](const QString &filterId, const QString &pattern, loglib::LeafRule::Match match) {
-                QVERIFY2(
-                    QMetaObject::invokeMethod(
-                        mWindow,
-                        "FilterSubmitted",
-                        Qt::DirectConnection,
-                        Q_ARG(QString, filterId),
-                        Q_ARG(int, msgCol),
-                        Q_ARG(QString, pattern),
-                        Q_ARG(int, static_cast<int>(match))
-                    ),
-                    "FilterSubmitted slot must be invocable via meta-object"
-                );
-                QCoreApplication::processEvents();
-            };
+        const auto submitFilter = [&](const QString &filterId, const QString &pattern, loglib::LeafRule::Match match) {
+            QVERIFY2(
+                QMetaObject::invokeMethod(
+                    mWindow,
+                    "FilterSubmitted",
+                    Qt::DirectConnection,
+                    Q_ARG(QString, filterId),
+                    Q_ARG(int, msgCol),
+                    Q_ARG(QString, pattern),
+                    Q_ARG(int, static_cast<int>(match))
+                ),
+                "FilterSubmitted slot must be invocable via meta-object"
+            );
+            QCoreApplication::processEvents();
+        };
 
         const auto clearFilter = [&](const QString &filterId) {
             QVERIFY2(
@@ -15625,18 +15687,14 @@ private slots:
 
         // Contains: needle matches the displayed (simplified) text.
         submitFilter(
-            QStringLiteral("contains-displayed"),
-            QStringLiteral("line1 line2"),
-            loglib::LeafRule::Match::Contains
+            QStringLiteral("contains-displayed"), QStringLiteral("line1 line2"), loglib::LeafRule::Match::Contains
         );
         QCOMPARE(filterModel->rowCount(), 1);
         clearFilter(QStringLiteral("contains-displayed"));
 
         // Exactly: full simplified value.
         submitFilter(
-            QStringLiteral("exact-displayed"),
-            QStringLiteral("line1 line2"),
-            loglib::LeafRule::Match::Exactly
+            QStringLiteral("exact-displayed"), QStringLiteral("line1 line2"), loglib::LeafRule::Match::Exactly
         );
         QCOMPARE(filterModel->rowCount(), 1);
         clearFilter(QStringLiteral("exact-displayed"));
@@ -15654,9 +15712,7 @@ private slots:
         // Wildcard: Qt-flavoured `line1 *2` only matches the
         // simplified single-line form.
         submitFilter(
-            QStringLiteral("wildcard-displayed"),
-            QStringLiteral("line1 *2"),
-            loglib::LeafRule::Match::Wildcard
+            QStringLiteral("wildcard-displayed"), QStringLiteral("line1 *2"), loglib::LeafRule::Match::Wildcard
         );
         QCOMPARE(filterModel->rowCount(), 1);
         clearFilter(QStringLiteral("wildcard-displayed"));
@@ -19348,8 +19404,7 @@ private slots:
         // to confirm the wire-format keys survive (mirrors the
         // lib-side tests for `Type::Number`). Leaf binds by
         // `columnKeys`; resolve the `value` column's keys once.
-        const std::vector<std::string> valueKeys =
-            model->Configuration().columns[static_cast<size_t>(valueCol)].keys;
+        const std::vector<std::string> valueKeys = model->Configuration().columns[static_cast<size_t>(valueCol)].keys;
 
         loglib::LogConfiguration cfg;
         loglib::LeafRule leaf;

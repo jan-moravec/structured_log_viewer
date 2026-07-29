@@ -5,7 +5,8 @@
 #include <QRegularExpressionMatchIterator>
 #include <QTextDocument>
 
-AdvancedFilterHighlighter::AdvancedFilterHighlighter(QTextDocument *parent) : QSyntaxHighlighter(parent)
+AdvancedFilterHighlighter::AdvancedFilterHighlighter(QTextDocument *parent)
+    : QSyntaxHighlighter(parent)
 {
     RebuildRules();
 }
@@ -33,35 +34,43 @@ void AdvancedFilterHighlighter::RebuildRules()
 
     // Keywords: `\b` bounds reject `AND` inside identifiers like
     // `handle_or_fail`. Case-insensitive to match the grammar.
-    mBaseRules.push_back(Rule{
-        .pattern = QRegularExpression(
-            QStringLiteral("\\b(?:and|or|not|in)\\b"), QRegularExpression::CaseInsensitiveOption
-        ),
-        .format = keywordFormat,
-        .captureGroup = 0,
-    });
+    mBaseRules.push_back(
+        Rule{
+            .pattern = QRegularExpression(
+                QStringLiteral("\\b(?:and|or|not|in)\\b"), QRegularExpression::CaseInsensitiveOption
+            ),
+            .format = keywordFormat,
+            .captureGroup = 0,
+        }
+    );
 
     // Two-char operators come first so `>=` isn't half-consumed as `>`.
-    mBaseRules.push_back(Rule{
-        .pattern = QRegularExpression(QStringLiteral(">=|<=|[:~%><=]")),
-        .format = operatorFormat,
-        .captureGroup = 0,
-    });
+    mBaseRules.push_back(
+        Rule{
+            .pattern = QRegularExpression(QStringLiteral(">=|<=|[:~%><=]")),
+            .format = operatorFormat,
+            .captureGroup = 0,
+        }
+    );
 
     // Double-quoted strings with `\\.` escapes.
-    mOverlayRules.push_back(Rule{
-        .pattern = QRegularExpression(QStringLiteral("\"(?:\\\\.|[^\"\\\\])*\"")),
-        .format = literalFormat,
-        .captureGroup = 0,
-    });
+    mOverlayRules.push_back(
+        Rule{
+            .pattern = QRegularExpression(QStringLiteral("\"(?:\\\\.|[^\"\\\\])*\"")),
+            .format = literalFormat,
+            .captureGroup = 0,
+        }
+    );
 
     // Regex literals only after `~`, so `path:/var/log` stays plain.
     // Capture group 1 = `/.../` body, so leading `~` isn't styled.
-    mOverlayRules.push_back(Rule{
-        .pattern = QRegularExpression(QStringLiteral("~\\s*(/(?:\\\\.|[^/\\\\])*/)")),
-        .format = literalFormat,
-        .captureGroup = 1,
-    });
+    mOverlayRules.push_back(
+        Rule{
+            .pattern = QRegularExpression(QStringLiteral("~\\s*(/(?:\\\\.|[^/\\\\])*/)")),
+            .format = literalFormat,
+            .captureGroup = 1,
+        }
+    );
 }
 
 void AdvancedFilterHighlighter::highlightBlock(const QString &text)

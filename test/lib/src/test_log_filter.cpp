@@ -898,9 +898,7 @@ CompiledFilterExpression MakeEnumLeaf(
 
     CompiledFilterExpression expr;
     expr.node = CompiledFilterExpression::Leaf{
-        RowPredicate{
-            std::in_place_type<EnumRowPredicate>, columnIndex, std::span<const std::string_view>(views), dict
-        }
+        RowPredicate{std::in_place_type<EnumRowPredicate>, columnIndex, std::span<const std::string_view>(views), dict}
     };
     expr.referencedColumns.push_back(columnIndex);
     return expr;
@@ -1209,8 +1207,12 @@ TEST_CASE("EstimatedLeafCost: cheaper predicates rank below string predicates", 
     // Ordering is monotonic (relative to observed benchmark cost);
     // exact numbers don't matter but the ranks matter because
     // `CompileExpression` uses them to reorder children.
-    const RowPredicate boolPred{std::in_place_type<BoolRowPredicate>, size_t{0}, /*includeTrue=*/true,
-                                /*includeFalse=*/false};
+    const RowPredicate boolPred{
+        std::in_place_type<BoolRowPredicate>,
+        size_t{0},
+        /*includeTrue=*/true,
+        /*includeFalse=*/false
+    };
     const RowPredicate timePred{std::in_place_type<TimeRangeRowPredicate>, size_t{0}, int64_t{0}, int64_t{1}};
     const RowPredicate numericPred{
         std::in_place_type<NumericRangeRowPredicate>, size_t{0}, std::optional<double>{0.0}, std::optional<double>{1.0}

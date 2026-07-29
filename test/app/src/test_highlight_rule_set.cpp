@@ -576,8 +576,7 @@ private slots:
         std::vector<loglib::FilterExpression> andChildren;
         andChildren.push_back(loglib::MakeLeaf(std::move(leftLeaf)));
         andChildren.push_back(loglib::MakeLeaf(std::move(rightLeaf)));
-        const loglib::FilterExpression expr =
-            loglib::MakeNot(loglib::MakeAnd(std::move(andChildren)));
+        const loglib::FilterExpression expr = loglib::MakeNot(loglib::MakeAnd(std::move(andChildren)));
 
         const loglib::CompiledFilterExpression compiled = CompileExpression(expr, columns, /*table=*/nullptr);
 
@@ -678,8 +677,7 @@ private slots:
         orChildren.push_back(loglib::MakeLeaf(std::move(svcLeaf)));
         const loglib::FilterExpression orExpr = loglib::MakeOr(std::move(orChildren));
 
-        const loglib::CompiledFilterExpression compiledOr =
-            CompileExpression(orExpr, columns, /*table=*/nullptr);
+        const loglib::CompiledFilterExpression compiledOr = CompileExpression(orExpr, columns, /*table=*/nullptr);
         // Cheap-first ordering plus short-circuit accept means the
         // Or contains a match-all child; `IsMatchAllCompiled` only
         // catches the fully-collapsed shape, so assert the
@@ -689,11 +687,12 @@ private slots:
         bool sawMatchAll = false;
         for (const auto &child : rootOr->children)
         {
-            if (loglib::IsMatchAllCompiled(child)) { sawMatchAll = true; }
+            if (loglib::IsMatchAllCompiled(child))
+            {
+                sawMatchAll = true;
+            }
         }
-        QVERIFY2(
-            sawMatchAll, "`Not{child=null}` inside an `Or` must materialise as a match-all child, not vanish"
-        );
+        QVERIFY2(sawMatchAll, "`Not{child=null}` inside an `Or` must materialise as a match-all child, not vanish");
     }
 };
 

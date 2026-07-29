@@ -456,8 +456,8 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
                             (filter.type == LeafType::Enumeration && isEnumLikeColumn) ||
                             (filter.type == LeafType::Boolean && column.type == ColumnType::Boolean) ||
                             (filter.type == LeafType::Number && isNumericColumn) ||
-                            (filter.type == LeafType::String && column.type != ColumnType::Time &&
-                             !isEnumLikeColumn && column.type != ColumnType::Boolean && !isNumericColumn);
+                            (filter.type == LeafType::String && column.type != ColumnType::Time && !isEnumLikeColumn &&
+                             column.type != ColumnType::Boolean && !isNumericColumn);
     if (!typesMatch)
     {
         return FilterValidationFailure{
@@ -473,9 +473,7 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
         if (!filter.filterBegin.has_value() && !filter.filterEnd.has_value())
         {
             return FilterValidationFailure{
-                .reason = FilterValidationReason::MissingTimeRange,
-                .row = resolvedRow,
-                .columnHeader = column.header
+                .reason = FilterValidationReason::MissingTimeRange, .row = resolvedRow, .columnHeader = column.header
             };
         }
         break;
@@ -483,9 +481,7 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
         if (!filter.filterMinValue.has_value() && !filter.filterMaxValue.has_value())
         {
             return FilterValidationFailure{
-                .reason = FilterValidationReason::MissingNumericRange,
-                .row = resolvedRow,
-                .columnHeader = column.header
+                .reason = FilterValidationReason::MissingNumericRange, .row = resolvedRow, .columnHeader = column.header
             };
         }
         break;
@@ -506,9 +502,7 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
         if (!filter.filterString.has_value() || !filter.matchType.has_value())
         {
             return FilterValidationFailure{
-                .reason = FilterValidationReason::MissingStringMatch,
-                .row = resolvedRow,
-                .columnHeader = column.header
+                .reason = FilterValidationReason::MissingStringMatch, .row = resolvedRow, .columnHeader = column.header
             };
         }
         break;
@@ -5283,8 +5277,7 @@ void MainWindow::MirrorSessionStateToConfiguration()
     // Copy by value: `SetExpression` below invalidates references
     // into `mModel->Configuration().expression`.
     const loglib::FilterExpression existing = mModel->Configuration().expression;
-    if (const auto *existingAnd = std::get_if<loglib::FilterExpression::And>(&existing.node);
-        existingAnd != nullptr)
+    if (const auto *existingAnd = std::get_if<loglib::FilterExpression::And>(&existing.node); existingAnd != nullptr)
     {
         for (const auto &child : existingAnd->children)
         {
@@ -5294,18 +5287,20 @@ void MainWindow::MirrorSessionStateToConfiguration()
             }
         }
     }
-    else if (std::holds_alternative<loglib::FilterExpression::Or>(existing.node) ||
-             std::holds_alternative<loglib::FilterExpression::Not>(existing.node))
+    else if (
+        std::holds_alternative<loglib::FilterExpression::Or>(existing.node) ||
+        std::holds_alternative<loglib::FilterExpression::Not>(existing.node)
+    )
     {
         newAnd.children.push_back(existing);
     }
-    else if (const auto *existingLeaf = std::get_if<loglib::FilterExpression::Leaf>(&existing.node);
-             existingLeaf != nullptr)
+    else if (
+        const auto *existingLeaf = std::get_if<loglib::FilterExpression::Leaf>(&existing.node); existingLeaf != nullptr
+    )
     {
-        const bool alreadyInSimple =
-            std::ranges::any_of(mSimpleLeaves, [&existingLeaf](const auto &entry) {
-                return entry.second == existingLeaf->rule;
-            });
+        const bool alreadyInSimple = std::ranges::any_of(mSimpleLeaves, [&existingLeaf](const auto &entry) {
+            return entry.second == existingLeaf->rule;
+        });
         if (!alreadyInSimple)
         {
             newAnd.children.push_back(existing);
@@ -6296,21 +6291,18 @@ void MainWindow::RebuildFiltersFromConfiguration()
     // GUI-only and regenerated here.
     std::vector<loglib::LeafRule> loadedFilters;
     const auto &loadedExpression = mModel->Configuration().expression;
-    if (const auto *rootAnd = std::get_if<loglib::FilterExpression::And>(&loadedExpression.node);
-        rootAnd != nullptr)
+    if (const auto *rootAnd = std::get_if<loglib::FilterExpression::And>(&loadedExpression.node); rootAnd != nullptr)
     {
         loadedFilters.reserve(rootAnd->children.size());
         for (const auto &child : rootAnd->children)
         {
-            if (const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&child.node);
-                leaf != nullptr)
+            if (const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&child.node); leaf != nullptr)
             {
                 loadedFilters.push_back(leaf->rule);
             }
         }
     }
-    else if (const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&loadedExpression.node);
-             leaf != nullptr)
+    else if (const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&loadedExpression.node); leaf != nullptr)
     {
         loadedFilters.push_back(leaf->rule);
     }
@@ -7225,10 +7217,7 @@ void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, boo
 }
 
 void MainWindow::AddFilter(
-    const QString &filterId,
-    const std::optional<loglib::LeafRule> &filter,
-    bool openEditor,
-    int initialColumn
+    const QString &filterId, const std::optional<loglib::LeafRule> &filter, bool openEditor, int initialColumn
 )
 {
     if (mModel->rowCount() == 0)
@@ -7346,8 +7335,7 @@ void MainWindow::AddFilter(
     {
         // Column keys are the wire identity; the editor needs a
         // live column index, so resolve once here and forward.
-        const int editorRow =
-            ResolveLeafColumnByKeys(resolvedFilter->columnKeys, mModel->Configuration().columns);
+        const int editorRow = ResolveLeafColumnByKeys(resolvedFilter->columnKeys, mModel->Configuration().columns);
         if (resolvedFilter->type == loglib::LeafRule::Type::Time)
         {
             // At least one bound must be set; the other side may be
@@ -7552,8 +7540,7 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
         rest.children.push_back(std::move(node));
     };
 
-    if (const auto *rootLeaf = std::get_if<loglib::FilterExpression::Leaf>(&result.node);
-        rootLeaf != nullptr)
+    if (const auto *rootLeaf = std::get_if<loglib::FilterExpression::Leaf>(&result.node); rootLeaf != nullptr)
     {
         if (isSimpleRepresentable(rootLeaf->rule))
         {
@@ -7564,8 +7551,7 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
             keepAsAdvanced(std::move(result));
         }
     }
-    else if (auto *rootAnd = std::get_if<loglib::FilterExpression::And>(&result.node);
-             rootAnd != nullptr)
+    else if (auto *rootAnd = std::get_if<loglib::FilterExpression::And>(&result.node); rootAnd != nullptr)
     {
         rest.children.reserve(rootAnd->children.size());
         for (auto &child : rootAnd->children)
@@ -7896,9 +7882,7 @@ QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
         // validation before they can reach the simple-mode surface.
         if (filter.filterString->empty())
         {
-            return filter.matchType == loglib::LeafRule::Match::Exactly
-                       ? QStringLiteral("\"\"")
-                       : tr("(unset)");
+            return filter.matchType == loglib::LeafRule::Match::Exactly ? QStringLiteral("\"\"") : tr("(unset)");
         }
         return QString::fromStdString(*filter.filterString);
     }
@@ -8211,9 +8195,8 @@ void MainWindow::UpdateFilters()
     // `CompiledFilterExpression` via the shared factory (handles
     // predicate construction, level-column expansion, and
     // cost-based ordering).
-    loglib::CompiledFilterExpression compiled = CompileExpression(
-        mModel->Configuration().expression, mModel->Configuration().columns, &mModel->Table()
-    );
+    loglib::CompiledFilterExpression compiled =
+        CompileExpression(mModel->Configuration().expression, mModel->Configuration().columns, &mModel->Table());
     mSortFilterProxyModel->SetFilterExpression(std::move(compiled));
 }
 

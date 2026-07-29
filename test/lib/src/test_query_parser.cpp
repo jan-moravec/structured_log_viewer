@@ -598,9 +598,7 @@ TEST_CASE("ParseQuery: out-of-range calendar fields are parse errors", "[query_p
 // ISO-8601 only allows `24:00:00` (start of the next day); everything
 // else with `hour == 24` should be a parse error the editor can
 // underline.
-TEST_CASE(
-    "ParseQuery: hour==24 is only valid at midnight", "[query_parser][regression]"
-)
+TEST_CASE("ParseQuery: hour==24 is only valid at midnight", "[query_parser][regression]")
 {
     SECTION("24:00:00 accepted as end-of-day spelling")
     {
@@ -619,10 +617,10 @@ TEST_CASE(
     SECTION("24:xx:yy with non-zero minute/second/fraction rejected")
     {
         const std::array<std::string_view, 4> queries{
-            "ts >= 2024-01-01T24:00:01Z",     // second != 0
-            "ts >= 2024-01-01T24:01:00Z",     // minute != 0
-            "ts >= 2024-01-01T24:59:59Z",     // both
-            "ts >= 2024-01-01T24:00:00.5Z",   // fractional != 0
+            "ts >= 2024-01-01T24:00:01Z",   // second != 0
+            "ts >= 2024-01-01T24:01:00Z",   // minute != 0
+            "ts >= 2024-01-01T24:59:59Z",   // both
+            "ts >= 2024-01-01T24:00:00.5Z", // fractional != 0
         };
         for (const auto &q : queries)
         {
@@ -639,9 +637,7 @@ TEST_CASE(
 // timestamp and copied only the `ts*` fields, so
 // `col in [2024-01-01T00:00:00Z..42]` became "on or after 2024-01-01"
 // with the upper bound gone. Users had no cue.
-TEST_CASE(
-    "ParseQuery: mixed-type range bounds are parse errors", "[query_parser][regression]"
-)
+TEST_CASE("ParseQuery: mixed-type range bounds are parse errors", "[query_parser][regression]")
 {
     SECTION("timestamp then number")
     {
@@ -657,9 +653,7 @@ TEST_CASE(
     }
     SECTION("both timestamps still parse")
     {
-        const auto parsed = ParseQuery(
-            "ts in [2024-01-01T00:00:00Z..2024-02-01T00:00:00Z]"
-        );
+        const auto parsed = ParseQuery("ts in [2024-01-01T00:00:00Z..2024-02-01T00:00:00Z]");
         REQUIRE(parsed.has_value());
     }
     SECTION("both numeric still parse")
@@ -677,10 +671,7 @@ TEST_CASE(
 // editor as `(a OR b)` -- the parens were harmless but visibly
 // jittered on every accept/reopen cycle. Peeling a single-child
 // `And` at the root removes the noise.
-TEST_CASE(
-    "FormatExpression: peels a single-child And wrapper at the root",
-    "[query_parser][pretty][regression]"
-)
+TEST_CASE("FormatExpression: peels a single-child And wrapper at the root", "[query_parser][pretty][regression]")
 {
     SECTION("And([Or([...])]) renders without redundant parens")
     {
@@ -773,7 +764,9 @@ TEST_CASE("ParseQuery: payload-less and inverted value lists are errors", "[quer
 // which `strftime` then rendered as `0000-00-00T00:00:00` -- a
 // silently wrong roundtrip. The guarded path falls back to an
 // `epoch_micros:<n>` marker instead.
-TEST_CASE("FormatExpression: extreme timestamp does not silently render as the epoch", "[query_parser][pretty][regression]")
+TEST_CASE(
+    "FormatExpression: extreme timestamp does not silently render as the epoch", "[query_parser][pretty][regression]"
+)
 {
     FilterExpression source;
     LeafRule rule;

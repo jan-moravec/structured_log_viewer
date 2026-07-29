@@ -509,9 +509,9 @@ constexpr size_t BITSET_MEMORY_CAP_BYTES = size_t{512} * 1024 * 1024;
     const size_t bytesPerBitset = (rowCount / 8) + 1;
     // `active_value` reads the live parallelism ceiling; floor at 1
     // for single-thread test runs.
-    const size_t workers =
-        std::max<size_t>(1, oneapi::tbb::global_control::active_value(
-                                oneapi::tbb::global_control::max_allowed_parallelism));
+    const size_t workers = std::max<size_t>(
+        1, oneapi::tbb::global_control::active_value(oneapi::tbb::global_control::max_allowed_parallelism)
+    );
     const size_t bytes = (shape.uniqueLeafCount + workers) * bytesPerBitset;
     return bytes <= BITSET_MEMORY_CAP_BYTES;
 }
@@ -522,7 +522,8 @@ class RowBitset
 {
 public:
     RowBitset() = default;
-    explicit RowBitset(size_t rowCount) : mRowCount(rowCount), mWords(WordCount(rowCount), 0U)
+    explicit RowBitset(size_t rowCount)
+        : mRowCount(rowCount), mWords(WordCount(rowCount), 0U)
     {
     }
 
@@ -760,8 +761,7 @@ RowBitset EvaluateExpressionBitset(
                     all.FillTrue();
                     return all;
                 }
-                RowBitset inner =
-                    EvaluateExpressionBitset(*node.child, leafBitsets, leafSlots, leafCursor, rowCount);
+                RowBitset inner = EvaluateExpressionBitset(*node.child, leafBitsets, leafSlots, leafCursor, rowCount);
                 inner.InvertInPlace();
                 return inner;
             }
@@ -862,9 +862,7 @@ std::vector<size_t> FilterAcceptedRows(const LogTable &table, const CompiledFilt
             }
             else
             {
-                leafSlots.push_back(
-                    static_cast<std::size_t>(std::distance(uniquePredicates.begin(), it))
-                );
+                leafSlots.push_back(static_cast<std::size_t>(std::distance(uniquePredicates.begin(), it)));
             }
         }
 

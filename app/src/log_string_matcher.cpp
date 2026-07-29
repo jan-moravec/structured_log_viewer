@@ -110,10 +110,7 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(const QString &pat
             // hand-edited config or a bypass. Warn and return
             // match-none: visibly wrong beats silently permissive.
             qCWarning(logMatcher).noquote()
-                << "MakeStringMatcher: invalid regular expression"
-                << pattern
-                << "-"
-                << regex.errorString();
+                << "MakeStringMatcher: invalid regular expression" << pattern << "-" << regex.errorString();
             return [](std::string_view) { return false; };
         }
         PrimeRegex(regex);
@@ -129,4 +126,3 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(const QString &pat
     }
     return [](std::string_view) { return false; };
 }
-

@@ -855,8 +855,8 @@ TEST_CASE(
 
     WARN(
         "FilterAcceptedRows AND(4 enum leaves) over " << ROW_COUNT << " rows: mean=" << Ms(mean).count()
-                                                      << " ms (low=" << Ms(low).count()
-                                                      << ", high=" << Ms(high).count() << "), accepted=" << accepted
+                                                      << " ms (low=" << Ms(low).count() << ", high=" << Ms(high).count()
+                                                      << "), accepted=" << accepted
     );
 
     // A flat `And` stays on the visit path -- `ShouldUseBitsetPath`
@@ -933,10 +933,9 @@ TEST_CASE(
     const auto high = *std::ranges::max_element(elapsed);
 
     WARN(
-        "FilterAcceptedRows AND(OR, NOT) [bitset path] over " << ROW_COUNT << " rows: mean=" << Ms(mean).count()
-                                                              << " ms (low=" << Ms(low).count()
-                                                              << ", high=" << Ms(high).count()
-                                                              << "), accepted=" << accepted
+        "FilterAcceptedRows AND(OR, NOT) [bitset path] over "
+        << ROW_COUNT << " rows: mean=" << Ms(mean).count() << " ms (low=" << Ms(low).count()
+        << ", high=" << Ms(high).count() << "), accepted=" << accepted
     );
 
     // Bitset path is where the OR-heavy workload's headline win

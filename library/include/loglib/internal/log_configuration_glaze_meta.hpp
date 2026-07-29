@@ -175,11 +175,12 @@ template <> struct glz::meta<loglib::FilterExpression::Not>
 // Internally-tagged variant: the discriminator `"kind"` lives on
 // the same object as the payload fields. Names are stable on disk;
 // append new alternatives at the end, never reorder.
-template <> struct glz::meta<std::variant<
-                       loglib::FilterExpression::Leaf,
-                       loglib::FilterExpression::And,
-                       loglib::FilterExpression::Or,
-                       loglib::FilterExpression::Not>>
+template <>
+struct glz::meta<std::variant<
+    loglib::FilterExpression::Leaf,
+    loglib::FilterExpression::And,
+    loglib::FilterExpression::Or,
+    loglib::FilterExpression::Not>>
 {
     static constexpr std::string_view tag = "kind";
     static constexpr auto ids = std::array{"leaf", "and", "or", "not"};

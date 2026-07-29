@@ -123,10 +123,12 @@ struct FilterExpression
         std::unique_ptr<FilterExpression> child;
 
         Not() = default;
-        explicit Not(FilterExpression c) : child(std::make_unique<FilterExpression>(std::move(c)))
+        explicit Not(FilterExpression c)
+            : child(std::make_unique<FilterExpression>(std::move(c)))
         {
         }
-        Not(const Not &other) : child(other.child ? std::make_unique<FilterExpression>(*other.child) : nullptr)
+        Not(const Not &other)
+            : child(other.child ? std::make_unique<FilterExpression>(*other.child) : nullptr)
         {
         }
         Not &operator=(const Not &other)

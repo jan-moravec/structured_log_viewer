@@ -84,8 +84,7 @@ struct RegexIssue
             {
                 const auto &rule = node.rule;
                 if (rule.type != loglib::LeafRule::Type::String ||
-                    rule.matchType != loglib::LeafRule::Match::RegularExpression ||
-                    !rule.filterString.has_value())
+                    rule.matchType != loglib::LeafRule::Match::RegularExpression || !rule.filterString.has_value())
                 {
                     return std::nullopt;
                 }
@@ -97,8 +96,9 @@ struct RegexIssue
                 }
                 return RegexIssue{.pattern = pattern, .errorText = probe.errorString()};
             }
-            else if constexpr (std::is_same_v<T, loglib::FilterExpression::And> ||
-                               std::is_same_v<T, loglib::FilterExpression::Or>)
+            else if constexpr (
+                std::is_same_v<T, loglib::FilterExpression::And> || std::is_same_v<T, loglib::FilterExpression::Or>
+            )
             {
                 for (const auto &child : node.children)
                 {
@@ -125,7 +125,8 @@ struct RegexIssue
 
 } // namespace
 
-AdvancedFilterEditor::AdvancedFilterEditor(QWidget *parent) : QDialog(parent)
+AdvancedFilterEditor::AdvancedFilterEditor(QWidget *parent)
+    : QDialog(parent)
 {
     setObjectName(QStringLiteral("advancedFilterEditor"));
     setWindowTitle(tr("Advanced Filter"));
@@ -308,9 +309,8 @@ void AdvancedFilterEditor::HighlightErrorAt(const QString &queryText, std::size_
     // Query text is UI-bounded (a single dialog input); narrowing
     // the code-unit count to `int` is safe and matches Qt's
     // `QTextCursor::setPosition` argument type.
-    const int codeUnitOffset = static_cast<int>(
-        QString::fromUtf8(utf8.constData(), static_cast<qsizetype>(clampedByteOffset)).size()
-    );
+    const int codeUnitOffset =
+        static_cast<int>(QString::fromUtf8(utf8.constData(), static_cast<qsizetype>(clampedByteOffset)).size());
     const int textSize = static_cast<int>(queryText.size());
     const int selectStart = std::min(codeUnitOffset, textSize);
     // For a caret at EOF, back up one glyph so at least one

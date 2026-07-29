@@ -55,7 +55,7 @@ constexpr std::size_t ISO_TIME_HHMM_LEN = 5;
 constexpr int MONTHS_PER_YEAR = 12;
 constexpr int FEB_DAYS_LEAP = 29;
 constexpr int FEB_DAYS_NORMAL = 28;
-constexpr int HOUR_MAX_INCLUSIVE = 24;   // ISO end-of-day `24:00:00`
+constexpr int HOUR_MAX_INCLUSIVE = 24; // ISO end-of-day `24:00:00`
 constexpr int MINUTE_MAX_INCLUSIVE = 59;
 constexpr int SECOND_MAX_INCLUSIVE = 60; // ISO leap second `:60`
 constexpr int TZ_HOUR_MAX_INCLUSIVE = 23;
@@ -87,30 +87,30 @@ constexpr std::size_t NUMBER_TO_CHARS_BUFFER_SIZE = 64;
 /// Tokens emitted by the lexer.
 enum class TokenKind : std::uint8_t
 {
-    Ident,      ///< bareword identifier (column or value)
-    Quoted,     ///< "quoted string" (`text` = decoded body)
-    Regex,      ///< /regex body/ (only produced after `~`)
-    Number,     ///< numeric literal (`text` = raw digits)
+    Ident,  ///< bareword identifier (column or value)
+    Quoted, ///< "quoted string" (`text` = decoded body)
+    Regex,  ///< /regex body/ (only produced after `~`)
+    Number, ///< numeric literal (`text` = raw digits)
     True,
     False,
     KwAnd,
     KwOr,
     KwNot,
     KwIn,
-    Colon,      ///< `:`
-    Eq,         ///< `=`
-    Tilde,      ///< `~`
-    Percent,    ///< `%`
-    Gt,         ///< `>`
-    GtEq,       ///< `>=`
-    Lt,         ///< `<`
-    LtEq,       ///< `<=`
-    LParen,     ///< `(`
-    RParen,     ///< `)`
-    LBracket,   ///< `[`
-    RBracket,   ///< `]`
-    Comma,      ///< `,`
-    DotDot,     ///< `..`
+    Colon,    ///< `:`
+    Eq,       ///< `=`
+    Tilde,    ///< `~`
+    Percent,  ///< `%`
+    Gt,       ///< `>`
+    GtEq,     ///< `>=`
+    Lt,       ///< `<`
+    LtEq,     ///< `<=`
+    LParen,   ///< `(`
+    RParen,   ///< `)`
+    LBracket, ///< `[`
+    RBracket, ///< `]`
+    Comma,    ///< `,`
+    DotDot,   ///< `..`
     End,
 };
 
@@ -138,7 +138,8 @@ struct Token
 class Lexer
 {
 public:
-    explicit Lexer(std::string_view input) noexcept : mInput(input)
+    explicit Lexer(std::string_view input) noexcept
+        : mInput(input)
     {
     }
 
@@ -496,8 +497,9 @@ private:
                     else if (tzCh == '+' || tzCh == '-')
                     {
                         ++cursor;
-                        while (cursor < mInput.size() && (mInput[cursor] == ':' ||
-                                                          (std::isdigit(static_cast<unsigned char>(mInput[cursor])) != 0)))
+                        while (
+                            cursor < mInput.size() &&
+                            (mInput[cursor] == ':' || (std::isdigit(static_cast<unsigned char>(mInput[cursor])) != 0)))
                         {
                             ++cursor;
                         }
@@ -533,8 +535,7 @@ private:
             ++mPos;
         }
         // Decimal part -- but reject `1..2` so `..` stays a token.
-        if (mPos < mInput.size() && mInput[mPos] == '.' &&
-            (mPos + 1 >= mInput.size() || mInput[mPos + 1] != '.'))
+        if (mPos < mInput.size() && mInput[mPos] == '.' && (mPos + 1 >= mInput.size() || mInput[mPos + 1] != '.'))
         {
             ++mPos;
             while (mPos < mInput.size() && (std::isdigit(static_cast<unsigned char>(mInput[mPos])) != 0))
@@ -835,8 +836,7 @@ private:
                     tzM = *tzMinutes;
                     cursor += 2;
                 }
-                else if (cursor + 1 < text.size() &&
-                         (std::isdigit(static_cast<unsigned char>(text[cursor])) != 0))
+                else if (cursor + 1 < text.size() && (std::isdigit(static_cast<unsigned char>(text[cursor])) != 0))
                 {
                     // `+HHMM` compact form: two more digits.
                     const auto tzMinutes = readInt(text, cursor, 2);
@@ -865,12 +865,10 @@ private:
     const long long era = (y >= 0 ? y : y - 399) / 400;
     const auto yoe = static_cast<unsigned long long>(y - (era * 400));
     const long long m = *month;
-    const auto doy =
-        static_cast<unsigned long long>((((153LL * (m + ((m > 2) ? -3 : 9))) + 2) / 5) + (*day - 1));
+    const auto doy = static_cast<unsigned long long>((((153LL * (m + ((m > 2) ? -3 : 9))) + 2) / 5) + (*day - 1));
     const unsigned long long doe = (yoe * 365) + (yoe / 4) - (yoe / 100) + doy;
     const long long daysSinceEpoch = (era * 146097) + static_cast<long long>(doe) - 719468;
-    const long long secondsSinceEpoch = (daysSinceEpoch * 86400LL) +
-                                        (static_cast<long long>(hour) * 3600LL) +
+    const long long secondsSinceEpoch = (daysSinceEpoch * 86400LL) + (static_cast<long long>(hour) * 3600LL) +
                                         (static_cast<long long>(minute) * 60LL) + static_cast<long long>(second) -
                                         offsetSeconds;
     // Bare-date: `hour`/`minute`/`second` stay 0 = midnight UTC.
@@ -919,9 +917,7 @@ private:
         }
     }
     // Reserved keywords must be quoted so they don't relex as tokens.
-    static constexpr std::array<std::string_view, 6> RESERVED{
-        "and", "or", "not", "in", "true", "false"
-    };
+    static constexpr std::array<std::string_view, 6> RESERVED{"and", "or", "not", "in", "true", "false"};
     return std::ranges::any_of(RESERVED, [text](std::string_view keyword) {
         return EqualsIgnoreCaseAscii(text, keyword);
     });
@@ -993,13 +989,13 @@ struct CivilDate
 {
     z += CIVIL_DAYS_EPOCH_OFFSET;
     const std::int64_t era = (z >= 0 ? z : z - 146096) / 146097;
-    const auto doe = static_cast<std::uint64_t>(z - (era * 146097));           // [0, 146096]
-    const std::uint64_t yoe =                                                  // [0, 399]
+    const auto doe = static_cast<std::uint64_t>(z - (era * 146097)); // [0, 146096]
+    const std::uint64_t yoe =                                        // [0, 399]
         (doe - (doe / 1460) + (doe / 36524) - (doe / 146096)) / 365;
     const std::int64_t y = static_cast<std::int64_t>(yoe) + (era * 400);
-    const std::uint64_t doy = doe - ((365 * yoe) + (yoe / 4) - (yoe / 100));    // [0, 365]
-    const std::uint64_t mp = ((5 * doy) + 2) / 153;                             // [0, 11]
-    const auto d = static_cast<unsigned>(doy - (((153 * mp) + 2) / 5) + 1);     // [1, 31]
+    const std::uint64_t doy = doe - ((365 * yoe) + (yoe / 4) - (yoe / 100)); // [0, 365]
+    const std::uint64_t mp = ((5 * doy) + 2) / 153;                          // [0, 11]
+    const auto d = static_cast<unsigned>(doy - (((153 * mp) + 2) / 5) + 1);  // [1, 31]
     // Shift `mp` (March-based) back to a January-based month.
     // Signed arithmetic; the canonical unsigned-wrap form works but
     // is subtle.
@@ -1074,7 +1070,8 @@ struct CivilDate
 class Parser
 {
 public:
-    explicit Parser(std::string_view input) : mLexer(input), mInput(input)
+    explicit Parser(std::string_view input)
+        : mLexer(input), mInput(input)
     {
     }
 
@@ -1410,8 +1407,9 @@ private:
         }
     }
 
-    [[nodiscard]] std::expected<FilterExpression, QueryParseError>
-    FinishStringLeaf(LeafRule rule, LeafRule::Match matchType)
+    [[nodiscard]] std::expected<FilterExpression, QueryParseError> FinishStringLeaf(
+        LeafRule rule, LeafRule::Match matchType
+    )
     {
         if (mLookahead.kind != TokenKind::Quoted && mLookahead.kind != TokenKind::Ident &&
             mLookahead.kind != TokenKind::Number && mLookahead.kind != TokenKind::True &&
@@ -1647,8 +1645,9 @@ private:
         return FinishListLeaf(std::move(rule), firstTok);
     }
 
-    [[nodiscard]] std::expected<FilterExpression, QueryParseError>
-    FinishRangeUpper(LeafRule rule, std::optional<Token> firstTok)
+    [[nodiscard]] std::expected<FilterExpression, QueryParseError> FinishRangeUpper(
+        LeafRule rule, std::optional<Token> firstTok
+    )
     {
         std::optional<Token> secondTok;
         if (mLookahead.kind == TokenKind::Number || mLookahead.kind == TokenKind::Ident ||
@@ -1725,8 +1724,7 @@ private:
         // Reject mixed-type bounds up-front. Otherwise the "Time or
         // Number" branch below picks Time and silently drops the
         // numeric bound (a hidden half-open range).
-        if ((tsMin.has_value() && numMax.has_value()) ||
-            (numMin.has_value() && tsMax.has_value()))
+        if ((tsMin.has_value() && numMax.has_value()) || (numMin.has_value() && tsMax.has_value()))
         {
             QueryParseError err;
             err.offset = secondOffset;
@@ -1759,15 +1757,12 @@ private:
         return MakeLeaf(std::move(rule));
     }
 
-    [[nodiscard]] std::expected<FilterExpression, QueryParseError>
-    FinishListLeaf(LeafRule rule, const Token &firstTok)
+    [[nodiscard]] std::expected<FilterExpression, QueryParseError> FinishListLeaf(LeafRule rule, const Token &firstTok)
     {
         // All-boolean list (`[true, false]`) is the printer's wire
         // form for `Type::Boolean`; detect that so the round-trip
         // preserves the type. Mixed lists stay `Enumeration`.
-        const auto isBoolKind = [](TokenKind k) {
-            return k == TokenKind::True || k == TokenKind::False;
-        };
+        const auto isBoolKind = [](TokenKind k) { return k == TokenKind::True || k == TokenKind::False; };
         bool allBool = isBoolKind(firstTok.kind);
         rule.filterValues.push_back(firstTok.text);
         while (mLookahead.kind == TokenKind::Comma)
@@ -2160,8 +2155,7 @@ std::string FormatExpression(const FilterExpression &expression)
     while (true)
     {
         const auto *andNode = std::get_if<FilterExpression::And>(&effective->node);
-        if (andNode == nullptr || andNode->children.size() != 1 ||
-            IsMatchAll(andNode->children.front()))
+        if (andNode == nullptr || andNode->children.size() != 1 || IsMatchAll(andNode->children.front()))
         {
             break;
         }

@@ -132,9 +132,7 @@ std::optional<loglib::RowPredicate> CompileLeaf(
         {
             return std::nullopt;
         }
-        return loglib::RowPredicate{
-            std::in_place_type<loglib::BoolRowPredicate>, column, includeTrue, includeFalse
-        };
+        return loglib::RowPredicate{std::in_place_type<loglib::BoolRowPredicate>, column, includeTrue, includeFalse};
     }
     case T::Enumeration:
     {

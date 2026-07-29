@@ -324,8 +324,6 @@ struct CompiledFilterExpression
 ///
 /// Threading: per-worker thread-local buckets/bitsets; the caller
 /// coalesces and sorts. Every predicate is read-only-safe.
-[[nodiscard]] std::vector<size_t> FilterAcceptedRows(
-    const LogTable &table, const CompiledFilterExpression &expression
-);
+[[nodiscard]] std::vector<size_t> FilterAcceptedRows(const LogTable &table, const CompiledFilterExpression &expression);
 
 } // namespace loglib

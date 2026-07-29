@@ -520,18 +520,18 @@ Multiple simple-mode filters combine with **AND** — a row shows only if every 
 
 **Leaves** — the atoms of a query — pair a column with an operator and a value:
 
-| Operator     | Meaning                                                   | Example                                          |
-| ------------ | --------------------------------------------------------- | ------------------------------------------------ |
-| `col:value`  | *Contains* — substring match for strings                  | `service:auth`                                   |
-| `col="..."`  | *Exactly* — quoted string, exact match                    | `service="auth-service"`                         |
-| `col~/.../`  | *Regular expression* (Qt regex flavour)                   | `msg ~ /err(or)?/`                               |
-| `col%"..."`  | *Wildcard* (`*` / `?` glob)                               | `path % "*.log"`                                 |
-| `col=42`     | Numeric equality (bare number, no quotes)                 | `latency=42`                                     |
-| `col>=N`     | Numeric one-sided (`>`, `>=`, `<`, `<=`)                  | `latency >= 100`                                 |
-| `col=true`   | Boolean equality                                          | `succeeded=false`                                |
-| `col IN […]` | Enum multi-select                                         | `level IN [Warn, Error]`                         |
-| `col IN [a..b]` | Range: numeric or ISO timestamp                        | `latency IN [10..100]`, `ts IN [2024-01-01T00:00:00Z..2024-02-01T00:00:00Z]` |
-| `col >= ISO` | Time comparison against an ISO-8601 literal               | `ts >= 2024-01-02T00:00:00Z`                     |
+| Operator        | Meaning                                     | Example                                                                      |
+| --------------- | ------------------------------------------- | ---------------------------------------------------------------------------- |
+| `col:value`     | *Contains* — substring match for strings    | `service:auth`                                                               |
+| `col="..."`     | *Exactly* — quoted string, exact match      | `service="auth-service"`                                                     |
+| `col~/.../`     | *Regular expression* (Qt regex flavour)     | `msg ~ /err(or)?/`                                                           |
+| `col%"..."`     | *Wildcard* (`*` / `?` glob)                 | `path % "*.log"`                                                             |
+| `col=42`        | Numeric equality (bare number, no quotes)   | `latency=42`                                                                 |
+| `col>=N`        | Numeric one-sided (`>`, `>=`, `<`, `<=`)    | `latency >= 100`                                                             |
+| `col=true`      | Boolean equality                            | `succeeded=false`                                                            |
+| `col IN […]`    | Enum multi-select                           | `level IN [Warn, Error]`                                                     |
+| `col IN [a..b]` | Range: numeric or ISO timestamp             | `latency IN [10..100]`, `ts IN [2024-01-01T00:00:00Z..2024-02-01T00:00:00Z]` |
+| `col >= ISO`    | Time comparison against an ISO-8601 literal | `ts >= 2024-01-02T00:00:00Z`                                                 |
 
 Column names are bare identifiers by default; wrap in double quotes to preserve whitespace (`"span id":"abc def"`). Regex delimiters are literal `/` — no escaping needed inside them apart from `\/`.
 
