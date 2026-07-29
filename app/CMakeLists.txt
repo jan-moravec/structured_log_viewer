@@ -62,6 +62,8 @@ set(PROJECT_SOURCES
     include/filter_editor.hpp
     src/advanced_filter_editor.cpp
     include/advanced_filter_editor.hpp
+    src/advanced_filter_highlighter.cpp
+    include/advanced_filter_highlighter.hpp
     src/preferences_editor.cpp
     include/preferences_editor.hpp
     src/theme_control.cpp

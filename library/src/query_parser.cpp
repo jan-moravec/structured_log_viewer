@@ -1876,7 +1876,7 @@ void AppendLeaf(const LeafRule &rule, std::string &out)
         }
         else if (hasMin && hasMax)
         {
-            out.append(" in [");
+            out.append(" IN [");
             out.append(FormatNumber(*rule.filterMinValue));
             out.append("..");
             out.append(FormatNumber(*rule.filterMaxValue));
@@ -1897,7 +1897,7 @@ void AppendLeaf(const LeafRule &rule, std::string &out)
             // No bounds -> inert. Emit a canonical placeholder so
             // the round-trip re-produces the same tree; the compile
             // step drops the leaf.
-            out.append(" in []");
+            out.append(" IN []");
         }
         break;
     }
@@ -1907,7 +1907,7 @@ void AppendLeaf(const LeafRule &rule, std::string &out)
         const bool hasEnd = rule.filterEnd.has_value();
         if (hasBegin && hasEnd)
         {
-            out.append(" in [");
+            out.append(" IN [");
             out.append(FormatTimestampMicros(*rule.filterBegin));
             out.append("..");
             out.append(FormatTimestampMicros(*rule.filterEnd));
@@ -1925,7 +1925,7 @@ void AppendLeaf(const LeafRule &rule, std::string &out)
         }
         else
         {
-            out.append(" in []");
+            out.append(" IN []");
         }
         break;
     }
@@ -1954,7 +1954,7 @@ void AppendLeaf(const LeafRule &rule, std::string &out)
         }
         if (hasTrue && hasFalse)
         {
-            out.append(" in [true, false]");
+            out.append(" IN [true, false]");
         }
         else if (hasTrue)
         {
@@ -1966,12 +1966,12 @@ void AppendLeaf(const LeafRule &rule, std::string &out)
         }
         else
         {
-            out.append(" in []");
+            out.append(" IN []");
         }
         break;
     }
     case LeafRule::Type::Enumeration:
-        out.append(" in [");
+        out.append(" IN [");
         for (std::size_t i = 0; i < rule.filterValues.size(); ++i)
         {
             if (i != 0)

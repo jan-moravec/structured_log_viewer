@@ -514,7 +514,7 @@ Multiple simple-mode filters combine with **AND** — a row shows only if every 
 
 **Filters → Advanced Filter…** opens a text editor for boolean filter expressions. Compared to the simple-mode entry that only combines rules with AND, the advanced editor accepts `AND` / `OR` / `NOT` in any nesting, plus a small query language that mirrors what you would type in a Kibana / Grafana / lnav filter box.
 
-- Every keystroke re-parses. The status label beneath the field shows either **Parsed OK: …** with the pretty-printed canonical form of the expression, or **Parse error at position N: …** with a caret offset into the text.
+- Every keystroke re-parses. The status label beneath the field shows either **Parsed OK.** (or **Parsed OK — will save as: …** when the pretty-printer normalises the input, e.g. lower-cases `in` to `IN` or trims whitespace), or **Parse error at position N: …** with a caret offset into the text.
 - **OK** is enabled only when the query parses. On accept the expression replaces the current filter tree wholesale; the per-column simple-mode entries in the Filters menu are cleared (the new tree may contain OR / NOT structure that the simple menu cannot represent one entry at a time).
 - Leave the field empty to match every row (equivalent to **Filters → Clear All**).
 
@@ -529,22 +529,22 @@ Multiple simple-mode filters combine with **AND** — a row shows only if every 
 | `col=42`     | Numeric equality (bare number, no quotes)                 | `latency=42`                                     |
 | `col>=N`     | Numeric one-sided (`>`, `>=`, `<`, `<=`)                  | `latency >= 100`                                 |
 | `col=true`   | Boolean equality                                          | `succeeded=false`                                |
-| `col in […]` | Enum multi-select                                         | `level in [Warn, Error]`                         |
-| `col in [a..b]` | Range: numeric or ISO timestamp                        | `latency in [10..100]`, `ts in [2024-01-01T00:00:00Z..2024-02-01T00:00:00Z]` |
+| `col IN […]` | Enum multi-select                                         | `level IN [Warn, Error]`                         |
+| `col IN [a..b]` | Range: numeric or ISO timestamp                        | `latency IN [10..100]`, `ts IN [2024-01-01T00:00:00Z..2024-02-01T00:00:00Z]` |
 | `col >= ISO` | Time comparison against an ISO-8601 literal               | `ts >= 2024-01-02T00:00:00Z`                     |
 
 Column names are bare identifiers by default; wrap in double quotes to preserve whitespace (`"span id":"abc def"`). Regex delimiters are literal `/` — no escaping needed inside them apart from `\/`.
 
 String **values are matched case-sensitively** (`:`, `=`, `%`, and `~` alike), the same as the simple-mode filter dialog. Use a regex with an inline flag when you need to ignore case — `msg ~ /(?i)timeout/`. Keywords, column-name resolution, and enum value aliases are all case-insensitive; only the value comparison is not.
 
-Value lists and ranges must carry a payload: `col in []` and `col in [..]` are parse errors rather than silently matching everything, as is an inverted range like `latency in [100..10]`.
+Value lists and ranges must carry a payload: `col IN []` and `col IN [..]` are parse errors rather than silently matching everything, as is an inverted range like `latency IN [100..10]`.
 
-**Combining leaves.** Use `AND`, `OR`, `NOT` (case-insensitive) or their symbolic aliases `&&`, `||`, `!`. Parentheses group. Adjacent leaves without an explicit operator combine as implicit **AND** — so `service:auth level:error` is shorthand for `service:auth AND level:error`, matching simple-mode behaviour. Precedence is the usual `NOT` > `AND` > `OR`, so `a AND b OR c` parses as `(a AND b) OR c`.
+**Combining leaves.** Use `AND`, `OR`, `NOT`, `IN` (all case-insensitive) or the symbolic aliases `&&`, `||`, `!` for the connectives. Parentheses group. Adjacent leaves without an explicit operator combine as implicit **AND** — so `service:auth level:error` is shorthand for `service:auth AND level:error`, matching simple-mode behaviour. Precedence is the usual `NOT` > `AND` > `OR`, so `a AND b OR c` parses as `(a AND b) OR c`. The pretty printer canonicalises all four keywords to uppercase in its output.
 
 **Examples.**
 
 ```text
-service:auth AND level in [Warn, Error]
+service:auth AND level IN [Warn, Error]
 (service:auth OR service:db) AND NOT msg:heartbeat
 ts >= 2024-01-01T00:00:00Z AND latency > 500
 NOT service:auth

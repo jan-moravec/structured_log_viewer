@@ -1,5 +1,6 @@
 #include "advanced_filter_editor.hpp"
 
+#include "advanced_filter_highlighter.hpp"
 #include "theme_control.hpp"
 
 #include <loglib/filter_expression.hpp>
@@ -29,6 +30,21 @@
 
 namespace
 {
+
+/// Initial dialog geometry. Wider than Qt's default `sizeHint` so
+/// the help table plus a realistic query -- e.g. a full ISO
+/// timestamp range or an `OR` chain of several leaves -- fit on
+/// one line without wrapping. Matches the width used by the
+/// sibling `ConfigurationDiagnosticsDialog`.
+constexpr int DIALOG_INITIAL_WIDTH_PX = 720;
+constexpr int DIALOG_INITIAL_HEIGHT_PX = 380;
+/// Prevent the user from shrinking the dialog below the point
+/// where the help table starts wrapping. The value keeps the
+/// widest table row (`latency > 100` + its gloss) on a single
+/// line while still allowing a reasonably compact layout on
+/// small displays.
+constexpr int DIALOG_MINIMUM_WIDTH_PX = 480;
+constexpr int DIALOG_MINIMUM_HEIGHT_PX = 300;
 
 /// `FormatExpression` renders match-all as the empty string
 /// already, so this is currently equivalent to a direct call --
@@ -122,6 +138,13 @@ AdvancedFilterEditor::AdvancedFilterEditor(QWidget *parent) : QDialog(parent)
 {
     setObjectName(QStringLiteral("advancedFilterEditor"));
     setWindowTitle(tr("Advanced Filter"));
+    // Explicit initial size + floor so the help table and typical
+    // queries fit without immediate wrapping. Without this the
+    // dialog defaulted to `sizeHint`, which packed the tallest
+    // widget (the four-row query editor) tightly and produced a
+    // ~370 px wide window that wrapped every help-table row.
+    resize(DIALOG_INITIAL_WIDTH_PX, DIALOG_INITIAL_HEIGHT_PX);
+    setMinimumSize(DIALOG_MINIMUM_WIDTH_PX, DIALOG_MINIMUM_HEIGHT_PX);
     SetupLayout();
     ReparseAndUpdate();
 }
@@ -145,20 +168,57 @@ void AdvancedFilterEditor::SetupLayout()
     // wrap into a readable block instead of scrolling horizontally.
     const int approxRowHeight = QFontMetrics(mQueryEdit->font()).lineSpacing();
     mQueryEdit->setMinimumHeight(approxRowHeight * 4);
+    // Live syntax highlighting -- keywords, operator punctuation,
+    // and quoted / regex literals get their own formats so the
+    // user can tell a keyword from a column name at a glance.
+    // Parented to the document; Qt manages the lifetime.
+    new AdvancedFilterHighlighter(mQueryEdit->document());
     layout->addWidget(mQueryEdit);
 
     // Concise operator summary so the user doesn't have to leave the
     // dialog. Spelled out inline rather than hoisted into a
     // `constexpr` string: `lupdate` only extracts `tr()` arguments
     // that are literals, so `tr(HELP_TEXT)` compiled fine but left
-    // the block permanently untranslatable.
+    // the block permanently untranslatable. Uses Qt rich text --
+    // `QLabel` auto-detects the HTML tags and renders bold /
+    // monospace / italic accordingly.
+    //
+    // Two-column HTML table so the italic gloss aligns vertically
+    // regardless of how wide each concrete example is (the previous
+    // inline `<br>` layout let each row's gloss start at a
+    // different horizontal position, which read as "all over the
+    // place"). The example column is monospace so operators /
+    // brackets align; the gloss column is italic so the reader can
+    // tell "what the operator does" from "what you actually type".
+    // The intro / grammar sentence sits *above* the table -- a
+    // single line that answers "what am I looking at?" (leaves
+    // combined by boolean connectives) and "what happens if I
+    // leave it blank?", so the reader gets one paragraph of
+    // context, then a scannable reference table underneath.
     mHelpLabel = new QLabel(
-        tr("Operators: col:contains, col=\"exact\", col~/regex/, col%\"wild\", col>N, col<=N,\n"
-           "col in [a,b,c] (enum) or col in [min..max] (numeric / ISO time range).\n"
-           "Combine with AND / OR / NOT and parentheses. Leave empty to match all rows."),
+        tr("Combine <b>leaves</b> (column, operator, value &mdash; see below) with "
+           "<b>AND</b> / <b>OR</b> / <b>NOT</b> / <b>IN</b> (case-insensitive) and parentheses. "
+           "Leave empty to match every row."
+           "<table cellspacing='0' cellpadding='2'>"
+           "<tr><td><code><b>service</b>:auth</code></td>"
+           "<td><i>substring match (contains)</i></td></tr>"
+           "<tr><td><code><b>service</b>=\"auth-svc\"</code></td>"
+           "<td><i>exact match (quoted for spaces)</i></td></tr>"
+           "<tr><td><code><b>msg</b> ~ /err(or)?/</code></td>"
+           "<td><i>regular expression</i></td></tr>"
+           "<tr><td><code><b>path</b> % \"*.log\"</code></td>"
+           "<td><i>wildcard glob (<code>*</code> <code>?</code>)</i></td></tr>"
+           "<tr><td><code><b>latency</b> &gt; 100</code></td>"
+           "<td><i>numeric or ISO-time compare (=, &gt;, &gt;=, &lt;, &lt;=)</i></td></tr>"
+           "<tr><td><code><b>level</b> IN [Warn, Error]</code></td>"
+           "<td><i>enum multi-select</i></td></tr>"
+           "<tr><td><code><b>latency</b> IN [10..100]</code></td>"
+           "<td><i>numeric or ISO-time range</i></td></tr>"
+           "</table>"),
         this
     );
     mHelpLabel->setObjectName(QStringLiteral("advancedFilterHelpLabel"));
+    mHelpLabel->setTextFormat(Qt::RichText);
     mHelpLabel->setWordWrap(true);
     mHelpLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     // Dim slightly so the help block reads as tertiary content.
@@ -242,8 +302,25 @@ void AdvancedFilterEditor::ReparseAndUpdate()
         }
         else
         {
+            // Only surface the canonical form when it differs from
+            // what the user typed (whitespace-insensitive) -- the
+            // previous "Parsed OK: <same text>" echo was a redundant
+            // repetition of the editor's contents. When casing /
+            // spacing normalises (e.g. `level in [warn]` -> `level
+            // IN [Warn]`), show the delta so the user can see what
+            // will actually be saved.
             const std::string formatted = loglib::FormatExpression(*mCachedResult);
-            mStatusLabel->setText(tr("Parsed OK: %1").arg(QString::fromStdString(formatted)));
+            const QString canonical = QString::fromStdString(formatted);
+            const QString typedTrimmed = queryText.simplified();
+            const QString canonicalTrimmed = canonical.simplified();
+            if (typedTrimmed == canonicalTrimmed)
+            {
+                mStatusLabel->setText(tr("Parsed OK."));
+            }
+            else
+            {
+                mStatusLabel->setText(tr("Parsed OK \u2014 will save as: %1").arg(canonical));
+            }
         }
         // Reset any warning styling from prior parse errors.
         mStatusLabel->setStyleSheet(QString());

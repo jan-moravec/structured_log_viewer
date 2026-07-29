@@ -341,11 +341,14 @@ TEST_CASE("FormatExpression: round-trips composite trees", "[query_parser][prett
     CHECK(*parsed == *reparsed);
 }
 
-TEST_CASE("FormatExpression: numeric range renders as in [..]", "[query_parser][pretty]")
+TEST_CASE("FormatExpression: numeric range renders as IN [..]", "[query_parser][pretty]")
 {
     const auto parsed = ParseOrFail("latency in [10..100]");
     const std::string out = FormatExpression(parsed);
-    CHECK(out.find("in [") != std::string::npos);
+    // `FormatExpression` canonicalises the keyword to uppercase; the
+    // lowercase input still parses (grammar is case-insensitive) but
+    // the round-trip output must carry the canonical form.
+    CHECK(out.find("IN [") != std::string::npos);
     CHECK(out.find("..") != std::string::npos);
 }
 
@@ -377,8 +380,10 @@ TEST_CASE("ParseQuery: bool-only in-list becomes Type::Boolean", "[query_parser]
     }
     SECTION("case-preserved input normalises to lowercase")
     {
-        // Boolean rules canonicalise to lowercase so the round-trip
-        // through `FormatExpression` (which emits lowercase) matches.
+        // Boolean *values* canonicalise to lowercase (`true` /
+        // `false`) so the round-trip through `FormatExpression` --
+        // which emits `col IN [true, false]` with uppercase keyword
+        // + lowercase values -- matches the original tree.
         const auto expr = ParseOrFail("succeeded in [True, FALSE]");
         const LeafRule *leaf = AsLeaf(expr);
         REQUIRE(leaf != nullptr);

@@ -36,7 +36,7 @@ struct QueryParseError
 ///   atom    := '(' or_expr ')' | leaf
 ///
 ///   leaf    := column op value
-///            | column 'in' value_list
+///            | column ('IN' | 'in') value_list
 ///
 ///   column  := ident | quoted-string
 ///   op      := ':' | '=' | '~' | '%' | '>' | '>=' | '<' | '<='
@@ -55,11 +55,14 @@ struct QueryParseError
 ///   col=N                       -- Numeric equal (min = max = N)
 ///   col>N / >=N / <N / <=N      -- Numeric one-sided range
 ///   col=true / =false           -- Boolean single-value
-///   col in [a, b, c]            -- Enumeration multi-select
-///   col in [a..b]               -- Numeric or Time range (autodetected
+///   col IN [a, b, c]            -- Enumeration multi-select
+///   col IN [a..b]               -- Numeric or Time range (autodetected
 ///                                  from bound token shape: ISO timestamp
 ///                                  -> Time, else -> Numeric). Either
 ///                                  bound may be empty for one-sided.
+///
+/// `AND`, `OR`, `NOT`, and `IN` are case-insensitive keywords in the
+/// grammar; `FormatExpression` canonicalises to uppercase.
 ///
 /// Column identity is captured verbatim into `LeafRule::columnKeys`
 /// as a single-element vector (subset-matched against
