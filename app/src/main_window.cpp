@@ -7924,9 +7924,19 @@ QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
         return values.join(QStringLiteral(", "));
     }
     case loglib::LeafRule::Type::String:
-        if (!filter.filterString.has_value() || filter.filterString->empty())
+        if (!filter.filterString.has_value())
         {
             return tr("(unset)");
+        }
+        // `Exactly ""` is a valid query that matches genuinely empty
+        // values. Keep it distinct from a missing payload in menus and
+        // column tooltips. Other empty string match kinds are rejected by
+        // validation before they can reach the simple-mode surface.
+        if (filter.filterString->empty())
+        {
+            return filter.matchType == loglib::LeafRule::Match::Exactly
+                       ? QStringLiteral("\"\"")
+                       : tr("(unset)");
         }
         return QString::fromStdString(*filter.filterString);
     }

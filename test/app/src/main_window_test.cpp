@@ -11975,6 +11975,49 @@ private slots:
         QVERIFY2(sawM2, "the follow-up simple-mode rule must be present");
     }
 
+    // Regression: `Exactly ""` is a valid string predicate that matches
+    // genuinely empty values. Once extracted into the simple-mode surface,
+    // its title must remain distinguishable from a missing payload.
+    void TestAdvancedExactEmptyStringHasAccurateFilterTitle()
+    {
+        const int levelCol = StreamFixtureForColumnTests();
+        QVERIFY2(levelCol >= 0, "level column must exist after streaming");
+        auto *model = mWindow->Model();
+        const int msgCol = ColumnByHeader(*model, QStringLiteral("msg"));
+        QVERIFY2(msgCol >= 0, "msg column must exist after streaming");
+        const std::vector<std::string> msgKeys = model->Configuration().columns[static_cast<size_t>(msgCol)].keys;
+
+        loglib::LeafRule exactEmpty;
+        exactEmpty.type = loglib::LeafRule::Type::String;
+        exactEmpty.columnKeys = msgKeys;
+        exactEmpty.matchType = loglib::LeafRule::Match::Exactly;
+        exactEmpty.filterString = std::string{};
+        mWindow->CommitAdvancedFilterForTest(loglib::MakeLeaf(std::move(exactEmpty)));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(static_cast<int>(mWindow->Filters().size()), 1);
+        const auto *filtersMenu = mWindow->findChild<QMenu *>(QStringLiteral("menuFilters"));
+        QVERIFY2(filtersMenu != nullptr, "MainWindow must expose its Filters menu");
+        bool foundExactEmptyTitle = false;
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): prior `QVERIFY2` aborts on null.
+        for (const QAction *action : filtersMenu->actions())
+        {
+            if (action->menu() != nullptr && action->text() == QStringLiteral("\"\""))
+            {
+                foundExactEmptyTitle = true;
+                break;
+            }
+        }
+        QVERIFY2(foundExactEmptyTitle, "exact-empty filter menu entry must render as two quotes");
+
+        const QString tooltip = model->headerData(msgCol, Qt::Horizontal, Qt::ToolTipRole).toString();
+        QVERIFY2(
+            tooltip.contains(QStringLiteral("&quot;&quot;")),
+            "column tooltip must contain the HTML-escaped exact-empty title"
+        );
+        QVERIFY2(!tooltip.contains(QStringLiteral("(unset)")), "exact-empty filter must not look like a missing payload");
+    }
+
     // Companion to the bare-Leaf case above: an Advanced commit whose
     // root is `And{[Leaf, Leaf, Or{...}]}` must extract the Leaves
     // into `mSimpleLeaves` and keep only the Or subtree as the
