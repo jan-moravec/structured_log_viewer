@@ -640,7 +640,7 @@ private:
     // whitespace, hex (`0x` / `0X`), or a trailing null in the middle
     // of the range must all fail parse, matching the previous
     // `std::from_chars` semantics.
-    const unsigned char firstChar = static_cast<unsigned char>(text.front());
+    const auto firstChar = static_cast<unsigned char>(text.front());
     if (std::isspace(firstChar) != 0)
     {
         return std::nullopt;

@@ -134,6 +134,8 @@ namespace
 )
 {
     return std::visit(
+        // NOLINTBEGIN(misc-no-recursion): the visitor recurses back through FilterHasUnresolvedLeaves
+        // for And/Or/Not; the recursion is structural and bounded by the parse-tree depth.
         [&columns]<class N>(const N &node) -> bool {
             if constexpr (std::is_same_v<N, loglib::FilterExpression::Leaf>)
             {
@@ -143,7 +145,6 @@ namespace
                 std::is_same_v<N, loglib::FilterExpression::And> || std::is_same_v<N, loglib::FilterExpression::Or>
             )
             {
-                // NOLINTNEXTLINE(misc-no-recursion)
                 return std::ranges::any_of(node.children, [&columns](const loglib::FilterExpression &child) {
                     return FilterHasUnresolvedLeaves(child, columns);
                 });
@@ -154,7 +155,6 @@ namespace
                 {
                     return false;
                 }
-                // NOLINTNEXTLINE(misc-no-recursion)
                 return FilterHasUnresolvedLeaves(*node.child, columns);
             }
             else
@@ -162,6 +162,7 @@ namespace
                 return false;
             }
         },
+        // NOLINTEND(misc-no-recursion)
         expression.node
     );
 }
