@@ -237,9 +237,10 @@ namespace
 /// Recursive compile step. Returns `nullopt` when the sub-tree is
 /// **absent** (carries no constraint).
 ///
-/// Absence propagates uniformly: `And` drops absent children (its
-/// identity is match-all); `Or` drops them and goes absent when
-/// **all** children did; `Not` goes absent when its child did.
+/// Absence propagates uniformly: `And` and `Or` drop absent
+/// children and go absent when **every** child did (an input `And`
+/// with no children stays match-all -- that's the identity). `Not`
+/// goes absent when its child did.
 ///
 /// We deliberately treat unresolvable leaves as absent rather than
 /// match-none. A leaf goes absent for routine, usually-temporary
@@ -250,8 +251,10 @@ namespace
 /// `enumColumnsChanged` rebuild.
 ///
 /// Note the deliberate asymmetry: `NOT <absent>` is absent, not
-/// match-all -- otherwise a stale `NOT` would discard every sibling
-/// constraint (`svc:auth AND NOT missing:x` would show the whole log).
+/// match-all. Folding to match-all inside an `Or` would explode the
+/// accept set -- `svc:auth OR NOT missing:x` would show every row.
+/// Sibling `And` cases collapse to the same result either way, so
+/// the `Or` case is the one that pins the choice.
 std::optional<loglib::CompiledFilterExpression> CompileNode(
     const loglib::FilterExpression &expr,
     const std::vector<loglib::LogConfiguration::Column> &columns,
@@ -280,14 +283,27 @@ std::optional<loglib::CompiledFilterExpression> CompileNode(
             {
                 loglib::CompiledFilterExpression::And andNode;
                 andNode.children.reserve(n.children.size());
+                bool anyChild = false;
                 for (const auto &child : n.children)
                 {
                     auto compiledChild = CompileNode(child, columns, table, referencedColumns);
                     if (compiledChild.has_value())
                     {
                         andNode.children.push_back(std::move(*compiledChild));
+                        anyChild = true;
                     }
                     // Absent -> drop (identity of `And` is match-all).
+                }
+                // Input had children but all compiled absent -> the
+                // whole `And` is absent, not match-all. Otherwise
+                // `NOT (all-absent-And)` would compile to
+                // `Not(empty-And)` = match-none and blank the view
+                // (see the design note above). An input `And` with
+                // no children was deliberately match-all and stays
+                // that way.
+                if (!anyChild && !n.children.empty())
+                {
+                    return std::nullopt;
                 }
                 // Cheap-first: short-circuit reject fires ASAP.
                 std::ranges::sort(

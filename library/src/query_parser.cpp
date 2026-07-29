@@ -759,10 +759,21 @@ private:
                 int tzM = 0;
                 if (cursor < text.size() && text[cursor] == ':')
                 {
+                    // `+HH:MM`: minutes are mandatory after `:`.
+                    // Rejects `+00:` and `+00:0`.
                     ++cursor;
+                    const auto tzMinutes = readInt(text, cursor, 2);
+                    if (!tzMinutes.has_value())
+                    {
+                        return std::nullopt;
+                    }
+                    tzM = *tzMinutes;
+                    cursor += 2;
                 }
-                if (cursor + 1 < text.size() && (std::isdigit(static_cast<unsigned char>(text[cursor])) != 0))
+                else if (cursor + 1 < text.size() &&
+                         (std::isdigit(static_cast<unsigned char>(text[cursor])) != 0))
                 {
+                    // `+HHMM` compact form: two more digits.
                     const auto tzMinutes = readInt(text, cursor, 2);
                     if (!tzMinutes.has_value())
                     {
@@ -893,7 +904,8 @@ private:
 /// `std::to_chars`, locale-free).
 [[nodiscard]] std::string FormatNumber(double value)
 {
-    std::array<char, 32> buffer{};
+    // 64 bytes fits any `to_chars(double)` shortest form with slack.
+    std::array<char, 64> buffer{};
     const auto result = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
     if (result.ec != std::errc{})
     {
@@ -1292,6 +1304,33 @@ private:
                 return std::unexpected(ok.error());
             }
             return FinishInLeaf(std::move(rule));
+        case TokenKind::KwNot:
+        {
+            // Sugar for `column NOT IN [...]` -> `NOT (column IN [...])`.
+            // Requires `IN` immediately after `NOT`; anything else is a
+            // parse error so `NOT` at the leaf position stays unambiguous.
+            if (auto ok = Advance(); !ok.has_value())
+            {
+                return std::unexpected(ok.error());
+            }
+            if (mLookahead.kind != TokenKind::KwIn)
+            {
+                QueryParseError err;
+                err.offset = mLookahead.offset;
+                err.message = "expected 'IN' after 'NOT' in leaf position";
+                return std::unexpected(err);
+            }
+            if (auto ok = Advance(); !ok.has_value())
+            {
+                return std::unexpected(ok.error());
+            }
+            auto inner = FinishInLeaf(std::move(rule));
+            if (!inner.has_value())
+            {
+                return inner;
+            }
+            return MakeNot(std::move(*inner));
+        }
         default:
         {
             QueryParseError err;
@@ -1698,6 +1737,33 @@ private:
                 std::ranges::transform(v, v.begin(), [](unsigned char ch) {
                     return static_cast<char>(std::tolower(ch));
                 });
+            }
+        }
+        else if (rule.filterValues.size() == 1)
+        {
+            // Single-item list: if the value parses as a number,
+            // demote to `Type::Number` (min==max) so `col IN [42]`
+            // behaves like `col = 42` on numeric columns instead of
+            // silently matching zero rows via the enum fallback.
+            // ISO timestamps get the same treatment for symmetry.
+            const std::string &only = rule.filterValues.front();
+            if (const auto asTs = ParseIsoTimestamp(only); asTs.has_value())
+            {
+                rule.type = LeafRule::Type::Time;
+                rule.filterBegin = *asTs;
+                rule.filterEnd = *asTs;
+                rule.filterValues.clear();
+            }
+            else if (const auto asNum = ParseDouble(only); asNum.has_value())
+            {
+                rule.type = LeafRule::Type::Number;
+                rule.filterMinValue = *asNum;
+                rule.filterMaxValue = *asNum;
+                rule.filterValues.clear();
+            }
+            else
+            {
+                rule.type = LeafRule::Type::Enumeration;
             }
         }
         else

@@ -308,13 +308,17 @@ void AdvancedFilterEditor::HighlightErrorAt(const QString &queryText, std::size_
     QTextCursor cursor(mQueryEdit->document());
     if (selectStart >= textSize && textSize > 0)
     {
-        cursor.setPosition(textSize - 1);
-        cursor.setPosition(textSize, QTextCursor::KeepAnchor);
+        cursor.setPosition(textSize);
+        // `PreviousCharacter` walks by grapheme, so surrogate pairs
+        // and combining marks stay intact.
+        cursor.movePosition(QTextCursor::PreviousCharacter, QTextCursor::KeepAnchor);
     }
     else if (textSize > 0)
     {
         cursor.setPosition(selectStart);
-        cursor.setPosition(std::min(selectStart + 1, textSize), QTextCursor::KeepAnchor);
+        // Grapheme-aware advance: avoids splitting surrogate pairs
+        // on supplementary-plane characters.
+        cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::KeepAnchor);
     }
     else
     {

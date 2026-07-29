@@ -713,6 +713,11 @@ MainWindow::MainWindow(
         {
             mHighlightRulesEditor->SetColumns(mModel->Configuration().columns);
         }
+        // Recompile the filter tree against the new column vector.
+        // A leaf whose keys just resolved (or whose stored column
+        // index shifted) needs `mCompiledExpression.referencedColumns`
+        // refreshed for the `dataChanged` fast-path to fire.
+        UpdateFilters();
     });
     connect(mModel, &QAbstractItemModel::modelReset, this, [this]() {
         if (mHighlights != nullptr)

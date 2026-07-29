@@ -793,3 +793,100 @@ TEST_CASE("FormatExpression: extreme timestamp does not silently render as the e
     CHECK_FALSE(formatted.contains("1970-01-01T00:00:00.000000Z"));
     CHECK_FALSE(formatted.contains("0000-00-00T00:00:00"));
 }
+
+// Regression: `ParseIsoTimestamp` silently accepted a trailing `:`
+// after `+HH` as `+HH:00`. The lexer greedily consumed the colon,
+// and the parser's post-colon minutes read fell through without
+// requiring the two digits.
+TEST_CASE("ParseQuery: timezone with trailing colon is rejected", "[query_parser][regression]")
+{
+    SECTION("`+00:` fails")
+    {
+        const auto parsed = ParseQuery("ts>=2024-01-01T00:00:00+00:");
+        CHECK_FALSE(parsed.has_value());
+    }
+    SECTION("`+00:0` fails")
+    {
+        const auto parsed = ParseQuery("ts>=2024-01-01T00:00:00+00:0");
+        CHECK_FALSE(parsed.has_value());
+    }
+    SECTION("`+00:00` and `+0000` and `+00` still parse")
+    {
+        for (const std::string_view q :
+             {"ts>=2024-01-01T00:00:00+00:00", "ts>=2024-01-01T00:00:00+0000", "ts>=2024-01-01T00:00:00+00"})
+        {
+            CAPTURE(q);
+            CHECK(ParseQuery(q).has_value());
+        }
+    }
+}
+
+// Regression: `col IN [42]` on a numeric column used to compile
+// into an `EnumRowPredicate` with a null dictionary. The fallback
+// string-set path then failed to match any numeric slot, blanking
+// the view without a cue. The parser now demotes single-item
+// numeric / timestamp lists so `col IN [42]` behaves like `col = 42`.
+TEST_CASE("ParseQuery: single-value numeric IN [N] demotes to equality", "[query_parser][regression]")
+{
+    SECTION("numeric single-item list")
+    {
+        const auto expr = ParseOrFail("latency in [42]");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(leaf->type == LeafRule::Type::Number);
+        REQUIRE(leaf->filterMinValue.has_value());
+        REQUIRE(leaf->filterMaxValue.has_value());
+        CHECK(*leaf->filterMinValue == 42.0);
+        CHECK(*leaf->filterMaxValue == 42.0);
+        CHECK(leaf->filterValues.empty());
+    }
+    SECTION("timestamp single-item list")
+    {
+        const auto expr = ParseOrFail("ts in [2024-01-01T00:00:00Z]");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(leaf->type == LeafRule::Type::Time);
+        REQUIRE(leaf->filterBegin.has_value());
+        REQUIRE(leaf->filterEnd.has_value());
+        CHECK(*leaf->filterBegin == *leaf->filterEnd);
+        CHECK(leaf->filterValues.empty());
+    }
+    SECTION("multi-item numeric list stays Enumeration")
+    {
+        // Multi-item lists still hit the enum path; that's a
+        // separate follow-up. Guard the current behaviour so we
+        // don't regress the single-item path by accident.
+        const auto expr = ParseOrFail("latency in [1, 2]");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(leaf->type == LeafRule::Type::Enumeration);
+        CHECK(leaf->filterValues.size() == 2);
+    }
+    SECTION("string single-item list stays Enumeration")
+    {
+        const auto expr = ParseOrFail("service in [auth]");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(leaf->type == LeafRule::Type::Enumeration);
+        REQUIRE(leaf->filterValues.size() == 1);
+        CHECK(leaf->filterValues.front() == "auth");
+    }
+}
+
+// `column NOT IN [...]` is sugar for `NOT (column IN [...])`. Keeps
+// SQL-style queries working without forcing users to wrap.
+TEST_CASE("ParseQuery: NOT IN sugar wraps the IN leaf in NOT", "[query_parser]")
+{
+    const auto expr = ParseOrFail("level not in [Debug, Trace]");
+    const auto *notNode = std::get_if<FilterExpression::Not>(&expr.node);
+    REQUIRE(notNode != nullptr);
+    REQUIRE(notNode->child != nullptr);
+    const LeafRule *inner = AsLeaf(*notNode->child);
+    REQUIRE(inner != nullptr);
+    CHECK(inner->type == LeafRule::Type::Enumeration);
+    CHECK(inner->filterValues.size() == 2);
+
+    // `NOT` without a following `IN` at leaf position stays an error.
+    const auto bad = ParseQuery("level not error");
+    CHECK_FALSE(bad.has_value());
+}

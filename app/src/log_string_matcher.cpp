@@ -16,13 +16,14 @@ Q_LOGGING_CATEGORY(logMatcher, "logapp.matcher")
 namespace
 {
 
-/// JIT-prime the regex so captured copies don't race on a lazy
-/// first `match()`. `QRegularExpression` is CoW / implicitly
-/// shared, and `match()` is thread-safe once the private is
-/// compiled; the parallel filter workers rely on that guarantee.
+/// Compile + JIT the pattern up-front. `QRegularExpression` is
+/// CoW / implicitly shared; captured copies then share the JIT'd
+/// private safely across the parallel filter workers. Using
+/// `optimize()` enables PCRE2's JIT (a lazy `match()` would only
+/// compile, not JIT).
 void PrimeRegex(QRegularExpression &regex)
 {
-    (void)regex.match(QStringLiteral(""));
+    regex.optimize();
 }
 
 /// Convert @p bytes to `QString`, skipping the `simplified()` walk

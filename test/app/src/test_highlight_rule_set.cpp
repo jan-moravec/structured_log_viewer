@@ -7,16 +7,20 @@
 // `OnRowsAppended`, FIFO eviction shift via `OnRowsEvicted`,
 // `RebindColumns` after schema growth, `ClearMatches`, key-based
 // identity survives `MoveColumn`, Boolean / Number predicates,
-// and empty-needle rejection.
+// and empty-needle rejection. Also hosts a focused regression
+// test for the shared `CompileExpression` path (`leaf_rule_compile`).
 
 #include "highlight_rule_set.hpp"
+#include "leaf_rule_compile.hpp"
 #include "log_model.hpp"
 #include "qt_streaming_log_sink.hpp"
 
 #include <loglib/file_line_source.hpp>
+#include <loglib/filter_expression.hpp>
 #include <loglib/internal/advanced_parser_options.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
+#include <loglib/log_filter.hpp>
 #include <loglib/log_parse_sink.hpp>
 #include <loglib/log_table.hpp>
 #include <loglib/parser_options.hpp>
@@ -541,6 +545,89 @@ private slots:
         QCOMPARE(rules.LastMatchFor(3), std::optional<std::size_t>{0u});
         QCOMPARE(rules.LastMatchFor(0), std::optional<std::size_t>{});
         QCOMPARE(rules.LastMatchFor(2), std::optional<std::size_t>{});
+    }
+
+    /// Regression: an `And` whose input had children but all
+    /// compiled to absent used to fold to `And{}` = match-all,
+    /// so `NOT (all-absent-And)` compiled to `Not(empty-And)` =
+    /// match-none, blanking the view. `Or` already returned
+    /// absent in this shape; `And` now matches, restoring the
+    /// over-accept-not-over-reject design contract.
+    void AllAbsentAndUnderNotIsMatchAll()
+    {
+        loglib::LogConfiguration::Column existing;
+        existing.header = "level";
+        existing.keys = {"level"};
+        existing.type = loglib::LogConfiguration::Type::String;
+        const std::vector<loglib::LogConfiguration::Column> columns{existing};
+
+        // `NOT (missing:x AND other_missing:y)` -- both leaves
+        // reference unknown columns, so both compile absent.
+        loglib::LeafRule leftLeaf;
+        leftLeaf.type = loglib::LeafRule::Type::String;
+        leftLeaf.matchType = loglib::LeafRule::Match::Contains;
+        leftLeaf.columnKeys = {"missing"};
+        leftLeaf.filterString = "x";
+        loglib::LeafRule rightLeaf;
+        rightLeaf.type = loglib::LeafRule::Type::String;
+        rightLeaf.matchType = loglib::LeafRule::Match::Contains;
+        rightLeaf.columnKeys = {"other_missing"};
+        rightLeaf.filterString = "y";
+        std::vector<loglib::FilterExpression> andChildren;
+        andChildren.push_back(loglib::MakeLeaf(std::move(leftLeaf)));
+        andChildren.push_back(loglib::MakeLeaf(std::move(rightLeaf)));
+        const loglib::FilterExpression expr =
+            loglib::MakeNot(loglib::MakeAnd(std::move(andChildren)));
+
+        const loglib::CompiledFilterExpression compiled = CompileExpression(expr, columns, /*table=*/nullptr);
+
+        // Absence propagates: whole tree compiles to match-all,
+        // not match-none. `IsMatchAllCompiled` catches the fix
+        // (bug shape would have left a `Not` at the root).
+        QVERIFY(loglib::IsMatchAllCompiled(compiled));
+    }
+
+    /// Companion: a sibling `And` next to the same `NOT
+    /// (all-absent)` should reduce to the sibling alone, not
+    /// blank out. Pins the more user-facing symptom described
+    /// in the design note.
+    void SiblingSurvivesNotAllAbsent()
+    {
+        loglib::LogConfiguration::Column svcCol;
+        svcCol.header = "svc";
+        svcCol.keys = {"svc"};
+        svcCol.type = loglib::LogConfiguration::Type::String;
+        const std::vector<loglib::LogConfiguration::Column> columns{svcCol};
+
+        loglib::LeafRule svcLeaf;
+        svcLeaf.type = loglib::LeafRule::Type::String;
+        svcLeaf.matchType = loglib::LeafRule::Match::Contains;
+        svcLeaf.columnKeys = {"svc"};
+        svcLeaf.filterString = "auth";
+
+        loglib::LeafRule missingA;
+        missingA.type = loglib::LeafRule::Type::String;
+        missingA.matchType = loglib::LeafRule::Match::Contains;
+        missingA.columnKeys = {"missing_a"};
+        missingA.filterString = "x";
+        loglib::LeafRule missingB = missingA;
+        missingB.columnKeys = {"missing_b"};
+        std::vector<loglib::FilterExpression> notInner;
+        notInner.push_back(loglib::MakeLeaf(std::move(missingA)));
+        notInner.push_back(loglib::MakeLeaf(std::move(missingB)));
+
+        std::vector<loglib::FilterExpression> topChildren;
+        topChildren.push_back(loglib::MakeLeaf(std::move(svcLeaf)));
+        topChildren.push_back(loglib::MakeNot(loglib::MakeAnd(std::move(notInner))));
+        const loglib::FilterExpression expr = loglib::MakeAnd(std::move(topChildren));
+
+        const loglib::CompiledFilterExpression compiled = CompileExpression(expr, columns, /*table=*/nullptr);
+        // Sibling survives: top-level `And` has one child (the
+        // svc leaf) and one referenced column (svc's index).
+        const auto *rootAnd = std::get_if<loglib::CompiledFilterExpression::And>(&compiled.node);
+        QVERIFY(rootAnd != nullptr);
+        QCOMPARE(rootAnd->children.size(), std::size_t{1});
+        QCOMPARE(compiled.referencedColumns.size(), std::size_t{1});
     }
 };
 
