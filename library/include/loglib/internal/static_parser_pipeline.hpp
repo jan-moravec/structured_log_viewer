@@ -3,6 +3,7 @@
 #include "loglib/file_line_source.hpp"
 #include "loglib/internal/advanced_parser_options.hpp"
 #include "loglib/internal/batch_coalescer.hpp"
+#include "loglib/internal/compact_log_value.hpp"
 #include "loglib/internal/parse_runtime.hpp"
 #include "loglib/internal/timestamp_promotion.hpp"
 #include "loglib/key_index.hpp"
@@ -57,6 +58,28 @@ struct ParsedPipelineBatch
     /// Source lines consumed (parsed + errors + skipped empties);
     /// advances Stage C's line-number cursor across batches.
     size_t totalLineCount = 0;
+    /// Bytes for continuation lines at the START of this batch. They
+    /// logically belong to the previous batch's last record and must be
+    /// spliced there by Stage C. Includes internal '\n' separators
+    /// (i.e., "line1\nline2\nline3"). Empty when the batch does not
+    /// open on a continuation. Only ever populated by parsers running
+    /// in a multi-line mode.
+    std::string leadingContinuationBytes;
+    /// Source lines consumed by `leadingContinuationBytes`. Kept
+    /// separate from `totalLineCount` (which counts them too) purely
+    /// for auditing / future accounting; Stage C uses `totalLineCount`
+    /// to advance its line-number cursor.
+    size_t leadingContinuationLineCount = 0;
+    /// True when this batch's LAST record may still receive
+    /// continuations from the NEXT batch (multi-line mode active AND
+    /// the batch ends on a record). Stage C holds that record back
+    /// until it sees the next batch's `leadingContinuationBytes`.
+    bool lastRecordOpenForContinuation = false;
+    /// KeyId to receive continuation-byte extensions for the LAST
+    /// record of this batch. `INVALID_KEY_ID` when
+    /// `lastRecordOpenForContinuation` is false. The receiving field
+    /// must be string-typed (validated by the parser at intern time).
+    KeyId continuationTargetKeyId = INVALID_KEY_ID;
 };
 
 /// Resolved defaults for `effectiveThreads` and `ntokens`. Both >= 1.
@@ -67,6 +90,65 @@ struct ResolvedPipelineSettings
 };
 
 ResolvedPipelineSettings ResolvePipelineSettings(const AdvancedParserOptions &advanced);
+
+/// Splice @p leadingContinuationBytes into @p heldLine's `targetKey`
+/// field, copying the field's existing bytes + a '\n' separator + the
+/// new bytes to the tail of @p file's owned-strings arena. Returns
+/// true when the splice succeeded; false leaves @p heldLine unchanged
+/// (target key missing, non-string field, or empty continuation).
+///
+/// The old bytes at the field's previous position remain in the arena
+/// but become orphaned. Called once per cross-batch splice, so the
+/// amortised overhead per record is one arena copy of the last field.
+inline bool SpliceCrossBatchContinuation(
+    LogLine &heldLine, LogFile &file, KeyId targetKey, std::string_view leadingContinuationBytes
+)
+{
+    if (targetKey == INVALID_KEY_ID || leadingContinuationBytes.empty())
+    {
+        return targetKey != INVALID_KEY_ID; // empty continuation is a no-op success
+    }
+    CompactLogValue *slot = heldLine.FindCompactMutable(targetKey);
+    if (slot == nullptr)
+    {
+        return false;
+    }
+    // Only string-typed fields can absorb continuation text.
+    if (slot->tag != CompactTag::OwnedString && slot->tag != CompactTag::MmapSlice
+        && slot->tag != CompactTag::Monostate)
+    {
+        return false;
+    }
+
+    std::string joined;
+    // Retrieve current bytes (empty if Monostate).
+    std::string_view current{};
+    if (slot->tag != CompactTag::Monostate)
+    {
+        auto view = heldLine.PeekStringView(*slot);
+        if (!view.has_value())
+        {
+            return false;
+        }
+        current = *view;
+    }
+    joined.reserve(current.size() + 1 + leadingContinuationBytes.size());
+    joined.append(current);
+    // Skip the leading '\n' separator when the target was Monostate
+    // (bare `key=` with no value): the continuation text should be
+    // the field's first content, not prefixed by a stray newline.
+    if (slot->tag != CompactTag::Monostate)
+    {
+        joined.push_back('\n');
+    }
+    joined.append(leadingContinuationBytes);
+
+    const uint64_t offset = file.AppendOwnedStrings(joined);
+    slot->tag = CompactTag::OwnedString;
+    slot->payload = offset;
+    slot->aux = static_cast<uint32_t>(joined.size());
+    return true;
+}
 
 /// Static-file TBB pipeline. Stage A (`serial_in_order`) drives
 /// tokens; Stage B (`parallel`) decodes; Stage C (`serial_in_order`)
@@ -128,6 +210,19 @@ void RunStaticParserPipeline(
     const bool prefersUncoalesced = sink.PrefersUncoalesced();
     size_t nextLineNumber = 1;
 
+    // Hold-back state for multi-line records. When a batch's last
+    // record `lastRecordOpenForContinuation`, Stage C moves it here
+    // instead of feeding it to the coalescer / sink so it can absorb
+    // any `leadingContinuationBytes` the next batch surfaces.
+    struct HeldTail
+    {
+        LogLine line;
+        std::vector<uint64_t> lineOffsets; // localLineOffsets for the physical lines making up this record
+        KeyId continuationTargetKeyId = INVALID_KEY_ID;
+        size_t absoluteLineNumber = 0; // header's absolute line number for `Prime`
+    };
+    std::optional<HeldTail> held;
+
     const StopToken stopToken = options.stopToken;
     std::span<const TimeColumnSpec> timeColumnsSpan(timeColumns);
 
@@ -157,6 +252,39 @@ void RunStaticParserPipeline(
         return parsed;
     };
 
+    // Commit a held record to the sink pathway. Called on:
+    //   - The next batch arrival (after any splice), or
+    //   - End-of-pipeline (`Finish` fallthrough).
+    auto commitHeld = [&]() {
+        if (!held.has_value())
+        {
+            return;
+        }
+        if (prefersUncoalesced)
+        {
+            StreamedBatch out;
+            out.lines.push_back(std::move(held->line));
+            out.localLineOffsets = std::move(held->lineOffsets);
+            out.firstLineNumber = held->absoluteLineNumber;
+            coalescer.DrainNewKeysInto(out);
+            sink.OnBatch(std::move(out));
+        }
+        else
+        {
+            StreamedBatch &pending = coalescer.Pending();
+            coalescer.Prime(held->absoluteLineNumber);
+            pending.lines.push_back(std::move(held->line));
+            if (!held->lineOffsets.empty())
+            {
+                pending.localLineOffsets.insert(
+                    pending.localLineOffsets.end(), held->lineOffsets.begin(), held->lineOffsets.end()
+                );
+            }
+            coalescer.TryFlush(false);
+        }
+        held.reset();
+    };
+
     auto stageC = [&](ParsedPipelineBatch parsed) {
         const size_t lineNumberDelta = nextLineNumber - 1;
         if (lineNumberDelta != 0)
@@ -179,6 +307,69 @@ void RunStaticParserPipeline(
             }
         }
 
+        // Cross-batch stitching: if this batch opens on a continuation
+        // and we're holding the previous batch's last record, splice
+        // the leading bytes into the held record's continuation
+        // target BEFORE committing the held record.
+        if (!parsed.leadingContinuationBytes.empty())
+        {
+            if (held.has_value())
+            {
+                const bool ok = SpliceCrossBatchContinuation(
+                    held->line, file, held->continuationTargetKeyId, parsed.leadingContinuationBytes
+                );
+                if (!ok)
+                {
+                    // Non-string target or missing field: surface one
+                    // error, drop the bytes. The held record still
+                    // emits with just its own contents.
+                    parsed.errors.push_back(ParsedLineError{
+                        .relativeLine = 1,
+                        .body = "Continuation lines dropped: target field is not a string.",
+                    });
+                }
+                // Extend the held record's byte span so `RawLine`
+                // covers the joined text: replace the last held
+                // line-offset with the batch's first offset (which
+                // is post-newline of the LAST leading-continuation
+                // line — Stage B pushes one offset per physical
+                // line, so it's already at index 0).
+                if (!held->lineOffsets.empty() && !parsed.localLineOffsets.empty()
+                    && parsed.leadingContinuationLineCount > 0)
+                {
+                    const size_t idx =
+                        std::min(parsed.leadingContinuationLineCount, parsed.localLineOffsets.size()) - 1;
+                    held->lineOffsets.back() = parsed.localLineOffsets[idx];
+                }
+            }
+            else
+            {
+                // Orphaned continuation at the very start of the file
+                // (no prior record to attach to). Surface as an
+                // error; the bytes themselves are dropped.
+                parsed.errors.push_back(ParsedLineError{
+                    .relativeLine = 1,
+                    .body = "Orphaned continuation line(s) at start of file.",
+                });
+            }
+            // The leading continuation lines have already had their
+            // line-offset entries pushed by Stage B; drop them from
+            // this batch's offsets so they don't double-count.
+            if (parsed.leadingContinuationLineCount > 0 && !parsed.localLineOffsets.empty())
+            {
+                const size_t drop =
+                    std::min(parsed.leadingContinuationLineCount, parsed.localLineOffsets.size());
+                parsed.localLineOffsets.erase(
+                    parsed.localLineOffsets.begin(),
+                    parsed.localLineOffsets.begin() + static_cast<std::ptrdiff_t>(drop)
+                );
+            }
+        }
+
+        // Commit any held record now that its potential continuation
+        // has been spliced (or wasn't coming).
+        commitHeld();
+
         // Compose absolute "Error on line N: ..." here so error and
         // line numbering stay in lockstep with `ShiftLineId` above.
         auto formatErrorsInto = [&](std::vector<std::string> &out) {
@@ -196,6 +387,35 @@ void RunStaticParserPipeline(
             parsed.errors.clear();
         };
 
+        // Hold back this batch's tail record if it's still open for
+        // continuation. We remove it from `parsed.lines` (and its
+        // matching line-offset) so it doesn't reach the sink yet.
+        std::optional<HeldTail> newHeld;
+        if (parsed.lastRecordOpenForContinuation && !parsed.lines.empty())
+        {
+            LogLine tailLine = std::move(parsed.lines.back());
+            parsed.lines.pop_back();
+            // Pop the header's line-offset entry (index-aligned with
+            // the record within the batch). In-batch continuations
+            // still contribute offset entries that remain in
+            // `parsed.localLineOffsets`; the held record's `RawLine`
+            // therefore recovers only the last physical line's bytes
+            // on commit — accepted limitation until RB2 lands.
+            std::vector<uint64_t> tailOffsets;
+            if (!parsed.localLineOffsets.empty())
+            {
+                tailOffsets.push_back(parsed.localLineOffsets.back());
+                parsed.localLineOffsets.pop_back();
+            }
+            const size_t absoluteLine = tailLine.LineId() + 1; // Prime is 1-based
+            newHeld = HeldTail{
+                std::move(tailLine),
+                std::move(tailOffsets),
+                parsed.continuationTargetKeyId,
+                absoluteLine,
+            };
+        }
+
         if (prefersUncoalesced)
         {
             StreamedBatch out;
@@ -207,7 +427,11 @@ void RunStaticParserPipeline(
 
             nextLineNumber += parsed.totalLineCount;
 
-            sink.OnBatch(std::move(out));
+            if (!out.lines.empty() || !out.errors.empty() || !out.localLineOffsets.empty())
+            {
+                sink.OnBatch(std::move(out));
+            }
+            held = std::move(newHeld);
             return;
         }
 
@@ -238,6 +462,7 @@ void RunStaticParserPipeline(
         nextLineNumber += parsed.totalLineCount;
 
         coalescer.TryFlush(false);
+        held = std::move(newHeld);
     };
 
     oneapi::tbb::global_control gc(
@@ -250,6 +475,10 @@ void RunStaticParserPipeline(
             oneapi::tbb::make_filter<Token, ParsedPipelineBatch>(oneapi::tbb::filter_mode::parallel, stageB) &
             oneapi::tbb::make_filter<ParsedPipelineBatch, void>(oneapi::tbb::filter_mode::serial_in_order, stageC)
     );
+
+    // Flush any held tail record so it's not lost when the pipeline
+    // reaches EOF without another batch arriving to trigger commit.
+    commitHeld();
 
     coalescer.Finish(nextLineNumber, stopToken.stop_requested());
 }

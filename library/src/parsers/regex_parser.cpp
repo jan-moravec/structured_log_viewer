@@ -702,6 +702,13 @@ struct RegexByteRange
     const char *fileEnd = nullptr;
 };
 
+// Forward declaration: implementation appears with the streaming
+// decoder below. Called from both the static Stage B and the
+// streaming decoder for `UntilNextHeader` mode header detection.
+bool RegexLooksLikeHeader(
+    const CompiledPattern &compiled, pcre2_match_data *matchData, std::string_view line
+);
+
 std::string_view StripCr(std::string_view s) noexcept
 {
     if (!s.empty() && s.back() == '\r')
@@ -730,13 +737,29 @@ void DecodeRegexBatch(
     std::span<const internal::TimeColumnSpec> timeColumns,
     internal::ParsedPipelineBatch &parsed,
     const CompiledPattern &compiled,
-    const std::vector<KeyId> &columnKeys
+    const std::vector<KeyId> &columnKeys,
+    ContinuationMode continuationMode
 )
 {
     (void)keys; // Schema is pre-interned in `columnKeys`.
     parsed.batchIndex = batch.batchIndex;
 
     EnsureWorkerMatchData(worker.user, compiled);
+
+    // Continuation target is the last source-order named group. The
+    // schema in `columnKeys` follows PCRE2's `pcre2_get_name_table`
+    // order, which is source order (see the intern step in
+    // `RegexParser::ParseStreaming`).
+    const KeyId continuationTargetKey =
+        (continuationMode != ContinuationMode::None && !columnKeys.empty()) ? columnKeys.back() : INVALID_KEY_ID;
+
+    // Header-detection scratch for UntilNextHeader mode. Allocated
+    // once per batch, not per line.
+    Pcre2MatchDataPtr headerScratch;
+    if (continuationMode == ContinuationMode::UntilNextHeader)
+    {
+        headerScratch = compiled.NewMatchData();
+    }
 
     const char *cursor = batch.bytesBegin;
     const char *end = batch.bytesEnd;
@@ -784,6 +807,63 @@ void DecodeRegexBatch(
             continue;
         }
 
+        // Multi-line: is this a continuation of the prior record?
+        bool isContinuation = false;
+        if (continuationMode == ContinuationMode::Indented)
+        {
+            isContinuation = (line.front() == ' ' || line.front() == '\t');
+        }
+        else if (continuationMode == ContinuationMode::UntilNextHeader)
+        {
+            isContinuation = !RegexLooksLikeHeader(compiled, headerScratch.get(), line);
+        }
+
+        if (isContinuation)
+        {
+            if (parsed.lines.empty())
+            {
+                // Batch opens on a continuation. Stage C splices these
+                // bytes into the previously held record.
+                if (!parsed.leadingContinuationBytes.empty())
+                {
+                    parsed.leadingContinuationBytes.push_back('\n');
+                }
+                parsed.leadingContinuationBytes.append(line.data(), line.size());
+                parsed.leadingContinuationLineCount++;
+            }
+            else
+            {
+                std::string continuation;
+                continuation.reserve(1 + line.size());
+                continuation.push_back('\n');
+                continuation.append(line.data(), line.size());
+
+                auto compactSpan = parsed.lines.back().CompactValues();
+                std::vector<std::pair<KeyId, internal::CompactLogValue>> mutableValues(
+                    compactSpan.begin(), compactSpan.end()
+                );
+                const bool ok = internal::ExtendContinuationTarget(
+                    mutableValues, parsed.ownedStringsArena, continuationTargetKey, continuation
+                );
+                if (ok)
+                {
+                    const size_t headerLineId = parsed.lines.back().LineId();
+                    parsed.lines.pop_back();
+                    LogLine rebuilt(std::move(mutableValues), keys, source, headerLineId);
+                    parsed.lines.push_back(std::move(rebuilt));
+                }
+                else
+                {
+                    parsed.errors.push_back(internal::ParsedLineError{
+                        .relativeLine = relativeLineNumber,
+                        .body = "Continuation lines dropped: target field is not a string.",
+                    });
+                }
+            }
+            ++relativeLineNumber;
+            continue;
+        }
+
         if (!MatchLineAndEmit(
                 compiled,
                 worker.user.matchData.get(),
@@ -815,6 +895,12 @@ void DecodeRegexBatch(
     }
 
     parsed.totalLineCount = relativeLineNumber - 1;
+
+    if (continuationMode != ContinuationMode::None && !parsed.lines.empty() && continuationTargetKey != INVALID_KEY_ID)
+    {
+        parsed.lastRecordOpenForContinuation = true;
+        parsed.continuationTargetKeyId = continuationTargetKey;
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -1154,6 +1240,16 @@ void RegexParser::ParseStreaming(
 
     const std::vector<KeyId> columnKeys = InternSchemaKeys(compiled.Schema(), sink.Keys());
 
+    // Look up the shipped/registered template so its
+    // `continuationMode` also drives the static (parallel) pipeline's
+    // multi-line handling. Custom / unsaved user patterns fall back
+    // to `None` — verbatim shipped behaviour.
+    ContinuationMode staticContinuationMode = ContinuationMode::None;
+    if (const auto tmpl = FindTemplateByPattern(pattern); tmpl.has_value())
+    {
+        staticContinuationMode = tmpl->continuationMode;
+    }
+
     const size_t batchSize = advanced.batchSizeBytes != 0 ? advanced.batchSizeBytes
                                                           : internal::AdvancedParserOptions::DEFAULT_BATCH_SIZE_BYTES;
 
@@ -1186,13 +1282,17 @@ void RegexParser::ParseStreaming(
     };
 
     FileLineSource *sourcePtr = &source;
-    auto stageB = [sourcePtr, &compiled, &columnKeys](
+    auto stageB = [sourcePtr, &compiled, &columnKeys, staticContinuationMode](
                       RegexByteRange token,
                       internal::WorkerScratch<RegexWorkerState> &worker,
                       KeyIndex &keys,
                       std::span<const internal::TimeColumnSpec> timeColumns,
                       internal::ParsedPipelineBatch &parsed
-                  ) { DecodeRegexBatch(token, worker, keys, *sourcePtr, timeColumns, parsed, compiled, columnKeys); };
+                  ) {
+        DecodeRegexBatch(
+            token, worker, keys, *sourcePtr, timeColumns, parsed, compiled, columnKeys, staticContinuationMode
+        );
+    };
 
     internal::RunStaticParserPipeline<RegexByteRange, RegexWorkerState>(
         source, sink, options, advanced, stageA, stageB, newKeyBaseline
