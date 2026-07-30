@@ -16,6 +16,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <optional>
@@ -51,17 +52,17 @@ constexpr size_t STREAMING_READ_BUFFER_SIZE = 64 * 1024;
 /// Returns true if the field was found and extended, false otherwise
 /// (unknown target, or target is a non-string type — orphan case).
 ///
-/// For streaming (`fileBegin == nullptr` in the parser call), the
-/// target's `OwnedString` is guaranteed to sit at the arena tail if
-/// it was the last-source-order field emitted, which matches how
-/// `LogfmtLineDecoder` / (future) `RegexLineDecoder` pick their
-/// continuation target. `Monostate` (a bare `key=` with no value) is
-/// promoted to `OwnedString` in-place. `MmapSlice` never appears in
+/// `mmapBytes` is the memory-mapped file view (only meaningful for
+/// the static pipeline where zero-copy `MmapSlice` values can appear).
+/// Streaming callers pass an empty span; `MmapSlice` never appears in
 /// the streaming path but is handled defensively via re-materialise
-/// into the arena tail.
+/// into the arena tail when the mmap view is available.
+///
+/// `Monostate` (a bare `key=` with no value) is promoted to
+/// `OwnedString` in-place, minus the would-be leading '\n' separator.
 inline bool ExtendContinuationTarget(
     std::vector<std::pair<KeyId, CompactLogValue>> &values, std::string &ownedArena, KeyId targetKey,
-    std::string_view continuationBytes
+    std::string_view continuationBytes, std::string_view mmapBytes = std::string_view{}
 )
 {
     if (targetKey == INVALID_KEY_ID || continuationBytes.empty())
@@ -120,15 +121,25 @@ inline bool ExtendContinuationTarget(
             }
             case CompactTag::MmapSlice:
             {
-                // Streaming should never hit this (parsers pass
-                // fileBegin=nullptr, forcing OwnedString), but keep
-                // the defensive path — copy the mmap slice's bytes
-                // into the arena tail so the record becomes self-
-                // contained, then append the continuation.
-                // Note: caller loses the `MmapSlice` fast path for
-                // this field; acceptable for a rare corner case.
-                return false; // Signal "unsupported": the caller
-                              // handles this as an orphan continuation.
+                // Static pipeline: zero-copy `MmapSlice` values point
+                // into the file mmap. Promote to `OwnedString` at the
+                // arena tail by copying the original bytes plus the
+                // continuation. Requires the file view (`mmapBytes`);
+                // streaming callers pass empty and this becomes an
+                // orphan-continuation signal.
+                const uint64_t offset = v.payload;
+                const uint32_t length = v.aux;
+                if (mmapBytes.empty() || offset + length > mmapBytes.size())
+                {
+                    return false;
+                }
+                const uint64_t newOffset = ownedArena.size();
+                ownedArena.append(mmapBytes.data() + offset, length);
+                ownedArena.append(continuationBytes.data(), continuationBytes.size());
+                v.tag = CompactTag::OwnedString;
+                v.payload = newOffset;
+                v.aux = static_cast<uint32_t>(static_cast<size_t>(length) + continuationBytes.size());
+                return true;
             }
             case CompactTag::DictRef:
             case CompactTag::Int64:
@@ -321,6 +332,14 @@ void RunStreamingParseLoop(
                 );
             }
             return;
+        }
+        // Any future `LineDecodeResult` variant added here without a
+        // handler would silently fall through to the Emit path. Assert
+        // + `std::unreachable()` in release makes that impossible.
+        assert(result == LineDecodeResult::Emit);
+        if (result != LineDecodeResult::Emit)
+        {
+            std::unreachable();
         }
 
         // Emit: commit any open record, then open a new one from

@@ -821,6 +821,132 @@ TEST_CASE(
     CHECK(errors.size() == 1);
 }
 
+TEST_CASE(
+    "RegexParser file: indented continuations fold into the last named group via ParseFile",
+    "[regex_parser][file_line_source][multiline]"
+)
+{
+    using namespace loglib;
+
+    const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
+    RegexTemplate extra{
+        .name = "test-static-indented",
+        .pattern = pattern,
+        .sampleLines = {"info hello"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::Indented,
+        .headerAnchor = "",
+    };
+    const RegexTemplate extras[] = {extra};
+    const ScopedExtraTemplates registration(extras);
+
+    const RegexParser parser{std::string{pattern}};
+
+    // Two records; the first spans three physical lines.
+    const TestLogFile file("regex_static_multiline.log");
+    file.Write(
+        "error boom\n"
+        "\tat com.example.Foo.bar(Foo.java:42)\n"
+        "\tat com.example.Baz.qux(Baz.java:7)\n"
+        "info recovered\n"
+    );
+
+    auto result = ParseFile(parser, file.GetFilePath());
+    for (const auto &e : result.errors)
+    {
+        UNSCOPED_INFO("parse error: " << e);
+    }
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.data.Lines().size() == 2);
+
+    const KeyId kMessage = result.data.Keys().Find("message");
+    REQUIRE(kMessage != INVALID_KEY_ID);
+
+    const auto &lines = result.data.Lines();
+    const LogValue v0 = lines[0].GetValue(kMessage);
+    const LogValue v1 = lines[1].GetValue(kMessage);
+    const auto m0 = AsStringView(v0);
+    const auto m1 = AsStringView(v1);
+    REQUIRE(m0.has_value());
+    REQUIRE(m1.has_value());
+    CHECK(
+        *m0
+        == "boom\n"
+           "\tat com.example.Foo.bar(Foo.java:42)\n"
+           "\tat com.example.Baz.qux(Baz.java:7)"
+    );
+    CHECK(*m1 == "recovered");
+}
+
+TEST_CASE(
+    "RegexParser file: cross-batch continuation splices tail record via ParseFile",
+    "[regex_parser][file_line_source][multiline]"
+)
+{
+    using namespace loglib;
+
+    const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
+    RegexTemplate extra{
+        .name = "test-static-crossbatch",
+        .pattern = pattern,
+        .sampleLines = {"info hello"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::Indented,
+        .headerAnchor = "",
+    };
+    const RegexTemplate extras[] = {extra};
+    const ScopedExtraTemplates registration(extras);
+
+    // Force a tiny batch size so continuation lines almost certainly
+    // straddle a batch boundary. Stage C's hold-back + splice path is
+    // the mechanism under test.
+    internal::AdvancedParserOptions advanced;
+    advanced.batchSizeBytes = 32; // deliberately smaller than one record
+
+    const TestLogFile file("regex_static_crossbatch.log");
+    file.Write(
+        "error boom\n"
+        "\tat com.example.Foo.bar(Foo.java:42)\n"
+        "\tat com.example.Baz.qux(Baz.java:7)\n"
+        "\tat com.example.Wibble.wobble(Wibble.java:99)\n"
+        "info recovered\n"
+    );
+
+    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
+    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    FileLineSource *sourcePtr = source.get();
+    internal::BufferingSink sink(std::move(source));
+
+    RegexParser parser{pattern};
+    parser.ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced, std::optional<std::string_view>{pattern});
+
+    auto data = sink.TakeData();
+    const auto errors = sink.TakeErrors();
+    for (const auto &e : errors)
+    {
+        UNSCOPED_INFO("parse error: " << e);
+    }
+    REQUIRE(errors.empty());
+    REQUIRE(data.Lines().size() == 2);
+
+    const KeyId kMessage = data.Keys().Find("message");
+    REQUIRE(kMessage != INVALID_KEY_ID);
+
+    const LogValue v0 = data.Lines()[0].GetValue(kMessage);
+    const auto m0 = AsStringView(v0);
+    REQUIRE(m0.has_value());
+    // The joined message must include every continuation line
+    // regardless of which side of the batch boundary it landed on.
+    CHECK(m0->contains("boom"));
+    CHECK(m0->contains("Foo.java:42"));
+    CHECK(m0->contains("Baz.java:7"));
+    CHECK(m0->contains("Wibble.java:99"));
+}
+
 TEST_CASE("ValidateRegexPattern rejects empty pattern [regex]", "[regex_parser]")
 {
     // GUI pre-flight: the Network Stream dialog calls this before

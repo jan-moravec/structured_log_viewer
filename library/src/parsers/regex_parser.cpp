@@ -775,6 +775,10 @@ void DecodeRegexBatch(
     size_t relativeLineNumber = 1;
     std::vector<std::pair<KeyId, internal::CompactLogValue>> values;
     std::string lineError;
+    // 0-based physical-line index (within batch) of the current
+    // tail record's header + last-fold-in.
+    size_t tailHeaderPhysical = 0;
+    size_t tailLastPhysical = 0;
 
     while (cursor < end)
     {
@@ -842,8 +846,15 @@ void DecodeRegexBatch(
                 std::vector<std::pair<KeyId, internal::CompactLogValue>> mutableValues(
                     compactSpan.begin(), compactSpan.end()
                 );
+                const std::string_view mmapView(
+                    fileBegin, fileBegin ? static_cast<size_t>(fileEnd - fileBegin) : 0
+                );
                 const bool ok = internal::ExtendContinuationTarget(
-                    mutableValues, parsed.ownedStringsArena, continuationTargetKey, continuation
+                    mutableValues,
+                    parsed.ownedStringsArena,
+                    continuationTargetKey,
+                    continuation,
+                    mmapView
                 );
                 if (ok)
                 {
@@ -851,6 +862,7 @@ void DecodeRegexBatch(
                     parsed.lines.pop_back();
                     LogLine rebuilt(std::move(mutableValues), keys, source, headerLineId);
                     parsed.lines.push_back(std::move(rebuilt));
+                    tailLastPhysical = relativeLineNumber - 1;
                 }
                 else
                 {
@@ -889,6 +901,8 @@ void DecodeRegexBatch(
         LogLine logLine(std::move(values), keys, source, relativeLineNumber - 1);
         parsed.lines.push_back(std::move(logLine));
         worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
+        tailHeaderPhysical = relativeLineNumber - 1;
+        tailLastPhysical = tailHeaderPhysical;
 
         values.clear();
         ++relativeLineNumber;
@@ -900,6 +914,8 @@ void DecodeRegexBatch(
     {
         parsed.lastRecordOpenForContinuation = true;
         parsed.continuationTargetKeyId = continuationTargetKey;
+        parsed.tailRecordHeaderPhysicalLine = tailHeaderPhysical;
+        parsed.tailRecordLastPhysicalLine = tailLastPhysical;
     }
 }
 

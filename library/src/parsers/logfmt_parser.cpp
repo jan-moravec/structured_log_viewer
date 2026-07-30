@@ -413,6 +413,10 @@ void DecodeLogfmtBatch(
     // Per-record continuation target: last source-order key emitted
     // for the most recent Emit. Reset on each new record.
     KeyId lastRecordContinuationTarget = INVALID_KEY_ID;
+    // 0-based physical-line index (within batch) of the current tail
+    // record: header on Emit, updated on each folded continuation.
+    size_t tailHeaderPhysical = 0;
+    size_t tailLastPhysical = 0;
 
     while (cursor < end)
     {
@@ -469,8 +473,15 @@ void DecodeLogfmtBatch(
                 std::vector<std::pair<KeyId, internal::CompactLogValue>> mutableValues(
                     compactSpan.begin(), compactSpan.end()
                 );
+                const std::string_view mmapView(
+                    fileBegin, fileBegin ? static_cast<size_t>(fileEnd - fileBegin) : 0
+                );
                 const bool ok = internal::ExtendContinuationTarget(
-                    mutableValues, parsed.ownedStringsArena, lastRecordContinuationTarget, continuation
+                    mutableValues,
+                    parsed.ownedStringsArena,
+                    lastRecordContinuationTarget,
+                    continuation,
+                    mmapView
                 );
                 if (ok)
                 {
@@ -480,6 +491,7 @@ void DecodeLogfmtBatch(
                     parsed.lines.pop_back();
                     LogLine rebuilt(std::move(mutableValues), keys, source, headerLineId);
                     parsed.lines.push_back(std::move(rebuilt));
+                    tailLastPhysical = relativeLineNumber - 1;
                 }
                 else
                 {
@@ -536,8 +548,11 @@ void DecodeLogfmtBatch(
             worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
 
             // Track the record's continuation target for any indented
-            // lines that follow before the next header.
+            // lines that follow before the next header, plus the
+            // header's physical index for cross-batch span math.
             lastRecordContinuationTarget = lastSourceOrderKey;
+            tailHeaderPhysical = relativeLineNumber - 1;
+            tailLastPhysical = tailHeaderPhysical;
 
             // Reset the moved-from vector for the next line.
             values.clear();
@@ -561,6 +576,8 @@ void DecodeLogfmtBatch(
     {
         parsed.lastRecordOpenForContinuation = true;
         parsed.continuationTargetKeyId = lastRecordContinuationTarget;
+        parsed.tailRecordHeaderPhysicalLine = tailHeaderPhysical;
+        parsed.tailRecordLastPhysicalLine = tailLastPhysical;
     }
 }
 

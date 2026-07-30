@@ -105,8 +105,23 @@ std::string LogFile::GetLine(size_t lineNumber) const
         throw std::out_of_range("Line number out of range: " + std::to_string(lineNumber));
     }
 
+    // Multi-line record: extend the stop offset to the post-newline
+    // position of the record's LAST physical line so `GetLine` returns
+    // the whole joined record (header + all continuation lines with
+    // their internal '\n' bytes preserved). Empty map short-circuits
+    // for single-line-only files.
+    size_t stopLine = lineNumber + 1;
+    if (!mMultiLineSpans.empty())
+    {
+        const auto it = mMultiLineSpans.find(lineNumber);
+        if (it != mMultiLineSpans.end() && it->second + 1 < mLineOffsets.size())
+        {
+            stopLine = it->second + 1;
+        }
+    }
+
     const uint64_t startOffset = mLineOffsets[lineNumber];
-    const uint64_t stopOffset = mLineOffsets[lineNumber + 1];
+    const uint64_t stopOffset = mLineOffsets[stopLine];
     if (stopOffset <= startOffset)
     {
         return std::string{};
@@ -152,6 +167,15 @@ void LogFile::RegisterLineEnd(size_t position)
 size_t LogFile::LineOffsetsMemoryBytes() const noexcept
 {
     return mLineOffsets.capacity() * sizeof(uint64_t);
+}
+
+void LogFile::RegisterMultiLineRecord(size_t headerLineId, size_t lastLineId)
+{
+    if (lastLineId <= headerLineId)
+    {
+        return; // Single-line records don't need an entry.
+    }
+    mMultiLineSpans[headerLineId] = lastLineId;
 }
 
 std::string_view LogFile::OwnedStringsView() const noexcept
