@@ -286,14 +286,26 @@ void ParseLogfmtLine(
     std::string &ownedArena,
     std::string &quotedScratch,
     std::vector<std::pair<KeyId, internal::CompactLogValue>> &out,
-    bool &outUnterminated
+    bool &outUnterminated,
+    KeyId *outLastSourceOrderKey = nullptr
 )
 {
     out.clear();
     out.reserve(INITIAL_FIELD_CAPACITY);
+    if (outLastSourceOrderKey != nullptr)
+    {
+        // Track the last key seen in source order (independent of
+        // `InsertSorted`'s KeyId ordering) so multi-line callers
+        // know which field to extend with continuation bytes.
+        *outLastSourceOrderKey = INVALID_KEY_ID;
+    }
 
     auto emit = [&](const LogfmtField &field) {
         const KeyId keyId = internal::InternKeyVia(field.key, keys, keyCache);
+        if (outLastSourceOrderKey != nullptr)
+        {
+            *outLastSourceOrderKey = keyId;
+        }
 
         if (field.valueIsNull)
         {
@@ -480,10 +492,26 @@ void DecodeLogfmtBatch(
 
 /// Logfmt record decoder for `RunStreamingParseLoop`. Owns the
 /// per-line scratch. Satisfies `CompactLineDecoder`.
+///
+/// Multi-line records (`mMultiline == true`, the default): an
+/// indented line (first byte ` ` or `\t`) is a continuation of the
+/// prior record and returns `LineDecodeResult::Continue`. The pipeline
+/// then extends the prior record's last-source-order field via
+/// `LastContinuationTarget()`. This covers Go / Python / Node stack
+/// traces spliced into a logfmt stream while leaving un-indented
+/// prose (the shipped "permissive prose" contract) unchanged.
+///
+/// Callers that need the pre-feature behaviour verbatim (e.g. tests
+/// pinning "hand-typed indented lines become three null-valued bare
+/// keys") pass `multiline = false` via `ParserOptions::multilineLogfmt`.
 class LogfmtLineDecoder
 {
 public:
     LogfmtLineDecoder() = default;
+
+    explicit LogfmtLineDecoder(bool multiline) noexcept : mMultiline(multiline)
+    {
+    }
 
     internal::LineDecodeResult DecodeCompact(
         std::string_view line,
@@ -496,14 +524,27 @@ public:
     {
         out.clear();
         outOwnedArena.clear();
+        // Streaming loop pre-filters empty lines; if one slips through
+        // (e.g. via a decoder-level fuzz test) it's benign — no fields
+        // to emit, and treating it as `Emit` matches shipped behaviour.
         if (line.empty())
         {
+            mLastContinuationTarget = INVALID_KEY_ID;
             return internal::LineDecodeResult::Emit;
+        }
+
+        if (mMultiline && (line.front() == ' ' || line.front() == '\t'))
+        {
+            // Indented lines are continuations of the prior record.
+            // The pipeline handles the actual splice (find target
+            // field, extend arena bytes) — the decoder just signals.
+            return internal::LineDecodeResult::Continue;
         }
 
         try
         {
             bool unterminated = false;
+            KeyId lastSourceOrderKey = INVALID_KEY_ID;
             // Streaming bytes aren't in any mmap, so passing
             // `fileBegin/fileSize=0` forces the `OwnedString` arena
             // copy in `MakeStringCompact`.
@@ -516,29 +557,47 @@ public:
                 outOwnedArena,
                 mQuotedScratch,
                 out,
-                unterminated
+                unterminated,
+                &lastSourceOrderKey
             );
             if (unterminated)
             {
+                mLastContinuationTarget = INVALID_KEY_ID;
                 errorOut = "Unterminated quoted value.";
                 return internal::LineDecodeResult::Error;
             }
             if (out.empty())
             {
+                mLastContinuationTarget = INVALID_KEY_ID;
                 errorOut = "Not a logfmt record.";
                 return internal::LineDecodeResult::Error;
             }
+            mLastContinuationTarget = lastSourceOrderKey;
             return internal::LineDecodeResult::Emit;
         }
         catch (const std::exception &e)
         {
+            mLastContinuationTarget = INVALID_KEY_ID;
             errorOut = std::string(e.what());
             return internal::LineDecodeResult::Error;
         }
     }
 
+    /// KeyId of the last field emitted in source order on the most
+    /// recent `DecodeCompact` call that returned `Emit`. Consumed by
+    /// `RunStreamingParseLoop` to route `Continue` bytes into the
+    /// prior record's arena. Returns `INVALID_KEY_ID` when no valid
+    /// `Emit` has happened yet, or when the last call returned
+    /// `Error` / `Continue`.
+    [[nodiscard]] KeyId LastContinuationTarget() const noexcept
+    {
+        return mLastContinuationTarget;
+    }
+
 private:
     std::string mQuotedScratch;
+    bool mMultiline = true;
+    KeyId mLastContinuationTarget = INVALID_KEY_ID;
 };
 
 static_assert(
@@ -745,7 +804,7 @@ std::string LogfmtParser::ToString(const LogMap &values)
 
 void LogfmtParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
-    LogfmtLineDecoder decoder;
+    LogfmtLineDecoder decoder(options.multilineLogfmt);
     internal::RunStreamingParseLoop(source, decoder, sink, options);
 }
 

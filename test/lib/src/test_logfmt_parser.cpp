@@ -1,13 +1,16 @@
 #include "common.hpp"
 
+#include <loglib/bytes_producer.hpp>
 #include <loglib/file_line_source.hpp>
 #include <loglib/internal/buffering_sink.hpp>
 #include <loglib/log_data.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_parser.hpp>
+#include <loglib/log_parse_sink.hpp>
 #include <loglib/parse_file.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/parsers/logfmt_parser.hpp>
+#include <loglib/stream_line_source.hpp>
 
 #include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>
@@ -16,9 +19,14 @@
 #include <catch2/catch_all.hpp>
 #include <glaze/glaze.hpp>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <memory>
 #include <random>
+#include <span>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -398,4 +406,277 @@ TEST_CASE(
         const auto expectedThreadId = static_cast<std::uint64_t>(i % 16);
         CHECK(std::get<std::uint64_t>(values.at("thread_id")) == expectedThreadId);
     }
+}
+
+// -----------------------------------------------------------------------------
+// Multi-line record tests (streaming pipeline)
+//
+// Live-tail (`ParseStreaming(StreamLineSource&)`) is where multi-line
+// support lands first: `ParserOptions::multilineLogfmt` (default true)
+// enables the "indented line = continuation" rule inside
+// `LogfmtLineDecoder`. `RunStreamingParseLoop` then holds the prior
+// record open, appending continuation bytes to the last-source-order
+// field before committing.
+// -----------------------------------------------------------------------------
+
+namespace
+{
+
+/// Single-shot `BytesProducer` matching the pattern used in
+/// `test_json_parser.cpp`. Yields the payload once and reports EOF so
+/// the parser exits its drain loop without blocking on `WaitForBytes`.
+class InMemoryProducer final : public loglib::BytesProducer
+{
+public:
+    explicit InMemoryProducer(std::string bytes)
+        : mBytes(std::move(bytes))
+    {
+    }
+
+    size_t Read(std::span<char> buffer) override
+    {
+        if (mCursor >= mBytes.size())
+        {
+            mClosed = true;
+            return 0;
+        }
+        const size_t available = mBytes.size() - mCursor;
+        const size_t n = std::min(available, buffer.size());
+        std::memcpy(buffer.data(), mBytes.data() + mCursor, n);
+        mCursor += n;
+        if (mCursor >= mBytes.size())
+        {
+            mClosed = true;
+        }
+        return n;
+    }
+
+    void WaitForBytes(std::chrono::milliseconds /*timeout*/) override
+    {
+    }
+
+    void Stop() noexcept override
+    {
+        mClosed = true;
+    }
+
+    [[nodiscard]] bool IsClosed() const noexcept override
+    {
+        return mClosed;
+    }
+
+    [[nodiscard]] std::string DisplayName() const override
+    {
+        return "in-memory";
+    }
+
+private:
+    std::string mBytes;
+    size_t mCursor = 0;
+    bool mClosed = false;
+};
+
+/// In-memory `LogParseSink` collecting emitted batches for assertion.
+struct CollectingStreamSink final : loglib::LogParseSink
+{
+    loglib::KeyIndex keys;
+    std::vector<loglib::StreamedBatch> batches;
+    bool finished = false;
+    bool finishedCancelled = false;
+
+    loglib::KeyIndex &Keys() override
+    {
+        return keys;
+    }
+    void OnStarted() override
+    {
+    }
+    void OnBatch(loglib::StreamedBatch batch) override
+    {
+        batches.push_back(std::move(batch));
+    }
+    void OnFinished(bool cancelled) override
+    {
+        finished = true;
+        finishedCancelled = cancelled;
+    }
+};
+
+/// Flatten every emitted `LogLine *` across the (potentially-coalesced)
+/// batches so tests can inspect them positionally.
+std::vector<loglib::LogLine *> FlattenLines(std::vector<loglib::StreamedBatch> &batches)
+{
+    std::vector<loglib::LogLine *> lines;
+    for (auto &b : batches)
+    {
+        for (auto &l : b.lines)
+        {
+            lines.push_back(&l);
+        }
+    }
+    return lines;
+}
+
+} // namespace
+
+TEST_CASE(
+    "LogfmtParser streaming: indented lines fold into the prior record's last field", "[logfmt_parser][stream_line_source]"
+)
+{
+    using namespace loglib;
+
+    // Two Go-style logfmt records with the second one carrying an
+    // indented stack-trace continuation. The trace's three lines
+    // must merge into `msg`'s value rather than emit their own rows.
+    const std::string payload =
+        "level=info msg=\"first record\"\n"
+        "level=error msg=\"boom\"\n"
+        "\tgoroutine 1 [running]:\n"
+        "\tmain.main()\n"
+        "\t\tmain.go:42 +0x0\n"
+        "level=info msg=\"after trace\"\n";
+
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
+
+    CollectingStreamSink sink;
+    const LogfmtParser parser;
+    parser.ParseStreaming(source, sink, ParserOptions{}); // multilineLogfmt=true default
+
+    REQUIRE(sink.finished);
+    CHECK_FALSE(sink.finishedCancelled);
+
+    auto lines = FlattenLines(sink.batches);
+    REQUIRE(lines.size() == 3);
+
+    const KeyId kLevel = sink.keys.Find("level");
+    const KeyId kMsg = sink.keys.Find("msg");
+    REQUIRE(kLevel != INVALID_KEY_ID);
+    REQUIRE(kMsg != INVALID_KEY_ID);
+
+    // The middle row's msg picks up all three continuation lines,
+    // each joined with a `\n` separator preserved from the source.
+    // Keep each `LogValue` bound to a local so `AsStringView`'s
+    // returned `string_view` doesn't dangle past a temporary.
+    const LogValue v0 = lines[0]->GetValue(kMsg);
+    const LogValue v1 = lines[1]->GetValue(kMsg);
+    const LogValue v2 = lines[2]->GetValue(kMsg);
+    const auto msg0 = AsStringView(v0);
+    const auto msg1 = AsStringView(v1);
+    const auto msg2 = AsStringView(v2);
+    REQUIRE(msg0.has_value());
+    REQUIRE(msg1.has_value());
+    REQUIRE(msg2.has_value());
+
+    CHECK(*msg0 == "first record");
+    CHECK(
+        *msg1
+        == "boom\n"
+           "\tgoroutine 1 [running]:\n"
+           "\tmain.main()\n"
+           "\t\tmain.go:42 +0x0"
+    );
+    CHECK(*msg2 == "after trace");
+
+    // `RawLine(lineId)` returns the JOINED raw bytes (header + all
+    // continuations), so downstream copy / detail-pane consumers
+    // naturally see the whole trace without any special-case code.
+    const std::string raw1 = source.RawLine(lines[1]->LineId());
+    CHECK(raw1.contains("level=error"));
+    CHECK(raw1.contains("goroutine 1"));
+    CHECK(raw1.contains("main.go:42"));
+}
+
+TEST_CASE("LogfmtParser streaming: multilineLogfmt=false restores permissive-prose behaviour", "[logfmt_parser][stream_line_source]")
+{
+    using namespace loglib;
+
+    // Same payload as the enabled case, but with the flag flipped
+    // off. Continuation lines now emit as N null-valued bare keys
+    // (the shipped pre-feature contract).
+    const std::string payload =
+        "level=info msg=\"first record\"\n"
+        "\ttab-indented continuation\n";
+
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
+
+    CollectingStreamSink sink;
+    const LogfmtParser parser;
+    ParserOptions options;
+    options.multilineLogfmt = false;
+    parser.ParseStreaming(source, sink, options);
+
+    REQUIRE(sink.finished);
+    auto lines = FlattenLines(sink.batches);
+    // Two rows now: the header, plus the "tab-indented continuation"
+    // parsed as three (or two, depending on leading-tab tokenization)
+    // null-valued bare keys.
+    REQUIRE(lines.size() == 2);
+
+    const KeyId kTab = sink.keys.Find("tab-indented");
+    const KeyId kContinuation = sink.keys.Find("continuation");
+    CHECK(kTab != INVALID_KEY_ID);
+    CHECK(kContinuation != INVALID_KEY_ID);
+}
+
+TEST_CASE(
+    "LogfmtParser streaming: orphan continuation before any Emit surfaces a per-line error", "[logfmt_parser][stream_line_source]"
+)
+{
+    using namespace loglib;
+
+    // Payload starts with an indented line: no prior record to
+    // attach to. The loop surfaces an "Orphaned continuation line"
+    // error but continues processing.
+    const std::string payload =
+        "\torphan indented at start\n"
+        "level=info msg=\"first real record\"\n";
+
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
+
+    CollectingStreamSink sink;
+    const LogfmtParser parser;
+    parser.ParseStreaming(source, sink, ParserOptions{});
+
+    REQUIRE(sink.finished);
+    auto lines = FlattenLines(sink.batches);
+    REQUIRE(lines.size() == 1);
+
+    std::vector<std::string> errors;
+    for (auto &b : sink.batches)
+    {
+        errors.insert(errors.end(), b.errors.begin(), b.errors.end());
+    }
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0].contains("line 1"));
+    CHECK(errors[0].contains("Orphaned continuation line"));
+}
+
+TEST_CASE("LogfmtParser streaming: final pending record commits on EOF", "[logfmt_parser][stream_line_source]")
+{
+    using namespace loglib;
+
+    // Header + continuation with no terminating newline / new
+    // header: the loop must still commit the record when the
+    // producer closes, otherwise the last multi-line trace is lost.
+    const std::string payload =
+        "level=warn msg=\"trailing\"\n"
+        "\tone continuation line\n"
+        "\tanother one\n";
+
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
+
+    CollectingStreamSink sink;
+    const LogfmtParser parser;
+    parser.ParseStreaming(source, sink, ParserOptions{});
+
+    REQUIRE(sink.finished);
+    auto lines = FlattenLines(sink.batches);
+    REQUIRE(lines.size() == 1);
+
+    const KeyId kMsg = sink.keys.Find("msg");
+    REQUIRE(kMsg != INVALID_KEY_ID);
+    const LogValue v = lines[0]->GetValue(kMsg);
+    const auto msg = AsStringView(v);
+    REQUIRE(msg.has_value());
+    CHECK(*msg == "trailing\n\tone continuation line\n\tanother one");
 }
