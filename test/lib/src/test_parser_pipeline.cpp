@@ -4,6 +4,7 @@
 #include <loglib/internal/advanced_parser_options.hpp>
 #include <loglib/internal/compact_log_value.hpp>
 #include <loglib/internal/static_parser_pipeline.hpp>
+#include <loglib/internal/streaming_parse_loop.hpp>
 #include <loglib/internal/timestamp_promotion.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
@@ -213,6 +214,258 @@ public:
             }
 
             parsed.totalLineCount = relativeLineNumber - 1;
+        };
+
+        loglib::internal::RunStaticParserPipeline<ByteRange, WorkerState>(
+            source, sink, options, advanced, stageA, stageB
+        );
+    }
+};
+
+/// Mock multi-line parser: same `key=value` format as `KeyValueLineParser`,
+/// but treats any line starting with a space or tab as a continuation of
+/// the previous record's `msg` field. Exercises the Stage C hold-back /
+/// cross-batch splice discipline independently of the real regex /
+/// logfmt parsers.
+class MultilineKeyValueLineParser
+{
+public:
+    struct ByteRange
+    {
+        const char *bytesBegin = nullptr;
+        const char *bytesEnd = nullptr;
+    };
+
+    struct WorkerState
+    {
+    };
+
+    static void ParseStreaming(
+        FileLineSource &source,
+        LogParseSink &sink,
+        const loglib::ParserOptions &options,
+        const loglib::internal::AdvancedParserOptions &advanced
+    )
+    {
+        FileLineSource *sourcePtr = &source;
+        LogFile &file = source.File();
+        const char *fileBegin = file.Data();
+        const char *fileEnd = (fileBegin != nullptr) ? fileBegin + file.Size() : nullptr;
+        const size_t batchBytes = advanced.batchSizeBytes != 0
+                                      ? advanced.batchSizeBytes
+                                      : loglib::internal::AdvancedParserOptions::DEFAULT_BATCH_SIZE_BYTES;
+        const char *cursor = fileBegin;
+
+        auto stageA = [cursor, fileEnd, batchBytes](ByteRange &out) mutable -> bool {
+            if (cursor >= fileEnd)
+            {
+                return false;
+            }
+            const char *batchBegin = cursor;
+            const auto remaining = static_cast<size_t>(fileEnd - cursor);
+            const size_t advance = std::min(batchBytes, remaining);
+            const char *target = cursor + advance;
+            if (advance < remaining)
+            {
+                const char *newline =
+                    static_cast<const char *>(memchr(target, '\n', static_cast<size_t>(fileEnd - target)));
+                cursor = (newline != nullptr) ? newline + 1 : fileEnd;
+            }
+            else
+            {
+                cursor = fileEnd;
+            }
+            out.bytesBegin = batchBegin;
+            out.bytesEnd = cursor;
+            return true;
+        };
+
+        auto stageB = [sourcePtr, fileBegin, fileEnd](
+                          ByteRange token,
+                          loglib::internal::WorkerScratch<WorkerState> &worker,
+                          KeyIndex &keys,
+                          std::span<const loglib::internal::TimeColumnSpec> timeColumns,
+                          loglib::internal::ParsedPipelineBatch &parsed
+                      ) {
+            const char *cur = token.bytesBegin;
+            const char *end = token.bytesEnd;
+            size_t relativeLineNumber = 1;
+
+            // Continuation state: which KeyId of the current tail record
+            // should absorb subsequent continuation bytes. Reset on every
+            // fresh header line.
+            loglib::KeyId lastRecordContinuationTarget = loglib::INVALID_KEY_ID;
+            size_t tailHeaderPhysical = 0;
+            size_t tailLastPhysical = 0;
+
+            while (cur < end)
+            {
+                const char *lineStart = cur;
+                const char *newline = static_cast<const char *>(memchr(cur, '\n', static_cast<size_t>(end - cur)));
+                const char *lineEnd = (newline != nullptr) ? newline : end;
+                cur = (newline != nullptr) ? newline + 1 : end;
+
+                const uint64_t nextOffset = static_cast<uint64_t>(cur - fileBegin) + (newline == nullptr ? 1u : 0u);
+                parsed.localLineOffsets.push_back(nextOffset);
+
+                std::string_view line(lineStart, static_cast<size_t>(lineEnd - lineStart));
+                if (!line.empty() && line.back() == '\r')
+                {
+                    line.remove_suffix(1);
+                }
+
+                if (line.empty())
+                {
+                    ++relativeLineNumber;
+                    continue;
+                }
+
+                // Continuation: indented line folds into the tail record.
+                if (line.front() == ' ' || line.front() == '\t')
+                {
+                    if (parsed.lines.empty())
+                    {
+                        // Batch opens on a continuation. Stage C splices these
+                        // into the previous batch's held tail record.
+                        if (!parsed.leadingContinuationBytes.empty())
+                        {
+                            parsed.leadingContinuationBytes.push_back('\n');
+                        }
+                        parsed.leadingContinuationBytes.append(line.data(), line.size());
+                        parsed.leadingContinuationLineCount++;
+                    }
+                    else
+                    {
+                        std::string continuation;
+                        continuation.reserve(1 + line.size());
+                        continuation.push_back('\n');
+                        continuation.append(line.data(), line.size());
+
+                        auto compactSpan = parsed.lines.back().CompactValues();
+                        std::vector<std::pair<loglib::KeyId, loglib::internal::CompactLogValue>> mutableValues(
+                            compactSpan.begin(), compactSpan.end()
+                        );
+                        const std::string_view mmapView(
+                            fileBegin, fileBegin ? static_cast<size_t>(fileEnd - fileBegin) : 0
+                        );
+                        const bool ok = loglib::internal::ExtendContinuationTarget(
+                            mutableValues,
+                            parsed.ownedStringsArena,
+                            lastRecordContinuationTarget,
+                            continuation,
+                            mmapView
+                        );
+                        if (ok)
+                        {
+                            const size_t headerLineId = parsed.lines.back().LineId();
+                            parsed.lines.pop_back();
+                            LogLine rebuilt(std::move(mutableValues), keys, *sourcePtr, headerLineId);
+                            parsed.lines.push_back(std::move(rebuilt));
+                            tailLastPhysical = relativeLineNumber - 1;
+                        }
+                        else
+                        {
+                            parsed.errors.push_back(loglib::internal::ParsedLineError{
+                                .relativeLine = relativeLineNumber,
+                                .body = "Continuation dropped: non-string target.",
+                            });
+                        }
+                    }
+                    ++relativeLineNumber;
+                    continue;
+                }
+
+                if (line.front() == '!')
+                {
+                    parsed.errors.push_back(
+                        loglib::internal::ParsedLineError{
+                            .relativeLine = relativeLineNumber, .body = "injected parser failure"
+                        }
+                    );
+                    ++relativeLineNumber;
+                    continue;
+                }
+
+                // Header line: tokenise `key=value` pairs.
+                std::vector<std::pair<loglib::KeyId, loglib::internal::CompactLogValue>> values;
+                values.reserve(8);
+                loglib::KeyId lastSourceOrderKey = loglib::INVALID_KEY_ID;
+                size_t pos = 0;
+                while (pos < line.size())
+                {
+                    while (pos < line.size() && line[pos] == ' ')
+                    {
+                        ++pos;
+                    }
+                    if (pos >= line.size())
+                    {
+                        break;
+                    }
+                    const size_t fieldStart = pos;
+                    while (pos < line.size() && line[pos] != ' ')
+                    {
+                        ++pos;
+                    }
+                    const std::string_view field = line.substr(fieldStart, pos - fieldStart);
+                    const size_t eq = field.find('=');
+                    if (eq == std::string_view::npos)
+                    {
+                        continue;
+                    }
+                    const std::string_view keyView = field.substr(0, eq);
+                    const std::string_view valueView = field.substr(eq + 1);
+
+                    const loglib::KeyId keyId = loglib::internal::InternKeyVia(keyView, keys, &worker.keyCache);
+
+                    const uint64_t offset = parsed.ownedStringsArena.size();
+                    parsed.ownedStringsArena.append(valueView.data(), valueView.size());
+                    auto val = loglib::internal::CompactLogValue::MakeOwnedString(
+                        offset, static_cast<uint32_t>(valueView.size())
+                    );
+                    auto it = values.begin();
+                    while (it != values.end() && it->first < keyId)
+                    {
+                        ++it;
+                    }
+                    if (it != values.end() && it->first == keyId)
+                    {
+                        it->second = val;
+                    }
+                    else
+                    {
+                        values.emplace(it, keyId, val);
+                    }
+                    lastSourceOrderKey = keyId;
+                }
+
+                if (values.empty())
+                {
+                    parsed.errors.push_back(loglib::internal::ParsedLineError{
+                        .relativeLine = relativeLineNumber, .body = "no key=value pairs"
+                    });
+                    ++relativeLineNumber;
+                    continue;
+                }
+
+                LogLine logLine(std::move(values), keys, *sourcePtr, relativeLineNumber - 1);
+                parsed.lines.push_back(std::move(logLine));
+                worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
+
+                lastRecordContinuationTarget = lastSourceOrderKey;
+                tailHeaderPhysical = relativeLineNumber - 1;
+                tailLastPhysical = tailHeaderPhysical;
+
+                ++relativeLineNumber;
+            }
+
+            parsed.totalLineCount = relativeLineNumber - 1;
+            if (!parsed.lines.empty() && lastRecordContinuationTarget != loglib::INVALID_KEY_ID)
+            {
+                parsed.lastRecordOpenForContinuation = true;
+                parsed.continuationTargetKeyId = lastRecordContinuationTarget;
+                parsed.tailRecordHeaderPhysicalLine = tailHeaderPhysical;
+                parsed.tailRecordLastPhysicalLine = tailLastPhysical;
+            }
         };
 
         loglib::internal::RunStaticParserPipeline<ByteRange, WorkerState>(
@@ -645,4 +898,160 @@ TEST_CASE("Mock parser: timestamp promotion via shared post-decoding hook", "[mo
     }
     REQUIRE(totalLines == 3);
     REQUIRE(promoted == 3);
+}
+
+// Cross-batch splice: a multi-line record's continuation lines land in
+// the NEXT Stage A batch. Stage C must hold the header record back and
+// splice `leadingContinuationBytes` into its last field before emitting.
+TEST_CASE(
+    "Mock parser (multiline): cross-batch continuation splices into held tail record",
+    "[mock_parser][multiline][cross_batch]"
+)
+{
+    // Fixture: two records, each followed by two indented continuation
+    // lines. We size the batch to guarantee the second record's header
+    // line ends a batch while its continuations start the next one.
+    std::string content;
+    content += "level=info msg=first\n";      // line 1: header A
+    content += "\tframe A1\n";                // line 2: continuation of A
+    content += "\tframe A2\n";                // line 3: continuation of A
+    content += "level=warn msg=second\n";     // line 4: header B
+    content += "\tframe B1\n";                // line 5: continuation of B
+    content += "\tframe B2\n";                // line 6: continuation of B
+
+    const TempTextFile fixture(content, "test_kv_multiline_xbatch.log");
+
+    // Split the file so the second record's continuations sit in a
+    // fresh batch. The first three lines together are 41 bytes; picking
+    // a batch size in that neighbourhood forces Stage A to break there.
+    const size_t firstThreeLineBytes = std::string_view("level=info msg=first\n\tframe A1\n\tframe A2\n").size();
+
+    loglib::ParserOptions options;
+    loglib::internal::AdvancedParserOptions advanced;
+    advanced.threads = 1;
+    advanced.batchSizeBytes = firstThreeLineBytes;
+
+    CollectingSink sink;
+    FileLineSource source(std::make_unique<LogFile>(fixture.Path()));
+    MultilineKeyValueLineParser::ParseStreaming(source, sink, options, advanced);
+
+    REQUIRE_FALSE(sink.cancelled);
+    REQUIRE(!sink.batches.empty());
+
+    std::vector<const LogLine *> allLines;
+    for (const auto &b : sink.batches)
+    {
+        for (const auto &line : b.lines)
+        {
+            allLines.push_back(&line);
+        }
+    }
+    REQUIRE(allLines.size() == 2);
+
+    // Record A must have absorbed both continuation frames.
+    LogValue msgA = allLines[0]->GetValue("msg");
+    REQUIRE(std::holds_alternative<std::string>(msgA));
+    const std::string &msgAStr = std::get<std::string>(msgA);
+    INFO("record A msg: " << msgAStr);
+    CHECK(msgAStr.find("first") != std::string::npos);
+    CHECK(msgAStr.find("frame A1") != std::string::npos);
+    CHECK(msgAStr.find("frame A2") != std::string::npos);
+
+    // Record B must have absorbed its own frames (may live in-batch or
+    // land at EOF via the pipeline's final `commitHeld`).
+    LogValue msgB = allLines[1]->GetValue("msg");
+    REQUIRE(std::holds_alternative<std::string>(msgB));
+    const std::string &msgBStr = std::get<std::string>(msgB);
+    INFO("record B msg: " << msgBStr);
+    CHECK(msgBStr.find("second") != std::string::npos);
+    CHECK(msgBStr.find("frame B1") != std::string::npos);
+    CHECK(msgBStr.find("frame B2") != std::string::npos);
+}
+
+// Orphan continuation at file start: the first physical line is a
+// continuation with no prior record to attach to. Stage C surfaces an
+// error and drops the bytes; the following record still parses.
+TEST_CASE(
+    "Mock parser (multiline): orphan continuation at file start surfaces error",
+    "[mock_parser][multiline][orphan]"
+)
+{
+    std::string content;
+    content += "\torphan frame at column 0\n"; // line 1: continuation, no header
+    content += "level=info msg=real\n";        // line 2: valid record
+
+    const TempTextFile fixture(content, "test_kv_orphan_continuation.log");
+
+    loglib::ParserOptions options;
+    loglib::internal::AdvancedParserOptions advanced;
+    advanced.threads = 1;
+    advanced.batchSizeBytes = 1024 * 1024;
+
+    CollectingSink sink;
+    FileLineSource source(std::make_unique<LogFile>(fixture.Path()));
+    MultilineKeyValueLineParser::ParseStreaming(source, sink, options, advanced);
+
+    REQUIRE_FALSE(sink.cancelled);
+
+    size_t totalLines = 0;
+    std::vector<std::string> allErrors;
+    for (const auto &b : sink.batches)
+    {
+        totalLines += b.lines.size();
+        for (const auto &e : b.errors)
+        {
+            allErrors.push_back(e);
+        }
+    }
+    CHECK(totalLines == 1);
+    REQUIRE(!allErrors.empty());
+    INFO("first error: " << allErrors.front());
+    // The orphan-continuation error is emitted at line 1 (the first
+    // physical continuation line) by Stage C.
+    CHECK(allErrors.front().find("Orphaned continuation") != std::string::npos);
+}
+
+// EOF commit: a multi-line record that reaches end-of-file with no
+// following header must still be emitted (via the pipeline's final
+// `commitHeld` fallthrough).
+TEST_CASE(
+    "Mock parser (multiline): final multi-line record commits at EOF",
+    "[mock_parser][multiline][eof]"
+)
+{
+    std::string content;
+    content += "level=info msg=only\n";
+    content += "\tfollowup 1\n";
+    content += "\tfollowup 2\n";
+
+    const TempTextFile fixture(content, "test_kv_multiline_eof.log");
+
+    loglib::ParserOptions options;
+    loglib::internal::AdvancedParserOptions advanced;
+    advanced.threads = 1;
+    advanced.batchSizeBytes = 1024 * 1024;
+
+    CollectingSink sink;
+    FileLineSource source(std::make_unique<LogFile>(fixture.Path()));
+    MultilineKeyValueLineParser::ParseStreaming(source, sink, options, advanced);
+
+    REQUIRE_FALSE(sink.cancelled);
+
+    std::vector<const LogLine *> allLines;
+    for (const auto &b : sink.batches)
+    {
+        for (const auto &line : b.lines)
+        {
+            allLines.push_back(&line);
+        }
+    }
+    REQUIRE(allLines.size() == 1);
+
+    LogValue msg = allLines[0]->GetValue("msg");
+    REQUIRE(std::holds_alternative<std::string>(msg));
+    const std::string &msgStr = std::get<std::string>(msg);
+    INFO("record msg: " << msgStr);
+    CHECK(msgStr.find("only") != std::string::npos);
+    CHECK(msgStr.find("followup 1") != std::string::npos);
+    CHECK(msgStr.find("followup 2") != std::string::npos);
 }
