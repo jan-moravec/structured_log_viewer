@@ -291,7 +291,7 @@ private slots:
     {
         const std::vector<Column> columns{MakeColumn("level", "level", loglib::LogConfiguration::Type::Enumeration)};
         const Leaf rule = MakeEnumLeaf("level", {});
-        loglib::LogTable table;
+        const loglib::LogTable table;
         QVERIFY(!CompileLeaf(rule, 0, columns, &table).has_value());
     }
 
@@ -316,7 +316,7 @@ private slots:
     {
         const std::vector<Column> columns{MakeColumn("level", "level", loglib::LogConfiguration::Type::Enumeration)};
         const Leaf rule = MakeEnumLeaf("level", {"Info", "Warn"});
-        loglib::LogTable table;
+        const loglib::LogTable table;
         const auto compiled = CompileLeaf(rule, 0, columns, &table);
         QVERIFY(compiled.has_value());
         QVERIFY(std::holds_alternative<loglib::EnumRowPredicate>(*compiled));
@@ -330,7 +330,7 @@ private slots:
     {
         const std::vector<Column> columns{MakeColumn("level", "level", loglib::LogConfiguration::Type::Level)};
         const Leaf rule = MakeEnumLeaf("level", {"Info"});
-        loglib::LogTable table;
+        const loglib::LogTable table;
         QVERIFY(!CompileLeaf(rule, 0, columns, &table).has_value());
     }
 
