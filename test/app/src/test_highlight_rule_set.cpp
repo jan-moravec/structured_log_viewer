@@ -7,16 +7,20 @@
 // `OnRowsAppended`, FIFO eviction shift via `OnRowsEvicted`,
 // `RebindColumns` after schema growth, `ClearMatches`, key-based
 // identity survives `MoveColumn`, Boolean / Number predicates,
-// and empty-needle rejection.
+// and empty-needle rejection. Also hosts a focused regression
+// test for the shared `CompileExpression` path (`leaf_rule_compile`).
 
 #include "highlight_rule_set.hpp"
+#include "leaf_rule_compile.hpp"
 #include "log_model.hpp"
 #include "qt_streaming_log_sink.hpp"
 
 #include <loglib/file_line_source.hpp>
+#include <loglib/filter_expression.hpp>
 #include <loglib/internal/advanced_parser_options.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
+#include <loglib/log_filter.hpp>
 #include <loglib/log_parse_sink.hpp>
 #include <loglib/log_table.hpp>
 #include <loglib/parser_options.hpp>
@@ -372,10 +376,14 @@ private slots:
         QCOMPARE(rules.LastMatchFor(3), std::optional<std::size_t>{});
     }
 
-    /// Regression: an empty `filterString` used to compile into a
+    /// Regression: an empty `filterString` on `Contains` /
+    /// `RegularExpression` / `Wildcard` used to compile into a
     /// matcher that returned true for every row -- the whole table
     /// lit up on a fresh rule the user hadn't finished typing.
-    /// `CompileRule` now treats empty as inactive.
+    /// `CompileRule` now treats those three as inactive, but
+    /// `Exactly ""` is a legitimate "column is genuinely empty"
+    /// query and stays active (it just fails to match any row here
+    /// because every `level` in the fixture is non-empty).
     void EmptyNeedleLeavesRuleInactive()
     {
         HighlightRuleSet rules;
@@ -399,12 +407,57 @@ private slots:
         }
         rules.SetRules(std::move(ruleSet), model.Configuration().columns, &model.Table());
 
-        QCOMPARE(rules.InactiveCount(), 4u);
-        QVERIFY(!rules.HasActiveRules());
+        // Contains / Regex / Wildcard rejected up-front. Exactly
+        // compiled, so the set has one active rule -- but no row in
+        // the fixture has an empty `level`, so nothing matches.
+        QCOMPARE(rules.InactiveCount(), 3u);
+        QVERIFY(rules.HasActiveRules());
         for (std::size_t row = 0; row < 4; ++row)
         {
             QCOMPARE(rules.LastMatchFor(row), std::optional<std::size_t>{});
         }
+    }
+
+    /// `Exactly ""` positive test: rows with a genuinely empty
+    /// column value should highlight. Complements the mixed-batch
+    /// test above (which only proves the rule compiled).
+    void ExactlyEmptyStringMatchesEmptyColumnValue()
+    {
+        HighlightRuleSet rules;
+        LogModel model{/*parent=*/nullptr, /*theme=*/nullptr, /*anchors=*/nullptr, &rules};
+
+        // Hand-roll a fixture with a mix of populated and empty
+        // `note` values so the highlight boundary is unambiguous.
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = dir.filePath("exact_empty.jsonl");
+        {
+            std::ofstream stream(path.toStdString(), std::ios::binary);
+            QVERIFY(stream.is_open());
+            stream << R"({"level": "info", "note": "hello"})" << '\n';
+            stream << R"({"level": "info", "note": ""})" << '\n';
+            stream << R"({"level": "info", "note": "world"})" << '\n';
+            stream << R"({"level": "info", "note": ""})" << '\n';
+        }
+        StreamJsonPathInto(model, path);
+
+        Rule r;
+        r.name = "blank-note";
+        r.enabled = true;
+        r.columnKeys = {"note"};
+        r.type = Rule::Type::String;
+        r.matchType = Rule::Match::Exactly;
+        r.filterString = std::string{};
+        std::vector<Rule> ruleSet;
+        ruleSet.push_back(std::move(r));
+        rules.SetRules(std::move(ruleSet), model.Configuration().columns, &model.Table());
+
+        QCOMPARE(rules.InactiveCount(), 0u);
+        QVERIFY(rules.HasActiveRules());
+        QCOMPARE(rules.LastMatchFor(0), std::optional<std::size_t>{});
+        QCOMPARE(rules.LastMatchFor(1), std::optional<std::size_t>{0u});
+        QCOMPARE(rules.LastMatchFor(2), std::optional<std::size_t>{});
+        QCOMPARE(rules.LastMatchFor(3), std::optional<std::size_t>{0u});
     }
 
     /// Number-range parity: covers min-only, max-only, both
@@ -492,6 +545,154 @@ private slots:
         QCOMPARE(rules.LastMatchFor(3), std::optional<std::size_t>{0u});
         QCOMPARE(rules.LastMatchFor(0), std::optional<std::size_t>{});
         QCOMPARE(rules.LastMatchFor(2), std::optional<std::size_t>{});
+    }
+
+    /// Regression: an `And` whose input had children but all
+    /// compiled to absent used to fold to `And{}` = match-all,
+    /// so `NOT (all-absent-And)` compiled to `Not(empty-And)` =
+    /// match-none, blanking the view. `Or` already returned
+    /// absent in this shape; `And` now matches, restoring the
+    /// over-accept-not-over-reject design contract.
+    void AllAbsentAndUnderNotIsMatchAll()
+    {
+        loglib::LogConfiguration::Column existing;
+        existing.header = "level";
+        existing.keys = {"level"};
+        existing.type = loglib::LogConfiguration::Type::String;
+        const std::vector<loglib::LogConfiguration::Column> columns{existing};
+
+        // `NOT (missing:x AND other_missing:y)` -- both leaves
+        // reference unknown columns, so both compile absent.
+        loglib::LeafRule leftLeaf;
+        leftLeaf.type = loglib::LeafRule::Type::String;
+        leftLeaf.matchType = loglib::LeafRule::Match::Contains;
+        leftLeaf.columnKeys = {"missing"};
+        leftLeaf.filterString = "x";
+        loglib::LeafRule rightLeaf;
+        rightLeaf.type = loglib::LeafRule::Type::String;
+        rightLeaf.matchType = loglib::LeafRule::Match::Contains;
+        rightLeaf.columnKeys = {"other_missing"};
+        rightLeaf.filterString = "y";
+        std::vector<loglib::FilterExpression> andChildren;
+        andChildren.push_back(loglib::MakeLeaf(std::move(leftLeaf)));
+        andChildren.push_back(loglib::MakeLeaf(std::move(rightLeaf)));
+        const loglib::FilterExpression expr = loglib::MakeNot(loglib::MakeAnd(std::move(andChildren)));
+
+        const loglib::CompiledFilterExpression compiled = CompileExpression(expr, columns, /*table=*/nullptr);
+
+        // Absence propagates: whole tree compiles to match-all,
+        // not match-none. `IsMatchAllCompiled` catches the fix
+        // (bug shape would have left a `Not` at the root).
+        QVERIFY(loglib::IsMatchAllCompiled(compiled));
+    }
+
+    /// Companion: a sibling `And` next to the same `NOT
+    /// (all-absent)` should reduce to the sibling alone, not
+    /// blank out. Pins the more user-facing symptom described
+    /// in the design note.
+    void SiblingSurvivesNotAllAbsent()
+    {
+        loglib::LogConfiguration::Column svcCol;
+        svcCol.header = "svc";
+        svcCol.keys = {"svc"};
+        svcCol.type = loglib::LogConfiguration::Type::String;
+        const std::vector<loglib::LogConfiguration::Column> columns{svcCol};
+
+        loglib::LeafRule svcLeaf;
+        svcLeaf.type = loglib::LeafRule::Type::String;
+        svcLeaf.matchType = loglib::LeafRule::Match::Contains;
+        svcLeaf.columnKeys = {"svc"};
+        svcLeaf.filterString = "auth";
+
+        loglib::LeafRule missingA;
+        missingA.type = loglib::LeafRule::Type::String;
+        missingA.matchType = loglib::LeafRule::Match::Contains;
+        missingA.columnKeys = {"missing_a"};
+        missingA.filterString = "x";
+        loglib::LeafRule missingB = missingA;
+        missingB.columnKeys = {"missing_b"};
+        std::vector<loglib::FilterExpression> notInner;
+        notInner.push_back(loglib::MakeLeaf(std::move(missingA)));
+        notInner.push_back(loglib::MakeLeaf(std::move(missingB)));
+
+        std::vector<loglib::FilterExpression> topChildren;
+        topChildren.push_back(loglib::MakeLeaf(std::move(svcLeaf)));
+        topChildren.push_back(loglib::MakeNot(loglib::MakeAnd(std::move(notInner))));
+        const loglib::FilterExpression expr = loglib::MakeAnd(std::move(topChildren));
+
+        const loglib::CompiledFilterExpression compiled = CompileExpression(expr, columns, /*table=*/nullptr);
+        // Sibling survives: top-level `And` has one child (the
+        // svc leaf) and one referenced column (svc's index).
+        const auto *rootAnd = std::get_if<loglib::CompiledFilterExpression::And>(&compiled.node);
+        QVERIFY(rootAnd != nullptr);
+        QCOMPARE(rootAnd->children.size(), std::size_t{1});
+        QCOMPARE(compiled.referencedColumns.size(), std::size_t{1});
+    }
+
+    /// Regression: a hand-edited `FilterExpression::Not{child=null}`
+    /// (only reachable via a config file the user pasted, since
+    /// `MakeNot` enforces non-null) used to compile to `nullopt`
+    /// (absent), while `EvaluateExpression` on the same node
+    /// returned `true` (match-all). Callers that later hand-built
+    /// a compiled `Not{}` for tests / benches would see the
+    /// visit-path verdict, while any real query would see the
+    /// compile-path drop -- two different verdicts for the same
+    /// input, differing when the null-NOT sits under an `Or`.
+    ///
+    /// New contract: both paths agree. `Not{child=null}` compiles
+    /// to a match-all node, so the compiled tree stays consistent
+    /// with the per-row visit semantics documented in
+    /// `EvaluateExpression`.
+    void NotWithNullChildCompilesToMatchAll()
+    {
+        loglib::LogConfiguration::Column svcCol;
+        svcCol.header = "svc";
+        svcCol.keys = {"svc"};
+        svcCol.type = loglib::LogConfiguration::Type::String;
+        const std::vector<loglib::LogConfiguration::Column> columns{svcCol};
+
+        // Top-level `Not{child=nullptr}` -> match-all.
+        loglib::FilterExpression bareNullNot;
+        bareNullNot.node = loglib::FilterExpression::Not{};
+        const loglib::CompiledFilterExpression compiledBare =
+            CompileExpression(bareNullNot, columns, /*table=*/nullptr);
+        QVERIFY2(
+            loglib::IsMatchAllCompiled(compiledBare),
+            "`Not{child=null}` at the root must compile to match-all, matching `EvaluateExpression`"
+        );
+
+        // Sibling under `Or`: the whole `Or` must reduce to
+        // match-all too (Not{null} = match-all short-circuits the
+        // Or), not to just the surviving leaf.
+        loglib::LeafRule svcLeaf;
+        svcLeaf.type = loglib::LeafRule::Type::String;
+        svcLeaf.matchType = loglib::LeafRule::Match::Contains;
+        svcLeaf.columnKeys = {"svc"};
+        svcLeaf.filterString = "auth";
+
+        std::vector<loglib::FilterExpression> orChildren;
+        loglib::FilterExpression innerNullNot;
+        innerNullNot.node = loglib::FilterExpression::Not{};
+        orChildren.push_back(std::move(innerNullNot));
+        orChildren.push_back(loglib::MakeLeaf(std::move(svcLeaf)));
+        const loglib::FilterExpression orExpr = loglib::MakeOr(std::move(orChildren));
+
+        const loglib::CompiledFilterExpression compiledOr = CompileExpression(orExpr, columns, /*table=*/nullptr);
+        // Cheap-first ordering plus short-circuit accept means the
+        // Or contains a match-all child; `IsMatchAllCompiled` only
+        // catches the fully-collapsed shape, so assert the
+        // structural presence of match-all inside the Or instead.
+        const auto *rootOr = std::get_if<loglib::CompiledFilterExpression::Or>(&compiledOr.node);
+        QVERIFY2(rootOr != nullptr, "root must remain an `Or` after compiling `Or([Not{null}, leaf])`");
+        bool sawMatchAll = false;
+        for (const auto &child : rootOr->children)
+        {
+            if (loglib::IsMatchAllCompiled(child))
+            {
+                sawMatchAll = true;
+            }
+        }
+        QVERIFY2(sawMatchAll, "`Not{child=null}` inside an `Or` must materialise as a match-all child, not vanish");
     }
 };
 

@@ -39,7 +39,7 @@ public:
     /// Call order after `setSourceModel`:
     ///   1. `setSourceModel(newChain)` -- clears rules, model, rank cache.
     ///   2. `SetLogModel(newLogModel)` -- rebind table pointer.
-    ///   3. `SetFilterRules(newRules)` -- (optional) reinstall predicates.
+    ///   3. `SetFilterExpression(newExpression)` -- (optional) reinstall.
     ///
     /// Installing rules without a `LogModel` asserts in debug and rejects
     /// every row in release.
@@ -96,8 +96,20 @@ public:
         const MatchRowCallback &onMatch
     ) const;
 
-    /// Replace the active predicate list and rebuild the row map.
-    void SetFilterRules(std::vector<loglib::RowPredicate> &&filterRules);
+    /// Replace the active filter expression and rebuild the row
+    /// map. Callers own recompilation on every mutation.
+    void SetFilterExpression(loglib::CompiledFilterExpression expression);
+
+    /// Test-only: install a flat rule list as a top-level `And`.
+    /// Empty list installs match-all. Kept for tests predating the
+    /// boolean-expression rewrite.
+    void SetFilterRules(std::vector<loglib::RowPredicate> rules);
+
+    /// Test-only inspection of the compiled expression.
+    [[nodiscard]] const loglib::CompiledFilterExpression &FilterExpressionForTest() const noexcept
+    {
+        return mCompiledExpression;
+    }
 
     /// Drop cached `EnumDictRank` entries; lazily rebuilt on next sort.
     /// `MainWindow` calls this on `enumColumnsChanged(Demoted)`.
@@ -207,7 +219,7 @@ private:
     [[nodiscard]] const loglib::EnumDictRank *EnumRankFor(int columnIndex) const;
 
     LogModel *mLogModel = nullptr;
-    std::vector<loglib::RowPredicate> mFilterRules;
+    loglib::CompiledFilterExpression mCompiledExpression;
 
     /// Source-coord row indices in proxy-display order. Ascending
     /// without an active sort; holds the sort permutation otherwise.

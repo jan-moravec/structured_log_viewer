@@ -31,6 +31,7 @@ add_executable(
     "src/test_log_table.cpp"
     "src/test_logfmt_parser.cpp"
     "src/test_parser_pipeline.cpp"
+    "src/test_query_parser.cpp"
     "src/test_regex_parser.cpp"
     "src/test_regex_template_generators.cpp"
     "src/test_regex_template_io.cpp"

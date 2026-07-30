@@ -496,7 +496,7 @@ Search matches any cell in any visible column. Results wrap at the end/beginning
 
 ## Filtering
 
-Structured Log Viewer supports any number of simultaneous filters. A row is shown only if it matches **all** active filters.
+Structured Log Viewer supports two ways to filter rows: a **simple mode** (any number of per-column rules, combined with implicit AND) and an **Advanced mode** (a full boolean expression with `AND` / `OR` / `NOT`, entered as text). Both modes share the same on-disk representation and evaluator — the tree is the source of truth; simple-mode entries are just leaves of an `AND` node.
 
 ### Adding a Filter
 
@@ -507,6 +507,55 @@ Structured Log Viewer supports any number of simultaneous filters. A row is show
    - **Timestamp columns** — pick a **Begin** and **End** date/time. The dialog constrains the two so Begin ≤ End, and pre-fills them with the range of values present in the table.
    - **Enumeration columns** — see [Filtering an enumeration column](#filtering-an-enumeration-column).
 1. Click **Ok**. The active filter is added as an entry in the **Filters** menu, titled with its value (or timestamp range, or comma-separated list of enum values).
+
+Multiple simple-mode filters combine with **AND** — a row shows only if every filter matches. To introduce **OR** or **NOT**, switch to the [advanced filter query](#advanced-filter-query-syntax).
+
+### Advanced filter query syntax
+
+**Filters → Advanced Filter…** opens a text editor for boolean filter expressions. Compared to the simple-mode entry that only combines rules with AND, the advanced editor accepts `AND` / `OR` / `NOT` in any nesting, plus a small query language that mirrors what you would type in a Kibana / Grafana / lnav filter box.
+
+- Every keystroke re-parses. The status label beneath the field shows either **Parsed OK.** (or **Parsed OK — will save as: …** when the pretty-printer normalises the input, e.g. lower-cases `in` to `IN` or trims whitespace), or **Parse error at position N: …** with a caret offset into the text.
+- **OK** is enabled only when the query parses. On accept the expression replaces the current filter tree wholesale. Top-level leaves the simple editor can represent (a plain per-column rule) reappear as individual entries in the Filters menu, so Edit / Remove still work on them; any `OR` / `NOT` structure that the simple menu can't represent stays under **Advanced Filter…** and roundtrips through save/load.
+- Leave the field empty to match every row (equivalent to **Filters → Clear All**).
+
+**Leaves** — the atoms of a query — pair a column with an operator and a value:
+
+| Operator        | Meaning                                     | Example                                                                      |
+| --------------- | ------------------------------------------- | ---------------------------------------------------------------------------- |
+| `col:value`     | *Contains* — substring match for strings    | `service:auth`                                                               |
+| `col="..."`     | *Exactly* — quoted string, exact match      | `service="auth-service"`                                                     |
+| `col~/.../`     | *Regular expression* (Qt regex flavour)     | `msg ~ /err(or)?/`                                                           |
+| `col%"..."`     | *Wildcard* (`*` / `?` glob)                 | `path % "*.log"`                                                             |
+| `col=42`        | Numeric equality (bare number, no quotes)   | `latency=42`                                                                 |
+| `col>=N`        | Numeric one-sided (`>`, `>=`, `<`, `<=`)    | `latency >= 100`                                                             |
+| `col=true`      | Boolean equality                            | `succeeded=false`                                                            |
+| `col IN […]`    | Enum multi-select                           | `level IN [Warn, Error]`                                                     |
+| `col IN [a..b]` | Range: numeric or ISO timestamp             | `latency IN [10..100]`, `ts IN [2024-01-01T00:00:00Z..2024-02-01T00:00:00Z]` |
+| `col >= ISO`    | Time comparison against an ISO-8601 literal | `ts >= 2024-01-02T00:00:00Z`                                                 |
+
+Column names are bare identifiers by default; wrap in double quotes to preserve whitespace (`"span id":"abc def"`). Regex delimiters are literal `/` — no escaping needed inside them apart from `\/`.
+
+String **values are matched case-sensitively** (`:`, `=`, `%`, and `~` alike), the same as the simple-mode filter dialog. Use a regex with an inline flag when you need to ignore case — `msg ~ /(?i)timeout/`. Keywords, column-name resolution, and enum value aliases are all case-insensitive; only the value comparison is not.
+
+Value lists and ranges must carry a payload: `col IN []` and `col IN [..]` are parse errors rather than silently matching everything, as is an inverted range like `latency IN [100..10]`.
+
+**Combining leaves.** Use `AND`, `OR`, `NOT`, `IN` (all case-insensitive) or the symbolic aliases `&&`, `||`, `!` for the connectives. Parentheses group. Adjacent leaves without an explicit operator combine as implicit **AND** — so `service:auth level:error` is shorthand for `service:auth AND level:error`, matching simple-mode behaviour. Precedence is the usual `NOT` > `AND` > `OR`, so `a AND b OR c` parses as `(a AND b) OR c`. The pretty printer canonicalises all four keywords to uppercase in its output.
+
+**Examples.**
+
+```text
+service:auth AND level IN [Warn, Error]
+(service:auth OR service:db) AND NOT msg:heartbeat
+ts >= 2024-01-01T00:00:00Z AND latency > 500
+NOT service:auth
+```
+
+**Performance.** The evaluator picks between two internal paths per rebuild:
+
+- **Visit path** (default) — walks the tree per row with short-circuit evaluation. Children of `AND` and `OR` are sorted cheap-first at compile time (Boolean < Enum < Time < Numeric < String), so the cheapest rejecting / accepting leaf fires first.
+- **Bitset materialisation path** — kicks in when the tree contains an `OR` or a `NOT` and has at least two leaves (a flat `AND` stays on the visit path because short-circuit evaluation strictly dominates). Each unique leaf's accept-set is precomputed into a packed bitset once, then the tree collapses via word-parallel `AND` / `OR` / `NOT`. Wins on OR-heavy queries and regex leaves reused across branches. The heuristic caps memory at 512 MiB; catastrophic bitsets fall back to the visit path automatically.
+
+Both paths run in parallel across rows via TBB. On a 1 M-row fixture, a four-leaf `AND` or an `AND(OR, NOT)` shape lands under ~15 ms on the dev box.
 
 ### Filtering an enumeration column
 

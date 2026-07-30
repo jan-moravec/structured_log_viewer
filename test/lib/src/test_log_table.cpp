@@ -3,6 +3,7 @@
 #include <loglib/bytes_producer.hpp>
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
+#include <loglib/filter_expression.hpp>
 #include <loglib/internal/compact_log_value.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
@@ -192,12 +193,19 @@ TEST_CASE("LogTable::Reset preserves the loaded LogConfiguration", "[log_table]"
          .type = LogConfiguration::Type::Any,
          .parseFormats = {}}
     );
-    LogConfiguration::LogFilter filter;
-    filter.type = LogConfiguration::LogFilter::Type::String;
-    filter.row = 0;
+    // Install a top-level `And` expression carrying a single string
+    // leaf on the `CustomA` column so `Reset()` can be tested to
+    // preserve the filter payload.
+    LeafRule filter;
+    filter.type = LeafRule::Type::String;
+    filter.columnKeys = {"key1"};
+    filter.matchType = LeafRule::Match::Contains;
     filter.filterString = "value1";
-    filter.matchType = LogConfiguration::LogFilter::Match::Contains;
-    logConfiguration.filters.push_back(filter);
+    FilterExpression::And rootAnd;
+    FilterExpression leafExpr;
+    leafExpr.node = FilterExpression::Leaf{filter};
+    rootAnd.children.push_back(std::move(leafExpr));
+    logConfiguration.expression.node = std::move(rootAnd);
 
     const TestLogConfiguration testLogConfiguration;
     testLogConfiguration.Write(logConfiguration);
@@ -214,8 +222,13 @@ TEST_CASE("LogTable::Reset preserves the loaded LogConfiguration", "[log_table]"
     REQUIRE(logTable.ColumnCount() == 2);
     CHECK(logTable.GetHeader(0) == "CustomA");
     CHECK(logTable.GetHeader(1) == "CustomB");
-    REQUIRE(logTable.Configuration().Configuration().filters.size() == 1);
-    CHECK(logTable.Configuration().Configuration().filters.front().filterString.value_or("") == "value1");
+    const auto *rootAndAfter =
+        std::get_if<FilterExpression::And>(&logTable.Configuration().Configuration().expression.node);
+    REQUIRE(rootAndAfter != nullptr);
+    REQUIRE(rootAndAfter->children.size() == 1);
+    const auto *leafAfter = std::get_if<FilterExpression::Leaf>(&rootAndAfter->children.front().node);
+    REQUIRE(leafAfter != nullptr);
+    CHECK(leafAfter->rule.filterString.value_or("") == "value1");
 }
 
 namespace

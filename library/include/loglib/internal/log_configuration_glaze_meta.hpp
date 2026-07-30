@@ -1,5 +1,6 @@
 #pragma once
 
+#include "loglib/filter_expression.hpp"
 #include "loglib/log_configuration.hpp"
 
 #include <glaze/glaze.hpp>
@@ -27,33 +28,23 @@ template <> struct glz::meta<loglib::LogConfiguration::Type>
     static constexpr std::array value{Any, String, Boolean, Integer, Floating, Number, Time, Enumeration, Level};
 };
 
-template <> struct glz::meta<loglib::LogConfiguration::LogFilter::Type>
+template <> struct glz::meta<loglib::LeafRule::Type>
 {
-    using enum loglib::LogConfiguration::LogFilter::Type;
+    using enum loglib::LeafRule::Type;
     static constexpr std::array keys{"string", "time", "enumeration", "number", "boolean"};
     static constexpr std::array value{String, Time, Enumeration, Number, Boolean};
 };
 
-template <> struct glz::meta<loglib::LogConfiguration::LogFilter::Match>
+template <> struct glz::meta<loglib::LeafRule::Match>
 {
-    using enum loglib::LogConfiguration::LogFilter::Match;
+    using enum loglib::LeafRule::Match;
     static constexpr std::array keys{"exactly", "contains", "regularExpression", "wildcard"};
     static constexpr std::array value{Exactly, Contains, RegularExpression, Wildcard};
 };
 
-template <> struct glz::meta<loglib::LogConfiguration::HighlightRule::Type>
-{
-    using enum loglib::LogConfiguration::HighlightRule::Type;
-    static constexpr std::array keys{"string", "time", "enumeration", "number", "boolean"};
-    static constexpr std::array value{String, Time, Enumeration, Number, Boolean};
-};
-
-template <> struct glz::meta<loglib::LogConfiguration::HighlightRule::Match>
-{
-    using enum loglib::LogConfiguration::HighlightRule::Match;
-    static constexpr std::array keys{"exactly", "contains", "regularExpression", "wildcard"};
-    static constexpr std::array value{Exactly, Contains, RegularExpression, Wildcard};
-};
+// `HighlightRule::Type` / `HighlightRule::Match` are aliases of
+// `LeafRule::Type` / `LeafRule::Match`, so their meta comes from
+// the specialisations above.
 
 template <> struct glz::meta<loglib::LogConfiguration::Source::Kind>
 {
@@ -113,18 +104,21 @@ template <> struct glz::meta<loglib::LogConfiguration::Column>
     );
 };
 
-template <> struct glz::meta<loglib::LogConfiguration::LogFilter>
+// A leaf of the filter tree. Column identity is a subset-match
+// against `LogConfiguration::Column::keys`, so leaves survive
+// `MoveColumn` and cross-source apply without any remap.
+template <> struct glz::meta<loglib::LeafRule>
 {
-    using T = loglib::LogConfiguration::LogFilter;
+    using T = loglib::LeafRule;
     static constexpr auto value = object(
         "type",
         &T::type,
-        "row",
-        &T::row,
-        "filterString",
-        &T::filterString,
+        "columnKeys",
+        &T::columnKeys,
         "matchType",
         &T::matchType,
+        "filterString",
+        &T::filterString,
         "filterBegin",
         &T::filterBegin,
         "filterEnd",
@@ -136,6 +130,66 @@ template <> struct glz::meta<loglib::LogConfiguration::LogFilter>
         "filterValues",
         &T::filterValues
     );
+};
+
+// Wire-format shape for the tagged boolean expression tree.
+//
+// On disk each node looks like:
+//   { "kind": "and", "children": [ ... ] }
+//   { "kind": "or",  "children": [ ... ] }
+//   { "kind": "not", "child": <sub-expression> }
+//   { "kind": "leaf", "rule": <LeafRule> }
+//
+// The discriminator lives on the `"kind"` field chosen by
+// `glz::meta<std::variant<...>>::tag` below. Each node struct
+// exposes only its payload field so the tag sits alongside it at
+// the same level.
+template <> struct glz::meta<loglib::FilterExpression::Leaf>
+{
+    using T = loglib::FilterExpression::Leaf;
+    static constexpr auto value = object("rule", &T::rule);
+};
+
+template <> struct glz::meta<loglib::FilterExpression::And>
+{
+    using T = loglib::FilterExpression::And;
+    static constexpr auto value = object("children", &T::children);
+};
+
+template <> struct glz::meta<loglib::FilterExpression::Or>
+{
+    using T = loglib::FilterExpression::Or;
+    static constexpr auto value = object("children", &T::children);
+};
+
+// `Not::child` is a `unique_ptr<FilterExpression>`; Glaze handles
+// smart pointers automatically. A null child on-disk is represented
+// as `null` and reconstructed as a null pointer -- editors treat
+// that as an unfinished tree and coerce it to match-all on load.
+template <> struct glz::meta<loglib::FilterExpression::Not>
+{
+    using T = loglib::FilterExpression::Not;
+    static constexpr auto value = object("child", &T::child);
+};
+
+// Internally-tagged variant: the discriminator `"kind"` lives on
+// the same object as the payload fields. Names are stable on disk;
+// append new alternatives at the end, never reorder.
+template <>
+struct glz::meta<std::variant<
+    loglib::FilterExpression::Leaf,
+    loglib::FilterExpression::And,
+    loglib::FilterExpression::Or,
+    loglib::FilterExpression::Not>>
+{
+    static constexpr std::string_view tag = "kind";
+    static constexpr auto ids = std::array{"leaf", "and", "or", "not"};
+};
+
+template <> struct glz::meta<loglib::FilterExpression>
+{
+    using T = loglib::FilterExpression;
+    static constexpr auto value = &T::node;
 };
 
 template <> struct glz::meta<loglib::LogConfiguration::Sort>

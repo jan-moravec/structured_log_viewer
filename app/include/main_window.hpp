@@ -324,10 +324,12 @@ public:
     /// `mTableView` if null).
     [[nodiscard]] QMenu *BuildRowContextMenu(int sourceRow, QWidget *parent = nullptr);
 
-    /// Live filter map; tests inspect it after a reorder.
-    [[nodiscard]] const std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> &Filters() const
+    /// Live simple-mode filter leaves keyed by UUID (UI-only
+    /// identifier for menu wiring). Persisted state lives on
+    /// `LogConfiguration::expression`.
+    [[nodiscard]] const std::unordered_map<std::string, loglib::LeafRule> &Filters() const
     {
-        return mFilters;
+        return mSimpleLeaves;
     }
 
     /// Owned `LogModel`; non-null after construction.
@@ -622,6 +624,15 @@ public:
     /// so `FindFirstRowAtOrAfter` takes its non-monotonic branch
     /// without a real inversion. Irreversible.
     void ForceTimestampsNonMonotonicForTest();
+
+    /// Test seam replaying `OpenAdvancedFilter`'s post-`exec` body
+    /// without a modal dialog. Runs the full leaf-extraction +
+    /// mirror + recompile pipeline so tests can pin the simple/
+    /// advanced split behaviour end-to-end.
+    void CommitAdvancedFilterForTest(loglib::FilterExpression expression)
+    {
+        ApplyAdvancedFilterResult(std::move(expression));
+    }
 #endif
 
 protected:
@@ -740,11 +751,22 @@ private slots:
     /// when @p filter has a value (it already pins the row).
     void AddFilter(
         const QString &filterId,
-        const std::optional<loglib::LogConfiguration::LogFilter> &filter = std::nullopt,
+        const std::optional<loglib::LeafRule> &filter = std::nullopt,
         bool openEditor = true,
         int initialColumn = -1
     );
     void ClearAllFilters();
+    /// Open the modal Advanced Filter editor seeded with the
+    /// current `LogConfiguration::expression`. On accept, dispatches
+    /// to `ApplyAdvancedFilterResult`.
+    void OpenAdvancedFilter();
+
+    /// Post-dialog body of `OpenAdvancedFilter`. Extracts top-level
+    /// Leaves back into `mSimpleLeaves` (mirroring load) so a mixed
+    /// tree like `svc:x AND NOT lvl:info` still shows a Filters-menu
+    /// entry per representable leaf; the non-Leaf remainder stays
+    /// on the expression. Exposed via `CommitAdvancedFilterForTest`.
+    void ApplyAdvancedFilterResult(loglib::FilterExpression result);
     /// Drop the active column sort via
     /// `mTableView->sortByColumn(-1, ...)` so proxy, header, and
     /// persisted config stay in lockstep. Bound to
@@ -792,13 +814,13 @@ private slots:
     /// (e.g. mid-stream timestamp bubbling).
     void OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int newVisualIndex);
 
-    /// `LogModel::columnsMoved` slot: remap `mFilters[*].row`,
-    /// re-apply `Column::visible`, and refresh the proxy rules.
-    /// Single source of truth for both header-drag and streaming-
-    /// induced column moves (the latter is the timestamp bubble in
-    /// `LogModel::AppendBatch`). The visibility re-apply is needed
-    /// because Qt clears hidden flags via `initializeSections()`
-    /// when the source has zero rows.
+    /// `LogModel::columnsMoved` slot: re-apply `Column::visible`
+    /// and rebuild the compiled filter (which caches resolved
+    /// column indices; leaves themselves bind by `columnKeys`).
+    /// Handles both header-drag and streaming-induced column moves
+    /// (the timestamp bubble in `LogModel::AppendBatch`). Qt
+    /// clears hidden flags via `initializeSections()` on a
+    /// zero-row source, hence the visibility re-apply.
     void OnSourceColumnsMoved(
         const QModelIndex &parent, int first, int last, const QModelIndex &destParent, int destColumn
     );
@@ -1026,16 +1048,19 @@ private:
     /// `mSuppressDialogsForTest` is set.
     void ShowDroppedFiltersDialog(int droppedCount, const QString &message);
 
-    /// Add @p filter to `mFilters` and build its menu entry. Pass
-    /// `deferSync = true` from bulk callers
-    /// (`RebuildFiltersFromConfiguration`) and run a single
-    /// trailing mirror + `UpdateFilters` after the loop.
-    void AddLogFilter(const QString &id, const loglib::LogConfiguration::LogFilter &filter, bool deferSync = false);
+    /// Add @p filter to `mSimpleLeaves` and build its menu entry.
+    /// Bulk callers pass `deferSync = true` and run one trailing
+    /// mirror + `UpdateFilters` after the loop.
+    void AddLogFilter(const QString &id, const loglib::LeafRule &filter, bool deferSync = false);
 
-    /// Display title for @p filter (e.g. `info, warn` for an enum
-    /// filter, `[1.5, 2.0]` for a numeric range). Shared between
-    /// the Filters menu and the column-header right-click menu.
-    [[nodiscard]] QString BuildFilterTitle(const loglib::LogConfiguration::LogFilter &filter) const;
+    /// Display title for @p filter (e.g. `info, warn` for enum,
+    /// `[1.5, 2.0]` for a numeric range). Shared by the Filters
+    /// menu and the column-header right-click menu.
+    [[nodiscard]] QString BuildFilterTitle(const loglib::LeafRule &filter) const;
+
+    /// Recompile `LogConfiguration::expression` against the
+    /// current column layout and install it on the proxy. Called
+    /// after every mutation and on column/enum-column changes.
     void UpdateFilters();
 
     /// True iff the window is worth auto-saving: history manager
@@ -1053,11 +1078,12 @@ private:
     /// overwriting the previous session's JSON.
     void DetachAutoSaveUuid();
 
-    /// Snapshot `mFilters`, the proxy's sort, and `mCurrentSource`
-    /// into the wire-format fields on the configuration. Filters
-    /// are sorted by `(row, type, payload)` so two saves of an
-    /// unchanged set produce byte-identical JSON. Bulk callers
-    /// should `deferSync = true` and mirror once at the end.
+    /// Snapshot `mSimpleLeaves` (ordered by `mSimpleLeafOrder`),
+    /// proxy sort, and `mCurrentSource` into the configuration.
+    /// Simple-mode leaves become the top-level `And` children;
+    /// pre-existing non-Leaf siblings (Advanced-editor output) are
+    /// preserved. Bulk callers set `deferSync = true` and mirror
+    /// once at the end.
     void MirrorSessionStateToConfiguration();
 
     /// Shared tail of `OpenLogStream` and `OpenLogStreamForTest`:
@@ -1091,6 +1117,21 @@ private:
     /// columns and revive survivors via `AddLogFilter`. Shared by
     /// `DoLoadConfiguration` and `TryLoadAsConfiguration`.
     void RebuildFiltersFromConfiguration();
+
+    /// Drop simple-mode leaves, per-filter menu entries, and the
+    /// "Clear All Filters" gate. Does *not* touch
+    /// `LogConfiguration::expression`, mark dirty, or refresh the
+    /// mirror/indicators -- callers handle those (bulk load runs one
+    /// mirror at the end; `ClearAllFilters` runs its own refresh).
+    /// Split out so `ClearAllFilters` can additionally reset the
+    /// expression tree while the load path preserves it.
+    void ResetSimpleFilterState();
+
+    /// Gate "Clear All Filters" on
+    /// `LogConfiguration::expression` (not `mSimpleLeaves`) so an
+    /// Advanced-only tree still enables the escape hatch. Must run
+    /// after `MirrorSessionStateToConfiguration`.
+    void SyncClearAllFiltersEnabled();
     void ApplyTableStyleSheet();
 
     /// Pick the light- or dark-variant title-bar icon to match the
@@ -1109,7 +1150,7 @@ private:
     /// True iff every selected string in @p filter resolves to an id
     /// in the canonical dictionary. Gates whether an
     /// `enumColumnsChanged` tick triggers a filter-rule rebuild.
-    [[nodiscard]] bool EnumFilterFullyResolved(const loglib::LogConfiguration::LogFilter &filter) const;
+    [[nodiscard]] bool EnumFilterFullyResolved(const loglib::LeafRule &filter) const;
 
     /// Apply the saved sort from `mPendingApplySortFromConfig` to
     /// the view, then clear the latch. No-op when the latch is
@@ -1267,7 +1308,7 @@ private:
     /// `ClearAllFilters` because the menu is rebuilt every time
     /// it's opened.
     ///
-    /// When `mFilters` is empty the menu shows a single disabled
+    /// When `mSimpleLeaves` is empty the menu shows a single disabled
     /// `(no filters)` placeholder so the dropdown surfaces a
     /// hint instead of opening blank. (The button's default
     /// action stays gated by `actionClearAllFilters->setDisabled`
@@ -1278,14 +1319,14 @@ private:
     /// remove.)
     void RebuildClearFiltersMenu(QMenu *menu);
 
-    /// Snapshot active filter titles per column from `mFilters` and
-    /// push them into `LogModel::SetColumnFilterDetails`, which
-    /// drives the funnel decoration + "Filters:" tooltip section.
-    /// Sorts each column's titles for stable display.
+    /// Snapshot active filter titles per column from `mSimpleLeaves`
+    /// and push them into `LogModel::SetColumnFilterDetails`,
+    /// which drives the funnel decoration + "Filters:" tooltip
+    /// section. Sorts each column's titles for stable display.
     ///
-    /// Called from every `mFilters` mutation point and from
-    /// column-shape signals that can shift `filter.row`. Idempotent
-    /// via the model-side diff guard.
+    /// Called from every `mSimpleLeaves` mutation point and from
+    /// column-shape signals that can shift a column's resolved
+    /// index. Idempotent via the model-side diff guard.
     void SyncColumnFilterIndicators();
 
     /// Re-evaluate the stream toolbar's visibility against the current
@@ -1496,7 +1537,13 @@ private:
     QAction *mActionJumpPrevAnchor = nullptr;
     QAction *mActionEditRowAnchorNote = nullptr;
     QAction *mActionClearAllAnchors = nullptr;
-    std::unordered_map<std::string, loglib::LogConfiguration::LogFilter> mFilters;
+    /// Simple-mode leaves keyed by UUID; each = one top-level
+    /// `Leaf` child of `LogConfiguration::expression`.
+    /// `mSimpleLeafOrder` preserves display order (map iteration
+    /// isn't stable). Advanced-only sub-trees live on the
+    /// configuration expression, not here.
+    std::unordered_map<std::string, loglib::LeafRule> mSimpleLeaves;
+    std::vector<std::string> mSimpleLeafOrder;
 
     /// Status-bar label shown while a streaming session is active.
     QLabel *mStatusLabel = nullptr;

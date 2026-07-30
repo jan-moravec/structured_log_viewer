@@ -1,11 +1,13 @@
 #pragma once
 
 #include "loglib/enum_dictionary.hpp"
+#include "loglib/filter_expression.hpp"
 #include "loglib/internal/transparent_string_hash.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -20,22 +22,17 @@ namespace loglib
 class LogTable;
 
 /// Multi-select equality predicate for `Type::Enumeration` columns.
-/// Hot path: one `GetEnumValueId` + `vector<bool>` test. Rows with a
-/// non-`DictRef` slot (column not yet promoted) fall back to a
-/// transparent-hash string set.
 ///
-/// The bitset is a dictionary snapshot taken at construction. Callers
-/// should rebuild the predicate on `enumColumnsChanged`. Stale
-/// predicates still work: an id past the bitset rejects when
-/// `mAllResolved`, otherwise falls through to the string set.
+/// Hot path: one `GetEnumValueId` + `vector<bool>` test. Rows whose
+/// slot isn't a `DictRef` (column not promoted yet) fall back to a
+/// transparent-hash string set. The bitset is a dictionary snapshot
+/// from construction time; rebuild on `enumColumnsChanged` for
+/// freshness. Stale predicates stay correct: ids past the bitset
+/// end reject when `mAllResolved`, else use the string set.
 ///
-/// Threading: `MatchesRow` is read-only and stateless on `*this`
-/// (the constructor writes `mSelectedIds` / `mSelectedStrings` and
-/// nobody mutates them afterwards). `FilterAcceptedRows` invokes it
-/// concurrently from `tbb::parallel_for`. The past-bitset branch
-/// keeps results correct even if a writer grows the dictionary
-/// mid-evaluation: growth only pushes new ids past the bitset's
-/// `size()`, and the string-set fallback handles them.
+/// Threading: `MatchesRow` is stateless post-construction and safe
+/// from `tbb::parallel_for`, even if a writer grows the dictionary
+/// mid-evaluation (new ids go past the bitset; string set handles them).
 class EnumRowPredicate
 {
 public:
@@ -67,17 +64,14 @@ private:
     size_t mColumnIndex = 0;
     /// Indexed by `EnumValueId`. Empty when no dictionary was given.
     std::vector<bool> mSelectedIds;
-    /// Selected values that did not resolve at construction (or all
-    /// of them when no dictionary was given). Skipped on the fully-
-    /// resolved fast path; covers unpromoted slots and past-bitset
-    /// hits from stale predicates.
+    /// Selected values that didn't resolve at construction (or all
+    /// of them if no dictionary was given). Covers unpromoted slots
+    /// and past-bitset hits from stale predicates.
     std::unordered_set<std::string, internal::TransparentStringHash, internal::TransparentStringEqual> mSelectedStrings;
     bool mFastPathArmed = false;
-    /// True iff every selected value resolved to an id at construction.
+    /// Every selected value resolved to an id at construction time.
     bool mAllResolved = false;
-    /// True iff the constructor was given an empty selection.
-    /// `MatchesRow` then rejects every row. Named sentinel so future
-    /// field additions don't accidentally break the inference.
+    /// Empty selection sentinel; `MatchesRow` rejects every row.
     bool mEmptySelection = false;
 };
 
@@ -108,15 +102,14 @@ private:
     int64_t mEnd = 0;
 };
 
-/// Inclusive numeric range over `int64_t`, `uint64_t`, and `double`
-/// slots; non-numeric slots reject. `std::nullopt` leaves the
-/// corresponding side unbounded.
+/// Inclusive numeric range over `int64_t` / `uint64_t` / `double`
+/// slots. Non-numeric slots reject; `nullopt` on a side means
+/// unbounded.
 ///
-/// Compares as `double` -- past `2^53` the cast from 64-bit integers
-/// loses precision (acceptable for filter UX; use
-/// `TimeRangeRowPredicate` for bit-exact int64). `NaN` slots reject;
-/// `NaN` bounds collapse to unbounded; `±inf` bounds are honoured
-/// literally. The GUI rejects `NaN`/`±inf` user input upstream.
+/// Compares as `double`, so integer precision loss past `2^53` is
+/// accepted (use `TimeRangeRowPredicate` for bit-exact int64).
+/// `NaN` slots reject; `NaN` bounds collapse to unbounded; `±inf`
+/// bounds are honoured. The GUI rejects `NaN`/`±inf` upstream.
 class NumericRangeRowPredicate
 {
 public:
@@ -142,9 +135,9 @@ private:
     std::optional<double> mMax;
 };
 
-/// Two-state predicate for `Type::Boolean` columns. With neither
-/// side selected the predicate rejects every row (mirrors empty
-/// `EnumRowPredicate`). Non-bool slots reject too.
+/// Two-state predicate for `Type::Boolean`. Neither side selected
+/// = reject every row (like empty `EnumRowPredicate`). Non-bool
+/// slots reject too.
 class BoolRowPredicate
 {
 public:
@@ -180,11 +173,10 @@ private:
     bool mIncludeFalse = false;
 };
 
-/// String predicate that defers matching to a caller-supplied
-/// callback. Keeps Qt-flavoured regex / wildcard semantics in the GUI
-/// without pulling Qt into the lib. The caller owns callback
-/// thread-safety; the GUI builder pre-JITs its `QRegularExpression`
-/// so captured copies don't re-compile lazily.
+/// String predicate that defers to a caller-supplied callback.
+/// Keeps Qt-flavoured regex/wildcard semantics in the GUI without
+/// pulling Qt into the lib. The caller owns callback thread-safety;
+/// the GUI builder pre-JITs its `QRegularExpression`.
 class CallbackStringRowPredicate
 {
 public:
@@ -211,12 +203,9 @@ private:
     MatchFn mMatch;
 };
 
-/// Closed union of concrete row predicates. Stored by value -- the
+/// Closed union of concrete row predicates. Stored by value; the
 /// per-row hot path pays no heap allocation or virtual dispatch.
-///
-/// Alternative order is stable: tests (and any future on-disk
-/// serialiser) persist `variant::index()`. Only append new
-/// alternatives; never insert.
+/// Alternative order is stable on disk -- append only.
 using RowPredicate = std::variant<
     EnumRowPredicate,
     TimeRangeRowPredicate,
@@ -224,29 +213,124 @@ using RowPredicate = std::variant<
     BoolRowPredicate,
     CallbackStringRowPredicate>;
 
-/// Visit-dispatch helper. Resolves to the concrete `MatchesRow` at
-/// compile time.
+/// Visit-dispatch helpers; compile-time-resolved to the concrete leaf.
 [[nodiscard]] inline bool MatchesRow(const RowPredicate &predicate, const LogTable &table, size_t row)
 {
     return std::visit([&table, row](const auto &concrete) { return concrete.MatchesRow(table, row); }, predicate);
 }
 
-/// Column index targeted by @p predicate. The GUI proxy uses this to
-/// decide whether a source `dataChanged` requires a filter rebuild.
 [[nodiscard]] inline size_t RowPredicateColumn(const RowPredicate &predicate)
 {
     return std::visit([](const auto &concrete) noexcept { return concrete.ColumnIndex(); }, predicate);
 }
 
-/// Evaluate @p predicates against every row of @p table in parallel
-/// and return the surviving rows in ascending order. Empty
-/// @p predicates returns `[0, table.RowCount())`.
+/// Relative cost weight for cheap-first child ordering in
+/// `And`/`Or`. No unit; only the monotonic order matters.
+///   Bool     - 1  (alt-check on decoded slot)
+///   Enum     - 2  (id lookup + bitset test)
+///   Time     - 3  (int64 compare)
+///   Numeric  - 4  (double compare with type coercion)
+///   String   - 10 (regex / UTF-8 walk / callback)
+[[nodiscard]] int EstimatedLeafCost(const RowPredicate &predicate) noexcept;
+
+/// Compiled mirror of `FilterExpression`. Leaves hold pre-built
+/// `RowPredicate`s; combinators own their children; each node
+/// caches `estimatedCost` so children stay cheap-first from
+/// `CompileExpression`.
 ///
-/// Threading: per-worker thread-local buckets via `tbb::parallel_for`,
-/// coalesced and sorted on the caller thread. `MatchesRow` must be
-/// thread-safe read-only against @p table; every predicate in this
-/// file qualifies. Lives in `loglib` so callers don't need a TBB
-/// include.
-[[nodiscard]] std::vector<size_t> FilterAcceptedRows(const LogTable &table, std::span<const RowPredicate> predicates);
+/// Move-only in practice (`EnumRowPredicate` is move-only, so
+/// callers move rather than copy). Evaluation is read-only, safe
+/// from `tbb::parallel_for` in `FilterAcceptedRows`.
+///
+/// clang-tidy suppression: `misc-non-private-member-variables-in-classes`
+/// -- the alternatives are transparent data holders that the
+/// evaluator, compiler, and tests read / write directly by field
+/// name. Same treatment as `FilterExpression`.
+// NOLINTBEGIN(misc-non-private-member-variables-in-classes)
+struct CompiledFilterExpression
+{
+    struct Leaf
+    {
+        RowPredicate predicate;
+        int estimatedCost = 0;
+
+        Leaf() = delete;
+        explicit Leaf(RowPredicate p);
+    };
+
+    struct And
+    {
+        std::vector<CompiledFilterExpression> children;
+        int estimatedCost = 0;
+    };
+
+    struct Or
+    {
+        std::vector<CompiledFilterExpression> children;
+        int estimatedCost = 0;
+    };
+
+    struct Not
+    {
+        std::unique_ptr<CompiledFilterExpression> child;
+        int estimatedCost = 0;
+
+        Not() = default;
+        explicit Not(CompiledFilterExpression c);
+        Not(const Not &) = delete;
+        Not &operator=(const Not &) = delete;
+        Not(Not &&) noexcept = default;
+        Not &operator=(Not &&) noexcept = default;
+        ~Not() = default;
+    };
+
+    using Node = std::variant<Leaf, And, Or, Not>;
+
+    /// Default = empty `And` (match-all).
+    Node node = And{};
+
+    /// Column indices referenced by leaves, sorted + deduped.
+    /// `LogFilterModel` uses this to decide whether a source
+    /// `dataChanged` requires a full rebuild.
+    std::vector<size_t> referencedColumns;
+
+    [[nodiscard]] int EstimatedCost() const noexcept;
+
+    CompiledFilterExpression() = default;
+    CompiledFilterExpression(const CompiledFilterExpression &) = delete;
+    CompiledFilterExpression &operator=(const CompiledFilterExpression &) = delete;
+    CompiledFilterExpression(CompiledFilterExpression &&) noexcept = default;
+    CompiledFilterExpression &operator=(CompiledFilterExpression &&) noexcept = default;
+    ~CompiledFilterExpression() = default;
+};
+// NOLINTEND(misc-non-private-member-variables-in-classes)
+
+/// Short-circuiting per-row evaluator. Empty `And` = true, empty
+/// `Or` = false, `Not` inverts, `And`/`Or` stop at the first
+/// decisive child. Cheap-first ordering is baked in by
+/// `CompileExpression`.
+[[nodiscard]] bool EvaluateExpression(const CompiledFilterExpression &expression, const LogTable &table, size_t row);
+
+/// True iff @p expression is an empty `And` (match-all).
+[[nodiscard]] bool IsMatchAllCompiled(const CompiledFilterExpression &expression) noexcept;
+
+/// Evaluate @p expression across every row of @p table in parallel
+/// and return the accepted rows in ascending order.
+///
+/// Picks one of two paths per rebuild:
+///
+/// - **Visit path** (default): `tbb::parallel_for` over rows, each
+///   row calling `EvaluateExpression`. Same envelope as the old
+///   flat `span<RowPredicate>` for flat `And` trees.
+/// - **Bitset materialisation path**: kicks in for trees with an
+///   `OR`/`NOT` and >=2 total leaves (or >=4 leaves overall), when
+///   `row_count * unique_leaves / 8 <= 512 MiB`. Flat `And` never
+///   qualifies (short-circuiting beats materialising). Each unique
+///   leaf's accept-set becomes a packed bitset (shared across
+///   repeats); the tree walks with word-parallel AND/OR/NOT.
+///
+/// Threading: per-worker thread-local buckets/bitsets; the caller
+/// coalesces and sorts. Every predicate is read-only-safe.
+[[nodiscard]] std::vector<size_t> FilterAcceptedRows(const LogTable &table, const CompiledFilterExpression &expression);
 
 } // namespace loglib

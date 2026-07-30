@@ -3,6 +3,7 @@
 #include "log_model.hpp"
 
 #include <QByteArray>
+#include <QLoggingCategory>
 #include <QRegularExpression>
 #include <QString>
 
@@ -10,16 +11,32 @@
 #include <string_view>
 #include <utility>
 
+// Q_LOGGING_CATEGORY expands to a Qt-mandated global `<name>()`
+// accessor plus a translation-unit-local storage variable.  The
+// name has to be `camelBack` (that's the identifier `qCInfo(<name>)`
+// callers use), and Qt intentionally keeps the accessor at namespace
+// scope so it participates in the loader-side deduplication of
+// category instances. Both concerns collide with clang-tidy's
+// preferred style:
+//   * misc-use-internal-linkage -- Qt's design; we cannot move it
+//     into an anonymous namespace without breaking the macro.
+//   * readability-identifier-naming -- the CamelCase suggestion
+//     would rename the macro's generated function, silently changing
+//     the ABI-visible symbol callers reference.
+// NOLINTNEXTLINE(misc-use-internal-linkage, readability-identifier-naming)
+Q_LOGGING_CATEGORY(logMatcher, "logapp.matcher")
+
 namespace
 {
 
-/// JIT-prime the regex so captured copies don't race on a lazy
-/// first `match()`. `QRegularExpression` is CoW / implicitly
-/// shared, and `match()` is thread-safe once the private is
-/// compiled; the parallel filter workers rely on that guarantee.
+/// Compile + JIT the pattern up-front. `QRegularExpression` is
+/// CoW / implicitly shared; captured copies then share the JIT'd
+/// private safely across the parallel filter workers. Using
+/// `optimize()` enables PCRE2's JIT (a lazy `match()` would only
+/// compile, not JIT).
 void PrimeRegex(QRegularExpression &regex)
 {
-    (void)regex.match(QStringLiteral(""));
+    regex.optimize();
 }
 
 /// Convert @p bytes to `QString`, skipping the `simplified()` walk
@@ -35,11 +52,9 @@ QString HaystackQStringFast(std::string_view bytes)
 
 } // namespace
 
-loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
-    const QString &pattern, loglib::LogConfiguration::LogFilter::Match match
-)
+loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(const QString &pattern, loglib::LeafRule::Match match)
 {
-    using Match = loglib::LogConfiguration::LogFilter::Match;
+    using Match = loglib::LeafRule::Match;
     switch (match)
     {
     case Match::Exactly:
@@ -88,31 +103,26 @@ loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
     case Match::RegularExpression:
     {
         QRegularExpression regex(pattern);
+        if (!regex.isValid())
+        {
+            // Callers validate up front (`FilterSubmitted`,
+            // `AdvancedFilterEditor`); reaching here means a
+            // hand-edited config or a bypass. Warn and return
+            // match-none: visibly wrong beats silently permissive.
+            qCWarning(logMatcher).noquote()
+                << "MakeStringMatcher: invalid regular expression" << pattern << "-" << regex.errorString();
+            return [](std::string_view) { return false; };
+        }
         PrimeRegex(regex);
         return [regex](std::string_view bytes) { return regex.match(HaystackQStringFast(bytes)).hasMatch(); };
     }
     case Match::Wildcard:
     {
+        // `wildcardToRegularExpression` always emits valid regex.
         QRegularExpression regex(QRegularExpression::wildcardToRegularExpression(pattern));
         PrimeRegex(regex);
         return [regex](std::string_view bytes) { return regex.match(HaystackQStringFast(bytes)).hasMatch(); };
     }
     }
     return [](std::string_view) { return false; };
-}
-
-loglib::CallbackStringRowPredicate::MatchFn MakeStringMatcher(
-    const QString &pattern, loglib::LogConfiguration::HighlightRule::Match match
-)
-{
-    // The two enums are pinned identical on purpose so this cast
-    // stays safe. The static_asserts turn any future reorder of
-    // either enum into a build error.
-    using HR = loglib::LogConfiguration::HighlightRule::Match;
-    using LF = loglib::LogConfiguration::LogFilter::Match;
-    static_assert(static_cast<int>(HR::Exactly) == static_cast<int>(LF::Exactly));
-    static_assert(static_cast<int>(HR::Contains) == static_cast<int>(LF::Contains));
-    static_assert(static_cast<int>(HR::RegularExpression) == static_cast<int>(LF::RegularExpression));
-    static_assert(static_cast<int>(HR::Wildcard) == static_cast<int>(LF::Wildcard));
-    return MakeStringMatcher(pattern, static_cast<LF>(match));
 }
