@@ -591,6 +591,236 @@ TEST_CASE(
     CHECK(errors[0].contains("named capture groups"));
 }
 
+// -----------------------------------------------------------------------------
+// Multi-line record tests (streaming pipeline)
+//
+// `RegexTemplate::continuationMode` on a shipped or user-registered
+// template drives multi-line handling for the streaming path.
+// - `Indented`: O(1) first-byte whitespace check. Java Logback
+//   (built-in `java_log.json`) ships with this mode.
+// - `UntilNextHeader`: PCRE2 anchored+partial-hard header check.
+//   Covers Python-style traces whose continuation lines mix
+//   indented and un-indented text.
+// Static (file-based) pipeline is a follow-up slice.
+// -----------------------------------------------------------------------------
+
+namespace
+{
+
+/// Register @p extras for the duration of a test case, resetting on
+/// scope exit. Templates registered via `SetExtraRegexTemplates` are
+/// process-global, so failure to reset would leak across tests.
+class ScopedExtraTemplates
+{
+public:
+    explicit ScopedExtraTemplates(std::span<const loglib::RegexTemplate> extras)
+    {
+        loglib::SetExtraRegexTemplates(extras);
+    }
+    ~ScopedExtraTemplates()
+    {
+        loglib::SetExtraRegexTemplates({});
+    }
+    ScopedExtraTemplates(const ScopedExtraTemplates &) = delete;
+    ScopedExtraTemplates &operator=(const ScopedExtraTemplates &) = delete;
+    ScopedExtraTemplates(ScopedExtraTemplates &&) = delete;
+    ScopedExtraTemplates &operator=(ScopedExtraTemplates &&) = delete;
+};
+
+} // namespace
+
+TEST_CASE(
+    "RegexParser streaming: indented continuation folds into the last named group",
+    "[regex_parser][stream_line_source][multiline]"
+)
+{
+    using namespace loglib;
+
+    // A minimal Java-shape pattern with `level` + `message`. Ship
+    // it as an extra template with `continuationMode: Indented` so
+    // `FindTemplateByPattern` in `ParseStreaming` resolves the
+    // mode. `\t`-indented lines are continuations of the prior
+    // `message`.
+    const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
+    RegexTemplate extra{
+        .name = "test-indented-multiline",
+        .pattern = pattern,
+        .sampleLines = {"info hello"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::Indented,
+        .headerAnchor = "",
+    };
+    const RegexTemplate extras[] = {extra};
+    const ScopedExtraTemplates registration(extras);
+
+    const RegexParser parser{std::string{pattern}};
+
+    // Header + two indented continuation lines + another header.
+    const std::string payload = "error boom\n"
+                                "\tat com.example.Foo.bar(Foo.java:42)\n"
+                                "\tat com.example.Baz.qux(Baz.java:7)\n"
+                                "info recovered\n";
+
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+    CollectingStreamSink sink;
+    parser.ParseStreaming(source, sink, ParserOptions{});
+
+    REQUIRE(sink.finished);
+    CHECK_FALSE(sink.finishedCancelled);
+
+    std::vector<LogLine *> lines;
+    for (auto &b : sink.batches)
+    {
+        for (auto &l : b.lines)
+        {
+            lines.push_back(&l);
+        }
+    }
+    REQUIRE(lines.size() == 2);
+
+    const KeyId kMessage = sink.keys.Find("message");
+    REQUIRE(kMessage != INVALID_KEY_ID);
+    const LogValue v0 = lines[0]->GetValue(kMessage);
+    const LogValue v1 = lines[1]->GetValue(kMessage);
+    const auto m0 = AsStringView(v0);
+    const auto m1 = AsStringView(v1);
+    REQUIRE(m0.has_value());
+    REQUIRE(m1.has_value());
+
+    CHECK(
+        *m0
+        == "boom\n"
+           "\tat com.example.Foo.bar(Foo.java:42)\n"
+           "\tat com.example.Baz.qux(Baz.java:7)"
+    );
+    CHECK(*m1 == "recovered");
+
+    // RawLine on the multi-line record returns the joined bytes so
+    // Copy / Detail-pane consumers naturally see the whole trace.
+    const std::string raw0 = source.RawLine(lines[0]->LineId());
+    CHECK(raw0.contains("error boom"));
+    CHECK(raw0.contains("Foo.java:42"));
+    CHECK(raw0.contains("Baz.java:7"));
+}
+
+TEST_CASE(
+    "RegexParser streaming: UntilNextHeader folds non-matching lines into the last named group",
+    "[regex_parser][stream_line_source][multiline]"
+)
+{
+    using namespace loglib;
+
+    // Pattern requires a leading `[LEVEL]` header. Continuation
+    // lines in this format mix indented and un-indented text (a
+    // Python-style "During handling of the above exception"). The
+    // PCRE2 anchored-partial-hard probe classifies them as
+    // continuations because they don't start with `[`.
+    const std::string pattern = R"(^\[(?<level>\w+)\]\s+(?<message>.*)$)";
+    RegexTemplate extra{
+        .name = "test-header-multiline",
+        .pattern = pattern,
+        .sampleLines = {"[ERROR] boom"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::UntilNextHeader,
+        .headerAnchor = "",
+    };
+    const RegexTemplate extras[] = {extra};
+    const ScopedExtraTemplates registration(extras);
+
+    const RegexParser parser{std::string{pattern}};
+
+    const std::string payload = "[ERROR] boom\n"
+                                "Traceback (most recent call last):\n"
+                                "During handling of the above exception, another exception occurred:\n"
+                                "  File \"a.py\", line 7\n"
+                                "[INFO] recovered\n";
+
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+    CollectingStreamSink sink;
+    parser.ParseStreaming(source, sink, ParserOptions{});
+
+    REQUIRE(sink.finished);
+
+    std::vector<LogLine *> lines;
+    for (auto &b : sink.batches)
+    {
+        for (auto &l : b.lines)
+        {
+            lines.push_back(&l);
+        }
+    }
+    REQUIRE(lines.size() == 2);
+
+    const KeyId kMessage = sink.keys.Find("message");
+    REQUIRE(kMessage != INVALID_KEY_ID);
+    const LogValue v0 = lines[0]->GetValue(kMessage);
+    const auto m0 = AsStringView(v0);
+    REQUIRE(m0.has_value());
+    // All three non-header lines (both indented and un-indented) fold in.
+    CHECK(m0->contains("Traceback"));
+    CHECK(m0->contains("During handling"));
+    CHECK(m0->contains("a.py"));
+}
+
+TEST_CASE(
+    "RegexParser streaming: template without continuationMode keeps shipped single-line behaviour",
+    "[regex_parser][stream_line_source][multiline]"
+)
+{
+    using namespace loglib;
+
+    // Same pattern as the indented test but registered with
+    // `ContinuationMode::None` (the default). Indented lines are
+    // now parse errors, matching the pre-feature contract exactly.
+    const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
+    RegexTemplate extra{
+        .name = "test-legacy-singleline",
+        .pattern = pattern,
+        .sampleLines = {"info hello"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::None,
+        .headerAnchor = "",
+    };
+    const RegexTemplate extras[] = {extra};
+    const ScopedExtraTemplates registration(extras);
+
+    const RegexParser parser{std::string{pattern}};
+
+    const std::string payload = "error boom\n"
+                                "\tat com.example.Foo.bar(Foo.java:42)\n"
+                                "info recovered\n";
+
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+    CollectingStreamSink sink;
+    parser.ParseStreaming(source, sink, ParserOptions{});
+
+    REQUIRE(sink.finished);
+
+    // `\w+` doesn't match a leading tab, so the continuation line
+    // fails to match under ContinuationMode::None and surfaces as
+    // a per-line parse error — matching the pre-feature behaviour
+    // verbatim. Two rows emit (the un-indented headers) and one
+    // error is captured.
+    std::vector<LogLine *> lines;
+    std::vector<std::string> errors;
+    for (auto &b : sink.batches)
+    {
+        for (auto &l : b.lines)
+        {
+            lines.push_back(&l);
+        }
+        errors.insert(errors.end(), b.errors.begin(), b.errors.end());
+    }
+    CHECK(lines.size() == 2);
+    CHECK(errors.size() == 1);
+}
+
 TEST_CASE("ValidateRegexPattern rejects empty pattern [regex]", "[regex_parser]")
 {
     // GUI pre-flight: the Network Stream dialog calls this before

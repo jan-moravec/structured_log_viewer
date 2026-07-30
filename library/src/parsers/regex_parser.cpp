@@ -821,13 +821,64 @@ void DecodeRegexBatch(
 // Streaming-loop glue.
 // ---------------------------------------------------------------------
 
+/// True if @p line is a "header" for the current pattern under the
+/// `UntilNextHeader` continuation rule. Runs `pcre2_match` with
+/// `PCRE2_ANCHORED | PCRE2_PARTIAL_HARD` on the main pattern so no
+/// second compile is needed. A full match at position 0 is a header;
+/// `PCRE2_ERROR_PARTIAL` (pattern matches the prefix but the line
+/// truncates before completion) is also treated as a header — the
+/// alternative is dropping a header that happens to be shorter than
+/// the pattern's required-length prefix, which is worse for a live
+/// tail scenario. Any other result is a continuation.
+bool RegexLooksLikeHeader(
+    const CompiledPattern &compiled, pcre2_match_data *matchData, std::string_view line
+)
+{
+    if (line.empty() || compiled.Code() == nullptr)
+    {
+        return false;
+    }
+    const int rc = pcre2_match(
+        compiled.Code(),
+        reinterpret_cast<PCRE2_SPTR>(line.data()),
+        line.size(),
+        /*startoffset*/ 0,
+        PCRE2_ANCHORED | PCRE2_PARTIAL_HARD,
+        matchData,
+        compiled.Context()
+    );
+    return rc >= 0 || rc == PCRE2_ERROR_PARTIAL;
+}
+
+/// RegexParser's live-tail decoder. Signals `Continue` for lines
+/// that look like continuations under @p mode; the pipeline
+/// (`RunStreamingParseLoop`) routes their raw bytes into the prior
+/// record's last-source-order named group.
+///
+///  - `None`: legacy behaviour — every unmatched line surfaces as
+///    a parse error via `MatchLineAndEmit`.
+///  - `Indented`: O(1) first-byte whitespace check. Covers Java /
+///    Python / Go / Node stack traces (all indented).
+///  - `UntilNextHeader`: PCRE2 anchored-partial-hard match against
+///    the main pattern. Slower per line but handles formats whose
+///    continuation lines mix indented and un-indented text (Python
+///    "During handling of the above exception, another exception
+///    occurred:"). Uses the same `pcre2_code*` as the record match,
+///    so no second compile.
 class RegexLineDecoder
 {
 public:
-    RegexLineDecoder(const CompiledPattern &compiled, const std::vector<KeyId> &columnKeys)
-        : mCompiled(&compiled), mColumnKeys(&columnKeys)
+    RegexLineDecoder(
+        const CompiledPattern &compiled, const std::vector<KeyId> &columnKeys, ContinuationMode mode = ContinuationMode::None
+    )
+        : mCompiled(&compiled), mColumnKeys(&columnKeys), mMode(mode),
+          mLastContinuationTarget(columnKeys.empty() ? INVALID_KEY_ID : columnKeys.back())
     {
         mMatchData = compiled.NewMatchData();
+        if (mMode == ContinuationMode::UntilNextHeader)
+        {
+            mHeaderMatchData = compiled.NewMatchData();
+        }
     }
 
     internal::LineDecodeResult DecodeCompact(
@@ -858,6 +909,28 @@ public:
             // is the right result if it's ever reached.
             return internal::LineDecodeResult::Skip;
         }
+
+        // Continuation check runs BEFORE the record match so a
+        // continuation line never counts as an "unmatched" error.
+        // `mLastContinuationTarget` is fixed at construction (the
+        // schema's last-source-order KeyId), so the streaming loop
+        // can route continuation bytes without re-inspecting
+        // `columnKeys` on every `Continue`.
+        if (mMode == ContinuationMode::Indented)
+        {
+            if (line.front() == ' ' || line.front() == '\t')
+            {
+                return internal::LineDecodeResult::Continue;
+            }
+        }
+        else if (mMode == ContinuationMode::UntilNextHeader)
+        {
+            if (!RegexLooksLikeHeader(*mCompiled, mHeaderMatchData.get(), line))
+            {
+                return internal::LineDecodeResult::Continue;
+            }
+        }
+
         if (!MatchLineAndEmit(
                 *mCompiled,
                 mMatchData.get(),
@@ -875,10 +948,27 @@ public:
         return internal::LineDecodeResult::Emit;
     }
 
+    /// KeyId of the pattern's last named group in source order. Fixed
+    /// for the lifetime of the decoder (regex schema is compile-time
+    /// constant). `RunStreamingParseLoop` calls this after each
+    /// `Emit` to know where continuation bytes go on subsequent
+    /// `Continue` results.
+    [[nodiscard]] KeyId LastContinuationTarget() const noexcept
+    {
+        return mLastContinuationTarget;
+    }
+
 private:
     const CompiledPattern *mCompiled;
     const std::vector<KeyId> *mColumnKeys;
+    ContinuationMode mMode;
+    KeyId mLastContinuationTarget;
     Pcre2MatchDataPtr mMatchData;
+    /// Separate match data for the `UntilNextHeader` anchor probe so
+    /// the record-match handle (`mMatchData`) is never mid-flight
+    /// when the anchor check fires on a not-yet-emitted line. Unused
+    /// (empty) in other modes.
+    Pcre2MatchDataPtr mHeaderMatchData;
     bool mSawFirstLine = false;
 };
 
@@ -983,7 +1073,18 @@ void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, P
 
     const std::vector<KeyId> columnKeys = InternSchemaKeys(compiled.Schema(), sink.Keys());
 
-    RegexLineDecoder decoder(compiled, columnKeys);
+    // Look up the shipped/registered template so its
+    // `continuationMode` can drive multi-line handling. For custom
+    // (unsaved) user patterns not registered anywhere,
+    // `FindTemplateByPattern` returns nullopt and the decoder falls
+    // back to `ContinuationMode::None` — verbatim shipped behaviour.
+    ContinuationMode mode = ContinuationMode::None;
+    if (const auto tmpl = FindTemplateByPattern(pattern); tmpl.has_value())
+    {
+        mode = tmpl->continuationMode;
+    }
+
+    RegexLineDecoder decoder(compiled, columnKeys, mode);
     internal::RunStreamingParseLoop(source, decoder, sink, options, newKeyBaseline);
 }
 
