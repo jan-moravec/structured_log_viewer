@@ -20,6 +20,15 @@
 # `_deps/catch2-src`, but the path-sensitive analyzer attributes the
 # warning to the test TU that triggered the trace, so the only way to
 # silence the Catch2 macro noise is to disable the check on tests.
+# `clang-analyzer-optin.cplusplus.VirtualCall` fires inside asio's
+# `resolver_thread_pool::~resolver_thread_pool`, which calls its own
+# virtual `shutdown()` because asio owns the shutdown-ordering
+# invariant. It's asio's design, not ours; the test-only network
+# clients construct a `resolver` to look up the peer once at startup,
+# reproducing the trace. Header-filter excludes `_deps/asio-src`, but
+# `llvm::Regex` (used by `-header-filter`) doesn't support the
+# negative-lookahead form our regex uses, so the header-filter is a
+# no-op for these files -- the check is disabled here instead.
 
 InheritParentConfig: true
 
@@ -31,4 +40,5 @@ Checks: >
   -cppcoreguidelines-non-private-member-variables-in-classes,
   -cppcoreguidelines-owning-memory,
   -bugprone-unchecked-optional-access,
-  -clang-analyzer-optin.core.EnumCastOutOfRange
+  -clang-analyzer-optin.core.EnumCastOutOfRange,
+  -clang-analyzer-optin.cplusplus.VirtualCall

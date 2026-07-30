@@ -1,5 +1,6 @@
 #include "common.hpp"
 
+#include <loglib/filter_expression.hpp>
 #include <loglib/internal/log_configuration_glaze_meta.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
@@ -15,9 +16,90 @@
 #include <fstream>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 using namespace loglib;
+
+namespace
+{
+
+/// Test helper: extract every top-level `Leaf` from an expression.
+/// Empty when the expression is default-constructed (empty `And`
+/// = "match every row") or when the top-level node is neither
+/// `Leaf` nor `And`. Sufficient for the legacy filters-vector-
+/// style assertions -- the historical simple-mode UX only ever
+/// wrote flat AND trees.
+[[nodiscard]] std::vector<LeafRule> LegacyLeavesOf(const FilterExpression &expression)
+{
+    std::vector<LeafRule> out;
+    if (const auto *leaf = std::get_if<FilterExpression::Leaf>(&expression.node); leaf != nullptr)
+    {
+        out.push_back(leaf->rule);
+        return out;
+    }
+    if (const auto *asAnd = std::get_if<FilterExpression::And>(&expression.node); asAnd != nullptr)
+    {
+        for (const auto &child : asAnd->children)
+        {
+            if (const auto *childLeaf = std::get_if<FilterExpression::Leaf>(&child.node); childLeaf != nullptr)
+            {
+                out.push_back(childLeaf->rule);
+            }
+        }
+    }
+    return out;
+}
+
+/// Test helper: install @p leaves as a top-level `And` expression.
+[[nodiscard]] FilterExpression LeavesAsExpression(std::vector<LeafRule> leaves)
+{
+    FilterExpression::And node;
+    node.children.reserve(leaves.size());
+    for (auto &rule : leaves)
+    {
+        FilterExpression child;
+        child.node = FilterExpression::Leaf{std::move(rule)};
+        node.children.push_back(std::move(child));
+    }
+    FilterExpression expression;
+    expression.node = std::move(node);
+    return expression;
+}
+
+/// Test helper: resolve the first column whose `keys` subset-matches @p keys.
+/// Returns -1 when nothing matches or @p keys is empty. Duplicated
+/// from `leaf_rule_compile.cpp` so `loglib` tests don't take an
+/// app-side dependency.
+[[nodiscard]] int LegacyColumnKeysToRow(
+    const std::vector<std::string> &keys, const std::vector<LogConfiguration::Column> &columns
+)
+{
+    if (keys.empty())
+    {
+        return -1;
+    }
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        const auto &columnKeys = columns[i].keys;
+        bool ok = true;
+        for (const auto &k : keys)
+        {
+            if (std::ranges::find(columnKeys, k) == columnKeys.end())
+            {
+                ok = false;
+                break;
+            }
+        }
+        if (ok)
+        {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+} // namespace
 
 TEST_CASE("Save and load empty configuration", "[LogConfigurationManager]")
 {
@@ -35,7 +117,7 @@ TEST_CASE("Save and load empty configuration", "[LogConfigurationManager]")
 
         // Verify loaded configuration is empty
         CHECK(manager.Configuration().columns.empty());
-        CHECK(manager.Configuration().filters.empty());
+        CHECK(IsMatchAll(manager.Configuration().expression));
     }
 }
 
@@ -524,14 +606,15 @@ TEST_CASE(
     manager.AppendKeys({"timestamp", "msg"});
     REQUIRE(manager.Configuration().columns.size() == 2);
 
-    // Populate session-only state (filter on row 0, sort by column 1
-    // descending, file-source).
-    LogConfiguration::LogFilter filter;
-    filter.type = LogConfiguration::LogFilter::Type::String;
-    filter.row = 0;
+    // Populate session-only state (filter on the first column, sort
+    // by column 1 descending, file-source). Leaves bind by column
+    // keys.
+    LeafRule filter;
+    filter.type = LeafRule::Type::String;
+    filter.columnKeys = {"timestamp"};
     filter.filterString = "boot";
-    filter.matchType = LogConfiguration::LogFilter::Match::Contains;
-    manager.SetFilters({filter});
+    filter.matchType = LeafRule::Match::Contains;
+    manager.SetExpression(LeavesAsExpression({filter}));
     manager.SetSort(LogConfiguration::Sort{.columnIndex = 1, .descending = true});
     manager.SetSource(
         LogConfiguration::Source{.kind = LogConfiguration::Source::Kind::File, .locators = {"C:/logs/app.json"}}
@@ -542,8 +625,8 @@ TEST_CASE(
 
     // The on-disk JSON must not even mention the session-only
     // fields: a transient `LogConfiguration` would still serialise
-    // empty `"filters"` / a default `"sort"` because those members
-    // are not optional. The `ColumnsOnlyDocument` shim in
+    // an empty `"expression"` / a default `"sort"` because those
+    // members are not optional. The `ColumnsOnlyDocument` shim in
     // `log_configuration.cpp` exists exactly to keep the wire output
     // clean for users who inspect saved configs by hand.
     {
@@ -551,17 +634,17 @@ TEST_CASE(
         REQUIRE(readBack.is_open());
         const std::string raw((std::istreambuf_iterator<char>(readBack)), std::istreambuf_iterator<char>());
         CHECK(raw.contains("\"columns\""));
-        CHECK_FALSE(raw.contains("\"filters\""));
+        CHECK_FALSE(raw.contains("\"expression\""));
         CHECK_FALSE(raw.contains("\"sort\""));
         CHECK_FALSE(raw.contains("\"source\""));
     }
 
-    // Re-load: only columns survive; filters/sort/source are absent
+    // Re-load: only columns survive; expression/sort/source are absent
     // and reload at their default (inert) values.
     LogConfigurationManager reloadedFromColumns;
     reloadedFromColumns.Load(columnsOnlyFile.GetFilePath());
     REQUIRE(reloadedFromColumns.Configuration().columns.size() == 2);
-    CHECK(reloadedFromColumns.Configuration().filters.empty());
+    CHECK(IsMatchAll(reloadedFromColumns.Configuration().expression));
     CHECK(reloadedFromColumns.Configuration().sort.columnIndex == -1);
     CHECK_FALSE(reloadedFromColumns.Configuration().sort.descending);
     CHECK_FALSE(reloadedFromColumns.Configuration().source.has_value());
@@ -574,10 +657,11 @@ TEST_CASE(
     LogConfigurationManager reloadedFromFull;
     reloadedFromFull.Load(fullFile.GetFilePath());
     REQUIRE(reloadedFromFull.Configuration().columns.size() == 2);
-    REQUIRE(reloadedFromFull.Configuration().filters.size() == 1);
-    CHECK(reloadedFromFull.Configuration().filters[0].row == 0);
-    REQUIRE(reloadedFromFull.Configuration().filters[0].filterString.has_value());
-    CHECK(*reloadedFromFull.Configuration().filters[0].filterString == "boot");
+    const auto reloadedLeaves = LegacyLeavesOf(reloadedFromFull.Configuration().expression);
+    REQUIRE(reloadedLeaves.size() == 1);
+    CHECK(reloadedLeaves[0].columnKeys == std::vector<std::string>{"timestamp"});
+    REQUIRE(reloadedLeaves[0].filterString.has_value());
+    CHECK(*reloadedLeaves[0].filterString == "boot");
     CHECK(reloadedFromFull.Configuration().sort.columnIndex == 1);
     CHECK(reloadedFromFull.Configuration().sort.descending);
     REQUIRE(reloadedFromFull.Configuration().source.has_value());
@@ -657,14 +741,14 @@ TEST_CASE("LogConfiguration::Source round-trips Format::Logfmt", "[log_configura
     CHECK(loaded.source->locators.front() == "C:/logs/app.logfmt");
 }
 
-TEST_CASE("Round-trip LogFilter with Type::Enumeration and filterValues", "[log_configuration][enum]")
+TEST_CASE("Round-trip LeafRule with Type::Enumeration and filterValues", "[log_configuration][enum]")
 {
     LogConfiguration original;
-    LogConfiguration::LogFilter filter;
-    filter.type = LogConfiguration::LogFilter::Type::Enumeration;
-    filter.row = 2;
+    LeafRule filter;
+    filter.type = LeafRule::Type::Enumeration;
+    filter.columnKeys = {"level"};
     filter.filterValues = {"info", "warn", "error"};
-    original.filters.push_back(filter);
+    original.expression = LeavesAsExpression({filter});
 
     std::string json;
     const auto writeError = glz::write_json(original, json);
@@ -674,34 +758,34 @@ TEST_CASE("Round-trip LogFilter with Type::Enumeration and filterValues", "[log_
     const auto readError = glz::read_json(loaded, json);
     REQUIRE_FALSE(readError);
 
-    REQUIRE(loaded.filters.size() == 1);
-    CHECK(loaded.filters[0].type == LogConfiguration::LogFilter::Type::Enumeration);
-    CHECK(loaded.filters[0].row == 2);
-    CHECK(loaded.filters[0].filterValues == std::vector<std::string>{"info", "warn", "error"});
+    const auto leaves = LegacyLeavesOf(loaded.expression);
+    REQUIRE(leaves.size() == 1);
+    CHECK(leaves[0].type == LeafRule::Type::Enumeration);
+    CHECK(leaves[0].columnKeys == std::vector<std::string>{"level"});
+    CHECK(leaves[0].filterValues == std::vector<std::string>{"info", "warn", "error"});
 }
 
-TEST_CASE("Round-trip LogFilter with Type::Number and bounded / unbounded range", "[log_configuration][number]")
+TEST_CASE("Round-trip LeafRule with Type::Number and bounded / unbounded range", "[log_configuration][number]")
 {
     LogConfiguration original;
 
-    LogConfiguration::LogFilter bounded;
-    bounded.type = LogConfiguration::LogFilter::Type::Number;
-    bounded.row = 1;
+    LeafRule bounded;
+    bounded.type = LeafRule::Type::Number;
+    bounded.columnKeys = {"latency"};
     bounded.filterMinValue = -2.5;
     bounded.filterMaxValue = 17.25;
-    original.filters.push_back(bounded);
 
-    LogConfiguration::LogFilter unboundedMin;
-    unboundedMin.type = LogConfiguration::LogFilter::Type::Number;
-    unboundedMin.row = 2;
+    LeafRule unboundedMin;
+    unboundedMin.type = LeafRule::Type::Number;
+    unboundedMin.columnKeys = {"count"};
     unboundedMin.filterMaxValue = 100.0;
-    original.filters.push_back(unboundedMin);
 
-    LogConfiguration::LogFilter unboundedMax;
-    unboundedMax.type = LogConfiguration::LogFilter::Type::Number;
-    unboundedMax.row = 3;
+    LeafRule unboundedMax;
+    unboundedMax.type = LeafRule::Type::Number;
+    unboundedMax.columnKeys = {"score"};
     unboundedMax.filterMinValue = 0.0;
-    original.filters.push_back(unboundedMax);
+
+    original.expression = LeavesAsExpression({bounded, unboundedMin, unboundedMax});
 
     std::string json;
     const auto writeError = glz::write_json(original, json);
@@ -714,30 +798,31 @@ TEST_CASE("Round-trip LogFilter with Type::Number and bounded / unbounded range"
     const auto readError = glz::read_json(loaded, json);
     REQUIRE_FALSE(readError);
 
-    REQUIRE(loaded.filters.size() == 3);
-    CHECK(loaded.filters[0].type == LogConfiguration::LogFilter::Type::Number);
-    REQUIRE(loaded.filters[0].filterMinValue.has_value());
-    REQUIRE(loaded.filters[0].filterMaxValue.has_value());
-    CHECK(*loaded.filters[0].filterMinValue == Catch::Approx(-2.5));
-    CHECK(*loaded.filters[0].filterMaxValue == Catch::Approx(17.25));
+    const auto leaves = LegacyLeavesOf(loaded.expression);
+    REQUIRE(leaves.size() == 3);
+    CHECK(leaves[0].type == LeafRule::Type::Number);
+    REQUIRE(leaves[0].filterMinValue.has_value());
+    REQUIRE(leaves[0].filterMaxValue.has_value());
+    CHECK(*leaves[0].filterMinValue == Catch::Approx(-2.5));
+    CHECK(*leaves[0].filterMaxValue == Catch::Approx(17.25));
 
-    CHECK_FALSE(loaded.filters[1].filterMinValue.has_value());
-    REQUIRE(loaded.filters[1].filterMaxValue.has_value());
-    CHECK(*loaded.filters[1].filterMaxValue == Catch::Approx(100.0));
+    CHECK_FALSE(leaves[1].filterMinValue.has_value());
+    REQUIRE(leaves[1].filterMaxValue.has_value());
+    CHECK(*leaves[1].filterMaxValue == Catch::Approx(100.0));
 
-    REQUIRE(loaded.filters[2].filterMinValue.has_value());
-    CHECK(*loaded.filters[2].filterMinValue == Catch::Approx(0.0));
-    CHECK_FALSE(loaded.filters[2].filterMaxValue.has_value());
+    REQUIRE(leaves[2].filterMinValue.has_value());
+    CHECK(*leaves[2].filterMinValue == Catch::Approx(0.0));
+    CHECK_FALSE(leaves[2].filterMaxValue.has_value());
 }
 
-TEST_CASE("Round-trip LogFilter with Type::Boolean", "[log_configuration][boolean]")
+TEST_CASE("Round-trip LeafRule with Type::Boolean", "[log_configuration][boolean]")
 {
     LogConfiguration original;
-    LogConfiguration::LogFilter filter;
-    filter.type = LogConfiguration::LogFilter::Type::Boolean;
-    filter.row = 0;
+    LeafRule filter;
+    filter.type = LeafRule::Type::Boolean;
+    filter.columnKeys = {"enabled"};
     filter.filterValues = {"true"};
-    original.filters.push_back(filter);
+    original.expression = LeavesAsExpression({filter});
 
     std::string json;
     const auto writeError = glz::write_json(original, json);
@@ -748,23 +833,22 @@ TEST_CASE("Round-trip LogFilter with Type::Boolean", "[log_configuration][boolea
     const auto readError = glz::read_json(loaded, json);
     REQUIRE_FALSE(readError);
 
-    REQUIRE(loaded.filters.size() == 1);
-    CHECK(loaded.filters[0].type == LogConfiguration::LogFilter::Type::Boolean);
-    CHECK(loaded.filters[0].filterValues == std::vector<std::string>{"true"});
+    const auto leaves = LegacyLeavesOf(loaded.expression);
+    REQUIRE(leaves.size() == 1);
+    CHECK(leaves[0].type == LeafRule::Type::Boolean);
+    CHECK(leaves[0].filterValues == std::vector<std::string>{"true"});
 }
 
 TEST_CASE(
-    "Legacy lowerCamelCase JSON keys still load after enum rename to UpperCamelCase",
-    "[log_configuration][wire_format_compat]"
+    "lowerCamelCase JSON keys pin the wire format for the boolean-filter-expression schema",
+    "[log_configuration][wire_format]"
 )
 {
-    // Hand-written JSON in the historical on-disk shape (lowerCamelCase
-    // enum keys for `Type`, `LogFilter::Type`, and `LogFilter::Match`).
-    // The C++ enumerators are now UpperCamelCase, but the Glaze meta
-    // pins the wire format so existing saved configurations keep
-    // working. Every `Type`, `LogFilter::Type`, and `LogFilter::Match`
-    // variant is exercised so renaming any one would break the test.
-    constexpr std::string_view LEGACY_JSON = R"({
+    // Hand-written JSON in the on-disk shape (lowerCamelCase enum
+    // keys for `Type`, `LeafRule::Type`, and `LeafRule::Match`).
+    // Every `Type`, `LeafRule::Type`, and `LeafRule::Match` variant
+    // is exercised so renaming any one would break the test.
+    constexpr std::string_view WIRE_JSON = R"({
         "columns": [
             {"header":"b","keys":["b"],"printFormat":"{}","type":"any","parseFormats":[]},
             {"header":"c","keys":["c"],"printFormat":"{}","type":"string","parseFormats":[]},
@@ -774,18 +858,21 @@ TEST_CASE(
             {"header":"g","keys":["g"],"printFormat":"{}","type":"time","parseFormats":[]},
             {"header":"h","keys":["h"],"printFormat":"{}","type":"enumeration","parseFormats":[]}
         ],
-        "filters": [
-            {"type":"string","row":0,"filterString":"foo","matchType":"exactly","filterValues":[]},
-            {"type":"string","row":1,"filterString":"bar","matchType":"contains","filterValues":[]},
-            {"type":"string","row":2,"filterString":"^baz$","matchType":"regularExpression","filterValues":[]},
-            {"type":"string","row":3,"filterString":"qux*","matchType":"wildcard","filterValues":[]},
-            {"type":"time","row":4,"filterBegin":1000,"filterEnd":2000,"filterValues":[]},
-            {"type":"enumeration","row":5,"filterValues":["info","warn"]}
-        ]
+        "expression": {
+            "kind": "and",
+            "children": [
+                {"kind": "leaf", "rule": {"type":"string","columnKeys":["b"],"filterString":"foo","matchType":"exactly","filterValues":[]}},
+                {"kind": "leaf", "rule": {"type":"string","columnKeys":["c"],"filterString":"bar","matchType":"contains","filterValues":[]}},
+                {"kind": "leaf", "rule": {"type":"string","columnKeys":["d"],"filterString":"^baz$","matchType":"regularExpression","filterValues":[]}},
+                {"kind": "leaf", "rule": {"type":"string","columnKeys":["e"],"filterString":"qux*","matchType":"wildcard","filterValues":[]}},
+                {"kind": "leaf", "rule": {"type":"time","columnKeys":["g"],"filterBegin":1000,"filterEnd":2000,"filterValues":[]}},
+                {"kind": "leaf", "rule": {"type":"enumeration","columnKeys":["h"],"filterValues":["info","warn"]}}
+            ]
+        }
     })";
 
     LogConfiguration loaded;
-    const auto readError = glz::read_json(loaded, LEGACY_JSON);
+    const auto readError = glz::read_json(loaded, WIRE_JSON);
     REQUIRE_FALSE(readError);
 
     using Type = LogConfiguration::Type;
@@ -798,20 +885,21 @@ TEST_CASE(
     CHECK(loaded.columns[5].type == Type::Time);
     CHECK(loaded.columns[6].type == Type::Enumeration);
 
-    using FilterType = LogConfiguration::LogFilter::Type;
-    using Match = LogConfiguration::LogFilter::Match;
-    REQUIRE(loaded.filters.size() == 6);
-    CHECK(loaded.filters[0].type == FilterType::String);
-    REQUIRE(loaded.filters[0].matchType.has_value());
-    CHECK(*loaded.filters[0].matchType == Match::Exactly);
-    REQUIRE(loaded.filters[1].matchType.has_value());
-    CHECK(*loaded.filters[1].matchType == Match::Contains);
-    REQUIRE(loaded.filters[2].matchType.has_value());
-    CHECK(*loaded.filters[2].matchType == Match::RegularExpression);
-    REQUIRE(loaded.filters[3].matchType.has_value());
-    CHECK(*loaded.filters[3].matchType == Match::Wildcard);
-    CHECK(loaded.filters[4].type == FilterType::Time);
-    CHECK(loaded.filters[5].type == FilterType::Enumeration);
+    using FilterType = LeafRule::Type;
+    using Match = LeafRule::Match;
+    const auto leaves = LegacyLeavesOf(loaded.expression);
+    REQUIRE(leaves.size() == 6);
+    CHECK(leaves[0].type == FilterType::String);
+    REQUIRE(leaves[0].matchType.has_value());
+    CHECK(*leaves[0].matchType == Match::Exactly);
+    REQUIRE(leaves[1].matchType.has_value());
+    CHECK(*leaves[1].matchType == Match::Contains);
+    REQUIRE(leaves[2].matchType.has_value());
+    CHECK(*leaves[2].matchType == Match::RegularExpression);
+    REQUIRE(leaves[3].matchType.has_value());
+    CHECK(*leaves[3].matchType == Match::Wildcard);
+    CHECK(leaves[4].type == FilterType::Time);
+    CHECK(leaves[5].type == FilterType::Enumeration);
 
     // Re-serialise and confirm the wire format keeps the original keys.
     std::string roundTripJson;
@@ -826,21 +914,24 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "LogFilter::Type::Number and Type::Boolean load via lowerCamelCase JSON keys",
-    "[log_configuration][wire_format_compat][number][boolean]"
+    "LeafRule::Type::Number and Type::Boolean load via lowerCamelCase JSON keys",
+    "[log_configuration][wire_format][number][boolean]"
 )
 {
     // Hand-written JSON pins the lowerCamelCase wire format for the
-    // new filter variants so future renames stay back-compat.
+    // number / boolean filter variants under the new expression schema.
     constexpr std::string_view JSON = R"({
         "columns": [
             {"header":"value","keys":["value"],"printFormat":"{}","type":"number","parseFormats":[]},
             {"header":"flag","keys":["flag"],"printFormat":"{}","type":"boolean","parseFormats":[]}
         ],
-        "filters": [
-            {"type":"number","row":0,"filterMinValue":1.5,"filterMaxValue":5.0,"filterValues":[]},
-            {"type":"boolean","row":1,"filterValues":["true","false"]}
-        ]
+        "expression": {
+            "kind": "and",
+            "children": [
+                {"kind": "leaf", "rule": {"type":"number","columnKeys":["value"],"filterMinValue":1.5,"filterMaxValue":5.0,"filterValues":[]}},
+                {"kind": "leaf", "rule": {"type":"boolean","columnKeys":["flag"],"filterValues":["true","false"]}}
+            ]
+        }
     })";
 
     LogConfiguration loaded;
@@ -852,16 +943,17 @@ TEST_CASE(
     CHECK(loaded.columns[0].type == Type::Number);
     CHECK(loaded.columns[1].type == Type::Boolean);
 
-    using FilterType = LogConfiguration::LogFilter::Type;
-    REQUIRE(loaded.filters.size() == 2);
-    CHECK(loaded.filters[0].type == FilterType::Number);
-    REQUIRE(loaded.filters[0].filterMinValue.has_value());
-    REQUIRE(loaded.filters[0].filterMaxValue.has_value());
-    CHECK(*loaded.filters[0].filterMinValue == Catch::Approx(1.5));
-    CHECK(*loaded.filters[0].filterMaxValue == Catch::Approx(5.0));
+    using FilterType = LeafRule::Type;
+    const auto leaves = LegacyLeavesOf(loaded.expression);
+    REQUIRE(leaves.size() == 2);
+    CHECK(leaves[0].type == FilterType::Number);
+    REQUIRE(leaves[0].filterMinValue.has_value());
+    REQUIRE(leaves[0].filterMaxValue.has_value());
+    CHECK(*leaves[0].filterMinValue == Catch::Approx(1.5));
+    CHECK(*leaves[0].filterMaxValue == Catch::Approx(5.0));
 
-    CHECK(loaded.filters[1].type == FilterType::Boolean);
-    CHECK(loaded.filters[1].filterValues == std::vector<std::string>{"true", "false"});
+    CHECK(leaves[1].type == FilterType::Boolean);
+    CHECK(leaves[1].filterValues == std::vector<std::string>{"true", "false"});
 }
 
 TEST_CASE(
@@ -1004,8 +1096,7 @@ TEST_CASE(
     constexpr std::string_view LEGACY_JSON = R"({
         "columns": [
             {"header":"a","keys":["a"],"printFormat":"{}","type":"any","parseFormats":[]}
-        ],
-        "filters": []
+        ]
     })";
 
     LogConfiguration loaded;
@@ -1017,29 +1108,32 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "LogConfigurationManager::MoveColumn remaps LogFilter::row through the permutation",
-    "[LogConfigurationManager][move_column][filter_row_remap]"
+    "LogConfigurationManager::MoveColumn leaves LeafRule::columnKeys untouched (key-based binding)",
+    "[LogConfigurationManager][move_column][filter_column_keys]"
 )
 {
-    // Four columns + one filter per column; each filter's `row`
-    // starts equal to its column index.
+    // Four columns + one filter per column; each filter's
+    // `columnKeys` names the column it filters on. After any
+    // permutation the keys stay put -- the compiled predicates
+    // resolve to the new indices via `ResolveLeafColumnByKeys`.
     LogConfigurationManager manager;
     manager.AppendKeys({"a", "b", "c", "d"});
     REQUIRE(manager.Configuration().columns.size() == 4);
 
-    // Bypass `AddFilter` (opens an editor): write filters to disk
+    // Bypass `AddFilter` (opens an editor): write leaves to disk
     // and re-load.
     {
         LogConfiguration configuration;
         configuration.columns = manager.Configuration().columns;
-        for (int row = 0; row < 4; ++row)
+        std::vector<LeafRule> leaves;
+        for (const std::string &key : {"a", "b", "c", "d"})
         {
-            configuration.filters.push_back(
-                LogConfiguration::LogFilter{
-                    .type = LogConfiguration::LogFilter::Type::String,
-                    .row = row,
+            leaves.push_back(
+                LeafRule{
+                    .type = LeafRule::Type::String,
+                    .columnKeys = {key},
+                    .matchType = LeafRule::Match::Contains,
                     .filterString = std::string{"x"},
-                    .matchType = LogConfiguration::LogFilter::Match::Contains,
                     .filterBegin = std::nullopt,
                     .filterEnd = std::nullopt,
                     .filterMinValue = std::nullopt,
@@ -1048,67 +1142,61 @@ TEST_CASE(
                 }
             );
         }
+        configuration.expression = LeavesAsExpression(std::move(leaves));
         const TestLogConfiguration testConfiguration;
         testConfiguration.Write(configuration);
         manager.Load(testConfiguration.GetFilePath());
     }
-    REQUIRE(manager.Configuration().filters.size() == 4);
+    REQUIRE(LegacyLeavesOf(manager.Configuration().expression).size() == 4);
 
-    SECTION("Right-to-left move (3 -> 0) shifts everything else right")
+    auto checkKeysUnchanged = [&manager]() {
+        const auto leaves = LegacyLeavesOf(manager.Configuration().expression);
+        REQUIRE(leaves.size() == 4);
+        CHECK(leaves[0].columnKeys == std::vector<std::string>{"a"});
+        CHECK(leaves[1].columnKeys == std::vector<std::string>{"b"});
+        CHECK(leaves[2].columnKeys == std::vector<std::string>{"c"});
+        CHECK(leaves[3].columnKeys == std::vector<std::string>{"d"});
+    };
+
+    SECTION("Right-to-left move (3 -> 0) keeps every column's key intact")
     {
         manager.MoveColumn(3, 0);
-        const auto &filters = manager.Configuration().filters;
-        REQUIRE(filters.size() == 4);
-        // Filters keep their order (created in column order); only
-        // `row` follows the permutation:
-        //   col 0 ('a') -> row 1
-        //   col 1 ('b') -> row 2
-        //   col 2 ('c') -> row 3
-        //   col 3 ('d') -> row 0
-        CHECK(filters[0].row == 1);
-        CHECK(filters[1].row == 2);
-        CHECK(filters[2].row == 3);
-        CHECK(filters[3].row == 0);
+        checkKeysUnchanged();
+        // Column layout rotated: 'd' is now at index 0.
+        const auto &columns = manager.Configuration().columns;
+        REQUIRE(columns.size() == 4);
+        CHECK(columns[0].header == "d");
+        CHECK(LegacyColumnKeysToRow({"d"}, columns) == 0);
+        CHECK(LegacyColumnKeysToRow({"a"}, columns) == 1);
     }
 
-    SECTION("Left-to-right move (0 -> 3) shifts the in-between columns left")
+    SECTION("Left-to-right move (0 -> 3) keeps every column's key intact")
     {
         manager.MoveColumn(0, 3);
-        const auto &filters = manager.Configuration().filters;
-        REQUIRE(filters.size() == 4);
-        // Permutation:
-        //   col 0 ('a') -> row 3
-        //   col 1 ('b') -> row 0
-        //   col 2 ('c') -> row 1
-        //   col 3 ('d') -> row 2
-        CHECK(filters[0].row == 3);
-        CHECK(filters[1].row == 0);
-        CHECK(filters[2].row == 1);
-        CHECK(filters[3].row == 2);
+        checkKeysUnchanged();
+        const auto &columns = manager.Configuration().columns;
+        CHECK(LegacyColumnKeysToRow({"a"}, columns) == 3);
+        CHECK(LegacyColumnKeysToRow({"b"}, columns) == 0);
     }
 
-    SECTION("Adjacent swap (1 -> 2) only touches the two adjacent rows")
+    SECTION("Adjacent swap (1 -> 2) only reorders the swapped columns")
     {
         manager.MoveColumn(1, 2);
-        const auto &filters = manager.Configuration().filters;
-        REQUIRE(filters.size() == 4);
-        CHECK(filters[0].row == 0);
-        CHECK(filters[1].row == 2);
-        CHECK(filters[2].row == 1);
-        CHECK(filters[3].row == 3);
+        checkKeysUnchanged();
+        const auto &columns = manager.Configuration().columns;
+        CHECK(LegacyColumnKeysToRow({"b"}, columns) == 2);
+        CHECK(LegacyColumnKeysToRow({"c"}, columns) == 1);
     }
 
-    SECTION("Out-of-range / no-op move leaves rows unchanged")
+    SECTION("Out-of-range / no-op move leaves everything unchanged")
     {
         manager.MoveColumn(0, 0);
         manager.MoveColumn(0, 99);
         manager.MoveColumn(99, 0);
-        const auto &filters = manager.Configuration().filters;
-        REQUIRE(filters.size() == 4);
-        CHECK(filters[0].row == 0);
-        CHECK(filters[1].row == 1);
-        CHECK(filters[2].row == 2);
-        CHECK(filters[3].row == 3);
+        checkKeysUnchanged();
+        const auto &columns = manager.Configuration().columns;
+        CHECK(LegacyColumnKeysToRow({"a"}, columns) == 0);
+        CHECK(LegacyColumnKeysToRow({"d"}, columns) == 3);
     }
 }
 
@@ -1187,26 +1275,28 @@ TEST_CASE(
 )
 {
     // `Update` appends auto-promoted timestamp columns and bubbles
-    // them to index 0. Persisted `LogFilter::row` must follow the
-    // bubble. Streaming-side coverage lives in
-    // `TestSourceColumnMoveRemapsRuntimeFilters`.
+    // them to index 0. Leaves bind by `columnKeys`, so their
+    // payload doesn't need to follow the bubble -- the resolved
+    // index just changes on the fly. Streaming-side coverage lives
+    // in `TestSourceColumnMoveKeepsRuntimeFilters`.
     LogConfigurationManager manager;
     manager.AppendKeys({"regular_a", "regular_b"});
     REQUIRE(manager.Configuration().columns.size() == 2);
     REQUIRE(manager.Configuration().columns[0].header == "regular_a");
     REQUIRE(manager.Configuration().columns[1].header == "regular_b");
 
-    // Filters pointing at the two existing columns; both must
-    // follow their column through the bubble.
+    // Leaves pointing at the two existing columns; both must
+    // survive the bubble unchanged.
     {
         LogConfiguration configuration;
         configuration.columns = manager.Configuration().columns;
-        configuration.filters.push_back(
-            LogConfiguration::LogFilter{
-                .type = LogConfiguration::LogFilter::Type::String,
-                .row = 0,
+        std::vector<LeafRule> leaves;
+        leaves.push_back(
+            LeafRule{
+                .type = LeafRule::Type::String,
+                .columnKeys = {"regular_a"},
+                .matchType = LeafRule::Match::Contains,
                 .filterString = std::string{"x"},
-                .matchType = LogConfiguration::LogFilter::Match::Contains,
                 .filterBegin = std::nullopt,
                 .filterEnd = std::nullopt,
                 .filterMinValue = std::nullopt,
@@ -1214,12 +1304,12 @@ TEST_CASE(
                 .filterValues = {},
             }
         );
-        configuration.filters.push_back(
-            LogConfiguration::LogFilter{
-                .type = LogConfiguration::LogFilter::Type::String,
-                .row = 1,
+        leaves.push_back(
+            LeafRule{
+                .type = LeafRule::Type::String,
+                .columnKeys = {"regular_b"},
+                .matchType = LeafRule::Match::Contains,
                 .filterString = std::string{"y"},
-                .matchType = LogConfiguration::LogFilter::Match::Contains,
                 .filterBegin = std::nullopt,
                 .filterEnd = std::nullopt,
                 .filterMinValue = std::nullopt,
@@ -1227,11 +1317,12 @@ TEST_CASE(
                 .filterValues = {},
             }
         );
+        configuration.expression = LeavesAsExpression(std::move(leaves));
         const TestLogConfiguration testConfiguration;
         testConfiguration.Write(configuration);
         manager.Load(testConfiguration.GetFilePath());
     }
-    REQUIRE(manager.Configuration().filters.size() == 2);
+    REQUIRE(LegacyLeavesOf(manager.Configuration().expression).size() == 2);
 
     // `Update` with a fresh `timestamp` key: appended at index 2
     // then bubbled to index 0; existing columns shift right.
@@ -1250,14 +1341,17 @@ TEST_CASE(
     CHECK(manager.Configuration().columns[1].header == "regular_a");
     CHECK(manager.Configuration().columns[2].header == "regular_b");
 
-    // Filters followed the bubble: row 0 -> row 1, row 1 -> row 2.
-    // Without the remap they would still report pre-bubble indices
-    // and silently target the wrong columns.
-    REQUIRE(manager.Configuration().filters.size() == 2);
-    CHECK(manager.Configuration().filters[0].row == 1);
-    CHECK(manager.Configuration().filters[0].filterString == std::string{"x"});
-    CHECK(manager.Configuration().filters[1].row == 2);
-    CHECK(manager.Configuration().filters[1].filterString == std::string{"y"});
+    // Leaves survived the bubble unchanged; `columnKeys` still
+    // point at the right columns and `LegacyColumnKeysToRow`
+    // resolves to the freshly bubbled indices.
+    const auto leaves = LegacyLeavesOf(manager.Configuration().expression);
+    REQUIRE(leaves.size() == 2);
+    CHECK(leaves[0].columnKeys == std::vector<std::string>{"regular_a"});
+    CHECK(leaves[0].filterString == std::string{"x"});
+    CHECK(leaves[1].columnKeys == std::vector<std::string>{"regular_b"});
+    CHECK(leaves[1].filterString == std::string{"y"});
+    CHECK(LegacyColumnKeysToRow({"regular_a"}, manager.Configuration().columns) == 1);
+    CHECK(LegacyColumnKeysToRow({"regular_b"}, manager.Configuration().columns) == 2);
 }
 
 TEST_CASE("BubbleLevelColumnToCanonicalPosition mirrors the Time bubble", "[LogConfigurationManager][level_bubble]")
@@ -1328,34 +1422,37 @@ TEST_CASE("BubbleLevelColumnToCanonicalPosition mirrors the Time bubble", "[LogC
         CHECK(manager.Configuration().columns[1].header == "col_one");
     }
 
-    SECTION("Persisted filter row follows the bubble")
+    SECTION("Persisted filter keys survive the bubble unchanged")
     {
-        // Proves the helper delegates to `MoveColumn` rather than
-        // open-coding the rotation, so `filters[*].row` stays in sync.
+        // Proves the helper delegates to `MoveColumn` and that key-
+        // based binding survives the rotation without any remap step.
         LogConfigurationManager manager;
         manager.AppendKeys({"col_zero", "col_one", "level"});
 
-        // Pin a filter on `level` so the remap is observable.
+        // Pin a filter on `level` so the movement is observable.
         LogConfiguration cfg = manager.Configuration();
-        cfg.filters.push_back(
-            LogConfiguration::LogFilter{
-                .type = LogConfiguration::LogFilter::Type::String,
-                .row = 2,
+        cfg.expression = LeavesAsExpression({
+            LeafRule{
+                .type = LeafRule::Type::String,
+                .columnKeys = {"level"},
+                .matchType = LeafRule::Match::Contains,
                 .filterString = std::string{"warn"},
-                .matchType = LogConfiguration::LogFilter::Match::Contains,
                 .filterBegin = std::nullopt,
                 .filterEnd = std::nullopt,
                 .filterMinValue = std::nullopt,
                 .filterMaxValue = std::nullopt,
                 .filterValues = {},
-            }
-        );
+            },
+        });
         manager.SetConfiguration(std::move(cfg));
 
         BubbleLevelColumnToCanonicalPosition(manager, 2);
 
-        REQUIRE(manager.Configuration().filters.size() == 1);
-        CHECK(manager.Configuration().filters[0].row == 1);
+        const auto leaves = LegacyLeavesOf(manager.Configuration().expression);
+        REQUIRE(leaves.size() == 1);
+        CHECK(leaves[0].columnKeys == std::vector<std::string>{"level"});
+        // `level` bubbled from index 2 to index 1 (Time reserves 0).
+        CHECK(LegacyColumnKeysToRow({"level"}, manager.Configuration().columns) == 1);
     }
 }
 
@@ -1702,15 +1799,16 @@ TEST_CASE("ResolveLevel honours per-column alias overrides", "[log_level]")
 // -----------------------------------------------------------------------------
 
 TEST_CASE(
-    "Legacy `\"locator\"` session JSON loads with columns and filters intact (source rebind drops to nullopt)",
+    "Legacy `\"locator\"` session JSON loads with columns and expression intact (source rebind drops to nullopt)",
     "[log_configuration][session][source][compat]"
 )
 {
     const TestLogConfiguration legacyFile("test_log_configuration_legacy_locator.json");
 
     // Pre-widening shape: `source.locator` (single string) instead of
-    // the current `locators` array. Columns / filters / sort match
-    // the new schema; only the source's inner field is renamed.
+    // the current `locators` array. Columns / expression / sort
+    // match the current schema; only the source's inner field is
+    // renamed.
     constexpr std::string_view LEGACY_JSON = R"({
    "columns": [
       {
@@ -1728,14 +1826,12 @@ TEST_CASE(
          "parseFormats": []
       }
    ],
-   "filters": [
-      {
-         "type": "string",
-         "row": 1,
-         "filterString": "boot",
-         "matchType": "contains"
-      }
-   ],
+   "expression": {
+      "kind": "and",
+      "children": [
+         {"kind": "leaf", "rule": {"type":"string","columnKeys":["msg"],"filterString":"boot","matchType":"contains"}}
+      ]
+   },
    "sort": {
       "columnIndex": 0,
       "descending": true
@@ -1755,18 +1851,19 @@ TEST_CASE(
     LogConfigurationManager manager;
     REQUIRE_NOTHROW(manager.Load(legacyFile.GetFilePath()));
 
-    // Columns / filters / sort survive despite the renamed source
-    // field (without the `error_on_unknown_keys=false` opt-in,
-    // this would throw and lose the entire session).
+    // Columns / expression / sort survive despite the renamed
+    // source field (without the `error_on_unknown_keys=false`
+    // opt-in, this would throw and lose the entire session).
     REQUIRE(manager.Configuration().columns.size() == 2);
     CHECK(manager.Configuration().columns[0].header == "timestamp");
     CHECK(manager.Configuration().columns[0].type == LogConfiguration::Type::Time);
     CHECK(manager.Configuration().columns[1].header == "msg");
 
-    REQUIRE(manager.Configuration().filters.size() == 1);
-    CHECK(manager.Configuration().filters[0].row == 1);
-    REQUIRE(manager.Configuration().filters[0].filterString.has_value());
-    CHECK(*manager.Configuration().filters[0].filterString == "boot");
+    const auto leaves = LegacyLeavesOf(manager.Configuration().expression);
+    REQUIRE(leaves.size() == 1);
+    CHECK(leaves[0].columnKeys == std::vector<std::string>{"msg"});
+    REQUIRE(leaves[0].filterString.has_value());
+    CHECK(*leaves[0].filterString == "boot");
 
     CHECK(manager.Configuration().sort.columnIndex == 0);
     CHECK(manager.Configuration().sort.descending);
@@ -2100,14 +2197,14 @@ TEST_CASE(
         written.columns.push_back(
             LogConfiguration::Column{.header = "service", .keys = {"service"}, .type = LogConfiguration::Type::String}
         );
-        written.filters.push_back(
-            LogConfiguration::LogFilter{
-                .type = LogConfiguration::LogFilter::Type::String,
-                .row = 0,
+        written.expression = LeavesAsExpression({
+            LeafRule{
+                .type = LeafRule::Type::String,
+                .columnKeys = {"service"},
+                .matchType = LeafRule::Match::Contains,
                 .filterString = "auth",
-                .matchType = LogConfiguration::LogFilter::Match::Contains,
-            }
-        );
+            },
+        });
         written.anchors.push_back(
             LogConfiguration::AnchorEntry{.locator = "c:/logs/one.json", .lineId = 42u, .colorIndex = 1u}
         );
@@ -2125,7 +2222,7 @@ TEST_CASE(
     CHECK(config.highlightRules.size() == 1);
     CHECK(config.highlightRules[0].name == "auth service");
 
-    CHECK(config.filters.empty());
+    CHECK(IsMatchAll(config.expression));
     CHECK_FALSE(config.source.has_value());
     CHECK(config.anchors.empty());
 }

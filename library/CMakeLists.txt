@@ -47,6 +47,7 @@ add_library(
     src/log_line.cpp
     src/log_processing.cpp
     src/log_table.cpp
+    src/query_parser.cpp
     src/parsers/csv_parser.cpp
     src/parsers/json_parser.cpp
     src/parsers/logfmt_parser.cpp

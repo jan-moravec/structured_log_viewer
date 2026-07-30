@@ -68,6 +68,7 @@
      <string>Filters</string>
     </property>
     <addaction name="actionAddFilter"/>
+    <addaction name="actionAdvancedFilter"/>
     <addaction name="actionClearAllFilters"/>
     <addaction name="separator"/>
    </widget>
@@ -213,6 +214,20 @@
    </property>
    <property name="toolTip">
     <string>Add a new filter rule. Click the arrow for a per-column shortcut that preselects the filter type.</string>
+   </property>
+  </action>
+  <action name="actionAdvancedFilter">
+   <property name="text">
+    <string>Advanced Filter...</string>
+   </property>
+   <property name="iconText">
+    <string>Advanced Filter</string>
+   </property>
+   <property name="toolTip">
+    <string>Open the text-query editor for boolean filter expressions (AND / OR / NOT, parentheses, ranges).</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+Shift+F</string>
    </property>
   </action>
   <action name="actionShow">

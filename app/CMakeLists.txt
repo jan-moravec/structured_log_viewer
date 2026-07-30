@@ -46,6 +46,8 @@ set(PROJECT_SOURCES
     include/level_cell_delegate.hpp
     src/log_string_matcher.cpp
     include/log_string_matcher.hpp
+    src/leaf_rule_compile.cpp
+    include/leaf_rule_compile.hpp
     src/highlight_rule_set.cpp
     include/highlight_rule_set.hpp
     src/highlight_rules_editor.cpp
@@ -58,6 +60,10 @@ set(PROJECT_SOURCES
     include/row_order_proxy_model.hpp
     src/filter_editor.cpp
     include/filter_editor.hpp
+    src/advanced_filter_editor.cpp
+    include/advanced_filter_editor.hpp
+    src/advanced_filter_highlighter.cpp
+    include/advanced_filter_highlighter.hpp
     src/preferences_editor.cpp
     include/preferences_editor.hpp
     src/theme_control.cpp

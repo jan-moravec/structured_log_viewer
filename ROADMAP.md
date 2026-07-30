@@ -132,19 +132,9 @@ Each of the ten items below closes a gap that reviewers and first-time users rou
 
 **Status: shipped.** Each anchor now carries an optional one-line `note` alongside its colour. Surfaces: the `AnchorsDock` second column (inline-editable, `F2` / double-click), the `RecordDetailDock` italic subline (with the note included in **Copy as key/value** as a synthetic `anchor.note:` prefix line), and the row tooltip. The row right-click **Anchor** sub-menu gains an **Edit note…** entry; `F4` on a focused anchored row opens the same editor (guarded against firing while a text editor holds focus so an in-flight edit is never dropped). Notes round-trip through `LogConfiguration::AnchorEntry` (a new `note` field), and `error_on_unknown_keys=false` keeps sessions saved by pre-note builds loading cleanly with empty notes. Notes are one-line by contract — CR / LF / tab collapse to a single space and edge whitespace is trimmed on write, enforced by `AnchorManager::SanitiseNote`. See [doc/README.md → Anchor notes](doc/README.md#anchor-notes) for the user-facing shape.
 
-### 5. Boolean filter expressions (AND / OR / NOT)
+### 5. ~~Boolean filter expressions (AND / OR / NOT)~~
 
-**Why.** Today filters compose with implicit AND only. Klogg, LogViewPlus, QLogExplorer, Logan all support boolean composition (`(service=auth OR service=db) AND level>=warn AND NOT message~heartbeat`). For incident triage on a noisy log the difference is qualitative.
-
-**Scope.** A small expression tree on top of the existing per-column rules. The default UX stays "click + to add another AND rule" (today's behaviour); a new **Advanced…** button in the Filters editor reveals a tree view where the user can introduce OR groups and NOT wrappers. The text input also accepts a tiny query syntax (`level:error AND (service:auth OR service:db) AND NOT msg:heartbeat`) so power users can type instead of click.
-
-**Non-goals (v1).** Cross-row predicates (e.g. "rows where the previous row was an error"), aggregates (covered by item 21's SQL path), saved expression presets (item 12).
-
-**Approach.** Introduce `loglib::FilterExpression` as a variant of `LeafRule` / `And` / `Or` / `Not`. The existing `LogConfiguration::LogFilter` becomes the leaf type. `LogFilterModel` evaluates the tree per row instead of looping rules. The Glaze meta degrades gracefully: an old "flat list of filters" loads as an AND-of-leaves; the new shape adds an optional `expression` field that, when present, wins over `filters`.
-
-**Acceptance bar.** Existing benchmarks ([`benchmark_log_filter.cpp`](test/lib/src/benchmark_log_filter.cpp)) regress by no more than 5 %. Filter-editor round-trip preserves expressions byte-identically. The text-syntax parser has a fuzz target.
-
-**Touches.** `loglib`: new `filter_expression.hpp` / `.cpp`, extend `LogConfiguration`, extend `LogFilterModel` evaluation. `app`: `filter_editor.cpp` gains the Advanced tree view, the text-syntax parser.
+**Status: shipped.** Filters now compose as a full boolean tree (`loglib::FilterExpression` = `Leaf` / `And` / `Or` / `Not`). The default simple-mode UX stays "click + to add another AND rule"; a new **Filters -> Advanced Filter…** action opens the `AdvancedFilterEditor`, a text-first dialog backed by a hand-rolled recursive-descent parser (`library/src/query_parser.cpp`, grammar in `library/include/loglib/query_parser.hpp`). Queries look like `level in [Warn, Error] AND (service:auth OR service:db) AND NOT msg~/heartbeat/`; every keystroke reparses and the OK button gates on a clean parse. Evaluation goes through `CompiledFilterExpression`, which sorts children cheap-first (`EstimatedLeafCost`) and picks between a per-row visit path and a **bitset-materialisation fast path** (packed `RowBitset` per unique leaf, folded with word-parallel AND/OR/NOT). The bitset path engages for trees containing `OR` or `NOT` with at least two leaves, subject to a 512 MiB memory budget; flat `And` trees stay on the short-circuiting visit path. `LogConfiguration::filters` is gone; on-disk the field is `expression` (internally tagged variants under a `kind` discriminator). See [doc/README.md -> Advanced filter query syntax](doc/README.md#advanced-filter-query-syntax) for the user-facing shape.
 
 ### 6. Multi-line records (stack traces and continuation lines)
 
@@ -353,7 +343,7 @@ Reference snapshot from the survey that informed the roadmap (June 2026). `✓` 
 | Per-row colouring by level                  |        ✓         |     ✓     |       |     ~     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
 | User-defined highlight rules                |                  |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |           |   ✓   |
 | Bookmarks with notes / comments             |        ✓         |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |     ~     |   ✓   |
-| Boolean filter expressions (AND / OR / NOT) |  partial (AND)   |     ✓     |   ✓   |     ✓     |      ✓      |         |      ✓       |     ~     |   ✓   |
+| Boolean filter expressions (AND / OR / NOT) |        ✓         |     ✓     |   ✓   |     ✓     |      ✓      |         |      ✓       |     ~     |   ✓   |
 | Per-column / per-cell scoped filters        |        ✓         |     ✓     |       |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
 | Saved / named filter or query presets       |  ~ session only  |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
 | Histogram / activity timeline               |                  |     ✓     |       |     ~     |      ✓      |         |              |           |   ✓   |

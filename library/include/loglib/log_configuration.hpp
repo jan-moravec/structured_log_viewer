@@ -1,5 +1,7 @@
 #pragma once
 
+#include "loglib/filter_expression.hpp"
+
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -77,56 +79,9 @@ struct LogConfiguration
         bool autoDetect = true;
     };
 
-    struct LogFilter
-    {
-        enum class Type
-        {
-            String,
-            Time,
-            /// Multi-select over an enum column. Persisted as strings,
-            /// resolved to an id bitset at rule construction.
-            Enumeration,
-            /// Inclusive numeric range over `Integer`/`Floating`/`Number`
-            /// columns. Carried in `filterMinValue`/`filterMaxValue`
-            /// (either may be `nullopt` for unbounded).
-            Number,
-            /// True/false multi-select for `Type::Boolean` columns.
-            /// `filterValues` is a subset of {"true","false"}; empty
-            /// rejects every row.
-            Boolean
-        };
-
-        enum class Match
-        {
-            Exactly,
-            Contains,
-            RegularExpression,
-            Wildcard
-        };
-
-        /// Defaults make a default-constructed `LogFilter` inert:
-        /// `row = -1` is rejected by `ValidateFilterAgainstColumns`,
-        /// and `String` is the most permissive type.
-        Type type = Type::String;
-        int row = -1;
-        std::optional<std::string> filterString;
-        std::optional<Match> matchType;
-        std::optional<int64_t> filterBegin;
-        std::optional<int64_t> filterEnd;
-        /// Inclusive lower bound for `Type::Number`. `nullopt` means
-        /// unbounded (-inf).
-        std::optional<double> filterMinValue;
-        /// Inclusive upper bound for `Type::Number`. `nullopt` means
-        /// unbounded (+inf).
-        std::optional<double> filterMaxValue;
-        /// Selected values for `Type::Enumeration` and `Type::Boolean`.
-        /// Empty otherwise.
-        std::vector<std::string> filterValues;
-    };
-
     /// Persisted sort. `columnIndex == -1` means "no sort applied";
     /// positive indices index `columns` and are remapped by
-    /// `MoveColumn` alongside `filters[*].row`.
+    /// `MoveColumn`.
     struct Sort
     {
         int columnIndex = -1;
@@ -226,29 +181,19 @@ struct LogConfiguration
     /// column additions. Unresolvable rules are inert at match
     /// time (editor greys them out).
     ///
-    /// The `type` / `matchType` / `filter*` fields mirror
-    /// `LogFilter` so the `MakeStringMatcher` factory is shared.
-    /// Rules apply in vector order, last match wins per row.
+    /// The `type` / `matchType` / `filter*` fields mirror `LeafRule`
+    /// so the shared `CompileLeaf` step applies uniformly to
+    /// filters and highlight rules (the app-side compile builds a
+    /// `LeafRule` shim from `HighlightRule` and passes it to the
+    /// same factory). Rules apply in vector order, last match wins
+    /// per row.
     struct HighlightRule
     {
-        /// Mirrors `LogFilter::Type`; append at the end, never
-        /// reorder or remove.
-        enum class Type
-        {
-            String,
-            Time,
-            Enumeration,
-            Number,
-            Boolean
-        };
-
-        enum class Match
-        {
-            Exactly,
-            Contains,
-            RegularExpression,
-            Wildcard
-        };
+        /// Aliased so filter-side and highlight-side rules share a
+        /// single canonical `Type` / `Match` enum without changing
+        /// the on-disk JSON.
+        using Type = loglib::LeafRule::Type;
+        using Match = loglib::LeafRule::Match;
 
         /// User-visible label. Free-form.
         std::string name;
@@ -285,7 +230,15 @@ struct LogConfiguration
 
     /// Session-only fields; default-valued when the file on disk is a
     /// columns-only configuration.
-    std::vector<LogFilter> filters;
+    ///
+    /// `expression` is the single boolean tree that drives the
+    /// filter view. Default-constructed `FilterExpression` is an
+    /// empty `And` node -- i.e. "match every row" -- so an unfilled
+    /// session is a plain view. Leaves bind columns by
+    /// `LeafRule::columnKeys` (durable across `MoveColumn` and
+    /// cross-source apply), which is why `MoveColumn` no longer
+    /// remaps filter row indices.
+    FilterExpression expression;
     Sort sort;
     std::optional<Source> source;
 
@@ -391,9 +344,11 @@ public:
     /// Non-mutating count of fresh columns `AppendKeys(newKeys)` would add.
     size_t CountAppendableKeys(const std::vector<std::string> &newKeys) const;
 
-    /// Move the column at @p srcIndex to @p destIndex. Also runs
-    /// every `LogConfiguration::filters[*].row` through the same
-    /// permutation so persisted filters follow the column.
+    /// Move the column at @p srcIndex to @p destIndex.
+    /// `LogConfiguration::expression` binds leaves by column keys,
+    /// so no filter remap is required here -- rules follow their
+    /// column across reorders automatically. `sort.columnIndex`
+    /// still tracks the moved column and is remapped in step.
     void MoveColumn(size_t srcIndex, size_t destIndex);
 
     /// Flip the type of the column at @p columnIndex; caller
@@ -429,10 +384,11 @@ public:
     /// back-fill walks the rows but matches nothing. No-op out of range.
     void SetColumnParseFormats(size_t columnIndex, std::vector<std::string> parseFormats);
 
-    /// Replace `LogConfiguration::filters` wholesale. The app
-    /// mirrors its runtime filter map through this before `Save` and
-    /// before `MoveColumn`'s row remap.
-    void SetFilters(std::vector<LogConfiguration::LogFilter> filters);
+    /// Replace `LogConfiguration::expression` wholesale. The app
+    /// mirrors its runtime expression tree through this before
+    /// `Save` and after every user edit in the simple / Advanced
+    /// filter editors.
+    void SetExpression(FilterExpression expression);
 
     /// Replace `LogConfiguration::sort`. Called by the session-state
     /// mirror before a `Full` save.
@@ -445,8 +401,8 @@ public:
     void SetAnchors(std::vector<LogConfiguration::AnchorEntry> anchors);
 
     /// Replace `LogConfiguration::highlightRules` wholesale. Rules
-    /// bind by column keys, so (unlike `SetFilters`) no
-    /// `MoveColumn` remap is needed afterwards.
+    /// bind by column keys, so no `MoveColumn` remap is needed
+    /// afterwards.
     void SetHighlightRules(std::vector<LogConfiguration::HighlightRule> rules);
 
     /// Apply `(srcIndex -> destIndex)` to a stored column index.

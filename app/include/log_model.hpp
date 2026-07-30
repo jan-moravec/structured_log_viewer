@@ -261,8 +261,8 @@ public:
 
     /// Move column @p srcIndex to @p destIndex (absolute final
     /// position, not Qt's "insert before"). Emits `columnsMoved`
-    /// and remaps `LogFilter::row` so saved filters follow the
-    /// column. Returns `true` on success.
+    /// column. Filters bind by `columnKeys`, so no explicit remap
+    /// is needed. Returns `true` on success.
     bool MoveColumn(int srcIndex, int destIndex);
 
     /// Tell the view to refresh its column structure after an
