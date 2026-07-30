@@ -20,7 +20,7 @@ repos:
         types_or: [c, c++]
 
   - repo: https://github.com/BlankSpruce/gersemi-pre-commit
-    rev: 0.27.7
+    rev: 0.28.0
     hooks:
       - id: gersemi
         args: [--in-place, --line-length, "120", --no-warn-about-unknown-commands]
@@ -34,7 +34,7 @@ repos:
           - mdformat-footnote
 
   - repo: https://github.com/DavidAnson/markdownlint-cli2
-    rev: v0.23.1
+    rev: v0.23.2
     hooks:
       - id: markdownlint-cli2
 
