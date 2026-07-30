@@ -44,6 +44,39 @@ TEST_CASE("FileLineSource: RawLine returns CR-stripped per-line text", "[FileLin
     CHECK_THROWS_AS(source.RawLine(3), std::out_of_range);
 }
 
+// Multi-line records: `RawLine(headerId)` returns the joined bytes
+// (header + continuation frames). This is what `CopyLine` and
+// `RecordDetailDock` render, so Copy-then-paste of a Java stack
+// trace round-trips the full record.
+TEST_CASE("FileLineSource: RawLine returns joined bytes for multi-line records", "[FileLineSource][multiline]")
+{
+    const TestLogFile testLogFile;
+    testLogFile.Write(
+        "ERROR NullPointerException at Foo\n"
+        "\tat com.example.A.foo(A.java:10)\n"
+        "\tat com.example.B.bar(B.java:20)\n"
+        "INFO next record\n"
+    );
+    auto logFile = testLogFile.CreateLogFile();
+    logFile->RegisterMultiLineRecord(0, 2);
+
+    FileLineSource source(std::move(logFile));
+
+    // Header line's RawLine covers the whole three-line record.
+    CHECK(
+        source.RawLine(0)
+        == "ERROR NullPointerException at Foo\n"
+           "\tat com.example.A.foo(A.java:10)\n"
+           "\tat com.example.B.bar(B.java:20)"
+    );
+    // Continuation lines still return their own bytes (needed by any
+    // per-physical-line code path — histogram, overview rail, ...).
+    CHECK(source.RawLine(1) == "\tat com.example.A.foo(A.java:10)");
+    CHECK(source.RawLine(2) == "\tat com.example.B.bar(B.java:20)");
+    // The next header is unaffected.
+    CHECK(source.RawLine(3) == "INFO next record");
+}
+
 TEST_CASE("FileLineSource: ResolveMmapBytes indexes into the mmap data", "[FileLineSource]")
 {
     const TestLogFile testLogFile;
