@@ -1232,3 +1232,163 @@ TEST_CASE("EstimatedLeafCost: cheaper predicates rank below string predicates", 
     CHECK(timeCost < numericCost);
     CHECK(numericCost < stringCost);
 }
+
+// -----------------------------------------------------------------------
+// Bitset-path degenerate-node coverage.
+//
+// The tests above (`bitset materialisation matches visit-path`) drive
+// the fast path with a fully-populated tree. These add degenerate
+// interior nodes -- empty `And{}`, empty `Or{}`, and `Not{child=null}`
+// nested inside a two-plus-leaf `Or` -- so `EvaluateExpressionBitset`
+// takes the `FillTrue` / zero-init branches at
+// `library/src/log_filter.cpp:722-724` / `:740-741` / `:760-762`.
+// Every test picks a rowCount that isn't a multiple of `WORD_BITS`
+// (64), so `MaskTail` also has to work for the `Count()`/`CollectInto`
+// helpers to return the right number of rows.
+//
+// Eligibility check (`ShouldUseBitsetPath`, log_filter.cpp:495-517):
+//   rowCount >= 1 AND leafCount >= 2 AND (hasOr OR hasNot).
+// Every tree below uses two enum leaves next to the degenerate node,
+// so the sibling leaves force `leafCount >= 2` even when the
+// degenerate node contributes no leaves of its own (empty `And{}`
+// contributes 0; a null-child `Not` contributes 0 too).
+// -----------------------------------------------------------------------
+
+TEST_CASE("FilterAcceptedRows: bitset path handles an empty And{} nested inside Or", "[log_filter][expression][bitset]")
+{
+    // 100 rows -> `rowCount` isn't a multiple of `WORD_BITS`; the
+    // tail-mask branch of `MaskTail` must fire on `FillTrue`.
+    const TestLogFile fixture("log_filter_bitset_empty_and.json");
+    fixture.Write("");
+    const LogTable table = BuildEnumTable(fixture, "category", {"a", "b", "c"}, 100);
+    REQUIRE(table.RowCount() == 100);
+
+    CompiledFilterExpression emptyAnd;
+    emptyAnd.node = CompiledFilterExpression::And{};
+
+    std::vector<CompiledFilterExpression> orChildren;
+    orChildren.push_back(std::move(emptyAnd));
+    // Two concrete leaves force `leafCount >= 2` so `ShouldUseBitsetPath`
+    // engages regardless of the empty-`And` sibling.
+    orChildren.push_back(MakeEnumLeaf(table, 0, {"a"}));
+    orChildren.push_back(MakeEnumLeaf(table, 0, {"b"}));
+    const CompiledFilterExpression expr = MakeCompiledOr(std::move(orChildren));
+
+    const std::vector<size_t> accepted = FilterAcceptedRows(table, expr);
+    // Empty `And{}` is match-all; `Or` with a match-all child
+    // reduces to match-all -- every row survives.
+    CHECK(accepted.size() == table.RowCount());
+}
+
+TEST_CASE("FilterAcceptedRows: bitset path handles an empty Or{} nested inside Or", "[log_filter][expression][bitset]")
+{
+    const TestLogFile fixture("log_filter_bitset_empty_or.json");
+    fixture.Write("");
+    const LogTable table = BuildEnumTable(fixture, "category", {"a", "b", "c"}, 100);
+
+    CompiledFilterExpression emptyOr = MakeCompiledOr({});
+
+    std::vector<CompiledFilterExpression> orChildren;
+    orChildren.push_back(std::move(emptyOr));
+    orChildren.push_back(MakeEnumLeaf(table, 0, {"a"}));
+    orChildren.push_back(MakeEnumLeaf(table, 0, {"b"}));
+    const CompiledFilterExpression expr = MakeCompiledOr(std::move(orChildren));
+
+    const std::vector<size_t> accepted = FilterAcceptedRows(table, expr);
+    // Empty `Or{}` is match-none; the outer `Or` collapses to
+    // `leafA OR leafB`. Vocabulary cycles {a,b,c}, so ~2/3 of the
+    // 100 rows accept.
+    std::vector<size_t> reference;
+    for (size_t row = 0; row < table.RowCount(); ++row)
+    {
+        const size_t value = row % 3;
+        if (value == 0 || value == 1)
+        {
+            reference.push_back(row);
+        }
+    }
+    CHECK(accepted == reference);
+}
+
+TEST_CASE(
+    "FilterAcceptedRows: bitset path handles Not{child=null} nested inside Or", "[log_filter][expression][bitset]"
+)
+{
+    const TestLogFile fixture("log_filter_bitset_null_not.json");
+    fixture.Write("");
+    const LogTable table = BuildEnumTable(fixture, "category", {"a", "b", "c"}, 100);
+
+    // Direct-construct a `Not` with a null child. The compile
+    // factory always seeds `child`, so this shape only reaches the
+    // bitset path via hand-built or test-only trees; we still
+    // want the two evaluators to agree on the "match-all" verdict.
+    CompiledFilterExpression bareNullNot;
+    bareNullNot.node = CompiledFilterExpression::Not{};
+
+    std::vector<CompiledFilterExpression> orChildren;
+    orChildren.push_back(std::move(bareNullNot));
+    orChildren.push_back(MakeEnumLeaf(table, 0, {"a"}));
+    orChildren.push_back(MakeEnumLeaf(table, 0, {"b"}));
+    const CompiledFilterExpression expr = MakeCompiledOr(std::move(orChildren));
+
+    const std::vector<size_t> accepted = FilterAcceptedRows(table, expr);
+    // Null-child `Not` decodes as match-all in the bitset path (same
+    // rule as the visit path in `EvaluateExpression`). OR with
+    // match-all is match-all.
+    CHECK(accepted.size() == table.RowCount());
+}
+
+TEST_CASE(
+    "FilterAcceptedRows: bitset path respects MaskTail on a non-64-aligned rowCount", "[log_filter][expression][bitset]"
+)
+{
+    // 130 rows -> two full words (128 bits) plus 2 tail bits. If
+    // `MaskTail` under-masks (leaves the high tail bits of the last
+    // word set), `Count()` and `CollectInto` would report rows >=
+    // rowCount, which the `assert(row < mRowCount)` in `CollectInto`
+    // would trip.
+    const TestLogFile fixture("log_filter_bitset_mask_tail.json");
+    fixture.Write("");
+    const LogTable table = BuildEnumTable(fixture, "category", {"a", "b"}, 130);
+    REQUIRE(table.RowCount() == 130);
+
+    // `Or` of two leaves picks up hasOr, and the enum vocabulary
+    // {a,b} means the union covers every row.
+    std::vector<CompiledFilterExpression> orChildren;
+    orChildren.push_back(MakeEnumLeaf(table, 0, {"a"}));
+    orChildren.push_back(MakeEnumLeaf(table, 0, {"b"}));
+    const CompiledFilterExpression expr = MakeCompiledOr(std::move(orChildren));
+
+    const std::vector<size_t> accepted = FilterAcceptedRows(table, expr);
+    CHECK(accepted.size() == 130);
+    // Sanity: no row index leaked past the table bound. A missing
+    // `MaskTail` on `FillTrue` would surface here (up to 62 spurious
+    // rows past the end on the last word).
+    CHECK(accepted.back() == 129);
+}
+
+TEST_CASE(
+    "FilterAcceptedRows: empty table returns no rows without engaging either evaluator path", "[log_filter][expression]"
+)
+{
+    // Zero-row short-circuit at `log_filter.cpp:832-834`: neither
+    // the visit nor the bitset path can produce a row, so the
+    // caller returns an empty vector immediately. Not a bitset-
+    // path test per se, but it's the sibling degenerate case that
+    // pins the top-level early-out.
+    const TestLogFile fixture("log_filter_empty_table.json");
+    fixture.Write("");
+    // `BuildEnumTable` with 0 rows still sets up the columns and
+    // dictionary; the table has zero data rows.
+    const LogTable table = BuildEnumTable(fixture, "category", {"a", "b"}, 0);
+    REQUIRE(table.RowCount() == 0);
+
+    std::vector<CompiledFilterExpression> orChildren;
+    orChildren.push_back(MakeEnumLeaf(table, 0, {"a"}));
+    orChildren.push_back(MakeEnumLeaf(table, 0, {"b"}));
+    const CompiledFilterExpression expr = MakeCompiledOr(std::move(orChildren));
+    REQUIRE_FALSE(IsMatchAllCompiled(expr));
+
+    const std::vector<size_t> accepted = FilterAcceptedRows(table, expr);
+    CHECK(accepted.empty());
+}
