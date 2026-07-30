@@ -19,6 +19,8 @@ RegexTemplate MakeExampleTemplate()
     t.autoDetect = true;
     t.priority = 25;
     t.description = "Hand-written for the round-trip test.";
+    t.continuationMode = ContinuationMode::Indented;
+    t.headerAnchor = R"(^\w+)";
     return t;
 }
 
@@ -39,6 +41,23 @@ TEST_CASE("RegexTemplate JSON round-trip preserves every field", "[regex_templat
     CHECK(reloaded.autoDetect == original.autoDetect);
     CHECK(reloaded.priority == original.priority);
     CHECK(reloaded.description == original.description);
+    CHECK(reloaded.continuationMode == original.continuationMode);
+    CHECK(reloaded.headerAnchor == original.headerAnchor);
+}
+
+TEST_CASE("ContinuationMode name / parse helpers round-trip", "[regex_templates][io]")
+{
+    // Wire spelling must stay stable: JSON files carrying these
+    // exact strings must keep loading forever.
+    CHECK(ContinuationModeName(ContinuationMode::None) == "none");
+    CHECK(ContinuationModeName(ContinuationMode::Indented) == "indented");
+    CHECK(ContinuationModeName(ContinuationMode::UntilNextHeader) == "untilNextHeader");
+
+    CHECK(ParseContinuationMode("none") == ContinuationMode::None);
+    CHECK(ParseContinuationMode("indented") == ContinuationMode::Indented);
+    CHECK(ParseContinuationMode("untilNextHeader") == ContinuationMode::UntilNextHeader);
+    CHECK_FALSE(ParseContinuationMode("bogus").has_value());
+    CHECK_FALSE(ParseContinuationMode("").has_value());
 }
 
 TEST_CASE("RegexTemplate JSON parse fills defaults for absent fields", "[regex_templates][io]")
@@ -61,6 +80,10 @@ TEST_CASE("RegexTemplate JSON parse fills defaults for absent fields", "[regex_t
     CHECK(parsed.autoDetect == true);
     CHECK(parsed.priority == USER_TEMPLATE_DEFAULT_PRIORITY);
     CHECK(parsed.description.empty());
+    // Pre-multi-line JSON must default to the safe single-line
+    // behaviour so existing user templates keep parsing unchanged.
+    CHECK(parsed.continuationMode == ContinuationMode::None);
+    CHECK(parsed.headerAnchor.empty());
 }
 
 TEST_CASE("RegexTemplate JSON parse tolerates unknown keys", "[regex_templates][io]")

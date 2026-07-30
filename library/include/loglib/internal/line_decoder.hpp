@@ -20,11 +20,20 @@ namespace loglib::internal
 ///    The loop still advances the line-number cursor.
 ///  - `Error`: emit no row; the loop wraps @p errorOut as
 ///    "Error on line N: ...".
+///  - `Continue`: append this line's raw bytes to the prior record's
+///    last column, do not emit a new row. Opt-in per decoder (Regex
+///    and Logfmt in v1; JSON / CSV never return it). If no prior
+///    record exists (`Continue` before any `Emit`), the loop
+///    surfaces "Error on line N: Orphaned continuation line." via
+///    the existing error path. Interacts with `Skip` only through
+///    ordering (CSV's header prelude runs before any `Continue`
+///    could arrive; the two never coexist inside one line).
 enum class LineDecodeResult : uint8_t
 {
     Emit,
     Skip,
     Error,
+    Continue,
 };
 
 /// Format-specific record decoder for the streaming pipeline.

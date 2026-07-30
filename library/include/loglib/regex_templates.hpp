@@ -17,6 +17,44 @@ namespace loglib
 /// creating a fresh draft, so the two never drift.
 inline constexpr int USER_TEMPLATE_DEFAULT_PRIORITY = 100;
 
+/// How the template treats lines that do not match its `pattern`.
+///
+///  - `None` (default; back-compat): unmatched line becomes a parse
+///    error via `LineDecodeResult::Error`.
+///  - `Indented`: line whose first byte is whitespace (` ` or `\t`)
+///    is a continuation of the prior record, appended to the last
+///    named group's captured text via `LineDecodeResult::Continue`.
+///    Cheap O(1) check; covers Java / Python / Go / Node stack
+///    traces (all indented).
+///  - `UntilNextHeader`: line that does not match the pattern with
+///    `PCRE2_ANCHORED | PCRE2_PARTIAL_HARD` is a continuation. Used
+///    for formats whose continuation lines mix indented and
+///    un-indented text (Python "During handling of the above
+///    exception, another exception occurred:"). Adds a cheap
+///    anchored PCRE2 match per line; measured by a dedicated
+///    `[regex][large]` benchmark.
+///
+/// When set to a non-`None` value, the template must end on a
+/// string-typed named capture group; that group is the target for
+/// appended continuation bytes.
+enum class ContinuationMode : uint8_t
+{
+    None = 0,
+    Indented,
+    UntilNextHeader,
+};
+
+/// Serialised name for @p mode (JSON string value). Returns
+/// `"none"` / `"indented"` / `"untilNextHeader"`. Used by the Glaze
+/// meta for `RegexTemplate` and by the app-side editor's picker.
+[[nodiscard]] std::string_view ContinuationModeName(ContinuationMode mode) noexcept;
+
+/// Parse the JSON string spelling of a continuation mode. Returns
+/// `std::nullopt` for unknown spellings so a caller (Glaze reader
+/// or CLI) can raise a specific "unknown continuation mode" error
+/// rather than silently defaulting.
+[[nodiscard]] std::optional<ContinuationMode> ParseContinuationMode(std::string_view name) noexcept;
+
 /// A named PCRE2 pattern that splits one log line into columns via
 /// named capture groups.
 ///
@@ -74,6 +112,23 @@ struct RegexTemplate
     /// licence citations. Empty for user templates that need
     /// neither.
     std::string description;
+    /// Multi-line handling for lines that do not match `pattern`.
+    /// See `ContinuationMode` for the modes. Defaults to `None`
+    /// so older JSON files (missing the field) keep the shipped
+    /// single-line behaviour verbatim. When set to a non-`None`
+    /// value, the pattern's last named capture group must be
+    /// string-typed — parse-load validation enforces this before
+    /// the pipeline runs.
+    ContinuationMode continuationMode = ContinuationMode::None;
+    /// Optional PCRE2 pattern used as the "header anchor" when
+    /// `continuationMode == UntilNextHeader`. Empty means "reuse
+    /// `pattern` with `PCRE2_ANCHORED | PCRE2_PARTIAL_HARD`" (the
+    /// default, and the shipped path for the Java template).
+    /// Setting a small dedicated header regex here can be cheaper
+    /// than the anchored-partial match against the full pattern
+    /// for patterns with expensive tails. Ignored when
+    /// `continuationMode != UntilNextHeader`.
+    std::string headerAnchor;
 };
 
 /// Parse a single regex-template JSON document. Throws
