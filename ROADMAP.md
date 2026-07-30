@@ -14,7 +14,7 @@ For the architecture each item plugs into, see [CONTRIBUTING.md → Architecture
   - [2. ~~Histogram / activity-rate strip~~ (shipped)](#2-histogram--activity-rate-strip)
   - [3. ~~User-defined highlight rules~~ (shipped)](#3-user-defined-highlight-rules)
   - [4. ~~Bookmark notes on anchors~~ (shipped)](#4-bookmark-notes-on-anchors)
-  - [5. Boolean filter expressions (AND / OR / NOT)](#5-boolean-filter-expressions-and--or--not)
+  - [5. ~~Boolean filter expressions (AND / OR / NOT)~~ (shipped)](#5-boolean-filter-expressions-and--or--not)
   - [6. Multi-line records (stack traces and continuation lines)](#6-multi-line-records-stack-traces-and-continuation-lines)
   - [7. Export filtered rows](#7-export-filtered-rows)
   - [8. ~~Goto line / Goto timestamp~~ (shipped)](#8-goto-line--goto-timestamp)
@@ -337,17 +337,17 @@ Reference snapshot from the survey that informed the roadmap (June 2026). `✓` 
 | Log rotation handling                       |        ✓         |     ✓     |   ~   |     ✓     |      ✓      |    ~    |      ✓       |     ~     |   ~   |
 | Network ingestion (TCP / UDP)               |        ✓         |     ~     |       |           |             |    ✓    |              |           |       |
 | TLS for network ingestion                   |        ✓         |           |       |           |             |         |              |           |       |
-| Compressed file (gz / bz2 / zst / zip)      |                  |     ✓     |   ~   |           |      ✓      |    ✓    |              |     ~     |       |
+| Compressed file (gz / bz2 / zst / zip)      |        ✓         |     ✓     |   ~   |           |      ✓      |    ✓    |              |     ~     |       |
 | Pulling rotated history off disk            |                  |     ✓     |       |           |             |    ~    |              |           |       |
 | stdin / pipe input                          |                  |     ✓     |   ✓   |           |             |         |              |           |   ~   |
 | Per-row colouring by level                  |        ✓         |     ✓     |       |     ~     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
-| User-defined highlight rules                |                  |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |           |   ✓   |
+| User-defined highlight rules                |        ✓         |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |           |   ✓   |
 | Bookmarks with notes / comments             |        ✓         |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |     ~     |   ✓   |
 | Boolean filter expressions (AND / OR / NOT) |        ✓         |     ✓     |   ✓   |     ✓     |      ✓      |         |      ✓       |     ~     |   ✓   |
 | Per-column / per-cell scoped filters        |        ✓         |     ✓     |       |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
 | Saved / named filter or query presets       |  ~ session only  |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
-| Histogram / activity timeline               |                  |     ✓     |       |     ~     |      ✓      |         |              |           |   ✓   |
-| Match overview rail / minimap               |                  |           |   ✓   |           |             |         |              |           |   ✓   |
+| Histogram / activity timeline               |        ✓         |     ✓     |       |     ~     |      ✓      |         |              |           |   ✓   |
+| Match overview rail / minimap               |        ✓         |           |   ✓   |           |             |         |              |           |   ✓   |
 | Pretty-print JSON / XML inline              | ~ Record Details |     ✓     |       |           |      ✓      |    ✓    |      ✓       |           |   ✓   |
 | Multi-line records (stack traces)           |                  |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
 | Goto line / Goto timestamp                  |        ✓         |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |

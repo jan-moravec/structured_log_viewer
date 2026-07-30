@@ -21,7 +21,7 @@ if(NOT USE_SYSTEM_DATE)
     FetchContent_Declare(
         date
         GIT_REPOSITORY https://github.com/HowardHinnant/date.git
-        GIT_TAG v3.0.4
+        GIT_TAG v3.0.5
         SYSTEM
         EXCLUDE_FROM_ALL
     )
@@ -87,7 +87,7 @@ if(NOT USE_SYSTEM_CATCH2)
     FetchContent_Declare(
         Catch2
         GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-        GIT_TAG v3.15.2
+        GIT_TAG v3.15.3
         SYSTEM
         EXCLUDE_FROM_ALL
     )
@@ -129,7 +129,7 @@ if(NOT USE_SYSTEM_SIMDJSON)
     FetchContent_Declare(
         simdjson
         GIT_REPOSITORY https://github.com/simdjson/simdjson.git
-        GIT_TAG v4.6.4
+        GIT_TAG v4.6.5
         SYSTEM
         EXCLUDE_FROM_ALL
     )
