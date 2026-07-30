@@ -883,3 +883,912 @@ TEST_CASE("ParseQuery: NOT IN sugar wraps the IN leaf in NOT", "[query_parser]")
     const auto bad = ParseQuery("level not error");
     CHECK_FALSE(bad.has_value());
 }
+
+// ---------------------------------------------------------------------------
+// Additional coverage: lexer error paths, alternate token shapes, quoted /
+// regex escape sequences, parser error paths, operator+value combos, IN /
+// NOT error branches, and pretty-print variants. Aims to exhaust the
+// branches the "grammar happy path" suite above doesn't touch, so a
+// regression in any error message or classification stays a caught mistake
+// instead of a silent behaviour change.
+// ---------------------------------------------------------------------------
+
+// -- Lexer error paths -------------------------------------------------------
+
+TEST_CASE("ParseQuery: lexer rejects unexpected characters", "[query_parser][lexer][error]")
+{
+    // Every char that is neither an ident start, a digit, nor an
+    // operator/bracket/quote must fail with an "unexpected character"
+    // error carrying the offset. Covers the fallthrough at the end of
+    // `Lexer::Next`.
+    for (const std::string_view q : {"@val", "?val", "#val", "*val", "^val", "$val"})
+    {
+        CAPTURE(q);
+        const auto parsed = ParseQuery(q);
+        REQUIRE_FALSE(parsed.has_value());
+        CHECK(parsed.error().offset == 0);
+        CHECK(parsed.error().message.contains("unexpected"));
+    }
+}
+
+TEST_CASE("ParseQuery: unterminated quoted string is a lexer error", "[query_parser][lexer][error]")
+{
+    // Hits the fallthrough at the end of `LexQuoted` (no closing `"`).
+    const auto parsed = ParseQuery("service:\"unterm");
+    REQUIRE_FALSE(parsed.has_value());
+    CHECK(parsed.error().message.contains("unterminated"));
+}
+
+TEST_CASE("ParseQuery: unterminated regex literal is a lexer error", "[query_parser][lexer][error]")
+{
+    // Hits `NextRegex`'s "unterminated regex literal" fallthrough.
+    const auto parsed = ParseQuery("msg ~ /unterm");
+    REQUIRE_FALSE(parsed.has_value());
+    CHECK(parsed.error().message.contains("unterminated"));
+}
+
+TEST_CASE("ParseQuery: `~` without a `/` regex literal is a lexer error", "[query_parser][lexer][error]")
+{
+    // `NextRegex` starts by requiring `/`; anything else including EOI
+    // hits the "expected '/' to open regex literal" branch.
+    SECTION("bare `~` at EOI")
+    {
+        const auto parsed = ParseQuery("msg ~");
+        REQUIRE_FALSE(parsed.has_value());
+        CHECK(parsed.error().message.contains("regex literal"));
+    }
+    SECTION("`~` followed by a non-`/` token")
+    {
+        const auto parsed = ParseQuery("msg ~ err");
+        REQUIRE_FALSE(parsed.has_value());
+    }
+}
+
+// -- Lexer alternative token shapes -----------------------------------------
+
+TEST_CASE("ParseQuery: numeric one-sided `<` and `>` bounds", "[query_parser]")
+{
+    // Pins the strict vs inclusive contract on all four comparison
+    // ops; a semantic swap between `<` and `<=` would fail here.
+    SECTION("< is strict (below the inclusive bound)")
+    {
+        const auto expr = ParseOrFail("latency < 100");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        REQUIRE(leaf->filterMaxValue.has_value());
+        CHECK(*leaf->filterMaxValue < 100.0);
+        CHECK_FALSE(leaf->filterMinValue.has_value());
+    }
+    SECTION("< inherits the value from `<=` by one ULP")
+    {
+        const auto strict = ParseOrFail("latency < 100");
+        const auto inclusive = ParseOrFail("latency <= 100");
+        const LeafRule *strictLeaf = AsLeaf(strict);
+        const LeafRule *inclusiveLeaf = AsLeaf(inclusive);
+        REQUIRE(strictLeaf != nullptr);
+        REQUIRE(inclusiveLeaf != nullptr);
+        REQUIRE(strictLeaf->filterMaxValue.has_value());
+        REQUIRE(inclusiveLeaf->filterMaxValue.has_value());
+        CHECK(*strictLeaf->filterMaxValue < *inclusiveLeaf->filterMaxValue);
+    }
+    SECTION("> inherits the value from `>=` by one ULP")
+    {
+        const auto strict = ParseOrFail("latency > 100");
+        const auto inclusive = ParseOrFail("latency >= 100");
+        const LeafRule *strictLeaf = AsLeaf(strict);
+        const LeafRule *inclusiveLeaf = AsLeaf(inclusive);
+        REQUIRE(strictLeaf != nullptr);
+        REQUIRE(inclusiveLeaf != nullptr);
+        REQUIRE(strictLeaf->filterMinValue.has_value());
+        REQUIRE(inclusiveLeaf->filterMinValue.has_value());
+        CHECK(*strictLeaf->filterMinValue > *inclusiveLeaf->filterMinValue);
+    }
+}
+
+TEST_CASE("ParseQuery: time one-sided `<`, `<=`, `>`, `>=` bounds", "[query_parser]")
+{
+    SECTION("<= is inclusive")
+    {
+        const auto expr = ParseOrFail("ts <= 2024-01-02T00:00:00Z");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(leaf->type == LeafRule::Type::Time);
+        REQUIRE(leaf->filterEnd.has_value());
+        CHECK_FALSE(leaf->filterBegin.has_value());
+    }
+    SECTION("< shifts the end bound one microsecond earlier than `<=`")
+    {
+        const auto strict = ParseOrFail("ts < 2024-01-02T00:00:00Z");
+        const auto inclusive = ParseOrFail("ts <= 2024-01-02T00:00:00Z");
+        const LeafRule *strictLeaf = AsLeaf(strict);
+        const LeafRule *inclusiveLeaf = AsLeaf(inclusive);
+        REQUIRE(strictLeaf != nullptr);
+        REQUIRE(inclusiveLeaf != nullptr);
+        REQUIRE(strictLeaf->filterEnd.has_value());
+        REQUIRE(inclusiveLeaf->filterEnd.has_value());
+        CHECK(*strictLeaf->filterEnd == *inclusiveLeaf->filterEnd - 1);
+    }
+    SECTION("> shifts the begin bound one microsecond later than `>=`")
+    {
+        const auto strict = ParseOrFail("ts > 2024-01-02T00:00:00Z");
+        const auto inclusive = ParseOrFail("ts >= 2024-01-02T00:00:00Z");
+        const LeafRule *strictLeaf = AsLeaf(strict);
+        const LeafRule *inclusiveLeaf = AsLeaf(inclusive);
+        REQUIRE(strictLeaf != nullptr);
+        REQUIRE(inclusiveLeaf != nullptr);
+        REQUIRE(strictLeaf->filterBegin.has_value());
+        REQUIRE(inclusiveLeaf->filterBegin.has_value());
+        CHECK(*strictLeaf->filterBegin == *inclusiveLeaf->filterBegin + 1);
+    }
+}
+
+TEST_CASE("ParseQuery: signed numeric literals in comparisons", "[query_parser]")
+{
+    // `LexNumber` accepts a leading `+`/`-` when followed by a digit,
+    // so `col > -1.5` tokens as a single Number `- 1.5`.
+    SECTION("negative signed number")
+    {
+        const auto expr = ParseOrFail("delta > -1.5");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(leaf->type == LeafRule::Type::Number);
+        REQUIRE(leaf->filterMinValue.has_value());
+        CHECK(*leaf->filterMinValue > -1.5);
+    }
+    SECTION("positive signed number")
+    {
+        const auto expr = ParseOrFail("delta >= +2");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        REQUIRE(leaf->filterMinValue.has_value());
+        CHECK(*leaf->filterMinValue == 2.0);
+    }
+    SECTION("scientific notation")
+    {
+        const auto expr = ParseOrFail("delta >= 1e2");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        REQUIRE(leaf->filterMinValue.has_value());
+        CHECK(*leaf->filterMinValue == 100.0);
+    }
+}
+
+// -- Quoted string escape sequences -----------------------------------------
+
+TEST_CASE("ParseQuery: quoted string escape sequences", "[query_parser][lexer]")
+{
+    // One SECTION per arm of the `LexQuoted` switch (`"`, `\\`, `n`,
+    // `r`, `t`, default) so a swap between arms fails visibly.
+    SECTION("\\\" produces a literal quote")
+    {
+        const auto expr = ParseOrFail(R"(col=" a\"b ")");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(*leaf->filterString == " a\"b ");
+    }
+    SECTION("\\\\ produces a literal backslash")
+    {
+        const auto expr = ParseOrFail(R"(col="a\\b")");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(*leaf->filterString == "a\\b");
+    }
+    SECTION("\\n produces a newline")
+    {
+        const auto expr = ParseOrFail(R"(col="a\nb")");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(*leaf->filterString == "a\nb");
+    }
+    SECTION("\\r produces a carriage return")
+    {
+        const auto expr = ParseOrFail(R"(col="a\rb")");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(*leaf->filterString == "a\rb");
+    }
+    SECTION("\\t produces a tab")
+    {
+        const auto expr = ParseOrFail(R"(col="a\tb")");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(*leaf->filterString == "a\tb");
+    }
+    SECTION("unknown escape falls through to the literal char")
+    {
+        // `\x` isn't a defined escape; the default arm drops the `\\`
+        // and keeps the `x` verbatim.
+        const auto expr = ParseOrFail(R"(col="a\xb")");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(*leaf->filterString == "axb");
+    }
+}
+
+TEST_CASE("ParseQuery: regex literal escape sequences", "[query_parser][lexer]")
+{
+    SECTION("\\/ collapses to a literal `/` inside the body")
+    {
+        // Users need to match a `/` inside a path segment; the lexer
+        // must accept `\\/` as an escaped delimiter and hand `/` to
+        // the regex engine.
+        const auto expr = ParseOrFail("path ~ /etc\\/pass/");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(*leaf->filterString == "etc/pass");
+    }
+    SECTION("other backslash escapes are preserved verbatim")
+    {
+        // `\d` etc. are decoded by `QRegularExpression`, not by the
+        // lexer, so they must arrive with the backslash intact.
+        const auto expr = ParseOrFail("msg ~ /\\d+/");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(*leaf->filterString == "\\d+");
+    }
+}
+
+// -- Wildcard operator error paths ------------------------------------------
+
+TEST_CASE("ParseQuery: `%` without a pattern is a parse error", "[query_parser][error]")
+{
+    SECTION("bare `%` at EOI")
+    {
+        const auto parsed = ParseQuery("path%");
+        REQUIRE_FALSE(parsed.has_value());
+        CHECK(parsed.error().message.contains("wildcard"));
+    }
+    SECTION("`%` followed by an operator token")
+    {
+        const auto parsed = ParseQuery("path% >");
+        REQUIRE_FALSE(parsed.has_value());
+    }
+}
+
+TEST_CASE("ParseQuery: `%` accepts a bareword pattern", "[query_parser]")
+{
+    // `FinishStringLeaf` for `Wildcard` accepts both Quoted and Ident
+    // right-hand sides; the Ident arm was under-tested by the initial
+    // suite (only Quoted).
+    const auto expr = ParseOrFail("path% abc");
+    const LeafRule *leaf = AsLeaf(expr);
+    REQUIRE(leaf != nullptr);
+    CHECK(leaf->matchType == LeafRule::Match::Wildcard);
+    CHECK(*leaf->filterString == "abc");
+}
+
+// -- ISO timestamp shape variations -----------------------------------------
+
+TEST_CASE("ParseQuery: date-only ISO literal is accepted", "[query_parser]")
+{
+    // `TryLexIsoTimestamp` accepts bare `YYYY-MM-DD` without a `T`
+    // portion; the parser then lands at midnight UTC on that day.
+    const auto expr = ParseOrFail("ts >= 2024-01-02");
+    const LeafRule *leaf = AsLeaf(expr);
+    REQUIRE(leaf != nullptr);
+    CHECK(leaf->type == LeafRule::Type::Time);
+    REQUIRE(leaf->filterBegin.has_value());
+    const auto reference = ParseOrFail("ts >= 2024-01-02T00:00:00Z");
+    const LeafRule *refLeaf = AsLeaf(reference);
+    REQUIRE(refLeaf != nullptr);
+    REQUIRE(refLeaf->filterBegin.has_value());
+    CHECK(*leaf->filterBegin == *refLeaf->filterBegin);
+}
+
+TEST_CASE("ParseQuery: ISO timestamp accepts space separator between date and time", "[query_parser]")
+{
+    // `TryLexIsoTimestamp` matches on both `T` and space so the shape
+    // `FormatTimestampMicros` doesn't emit (space) is still safe to
+    // paste in.
+    const auto expr = ParseOrFail("ts >= 2024-01-02 03:04:05Z");
+    const LeafRule *leaf = AsLeaf(expr);
+    REQUIRE(leaf != nullptr);
+    CHECK(leaf->type == LeafRule::Type::Time);
+    REQUIRE(leaf->filterBegin.has_value());
+}
+
+TEST_CASE("ParseQuery: ISO timestamp fractional-second separators", "[query_parser]")
+{
+    SECTION("dot separator")
+    {
+        const auto expr = ParseOrFail("ts >= 2024-01-02T00:00:00.5Z");
+        REQUIRE(AsLeaf(expr) != nullptr);
+    }
+    SECTION("comma separator (ISO-8601 allows both)")
+    {
+        const auto expr = ParseOrFail("ts >= 2024-01-02T00:00:00,5Z");
+        REQUIRE(AsLeaf(expr) != nullptr);
+    }
+    SECTION("trailing digits past microsecond precision are ignored, not rejected")
+    {
+        const auto expr = ParseOrFail("ts >= 2024-01-02T00:00:00.1234567890Z");
+        REQUIRE(AsLeaf(expr) != nullptr);
+    }
+}
+
+TEST_CASE("ParseQuery: ISO timestamp timezone shapes", "[query_parser]")
+{
+    // `+HH`, `+HHMM`, `+HH:MM` all pin to the same instant when the
+    // offsets are numerically equal.
+    const auto colonForm = ParseOrFail("ts >= 2024-01-02T00:00:00+01:30");
+    const auto compactForm = ParseOrFail("ts >= 2024-01-02T00:00:00+0130");
+    const LeafRule *colonLeaf = AsLeaf(colonForm);
+    const LeafRule *compactLeaf = AsLeaf(compactForm);
+    REQUIRE(colonLeaf != nullptr);
+    REQUIRE(compactLeaf != nullptr);
+    REQUIRE(colonLeaf->filterBegin.has_value());
+    REQUIRE(compactLeaf->filterBegin.has_value());
+    CHECK(*colonLeaf->filterBegin == *compactLeaf->filterBegin);
+}
+
+TEST_CASE("ParseQuery: ISO timestamp rejects malformed time portion", "[query_parser][error]")
+{
+    for (const std::string_view q : {
+             "ts >= 2024-01-02T25:00:00Z", // hour 25
+             "ts >= 2024-01-02T00:1:00Z",  // 1-digit minute
+         })
+    {
+        CAPTURE(q);
+        const auto parsed = ParseQuery(q);
+        CHECK_FALSE(parsed.has_value());
+    }
+}
+
+TEST_CASE("ParseQuery: numeric literal with malformed prefix is a lexer error", "[query_parser][lexer][error]")
+{
+    // Bare `.` (without a leading digit and no `..` continuation) is
+    // an unexpected character; the sign-check in `Lexer::Next` needs a
+    // following digit to enter `LexNumber`.
+    for (const std::string_view q : {"latency=.", "latency=1..", "latency=+"})
+    {
+        CAPTURE(q);
+        const auto parsed = ParseQuery(q);
+        CHECK_FALSE(parsed.has_value());
+    }
+}
+
+// -- Parser: leaf `=` payload shapes ----------------------------------------
+
+TEST_CASE("ParseQuery: `=` payload alternatives", "[query_parser]")
+{
+    SECTION("bareword ident -> String Exactly")
+    {
+        // The Ident arm of `FinishEqLeaf` was under-tested by the
+        // initial suite (Quoted-only).
+        const auto expr = ParseOrFail("service=auth");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(leaf->type == LeafRule::Type::String);
+        CHECK(leaf->matchType == LeafRule::Match::Exactly);
+        CHECK(*leaf->filterString == "auth");
+    }
+    SECTION("`=false` becomes a Boolean leaf")
+    {
+        const auto expr = ParseOrFail("succeeded=false");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(leaf->type == LeafRule::Type::Boolean);
+        REQUIRE(leaf->filterValues.size() == 1);
+        CHECK(leaf->filterValues.front() == "false");
+    }
+    SECTION("no value after `=` errors")
+    {
+        const auto parsed = ParseQuery("service=");
+        REQUIRE_FALSE(parsed.has_value());
+        CHECK(parsed.error().message.contains("value after '='"));
+    }
+    SECTION("operator token after `=` errors")
+    {
+        const auto parsed = ParseQuery("service= (");
+        REQUIRE_FALSE(parsed.has_value());
+    }
+}
+
+TEST_CASE("ParseQuery: `:` payload alternatives", "[query_parser]")
+{
+    SECTION("number payload becomes a String Contains")
+    {
+        // `:` treats the RHS as literal text, so `latency:42` matches
+        // rows whose `latency` cell contains the substring "42".
+        const auto expr = ParseOrFail("latency:42");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(leaf->type == LeafRule::Type::String);
+        CHECK(leaf->matchType == LeafRule::Match::Contains);
+        CHECK(*leaf->filterString == "42");
+    }
+    SECTION("true payload becomes a String Contains (not Boolean)")
+    {
+        // Only `=` promotes `true`/`false` to a Boolean leaf; the `:`
+        // arm keeps them as literal-text substring matches.
+        const auto expr = ParseOrFail("state:true");
+        const LeafRule *leaf = AsLeaf(expr);
+        REQUIRE(leaf != nullptr);
+        CHECK(leaf->type == LeafRule::Type::String);
+        CHECK(leaf->matchType == LeafRule::Match::Contains);
+        CHECK(*leaf->filterString == "true");
+    }
+    SECTION("no value after `:` errors")
+    {
+        const auto parsed = ParseQuery("service:");
+        REQUIRE_FALSE(parsed.has_value());
+        CHECK(parsed.error().message.contains("value after ':'"));
+    }
+}
+
+TEST_CASE("ParseQuery: leaf without an operator errors", "[query_parser][error]")
+{
+    const auto parsed = ParseQuery("service");
+    REQUIRE_FALSE(parsed.has_value());
+    CHECK(parsed.error().message.contains("operator"));
+}
+
+TEST_CASE("ParseQuery: leaf without a column name errors", "[query_parser][error]")
+{
+    // Bare operator without an ident/quoted column can't start a leaf;
+    // `ParseLeaf` bails on the first non-Ident/non-Quoted lookahead.
+    for (const std::string_view q : {"= value", ": value", "> 42", "in [a]"})
+    {
+        CAPTURE(q);
+        const auto parsed = ParseQuery(q);
+        CHECK_FALSE(parsed.has_value());
+    }
+}
+
+TEST_CASE("ParseQuery: comparison operator without a value errors", "[query_parser][error]")
+{
+    for (const std::string_view q : {"latency >", "latency <", "latency >=", "latency <="})
+    {
+        CAPTURE(q);
+        const auto parsed = ParseQuery(q);
+        REQUIRE_FALSE(parsed.has_value());
+        CHECK(parsed.error().message.contains("comparison operator"));
+    }
+}
+
+TEST_CASE("ParseQuery: comparison against a non-numeric bareword errors", "[query_parser][error]")
+{
+    // `FinishCompareLeaf` accepts an Ident token but then tries
+    // `ParseIsoTimestamp` / `ParseDouble`; when neither parses, the
+    // caret points at the operator with a helpful message.
+    const auto parsed = ParseQuery("latency > abc");
+    REQUIRE_FALSE(parsed.has_value());
+    CHECK(parsed.error().message.contains("number or ISO timestamp"));
+}
+
+// -- Parser: IN [...] error paths -------------------------------------------
+
+TEST_CASE("ParseQuery: `IN` without an opening bracket errors", "[query_parser][error]")
+{
+    const auto parsed = ParseQuery("level in warn");
+    REQUIRE_FALSE(parsed.has_value());
+    CHECK(parsed.error().message.contains("'[' to open value list"));
+}
+
+TEST_CASE("ParseQuery: `IN [` with a non-value first token errors", "[query_parser][error]")
+{
+    // `FinishInLeaf` restricts the first token to
+    // Number/Ident/Quoted/True/False/RBracket/DotDot; every other
+    // token hits the "expected a value or ']'" branch.
+    for (const std::string_view q : {"level in [(a)]", "level in [>a]", "level in [=a]"})
+    {
+        CAPTURE(q);
+        const auto parsed = ParseQuery(q);
+        CHECK_FALSE(parsed.has_value());
+    }
+}
+
+TEST_CASE("ParseQuery: `IN [a,` missing next value errors", "[query_parser][error]")
+{
+    // `FinishListLeaf` requires an Ident/Quoted/Number/True/False
+    // after each comma; a trailing comma or non-value token errors.
+    SECTION("trailing comma")
+    {
+        const auto parsed = ParseQuery("level in [a,]");
+        REQUIRE_FALSE(parsed.has_value());
+        CHECK(parsed.error().message.contains("value after ','"));
+    }
+    SECTION("non-value after comma")
+    {
+        const auto parsed = ParseQuery("level in [a, >]");
+        REQUIRE_FALSE(parsed.has_value());
+    }
+}
+
+TEST_CASE("ParseQuery: `IN [...` missing closing bracket errors", "[query_parser][error]")
+{
+    SECTION("value list unclosed")
+    {
+        const auto parsed = ParseQuery("level in [a, b");
+        REQUIRE_FALSE(parsed.has_value());
+        CHECK(parsed.error().message.contains("']' or ','"));
+    }
+    SECTION("range unclosed")
+    {
+        const auto parsed = ParseQuery("latency in [10..100");
+        REQUIRE_FALSE(parsed.has_value());
+        CHECK(parsed.error().message.contains("']'"));
+    }
+}
+
+TEST_CASE("ParseQuery: range bound that classifies as neither number nor timestamp errors", "[query_parser][error]")
+{
+    // `FinishRangeUpper` runs each bound through `classify` (tries ISO
+    // then double); a quoted bareword fails both.
+    //
+    // Bareword idents can't be used here because `IsIdentChar`
+    // includes `.`, so `abc..10` lexes as a single ident token; only
+    // quoted strings force the range-separator split while still
+    // failing `ParseIsoTimestamp` and `ParseDouble`.
+    SECTION("lower bound")
+    {
+        const auto parsed = ParseQuery("latency in [\"abc\"..10]");
+        REQUIRE_FALSE(parsed.has_value());
+        CHECK(parsed.error().message.contains("lower bound"));
+    }
+    SECTION("upper bound")
+    {
+        const auto parsed = ParseQuery("latency in [10..\"def\"]");
+        REQUIRE_FALSE(parsed.has_value());
+        CHECK(parsed.error().message.contains("upper bound"));
+    }
+}
+
+TEST_CASE("ParseQuery: open-lower time range parses", "[query_parser]")
+{
+    // Covers the `[..end]` branch in `FinishInLeaf` that jumps
+    // straight into `FinishRangeUpper` without a firstTok.
+    const auto expr = ParseOrFail("ts in [..2024-01-02T00:00:00Z]");
+    const LeafRule *leaf = AsLeaf(expr);
+    REQUIRE(leaf != nullptr);
+    CHECK(leaf->type == LeafRule::Type::Time);
+    CHECK_FALSE(leaf->filterBegin.has_value());
+    REQUIRE(leaf->filterEnd.has_value());
+}
+
+TEST_CASE("ParseQuery: multi-value numeric IN list stays Enumeration", "[query_parser]")
+{
+    // `FinishListLeaf` only demotes single-item numeric/timestamp
+    // lists to Number/Time; multi-item lists stay Enumeration so the
+    // enum-set predicate handles them (see the pretty-print regression
+    // suite for the boolean multi-value round-trip).
+    const auto expr = ParseOrFail("latency in [1, 2, 3]");
+    const LeafRule *leaf = AsLeaf(expr);
+    REQUIRE(leaf != nullptr);
+    CHECK(leaf->type == LeafRule::Type::Enumeration);
+    CHECK(leaf->filterValues.size() == 3);
+}
+
+TEST_CASE("ParseQuery: NOT without following IN at leaf position errors", "[query_parser][error]")
+{
+    SECTION("NOT followed by a non-IN token")
+    {
+        const auto parsed = ParseQuery("level not error");
+        REQUIRE_FALSE(parsed.has_value());
+        CHECK(parsed.error().message.contains("'IN' after 'NOT'"));
+    }
+    SECTION("NOT at EOI")
+    {
+        const auto parsed = ParseQuery("level not");
+        REQUIRE_FALSE(parsed.has_value());
+    }
+    SECTION("NOT IN without a bracket")
+    {
+        const auto parsed = ParseQuery("level not in Warn");
+        REQUIRE_FALSE(parsed.has_value());
+    }
+}
+
+// -- Parser: group / trailing / grouping errors -----------------------------
+
+TEST_CASE("ParseQuery: unbalanced grouping errors", "[query_parser][error]")
+{
+    SECTION("missing closing paren")
+    {
+        const auto parsed = ParseQuery("(service:auth");
+        REQUIRE_FALSE(parsed.has_value());
+        CHECK(parsed.error().message.contains("')'"));
+    }
+    SECTION("missing closing paren nested")
+    {
+        // Two levels deep so `ParseAtom` sees `LParen` twice and only
+        // one `RParen`; the inner group closes fine, the outer one
+        // errors on End.
+        const auto parsed = ParseQuery("((service:auth AND level:error)");
+        REQUIRE_FALSE(parsed.has_value());
+    }
+    SECTION("stray closing paren after a leaf")
+    {
+        const auto parsed = ParseQuery("service:auth)");
+        REQUIRE_FALSE(parsed.has_value());
+    }
+}
+
+TEST_CASE("ParseQuery: trailing tokens after a complete expression error", "[query_parser][error]")
+{
+    // `Parser::Parse` requires `End` after `ParseOr` returns; any
+    // residual token surfaces via "unexpected trailing tokens".
+    const auto parsed = ParseQuery("service:auth ]");
+    REQUIRE_FALSE(parsed.has_value());
+}
+
+// -- Pretty-print variants --------------------------------------------------
+
+TEST_CASE("FormatExpression: string match kinds round-trip", "[query_parser][pretty]")
+{
+    // One SECTION per `LeafRule::Match` arm of `AppendLeaf` so a
+    // dispatch swap fails visibly.
+    SECTION("Contains")
+    {
+        const auto parsed = ParseOrFail("msg:hello");
+        const std::string formatted = FormatExpression(parsed);
+        CHECK(formatted.contains(":hello"));
+        const auto reparsed = ParseQuery(formatted);
+        REQUIRE(reparsed.has_value());
+        CHECK(*reparsed == parsed);
+    }
+    SECTION("Exactly")
+    {
+        const auto parsed = ParseOrFail("svc=\"auth\"");
+        const std::string formatted = FormatExpression(parsed);
+        CHECK(formatted.contains("=\"auth\""));
+    }
+    SECTION("Wildcard")
+    {
+        const auto parsed = ParseOrFail("path%\"*.log\"");
+        const std::string formatted = FormatExpression(parsed);
+        CHECK(formatted.contains("%\"*.log\""));
+        const auto reparsed = ParseQuery(formatted);
+        REQUIRE(reparsed.has_value());
+        CHECK(*reparsed == parsed);
+    }
+    SECTION("Regex with `/` escape")
+    {
+        // Body contains a `/` so the emitter must escape it as `\\/`;
+        // the round-trip through `NextRegex`'s escape decoder puts
+        // the `/` back on the way in.
+        const auto parsed = ParseOrFail("path ~ /etc\\/pass/");
+        const std::string formatted = FormatExpression(parsed);
+        CHECK(formatted.contains("\\/"));
+        const auto reparsed = ParseQuery(formatted);
+        REQUIRE(reparsed.has_value());
+        CHECK(*reparsed == parsed);
+    }
+}
+
+TEST_CASE("FormatExpression: numeric leaf shapes", "[query_parser][pretty]")
+{
+    SECTION("equality -> `=N`")
+    {
+        const auto parsed = ParseOrFail("latency=42");
+        const std::string formatted = FormatExpression(parsed);
+        CHECK(formatted.contains("=42"));
+    }
+    SECTION("one-sided >= -> `>=N`")
+    {
+        const auto parsed = ParseOrFail("latency>=100");
+        const std::string formatted = FormatExpression(parsed);
+        CHECK(formatted.contains(">=100"));
+    }
+    SECTION("one-sided <= -> `<=N`")
+    {
+        const auto parsed = ParseOrFail("latency<=100");
+        const std::string formatted = FormatExpression(parsed);
+        CHECK(formatted.contains("<=100"));
+    }
+    SECTION("no-bounds numeric leaf renders as ` IN []`")
+    {
+        // Directly build a numeric leaf with neither bound set to
+        // exercise the fallthrough branch in `AppendLeaf`'s Number
+        // case (a shape the parser itself won't produce, but which the
+        // formatter still needs to handle for hand-edited configs).
+        FilterExpression expr;
+        LeafRule rule;
+        rule.type = LeafRule::Type::Number;
+        rule.columnKeys = {"latency"};
+        expr.node = FilterExpression::Leaf{rule};
+        const std::string formatted = FormatExpression(expr);
+        CHECK(formatted.contains(" IN []"));
+    }
+}
+
+TEST_CASE("FormatExpression: time leaf shapes", "[query_parser][pretty]")
+{
+    SECTION("one-sided lower bound")
+    {
+        const auto parsed = ParseOrFail("ts>=2024-01-02T00:00:00Z");
+        const std::string formatted = FormatExpression(parsed);
+        CHECK(formatted.contains(">="));
+        CHECK(formatted.contains("2024-01-02"));
+    }
+    SECTION("one-sided upper bound")
+    {
+        const auto parsed = ParseOrFail("ts<=2024-01-02T00:00:00Z");
+        const std::string formatted = FormatExpression(parsed);
+        CHECK(formatted.contains("<="));
+    }
+    SECTION("no-bounds time leaf renders as ` IN []`")
+    {
+        FilterExpression expr;
+        LeafRule rule;
+        rule.type = LeafRule::Type::Time;
+        rule.columnKeys = {"ts"};
+        expr.node = FilterExpression::Leaf{rule};
+        const std::string formatted = FormatExpression(expr);
+        CHECK(formatted.contains(" IN []"));
+    }
+}
+
+TEST_CASE("FormatExpression: boolean leaf shapes", "[query_parser][pretty]")
+{
+    SECTION("=true and =false round-trip through the same leaf")
+    {
+        for (const std::string_view q : {"succeeded=true", "succeeded=false"})
+        {
+            CAPTURE(q);
+            const auto parsed = ParseOrFail(q);
+            const std::string formatted = FormatExpression(parsed);
+            const auto reparsed = ParseQuery(formatted);
+            REQUIRE(reparsed.has_value());
+            CHECK(*reparsed == parsed);
+        }
+    }
+    SECTION("boolean leaf with no bool value renders as ` IN []`")
+    {
+        // `AppendLeaf` collapses to `IN []` when neither `true` nor
+        // `false` is selected; a shape the parser rejects (empty list)
+        // but that shows up in hand-edited or partially-materialised
+        // configs.
+        FilterExpression expr;
+        LeafRule rule;
+        rule.type = LeafRule::Type::Boolean;
+        rule.columnKeys = {"succeeded"};
+        expr.node = FilterExpression::Leaf{rule};
+        const std::string formatted = FormatExpression(expr);
+        CHECK(formatted.contains(" IN []"));
+    }
+}
+
+TEST_CASE("FormatExpression: enumeration leaf renders as ` IN [...]`", "[query_parser][pretty]")
+{
+    const auto parsed = ParseOrFail("level in [Info, Warn, Error]");
+    const std::string formatted = FormatExpression(parsed);
+    CHECK(formatted.contains(" IN ["));
+    CHECK(formatted.contains("Info"));
+    CHECK(formatted.contains("Warn"));
+    CHECK(formatted.contains("Error"));
+    const auto reparsed = ParseQuery(formatted);
+    REQUIRE(reparsed.has_value());
+    CHECK(*reparsed == parsed);
+}
+
+TEST_CASE("FormatExpression: `Or` inside `And` is parenthesised", "[query_parser][pretty]")
+{
+    // `AppendOr` adds parens whenever `parent > Precedence::Or`, which
+    // fires when an `Or` node is a child of an `And`. Parse a query
+    // that produces exactly that shape and check the output preserves
+    // the grouping.
+    const auto parsed = ParseOrFail("service:auth AND (level:error OR level:warn)");
+    const std::string formatted = FormatExpression(parsed);
+    CAPTURE(formatted);
+    // The parenthesised `Or` group must survive round-trip; naked
+    // spelling would flip precedence.
+    CHECK(formatted.contains("("));
+    CHECK(formatted.contains(")"));
+    const auto reparsed = ParseQuery(formatted);
+    REQUIRE(reparsed.has_value());
+    CHECK(*reparsed == parsed);
+}
+
+TEST_CASE("FormatExpression: `And` under `Not` is parenthesised", "[query_parser][pretty]")
+{
+    // `AppendAnd` adds parens whenever `parent > Precedence::And`.
+    // `Or` is below `And` so `Or`-parent doesn't need parens (natural
+    // precedence carries the grouping); `Not` sits *above* `And`, so
+    // an `And` under a `Not` must be parenthesised or the negation
+    // would swallow only the first conjunct.
+    const auto parsed = ParseOrFail("NOT (service:auth AND level:error)");
+    const std::string formatted = FormatExpression(parsed);
+    CAPTURE(formatted);
+    CHECK(formatted.contains("("));
+    CHECK(formatted.contains(")"));
+    const auto reparsed = ParseQuery(formatted);
+    REQUIRE(reparsed.has_value());
+    CHECK(*reparsed == parsed);
+}
+
+TEST_CASE("FormatExpression: nested empty `Or` renders as `()`", "[query_parser][pretty]")
+{
+    // Empty `Or` isn't in the grammar as a source, but
+    // `MirrorSessionStateToConfiguration` can produce transient shapes
+    // where it appears nested inside an `And`. The debug placeholder
+    // `()` is what `AppendOr` emits for the empty-children branch.
+    FilterExpression expr;
+    std::vector<FilterExpression> children;
+    children.emplace_back(); // default = empty And, will render as "*"
+    // Replace first with an empty Or so `AppendOr` fires the empty
+    // branch; wrap in an outer And so the Or isn't the root
+    // (root empty-Or would take the `IsMatchAll` early exit? No --
+    // `IsMatchAll` only matches empty `And`).
+    FilterExpression innerOr;
+    innerOr.node = FilterExpression::Or{};
+    std::vector<FilterExpression> outerChildren;
+    outerChildren.push_back(std::move(innerOr));
+    outerChildren.push_back(ParseOrFail("service:auth"));
+    expr.node = FilterExpression::And{std::move(outerChildren)};
+    const std::string formatted = FormatExpression(expr);
+    CAPTURE(formatted);
+    CHECK(formatted.contains("()"));
+}
+
+TEST_CASE("FormatExpression: `Not` with null child renders as `NOT ()`", "[query_parser][pretty]")
+{
+    // `Not` default-constructs with `child == nullptr`; the parser
+    // never produces this shape (the `MakeNot` factory always seeds
+    // `child`), but hand-edited configs can.
+    FilterExpression expr;
+    expr.node = FilterExpression::Not{};
+    const std::string formatted = FormatExpression(expr);
+    CAPTURE(formatted);
+    CHECK(formatted.contains("NOT"));
+    CHECK(formatted.contains("()"));
+}
+
+// -- FilterExpression::Not copy assignment and null-child equality ----------
+
+TEST_CASE("FilterExpression::Not deep-copies the child on assignment", "[filter_expression]")
+{
+    // `Not::operator=` copies the wrapped `FilterExpression` so two
+    // sibling `Not` values stay independent -- a shared pointer would
+    // let a mutation on one affect the other.
+    FilterExpression sourceInner = ParseOrFail("service:auth");
+    FilterExpression::Not lhs{std::move(sourceInner)};
+    FilterExpression::Not rhs;
+    rhs = lhs;
+    REQUIRE(rhs.child != nullptr);
+    REQUIRE(lhs.child != nullptr);
+    // Distinct addresses -> genuine deep copy.
+    CHECK(rhs.child.get() != lhs.child.get());
+    // But the wrapped values compare equal.
+    CHECK(*rhs.child == *lhs.child);
+}
+
+TEST_CASE("FilterExpression::Not self-assignment is a no-op", "[filter_expression]")
+{
+    // The `if (this != &other)` self-check in `Not::operator=` guards
+    // against reset-then-copy corruption on `x = x`.
+    FilterExpression::Not value{ParseOrFail("svc:auth")};
+    const FilterExpression *originalChild = value.child.get();
+    // NOLINTNEXTLINE(clang-diagnostic-self-assign-overloaded): intentional
+    value = value;
+    REQUIRE(value.child != nullptr);
+    // Same address -> the guard preserved the storage.
+    CHECK(value.child.get() == originalChild);
+}
+
+TEST_CASE("FilterExpression::Not equality handles null children", "[filter_expression]")
+{
+    // `operator==` on `Not` explicitly checks both-null / one-null
+    // before dereferencing so hand-edited configs don't UB-crash.
+    SECTION("both null compare equal")
+    {
+        FilterExpression::Not lhs;
+        FilterExpression::Not rhs;
+        CHECK(lhs == rhs);
+    }
+    SECTION("one null vs one populated compare unequal")
+    {
+        FilterExpression::Not lhs;
+        FilterExpression::Not rhs{ParseOrFail("svc:auth")};
+        CHECK_FALSE(lhs == rhs);
+        CHECK_FALSE(rhs == lhs);
+    }
+    SECTION("two populated compare equal iff the wrapped trees match")
+    {
+        FilterExpression::Not lhs{ParseOrFail("svc:auth")};
+        FilterExpression::Not rhs{ParseOrFail("svc:auth")};
+        CHECK(lhs == rhs);
+        FilterExpression::Not other{ParseOrFail("svc:other")};
+        CHECK_FALSE(lhs == other);
+    }
+}
