@@ -6,6 +6,7 @@
 
 class QCheckBox;
 class QCloseEvent;
+class QComboBox;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -108,6 +109,14 @@ private:
     QPlainTextEdit *mSampleLinesEdit = nullptr;
     QCheckBox *mAutoDetectCheck = nullptr;
     QSpinBox *mPrioritySpin = nullptr;
+    /// Continuation mode for multi-line records: `None`, `Indented`,
+    /// or `UntilNextHeader`. When non-`None`, indented / non-matching
+    /// lines fold into the previous record's last named group.
+    QComboBox *mContinuationModeCombo = nullptr;
+    /// Optional PCRE2 pattern used only by `UntilNextHeader` mode to
+    /// probe whether a line is a new record header. Leave blank to
+    /// reuse the main pattern (default).
+    QLineEdit *mHeaderAnchorEdit = nullptr;
     /// Multi-line so descriptions can hold a paragraph covering
     /// the format and an optional upstream attribution.
     QPlainTextEdit *mDescriptionEdit = nullptr;
