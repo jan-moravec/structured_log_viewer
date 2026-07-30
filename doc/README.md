@@ -45,6 +45,8 @@ Empty CSV cells (`a,,c` or trailing missing cells) are omitted from the record r
 
 Empty lines are skipped. Lines that fail to parse are reported as errors but do not abort loading — valid records are still shown. Nested JSON objects and arrays are preserved as their compact JSON string in logfmt and CSV; only JSON Lines preserves nesting natively.
 
+**Multi-line records (stack traces).** The regex-template and logfmt parsers understand log records that span more than one physical line, so a Java, Python, Go, or Node stack trace attaches to the row that emitted it instead of surfacing as a wall of parse errors. For regex templates the behaviour is per-template: the shipped **Java / log4j / SLF4J Logback** template folds indented `\tat ...` frames into the previous record's `message` column; **user templates** you author through **Settings → Regex templates...** get a *Continuation* combo (`None` / `Indented` / `Until next header`) plus an optional *Header anchor* line. For logfmt the rule is "any line starting with space or tab is a continuation of the previous record's last field" — hand-typed prose that starts un-indented keeps parsing as before. **Copy Line** and the **Record Details** pane show the full joined text; when you multi-select rows for copy, internal newlines are escaped as `\n` so external tools receive one logical line per record. When you author a highlight rule or advanced-filter regex that needs `.` to match across the embedded newline separators, add the PCRE2 `(?s)` flag (e.g. `(?s).*Caused by.*`); the default `.` still stops at `\n`.
+
 ### Compressed inputs
 
 Static-mode opens (`File → Open…`, drag & drop, command-line arguments, session restore) transparently decompress the four canonical single-file codecs before the format-detection step above runs:
@@ -291,7 +293,7 @@ Duplicate header names are disambiguated as `header [key]` in both menus so colu
 ### Selecting and Copying Rows
 
 - Click a row to select it. Hold `Ctrl`/`Shift` to extend the selection.
-- **Edit → Copy** (`Ctrl+C`) copies the selected rows as the **original JSON text** (one line per row), so you can paste them back into another tool. Cell-level copy is not performed — rows are always copied whole.
+- **Edit → Copy** (`Ctrl+C`) copies the selected rows as the **original JSON text** (one line per row), so you can paste them back into another tool. Cell-level copy is not performed — rows are always copied whole. When you copy a **single** multi-line record (Java / Python stack trace, etc.), the joined bytes go to the clipboard verbatim; when you copy **multiple** rows at once each row's internal newlines are escaped as `\n` so external tools that use `\n` as a record separator keep working.
 
 See [Anchors](#anchors) for marking and navigating between specific rows.
 
@@ -396,7 +398,7 @@ Highlight rules let you paint whole rows in a custom foreground / background col
 
 Each rule targets exactly one column, identified by its stable *key* (not by its current visual position, so [reordering columns](#column-management) never disturbs a rule). The v1 editor exposes three shapes:
 
-- **Text (string)** — Exactly, Contains, Regular expression, or Wildcard against the column's rendered value. The engine is the same string matcher the [Find bar](#searching) and [filters](#filtering) use, so a rule that finds a match on-screen also lights up here.
+- **Text (string)** — Exactly, Contains, Regular expression, or Wildcard against the column's rendered value. The engine is the same string matcher the [Find bar](#searching) and [filters](#filtering) use, so a rule that finds a match on-screen also lights up here. When the column can contain a multi-line record (e.g. a `message` column that has folded in a Java stack trace), add PCRE2's `(?s)` flag to a Regular-expression rule so `.` also matches the embedded `\n` bytes — otherwise `.*Caused by.*` will stop at the first newline.
 - **Number** — an optional minimum and maximum. Rows whose column value falls inside the interval match; leaving a bound empty makes it unbounded on that side.
 - **Boolean** — pick whether **true** and / or **false** should highlight.
 
@@ -535,7 +537,7 @@ Multiple simple-mode filters combine with **AND** — a row shows only if every 
 
 Column names are bare identifiers by default; wrap in double quotes to preserve whitespace (`"span id":"abc def"`). Regex delimiters are literal `/` — no escaping needed inside them apart from `\/`.
 
-String **values are matched case-sensitively** (`:`, `=`, `%`, and `~` alike), the same as the simple-mode filter dialog. Use a regex with an inline flag when you need to ignore case — `msg ~ /(?i)timeout/`. Keywords, column-name resolution, and enum value aliases are all case-insensitive; only the value comparison is not.
+String **values are matched case-sensitively** (`:`, `=`, `%`, and `~` alike), the same as the simple-mode filter dialog. Use a regex with an inline flag when you need to ignore case — `msg ~ /(?i)timeout/`. Keywords, column-name resolution, and enum value aliases are all case-insensitive; only the value comparison is not. When a column holds a multi-line record (e.g. a `message` that has folded in a stack trace) and you want `.` to also match the embedded `\n` bytes, add PCRE2's `(?s)` inline flag — `msg ~ /(?s)Caused by.*NullPointer/`.
 
 Value lists and ranges must carry a payload: `col IN []` and `col IN [..]` are parse errors rather than silently matching everything, as is an inverted range like `latency IN [100..10]`.
 

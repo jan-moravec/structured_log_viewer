@@ -15,7 +15,7 @@ For the architecture each item plugs into, see [CONTRIBUTING.md → Architecture
   - [3. ~~User-defined highlight rules~~ (shipped)](#3-user-defined-highlight-rules)
   - [4. ~~Bookmark notes on anchors~~ (shipped)](#4-bookmark-notes-on-anchors)
   - [5. ~~Boolean filter expressions (AND / OR / NOT)~~ (shipped)](#5-boolean-filter-expressions-and--or--not)
-  - [6. Multi-line records (stack traces and continuation lines)](#6-multi-line-records-stack-traces-and-continuation-lines)
+  - [6. ~~Multi-line records (stack traces and continuation lines)~~ (shipped)](#6-multi-line-records-stack-traces-and-continuation-lines)
   - [7. Export filtered rows](#7-export-filtered-rows)
   - [8. ~~Goto line / Goto timestamp~~ (shipped)](#8-goto-line--goto-timestamp)
   - [9. Stdin / pipe input](#9-stdin--pipe-input)
@@ -70,7 +70,7 @@ The roadmap aims to close the **mainstream desktop log-viewer expectations** bef
 
 Beyond the per-item list, three themes run through the roadmap:
 
-1. **Pre-release ergonomics.** Close the "table stakes" gaps any reviewer will flag in a head-to-head against Klogg or lnav: compressed files, histogram strip, highlight rules, bookmark notes, AND/OR filters, multi-line records, export, goto, stdin, headless mode.
+1. **Pre-release ergonomics.** Close the "table stakes" gaps any reviewer will flag in a head-to-head against Klogg or lnav: compressed files, histogram strip, highlight rules, bookmark notes, AND/OR filters, ~~multi-line records~~ (shipped), export, goto, stdin, headless mode.
 1. **Structured-log power user.** Lean into what `loglib` already does well — typed columns, level promotion, the regex-template registry — with features that only make sense on structured data: SQL queries over typed rows, per-cell quick filters, pattern clustering by template key, time-gap detection across the first `Type::Time` column.
 1. **Scale and performance.** Preserve the existing performance envelope (see [CONTRIBUTING.md → Benchmarking](CONTRIBUTING.md#benchmarking)) as features land. Each Tier 1 / 2 item below documents whether it needs a new benchmark or a regression check against the [Acceptance bar](CONTRIBUTING.md#acceptance-bar).
 
@@ -136,23 +136,23 @@ Each of the ten items below closes a gap that reviewers and first-time users rou
 
 **Status: shipped.** Filters now compose as a full boolean tree (`loglib::FilterExpression` = `Leaf` / `And` / `Or` / `Not`). The default simple-mode UX stays "click + to add another AND rule"; a new **Filters -> Advanced Filter…** action opens the `AdvancedFilterEditor`, a text-first dialog backed by a hand-rolled recursive-descent parser (`library/src/query_parser.cpp`, grammar in `library/include/loglib/query_parser.hpp`). Queries look like `level in [Warn, Error] AND (service:auth OR service:db) AND NOT msg~/heartbeat/`; every keystroke reparses and the OK button gates on a clean parse. Evaluation goes through `CompiledFilterExpression`, which sorts children cheap-first (`EstimatedLeafCost`) and picks between a per-row visit path and a **bitset-materialisation fast path** (packed `RowBitset` per unique leaf, folded with word-parallel AND/OR/NOT). The bitset path engages for trees containing `OR` or `NOT` with at least two leaves, subject to a 512 MiB memory budget; flat `And` trees stay on the short-circuiting visit path. `LogConfiguration::filters` is gone; on-disk the field is `expression` (internally tagged variants under a `kind` discriminator). See [doc/README.md -> Advanced filter query syntax](doc/README.md#advanced-filter-query-syntax) for the user-facing shape.
 
-### 6. Multi-line records (stack traces and continuation lines)
+### 6. ~~Multi-line records (stack traces and continuation lines)~~ (shipped)
 
-**Why.** Java, Python, and Go loggers routinely emit a one-line header followed by an indented stack trace. Today every continuation line lands as a parse error. This is the single most-cited annoyance from anyone using `journalctl --output=short` on a Java service, or tailing a Python app with `traceback` enabled.
+**Status: shipped.** Java, Python, and Go loggers routinely emit a one-line header followed by an indented stack trace. Before this shipped every continuation line landed as a parse error.
 
-**Scope.** Extend the streaming line decoder contract so a decoder can request "consume the next continuation line and append it to my current record" without forcing a whole rewrite of the static / streaming pipelines. The shipped parsers opt in selectively:
+**Scope.** The `CompactLineDecoder` contract gained a new `LineDecodeResult::Continue` variant meaning "append this line's raw bytes to the prior record's last column, do not emit a new row". `RunStreamingParseLoop` and `RunStaticParserPipeline` thread the previous record through Stage B (deferred emit / hold-back-the-tail across batch boundaries) so the plumbing is shared. The shipped parsers opt in selectively:
 
-- `RegexParser`: continuation = any subsequent line that does **not** match the pattern's leading `(?<timestamp>...)` anchor. Pattern templates gain an optional `continuationMode` field (`"indented"` / `"untilNextHeader"`).
-- `LogfmtParser`: continuation = any line that does not contain `key=` at column 0.
-- `JsonParser` / `CsvParser`: opt out — multi-line records in JSON / CSV go through normal record framing, no continuation logic.
+- `RegexParser`: `RegexTemplate` gains an optional `continuationMode` field (`"none"` (default) / `"indented"` / `"untilNextHeader"`) and an optional `headerAnchor` regex. `Indented` folds any line starting with space / tab; `UntilNextHeader` runs a `PCRE2_ANCHORED | PCRE2_PARTIAL_HARD` probe against the header pattern (or the explicit `headerAnchor`) and folds every line that does not match. Continuation bytes append to the pattern's **last named group in source order**, which must be string-typed. The shipped `java_log` template ships with `continuationMode: "indented"`.
+- `LogfmtParser`: opt-in via `ParserOptions::multilineLogfmt` (default `true`). Rule is **indented-only** — any line whose first byte is a space or tab is a continuation and folds into the previous record's last source-order key. The permissive "prose" contract (un-indented `plain text line` parses as three bare-keyed pairs) is preserved verbatim.
+- `JsonParser` / `CsvParser`: opt out — multi-line records in JSON / CSV go through normal record framing, no continuation logic. `LineDecodeResult::Continue` is unreachable in these decoders and guarded by `std::unreachable()`.
 
-**Non-goals (v1).** True multi-line **regex** matching across the wire (the line is still the atomic unit; we only append the continuation to the last record's `message` column), in-cell rendering of newlines (item 15 handles that).
+**Non-goals (v1, still true).** True multi-line **regex** matching across the wire (the line is still the atomic unit; we only append the continuation to the last record's last named group), in-cell rendering of newlines (item 15 handles that).
 
-**Approach.** Extend the `CompactLineDecoder` contract with a new `LineDecodeResult::Continue` variant that means "append this line's raw bytes to the prior record's last column, do not emit a new row". `RunStreamingParseLoop` and `RunStaticParserPipeline` learn to thread the previous record through Stage B for batch tails. The behaviour is opt-in per decoder; existing fixtures and benchmarks are unaffected.
+**Acceptance bar (met).** Java-SLF4J-Logback fixtures with stack traces open cleanly. Each multi-line record renders as one row whose last named group contains the joined trace. `RawLine(headerId)` returns the full joined bytes (via a `LogFile::mMultiLineSpans` side-channel) so **Copy Line** and the **Record Details** pane show the whole trace. Parse errors only fire on truly orphaned continuation lines (continuation before the first record). Two new `[large]` benchmarks (`[java_multiline]` for indented mode, `[untilNextHeader]` for the R5 probe) gate the hot path.
 
-**Acceptance bar.** A new fixture (Java SLF4J Logback with `%n` + stack trace) opens cleanly with the `java` regex template. Each multi-line record renders as one row whose `message` column contains the joined trace. Parse errors only fire on truly orphaned continuation lines (continuation before the first record).
+**Note on message-side regex users.** Highlight rules and advanced-filter expressions that need to match across embedded `\n` bytes should include PCRE2's `(?s)` flag so `.` covers line separators; without it, `.*` will not span the joined multi-line payload.
 
-**Touches.** `loglib`: `line_decoder.hpp`, `streaming_parse_loop.hpp`, `static_parser_pipeline.hpp`, the four parsers' decoders. `app`: `RecordDetailDock` already pretty-prints; ensure embedded `\n` round-trips through copy.
+**Touches (as shipped).** `loglib`: `line_decoder.hpp`, `regex_templates.hpp`, `parser_options.hpp`, `streaming_parse_loop.hpp`, `static_parser_pipeline.hpp`, the four parsers' decoders, `log_file.hpp` (multi-line span side-channel). `app`: multi-row Copy escapes embedded `\n`, single-row Copy preserves the joined bytes verbatim; the regex-templates editor exposes `continuationMode` + `headerAnchor` for user templates.
 
 ### 7. Export filtered rows
 
@@ -349,7 +349,7 @@ Reference snapshot from the survey that informed the roadmap (June 2026). `✓` 
 | Histogram / activity timeline               |        ✓         |     ✓     |       |     ~     |      ✓      |         |              |           |   ✓   |
 | Match overview rail / minimap               |        ✓         |           |   ✓   |           |             |         |              |           |   ✓   |
 | Pretty-print JSON / XML inline              | ~ Record Details |     ✓     |       |           |      ✓      |    ✓    |      ✓       |           |   ✓   |
-| Multi-line records (stack traces)           |                  |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
+| Multi-line records (stack traces)           |        ✓         |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
 | Goto line / Goto timestamp                  |        ✓         |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
 | Time-range zoom / jump-by-N-min             |  ~ time filter   |     ✓     |       |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
 | Timeshift (per-file clock offset)           |                  |           |       |     ✓     |             |         |              |           |       |
