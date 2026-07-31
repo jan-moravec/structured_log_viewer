@@ -96,6 +96,15 @@ private:
     /// read-only.
     [[nodiscard]] bool IsCurrentEditable() const;
 
+    /// Sync the header-anchor field's enabled state with the
+    /// currently selected continuation mode: enabled only when
+    /// `UntilNextHeader` is selected AND the form is editable
+    /// (built-ins stay read-only). Called on mode change and after
+    /// every `LoadIntoForm` / enable-toggle so the field's state
+    /// never lags the mode combo. Placeholder text already says
+    /// "Until-next-header only"; this enforces it.
+    void SyncHeaderAnchorEnabled();
+
     /// Prompt "discard unsaved edits?" and return true to proceed.
     /// Returns true immediately when there are no unsaved edits.
     [[nodiscard]] bool ConfirmDiscardEdits();

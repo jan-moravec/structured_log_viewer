@@ -350,6 +350,16 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
         this,
         &RegexTemplatesEditor::OnFieldEdited
     );
+    // Separate connection so switching modes updates the anchor
+    // field's enabled state even when signals are being suppressed
+    // via `OnFieldEdited` (they're not, but keeping the two effects
+    // decoupled makes the intent obvious).
+    connect(
+        mContinuationModeCombo,
+        QOverload<int>::of(&QComboBox::currentIndexChanged),
+        this,
+        [this](int) { SyncHeaderAnchorEnabled(); }
+    );
     connect(mHeaderAnchorEdit, &QLineEdit::textEdited, this, &RegexTemplatesEditor::OnFieldEdited);
     connect(mDescriptionEdit, &QPlainTextEdit::textChanged, this, &RegexTemplatesEditor::OnFieldEdited);
 
@@ -511,6 +521,7 @@ void RegexTemplatesEditor::OnNewClicked()
     mDescriptionEdit->setReadOnly(false);
     mDeleteButton->setEnabled(false);
     mDuplicateButton->setEnabled(false);
+    SyncHeaderAnchorEnabled();
 
     // Blank drafts start "dirty" so Save enables immediately.
     // A missing name / pattern is caught in `OnSaveClicked`.
@@ -651,6 +662,15 @@ void RegexTemplatesEditor::OnSaveClicked()
             tr("Pattern does not compile: %1").arg(QString::fromStdString(regexError)),
             /*isError=*/true
         );
+        return;
+    }
+
+    // Front-load header-anchor errors the same way. Refuses to
+    // persist a template whose anchor doesn't compile so the parser
+    // never has to fail-close on it at runtime.
+    if (!loglib::ValidateHeaderAnchor(tmpl.headerAnchor, regexError))
+    {
+        ShowStatus(QString::fromStdString(regexError), /*isError=*/true);
         return;
     }
 
@@ -798,6 +818,14 @@ void RegexTemplatesEditor::OnValidateClicked()
         return;
     }
 
+    // Anchor compile-check runs on Validate too so users can iterate
+    // on the anchor without hitting Save first.
+    if (!loglib::ValidateHeaderAnchor(tmpl.headerAnchor, regexError))
+    {
+        ShowStatus(QString::fromStdString(regexError), /*isError=*/true);
+        return;
+    }
+
     if (tmpl.sampleLines.empty())
     {
         ShowStatus(tr("Pattern compiles. No sample lines to self-test against."));
@@ -901,6 +929,7 @@ void RegexTemplatesEditor::LoadIntoForm(const QString &name)
         mDescriptionEdit->setReadOnly(true);
         mDeleteButton->setEnabled(false);
         mDuplicateButton->setEnabled(false);
+        SyncHeaderAnchorEnabled();
         MarkClean();
         mSuppressDirtySignals = false;
         return;
@@ -930,6 +959,7 @@ void RegexTemplatesEditor::LoadIntoForm(const QString &name)
         mDescriptionEdit->setReadOnly(true);
         mDeleteButton->setEnabled(false);
         mDuplicateButton->setEnabled(false);
+        SyncHeaderAnchorEnabled();
         MarkClean();
         mSuppressDirtySignals = false;
         return;
@@ -974,6 +1004,10 @@ void RegexTemplatesEditor::LoadIntoForm(const QString &name)
     mDescriptionEdit->setReadOnly(!editable);
     mDeleteButton->setEnabled(editable);
     mDuplicateButton->setEnabled(true);
+    // Final anchor-field state depends on both editability AND the
+    // loaded mode; sync after the readonly toggles above so this
+    // has the last say.
+    SyncHeaderAnchorEnabled();
 
     MarkClean();
     mSuppressDirtySignals = false;
@@ -1050,6 +1084,24 @@ bool RegexTemplatesEditor::IsCurrentEditable() const
         return true;
     }
     return !mCurrentName.isEmpty() && mRegistry->IsUserTemplate(mCurrentName);
+}
+
+void RegexTemplatesEditor::SyncHeaderAnchorEnabled()
+{
+    // Anchor field is only meaningful under `UntilNextHeader`;
+    // `RegexTemplate::headerAnchor` is documented as ignored
+    // otherwise. Reflecting that in the UI (rather than letting
+    // users type into a field that will be silently discarded)
+    // matches the placeholder's "Until-next-header only" note.
+    const auto mode = static_cast<loglib::ContinuationMode>(mContinuationModeCombo->currentData().toInt());
+    const bool modeAllows = (mode == loglib::ContinuationMode::UntilNextHeader);
+    const bool editable = IsCurrentEditable();
+    // `setReadOnly` keeps the text visible on built-ins (so users
+    // can inspect the anchor a shipped template ships with); we
+    // toggle it here and let `setEnabled` do the "grey out" work
+    // when the mode disallows the field entirely.
+    mHeaderAnchorEdit->setReadOnly(!editable || !modeAllows);
+    mHeaderAnchorEdit->setEnabled(modeAllows);
 }
 
 void RegexTemplatesEditor::ShowStatus(const QString &message, bool isError)
