@@ -20877,6 +20877,72 @@ private slots:
         QVERIFY2(lines[1].contains(QStringLiteral("msg=ok")), qPrintable(lines[1]));
     }
 
+    // The multi-row escape sequence must double any existing '\'
+    // BEFORE turning real newlines into a `\n` two-char escape --
+    // otherwise the just-introduced backslash gets doubled again and
+    // a paste of "a\<newline>b" round-trips to "a\\<newline>b"
+    // instead of "a\<newline>b". Guard the order-of-operations by
+    // seeding a raw '\' inside a multi-line record's payload.
+    void TestLogTableViewCopyMultipleRowsEscapesBackslashesBeforeNewlines()
+    {
+        QTemporaryDir tmp;
+        QVERIFY2(tmp.isValid(), "temp dir must be creatable");
+        const QString fixturePath = tmp.filePath(QStringLiteral("multiline_bs.log"));
+        {
+            std::ofstream stream(fixturePath.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture file must be openable");
+            // The continuation line contains a real backslash byte.
+            // On copy, the escape order should produce `\\` (two
+            // characters: backslash + backslash) for that single
+            // input byte, and `\n` (two characters: backslash + n)
+            // for the real newline between the header and the
+            // continuation. If the ordering ever regresses, either
+            // the backslash gets extra doubles or the newline
+            // splits the record across two clipboard rows.
+            stream << "level=error msg=boom\n"
+                      "\tpath C:\\a\\b\n"
+                      "level=info msg=ok\n";
+        }
+
+        const StreamingRun run = RunStreamingLogfmt(fixturePath);
+        QCOMPARE(run.finishedCount, 1);
+        QCOMPARE(run.model->rowCount(), 2);
+
+        LogTableView view;
+        view.setModel(run.model.get());
+
+        QItemSelectionModel *sel = view.selectionModel();
+        QVERIFY(sel != nullptr);
+        for (int row = 0; row < run.model->rowCount(); ++row)
+        {
+            sel->select(run.model->index(row, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        }
+        QCOMPARE(sel->selectedRows().size(), 2);
+
+        QClipboard *clipboard = QApplication::clipboard();
+        QVERIFY(clipboard != nullptr);
+        clipboard->clear();
+
+        const QString pasted = InvokeAndReadClipboardWithRetry(
+            clipboard, &view, "CopySelectedRowsToClipboard", QStringLiteral("path")
+        );
+
+        const QStringList lines = pasted.split(QLatin1Char('\n'));
+        QCOMPARE(lines.size(), 2);
+
+        // Each raw backslash in the source must appear as exactly
+        // two backslashes (single-escaped). Four in a row would
+        // mean the '\\' pass ran twice / after the newline pass and
+        // doubled the just-introduced escapes.
+        QVERIFY2(lines[0].contains(QStringLiteral("C:\\\\a\\\\b")), qPrintable(lines[0]));
+        QVERIFY2(!lines[0].contains(QStringLiteral("\\\\\\\\")), qPrintable(lines[0]));
+        // The real newline between header and continuation must
+        // have been escaped to '\n' (two chars) and NOT dropped.
+        // (`\t` is deliberately not escaped -- tabs are tolerated
+        // inside a single clipboard row.)
+        QVERIFY2(lines[0].contains(QStringLiteral("boom\\n\tpath")), qPrintable(lines[0]));
+    }
+
     // Single-row copy is the "round-trip clean" path: paste the
     // multi-line record straight back into an editor and it looks
     // like the original file. No escaping applied.

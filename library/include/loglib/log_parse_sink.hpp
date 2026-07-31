@@ -11,6 +11,20 @@
 namespace loglib
 {
 
+/// Span of physical lines making up one multi-line record; the header
+/// line owns the span. Both indices are 0-based absolute physical-line
+/// indices (i.e. indices into `LogFile::mLineOffsets` once
+/// `localLineOffsets` has been appended). The static parser attaches
+/// one entry per multi-line record it seals; consumers register it via
+/// `LogFile::RegisterMultiLineRecord` *after* `AppendLineOffsets` so
+/// `GetLine(headerLineId)` can look up the terminating offset in the
+/// same append batch.
+struct MultiLineRecordSpan
+{
+    size_t headerLineId = 0;
+    size_t lastLineId = 0;
+};
+
 /// One unit of work handed from the parser to a `LogParseSink`. A
 /// "rows-empty" batch with non-empty `errors`/`newKeys` is valid; the parser
 /// always emits a final batch before `OnFinished`.
@@ -26,6 +40,16 @@ struct StreamedBatch
     std::vector<uint64_t> localLineOffsets;
     std::vector<std::string> errors;
     std::vector<std::string> newKeys;
+    /// Multi-line record spans (header + last physical line) that
+    /// belong to this batch. The consumer *must* register these on
+    /// `LogFile` **after** `AppendLineOffsets`, otherwise
+    /// `GetLine(headerLineId)` would look up a stop offset that has
+    /// not yet been appended and silently return only the header
+    /// line's bytes. Populated only by the static parser pipeline
+    /// when a template runs in multi-line mode; the live-tail loop
+    /// joins bytes directly on the `StreamLineSource` and leaves
+    /// this empty.
+    std::vector<MultiLineRecordSpan> multiLineSpans;
     /// 1-based absolute line number of the batch's start cursor.
     /// - When `lines` is non-empty: matches the chunk start, not necessarily
     ///   the first parsed line (errors preceding it can push it lower).

@@ -213,7 +213,11 @@ void LogData::Merge(LogData other)
     }
 }
 
-void LogData::AppendBatch(std::vector<LogLine> lines, const std::vector<uint64_t> &lineOffsets)
+void LogData::AppendBatch(
+    std::vector<LogLine> lines,
+    const std::vector<uint64_t> &lineOffsets,
+    std::span<const MultiLineRecordSpan> multiLineSpans
+)
 {
     // No per-batch `reserve` — rely on geometric push_back growth
     // (some STL impls take `reserve(size+n)` as exact = O(N^2/B)).
@@ -226,16 +230,29 @@ void LogData::AppendBatch(std::vector<LogLine> lines, const std::vector<uint64_t
         }
     }
 
-    if (!lineOffsets.empty())
+    if (!lineOffsets.empty() || !multiLineSpans.empty())
     {
-        // Route offsets to the most-recently-appended `FileLineSource`
-        // — the file currently being streamed. Live-tail passes empty
-        // `lineOffsets` and skips this branch.
+        // Route offsets & spans to the most-recently-appended
+        // `FileLineSource` — the file currently being streamed.
+        // Live-tail passes both vectors empty and skips this branch.
         FileLineSource *fileSource = BackFileSource();
         assert(fileSource != nullptr);
         if (fileSource != nullptr)
         {
-            fileSource->File().AppendLineOffsets(lineOffsets);
+            if (!lineOffsets.empty())
+            {
+                fileSource->File().AppendLineOffsets(lineOffsets);
+            }
+            // Order matters: `RegisterMultiLineRecord` must run
+            // *after* `AppendLineOffsets` for this batch. Otherwise
+            // `LogFile::GetLine(headerLineId)` would look up the
+            // widened stop at `mLineOffsets[lastLineId + 1]` before
+            // that entry is present and silently fall back to the
+            // single-line rendering path.
+            for (const auto &span : multiLineSpans)
+            {
+                fileSource->File().RegisterMultiLineRecord(span.headerLineId, span.lastLineId);
+            }
         }
     }
 }

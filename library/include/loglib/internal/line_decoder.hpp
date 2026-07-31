@@ -36,6 +36,27 @@ enum class LineDecodeResult : uint8_t
     Continue,
 };
 
+/// Outcome of extending a record's continuation-target field with
+/// additional bytes. Both the streaming loop's `ExtendContinuationTarget`
+/// and the static pipeline's `SpliceCrossBatchContinuation` return
+/// this so the two paths surface identical error messages.
+///
+/// - `Ok`: bytes appended (or the append was a no-op).
+/// - `MissingTarget`: the record has no entry for the continuation
+///   target key -- e.g. an optional PCRE2 named group that didn't
+///   match on the header line. Surfaced as
+///   "target field is not present in the record".
+/// - `NonStringTarget`: the target key is bound to a typed slot
+///   (Int64 / Bool / Timestamp / DictRef / …) or, for `MmapSlice`,
+///   the callsite couldn't supply the file view. Surfaced as
+///   "target field is not a string".
+enum class ContinuationSpliceOutcome : uint8_t
+{
+    Ok,
+    MissingTarget,
+    NonStringTarget,
+};
+
 /// Format-specific record decoder for the streaming pipeline.
 /// `RunStreamingParseLoop` feeds one record at a time and stays
 /// format-agnostic; per-format code implements this concept.

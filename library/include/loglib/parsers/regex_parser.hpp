@@ -44,9 +44,20 @@ struct AdvancedParserOptions;
 /// evaluation.
 ///
 /// Known limits:
-/// - Patterns must match a single line. Multi-line records (stack
-///   traces) are out of scope and surface as one parse error per
-///   line.
+/// - The pattern itself must match a single line. Records that span
+///   multiple physical lines (stack traces, wrapped JSON blobs) are
+///   supported when the template opts in via
+///   `RegexTemplate::continuationMode`: `Indented` folds any line
+///   whose first byte is a space/tab into the previous record's
+///   last named capture, and `UntilNextHeader` folds every line
+///   until the next line matches the optional `headerAnchor` (or
+///   the full pattern when no anchor is set). Templates that leave
+///   `continuationMode == None` (the default) parse strictly line-
+///   by-line and surface any non-matching line as a parse error.
+/// - Custom regex patterns entered directly via
+///   `File → Open Network Stream…` always use `continuationMode ==
+///   None`; save them as a template first to enable multi-line
+///   folding.
 /// - The pattern is parser configuration, not file content, so
 ///   `IsValid` only auto-detects files matching a template from
 ///   the merged catalog (built-ins ∪ user templates registered

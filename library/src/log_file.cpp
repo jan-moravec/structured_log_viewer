@@ -108,10 +108,10 @@ std::string LogFile::GetLine(size_t lineNumber) const
     // Multi-line record: extend the stop offset to the post-newline
     // position of the record's LAST physical line so `GetLine` returns
     // the whole joined record (header + all continuation lines with
-    // their internal '\n' bytes preserved). Empty map short-circuits
-    // for single-line-only files.
+    // their internal '\n' bytes preserved). `HasMultiLineRecords()`
+    // short-circuits for single-line-only files (the common case).
     size_t stopLine = lineNumber + 1;
-    if (!mMultiLineSpans.empty())
+    if (HasMultiLineRecords())
     {
         const auto it = mMultiLineSpans.find(lineNumber);
         if (it != mMultiLineSpans.end() && it->second + 1 < mLineOffsets.size())

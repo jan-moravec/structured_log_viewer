@@ -17,6 +17,7 @@ void BufferingSink::OnStarted()
 {
     mLines.clear();
     mLineOffsets.clear();
+    mMultiLineSpans.clear();
     mErrors.clear();
     mFinished = false;
 }
@@ -37,6 +38,14 @@ void BufferingSink::OnBatch(StreamedBatch batch)
             mLineOffsets.end(),
             std::make_move_iterator(batch.localLineOffsets.begin()),
             std::make_move_iterator(batch.localLineOffsets.end())
+        );
+    }
+    if (!batch.multiLineSpans.empty())
+    {
+        mMultiLineSpans.insert(
+            mMultiLineSpans.end(),
+            std::make_move_iterator(batch.multiLineSpans.begin()),
+            std::make_move_iterator(batch.multiLineSpans.end())
         );
     }
     if (!batch.errors.empty())
@@ -61,10 +70,23 @@ LogData BufferingSink::TakeData()
 {
     // Flush line offsets into the LogFile before moving the source
     // into LogData so `GetLine(i)` works on the returned data.
-    if (mSource && !mLineOffsets.empty())
+    // Multi-line spans must be registered *after* the offsets so
+    // `GetLine(headerLineId)` can look up the widened stop offset.
+    if (mSource)
     {
-        mSource->File().AppendLineOffsets(mLineOffsets);
-        mLineOffsets.clear();
+        if (!mLineOffsets.empty())
+        {
+            mSource->File().AppendLineOffsets(mLineOffsets);
+            mLineOffsets.clear();
+        }
+        if (!mMultiLineSpans.empty())
+        {
+            for (const auto &span : mMultiLineSpans)
+            {
+                mSource->File().RegisterMultiLineRecord(span.headerLineId, span.lastLineId);
+            }
+            mMultiLineSpans.clear();
+        }
     }
     return {std::move(mSource), std::move(mLines), std::move(mKeys)};
 }

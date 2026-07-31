@@ -49,8 +49,10 @@ constexpr size_t STREAMING_READ_BUFFER_SIZE = 64 * 1024;
 
 /// Extend @p targetKey's `OwnedString` bytes inside @p ownedArena with
 /// @p continuationBytes (already prefixed with any needed separators).
-/// Returns true if the field was found and extended, false otherwise
-/// (unknown target, or target is a non-string type — orphan case).
+/// Returns `Ok` if the field was found and extended, `MissingTarget`
+/// when the key isn't present in the values (e.g. an optional PCRE2
+/// group that didn't match), or `NonStringTarget` when the target
+/// slot is typed / a `MmapSlice` the caller can't materialise.
 ///
 /// `mmapBytes` is the memory-mapped file view (only meaningful for
 /// the static pipeline where zero-copy `MmapSlice` values can appear).
@@ -60,14 +62,18 @@ constexpr size_t STREAMING_READ_BUFFER_SIZE = 64 * 1024;
 ///
 /// `Monostate` (a bare `key=` with no value) is promoted to
 /// `OwnedString` in-place, minus the would-be leading '\n' separator.
-inline bool ExtendContinuationTarget(
+inline ContinuationSpliceOutcome ExtendContinuationTarget(
     std::vector<std::pair<KeyId, CompactLogValue>> &values, std::string &ownedArena, KeyId targetKey,
     std::string_view continuationBytes, std::string_view mmapBytes = std::string_view{}
 )
 {
-    if (targetKey == INVALID_KEY_ID || continuationBytes.empty())
+    if (targetKey == INVALID_KEY_ID)
     {
-        return targetKey != INVALID_KEY_ID; // empty continuation on a known target is a no-op success
+        return ContinuationSpliceOutcome::MissingTarget;
+    }
+    if (continuationBytes.empty())
+    {
+        return ContinuationSpliceOutcome::Ok;
     }
 
     for (auto &kv : values)
@@ -106,7 +112,7 @@ inline bool ExtendContinuationTarget(
                     v.payload = newOffset;
                     v.aux = static_cast<uint32_t>(static_cast<size_t>(length) + continuationBytes.size());
                 }
-                return true;
+                return ContinuationSpliceOutcome::Ok;
             }
             case CompactTag::Monostate:
             {
@@ -123,7 +129,7 @@ inline bool ExtendContinuationTarget(
                 v.payload = ownedArena.size();
                 v.aux = static_cast<uint32_t>(bytes.size());
                 ownedArena.append(bytes.data(), bytes.size());
-                return true;
+                return ContinuationSpliceOutcome::Ok;
             }
             case CompactTag::MmapSlice:
             {
@@ -137,7 +143,7 @@ inline bool ExtendContinuationTarget(
                 const uint32_t length = v.aux;
                 if (mmapBytes.empty() || offset + length > mmapBytes.size())
                 {
-                    return false;
+                    return ContinuationSpliceOutcome::NonStringTarget;
                 }
                 const uint64_t newOffset = ownedArena.size();
                 ownedArena.append(mmapBytes.data() + offset, length);
@@ -145,7 +151,7 @@ inline bool ExtendContinuationTarget(
                 v.tag = CompactTag::OwnedString;
                 v.payload = newOffset;
                 v.aux = static_cast<uint32_t>(static_cast<size_t>(length) + continuationBytes.size());
-                return true;
+                return ContinuationSpliceOutcome::Ok;
             }
             case CompactTag::DictRef:
             case CompactTag::Int64:
@@ -156,12 +162,12 @@ inline bool ExtendContinuationTarget(
                 // Non-string target: can't splice text into it
                 // without corrupting the type. Template validation
                 // should have rejected this at load-time; if it
-                // reaches here, treat as orphan.
-                return false;
+                // reaches here, treat as an orphan / drop the bytes.
+                return ContinuationSpliceOutcome::NonStringTarget;
         }
-        return false;
+        return ContinuationSpliceOutcome::NonStringTarget;
     }
-    return false; // Target key not present in the values.
+    return ContinuationSpliceOutcome::MissingTarget;
 }
 
 /// Format-agnostic live-tail entry point. Drains `source.Producer()`
@@ -247,10 +253,60 @@ void RunStreamingParseLoop(
         std::vector<std::pair<KeyId, CompactLogValue>> compactValues;
         size_t startLineNumber = 0; // physical line number of the header.
         KeyId continuationTarget = INVALID_KEY_ID;
-        std::string continuationBytes; // "\ncont1\ncont2" (starts with '\n' when non-empty).
+        // "\ncont1[\ncont2...]" -- always leads with '\n' when non-empty,
+        // because a `PendingRecord` only exists after an `Emit` (so
+        // `rawText` is the non-empty header line and the first
+        // Continue unconditionally prepends a separator).
+        std::string continuationBytes;
         std::chrono::steady_clock::time_point openedAt;
+        /// True iff `continuationTarget` maps to a string-typed slot
+        /// in `compactValues`. When false, incoming `Continue` lines
+        /// are dropped without buffering (see `droppedContinuationLines`)
+        /// -- otherwise a live stream that keeps emitting continuations
+        /// for a record whose target is missing / typed would grow
+        /// `continuationBytes` unbounded until the next header.
+        bool continuationAcceptsText = false;
+        /// Count of `Continue` lines dropped for this record because
+        /// `continuationAcceptsText == false`. Surfaced at commit as
+        /// a single "target not present / not a string" error.
+        size_t droppedContinuationLines = 0;
     };
     std::optional<PendingRecord> pending;
+
+    // True iff @p key resolves to an extend-safe slot in @p values.
+    // Used to gate `Continue`-line buffering; false-return causes the
+    // loop to count-and-drop instead of accumulating bytes into a
+    // record whose commit-time splice would fail anyway.
+    auto canAcceptContinuation =
+        [](std::span<const std::pair<KeyId, CompactLogValue>> values, KeyId key) -> bool {
+        if (key == INVALID_KEY_ID)
+        {
+            return false;
+        }
+        for (const auto &kv : values)
+        {
+            if (kv.first != key)
+            {
+                continue;
+            }
+            switch (kv.second.tag)
+            {
+                case CompactTag::OwnedString:
+                case CompactTag::Monostate:
+                case CompactTag::MmapSlice:
+                    return true;
+                case CompactTag::DictRef:
+                case CompactTag::Int64:
+                case CompactTag::Uint64:
+                case CompactTag::Double:
+                case CompactTag::Bool:
+                case CompactTag::Timestamp:
+                    return false;
+            }
+            return false;
+        }
+        return false;
+    };
 
     // Consecutive orphan-continuation lines (a stack trace pasted at
     // the top of a stream, a broken chunk that starts mid-record,
@@ -293,22 +349,35 @@ void RunStreamingParseLoop(
 
         if (!rec.continuationBytes.empty())
         {
-            const bool extended =
+            const ContinuationSpliceOutcome outcome =
                 ExtendContinuationTarget(rec.compactValues, rec.ownedArena, rec.continuationTarget, rec.continuationBytes);
-            if (extended)
+            if (outcome == ContinuationSpliceOutcome::Ok)
             {
                 rec.rawText.append(rec.continuationBytes);
             }
             else
             {
-                // Target field can't accept text (e.g. typed value,
-                // MmapSlice fallback, or key not present). Surface
-                // one error per orphaned run — the header record
-                // still emits cleanly with just its own bytes.
+                // Should be unreachable when `continuationAcceptsText`
+                // gating works: bytes were only buffered because the
+                // target was extend-safe. Keep defensive error path
+                // in case a future refactor re-enables buffering.
                 coalescer.Pending().errors.emplace_back(fmt::format(
-                    "Continuation lines dropped on line {}: target field is not a string.", rec.startLineNumber
+                    "Continuation lines dropped on line {}: {}.",
+                    rec.startLineNumber,
+                    outcome == ContinuationSpliceOutcome::MissingTarget
+                        ? "target field is not present in the record"
+                        : "target field is not a string"
                 ));
             }
+        }
+        if (rec.droppedContinuationLines > 0)
+        {
+            coalescer.Pending().errors.emplace_back(fmt::format(
+                "Continuation lines dropped on line {} ({} line{}): target field is not present in the record or is not a string.",
+                rec.startLineNumber,
+                rec.droppedContinuationLines,
+                rec.droppedContinuationLines == 1 ? "" : "s"
+            ));
         }
 
         std::sort(rec.compactValues.begin(), rec.compactValues.end(), [](const auto &a, const auto &b) {
@@ -360,11 +429,23 @@ void RunStreamingParseLoop(
             if (pending)
             {
                 flushOrphanRun();
-                if (!pending->continuationBytes.empty() || !pending->rawText.empty())
+                if (pending->continuationAcceptsText)
                 {
+                    // The header line's own bytes are always in
+                    // `rawText`, so `continuationBytes` gets a leading
+                    // '\n' separator from the very first continuation.
                     pending->continuationBytes.push_back('\n');
+                    pending->continuationBytes.append(trimmed.data(), trimmed.size());
                 }
-                pending->continuationBytes.append(trimmed.data(), trimmed.size());
+                else
+                {
+                    // Target field is missing or typed. Buffering the
+                    // bytes would grow `continuationBytes` unbounded
+                    // for a hot producer that keeps emitting
+                    // continuations before the next header. Count and
+                    // drop; a single summary error is surfaced at commit.
+                    ++pending->droppedContinuationLines;
+                }
             }
             else
             {
@@ -410,6 +491,8 @@ void RunStreamingParseLoop(
         {
             fresh.continuationTarget = decoder.LastContinuationTarget();
         }
+        fresh.continuationAcceptsText =
+            canAcceptContinuation(std::span<const std::pair<KeyId, CompactLogValue>>(fresh.compactValues), fresh.continuationTarget);
         pending = std::move(fresh);
 
         // Reset the moved-from scratch buffers to a known-empty

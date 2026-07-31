@@ -367,9 +367,9 @@ void LogTable::AppendBatch(StreamedBatch batch)
     // Snapshot before append so slice back-fill only touches new rows.
     const size_t oldLineCount = mData.Lines().size();
 
-    if (!batch.lines.empty() || !batch.localLineOffsets.empty())
+    if (!batch.lines.empty() || !batch.localLineOffsets.empty() || !batch.multiLineSpans.empty())
     {
-        mData.AppendBatch(std::move(batch.lines), batch.localLineOffsets);
+        mData.AppendBatch(std::move(batch.lines), batch.localLineOffsets, batch.multiLineSpans);
     }
 
     if (!batch.newKeys.empty())

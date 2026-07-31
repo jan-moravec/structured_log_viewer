@@ -348,14 +348,15 @@ public:
                         const std::string_view mmapView(
                             fileBegin, fileBegin ? static_cast<size_t>(fileEnd - fileBegin) : 0
                         );
-                        const bool ok = loglib::internal::ExtendContinuationTarget(
-                            mutableValues,
-                            parsed.ownedStringsArena,
-                            lastRecordContinuationTarget,
-                            continuation,
-                            mmapView
-                        );
-                        if (ok)
+                        const loglib::internal::ContinuationSpliceOutcome outcome =
+                            loglib::internal::ExtendContinuationTarget(
+                                mutableValues,
+                                parsed.ownedStringsArena,
+                                lastRecordContinuationTarget,
+                                continuation,
+                                mmapView
+                            );
+                        if (outcome == loglib::internal::ContinuationSpliceOutcome::Ok)
                         {
                             const size_t headerLineId = parsed.lines.back().LineId();
                             parsed.lines.pop_back();

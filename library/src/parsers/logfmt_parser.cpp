@@ -476,14 +476,14 @@ void DecodeLogfmtBatch(
                 const std::string_view mmapView(
                     fileBegin, fileBegin ? static_cast<size_t>(fileEnd - fileBegin) : 0
                 );
-                const bool ok = internal::ExtendContinuationTarget(
+                const internal::ContinuationSpliceOutcome outcome = internal::ExtendContinuationTarget(
                     mutableValues,
                     parsed.ownedStringsArena,
                     lastRecordContinuationTarget,
                     continuation,
                     mmapView
                 );
-                if (ok)
+                if (outcome == internal::ContinuationSpliceOutcome::Ok)
                 {
                     // Rebuild the LogLine with the extended values. We
                     // preserve the header's lineId (record identity).
@@ -497,7 +497,9 @@ void DecodeLogfmtBatch(
                 {
                     parsed.errors.push_back(internal::ParsedLineError{
                         .relativeLine = relativeLineNumber,
-                        .body = "Continuation lines dropped: target field is not a string.",
+                        .body = outcome == internal::ContinuationSpliceOutcome::MissingTarget
+                            ? "Continuation lines dropped: target field is not present in the record."
+                            : "Continuation lines dropped: target field is not a string.",
                     });
                 }
             }
@@ -613,7 +615,11 @@ void DecodeLogfmtBatch(
 class LogfmtLineDecoder
 {
 public:
-    LogfmtLineDecoder() = default;
+    // Multi-line behaviour is opt-in via the explicit constructor
+    // so tests / callers that don't route through `ParserOptions`
+    // cannot silently pick up continuation folding by default-
+    // constructing the decoder.
+    LogfmtLineDecoder() = delete;
 
     explicit LogfmtLineDecoder(bool multiline) noexcept : mMultiline(multiline)
     {

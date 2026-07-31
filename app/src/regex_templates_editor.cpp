@@ -628,9 +628,15 @@ void RegexTemplatesEditor::OnDuplicateClicked()
     mSampleLinesEdit->setReadOnly(false);
     mAutoDetectCheck->setEnabled(true);
     mPrioritySpin->setEnabled(true);
+    mContinuationModeCombo->setEnabled(true);
+    mHeaderAnchorEdit->setReadOnly(false);
     mDescriptionEdit->setReadOnly(false);
     mDeleteButton->setEnabled(false);
     mDuplicateButton->setEnabled(false);
+    // Duplicating a built-in inherits its mode; sync so the anchor
+    // field's enabled state reflects the just-loaded mode (rather
+    // than lagging behind whatever the previous selection was).
+    SyncHeaderAnchorEnabled();
 
     MarkDirty();
     mNameEdit->setFocus();
@@ -1058,7 +1064,19 @@ loglib::RegexTemplate RegexTemplatesEditor::GatherForm() const
     t.priority = mPrioritySpin->value();
     t.continuationMode =
         static_cast<loglib::ContinuationMode>(mContinuationModeCombo->currentData().toInt());
-    t.headerAnchor = mHeaderAnchorEdit->text().trimmed().toStdString();
+    // `headerAnchor` is only honoured in `UntilNextHeader` mode; drop
+    // any stale text a user may have typed and then switched away
+    // from so it does not round-trip to disk (the runtime would
+    // silently ignore it, but a persisted JSON with a stray anchor
+    // is confusing on re-open).
+    if (t.continuationMode == loglib::ContinuationMode::UntilNextHeader)
+    {
+        t.headerAnchor = mHeaderAnchorEdit->text().trimmed().toStdString();
+    }
+    else
+    {
+        t.headerAnchor.clear();
+    }
     t.description = mDescriptionEdit->toPlainText().toStdString();
     return t;
 }
