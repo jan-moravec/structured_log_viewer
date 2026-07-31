@@ -311,8 +311,12 @@ test_common::LogFormat PythonTracebackFormat(std::size_t everyN)
 
 /// Python-traceback header pattern. Two named groups (level + message)
 /// so `LastContinuationTarget` folds continuation bytes into `message`
-/// -- the last named group in source order.
-constexpr const char PYTHON_TRACEBACK_PATTERN[] = R"(^(?<level>DEBUG|INFO|WARN|WARNING|ERROR|CRITICAL): (?<message>.*)$)";
+/// -- the last named group in source order. The alternation covers every
+/// level `GenerateRandomLogRecord` may produce (`trace`/`debug`/`info`/
+/// `warning`/`error`/`fatal`, uppercased by `PythonTracebackFormat`)
+/// plus the conventional Python aliases (`WARN`, `CRITICAL`).
+constexpr const char PYTHON_TRACEBACK_PATTERN[] =
+    R"(^(?<level>TRACE|DEBUG|INFO|WARN|WARNING|ERROR|CRITICAL|FATAL): (?<message>.*)$)";
 
 } // namespace
 
