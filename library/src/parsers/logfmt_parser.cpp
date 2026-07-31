@@ -400,6 +400,11 @@ void DecodeLogfmtBatch(
     const char *fileEnd = batch.fileEnd;
     const char *fileBegin = source.File().Data();
 
+    if (fileBegin == nullptr || cursor == nullptr || end == nullptr || cursor == end)
+    {
+        return;
+    }
+
     const auto batchBytes = static_cast<size_t>(end - cursor);
     const size_t estimatedLines = (batchBytes / 64) + 1;
     parsed.lines.reserve(estimatedLines);
@@ -544,9 +549,9 @@ void DecodeLogfmtBatch(
             // Save the span being sealed; Stage C handles the batch tail.
             if (multiline && !parsed.lines.empty() && tailLastPhysical > tailHeaderPhysical)
             {
-                parsed.completedMultiLineSpans.push_back(
-                    internal::ParsedPipelineBatch::MultiLineSpan{tailHeaderPhysical, tailLastPhysical}
-                );
+            parsed.completedMultiLineSpans.push_back(internal::ParsedPipelineBatch::MultiLineSpan{
+                .headerPhysicalLine = tailHeaderPhysical, .lastPhysicalLine = tailLastPhysical
+            });
             }
 
             LogLine logLine(std::move(values), keys, source, relativeLineNumber - 1);

@@ -904,9 +904,9 @@ void DecodeRegexBatch(
         if (continuationMode != ContinuationMode::None && !parsed.lines.empty()
             && tailLastPhysical > tailHeaderPhysical)
         {
-            parsed.completedMultiLineSpans.push_back(
-                internal::ParsedPipelineBatch::MultiLineSpan{tailHeaderPhysical, tailLastPhysical}
-            );
+            parsed.completedMultiLineSpans.push_back(internal::ParsedPipelineBatch::MultiLineSpan{
+                .headerPhysicalLine = tailHeaderPhysical, .lastPhysicalLine = tailLastPhysical
+            });
         }
 
         // `LogLine` requires KeyId order, unlike source-order captures.

@@ -623,7 +623,7 @@ TEST_CASE(
     using namespace loglib;
 
     const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
-    RegexTemplate extra{
+    const RegexTemplate extra{
         .name = "test-indented-multiline",
         .pattern = pattern,
         .sampleLines = {"info hello"},
@@ -691,7 +691,7 @@ TEST_CASE(
     using namespace loglib;
 
     const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
-    RegexTemplate extra{
+    const RegexTemplate extra{
         .name = "test-stream-multiline-blank",
         .pattern = pattern,
         .sampleLines = {"info hello"},
@@ -753,7 +753,7 @@ TEST_CASE(
     using namespace loglib;
 
     const std::string pattern = R"(^\[(?<level>\w+)\]\s+(?<message>.*)$)";
-    RegexTemplate extra{
+    const RegexTemplate extra{
         .name = "test-header-multiline",
         .pattern = pattern,
         .sampleLines = {"[ERROR] boom"},
@@ -808,7 +808,7 @@ TEST_CASE(
     using namespace loglib;
 
     const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
-    RegexTemplate extra{
+    const RegexTemplate extra{
         .name = "test-legacy-singleline",
         .pattern = pattern,
         .sampleLines = {"info hello"},
@@ -855,7 +855,7 @@ TEST_CASE(
     using namespace loglib;
 
     const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
-    RegexTemplate extra{
+    const RegexTemplate extra{
         .name = "test-static-indented",
         .pattern = pattern,
         .sampleLines = {"info hello"},
@@ -913,7 +913,7 @@ TEST_CASE(
     using namespace loglib;
 
     const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
-    RegexTemplate extra{
+    const RegexTemplate extra{
         .name = "test-static-crossbatch",
         .pattern = pattern,
         .sampleLines = {"info hello"},
@@ -943,8 +943,7 @@ TEST_CASE(
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
-    RegexParser parser{pattern};
-    parser.ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced, std::optional<std::string_view>{pattern});
+    RegexParser::ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced, std::optional<std::string_view>{pattern});
 
     auto data = sink.TakeData();
     const auto errors = sink.TakeErrors();
@@ -966,7 +965,7 @@ TEST_CASE(
     CHECK(m0->contains("Baz.java:7"));
     CHECK(m0->contains("Wibble.java:99"));
 
-    LogFile &parsedFile = sourcePtr->File();
+    const LogFile &parsedFile = sourcePtr->File();
     REQUIRE(parsedFile.GetLineCount() == 5);
     CHECK(parsedFile.GetLine(1) == "\tat com.example.Foo.bar(Foo.java:42)");
     CHECK(parsedFile.GetLine(2) == "\tat com.example.Baz.qux(Baz.java:7)");
@@ -991,7 +990,7 @@ TEST_CASE(
     using namespace loglib;
 
     const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
-    RegexTemplate extra{
+    const RegexTemplate extra{
         .name = "test-crossbatch-blank-leading",
         .pattern = pattern,
         .sampleLines = {"info hello"},
@@ -1020,8 +1019,7 @@ TEST_CASE(
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
-    RegexParser parser{pattern};
-    parser.ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced, std::optional<std::string_view>{pattern});
+    RegexParser::ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced, std::optional<std::string_view>{pattern});
 
     auto data = sink.TakeData();
     const auto errors = sink.TakeErrors();
@@ -1032,9 +1030,9 @@ TEST_CASE(
     REQUIRE(errors.empty());
     REQUIRE(data.Lines().size() == 2);
 
-    LogFile &parsedFile = sourcePtr->File();
+    const LogFile &parsedFile = sourcePtr->File();
     REQUIRE(parsedFile.GetLineCount() == 4);
-    CHECK(parsedFile.GetLine(1) == "");
+    CHECK(parsedFile.GetLine(1).empty());
     CHECK(parsedFile.GetLine(2) == "\tat com.example.Foo.bar(Foo.java:42)");
     CHECK(parsedFile.GetLine(3) == "info recovered");
 
@@ -1061,7 +1059,7 @@ TEST_CASE(
     using namespace loglib;
 
     const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
-    RegexTemplate extra{
+    const RegexTemplate extra{
         .name = "test-crossbatch-blank-no-cont",
         .pattern = pattern,
         .sampleLines = {"info hello"},
@@ -1089,8 +1087,7 @@ TEST_CASE(
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
-    RegexParser parser{pattern};
-    parser.ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced, std::optional<std::string_view>{pattern});
+    RegexParser::ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced, std::optional<std::string_view>{pattern});
 
     auto data = sink.TakeData();
     const auto errors = sink.TakeErrors();
@@ -1277,7 +1274,7 @@ TEST_CASE(
     using namespace loglib;
 
     const std::string pattern = R"(^(?<ts>\d{4}-\d{2}-\d{2})\s+(?<level>\w+)\s+(?<message>.*)$)";
-    RegexTemplate anchored{
+    const RegexTemplate anchored{
         .name = "test-header-anchor-streaming",
         .pattern = pattern,
         .sampleLines = {"2026-01-01 INFO ok"},
@@ -1339,7 +1336,7 @@ TEST_CASE(
     using namespace loglib;
 
     const std::string pattern = R"(^(?<ts>\d{4}-\d{2}-\d{2})\s+(?<level>\w+)\s+(?<message>.*)$)";
-    RegexTemplate anchored{
+    const RegexTemplate anchored{
         .name = "test-header-anchor-static",
         .pattern = pattern,
         .sampleLines = {"2026-01-01 INFO ok"},
@@ -1403,7 +1400,7 @@ TEST_CASE(
     using namespace loglib;
 
     const std::string pattern = R"(^(?<ts>\d{4}-\d{2}-\d{2})\s+(?<level>\w+)\s+(?<message>.*)$)";
-    RegexTemplate bad{
+    const RegexTemplate bad{
         .name = "test-header-anchor-bad-streaming",
         .pattern = pattern,
         .sampleLines = {"2026-01-01 INFO ok"},
@@ -1447,7 +1444,7 @@ TEST_CASE(
     using namespace loglib;
 
     const std::string pattern = R"(^(?<ts>\d{4}-\d{2}-\d{2})\s+(?<level>\w+)\s+(?<message>.*)$)";
-    RegexTemplate bad{
+    const RegexTemplate bad{
         .name = "test-header-anchor-bad-static",
         .pattern = pattern,
         .sampleLines = {"2026-01-01 INFO ok"},
@@ -1498,7 +1495,7 @@ TEST_CASE(
         "info recovered\n";
 
     auto runOnce = [&](const std::string &anchor) {
-        RegexTemplate extra{
+        const RegexTemplate extra{
             .name = "test-header-anchor-ignored",
             .pattern = pattern,
             .sampleLines = {"info ok"},

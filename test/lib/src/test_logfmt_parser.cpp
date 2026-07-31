@@ -795,7 +795,7 @@ TEST_CASE(
     CHECK(m0->contains("main.main()"));
     CHECK(m0->contains("/app/main.go:10"));
 
-    LogFile &parsedFile = sourcePtr->File();
+    const LogFile &parsedFile = sourcePtr->File();
     REQUIRE(parsedFile.GetLineCount() == 5);
     CHECK(parsedFile.GetLine(1) == "\tgoroutine 1 [running]:");
     CHECK(parsedFile.GetLine(2) == "\tmain.main()");
@@ -845,9 +845,9 @@ TEST_CASE(
     REQUIRE(errors.empty());
     REQUIRE(data.Lines().size() == 2);
 
-    LogFile &parsedFile = sourcePtr->File();
+    const LogFile &parsedFile = sourcePtr->File();
     REQUIRE(parsedFile.GetLineCount() == 4);
-    CHECK(parsedFile.GetLine(1) == "");
+    CHECK(parsedFile.GetLine(1).empty());
     CHECK(parsedFile.GetLine(2) == "\tgoroutine 1 [running]:");
     CHECK(parsedFile.GetLine(3) == "level=info msg=\"recovered\"");
 

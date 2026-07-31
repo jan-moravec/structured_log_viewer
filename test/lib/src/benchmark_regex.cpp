@@ -181,7 +181,7 @@ struct EveryN
 {
     std::size_t stride = 10;
     std::size_t counter = 0;
-    bool tick() noexcept
+    bool Tick() noexcept
     {
         const bool fire = stride != 0 && ((counter % stride) == (stride - 1));
         ++counter;
@@ -214,7 +214,7 @@ test_common::LogFormat MultilineIndentedFormat(test_common::LogFormat base, std:
         .writeLine =
             [base = std::move(base), gate](const test_common::LogRecord &record) {
                 std::string out = base.writeLine(record);
-                if (gate->tick())
+                if (gate->Tick())
                 {
                     out += "\n\tat com.example.Foo.bar(Foo.java:42)"
                            "\n\tat com.example.Baz.qux(Baz.java:73)"
@@ -247,7 +247,7 @@ test_common::LogFormat PythonTracebackFormat(std::size_t everyN)
                     message = "message";
                 }
                 std::string out = level + ": " + message;
-                if (gate->tick())
+                if (gate->Tick())
                 {
                     out += "\nTraceback (most recent call last):"
                            "\n  File \"foo.py\", line 12, in <module>"
@@ -337,11 +337,17 @@ TEST_CASE(
     loglib::SetExtraRegexTemplates(std::span<const RegexTemplate>(extras));
     struct ExtrasGuard
     {
+        ExtrasGuard() = default;
+        ExtrasGuard(const ExtrasGuard &) = delete;
+        ExtrasGuard(ExtrasGuard &&) = delete;
+        ExtrasGuard &operator=(const ExtrasGuard &) = delete;
+        ExtrasGuard &operator=(ExtrasGuard &&) = delete;
         ~ExtrasGuard()
         {
             loglib::SetExtraRegexTemplates({});
         }
-    } guard;
+    };
+    const ExtrasGuard guard;
     (void)guard;
 
     const test_common::TimestampPolicy timestamps = DeterministicBenchmarkTimestamps();

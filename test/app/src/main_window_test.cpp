@@ -20807,7 +20807,7 @@ private slots:
 
     void TestLogTableViewCopyMultipleRowsEscapesEmbeddedNewlines()
     {
-        QTemporaryDir tmp;
+        const QTemporaryDir tmp;
         QVERIFY2(tmp.isValid(), "temp dir must be creatable");
         const QString fixturePath = tmp.filePath(QStringLiteral("multiline.log"));
         {
@@ -20858,7 +20858,7 @@ private slots:
 
     void TestLogTableViewCopyMultipleRowsEscapesBackslashesBeforeNewlines()
     {
-        QTemporaryDir tmp;
+        const QTemporaryDir tmp;
         QVERIFY2(tmp.isValid(), "temp dir must be creatable");
         const QString fixturePath = tmp.filePath(QStringLiteral("multiline_bs.log"));
         {
@@ -20902,7 +20902,7 @@ private slots:
 
     void TestLogTableViewCopySingleRowPreservesEmbeddedNewlines()
     {
-        QTemporaryDir tmp;
+        const QTemporaryDir tmp;
         QVERIFY2(tmp.isValid(), "temp dir must be creatable");
         const QString fixturePath = tmp.filePath(QStringLiteral("multiline_single.log"));
         {
@@ -20943,7 +20943,7 @@ private slots:
 
     void TestRecordDetailDockRendersMultilineMessage()
     {
-        QTemporaryDir tmp;
+        const QTemporaryDir tmp;
         QVERIFY2(tmp.isValid(), "temp dir must be creatable");
         const QString fixturePath = tmp.filePath(QStringLiteral("multiline_detail.log"));
         {

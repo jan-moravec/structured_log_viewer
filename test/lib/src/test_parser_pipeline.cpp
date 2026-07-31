@@ -290,6 +290,12 @@ public:
             size_t tailHeaderPhysical = 0;
             size_t tailLastPhysical = 0;
 
+            if (fileBegin == nullptr || cur == nullptr || end == nullptr)
+            {
+                parsed.totalLineCount = 0;
+                return;
+            }
+
             while (cur < end)
             {
                 const char *lineStart = cur;
@@ -438,9 +444,9 @@ public:
 
                 if (!parsed.lines.empty() && tailLastPhysical > tailHeaderPhysical)
                 {
-                    parsed.completedMultiLineSpans.push_back(
-                        loglib::internal::ParsedPipelineBatch::MultiLineSpan{tailHeaderPhysical, tailLastPhysical}
-                    );
+                    parsed.completedMultiLineSpans.push_back(loglib::internal::ParsedPipelineBatch::MultiLineSpan{
+                        .headerPhysicalLine = tailHeaderPhysical, .lastPhysicalLine = tailLastPhysical
+                    });
                 }
 
                 LogLine logLine(std::move(values), keys, *sourcePtr, relativeLineNumber - 1);
@@ -913,7 +919,7 @@ TEST_CASE(
 
     const size_t firstThreeLineBytes = std::string_view("level=info msg=first\n\tframe A1\n\tframe A2\n").size();
 
-    loglib::ParserOptions options;
+    const loglib::ParserOptions options;
     loglib::internal::AdvancedParserOptions advanced;
     advanced.threads = 1;
     advanced.batchSizeBytes = firstThreeLineBytes;
@@ -939,17 +945,17 @@ TEST_CASE(
     REQUIRE(std::holds_alternative<std::string>(msgA));
     const std::string &msgAStr = std::get<std::string>(msgA);
     INFO("record A msg: " << msgAStr);
-    CHECK(msgAStr.find("first") != std::string::npos);
-    CHECK(msgAStr.find("frame A1") != std::string::npos);
-    CHECK(msgAStr.find("frame A2") != std::string::npos);
+    CHECK(msgAStr.contains("first"));
+    CHECK(msgAStr.contains("frame A1"));
+    CHECK(msgAStr.contains("frame A2"));
 
     LogValue msgB = allLines[1]->GetValue("msg");
     REQUIRE(std::holds_alternative<std::string>(msgB));
     const std::string &msgBStr = std::get<std::string>(msgB);
     INFO("record B msg: " << msgBStr);
-    CHECK(msgBStr.find("second") != std::string::npos);
-    CHECK(msgBStr.find("frame B1") != std::string::npos);
-    CHECK(msgBStr.find("frame B2") != std::string::npos);
+    CHECK(msgBStr.contains("second"));
+    CHECK(msgBStr.contains("frame B1"));
+    CHECK(msgBStr.contains("frame B2"));
 
     std::vector<uint64_t> allOffsets;
     for (const auto &b : sink.batches)
@@ -973,7 +979,7 @@ TEST_CASE(
 
     const TempTextFile fixture(content, "test_kv_multiline_leading_cont.log");
 
-    loglib::ParserOptions options;
+    const loglib::ParserOptions options;
     loglib::internal::AdvancedParserOptions advanced;
     advanced.threads = 1;
     advanced.batchSizeBytes = std::string_view("level=error msg=first\n").size();
@@ -1025,7 +1031,7 @@ TEST_CASE(
 
     const TempTextFile fixture(content, "test_kv_orphan_continuation.log");
 
-    loglib::ParserOptions options;
+    const loglib::ParserOptions options;
     loglib::internal::AdvancedParserOptions advanced;
     advanced.threads = 1;
     advanced.batchSizeBytes = 1024 * 1024;
@@ -1049,7 +1055,7 @@ TEST_CASE(
     CHECK(totalLines == 1);
     REQUIRE(!allErrors.empty());
     INFO("first error: " << allErrors.front());
-    CHECK(allErrors.front().find("Orphaned continuation") != std::string::npos);
+    CHECK(allErrors.front().contains("Orphaned continuation"));
 }
 
 TEST_CASE(
@@ -1064,7 +1070,7 @@ TEST_CASE(
 
     const TempTextFile fixture(content, "test_kv_multiline_eof.log");
 
-    loglib::ParserOptions options;
+    const loglib::ParserOptions options;
     loglib::internal::AdvancedParserOptions advanced;
     advanced.threads = 1;
     advanced.batchSizeBytes = 1024 * 1024;
@@ -1089,7 +1095,7 @@ TEST_CASE(
     REQUIRE(std::holds_alternative<std::string>(msg));
     const std::string &msgStr = std::get<std::string>(msg);
     INFO("record msg: " << msgStr);
-    CHECK(msgStr.find("only") != std::string::npos);
-    CHECK(msgStr.find("followup 1") != std::string::npos);
-    CHECK(msgStr.find("followup 2") != std::string::npos);
+    CHECK(msgStr.contains("only"));
+    CHECK(msgStr.contains("followup 1"));
+    CHECK(msgStr.contains("followup 2"));
 }
