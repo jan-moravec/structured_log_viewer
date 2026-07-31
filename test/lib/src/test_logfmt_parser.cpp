@@ -2,6 +2,7 @@
 
 #include <loglib/bytes_producer.hpp>
 #include <loglib/file_line_source.hpp>
+#include <loglib/internal/advanced_parser_options.hpp>
 #include <loglib/internal/buffering_sink.hpp>
 #include <loglib/log_data.hpp>
 #include <loglib/log_file.hpp>
@@ -679,4 +680,154 @@ TEST_CASE("LogfmtParser streaming: final pending record commits on EOF", "[logfm
     const auto msg = AsStringView(v);
     REQUIRE(msg.has_value());
     CHECK(*msg == "trailing\n\tone continuation line\n\tanother one");
+}
+
+// -----------------------------------------------------------------------------
+// Multi-line record tests (static / file-backed pipeline)
+//
+// The streaming loop was covered above; the static path (`ParseFile`
+// -> TBB `parallel_pipeline` -> Stage C hold-back + cross-batch
+// splice) is what the GUI opens files with. `LogfmtParser` opts in
+// via `ParserOptions::multilineLogfmt` (default `true`) and drives
+// the same `ExtendContinuationTarget` helper the streaming loop uses.
+// -----------------------------------------------------------------------------
+
+TEST_CASE("LogfmtParser file: indented continuations fold via ParseFile", "[logfmt_parser][file_line_source][multiline]")
+{
+    using namespace loglib;
+
+    // Two records; the first's `msg` picks up two indented
+    // continuation lines. Mirrors the streaming test's fixture so
+    // failures on one path but not the other point at the offending
+    // pipeline.
+    const TestLogFile file{"logfmt_static_multiline.log"};
+    file.Write(
+        "level=error msg=\"boom\"\n"
+        "\tgoroutine 1 [running]:\n"
+        "\tmain.main()\n"
+        "level=info msg=\"recovered\"\n"
+    );
+
+    const LogfmtParser parser;
+    const auto result = ParseFile(parser, file.GetFilePath());
+    for (const auto &e : result.errors)
+    {
+        UNSCOPED_INFO("parse error: " << e);
+    }
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.data.Lines().size() == 2);
+
+    const KeyId kMsg = result.data.Keys().Find("msg");
+    REQUIRE(kMsg != INVALID_KEY_ID);
+    // Bind the `LogValue` to a local so `AsStringView`'s result
+    // doesn't dangle when the source is `OwnedString`.
+    const LogValue v0 = result.data.Lines()[0].GetValue(kMsg);
+    const LogValue v1 = result.data.Lines()[1].GetValue(kMsg);
+    const auto m0 = AsStringView(v0);
+    const auto m1 = AsStringView(v1);
+    REQUIRE(m0.has_value());
+    REQUIRE(m1.has_value());
+    CHECK(m0->contains("boom"));
+    CHECK(m0->contains("goroutine 1"));
+    CHECK(m0->contains("main.main()"));
+    CHECK(*m1 == "recovered");
+}
+
+TEST_CASE(
+    "LogfmtParser file: cross-batch continuation splices tail record via ParseFile",
+    "[logfmt_parser][file_line_source][multiline]"
+)
+{
+    using namespace loglib;
+
+    // Force a tiny batch size so at least one continuation line
+    // lands in the next Stage B batch and the tail-record hold-back
+    // + `SpliceCrossBatchContinuation` path is what re-joins the
+    // record. The mock-decoder tests in `test_parser_pipeline.cpp`
+    // exercise the mechanism synthetically; this test proves the
+    // real `LogfmtLineDecoder` populates `ParsedPipelineBatch` such
+    // that Stage C succeeds.
+    internal::AdvancedParserOptions advanced;
+    advanced.batchSizeBytes = 24; // deliberately smaller than one record
+
+    const TestLogFile file{"logfmt_static_crossbatch.log"};
+    file.Write(
+        "level=error msg=\"boom\"\n"
+        "\tgoroutine 1 [running]:\n"
+        "\tmain.main()\n"
+        "\t/app/main.go:10 +0x1a\n"
+        "level=info msg=\"recovered\"\n"
+    );
+
+    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
+    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    FileLineSource *sourcePtr = source.get();
+    internal::BufferingSink sink(std::move(source));
+
+    // The 4-arg advanced overload is `static`; call it via the
+    // type name so clang-tidy doesn't flag static-through-instance.
+    LogfmtParser::ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced);
+
+    auto data = sink.TakeData();
+    const auto errors = sink.TakeErrors();
+    for (const auto &e : errors)
+    {
+        UNSCOPED_INFO("parse error: " << e);
+    }
+    REQUIRE(errors.empty());
+    REQUIRE(data.Lines().size() == 2);
+
+    const KeyId kMsg = data.Keys().Find("msg");
+    REQUIRE(kMsg != INVALID_KEY_ID);
+
+    const LogValue v0 = data.Lines()[0].GetValue(kMsg);
+    const auto m0 = AsStringView(v0);
+    REQUIRE(m0.has_value());
+    // Every continuation line must land in the joined message,
+    // whichever side of the batch boundary it fell on.
+    CHECK(m0->contains("boom"));
+    CHECK(m0->contains("goroutine 1"));
+    CHECK(m0->contains("main.main()"));
+    CHECK(m0->contains("/app/main.go:10"));
+}
+
+TEST_CASE(
+    "LogfmtParser file: multilineLogfmt=false parses indented lines as bare keys",
+    "[logfmt_parser][file_line_source][multiline]"
+)
+{
+    using namespace loglib;
+
+    // Same shape as the streaming opt-out test but on the static
+    // path. With the flag off, indented follow-up lines are not
+    // continuations; each parses as N null-valued bare keys under
+    // the permissive-prose contract.
+    const TestLogFile file{"logfmt_static_multiline_disabled.log"};
+    file.Write(
+        "level=info msg=\"first record\"\n"
+        "\ttab-indented continuation\n"
+    );
+
+    const LogfmtParser parser;
+    ParserOptions options;
+    options.multilineLogfmt = false;
+
+    // Route through ParseStreaming so ParserOptions flow into the
+    // decoder; `ParseFile`'s default-options overload would reset
+    // the flag.
+    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
+    auto fileSource = std::make_unique<FileLineSource>(std::move(logFile));
+    FileLineSource *sourcePtr = fileSource.get();
+    internal::BufferingSink sink(std::move(fileSource));
+    parser.ParseStreaming(*sourcePtr, sink, options);
+
+    auto data = sink.TakeData();
+    REQUIRE(data.Lines().size() == 2);
+
+    // Row 1 must expose "tab-indented" / "continuation" as bare
+    // keys, not folded into row 0's msg.
+    const KeyId kTab = data.Keys().Find("tab-indented");
+    const KeyId kContinuation = data.Keys().Find("continuation");
+    CHECK(kTab != INVALID_KEY_ID);
+    CHECK(kContinuation != INVALID_KEY_ID);
 }
