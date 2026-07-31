@@ -247,8 +247,10 @@ void RunStreamingParseLoop(
     /// happens on `AppendLine`, which we haven't called yet.
     struct PendingRecord
     {
-        std::string rawText;    // header line's bytes; continuations get appended
-                                // on commit so `RawLine(lineId)` returns the joined form.
+        std::string rawText;    // header line's bytes; continuations (and
+                                // any interspersed blank lines) get folded
+                                // in on commit so `RawLine(lineId)` returns
+                                // the joined form.
         std::string ownedArena; // header's decoded field bytes.
         std::vector<std::pair<KeyId, CompactLogValue>> compactValues;
         size_t startLineNumber = 0; // physical line number of the header.
@@ -256,8 +258,27 @@ void RunStreamingParseLoop(
         // "\ncont1[\ncont2...]" -- always leads with '\n' when non-empty,
         // because a `PendingRecord` only exists after an `Emit` (so
         // `rawText` is the non-empty header line and the first
-        // Continue unconditionally prepends a separator).
+        // Continue unconditionally prepends a separator). Fed to
+        // `ExtendContinuationTarget` at commit so the record's
+        // continuation-target field carries the joined content.
+        // Blank lines DO NOT contribute here (they add no content), so
+        // the field value stays in step with the static pipeline's
+        // in-batch splice (which also skips blanks).
         std::string continuationBytes;
+        // What to append to `rawText` at commit. Distinct from
+        // `continuationBytes` because blank lines inside the record
+        // contribute a bare '\n' to the joined bytes (matches the
+        // static pipeline's mmap-based `LogFile::GetLine`, which
+        // includes blanks-between-continuations in the span) but
+        // contribute nothing to the field value. Empty when the
+        // record has no continuations or blanks pending.
+        std::string rawTextAppendix;
+        // Number of blank lines seen since the last continuation (or
+        // since the header, if no continuation has arrived yet).
+        // Promoted into `rawTextAppendix` when a continuation follows;
+        // discarded on commit (trailing blanks are separators, not
+        // part of the record).
+        size_t pendingBlanks = 0;
         std::chrono::steady_clock::time_point openedAt;
         /// True iff `continuationTarget` maps to a string-typed slot
         /// in `compactValues`. When false, incoming `Continue` lines
@@ -353,7 +374,7 @@ void RunStreamingParseLoop(
                 ExtendContinuationTarget(rec.compactValues, rec.ownedArena, rec.continuationTarget, rec.continuationBytes);
             if (outcome == ContinuationSpliceOutcome::Ok)
             {
-                rec.rawText.append(rec.continuationBytes);
+                rec.rawText.append(rec.rawTextAppendix);
             }
             else
             {
@@ -370,6 +391,11 @@ void RunStreamingParseLoop(
                 ));
             }
         }
+        // Trailing blanks (blanks after the last continuation, or
+        // blanks after a header that never received a continuation)
+        // are between-records separators and never make it into the
+        // record's rawText -- matches the static pipeline's in-batch
+        // semantics where `tailLast` only advances on a continuation.
         if (rec.droppedContinuationLines > 0)
         {
             coalescer.Pending().errors.emplace_back(fmt::format(
@@ -406,6 +432,16 @@ void RunStreamingParseLoop(
         if (trimmed.empty())
         {
             flushOrphanRun();
+            // Blank inside a pending record's continuation region:
+            // buffer it as a pending blank. Materialised into
+            // `rawTextAppendix` only when a following continuation
+            // confirms the record actually spans across the blank
+            // (mirrors the static pipeline's rule that blanks after
+            // the last continuation are between-records separators).
+            if (pending && pending->continuationAcceptsText)
+            {
+                ++pending->pendingBlanks;
+            }
             return;
         }
 
@@ -431,11 +467,22 @@ void RunStreamingParseLoop(
                 flushOrphanRun();
                 if (pending->continuationAcceptsText)
                 {
-                    // The header line's own bytes are always in
-                    // `rawText`, so `continuationBytes` gets a leading
-                    // '\n' separator from the very first continuation.
+                    // Promote any pending blanks into `rawTextAppendix`
+                    // as bare '\n' padding BEFORE the continuation's
+                    // separator + content. `continuationBytes`
+                    // (destined for the field) stays blank-free so the
+                    // field value doesn't sprout stray '\n' chunks the
+                    // static pipeline's in-batch splice wouldn't
+                    // produce.
+                    if (pending->pendingBlanks > 0)
+                    {
+                        pending->rawTextAppendix.append(pending->pendingBlanks, '\n');
+                        pending->pendingBlanks = 0;
+                    }
                     pending->continuationBytes.push_back('\n');
                     pending->continuationBytes.append(trimmed.data(), trimmed.size());
+                    pending->rawTextAppendix.push_back('\n');
+                    pending->rawTextAppendix.append(trimmed.data(), trimmed.size());
                 }
                 else
                 {
@@ -445,6 +492,12 @@ void RunStreamingParseLoop(
                     // continuations before the next header. Count and
                     // drop; a single summary error is surfaced at commit.
                     ++pending->droppedContinuationLines;
+                    // Blanks were buffered on the assumption a
+                    // materialising continuation would follow; here
+                    // that continuation itself is being dropped, so
+                    // discard the pending blanks too rather than
+                    // leaving them attached to a phantom continuation.
+                    pending->pendingBlanks = 0;
                 }
             }
             else

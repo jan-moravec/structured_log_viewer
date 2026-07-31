@@ -784,6 +784,14 @@ void DecodeRegexBatch(
     // tail record's header + last-fold-in.
     size_t tailHeaderPhysical = 0;
     size_t tailLastPhysical = 0;
+    // Blank lines seen in the leading region that we haven't decided
+    // about yet. If a leading continuation follows, promote them into
+    // `leadingContinuationLineCount` so they end up in the held
+    // record's multi-line span (mirrors the in-batch treatment where
+    // a blank between the header and a continuation is part of the
+    // span). If a fresh header arrives first, discard -- those blanks
+    // are separators between records, not part of the held tail.
+    size_t pendingLeadingBlanks = 0;
 
     while (cursor < end)
     {
@@ -812,6 +820,14 @@ void DecodeRegexBatch(
 
         if (line.empty())
         {
+            // Track blanks in the leading region so we can promote
+            // them to `leadingContinuationLineCount` if a continuation
+            // follows. In non-multiline mode this branch is inert
+            // (`pendingLeadingBlanks` never gets promoted).
+            if (continuationMode != ContinuationMode::None && parsed.lines.empty())
+            {
+                ++pendingLeadingBlanks;
+            }
             ++relativeLineNumber;
             continue;
         }
@@ -832,7 +848,13 @@ void DecodeRegexBatch(
             if (parsed.lines.empty())
             {
                 // Batch opens on a continuation. Stage C splices these
-                // bytes into the previously held record.
+                // bytes into the previously held record. Any blank
+                // lines that preceded this continuation in the leading
+                // region belong to the held tail's span too -- fold
+                // their physical-line count in before bumping for the
+                // current continuation.
+                parsed.leadingContinuationLineCount += pendingLeadingBlanks;
+                pendingLeadingBlanks = 0;
                 if (!parsed.leadingContinuationBytes.empty())
                 {
                     parsed.leadingContinuationBytes.push_back('\n');
@@ -900,6 +922,12 @@ void DecodeRegexBatch(
             ++relativeLineNumber;
             continue;
         }
+
+        // Fresh header: any pending leading blanks are separators, not
+        // part of the previous batch's held tail. Discard so Stage C's
+        // offset shuffle stops at the LAST leading continuation (or is
+        // a no-op if there wasn't one).
+        pendingLeadingBlanks = 0;
 
         // Before overwriting the tail-tracker with the fresh
         // header's indices, snapshot the OUTGOING record's

@@ -849,7 +849,14 @@ void LogTableView::CopySelectedRowsToClipboard()
         }
         text += rowText + QLatin1Char('\n');
     }
-    text.chop(1); // Drop the trailing newline
+    // Drop the trailing newline appended after the final row. Guard
+    // against an empty accumulator so we don't silently corrupt the
+    // clipboard when every selected row's `CopyLine` role returned
+    // an empty string (rare but possible for pure-metadata rows).
+    if (!text.isEmpty())
+    {
+        text.chop(1);
+    }
 
     QClipboard *clipboard = QApplication::clipboard();
     clipboard->setText(text);

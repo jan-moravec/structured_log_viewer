@@ -175,6 +175,22 @@ void LogFile::RegisterMultiLineRecord(size_t headerLineId, size_t lastLineId)
     {
         return; // Single-line records don't need an entry.
     }
+    // Caller contract: `AppendLineOffsets` for both `headerLineId` AND
+    // `lastLineId` must already have landed (Stage C / LogData
+    // sequence the append-then-register ordering). If either is out
+    // of range the span is a widening no-op inside `GetLine` (its
+    // own `mLineOffsets.size()` guard skips broken entries), which
+    // silently hides the bug in release. Assert here so the regression
+    // surfaces at register time instead of at random RawLine calls.
+    assert(headerLineId + 1 < mLineOffsets.size());
+    assert(lastLineId + 1 < mLineOffsets.size());
+    // Release-safe fallback: refuse to record an out-of-range span
+    // rather than growing `mMultiLineSpans` with entries `GetLine`
+    // would ignore anyway.
+    if (headerLineId + 1 >= mLineOffsets.size() || lastLineId + 1 >= mLineOffsets.size())
+    {
+        return;
+    }
     mMultiLineSpans[headerLineId] = lastLineId;
 }
 

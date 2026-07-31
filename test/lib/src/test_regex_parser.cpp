@@ -706,6 +706,86 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "RegexParser streaming: blank line between header and continuation stays in RawLine, not in field",
+    "[regex_parser][stream_line_source][multiline]"
+)
+{
+    using namespace loglib;
+
+    // Streaming used to silently drop blank lines that appeared
+    // inside a multi-line record: the pending record's `rawText`
+    // would go straight from header to continuation, so `RawLine`
+    // reported "header\n<cont>" while the on-disk / static path
+    // returned "header\n\n<cont>" for identical bytes. This fixture
+    // pins the field value (blanks not folded, matches static) and
+    // the raw joined bytes (blanks folded, also matches static).
+    // Trailing blanks after the last continuation must NOT leak
+    // into the record either.
+    const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
+    RegexTemplate extra{
+        .name = "test-stream-multiline-blank",
+        .pattern = pattern,
+        .sampleLines = {"info hello"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::Indented,
+        .headerAnchor = "",
+    };
+    const RegexTemplate extras[] = {extra};
+    const ScopedExtraTemplates registration(extras);
+
+    const RegexParser parser{std::string{pattern}};
+
+    // Record 0: header, blank, cont, blank (trailing separator).
+    // Record 1: single-line.
+    const std::string payload =
+        "error boom\n"
+        "\n"
+        "\tat com.example.Foo.bar(Foo.java:42)\n"
+        "\n"
+        "info recovered\n";
+
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+    CollectingStreamSink sink;
+    parser.ParseStreaming(source, sink, ParserOptions{});
+
+    REQUIRE(sink.finished);
+
+    std::vector<LogLine *> lines;
+    for (auto &b : sink.batches)
+    {
+        for (auto &l : b.lines)
+        {
+            lines.push_back(&l);
+        }
+    }
+    REQUIRE(lines.size() == 2);
+
+    const KeyId kMessage = sink.keys.Find("message");
+    REQUIRE(kMessage != INVALID_KEY_ID);
+    const LogValue v0 = lines[0]->GetValue(kMessage);
+    const auto m0 = AsStringView(v0);
+    REQUIRE(m0.has_value());
+    // Field value skips the blank -- one '\n' separator between
+    // header content and continuation, matching the static path's
+    // in-batch splice.
+    CHECK(*m0 == "boom\n\tat com.example.Foo.bar(Foo.java:42)");
+
+    // RawLine spans the blank as a bare '\n' (matches mmap-based
+    // `LogFile::GetLine` for the same input).
+    const std::string raw0 = source.RawLine(lines[0]->LineId());
+    CHECK(raw0.contains("boom\n\n\tat"));
+    CHECK_FALSE(raw0.contains("info recovered"));
+    // Trailing blank between the record and the next header is a
+    // separator, not part of record 0's rawText.
+    CHECK_FALSE(raw0.ends_with('\n'));
+
+    const std::string raw1 = source.RawLine(lines[1]->LineId());
+    CHECK(raw1 == "info recovered");
+}
+
+TEST_CASE(
     "RegexParser streaming: UntilNextHeader folds non-matching lines into the last named group",
     "[regex_parser][stream_line_source][multiline]"
 )
@@ -971,6 +1051,153 @@ TEST_CASE(
 
     // Second record's `LineId` used to overshoot `mLineOffsets` and
     // trigger `std::out_of_range` on the copy / detail-dock path.
+    const std::string secondRaw = sourcePtr->RawLine(data.Lines()[1].LineId());
+    CHECK(secondRaw == "info recovered");
+}
+
+TEST_CASE(
+    "RegexParser file: blank line inside cross-batch leading continuations stays in the record's span",
+    "[regex_parser][file_line_source][multiline][cross_batch]"
+)
+{
+    using namespace loglib;
+
+    // Cross-batch leading continuations used to count only actual
+    // continuation lines, ignoring blank lines interspersed with them.
+    // Stage C would then move too few offsets onto the held record
+    // and set its `lastLineIdx` short of the real last content line,
+    // making `LogFile::GetLine(headerLineId)` truncate the joined
+    // record right before the continuation. This fixture pins a
+    // blank line squarely inside the leading region so a regression
+    // to that arithmetic flips the assertion below.
+    const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
+    RegexTemplate extra{
+        .name = "test-crossbatch-blank-leading",
+        .pattern = pattern,
+        .sampleLines = {"info hello"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::Indented,
+        .headerAnchor = "",
+    };
+    const RegexTemplate extras[] = {extra};
+    const ScopedExtraTemplates registration(extras);
+
+    // Tiny batches so the header lands in batch 0 and the blank +
+    // continuation + next header land in batch 1 as leading
+    // continuations.
+    internal::AdvancedParserOptions advanced;
+    advanced.batchSizeBytes = 16;
+
+    const TestLogFile file("regex_static_crossbatch_blank.log");
+    file.Write(
+        "error boom\n"
+        "\n"
+        "\tat com.example.Foo.bar(Foo.java:42)\n"
+        "info recovered\n"
+    );
+
+    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
+    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    FileLineSource *sourcePtr = source.get();
+    internal::BufferingSink sink(std::move(source));
+
+    RegexParser parser{pattern};
+    parser.ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced, std::optional<std::string_view>{pattern});
+
+    auto data = sink.TakeData();
+    const auto errors = sink.TakeErrors();
+    for (const auto &e : errors)
+    {
+        UNSCOPED_INFO("parse error: " << e);
+    }
+    REQUIRE(errors.empty());
+    REQUIRE(data.Lines().size() == 2);
+
+    // Per-physical-line indexing must still resolve every line to
+    // its bytes -- the blank shows up as an empty string, and the
+    // continuation lives at its own physical index.
+    LogFile &parsedFile = sourcePtr->File();
+    REQUIRE(parsedFile.GetLineCount() == 4);
+    CHECK(parsedFile.GetLine(1) == "");
+    CHECK(parsedFile.GetLine(2) == "\tat com.example.Foo.bar(Foo.java:42)");
+    CHECK(parsedFile.GetLine(3) == "info recovered");
+
+    // The multi-line record's joined text must include the blank
+    // line's '\n' AND the trailing continuation.
+    const std::string joined = sourcePtr->RawLine(data.Lines()[0].LineId());
+    CHECK(joined.contains("error boom"));
+    CHECK(joined.contains("Foo.java:42"));
+    // "boom" + "\n" (line 0's terminator) + "" (blank) + "\n"
+    // (blank's terminator) is what the joined bytes should carry.
+    CHECK(joined.contains("boom\n\n\tat"));
+    CHECK_FALSE(joined.contains("info recovered"));
+
+    // Message field also sees the continuation. The blank line
+    // itself doesn't contribute any bytes to the field (matches the
+    // in-batch semantics), only its physical-line index counts.
+    const KeyId kMessage = data.Keys().Find("message");
+    REQUIRE(kMessage != INVALID_KEY_ID);
+    const LogValue v0 = data.Lines()[0].GetValue(kMessage);
+    const auto m0 = AsStringView(v0);
+    REQUIRE(m0.has_value());
+    CHECK(m0->contains("boom"));
+    CHECK(m0->contains("Foo.java:42"));
+}
+
+TEST_CASE(
+    "RegexParser file: leading blanks followed by a fresh header are not attached to the held tail",
+    "[regex_parser][file_line_source][multiline][cross_batch]"
+)
+{
+    using namespace loglib;
+
+    // Second regression axis for the pending-blank promotion logic:
+    // if the leading region contains blanks with NO continuation
+    // after them, they must NOT extend the held tail (blanks between
+    // records are separators, exactly like the in-batch case).
+    const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
+    RegexTemplate extra{
+        .name = "test-crossbatch-blank-no-cont",
+        .pattern = pattern,
+        .sampleLines = {"info hello"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::Indented,
+        .headerAnchor = "",
+    };
+    const RegexTemplate extras[] = {extra};
+    const ScopedExtraTemplates registration(extras);
+
+    internal::AdvancedParserOptions advanced;
+    advanced.batchSizeBytes = 16;
+
+    const TestLogFile file("regex_static_crossbatch_blank_no_cont.log");
+    file.Write(
+        "error boom\n"
+        "\n"
+        "info recovered\n"
+    );
+
+    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
+    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    FileLineSource *sourcePtr = source.get();
+    internal::BufferingSink sink(std::move(source));
+
+    RegexParser parser{pattern};
+    parser.ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced, std::optional<std::string_view>{pattern});
+
+    auto data = sink.TakeData();
+    const auto errors = sink.TakeErrors();
+    REQUIRE(errors.empty());
+    REQUIRE(data.Lines().size() == 2);
+
+    // `error boom` is a single-line record; the blank is a between-
+    // records separator that stays a normal physical line.
+    const std::string firstRaw = sourcePtr->RawLine(data.Lines()[0].LineId());
+    CHECK(firstRaw == "error boom");
     const std::string secondRaw = sourcePtr->RawLine(data.Lines()[1].LineId());
     CHECK(secondRaw == "info recovered");
 }

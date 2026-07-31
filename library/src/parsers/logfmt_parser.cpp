@@ -417,6 +417,12 @@ void DecodeLogfmtBatch(
     // record: header on Emit, updated on each folded continuation.
     size_t tailHeaderPhysical = 0;
     size_t tailLastPhysical = 0;
+    // Blank lines seen in the leading region that we haven't decided
+    // about yet. Promoted into `leadingContinuationLineCount` when a
+    // continuation follows (so the blank ends up in the held record's
+    // multi-line span, matching the in-batch semantics), discarded on
+    // a fresh header (where the blank is a between-records separator).
+    size_t pendingLeadingBlanks = 0;
 
     while (cursor < end)
     {
@@ -438,6 +444,13 @@ void DecodeLogfmtBatch(
 
         if (line.empty())
         {
+            // Blank line inside the leading region: track it so a
+            // following continuation can promote it into the held
+            // record's span. Inert outside multiline mode.
+            if (multiline && parsed.lines.empty())
+            {
+                ++pendingLeadingBlanks;
+            }
             relativeLineNumber++;
             continue;
         }
@@ -451,7 +464,11 @@ void DecodeLogfmtBatch(
             if (parsed.lines.empty())
             {
                 // Batch opens on a continuation. Stage C splices these
-                // bytes into the previously held record.
+                // bytes into the previously held record. Fold in any
+                // pending leading blanks first so their physical-line
+                // count is charged to the held tail's span.
+                parsed.leadingContinuationLineCount += pendingLeadingBlanks;
+                pendingLeadingBlanks = 0;
                 if (!parsed.leadingContinuationBytes.empty())
                 {
                     parsed.leadingContinuationBytes.push_back('\n');
@@ -542,6 +559,10 @@ void DecodeLogfmtBatch(
                 relativeLineNumber++;
                 continue;
             }
+
+            // Fresh header: any pending leading blanks were separators
+            // between records, not part of the previous batch's tail.
+            pendingLeadingBlanks = 0;
 
             // Before overwriting the tail-tracker with the fresh
             // header's indices, snapshot the OUTGOING record's

@@ -68,10 +68,19 @@ struct ParsedPipelineBatch
     /// open on a continuation. Only ever populated by parsers running
     /// in a multi-line mode.
     std::string leadingContinuationBytes;
-    /// Source lines consumed by `leadingContinuationBytes`. Kept
-    /// separate from `totalLineCount` (which counts them too) purely
-    /// for auditing / future accounting; Stage C uses `totalLineCount`
-    /// to advance its line-number cursor.
+    /// Physical source lines consumed by the leading-continuation
+    /// region: from the first line of the batch through the LAST
+    /// leading continuation (inclusive). Interspersed blank lines
+    /// count toward this total when they sit BETWEEN or BEFORE
+    /// leading continuations, matching the in-batch semantics where
+    /// a blank line between the header and a continuation is folded
+    /// into the multi-line span. Blank lines AFTER the last leading
+    /// continuation (i.e. immediately before the batch's first fresh
+    /// header) are NOT counted -- they belong to no record, exactly
+    /// like a blank between two single-line headers. Stage C uses
+    /// this to (a) transfer that many leading offsets from
+    /// `localLineOffsets` onto the held record's `lineOffsets` and
+    /// (b) compute `held->lastLineIdx = lineNumberDelta + count - 1`.
     size_t leadingContinuationLineCount = 0;
     /// True when this batch's LAST record may still receive
     /// continuations from the NEXT batch (multi-line mode active AND
@@ -132,8 +141,23 @@ ResolvedPipelineSettings ResolvePipelineSettings(const AdvancedParserOptions &ad
 /// tail. Outcome is shared with the streaming path's
 /// `ExtendContinuationTarget` so both surface the same error text.
 ///
-/// Fast-path elision matters because a stack trace can span N batches
-/// -- always relocating O(record) bytes per batch would be O(N²).
+/// Which path fires depends on the batch that PRECEDES this call:
+/// - Fast path (in-place append). Only reachable when the incoming
+///   batch's `ownedStringsArena` is empty, so Stage C skipped the
+///   `AppendOwnedStrings` that would have pushed the held field off
+///   the arena tail. In practice: batches consisting SOLELY of
+///   leading continuations (`parsed.lines.empty()`), which is the
+///   common shape once a stack trace is running longer than the
+///   configured batch size.
+/// - Slow / middle path (copy the field to the arena tail). Fires
+///   every time the incoming batch also had fresh records: Stage C
+///   appends the batch arena FIRST, which relocates the held field
+///   away from the tail. `SpliceCrossBatchContinuation` then has to
+///   materialise the field + new bytes at the new tail.
+///
+/// Preserving the fast path matters because a stack trace can span
+/// N batches -- always relocating O(record) bytes per batch would be
+/// O(N^2).
 inline ContinuationSpliceOutcome SpliceCrossBatchContinuation(
     LogLine &heldLine, LogFile &file, KeyId targetKey, std::string_view leadingContinuationBytes
 )

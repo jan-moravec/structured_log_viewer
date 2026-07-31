@@ -889,6 +889,71 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "LogfmtParser file: blank line inside cross-batch leading continuations stays in the record's span",
+    "[logfmt_parser][file_line_source][multiline][cross_batch]"
+)
+{
+    using namespace loglib;
+
+    // Stage C used to key the "how many leading physical lines belong
+    // to the held tail" arithmetic off `leadingContinuationLineCount`,
+    // which only tracked actual continuation lines. A blank line in
+    // the middle of the leading region would leave one physical-line
+    // offset stranded and shrink the held record's multi-line span,
+    // so `LogFile::GetLine(headerLineId)` returned only header +
+    // blank, dropping every continuation.
+    internal::AdvancedParserOptions advanced;
+    advanced.batchSizeBytes = 24;
+
+    const TestLogFile file{"logfmt_static_crossbatch_blank.log"};
+    file.Write(
+        "level=error msg=\"boom\"\n"
+        "\n"
+        "\tgoroutine 1 [running]:\n"
+        "level=info msg=\"recovered\"\n"
+    );
+
+    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
+    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    FileLineSource *sourcePtr = source.get();
+    internal::BufferingSink sink(std::move(source));
+
+    LogfmtParser::ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced);
+
+    auto data = sink.TakeData();
+    const auto errors = sink.TakeErrors();
+    for (const auto &e : errors)
+    {
+        UNSCOPED_INFO("parse error: " << e);
+    }
+    REQUIRE(errors.empty());
+    REQUIRE(data.Lines().size() == 2);
+
+    LogFile &parsedFile = sourcePtr->File();
+    REQUIRE(parsedFile.GetLineCount() == 4);
+    CHECK(parsedFile.GetLine(1) == "");
+    CHECK(parsedFile.GetLine(2) == "\tgoroutine 1 [running]:");
+    CHECK(parsedFile.GetLine(3) == "level=info msg=\"recovered\"");
+
+    // Joined bytes for the first record must extend all the way to
+    // the end of the continuation line -- blank included as a bare
+    // '\n' inside the record.
+    const std::string joined = sourcePtr->RawLine(data.Lines()[0].LineId());
+    CHECK(joined.contains("boom"));
+    CHECK(joined.contains("goroutine 1"));
+    CHECK(joined.contains("\"boom\"\n\n\tgoroutine"));
+    CHECK_FALSE(joined.contains("recovered"));
+
+    const KeyId kMsg = data.Keys().Find("msg");
+    REQUIRE(kMsg != INVALID_KEY_ID);
+    const LogValue v0 = data.Lines()[0].GetValue(kMsg);
+    const auto m0 = AsStringView(v0);
+    REQUIRE(m0.has_value());
+    CHECK(m0->contains("boom"));
+    CHECK(m0->contains("goroutine 1"));
+}
+
+TEST_CASE(
     "LogfmtParser file: multilineLogfmt=false parses indented lines as bare keys",
     "[logfmt_parser][file_line_source][multiline]"
 )
