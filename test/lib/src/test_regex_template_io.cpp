@@ -47,8 +47,6 @@ TEST_CASE("RegexTemplate JSON round-trip preserves every field", "[regex_templat
 
 TEST_CASE("ContinuationMode name / parse helpers round-trip", "[regex_templates][io]")
 {
-    // Wire spelling must stay stable: JSON files carrying these
-    // exact strings must keep loading forever.
     CHECK(ContinuationModeName(ContinuationMode::None) == "none");
     CHECK(ContinuationModeName(ContinuationMode::Indented) == "indented");
     CHECK(ContinuationModeName(ContinuationMode::UntilNextHeader) == "untilNextHeader");
@@ -80,8 +78,6 @@ TEST_CASE("RegexTemplate JSON parse fills defaults for absent fields", "[regex_t
     CHECK(parsed.autoDetect == true);
     CHECK(parsed.priority == USER_TEMPLATE_DEFAULT_PRIORITY);
     CHECK(parsed.description.empty());
-    // Pre-multi-line JSON must default to the safe single-line
-    // behaviour so existing user templates keep parsing unchanged.
     CHECK(parsed.continuationMode == ContinuationMode::None);
     CHECK(parsed.headerAnchor.empty());
 }

@@ -14,17 +14,9 @@ struct ParserOptions
 {
     StopToken stopToken{};
     std::shared_ptr<const LogConfiguration> configuration;
-    /// LogfmtParser multi-line handling: when `true`, an indented
-    /// continuation line (first byte is ` ` or `\t`) is appended to
-    /// the prior record's last field rather than emitted as its own
-    /// row of null-valued bare keys. Unindented lines behave
-    /// exactly as before (the shipped "permissive prose" contract
-    /// is preserved). Default `true` so shipped Logfmt files with
-    /// interleaved Go/Python/Java stack dumps parse cleanly out of
-    /// the box; flip to `false` in tests that need the pre-feature
-    /// row semantics.
-    ///
-    /// No effect on JSON / CSV / Regex parsers.
+    /// When enabled, Logfmt treats space- or tab-prefixed lines as
+    /// continuations of the preceding record's last source-order field.
+    /// Has no effect on other parsers.
     bool multilineLogfmt = true;
 };
 

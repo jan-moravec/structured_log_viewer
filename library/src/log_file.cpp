@@ -105,11 +105,7 @@ std::string LogFile::GetLine(size_t lineNumber) const
         throw std::out_of_range("Line number out of range: " + std::to_string(lineNumber));
     }
 
-    // Multi-line record: extend the stop offset to the post-newline
-    // position of the record's LAST physical line so `GetLine` returns
-    // the whole joined record (header + all continuation lines with
-    // their internal '\n' bytes preserved). `HasMultiLineRecords()`
-    // short-circuits for single-line-only files (the common case).
+    // Multi-line headers use the offset after their final continuation.
     size_t stopLine = lineNumber + 1;
     if (HasMultiLineRecords())
     {
@@ -175,18 +171,9 @@ void LogFile::RegisterMultiLineRecord(size_t headerLineId, size_t lastLineId)
     {
         return; // Single-line records don't need an entry.
     }
-    // Caller contract: `AppendLineOffsets` for both `headerLineId` AND
-    // `lastLineId` must already have landed (Stage C / LogData
-    // sequence the append-then-register ordering). If either is out
-    // of range the span is a widening no-op inside `GetLine` (its
-    // own `mLineOffsets.size()` guard skips broken entries), which
-    // silently hides the bug in release. Assert here so the regression
-    // surfaces at register time instead of at random RawLine calls.
+    // Both offsets must be registered before the span.
     assert(headerLineId + 1 < mLineOffsets.size());
     assert(lastLineId + 1 < mLineOffsets.size());
-    // Release-safe fallback: refuse to record an out-of-range span
-    // rather than growing `mMultiLineSpans` with entries `GetLine`
-    // would ignore anyway.
     if (headerLineId + 1 >= mLineOffsets.size() || lastLineId + 1 >= mLineOffsets.size())
     {
         return;

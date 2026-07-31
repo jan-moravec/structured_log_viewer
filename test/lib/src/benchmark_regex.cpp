@@ -173,31 +173,10 @@ TEST_CASE(
     );
 }
 
-// ---------------------------------------------------------------------------
-// Multi-line benchmarks
-// ---------------------------------------------------------------------------
-//
-// The two cases below exercise `RegexLineDecoder`'s multi-line paths on
-// 1 M-record fixtures. Every 10th record carries a synthetic stack trace
-// (three indented frames) so ~30 % of physical lines are continuations.
-// Numbers are directly comparable to the single-line Java case above:
-//   * `[java_multiline]` measures the `Indented` mode cost (one-byte
-//     header check per line).
-//   * `[untilNextHeader]` measures R5 (`PCRE2_ANCHORED | PCRE2_PARTIAL_HARD`
-//     probe per line) using a hand-authored Python-traceback-shaped
-//     template registered via `SetExtraRegexTemplates`.
-//
-// Acceptance bar (see CONTRIBUTING.md `## Benchmarking`): both cases
-// stay within ±3 % of the single-line Java case's lines/s on the same
-// hardware, i.e. the multi-line machinery must not regress the hot path
-// for records that never continue.
 
 namespace
 {
 
-/// Local counter-based "every N" gate. `writeLine` is called
-/// sequentially from `TestStructuredLogFile`'s fixture-generation loop
-/// (single-threaded) so a mutable captured counter is race-free.
 struct EveryN
 {
     std::size_t stride = 10;
@@ -210,10 +189,6 @@ struct EveryN
     }
 };
 
-/// Look up @p key inside @p record's object. Returns "" if the record
-/// is not an object or the key is missing / non-string. Duplicated
-/// from `log_format.cpp`'s private `FieldOr` so the benchmark stays
-/// self-contained without widening `test_common`'s public surface.
 std::string FieldOrEmpty(const test_common::LogRecord &record, std::string_view key)
 {
     if (!record.is_object())
@@ -230,14 +205,8 @@ std::string FieldOrEmpty(const test_common::LogRecord &record, std::string_view 
     return {};
 }
 
-/// Wrap @p base so every @p everyN-th record's line is followed by a
-/// synthetic multi-line stack trace (3 indented frames). Continuation
-/// lines are legal inside `writeLine` output — `TestStructuredLogFile`
-/// only asserts the string does not END on '\n'.
 test_common::LogFormat MultilineIndentedFormat(test_common::LogFormat base, std::size_t everyN)
 {
-    // Shared mutable state; the closure owns it and the writer loop is
-    // single-threaded so no atomic is required.
     auto gate = std::make_shared<EveryN>(EveryN{.stride = everyN});
     return test_common::LogFormat{
         .suggestedExtension = base.suggestedExtension,
@@ -256,19 +225,6 @@ test_common::LogFormat MultilineIndentedFormat(test_common::LogFormat base, std:
     };
 }
 
-/// Python-traceback-shaped format. Every 10th record spawns a synthetic
-/// traceback:
-///
-///     Traceback (most recent call last):
-///       File "foo.py", line 12, in <module>
-///         raise ValueError('x')
-///     During handling of the above exception, another exception occurred:
-///       File "foo.py", line 20, in <module>
-///         wrap()
-///
-/// The mid-block "During handling..." line is un-indented, which is
-/// exactly what forces `UntilNextHeader` mode (an `Indented`-only rule
-/// would stop folding at that line).
 test_common::LogFormat PythonTracebackFormat(std::size_t everyN)
 {
     auto gate = std::make_shared<EveryN>(EveryN{.stride = everyN});
@@ -277,8 +233,6 @@ test_common::LogFormat PythonTracebackFormat(std::size_t everyN)
         .writeHeader = [](const test_common::RecordSchema &) { return std::string{}; },
         .writeLine =
             [gate](const test_common::LogRecord &record) {
-                // Single-line header shape parsed by the template
-                // registered below: `LEVEL: message`.
                 std::string level = FieldOrEmpty(record, "level");
                 if (level.empty())
                 {
@@ -309,12 +263,6 @@ test_common::LogFormat PythonTracebackFormat(std::size_t everyN)
     };
 }
 
-/// Python-traceback header pattern. Two named groups (level + message)
-/// so `LastContinuationTarget` folds continuation bytes into `message`
-/// -- the last named group in source order. The alternation covers every
-/// level `GenerateRandomLogRecord` may produce (`trace`/`debug`/`info`/
-/// `warning`/`error`/`fatal`, uppercased by `PythonTracebackFormat`)
-/// plus the conventional Python aliases (`WARN`, `CRITICAL`).
 constexpr const char PYTHON_TRACEBACK_PATTERN[] =
     R"(^(?<level>TRACE|DEBUG|INFO|WARN|WARNING|ERROR|CRITICAL|FATAL): (?<message>.*)$)";
 
@@ -374,10 +322,6 @@ TEST_CASE(
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    // Register a Python-traceback template with `UntilNextHeader`
-    // mode so `FindTemplateByPattern` in `ParseStreaming` picks it up
-    // and drives R5's `PCRE2_ANCHORED | PCRE2_PARTIAL_HARD` probe on
-    // every non-header line.
     const std::string pattern{PYTHON_TRACEBACK_PATTERN};
     const RegexTemplate extra{
         .name = "test-python-traceback",
@@ -442,17 +386,7 @@ TEST_CASE(
 {
     BENCHMARK_REQUIRES_RELEASE_BUILD();
 
-    // Two runs on the same fixture: baseline reuses the main
-    // pattern for the header probe (shipped path, `headerAnchor
-    // == ""`), the second registers a cheap `^(?:LEVEL|...)\s`
-    // anchor. `RegexTemplate::headerAnchor` docs, CONTRIBUTING.md,
-    // and ROADMAP §6 all promise this is a real perf-tuning knob;
-    // this bench asserts the promise with a >=1.15x MB/s floor
-    // (observed win is typically 1.5-2x).
     const std::string pattern{PYTHON_TRACEBACK_PATTERN};
-    // The anchor is a strict subset of the main pattern's header
-    // recogniser — every level `PythonTracebackFormat` writes
-    // (`INFO`, `ERROR`, ...) matches this and nothing else does.
     const std::string anchor = R"(^(?:TRACE|DEBUG|INFO|WARN|WARNING|ERROR|CRITICAL|FATAL): )";
 
     const test_common::TimestampPolicy timestamps = DeterministicBenchmarkTimestamps();
@@ -471,9 +405,6 @@ TEST_CASE(
     const TestLogConfiguration configFile;
     configFile.Write(*configuration);
 
-    // Warm-up outside the timed samples so the OS page cache is
-    // populated identically for both configs. Uses the shipped
-    // (no-anchor) path.
     {
         const RegexTemplate extraNoAnchor{
             .name = "test-python-traceback-anchor",
@@ -501,13 +432,6 @@ TEST_CASE(
         loglib::SetExtraRegexTemplates({});
     }
 
-    // Interleave baseline and anchored samples so both configs
-    // see identical page-cache warmth. Time each `parserStream`
-    // call minus its `AppendBatch` accumulator — that's the
-    // "parse-loop cost" the header-probe optimisation actually
-    // affects. Timing the outer `RunStreamingFlow` would dilute
-    // the difference behind mmap, `LogTable` construction, and
-    // `~LogTable`, which are identical between configs.
     auto runOneConfig = [&](const std::string &headerAnchor) -> std::chrono::nanoseconds {
         const RegexTemplate extra{
             .name = "test-python-traceback-anchor",
@@ -535,19 +459,9 @@ TEST_CASE(
             RunStreamingFlow(configFile.GetFilePath(), testFile.GetFilePath(), configuration, parserStream);
         REQUIRE(run.rowCount == testFile.RecordCount());
         loglib::SetExtraRegexTemplates({});
-        // Parse-loop cost only: elapsed wall-time minus the
-        // synchronous portion spent inside `LogTable::AppendBatch`
-        // (which does no header-probe work). Both configs pay
-        // identical AppendBatch cost, so subtracting it out
-        // amplifies the header-probe delta the benchmark is
-        // measuring.
         return run.elapsed - run.appendTotal;
     };
 
-    // Twice the usual REGEX_BENCH_SAMPLES because the anchored-
-    // vs-baseline delta lives close to per-sample noise; more
-    // samples tighten the mean without changing the benchmark's
-    // observable cost (still ~15s on release builds).
     constexpr std::size_t HEADER_ANCHOR_SAMPLES = REGEX_BENCH_SAMPLES * 2;
     std::vector<std::chrono::nanoseconds> baselineSamples;
     std::vector<std::chrono::nanoseconds> anchoredSamples;
@@ -577,18 +491,5 @@ TEST_CASE(
         << baselineMBps << " MB/s vs anchored " << anchoredMBps << " MB/s => " << ratio << "x speedup"
     );
 
-    // 1.03x floor for the parse-loop-only measurement (elapsed
-    // minus `LogTable::AppendBatch` wall-time; the anchor probe
-    // has no effect on AppendBatch, so subtracting it isolates
-    // the header-probe delta). Observed win across noisy Windows
-    // release builds is 1.05-1.20x with the occasional 1.04x
-    // outlier; setting the floor at 1.03 stays comfortably above
-    // the "wiring broken" degenerate case (which would sit at
-    // ~1.00x) while tolerating sample-to-sample variance. The
-    // plan wrote a more aggressive 1.15x based on an earlier
-    // expectation; in practice PCRE2 JIT flattens the alternation
-    // cost enough that the anchor savings are smaller than
-    // initially thought, especially with continuation lines that
-    // fail-fast at the first byte.
     CHECK(ratio >= 1.03);
 }

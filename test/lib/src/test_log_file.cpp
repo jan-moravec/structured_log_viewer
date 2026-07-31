@@ -155,13 +155,9 @@ TEST_CASE("LogFile: AttachLifetimeAnchor composes multiple anchors", "[LogFile]"
     CHECK(secondDestructed == 1);
 }
 
-// Multi-line records: `RegisterMultiLineRecord` widens a header
-// line's byte span so `GetLine` returns the joined bytes for the
-// header + continuation range. Non-header lines are unaffected.
 TEST_CASE("LogFile: RegisterMultiLineRecord widens GetLine span", "[LogFile][multiline]")
 {
     const TestLogFile testLogFile;
-    // Two multi-line records: header (0) + 2 frames (1,2), header (3) + 1 frame (4)
     testLogFile.Write(
         "level=info msg=first\n"
         "\tframe A1\n"
@@ -173,33 +169,23 @@ TEST_CASE("LogFile: RegisterMultiLineRecord widens GetLine span", "[LogFile][mul
     auto logFile = testLogFile.CreateLogFile();
     REQUIRE(logFile->GetLineCount() == 5);
 
-    // Before registration: `GetLine` returns physical lines.
     CHECK(logFile->GetLine(0) == "level=info msg=first");
     CHECK(logFile->GetLine(1) == "\tframe A1");
     CHECK(logFile->GetLine(2) == "\tframe A2");
     CHECK(logFile->HasMultiLineRecords() == false);
 
-    // Register the two spans.
     logFile->RegisterMultiLineRecord(0, 2);
     logFile->RegisterMultiLineRecord(3, 4);
     CHECK(logFile->HasMultiLineRecords() == true);
 
-    // Header lines now surface the joined text (header + continuations).
     CHECK(logFile->GetLine(0) == "level=info msg=first\n\tframe A1\n\tframe A2");
     CHECK(logFile->GetLine(3) == "level=warn msg=second\n\tframe B1");
 
-    // Non-header (continuation) lines remain their physical bytes so
-    // callers that walk lineIds row-by-row see the same content as
-    // before. This is what keeps the histogram / overview rail's
-    // per-line indexing intact.
     CHECK(logFile->GetLine(1) == "\tframe A1");
     CHECK(logFile->GetLine(2) == "\tframe A2");
     CHECK(logFile->GetLine(4) == "\tframe B1");
 }
 
-// A single-line "multi-line" record (last == header) is a legal no-op:
-// the caller's Stage C emits this at commit time for single-line
-// records that were never continued. `GetLine` must not change.
 TEST_CASE("LogFile: RegisterMultiLineRecord single-line span is a no-op", "[LogFile][multiline]")
 {
     const TestLogFile testLogFile;

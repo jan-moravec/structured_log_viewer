@@ -591,25 +591,11 @@ TEST_CASE(
     CHECK(errors[0].contains("named capture groups"));
 }
 
-// -----------------------------------------------------------------------------
-// Multi-line record tests (streaming pipeline)
-//
-// `RegexTemplate::continuationMode` on a shipped or user-registered
-// template drives multi-line handling for the streaming path.
-// - `Indented`: O(1) first-byte whitespace check. Java Logback
-//   (built-in `java_log.json`) ships with this mode.
-// - `UntilNextHeader`: PCRE2 anchored+partial-hard header check.
-//   Covers Python-style traces whose continuation lines mix
-//   indented and un-indented text.
-// Static (file-based) pipeline is a follow-up slice.
-// -----------------------------------------------------------------------------
 
 namespace
 {
 
-/// Register @p extras for the duration of a test case, resetting on
-/// scope exit. Templates registered via `SetExtraRegexTemplates` are
-/// process-global, so failure to reset would leak across tests.
+// Prevent process-global template registration leaking across tests.
 class ScopedExtraTemplates
 {
 public:
@@ -636,11 +622,6 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    // A minimal Java-shape pattern with `level` + `message`. Ship
-    // it as an extra template with `continuationMode: Indented` so
-    // `FindTemplateByPattern` in `ParseStreaming` resolves the
-    // mode. `\t`-indented lines are continuations of the prior
-    // `message`.
     const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
     RegexTemplate extra{
         .name = "test-indented-multiline",
@@ -657,7 +638,6 @@ TEST_CASE(
 
     const RegexParser parser{std::string{pattern}};
 
-    // Header + two indented continuation lines + another header.
     const std::string payload = "error boom\n"
                                 "\tat com.example.Foo.bar(Foo.java:42)\n"
                                 "\tat com.example.Baz.qux(Baz.java:7)\n"
@@ -697,8 +677,6 @@ TEST_CASE(
     );
     CHECK(*m1 == "recovered");
 
-    // RawLine on the multi-line record returns the joined bytes so
-    // Copy / Detail-pane consumers naturally see the whole trace.
     const std::string raw0 = source.RawLine(lines[0]->LineId());
     CHECK(raw0.contains("error boom"));
     CHECK(raw0.contains("Foo.java:42"));
@@ -712,15 +690,6 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    // Streaming used to silently drop blank lines that appeared
-    // inside a multi-line record: the pending record's `rawText`
-    // would go straight from header to continuation, so `RawLine`
-    // reported "header\n<cont>" while the on-disk / static path
-    // returned "header\n\n<cont>" for identical bytes. This fixture
-    // pins the field value (blanks not folded, matches static) and
-    // the raw joined bytes (blanks folded, also matches static).
-    // Trailing blanks after the last continuation must NOT leak
-    // into the record either.
     const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
     RegexTemplate extra{
         .name = "test-stream-multiline-blank",
@@ -737,8 +706,6 @@ TEST_CASE(
 
     const RegexParser parser{std::string{pattern}};
 
-    // Record 0: header, blank, cont, blank (trailing separator).
-    // Record 1: single-line.
     const std::string payload =
         "error boom\n"
         "\n"
@@ -767,18 +734,11 @@ TEST_CASE(
     const LogValue v0 = lines[0]->GetValue(kMessage);
     const auto m0 = AsStringView(v0);
     REQUIRE(m0.has_value());
-    // Field value skips the blank -- one '\n' separator between
-    // header content and continuation, matching the static path's
-    // in-batch splice.
     CHECK(*m0 == "boom\n\tat com.example.Foo.bar(Foo.java:42)");
 
-    // RawLine spans the blank as a bare '\n' (matches mmap-based
-    // `LogFile::GetLine` for the same input).
     const std::string raw0 = source.RawLine(lines[0]->LineId());
     CHECK(raw0.contains("boom\n\n\tat"));
     CHECK_FALSE(raw0.contains("info recovered"));
-    // Trailing blank between the record and the next header is a
-    // separator, not part of record 0's rawText.
     CHECK_FALSE(raw0.ends_with('\n'));
 
     const std::string raw1 = source.RawLine(lines[1]->LineId());
@@ -792,11 +752,6 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    // Pattern requires a leading `[LEVEL]` header. Continuation
-    // lines in this format mix indented and un-indented text (a
-    // Python-style "During handling of the above exception"). The
-    // PCRE2 anchored-partial-hard probe classifies them as
-    // continuations because they don't start with `[`.
     const std::string pattern = R"(^\[(?<level>\w+)\]\s+(?<message>.*)$)";
     RegexTemplate extra{
         .name = "test-header-multiline",
@@ -840,7 +795,6 @@ TEST_CASE(
     const LogValue v0 = lines[0]->GetValue(kMessage);
     const auto m0 = AsStringView(v0);
     REQUIRE(m0.has_value());
-    // All three non-header lines (both indented and un-indented) fold in.
     CHECK(m0->contains("Traceback"));
     CHECK(m0->contains("During handling"));
     CHECK(m0->contains("a.py"));
@@ -853,9 +807,6 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    // Same pattern as the indented test but registered with
-    // `ContinuationMode::None` (the default). Indented lines are
-    // now parse errors, matching the pre-feature contract exactly.
     const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
     RegexTemplate extra{
         .name = "test-legacy-singleline",
@@ -882,11 +833,6 @@ TEST_CASE(
 
     REQUIRE(sink.finished);
 
-    // `\w+` doesn't match a leading tab, so the continuation line
-    // fails to match under ContinuationMode::None and surfaces as
-    // a per-line parse error — matching the pre-feature behaviour
-    // verbatim. Two rows emit (the un-indented headers) and one
-    // error is captured.
     std::vector<LogLine *> lines;
     std::vector<std::string> errors;
     for (auto &b : sink.batches)
@@ -924,7 +870,6 @@ TEST_CASE(
 
     const RegexParser parser{std::string{pattern}};
 
-    // Two records; the first spans three physical lines.
     const TestLogFile file("regex_static_multiline.log");
     file.Write(
         "error boom\n"
@@ -981,11 +926,8 @@ TEST_CASE(
     const RegexTemplate extras[] = {extra};
     const ScopedExtraTemplates registration(extras);
 
-    // Force a tiny batch size so continuation lines almost certainly
-    // straddle a batch boundary. Stage C's hold-back + splice path is
-    // the mechanism under test.
     internal::AdvancedParserOptions advanced;
-    advanced.batchSizeBytes = 32; // deliberately smaller than one record
+    advanced.batchSizeBytes = 32; // Force a cross-batch continuation.
 
     const TestLogFile file("regex_static_crossbatch.log");
     file.Write(
@@ -1019,21 +961,11 @@ TEST_CASE(
     const LogValue v0 = data.Lines()[0].GetValue(kMessage);
     const auto m0 = AsStringView(v0);
     REQUIRE(m0.has_value());
-    // The joined message must include every continuation line
-    // regardless of which side of the batch boundary it landed on.
     CHECK(m0->contains("boom"));
     CHECK(m0->contains("Foo.java:42"));
     CHECK(m0->contains("Baz.java:7"));
     CHECK(m0->contains("Wibble.java:99"));
 
-    // Stage C used to overwrite the held record's trailing offset
-    // with the LAST leading-continuation offset on every cross-batch
-    // splice, silently dropping the intermediate physical-line
-    // boundaries from `mLineOffsets`. That collapsed `GetLineCount`,
-    // shifted every per-physical-line lookup, and made the widening
-    // guard in `RegisterMultiLineRecord` skip the header (its
-    // `lastLineIdx` ran past the shrunken offsets array). Assert
-    // the per-physical-line indexing survives the splice.
     LogFile &parsedFile = sourcePtr->File();
     REQUIRE(parsedFile.GetLineCount() == 5);
     CHECK(parsedFile.GetLine(1) == "\tat com.example.Foo.bar(Foo.java:42)");
@@ -1041,16 +973,12 @@ TEST_CASE(
     CHECK(parsedFile.GetLine(3) == "\tat com.example.Wibble.wobble(Wibble.java:99)");
     CHECK(parsedFile.GetLine(4) == "info recovered");
 
-    // Header widening still covers the whole trace and stops at the
-    // last continuation (no bleed into the next record's line).
     const std::string joined = sourcePtr->RawLine(data.Lines()[0].LineId());
     CHECK(joined.contains("error boom"));
     CHECK(joined.contains("Foo.java:42"));
     CHECK(joined.contains("Wibble.java:99"));
     CHECK_FALSE(joined.contains("info recovered"));
 
-    // Second record's `LineId` used to overshoot `mLineOffsets` and
-    // trigger `std::out_of_range` on the copy / detail-dock path.
     const std::string secondRaw = sourcePtr->RawLine(data.Lines()[1].LineId());
     CHECK(secondRaw == "info recovered");
 }
@@ -1062,14 +990,6 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    // Cross-batch leading continuations used to count only actual
-    // continuation lines, ignoring blank lines interspersed with them.
-    // Stage C would then move too few offsets onto the held record
-    // and set its `lastLineIdx` short of the real last content line,
-    // making `LogFile::GetLine(headerLineId)` truncate the joined
-    // record right before the continuation. This fixture pins a
-    // blank line squarely inside the leading region so a regression
-    // to that arithmetic flips the assertion below.
     const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
     RegexTemplate extra{
         .name = "test-crossbatch-blank-leading",
@@ -1084,9 +1004,6 @@ TEST_CASE(
     const RegexTemplate extras[] = {extra};
     const ScopedExtraTemplates registration(extras);
 
-    // Tiny batches so the header lands in batch 0 and the blank +
-    // continuation + next header land in batch 1 as leading
-    // continuations.
     internal::AdvancedParserOptions advanced;
     advanced.batchSizeBytes = 16;
 
@@ -1115,28 +1032,18 @@ TEST_CASE(
     REQUIRE(errors.empty());
     REQUIRE(data.Lines().size() == 2);
 
-    // Per-physical-line indexing must still resolve every line to
-    // its bytes -- the blank shows up as an empty string, and the
-    // continuation lives at its own physical index.
     LogFile &parsedFile = sourcePtr->File();
     REQUIRE(parsedFile.GetLineCount() == 4);
     CHECK(parsedFile.GetLine(1) == "");
     CHECK(parsedFile.GetLine(2) == "\tat com.example.Foo.bar(Foo.java:42)");
     CHECK(parsedFile.GetLine(3) == "info recovered");
 
-    // The multi-line record's joined text must include the blank
-    // line's '\n' AND the trailing continuation.
     const std::string joined = sourcePtr->RawLine(data.Lines()[0].LineId());
     CHECK(joined.contains("error boom"));
     CHECK(joined.contains("Foo.java:42"));
-    // "boom" + "\n" (line 0's terminator) + "" (blank) + "\n"
-    // (blank's terminator) is what the joined bytes should carry.
     CHECK(joined.contains("boom\n\n\tat"));
     CHECK_FALSE(joined.contains("info recovered"));
 
-    // Message field also sees the continuation. The blank line
-    // itself doesn't contribute any bytes to the field (matches the
-    // in-batch semantics), only its physical-line index counts.
     const KeyId kMessage = data.Keys().Find("message");
     REQUIRE(kMessage != INVALID_KEY_ID);
     const LogValue v0 = data.Lines()[0].GetValue(kMessage);
@@ -1153,10 +1060,6 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    // Second regression axis for the pending-blank promotion logic:
-    // if the leading region contains blanks with NO continuation
-    // after them, they must NOT extend the held tail (blanks between
-    // records are separators, exactly like the in-batch case).
     const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
     RegexTemplate extra{
         .name = "test-crossbatch-blank-no-cont",
@@ -1194,8 +1097,6 @@ TEST_CASE(
     REQUIRE(errors.empty());
     REQUIRE(data.Lines().size() == 2);
 
-    // `error boom` is a single-line record; the blank is a between-
-    // records separator that stays a normal physical line.
     const std::string firstRaw = sourcePtr->RawLine(data.Lines()[0].LineId());
     CHECK(firstRaw == "error boom");
     const std::string secondRaw = sourcePtr->RawLine(data.Lines()[1].LineId());
@@ -1375,10 +1276,6 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    // Main pattern requires the level word plus a message; header
-    // anchor is a cheaper `^\d{4}-` prefix probe. Both refuse the
-    // continuation lines, but this test asserts the wiring by
-    // registering a `headerAnchor` and observing identical folding.
     const std::string pattern = R"(^(?<ts>\d{4}-\d{2}-\d{2})\s+(?<level>\w+)\s+(?<message>.*)$)";
     RegexTemplate anchored{
         .name = "test-header-anchor-streaming",
@@ -1423,9 +1320,6 @@ TEST_CASE(
     const LogValue v0 = lines[0]->GetValue(kMessage);
     const auto m0 = AsStringView(v0);
     REQUIRE(m0.has_value());
-    // The joined message must contain every continuation line —
-    // the anchor probe rejected them as non-headers just like the
-    // main pattern would have.
     CHECK(m0->contains("boom"));
     CHECK(m0->contains("Traceback"));
     CHECK(m0->contains("a.py"));
@@ -1458,9 +1352,6 @@ TEST_CASE(
     const RegexTemplate extras[] = {anchored};
     const ScopedExtraTemplates registration(extras);
 
-    // Force a tiny batch so the continuation run almost certainly
-    // straddles a Stage B boundary. Regression guard for Stage C's
-    // hold-back path re-using the header anchor across workers.
     internal::AdvancedParserOptions advanced;
     advanced.batchSizeBytes = 24;
 
@@ -1520,7 +1411,7 @@ TEST_CASE(
         .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
         .description = "",
         .continuationMode = ContinuationMode::UntilNextHeader,
-        .headerAnchor = R"((?<a)", // dangling group
+        .headerAnchor = R"((?<a)",
     };
     const RegexTemplate extras[] = {bad};
     const ScopedExtraTemplates registration(extras);
@@ -1542,7 +1433,6 @@ TEST_CASE(
             lines.push_back(&l);
         }
     }
-    // Bad anchor must fail closed: exactly one error, zero rows.
     const auto errors = FlattenSinkErrors(sink);
     REQUIRE(errors.size() == 1);
     CHECK(errors.front().contains("Header anchor compile failed"));
@@ -1600,11 +1490,6 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    // Indented mode uses a byte-cheap "starts with space/tab"
-    // check, never the header probe. Setting `headerAnchor` in
-    // this mode must be silently ignored so the field's
-    // "ignored outside UntilNextHeader" contract is enforced
-    // at the parser level, not just the editor.
     const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
     const std::string payload =
         "error boom\n"
@@ -1650,17 +1535,11 @@ TEST_CASE(
 
     const auto control = runOnce("");
     const auto withAnchor = runOnce(R"(^\d{4}-)");
-    // A deliberately mismatched `headerAnchor` (matches nothing in
-    // this fixture) must not perturb Indented-mode folding one bit.
     CHECK(control == withAnchor);
 }
 
 TEST_CASE("ValidateHeaderAnchor accepts empty [regex]", "[regex_parser][header_anchor]")
 {
-    // Empty anchor is the shipped "reuse the main pattern" path;
-    // callers key their UI off "empty error means OK", so
-    // `errorOut` must come back clear even if it was pre-populated
-    // with stale text.
     std::string err = "stale";
     CHECK(ValidateHeaderAnchor("", err));
     CHECK(err.empty());
@@ -1671,10 +1550,6 @@ TEST_CASE(
     "[regex_parser][header_anchor]"
 )
 {
-    // Wording of the surfaced error mirrors the runtime error the
-    // streaming pipeline emits on a bad anchor so both surfaces
-    // (editor pre-flight and parse-time error stream) read
-    // identically.
     std::string err;
     CHECK_FALSE(ValidateHeaderAnchor(R"((?<a)", err));
     CHECK(err.contains("Header anchor compile failed"));
@@ -1685,9 +1560,6 @@ TEST_CASE(
     "[regex_parser][header_anchor]"
 )
 {
-    // The anchor is a boolean probe, not a schema; a plain
-    // `^\d{4}-` (no `(?<Name>...)`) is a perfectly valid
-    // header anchor and must be accepted.
     std::string err = "stale";
     CHECK(ValidateHeaderAnchor(R"(^\d{4}-)", err));
     CHECK(err.empty());

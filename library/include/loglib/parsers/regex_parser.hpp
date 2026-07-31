@@ -44,20 +44,9 @@ struct AdvancedParserOptions;
 /// evaluation.
 ///
 /// Known limits:
-/// - The pattern itself must match a single line. Records that span
-///   multiple physical lines (stack traces, wrapped JSON blobs) are
-///   supported when the template opts in via
-///   `RegexTemplate::continuationMode`: `Indented` folds any line
-///   whose first byte is a space/tab into the previous record's
-///   last named capture, and `UntilNextHeader` folds every line
-///   until the next line matches the optional `headerAnchor` (or
-///   the full pattern when no anchor is set). Templates that leave
-///   `continuationMode == None` (the default) parse strictly line-
-///   by-line and surface any non-matching line as a parse error.
-/// - Custom regex patterns entered directly via
-///   `File → Open Network Stream…` always use `continuationMode ==
-///   None`; save them as a template first to enable multi-line
-///   folding.
+/// - The pattern matches one physical line. Registered templates may
+///   fold additional lines according to `continuationMode`; unregistered
+///   patterns remain strictly line-oriented.
 /// - The pattern is parser configuration, not file content, so
 ///   `IsValid` only auto-detects files matching a template from
 ///   the merged catalog (built-ins ∪ user templates registered
@@ -161,16 +150,8 @@ private:
 /// parse setup.
 [[nodiscard]] bool ValidateRegexPattern(std::string_view pattern, std::string &errorOut);
 
-/// Compile-check `RegexTemplate::headerAnchor`. Empty is accepted
-/// (means "reuse the main pattern for the header probe"). Non-empty
-/// must compile with PCRE2 but need NOT declare named capture
-/// groups — the anchor is a boolean probe, not a schema. Symmetric
-/// with `ValidateRegexPattern` so the editor's Save / Validate can
-/// front-load anchor errors the same way it front-loads main-pattern
-/// errors. Wording of @p errorOut mirrors the runtime error the
-/// streaming pipeline surfaces on a bad anchor
-/// ("Header anchor compile failed: ...") so both surfaces read
-/// identically.
+/// Validate a header probe. Empty reuses the main pattern; non-empty
+/// probes need to compile but do not require named captures.
 [[nodiscard]] bool ValidateHeaderAnchor(std::string_view anchor, std::string &errorOut);
 
 /// True iff @p pattern compiles and matches @p line in full

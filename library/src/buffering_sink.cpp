@@ -68,10 +68,7 @@ KeyIndex &BufferingSink::Keys()
 
 LogData BufferingSink::TakeData()
 {
-    // Flush line offsets into the LogFile before moving the source
-    // into LogData so `GetLine(i)` works on the returned data.
-    // Multi-line spans must be registered *after* the offsets so
-    // `GetLine(headerLineId)` can look up the widened stop offset.
+    // Register spans after offsets so widened line lookups can resolve.
     if (mSource)
     {
         if (!mLineOffsets.empty())

@@ -23,7 +23,7 @@ For the architecture each item plugs into, see [CONTRIBUTING.md → Architecture
 - [Tier 2 — `v1.x` strong differentiators](#tier-2--v1x-strong-differentiators)
   - [11. Pulling rotated history off disk](#11-pulling-rotated-history-off-disk)
   - [12. Saved searches and named views](#12-saved-searches-and-named-views)
-  - [13. Match overview rail / minimap](#13-match-overview-rail--minimap)
+  - [13. ~~Match overview rail / minimap~~ (shipped)](#13-match-overview-rail--minimap)
   - [14. Per-cell quick filter](#14-per-cell-quick-filter)
   - [15. Inline pretty-print for embedded JSON / XML](#15-inline-pretty-print-for-embedded-json--xml)
   - [16. Tabs for multiple sources in one window](#16-tabs-for-multiple-sources-in-one-window)
@@ -136,23 +136,26 @@ Each of the ten items below closes a gap that reviewers and first-time users rou
 
 **Status: shipped.** Filters now compose as a full boolean tree (`loglib::FilterExpression` = `Leaf` / `And` / `Or` / `Not`). The default simple-mode UX stays "click + to add another AND rule"; a new **Filters -> Advanced Filter…** action opens the `AdvancedFilterEditor`, a text-first dialog backed by a hand-rolled recursive-descent parser (`library/src/query_parser.cpp`, grammar in `library/include/loglib/query_parser.hpp`). Queries look like `level in [Warn, Error] AND (service:auth OR service:db) AND NOT msg~/heartbeat/`; every keystroke reparses and the OK button gates on a clean parse. Evaluation goes through `CompiledFilterExpression`, which sorts children cheap-first (`EstimatedLeafCost`) and picks between a per-row visit path and a **bitset-materialisation fast path** (packed `RowBitset` per unique leaf, folded with word-parallel AND/OR/NOT). The bitset path engages for trees containing `OR` or `NOT` with at least two leaves, subject to a 512 MiB memory budget; flat `And` trees stay on the short-circuiting visit path. `LogConfiguration::filters` is gone; on-disk the field is `expression` (internally tagged variants under a `kind` discriminator). See [doc/README.md -> Advanced filter query syntax](doc/README.md#advanced-filter-query-syntax) for the user-facing shape.
 
-### 6. ~~Multi-line records (stack traces and continuation lines)~~ (shipped)
+### 6. ~~Multi-line records (stack traces and continuation lines)~~
 
-**Status: shipped.** Java, Python, and Go loggers routinely emit a one-line header followed by an indented stack trace. Before this shipped every continuation line landed as a parse error.
+**Status: shipped.** Static files, live tail, and network streams now share a continuation-aware decoder contract. `LineDecodeResult::Continue` extends the pending row instead of emitting another row. The streaming loop defers a row for at most 500 ms; static Stage C holds batch tails and stitches cross-batch continuations. Static raw-byte lookup uses `StreamedBatch::multiLineSpans` and `LogFile::RegisterMultiLineRecord`.
 
-**Scope.** The `CompactLineDecoder` contract gained a new `LineDecodeResult::Continue` variant meaning "append this line's raw bytes to the prior record's last column, do not emit a new row". `RunStreamingParseLoop` and `RunStaticParserPipeline` thread the previous record through Stage B (deferred emit / hold-back-the-tail across batch boundaries) so the plumbing is shared. The shipped parsers opt in selectively:
+**Parser coverage.**
 
-- `RegexParser`: `RegexTemplate` gains an optional `continuationMode` field (`"none"` (default) / `"indented"` / `"untilNextHeader"`) and an optional `headerAnchor` regex. `Indented` folds any line starting with space / tab; `UntilNextHeader` runs a `PCRE2_ANCHORED | PCRE2_PARTIAL_HARD` probe against the header pattern (or the explicit `headerAnchor`) and folds every line that does not match. Continuation bytes append to the pattern's **last named group in source order**, which must be string-typed. The shipped `java_log` template ships with `continuationMode: "indented"`.
-- `LogfmtParser`: opt-in via `ParserOptions::multilineLogfmt` (default `true`). Rule is **indented-only** — any line whose first byte is a space or tab is a continuation and folds into the previous record's last source-order key. The permissive "prose" contract (un-indented `plain text line` parses as three bare-keyed pairs) is preserved verbatim.
-- `JsonParser` / `CsvParser`: opt out — multi-line records in JSON / CSV go through normal record framing, no continuation logic. `LineDecodeResult::Continue` is unreachable in these decoders and guarded by `std::unreachable()`.
+- `RegexTemplate::continuationMode` accepts `"none"` (default), `"indented"`, and `"untilNextHeader"`. The last mode uses `PCRE2_ANCHORED | PCRE2_PARTIAL_HARD` against the main pattern or optional `headerAnchor`.
+- Continuations append to the last named capture in source order. If that capture is missing or classifies as a non-string value for a header, its continuations are dropped with one error summary.
+- Seven built-ins use `"indented"`: Apache error, Generic bracketed level, Java / log4j / Logback, MongoDB 3.x, MySQL / MariaDB error, PostgreSQL, and spdlog.
+- Four use `"untilNextHeader"`: Google glog, Rust `env_logger`, Ruby on Rails, and Uber Zap.
+- Logfmt folds indented lines into the previous record's last source-order key by default. `ParserOptions::multilineLogfmt = false` restores the old row-per-line behavior.
+- JSON Lines and CSV remain line-framed and never emit `Continue`.
 
-**Non-goals (v1, still true).** True multi-line **regex** matching across the wire (the line is still the atomic unit; we only append the continuation to the last record's last named group), in-cell rendering of newlines (item 15 handles that).
+Blank lines join a record only when followed by another continuation; trailing and between-record blanks remain separators. A run of continuations before any header produces one summarized orphan error.
 
-**Acceptance bar (met).** Java-SLF4J-Logback fixtures with stack traces open cleanly. Each multi-line record renders as one row whose last named group contains the joined trace. `RawLine(headerId)` returns the full joined bytes (via a `LogFile::mMultiLineSpans` side-channel) so **Copy Line** and the **Record Details** pane show the whole trace. Parse errors only fire on truly orphaned continuation lines (continuation before the first record). Two new `[large]` benchmarks (`[java_multiline]` for indented mode, `[untilNextHeader]` for the R5 probe) gate the hot path.
+**Copy and details.** A single-row **Edit → Copy** preserves the joined text. Multi-row copy escapes backslashes plus embedded CR/LF so every selected record occupies one clipboard line. Record Details receives the same joined raw text.
 
-**Note on message-side regex users.** Highlight rules and advanced-filter expressions that need to match across embedded `\n` bytes should include PCRE2's `(?s)` flag so `.` covers line separators; without it, `.*` will not span the joined multi-line payload.
+**Benchmarks.** `[java_multiline]` and `[untilNextHeader]` each parse 1,000,000 records, with every tenth record carrying continuations, and follow the manual ±3% `[large]` before/after convention. `[header_anchor]` compares full-pattern and dedicated-anchor probes and enforces a 1.03× parse-loop throughput floor.
 
-**Touches (as shipped).** `loglib`: `line_decoder.hpp`, `regex_templates.hpp`, `parser_options.hpp`, `streaming_parse_loop.hpp`, `static_parser_pipeline.hpp`, the four parsers' decoders, `log_file.hpp` (multi-line span side-channel). `app`: multi-row Copy escapes embedded `\n`, single-row Copy preserves the joined bytes verbatim; the regex-templates editor exposes `continuationMode` + `headerAnchor` for user templates.
+**Non-goals.** Regex matching still happens per physical line; continuation handling appends bytes after the header match. JSON/CSV record framing and expanded in-cell rendering are unchanged.
 
 ### 7. Export filtered rows
 
@@ -228,7 +231,7 @@ When the user opens `app.log`, also surface `app.log.1`, `app.log.2`, `app.log.1
 
 Sessions already persist a single filter set. Real triage needs a small library of named presets: `@errors`, `@my-service`, `@slow-requests`, swappable from a dropdown next to the filter bar. The chosen "view" applies its filters + sort + visible-column set in one click. Views live in a new section of the user configuration; the global library lives under `<AppDataLocation>/views/*.json` with the same shadowing rules as themes and regex templates.
 
-### 13. ~~Match overview rail / minimap~~
+### 13. ~~Match overview rail / minimap~~ (shipped)
 
 > **Shipped.** Vertical strip to the right of the table showing matches, anchors, and level-coloured bands over the whole proxy stream, with a click / drag / wheel viewport indicator. On by default; toggle from **View → Overview Rail** (`Ctrl+Shift+R`). See [`doc/README.md § Match overview rail`](doc/README.md#match-overview-rail).
 

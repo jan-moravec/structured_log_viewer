@@ -66,16 +66,12 @@ public:
     /// memory-footprint benchmark; not part of the parse hot path.
     size_t LineOffsetsMemoryBytes() const noexcept;
 
-    /// Register a multi-line record spanning physical lines
-    /// `[headerLineId, lastLineId]` (both 0-based indices into
-    /// `mLineOffsets`). `lastLineId` must be > `headerLineId`. Later
-    /// `GetLine(headerLineId)` returns the joined bytes for the full
-    /// range instead of just the header line. No-op for single-line
-    /// records (they never need this mapping).
+    /// Register the inclusive physical-line span for a multi-line
+    /// record. Indices are zero-based; `lastLineId` must exceed
+    /// `headerLineId`. Single-line spans are ignored.
     void RegisterMultiLineRecord(size_t headerLineId, size_t lastLineId);
 
-    /// True when at least one multi-line record has been registered.
-    /// Cheap short-circuit for `GetLine`'s hot path.
+    /// True when at least one multi-line record is registered.
     [[nodiscard]] bool HasMultiLineRecords() const noexcept
     {
         return !mMultiLineSpans.empty();
@@ -126,11 +122,7 @@ private:
     /// `LogLine` values via `(offset, length)`.
     std::string mOwnedStrings;
 
-    /// Side-channel for multi-line records: `headerLineId ->
-    /// lastLineId`. Empty for single-line-only files (majority of
-    /// inputs). `GetLine` consults this to widen a record's byte
-    /// span across contiguous continuation lines. Kept as a hash map
-    /// so the (common) single-line path pays only a `.empty()` check.
+    /// Maps each multi-line header to its final physical line.
     std::unordered_map<size_t, size_t> mMultiLineSpans;
 };
 

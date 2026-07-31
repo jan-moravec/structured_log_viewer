@@ -232,9 +232,7 @@ void LogData::AppendBatch(
 
     if (!lineOffsets.empty() || !multiLineSpans.empty())
     {
-        // Route offsets & spans to the most-recently-appended
-        // `FileLineSource` — the file currently being streamed.
-        // Live-tail passes both vectors empty and skips this branch.
+        // File batches belong to the most recently appended file source.
         FileLineSource *fileSource = BackFileSource();
         assert(fileSource != nullptr);
         if (fileSource != nullptr)
@@ -243,12 +241,7 @@ void LogData::AppendBatch(
             {
                 fileSource->File().AppendLineOffsets(lineOffsets);
             }
-            // Order matters: `RegisterMultiLineRecord` must run
-            // *after* `AppendLineOffsets` for this batch. Otherwise
-            // `LogFile::GetLine(headerLineId)` would look up the
-            // widened stop at `mLineOffsets[lastLineId + 1]` before
-            // that entry is present and silently fall back to the
-            // single-line rendering path.
+            // Spans depend on offsets from the same batch.
             for (const auto &span : multiLineSpans)
             {
                 fileSource->File().RegisterMultiLineRecord(span.headerLineId, span.lastLineId);

@@ -83,9 +83,7 @@ public:
     /// Append a parsed batch. `lineOffsets` populates
     /// `LogFile::mLineOffsets` for file sources; the live-tail path
     /// passes an empty vector (the source owns its per-line storage).
-    /// `multiLineSpans` are registered *after* `AppendLineOffsets` so
-    /// `LogFile::GetLine(headerLineId)` can look up the terminating
-    /// offset that the same batch just supplied.
+    /// Registers @p multiLineSpans after their offsets are appended.
     void AppendBatch(
         std::vector<LogLine> lines,
         const std::vector<uint64_t> &lineOffsets,

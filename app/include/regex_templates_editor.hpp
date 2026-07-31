@@ -96,13 +96,8 @@ private:
     /// read-only.
     [[nodiscard]] bool IsCurrentEditable() const;
 
-    /// Sync the header-anchor field's enabled state with the
-    /// currently selected continuation mode: enabled only when
-    /// `UntilNextHeader` is selected AND the form is editable
-    /// (built-ins stay read-only). Called on mode change and after
-    /// every `LoadIntoForm` / enable-toggle so the field's state
-    /// never lags the mode combo. Placeholder text already says
-    /// "Until-next-header only"; this enforces it.
+    /// Keep the header-anchor field usable only when the current
+    /// template is editable and its continuation mode uses it.
     void SyncHeaderAnchorEnabled();
 
     /// Prompt "discard unsaved edits?" and return true to proceed.
@@ -118,13 +113,9 @@ private:
     QPlainTextEdit *mSampleLinesEdit = nullptr;
     QCheckBox *mAutoDetectCheck = nullptr;
     QSpinBox *mPrioritySpin = nullptr;
-    /// Continuation mode for multi-line records: `None`, `Indented`,
-    /// or `UntilNextHeader`. When non-`None`, indented / non-matching
-    /// lines fold into the previous record's last named group.
+    /// Controls how continuation lines join the previous record.
     QComboBox *mContinuationModeCombo = nullptr;
-    /// Optional PCRE2 pattern used only by `UntilNextHeader` mode to
-    /// probe whether a line is a new record header. Leave blank to
-    /// reuse the main pattern (default).
+    /// Optional record-header pattern for `UntilNextHeader` mode.
     QLineEdit *mHeaderAnchorEdit = nullptr;
     /// Multi-line so descriptions can hold a paragraph covering
     /// the format and an optional upstream attribution.

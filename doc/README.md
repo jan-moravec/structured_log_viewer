@@ -30,14 +30,16 @@ timestamp,level,component,message
 2025-01-15T12:34:57.000Z,error,db,"connection refused"
 ```
 
-**Regex templates** (PCRE2 with named capture groups): one record per line, no header on the wire — the parser receives the **pattern itself** as configuration. Each `(?<Name>...)` group in the pattern becomes a column named `Name` whose value is the matched substring. The application ships a registry of common shapes and you can also supply a custom pattern through the Network Stream dialog.
+**Regex templates** (PCRE2 with named capture groups): each matching header line starts a record. Depending on the selected template, later physical lines may continue that record. Each `(?<Name>...)` group becomes a column named `Name`. The application ships a registry of common shapes; the Network Stream dialog can also use a saved user template or an unsaved custom pattern.
 
 ```log
 Apr 28 04:02:03 host-a systemd: System starting
 Apr 28 04:02:04 host-b CRON[1234]: (root) CMD (test)
 ```
 
-Built-in templates ship for **Syslog (RFC3164)**, **Syslog (RFC5424)**, **Apache/nginx Common Log Format**, **Apache/nginx Combined Log Format**, **Apache error log**, and a **Generic `[LEVEL]`** form. The patterns are based on shapes from [lnav](https://github.com/tstack/lnav) (BSD-2-Clause) and [logstash grok patterns](https://github.com/logstash-plugins/logstash-patterns-core) (Apache-2.0). Auto-detection probes every built-in template on the first few non-blank lines and picks the first one that matches enough samples — files that match a **custom** user pattern can only be opened via the Network Stream dialog where the pattern is supplied explicitly.
+The 28 built-in templates cover syslog, Apache/nginx access and error logs, glog, PostgreSQL, MySQL/MariaDB, HAProxy, Zap, Rails, Redis, Java / log4j / Logback, spdlog, `env_logger`, Cisco ASA, BIND9, iptables, Squid, AWS access logs, NetScreen, Exim, MongoDB, and Docker / containerd CRI. Sources include [lnav](https://github.com/tstack/lnav) (BSD-2-Clause), [logstash-patterns-core](https://github.com/logstash-plugins/logstash-patterns-core) (Apache-2.0), and vendor documentation.
+
+Auto-detection probes the merged built-in and user catalog against the first few non-blank lines. Built-ins always probe before user templates; each tier uses ascending `priority`. An unsaved custom pattern is available only through Network Stream and does not carry template metadata such as continuation mode.
 
 Bare values are typed: empty becomes null, `true` / `false` become booleans, decimal integers become int / uint, decimals with point or exponent become double, otherwise the value stays a string. Quoted values **stay strings even if the contents look numeric** (so `"42"` does not promote to a number). Repeated keys within one record are last-write-wins. The same typing rules apply to regex captures: a `(?<pid>\d+)` group reads as `uint64`, a `(?<ratio>[-+]?\d*\.\d+)` as `double`, etc.
 
@@ -45,7 +47,20 @@ Empty CSV cells (`a,,c` or trailing missing cells) are omitted from the record r
 
 Empty lines are skipped. Lines that fail to parse are reported as errors but do not abort loading — valid records are still shown. Nested JSON objects and arrays are preserved as their compact JSON string in logfmt and CSV; only JSON Lines preserves nesting natively.
 
-**Multi-line records (stack traces).** The regex-template and logfmt parsers understand log records that span more than one physical line, so a Java, Python, Go, or Node stack trace attaches to the row that emitted it instead of surfacing as a wall of parse errors. For regex templates the behaviour is per-template: the shipped **Java / log4j / SLF4J Logback** template folds indented `\tat ...` frames into the previous record's `message` column; **user templates** you author through **Settings → Regex templates...** get a *Continuation* combo (`None` / `Indented` / `Until next header`) plus an optional *Header anchor* line. For logfmt the rule is "any line starting with space or tab is a continuation of the previous record's last field" — hand-typed prose that starts un-indented keeps parsing as before. **Copy Line** and the **Record Details** pane show the full joined text; when you multi-select rows for copy, internal newlines are escaped as `\n` so external tools receive one logical line per record. When you author a highlight rule or advanced-filter regex that needs `.` to match across the embedded newline separators, add the PCRE2 `(?s)` flag (e.g. `(?s).*Caused by.*`); the default `.` still stops at `\n`.
+### Multi-line records
+
+Regex templates and logfmt can fold several physical lines into one row.
+
+- **Indented** folds lines starting with a space or tab. Seven built-ins use it: Apache error, Generic bracketed level, Java / log4j / Logback, MongoDB 3.x, MySQL / MariaDB error, PostgreSQL, and spdlog.
+- **Until next header** folds every line that does not match the next-header probe. Google glog, Rust `env_logger`, Ruby on Rails, and Uber Zap use it.
+- **None** keeps strict line-per-record behavior and is the default for templates without `continuationMode`.
+- **Logfmt** uses the indented rule by default and appends to the previous record's last source-order key.
+
+Built-ins show these settings read-only; duplicate one under **Settings → Regex templates...** to customize it. *Header anchor* is available only for *Until next header*; leave it empty to reuse the main pattern. Continuations append to the last named capture. If that capture is absent or parsed as a number / boolean on a header, its continuation lines are dropped and reported.
+
+A continuation before the first header is orphaned; consecutive orphans are summarized as one error. Blank lines are retained inside raw record text only when a later continuation proves they belong to that record. Live streams publish a pending record after at most 500 ms even if no later header arrives.
+
+The main table renders folded fields on one compact line, replacing embedded line breaks with spaces. **Edit → Copy** and Record Details use the joined raw text. Single-row copy preserves it verbatim; multi-row copy escapes backslashes and embedded CR/LF so each selected record stays on one clipboard line.
 
 ### Compressed inputs
 
@@ -110,7 +125,7 @@ A toolbar appears above the table while a stream is running, mirroring the **Str
 | -------------- | -------------- | ------------------------------------------------------------------------------------------------------------------ |
 | Pause / Resume | `Ctrl+Shift+P` | Pause freezes the visible table; new lines accumulate in memory until you Resume or Stop.                          |
 | Follow newest  | `Ctrl+Shift+T` | Auto-scroll to the newest line. Auto-disengages when you scroll away to read history; re-engages on scroll-to-end. |
-| Stop           | `Ctrl+Shift+S` | Ends the session and leaves the rows visible as a static snapshot you can keep filtering, sorting, and copying.    |
+| Stop           | `Ctrl+Shift+X` | Ends the session and leaves the rows visible as a static snapshot you can keep filtering, sorting, and copying.    |
 
 **Pause** and **Follow newest** are independent toggles, and both reset to their defaults (un-paused, follow on) on every new session.
 
@@ -166,8 +181,8 @@ The following are **out of scope** for the current Stream Mode implementation:
 - **stdin / named-pipe sources** — only file tailing is wired up; for network ingestion see [Network Stream Mode](#network-stream-mode-tcp--udp).
 - **Auto-detect "this file is being actively written → open in Stream Mode"** — Stream Mode is always an explicit `File → Open Log Stream…` action.
 - **Per-file or per-session retention overrides** — the retention cap is a single application-wide setting.
-- **Streaming for arbitrary formats** — JSON Lines, logfmt, CSV, and regex templates are first-class; other formats (ad-hoc text, multi-line records, alternative delimiters) are not yet supported but the seam in `loglib` is format-agnostic so future parsers inherit live tail and network ingestion for free.
-- **Multi-line regex matches** — every record must match on a single line. Stack traces and other multi-line payloads surface as one parse error per stray line; coalesce them on the producer side or pre-process the file before opening.
+- **Streaming for arbitrary formats** — JSON Lines, logfmt, CSV, and regex templates are first-class; ad-hoc text and alternative delimiters still need a parser.
+- **True multi-line regex matching** — PCRE2 matches each physical header line. Continuation modes append later lines to the last capture; the main pattern is not re-run over the joined record.
 
 ## Network Stream Mode (TCP / UDP)
 
@@ -178,7 +193,7 @@ Network Stream Mode listens on a local TCP or UDP port and ingests structured lo
 Use **File → Open Network Stream…** (`Ctrl+Shift+L`). The dialog asks for:
 
 - **Protocol** — TCP or UDP.
-- **Format** — JSON Lines, logfmt, CSV, or **Regex template**. Network ingestion has no file to sniff, so the parser is selected explicitly here. The choice is persisted with the session. **CSV caveat:** the first inbound line is treated as the schema header. With multiple concurrent TCP clients, whichever client's first line arrives first sets the schema for *every* connected client — coordinate the header across producers (same column order, same names) or restrict CSV mode to a single producer. **Regex template:** picking *Regex template* reveals a *Template* dropdown listing every built-in pattern plus *Custom…*; the latter unlocks a free-form *Pattern* editor where you can paste any PCRE2 pattern with named groups. The selected pattern is persisted with the session.
+- **Format** — JSON Lines, logfmt, CSV, or **Regex template**. Network ingestion has no file to sniff, so the parser is selected explicitly and persisted with the session. **CSV caveat:** the first inbound line sets the schema for every TCP client; coordinate column names and order or use one producer. **Regex template:** the picker lists the merged built-in and user catalog plus *Custom…*. Continuation metadata is resolved by exact pattern lookup in that catalog; a genuinely unregistered custom pattern remains single-line.
 - **Bind address** — `0.0.0.0` (IPv4 any), `::` (IPv6 dual-stack), `127.0.0.1` / `::1` (loopback only), or a specific interface IP.
 - **Port** — the listening port. `0` requests an OS-assigned ephemeral port (handy for ad-hoc local testing).
 - **Max concurrent clients (TCP)** — hard cap on simultaneous accepted connections (default 16). New connections beyond this are accepted-and-immediately-closed.
@@ -293,13 +308,13 @@ Duplicate header names are disambiguated as `header [key]` in both menus so colu
 ### Selecting and Copying Rows
 
 - Click a row to select it. Hold `Ctrl`/`Shift` to extend the selection.
-- **Edit → Copy** (`Ctrl+C`) copies the selected rows as the **original JSON text** (one line per row), so you can paste them back into another tool. Cell-level copy is not performed — rows are always copied whole. When you copy a **single** multi-line record (Java / Python stack trace, etc.), the joined bytes go to the clipboard verbatim; when you copy **multiple** rows at once each row's internal newlines are escaped as `\n` so external tools that use `\n` as a record separator keep working.
+- **Edit → Copy** (`Ctrl+C`) copies each selected row's raw source text, regardless of input format. Cell-level copy is not performed. A single multi-line record is copied verbatim; multi-row copy escapes `\`, CR, and LF inside each record before joining records with LF.
 
 See [Anchors](#anchors) for marking and navigating between specific rows.
 
 ### Inspecting a Record
 
-For per-row drill-down, Structured Log Viewer ships a **Record Details** pane that shows every parsed field on its own row plus the pretty-printed original JSON. Open it any of three ways:
+For per-row drill-down, Structured Log Viewer ships a **Record Details** pane that shows every parsed field plus the raw source record. Open it any of three ways:
 
 - **Double-click** any row in the table.
 - **View → Record Details** (`Ctrl+I`).
@@ -311,9 +326,9 @@ Inside the pane:
 
 - A bold header summarises the row (`Row N` plus the formatted timestamp when a `Time` column exists). `Row N` is the **source-model row** — the underlying record's stable position — and may not match the row number shown in the main table when a sort or filter is active.
 - A two-column **Field / Value** table lists **every configured column** for the record — a complete view that isn't filtered by the main table's reorder, hide, or sort state. Fields are listed in the parser's original column order so the layout stays stable even as you customise the main view. Values are the same formatted output the table cells show, but without single-line compaction so nested objects stay readable. Present-but-empty fields render as a muted em-dash (`—`) so the row still has visual weight; the original empty value is what gets written to the clipboard.
-- A collapsible **Raw JSON** section reveals the on-disk line, pretty-printed via `QJsonDocument` (with a fall-back to the original bytes for non-JSON lines). When the raw bytes aren't available (e.g. the line was evicted in a streaming session after you pinned it) the section is disabled and labelled *Raw JSON (unavailable)* so the empty state is visible rather than silent.
+- A collapsible **Raw JSON** section reveals the source record, pretty-printed via `QJsonDocument` when it is JSON and shown verbatim otherwise. Multi-line records include their continuations. When the raw bytes are unavailable (for example, after stream eviction), the section is disabled and labelled *Raw JSON (unavailable)*.
 - The pane refreshes automatically whenever the pinned record itself changes underneath you: a column rename via the columns manager, an enum-column promotion, or any other `dataChanged` notification covering the pinned row. New rows being appended to a live stream don't trigger a refresh because the pinned record's data is unaffected; the persistent pin keeps tracking the same record across FIFO eviction shifts and falls back to a placeholder if the pinned line is itself evicted.
-- **Copy raw JSON** copies the **original on-disk bytes** of the line (compact, exactly as the parser ingested) so the clipboard text round-trips back into another tool unchanged. To copy the pretty-printed text instead, select inside the Raw JSON edit and press `Ctrl+C`. The button is disabled when the raw bytes aren't available.
+- **Copy raw JSON** copies the source record exactly as ingested, including joined continuations. To copy the pretty-printed text instead, select inside the Raw JSON edit and press `Ctrl+C`. The button is disabled when the raw bytes are unavailable.
 - **Copy as key/value** copies the field table as `header: value` lines. Embedded newlines, tabs, and backslashes inside values are escaped C-style (`\n`, `\r`, `\t`, `\\`) so each field always lands on a single line and the format round-trips unambiguously.
 - Inside the Field/Value table, `Ctrl+C` copies the selected cells as tab-separated values. Selection is extended (Ctrl-click to toggle individual cells, Shift-click for a range), matching standard spreadsheet behaviour.
 
@@ -398,7 +413,7 @@ Highlight rules let you paint whole rows in a custom foreground / background col
 
 Each rule targets exactly one column, identified by its stable *key* (not by its current visual position, so [reordering columns](#column-management) never disturbs a rule). The v1 editor exposes three shapes:
 
-- **Text (string)** — Exactly, Contains, Regular expression, or Wildcard against the column's rendered value. The engine is the same string matcher the [Find bar](#searching) and [filters](#filtering) use, so a rule that finds a match on-screen also lights up here. When the column can contain a multi-line record (e.g. a `message` column that has folded in a Java stack trace), add PCRE2's `(?s)` flag to a Regular-expression rule so `.` also matches the embedded `\n` bytes — otherwise `.*Caused by.*` will stop at the first newline.
+- **Text (string)** — Exactly, Contains, Regular expression, or Wildcard against the column's compact single-line rendering. Embedded line breaks are normalized to spaces before matching.
 - **Number** — an optional minimum and maximum. Rows whose column value falls inside the interval match; leaving a bound empty makes it unbounded on that side.
 - **Boolean** — pick whether **true** and / or **false** should highlight.
 
@@ -537,7 +552,7 @@ Multiple simple-mode filters combine with **AND** — a row shows only if every 
 
 Column names are bare identifiers by default; wrap in double quotes to preserve whitespace (`"span id":"abc def"`). Regex delimiters are literal `/` — no escaping needed inside them apart from `\/`.
 
-String **values are matched case-sensitively** (`:`, `=`, `%`, and `~` alike), the same as the simple-mode filter dialog. Use a regex with an inline flag when you need to ignore case — `msg ~ /(?i)timeout/`. Keywords, column-name resolution, and enum value aliases are all case-insensitive; only the value comparison is not. When a column holds a multi-line record (e.g. a `message` that has folded in a stack trace) and you want `.` to also match the embedded `\n` bytes, add PCRE2's `(?s)` inline flag — `msg ~ /(?s)Caused by.*NullPointer/`.
+String **values are matched case-sensitively** (`:`, `=`, `%`, and `~` alike), the same as the simple-mode filter dialog. Use an inline regex flag to ignore case — `msg ~ /(?i)timeout/`. Keywords, column-name resolution, and enum aliases are case-insensitive. Folded multi-line values are matched through their compact single-line rendering, with line breaks normalized to spaces.
 
 Value lists and ranges must carry a payload: `col IN []` and `col IN [..]` are parse errors rather than silently matching everything, as is an inverted range like `latency IN [100..10]`.
 
@@ -676,7 +691,7 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 | Find                           | `Ctrl+F`            |
 | Go to Line                     | `Ctrl+G`            |
 | Go to Timestamp                | `Ctrl+Shift+G`      |
-| Copy selected rows as JSON     | `Ctrl+C`            |
+| Copy selected rows             | `Ctrl+C`            |
 | Toggle Record Details pane     | `Ctrl+I`            |
 | Toggle Anchors panel           | `Ctrl+K`            |
 | Toggle Histogram panel         | `Ctrl+H`            |
@@ -696,7 +711,7 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 
 ### "Failed to parse …" or "No valid log data found"
 
-The selected file is not valid JSON Lines, logfmt, CSV, or any built-in regex template, or every line failed to parse. Check the error dialog for the first few offending line numbers. If a file is being opened with the wrong parser, make sure the first non-empty line is unambiguously one format — auto-detection requires JSON Lines to start with `{`, logfmt to contain at least one bare `key=` token, CSV to have a header row with two or more comma-separated cells followed by a data row of the same cell count, and regex templates to match at least two of the first non-blank lines (and only the built-in registry; custom patterns must be opened via the Network Stream dialog).
+The selected file is not valid JSON Lines, logfmt, CSV, or any auto-detect-enabled regex template, or every line failed to parse. Check the first reported line numbers. JSON Lines must start with `{`; logfmt needs a bare `key=` token; CSV needs a two-or-more-cell header followed by a row of the same width; a built-in or user regex template must match at least two sampled non-blank lines. Unsaved custom patterns are available only through Network Stream.
 
 ### Timestamps show as raw strings
 

@@ -409,23 +409,10 @@ TEST_CASE(
     }
 }
 
-// -----------------------------------------------------------------------------
-// Multi-line record tests (streaming pipeline)
-//
-// Live-tail (`ParseStreaming(StreamLineSource&)`) is where multi-line
-// support lands first: `ParserOptions::multilineLogfmt` (default true)
-// enables the "indented line = continuation" rule inside
-// `LogfmtLineDecoder`. `RunStreamingParseLoop` then holds the prior
-// record open, appending continuation bytes to the last-source-order
-// field before committing.
-// -----------------------------------------------------------------------------
 
 namespace
 {
 
-/// Single-shot `BytesProducer` matching the pattern used in
-/// `test_json_parser.cpp`. Yields the payload once and reports EOF so
-/// the parser exits its drain loop without blocking on `WaitForBytes`.
 class InMemoryProducer final : public loglib::BytesProducer
 {
 public:
@@ -477,7 +464,6 @@ private:
     bool mClosed = false;
 };
 
-/// In-memory `LogParseSink` collecting emitted batches for assertion.
 struct CollectingStreamSink final : loglib::LogParseSink
 {
     loglib::KeyIndex keys;
@@ -503,8 +489,6 @@ struct CollectingStreamSink final : loglib::LogParseSink
     }
 };
 
-/// Flatten every emitted `LogLine *` across the (potentially-coalesced)
-/// batches so tests can inspect them positionally.
 std::vector<loglib::LogLine *> FlattenLines(std::vector<loglib::StreamedBatch> &batches)
 {
     std::vector<loglib::LogLine *> lines;
@@ -526,9 +510,6 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    // Two Go-style logfmt records with the second one carrying an
-    // indented stack-trace continuation. The trace's three lines
-    // must merge into `msg`'s value rather than emit their own rows.
     const std::string payload =
         "level=info msg=\"first record\"\n"
         "level=error msg=\"boom\"\n"
@@ -541,7 +522,7 @@ TEST_CASE(
 
     CollectingStreamSink sink;
     const LogfmtParser parser;
-    parser.ParseStreaming(source, sink, ParserOptions{}); // multilineLogfmt=true default
+    parser.ParseStreaming(source, sink, ParserOptions{});
 
     REQUIRE(sink.finished);
     CHECK_FALSE(sink.finishedCancelled);
@@ -554,10 +535,7 @@ TEST_CASE(
     REQUIRE(kLevel != INVALID_KEY_ID);
     REQUIRE(kMsg != INVALID_KEY_ID);
 
-    // The middle row's msg picks up all three continuation lines,
-    // each joined with a `\n` separator preserved from the source.
-    // Keep each `LogValue` bound to a local so `AsStringView`'s
-    // returned `string_view` doesn't dangle past a temporary.
+    // Keep LogValue alive while its string_view is used.
     const LogValue v0 = lines[0]->GetValue(kMsg);
     const LogValue v1 = lines[1]->GetValue(kMsg);
     const LogValue v2 = lines[2]->GetValue(kMsg);
@@ -578,9 +556,6 @@ TEST_CASE(
     );
     CHECK(*msg2 == "after trace");
 
-    // `RawLine(lineId)` returns the JOINED raw bytes (header + all
-    // continuations), so downstream copy / detail-pane consumers
-    // naturally see the whole trace without any special-case code.
     const std::string raw1 = source.RawLine(lines[1]->LineId());
     CHECK(raw1.contains("level=error"));
     CHECK(raw1.contains("goroutine 1"));
@@ -591,9 +566,6 @@ TEST_CASE("LogfmtParser streaming: multilineLogfmt=false restores permissive-pro
 {
     using namespace loglib;
 
-    // Same payload as the enabled case, but with the flag flipped
-    // off. Continuation lines now emit as N null-valued bare keys
-    // (the shipped pre-feature contract).
     const std::string payload =
         "level=info msg=\"first record\"\n"
         "\ttab-indented continuation\n";
@@ -608,9 +580,6 @@ TEST_CASE("LogfmtParser streaming: multilineLogfmt=false restores permissive-pro
 
     REQUIRE(sink.finished);
     auto lines = FlattenLines(sink.batches);
-    // Two rows now: the header, plus the "tab-indented continuation"
-    // parsed as three (or two, depending on leading-tab tokenization)
-    // null-valued bare keys.
     REQUIRE(lines.size() == 2);
 
     const KeyId kTab = sink.keys.Find("tab-indented");
@@ -625,9 +594,6 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    // Payload starts with an indented line: no prior record to
-    // attach to. The loop surfaces an "Orphaned continuation line"
-    // error but continues processing.
     const std::string payload =
         "\torphan indented at start\n"
         "level=info msg=\"first real record\"\n";
@@ -659,13 +625,6 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    // Payload starts with FIVE indented lines (imagine someone
-    // pastes a stack trace at the top of a stream, or a tail
-    // reconnects mid-record). The parser used to emit one error
-    // per physical orphan line, drowning out real parse errors in
-    // the GUI dock. The fold collapses each contiguous run to a
-    // single "Error on lines N-M: X orphaned continuation lines
-    // dropped." summary.
     const std::string payload =
         "\torphan 1\n"
         "\torphan 2\n"
@@ -701,9 +660,6 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    // No real header ever arrives; the run must still be flushed
-    // by the EOF hook so the caller isn't left wondering why the
-    // stream produced zero records and zero errors.
     const std::string payload =
         "\torphan 1\n"
         "\torphan 2\n"
@@ -733,9 +689,6 @@ TEST_CASE("LogfmtParser streaming: final pending record commits on EOF", "[logfm
 {
     using namespace loglib;
 
-    // Header + continuation with no terminating newline / new
-    // header: the loop must still commit the record when the
-    // producer closes, otherwise the last multi-line trace is lost.
     const std::string payload =
         "level=warn msg=\"trailing\"\n"
         "\tone continuation line\n"
@@ -759,24 +712,11 @@ TEST_CASE("LogfmtParser streaming: final pending record commits on EOF", "[logfm
     CHECK(*msg == "trailing\n\tone continuation line\n\tanother one");
 }
 
-// -----------------------------------------------------------------------------
-// Multi-line record tests (static / file-backed pipeline)
-//
-// The streaming loop was covered above; the static path (`ParseFile`
-// -> TBB `parallel_pipeline` -> Stage C hold-back + cross-batch
-// splice) is what the GUI opens files with. `LogfmtParser` opts in
-// via `ParserOptions::multilineLogfmt` (default `true`) and drives
-// the same `ExtendContinuationTarget` helper the streaming loop uses.
-// -----------------------------------------------------------------------------
 
 TEST_CASE("LogfmtParser file: indented continuations fold via ParseFile", "[logfmt_parser][file_line_source][multiline]")
 {
     using namespace loglib;
 
-    // Two records; the first's `msg` picks up two indented
-    // continuation lines. Mirrors the streaming test's fixture so
-    // failures on one path but not the other point at the offending
-    // pipeline.
     const TestLogFile file{"logfmt_static_multiline.log"};
     file.Write(
         "level=error msg=\"boom\"\n"
@@ -796,8 +736,7 @@ TEST_CASE("LogfmtParser file: indented continuations fold via ParseFile", "[logf
 
     const KeyId kMsg = result.data.Keys().Find("msg");
     REQUIRE(kMsg != INVALID_KEY_ID);
-    // Bind the `LogValue` to a local so `AsStringView`'s result
-    // doesn't dangle when the source is `OwnedString`.
+    // Keep LogValue alive while its string_view is used.
     const LogValue v0 = result.data.Lines()[0].GetValue(kMsg);
     const LogValue v1 = result.data.Lines()[1].GetValue(kMsg);
     const auto m0 = AsStringView(v0);
@@ -817,15 +756,8 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    // Force a tiny batch size so at least one continuation line
-    // lands in the next Stage B batch and the tail-record hold-back
-    // + `SpliceCrossBatchContinuation` path is what re-joins the
-    // record. The mock-decoder tests in `test_parser_pipeline.cpp`
-    // exercise the mechanism synthetically; this test proves the
-    // real `LogfmtLineDecoder` populates `ParsedPipelineBatch` such
-    // that Stage C succeeds.
     internal::AdvancedParserOptions advanced;
-    advanced.batchSizeBytes = 24; // deliberately smaller than one record
+    advanced.batchSizeBytes = 24; // Force a cross-batch continuation.
 
     const TestLogFile file{"logfmt_static_crossbatch.log"};
     file.Write(
@@ -841,8 +773,6 @@ TEST_CASE(
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
-    // The 4-arg advanced overload is `static`; call it via the
-    // type name so clang-tidy doesn't flag static-through-instance.
     LogfmtParser::ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced);
 
     auto data = sink.TakeData();
@@ -860,18 +790,11 @@ TEST_CASE(
     const LogValue v0 = data.Lines()[0].GetValue(kMsg);
     const auto m0 = AsStringView(v0);
     REQUIRE(m0.has_value());
-    // Every continuation line must land in the joined message,
-    // whichever side of the batch boundary it fell on.
     CHECK(m0->contains("boom"));
     CHECK(m0->contains("goroutine 1"));
     CHECK(m0->contains("main.main()"));
     CHECK(m0->contains("/app/main.go:10"));
 
-    // Per-physical-line indexing must survive the splice: previously
-    // Stage C dropped intermediate offsets from `mLineOffsets` on
-    // every leading-continuation batch, collapsing the file's 5
-    // physical lines into 2 and turning the second record's
-    // `RawLine` call into `std::out_of_range`.
     LogFile &parsedFile = sourcePtr->File();
     REQUIRE(parsedFile.GetLineCount() == 5);
     CHECK(parsedFile.GetLine(1) == "\tgoroutine 1 [running]:");
@@ -895,13 +818,6 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    // Stage C used to key the "how many leading physical lines belong
-    // to the held tail" arithmetic off `leadingContinuationLineCount`,
-    // which only tracked actual continuation lines. A blank line in
-    // the middle of the leading region would leave one physical-line
-    // offset stranded and shrink the held record's multi-line span,
-    // so `LogFile::GetLine(headerLineId)` returned only header +
-    // blank, dropping every continuation.
     internal::AdvancedParserOptions advanced;
     advanced.batchSizeBytes = 24;
 
@@ -935,9 +851,6 @@ TEST_CASE(
     CHECK(parsedFile.GetLine(2) == "\tgoroutine 1 [running]:");
     CHECK(parsedFile.GetLine(3) == "level=info msg=\"recovered\"");
 
-    // Joined bytes for the first record must extend all the way to
-    // the end of the continuation line -- blank included as a bare
-    // '\n' inside the record.
     const std::string joined = sourcePtr->RawLine(data.Lines()[0].LineId());
     CHECK(joined.contains("boom"));
     CHECK(joined.contains("goroutine 1"));
@@ -960,10 +873,6 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    // Same shape as the streaming opt-out test but on the static
-    // path. With the flag off, indented follow-up lines are not
-    // continuations; each parses as N null-valued bare keys under
-    // the permissive-prose contract.
     const TestLogFile file{"logfmt_static_multiline_disabled.log"};
     file.Write(
         "level=info msg=\"first record\"\n"
@@ -974,9 +883,6 @@ TEST_CASE(
     ParserOptions options;
     options.multilineLogfmt = false;
 
-    // Route through ParseStreaming so ParserOptions flow into the
-    // decoder; `ParseFile`'s default-options overload would reset
-    // the flag.
     auto logFile = std::make_unique<LogFile>(file.GetFilePath());
     auto fileSource = std::make_unique<FileLineSource>(std::move(logFile));
     FileLineSource *sourcePtr = fileSource.get();
@@ -986,8 +892,6 @@ TEST_CASE(
     auto data = sink.TakeData();
     REQUIRE(data.Lines().size() == 2);
 
-    // Row 1 must expose "tab-indented" / "continuation" as bare
-    // keys, not folded into row 0's msg.
     const KeyId kTab = data.Keys().Find("tab-indented");
     const KeyId kContinuation = data.Keys().Find("continuation");
     CHECK(kTab != INVALID_KEY_ID);

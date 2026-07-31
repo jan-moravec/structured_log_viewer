@@ -207,11 +207,6 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
     flagsRow->addStretch(1);
     formLayout->addRow(QString{}, flagsRow);
 
-    // Multi-line records: mode combo + header-anchor line. The
-    // combo drives `RegexLineDecoder`'s per-line classification and
-    // Stage B's continuation detection; the header-anchor field is
-    // used only by `UntilNextHeader` mode (leave blank to reuse the
-    // main pattern).
     mContinuationModeCombo = new QComboBox(formContainer);
     mContinuationModeCombo->addItem(tr("None (single-line)"), static_cast<int>(loglib::ContinuationMode::None));
     mContinuationModeCombo->addItem(tr("Indented"), static_cast<int>(loglib::ContinuationMode::Indented));
@@ -350,10 +345,6 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
         this,
         &RegexTemplatesEditor::OnFieldEdited
     );
-    // Separate connection so switching modes updates the anchor
-    // field's enabled state even when signals are being suppressed
-    // via `OnFieldEdited` (they're not, but keeping the two effects
-    // decoupled makes the intent obvious).
     connect(
         mContinuationModeCombo,
         QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -505,7 +496,7 @@ void RegexTemplatesEditor::OnNewClicked()
     mSampleLinesEdit->clear();
     mAutoDetectCheck->setChecked(true);
     mPrioritySpin->setValue(loglib::USER_TEMPLATE_DEFAULT_PRIORITY);
-    mContinuationModeCombo->setCurrentIndex(0); // None
+    mContinuationModeCombo->setCurrentIndex(0);
     mHeaderAnchorEdit->clear();
     mDescriptionEdit->clear();
     mSourceLabel->setText(tr("New user template (not yet saved)"));
@@ -633,9 +624,6 @@ void RegexTemplatesEditor::OnDuplicateClicked()
     mDescriptionEdit->setReadOnly(false);
     mDeleteButton->setEnabled(false);
     mDuplicateButton->setEnabled(false);
-    // Duplicating a built-in inherits its mode; sync so the anchor
-    // field's enabled state reflects the just-loaded mode (rather
-    // than lagging behind whatever the previous selection was).
     SyncHeaderAnchorEnabled();
 
     MarkDirty();
@@ -671,9 +659,6 @@ void RegexTemplatesEditor::OnSaveClicked()
         return;
     }
 
-    // Front-load header-anchor errors the same way. Refuses to
-    // persist a template whose anchor doesn't compile so the parser
-    // never has to fail-close on it at runtime.
     if (!loglib::ValidateHeaderAnchor(tmpl.headerAnchor, regexError))
     {
         ShowStatus(QString::fromStdString(regexError), /*isError=*/true);
@@ -824,8 +809,6 @@ void RegexTemplatesEditor::OnValidateClicked()
         return;
     }
 
-    // Anchor compile-check runs on Validate too so users can iterate
-    // on the anchor without hitting Save first.
     if (!loglib::ValidateHeaderAnchor(tmpl.headerAnchor, regexError))
     {
         ShowStatus(QString::fromStdString(regexError), /*isError=*/true);
@@ -1010,9 +993,6 @@ void RegexTemplatesEditor::LoadIntoForm(const QString &name)
     mDescriptionEdit->setReadOnly(!editable);
     mDeleteButton->setEnabled(editable);
     mDuplicateButton->setEnabled(true);
-    // Final anchor-field state depends on both editability AND the
-    // loaded mode; sync after the readonly toggles above so this
-    // has the last say.
     SyncHeaderAnchorEnabled();
 
     MarkClean();
@@ -1064,11 +1044,7 @@ loglib::RegexTemplate RegexTemplatesEditor::GatherForm() const
     t.priority = mPrioritySpin->value();
     t.continuationMode =
         static_cast<loglib::ContinuationMode>(mContinuationModeCombo->currentData().toInt());
-    // `headerAnchor` is only honoured in `UntilNextHeader` mode; drop
-    // any stale text a user may have typed and then switched away
-    // from so it does not round-trip to disk (the runtime would
-    // silently ignore it, but a persisted JSON with a stray anchor
-    // is confusing on re-open).
+    // Do not persist anchors ignored by the current mode.
     if (t.continuationMode == loglib::ContinuationMode::UntilNextHeader)
     {
         t.headerAnchor = mHeaderAnchorEdit->text().trimmed().toStdString();
@@ -1106,18 +1082,10 @@ bool RegexTemplatesEditor::IsCurrentEditable() const
 
 void RegexTemplatesEditor::SyncHeaderAnchorEnabled()
 {
-    // Anchor field is only meaningful under `UntilNextHeader`;
-    // `RegexTemplate::headerAnchor` is documented as ignored
-    // otherwise. Reflecting that in the UI (rather than letting
-    // users type into a field that will be silently discarded)
-    // matches the placeholder's "Until-next-header only" note.
+    // Keep built-in anchors visible but read-only.
     const auto mode = static_cast<loglib::ContinuationMode>(mContinuationModeCombo->currentData().toInt());
     const bool modeAllows = (mode == loglib::ContinuationMode::UntilNextHeader);
     const bool editable = IsCurrentEditable();
-    // `setReadOnly` keeps the text visible on built-ins (so users
-    // can inspect the anchor a shipped template ships with); we
-    // toggle it here and let `setEnabled` do the "grey out" work
-    // when the mode disallows the field entirely.
     mHeaderAnchorEdit->setReadOnly(!editable || !modeAllows);
     mHeaderAnchorEdit->setEnabled(modeAllows);
 }

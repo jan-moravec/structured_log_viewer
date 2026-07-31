@@ -294,9 +294,7 @@ void ParseLogfmtLine(
     out.reserve(INITIAL_FIELD_CAPACITY);
     if (outLastSourceOrderKey != nullptr)
     {
-        // Track the last key seen in source order (independent of
-        // `InsertSorted`'s KeyId ordering) so multi-line callers
-        // know which field to extend with continuation bytes.
+        // Continuations target source order, not sorted KeyId order.
         *outLastSourceOrderKey = INVALID_KEY_ID;
     }
 
@@ -410,18 +408,13 @@ void DecodeLogfmtBatch(
     size_t relativeLineNumber = 1;
 
     std::vector<std::pair<KeyId, internal::CompactLogValue>> values;
-    // Per-record continuation target: last source-order key emitted
-    // for the most recent Emit. Reset on each new record.
+    // Last source-order key emitted for the current record.
     KeyId lastRecordContinuationTarget = INVALID_KEY_ID;
-    // 0-based physical-line index (within batch) of the current tail
-    // record: header on Emit, updated on each folded continuation.
+    // Batch-relative physical span of the current final record.
     size_t tailHeaderPhysical = 0;
     size_t tailLastPhysical = 0;
-    // Blank lines seen in the leading region that we haven't decided
-    // about yet. Promoted into `leadingContinuationLineCount` when a
-    // continuation follows (so the blank ends up in the held record's
-    // multi-line span, matching the in-batch semantics), discarded on
-    // a fresh header (where the blank is a between-records separator).
+    // Leading blanks belong to the held record only when followed by
+    // another continuation.
     size_t pendingLeadingBlanks = 0;
 
     while (cursor < end)
@@ -444,9 +437,6 @@ void DecodeLogfmtBatch(
 
         if (line.empty())
         {
-            // Blank line inside the leading region: track it so a
-            // following continuation can promote it into the held
-            // record's span. Inert outside multiline mode.
             if (multiline && parsed.lines.empty())
             {
                 ++pendingLeadingBlanks;
@@ -455,18 +445,11 @@ void DecodeLogfmtBatch(
             continue;
         }
 
-        // Multi-line: indented lines are continuations of the prior
-        // record. Handling identical to the streaming path: fold into
-        // the last source-order key of the current record, or buffer
-        // for cross-batch stitching at Stage C.
         if (multiline && (line.front() == ' ' || line.front() == '\t'))
         {
             if (parsed.lines.empty())
             {
-                // Batch opens on a continuation. Stage C splices these
-                // bytes into the previously held record. Fold in any
-                // pending leading blanks first so their physical-line
-                // count is charged to the held tail's span.
+                // Include preceding blanks in the held record's physical span.
                 parsed.leadingContinuationLineCount += pendingLeadingBlanks;
                 pendingLeadingBlanks = 0;
                 if (!parsed.leadingContinuationBytes.empty())
@@ -483,9 +466,6 @@ void DecodeLogfmtBatch(
                 continuation.push_back('\n');
                 continuation.append(line.data(), line.size());
 
-                // In-batch splice into the tail record. Uses the same
-                // arena as the record's `OwnedString` values so the
-                // extension stays contiguous.
                 auto compactSpan = parsed.lines.back().CompactValues();
                 std::vector<std::pair<KeyId, internal::CompactLogValue>> mutableValues(
                     compactSpan.begin(), compactSpan.end()
@@ -502,8 +482,7 @@ void DecodeLogfmtBatch(
                 );
                 if (outcome == internal::ContinuationSpliceOutcome::Ok)
                 {
-                    // Rebuild the LogLine with the extended values. We
-                    // preserve the header's lineId (record identity).
+                    // Preserve the header line ID while replacing its values.
                     const size_t headerLineId = parsed.lines.back().LineId();
                     parsed.lines.pop_back();
                     LogLine rebuilt(std::move(mutableValues), keys, source, headerLineId);
@@ -560,18 +539,9 @@ void DecodeLogfmtBatch(
                 continue;
             }
 
-            // Fresh header: any pending leading blanks were separators
-            // between records, not part of the previous batch's tail.
             pendingLeadingBlanks = 0;
 
-            // Before overwriting the tail-tracker with the fresh
-            // header's indices, snapshot the OUTGOING record's
-            // multi-line span so Stage C can register it. The batch's
-            // tail record is handled separately by Stage C (via
-            // `tailRecord*PhysicalLine`); this branch fires strictly
-            // for records that got sealed by a new header inside the
-            // same batch. Skip when no continuation was folded
-            // (single-line record: last == header).
+            // Save the span being sealed; Stage C handles the batch tail.
             if (multiline && !parsed.lines.empty() && tailLastPhysical > tailHeaderPhysical)
             {
                 parsed.completedMultiLineSpans.push_back(
@@ -585,9 +555,6 @@ void DecodeLogfmtBatch(
             // Inline promotion: same shape as the JSON parser.
             worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
 
-            // Track the record's continuation target for any indented
-            // lines that follow before the next header, plus the
-            // header's physical index for cross-batch span math.
             lastRecordContinuationTarget = lastSourceOrderKey;
             tailHeaderPhysical = relativeLineNumber - 1;
             tailLastPhysical = tailHeaderPhysical;
@@ -607,9 +574,6 @@ void DecodeLogfmtBatch(
 
     parsed.totalLineCount = relativeLineNumber - 1;
 
-    // Only mark the tail record as open when we're actually in a
-    // multi-line mode; single-line mode never generates continuations
-    // and Stage C must never hold back an ordinary record.
     if (multiline && !parsed.lines.empty() && lastRecordContinuationTarget != INVALID_KEY_ID)
     {
         parsed.lastRecordOpenForContinuation = true;
@@ -621,25 +585,11 @@ void DecodeLogfmtBatch(
 
 /// Logfmt record decoder for `RunStreamingParseLoop`. Owns the
 /// per-line scratch. Satisfies `CompactLineDecoder`.
-///
-/// Multi-line records (`mMultiline == true`, the default): an
-/// indented line (first byte ` ` or `\t`) is a continuation of the
-/// prior record and returns `LineDecodeResult::Continue`. The pipeline
-/// then extends the prior record's last-source-order field via
-/// `LastContinuationTarget()`. This covers Go / Python / Node stack
-/// traces spliced into a logfmt stream while leaving un-indented
-/// prose (the shipped "permissive prose" contract) unchanged.
-///
-/// Callers that need the pre-feature behaviour verbatim (e.g. tests
-/// pinning "hand-typed indented lines become three null-valued bare
-/// keys") pass `multiline = false` via `ParserOptions::multilineLogfmt`.
+/// In multi-line mode, indented lines continue the preceding record's
+/// last source-order field. Other lines retain normal logfmt parsing.
 class LogfmtLineDecoder
 {
 public:
-    // Multi-line behaviour is opt-in via the explicit constructor
-    // so tests / callers that don't route through `ParserOptions`
-    // cannot silently pick up continuation folding by default-
-    // constructing the decoder.
     LogfmtLineDecoder() = delete;
 
     explicit LogfmtLineDecoder(bool multiline) noexcept : mMultiline(multiline)
@@ -657,9 +607,6 @@ public:
     {
         out.clear();
         outOwnedArena.clear();
-        // Streaming loop pre-filters empty lines; if one slips through
-        // (e.g. via a decoder-level fuzz test) it's benign — no fields
-        // to emit, and treating it as `Emit` matches shipped behaviour.
         if (line.empty())
         {
             mLastContinuationTarget = INVALID_KEY_ID;
@@ -668,9 +615,6 @@ public:
 
         if (mMultiline && (line.front() == ' ' || line.front() == '\t'))
         {
-            // Indented lines are continuations of the prior record.
-            // The pipeline handles the actual splice (find target
-            // field, extend arena bytes) — the decoder just signals.
             return internal::LineDecodeResult::Continue;
         }
 
@@ -716,12 +660,7 @@ public:
         }
     }
 
-    /// KeyId of the last field emitted in source order on the most
-    /// recent `DecodeCompact` call that returned `Emit`. Consumed by
-    /// `RunStreamingParseLoop` to route `Continue` bytes into the
-    /// prior record's arena. Returns `INVALID_KEY_ID` when no valid
-    /// `Emit` has happened yet, or when the last call returned
-    /// `Error` / `Continue`.
+    /// Last source-order field from the most recent emitted record.
     [[nodiscard]] KeyId LastContinuationTarget() const noexcept
     {
         return mLastContinuationTarget;

@@ -222,11 +222,6 @@ public:
     }
 };
 
-/// Mock multi-line parser: same `key=value` format as `KeyValueLineParser`,
-/// but treats any line starting with a space or tab as a continuation of
-/// the previous record's `msg` field. Exercises the Stage C hold-back /
-/// cross-batch splice discipline independently of the real regex /
-/// logfmt parsers.
 class MultilineKeyValueLineParser
 {
 public:
@@ -291,9 +286,6 @@ public:
             const char *end = token.bytesEnd;
             size_t relativeLineNumber = 1;
 
-            // Continuation state: which KeyId of the current tail record
-            // should absorb subsequent continuation bytes. Reset on every
-            // fresh header line.
             loglib::KeyId lastRecordContinuationTarget = loglib::INVALID_KEY_ID;
             size_t tailHeaderPhysical = 0;
             size_t tailLastPhysical = 0;
@@ -320,13 +312,10 @@ public:
                     continue;
                 }
 
-                // Continuation: indented line folds into the tail record.
                 if (line.front() == ' ' || line.front() == '\t')
                 {
                     if (parsed.lines.empty())
                     {
-                        // Batch opens on a continuation. Stage C splices these
-                        // into the previous batch's held tail record.
                         if (!parsed.leadingContinuationBytes.empty())
                         {
                             parsed.leadingContinuationBytes.push_back('\n');
@@ -387,7 +376,6 @@ public:
                     continue;
                 }
 
-                // Header line: tokenise `key=value` pairs.
                 std::vector<std::pair<loglib::KeyId, loglib::internal::CompactLogValue>> values;
                 values.reserve(8);
                 loglib::KeyId lastSourceOrderKey = loglib::INVALID_KEY_ID;
@@ -448,12 +436,6 @@ public:
                     continue;
                 }
 
-                // Snapshot the OUTGOING record's multi-line span
-                // before overwriting the tail-tracker; Stage C uses
-                // this to call `LogFile::RegisterMultiLineRecord`
-                // for non-tail records that got sealed by a fresh
-                // header inside the same batch. Mirrors the real
-                // logfmt / regex parsers.
                 if (!parsed.lines.empty() && tailLastPhysical > tailHeaderPhysical)
                 {
                     parsed.completedMultiLineSpans.push_back(
@@ -914,30 +896,21 @@ TEST_CASE("Mock parser: timestamp promotion via shared post-decoding hook", "[mo
     REQUIRE(promoted == 3);
 }
 
-// Cross-batch splice: a multi-line record's continuation lines land in
-// the NEXT Stage A batch. Stage C must hold the header record back and
-// splice `leadingContinuationBytes` into its last field before emitting.
 TEST_CASE(
     "Mock parser (multiline): cross-batch continuation splices into held tail record",
     "[mock_parser][multiline][cross_batch]"
 )
 {
-    // Fixture: two records, each followed by two indented continuation
-    // lines. We size the batch to guarantee the second record's header
-    // line ends a batch while its continuations start the next one.
     std::string content;
-    content += "level=info msg=first\n";      // line 1: header A
-    content += "\tframe A1\n";                // line 2: continuation of A
-    content += "\tframe A2\n";                // line 3: continuation of A
-    content += "level=warn msg=second\n";     // line 4: header B
-    content += "\tframe B1\n";                // line 5: continuation of B
-    content += "\tframe B2\n";                // line 6: continuation of B
+    content += "level=info msg=first\n";
+    content += "\tframe A1\n";
+    content += "\tframe A2\n";
+    content += "level=warn msg=second\n";
+    content += "\tframe B1\n";
+    content += "\tframe B2\n";
 
     const TempTextFile fixture(content, "test_kv_multiline_xbatch.log");
 
-    // Split the file so the second record's continuations sit in a
-    // fresh batch. The first three lines together are 41 bytes; picking
-    // a batch size in that neighbourhood forces Stage A to break there.
     const size_t firstThreeLineBytes = std::string_view("level=info msg=first\n\tframe A1\n\tframe A2\n").size();
 
     loglib::ParserOptions options;
@@ -962,7 +935,6 @@ TEST_CASE(
     }
     REQUIRE(allLines.size() == 2);
 
-    // Record A must have absorbed both continuation frames.
     LogValue msgA = allLines[0]->GetValue("msg");
     REQUIRE(std::holds_alternative<std::string>(msgA));
     const std::string &msgAStr = std::get<std::string>(msgA);
@@ -971,8 +943,6 @@ TEST_CASE(
     CHECK(msgAStr.find("frame A1") != std::string::npos);
     CHECK(msgAStr.find("frame A2") != std::string::npos);
 
-    // Record B must have absorbed its own frames (may live in-batch or
-    // land at EOF via the pipeline's final `commitHeld`).
     LogValue msgB = allLines[1]->GetValue("msg");
     REQUIRE(std::holds_alternative<std::string>(msgB));
     const std::string &msgBStr = std::get<std::string>(msgB);
@@ -981,13 +951,6 @@ TEST_CASE(
     CHECK(msgBStr.find("frame B1") != std::string::npos);
     CHECK(msgBStr.find("frame B2") != std::string::npos);
 
-    // Per-physical-line indexing must survive the splice: the
-    // Stage C stream carries one `localLineOffsets` entry per
-    // physical line, in file order, so the eventual `mLineOffsets`
-    // has one entry per line + the leading sentinel.
-    // `CollectingSink` never forwards to `LogFile`, so we
-    // aggregate directly here (the regex / logfmt end-to-end
-    // tests use `BufferingSink` for the `GetLineCount` variant).
     std::vector<uint64_t> allOffsets;
     for (const auto &b : sink.batches)
     {
@@ -996,34 +959,20 @@ TEST_CASE(
     REQUIRE(allOffsets.size() == 6);
 }
 
-// Cross-batch splice with LEADING continuations: the second batch
-// STARTS with continuation lines that belong to the previous batch's
-// held tail record. Stage C used to overwrite the single trailing
-// offset held for the record with the LAST leading-continuation
-// offset and drop the intermediate physical-line boundaries; this
-// case pins the per-physical-line accounting so any regression trips
-// `GetLineCount` or a `std::out_of_range` on the second record's
-// `RawLine` call.
 TEST_CASE(
     "Mock parser (multiline): leading continuations preserve per-physical-line offsets",
     "[mock_parser][multiline][cross_batch]"
 )
 {
-    // Fixture: one header + three indented continuations + a second
-    // header. Batch size = the header + first continuation (~30
-    // bytes), so subsequent batches begin with continuation lines.
     std::string content;
-    content += "level=error msg=first\n"; // line 1: header A
-    content += "\tframe A1\n";            // line 2: continuation of A
-    content += "\tframe A2\n";            // line 3: continuation of A
-    content += "\tframe A3\n";            // line 4: continuation of A
-    content += "level=info msg=second\n"; // line 5: header B
+    content += "level=error msg=first\n";
+    content += "\tframe A1\n";
+    content += "\tframe A2\n";
+    content += "\tframe A3\n";
+    content += "level=info msg=second\n";
 
     const TempTextFile fixture(content, "test_kv_multiline_leading_cont.log");
 
-    // Force Stage A to break the batch at the first newline so batch
-    // 2+ start with a continuation line (guarantees the leading-
-    // continuation splice path runs).
     loglib::ParserOptions options;
     loglib::internal::AdvancedParserOptions advanced;
     advanced.threads = 1;
@@ -1053,38 +1002,26 @@ TEST_CASE(
     CHECK(msgAStr.contains("frame A2"));
     CHECK(msgAStr.contains("frame A3"));
 
-    // The file has 5 physical lines. Before the fix Stage C
-    // pushed only 3 line-offset entries (the boom header, the
-    // last leading-continuation offset, and B's header), which
-    // downstream turned into `mLineOffsets.size() == 4`,
-    // `GetLineCount == 3`, and `RawLine(record B)` throwing
-    // `std::out_of_range` because B's absolute physical index
-    // pointed past the shrunken offsets array.
     std::vector<uint64_t> allOffsets;
     for (const auto &b : sink.batches)
     {
         allOffsets.insert(allOffsets.end(), b.localLineOffsets.begin(), b.localLineOffsets.end());
     }
     REQUIRE(allOffsets.size() == 5);
-    // Offsets are strictly monotonic (each is the position just
-    // past the physical line's trailing newline).
     for (size_t i = 1; i < allOffsets.size(); ++i)
     {
         CHECK(allOffsets[i] > allOffsets[i - 1]);
     }
 }
 
-// Orphan continuation at file start: the first physical line is a
-// continuation with no prior record to attach to. Stage C surfaces an
-// error and drops the bytes; the following record still parses.
 TEST_CASE(
     "Mock parser (multiline): orphan continuation at file start surfaces error",
     "[mock_parser][multiline][orphan]"
 )
 {
     std::string content;
-    content += "\torphan frame at column 0\n"; // line 1: continuation, no header
-    content += "level=info msg=real\n";        // line 2: valid record
+    content += "\torphan frame at column 0\n";
+    content += "level=info msg=real\n";
 
     const TempTextFile fixture(content, "test_kv_orphan_continuation.log");
 
@@ -1112,14 +1049,9 @@ TEST_CASE(
     CHECK(totalLines == 1);
     REQUIRE(!allErrors.empty());
     INFO("first error: " << allErrors.front());
-    // The orphan-continuation error is emitted at line 1 (the first
-    // physical continuation line) by Stage C.
     CHECK(allErrors.front().find("Orphaned continuation") != std::string::npos);
 }
 
-// EOF commit: a multi-line record that reaches end-of-file with no
-// following header must still be emitted (via the pipeline's final
-// `commitHeld` fallthrough).
 TEST_CASE(
     "Mock parser (multiline): final multi-line record commits at EOF",
     "[mock_parser][multiline][eof]"

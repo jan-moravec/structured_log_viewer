@@ -435,62 +435,21 @@ TEST_CASE(
     CHECK(std::get<std::string_view>(row1message) == std::string_view{"Application starting"});
 }
 
-// -----------------------------------------------------------------------------
-// Multi-line record support in shipped templates.
-//
-// Each `MultilineCase` names a shipped template, the mode it must
-// declare, and a hand-crafted three-part fixture: `header` (one
-// line matching the pattern) + `continuationLines` (folded into
-// the prior record's last named group) + `nextHeader` (a second
-// header that seals the multi-line record and gives Stage C /
-// streaming loop a real "new header" event to react to).
-//
-// Assertions:
-//   1. The template's `continuationMode` field matches what the
-//      shipped JSON declares. This catches accidental deletions of
-//      the field during future edits.
-//   2. Parsing the fixture emits exactly two rows and zero errors.
-//   3. The first row's `<lastField>` value contains every
-//      continuation-line substring — i.e. the continuation was
-//      actually appended rather than dropped or emitted as its own
-//      row.
-//
-// The intent is a per-template smoke test, not a comprehensive
-// fixture for every format's real-world corpus; the goal is to
-// notice within seconds if a future edit demotes a template back
-// to `None` or breaks the fold. Depth-heavy coverage lives in
-// `test_regex_parser.cpp` (streaming vs static, cross-batch).
-// -----------------------------------------------------------------------------
 
 namespace
 {
 
 struct MultilineCase
 {
-    /// Shipped template name (matched against `BuiltinRegexTemplates()`).
     std::string_view templateName;
-    /// Expected `continuationMode` after the JSON edit lands.
     ContinuationMode expectedMode;
-    /// Header line — must match `pattern` and emit a row.
     std::string_view header;
-    /// Zero or more continuation lines that must fold into
-    /// `header`'s last named group.
     std::vector<std::string_view> continuationLines;
-    /// A second header that seals the multi-line record. Emits
-    /// its own row.
     std::string_view nextHeader;
-    /// Named group that receives the continuation bytes. This is
-    /// always the pattern's last named group in source order;
-    /// spelling it out makes the fixture self-documenting.
     std::string_view lastField;
-    /// Fragments the joined `<lastField>` value must contain. One
-    /// per continuation line is customary but not required.
     std::vector<std::string_view> expectedContainsInLastField;
 };
 
-/// Look up a shipped template by name. Fails the calling test if
-/// the name is unknown so a rename in `library/data/regex_templates`
-/// is caught immediately.
 const RegexTemplate &LookupBuiltin(std::string_view name)
 {
     for (const RegexTemplate &t : BuiltinRegexTemplates())
@@ -501,21 +460,15 @@ const RegexTemplate &LookupBuiltin(std::string_view name)
         }
     }
     FAIL("Unknown built-in regex template: " << name);
-    // Unreachable in practice (`FAIL` aborts the test), but the
-    // compiler still needs a return path. The static sentinel
-    // outlives every caller and is never mutated.
     static const RegexTemplate UNREACHABLE_SENTINEL{};
     return UNREACHABLE_SENTINEL;
 }
 
-/// Drive @p tc through `ParseFile` with the template's shipped
-/// pattern and assert every expectation from the case's doc.
 void ExpectMultilineTemplateFolds(const MultilineCase &tc)
 {
     INFO("template: " << tc.templateName);
 
     const RegexTemplate &t = LookupBuiltin(tc.templateName);
-    // (1) The JSON edit must have declared the expected mode.
     CHECK(t.continuationMode == tc.expectedMode);
 
     std::string content;
@@ -539,17 +492,10 @@ void ExpectMultilineTemplateFolds(const MultilineCase &tc)
     {
         UNSCOPED_INFO("parse error: " << e);
     }
-    // (2) Fixture must emit exactly two rows: the header and the
-    // next-header. Every continuation line must have folded into
-    // row 0.
     CHECK(result.errors.empty());
     REQUIRE(result.data.Lines().size() == 2);
 
-    // (3) The joined last-field value contains each expected
-    // fragment. Bind the `LogValue` to a local — `AsStringView`
-    // returns a `string_view` into the variant, which would
-    // dangle if constructed from a temporary. `LogLine::GetValue`
-    // takes `std::string const&`, so materialise the name.
+    // Keep LogValue alive while its string_view is used.
     const LogValue joined = result.data.Lines()[0].GetValue(std::string{tc.lastField});
     const auto joinedView = AsStringView(joined);
     REQUIRE(joinedView.has_value());
@@ -567,14 +513,7 @@ TEST_CASE(
     "Shipped indented-continuation templates fold indented follow-up lines [regex_templates]", "[regex_templates][multiline]"
 )
 {
-    // Six templates elect the low-cost `Indented` mode: whitespace
-    // on the first byte marks a continuation. The fixture for each
-    // uses a realistic stack-trace / long-query / diagnostic-dump
-    // shape from the format's canonical docs.
     const MultilineCase cases[] = {
-        // Java template ships with `indented` too and is exercised
-        // extensively elsewhere; the six new templates below are
-        // what this commit adds.
         MultilineCase{
             .templateName = "spdlog",
             .expectedMode = ContinuationMode::Indented,
@@ -671,13 +610,6 @@ TEST_CASE(
     "[regex_templates][multiline]"
 )
 {
-    // Four templates elect `UntilNextHeader`: continuation lines
-    // are detected by a `PCRE2_ANCHORED | PCRE2_PARTIAL_HARD` probe
-    // against the main pattern. The fixture for each carries both
-    // unindented and indented continuation lines (a Zap goroutine
-    // dump, glog `LOG(FATAL)` marker, Rust panic frames, Ruby
-    // backtrace paths) that the cheaper `Indented` mode would
-    // fail to fold.
     const MultilineCase cases[] = {
         MultilineCase{
             .templateName = "Uber Zap (console)",
@@ -754,17 +686,6 @@ TEST_CASE(
     "[regex_templates][multiline]"
 )
 {
-    // Cheap structural sweep. Two invariants:
-    //  (a) Templates with `continuationMode != None` still declare
-    //      at least one named group (the last-in-source-order one
-    //      is the continuation target). A future refactor that
-    //      strips named groups without also flipping the mode back
-    //      to `None` would parse without errors but silently drop
-    //      continuation bytes.
-    //  (b) A non-empty `headerAnchor` is only meaningful for
-    //      `UntilNextHeader` (the parser ignores it otherwise);
-    //      declaring one on an `Indented` template is almost
-    //      always a mistake.
     for (const RegexTemplate &t : BuiltinRegexTemplates())
     {
         INFO("template: " << t.name);
@@ -781,23 +702,11 @@ TEST_CASE(
 
 TEST_CASE("Every shipped template's headerAnchor compiles [regex_templates]", "[regex_templates][header_anchor]")
 {
-    // Forward-looking guard: all shipped templates currently leave
-    // `headerAnchor` empty (which is fine — the parser falls back
-    // to the main pattern). If a future JSON edit adds an anchor
-    // it must compile cleanly, or the parser will fail closed at
-    // load time and users will see a "Header anchor compile
-    // failed" error instead of any rows. Running the same
-    // pre-flight the editor's Save button runs catches this at
-    // test time.
     for (const RegexTemplate &t : BuiltinRegexTemplates())
     {
         INFO("template: " << t.name);
         std::string err;
         CHECK(ValidateHeaderAnchor(t.headerAnchor, err));
-        // On the happy path `err` must come back empty; a stale
-        // non-empty value would mask a future bug where a bad
-        // anchor slipped through because the return-value check
-        // was the only signal.
         CHECK(err.empty());
     }
 }

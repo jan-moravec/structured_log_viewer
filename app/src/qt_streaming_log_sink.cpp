@@ -359,9 +359,7 @@ loglib::StreamedBatch QtStreamingLogSink::CoalesceLocked(std::vector<loglib::Str
         std::ranges::move(batch.localLineOffsets, std::back_inserter(out.localLineOffsets));
         std::ranges::move(batch.errors, std::back_inserter(out.errors));
         std::ranges::move(batch.newKeys, std::back_inserter(out.newKeys));
-        // Multi-line spans carry absolute physical-line indices in the
-        // sink-shared `mLineOffsets`, so coalescing across batches is a
-        // straight concatenation -- no per-batch offset rebasing.
+        // Span indices are absolute, so concatenation needs no rebasing.
         std::ranges::move(batch.multiLineSpans, std::back_inserter(out.multiLineSpans));
     }
     return out;

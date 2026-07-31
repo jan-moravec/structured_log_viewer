@@ -702,9 +702,6 @@ struct RegexByteRange
     const char *fileEnd = nullptr;
 };
 
-// Forward declaration: implementation appears with the streaming
-// decoder below. Called from both the static Stage B and the
-// streaming decoder for `UntilNextHeader` mode header detection.
 bool RegexLooksLikeHeader(
     const CompiledPattern &compiled, pcre2_match_data *matchData, std::string_view line
 );
@@ -747,18 +744,12 @@ void DecodeRegexBatch(
 
     EnsureWorkerMatchData(worker.user, compiled);
 
-    // Continuation target is the last source-order named group. The
-    // schema in `columnKeys` follows PCRE2's `pcre2_get_name_table`
-    // order, which is source order (see the intern step in
-    // `RegexParser::ParseStreaming`).
+    // `columnKeys` follows the schema's group-index sort, so its last
+    // entry is the final named group in pattern source order.
     const KeyId continuationTargetKey =
         (continuationMode != ContinuationMode::None && !columnKeys.empty()) ? columnKeys.back() : INVALID_KEY_ID;
 
-    // Header-detection scratch for UntilNextHeader mode. Allocated
-    // once per batch, not per line. Prefer the dedicated header
-    // anchor pattern when provided; falls back to the main pattern
-    // so shipped templates with an empty `headerAnchor` keep the
-    // pre-feature behaviour verbatim.
+    // Match data is per batch because PCRE2 match state is mutable.
     const CompiledPattern *headerProbe = (headerAnchor != nullptr) ? headerAnchor : &compiled;
     Pcre2MatchDataPtr headerScratch;
     if (continuationMode == ContinuationMode::UntilNextHeader)
@@ -780,17 +771,11 @@ void DecodeRegexBatch(
     size_t relativeLineNumber = 1;
     std::vector<std::pair<KeyId, internal::CompactLogValue>> values;
     std::string lineError;
-    // 0-based physical-line index (within batch) of the current
-    // tail record's header + last-fold-in.
+    // Batch-relative physical span of the current final record.
     size_t tailHeaderPhysical = 0;
     size_t tailLastPhysical = 0;
-    // Blank lines seen in the leading region that we haven't decided
-    // about yet. If a leading continuation follows, promote them into
-    // `leadingContinuationLineCount` so they end up in the held
-    // record's multi-line span (mirrors the in-batch treatment where
-    // a blank between the header and a continuation is part of the
-    // span). If a fresh header arrives first, discard -- those blanks
-    // are separators between records, not part of the held tail.
+    // Leading blanks belong to the held record only when followed by
+    // another continuation.
     size_t pendingLeadingBlanks = 0;
 
     while (cursor < end)
@@ -820,10 +805,6 @@ void DecodeRegexBatch(
 
         if (line.empty())
         {
-            // Track blanks in the leading region so we can promote
-            // them to `leadingContinuationLineCount` if a continuation
-            // follows. In non-multiline mode this branch is inert
-            // (`pendingLeadingBlanks` never gets promoted).
             if (continuationMode != ContinuationMode::None && parsed.lines.empty())
             {
                 ++pendingLeadingBlanks;
@@ -832,7 +813,6 @@ void DecodeRegexBatch(
             continue;
         }
 
-        // Multi-line: is this a continuation of the prior record?
         bool isContinuation = false;
         if (continuationMode == ContinuationMode::Indented)
         {
@@ -847,12 +827,7 @@ void DecodeRegexBatch(
         {
             if (parsed.lines.empty())
             {
-                // Batch opens on a continuation. Stage C splices these
-                // bytes into the previously held record. Any blank
-                // lines that preceded this continuation in the leading
-                // region belong to the held tail's span too -- fold
-                // their physical-line count in before bumping for the
-                // current continuation.
+                // Include preceding blanks in the held record's physical span.
                 parsed.leadingContinuationLineCount += pendingLeadingBlanks;
                 pendingLeadingBlanks = 0;
                 if (!parsed.leadingContinuationBytes.empty())
@@ -923,20 +898,9 @@ void DecodeRegexBatch(
             continue;
         }
 
-        // Fresh header: any pending leading blanks are separators, not
-        // part of the previous batch's held tail. Discard so Stage C's
-        // offset shuffle stops at the LAST leading continuation (or is
-        // a no-op if there wasn't one).
         pendingLeadingBlanks = 0;
 
-        // Before overwriting the tail-tracker with the fresh
-        // header's indices, snapshot the OUTGOING record's
-        // multi-line span so Stage C can register it via
-        // `LogFile::RegisterMultiLineRecord`. The batch's tail
-        // record is registered separately by Stage C's hold-back
-        // path; this fires only for records sealed by a fresh
-        // header inside the SAME batch. Skip single-line records
-        // (last == header) so we don't bloat the span vector.
+        // Save the span being sealed; Stage C handles the batch tail.
         if (continuationMode != ContinuationMode::None && !parsed.lines.empty()
             && tailLastPhysical > tailHeaderPhysical)
         {
@@ -945,8 +909,7 @@ void DecodeRegexBatch(
             );
         }
 
-        // `LogLine` ctor asserts ascending KeyIds; the name-table
-        // ordering here is source order, not KeyId order.
+        // `LogLine` requires KeyId order, unlike source-order captures.
         std::sort(values.begin(), values.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
 
         LogLine logLine(std::move(values), keys, source, relativeLineNumber - 1);
@@ -974,15 +937,9 @@ void DecodeRegexBatch(
 // Streaming-loop glue.
 // ---------------------------------------------------------------------
 
-/// True if @p line is a "header" for the current pattern under the
-/// `UntilNextHeader` continuation rule. Runs `pcre2_match` with
-/// `PCRE2_ANCHORED | PCRE2_PARTIAL_HARD` on the main pattern so no
-/// second compile is needed. A full match at position 0 is a header;
-/// `PCRE2_ERROR_PARTIAL` (pattern matches the prefix but the line
-/// truncates before completion) is also treated as a header — the
-/// alternative is dropping a header that happens to be shorter than
-/// the pattern's required-length prefix, which is worse for a live
-/// tail scenario. Any other result is a continuation.
+/// Test @p line with an anchored, partial-hard header probe. A partial
+/// prefix counts as a header so an incomplete live-tail line is not
+/// folded into the preceding record.
 bool RegexLooksLikeHeader(
     const CompiledPattern &compiled, pcre2_match_data *matchData, std::string_view line
 )
@@ -1003,26 +960,9 @@ bool RegexLooksLikeHeader(
     return rc >= 0 || rc == PCRE2_ERROR_PARTIAL;
 }
 
-/// RegexParser's live-tail decoder. Signals `Continue` for lines
-/// that look like continuations under @p mode; the pipeline
-/// (`RunStreamingParseLoop`) routes their raw bytes into the prior
-/// record's last-source-order named group.
-///
-///  - `None`: legacy behaviour — every unmatched line surfaces as
-///    a parse error via `MatchLineAndEmit`.
-///  - `Indented`: O(1) first-byte whitespace check. Covers Java /
-///    Python / Go / Node stack traces (all indented).
-///  - `UntilNextHeader`: PCRE2 anchored-partial-hard match against
-///    the main pattern by default. Slower per line but handles
-///    formats whose continuation lines mix indented and un-indented
-///    text (Python "During handling of the above exception, another
-///    exception occurred:"). When @p headerAnchor is non-null the
-///    probe uses that (usually cheaper) compiled pattern instead —
-///    same PCRE2 flags, just a smaller regex to run per line.
-///
-/// When @p mode is `UntilNextHeader` and @p headerAnchor is null the
-/// probe reuses `compiled`; no second compile is needed for the
-/// "reuse the main pattern" shipped path.
+/// Live-tail decoder that classifies continuations according to
+/// @p mode. `UntilNextHeader` uses @p headerAnchor when supplied,
+/// otherwise it probes the main compiled pattern.
 class RegexLineDecoder
 {
 public:
@@ -1034,10 +974,6 @@ public:
     )
         : mCompiled(&compiled), mColumnKeys(&columnKeys), mMode(mode),
           mLastContinuationTarget(columnKeys.empty() ? INVALID_KEY_ID : columnKeys.back())
-    // `mHeaderProbe` picks up its default `nullptr` here and gets
-    // rewired below only when `mode == UntilNextHeader`. Splitting
-    // this out of the init list sidesteps the nested-conditional
-    // clang-tidy warning without changing behaviour.
     {
         mMatchData = compiled.NewMatchData();
         if (mMode == ContinuationMode::UntilNextHeader)
@@ -1076,12 +1012,7 @@ public:
             return internal::LineDecodeResult::Skip;
         }
 
-        // Continuation check runs BEFORE the record match so a
-        // continuation line never counts as an "unmatched" error.
-        // `mLastContinuationTarget` is fixed at construction (the
-        // schema's last-source-order KeyId), so the streaming loop
-        // can route continuation bytes without re-inspecting
-        // `columnKeys` on every `Continue`.
+        // Classify continuations before record matching to avoid false errors.
         if (mMode == ContinuationMode::Indented)
         {
             if (line.front() == ' ' || line.front() == '\t')
@@ -1114,11 +1045,7 @@ public:
         return internal::LineDecodeResult::Emit;
     }
 
-    /// KeyId of the pattern's last named group in source order. Fixed
-    /// for the lifetime of the decoder (regex schema is compile-time
-    /// constant). `RunStreamingParseLoop` calls this after each
-    /// `Emit` to know where continuation bytes go on subsequent
-    /// `Continue` results.
+    /// KeyId of the pattern's final source-order named group.
     [[nodiscard]] KeyId LastContinuationTarget() const noexcept
     {
         return mLastContinuationTarget;
@@ -1129,16 +1056,11 @@ private:
     const std::vector<KeyId> *mColumnKeys;
     ContinuationMode mMode;
     KeyId mLastContinuationTarget;
-    /// Compiled pattern used for the `UntilNextHeader` header probe.
-    /// Points at either `mCompiled` (default reuse) or a caller-
-    /// owned dedicated header-anchor pattern. Null in non-
-    /// `UntilNextHeader` modes so the probe branch is never entered.
+    /// Non-owning header probe; null outside `UntilNextHeader` mode.
     const CompiledPattern *mHeaderProbe = nullptr;
     Pcre2MatchDataPtr mMatchData;
-    /// Separate match data sized for `mHeaderProbe` so the record-
-    /// match handle (`mMatchData`) is never mid-flight when the
-    /// anchor check fires on a not-yet-emitted line. Unused (empty)
-    /// in other modes.
+    /// Match data is tied to `mHeaderProbe` and cannot be shared with
+    /// the main pattern's match state.
     Pcre2MatchDataPtr mHeaderMatchData;
     bool mSawFirstLine = false;
 };
@@ -1244,11 +1166,7 @@ void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, P
 
     const std::vector<KeyId> columnKeys = InternSchemaKeys(compiled.Schema(), sink.Keys());
 
-    // Look up the shipped/registered template so its
-    // `continuationMode` can drive multi-line handling. For custom
-    // (unsaved) user patterns not registered anywhere,
-    // `FindTemplateByPattern` returns nullopt and the decoder falls
-    // back to `ContinuationMode::None` — verbatim shipped behaviour.
+    // Unregistered patterns remain line-oriented.
     ContinuationMode mode = ContinuationMode::None;
     std::string headerAnchorSource;
     if (const auto tmpl = FindTemplateByPattern(pattern); tmpl.has_value())
@@ -1257,11 +1175,7 @@ void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, P
         headerAnchorSource = tmpl->headerAnchor;
     }
 
-    // Optional dedicated header anchor for `UntilNextHeader` mode.
-    // Compiled synchronously here; `RegexLineDecoder` reuses the
-    // main pattern when `anchorPtr` stays null. Fail closed on a
-    // bad anchor so the user sees the mistake rather than silently
-    // paying the full-pattern probe cost.
+    // A configured anchor must compile; null means reuse the main pattern.
     CompiledPattern headerAnchor;
     const CompiledPattern *anchorPtr = nullptr;
     if (mode == ContinuationMode::UntilNextHeader && !headerAnchorSource.empty())
@@ -1347,10 +1261,7 @@ void RegexParser::ParseStreaming(
 
     const std::vector<KeyId> columnKeys = InternSchemaKeys(compiled.Schema(), sink.Keys());
 
-    // Look up the shipped/registered template so its
-    // `continuationMode` also drives the static (parallel) pipeline's
-    // multi-line handling. Custom / unsaved user patterns fall back
-    // to `None` — verbatim shipped behaviour.
+    // Unregistered patterns remain line-oriented.
     ContinuationMode staticContinuationMode = ContinuationMode::None;
     std::string headerAnchorSource;
     if (const auto tmpl = FindTemplateByPattern(pattern); tmpl.has_value())
@@ -1359,10 +1270,8 @@ void RegexParser::ParseStreaming(
         headerAnchorSource = tmpl->headerAnchor;
     }
 
-    // Optional dedicated header anchor (see the streaming overload
-    // for the shape). Stack-allocated: `RunStaticParserPipeline`
-    // joins every Stage B worker synchronously so the anchor
-    // outlives all concurrent uses, same as the main `compiled`.
+    // The synchronous pipeline guarantees this stack-owned pattern
+    // outlives every Stage B worker.
     CompiledPattern headerAnchor;
     const CompiledPattern *anchorPtr = nullptr;
     if (staticContinuationMode == ContinuationMode::UntilNextHeader && !headerAnchorSource.empty())
@@ -1524,18 +1433,13 @@ bool ValidateRegexPattern(std::string_view pattern, std::string &errorOut)
 
 bool ValidateHeaderAnchor(std::string_view anchor, std::string &errorOut)
 {
-    // Callers key their UI off "empty error means OK", so both the
-    // "empty anchor accepted" and "non-empty anchor compiled OK"
-    // paths must reset @p errorOut even if it came in stale.
+    // Success is represented by an empty error string.
     errorOut.clear();
     if (anchor.empty())
     {
-        // Empty is the shipped "reuse the main pattern" contract.
         return true;
     }
-    // No `HasNamedGroups` gate here: the anchor is a boolean probe
-    // for `RegexLooksLikeHeader`, not a schema, so a pattern like
-    // `^\d{4}-` (no captures) is a perfectly valid header anchor.
+    // A boolean header probe does not define a capture schema.
     CompiledPattern compiled;
     std::string compileErr;
     if (!compiled.Compile(anchor, compileErr))

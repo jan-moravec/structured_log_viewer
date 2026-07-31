@@ -824,16 +824,9 @@ void LogTableView::CopySelectedRowsToClipboard()
         return;
     }
 
-    // Multi-row copy needs a stable row separator, but multi-line
-    // records (Java traces, Python tracebacks) legitimately contain
-    // internal '\n' / '\r' bytes. Escape them to literal `\n` / `\r`
-    // so each row on the clipboard is exactly one line -- consumers
-    // that use '\n' (or '\r' on legacy Excel / Mac tools) as a
-    // record separator keep working. The '\\' pass runs first so
-    // the subsequent replacements always produce a two-char escape
-    // that unambiguously round-trips. Single-row copy preserves the
-    // bytes verbatim so Copy-then-paste of a trace is round-trip
-    // clean.
+    // Keep each record on one clipboard line when copying multiple
+    // rows. Escape backslashes first so generated escapes remain
+    // distinguishable; single-row copies remain verbatim.
     const bool multiRow = selectedRows.size() > 1;
 
     QString text;
@@ -849,10 +842,6 @@ void LogTableView::CopySelectedRowsToClipboard()
         }
         text += rowText + QLatin1Char('\n');
     }
-    // Drop the trailing newline appended after the final row. Guard
-    // against an empty accumulator so we don't silently corrupt the
-    // clipboard when every selected row's `CopyLine` role returned
-    // an empty string (rare but possible for pure-metadata rows).
     if (!text.isEmpty())
     {
         text.chop(1);

@@ -21,10 +21,10 @@ struct AdvancedParserOptions;
 
 /// Newline-delimited logfmt parser (Heroku / `kr/logfmt` flavour).
 ///
-/// One record per line: whitespace-separated `key=value` pairs,
-/// optional double-quoted values with C-style escapes
-/// (`\"`, `\\`, `\n`, `\r`, `\t`). See the cited port in
-/// `library/src/parsers/logfmt_parser.cpp`.
+/// Records contain whitespace-separated `key=value` pairs and optional
+/// double-quoted values with C-style escapes (`\"`, `\\`, `\n`, `\r`,
+/// `\t`). By default, indented lines continue the preceding record;
+/// set `ParserOptions::multilineLogfmt` to false for line-per-record parsing.
 ///
 /// Bare values are typed: `key=` -> null, `true`/`false` -> bool,
 /// decimal -> int64/uint64, decimal-with-point/exponent -> double,
