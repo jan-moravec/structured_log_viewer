@@ -288,8 +288,8 @@ void RunStaticParserPipeline(
             {
                 spansThisBatch.push_back(
                     MultiLineRecordSpan{
-                        lineNumberDelta + span.headerPhysicalLine,
-                        lineNumberDelta + span.lastPhysicalLine,
+                        .headerLineId = lineNumberDelta + span.headerPhysicalLine,
+                        .lastLineId = lineNumberDelta + span.lastPhysicalLine,
                     }
                 );
             }
@@ -374,7 +374,8 @@ void RunStaticParserPipeline(
             heldAbsoluteLineNumber = held->absoluteLineNumber;
             if (held->lastLineIdx > held->headerLineIdx)
             {
-                heldSpanToEmit = MultiLineRecordSpan{held->headerLineIdx, held->lastLineIdx};
+                heldSpanToEmit =
+                    MultiLineRecordSpan{.headerLineId = held->headerLineIdx, .lastLineId = held->lastLineIdx};
             }
             heldOffsetsToEmit = std::move(held->lineOffsets);
             heldLineToEmit = std::move(held->line);
