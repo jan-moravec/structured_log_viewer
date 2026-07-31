@@ -1510,7 +1510,8 @@ TEST_CASE(
         {
             for (auto &l : b.lines)
             {
-                const auto m = AsStringView(l.GetValue("message"));
+                const auto value = l.GetValue("message");
+                const auto m = AsStringView(value);
                 REQUIRE(m.has_value());
                 joined.emplace_back(*m);
             }
