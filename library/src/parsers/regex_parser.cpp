@@ -738,7 +738,8 @@ void DecodeRegexBatch(
     internal::ParsedPipelineBatch &parsed,
     const CompiledPattern &compiled,
     const std::vector<KeyId> &columnKeys,
-    ContinuationMode continuationMode
+    ContinuationMode continuationMode,
+    const CompiledPattern *headerAnchor
 )
 {
     (void)keys; // Schema is pre-interned in `columnKeys`.
@@ -754,11 +755,15 @@ void DecodeRegexBatch(
         (continuationMode != ContinuationMode::None && !columnKeys.empty()) ? columnKeys.back() : INVALID_KEY_ID;
 
     // Header-detection scratch for UntilNextHeader mode. Allocated
-    // once per batch, not per line.
+    // once per batch, not per line. Prefer the dedicated header
+    // anchor pattern when provided; falls back to the main pattern
+    // so shipped templates with an empty `headerAnchor` keep the
+    // pre-feature behaviour verbatim.
+    const CompiledPattern *headerProbe = (headerAnchor != nullptr) ? headerAnchor : &compiled;
     Pcre2MatchDataPtr headerScratch;
     if (continuationMode == ContinuationMode::UntilNextHeader)
     {
-        headerScratch = compiled.NewMatchData();
+        headerScratch = headerProbe->NewMatchData();
     }
 
     const char *cursor = batch.bytesBegin;
@@ -819,7 +824,7 @@ void DecodeRegexBatch(
         }
         else if (continuationMode == ContinuationMode::UntilNextHeader)
         {
-            isContinuation = !RegexLooksLikeHeader(compiled, headerScratch.get(), line);
+            isContinuation = !RegexLooksLikeHeader(*headerProbe, headerScratch.get(), line);
         }
 
         if (isContinuation)
@@ -962,24 +967,37 @@ bool RegexLooksLikeHeader(
 ///  - `Indented`: O(1) first-byte whitespace check. Covers Java /
 ///    Python / Go / Node stack traces (all indented).
 ///  - `UntilNextHeader`: PCRE2 anchored-partial-hard match against
-///    the main pattern. Slower per line but handles formats whose
-///    continuation lines mix indented and un-indented text (Python
-///    "During handling of the above exception, another exception
-///    occurred:"). Uses the same `pcre2_code*` as the record match,
-///    so no second compile.
+///    the main pattern by default. Slower per line but handles
+///    formats whose continuation lines mix indented and un-indented
+///    text (Python "During handling of the above exception, another
+///    exception occurred:"). When @p headerAnchor is non-null the
+///    probe uses that (usually cheaper) compiled pattern instead —
+///    same PCRE2 flags, just a smaller regex to run per line.
+///
+/// When @p mode is `UntilNextHeader` and @p headerAnchor is null the
+/// probe reuses `compiled`; no second compile is needed for the
+/// "reuse the main pattern" shipped path.
 class RegexLineDecoder
 {
 public:
     RegexLineDecoder(
-        const CompiledPattern &compiled, const std::vector<KeyId> &columnKeys, ContinuationMode mode = ContinuationMode::None
+        const CompiledPattern &compiled,
+        const std::vector<KeyId> &columnKeys,
+        ContinuationMode mode = ContinuationMode::None,
+        const CompiledPattern *headerAnchor = nullptr
     )
         : mCompiled(&compiled), mColumnKeys(&columnKeys), mMode(mode),
           mLastContinuationTarget(columnKeys.empty() ? INVALID_KEY_ID : columnKeys.back())
+    // `mHeaderProbe` picks up its default `nullptr` here and gets
+    // rewired below only when `mode == UntilNextHeader`. Splitting
+    // this out of the init list sidesteps the nested-conditional
+    // clang-tidy warning without changing behaviour.
     {
         mMatchData = compiled.NewMatchData();
         if (mMode == ContinuationMode::UntilNextHeader)
         {
-            mHeaderMatchData = compiled.NewMatchData();
+            mHeaderProbe = (headerAnchor != nullptr) ? headerAnchor : &compiled;
+            mHeaderMatchData = mHeaderProbe->NewMatchData();
         }
     }
 
@@ -1027,7 +1045,7 @@ public:
         }
         else if (mMode == ContinuationMode::UntilNextHeader)
         {
-            if (!RegexLooksLikeHeader(*mCompiled, mHeaderMatchData.get(), line))
+            if (!RegexLooksLikeHeader(*mHeaderProbe, mHeaderMatchData.get(), line))
             {
                 return internal::LineDecodeResult::Continue;
             }
@@ -1065,11 +1083,16 @@ private:
     const std::vector<KeyId> *mColumnKeys;
     ContinuationMode mMode;
     KeyId mLastContinuationTarget;
+    /// Compiled pattern used for the `UntilNextHeader` header probe.
+    /// Points at either `mCompiled` (default reuse) or a caller-
+    /// owned dedicated header-anchor pattern. Null in non-
+    /// `UntilNextHeader` modes so the probe branch is never entered.
+    const CompiledPattern *mHeaderProbe = nullptr;
     Pcre2MatchDataPtr mMatchData;
-    /// Separate match data for the `UntilNextHeader` anchor probe so
-    /// the record-match handle (`mMatchData`) is never mid-flight
-    /// when the anchor check fires on a not-yet-emitted line. Unused
-    /// (empty) in other modes.
+    /// Separate match data sized for `mHeaderProbe` so the record-
+    /// match handle (`mMatchData`) is never mid-flight when the
+    /// anchor check fires on a not-yet-emitted line. Unused (empty)
+    /// in other modes.
     Pcre2MatchDataPtr mHeaderMatchData;
     bool mSawFirstLine = false;
 };
@@ -1181,12 +1204,34 @@ void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, P
     // `FindTemplateByPattern` returns nullopt and the decoder falls
     // back to `ContinuationMode::None` — verbatim shipped behaviour.
     ContinuationMode mode = ContinuationMode::None;
+    std::string headerAnchorSource;
     if (const auto tmpl = FindTemplateByPattern(pattern); tmpl.has_value())
     {
         mode = tmpl->continuationMode;
+        headerAnchorSource = tmpl->headerAnchor;
     }
 
-    RegexLineDecoder decoder(compiled, columnKeys, mode);
+    // Optional dedicated header anchor for `UntilNextHeader` mode.
+    // Compiled synchronously here; `RegexLineDecoder` reuses the
+    // main pattern when `anchorPtr` stays null. Fail closed on a
+    // bad anchor so the user sees the mistake rather than silently
+    // paying the full-pattern probe cost.
+    CompiledPattern headerAnchor;
+    const CompiledPattern *anchorPtr = nullptr;
+    if (mode == ContinuationMode::UntilNextHeader && !headerAnchorSource.empty())
+    {
+        std::string anchorErr;
+        if (!headerAnchor.Compile(headerAnchorSource, anchorErr))
+        {
+            EmitErrorAndFinish(
+                sink, "Header anchor compile failed: " + anchorErr, newKeyBaseline, /*streaming=*/true
+            );
+            return;
+        }
+        anchorPtr = &headerAnchor;
+    }
+
+    RegexLineDecoder decoder(compiled, columnKeys, mode, anchorPtr);
     internal::RunStreamingParseLoop(source, decoder, sink, options, newKeyBaseline);
 }
 
@@ -1261,9 +1306,28 @@ void RegexParser::ParseStreaming(
     // multi-line handling. Custom / unsaved user patterns fall back
     // to `None` — verbatim shipped behaviour.
     ContinuationMode staticContinuationMode = ContinuationMode::None;
+    std::string headerAnchorSource;
     if (const auto tmpl = FindTemplateByPattern(pattern); tmpl.has_value())
     {
         staticContinuationMode = tmpl->continuationMode;
+        headerAnchorSource = tmpl->headerAnchor;
+    }
+
+    // Optional dedicated header anchor (see the streaming overload
+    // for the shape). Stack-allocated: `RunStaticParserPipeline`
+    // joins every Stage B worker synchronously so the anchor
+    // outlives all concurrent uses, same as the main `compiled`.
+    CompiledPattern headerAnchor;
+    const CompiledPattern *anchorPtr = nullptr;
+    if (staticContinuationMode == ContinuationMode::UntilNextHeader && !headerAnchorSource.empty())
+    {
+        std::string anchorErr;
+        if (!headerAnchor.Compile(headerAnchorSource, anchorErr))
+        {
+            EmitErrorAndFinish(sink, "Header anchor compile failed: " + anchorErr, newKeyBaseline);
+            return;
+        }
+        anchorPtr = &headerAnchor;
     }
 
     const size_t batchSize = advanced.batchSizeBytes != 0 ? advanced.batchSizeBytes
@@ -1298,7 +1362,7 @@ void RegexParser::ParseStreaming(
     };
 
     FileLineSource *sourcePtr = &source;
-    auto stageB = [sourcePtr, &compiled, &columnKeys, staticContinuationMode](
+    auto stageB = [sourcePtr, &compiled, &columnKeys, staticContinuationMode, anchorPtr](
                       RegexByteRange token,
                       internal::WorkerScratch<RegexWorkerState> &worker,
                       KeyIndex &keys,
@@ -1306,7 +1370,16 @@ void RegexParser::ParseStreaming(
                       internal::ParsedPipelineBatch &parsed
                   ) {
         DecodeRegexBatch(
-            token, worker, keys, *sourcePtr, timeColumns, parsed, compiled, columnKeys, staticContinuationMode
+            token,
+            worker,
+            keys,
+            *sourcePtr,
+            timeColumns,
+            parsed,
+            compiled,
+            columnKeys,
+            staticContinuationMode,
+            anchorPtr
         );
     };
 
@@ -1398,6 +1471,30 @@ bool ValidateRegexPattern(std::string_view pattern, std::string &errorOut)
     if (!compiled.HasNamedGroups())
     {
         errorOut = "Regex pattern has no named capture groups; nothing to put in columns. Use `(?<Name>...)`.";
+        return false;
+    }
+    return true;
+}
+
+bool ValidateHeaderAnchor(std::string_view anchor, std::string &errorOut)
+{
+    // Callers key their UI off "empty error means OK", so both the
+    // "empty anchor accepted" and "non-empty anchor compiled OK"
+    // paths must reset @p errorOut even if it came in stale.
+    errorOut.clear();
+    if (anchor.empty())
+    {
+        // Empty is the shipped "reuse the main pattern" contract.
+        return true;
+    }
+    // No `HasNamedGroups` gate here: the anchor is a boolean probe
+    // for `RegexLooksLikeHeader`, not a schema, so a pattern like
+    // `^\d{4}-` (no captures) is a perfectly valid header anchor.
+    CompiledPattern compiled;
+    std::string compileErr;
+    if (!compiled.Compile(anchor, compileErr))
+    {
+        errorOut = "Header anchor compile failed: " + compileErr;
         return false;
     }
     return true;

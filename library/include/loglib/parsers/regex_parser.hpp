@@ -150,6 +150,18 @@ private:
 /// parse setup.
 [[nodiscard]] bool ValidateRegexPattern(std::string_view pattern, std::string &errorOut);
 
+/// Compile-check `RegexTemplate::headerAnchor`. Empty is accepted
+/// (means "reuse the main pattern for the header probe"). Non-empty
+/// must compile with PCRE2 but need NOT declare named capture
+/// groups — the anchor is a boolean probe, not a schema. Symmetric
+/// with `ValidateRegexPattern` so the editor's Save / Validate can
+/// front-load anchor errors the same way it front-loads main-pattern
+/// errors. Wording of @p errorOut mirrors the runtime error the
+/// streaming pipeline surfaces on a bad anchor
+/// ("Header anchor compile failed: ...") so both surfaces read
+/// identically.
+[[nodiscard]] bool ValidateHeaderAnchor(std::string_view anchor, std::string &errorOut);
+
 /// True iff @p pattern compiles and matches @p line in full
 /// (same `PCRE2_ANCHORED | PCRE2_ENDANCHORED` flags as the
 /// auto-detect probe). "Matches" therefore means "a `RegexParser`
