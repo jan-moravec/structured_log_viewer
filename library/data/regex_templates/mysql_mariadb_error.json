@@ -9,5 +9,6 @@
     ],
     "autoDetect": true,
     "priority": 10,
-    "description": "Adapted from lnav src/formats/mysql_log.json (BSD-2-Clause). MariaDB keeps its error log byte-compatible with MySQL's (see MariaDB KB 'Error Log' and MySQL 8.0 'Error Log' chapter), so the same template ships under a combined name. Captures the standard MySQL 8.0 ISO timestamp + thread id + [level] + optional [subsystem] tag introduced in 8.0's structured error log."
+    "description": "Adapted from lnav src/formats/mysql_log.json (BSD-2-Clause). MariaDB keeps its error log byte-compatible with MySQL's (see MariaDB KB 'Error Log' and MySQL 8.0 'Error Log' chapter), so the same template ships under a combined name. Captures the standard MySQL 8.0 ISO timestamp + thread id + [level] + optional [subsystem] tag introduced in 8.0's structured error log.",
+    "continuationMode": "indented"
 }

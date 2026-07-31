@@ -9,5 +9,6 @@
     ],
     "autoDetect": true,
     "priority": 10,
-    "description": "Adapted from lnav src/formats/zap_console_log.json (BSD-2-Clause). Matches the default `zapcore.NewConsoleEncoder` output: ISO-8601 timestamp + capitalised level + optional caller + message + trailing structured fields. See go.uber.org/zap NewProductionConfig for the encoder defaults."
+    "description": "Adapted from lnav src/formats/zap_console_log.json (BSD-2-Clause). Matches the default `zapcore.NewConsoleEncoder` output: ISO-8601 timestamp + capitalised level + optional caller + message + trailing structured fields. See go.uber.org/zap NewProductionConfig for the encoder defaults. `continuationMode: untilNextHeader` folds `zap.AddStacktrace` output — `runtime.Stack` produces mixed indented/unindented lines (`goroutine 1 [running]:` unindented, `\\t/path/main.go:10 +0x1a` tab-indented) which the anchored-partial-hard probe against the ISO-8601-prefixed header pattern classifies as continuations.",
+    "continuationMode": "untilNextHeader"
 }

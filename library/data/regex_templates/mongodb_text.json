@@ -9,5 +9,6 @@
     ],
     "autoDetect": true,
     "priority": 20,
-    "description": "Adapted from logstash-plugins/logstash-patterns-core patterns/ecs-v1/mongodb (Apache-2.0), entry MONGO3_LOG. Inlined %{TIMESTAMP_ISO8601}, %{WORD}, %{NOTSPACE}, %{GREEDYDATA} macros to plain PCRE2; the severity letter (F/E/W/I/D) is documented in the MongoDB 3.x 'Log Messages' chapter and survives into 4.x text logs as a legacy fallback."
+    "description": "Adapted from logstash-plugins/logstash-patterns-core patterns/ecs-v1/mongodb (Apache-2.0), entry MONGO3_LOG. Inlined %{TIMESTAMP_ISO8601}, %{WORD}, %{NOTSPACE}, %{GREEDYDATA} macros to plain PCRE2; the severity letter (F/E/W/I/D) is documented in the MongoDB 3.x 'Log Messages' chapter and survives into 4.x text logs as a legacy fallback.",
+    "continuationMode": "indented"
 }

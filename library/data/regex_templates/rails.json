@@ -9,5 +9,6 @@
     ],
     "autoDetect": true,
     "priority": 10,
-    "description": "Adapted from lnav src/formats/rails_log.json (BSD-2-Clause). Matches Ruby's stdlib Logger 'Formatter#call' default output, which Rails uses by default for production / development logs ('SEV, [TIMESTAMP #PID] LEVEL -- PROGNAME: MESSAGE'; see Ruby Logger documentation)."
+    "description": "Adapted from lnav src/formats/rails_log.json (BSD-2-Clause). Matches Ruby's stdlib Logger 'Formatter#call' default output, which Rails uses by default for production / development logs ('SEV, [TIMESTAMP #PID] LEVEL -- PROGNAME: MESSAGE'; see Ruby Logger documentation). `continuationMode: untilNextHeader` folds Ruby exception backtraces — the `full_message` / `backtrace` output starts each frame with an absolute path (e.g. '/app/controllers/users_controller.rb:12:in show'), unindented, which the anchored-partial-hard probe against the severity-letter header shape classifies as continuations.",
+    "continuationMode": "untilNextHeader"
 }

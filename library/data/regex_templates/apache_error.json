@@ -8,5 +8,6 @@
     ],
     "autoDetect": true,
     "priority": 15,
-    "description": "Written from scratch; cross-checked against lnav's src/formats/error_log.json shape (BSD-2-Clause). Handles both the legacy '[time] [level] [client x] msg' and the modern '[time] [module:level] [pid N] [client x] msg' Apache 2.4 error log formats."
+    "description": "Written from scratch; cross-checked against lnav's src/formats/error_log.json shape (BSD-2-Clause). Handles both the legacy '[time] [level] [client x] msg' and the modern '[time] [module:level] [pid N] [client x] msg' Apache 2.4 error log formats.",
+    "continuationMode": "indented"
 }

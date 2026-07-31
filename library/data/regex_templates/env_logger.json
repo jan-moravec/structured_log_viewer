@@ -9,5 +9,6 @@
     ],
     "autoDetect": true,
     "priority": 20,
-    "description": "Adapted from lnav src/formats/env_logger_log.json (BSD-2-Clause). Matches rust-cli/env_logger's default `default_format`: '[timestamp LEVEL module_path] message' (see env_logger crate docs, fmt::Formatter::default_format)."
+    "description": "Adapted from lnav src/formats/env_logger_log.json (BSD-2-Clause). Matches rust-cli/env_logger's default `default_format`: '[timestamp LEVEL module_path] message' (see env_logger crate docs, fmt::Formatter::default_format). `continuationMode: untilNextHeader` folds Rust panic backtraces — `RUST_BACKTRACE=1` emits mixed unindented markers (`stack backtrace:`, `note: run with …`) and indented frames (`   0: rust_begin_unwind`) which the anchored-partial-hard probe against the `[YYYY-…]` header shape classifies as continuations.",
+    "continuationMode": "untilNextHeader"
 }
