@@ -899,6 +899,22 @@ void DecodeRegexBatch(
             continue;
         }
 
+        // Before overwriting the tail-tracker with the fresh
+        // header's indices, snapshot the OUTGOING record's
+        // multi-line span so Stage C can register it via
+        // `LogFile::RegisterMultiLineRecord`. The batch's tail
+        // record is registered separately by Stage C's hold-back
+        // path; this fires only for records sealed by a fresh
+        // header inside the SAME batch. Skip single-line records
+        // (last == header) so we don't bloat the span vector.
+        if (continuationMode != ContinuationMode::None && !parsed.lines.empty()
+            && tailLastPhysical > tailHeaderPhysical)
+        {
+            parsed.completedMultiLineSpans.push_back(
+                internal::ParsedPipelineBatch::MultiLineSpan{tailHeaderPhysical, tailLastPhysical}
+            );
+        }
+
         // `LogLine` ctor asserts ascending KeyIds; the name-table
         // ordering here is source order, not KeyId order.
         std::sort(values.begin(), values.end(), [](const auto &a, const auto &b) { return a.first < b.first; });

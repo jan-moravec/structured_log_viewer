@@ -945,6 +945,34 @@ TEST_CASE(
     CHECK(m0->contains("Foo.java:42"));
     CHECK(m0->contains("Baz.java:7"));
     CHECK(m0->contains("Wibble.java:99"));
+
+    // Stage C used to overwrite the held record's trailing offset
+    // with the LAST leading-continuation offset on every cross-batch
+    // splice, silently dropping the intermediate physical-line
+    // boundaries from `mLineOffsets`. That collapsed `GetLineCount`,
+    // shifted every per-physical-line lookup, and made the widening
+    // guard in `RegisterMultiLineRecord` skip the header (its
+    // `lastLineIdx` ran past the shrunken offsets array). Assert
+    // the per-physical-line indexing survives the splice.
+    LogFile &parsedFile = sourcePtr->File();
+    REQUIRE(parsedFile.GetLineCount() == 5);
+    CHECK(parsedFile.GetLine(1) == "\tat com.example.Foo.bar(Foo.java:42)");
+    CHECK(parsedFile.GetLine(2) == "\tat com.example.Baz.qux(Baz.java:7)");
+    CHECK(parsedFile.GetLine(3) == "\tat com.example.Wibble.wobble(Wibble.java:99)");
+    CHECK(parsedFile.GetLine(4) == "info recovered");
+
+    // Header widening still covers the whole trace and stops at the
+    // last continuation (no bleed into the next record's line).
+    const std::string joined = sourcePtr->RawLine(data.Lines()[0].LineId());
+    CHECK(joined.contains("error boom"));
+    CHECK(joined.contains("Foo.java:42"));
+    CHECK(joined.contains("Wibble.java:99"));
+    CHECK_FALSE(joined.contains("info recovered"));
+
+    // Second record's `LineId` used to overshoot `mLineOffsets` and
+    // trigger `std::out_of_range` on the copy / detail-dock path.
+    const std::string secondRaw = sourcePtr->RawLine(data.Lines()[1].LineId());
+    CHECK(secondRaw == "info recovered");
 }
 
 TEST_CASE("ValidateRegexPattern rejects empty pattern [regex]", "[regex_parser]")

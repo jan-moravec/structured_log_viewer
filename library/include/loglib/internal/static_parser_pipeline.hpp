@@ -91,6 +91,23 @@ struct ParsedPipelineBatch
     /// record's HEADER line. Same meaningfulness rule as
     /// `tailRecordLastPhysicalLine`.
     size_t tailRecordHeaderPhysicalLine = 0;
+
+    /// Completed in-batch multi-line records (records that received
+    /// at least one continuation and were then sealed by a fresh
+    /// header inside the same batch). Stage B pushes {header, last}
+    /// per record; Stage C converts each to absolute line indices
+    /// and calls `LogFile::RegisterMultiLineRecord`. Without this
+    /// side-channel, only the batch's TAIL record ever gets its
+    /// span registered -- non-tail multi-line records would render
+    /// through `RawLine` as their header line only, dropping the
+    /// continuation bytes from Copy Line, Record Details, and any
+    /// consumer that goes through `LineSource::RawLine`.
+    struct MultiLineSpan
+    {
+        size_t headerPhysicalLine = 0;
+        size_t lastPhysicalLine = 0;
+    };
+    std::vector<MultiLineSpan> completedMultiLineSpans;
 };
 
 /// Resolved defaults for `effectiveThreads` and `ntokens`. Both >= 1.
@@ -314,6 +331,24 @@ void RunStaticParserPipeline(
             }
         }
 
+        // Register in-batch multi-line spans (non-tail records
+        // that got sealed by a fresh header inside the same
+        // batch). The batch's tail is handled by `commitHeld`
+        // later. Do this early so `RegisterMultiLineRecord` runs
+        // before the records reach the sink -- `LineSource::RawLine`
+        // is queried lazily by the UI and must always see the
+        // widened span.
+        if (!parsed.completedMultiLineSpans.empty())
+        {
+            for (const auto &span : parsed.completedMultiLineSpans)
+            {
+                file.RegisterMultiLineRecord(
+                    (nextLineNumber - 1) + span.headerPhysicalLine,
+                    (nextLineNumber - 1) + span.lastPhysicalLine
+                );
+            }
+        }
+
         // Rebase per-batch `OwnedString` offsets into the `LogFile`
         // arena. Stage C is serial_in_order, so this write is
         // single-threaded.
@@ -347,19 +382,37 @@ void RunStaticParserPipeline(
                         .body = "Continuation lines dropped: target field is not a string.",
                     });
                 }
-                // Extend the held record's byte span so `RawLine`
-                // covers the joined text: point the record's stored
-                // trailing offset at the LAST leading-continuation
-                // line's post-newline offset. Also grow the tracked
-                // `lastLineIdx` so `LogFile::RegisterMultiLineRecord`
-                // covers the newly-absorbed physical lines.
+                // Move the leading-continuation-line offsets from
+                // `parsed` onto `held` so every physical line the
+                // record now spans lands in `mLineOffsets` in order
+                // on the eventual `commitHeld`. Overwriting held's
+                // single trailing entry with only the LAST leading
+                // offset (and dropping the intermediates) collapses
+                // multi-line records into fewer physical-line
+                // entries in `mLineOffsets`, which breaks
+                // `LogFile::GetLine(continuationLineId)` for the
+                // dropped lines and drives `RegisterMultiLineRecord`
+                // past the end of the shrunken offsets array (making
+                // the widening guard skip the header). See the
+                // regression case in `test_regex_parser.cpp` /
+                // `test_logfmt_parser.cpp` under
+                // `[file_line_source][multiline][cross_batch]`.
                 if (parsed.leadingContinuationLineCount > 0)
                 {
-                    if (!held->lineOffsets.empty() && !parsed.localLineOffsets.empty())
+                    const size_t drop = std::min(
+                        parsed.leadingContinuationLineCount, parsed.localLineOffsets.size()
+                    );
+                    if (drop > 0)
                     {
-                        const size_t idx =
-                            std::min(parsed.leadingContinuationLineCount, parsed.localLineOffsets.size()) - 1;
-                        held->lineOffsets.back() = parsed.localLineOffsets[idx];
+                        held->lineOffsets.insert(
+                            held->lineOffsets.end(),
+                            parsed.localLineOffsets.begin(),
+                            parsed.localLineOffsets.begin() + static_cast<std::ptrdiff_t>(drop)
+                        );
+                        parsed.localLineOffsets.erase(
+                            parsed.localLineOffsets.begin(),
+                            parsed.localLineOffsets.begin() + static_cast<std::ptrdiff_t>(drop)
+                        );
                     }
                     // Physical lines 0..leadingContinuationLineCount-1
                     // within this batch correspond to absolute indices
@@ -373,23 +426,14 @@ void RunStaticParserPipeline(
             {
                 // Orphaned continuation at the very start of the file
                 // (no prior record to attach to). Surface as an
-                // error; the bytes themselves are dropped.
+                // error and drop the content bytes; keep the
+                // per-physical-line offset entries so the following
+                // record's `LogLine::LineId` (a physical index) still
+                // resolves to the right slot in `mLineOffsets`.
                 parsed.errors.push_back(ParsedLineError{
                     .relativeLine = 1,
                     .body = "Orphaned continuation line(s) at start of file.",
                 });
-            }
-            // The leading continuation lines have already had their
-            // line-offset entries pushed by Stage B; drop them from
-            // this batch's offsets so they don't double-count.
-            if (parsed.leadingContinuationLineCount > 0 && !parsed.localLineOffsets.empty())
-            {
-                const size_t drop =
-                    std::min(parsed.leadingContinuationLineCount, parsed.localLineOffsets.size());
-                parsed.localLineOffsets.erase(
-                    parsed.localLineOffsets.begin(),
-                    parsed.localLineOffsets.begin() + static_cast<std::ptrdiff_t>(drop)
-                );
             }
         }
 

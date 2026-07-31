@@ -93,7 +93,13 @@ inline bool ExtendContinuationTarget(
                 {
                     // Target sits in the middle (rare; possible if a
                     // future decoder re-orders arena writes). Copy
-                    // old + new to the tail and rebase.
+                    // old + new to the tail and rebase. Reserve up
+                    // front so neither `append` reallocates -- the
+                    // first append reads from `ownedArena.data()`,
+                    // which would dangle if the same call caused a
+                    // grow (self-append into `std::string` is not
+                    // guaranteed overlap-safe by the standard).
+                    ownedArena.reserve(ownedArena.size() + length + continuationBytes.size());
                     const uint64_t newOffset = ownedArena.size();
                     ownedArena.append(ownedArena.data() + offset, length);
                     ownedArena.append(continuationBytes.data(), continuationBytes.size());
@@ -246,6 +252,37 @@ void RunStreamingParseLoop(
     };
     std::optional<PendingRecord> pending;
 
+    // Consecutive orphan-continuation lines (a stack trace pasted at
+    // the top of a stream, a broken chunk that starts mid-record,
+    // etc.) fold into one summary error per run instead of one
+    // error per physical line -- N lines used to produce N Error-
+    // list entries and drown out real parse errors.
+    size_t orphanRunFirstLine = 0;
+    size_t orphanRunLastLine = 0;
+    auto flushOrphanRun = [&]() {
+        if (orphanRunFirstLine == 0)
+        {
+            return;
+        }
+        std::string msg;
+        if (orphanRunFirstLine == orphanRunLastLine)
+        {
+            msg = fmt::format("Error on line {}: Orphaned continuation line.", orphanRunFirstLine);
+        }
+        else
+        {
+            msg = fmt::format(
+                "Error on lines {}-{}: {} orphaned continuation lines dropped.",
+                orphanRunFirstLine,
+                orphanRunLastLine,
+                orphanRunLastLine - orphanRunFirstLine + 1
+            );
+        }
+        coalescer.Pending().errors.emplace_back(std::move(msg));
+        orphanRunFirstLine = 0;
+        orphanRunLastLine = 0;
+    };
+
     auto commitPending = [&]() {
         if (!pending)
         {
@@ -299,6 +336,7 @@ void RunStreamingParseLoop(
 
         if (trimmed.empty())
         {
+            flushOrphanRun();
             return;
         }
 
@@ -306,6 +344,7 @@ void RunStreamingParseLoop(
             decoder.DecodeCompact(trimmed, keys, &promoteScratch.keyCache, compactValues, ownedArena, lineError);
         if (result == LineDecodeResult::Error)
         {
+            flushOrphanRun();
             coalescer.Pending().errors.emplace_back(
                 fmt::format("Error on line {}: {}", lineNumber, std::move(lineError))
             );
@@ -313,12 +352,14 @@ void RunStreamingParseLoop(
         }
         if (result == LineDecodeResult::Skip)
         {
+            flushOrphanRun();
             return;
         }
         if (result == LineDecodeResult::Continue)
         {
             if (pending)
             {
+                flushOrphanRun();
                 if (!pending->continuationBytes.empty() || !pending->rawText.empty())
                 {
                     pending->continuationBytes.push_back('\n');
@@ -327,9 +368,15 @@ void RunStreamingParseLoop(
             }
             else
             {
-                coalescer.Pending().errors.emplace_back(
-                    fmt::format("Error on line {}: Orphaned continuation line.", lineNumber)
-                );
+                // Extend the current orphan run instead of emitting
+                // a new error per line; `flushOrphanRun` compresses
+                // the run to a single "lines N-M" summary the first
+                // time a real header (or EOF) arrives.
+                if (orphanRunFirstLine == 0)
+                {
+                    orphanRunFirstLine = lineNumber;
+                }
+                orphanRunLastLine = lineNumber;
             }
             return;
         }
@@ -345,6 +392,7 @@ void RunStreamingParseLoop(
         // Emit: commit any open record, then open a new one from
         // the freshly-decoded fields. Sort happens at commit time
         // (fields may have been re-ordered by continuation splice).
+        flushOrphanRun();
         commitPending();
 
         PendingRecord fresh;
@@ -446,7 +494,10 @@ void RunStreamingParseLoop(
     }
 
     // EOF / cancellation: commit whatever pending we still hold so
-    // the record isn't lost. `Finish` then emits its terminal batch.
+    // the record isn't lost, and surface any still-open orphan run
+    // as its final "lines N-M" summary. `Finish` then emits its
+    // terminal batch.
+    flushOrphanRun();
     commitPending();
 
     coalescer.Finish(nextLineNumber, stopToken.stop_requested());

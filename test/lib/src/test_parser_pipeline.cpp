@@ -447,6 +447,19 @@ public:
                     continue;
                 }
 
+                // Snapshot the OUTGOING record's multi-line span
+                // before overwriting the tail-tracker; Stage C uses
+                // this to call `LogFile::RegisterMultiLineRecord`
+                // for non-tail records that got sealed by a fresh
+                // header inside the same batch. Mirrors the real
+                // logfmt / regex parsers.
+                if (!parsed.lines.empty() && tailLastPhysical > tailHeaderPhysical)
+                {
+                    parsed.completedMultiLineSpans.push_back(
+                        loglib::internal::ParsedPipelineBatch::MultiLineSpan{tailHeaderPhysical, tailLastPhysical}
+                    );
+                }
+
                 LogLine logLine(std::move(values), keys, *sourcePtr, relativeLineNumber - 1);
                 parsed.lines.push_back(std::move(logLine));
                 worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
@@ -966,6 +979,98 @@ TEST_CASE(
     CHECK(msgBStr.find("second") != std::string::npos);
     CHECK(msgBStr.find("frame B1") != std::string::npos);
     CHECK(msgBStr.find("frame B2") != std::string::npos);
+
+    // Per-physical-line indexing must survive the splice: the
+    // Stage C stream carries one `localLineOffsets` entry per
+    // physical line, in file order, so the eventual `mLineOffsets`
+    // has one entry per line + the leading sentinel.
+    // `CollectingSink` never forwards to `LogFile`, so we
+    // aggregate directly here (the regex / logfmt end-to-end
+    // tests use `BufferingSink` for the `GetLineCount` variant).
+    std::vector<uint64_t> allOffsets;
+    for (const auto &b : sink.batches)
+    {
+        allOffsets.insert(allOffsets.end(), b.localLineOffsets.begin(), b.localLineOffsets.end());
+    }
+    REQUIRE(allOffsets.size() == 6);
+}
+
+// Cross-batch splice with LEADING continuations: the second batch
+// STARTS with continuation lines that belong to the previous batch's
+// held tail record. Stage C used to overwrite the single trailing
+// offset held for the record with the LAST leading-continuation
+// offset and drop the intermediate physical-line boundaries; this
+// case pins the per-physical-line accounting so any regression trips
+// `GetLineCount` or a `std::out_of_range` on the second record's
+// `RawLine` call.
+TEST_CASE(
+    "Mock parser (multiline): leading continuations preserve per-physical-line offsets",
+    "[mock_parser][multiline][cross_batch]"
+)
+{
+    // Fixture: one header + three indented continuations + a second
+    // header. Batch size = the header + first continuation (~30
+    // bytes), so subsequent batches begin with continuation lines.
+    std::string content;
+    content += "level=error msg=first\n"; // line 1: header A
+    content += "\tframe A1\n";            // line 2: continuation of A
+    content += "\tframe A2\n";            // line 3: continuation of A
+    content += "\tframe A3\n";            // line 4: continuation of A
+    content += "level=info msg=second\n"; // line 5: header B
+
+    const TempTextFile fixture(content, "test_kv_multiline_leading_cont.log");
+
+    // Force Stage A to break the batch at the first newline so batch
+    // 2+ start with a continuation line (guarantees the leading-
+    // continuation splice path runs).
+    loglib::ParserOptions options;
+    loglib::internal::AdvancedParserOptions advanced;
+    advanced.threads = 1;
+    advanced.batchSizeBytes = std::string_view("level=error msg=first\n").size();
+
+    CollectingSink sink;
+    FileLineSource source(std::make_unique<LogFile>(fixture.Path()));
+    MultilineKeyValueLineParser::ParseStreaming(source, sink, options, advanced);
+
+    REQUIRE_FALSE(sink.cancelled);
+
+    std::vector<const LogLine *> allLines;
+    for (const auto &b : sink.batches)
+    {
+        for (const auto &line : b.lines)
+        {
+            allLines.push_back(&line);
+        }
+    }
+    REQUIRE(allLines.size() == 2);
+
+    LogValue msgA = allLines[0]->GetValue("msg");
+    REQUIRE(std::holds_alternative<std::string>(msgA));
+    const std::string &msgAStr = std::get<std::string>(msgA);
+    CHECK(msgAStr.contains("first"));
+    CHECK(msgAStr.contains("frame A1"));
+    CHECK(msgAStr.contains("frame A2"));
+    CHECK(msgAStr.contains("frame A3"));
+
+    // The file has 5 physical lines. Before the fix Stage C
+    // pushed only 3 line-offset entries (the boom header, the
+    // last leading-continuation offset, and B's header), which
+    // downstream turned into `mLineOffsets.size() == 4`,
+    // `GetLineCount == 3`, and `RawLine(record B)` throwing
+    // `std::out_of_range` because B's absolute physical index
+    // pointed past the shrunken offsets array.
+    std::vector<uint64_t> allOffsets;
+    for (const auto &b : sink.batches)
+    {
+        allOffsets.insert(allOffsets.end(), b.localLineOffsets.begin(), b.localLineOffsets.end());
+    }
+    REQUIRE(allOffsets.size() == 5);
+    // Offsets are strictly monotonic (each is the position just
+    // past the physical line's trailing newline).
+    for (size_t i = 1; i < allOffsets.size(); ++i)
+    {
+        CHECK(allOffsets[i] > allOffsets[i - 1]);
+    }
 }
 
 // Orphan continuation at file start: the first physical line is a

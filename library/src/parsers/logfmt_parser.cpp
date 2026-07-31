@@ -541,6 +541,21 @@ void DecodeLogfmtBatch(
                 continue;
             }
 
+            // Before overwriting the tail-tracker with the fresh
+            // header's indices, snapshot the OUTGOING record's
+            // multi-line span so Stage C can register it. The batch's
+            // tail record is handled separately by Stage C (via
+            // `tailRecord*PhysicalLine`); this branch fires strictly
+            // for records that got sealed by a new header inside the
+            // same batch. Skip when no continuation was folded
+            // (single-line record: last == header).
+            if (multiline && !parsed.lines.empty() && tailLastPhysical > tailHeaderPhysical)
+            {
+                parsed.completedMultiLineSpans.push_back(
+                    internal::ParsedPipelineBatch::MultiLineSpan{tailHeaderPhysical, tailLastPhysical}
+                );
+            }
+
             LogLine logLine(std::move(values), keys, source, relativeLineNumber - 1);
             parsed.lines.push_back(std::move(logLine));
 

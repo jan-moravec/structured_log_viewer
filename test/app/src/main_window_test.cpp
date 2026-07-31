@@ -20805,6 +20805,168 @@ private slots:
         QCOMPARE(lines[2], QStringLiteral("back\\\\slash: v"));
     }
 
+    // Multi-line records (Java traces, Python tracebacks, logfmt
+    // indented continuations) legitimately carry '\n' / '\r' bytes
+    // inside a single record. Multi-row copy uses '\n' as its row
+    // separator, so those embedded bytes must be escaped ('\n' ->
+    // literal `\n`, '\r' -> literal `\r`, '\\' pre-escaped so the
+    // round-trip is unambiguous). Without this the pasted text
+    // splits a multi-line record across N rows in Excel / grep /
+    // downstream tooling. Companion to the single-row test below,
+    // which asserts that verbatim bytes are preserved.
+    void TestLogTableViewCopyMultipleRowsEscapesEmbeddedNewlines()
+    {
+        QTemporaryDir tmp;
+        QVERIFY2(tmp.isValid(), "temp dir must be creatable");
+        const QString fixturePath = tmp.filePath(QStringLiteral("multiline.log"));
+        {
+            std::ofstream stream(fixturePath.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture file must be openable");
+            // The header line uses "\r\n" so the CR ends up INSIDE
+            // the joined multi-line record (`LogFile::GetLine`
+            // strips a *trailing* '\r' but preserves internal ones).
+            // Guards the '\r' escape branch -- a regression that
+            // shipped once because '\n' and '\\' were escaped but
+            // '\r' was not.
+            stream << "level=error msg=boom\r\n"
+                      "\tframe 1\n"
+                      "\tframe 2\n"
+                      "level=info msg=ok\n";
+        }
+
+        const StreamingRun run = RunStreamingLogfmt(fixturePath);
+        QCOMPARE(run.finishedCount, 1);
+        QCOMPARE(run.cancelled, false);
+        QCOMPARE(run.model->rowCount(), 2);
+
+        LogTableView view;
+        view.setModel(run.model.get());
+
+        // Select both rows through the model index that
+        // `selectionModel()->selectedRows()` iterates.
+        QItemSelectionModel *sel = view.selectionModel();
+        QVERIFY(sel != nullptr);
+        for (int row = 0; row < run.model->rowCount(); ++row)
+        {
+            sel->select(run.model->index(row, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        }
+        QCOMPARE(sel->selectedRows().size(), 2);
+
+        QClipboard *clipboard = QApplication::clipboard();
+        QVERIFY(clipboard != nullptr);
+        clipboard->clear();
+
+        const QString pasted = InvokeAndReadClipboardWithRetry(
+            clipboard, &view, "CopySelectedRowsToClipboard", QStringLiteral("frame 1")
+        );
+
+        // One '\n' between rows: two rows in, two lines out.
+        const QStringList lines = pasted.split(QLatin1Char('\n'));
+        QCOMPARE(lines.size(), 2);
+
+        // Row 0 is the multi-line record: internal newlines / CR
+        // must be escaped, nothing raw allowed to leak through.
+        QVERIFY2(lines[0].contains(QStringLiteral("boom")), qPrintable(lines[0]));
+        QVERIFY2(lines[0].contains(QStringLiteral("frame 1")), qPrintable(lines[0]));
+        QVERIFY2(lines[0].contains(QStringLiteral("frame 2")), qPrintable(lines[0]));
+        QVERIFY2(lines[0].contains(QStringLiteral("\\n")), qPrintable(lines[0]));
+        QVERIFY2(lines[0].contains(QStringLiteral("\\r")), qPrintable(lines[0]));
+        QVERIFY2(!lines[0].contains(QChar('\r')), "raw CR must not leak into a row");
+
+        // Row 1 is the single-line follow-up.
+        QVERIFY2(lines[1].contains(QStringLiteral("msg=ok")), qPrintable(lines[1]));
+    }
+
+    // Single-row copy is the "round-trip clean" path: paste the
+    // multi-line record straight back into an editor and it looks
+    // like the original file. No escaping applied.
+    void TestLogTableViewCopySingleRowPreservesEmbeddedNewlines()
+    {
+        QTemporaryDir tmp;
+        QVERIFY2(tmp.isValid(), "temp dir must be creatable");
+        const QString fixturePath = tmp.filePath(QStringLiteral("multiline_single.log"));
+        {
+            std::ofstream stream(fixturePath.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture file must be openable");
+            stream << "level=error msg=boom\n"
+                      "\tframe 1\n"
+                      "\tframe 2\n"
+                      "level=info msg=ok\n";
+        }
+
+        const StreamingRun run = RunStreamingLogfmt(fixturePath);
+        QCOMPARE(run.finishedCount, 1);
+        QCOMPARE(run.model->rowCount(), 2);
+
+        LogTableView view;
+        view.setModel(run.model.get());
+
+        QItemSelectionModel *sel = view.selectionModel();
+        QVERIFY(sel != nullptr);
+        sel->select(run.model->index(0, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        QCOMPARE(sel->selectedRows().size(), 1);
+
+        QClipboard *clipboard = QApplication::clipboard();
+        QVERIFY(clipboard != nullptr);
+        clipboard->clear();
+
+        const QString pasted = InvokeAndReadClipboardWithRetry(
+            clipboard, &view, "CopySelectedRowsToClipboard", QStringLiteral("frame 2")
+        );
+
+        // Bytes verbatim: real newlines between the header and
+        // each continuation, no escape sequences.
+        QVERIFY2(pasted.contains(QStringLiteral("level=error msg=boom")), qPrintable(pasted));
+        QVERIFY2(pasted.contains(QStringLiteral("\tframe 1")), qPrintable(pasted));
+        QVERIFY2(pasted.contains(QStringLiteral("\tframe 2")), qPrintable(pasted));
+        QVERIFY2(pasted.contains(QChar('\n')), "single-row copy keeps real newlines");
+        QVERIFY2(!pasted.contains(QStringLiteral("\\n")), "single-row copy must NOT escape newlines");
+    }
+
+    // The record-detail dock reads its `msg` value from the parsed
+    // compact-value slot, which the multi-line pipeline extends with
+    // continuation bytes via `LogFile::AppendOwnedStrings`. If Stage
+    // C ever regresses to slicing the joined bytes at the header's
+    // newline (or to reading from the un-widened `RawLine`) this
+    // test starts failing: the dock only sees "boom".
+    void TestRecordDetailDockRendersMultilineMessage()
+    {
+        QTemporaryDir tmp;
+        QVERIFY2(tmp.isValid(), "temp dir must be creatable");
+        const QString fixturePath = tmp.filePath(QStringLiteral("multiline_detail.log"));
+        {
+            std::ofstream stream(fixturePath.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture file must be openable");
+            stream << "level=error msg=boom\n"
+                      "\tframe A\n"
+                      "\tframe B\n";
+        }
+
+        const StreamingRun run = RunStreamingLogfmt(fixturePath);
+        QCOMPARE(run.finishedCount, 1);
+        QCOMPARE(run.model->rowCount(), 1);
+
+        const RecordDetailContent content = BuildRecordDetailContent(*run.model, 0);
+        QVERIFY(content.valid);
+
+        QString msgValue;
+        for (const auto &field : content.fields)
+        {
+            if (field.first == QStringLiteral("msg"))
+            {
+                msgValue = field.second;
+                break;
+            }
+        }
+        QVERIFY2(
+            !msgValue.isEmpty(),
+            "record detail must surface the msg field for a multi-line record"
+        );
+        QVERIFY2(msgValue.contains(QStringLiteral("boom")), qPrintable(msgValue));
+        QVERIFY2(msgValue.contains(QStringLiteral("frame A")), qPrintable(msgValue));
+        QVERIFY2(msgValue.contains(QStringLiteral("frame B")), qPrintable(msgValue));
+    }
+
     // Empty values render a muted em-dash with the
     // `RECORD_DETAIL_EMPTY_PLACEHOLDER_ROLE` flag set; a literal
     // em-dash value stays distinguishable because the flag is unset.

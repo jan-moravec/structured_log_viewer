@@ -652,6 +652,83 @@ TEST_CASE(
     CHECK(errors[0].contains("Orphaned continuation line"));
 }
 
+TEST_CASE(
+    "LogfmtParser streaming: consecutive orphan continuations fold into one summary error",
+    "[logfmt_parser][stream_line_source]"
+)
+{
+    using namespace loglib;
+
+    // Payload starts with FIVE indented lines (imagine someone
+    // pastes a stack trace at the top of a stream, or a tail
+    // reconnects mid-record). The parser used to emit one error
+    // per physical orphan line, drowning out real parse errors in
+    // the GUI dock. The fold collapses each contiguous run to a
+    // single "Error on lines N-M: X orphaned continuation lines
+    // dropped." summary.
+    const std::string payload =
+        "\torphan 1\n"
+        "\torphan 2\n"
+        "\torphan 3\n"
+        "\torphan 4\n"
+        "\torphan 5\n"
+        "level=info msg=\"first real record\"\n";
+
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
+
+    CollectingStreamSink sink;
+    const LogfmtParser parser;
+    parser.ParseStreaming(source, sink, ParserOptions{});
+
+    REQUIRE(sink.finished);
+    auto lines = FlattenLines(sink.batches);
+    REQUIRE(lines.size() == 1);
+
+    std::vector<std::string> errors;
+    for (auto &b : sink.batches)
+    {
+        errors.insert(errors.end(), b.errors.begin(), b.errors.end());
+    }
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0].contains("lines 1-5"));
+    CHECK(errors[0].contains("5 orphaned continuation lines"));
+}
+
+TEST_CASE(
+    "LogfmtParser streaming: orphan run open at EOF still emits its summary",
+    "[logfmt_parser][stream_line_source]"
+)
+{
+    using namespace loglib;
+
+    // No real header ever arrives; the run must still be flushed
+    // by the EOF hook so the caller isn't left wondering why the
+    // stream produced zero records and zero errors.
+    const std::string payload =
+        "\torphan 1\n"
+        "\torphan 2\n"
+        "\torphan 3\n";
+
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
+
+    CollectingStreamSink sink;
+    const LogfmtParser parser;
+    parser.ParseStreaming(source, sink, ParserOptions{});
+
+    REQUIRE(sink.finished);
+    auto lines = FlattenLines(sink.batches);
+    REQUIRE(lines.empty());
+
+    std::vector<std::string> errors;
+    for (auto &b : sink.batches)
+    {
+        errors.insert(errors.end(), b.errors.begin(), b.errors.end());
+    }
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0].contains("lines 1-3"));
+    CHECK(errors[0].contains("3 orphaned continuation lines"));
+}
+
 TEST_CASE("LogfmtParser streaming: final pending record commits on EOF", "[logfmt_parser][stream_line_source]")
 {
     using namespace loglib;
@@ -789,6 +866,26 @@ TEST_CASE(
     CHECK(m0->contains("goroutine 1"));
     CHECK(m0->contains("main.main()"));
     CHECK(m0->contains("/app/main.go:10"));
+
+    // Per-physical-line indexing must survive the splice: previously
+    // Stage C dropped intermediate offsets from `mLineOffsets` on
+    // every leading-continuation batch, collapsing the file's 5
+    // physical lines into 2 and turning the second record's
+    // `RawLine` call into `std::out_of_range`.
+    LogFile &parsedFile = sourcePtr->File();
+    REQUIRE(parsedFile.GetLineCount() == 5);
+    CHECK(parsedFile.GetLine(1) == "\tgoroutine 1 [running]:");
+    CHECK(parsedFile.GetLine(2) == "\tmain.main()");
+    CHECK(parsedFile.GetLine(3) == "\t/app/main.go:10 +0x1a");
+    CHECK(parsedFile.GetLine(4) == "level=info msg=\"recovered\"");
+
+    const std::string joined = sourcePtr->RawLine(data.Lines()[0].LineId());
+    CHECK(joined.contains("boom"));
+    CHECK(joined.contains("main.main()"));
+    CHECK_FALSE(joined.contains("recovered"));
+
+    const std::string secondRaw = sourcePtr->RawLine(data.Lines()[1].LineId());
+    CHECK(secondRaw == "level=info msg=\"recovered\"");
 }
 
 TEST_CASE(
