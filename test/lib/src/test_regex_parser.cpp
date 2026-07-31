@@ -1113,6 +1113,331 @@ TEST_CASE("RegexParser static overload with explicit pattern overrides configura
     CHECK(AsStringView(data.Lines()[1].GetValue("message")) == std::string_view{"world"});
 }
 
+TEST_CASE(
+    "RegexParser: headerAnchor overrides the header probe (streaming)",
+    "[regex_parser][multiline][header_anchor]"
+)
+{
+    using namespace loglib;
+
+    // Main pattern requires the level word plus a message; header
+    // anchor is a cheaper `^\d{4}-` prefix probe. Both refuse the
+    // continuation lines, but this test asserts the wiring by
+    // registering a `headerAnchor` and observing identical folding.
+    const std::string pattern = R"(^(?<ts>\d{4}-\d{2}-\d{2})\s+(?<level>\w+)\s+(?<message>.*)$)";
+    RegexTemplate anchored{
+        .name = "test-header-anchor-streaming",
+        .pattern = pattern,
+        .sampleLines = {"2026-01-01 INFO ok"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::UntilNextHeader,
+        .headerAnchor = R"(^\d{4}-)",
+    };
+    const RegexTemplate extras[] = {anchored};
+    const ScopedExtraTemplates registration(extras);
+
+    const RegexParser parser{std::string{pattern}};
+
+    const std::string payload = "2026-01-01 ERROR boom\n"
+                                "Traceback (most recent call last):\n"
+                                "  File \"a.py\", line 7\n"
+                                "During handling of the above exception, another exception occurred:\n"
+                                "2026-01-02 INFO recovered\n";
+
+    StreamLineSource source(std::filesystem::path("anchor_stream.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+    CollectingStreamSink sink;
+    parser.ParseStreaming(source, sink, ParserOptions{});
+
+    REQUIRE(sink.finished);
+    CHECK(FlattenSinkErrors(sink).empty());
+
+    std::vector<LogLine *> lines;
+    for (auto &b : sink.batches)
+    {
+        for (auto &l : b.lines)
+        {
+            lines.push_back(&l);
+        }
+    }
+    REQUIRE(lines.size() == 2);
+
+    const KeyId kMessage = sink.keys.Find("message");
+    REQUIRE(kMessage != INVALID_KEY_ID);
+    const LogValue v0 = lines[0]->GetValue(kMessage);
+    const auto m0 = AsStringView(v0);
+    REQUIRE(m0.has_value());
+    // The joined message must contain every continuation line —
+    // the anchor probe rejected them as non-headers just like the
+    // main pattern would have.
+    CHECK(m0->contains("boom"));
+    CHECK(m0->contains("Traceback"));
+    CHECK(m0->contains("a.py"));
+    CHECK(m0->contains("During handling"));
+
+    const LogValue v1 = lines[1]->GetValue(kMessage);
+    const auto m1 = AsStringView(v1);
+    REQUIRE(m1.has_value());
+    CHECK(*m1 == "recovered");
+}
+
+TEST_CASE(
+    "RegexParser: headerAnchor overrides the header probe (static, cross-batch)",
+    "[regex_parser][multiline][header_anchor]"
+)
+{
+    using namespace loglib;
+
+    const std::string pattern = R"(^(?<ts>\d{4}-\d{2}-\d{2})\s+(?<level>\w+)\s+(?<message>.*)$)";
+    RegexTemplate anchored{
+        .name = "test-header-anchor-static",
+        .pattern = pattern,
+        .sampleLines = {"2026-01-01 INFO ok"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::UntilNextHeader,
+        .headerAnchor = R"(^\d{4}-)",
+    };
+    const RegexTemplate extras[] = {anchored};
+    const ScopedExtraTemplates registration(extras);
+
+    // Force a tiny batch so the continuation run almost certainly
+    // straddles a Stage B boundary. Regression guard for Stage C's
+    // hold-back path re-using the header anchor across workers.
+    internal::AdvancedParserOptions advanced;
+    advanced.batchSizeBytes = 24;
+
+    const TestLogFile file("regex_header_anchor_crossbatch.log");
+    file.Write(
+        "2026-01-01 ERROR boom\n"
+        "Traceback (most recent call last):\n"
+        "  File \"a.py\", line 7\n"
+        "During handling of the above exception, another exception occurred:\n"
+        "  File \"b.py\", line 9\n"
+        "2026-01-02 INFO recovered\n"
+    );
+
+    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
+    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    FileLineSource *sourcePtr = source.get();
+    internal::BufferingSink sink(std::move(source));
+
+    RegexParser::ParseStreaming(
+        *sourcePtr, sink, ParserOptions{}, advanced, std::optional<std::string_view>{pattern}
+    );
+
+    LogData data = sink.TakeData();
+    const std::vector<std::string> errors = sink.TakeErrors();
+    for (const auto &e : errors)
+    {
+        UNSCOPED_INFO("parse error: " << e);
+    }
+    REQUIRE(errors.empty());
+    REQUIRE(data.Lines().size() == 2);
+
+    const KeyId kMessage = data.Keys().Find("message");
+    REQUIRE(kMessage != INVALID_KEY_ID);
+    const LogValue v0 = data.Lines()[0].GetValue(kMessage);
+    const auto m0 = AsStringView(v0);
+    REQUIRE(m0.has_value());
+    CHECK(m0->contains("boom"));
+    CHECK(m0->contains("Traceback"));
+    CHECK(m0->contains("a.py"));
+    CHECK(m0->contains("During handling"));
+    CHECK(m0->contains("b.py"));
+}
+
+TEST_CASE(
+    "RegexParser: bad headerAnchor surfaces a compile error (streaming)",
+    "[regex_parser][multiline][header_anchor]"
+)
+{
+    using namespace loglib;
+
+    const std::string pattern = R"(^(?<ts>\d{4}-\d{2}-\d{2})\s+(?<level>\w+)\s+(?<message>.*)$)";
+    RegexTemplate bad{
+        .name = "test-header-anchor-bad-streaming",
+        .pattern = pattern,
+        .sampleLines = {"2026-01-01 INFO ok"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::UntilNextHeader,
+        .headerAnchor = R"((?<a)", // dangling group
+    };
+    const RegexTemplate extras[] = {bad};
+    const ScopedExtraTemplates registration(extras);
+
+    const RegexParser parser{std::string{pattern}};
+
+    const std::string payload = "2026-01-01 ERROR boom\nTraceback\n2026-01-02 INFO ok\n";
+    StreamLineSource source(std::filesystem::path("anchor_bad_stream.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+    CollectingStreamSink sink;
+    parser.ParseStreaming(source, sink, ParserOptions{});
+
+    REQUIRE(sink.finished);
+
+    std::vector<LogLine *> lines;
+    for (auto &b : sink.batches)
+    {
+        for (auto &l : b.lines)
+        {
+            lines.push_back(&l);
+        }
+    }
+    // Bad anchor must fail closed: exactly one error, zero rows.
+    const auto errors = FlattenSinkErrors(sink);
+    REQUIRE(errors.size() == 1);
+    CHECK(errors.front().contains("Header anchor compile failed"));
+    CHECK(lines.empty());
+}
+
+TEST_CASE(
+    "RegexParser: bad headerAnchor surfaces a compile error (static)",
+    "[regex_parser][multiline][header_anchor]"
+)
+{
+    using namespace loglib;
+
+    const std::string pattern = R"(^(?<ts>\d{4}-\d{2}-\d{2})\s+(?<level>\w+)\s+(?<message>.*)$)";
+    RegexTemplate bad{
+        .name = "test-header-anchor-bad-static",
+        .pattern = pattern,
+        .sampleLines = {"2026-01-01 INFO ok"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::UntilNextHeader,
+        .headerAnchor = R"((?<a)",
+    };
+    const RegexTemplate extras[] = {bad};
+    const ScopedExtraTemplates registration(extras);
+
+    const TestLogFile file("regex_header_anchor_bad_static.log");
+    file.Write("2026-01-01 ERROR boom\nTraceback\n2026-01-02 INFO ok\n");
+
+    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
+    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    FileLineSource *sourcePtr = source.get();
+    internal::BufferingSink sink(std::move(source));
+
+    RegexParser::ParseStreaming(
+        *sourcePtr,
+        sink,
+        ParserOptions{},
+        internal::AdvancedParserOptions{},
+        std::optional<std::string_view>{pattern}
+    );
+
+    LogData data = sink.TakeData();
+    const std::vector<std::string> errors = sink.TakeErrors();
+    REQUIRE(errors.size() == 1);
+    CHECK(errors.front().contains("Header anchor compile failed"));
+    CHECK(data.Lines().empty());
+}
+
+TEST_CASE(
+    "RegexParser: headerAnchor ignored when continuationMode != UntilNextHeader",
+    "[regex_parser][multiline][header_anchor]"
+)
+{
+    using namespace loglib;
+
+    // Indented mode uses a byte-cheap "starts with space/tab"
+    // check, never the header probe. Setting `headerAnchor` in
+    // this mode must be silently ignored so the field's
+    // "ignored outside UntilNextHeader" contract is enforced
+    // at the parser level, not just the editor.
+    const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
+    const std::string payload =
+        "error boom\n"
+        "\tat com.example.Foo.bar(Foo.java:42)\n"
+        "\tat com.example.Baz.qux(Baz.java:7)\n"
+        "info recovered\n";
+
+    auto runOnce = [&](const std::string &anchor) {
+        RegexTemplate extra{
+            .name = "test-header-anchor-ignored",
+            .pattern = pattern,
+            .sampleLines = {"info ok"},
+            .autoDetect = false,
+            .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+            .description = "",
+            .continuationMode = ContinuationMode::Indented,
+            .headerAnchor = anchor,
+        };
+        const RegexTemplate extras[] = {extra};
+        const ScopedExtraTemplates registration(extras);
+
+        const RegexParser parser{std::string{pattern}};
+        StreamLineSource source(
+            std::filesystem::path("anchor_ignored.log"), std::make_unique<StreamingInMemoryProducer>(payload)
+        );
+        CollectingStreamSink sink;
+        parser.ParseStreaming(source, sink, ParserOptions{});
+        REQUIRE(sink.finished);
+        CHECK(FlattenSinkErrors(sink).empty());
+
+        std::vector<std::string> joined;
+        for (auto &b : sink.batches)
+        {
+            for (auto &l : b.lines)
+            {
+                const auto m = AsStringView(l.GetValue("message"));
+                REQUIRE(m.has_value());
+                joined.emplace_back(*m);
+            }
+        }
+        return joined;
+    };
+
+    const auto control = runOnce("");
+    const auto withAnchor = runOnce(R"(^\d{4}-)");
+    // A deliberately mismatched `headerAnchor` (matches nothing in
+    // this fixture) must not perturb Indented-mode folding one bit.
+    CHECK(control == withAnchor);
+}
+
+TEST_CASE("ValidateHeaderAnchor accepts empty [regex]", "[regex_parser][header_anchor]")
+{
+    // Empty anchor is the shipped "reuse the main pattern" path;
+    // callers key their UI off "empty error means OK", so
+    // `errorOut` must come back clear even if it was pre-populated
+    // with stale text.
+    std::string err = "stale";
+    CHECK(ValidateHeaderAnchor("", err));
+    CHECK(err.empty());
+}
+
+TEST_CASE(
+    "ValidateHeaderAnchor rejects patterns that fail to compile [regex]",
+    "[regex_parser][header_anchor]"
+)
+{
+    // Wording of the surfaced error mirrors the runtime error the
+    // streaming pipeline emits on a bad anchor so both surfaces
+    // (editor pre-flight and parse-time error stream) read
+    // identically.
+    std::string err;
+    CHECK_FALSE(ValidateHeaderAnchor(R"((?<a)", err));
+    CHECK(err.contains("Header anchor compile failed"));
+}
+
+TEST_CASE(
+    "ValidateHeaderAnchor accepts patterns without named groups [regex]",
+    "[regex_parser][header_anchor]"
+)
+{
+    // The anchor is a boolean probe, not a schema; a plain
+    // `^\d{4}-` (no `(?<Name>...)`) is a perfectly valid
+    // header anchor and must be accepted.
+    std::string err = "stale";
+    CHECK(ValidateHeaderAnchor(R"(^\d{4}-)", err));
+    CHECK(err.empty());
+}
+
 TEST_CASE("RegexParser handles empty file cleanly [regex]", "[regex_parser]")
 {
     // An empty regex file must be refused by `ParseFile(path)`

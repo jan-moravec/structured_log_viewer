@@ -778,3 +778,26 @@ TEST_CASE(
         }
     }
 }
+
+TEST_CASE("Every shipped template's headerAnchor compiles [regex_templates]", "[regex_templates][header_anchor]")
+{
+    // Forward-looking guard: all shipped templates currently leave
+    // `headerAnchor` empty (which is fine — the parser falls back
+    // to the main pattern). If a future JSON edit adds an anchor
+    // it must compile cleanly, or the parser will fail closed at
+    // load time and users will see a "Header anchor compile
+    // failed" error instead of any rows. Running the same
+    // pre-flight the editor's Save button runs catches this at
+    // test time.
+    for (const RegexTemplate &t : BuiltinRegexTemplates())
+    {
+        INFO("template: " << t.name);
+        std::string err;
+        CHECK(ValidateHeaderAnchor(t.headerAnchor, err));
+        // On the happy path `err` must come back empty; a stale
+        // non-empty value would mask a future bug where a bad
+        // anchor slipped through because the return-value check
+        // was the only signal.
+        CHECK(err.empty());
+    }
+}
