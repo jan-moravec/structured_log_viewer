@@ -2,8 +2,8 @@
 
 #include "loglib/regex_templates.hpp"
 
-#include <array>
 #include <glaze/glaze.hpp>
+#include <array>
 
 // Glaze meta-specialisation for `loglib::RegexTemplate`. Kept out
 // of the public header so consumers don't pull in

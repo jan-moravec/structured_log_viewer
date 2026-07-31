@@ -231,7 +231,7 @@ When the user opens `app.log`, also surface `app.log.1`, `app.log.2`, `app.log.1
 
 Sessions already persist a single filter set. Real triage needs a small library of named presets: `@errors`, `@my-service`, `@slow-requests`, swappable from a dropdown next to the filter bar. The chosen "view" applies its filters + sort + visible-column set in one click. Views live in a new section of the user configuration; the global library lives under `<AppDataLocation>/views/*.json` with the same shadowing rules as themes and regex templates.
 
-### 13. ~~Match overview rail / minimap~~ (shipped)
+### 13. ~~Match overview rail / minimap~~
 
 > **Shipped.** Vertical strip to the right of the table showing matches, anchors, and level-coloured bands over the whole proxy stream, with a click / drag / wheel viewport indicator. On by default; toggle from **View → Overview Rail** (`Ctrl+Shift+R`). See [`doc/README.md § Match overview rail`](doc/README.md#match-overview-rail).
 

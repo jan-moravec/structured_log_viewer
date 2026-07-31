@@ -118,8 +118,8 @@ inline ContinuationSpliceOutcome SpliceCrossBatchContinuation(
     {
         return ContinuationSpliceOutcome::MissingTarget;
     }
-    if (slot->tag != CompactTag::OwnedString && slot->tag != CompactTag::MmapSlice
-        && slot->tag != CompactTag::Monostate)
+    if (slot->tag != CompactTag::OwnedString && slot->tag != CompactTag::MmapSlice &&
+        slot->tag != CompactTag::Monostate)
     {
         return ContinuationSpliceOutcome::NonStringTarget;
     }
@@ -286,10 +286,12 @@ void RunStaticParserPipeline(
             spansThisBatch.reserve(parsed.completedMultiLineSpans.size());
             for (const auto &span : parsed.completedMultiLineSpans)
             {
-                spansThisBatch.push_back(MultiLineRecordSpan{
-                    lineNumberDelta + span.headerPhysicalLine,
-                    lineNumberDelta + span.lastPhysicalLine,
-                });
+                spansThisBatch.push_back(
+                    MultiLineRecordSpan{
+                        lineNumberDelta + span.headerPhysicalLine,
+                        lineNumberDelta + span.lastPhysicalLine,
+                    }
+                );
             }
         }
 
@@ -317,21 +319,21 @@ void RunStaticParserPipeline(
                 if (outcome != ContinuationSpliceOutcome::Ok)
                 {
                     // Preserve the record and report the dropped bytes.
-                    parsed.errors.push_back(ParsedLineError{
-                        .relativeLine = 1,
-                        .body = outcome == ContinuationSpliceOutcome::MissingTarget
-                            ? "Continuation lines dropped: target field is not present in the record."
-                            : "Continuation lines dropped: target field is not a string.",
-                    });
+                    parsed.errors.push_back(
+                        ParsedLineError{
+                            .relativeLine = 1,
+                            .body = outcome == ContinuationSpliceOutcome::MissingTarget
+                                        ? "Continuation lines dropped: target field is not present in the record."
+                                        : "Continuation lines dropped: target field is not a string.",
+                        }
+                    );
                 }
                 // Preserve one offset per physical line and in source
                 // order; `LogLine::LineId` and multi-line spans index
                 // the same offset array.
                 if (parsed.leadingContinuationLineCount > 0)
                 {
-                    const size_t drop = std::min(
-                        parsed.leadingContinuationLineCount, parsed.localLineOffsets.size()
-                    );
+                    const size_t drop = std::min(parsed.leadingContinuationLineCount, parsed.localLineOffsets.size());
                     if (drop > 0)
                     {
                         held->lineOffsets.insert(
@@ -351,10 +353,12 @@ void RunStaticParserPipeline(
             {
                 // Keep orphan offsets so subsequent physical line IDs
                 // remain aligned with `mLineOffsets`.
-                parsed.errors.push_back(ParsedLineError{
-                    .relativeLine = 1,
-                    .body = "Orphaned continuation line(s) at start of file.",
-                });
+                parsed.errors.push_back(
+                    ParsedLineError{
+                        .relativeLine = 1,
+                        .body = "Orphaned continuation line(s) at start of file.",
+                    }
+                );
             }
         }
 
@@ -446,8 +450,8 @@ void RunStaticParserPipeline(
 
             nextLineNumber += parsed.totalLineCount;
 
-            if (!out.lines.empty() || !out.errors.empty() || !out.localLineOffsets.empty()
-                || !out.multiLineSpans.empty())
+            if (!out.lines.empty() || !out.errors.empty() || !out.localLineOffsets.empty() ||
+                !out.multiLineSpans.empty())
             {
                 sink.OnBatch(std::move(out));
             }

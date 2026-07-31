@@ -59,10 +59,9 @@ TEST_CASE("FileLineSource: RawLine returns joined bytes for multi-line records",
     FileLineSource source(std::move(logFile));
 
     CHECK(
-        source.RawLine(0)
-        == "ERROR NullPointerException at Foo\n"
-           "\tat com.example.A.foo(A.java:10)\n"
-           "\tat com.example.B.bar(B.java:20)"
+        source.RawLine(0) == "ERROR NullPointerException at Foo\n"
+                             "\tat com.example.A.foo(A.java:10)\n"
+                             "\tat com.example.B.bar(B.java:20)"
     );
     CHECK(source.RawLine(1) == "\tat com.example.A.foo(A.java:10)");
     CHECK(source.RawLine(2) == "\tat com.example.B.bar(B.java:20)");

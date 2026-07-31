@@ -345,12 +345,9 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
         this,
         &RegexTemplatesEditor::OnFieldEdited
     );
-    connect(
-        mContinuationModeCombo,
-        QOverload<int>::of(&QComboBox::currentIndexChanged),
-        this,
-        [this](int) { SyncHeaderAnchorEnabled(); }
-    );
+    connect(mContinuationModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        SyncHeaderAnchorEnabled();
+    });
     connect(mHeaderAnchorEdit, &QLineEdit::textEdited, this, &RegexTemplatesEditor::OnFieldEdited);
     connect(mDescriptionEdit, &QPlainTextEdit::textChanged, this, &RegexTemplatesEditor::OnFieldEdited);
 
@@ -1042,8 +1039,7 @@ loglib::RegexTemplate RegexTemplatesEditor::GatherForm() const
 
     t.autoDetect = mAutoDetectCheck->isChecked();
     t.priority = mPrioritySpin->value();
-    t.continuationMode =
-        static_cast<loglib::ContinuationMode>(mContinuationModeCombo->currentData().toInt());
+    t.continuationMode = static_cast<loglib::ContinuationMode>(mContinuationModeCombo->currentData().toInt());
     // Do not persist anchors ignored by the current mode.
     if (t.continuationMode == loglib::ContinuationMode::UntilNextHeader)
     {

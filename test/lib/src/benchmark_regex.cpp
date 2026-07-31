@@ -173,7 +173,6 @@ TEST_CASE(
     );
 }
 
-
 namespace
 {
 
@@ -211,17 +210,16 @@ test_common::LogFormat MultilineIndentedFormat(test_common::LogFormat base, std:
     return test_common::LogFormat{
         .suggestedExtension = base.suggestedExtension,
         .writeHeader = base.writeHeader,
-        .writeLine =
-            [base = std::move(base), gate](const test_common::LogRecord &record) {
-                std::string out = base.writeLine(record);
-                if (gate->Tick())
-                {
-                    out += "\n\tat com.example.Foo.bar(Foo.java:42)"
-                           "\n\tat com.example.Baz.qux(Baz.java:73)"
-                           "\n\tat com.example.Quux.run(Quux.java:15)";
-                }
-                return out;
-            },
+        .writeLine = [base = std::move(base), gate](const test_common::LogRecord &record) {
+            std::string out = base.writeLine(record);
+            if (gate->Tick())
+            {
+                out += "\n\tat com.example.Foo.bar(Foo.java:42)"
+                       "\n\tat com.example.Baz.qux(Baz.java:73)"
+                       "\n\tat com.example.Quux.run(Quux.java:15)";
+            }
+            return out;
+        },
     };
 }
 

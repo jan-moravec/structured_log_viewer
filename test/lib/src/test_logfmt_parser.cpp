@@ -6,8 +6,8 @@
 #include <loglib/internal/buffering_sink.hpp>
 #include <loglib/log_data.hpp>
 #include <loglib/log_file.hpp>
-#include <loglib/log_parser.hpp>
 #include <loglib/log_parse_sink.hpp>
+#include <loglib/log_parser.hpp>
 #include <loglib/parse_file.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/parsers/logfmt_parser.hpp>
@@ -409,7 +409,6 @@ TEST_CASE(
     }
 }
 
-
 namespace
 {
 
@@ -505,18 +504,18 @@ std::vector<loglib::LogLine *> FlattenLines(std::vector<loglib::StreamedBatch> &
 } // namespace
 
 TEST_CASE(
-    "LogfmtParser streaming: indented lines fold into the prior record's last field", "[logfmt_parser][stream_line_source]"
+    "LogfmtParser streaming: indented lines fold into the prior record's last field",
+    "[logfmt_parser][stream_line_source]"
 )
 {
     using namespace loglib;
 
-    const std::string payload =
-        "level=info msg=\"first record\"\n"
-        "level=error msg=\"boom\"\n"
-        "\tgoroutine 1 [running]:\n"
-        "\tmain.main()\n"
-        "\t\tmain.go:42 +0x0\n"
-        "level=info msg=\"after trace\"\n";
+    const std::string payload = "level=info msg=\"first record\"\n"
+                                "level=error msg=\"boom\"\n"
+                                "\tgoroutine 1 [running]:\n"
+                                "\tmain.main()\n"
+                                "\t\tmain.go:42 +0x0\n"
+                                "level=info msg=\"after trace\"\n";
 
     StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
 
@@ -548,11 +547,10 @@ TEST_CASE(
 
     CHECK(*msg0 == "first record");
     CHECK(
-        *msg1
-        == "boom\n"
-           "\tgoroutine 1 [running]:\n"
-           "\tmain.main()\n"
-           "\t\tmain.go:42 +0x0"
+        *msg1 == "boom\n"
+                 "\tgoroutine 1 [running]:\n"
+                 "\tmain.main()\n"
+                 "\t\tmain.go:42 +0x0"
     );
     CHECK(*msg2 == "after trace");
 
@@ -562,13 +560,15 @@ TEST_CASE(
     CHECK(raw1.contains("main.go:42"));
 }
 
-TEST_CASE("LogfmtParser streaming: multilineLogfmt=false restores permissive-prose behaviour", "[logfmt_parser][stream_line_source]")
+TEST_CASE(
+    "LogfmtParser streaming: multilineLogfmt=false restores permissive-prose behaviour",
+    "[logfmt_parser][stream_line_source]"
+)
 {
     using namespace loglib;
 
-    const std::string payload =
-        "level=info msg=\"first record\"\n"
-        "\ttab-indented continuation\n";
+    const std::string payload = "level=info msg=\"first record\"\n"
+                                "\ttab-indented continuation\n";
 
     StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
 
@@ -589,14 +589,14 @@ TEST_CASE("LogfmtParser streaming: multilineLogfmt=false restores permissive-pro
 }
 
 TEST_CASE(
-    "LogfmtParser streaming: orphan continuation before any Emit surfaces a per-line error", "[logfmt_parser][stream_line_source]"
+    "LogfmtParser streaming: orphan continuation before any Emit surfaces a per-line error",
+    "[logfmt_parser][stream_line_source]"
 )
 {
     using namespace loglib;
 
-    const std::string payload =
-        "\torphan indented at start\n"
-        "level=info msg=\"first real record\"\n";
+    const std::string payload = "\torphan indented at start\n"
+                                "level=info msg=\"first real record\"\n";
 
     StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
 
@@ -625,13 +625,12 @@ TEST_CASE(
 {
     using namespace loglib;
 
-    const std::string payload =
-        "\torphan 1\n"
-        "\torphan 2\n"
-        "\torphan 3\n"
-        "\torphan 4\n"
-        "\torphan 5\n"
-        "level=info msg=\"first real record\"\n";
+    const std::string payload = "\torphan 1\n"
+                                "\torphan 2\n"
+                                "\torphan 3\n"
+                                "\torphan 4\n"
+                                "\torphan 5\n"
+                                "level=info msg=\"first real record\"\n";
 
     StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
 
@@ -654,16 +653,14 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "LogfmtParser streaming: orphan run open at EOF still emits its summary",
-    "[logfmt_parser][stream_line_source]"
+    "LogfmtParser streaming: orphan run open at EOF still emits its summary", "[logfmt_parser][stream_line_source]"
 )
 {
     using namespace loglib;
 
-    const std::string payload =
-        "\torphan 1\n"
-        "\torphan 2\n"
-        "\torphan 3\n";
+    const std::string payload = "\torphan 1\n"
+                                "\torphan 2\n"
+                                "\torphan 3\n";
 
     StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
 
@@ -689,10 +686,9 @@ TEST_CASE("LogfmtParser streaming: final pending record commits on EOF", "[logfm
 {
     using namespace loglib;
 
-    const std::string payload =
-        "level=warn msg=\"trailing\"\n"
-        "\tone continuation line\n"
-        "\tanother one\n";
+    const std::string payload = "level=warn msg=\"trailing\"\n"
+                                "\tone continuation line\n"
+                                "\tanother one\n";
 
     StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<InMemoryProducer>(payload));
 
@@ -712,8 +708,9 @@ TEST_CASE("LogfmtParser streaming: final pending record commits on EOF", "[logfm
     CHECK(*msg == "trailing\n\tone continuation line\n\tanother one");
 }
 
-
-TEST_CASE("LogfmtParser file: indented continuations fold via ParseFile", "[logfmt_parser][file_line_source][multiline]")
+TEST_CASE(
+    "LogfmtParser file: indented continuations fold via ParseFile", "[logfmt_parser][file_line_source][multiline]"
+)
 {
     using namespace loglib;
 

@@ -361,10 +361,12 @@ public:
                         }
                         else
                         {
-                            parsed.errors.push_back(loglib::internal::ParsedLineError{
-                                .relativeLine = relativeLineNumber,
-                                .body = "Continuation dropped: non-string target.",
-                            });
+                            parsed.errors.push_back(
+                                loglib::internal::ParsedLineError{
+                                    .relativeLine = relativeLineNumber,
+                                    .body = "Continuation dropped: non-string target.",
+                                }
+                            );
                         }
                     }
                     ++relativeLineNumber;
@@ -435,18 +437,22 @@ public:
 
                 if (values.empty())
                 {
-                    parsed.errors.push_back(loglib::internal::ParsedLineError{
-                        .relativeLine = relativeLineNumber, .body = "no key=value pairs"
-                    });
+                    parsed.errors.push_back(
+                        loglib::internal::ParsedLineError{
+                            .relativeLine = relativeLineNumber, .body = "no key=value pairs"
+                        }
+                    );
                     ++relativeLineNumber;
                     continue;
                 }
 
                 if (!parsed.lines.empty() && tailLastPhysical > tailHeaderPhysical)
                 {
-                    parsed.completedMultiLineSpans.push_back(loglib::internal::ParsedPipelineBatch::MultiLineSpan{
-                        .headerPhysicalLine = tailHeaderPhysical, .lastPhysicalLine = tailLastPhysical
-                    });
+                    parsed.completedMultiLineSpans.push_back(
+                        loglib::internal::ParsedPipelineBatch::MultiLineSpan{
+                            .headerPhysicalLine = tailHeaderPhysical, .lastPhysicalLine = tailLastPhysical
+                        }
+                    );
                 }
 
                 LogLine logLine(std::move(values), keys, *sourcePtr, relativeLineNumber - 1);
@@ -1021,8 +1027,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "Mock parser (multiline): orphan continuation at file start surfaces error",
-    "[mock_parser][multiline][orphan]"
+    "Mock parser (multiline): orphan continuation at file start surfaces error", "[mock_parser][multiline][orphan]"
 )
 {
     std::string content;
@@ -1058,10 +1063,7 @@ TEST_CASE(
     CHECK(allErrors.front().contains("Orphaned continuation"));
 }
 
-TEST_CASE(
-    "Mock parser (multiline): final multi-line record commits at EOF",
-    "[mock_parser][multiline][eof]"
-)
+TEST_CASE("Mock parser (multiline): final multi-line record commits at EOF", "[mock_parser][multiline][eof]")
 {
     std::string content;
     content += "level=info msg=only\n";

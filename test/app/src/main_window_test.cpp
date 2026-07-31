@@ -20839,9 +20839,8 @@ private slots:
         QVERIFY(clipboard != nullptr);
         clipboard->clear();
 
-        const QString pasted = InvokeAndReadClipboardWithRetry(
-            clipboard, &view, "CopySelectedRowsToClipboard", QStringLiteral("frame 1")
-        );
+        const QString pasted =
+            InvokeAndReadClipboardWithRetry(clipboard, &view, "CopySelectedRowsToClipboard", QStringLiteral("frame 1"));
 
         const QStringList lines = pasted.split(QLatin1Char('\n'));
         QCOMPARE(lines.size(), 2);
@@ -20888,9 +20887,8 @@ private slots:
         QVERIFY(clipboard != nullptr);
         clipboard->clear();
 
-        const QString pasted = InvokeAndReadClipboardWithRetry(
-            clipboard, &view, "CopySelectedRowsToClipboard", QStringLiteral("path")
-        );
+        const QString pasted =
+            InvokeAndReadClipboardWithRetry(clipboard, &view, "CopySelectedRowsToClipboard", QStringLiteral("path"));
 
         const QStringList lines = pasted.split(QLatin1Char('\n'));
         QCOMPARE(lines.size(), 2);
@@ -20930,9 +20928,8 @@ private slots:
         QVERIFY(clipboard != nullptr);
         clipboard->clear();
 
-        const QString pasted = InvokeAndReadClipboardWithRetry(
-            clipboard, &view, "CopySelectedRowsToClipboard", QStringLiteral("frame 2")
-        );
+        const QString pasted =
+            InvokeAndReadClipboardWithRetry(clipboard, &view, "CopySelectedRowsToClipboard", QStringLiteral("frame 2"));
 
         QVERIFY2(pasted.contains(QStringLiteral("level=error msg=boom")), qPrintable(pasted));
         QVERIFY2(pasted.contains(QStringLiteral("\tframe 1")), qPrintable(pasted));
@@ -20970,10 +20967,7 @@ private slots:
                 break;
             }
         }
-        QVERIFY2(
-            !msgValue.isEmpty(),
-            "record detail must surface the msg field for a multi-line record"
-        );
+        QVERIFY2(!msgValue.isEmpty(), "record detail must surface the msg field for a multi-line record");
         QVERIFY2(msgValue.contains(QStringLiteral("boom")), qPrintable(msgValue));
         QVERIFY2(msgValue.contains(QStringLiteral("frame A")), qPrintable(msgValue));
         QVERIFY2(msgValue.contains(QStringLiteral("frame B")), qPrintable(msgValue));

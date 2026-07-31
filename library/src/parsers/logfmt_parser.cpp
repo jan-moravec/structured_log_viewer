@@ -475,15 +475,9 @@ void DecodeLogfmtBatch(
                 std::vector<std::pair<KeyId, internal::CompactLogValue>> mutableValues(
                     compactSpan.begin(), compactSpan.end()
                 );
-                const std::string_view mmapView(
-                    fileBegin, fileBegin ? static_cast<size_t>(fileEnd - fileBegin) : 0
-                );
+                const std::string_view mmapView(fileBegin, fileBegin ? static_cast<size_t>(fileEnd - fileBegin) : 0);
                 const internal::ContinuationSpliceOutcome outcome = internal::ExtendContinuationTarget(
-                    mutableValues,
-                    parsed.ownedStringsArena,
-                    lastRecordContinuationTarget,
-                    continuation,
-                    mmapView
+                    mutableValues, parsed.ownedStringsArena, lastRecordContinuationTarget, continuation, mmapView
                 );
                 if (outcome == internal::ContinuationSpliceOutcome::Ok)
                 {
@@ -496,12 +490,14 @@ void DecodeLogfmtBatch(
                 }
                 else
                 {
-                    parsed.errors.push_back(internal::ParsedLineError{
-                        .relativeLine = relativeLineNumber,
-                        .body = outcome == internal::ContinuationSpliceOutcome::MissingTarget
-                            ? "Continuation lines dropped: target field is not present in the record."
-                            : "Continuation lines dropped: target field is not a string.",
-                    });
+                    parsed.errors.push_back(
+                        internal::ParsedLineError{
+                            .relativeLine = relativeLineNumber,
+                            .body = outcome == internal::ContinuationSpliceOutcome::MissingTarget
+                                        ? "Continuation lines dropped: target field is not present in the record."
+                                        : "Continuation lines dropped: target field is not a string.",
+                        }
+                    );
                 }
             }
             relativeLineNumber++;
@@ -549,9 +545,11 @@ void DecodeLogfmtBatch(
             // Save the span being sealed; Stage C handles the batch tail.
             if (multiline && !parsed.lines.empty() && tailLastPhysical > tailHeaderPhysical)
             {
-            parsed.completedMultiLineSpans.push_back(internal::ParsedPipelineBatch::MultiLineSpan{
-                .headerPhysicalLine = tailHeaderPhysical, .lastPhysicalLine = tailLastPhysical
-            });
+                parsed.completedMultiLineSpans.push_back(
+                    internal::ParsedPipelineBatch::MultiLineSpan{
+                        .headerPhysicalLine = tailHeaderPhysical, .lastPhysicalLine = tailLastPhysical
+                    }
+                );
             }
 
             LogLine logLine(std::move(values), keys, source, relativeLineNumber - 1);
@@ -597,7 +595,8 @@ class LogfmtLineDecoder
 public:
     LogfmtLineDecoder() = delete;
 
-    explicit LogfmtLineDecoder(bool multiline) noexcept : mMultiline(multiline)
+    explicit LogfmtLineDecoder(bool multiline) noexcept
+        : mMultiline(multiline)
     {
     }
 

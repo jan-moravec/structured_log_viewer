@@ -702,9 +702,7 @@ struct RegexByteRange
     const char *fileEnd = nullptr;
 };
 
-bool RegexLooksLikeHeader(
-    const CompiledPattern &compiled, pcre2_match_data *matchData, std::string_view line
-);
+bool RegexLooksLikeHeader(const CompiledPattern &compiled, pcre2_match_data *matchData, std::string_view line);
 
 std::string_view StripCr(std::string_view s) noexcept
 {
@@ -848,15 +846,9 @@ void DecodeRegexBatch(
                 std::vector<std::pair<KeyId, internal::CompactLogValue>> mutableValues(
                     compactSpan.begin(), compactSpan.end()
                 );
-                const std::string_view mmapView(
-                    fileBegin, fileBegin ? static_cast<size_t>(fileEnd - fileBegin) : 0
-                );
+                const std::string_view mmapView(fileBegin, fileBegin ? static_cast<size_t>(fileEnd - fileBegin) : 0);
                 const internal::ContinuationSpliceOutcome outcome = internal::ExtendContinuationTarget(
-                    mutableValues,
-                    parsed.ownedStringsArena,
-                    continuationTargetKey,
-                    continuation,
-                    mmapView
+                    mutableValues, parsed.ownedStringsArena, continuationTargetKey, continuation, mmapView
                 );
                 if (outcome == internal::ContinuationSpliceOutcome::Ok)
                 {
@@ -868,12 +860,14 @@ void DecodeRegexBatch(
                 }
                 else
                 {
-                    parsed.errors.push_back(internal::ParsedLineError{
-                        .relativeLine = relativeLineNumber,
-                        .body = outcome == internal::ContinuationSpliceOutcome::MissingTarget
-                            ? "Continuation lines dropped: target field is not present in the record."
-                            : "Continuation lines dropped: target field is not a string.",
-                    });
+                    parsed.errors.push_back(
+                        internal::ParsedLineError{
+                            .relativeLine = relativeLineNumber,
+                            .body = outcome == internal::ContinuationSpliceOutcome::MissingTarget
+                                        ? "Continuation lines dropped: target field is not present in the record."
+                                        : "Continuation lines dropped: target field is not a string.",
+                        }
+                    );
                 }
             }
             ++relativeLineNumber;
@@ -901,12 +895,14 @@ void DecodeRegexBatch(
         pendingLeadingBlanks = 0;
 
         // Save the span being sealed; Stage C handles the batch tail.
-        if (continuationMode != ContinuationMode::None && !parsed.lines.empty()
-            && tailLastPhysical > tailHeaderPhysical)
+        if (continuationMode != ContinuationMode::None && !parsed.lines.empty() &&
+            tailLastPhysical > tailHeaderPhysical)
         {
-            parsed.completedMultiLineSpans.push_back(internal::ParsedPipelineBatch::MultiLineSpan{
-                .headerPhysicalLine = tailHeaderPhysical, .lastPhysicalLine = tailLastPhysical
-            });
+            parsed.completedMultiLineSpans.push_back(
+                internal::ParsedPipelineBatch::MultiLineSpan{
+                    .headerPhysicalLine = tailHeaderPhysical, .lastPhysicalLine = tailLastPhysical
+                }
+            );
         }
 
         // `LogLine` requires KeyId order, unlike source-order captures.
@@ -940,9 +936,7 @@ void DecodeRegexBatch(
 /// Test @p line with an anchored, partial-hard header probe. A partial
 /// prefix counts as a header so an incomplete live-tail line is not
 /// folded into the preceding record.
-bool RegexLooksLikeHeader(
-    const CompiledPattern &compiled, pcre2_match_data *matchData, std::string_view line
-)
+bool RegexLooksLikeHeader(const CompiledPattern &compiled, pcre2_match_data *matchData, std::string_view line)
 {
     if (line.empty() || compiled.Code() == nullptr)
     {
@@ -972,7 +966,9 @@ public:
         ContinuationMode mode = ContinuationMode::None,
         const CompiledPattern *headerAnchor = nullptr
     )
-        : mCompiled(&compiled), mColumnKeys(&columnKeys), mMode(mode),
+        : mCompiled(&compiled),
+          mColumnKeys(&columnKeys),
+          mMode(mode),
           mLastContinuationTarget(columnKeys.empty() ? INVALID_KEY_ID : columnKeys.back())
     {
         mMatchData = compiled.NewMatchData();
@@ -1183,9 +1179,7 @@ void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, P
         std::string anchorErr;
         if (!headerAnchor.Compile(headerAnchorSource, anchorErr))
         {
-            EmitErrorAndFinish(
-                sink, "Header anchor compile failed: " + anchorErr, newKeyBaseline, /*streaming=*/true
-            );
+            EmitErrorAndFinish(sink, "Header anchor compile failed: " + anchorErr, newKeyBaseline, /*streaming=*/true);
             return;
         }
         anchorPtr = &headerAnchor;

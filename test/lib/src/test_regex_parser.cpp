@@ -591,7 +591,6 @@ TEST_CASE(
     CHECK(errors[0].contains("named capture groups"));
 }
 
-
 namespace
 {
 
@@ -670,10 +669,9 @@ TEST_CASE(
     REQUIRE(m1.has_value());
 
     CHECK(
-        *m0
-        == "boom\n"
-           "\tat com.example.Foo.bar(Foo.java:42)\n"
-           "\tat com.example.Baz.qux(Baz.java:7)"
+        *m0 == "boom\n"
+               "\tat com.example.Foo.bar(Foo.java:42)\n"
+               "\tat com.example.Baz.qux(Baz.java:7)"
     );
     CHECK(*m1 == "recovered");
 
@@ -706,12 +704,11 @@ TEST_CASE(
 
     const RegexParser parser{std::string{pattern}};
 
-    const std::string payload =
-        "error boom\n"
-        "\n"
-        "\tat com.example.Foo.bar(Foo.java:42)\n"
-        "\n"
-        "info recovered\n";
+    const std::string payload = "error boom\n"
+                                "\n"
+                                "\tat com.example.Foo.bar(Foo.java:42)\n"
+                                "\n"
+                                "info recovered\n";
 
     StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<StreamingInMemoryProducer>(payload));
     CollectingStreamSink sink;
@@ -897,10 +894,9 @@ TEST_CASE(
     REQUIRE(m0.has_value());
     REQUIRE(m1.has_value());
     CHECK(
-        *m0
-        == "boom\n"
-           "\tat com.example.Foo.bar(Foo.java:42)\n"
-           "\tat com.example.Baz.qux(Baz.java:7)"
+        *m0 == "boom\n"
+               "\tat com.example.Foo.bar(Foo.java:42)\n"
+               "\tat com.example.Baz.qux(Baz.java:7)"
     );
     CHECK(*m1 == "recovered");
 }
@@ -1267,8 +1263,7 @@ TEST_CASE("RegexParser static overload with explicit pattern overrides configura
 }
 
 TEST_CASE(
-    "RegexParser: headerAnchor overrides the header probe (streaming)",
-    "[regex_parser][multiline][header_anchor]"
+    "RegexParser: headerAnchor overrides the header probe (streaming)", "[regex_parser][multiline][header_anchor]"
 )
 {
     using namespace loglib;
@@ -1295,7 +1290,9 @@ TEST_CASE(
                                 "During handling of the above exception, another exception occurred:\n"
                                 "2026-01-02 INFO recovered\n";
 
-    StreamLineSource source(std::filesystem::path("anchor_stream.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+    StreamLineSource source(
+        std::filesystem::path("anchor_stream.log"), std::make_unique<StreamingInMemoryProducer>(payload)
+    );
     CollectingStreamSink sink;
     parser.ParseStreaming(source, sink, ParserOptions{});
 
@@ -1367,9 +1364,7 @@ TEST_CASE(
     FileLineSource *sourcePtr = source.get();
     internal::BufferingSink sink(std::move(source));
 
-    RegexParser::ParseStreaming(
-        *sourcePtr, sink, ParserOptions{}, advanced, std::optional<std::string_view>{pattern}
-    );
+    RegexParser::ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced, std::optional<std::string_view>{pattern});
 
     LogData data = sink.TakeData();
     const std::vector<std::string> errors = sink.TakeErrors();
@@ -1393,8 +1388,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "RegexParser: bad headerAnchor surfaces a compile error (streaming)",
-    "[regex_parser][multiline][header_anchor]"
+    "RegexParser: bad headerAnchor surfaces a compile error (streaming)", "[regex_parser][multiline][header_anchor]"
 )
 {
     using namespace loglib;
@@ -1416,7 +1410,9 @@ TEST_CASE(
     const RegexParser parser{std::string{pattern}};
 
     const std::string payload = "2026-01-01 ERROR boom\nTraceback\n2026-01-02 INFO ok\n";
-    StreamLineSource source(std::filesystem::path("anchor_bad_stream.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+    StreamLineSource source(
+        std::filesystem::path("anchor_bad_stream.log"), std::make_unique<StreamingInMemoryProducer>(payload)
+    );
     CollectingStreamSink sink;
     parser.ParseStreaming(source, sink, ParserOptions{});
 
@@ -1436,10 +1432,7 @@ TEST_CASE(
     CHECK(lines.empty());
 }
 
-TEST_CASE(
-    "RegexParser: bad headerAnchor surfaces a compile error (static)",
-    "[regex_parser][multiline][header_anchor]"
-)
+TEST_CASE("RegexParser: bad headerAnchor surfaces a compile error (static)", "[regex_parser][multiline][header_anchor]")
 {
     using namespace loglib;
 
@@ -1466,11 +1459,7 @@ TEST_CASE(
     internal::BufferingSink sink(std::move(source));
 
     RegexParser::ParseStreaming(
-        *sourcePtr,
-        sink,
-        ParserOptions{},
-        internal::AdvancedParserOptions{},
-        std::optional<std::string_view>{pattern}
+        *sourcePtr, sink, ParserOptions{}, internal::AdvancedParserOptions{}, std::optional<std::string_view>{pattern}
     );
 
     LogData data = sink.TakeData();
@@ -1488,11 +1477,10 @@ TEST_CASE(
     using namespace loglib;
 
     const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
-    const std::string payload =
-        "error boom\n"
-        "\tat com.example.Foo.bar(Foo.java:42)\n"
-        "\tat com.example.Baz.qux(Baz.java:7)\n"
-        "info recovered\n";
+    const std::string payload = "error boom\n"
+                                "\tat com.example.Foo.bar(Foo.java:42)\n"
+                                "\tat com.example.Baz.qux(Baz.java:7)\n"
+                                "info recovered\n";
 
     auto runOnce = [&](const std::string &anchor) {
         const RegexTemplate extra{
@@ -1542,20 +1530,14 @@ TEST_CASE("ValidateHeaderAnchor accepts empty [regex]", "[regex_parser][header_a
     CHECK(err.empty());
 }
 
-TEST_CASE(
-    "ValidateHeaderAnchor rejects patterns that fail to compile [regex]",
-    "[regex_parser][header_anchor]"
-)
+TEST_CASE("ValidateHeaderAnchor rejects patterns that fail to compile [regex]", "[regex_parser][header_anchor]")
 {
     std::string err;
     CHECK_FALSE(ValidateHeaderAnchor(R"((?<a)", err));
     CHECK(err.contains("Header anchor compile failed"));
 }
 
-TEST_CASE(
-    "ValidateHeaderAnchor accepts patterns without named groups [regex]",
-    "[regex_parser][header_anchor]"
-)
+TEST_CASE("ValidateHeaderAnchor accepts patterns without named groups [regex]", "[regex_parser][header_anchor]")
 {
     std::string err = "stale";
     CHECK(ValidateHeaderAnchor(R"(^\d{4}-)", err));

@@ -46,8 +46,11 @@ constexpr size_t STREAMING_READ_BUFFER_SIZE = 64 * 1024;
 /// Mmap-backed values require @p mmapBytes and are materialised into
 /// @p ownedArena. A bare `key=` is promoted without a leading separator.
 inline ContinuationSpliceOutcome ExtendContinuationTarget(
-    std::vector<std::pair<KeyId, CompactLogValue>> &values, std::string &ownedArena, KeyId targetKey,
-    std::string_view continuationBytes, std::string_view mmapBytes = std::string_view{}
+    std::vector<std::pair<KeyId, CompactLogValue>> &values,
+    std::string &ownedArena,
+    KeyId targetKey,
+    std::string_view continuationBytes,
+    std::string_view mmapBytes = std::string_view{}
 )
 {
     if (targetKey == INVALID_KEY_ID)
@@ -68,67 +71,67 @@ inline ContinuationSpliceOutcome ExtendContinuationTarget(
         CompactLogValue &v = kv.second;
         switch (v.tag)
         {
-            case CompactTag::OwnedString:
+        case CompactTag::OwnedString:
+        {
+            const uint64_t offset = v.payload;
+            const uint32_t length = v.aux;
+            if (offset + length == ownedArena.size())
             {
-                const uint64_t offset = v.payload;
-                const uint32_t length = v.aux;
-                if (offset + length == ownedArena.size())
-                {
-                    ownedArena.append(continuationBytes.data(), continuationBytes.size());
-                    v.aux = static_cast<uint32_t>(static_cast<size_t>(length) + continuationBytes.size());
-                }
-                else
-                {
-                    // Reserve before self-appending: reallocation would
-                    // invalidate the source pointer, and overlap safety
-                    // is not guaranteed.
-                    ownedArena.reserve(ownedArena.size() + length + continuationBytes.size());
-                    const uint64_t newOffset = ownedArena.size();
-                    ownedArena.append(ownedArena.data() + offset, length);
-                    ownedArena.append(continuationBytes.data(), continuationBytes.size());
-                    v.payload = newOffset;
-                    v.aux = static_cast<uint32_t>(static_cast<size_t>(length) + continuationBytes.size());
-                }
-                return ContinuationSpliceOutcome::Ok;
-            }
-            case CompactTag::Monostate:
-            {
-                // A bare `key=` has no preceding content to separate.
-                std::string_view bytes = continuationBytes;
-                if (!bytes.empty() && bytes.front() == '\n')
-                {
-                    bytes.remove_prefix(1);
-                }
-                v.tag = CompactTag::OwnedString;
-                v.payload = ownedArena.size();
-                v.aux = static_cast<uint32_t>(bytes.size());
-                ownedArena.append(bytes.data(), bytes.size());
-                return ContinuationSpliceOutcome::Ok;
-            }
-            case CompactTag::MmapSlice:
-            {
-                // Materialise the mmap slice before extending it.
-                const uint64_t offset = v.payload;
-                const uint32_t length = v.aux;
-                if (mmapBytes.empty() || offset + length > mmapBytes.size())
-                {
-                    return ContinuationSpliceOutcome::NonStringTarget;
-                }
-                const uint64_t newOffset = ownedArena.size();
-                ownedArena.append(mmapBytes.data() + offset, length);
                 ownedArena.append(continuationBytes.data(), continuationBytes.size());
-                v.tag = CompactTag::OwnedString;
+                v.aux = static_cast<uint32_t>(static_cast<size_t>(length) + continuationBytes.size());
+            }
+            else
+            {
+                // Reserve before self-appending: reallocation would
+                // invalidate the source pointer, and overlap safety
+                // is not guaranteed.
+                ownedArena.reserve(ownedArena.size() + length + continuationBytes.size());
+                const uint64_t newOffset = ownedArena.size();
+                ownedArena.append(ownedArena.data() + offset, length);
+                ownedArena.append(continuationBytes.data(), continuationBytes.size());
                 v.payload = newOffset;
                 v.aux = static_cast<uint32_t>(static_cast<size_t>(length) + continuationBytes.size());
-                return ContinuationSpliceOutcome::Ok;
             }
-            case CompactTag::DictRef:
-            case CompactTag::Int64:
-            case CompactTag::Uint64:
-            case CompactTag::Double:
-            case CompactTag::Bool:
-            case CompactTag::Timestamp:
+            return ContinuationSpliceOutcome::Ok;
+        }
+        case CompactTag::Monostate:
+        {
+            // A bare `key=` has no preceding content to separate.
+            std::string_view bytes = continuationBytes;
+            if (!bytes.empty() && bytes.front() == '\n')
+            {
+                bytes.remove_prefix(1);
+            }
+            v.tag = CompactTag::OwnedString;
+            v.payload = ownedArena.size();
+            v.aux = static_cast<uint32_t>(bytes.size());
+            ownedArena.append(bytes.data(), bytes.size());
+            return ContinuationSpliceOutcome::Ok;
+        }
+        case CompactTag::MmapSlice:
+        {
+            // Materialise the mmap slice before extending it.
+            const uint64_t offset = v.payload;
+            const uint32_t length = v.aux;
+            if (mmapBytes.empty() || offset + length > mmapBytes.size())
+            {
                 return ContinuationSpliceOutcome::NonStringTarget;
+            }
+            const uint64_t newOffset = ownedArena.size();
+            ownedArena.append(mmapBytes.data() + offset, length);
+            ownedArena.append(continuationBytes.data(), continuationBytes.size());
+            v.tag = CompactTag::OwnedString;
+            v.payload = newOffset;
+            v.aux = static_cast<uint32_t>(static_cast<size_t>(length) + continuationBytes.size());
+            return ContinuationSpliceOutcome::Ok;
+        }
+        case CompactTag::DictRef:
+        case CompactTag::Int64:
+        case CompactTag::Uint64:
+        case CompactTag::Double:
+        case CompactTag::Bool:
+        case CompactTag::Timestamp:
+            return ContinuationSpliceOutcome::NonStringTarget;
         }
         return ContinuationSpliceOutcome::NonStringTarget;
     }
@@ -224,8 +227,7 @@ void RunStreamingParseLoop(
     std::optional<PendingRecord> pending;
 
     // Reject invalid targets before buffering to keep memory bounded.
-    auto canAcceptContinuation =
-        [](std::span<const std::pair<KeyId, CompactLogValue>> values, KeyId key) -> bool {
+    auto canAcceptContinuation = [](std::span<const std::pair<KeyId, CompactLogValue>> values, KeyId key) -> bool {
         if (key == INVALID_KEY_ID)
         {
             return false;
@@ -238,17 +240,17 @@ void RunStreamingParseLoop(
             }
             switch (kv.second.tag)
             {
-                case CompactTag::OwnedString:
-                case CompactTag::Monostate:
-                case CompactTag::MmapSlice:
-                    return true;
-                case CompactTag::DictRef:
-                case CompactTag::Int64:
-                case CompactTag::Uint64:
-                case CompactTag::Double:
-                case CompactTag::Bool:
-                case CompactTag::Timestamp:
-                    return false;
+            case CompactTag::OwnedString:
+            case CompactTag::Monostate:
+            case CompactTag::MmapSlice:
+                return true;
+            case CompactTag::DictRef:
+            case CompactTag::Int64:
+            case CompactTag::Uint64:
+            case CompactTag::Double:
+            case CompactTag::Bool:
+            case CompactTag::Timestamp:
+                return false;
             }
             return false;
         }
@@ -292,8 +294,9 @@ void RunStreamingParseLoop(
 
         if (!rec.continuationBytes.empty())
         {
-            const ContinuationSpliceOutcome outcome =
-                ExtendContinuationTarget(rec.compactValues, rec.ownedArena, rec.continuationTarget, rec.continuationBytes);
+            const ContinuationSpliceOutcome outcome = ExtendContinuationTarget(
+                rec.compactValues, rec.ownedArena, rec.continuationTarget, rec.continuationBytes
+            );
             if (outcome == ContinuationSpliceOutcome::Ok)
             {
                 rec.rawText.append(rec.rawTextAppendix);
@@ -301,24 +304,29 @@ void RunStreamingParseLoop(
             else
             {
                 // Defensive: buffered targets should already be valid.
-                coalescer.Pending().errors.emplace_back(fmt::format(
-                    "Continuation lines dropped on line {}: {}.",
-                    rec.startLineNumber,
-                    outcome == ContinuationSpliceOutcome::MissingTarget
-                        ? "target field is not present in the record"
-                        : "target field is not a string"
-                ));
+                coalescer.Pending().errors.emplace_back(
+                    fmt::format(
+                        "Continuation lines dropped on line {}: {}.",
+                        rec.startLineNumber,
+                        outcome == ContinuationSpliceOutcome::MissingTarget
+                            ? "target field is not present in the record"
+                            : "target field is not a string"
+                    )
+                );
             }
         }
         // Trailing blanks remain between-record separators.
         if (rec.droppedContinuationLines > 0)
         {
-            coalescer.Pending().errors.emplace_back(fmt::format(
-                "Continuation lines dropped on line {} ({} line{}): target field is not present in the record or is not a string.",
-                rec.startLineNumber,
-                rec.droppedContinuationLines,
-                rec.droppedContinuationLines == 1 ? "" : "s"
-            ));
+            coalescer.Pending().errors.emplace_back(
+                fmt::format(
+                    "Continuation lines dropped on line {} ({} line{}): target field is not present in the record or "
+                    "is not a string.",
+                    rec.startLineNumber,
+                    rec.droppedContinuationLines,
+                    rec.droppedContinuationLines == 1 ? "" : "s"
+                )
+            );
         }
 
         std::sort(rec.compactValues.begin(), rec.compactValues.end(), [](const auto &a, const auto &b) {
@@ -425,8 +433,9 @@ void RunStreamingParseLoop(
         {
             fresh.continuationTarget = decoder.LastContinuationTarget();
         }
-        fresh.continuationAcceptsText =
-            canAcceptContinuation(std::span<const std::pair<KeyId, CompactLogValue>>(fresh.compactValues), fresh.continuationTarget);
+        fresh.continuationAcceptsText = canAcceptContinuation(
+            std::span<const std::pair<KeyId, CompactLogValue>>(fresh.compactValues), fresh.continuationTarget
+        );
         pending = std::move(fresh);
 
         // Reset moved-from buffers explicitly for clang-analyzer.

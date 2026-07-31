@@ -174,12 +174,12 @@ std::string_view ContinuationModeName(ContinuationMode mode) noexcept
 {
     switch (mode)
     {
-        case ContinuationMode::None:
-            return "none";
-        case ContinuationMode::Indented:
-            return "indented";
-        case ContinuationMode::UntilNextHeader:
-            return "untilNextHeader";
+    case ContinuationMode::None:
+        return "none";
+    case ContinuationMode::Indented:
+        return "indented";
+    case ContinuationMode::UntilNextHeader:
+        return "untilNextHeader";
     }
     return "none";
 }

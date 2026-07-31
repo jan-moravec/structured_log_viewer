@@ -435,7 +435,6 @@ TEST_CASE(
     CHECK(std::get<std::string_view>(row1message) == std::string_view{"Application starting"});
 }
 
-
 namespace
 {
 
@@ -510,7 +509,8 @@ void ExpectMultilineTemplateFolds(const MultilineCase &tc)
 } // namespace
 
 TEST_CASE(
-    "Shipped indented-continuation templates fold indented follow-up lines [regex_templates]", "[regex_templates][multiline]"
+    "Shipped indented-continuation templates fold indented follow-up lines [regex_templates]",
+    "[regex_templates][multiline]"
 )
 {
     const MultilineCase cases[] = {
@@ -530,7 +530,7 @@ TEST_CASE(
         MultilineCase{
             .templateName = "PostgreSQL",
             .expectedMode = ContinuationMode::Indented,
-            .header = "2024-04-28 04:02:03.123 UTC [12345] ERROR:  syntax error at or near \"SELCT\"",
+            .header = "2024-04-28 04:02:03.123 UTC [12345] ERROR:  syntax error at or near \"FOOBAR\"",
             .continuationLines =
                 {
                     "\tSELECT * FROM",
@@ -539,7 +539,7 @@ TEST_CASE(
                 },
             .nextHeader = "2024-04-28 04:02:03.500 UTC [12345] LOG:  statement ended",
             .lastField = "message",
-            .expectedContainsInLastField = {"SELCT", "SELECT * FROM", "WHERE id = 1"},
+            .expectedContainsInLastField = {"FOOBAR", "SELECT * FROM", "WHERE id = 1"},
         },
         MultilineCase{
             .templateName = "MySQL / MariaDB error log",
@@ -581,8 +581,7 @@ TEST_CASE(
                 },
             .nextHeader = "[Tue Apr 19 16:38:39.000000 2011] [core:notice] [pid 9999] AH00094: Command line: 'httpd'",
             .lastField = "message",
-            .expectedContainsInLastField =
-                {"Uncaught Exception", "Stack trace:", "index.php(10)", "on line 10"},
+            .expectedContainsInLastField = {"Uncaught Exception", "Stack trace:", "index.php(10)", "on line 10"},
         },
         MultilineCase{
             .templateName = "Generic bracketed level",
@@ -670,8 +669,9 @@ TEST_CASE(
                 },
             .nextHeader = "I, [2024-04-28T04:02:06.000000 #12345]  INFO -- : Completed 500 in 42ms",
             .lastField = "message",
-            .expectedContainsInLastField =
-                {"NoMethodError", "users_controller.rb:12", "application_controller.rb:5", "basic_implicit_render.rb:6"},
+            .expectedContainsInLastField = {
+                "NoMethodError", "users_controller.rb:12", "application_controller.rb:5", "basic_implicit_render.rb:6"
+            },
         },
     };
 
