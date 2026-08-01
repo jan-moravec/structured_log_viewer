@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 
 namespace slv::exports
@@ -28,12 +29,33 @@ std::string DescribeErrno(int err)
     }
     return std::string(buf);
 #else
-    // XSI-compliant `strerror_r` returns int; GNU returns char*. Use
-    // the XSI form via `_POSIX_C_SOURCE` (already the default under
-    // GCC / libc). Cast to void to silence the discarded-result
-    // warning on the GNU shim.
-    (void)strerror_r(err, buf, BUF_SIZE);
-    return std::string(buf);
+    // Two `strerror_r` shapes exist and both compile under GCC / libc:
+    //   * XSI (`_POSIX_C_SOURCE >= 200112L && !_GNU_SOURCE`) -- returns
+    //     `int` (0 on success), writes into `buf`.
+    //   * GNU (`_GNU_SOURCE`, the glibc default) -- returns `char *`,
+    //     which may or may not point at `buf`; writing into `buf` is
+    //     optional. Discarding the return value here would leave `buf`
+    //     empty on glibc, giving a blank error message.
+    //
+    // Dispatch on the return type at compile time so both shapes work
+    // regardless of which one the current build has enabled.
+    auto result = strerror_r(err, buf, BUF_SIZE);
+    if constexpr (std::is_same_v<decltype(result), char *>)
+    {
+        // GNU: pointer we must dereference. May be `buf` or a static
+        // internal string.
+        return std::string(result != nullptr ? result : "unknown error");
+    }
+    else
+    {
+        // XSI: int return; success writes into `buf`, non-zero means
+        // the call itself failed (unknown errno, buffer too small).
+        if (result != 0)
+        {
+            return "unknown error";
+        }
+        return std::string(buf);
+    }
 #endif
 }
 

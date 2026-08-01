@@ -1229,6 +1229,16 @@ private:
     /// Persists the directory of @p path as the last-used dialog dir.
     void RememberLastOpenDir(const QString &path);
 
+    /// Last-used export destination directory. Kept separate from
+    /// `ui/lastOpenDir` so a one-off export to (say) a shared drive
+    /// doesn't retarget the next `File -> Open...` dialog. Falls back
+    /// to `DefaultOpenDir()` on first use so the first Export dialog
+    /// still lands somewhere sensible.
+    [[nodiscard]] QString DefaultExportDir() const;
+
+    /// Persists the directory of @p path under `ui/lastExportDir`.
+    void RememberLastExportDir(const QString &path);
+
     /// Appends shortcut text to each action's tooltip and mirrors the
     /// tooltip into `statusTip()`. Skips actions whose tooltip already
     /// names the shortcut, so it's safe to re-run.

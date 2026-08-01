@@ -122,6 +122,11 @@ ExportDialog::ExportDialog(
     mFormatCombo = new QComboBox(this);
     QSettings settings;
     const int savedFormat = settings.value(QStringLiteral("ui/lastExportFormat"), static_cast<int>(ExportFormat::JsonLines)).toInt();
+    // Toggle defaults: match the shipped defaults if nothing is persisted.
+    const bool savedIncludeHeader =
+        settings.value(QStringLiteral("ui/lastExportIncludeHeader"), true).toBool();
+    const bool savedIncludeHidden =
+        settings.value(QStringLiteral("ui/lastExportIncludeHidden"), false).toBool();
     int selectedIndex = 0;
     const auto &entries = FormatEntries();
     for (size_t i = 0; i < entries.size(); ++i)
@@ -174,12 +179,12 @@ ExportDialog::ExportDialog(
     optionsLayout->addWidget(mSelectionOnly);
 
     mIncludeHeader = new QCheckBox(tr("Include header row"), this);
-    mIncludeHeader->setChecked(true);
+    mIncludeHeader->setChecked(savedIncludeHeader);
     mIncludeHeader->setToolTip(tr("Applies to CSV and Markdown output."));
     optionsLayout->addWidget(mIncludeHeader);
 
     mIncludeHidden = new QCheckBox(tr("Include hidden columns"), this);
-    mIncludeHidden->setChecked(false);
+    mIncludeHidden->setChecked(savedIncludeHidden);
     mIncludeHidden->setToolTip(
         tr("By default, CSV and Markdown emit only visible columns. JSON Lines "
            "and Snapshot always include everything.")
@@ -197,16 +202,14 @@ ExportDialog::ExportDialog(
     mRowSizeWarning->setVisible(false);
     layout->addWidget(mRowSizeWarning);
 
-    // Exports are refused while a live-tail session is actively
-    // streaming (see `MainWindow::ExportFilteredRows`), so this note
-    // only fires when live tail is paused or stopped. Point the user
-    // at those actions rather than the (misleading) "snapshot at
-    // start time" wording, which implied a concurrent export was
-    // supported.
+    // Live-tail exports must be preceded by a Stop, not a Pause: a
+    // paused sink still buffers producer batches that would flush on
+    // resume and race the export worker's `LogTable` read. The gate
+    // in `MainWindow::ExportFilteredRows` matches this wording.
     mLiveTailNote = new QLabel(
-        tr("Note: live-tail streaming must be paused (Ctrl+Shift+P) or stopped "
-           "(Ctrl+Shift+X) before an export can start. The exported view is a "
-           "snapshot of the currently visible rows."),
+        tr("Note: live-tail streaming must be stopped (Ctrl+Shift+X) before an "
+           "export can start. The exported view is a snapshot of the currently "
+           "visible rows."),
         this
     );
     mLiveTailNote->setWordWrap(true);
@@ -338,6 +341,13 @@ void ExportDialog::OnAccept()
 
     QSettings settings;
     settings.setValue(QStringLiteral("ui/lastExportFormat"), mFormatCombo->currentData().toInt());
+    // Persist the column-format-relevant toggles too so a user who
+    // routinely exports CSV with hidden columns doesn't have to
+    // re-check the box every time. `Export selection only` is
+    // deliberately NOT persisted: it depends on the *current*
+    // selection existing, which is a per-open condition.
+    settings.setValue(QStringLiteral("ui/lastExportIncludeHeader"), mIncludeHeader->isChecked());
+    settings.setValue(QStringLiteral("ui/lastExportIncludeHidden"), mIncludeHidden->isChecked());
     accept();
 }
 

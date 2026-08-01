@@ -2756,6 +2756,18 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
 
 void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
 {
+    // Cancel the export worker up-front, regardless of `mode`. The
+    // destructive branch below needs it before `mModel->Reset()`
+    // tears down `LogTable`, but non-destructive Append also has to
+    // cancel: `AppendStreaming` will mutate `LogTable` / `KeyIndex`
+    // from a streaming worker while the export worker is still
+    // reading them. `setEnabled(false)` blocks that path from the
+    // GUI, but cross-instance CLI forwarding (`OpenFilesForCli`)
+    // bypasses the disabled state and reaches this function directly.
+    // Unconditional cancel closes the race at the one funnel every
+    // open path shares. Safe to call when no export is in flight.
+    CancelInFlightExport();
+
     // Live-tail / network sessions are single-source: a new
     // static-files open implicitly tears them down regardless of
     // `mode`. Static sessions honour `mode`.
@@ -2763,10 +2775,6 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
 
     if (destructive)
     {
-        // Cancel the export worker BEFORE resetting the model: the
-        // worker reads `LogTable` from a background thread, and
-        // `Reset()` below tears down its storage.
-        CancelInFlightExport();
         // `mModel->Reset()` synchronously stops any in-flight worker.
         mModel->Reset();
         ClearAllFilters();
@@ -3658,8 +3666,14 @@ void MainWindow::ExportFilteredRows()
     // need an explicit Pause / Stop first.
     if (mModel->IsStreamingActive() || mDecompressionInFlight)
     {
+        // Live-tail exports require Stop, not Pause: pause only halts the
+        // sink drain (`QtStreamingLogSink::SetPaused`) but leaves the
+        // producer streaming into a buffer that would flush on resume,
+        // racing with the export worker's read of `LogTable`.
+        // `IsStreamingActive()` stays true across pause, so this branch
+        // fires either way -- the guidance below must match the guard.
         const QString detail = IsLiveTailSession()
-            ? tr("Pause (Ctrl+Shift+P) or Stop (Ctrl+Shift+X) the live-tail session before exporting.")
+            ? tr("Stop the live-tail session (Ctrl+Shift+X) before exporting.")
             : tr("Wait for the current file load to finish, then retry.");
         QMessageBox::information(this, tr("Export Filtered Rows"), detail);
         return;
@@ -3699,7 +3713,7 @@ void MainWindow::ExportFilteredRows()
         static_cast<std::size_t>(filteredCount),
         selectionCount,
         defaultStem,
-        DefaultOpenDir(),
+        DefaultExportDir(),
         IsLiveTailSession(),
         this
     );
@@ -3712,10 +3726,11 @@ void MainWindow::ExportFilteredRows()
     {
         return;
     }
-    // `RememberLastOpenDir` is deferred to `OnExportFinished`'s
+    // `RememberLastExportDir` is deferred to `OnExportFinished`'s
     // success branch so that a failed export (bad path, permission
-    // denied, disk full) does not point the next Open dialog at a
-    // directory the user just failed to reach.
+    // denied, disk full) does not stick as the remembered directory.
+    // Kept separate from `ui/lastOpenDir` so a one-off export to a
+    // shared drive does not retarget the next File -> Open dialog.
 
     std::vector<int> sourceRows = CollectExportSourceRows(config.selectionOnly);
 
@@ -3785,8 +3800,14 @@ void MainWindow::BeginAsyncExport(
     ShowExportProgress();
     if (mExportProgressDialog)
     {
+        // `%L1` (not `%1`) so the row count picks up the user's locale
+        // grouping, matching the polling label and the completion toast
+        // below. `arg(qulonglong)` avoids narrowing on 32-bit builds
+        // where `std::size_t` is `unsigned int`.
         mExportProgressDialog->setLabelText(
-            tr("Exporting %1 rows to %2\nPreparing\u2026").arg(plan->sourceRows.size()).arg(QFileInfo(destination).fileName())
+            tr("Exporting %L1 rows to %2\nPreparing\u2026")
+                .arg(static_cast<qulonglong>(plan->sourceRows.size()))
+                .arg(QFileInfo(destination).fileName())
         );
     }
 
@@ -3892,6 +3913,14 @@ void MainWindow::ShowExportProgress()
             {
                 const int pct = static_cast<int>((static_cast<qint64>(PROGRESS_PERCENT_MAX) * written) / total);
                 mExportProgressDialog->setValue(std::min(pct, PROGRESS_PERCENT_MAX));
+                // `QProgressDialog::setValue` calls `processEvents` on
+                // its visible dialog. A queued `finished` slot (from
+                // the export worker completing during that pump) can
+                // run `TeardownExportProgress` and clear
+                // `mExportInFlight` between `setValue` above and
+                // `setLabelText` below. Re-check both, otherwise we'd
+                // repaint a stale label onto a torn-down dialog and
+                // briefly flash it back on screen.
                 if (!mExportInFlight || !mExportProgressDialog)
                 {
                     return;
@@ -4038,7 +4067,7 @@ void MainWindow::OnExportFinished()
         statusBar()->showMessage(msg, STATUS_BAR_MESSAGE_TIMEOUT_MS);
         // Only remember the destination directory on a successful
         // export. See the deferral note in `ExportFilteredRows`.
-        RememberLastOpenDir(mExportDestinationPath);
+        RememberLastExportDir(mExportDestinationPath);
     }
 
     mExportDestinationPath.clear();
@@ -4645,6 +4674,36 @@ void MainWindow::RememberLastOpenDir(const QString &path)
     }
     QSettings settings;
     settings.setValue(QStringLiteral("ui/lastOpenDir"), dir);
+}
+
+QString MainWindow::DefaultExportDir() const
+{
+    const QSettings settings;
+    QString remembered = settings.value(QStringLiteral("ui/lastExportDir")).toString();
+    if (!remembered.isEmpty() && QFileInfo(remembered).isDir())
+    {
+        return remembered;
+    }
+    // First-run fallback: seed from the shared "last dialog dir" so
+    // the Export dialog opens somewhere familiar instead of the
+    // platform Documents root. Only the export's own writes update
+    // `ui/lastExportDir`, so the fallback is one-way.
+    return DefaultOpenDir();
+}
+
+void MainWindow::RememberLastExportDir(const QString &path)
+{
+    if (path.isEmpty())
+    {
+        return;
+    }
+    const QString dir = QFileInfo(path).absolutePath();
+    if (dir.isEmpty())
+    {
+        return;
+    }
+    QSettings settings;
+    settings.setValue(QStringLiteral("ui/lastExportDir"), dir);
 }
 
 void MainWindow::FinaliseActionMetadata()

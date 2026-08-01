@@ -71,6 +71,56 @@ private:
     bool mFinished = false;
 };
 
+/// `MemorySink` that throws `std::runtime_error` on the Nth `Write`.
+/// Used to pin the "sink I/O failure aborts the export" contract:
+/// the snapshot exporter used to have a broad `catch (std::exception)`
+/// that swallowed sink throws alongside `RawLine` throws, silently
+/// truncating the output on a full-disk / dropped-share failure.
+class ThrowOnNthWriteSink : public slv::exports::ExportSink
+{
+public:
+    /// Throws on write @p failOnWrite (0-based). Every other write
+    /// accumulates into the buffer as normal so callers can inspect
+    /// what the exporter had written before the throw.
+    explicit ThrowOnNthWriteSink(std::size_t failOnWrite) noexcept
+        : mFailOnWrite(failOnWrite)
+    {
+    }
+
+    void Write(std::string_view bytes) override
+    {
+        if (mWriteCount == mFailOnWrite)
+        {
+            ++mWriteCount;
+            throw std::runtime_error("simulated disk full");
+        }
+        ++mWriteCount;
+        mBuffer.append(bytes.data(), bytes.size());
+    }
+    void Finish() override
+    {
+        mFinished = true;
+    }
+    [[nodiscard]] std::size_t WriteCount() const noexcept
+    {
+        return mWriteCount;
+    }
+    [[nodiscard]] const std::string &Bytes() const noexcept
+    {
+        return mBuffer;
+    }
+    [[nodiscard]] bool Finished() const noexcept
+    {
+        return mFinished;
+    }
+
+private:
+    std::size_t mFailOnWrite;
+    std::size_t mWriteCount = 0;
+    std::string mBuffer;
+    bool mFinished = false;
+};
+
 /// Mock `LineSource` that throws configurable exception types per
 /// line. Lets the snapshot exporter tests confirm that the exception
 /// handler catches every `std::exception`, not just
@@ -288,6 +338,14 @@ private slots:
     /// for the earlier `catch (const std::out_of_range &)`, which
     /// would let anything else escape.
     static void TestSnapshotSkipsUnavailableRows();
+
+    /// Sink write failures (disk full, network drop) MUST propagate
+    /// out of `RowExporter::Run` regardless of format so the caller
+    /// drops the sink and `~FileSink` unlinks the `.tmp`. Regression
+    /// guard for a snapshot-exporter bug that swallowed the write
+    /// throw alongside `RawLine` throws, leaving a truncated file on
+    /// disk and a false "success" toast for the user.
+    static void TestSinkWriteFailurePropagatesFromAllFormats();
 
     /// A stop request mid-export unwinds via `ExportCancelled` and
     /// the `FileSink` leaves no partial file behind on
@@ -683,6 +741,83 @@ void RowExporterTest::TestSnapshotSkipsUnavailableRows()
 
     // Only lineIds 1 and 4 survive; the middle two were skipped.
     QCOMPARE(QString::fromStdString(sink.Bytes()), QStringLiteral("line 1\nline 4\n"));
+}
+
+void RowExporterTest::TestSinkWriteFailurePropagatesFromAllFormats()
+{
+    // Two-row fixture -- each exporter emits at least one write per
+    // row plus (for column formats) an optional header write, so
+    // failing on write index 1 exercises the mid-export failure path
+    // for every format regardless of whether the header row is on.
+    std::vector<std::string> raws = {"first raw line", "second raw line"};
+    const auto table = BuildFixtureTable(std::move(raws), 2);
+
+    std::vector<int> rows = {0, 1};
+    // Skip the Time column (index 0) for CSV / Markdown: their
+    // formatter path (`LogTable::GetValueOrFormatted` ->
+    // `FormatLogValue` -> `date::zoned_time{CurrentZone(), ...}`)
+    // needs a bootstrapped tzdata that `QTEST_GUILESS_MAIN` does
+    // not set up. JSON Lines / Snapshot do not consult
+    // `visibleColumns` here (Snapshot echoes raw bytes; JSON
+    // materialises the full row via `MaterialiseRow`) so the
+    // narrower list still exercises them fully.
+    std::vector<std::size_t> cols = {1, 2, 3, 4, 5};
+    RowSource src{
+        .table = &table,
+        .sourceRows = rows,
+        .visibleColumns = cols,
+        .includeAllFieldsForJson = false,
+        .includeHeaderRow = true,
+    };
+
+    const std::array<ExportFormat, 4> formats = {
+        ExportFormat::JsonLines,
+        ExportFormat::Csv,
+        ExportFormat::Snapshot,
+        ExportFormat::Markdown,
+    };
+    for (const ExportFormat format : formats)
+    {
+        ThrowOnNthWriteSink sink(/*failOnWrite=*/1);
+        auto exporter = slv::exports::MakeExporter(format);
+        QVERIFY(exporter != nullptr);
+        bool threw = false;
+        try
+        {
+            exporter->Run(src, sink, loglib::StopToken{});
+        }
+        catch (const slv::exports::ExportCancelled &)
+        {
+            // Not this: we didn't cancel, we failed to write.
+            QFAIL(qPrintable(
+                QStringLiteral("format %1 wrongly surfaced ExportCancelled on write failure")
+                    .arg(slv::exports::LabelFor(format))
+            ));
+        }
+        catch (const std::runtime_error &)
+        {
+            threw = true;
+        }
+        QVERIFY2(
+            threw,
+            qPrintable(
+                QStringLiteral("format %1 swallowed a sink write failure -- exports over a "
+                               "network share / full disk would silently truncate")
+                    .arg(slv::exports::LabelFor(format))
+            )
+        );
+        // Sink saw exactly the writes it accepted before the throw
+        // plus the throwing write itself. If the exporter had kept
+        // going after the failure, `WriteCount` would be higher.
+        QVERIFY2(
+            sink.WriteCount() == std::size_t(2),
+            qPrintable(
+                QStringLiteral("format %1: expected WriteCount==2 after throw on write index 1, got %2")
+                    .arg(slv::exports::LabelFor(format))
+                    .arg(sink.WriteCount())
+            )
+        );
+    }
 }
 
 void RowExporterTest::TestCancelLeavesNoPartialFile()

@@ -1,12 +1,10 @@
 #include "row_exporter.hpp"
 
-#include <loglib/enum_dictionary.hpp>
 #include <loglib/internal/compact_log_value.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/line_source.hpp>
 #include <loglib/log_data.hpp>
 #include <loglib/log_line.hpp>
-#include <loglib/log_processing.hpp>
 #include <loglib/log_value.hpp>
 
 #include <date/date.h>
@@ -521,24 +519,30 @@ void SnapshotExporter::Run(
         {
             continue;
         }
+        // Only per-row `RawLine` failures are swallowed: `std::out_of_range`
+        // when a live-tail FIFO has evicted the line, `std::runtime_error`
+        // when the backing source (mmapped file, network stream) has gone
+        // away since the plan was snapshotted, codec-specific errors on
+        // partially-decoded compressed inputs. Skipping the row matches
+        // the "best-effort per row" contract; aborting the whole export
+        // over a single evicted line is worse UX.
+        //
+        // Sink writes are NOT inside the try: an I/O failure (disk full,
+        // network share dropped) MUST abort the export so the caller
+        // drops the sink and unlinks the temp file. Otherwise repeated
+        // swallowed writes leave a truncated / interleaved file on disk
+        // and the user sees a false "success" toast.
+        std::string raw;
         try
         {
-            const std::string raw = lineSource->RawLine(line.LineId());
-            sink.Write(raw);
-            sink.WriteChar('\n');
+            raw = lineSource->RawLine(line.LineId());
         }
-        catch (const std::exception &) // NOLINT(bugprone-empty-catch)
+        catch (const std::exception &)
         {
-            // `RawLine` can throw `std::out_of_range` when a live-tail
-            // FIFO has evicted the line, `std::runtime_error` when the
-            // backing source (mmapped file, network stream) has gone
-            // away since the plan was snapshotted, and other codec-
-            // specific errors on partially-decoded compressed inputs.
-            // The snapshot format is deliberately best-effort per row
-            // -- swallow-and-continue matches the "one row per output
-            // line" contract; the alternative (abort the whole export)
-            // is worse UX and leaves nothing on disk.
+            continue;
         }
+        sink.Write(raw);
+        sink.WriteChar('\n');
 
         if (progress != nullptr && ((slot + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
         {
@@ -684,6 +688,12 @@ void MarkdownExporter::Run(
 
 } // namespace
 
+// Trailing `return` after an exhaustive switch is deliberately omitted:
+// the compiler's `-Wswitch` (and MSVC C4062) catches a missing arm
+// when a new `ExportFormat` is added, instead of the runtime returning
+// a stealth default (`"txt"` / `"Unknown"` / `nullptr`). The `assert`
+// hardens the release build against a corrupt / out-of-range enum
+// value cast in from persisted settings.
 const char *ExtensionFor(ExportFormat format) noexcept
 {
     switch (format)
@@ -697,7 +707,8 @@ const char *ExtensionFor(ExportFormat format) noexcept
     case ExportFormat::Markdown:
         return "md";
     }
-    return "txt";
+    assert(false && "unknown ExportFormat");
+    return "jsonl";
 }
 
 const char *LabelFor(ExportFormat format) noexcept
@@ -713,7 +724,8 @@ const char *LabelFor(ExportFormat format) noexcept
     case ExportFormat::Markdown:
         return "Markdown table";
     }
-    return "Unknown";
+    assert(false && "unknown ExportFormat");
+    return "JSON Lines";
 }
 
 std::unique_ptr<RowExporter> MakeExporter(ExportFormat format)
@@ -729,6 +741,7 @@ std::unique_ptr<RowExporter> MakeExporter(ExportFormat format)
     case ExportFormat::Markdown:
         return std::make_unique<MarkdownExporter>();
     }
+    assert(false && "unknown ExportFormat");
     return nullptr;
 }
 
