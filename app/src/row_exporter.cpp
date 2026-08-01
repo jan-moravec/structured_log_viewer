@@ -13,19 +13,12 @@
 #include <date/tz.h>
 #include <fmt/format.h>
 
-#include <algorithm>
 #include <cassert>
-#include <cerrno>
-#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
-#include <cstring>
-#include <stdexcept>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 #include <variant>
 
@@ -97,6 +90,14 @@ void AppendJsonEscaped(std::string &out, std::string_view input)
 /// includes fractional seconds derived from the underlying
 /// precision (microseconds), and the trailing `Z` is appended
 /// literally so the output is unambiguously UTC.
+///
+/// The caller is expected to have already opened the JSON string
+/// (`"`) before this call and to close it (`"`) after. The failure
+/// fallback stays inside those quotes and emits the raw microsecond
+/// count as a decimal string -- valid JSON, still human-inspectable,
+/// but no longer ISO-parseable. A downstream reader that requires
+/// an ISO string should treat any purely-numeric content between the
+/// quotes as a diagnostic value rather than an instant.
 void AppendIsoTimestamp(std::string &out, loglib::TimeStamp ts)
 {
     try
@@ -107,9 +108,11 @@ void AppendIsoTimestamp(std::string &out, loglib::TimeStamp ts)
     }
     catch (const std::exception &)
     {
-        // date::format can throw on far-future values past its
-        // internal tables. Fall back to a raw microsecond count so
-        // the row is still emitted, just not ISO.
+        // `date::format` throws on far-future / far-past values past
+        // its internal tables. Emit the raw microsecond count so the
+        // row is still emitted (rather than aborting the export);
+        // the JSON stays valid because we're already inside a `"…"`
+        // opened by the caller.
         fmt::format_to(std::back_inserter(out), "{}", ts.time_since_epoch().count());
     }
 }
@@ -151,10 +154,25 @@ void AppendLogValueAsJson(std::string &out, const loglib::LogValue &value)
                 {
                     // `fmt`'s default double formatting matches JSON
                     // number grammar (no locale, no thousands sep,
-                    // shortest round-trip). We rely on `{:g}` giving
-                    // enough digits; `fmt` uses the shortest form
-                    // that round-trips by default.
+                    // shortest round-trip). `{}` uses the shortest
+                    // form that round-trips.
+                    //
+                    // Type-stability post-fix: whole-valued doubles
+                    // (`1.0`, `-3.0`, ...) format as `1` / `-3` under
+                    // default fmt shortest rules, which is valid JSON
+                    // but re-parses as an integer -- annoying when a
+                    // downstream reader keys behaviour off `typeof`
+                    // (Python's `json`, JS `Number.isInteger`, jq).
+                    // Detect the case and append `.0` so a Floating
+                    // column always survives round-trip as a
+                    // fractional literal.
+                    const std::size_t before = out.size();
                     fmt::format_to(std::back_inserter(out), "{}", arg);
+                    const std::string_view emitted(out.data() + before, out.size() - before);
+                    if (emitted.find_first_of(".eE") == std::string_view::npos)
+                    {
+                        out.append(".0");
+                    }
                 }
             }
             else if constexpr (std::is_same_v<T, std::string_view>)
@@ -312,18 +330,54 @@ public:
 private:
     /// Append @p cell to @p out, quoted per RFC 4180 iff it
     /// contains `,`, `"`, `\r`, or `\n`.
+    ///
+    /// **CSV formula-injection defense**: cells whose first byte is
+    /// `=` or `@` are additionally prefixed with `'` and force-
+    /// quoted. Excel / Google Sheets / LibreOffice treat these as
+    /// formula / DDE prefixes and will *evaluate* the cell contents
+    /// when the CSV is opened — a well-known vector (OWASP CSV
+    /// Injection) that turns a shared log dump into arbitrary code
+    /// execution on the recipient's machine. The `'` sentinel makes
+    /// spreadsheets render the cell as literal text; plain text
+    /// readers see `'=...` inside the quotes and can strip the
+    /// sentinel if they need the raw value. Leading `+` / `-` are
+    /// deliberately NOT rewritten because they also start every
+    /// negative / signed number in the log and mangling those would
+    /// break arithmetic in the vast majority of real spreadsheets.
     static void AppendCsvCell(std::string &out, std::string_view cell);
+
+    /// True iff @p cell begins with a character a spreadsheet reader
+    /// would interpret as a formula / DDE prefix.
+    [[nodiscard]] static bool IsFormulaTrigger(std::string_view cell) noexcept
+    {
+        if (cell.empty())
+        {
+            return false;
+        }
+        const char first = cell.front();
+        return first == '=' || first == '@';
+    }
 };
 
 void CsvExporter::AppendCsvCell(std::string &out, std::string_view cell)
 {
-    const bool needsQuote = cell.find_first_of(",\"\r\n") != std::string_view::npos;
+    const bool formulaTrigger = IsFormulaTrigger(cell);
+    const bool hasSpecial = cell.find_first_of(",\"\r\n") != std::string_view::npos;
+    const bool needsQuote = hasSpecial || formulaTrigger;
     if (!needsQuote)
     {
         out.append(cell);
         return;
     }
     out.push_back('"');
+    if (formulaTrigger)
+    {
+        // Neutralise formula evaluation. `'` inside a quoted CSV cell
+        // is not itself a special character (no doubling required)
+        // and every spreadsheet treats the following content as
+        // literal text.
+        out.push_back('\'');
+    }
     for (const char c : cell)
     {
         if (c == '"')
@@ -473,10 +527,17 @@ void SnapshotExporter::Run(
             sink.Write(raw);
             sink.WriteChar('\n');
         }
-        catch (const std::out_of_range &) // NOLINT(bugprone-empty-catch)
+        catch (const std::exception &) // NOLINT(bugprone-empty-catch)
         {
-            // Line has been evicted from a live-tail source. Skip;
-            // the snapshot is best-effort for the surviving rows.
+            // `RawLine` can throw `std::out_of_range` when a live-tail
+            // FIFO has evicted the line, `std::runtime_error` when the
+            // backing source (mmapped file, network stream) has gone
+            // away since the plan was snapshotted, and other codec-
+            // specific errors on partially-decoded compressed inputs.
+            // The snapshot format is deliberately best-effort per row
+            // -- swallow-and-continue matches the "one row per output
+            // line" contract; the alternative (abort the whole export)
+            // is worse UX and leaves nothing on disk.
         }
 
         if (progress != nullptr && ((slot + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
@@ -669,43 +730,6 @@ std::unique_ptr<RowExporter> MakeExporter(ExportFormat format)
         return std::make_unique<MarkdownExporter>();
     }
     return nullptr;
-}
-
-namespace
-{
-
-// Free function so its address is stable and the lambda-less capture
-// keeps the code path allocation-free. `userData` is an atomic<size_t>*
-// whose lifetime the caller owns.
-void AtomicProgressAdapter(void *userData, size_t rowsWritten, size_t /*totalRows*/)
-{
-    auto *counter = static_cast<std::atomic<size_t> *>(userData);
-    if (counter != nullptr)
-    {
-        counter->store(rowsWritten, std::memory_order_relaxed);
-    }
-}
-
-} // namespace
-
-void RunExport(
-    const ExportPlan &plan,
-    ExportSink &sink,
-    const loglib::StopToken &stopToken,
-    std::atomic<size_t> *rowsWritten
-)
-{
-    auto exporter = MakeExporter(plan.format);
-    if (exporter == nullptr)
-    {
-        throw std::runtime_error("Unsupported export format");
-    }
-    exporter->Run(plan.View(), sink, stopToken, &AtomicProgressAdapter, rowsWritten);
-    sink.Finish();
-    if (rowsWritten != nullptr)
-    {
-        rowsWritten->store(plan.sourceRows.size(), std::memory_order_relaxed);
-    }
 }
 
 } // namespace slv::exports

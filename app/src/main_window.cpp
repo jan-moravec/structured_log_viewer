@@ -17,6 +17,7 @@
 #include "log_string_matcher.hpp"
 #include "log_warning.hpp"
 #include "network_stream_dialog.hpp"
+#include "qstring_path.hpp"
 #include "qt_streaming_log_sink.hpp"
 #include "regex_template_registry.hpp"
 #include "regex_templates_editor.hpp"
@@ -3711,7 +3712,10 @@ void MainWindow::ExportFilteredRows()
     {
         return;
     }
-    RememberLastOpenDir(config.destination);
+    // `RememberLastOpenDir` is deferred to `OnExportFinished`'s
+    // success branch so that a failed export (bad path, permission
+    // denied, disk full) does not point the next Open dialog at a
+    // directory the user just failed to reach.
 
     std::vector<int> sourceRows = CollectExportSourceRows(config.selectionOnly);
 
@@ -3743,7 +3747,10 @@ void MainWindow::ExportFilteredRows()
     plan->includeAllFieldsForJson = true; // v1: JSON always includes every field.
     plan->includeHeaderRow = config.includeHeaderRow;
     plan->table = &mModel->Table();
-    plan->destination = std::filesystem::path(config.destination.toStdString());
+    // Use the wide-path overload on Windows so non-ASCII filenames
+    // (Cyrillic, CJK, ...) survive the round-trip through
+    // `<filesystem>`. See `qstring_path.hpp` for details.
+    plan->destination = logapp::QStringToFsPath(config.destination);
 
     const QString formatLabel = QString::fromLatin1(slv::exports::LabelFor(config.format));
     BeginAsyncExport(std::move(plan), config.destination, formatLabel);
@@ -3763,6 +3770,17 @@ void MainWindow::BeginAsyncExport(
     mExportFormatLabel = formatLabel;
     mExportStartedAt = std::chrono::steady_clock::now();
     mExportInFlight = true;
+
+    // Disable the main window for the entire export. The
+    // `QProgressDialog` below defers appearance by 500 ms
+    // (`EXPORT_DIALOG_DEFER_MS`); without this the user can drag a
+    // column header, add a filter, or trigger a session switch during
+    // that window and race the worker on `LogTable::MoveColumn` /
+    // `KeyIndex` mutations. The dialog is a separate top-level
+    // widget, so its Cancel button stays interactive; the window
+    // frame's OS-managed close button still delivers `closeEvent`,
+    // which pre-cancels the worker before teardown.
+    setEnabled(false);
 
     ShowExportProgress();
     if (mExportProgressDialog)
@@ -3785,9 +3803,11 @@ void MainWindow::BeginAsyncExport(
     catch (const std::exception &e)
     {
         // Open-time failure surfaces synchronously: teardown the
-        // dialog and report as a normal error toast.
+        // dialog, re-enable the window, and report as a normal error
+        // toast.
         mExportInFlight = false;
         TeardownExportProgress();
+        setEnabled(true);
         QMessageBox::warning(
             this,
             tr("Export Failed"),
@@ -3910,11 +3930,20 @@ void MainWindow::TeardownExportProgress()
 
 void MainWindow::CancelInFlightExport()
 {
+    const bool wasInFlight = mExportInFlight;
     mExportInFlight = false;
     if (mExportWatcher == nullptr)
     {
         mExportDestinationPath.clear();
         mExportFormatLabel.clear();
+        // Only re-enable if we actually disabled: this helper is
+        // called on every session-switch and from `~MainWindow`, so
+        // the guard keeps us from bouncing enabled state on paths
+        // where no export was running.
+        if (wasInFlight)
+        {
+            setEnabled(true);
+        }
         return;
     }
     mExportStopSource.request_stop();
@@ -3938,6 +3967,10 @@ void MainWindow::CancelInFlightExport()
     TeardownExportProgress();
     mExportDestinationPath.clear();
     mExportFormatLabel.clear();
+    if (wasInFlight)
+    {
+        setEnabled(true);
+    }
 }
 
 void MainWindow::OnExportFinished()
@@ -3948,6 +3981,11 @@ void MainWindow::OnExportFinished()
     }
     mExportInFlight = false;
     TeardownExportProgress();
+    // Re-enable the window before any modal toast so error dialogs
+    // land against a live parent (a `QMessageBox` shown against a
+    // disabled parent still works, but the greyed-out backdrop reads
+    // as "app is frozen").
+    setEnabled(true);
 
     if (mExportWatcher == nullptr)
     {
@@ -3998,6 +4036,9 @@ void MainWindow::OnExportFinished()
                                 .arg(mExportFormatLabel)
                                 .arg(HumanDuration(elapsed));
         statusBar()->showMessage(msg, STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        // Only remember the destination directory on a successful
+        // export. See the deferral note in `ExportFilteredRows`.
+        RememberLastOpenDir(mExportDestinationPath);
     }
 
     mExportDestinationPath.clear();

@@ -25,15 +25,15 @@
 #include <QTemporaryFile>
 #include <QtTest/QtTest>
 
-#include <atomic>
+#include <array>
 #include <chrono>
-#include <cstdio>
-#include <cstdlib>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <numeric>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -69,6 +69,80 @@ public:
 private:
     std::string mBuffer;
     bool mFinished = false;
+};
+
+/// Mock `LineSource` that throws configurable exception types per
+/// line. Lets the snapshot exporter tests confirm that the exception
+/// handler catches every `std::exception`, not just
+/// `std::out_of_range` (the pre-fix narrow catch).
+class ThrowingLineSource final : public loglib::LineSource
+{
+public:
+    enum class ThrowMode
+    {
+        None,
+        OutOfRange,
+        RuntimeError,
+        LogicError,
+    };
+
+    /// @p perLine maps 1-based `lineId` to its throw behaviour. Any
+    /// lineId not in the map returns @p defaultLine as its raw text.
+    ThrowingLineSource(std::filesystem::path displayName, std::unordered_map<std::size_t, ThrowMode> perLine)
+        : mPath(std::move(displayName)), mPerLine(std::move(perLine))
+    {
+    }
+
+    [[nodiscard]] const std::filesystem::path &Path() const noexcept override
+    {
+        return mPath;
+    }
+    [[nodiscard]] std::string RawLine(std::size_t lineId) const override
+    {
+        auto it = mPerLine.find(lineId);
+        const ThrowMode mode = (it == mPerLine.end()) ? ThrowMode::None : it->second;
+        switch (mode)
+        {
+        case ThrowMode::None:
+            return std::string("line ") + std::to_string(lineId);
+        case ThrowMode::OutOfRange:
+            throw std::out_of_range("evicted");
+        case ThrowMode::RuntimeError:
+            throw std::runtime_error("backing store gone");
+        case ThrowMode::LogicError:
+            throw std::logic_error("bogus lineId");
+        }
+        return {};
+    }
+    [[nodiscard]] std::string_view ResolveMmapBytes(std::uint64_t, std::uint32_t, std::size_t) const noexcept override
+    {
+        return {};
+    }
+    [[nodiscard]] std::string_view ResolveOwnedBytes(std::uint64_t, std::uint32_t, std::size_t) const noexcept override
+    {
+        return {};
+    }
+    [[nodiscard]] std::span<const char> StableBytes() const noexcept override
+    {
+        return {};
+    }
+    std::uint64_t AppendOwnedBytes(std::size_t, std::string_view) override
+    {
+        return 0;
+    }
+    [[nodiscard]] bool SupportsEviction() const noexcept override
+    {
+        return false;
+    }
+    void EvictBefore(std::size_t) override {}
+    [[nodiscard]] std::size_t FirstAvailableLineId() const noexcept override
+    {
+        return 1;
+    }
+
+private:
+    std::filesystem::path mPath;
+    std::unordered_map<std::size_t, ThrowMode> mPerLine;
 };
 
 /// One-off temp directory that unlinks its contents on destruction.
@@ -188,6 +262,18 @@ private slots:
     /// CSV header row respects `includeHeaderRow`.
     static void TestCsvHeaderToggle();
 
+    /// CSV formula-injection defense: cells whose first byte is `=`
+    /// or `@` are prefixed with `'` and force-quoted, so opening the
+    /// CSV in Excel / Sheets / Calc does not evaluate the cell
+    /// content as a formula. Leading `+` / `-` are deliberately left
+    /// alone (they start every negative number in the log).
+    static void TestCsvFormulaInjectionNeutralised();
+
+    /// Whole-valued doubles emit a trailing `.0` in JSON Lines so a
+    /// downstream reader keying off `typeof` (Python's `json`, jq,
+    /// JS `Number.isInteger`) still sees a fractional literal.
+    static void TestJsonLinesDoubleTypeStability();
+
     /// Markdown escapes `|` and collapses embedded whitespace so a
     /// multi-line value cannot break the row layout.
     static void TestMarkdownPipeAndNewlineHandling();
@@ -196,6 +282,12 @@ private slots:
     /// record per output line, including embedded multi-line
     /// content (which stays intact via `LineSource::RawLine`).
     static void TestSnapshotEchoesRawBytes();
+
+    /// Snapshot swallows every `RawLine` failure so a single evicted
+    /// / broken row cannot abort the whole export. Regression guard
+    /// for the earlier `catch (const std::out_of_range &)`, which
+    /// would let anything else escape.
+    static void TestSnapshotSkipsUnavailableRows();
 
     /// A stop request mid-export unwinds via `ExportCancelled` and
     /// the `FileSink` leaves no partial file behind on
@@ -237,7 +329,11 @@ void RowExporterTest::TestJsonLinesTypedValues()
     // First line: integer count == 0, boolean ok == true, ratio == 0.
     QVERIFY(lines[0].contains(QStringLiteral("\"count\":0")));
     QVERIFY(lines[0].contains(QStringLiteral("\"ok\":true")));
-    QVERIFY(lines[0].contains(QStringLiteral("\"ratio\":0")));
+    // `ratio` is a Floating column; the exporter forces a trailing
+    // `.0` on whole-valued doubles so consumers keying off type
+    // (`Number.isInteger`, Python's `json`, jq) see a fractional
+    // literal instead of an integer.
+    QVERIFY(lines[0].contains(QStringLiteral("\"ratio\":0.0")));
     QVERIFY(lines[0].contains(QStringLiteral("\"ts\":\"2023-11-14T22:13:20")));
     // Second line: count == 1, ok == false, ratio == 0.5.
     QVERIFY(lines[1].contains(QStringLiteral("\"count\":1")));
@@ -351,6 +447,136 @@ void RowExporterTest::TestCsvHeaderToggle()
     }
 }
 
+void RowExporterTest::TestCsvFormulaInjectionNeutralised()
+{
+    // Build a fixture whose `message` column carries a spreadsheet
+    // formula payload (the canonical `=cmd|...` DDE attack + Google
+    // Sheets `@import` / `+SUM` variants). We drive the exporter
+    // directly with cell strings via a stub `LogValue`-backed row
+    // rather than through `LogTable::GetValueOrFormatted` so we get
+    // exact control over the cell bytes.
+    std::vector<std::string> raws = {"raw1", "raw2", "raw3", "raw4"};
+    auto stream = std::make_unique<loglib::StreamLineSource>(std::filesystem::path("fixture.csv"), nullptr);
+    for (auto &raw : raws)
+    {
+        stream->AppendLine(std::move(raw), {});
+    }
+    auto *sourcePtr = stream.get();
+
+    loglib::KeyIndex keys;
+    std::vector<loglib::LogLine> lines;
+    const std::array<std::string, 4> payloads = {
+        std::string("=cmd|'/c calc'!A1"),  // classic formula injection
+        std::string("@SUM(1+1)"),           // DDE prefix
+        std::string("+2+3"),                // benign leading `+` -- must NOT be neutralised
+        std::string("-42"),                 // benign negative number -- must NOT be neutralised
+    };
+    for (std::size_t i = 0; i < payloads.size(); ++i)
+    {
+        loglib::LogMap map;
+        map["message"] = payloads[i];
+        lines.emplace_back(map, keys, *sourcePtr, i + 1);
+    }
+    loglib::LogData data(std::move(stream), std::move(lines), std::move(keys));
+
+    loglib::LogConfiguration config;
+    config.columns.push_back(
+        {.header = "Message", .keys = {"message"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::String}
+    );
+    loglib::LogConfigurationManager manager;
+    manager.SetConfiguration(std::move(config));
+    const loglib::LogTable table(std::move(data), std::move(manager));
+
+    std::vector<int> rows = {0, 1, 2, 3};
+    std::vector<std::size_t> cols = {0};
+    RowSource src{
+        .table = &table,
+        .sourceRows = rows,
+        .visibleColumns = cols,
+        .includeAllFieldsForJson = false,
+        .includeHeaderRow = false,
+    };
+
+    MemorySink sink;
+    auto exporter = slv::exports::MakeExporter(ExportFormat::Csv);
+    QVERIFY(exporter != nullptr);
+    exporter->Run(src, sink, loglib::StopToken{});
+
+    const QString out = QString::fromStdString(sink.Bytes());
+    const QStringList outLines = out.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    QCOMPARE(outLines.size(), 4);
+
+    // Row 0: `=cmd|...` -- must be sentinel-prefixed AND quoted so a
+    // spreadsheet never evaluates the cell.
+    QCOMPARE(outLines[0], QStringLiteral("\"'=cmd|'/c calc'!A1\""));
+    // Row 1: `@SUM(...)` -- same treatment.
+    QCOMPARE(outLines[1], QStringLiteral("\"'@SUM(1+1)\""));
+    // Row 2: `+2+3` -- leading `+` alone is not a formula trigger
+    // here; passes through verbatim, no quotes needed.
+    QCOMPARE(outLines[2], QStringLiteral("+2+3"));
+    // Row 3: `-42` -- negative number, must not be mangled.
+    QCOMPARE(outLines[3], QStringLiteral("-42"));
+}
+
+void RowExporterTest::TestJsonLinesDoubleTypeStability()
+{
+    // A floating column carrying whole-valued doubles used to emit
+    // `"ratio":0` / `"ratio":1` under the default fmt shortest-round-
+    // trip, which re-parses as an integer in every JSON reader with
+    // typed numbers. Pin the trailing `.0`.
+    std::vector<std::string> raws = {"row 0", "row 1", "row 2", "row 3"};
+    auto stream = std::make_unique<loglib::StreamLineSource>(std::filesystem::path("fixture.jsonl"), nullptr);
+    for (auto &raw : raws)
+    {
+        stream->AppendLine(std::move(raw), {});
+    }
+    auto *sourcePtr = stream.get();
+
+    loglib::KeyIndex keys;
+    std::vector<loglib::LogLine> lines;
+    const std::array<double, 4> values = {0.0, 1.0, -3.0, 2.5};
+    for (std::size_t i = 0; i < values.size(); ++i)
+    {
+        loglib::LogMap map;
+        map["value"] = values[i];
+        lines.emplace_back(map, keys, *sourcePtr, i + 1);
+    }
+    loglib::LogData data(std::move(stream), std::move(lines), std::move(keys));
+
+    loglib::LogConfiguration config;
+    config.columns.push_back(
+        {.header = "Value", .keys = {"value"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::Floating}
+    );
+    loglib::LogConfigurationManager manager;
+    manager.SetConfiguration(std::move(config));
+    const loglib::LogTable table(std::move(data), std::move(manager));
+
+    std::vector<int> rows = {0, 1, 2, 3};
+    std::vector<std::size_t> cols;
+    RowSource src{
+        .table = &table,
+        .sourceRows = rows,
+        .visibleColumns = cols,
+        .includeAllFieldsForJson = true,
+        .includeHeaderRow = false,
+    };
+
+    MemorySink sink;
+    auto exporter = slv::exports::MakeExporter(ExportFormat::JsonLines);
+    QVERIFY(exporter != nullptr);
+    exporter->Run(src, sink, loglib::StopToken{});
+
+    const QString out = QString::fromStdString(sink.Bytes());
+    const QStringList outLines = out.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    QCOMPARE(outLines.size(), 4);
+    // Whole-valued doubles carry `.0`.
+    QVERIFY2(outLines[0].contains(QStringLiteral("\"value\":0.0")), qPrintable(outLines[0]));
+    QVERIFY2(outLines[1].contains(QStringLiteral("\"value\":1.0")), qPrintable(outLines[1]));
+    QVERIFY2(outLines[2].contains(QStringLiteral("\"value\":-3.0")), qPrintable(outLines[2]));
+    // Fractional doubles are unchanged.
+    QVERIFY2(outLines[3].contains(QStringLiteral("\"value\":2.5")), qPrintable(outLines[3]));
+}
+
 void RowExporterTest::TestMarkdownPipeAndNewlineHandling()
 {
     // Feed a row with a literal `|` in the message; the Markdown
@@ -409,6 +635,54 @@ void RowExporterTest::TestSnapshotEchoesRawBytes()
     exporter->Run(src, sink, loglib::StopToken{});
 
     QCOMPARE(QString::fromStdString(sink.Bytes()), QStringLiteral("line one\nline two\n"));
+}
+
+void RowExporterTest::TestSnapshotSkipsUnavailableRows()
+{
+    // Build a fixture whose source throws on lineIds 2 and 3
+    // (`runtime_error` and `logic_error` respectively) but returns
+    // ordinary text for lineIds 1 and 4. The exporter must swallow
+    // every throw and still emit the surviving rows -- pre-fix
+    // behaviour caught only `std::out_of_range` and aborted the
+    // whole export on either of the other two.
+    std::unordered_map<std::size_t, ThrowingLineSource::ThrowMode> throwSpec = {
+        {2, ThrowingLineSource::ThrowMode::RuntimeError},
+        {3, ThrowingLineSource::ThrowMode::LogicError},
+    };
+    auto source = std::make_unique<ThrowingLineSource>(std::filesystem::path("throwing.log"), std::move(throwSpec));
+    auto *sourcePtr = source.get();
+
+    loglib::KeyIndex keys;
+    std::vector<loglib::LogLine> lines;
+    for (std::size_t i = 0; i < 4; ++i)
+    {
+        loglib::LogMap map;
+        map["message"] = std::string("payload ") + std::to_string(i);
+        lines.emplace_back(map, keys, *sourcePtr, i + 1); // lineId 1..4
+    }
+    loglib::LogData data(std::move(source), std::move(lines), std::move(keys));
+
+    loglib::LogConfiguration config;
+    config.columns.push_back(
+        {.header = "Message", .keys = {"message"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::String}
+    );
+    loglib::LogConfigurationManager manager;
+    manager.SetConfiguration(std::move(config));
+    const loglib::LogTable table(std::move(data), std::move(manager));
+
+    std::vector<int> rows = {0, 1, 2, 3};
+    std::vector<std::size_t> cols;
+    RowSource src{.table = &table, .sourceRows = rows, .visibleColumns = cols};
+
+    MemorySink sink;
+    auto exporter = slv::exports::MakeExporter(ExportFormat::Snapshot);
+    // Must not throw: broadened `catch (std::exception&)` swallows
+    // every `RawLine` failure so a single evicted / broken row cannot
+    // abort the export.
+    exporter->Run(src, sink, loglib::StopToken{});
+
+    // Only lineIds 1 and 4 survive; the middle two were skipped.
+    QCOMPARE(QString::fromStdString(sink.Bytes()), QStringLiteral("line 1\nline 4\n"));
 }
 
 void RowExporterTest::TestCancelLeavesNoPartialFile()

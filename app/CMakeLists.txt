@@ -103,6 +103,7 @@ set(PROJECT_SOURCES
     src/shortcuts_dialog.cpp
     include/shortcuts_dialog.hpp
     include/uuid_utils.hpp
+    include/qstring_path.hpp
     include/log_warning.hpp
     include/cli_parser.hpp
 )

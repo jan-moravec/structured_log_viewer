@@ -6,7 +6,6 @@
 #include <loglib/log_table.hpp>
 #include <loglib/stop_token.hpp>
 
-#include <atomic>
 #include <cstddef>
 #include <exception>
 #include <filesystem>
@@ -167,17 +166,5 @@ struct ExportPlan
         };
     }
 };
-
-/// Execute @p plan synchronously against @p sink. Wraps the exporter
-/// factory + `Run` + `Finish` handshake so the async worker is a
-/// one-liner. Rethrows `ExportCancelled` / `std::runtime_error`.
-///
-/// @p rowsWritten is written on every row-batch checkpoint, so the
-/// GUI's poll timer can render a progress bar without touching
-/// the plan. May be null.
-///
-/// @p stopToken is polled between rows; a stop request unwinds
-/// via `ExportCancelled`.
-void RunExport(const ExportPlan &plan, ExportSink &sink, const loglib::StopToken &stopToken, std::atomic<size_t> *rowsWritten);
 
 } // namespace slv::exports

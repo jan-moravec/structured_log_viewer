@@ -197,8 +197,16 @@ ExportDialog::ExportDialog(
     mRowSizeWarning->setVisible(false);
     layout->addWidget(mRowSizeWarning);
 
+    // Exports are refused while a live-tail session is actively
+    // streaming (see `MainWindow::ExportFilteredRows`), so this note
+    // only fires when live tail is paused or stopped. Point the user
+    // at those actions rather than the (misleading) "snapshot at
+    // start time" wording, which implied a concurrent export was
+    // supported.
     mLiveTailNote = new QLabel(
-        tr("Note: live-tail exports are a snapshot at start time. Rows arriving during the export are not included."),
+        tr("Note: live-tail streaming must be paused (Ctrl+Shift+P) or stopped "
+           "(Ctrl+Shift+X) before an export can start. The exported view is a "
+           "snapshot of the currently visible rows."),
         this
     );
     mLiveTailNote->setWordWrap(true);
@@ -225,7 +233,16 @@ ExportDialog::Config ExportDialog::Configuration() const
 {
     Config cfg;
     cfg.format = static_cast<ExportFormat>(mFormatCombo->currentData().toInt());
-    cfg.destination = mDestinationEdit->text();
+    // Trim leading/trailing whitespace so the value handed to
+    // `QStringToFsPath` matches the value that `OnAccept` validated
+    // for emptiness / directory existence / overwrite. Without this
+    // the two paths can diverge: `OnAccept` validates the trimmed
+    // path but skips the widget write-back when the user already
+    // typed a known extension, leaving surrounding whitespace in
+    // the raw text. On Windows a trailing space produces a filename
+    // the shell silently normalises away; on POSIX it addresses a
+    // genuinely different (unvalidated) path.
+    cfg.destination = mDestinationEdit->text().trimmed();
     cfg.selectionOnly = mSelectionOnly->isEnabled() && mSelectionOnly->isChecked();
     cfg.includeHeaderRow = mIncludeHeader->isChecked();
     cfg.includeHiddenColumns = mIncludeHidden->isChecked();
@@ -264,12 +281,31 @@ void ExportDialog::OnBrowseClicked()
 
 void ExportDialog::OnAccept()
 {
-    const QString path = mDestinationEdit->text().trimmed();
+    QString path = mDestinationEdit->text().trimmed();
     if (path.isEmpty())
     {
         QMessageBox::warning(this, tr("Export"), tr("Choose a destination file."));
         return;
     }
+    // Auto-append the format's extension when the user typed (or
+    // browsed to) a path with no suffix at all. Distinct from
+    // `UpdateExtensionSuggestion`, which only rewrites *known* format
+    // extensions -- we deliberately preserve any suffix the user
+    // typed themselves (`.txt`, `.dat`, ...) even when it doesn't
+    // match the format, because forcing a swap there overrides an
+    // explicit user choice. `QFileInfo::suffix()` returns the last
+    // component after the final `.`; empty means "no dot in the
+    // filename component".
+    const auto &entry = EntryFor(static_cast<ExportFormat>(mFormatCombo->currentData().toInt()));
+    if (QFileInfo(path).suffix().isEmpty())
+    {
+        path += QStringLiteral(".") + entry.extension;
+    }
+    // Always reflect the normalised (trimmed + possibly extended)
+    // path back into the widget. This keeps the visible state and
+    // `Configuration()` output aligned with what we validate below,
+    // even when no suffix append happened.
+    mDestinationEdit->setText(QDir::toNativeSeparators(path));
     QFileInfo info(path);
     if (info.isDir())
     {
