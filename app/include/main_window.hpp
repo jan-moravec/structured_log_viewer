@@ -343,6 +343,21 @@ public:
         return mModel;
     }
 
+    /// Collect the source-model row indices that `File -> Export
+    /// Filtered Rows...` would walk, in display order. Handles both
+    /// the full-view case (`selectionOnly=false`) and "export
+    /// selection only": rows arrive in the same top-to-bottom order
+    /// the user sees, respecting every proxy layer
+    /// (`LogFilterModel` sort, `RowOrderProxyModel` newest-first
+    /// flip).
+    ///
+    /// Exposed on the public API so tests can pin ordering under
+    /// combinations of user column sort + newest-first + selection
+    /// without going through the async worker (which needs a
+    /// modal `ExportDialog`). Callers that don't need this seam
+    /// should use `ExportFilteredRows` instead.
+    [[nodiscard]] std::vector<int> CollectExportSourceRows(bool selectionOnly) const;
+
     /// Owned `AnchorManager`; non-null after construction.
     [[nodiscard]] AnchorManager *Anchors() const noexcept
     {

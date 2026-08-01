@@ -27,38 +27,67 @@ constexpr std::size_t MARKDOWN_SOFT_WARNING_ROWS = 10000;
 
 using ExportFormat = slv::exports::ExportFormat;
 
+/// Format-catalogue view. `label` and `extension` are pulled from
+/// `slv::exports` so the dialog, the completion toast, and the
+/// documentation cannot drift out of sync. Only the file-dialog
+/// filter string is dialog-local; it derives from the same
+/// extension.
 struct FormatEntry
 {
     ExportFormat format;
-    const char *label;
-    const char *extension;
-    const char *fileFilter;
+    QString label;      // e.g. "JSON Lines"
+    QString extension;  // e.g. "jsonl" (no leading dot)
+    QString fileFilter; // e.g. "JSON Lines (*.jsonl);;All Files (*)"
 };
 
-constexpr std::array<FormatEntry, 4> FORMAT_ENTRIES{{
-    {ExportFormat::JsonLines, "JSON Lines (*.jsonl)", "jsonl", "JSON Lines (*.jsonl);;All Files (*)"},
-    {ExportFormat::Csv, "CSV (*.csv)", "csv", "CSV (*.csv);;All Files (*)"},
-    {ExportFormat::Snapshot, "Source snapshot (*.log)", "log", "Log (*.log);;All Files (*)"},
-    {ExportFormat::Markdown, "Markdown table (*.md)", "md", "Markdown (*.md);;All Files (*)"},
-}};
+std::array<FormatEntry, 4> BuildFormatEntries()
+{
+    constexpr std::array<ExportFormat, 4> ORDER = {
+        ExportFormat::JsonLines,
+        ExportFormat::Csv,
+        ExportFormat::Snapshot,
+        ExportFormat::Markdown,
+    };
+    std::array<FormatEntry, 4> entries;
+    for (std::size_t i = 0; i < ORDER.size(); ++i)
+    {
+        const auto fmt = ORDER[i];
+        const QString label = QString::fromLatin1(slv::exports::LabelFor(fmt));
+        const QString ext = QString::fromLatin1(slv::exports::ExtensionFor(fmt));
+        entries[i] = FormatEntry{
+            .format = fmt,
+            .label = label,
+            .extension = ext,
+            // "JSON Lines (*.jsonl);;All Files (*)"; single source of truth.
+            .fileFilter = QStringLiteral("%1 (*.%2);;All Files (*)").arg(label, ext),
+        };
+    }
+    return entries;
+}
+
+const std::array<FormatEntry, 4> &FormatEntries()
+{
+    static const std::array<FormatEntry, 4> ENTRIES = BuildFormatEntries();
+    return ENTRIES;
+}
 
 const FormatEntry &EntryFor(ExportFormat format)
 {
-    for (const auto &entry : FORMAT_ENTRIES)
+    for (const auto &entry : FormatEntries())
     {
         if (entry.format == format)
         {
             return entry;
         }
     }
-    return FORMAT_ENTRIES.front();
+    return FormatEntries().front();
 }
 
 bool StripKnownExtension(QString &path)
 {
-    for (const auto &entry : FORMAT_ENTRIES)
+    for (const auto &entry : FormatEntries())
     {
-        const QString suffix = QStringLiteral(".") + QString::fromLatin1(entry.extension);
+        const QString suffix = QStringLiteral(".") + entry.extension;
         if (path.endsWith(suffix, Qt::CaseInsensitive))
         {
             path.chop(suffix.size());
@@ -94,10 +123,15 @@ ExportDialog::ExportDialog(
     QSettings settings;
     const int savedFormat = settings.value(QStringLiteral("ui/lastExportFormat"), static_cast<int>(ExportFormat::JsonLines)).toInt();
     int selectedIndex = 0;
-    for (size_t i = 0; i < FORMAT_ENTRIES.size(); ++i)
+    const auto &entries = FormatEntries();
+    for (size_t i = 0; i < entries.size(); ++i)
     {
-        const auto &entry = FORMAT_ENTRIES[i];
-        mFormatCombo->addItem(tr(entry.label), static_cast<int>(entry.format));
+        const auto &entry = entries[i];
+        // Combo entries read "JSON Lines (*.jsonl)" — the glob is a
+        // hint at the suggested extension, useful even before the
+        // user opens the Browse dialog.
+        const QString displayLabel = QStringLiteral("%1 (*.%2)").arg(entry.label, entry.extension);
+        mFormatCombo->addItem(displayLabel, static_cast<int>(entry.format));
         if (static_cast<int>(entry.format) == savedFormat)
         {
             selectedIndex = static_cast<int>(i);
@@ -119,7 +153,7 @@ ExportDialog::ExportDialog(
     {
         initialPath += QDir::separator();
     }
-    initialPath += defaultStem + QStringLiteral(".") + QString::fromLatin1(initialEntry.extension);
+    initialPath += defaultStem + QStringLiteral(".") + initialEntry.extension;
     mDestinationEdit->setText(QDir::toNativeSeparators(initialPath));
     destRow->addWidget(mDestinationEdit);
     mBrowseButton = new QPushButton(tr("&Browse..."), this);
@@ -219,7 +253,7 @@ void ExportDialog::OnBrowseClicked()
         start = mDefaultDir;
     }
     const QString chosen = QFileDialog::getSaveFileName(
-        this, tr("Choose Export Destination"), start, tr(entry.fileFilter)
+        this, tr("Choose Export Destination"), start, entry.fileFilter
     );
     if (chosen.isEmpty())
     {
@@ -317,7 +351,7 @@ void ExportDialog::UpdateExtensionSuggestion()
         return;
     }
     const auto &entry = EntryFor(static_cast<ExportFormat>(mFormatCombo->currentData().toInt()));
-    path += QStringLiteral(".") + QString::fromLatin1(entry.extension);
+    path += QStringLiteral(".") + entry.extension;
     mDestinationEdit->setText(path);
 }
 

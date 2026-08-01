@@ -318,7 +318,7 @@ See [Anchors](#anchors) for marking and navigating between specific rows.
 
 - **JSON Lines** (`.jsonl`) — one JSON object per row containing every field the row actually carried, not just the visible columns. Booleans are native JSON, integers and doubles are numeric literals (no quotes), and timestamps are ISO 8601 with microsecond precision in UTC (`YYYY-MM-DDTHH:MM:SS.ffffffZ`) so the file round-trips unambiguously through **File → Open…** without depending on the reader's time zone.
 - **CSV** (`.csv`) — the currently visible columns only, rendered with the same per-column formatter the table uses. RFC 4180 quoting: cells containing `,`, `"`, or `\n` are wrapped in `"…"` and embedded `"` is doubled. The "Include header row" toggle emits the column headers as the first line.
-- **Source snapshot** (`.txt`) — the original on-disk bytes for each row, one record per output line, exactly matching what `Ctrl+C` would place on the clipboard. Multi-line records are preserved verbatim. This is the format to pick when you want the raw log excerpt rather than the parsed view.
+- **Source snapshot** (`.log`) — the original on-disk bytes for each row, one record per output line, exactly matching what `Ctrl+C` would place on the clipboard. Multi-line records are preserved verbatim. This is the format to pick when you want the raw log excerpt rather than the parsed view.
 - **Markdown table** (`.md`) — the currently visible columns as a GitHub-flavoured Markdown table. Cell text has `|` escaped and internal newlines collapsed to spaces so the row layout can't break. Large exports flip a soft warning because Markdown renderers slow down past a few thousand rows.
 
 The dialog:

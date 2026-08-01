@@ -2566,6 +2566,160 @@ private slots:
         model->EndStreaming(false);
     }
 
+    // Pin the display-order contract of
+    // `MainWindow::CollectExportSourceRows`. The rows the export
+    // worker walks must match the top-to-bottom order the user
+    // sees, or the exported file diverges from the view. Regression
+    // guard for the "single-level `mapToSource` skipped the outer
+    // proxy" bug: without the full-chain walk, newest-first display
+    // silently reverses the exported order.
+    void TestCollectExportSourceRowsRespectsDisplayOrder()
+    {
+        auto *rowOrderProxy = mWindow->findChild<RowOrderProxyModel *>();
+        auto *model = mWindow->findChild<LogModel *>();
+        auto *filterProxy = mWindow->FilterModel();
+        QVERIFY(rowOrderProxy != nullptr);
+        QVERIFY(model != nullptr);
+        QVERIFY(filterProxy != nullptr);
+
+        // Five rows, deterministic ids so we can assert on the
+        // exact source-row ordering.
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 5, /*declareNewKey=*/true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 5);
+
+        // Natural order: source rows 0..4.
+        {
+            const std::vector<int> collected = mWindow->CollectExportSourceRows(/*selectionOnly=*/false);
+            QCOMPARE(collected.size(), std::size_t(5));
+            for (std::size_t i = 0; i < collected.size(); ++i)
+            {
+                QCOMPARE(collected[i], static_cast<int>(i));
+            }
+        }
+
+        // Newest-first: display row 0 == source row 4 (newest),
+        // display row 4 == source row 0 (oldest). This is the
+        // exact case the pre-fix code got wrong: it walked only
+        // one proxy level and pushed [0,1,2,3,4] here.
+        rowOrderProxy->SetReversed(true);
+        QVERIFY(rowOrderProxy->IsReversed());
+        {
+            const std::vector<int> collected = mWindow->CollectExportSourceRows(/*selectionOnly=*/false);
+            QCOMPARE(collected.size(), std::size_t(5));
+            const std::vector<int> expected = {4, 3, 2, 1, 0};
+            QCOMPARE(collected, expected);
+        }
+        rowOrderProxy->SetReversed(false);
+
+        model->EndStreaming(false);
+    }
+
+    // Same contract, but with a user column sort layered on top
+    // instead of newest-first. Sorting by `value` descending puts
+    // the highest lineId at proxy row 0 -- the export must reflect
+    // that.
+    void TestCollectExportSourceRowsRespectsColumnSort()
+    {
+        auto *model = mWindow->findChild<LogModel *>();
+        auto *filterProxy = mWindow->FilterModel();
+        QVERIFY(model != nullptr);
+        QVERIFY(filterProxy != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 5, /*declareNewKey=*/true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 5);
+
+        const int valueColumn = ColumnByHeader(*model, QStringLiteral("value"));
+        QVERIFY(valueColumn >= 0);
+
+        // Descending sort on `value`. Values equal lineIds 1..5, so
+        // descending puts lineId 5 (source row 4) at proxy row 0.
+        filterProxy->sort(valueColumn, Qt::DescendingOrder);
+        QCoreApplication::processEvents();
+
+        const std::vector<int> collected = mWindow->CollectExportSourceRows(/*selectionOnly=*/false);
+        QCOMPARE(collected.size(), std::size_t(5));
+        const std::vector<int> expected = {4, 3, 2, 1, 0};
+        QCOMPARE(collected, expected);
+
+        // Ascending: reverses to source order.
+        filterProxy->sort(valueColumn, Qt::AscendingOrder);
+        QCoreApplication::processEvents();
+        const std::vector<int> ascending = mWindow->CollectExportSourceRows(/*selectionOnly=*/false);
+        const std::vector<int> ascendingExpected = {0, 1, 2, 3, 4};
+        QCOMPARE(ascending, ascendingExpected);
+
+        // Clear the sort so subsequent tests / fixture teardown
+        // don't inherit it.
+        filterProxy->sort(-1);
+
+        model->EndStreaming(false);
+    }
+
+    // Selection-only path must preserve the same top-to-bottom
+    // display order, not "sort by source-row index" (the pre-fix
+    // behaviour that lost the user's column sort).
+    void TestCollectExportSourceRowsSelectionKeepsDisplayOrder()
+    {
+        auto *model = mWindow->findChild<LogModel *>();
+        auto *filterProxy = mWindow->FilterModel();
+        QVERIFY(model != nullptr);
+        QVERIFY(filterProxy != nullptr);
+
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        QVERIFY(tableView != nullptr);
+        QVERIFY(tableView->selectionModel() != nullptr);
+
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, 5, /*declareNewKey=*/true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 5);
+
+        const int valueColumn = ColumnByHeader(*model, QStringLiteral("value"));
+        QVERIFY(valueColumn >= 0);
+
+        // Descending sort by value: display rows 0..4 correspond to
+        // source rows 4,3,2,1,0.
+        filterProxy->sort(valueColumn, Qt::DescendingOrder);
+        QCoreApplication::processEvents();
+
+        // Select the *middle three* display rows (indices 1..3),
+        // which correspond to source rows 3, 2, 1 in that order.
+        QItemSelection selection;
+        selection.select(filterProxy->index(1, 0), filterProxy->index(3, filterProxy->columnCount() - 1));
+        tableView->selectionModel()->select(selection, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        // Sanity: the view sees exactly three selected rows.
+        QCOMPARE(tableView->selectionModel()->selectedRows().size(), 3);
+
+        const std::vector<int> collected = mWindow->CollectExportSourceRows(/*selectionOnly=*/true);
+        // Must arrive top-to-bottom in the display's sort order,
+        // NOT sorted by source-row index (which would give
+        // {1,2,3} instead of {3,2,1}).
+        const std::vector<int> expected = {3, 2, 1};
+        QCOMPARE(collected, expected);
+
+        filterProxy->sort(-1);
+        model->EndStreaming(false);
+    }
+
     // Regression for incremental streaming: `QSortFilterProxyModel`
     // does not reliably keep descending-by-insertion-order stable
     // across successive `rowsInserted` unless we queue an explicit

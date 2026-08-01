@@ -2465,6 +2465,12 @@ void MainWindow::NewSession()
     mTableView->sortByColumn(-1, Qt::AscendingOrder);
     mSortFilterProxyModel->SetFilterExpression(loglib::CompiledFilterExpression{});
 
+    // Cancel the export worker BEFORE resetting the model. The
+    // worker reads `LogTable` from a background thread; the reset
+    // below tears down `LogTable`'s row / key storage. Any other
+    // order is a data race.
+    CancelInFlightExport();
+
     // RAII latch so the synchronous `streamingFinished(Cancelled)`
     // emitted by `mModel->Reset()` doesn't run
     // `OnStreamingFinished` against the about-to-be-rebuilt session.
@@ -2506,7 +2512,7 @@ void MainWindow::NewSession()
     mSourceWaiting = false;
     // Cancel any in-flight decompression from the outgoing session
     // so its `finished` slot cannot splice the old file into the
-    // fresh session.
+    // fresh session. Export was already cancelled above (pre-reset).
     CancelInFlightDecompression();
     // Drop the outgoing session's multi-file queue too -- otherwise
     // queued-but-not-yet-drained files stay invisibly attached to a
@@ -2756,6 +2762,10 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
 
     if (destructive)
     {
+        // Cancel the export worker BEFORE resetting the model: the
+        // worker reads `LogTable` from a background thread, and
+        // `Reset()` below tears down its storage.
+        CancelInFlightExport();
         // `mModel->Reset()` synchronously stops any in-flight worker.
         mModel->Reset();
         ClearAllFilters();
@@ -2779,6 +2789,7 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
         DetachAutoSaveUuid();
         // Cancel any in-flight decompression so its `finished` slot
         // cannot splice the outgoing file into the new session.
+        // Export was already cancelled above (pre-reset).
         CancelInFlightDecompression();
     }
     else if (mModel->IsStreamingActive() || mDecompressionInFlight)
@@ -3538,6 +3549,83 @@ void MainWindow::OnDecompressionFinished()
     }
 }
 
+std::vector<int> MainWindow::CollectExportSourceRows(bool selectionOnly) const
+{
+    // Empty guard: callers already gate on `mModel->rowCount() == 0`,
+    // but be defensive in case a test seam calls this without one.
+    if (mModel == nullptr || mSortFilterProxyModel == nullptr)
+    {
+        return {};
+    }
+
+    const int filteredCount = mSortFilterProxyModel->rowCount();
+    if (filteredCount <= 0)
+    {
+        return {};
+    }
+
+    // Selection filter for the display-order walk below. Empty
+    // vector => no selection filter (export the whole filtered
+    // view). Non-empty => a `[outer proxy row] -> keep?` flag map,
+    // populated in `O(selection.size())`.
+    std::vector<bool> selectedOuterRows;
+    if (selectionOnly && mTableView != nullptr && mTableView->selectionModel() != nullptr)
+    {
+        const QModelIndexList selected = mTableView->selectionModel()->selectedRows();
+        // `selectedRows()` returns indexes in the view's model,
+        // which is `mSortFilterProxyModel` (the outermost proxy).
+        selectedOuterRows.assign(static_cast<std::size_t>(filteredCount), false);
+        for (const QModelIndex &idx : selected)
+        {
+            if (idx.model() != mSortFilterProxyModel)
+            {
+                // Defensive: an index minted against a stale model
+                // would be nonsense here. Skip rather than trip an
+                // assertion on the worker thread.
+                continue;
+            }
+            const int row = idx.row();
+            if (row >= 0 && static_cast<std::size_t>(row) < selectedOuterRows.size())
+            {
+                selectedOuterRows[static_cast<std::size_t>(row)] = true;
+            }
+        }
+    }
+
+    // Walk the outer proxy in display order and resolve each row
+    // down to the LogModel via the full proxy chain (`view ->
+    // SortFilterProxyModel -> RowOrderProxyModel -> LogModel`).
+    // Iterating the *outer* proxy is what pins the export to the
+    // user's visible sort order, including the newest-first flip
+    // that `RowOrderProxyModel` applies -- iterating a lower proxy
+    // (or reading `sortSourceModel()->mapToSource` once) would
+    // silently drop that layer.
+    std::vector<int> sourceRows;
+    sourceRows.reserve(static_cast<std::size_t>(filteredCount));
+    for (int outerRow = 0; outerRow < filteredCount; ++outerRow)
+    {
+        if (!selectedOuterRows.empty() && !selectedOuterRows[static_cast<std::size_t>(outerRow)])
+        {
+            continue;
+        }
+        QModelIndex walker = mSortFilterProxyModel->index(outerRow, 0);
+        while (walker.isValid())
+        {
+            const auto *proxy = qobject_cast<const QAbstractProxyModel *>(walker.model());
+            if (proxy == nullptr)
+            {
+                break;
+            }
+            walker = proxy->mapToSource(walker);
+        }
+        if (walker.isValid() && walker.row() >= 0)
+        {
+            sourceRows.push_back(walker.row());
+        }
+    }
+    return sourceRows;
+}
+
 void MainWindow::ExportFilteredRows()
 {
     // Gate the entry: nothing to export if the model is empty.
@@ -3558,6 +3646,21 @@ void MainWindow::ExportFilteredRows()
     // while the progress dialog is deferred (< 500 ms).
     if (mExportInFlight)
     {
+        return;
+    }
+
+    // Refuse to start an export while the model is being mutated by
+    // a live stream / bulk load. The worker reads `LogTable` from a
+    // background thread and there is no lock protecting appends,
+    // FIFO evictions, or `KeyIndex` mutations. Bulk loads finish
+    // quickly (retry after `streamingFinished`); live-tail sessions
+    // need an explicit Pause / Stop first.
+    if (mModel->IsStreamingActive() || mDecompressionInFlight)
+    {
+        const QString detail = IsLiveTailSession()
+            ? tr("Pause (Ctrl+Shift+P) or Stop (Ctrl+Shift+X) the live-tail session before exporting.")
+            : tr("Wait for the current file load to finish, then retry.");
+        QMessageBox::information(this, tr("Export Filtered Rows"), detail);
         return;
     }
 
@@ -3610,55 +3713,7 @@ void MainWindow::ExportFilteredRows()
     }
     RememberLastOpenDir(config.destination);
 
-    // Build the source-row snapshot. Two paths:
-    //   - selection-only: read `selectedRows()` and translate each
-    //     proxy row to a source row via `mapToSource`.
-    //   - filtered (default): walk the proxy in display order.
-    // Both paths pin the source rows so subsequent GUI mutations
-    // (live-tail batches, sort changes) cannot alter the export.
-    std::vector<int> sourceRows;
-    if (config.selectionOnly && mTableView != nullptr && mTableView->selectionModel() != nullptr)
-    {
-        // The table view's model chain is proxy chain (outer) -> proxy chain -> LogModel.
-        // `selectedRows()` returns indices in the outermost proxy (`mRowOrderProxyModel` if newest-first).
-        // We resolve down to source-model rows.
-        const QModelIndexList selected = mTableView->selectionModel()->selectedRows();
-        sourceRows.reserve(static_cast<std::size_t>(selected.size()));
-        for (const QModelIndex &idx : selected)
-        {
-            QModelIndex walker = idx;
-            while (walker.isValid())
-            {
-                const auto *proxy = qobject_cast<const QAbstractProxyModel *>(walker.model());
-                if (proxy == nullptr)
-                {
-                    break;
-                }
-                walker = proxy->mapToSource(walker);
-            }
-            if (walker.isValid() && walker.row() >= 0)
-            {
-                sourceRows.push_back(walker.row());
-            }
-        }
-        // Preserve display order rather than selection insertion
-        // order: users expect the file to read top-to-bottom.
-        std::sort(sourceRows.begin(), sourceRows.end());
-        sourceRows.erase(std::unique(sourceRows.begin(), sourceRows.end()), sourceRows.end());
-    }
-    else
-    {
-        sourceRows.reserve(static_cast<std::size_t>(filteredCount));
-        for (int proxyRow = 0; proxyRow < filteredCount; ++proxyRow)
-        {
-            const QModelIndex proxyIdx = mSortFilterProxyModel->index(proxyRow, 0);
-            const QModelIndex sourceIdx = mSortFilterProxyModel->mapToSource(proxyIdx);
-            if (sourceIdx.isValid() && sourceIdx.row() >= 0)
-            {
-                sourceRows.push_back(sourceIdx.row());
-            }
-        }
-    }
+    std::vector<int> sourceRows = CollectExportSourceRows(config.selectionOnly);
 
     if (sourceRows.empty())
     {
@@ -3746,7 +3801,7 @@ void MainWindow::BeginAsyncExport(
 
     // Worker: synchronously drive the exporter into the sink. On
     // cancel or error, throws propagate out of `QtConcurrent::run`
-    // and land on `future.result()` in the finished slot. The
+    // and land on `waitForFinished()` in the finished slot. The
     // progress callback publishes into the GUI atomic; the poll
     // timer picks it up on the next tick.
     // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
@@ -3764,6 +3819,10 @@ void MainWindow::BeginAsyncExport(
             dst->storeRelaxed(static_cast<qint64>(rowsWritten));
         };
         exporter->Run(sharedPlan->View(), *sink, stopToken, progressCb, rowsWrittenAtomic);
+        // `RowExporter::Run` deliberately does NOT call `Finish`
+        // so that a mid-export throw can unwind through the sink's
+        // destructor and unlink the temp file. Success path is
+        // exactly one `Finish` call after `Run` returns cleanly.
         sink->Finish();
         rowsWrittenAtomic->storeRelaxed(static_cast<qint64>(sharedPlan->sourceRows.size()));
     });
@@ -3859,7 +3918,22 @@ void MainWindow::CancelInFlightExport()
         return;
     }
     mExportStopSource.request_stop();
-    mExportWatcher->waitForFinished();
+    // `waitForFinished()` re-throws any exception the worker let
+    // escape (including `ExportCancelled`, which is the *normal*
+    // outcome of a cancel). Swallow every std::exception here so
+    // this helper stays safe to call from destructors and other
+    // no-throw contexts (the destructor already invokes us before
+    // touching model state).
+    try
+    {
+        mExportWatcher->waitForFinished();
+    }
+    catch (const std::exception &)
+    {
+        // Expected on cancel; ignored on any other worker throw
+        // because there is no user-visible surface here (the toast
+        // slot has already been detached below).
+    }
     mExportWatcher->setFuture(QFuture<void>{});
     TeardownExportProgress();
     mExportDestinationPath.clear();
@@ -4063,6 +4137,11 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     // immediately afterwards.
     AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
 
+    // Cancel the export worker BEFORE `mModel->Reset()` tears down
+    // `LogTable`'s storage; the worker reads it from a background
+    // thread with no lock, so any other order is a data race.
+    CancelInFlightExport();
+
     // RAII latch: see `NewSession` for why we need to suppress the
     // synchronous `Cancelled` cleanup.
     const SessionSwitchScope switchGuard(*this);
@@ -4083,7 +4162,7 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     mStreamingErrorsCut = 0;
     // Session boundary: cancel any in-flight decompression so its
     // `finished` slot can't splice the outgoing static file into
-    // the new live-tail session.
+    // the new live-tail session. Export was already cancelled above.
     CancelInFlightDecompression();
     // Live-tail is transient and not auto-saved; leaving the prior
     // static session's uuid pinned would let closeEvent's
@@ -4204,6 +4283,11 @@ void MainWindow::OpenNetworkStream()
 
     AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
 
+    // Cancel the export worker BEFORE `mModel->Reset()` tears down
+    // `LogTable`'s storage; the worker reads it from a background
+    // thread with no lock, so any other order is a data race.
+    CancelInFlightExport();
+
     const SessionSwitchScope switchGuard(*this);
 
     mModel->Reset();
@@ -4222,7 +4306,7 @@ void MainWindow::OpenNetworkStream()
     mStreamingErrorsCut = 0;
     // Session boundary: cancel any in-flight decompression so its
     // `finished` slot can't splice the outgoing static file into
-    // the new network-stream session.
+    // the new network-stream session. Export was already cancelled above.
     CancelInFlightDecompression();
     DetachAutoSaveUuid();
 
@@ -5990,6 +6074,10 @@ void MainWindow::closeEvent(QCloseEvent *event)
     // user code (nested event loops from `QMessageBox` inside
     // `ShowParseErrors`) between the snapshot and the state reset.
     CancelInFlightDecompression();
+    // Same for the export worker: closeEvent runs before ~MainWindow,
+    // so we cancel here to close the "close while worker is running"
+    // window. The destructor's Cancel is a defensive backstop.
+    CancelInFlightExport();
 
     // Final flush so the restore-on-launch loop captures user
     // edits made after the last `streamingFinished`. Best-effort:
@@ -6617,6 +6705,11 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         mSortFilterProxyModel->SetFilterExpression(loglib::CompiledFilterExpression{});
         mTableView->sortByColumn(-1, Qt::AscendingOrder);
 
+        // Cancel the export worker BEFORE resetting the model; the
+        // worker reads `LogTable` from a background thread with no
+        // lock, and `Reset()` below tears down its storage.
+        CancelInFlightExport();
+
         // See `NewSession` for the session-switch latch rationale.
         const SessionSwitchScope switchGuard(*this);
 
@@ -6630,7 +6723,8 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         mStreamingErrorsCut = 0;
         // Session boundary: cancel any in-flight decompression so
         // its `finished` slot can't splice the old file back into
-        // the freshly-loaded configuration.
+        // the freshly-loaded configuration. Export was already
+        // cancelled above.
         CancelInFlightDecompression();
         // Fully quiesce the outgoing session before applying the
         // new configuration -- mirrors `NewSession`. Without this,

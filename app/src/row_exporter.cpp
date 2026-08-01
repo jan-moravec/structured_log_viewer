@@ -252,13 +252,13 @@ void JsonLinesExporter::Run(
     scratch.reserve(ROW_SCRATCH_RESERVE);
 
     const size_t total = source.sourceRows.size();
-    for (size_t proxyRow = 0; proxyRow < total; ++proxyRow)
+    for (size_t slot = 0; slot < total; ++slot)
     {
-        if ((proxyRow % STOP_POLL_INTERVAL_ROWS) == 0)
+        if ((slot % STOP_POLL_INTERVAL_ROWS) == 0)
         {
             PollStop(stopToken);
         }
-        const int sourceRow = source.sourceRows[proxyRow];
+        const int sourceRow = source.sourceRows[slot];
         if (sourceRow < 0 || static_cast<size_t>(sourceRow) >= lines.size())
         {
             continue;
@@ -284,9 +284,9 @@ void JsonLinesExporter::Run(
         scratch.append("}\n");
         sink.Write(scratch);
 
-        if (progress != nullptr && ((proxyRow + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
+        if (progress != nullptr && ((slot + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
         {
-            progress(progressUserData, proxyRow + 1, total);
+            progress(progressUserData, slot + 1, total);
         }
     }
     if (progress != nullptr)
@@ -349,6 +349,7 @@ void CsvExporter::Run(
     assert(source.table != nullptr);
     const auto &table = *source.table;
     const auto &config = table.Configuration().Configuration();
+    const auto &lines = table.Data().Lines();
 
     std::string scratch;
     scratch.reserve(ROW_SCRATCH_RESERVE);
@@ -379,14 +380,17 @@ void CsvExporter::Run(
 
     const size_t total = source.sourceRows.size();
     std::string cellBuffer;
-    for (size_t proxyRow = 0; proxyRow < total; ++proxyRow)
+    for (size_t slot = 0; slot < total; ++slot)
     {
-        if ((proxyRow % STOP_POLL_INTERVAL_ROWS) == 0)
+        if ((slot % STOP_POLL_INTERVAL_ROWS) == 0)
         {
             PollStop(stopToken);
         }
-        const int sourceRow = source.sourceRows[proxyRow];
-        if (sourceRow < 0)
+        const int sourceRow = source.sourceRows[slot];
+        // Bounds match JsonLines / Snapshot: skip both negative and
+        // past-the-end indices so a mid-export FIFO eviction on the
+        // GUI thread doesn't hand us a row that has been dropped.
+        if (sourceRow < 0 || static_cast<size_t>(sourceRow) >= lines.size())
         {
             continue;
         }
@@ -408,9 +412,9 @@ void CsvExporter::Run(
         scratch.push_back('\n');
         sink.Write(scratch);
 
-        if (progress != nullptr && ((proxyRow + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
+        if (progress != nullptr && ((slot + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
         {
-            progress(progressUserData, proxyRow + 1, total);
+            progress(progressUserData, slot + 1, total);
         }
     }
     if (progress != nullptr)
@@ -446,13 +450,13 @@ void SnapshotExporter::Run(
     const auto &lines = source.table->Data().Lines();
 
     const size_t total = source.sourceRows.size();
-    for (size_t proxyRow = 0; proxyRow < total; ++proxyRow)
+    for (size_t slot = 0; slot < total; ++slot)
     {
-        if ((proxyRow % STOP_POLL_INTERVAL_ROWS) == 0)
+        if ((slot % STOP_POLL_INTERVAL_ROWS) == 0)
         {
             PollStop(stopToken);
         }
-        const int sourceRow = source.sourceRows[proxyRow];
+        const int sourceRow = source.sourceRows[slot];
         if (sourceRow < 0 || static_cast<size_t>(sourceRow) >= lines.size())
         {
             continue;
@@ -475,9 +479,9 @@ void SnapshotExporter::Run(
             // the snapshot is best-effort for the surviving rows.
         }
 
-        if (progress != nullptr && ((proxyRow + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
+        if (progress != nullptr && ((slot + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
         {
-            progress(progressUserData, proxyRow + 1, total);
+            progress(progressUserData, slot + 1, total);
         }
     }
     if (progress != nullptr)
@@ -545,6 +549,7 @@ void MarkdownExporter::Run(
     assert(source.table != nullptr);
     const auto &table = *source.table;
     const auto &config = table.Configuration().Configuration();
+    const auto &lines = table.Data().Lines();
 
     std::string scratch;
     scratch.reserve(ROW_SCRATCH_RESERVE);
@@ -576,14 +581,17 @@ void MarkdownExporter::Run(
 
     const size_t total = source.sourceRows.size();
     std::string cellBuffer;
-    for (size_t proxyRow = 0; proxyRow < total; ++proxyRow)
+    for (size_t slot = 0; slot < total; ++slot)
     {
-        if ((proxyRow % STOP_POLL_INTERVAL_ROWS) == 0)
+        if ((slot % STOP_POLL_INTERVAL_ROWS) == 0)
         {
             PollStop(stopToken);
         }
-        const int sourceRow = source.sourceRows[proxyRow];
-        if (sourceRow < 0)
+        const int sourceRow = source.sourceRows[slot];
+        // Bounds match JsonLines / Snapshot: skip both negative and
+        // past-the-end indices so a mid-export FIFO eviction on the
+        // GUI thread doesn't hand us a row that has been dropped.
+        if (sourceRow < 0 || static_cast<size_t>(sourceRow) >= lines.size())
         {
             continue;
         }
@@ -602,9 +610,9 @@ void MarkdownExporter::Run(
         scratch.push_back('\n');
         sink.Write(scratch);
 
-        if (progress != nullptr && ((proxyRow + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
+        if (progress != nullptr && ((slot + 1) % STOP_POLL_INTERVAL_ROWS) == 0)
         {
-            progress(progressUserData, proxyRow + 1, total);
+            progress(progressUserData, slot + 1, total);
         }
     }
     if (progress != nullptr)
@@ -666,17 +674,15 @@ std::unique_ptr<RowExporter> MakeExporter(ExportFormat format)
 namespace
 {
 
-struct ProgressState
+// Free function so its address is stable and the lambda-less capture
+// keeps the code path allocation-free. `userData` is an atomic<size_t>*
+// whose lifetime the caller owns.
+void AtomicProgressAdapter(void *userData, size_t rowsWritten, size_t /*totalRows*/)
 {
-    std::atomic<size_t> *counter;
-};
-
-void ProgressAdapter(void *userData, size_t rowsWritten, size_t /*totalRows*/)
-{
-    auto *state = static_cast<ProgressState *>(userData);
-    if (state != nullptr && state->counter != nullptr)
+    auto *counter = static_cast<std::atomic<size_t> *>(userData);
+    if (counter != nullptr)
     {
-        state->counter->store(rowsWritten, std::memory_order_relaxed);
+        counter->store(rowsWritten, std::memory_order_relaxed);
     }
 }
 
@@ -694,8 +700,7 @@ void RunExport(
     {
         throw std::runtime_error("Unsupported export format");
     }
-    ProgressState state{.counter = rowsWritten};
-    exporter->Run(plan.View(), sink, stopToken, &ProgressAdapter, &state);
+    exporter->Run(plan.View(), sink, stopToken, &AtomicProgressAdapter, rowsWritten);
     sink.Finish();
     if (rowsWritten != nullptr)
     {
