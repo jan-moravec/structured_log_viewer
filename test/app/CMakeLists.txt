@@ -159,3 +159,20 @@ add_test(
     COMMAND apptest_leaf_rule_compile
     WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_leaf_rule_compile>
 )
+
+# Focused tests for the filtered-row exporter (ROADMAP item 7).
+# Same concern-per-binary pattern as the tests above; covers each
+# formatter (JSON Lines, CSV, Snapshot, Markdown) plus the
+# `FileSink` atomic-rename contract and the cancel-leaves-no-partial
+# invariant.
+qt_add_executable(apptest_row_exporter src/test_row_exporter.cpp)
+
+target_link_libraries(apptest_row_exporter PRIVATE Qt6::Test Qt6::Widgets logapp)
+
+target_include_directories(apptest_row_exporter PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+
+add_test(
+    NAME apptest_row_exporter
+    COMMAND apptest_row_exporter
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_row_exporter>
+)

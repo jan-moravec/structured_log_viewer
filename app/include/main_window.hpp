@@ -79,6 +79,11 @@ class RegexTemplatesEditor;
 class HighlightRuleSet;
 class HighlightRulesEditor;
 
+namespace slv::exports
+{
+struct ExportPlan;
+} // namespace slv::exports
+
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -691,6 +696,15 @@ private slots:
     /// Loads either shape; missing session fields default to inert
     /// values.
     void LoadConfiguration();
+
+    /// "Export Filtered Rows\u2026" -- pops the export dialog, then
+    /// dispatches an async worker that writes the current filter
+    /// slice to disk in one of the four supported formats
+    /// (`JSON Lines`, `CSV`, `Source snapshot`, `Markdown table`).
+    /// Progress + cancel via a modal-per-window `QProgressDialog`;
+    /// the worker unwinds through `slv::exports::ExportCancelled` on
+    /// user cancel, mirroring the decompression flow.
+    void ExportFilteredRows();
 
     /// Show the `ConfigurationDiagnosticsDialog` (constructed lazily).
     /// A second call raises the existing instance.
@@ -1787,6 +1801,82 @@ private:
     /// Wall-clock start of the current decompression, for the
     /// post-success status-bar toast.
     std::chrono::steady_clock::time_point mDecompressionStartedAt;
+
+    // --------------------------- Filtered-row export -----------------
+    // Async orchestration for `File -> Export Filtered Rows...`.
+    // Mirrors the decompression block above: fresh `StopSource` per
+    // run, own `QFutureWatcher<void>`, modal-per-window
+    // `QProgressDialog` with `minimumDuration`-deferred show, atomic
+    // progress counter polled by a `QTimer`. Members live here (not
+    // in the export TU) so a future full-state export slot can
+    // reuse the same orchestration without extra plumbing.
+
+    /// Watcher for the export worker future. Owned via Qt parentage;
+    /// re-armed per export.
+    QFutureWatcher<void> *mExportWatcher = nullptr;
+
+    /// Set in `BeginAsyncExport`, cleared in `OnExportFinished` /
+    /// `CancelInFlightExport`. Guards the finished slot against a
+    /// stale queued callout (see the sibling `mDecompressionInFlight`
+    /// doc for the failure mode).
+    bool mExportInFlight = false;
+
+    /// Stop source paired with the current export worker.
+    /// `QProgressDialog::canceled` calls `request_stop()`; the
+    /// worker polls it between row batches (see
+    /// `slv::exports::STOP_POLL_INTERVAL_ROWS`).
+    loglib::StopSource mExportStopSource;
+
+    /// Rows-written counter, written by the worker, read by the
+    /// poll timer. Widened to `qint64` for QAtomicInteger.
+    QAtomicInteger<qint64> mExportRowsWritten = 0;
+    QAtomicInteger<qint64> mExportRowsTotal = 0;
+
+    /// 200 ms poll timer that pumps the atomics into the progress
+    /// dialog label / value. Nulled out when no export is active.
+    QTimer *mExportPollTimer = nullptr;
+
+    /// Modal-per-window progress dialog. `QPointer` because
+    /// `deleteLater` may run between the finished slot and
+    /// destruction.
+    QPointer<QProgressDialog> mExportProgressDialog;
+
+    /// Destination path (user-facing) so the finished-slot toast
+    /// can name the file without re-reading the plan.
+    QString mExportDestinationPath;
+
+    /// Human-readable format name for the label ("JSON Lines").
+    QString mExportFormatLabel;
+
+    /// Wall-clock start of the current export, for the success toast.
+    std::chrono::steady_clock::time_point mExportStartedAt;
+
+    /// Kicks off the async export worker. @p rowsTotal drives the
+    /// progress bar range; @p destination and @p formatLabel feed
+    /// the progress label / completion toast. Model on
+    /// `BeginAsyncDecompression`.
+    void BeginAsyncExport(
+        std::unique_ptr<slv::exports::ExportPlan> plan, const QString &destination, const QString &formatLabel
+    );
+
+    /// Show / hide the export progress dialog (deferred show via
+    /// `minimumDuration`). Mirrors `ShowDecompressionProgress`.
+    void ShowExportProgress();
+
+    /// Reset the dialog + poll timer to the "no operation running"
+    /// state without deleting them (they are reused across runs).
+    void TeardownExportProgress();
+
+    /// Slot: the export future finished (success, cancel, or
+    /// error). Reads the outcome via `result()` and drives the
+    /// user-facing toast / message.
+    void OnExportFinished();
+
+    /// Cancel any in-flight export and reset scratch state. Safe to
+    /// call when no export is running.
+    void CancelInFlightExport();
+
+    // --------------------------- Session mode ------------------------
 
     /// Streaming session kind; gates UI variants. Set on open,
     /// cleared in `streamingFinished`. Underlying type pinned to
