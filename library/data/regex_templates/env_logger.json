@@ -9,5 +9,6 @@
     ],
     "autoDetect": true,
     "priority": 20,
-    "description": "Adapted from lnav src/formats/env_logger_log.json (BSD-2-Clause). Matches rust-cli/env_logger's default `default_format`: '[timestamp LEVEL module_path] message' (see env_logger crate docs, fmt::Formatter::default_format)."
+    "description": "Adapted from lnav src/formats/env_logger_log.json (BSD-2-Clause). Matches rust-cli/env_logger's default '[timestamp LEVEL module_path] message' format and folds mixed-indentation panic backtraces into the message.",
+    "continuationMode": "untilNextHeader"
 }

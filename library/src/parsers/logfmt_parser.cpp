@@ -286,14 +286,24 @@ void ParseLogfmtLine(
     std::string &ownedArena,
     std::string &quotedScratch,
     std::vector<std::pair<KeyId, internal::CompactLogValue>> &out,
-    bool &outUnterminated
+    bool &outUnterminated,
+    KeyId *outLastSourceOrderKey = nullptr
 )
 {
     out.clear();
     out.reserve(INITIAL_FIELD_CAPACITY);
+    if (outLastSourceOrderKey != nullptr)
+    {
+        // Continuations target source order, not sorted KeyId order.
+        *outLastSourceOrderKey = INVALID_KEY_ID;
+    }
 
     auto emit = [&](const LogfmtField &field) {
         const KeyId keyId = internal::InternKeyVia(field.key, keys, keyCache);
+        if (outLastSourceOrderKey != nullptr)
+        {
+            *outLastSourceOrderKey = keyId;
+        }
 
         if (field.valueIsNull)
         {
@@ -379,7 +389,8 @@ void DecodeLogfmtBatch(
     KeyIndex &keys,
     FileLineSource &source,
     std::span<const internal::TimeColumnSpec> timeColumns,
-    internal::ParsedPipelineBatch &parsed
+    internal::ParsedPipelineBatch &parsed,
+    bool multiline
 )
 {
     parsed.batchIndex = batch.batchIndex;
@@ -389,6 +400,11 @@ void DecodeLogfmtBatch(
     const char *fileEnd = batch.fileEnd;
     const char *fileBegin = source.File().Data();
 
+    if (fileBegin == nullptr || cursor == nullptr || end == nullptr || cursor == end)
+    {
+        return;
+    }
+
     const auto batchBytes = static_cast<size_t>(end - cursor);
     const size_t estimatedLines = (batchBytes / 64) + 1;
     parsed.lines.reserve(estimatedLines);
@@ -397,6 +413,14 @@ void DecodeLogfmtBatch(
     size_t relativeLineNumber = 1;
 
     std::vector<std::pair<KeyId, internal::CompactLogValue>> values;
+    // Last source-order key emitted for the current record.
+    KeyId lastRecordContinuationTarget = INVALID_KEY_ID;
+    // Batch-relative physical span of the current final record.
+    size_t tailHeaderPhysical = 0;
+    size_t tailLastPhysical = 0;
+    // Leading blanks belong to the held record only when followed by
+    // another continuation.
+    size_t pendingLeadingBlanks = 0;
 
     while (cursor < end)
     {
@@ -418,6 +442,64 @@ void DecodeLogfmtBatch(
 
         if (line.empty())
         {
+            if (multiline && parsed.lines.empty())
+            {
+                ++pendingLeadingBlanks;
+            }
+            relativeLineNumber++;
+            continue;
+        }
+
+        if (multiline && (line.front() == ' ' || line.front() == '\t'))
+        {
+            if (parsed.lines.empty())
+            {
+                // Include preceding blanks in the held record's physical span.
+                parsed.leadingContinuationLineCount += pendingLeadingBlanks;
+                pendingLeadingBlanks = 0;
+                if (!parsed.leadingContinuationBytes.empty())
+                {
+                    parsed.leadingContinuationBytes.push_back('\n');
+                }
+                parsed.leadingContinuationBytes.append(line.data(), line.size());
+                parsed.leadingContinuationLineCount++;
+            }
+            else
+            {
+                std::string continuation;
+                continuation.reserve(1 + line.size());
+                continuation.push_back('\n');
+                continuation.append(line.data(), line.size());
+
+                auto compactSpan = parsed.lines.back().CompactValues();
+                std::vector<std::pair<KeyId, internal::CompactLogValue>> mutableValues(
+                    compactSpan.begin(), compactSpan.end()
+                );
+                const std::string_view mmapView(fileBegin, fileBegin ? static_cast<size_t>(fileEnd - fileBegin) : 0);
+                const internal::ContinuationSpliceOutcome outcome = internal::ExtendContinuationTarget(
+                    mutableValues, parsed.ownedStringsArena, lastRecordContinuationTarget, continuation, mmapView
+                );
+                if (outcome == internal::ContinuationSpliceOutcome::Ok)
+                {
+                    // Preserve the header line ID while replacing its values.
+                    const size_t headerLineId = parsed.lines.back().LineId();
+                    parsed.lines.pop_back();
+                    LogLine rebuilt(std::move(mutableValues), keys, source, headerLineId);
+                    parsed.lines.push_back(std::move(rebuilt));
+                    tailLastPhysical = relativeLineNumber - 1;
+                }
+                else
+                {
+                    parsed.errors.push_back(
+                        internal::ParsedLineError{
+                            .relativeLine = relativeLineNumber,
+                            .body = outcome == internal::ContinuationSpliceOutcome::MissingTarget
+                                        ? "Continuation lines dropped: target field is not present in the record."
+                                        : "Continuation lines dropped: target field is not a string.",
+                        }
+                    );
+                }
+            }
             relativeLineNumber++;
             continue;
         }
@@ -426,6 +508,7 @@ void DecodeLogfmtBatch(
         {
             const auto fileSize = static_cast<size_t>(fileEnd - fileBegin);
             bool unterminated = false;
+            KeyId lastSourceOrderKey = INVALID_KEY_ID;
             ParseLogfmtLine(
                 line,
                 keys,
@@ -435,7 +518,8 @@ void DecodeLogfmtBatch(
                 parsed.ownedStringsArena,
                 worker.user.quotedScratch,
                 values,
-                unterminated
+                unterminated,
+                &lastSourceOrderKey
             );
             if (unterminated)
             {
@@ -456,11 +540,27 @@ void DecodeLogfmtBatch(
                 continue;
             }
 
+            pendingLeadingBlanks = 0;
+
+            // Save the span being sealed; Stage C handles the batch tail.
+            if (multiline && !parsed.lines.empty() && tailLastPhysical > tailHeaderPhysical)
+            {
+                parsed.completedMultiLineSpans.push_back(
+                    internal::ParsedPipelineBatch::MultiLineSpan{
+                        .headerPhysicalLine = tailHeaderPhysical, .lastPhysicalLine = tailLastPhysical
+                    }
+                );
+            }
+
             LogLine logLine(std::move(values), keys, source, relativeLineNumber - 1);
             parsed.lines.push_back(std::move(logLine));
 
             // Inline promotion: same shape as the JSON parser.
             worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
+
+            lastRecordContinuationTarget = lastSourceOrderKey;
+            tailHeaderPhysical = relativeLineNumber - 1;
+            tailLastPhysical = tailHeaderPhysical;
 
             // Reset the moved-from vector for the next line.
             values.clear();
@@ -476,14 +576,29 @@ void DecodeLogfmtBatch(
     }
 
     parsed.totalLineCount = relativeLineNumber - 1;
+
+    if (multiline && !parsed.lines.empty() && lastRecordContinuationTarget != INVALID_KEY_ID)
+    {
+        parsed.lastRecordOpenForContinuation = true;
+        parsed.continuationTargetKeyId = lastRecordContinuationTarget;
+        parsed.tailRecordHeaderPhysicalLine = tailHeaderPhysical;
+        parsed.tailRecordLastPhysicalLine = tailLastPhysical;
+    }
 }
 
 /// Logfmt record decoder for `RunStreamingParseLoop`. Owns the
 /// per-line scratch. Satisfies `CompactLineDecoder`.
+/// In multi-line mode, indented lines continue the preceding record's
+/// last source-order field. Other lines retain normal logfmt parsing.
 class LogfmtLineDecoder
 {
 public:
-    LogfmtLineDecoder() = default;
+    LogfmtLineDecoder() = delete;
+
+    explicit LogfmtLineDecoder(bool multiline) noexcept
+        : mMultiline(multiline)
+    {
+    }
 
     internal::LineDecodeResult DecodeCompact(
         std::string_view line,
@@ -498,12 +613,19 @@ public:
         outOwnedArena.clear();
         if (line.empty())
         {
+            mLastContinuationTarget = INVALID_KEY_ID;
             return internal::LineDecodeResult::Emit;
+        }
+
+        if (mMultiline && (line.front() == ' ' || line.front() == '\t'))
+        {
+            return internal::LineDecodeResult::Continue;
         }
 
         try
         {
             bool unterminated = false;
+            KeyId lastSourceOrderKey = INVALID_KEY_ID;
             // Streaming bytes aren't in any mmap, so passing
             // `fileBegin/fileSize=0` forces the `OwnedString` arena
             // copy in `MakeStringCompact`.
@@ -516,29 +638,42 @@ public:
                 outOwnedArena,
                 mQuotedScratch,
                 out,
-                unterminated
+                unterminated,
+                &lastSourceOrderKey
             );
             if (unterminated)
             {
+                mLastContinuationTarget = INVALID_KEY_ID;
                 errorOut = "Unterminated quoted value.";
                 return internal::LineDecodeResult::Error;
             }
             if (out.empty())
             {
+                mLastContinuationTarget = INVALID_KEY_ID;
                 errorOut = "Not a logfmt record.";
                 return internal::LineDecodeResult::Error;
             }
+            mLastContinuationTarget = lastSourceOrderKey;
             return internal::LineDecodeResult::Emit;
         }
         catch (const std::exception &e)
         {
+            mLastContinuationTarget = INVALID_KEY_ID;
             errorOut = std::string(e.what());
             return internal::LineDecodeResult::Error;
         }
     }
 
+    /// Last source-order field from the most recent emitted record.
+    [[nodiscard]] KeyId LastContinuationTarget() const noexcept
+    {
+        return mLastContinuationTarget;
+    }
+
 private:
     std::string mQuotedScratch;
+    bool mMultiline = true;
+    KeyId mLastContinuationTarget = INVALID_KEY_ID;
 };
 
 static_assert(
@@ -745,7 +880,7 @@ std::string LogfmtParser::ToString(const LogMap &values)
 
 void LogfmtParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
-    LogfmtLineDecoder decoder;
+    LogfmtLineDecoder decoder(options.multilineLogfmt);
     internal::RunStreamingParseLoop(source, decoder, sink, options);
 }
 
@@ -796,13 +931,14 @@ void LogfmtParser::ParseStreaming(
     };
 
     FileLineSource *sourcePtr = &source;
-    auto stageB = [sourcePtr](
+    const bool multiline = options.multilineLogfmt;
+    auto stageB = [sourcePtr, multiline](
                       LogfmtByteRange token,
                       internal::WorkerScratch<LogfmtWorkerState> &worker,
                       KeyIndex &keys,
                       std::span<const internal::TimeColumnSpec> timeColumns,
                       internal::ParsedPipelineBatch &parsed
-                  ) { DecodeLogfmtBatch(token, worker, keys, *sourcePtr, timeColumns, parsed); };
+                  ) { DecodeLogfmtBatch(token, worker, keys, *sourcePtr, timeColumns, parsed, multiline); };
 
     internal::RunStaticParserPipeline<LogfmtByteRange, LogfmtWorkerState>(
         source, sink, options, advanced, stageA, stageB

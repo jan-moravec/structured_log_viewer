@@ -1,6 +1,7 @@
 #include "common.hpp"
 
 #include <loglib/log_data.hpp>
+#include <loglib/log_value.hpp>
 #include <loglib/parse_file.hpp>
 #include <loglib/parsers/regex_parser.hpp>
 #include <loglib/regex_templates.hpp>
@@ -12,6 +13,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 using namespace loglib;
 
@@ -431,4 +433,280 @@ TEST_CASE(
     CHECK(std::get<std::string_view>(row1logger) == std::string_view{"com.example.App"});
     REQUIRE(std::holds_alternative<std::string_view>(row1message));
     CHECK(std::get<std::string_view>(row1message) == std::string_view{"Application starting"});
+}
+
+namespace
+{
+
+struct MultilineCase
+{
+    std::string_view templateName;
+    ContinuationMode expectedMode;
+    std::string_view header;
+    std::vector<std::string_view> continuationLines;
+    std::string_view nextHeader;
+    std::string_view lastField;
+    std::vector<std::string_view> expectedContainsInLastField;
+};
+
+const RegexTemplate &LookupBuiltin(std::string_view name)
+{
+    for (const RegexTemplate &t : BuiltinRegexTemplates())
+    {
+        if (t.name == name)
+        {
+            return t;
+        }
+    }
+    FAIL("Unknown built-in regex template: " << name);
+    static const RegexTemplate UNREACHABLE_SENTINEL{};
+    return UNREACHABLE_SENTINEL;
+}
+
+void ExpectMultilineTemplateFolds(const MultilineCase &tc)
+{
+    INFO("template: " << tc.templateName);
+
+    const RegexTemplate &t = LookupBuiltin(tc.templateName);
+    CHECK(t.continuationMode == tc.expectedMode);
+
+    std::string content;
+    content.append(tc.header);
+    content.push_back('\n');
+    for (const std::string_view line : tc.continuationLines)
+    {
+        content.append(line);
+        content.push_back('\n');
+    }
+    content.append(tc.nextHeader);
+    content.push_back('\n');
+
+    const TestLogFile file{"regex_templates_multiline_" + SlugifyName(tc.templateName) + ".log"};
+    file.Write(content);
+
+    const RegexParser parser{t.pattern};
+    const ParseResult result = ParseFile(parser, file.GetFilePath());
+
+    for (const auto &e : result.errors)
+    {
+        UNSCOPED_INFO("parse error: " << e);
+    }
+    CHECK(result.errors.empty());
+    REQUIRE(result.data.Lines().size() == 2);
+
+    // Keep LogValue alive while its string_view is used.
+    const LogValue joined = result.data.Lines()[0].GetValue(std::string{tc.lastField});
+    const auto joinedView = AsStringView(joined);
+    REQUIRE(joinedView.has_value());
+    for (const std::string_view needle : tc.expectedContainsInLastField)
+    {
+        UNSCOPED_INFO("expected fragment: " << needle);
+        UNSCOPED_INFO("joined value:       " << *joinedView);
+        CHECK(joinedView->contains(needle));
+    }
+}
+
+} // namespace
+
+TEST_CASE(
+    "Shipped indented-continuation templates fold indented follow-up lines [regex_templates]",
+    "[regex_templates][multiline]"
+)
+{
+    const MultilineCase cases[] = {
+        MultilineCase{
+            .templateName = "spdlog",
+            .expectedMode = ContinuationMode::Indented,
+            .header = "[2024-04-28 04:02:03.123] [error] Uncaught exception: bad_alloc",
+            .continuationLines =
+                {
+                    "\tat foo/service.cpp:42",
+                    "\tat foo/main.cpp:99",
+                },
+            .nextHeader = "[2024-04-28 04:02:03.500] [info] recovered",
+            .lastField = "message",
+            .expectedContainsInLastField = {"bad_alloc", "foo/service.cpp:42", "foo/main.cpp:99"},
+        },
+        MultilineCase{
+            .templateName = "PostgreSQL",
+            .expectedMode = ContinuationMode::Indented,
+            .header = "2024-04-28 04:02:03.123 UTC [12345] ERROR:  syntax error at or near \"FOOBAR\"",
+            .continuationLines =
+                {
+                    "\tSELECT * FROM",
+                    "\t  users",
+                    "\t  WHERE id = 1",
+                },
+            .nextHeader = "2024-04-28 04:02:03.500 UTC [12345] LOG:  statement ended",
+            .lastField = "message",
+            .expectedContainsInLastField = {"FOOBAR", "SELECT * FROM", "WHERE id = 1"},
+        },
+        MultilineCase{
+            .templateName = "MySQL / MariaDB error log",
+            .expectedMode = ContinuationMode::Indented,
+            .header = "2024-04-28T04:02:03.123456Z 0 [ERROR] InnoDB: Assertion failure at buf0buf.cc:3141",
+            .continuationLines =
+                {
+                    "\tInnoDB: We intentionally generate a memory trap.",
+                    "\tInnoDB: Submit a detailed bug report to https://bugs.mysql.com.",
+                },
+            .nextHeader = "2024-04-28T04:02:03.999999Z 0 [Note] mysqld: shutting down",
+            .lastField = "message",
+            .expectedContainsInLastField = {"Assertion failure", "memory trap", "bugs.mysql.com"},
+        },
+        MultilineCase{
+            .templateName = "MongoDB 3.x text log",
+            .expectedMode = ContinuationMode::Indented,
+            .header = "2024-04-28T04:02:03.123+0000 F QUERY    [conn42] Assertion failed",
+            .continuationLines =
+                {
+                    "\tat src/mongo/db/query/query_planner.cpp:100",
+                    "\tat src/mongo/db/exec/plan_stage.cpp:250",
+                },
+            .nextHeader = "2024-04-28T04:02:03.500+0000 I NETWORK  [conn42] connection closed",
+            .lastField = "message",
+            .expectedContainsInLastField = {"Assertion failed", "query_planner.cpp:100", "plan_stage.cpp:250"},
+        },
+        MultilineCase{
+            .templateName = "Apache error log",
+            .expectedMode = ContinuationMode::Indented,
+            .header =
+                "[Tue Apr 19 16:38:38.290122 2011] [php:error] [pid 1234] [client 127.0.0.1:50318] PHP Fatal error: "
+                "Uncaught Exception",
+            .continuationLines =
+                {
+                    "\tStack trace:",
+                    "\t#0 /var/www/html/index.php(10): example()",
+                    "\t#1 {main} thrown in /var/www/html/index.php on line 10",
+                },
+            .nextHeader = "[Tue Apr 19 16:38:39.000000 2011] [core:notice] [pid 9999] AH00094: Command line: 'httpd'",
+            .lastField = "message",
+            .expectedContainsInLastField = {"Uncaught Exception", "Stack trace:", "index.php(10)", "on line 10"},
+        },
+        MultilineCase{
+            .templateName = "Generic bracketed level",
+            .expectedMode = ContinuationMode::Indented,
+            .header = "[ERROR] 2024-01-01T00:00:00.000 main Fatal error: NullPointerException",
+            .continuationLines =
+                {
+                    "\tat com.example.A.foo(A.java:10)",
+                    "\tat com.example.B.bar(B.java:20)",
+                },
+            .nextHeader = "[INFO] 2024-01-01T00:00:01.000 main Recovered",
+            .lastField = "Message",
+            .expectedContainsInLastField = {"NullPointerException", "A.java:10", "B.java:20"},
+        },
+    };
+
+    for (const MultilineCase &tc : cases)
+    {
+        ExpectMultilineTemplateFolds(tc);
+    }
+}
+
+TEST_CASE(
+    "Shipped until-next-header templates fold mixed-indent continuation lines [regex_templates]",
+    "[regex_templates][multiline]"
+)
+{
+    const MultilineCase cases[] = {
+        MultilineCase{
+            .templateName = "Uber Zap (console)",
+            .expectedMode = ContinuationMode::UntilNextHeader,
+            .header = "2024-04-28T04:02:03.123Z ERROR main.go:42 request failed",
+            .continuationLines =
+                {
+                    "goroutine 1 [running]:",
+                    "main.main()",
+                    "\t/app/main.go:10 +0x1a",
+                },
+            .nextHeader = "2024-04-28T04:02:03.500Z INFO main.go:99 recovered",
+            .lastField = "message",
+            .expectedContainsInLastField =
+                {"request failed", "goroutine 1 [running]", "main.main()", "/app/main.go:10"},
+        },
+        MultilineCase{
+            .templateName = "Google glog",
+            .expectedMode = ContinuationMode::UntilNextHeader,
+            .header = "F0701 06:00:00.000000  9999 fatal.cc:42] Process aborted",
+            .continuationLines =
+                {
+                    "*** Check failure stack trace: ***",
+                    "    @     0x7fabcdef1234 google::LogMessage::Fail()",
+                    "    @     0x7fabcdef2345 google::LogMessage::SendToLog()",
+                },
+            .nextHeader = "I0701 06:00:00.500000  9999 main.cc:1] restarted",
+            .lastField = "message",
+            .expectedContainsInLastField =
+                {"Process aborted", "Check failure stack trace", "LogMessage::Fail", "LogMessage::SendToLog"},
+        },
+        MultilineCase{
+            .templateName = "Rust env_logger",
+            .expectedMode = ContinuationMode::UntilNextHeader,
+            .header = "[2024-04-28T04:02:03Z ERROR myapp] panicked at 'boom'",
+            .continuationLines =
+                {
+                    "stack backtrace:",
+                    "   0: rust_begin_unwind",
+                    "             at /rustc/foo/library/std/src/panicking.rs:597:5",
+                    "   1: core::panicking::panic_fmt",
+                    "note: run with `RUST_BACKTRACE=full` for a verbose trace",
+                },
+            .nextHeader = "[2024-04-28T04:02:04Z INFO myapp] restarted",
+            .lastField = "message",
+            .expectedContainsInLastField =
+                {"panicked at 'boom'", "stack backtrace:", "rust_begin_unwind", "panic_fmt", "RUST_BACKTRACE=full"},
+        },
+        MultilineCase{
+            .templateName = "Ruby on Rails",
+            .expectedMode = ContinuationMode::UntilNextHeader,
+            .header = "E, [2024-04-28T04:02:05.456789 #12345] ERROR -- : NoMethodError (undefined method for nil)",
+            .continuationLines =
+                {
+                    "/app/controllers/users_controller.rb:12:in show",
+                    "/app/controllers/application_controller.rb:5:in block",
+                    "/gems/actionpack-7.0.4/lib/action_controller/metal/basic_implicit_render.rb:6:in send_action",
+                },
+            .nextHeader = "I, [2024-04-28T04:02:06.000000 #12345]  INFO -- : Completed 500 in 42ms",
+            .lastField = "message",
+            .expectedContainsInLastField = {
+                "NoMethodError", "users_controller.rb:12", "application_controller.rb:5", "basic_implicit_render.rb:6"
+            },
+        },
+    };
+
+    for (const MultilineCase &tc : cases)
+    {
+        ExpectMultilineTemplateFolds(tc);
+    }
+}
+
+TEST_CASE(
+    "Every shipped template's continuation contract stays in sync with its pattern [regex_templates]",
+    "[regex_templates][multiline]"
+)
+{
+    for (const RegexTemplate &t : BuiltinRegexTemplates())
+    {
+        INFO("template: " << t.name);
+        if (t.continuationMode != ContinuationMode::None)
+        {
+            CHECK(t.pattern.contains("(?<"));
+        }
+        if (!t.headerAnchor.empty())
+        {
+            CHECK(t.continuationMode == ContinuationMode::UntilNextHeader);
+        }
+    }
+}
+
+TEST_CASE("Every shipped template's headerAnchor compiles [regex_templates]", "[regex_templates][header_anchor]")
+{
+    for (const RegexTemplate &t : BuiltinRegexTemplates())
+    {
+        INFO("template: " << t.name);
+        std::string err;
+        CHECK(ValidateHeaderAnchor(t.headerAnchor, err));
+        CHECK(err.empty());
+    }
 }

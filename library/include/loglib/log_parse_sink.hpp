@@ -11,6 +11,14 @@
 namespace loglib
 {
 
+/// Inclusive span of a multi-line record. Both members are zero-based
+/// absolute physical-line indices.
+struct MultiLineRecordSpan
+{
+    size_t headerLineId = 0;
+    size_t lastLineId = 0;
+};
+
 /// One unit of work handed from the parser to a `LogParseSink`. A
 /// "rows-empty" batch with non-empty `errors`/`newKeys` is valid; the parser
 /// always emits a final batch before `OnFinished`.
@@ -26,6 +34,9 @@ struct StreamedBatch
     std::vector<uint64_t> localLineOffsets;
     std::vector<std::string> errors;
     std::vector<std::string> newKeys;
+    /// File-backed multi-line spans. Consumers must append
+    /// `localLineOffsets` before registering these on `LogFile`.
+    std::vector<MultiLineRecordSpan> multiLineSpans;
     /// 1-based absolute line number of the batch's start cursor.
     /// - When `lines` is non-empty: matches the chunk start, not necessarily
     ///   the first parsed line (errors preceding it can push it lower).

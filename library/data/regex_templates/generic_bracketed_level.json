@@ -8,5 +8,6 @@
     ],
     "autoDetect": true,
     "priority": 30,
-    "description": "Written from scratch from qlogexplorer's README example (https://github.com/rafaelfassi/qlogexplorer) of a generic '[LEVEL] timestamp thread message' shape, translated to PCRE2. Kept last because its anchor is loose enough to catch ad-hoc app logs."
+    "description": "Written from scratch from qlogexplorer's README example (https://github.com/rafaelfassi/qlogexplorer) of a generic '[LEVEL] timestamp thread message' shape, translated to PCRE2. Kept last because its anchor is loose enough to catch ad-hoc app logs.",
+    "continuationMode": "indented"
 }

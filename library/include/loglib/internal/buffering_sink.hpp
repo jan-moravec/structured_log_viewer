@@ -43,6 +43,7 @@ private:
     KeyIndex mKeys;
     std::vector<LogLine> mLines;
     std::vector<uint64_t> mLineOffsets;
+    std::vector<MultiLineRecordSpan> mMultiLineSpans;
     std::vector<std::string> mErrors;
     bool mFinished = false;
 };

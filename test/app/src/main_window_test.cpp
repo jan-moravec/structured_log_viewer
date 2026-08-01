@@ -20805,6 +20805,174 @@ private slots:
         QCOMPARE(lines[2], QStringLiteral("back\\\\slash: v"));
     }
 
+    void TestLogTableViewCopyMultipleRowsEscapesEmbeddedNewlines()
+    {
+        const QTemporaryDir tmp;
+        QVERIFY2(tmp.isValid(), "temp dir must be creatable");
+        const QString fixturePath = tmp.filePath(QStringLiteral("multiline.log"));
+        {
+            std::ofstream stream(fixturePath.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture file must be openable");
+            stream << "level=error msg=boom\r\n"
+                      "\tframe 1\n"
+                      "\tframe 2\n"
+                      "level=info msg=ok\n";
+        }
+
+        const StreamingRun run = RunStreamingLogfmt(fixturePath);
+        QCOMPARE(run.finishedCount, 1);
+        QCOMPARE(run.cancelled, false);
+        QCOMPARE(run.model->rowCount(), 2);
+
+        LogTableView view;
+        view.setModel(run.model.get());
+
+        QItemSelectionModel *sel = view.selectionModel();
+        QVERIFY(sel != nullptr);
+        for (int row = 0; row < run.model->rowCount(); ++row)
+        {
+            sel->select(run.model->index(row, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        }
+        QCOMPARE(sel->selectedRows().size(), 2);
+
+        QClipboard *clipboard = QApplication::clipboard();
+        QVERIFY(clipboard != nullptr);
+        clipboard->clear();
+
+        const QString pasted =
+            InvokeAndReadClipboardWithRetry(clipboard, &view, "CopySelectedRowsToClipboard", QStringLiteral("frame 1"));
+
+        const QStringList lines = pasted.split(QLatin1Char('\n'));
+        QCOMPARE(lines.size(), 2);
+
+        QVERIFY2(lines[0].contains(QStringLiteral("boom")), qPrintable(lines[0]));
+        QVERIFY2(lines[0].contains(QStringLiteral("frame 1")), qPrintable(lines[0]));
+        QVERIFY2(lines[0].contains(QStringLiteral("frame 2")), qPrintable(lines[0]));
+        QVERIFY2(lines[0].contains(QStringLiteral("\\n")), qPrintable(lines[0]));
+        QVERIFY2(lines[0].contains(QStringLiteral("\\r")), qPrintable(lines[0]));
+        QVERIFY2(!lines[0].contains(QChar('\r')), "raw CR must not leak into a row");
+
+        QVERIFY2(lines[1].contains(QStringLiteral("msg=ok")), qPrintable(lines[1]));
+    }
+
+    void TestLogTableViewCopyMultipleRowsEscapesBackslashesBeforeNewlines()
+    {
+        const QTemporaryDir tmp;
+        QVERIFY2(tmp.isValid(), "temp dir must be creatable");
+        const QString fixturePath = tmp.filePath(QStringLiteral("multiline_bs.log"));
+        {
+            std::ofstream stream(fixturePath.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture file must be openable");
+            stream << "level=error msg=boom\n"
+                      "\tpath C:\\a\\b\n"
+                      "level=info msg=ok\n";
+        }
+
+        const StreamingRun run = RunStreamingLogfmt(fixturePath);
+        QCOMPARE(run.finishedCount, 1);
+        QCOMPARE(run.model->rowCount(), 2);
+
+        LogTableView view;
+        view.setModel(run.model.get());
+
+        QItemSelectionModel *sel = view.selectionModel();
+        QVERIFY(sel != nullptr);
+        for (int row = 0; row < run.model->rowCount(); ++row)
+        {
+            sel->select(run.model->index(row, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        }
+        QCOMPARE(sel->selectedRows().size(), 2);
+
+        QClipboard *clipboard = QApplication::clipboard();
+        QVERIFY(clipboard != nullptr);
+        clipboard->clear();
+
+        const QString pasted =
+            InvokeAndReadClipboardWithRetry(clipboard, &view, "CopySelectedRowsToClipboard", QStringLiteral("path"));
+
+        const QStringList lines = pasted.split(QLatin1Char('\n'));
+        QCOMPARE(lines.size(), 2);
+
+        QVERIFY2(lines[0].contains(QStringLiteral("C:\\\\a\\\\b")), qPrintable(lines[0]));
+        QVERIFY2(!lines[0].contains(QStringLiteral("\\\\\\\\")), qPrintable(lines[0]));
+        QVERIFY2(lines[0].contains(QStringLiteral("boom\\n\tpath")), qPrintable(lines[0]));
+    }
+
+    void TestLogTableViewCopySingleRowPreservesEmbeddedNewlines()
+    {
+        const QTemporaryDir tmp;
+        QVERIFY2(tmp.isValid(), "temp dir must be creatable");
+        const QString fixturePath = tmp.filePath(QStringLiteral("multiline_single.log"));
+        {
+            std::ofstream stream(fixturePath.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture file must be openable");
+            stream << "level=error msg=boom\n"
+                      "\tframe 1\n"
+                      "\tframe 2\n"
+                      "level=info msg=ok\n";
+        }
+
+        const StreamingRun run = RunStreamingLogfmt(fixturePath);
+        QCOMPARE(run.finishedCount, 1);
+        QCOMPARE(run.model->rowCount(), 2);
+
+        LogTableView view;
+        view.setModel(run.model.get());
+
+        QItemSelectionModel *sel = view.selectionModel();
+        QVERIFY(sel != nullptr);
+        sel->select(run.model->index(0, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        QCOMPARE(sel->selectedRows().size(), 1);
+
+        QClipboard *clipboard = QApplication::clipboard();
+        QVERIFY(clipboard != nullptr);
+        clipboard->clear();
+
+        const QString pasted =
+            InvokeAndReadClipboardWithRetry(clipboard, &view, "CopySelectedRowsToClipboard", QStringLiteral("frame 2"));
+
+        QVERIFY2(pasted.contains(QStringLiteral("level=error msg=boom")), qPrintable(pasted));
+        QVERIFY2(pasted.contains(QStringLiteral("\tframe 1")), qPrintable(pasted));
+        QVERIFY2(pasted.contains(QStringLiteral("\tframe 2")), qPrintable(pasted));
+        QVERIFY2(pasted.contains(QChar('\n')), "single-row copy keeps real newlines");
+        QVERIFY2(!pasted.contains(QStringLiteral("\\n")), "single-row copy must NOT escape newlines");
+    }
+
+    void TestRecordDetailDockRendersMultilineMessage()
+    {
+        const QTemporaryDir tmp;
+        QVERIFY2(tmp.isValid(), "temp dir must be creatable");
+        const QString fixturePath = tmp.filePath(QStringLiteral("multiline_detail.log"));
+        {
+            std::ofstream stream(fixturePath.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture file must be openable");
+            stream << "level=error msg=boom\n"
+                      "\tframe A\n"
+                      "\tframe B\n";
+        }
+
+        const StreamingRun run = RunStreamingLogfmt(fixturePath);
+        QCOMPARE(run.finishedCount, 1);
+        QCOMPARE(run.model->rowCount(), 1);
+
+        const RecordDetailContent content = BuildRecordDetailContent(*run.model, 0);
+        QVERIFY(content.valid);
+
+        QString msgValue;
+        for (const auto &field : content.fields)
+        {
+            if (field.first == QStringLiteral("msg"))
+            {
+                msgValue = field.second;
+                break;
+            }
+        }
+        QVERIFY2(!msgValue.isEmpty(), "record detail must surface the msg field for a multi-line record");
+        QVERIFY2(msgValue.contains(QStringLiteral("boom")), qPrintable(msgValue));
+        QVERIFY2(msgValue.contains(QStringLiteral("frame A")), qPrintable(msgValue));
+        QVERIFY2(msgValue.contains(QStringLiteral("frame B")), qPrintable(msgValue));
+    }
+
     // Empty values render a muted em-dash with the
     // `RECORD_DETAIL_EMPTY_PLACEHOLDER_ROLE` flag set; a literal
     // em-dash value stays distinguishable because the flag is unset.

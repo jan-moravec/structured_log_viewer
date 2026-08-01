@@ -702,6 +702,8 @@ struct RegexByteRange
     const char *fileEnd = nullptr;
 };
 
+bool RegexLooksLikeHeader(const CompiledPattern &compiled, pcre2_match_data *matchData, std::string_view line);
+
 std::string_view StripCr(std::string_view s) noexcept
 {
     if (!s.empty() && s.back() == '\r')
@@ -730,13 +732,28 @@ void DecodeRegexBatch(
     std::span<const internal::TimeColumnSpec> timeColumns,
     internal::ParsedPipelineBatch &parsed,
     const CompiledPattern &compiled,
-    const std::vector<KeyId> &columnKeys
+    const std::vector<KeyId> &columnKeys,
+    ContinuationMode continuationMode,
+    const CompiledPattern *headerAnchor
 )
 {
     (void)keys; // Schema is pre-interned in `columnKeys`.
     parsed.batchIndex = batch.batchIndex;
 
     EnsureWorkerMatchData(worker.user, compiled);
+
+    // `columnKeys` follows the schema's group-index sort, so its last
+    // entry is the final named group in pattern source order.
+    const KeyId continuationTargetKey =
+        (continuationMode != ContinuationMode::None && !columnKeys.empty()) ? columnKeys.back() : INVALID_KEY_ID;
+
+    // Match data is per batch because PCRE2 match state is mutable.
+    const CompiledPattern *headerProbe = (headerAnchor != nullptr) ? headerAnchor : &compiled;
+    Pcre2MatchDataPtr headerScratch;
+    if (continuationMode == ContinuationMode::UntilNextHeader)
+    {
+        headerScratch = headerProbe->NewMatchData();
+    }
 
     const char *cursor = batch.bytesBegin;
     const char *end = batch.bytesEnd;
@@ -752,6 +769,12 @@ void DecodeRegexBatch(
     size_t relativeLineNumber = 1;
     std::vector<std::pair<KeyId, internal::CompactLogValue>> values;
     std::string lineError;
+    // Batch-relative physical span of the current final record.
+    size_t tailHeaderPhysical = 0;
+    size_t tailLastPhysical = 0;
+    // Leading blanks belong to the held record only when followed by
+    // another continuation.
+    size_t pendingLeadingBlanks = 0;
 
     while (cursor < end)
     {
@@ -780,6 +803,73 @@ void DecodeRegexBatch(
 
         if (line.empty())
         {
+            if (continuationMode != ContinuationMode::None && parsed.lines.empty())
+            {
+                ++pendingLeadingBlanks;
+            }
+            ++relativeLineNumber;
+            continue;
+        }
+
+        bool isContinuation = false;
+        if (continuationMode == ContinuationMode::Indented)
+        {
+            isContinuation = (line.front() == ' ' || line.front() == '\t');
+        }
+        else if (continuationMode == ContinuationMode::UntilNextHeader)
+        {
+            isContinuation = !RegexLooksLikeHeader(*headerProbe, headerScratch.get(), line);
+        }
+
+        if (isContinuation)
+        {
+            if (parsed.lines.empty())
+            {
+                // Include preceding blanks in the held record's physical span.
+                parsed.leadingContinuationLineCount += pendingLeadingBlanks;
+                pendingLeadingBlanks = 0;
+                if (!parsed.leadingContinuationBytes.empty())
+                {
+                    parsed.leadingContinuationBytes.push_back('\n');
+                }
+                parsed.leadingContinuationBytes.append(line.data(), line.size());
+                parsed.leadingContinuationLineCount++;
+            }
+            else
+            {
+                std::string continuation;
+                continuation.reserve(1 + line.size());
+                continuation.push_back('\n');
+                continuation.append(line.data(), line.size());
+
+                auto compactSpan = parsed.lines.back().CompactValues();
+                std::vector<std::pair<KeyId, internal::CompactLogValue>> mutableValues(
+                    compactSpan.begin(), compactSpan.end()
+                );
+                const std::string_view mmapView(fileBegin, fileBegin ? static_cast<size_t>(fileEnd - fileBegin) : 0);
+                const internal::ContinuationSpliceOutcome outcome = internal::ExtendContinuationTarget(
+                    mutableValues, parsed.ownedStringsArena, continuationTargetKey, continuation, mmapView
+                );
+                if (outcome == internal::ContinuationSpliceOutcome::Ok)
+                {
+                    const size_t headerLineId = parsed.lines.back().LineId();
+                    parsed.lines.pop_back();
+                    LogLine rebuilt(std::move(mutableValues), keys, source, headerLineId);
+                    parsed.lines.push_back(std::move(rebuilt));
+                    tailLastPhysical = relativeLineNumber - 1;
+                }
+                else
+                {
+                    parsed.errors.push_back(
+                        internal::ParsedLineError{
+                            .relativeLine = relativeLineNumber,
+                            .body = outcome == internal::ContinuationSpliceOutcome::MissingTarget
+                                        ? "Continuation lines dropped: target field is not present in the record."
+                                        : "Continuation lines dropped: target field is not a string.",
+                        }
+                    );
+                }
+            }
             ++relativeLineNumber;
             continue;
         }
@@ -802,32 +892,91 @@ void DecodeRegexBatch(
             continue;
         }
 
-        // `LogLine` ctor asserts ascending KeyIds; the name-table
-        // ordering here is source order, not KeyId order.
+        pendingLeadingBlanks = 0;
+
+        // Save the span being sealed; Stage C handles the batch tail.
+        if (continuationMode != ContinuationMode::None && !parsed.lines.empty() &&
+            tailLastPhysical > tailHeaderPhysical)
+        {
+            parsed.completedMultiLineSpans.push_back(
+                internal::ParsedPipelineBatch::MultiLineSpan{
+                    .headerPhysicalLine = tailHeaderPhysical, .lastPhysicalLine = tailLastPhysical
+                }
+            );
+        }
+
+        // `LogLine` requires KeyId order, unlike source-order captures.
         std::sort(values.begin(), values.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
 
         LogLine logLine(std::move(values), keys, source, relativeLineNumber - 1);
         parsed.lines.push_back(std::move(logLine));
         worker.PromoteTimestamps(parsed.lines.back(), timeColumns, std::string_view(parsed.ownedStringsArena));
+        tailHeaderPhysical = relativeLineNumber - 1;
+        tailLastPhysical = tailHeaderPhysical;
 
         values.clear();
         ++relativeLineNumber;
     }
 
     parsed.totalLineCount = relativeLineNumber - 1;
+
+    if (continuationMode != ContinuationMode::None && !parsed.lines.empty() && continuationTargetKey != INVALID_KEY_ID)
+    {
+        parsed.lastRecordOpenForContinuation = true;
+        parsed.continuationTargetKeyId = continuationTargetKey;
+        parsed.tailRecordHeaderPhysicalLine = tailHeaderPhysical;
+        parsed.tailRecordLastPhysicalLine = tailLastPhysical;
+    }
 }
 
 // ---------------------------------------------------------------------
 // Streaming-loop glue.
 // ---------------------------------------------------------------------
 
+/// Test @p line with an anchored, partial-hard header probe. A partial
+/// prefix counts as a header so an incomplete live-tail line is not
+/// folded into the preceding record.
+bool RegexLooksLikeHeader(const CompiledPattern &compiled, pcre2_match_data *matchData, std::string_view line)
+{
+    if (line.empty() || compiled.Code() == nullptr)
+    {
+        return false;
+    }
+    const int rc = pcre2_match(
+        compiled.Code(),
+        reinterpret_cast<PCRE2_SPTR>(line.data()),
+        line.size(),
+        /*startoffset*/ 0,
+        PCRE2_ANCHORED | PCRE2_PARTIAL_HARD,
+        matchData,
+        compiled.Context()
+    );
+    return rc >= 0 || rc == PCRE2_ERROR_PARTIAL;
+}
+
+/// Live-tail decoder that classifies continuations according to
+/// @p mode. `UntilNextHeader` uses @p headerAnchor when supplied,
+/// otherwise it probes the main compiled pattern.
 class RegexLineDecoder
 {
 public:
-    RegexLineDecoder(const CompiledPattern &compiled, const std::vector<KeyId> &columnKeys)
-        : mCompiled(&compiled), mColumnKeys(&columnKeys)
+    RegexLineDecoder(
+        const CompiledPattern &compiled,
+        const std::vector<KeyId> &columnKeys,
+        ContinuationMode mode = ContinuationMode::None,
+        const CompiledPattern *headerAnchor = nullptr
+    )
+        : mCompiled(&compiled),
+          mColumnKeys(&columnKeys),
+          mMode(mode),
+          mLastContinuationTarget(columnKeys.empty() ? INVALID_KEY_ID : columnKeys.back())
     {
         mMatchData = compiled.NewMatchData();
+        if (mMode == ContinuationMode::UntilNextHeader)
+        {
+            mHeaderProbe = (headerAnchor != nullptr) ? headerAnchor : &compiled;
+            mHeaderMatchData = mHeaderProbe->NewMatchData();
+        }
     }
 
     internal::LineDecodeResult DecodeCompact(
@@ -858,6 +1007,23 @@ public:
             // is the right result if it's ever reached.
             return internal::LineDecodeResult::Skip;
         }
+
+        // Classify continuations before record matching to avoid false errors.
+        if (mMode == ContinuationMode::Indented)
+        {
+            if (line.front() == ' ' || line.front() == '\t')
+            {
+                return internal::LineDecodeResult::Continue;
+            }
+        }
+        else if (mMode == ContinuationMode::UntilNextHeader)
+        {
+            if (!RegexLooksLikeHeader(*mHeaderProbe, mHeaderMatchData.get(), line))
+            {
+                return internal::LineDecodeResult::Continue;
+            }
+        }
+
         if (!MatchLineAndEmit(
                 *mCompiled,
                 mMatchData.get(),
@@ -875,10 +1041,23 @@ public:
         return internal::LineDecodeResult::Emit;
     }
 
+    /// KeyId of the pattern's final source-order named group.
+    [[nodiscard]] KeyId LastContinuationTarget() const noexcept
+    {
+        return mLastContinuationTarget;
+    }
+
 private:
     const CompiledPattern *mCompiled;
     const std::vector<KeyId> *mColumnKeys;
+    ContinuationMode mMode;
+    KeyId mLastContinuationTarget;
+    /// Non-owning header probe; null outside `UntilNextHeader` mode.
+    const CompiledPattern *mHeaderProbe = nullptr;
     Pcre2MatchDataPtr mMatchData;
+    /// Match data is tied to `mHeaderProbe` and cannot be shared with
+    /// the main pattern's match state.
+    Pcre2MatchDataPtr mHeaderMatchData;
     bool mSawFirstLine = false;
 };
 
@@ -983,7 +1162,30 @@ void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, P
 
     const std::vector<KeyId> columnKeys = InternSchemaKeys(compiled.Schema(), sink.Keys());
 
-    RegexLineDecoder decoder(compiled, columnKeys);
+    // Unregistered patterns remain line-oriented.
+    ContinuationMode mode = ContinuationMode::None;
+    std::string headerAnchorSource;
+    if (const auto tmpl = FindTemplateByPattern(pattern); tmpl.has_value())
+    {
+        mode = tmpl->continuationMode;
+        headerAnchorSource = tmpl->headerAnchor;
+    }
+
+    // A configured anchor must compile; null means reuse the main pattern.
+    CompiledPattern headerAnchor;
+    const CompiledPattern *anchorPtr = nullptr;
+    if (mode == ContinuationMode::UntilNextHeader && !headerAnchorSource.empty())
+    {
+        std::string anchorErr;
+        if (!headerAnchor.Compile(headerAnchorSource, anchorErr))
+        {
+            EmitErrorAndFinish(sink, "Header anchor compile failed: " + anchorErr, newKeyBaseline, /*streaming=*/true);
+            return;
+        }
+        anchorPtr = &headerAnchor;
+    }
+
+    RegexLineDecoder decoder(compiled, columnKeys, mode, anchorPtr);
     internal::RunStreamingParseLoop(source, decoder, sink, options, newKeyBaseline);
 }
 
@@ -1053,6 +1255,30 @@ void RegexParser::ParseStreaming(
 
     const std::vector<KeyId> columnKeys = InternSchemaKeys(compiled.Schema(), sink.Keys());
 
+    // Unregistered patterns remain line-oriented.
+    ContinuationMode staticContinuationMode = ContinuationMode::None;
+    std::string headerAnchorSource;
+    if (const auto tmpl = FindTemplateByPattern(pattern); tmpl.has_value())
+    {
+        staticContinuationMode = tmpl->continuationMode;
+        headerAnchorSource = tmpl->headerAnchor;
+    }
+
+    // The synchronous pipeline guarantees this stack-owned pattern
+    // outlives every Stage B worker.
+    CompiledPattern headerAnchor;
+    const CompiledPattern *anchorPtr = nullptr;
+    if (staticContinuationMode == ContinuationMode::UntilNextHeader && !headerAnchorSource.empty())
+    {
+        std::string anchorErr;
+        if (!headerAnchor.Compile(headerAnchorSource, anchorErr))
+        {
+            EmitErrorAndFinish(sink, "Header anchor compile failed: " + anchorErr, newKeyBaseline);
+            return;
+        }
+        anchorPtr = &headerAnchor;
+    }
+
     const size_t batchSize = advanced.batchSizeBytes != 0 ? advanced.batchSizeBytes
                                                           : internal::AdvancedParserOptions::DEFAULT_BATCH_SIZE_BYTES;
 
@@ -1085,13 +1311,26 @@ void RegexParser::ParseStreaming(
     };
 
     FileLineSource *sourcePtr = &source;
-    auto stageB = [sourcePtr, &compiled, &columnKeys](
+    auto stageB = [sourcePtr, &compiled, &columnKeys, staticContinuationMode, anchorPtr](
                       RegexByteRange token,
                       internal::WorkerScratch<RegexWorkerState> &worker,
                       KeyIndex &keys,
                       std::span<const internal::TimeColumnSpec> timeColumns,
                       internal::ParsedPipelineBatch &parsed
-                  ) { DecodeRegexBatch(token, worker, keys, *sourcePtr, timeColumns, parsed, compiled, columnKeys); };
+                  ) {
+        DecodeRegexBatch(
+            token,
+            worker,
+            keys,
+            *sourcePtr,
+            timeColumns,
+            parsed,
+            compiled,
+            columnKeys,
+            staticContinuationMode,
+            anchorPtr
+        );
+    };
 
     internal::RunStaticParserPipeline<RegexByteRange, RegexWorkerState>(
         source, sink, options, advanced, stageA, stageB, newKeyBaseline
@@ -1181,6 +1420,25 @@ bool ValidateRegexPattern(std::string_view pattern, std::string &errorOut)
     if (!compiled.HasNamedGroups())
     {
         errorOut = "Regex pattern has no named capture groups; nothing to put in columns. Use `(?<Name>...)`.";
+        return false;
+    }
+    return true;
+}
+
+bool ValidateHeaderAnchor(std::string_view anchor, std::string &errorOut)
+{
+    // Success is represented by an empty error string.
+    errorOut.clear();
+    if (anchor.empty())
+    {
+        return true;
+    }
+    // A boolean header probe does not define a capture schema.
+    CompiledPattern compiled;
+    std::string compileErr;
+    if (!compiled.Compile(anchor, compileErr))
+    {
+        errorOut = "Header anchor compile failed: " + compileErr;
         return false;
     }
     return true;

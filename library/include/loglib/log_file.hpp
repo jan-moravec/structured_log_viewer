@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace loglib
@@ -65,6 +66,17 @@ public:
     /// memory-footprint benchmark; not part of the parse hot path.
     size_t LineOffsetsMemoryBytes() const noexcept;
 
+    /// Register the inclusive physical-line span for a multi-line
+    /// record. Indices are zero-based; `lastLineId` must exceed
+    /// `headerLineId`. Single-line spans are ignored.
+    void RegisterMultiLineRecord(size_t headerLineId, size_t lastLineId);
+
+    /// True when at least one multi-line record is registered.
+    [[nodiscard]] bool HasMultiLineRecords() const noexcept
+    {
+        return !mMultiLineSpans.empty();
+    }
+
     /// Sliding view over the owned-string arena (escape-decoded values
     /// that cannot live in the mmap). `LogLine` materialisation indexes
     /// into this via `(offset, length)` stored in its compact values.
@@ -109,6 +121,9 @@ private:
     /// Concatenated escape-decoded strings referenced by this file's
     /// `LogLine` values via `(offset, length)`.
     std::string mOwnedStrings;
+
+    /// Maps each multi-line header to its final physical line.
+    std::unordered_map<size_t, size_t> mMultiLineSpans;
 };
 
 } // namespace loglib

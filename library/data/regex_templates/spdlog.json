@@ -9,5 +9,6 @@
     ],
     "autoDetect": true,
     "priority": 20,
-    "description": "Adapted from lnav src/formats/spdlog_log.json (BSD-2-Clause). Matches gabime/spdlog's default `%+` pattern: '[YYYY-MM-DD HH:MM:SS.fff] [logger] [level] message' with the logger group optional (the sink may omit it; see spdlog wiki 'Custom formatting')."
+    "description": "Adapted from lnav src/formats/spdlog_log.json (BSD-2-Clause). Matches gabime/spdlog's default `%+` pattern: '[YYYY-MM-DD HH:MM:SS.fff] [logger] [level] message' with the logger group optional (the sink may omit it; see spdlog wiki 'Custom formatting').",
+    "continuationMode": "indented"
 }

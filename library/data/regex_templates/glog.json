@@ -9,5 +9,6 @@
     ],
     "autoDetect": true,
     "priority": 10,
-    "description": "Adapted from lnav src/formats/glog_log.json (BSD-2-Clause). The severity letter (I/W/E/F) and microsecond timestamp encode Google glog's INFO/WARNING/ERROR/FATAL header shape (see glog README); we capture thread id, source file:line and message into named groups for the column auto-detect."
+    "description": "Adapted from lnav src/formats/glog_log.json (BSD-2-Clause). Matches glog headers with severity, timestamp, thread, source location, and message. Mixed-indentation `LOG(FATAL)` stack dumps fold into the message.",
+    "continuationMode": "untilNextHeader"
 }

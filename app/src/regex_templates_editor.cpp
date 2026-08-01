@@ -7,6 +7,7 @@
 
 #include <QCheckBox>
 #include <QCloseEvent>
+#include <QComboBox>
 #include <QFontDatabase>
 #include <QFontMetrics>
 #include <QFormLayout>
@@ -206,6 +207,33 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
     flagsRow->addStretch(1);
     formLayout->addRow(QString{}, flagsRow);
 
+    mContinuationModeCombo = new QComboBox(formContainer);
+    mContinuationModeCombo->addItem(tr("None (single-line)"), static_cast<int>(loglib::ContinuationMode::None));
+    mContinuationModeCombo->addItem(tr("Indented"), static_cast<int>(loglib::ContinuationMode::Indented));
+    mContinuationModeCombo->addItem(
+        tr("Until next header"), static_cast<int>(loglib::ContinuationMode::UntilNextHeader)
+    );
+    mContinuationModeCombo->setToolTip(
+        tr("Multi-line records: how continuation lines are detected.\n"
+           "  * None: every line must match the pattern (default).\n"
+           "  * Indented: lines starting with space or tab fold into the previous record's "
+           "last named group. Covers Java / Python / Go / Node stack traces.\n"
+           "  * Until next header: any line that does not match the pattern folds into "
+           "the previous record. Slower per line but handles formats whose continuations mix "
+           "indented and un-indented text (Python 'During handling of the above exception').")
+    );
+    formLayout->addRow(tr("Continuation:"), mContinuationModeCombo);
+
+    mHeaderAnchorEdit = new QLineEdit(formContainer);
+    mHeaderAnchorEdit->setPlaceholderText(tr("Optional (Until-next-header only). Leave blank to reuse the pattern."));
+    mHeaderAnchorEdit->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    mHeaderAnchorEdit->setToolTip(
+        tr("Regex probed against each line to decide whether it starts a new record. "
+           "Only used when Continuation mode is 'Until next header'. Leave blank to reuse "
+           "the main pattern via PCRE2's ANCHORED | PARTIAL_HARD match.")
+    );
+    formLayout->addRow(tr("Header anchor:"), mHeaderAnchorEdit);
+
     mDescriptionEdit = new QPlainTextEdit(formContainer);
     mDescriptionEdit->setPlaceholderText(
         tr("Optional. Describe the format the template parses: what software emits "
@@ -311,6 +339,16 @@ RegexTemplatesEditor::RegexTemplatesEditor(RegexTemplateRegistry *registry, QWid
     connect(mSampleLinesEdit, &QPlainTextEdit::textChanged, this, &RegexTemplatesEditor::OnFieldEdited);
     connect(mAutoDetectCheck, &QCheckBox::toggled, this, &RegexTemplatesEditor::OnFieldEdited);
     connect(mPrioritySpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &RegexTemplatesEditor::OnFieldEdited);
+    connect(
+        mContinuationModeCombo,
+        QOverload<int>::of(&QComboBox::currentIndexChanged),
+        this,
+        &RegexTemplatesEditor::OnFieldEdited
+    );
+    connect(mContinuationModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        SyncHeaderAnchorEnabled();
+    });
+    connect(mHeaderAnchorEdit, &QLineEdit::textEdited, this, &RegexTemplatesEditor::OnFieldEdited);
     connect(mDescriptionEdit, &QPlainTextEdit::textChanged, this, &RegexTemplatesEditor::OnFieldEdited);
 
     // External registry changes (Reload from disk, a save from
@@ -455,6 +493,8 @@ void RegexTemplatesEditor::OnNewClicked()
     mSampleLinesEdit->clear();
     mAutoDetectCheck->setChecked(true);
     mPrioritySpin->setValue(loglib::USER_TEMPLATE_DEFAULT_PRIORITY);
+    mContinuationModeCombo->setCurrentIndex(0);
+    mHeaderAnchorEdit->clear();
     mDescriptionEdit->clear();
     mSourceLabel->setText(tr("New user template (not yet saved)"));
     mSuppressDirtySignals = false;
@@ -464,9 +504,12 @@ void RegexTemplatesEditor::OnNewClicked()
     mSampleLinesEdit->setReadOnly(false);
     mAutoDetectCheck->setEnabled(true);
     mPrioritySpin->setEnabled(true);
+    mContinuationModeCombo->setEnabled(true);
+    mHeaderAnchorEdit->setReadOnly(false);
     mDescriptionEdit->setReadOnly(false);
     mDeleteButton->setEnabled(false);
     mDuplicateButton->setEnabled(false);
+    SyncHeaderAnchorEnabled();
 
     // Blank drafts start "dirty" so Save enables immediately.
     // A missing name / pattern is caught in `OnSaveClicked`.
@@ -559,6 +602,11 @@ void RegexTemplatesEditor::OnDuplicateClicked()
     }
     mAutoDetectCheck->setChecked(base.autoDetect);
     mPrioritySpin->setValue(base.priority);
+    {
+        const int modeIdx = mContinuationModeCombo->findData(static_cast<int>(base.continuationMode));
+        mContinuationModeCombo->setCurrentIndex(modeIdx >= 0 ? modeIdx : 0);
+    }
+    mHeaderAnchorEdit->setText(QString::fromStdString(base.headerAnchor));
     mDescriptionEdit->setPlainText(QString::fromStdString(base.description));
     mSourceLabel->setText(tr("Duplicating \"%1\" -- pick a name and Save").arg(sourceName));
     mSuppressDirtySignals = false;
@@ -568,9 +616,12 @@ void RegexTemplatesEditor::OnDuplicateClicked()
     mSampleLinesEdit->setReadOnly(false);
     mAutoDetectCheck->setEnabled(true);
     mPrioritySpin->setEnabled(true);
+    mContinuationModeCombo->setEnabled(true);
+    mHeaderAnchorEdit->setReadOnly(false);
     mDescriptionEdit->setReadOnly(false);
     mDeleteButton->setEnabled(false);
     mDuplicateButton->setEnabled(false);
+    SyncHeaderAnchorEnabled();
 
     MarkDirty();
     mNameEdit->setFocus();
@@ -602,6 +653,12 @@ void RegexTemplatesEditor::OnSaveClicked()
             tr("Pattern does not compile: %1").arg(QString::fromStdString(regexError)),
             /*isError=*/true
         );
+        return;
+    }
+
+    if (!loglib::ValidateHeaderAnchor(tmpl.headerAnchor, regexError))
+    {
+        ShowStatus(QString::fromStdString(regexError), /*isError=*/true);
         return;
     }
 
@@ -749,6 +806,12 @@ void RegexTemplatesEditor::OnValidateClicked()
         return;
     }
 
+    if (!loglib::ValidateHeaderAnchor(tmpl.headerAnchor, regexError))
+    {
+        ShowStatus(QString::fromStdString(regexError), /*isError=*/true);
+        return;
+    }
+
     if (tmpl.sampleLines.empty())
     {
         ShowStatus(tr("Pattern compiles. No sample lines to self-test against."));
@@ -837,6 +900,8 @@ void RegexTemplatesEditor::LoadIntoForm(const QString &name)
         mSampleLinesEdit->clear();
         mAutoDetectCheck->setChecked(true);
         mPrioritySpin->setValue(loglib::USER_TEMPLATE_DEFAULT_PRIORITY);
+        mContinuationModeCombo->setCurrentIndex(0);
+        mHeaderAnchorEdit->clear();
         mDescriptionEdit->clear();
         mSourceLabel->clear();
 
@@ -845,9 +910,12 @@ void RegexTemplatesEditor::LoadIntoForm(const QString &name)
         mSampleLinesEdit->setReadOnly(true);
         mAutoDetectCheck->setEnabled(false);
         mPrioritySpin->setEnabled(false);
+        mContinuationModeCombo->setEnabled(false);
+        mHeaderAnchorEdit->setReadOnly(true);
         mDescriptionEdit->setReadOnly(true);
         mDeleteButton->setEnabled(false);
         mDuplicateButton->setEnabled(false);
+        SyncHeaderAnchorEnabled();
         MarkClean();
         mSuppressDirtySignals = false;
         return;
@@ -864,6 +932,7 @@ void RegexTemplatesEditor::LoadIntoForm(const QString &name)
         mNameEdit->clear();
         mPatternEdit->clear();
         mSampleLinesEdit->clear();
+        mHeaderAnchorEdit->clear();
         mDescriptionEdit->clear();
         mSourceLabel->setText(tr("Could not load \"%1\" (try Reload from disk)").arg(name));
         mNameEdit->setReadOnly(true);
@@ -871,9 +940,12 @@ void RegexTemplatesEditor::LoadIntoForm(const QString &name)
         mSampleLinesEdit->setReadOnly(true);
         mAutoDetectCheck->setEnabled(false);
         mPrioritySpin->setEnabled(false);
+        mContinuationModeCombo->setEnabled(false);
+        mHeaderAnchorEdit->setReadOnly(true);
         mDescriptionEdit->setReadOnly(true);
         mDeleteButton->setEnabled(false);
         mDuplicateButton->setEnabled(false);
+        SyncHeaderAnchorEnabled();
         MarkClean();
         mSuppressDirtySignals = false;
         return;
@@ -896,6 +968,11 @@ void RegexTemplatesEditor::LoadIntoForm(const QString &name)
     }
     mAutoDetectCheck->setChecked(t.autoDetect);
     mPrioritySpin->setValue(t.priority);
+    {
+        const int modeIdx = mContinuationModeCombo->findData(static_cast<int>(t.continuationMode));
+        mContinuationModeCombo->setCurrentIndex(modeIdx >= 0 ? modeIdx : 0);
+    }
+    mHeaderAnchorEdit->setText(QString::fromStdString(t.headerAnchor));
     mDescriptionEdit->setPlainText(QString::fromStdString(t.description));
     mSourceLabel->setText(isUser ? tr("User template (editable in place)") : tr("Built-in template (read-only)"));
 
@@ -908,9 +985,12 @@ void RegexTemplatesEditor::LoadIntoForm(const QString &name)
     mSampleLinesEdit->setReadOnly(!editable);
     mAutoDetectCheck->setEnabled(editable);
     mPrioritySpin->setEnabled(editable);
+    mContinuationModeCombo->setEnabled(editable);
+    mHeaderAnchorEdit->setReadOnly(!editable);
     mDescriptionEdit->setReadOnly(!editable);
     mDeleteButton->setEnabled(editable);
     mDuplicateButton->setEnabled(true);
+    SyncHeaderAnchorEnabled();
 
     MarkClean();
     mSuppressDirtySignals = false;
@@ -959,6 +1039,16 @@ loglib::RegexTemplate RegexTemplatesEditor::GatherForm() const
 
     t.autoDetect = mAutoDetectCheck->isChecked();
     t.priority = mPrioritySpin->value();
+    t.continuationMode = static_cast<loglib::ContinuationMode>(mContinuationModeCombo->currentData().toInt());
+    // Do not persist anchors ignored by the current mode.
+    if (t.continuationMode == loglib::ContinuationMode::UntilNextHeader)
+    {
+        t.headerAnchor = mHeaderAnchorEdit->text().trimmed().toStdString();
+    }
+    else
+    {
+        t.headerAnchor.clear();
+    }
     t.description = mDescriptionEdit->toPlainText().toStdString();
     return t;
 }
@@ -984,6 +1074,16 @@ bool RegexTemplatesEditor::IsCurrentEditable() const
         return true;
     }
     return !mCurrentName.isEmpty() && mRegistry->IsUserTemplate(mCurrentName);
+}
+
+void RegexTemplatesEditor::SyncHeaderAnchorEnabled()
+{
+    // Keep built-in anchors visible but read-only.
+    const auto mode = static_cast<loglib::ContinuationMode>(mContinuationModeCombo->currentData().toInt());
+    const bool modeAllows = (mode == loglib::ContinuationMode::UntilNextHeader);
+    const bool editable = IsCurrentEditable();
+    mHeaderAnchorEdit->setReadOnly(!editable || !modeAllows);
+    mHeaderAnchorEdit->setEnabled(modeAllows);
 }
 
 void RegexTemplatesEditor::ShowStatus(const QString &message, bool isError)

@@ -14,6 +14,10 @@ struct ParserOptions
 {
     StopToken stopToken{};
     std::shared_ptr<const LogConfiguration> configuration;
+    /// When enabled, Logfmt treats space- or tab-prefixed lines as
+    /// continuations of the preceding record's last source-order field.
+    /// Has no effect on other parsers.
+    bool multilineLogfmt = true;
 };
 
 } // namespace loglib

@@ -44,9 +44,9 @@ struct AdvancedParserOptions;
 /// evaluation.
 ///
 /// Known limits:
-/// - Patterns must match a single line. Multi-line records (stack
-///   traces) are out of scope and surface as one parse error per
-///   line.
+/// - The pattern matches one physical line. Registered templates may
+///   fold additional lines according to `continuationMode`; unregistered
+///   patterns remain strictly line-oriented.
 /// - The pattern is parser configuration, not file content, so
 ///   `IsValid` only auto-detects files matching a template from
 ///   the merged catalog (built-ins ∪ user templates registered
@@ -149,6 +149,10 @@ private:
 /// discarded immediately; this is a cheap pre-flight check, not
 /// parse setup.
 [[nodiscard]] bool ValidateRegexPattern(std::string_view pattern, std::string &errorOut);
+
+/// Validate a header probe. Empty reuses the main pattern; non-empty
+/// probes need to compile but do not require named captures.
+[[nodiscard]] bool ValidateHeaderAnchor(std::string_view anchor, std::string &errorOut);
 
 /// True iff @p pattern compiles and matches @p line in full
 /// (same `PCRE2_ANCHORED | PCRE2_ENDANCHORED` flags as the

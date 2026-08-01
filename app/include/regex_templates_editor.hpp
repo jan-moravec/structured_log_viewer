@@ -6,6 +6,7 @@
 
 class QCheckBox;
 class QCloseEvent;
+class QComboBox;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -95,6 +96,10 @@ private:
     /// read-only.
     [[nodiscard]] bool IsCurrentEditable() const;
 
+    /// Keep the header-anchor field usable only when the current
+    /// template is editable and its continuation mode uses it.
+    void SyncHeaderAnchorEnabled();
+
     /// Prompt "discard unsaved edits?" and return true to proceed.
     /// Returns true immediately when there are no unsaved edits.
     [[nodiscard]] bool ConfirmDiscardEdits();
@@ -108,6 +113,10 @@ private:
     QPlainTextEdit *mSampleLinesEdit = nullptr;
     QCheckBox *mAutoDetectCheck = nullptr;
     QSpinBox *mPrioritySpin = nullptr;
+    /// Controls how continuation lines join the previous record.
+    QComboBox *mContinuationModeCombo = nullptr;
+    /// Optional record-header pattern for `UntilNextHeader` mode.
+    QLineEdit *mHeaderAnchorEdit = nullptr;
     /// Multi-line so descriptions can hold a paragraph covering
     /// the format and an optional upstream attribution.
     QPlainTextEdit *mDescriptionEdit = nullptr;

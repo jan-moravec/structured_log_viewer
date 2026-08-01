@@ -9,5 +9,6 @@
     ],
     "autoDetect": true,
     "priority": 10,
-    "description": "Adapted from lnav src/formats/rails_log.json (BSD-2-Clause). Matches Ruby's stdlib Logger 'Formatter#call' default output, which Rails uses by default for production / development logs ('SEV, [TIMESTAMP #PID] LEVEL -- PROGNAME: MESSAGE'; see Ruby Logger documentation)."
+    "description": "Adapted from lnav src/formats/rails_log.json (BSD-2-Clause). Matches Ruby Logger's default 'SEV, [TIMESTAMP #PID] LEVEL -- PROGNAME: MESSAGE' output used by Rails. Unindented exception backtraces fold into the message.",
+    "continuationMode": "untilNextHeader"
 }

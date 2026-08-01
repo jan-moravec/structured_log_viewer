@@ -105,8 +105,19 @@ std::string LogFile::GetLine(size_t lineNumber) const
         throw std::out_of_range("Line number out of range: " + std::to_string(lineNumber));
     }
 
+    // Multi-line headers use the offset after their final continuation.
+    size_t stopLine = lineNumber + 1;
+    if (HasMultiLineRecords())
+    {
+        const auto it = mMultiLineSpans.find(lineNumber);
+        if (it != mMultiLineSpans.end() && it->second + 1 < mLineOffsets.size())
+        {
+            stopLine = it->second + 1;
+        }
+    }
+
     const uint64_t startOffset = mLineOffsets[lineNumber];
-    const uint64_t stopOffset = mLineOffsets[lineNumber + 1];
+    const uint64_t stopOffset = mLineOffsets[stopLine];
     if (stopOffset <= startOffset)
     {
         return std::string{};
@@ -152,6 +163,22 @@ void LogFile::RegisterLineEnd(size_t position)
 size_t LogFile::LineOffsetsMemoryBytes() const noexcept
 {
     return mLineOffsets.capacity() * sizeof(uint64_t);
+}
+
+void LogFile::RegisterMultiLineRecord(size_t headerLineId, size_t lastLineId)
+{
+    if (lastLineId <= headerLineId)
+    {
+        return; // Single-line records don't need an entry.
+    }
+    // Both offsets must be registered before the span.
+    assert(headerLineId + 1 < mLineOffsets.size());
+    assert(lastLineId + 1 < mLineOffsets.size());
+    if (headerLineId + 1 >= mLineOffsets.size() || lastLineId + 1 >= mLineOffsets.size())
+    {
+        return;
+    }
+    mMultiLineSpans[headerLineId] = lastLineId;
 }
 
 std::string_view LogFile::OwnedStringsView() const noexcept

@@ -824,13 +824,28 @@ void LogTableView::CopySelectedRowsToClipboard()
         return;
     }
 
+    // Keep each record on one clipboard line when copying multiple
+    // rows. Escape backslashes first so generated escapes remain
+    // distinguishable; single-row copies remain verbatim.
+    const bool multiRow = selectedRows.size() > 1;
+
     QString text;
     for (const QModelIndex &rowIndex : selectedRows)
     {
         const QVariant modelData = this->model()->data(rowIndex, LogModelItemDataRole::CopyLine);
-        text += modelData.toString() + QLatin1Char('\n');
+        QString rowText = modelData.toString();
+        if (multiRow)
+        {
+            rowText.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
+            rowText.replace(QLatin1Char('\n'), QStringLiteral("\\n"));
+            rowText.replace(QLatin1Char('\r'), QStringLiteral("\\r"));
+        }
+        text += rowText + QLatin1Char('\n');
     }
-    text.chop(1); // Drop the trailing newline
+    if (!text.isEmpty())
+    {
+        text.chop(1);
+    }
 
     QClipboard *clipboard = QApplication::clipboard();
     clipboard->setText(text);

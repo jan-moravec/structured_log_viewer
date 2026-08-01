@@ -44,6 +44,30 @@ TEST_CASE("FileLineSource: RawLine returns CR-stripped per-line text", "[FileLin
     CHECK_THROWS_AS(source.RawLine(3), std::out_of_range);
 }
 
+TEST_CASE("FileLineSource: RawLine returns joined bytes for multi-line records", "[FileLineSource][multiline]")
+{
+    const TestLogFile testLogFile;
+    testLogFile.Write(
+        "ERROR NullPointerException at Foo\n"
+        "\tat com.example.A.foo(A.java:10)\n"
+        "\tat com.example.B.bar(B.java:20)\n"
+        "INFO next record\n"
+    );
+    auto logFile = testLogFile.CreateLogFile();
+    logFile->RegisterMultiLineRecord(0, 2);
+
+    FileLineSource source(std::move(logFile));
+
+    CHECK(
+        source.RawLine(0) == "ERROR NullPointerException at Foo\n"
+                             "\tat com.example.A.foo(A.java:10)\n"
+                             "\tat com.example.B.bar(B.java:20)"
+    );
+    CHECK(source.RawLine(1) == "\tat com.example.A.foo(A.java:10)");
+    CHECK(source.RawLine(2) == "\tat com.example.B.bar(B.java:20)");
+    CHECK(source.RawLine(3) == "INFO next record");
+}
+
 TEST_CASE("FileLineSource: ResolveMmapBytes indexes into the mmap data", "[FileLineSource]")
 {
     const TestLogFile testLogFile;

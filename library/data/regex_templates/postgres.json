@@ -8,5 +8,6 @@
     ],
     "autoDetect": true,
     "priority": 10,
-    "description": "Adapted from lnav src/formats/postgres_log.json (BSD-2-Clause). The default log_line_prefix on modern PostgreSQL ships timestamp + pid + optional user@database + severity (LOG/ERROR/FATAL/...) followed by ':  message' (two spaces). All severity tokens come from PostgreSQL's elog.c enum."
+    "description": "Adapted from lnav src/formats/postgres_log.json (BSD-2-Clause). The default log_line_prefix on modern PostgreSQL ships timestamp + pid + optional user@database + severity (LOG/ERROR/FATAL/...) followed by ':  message' (two spaces). All severity tokens come from PostgreSQL's elog.c enum.",
+    "continuationMode": "indented"
 }

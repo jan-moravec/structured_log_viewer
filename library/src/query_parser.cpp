@@ -630,7 +630,7 @@ private:
 /// leading whitespace / signs / hex; we reject leading whitespace
 /// and hex prefixes up front so the grammar stays what the parser
 /// tests pin (`col > 42`, `col = -1.5`, `col IN [1e3..2e3]`).
-[[nodiscard]] std::optional<double> ParseDouble(std::string_view text) noexcept
+[[nodiscard]] std::optional<double> ParseDouble(std::string_view text)
 {
     if (text.empty())
     {

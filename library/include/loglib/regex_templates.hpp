@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <string>
@@ -16,6 +17,28 @@ namespace loglib
 /// the on-disk JSON schema default and by the app-side editor when
 /// creating a fresh draft, so the two never drift.
 inline constexpr int USER_TEMPLATE_DEFAULT_PRIORITY = 100;
+
+/// How a template identifies continuation lines.
+///
+///  - `None`: every line is parsed independently.
+///  - `Indented`: space- or tab-prefixed lines continue the prior record.
+///  - `UntilNextHeader`: lines failing the anchored header probe
+///    continue the prior record.
+///
+/// Non-`None` modes append continuation text to the pattern's final
+/// source-order named capture, which must be string-typed.
+enum class ContinuationMode : uint8_t
+{
+    None = 0,
+    Indented,
+    UntilNextHeader,
+};
+
+/// Return the JSON spelling of @p mode.
+[[nodiscard]] std::string_view ContinuationModeName(ContinuationMode mode) noexcept;
+
+/// Parse a continuation mode's JSON spelling.
+[[nodiscard]] std::optional<ContinuationMode> ParseContinuationMode(std::string_view name) noexcept;
 
 /// A named PCRE2 pattern that splits one log line into columns via
 /// named capture groups.
@@ -74,13 +97,16 @@ struct RegexTemplate
     /// licence citations. Empty for user templates that need
     /// neither.
     std::string description;
+    /// Multi-line handling. Missing JSON fields retain `None`.
+    ContinuationMode continuationMode = ContinuationMode::None;
+    /// Optional header probe for `UntilNextHeader`. An empty value
+    /// reuses `pattern`; other modes ignore this field.
+    std::string headerAnchor;
 };
 
 /// Parse a single regex-template JSON document. Throws
 /// `std::runtime_error` on parse failure (the message includes
-/// glaze's position context). Defaults `autoDetect = true`,
-/// `priority = USER_TEMPLATE_DEFAULT_PRIORITY`, `description = ""`
-/// so older JSON files still load cleanly.
+/// glaze's position context). Missing fields keep their struct defaults.
 [[nodiscard]] RegexTemplate ParseRegexTemplate(std::string_view content);
 
 /// Serialise @p tmpl to pretty-printed JSON. Throws

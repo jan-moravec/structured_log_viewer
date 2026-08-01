@@ -154,3 +154,47 @@ TEST_CASE("LogFile: AttachLifetimeAnchor composes multiple anchors", "[LogFile]"
     CHECK(firstDestructed == 1);
     CHECK(secondDestructed == 1);
 }
+
+TEST_CASE("LogFile: RegisterMultiLineRecord widens GetLine span", "[LogFile][multiline]")
+{
+    const TestLogFile testLogFile;
+    testLogFile.Write(
+        "level=info msg=first\n"
+        "\tframe A1\n"
+        "\tframe A2\n"
+        "level=warn msg=second\n"
+        "\tframe B1\n"
+    );
+
+    auto logFile = testLogFile.CreateLogFile();
+    REQUIRE(logFile->GetLineCount() == 5);
+
+    CHECK(logFile->GetLine(0) == "level=info msg=first");
+    CHECK(logFile->GetLine(1) == "\tframe A1");
+    CHECK(logFile->GetLine(2) == "\tframe A2");
+    CHECK(logFile->HasMultiLineRecords() == false);
+
+    logFile->RegisterMultiLineRecord(0, 2);
+    logFile->RegisterMultiLineRecord(3, 4);
+    CHECK(logFile->HasMultiLineRecords() == true);
+
+    CHECK(logFile->GetLine(0) == "level=info msg=first\n\tframe A1\n\tframe A2");
+    CHECK(logFile->GetLine(3) == "level=warn msg=second\n\tframe B1");
+
+    CHECK(logFile->GetLine(1) == "\tframe A1");
+    CHECK(logFile->GetLine(2) == "\tframe A2");
+    CHECK(logFile->GetLine(4) == "\tframe B1");
+}
+
+TEST_CASE("LogFile: RegisterMultiLineRecord single-line span is a no-op", "[LogFile][multiline]")
+{
+    const TestLogFile testLogFile;
+    testLogFile.Write("Line 1\nLine 2\nLine 3\n");
+
+    auto logFile = testLogFile.CreateLogFile();
+    logFile->RegisterMultiLineRecord(1, 1);
+
+    CHECK(logFile->GetLine(0) == "Line 1");
+    CHECK(logFile->GetLine(1) == "Line 2");
+    CHECK(logFile->GetLine(2) == "Line 3");
+}

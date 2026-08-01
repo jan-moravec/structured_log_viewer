@@ -591,6 +591,511 @@ TEST_CASE(
     CHECK(errors[0].contains("named capture groups"));
 }
 
+namespace
+{
+
+// Prevent process-global template registration leaking across tests.
+class ScopedExtraTemplates
+{
+public:
+    explicit ScopedExtraTemplates(std::span<const loglib::RegexTemplate> extras)
+    {
+        loglib::SetExtraRegexTemplates(extras);
+    }
+    ~ScopedExtraTemplates()
+    {
+        loglib::SetExtraRegexTemplates({});
+    }
+    ScopedExtraTemplates(const ScopedExtraTemplates &) = delete;
+    ScopedExtraTemplates &operator=(const ScopedExtraTemplates &) = delete;
+    ScopedExtraTemplates(ScopedExtraTemplates &&) = delete;
+    ScopedExtraTemplates &operator=(ScopedExtraTemplates &&) = delete;
+};
+
+} // namespace
+
+TEST_CASE(
+    "RegexParser streaming: indented continuation folds into the last named group",
+    "[regex_parser][stream_line_source][multiline]"
+)
+{
+    using namespace loglib;
+
+    const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
+    const RegexTemplate extra{
+        .name = "test-indented-multiline",
+        .pattern = pattern,
+        .sampleLines = {"info hello"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::Indented,
+        .headerAnchor = "",
+    };
+    const RegexTemplate extras[] = {extra};
+    const ScopedExtraTemplates registration(extras);
+
+    const RegexParser parser{std::string{pattern}};
+
+    const std::string payload = "error boom\n"
+                                "\tat com.example.Foo.bar(Foo.java:42)\n"
+                                "\tat com.example.Baz.qux(Baz.java:7)\n"
+                                "info recovered\n";
+
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+    CollectingStreamSink sink;
+    parser.ParseStreaming(source, sink, ParserOptions{});
+
+    REQUIRE(sink.finished);
+    CHECK_FALSE(sink.finishedCancelled);
+
+    std::vector<LogLine *> lines;
+    for (auto &b : sink.batches)
+    {
+        for (auto &l : b.lines)
+        {
+            lines.push_back(&l);
+        }
+    }
+    REQUIRE(lines.size() == 2);
+
+    const KeyId kMessage = sink.keys.Find("message");
+    REQUIRE(kMessage != INVALID_KEY_ID);
+    const LogValue v0 = lines[0]->GetValue(kMessage);
+    const LogValue v1 = lines[1]->GetValue(kMessage);
+    const auto m0 = AsStringView(v0);
+    const auto m1 = AsStringView(v1);
+    REQUIRE(m0.has_value());
+    REQUIRE(m1.has_value());
+
+    CHECK(
+        *m0 == "boom\n"
+               "\tat com.example.Foo.bar(Foo.java:42)\n"
+               "\tat com.example.Baz.qux(Baz.java:7)"
+    );
+    CHECK(*m1 == "recovered");
+
+    const std::string raw0 = source.RawLine(lines[0]->LineId());
+    CHECK(raw0.contains("error boom"));
+    CHECK(raw0.contains("Foo.java:42"));
+    CHECK(raw0.contains("Baz.java:7"));
+}
+
+TEST_CASE(
+    "RegexParser streaming: blank line between header and continuation stays in RawLine, not in field",
+    "[regex_parser][stream_line_source][multiline]"
+)
+{
+    using namespace loglib;
+
+    const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
+    const RegexTemplate extra{
+        .name = "test-stream-multiline-blank",
+        .pattern = pattern,
+        .sampleLines = {"info hello"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::Indented,
+        .headerAnchor = "",
+    };
+    const RegexTemplate extras[] = {extra};
+    const ScopedExtraTemplates registration(extras);
+
+    const RegexParser parser{std::string{pattern}};
+
+    const std::string payload = "error boom\n"
+                                "\n"
+                                "\tat com.example.Foo.bar(Foo.java:42)\n"
+                                "\n"
+                                "info recovered\n";
+
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+    CollectingStreamSink sink;
+    parser.ParseStreaming(source, sink, ParserOptions{});
+
+    REQUIRE(sink.finished);
+
+    std::vector<LogLine *> lines;
+    for (auto &b : sink.batches)
+    {
+        for (auto &l : b.lines)
+        {
+            lines.push_back(&l);
+        }
+    }
+    REQUIRE(lines.size() == 2);
+
+    const KeyId kMessage = sink.keys.Find("message");
+    REQUIRE(kMessage != INVALID_KEY_ID);
+    const LogValue v0 = lines[0]->GetValue(kMessage);
+    const auto m0 = AsStringView(v0);
+    REQUIRE(m0.has_value());
+    CHECK(*m0 == "boom\n\tat com.example.Foo.bar(Foo.java:42)");
+
+    const std::string raw0 = source.RawLine(lines[0]->LineId());
+    CHECK(raw0.contains("boom\n\n\tat"));
+    CHECK_FALSE(raw0.contains("info recovered"));
+    CHECK_FALSE(raw0.ends_with('\n'));
+
+    const std::string raw1 = source.RawLine(lines[1]->LineId());
+    CHECK(raw1 == "info recovered");
+}
+
+TEST_CASE(
+    "RegexParser streaming: UntilNextHeader folds non-matching lines into the last named group",
+    "[regex_parser][stream_line_source][multiline]"
+)
+{
+    using namespace loglib;
+
+    const std::string pattern = R"(^\[(?<level>\w+)\]\s+(?<message>.*)$)";
+    const RegexTemplate extra{
+        .name = "test-header-multiline",
+        .pattern = pattern,
+        .sampleLines = {"[ERROR] boom"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::UntilNextHeader,
+        .headerAnchor = "",
+    };
+    const RegexTemplate extras[] = {extra};
+    const ScopedExtraTemplates registration(extras);
+
+    const RegexParser parser{std::string{pattern}};
+
+    const std::string payload = "[ERROR] boom\n"
+                                "Traceback (most recent call last):\n"
+                                "During handling of the above exception, another exception occurred:\n"
+                                "  File \"a.py\", line 7\n"
+                                "[INFO] recovered\n";
+
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+    CollectingStreamSink sink;
+    parser.ParseStreaming(source, sink, ParserOptions{});
+
+    REQUIRE(sink.finished);
+
+    std::vector<LogLine *> lines;
+    for (auto &b : sink.batches)
+    {
+        for (auto &l : b.lines)
+        {
+            lines.push_back(&l);
+        }
+    }
+    REQUIRE(lines.size() == 2);
+
+    const KeyId kMessage = sink.keys.Find("message");
+    REQUIRE(kMessage != INVALID_KEY_ID);
+    const LogValue v0 = lines[0]->GetValue(kMessage);
+    const auto m0 = AsStringView(v0);
+    REQUIRE(m0.has_value());
+    CHECK(m0->contains("Traceback"));
+    CHECK(m0->contains("During handling"));
+    CHECK(m0->contains("a.py"));
+}
+
+TEST_CASE(
+    "RegexParser streaming: template without continuationMode keeps shipped single-line behaviour",
+    "[regex_parser][stream_line_source][multiline]"
+)
+{
+    using namespace loglib;
+
+    const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
+    const RegexTemplate extra{
+        .name = "test-legacy-singleline",
+        .pattern = pattern,
+        .sampleLines = {"info hello"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::None,
+        .headerAnchor = "",
+    };
+    const RegexTemplate extras[] = {extra};
+    const ScopedExtraTemplates registration(extras);
+
+    const RegexParser parser{std::string{pattern}};
+
+    const std::string payload = "error boom\n"
+                                "\tat com.example.Foo.bar(Foo.java:42)\n"
+                                "info recovered\n";
+
+    StreamLineSource source(std::filesystem::path("memory.log"), std::make_unique<StreamingInMemoryProducer>(payload));
+    CollectingStreamSink sink;
+    parser.ParseStreaming(source, sink, ParserOptions{});
+
+    REQUIRE(sink.finished);
+
+    std::vector<LogLine *> lines;
+    std::vector<std::string> errors;
+    for (auto &b : sink.batches)
+    {
+        for (auto &l : b.lines)
+        {
+            lines.push_back(&l);
+        }
+        errors.insert(errors.end(), b.errors.begin(), b.errors.end());
+    }
+    CHECK(lines.size() == 2);
+    CHECK(errors.size() == 1);
+}
+
+TEST_CASE(
+    "RegexParser file: indented continuations fold into the last named group via ParseFile",
+    "[regex_parser][file_line_source][multiline]"
+)
+{
+    using namespace loglib;
+
+    const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
+    const RegexTemplate extra{
+        .name = "test-static-indented",
+        .pattern = pattern,
+        .sampleLines = {"info hello"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::Indented,
+        .headerAnchor = "",
+    };
+    const RegexTemplate extras[] = {extra};
+    const ScopedExtraTemplates registration(extras);
+
+    const RegexParser parser{std::string{pattern}};
+
+    const TestLogFile file("regex_static_multiline.log");
+    file.Write(
+        "error boom\n"
+        "\tat com.example.Foo.bar(Foo.java:42)\n"
+        "\tat com.example.Baz.qux(Baz.java:7)\n"
+        "info recovered\n"
+    );
+
+    auto result = ParseFile(parser, file.GetFilePath());
+    for (const auto &e : result.errors)
+    {
+        UNSCOPED_INFO("parse error: " << e);
+    }
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.data.Lines().size() == 2);
+
+    const KeyId kMessage = result.data.Keys().Find("message");
+    REQUIRE(kMessage != INVALID_KEY_ID);
+
+    const auto &lines = result.data.Lines();
+    const LogValue v0 = lines[0].GetValue(kMessage);
+    const LogValue v1 = lines[1].GetValue(kMessage);
+    const auto m0 = AsStringView(v0);
+    const auto m1 = AsStringView(v1);
+    REQUIRE(m0.has_value());
+    REQUIRE(m1.has_value());
+    CHECK(
+        *m0 == "boom\n"
+               "\tat com.example.Foo.bar(Foo.java:42)\n"
+               "\tat com.example.Baz.qux(Baz.java:7)"
+    );
+    CHECK(*m1 == "recovered");
+}
+
+TEST_CASE(
+    "RegexParser file: cross-batch continuation splices tail record via ParseFile",
+    "[regex_parser][file_line_source][multiline]"
+)
+{
+    using namespace loglib;
+
+    const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
+    const RegexTemplate extra{
+        .name = "test-static-crossbatch",
+        .pattern = pattern,
+        .sampleLines = {"info hello"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::Indented,
+        .headerAnchor = "",
+    };
+    const RegexTemplate extras[] = {extra};
+    const ScopedExtraTemplates registration(extras);
+
+    internal::AdvancedParserOptions advanced;
+    advanced.batchSizeBytes = 32; // Force a cross-batch continuation.
+
+    const TestLogFile file("regex_static_crossbatch.log");
+    file.Write(
+        "error boom\n"
+        "\tat com.example.Foo.bar(Foo.java:42)\n"
+        "\tat com.example.Baz.qux(Baz.java:7)\n"
+        "\tat com.example.Wibble.wobble(Wibble.java:99)\n"
+        "info recovered\n"
+    );
+
+    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
+    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    FileLineSource *sourcePtr = source.get();
+    internal::BufferingSink sink(std::move(source));
+
+    RegexParser::ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced, std::optional<std::string_view>{pattern});
+
+    auto data = sink.TakeData();
+    const auto errors = sink.TakeErrors();
+    for (const auto &e : errors)
+    {
+        UNSCOPED_INFO("parse error: " << e);
+    }
+    REQUIRE(errors.empty());
+    REQUIRE(data.Lines().size() == 2);
+
+    const KeyId kMessage = data.Keys().Find("message");
+    REQUIRE(kMessage != INVALID_KEY_ID);
+
+    const LogValue v0 = data.Lines()[0].GetValue(kMessage);
+    const auto m0 = AsStringView(v0);
+    REQUIRE(m0.has_value());
+    CHECK(m0->contains("boom"));
+    CHECK(m0->contains("Foo.java:42"));
+    CHECK(m0->contains("Baz.java:7"));
+    CHECK(m0->contains("Wibble.java:99"));
+
+    const LogFile &parsedFile = sourcePtr->File();
+    REQUIRE(parsedFile.GetLineCount() == 5);
+    CHECK(parsedFile.GetLine(1) == "\tat com.example.Foo.bar(Foo.java:42)");
+    CHECK(parsedFile.GetLine(2) == "\tat com.example.Baz.qux(Baz.java:7)");
+    CHECK(parsedFile.GetLine(3) == "\tat com.example.Wibble.wobble(Wibble.java:99)");
+    CHECK(parsedFile.GetLine(4) == "info recovered");
+
+    const std::string joined = sourcePtr->RawLine(data.Lines()[0].LineId());
+    CHECK(joined.contains("error boom"));
+    CHECK(joined.contains("Foo.java:42"));
+    CHECK(joined.contains("Wibble.java:99"));
+    CHECK_FALSE(joined.contains("info recovered"));
+
+    const std::string secondRaw = sourcePtr->RawLine(data.Lines()[1].LineId());
+    CHECK(secondRaw == "info recovered");
+}
+
+TEST_CASE(
+    "RegexParser file: blank line inside cross-batch leading continuations stays in the record's span",
+    "[regex_parser][file_line_source][multiline][cross_batch]"
+)
+{
+    using namespace loglib;
+
+    const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
+    const RegexTemplate extra{
+        .name = "test-crossbatch-blank-leading",
+        .pattern = pattern,
+        .sampleLines = {"info hello"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::Indented,
+        .headerAnchor = "",
+    };
+    const RegexTemplate extras[] = {extra};
+    const ScopedExtraTemplates registration(extras);
+
+    internal::AdvancedParserOptions advanced;
+    advanced.batchSizeBytes = 16;
+
+    const TestLogFile file("regex_static_crossbatch_blank.log");
+    file.Write(
+        "error boom\n"
+        "\n"
+        "\tat com.example.Foo.bar(Foo.java:42)\n"
+        "info recovered\n"
+    );
+
+    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
+    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    FileLineSource *sourcePtr = source.get();
+    internal::BufferingSink sink(std::move(source));
+
+    RegexParser::ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced, std::optional<std::string_view>{pattern});
+
+    auto data = sink.TakeData();
+    const auto errors = sink.TakeErrors();
+    for (const auto &e : errors)
+    {
+        UNSCOPED_INFO("parse error: " << e);
+    }
+    REQUIRE(errors.empty());
+    REQUIRE(data.Lines().size() == 2);
+
+    const LogFile &parsedFile = sourcePtr->File();
+    REQUIRE(parsedFile.GetLineCount() == 4);
+    CHECK(parsedFile.GetLine(1).empty());
+    CHECK(parsedFile.GetLine(2) == "\tat com.example.Foo.bar(Foo.java:42)");
+    CHECK(parsedFile.GetLine(3) == "info recovered");
+
+    const std::string joined = sourcePtr->RawLine(data.Lines()[0].LineId());
+    CHECK(joined.contains("error boom"));
+    CHECK(joined.contains("Foo.java:42"));
+    CHECK(joined.contains("boom\n\n\tat"));
+    CHECK_FALSE(joined.contains("info recovered"));
+
+    const KeyId kMessage = data.Keys().Find("message");
+    REQUIRE(kMessage != INVALID_KEY_ID);
+    const LogValue v0 = data.Lines()[0].GetValue(kMessage);
+    const auto m0 = AsStringView(v0);
+    REQUIRE(m0.has_value());
+    CHECK(m0->contains("boom"));
+    CHECK(m0->contains("Foo.java:42"));
+}
+
+TEST_CASE(
+    "RegexParser file: leading blanks followed by a fresh header are not attached to the held tail",
+    "[regex_parser][file_line_source][multiline][cross_batch]"
+)
+{
+    using namespace loglib;
+
+    const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
+    const RegexTemplate extra{
+        .name = "test-crossbatch-blank-no-cont",
+        .pattern = pattern,
+        .sampleLines = {"info hello"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::Indented,
+        .headerAnchor = "",
+    };
+    const RegexTemplate extras[] = {extra};
+    const ScopedExtraTemplates registration(extras);
+
+    internal::AdvancedParserOptions advanced;
+    advanced.batchSizeBytes = 16;
+
+    const TestLogFile file("regex_static_crossbatch_blank_no_cont.log");
+    file.Write(
+        "error boom\n"
+        "\n"
+        "info recovered\n"
+    );
+
+    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
+    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    FileLineSource *sourcePtr = source.get();
+    internal::BufferingSink sink(std::move(source));
+
+    RegexParser::ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced, std::optional<std::string_view>{pattern});
+
+    auto data = sink.TakeData();
+    const auto errors = sink.TakeErrors();
+    REQUIRE(errors.empty());
+    REQUIRE(data.Lines().size() == 2);
+
+    const std::string firstRaw = sourcePtr->RawLine(data.Lines()[0].LineId());
+    CHECK(firstRaw == "error boom");
+    const std::string secondRaw = sourcePtr->RawLine(data.Lines()[1].LineId());
+    CHECK(secondRaw == "info recovered");
+}
+
 TEST_CASE("ValidateRegexPattern rejects empty pattern [regex]", "[regex_parser]")
 {
     // GUI pre-flight: the Network Stream dialog calls this before
@@ -755,6 +1260,289 @@ TEST_CASE("RegexParser static overload with explicit pattern overrides configura
     REQUIRE(data.Lines().size() == 2);
     CHECK(AsStringView(data.Lines()[0].GetValue("level")) == std::string_view{"info"});
     CHECK(AsStringView(data.Lines()[1].GetValue("message")) == std::string_view{"world"});
+}
+
+TEST_CASE(
+    "RegexParser: headerAnchor overrides the header probe (streaming)", "[regex_parser][multiline][header_anchor]"
+)
+{
+    using namespace loglib;
+
+    const std::string pattern = R"(^(?<ts>\d{4}-\d{2}-\d{2})\s+(?<level>\w+)\s+(?<message>.*)$)";
+    const RegexTemplate anchored{
+        .name = "test-header-anchor-streaming",
+        .pattern = pattern,
+        .sampleLines = {"2026-01-01 INFO ok"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::UntilNextHeader,
+        .headerAnchor = R"(^\d{4}-)",
+    };
+    const RegexTemplate extras[] = {anchored};
+    const ScopedExtraTemplates registration(extras);
+
+    const RegexParser parser{std::string{pattern}};
+
+    const std::string payload = "2026-01-01 ERROR boom\n"
+                                "Traceback (most recent call last):\n"
+                                "  File \"a.py\", line 7\n"
+                                "During handling of the above exception, another exception occurred:\n"
+                                "2026-01-02 INFO recovered\n";
+
+    StreamLineSource source(
+        std::filesystem::path("anchor_stream.log"), std::make_unique<StreamingInMemoryProducer>(payload)
+    );
+    CollectingStreamSink sink;
+    parser.ParseStreaming(source, sink, ParserOptions{});
+
+    REQUIRE(sink.finished);
+    CHECK(FlattenSinkErrors(sink).empty());
+
+    std::vector<LogLine *> lines;
+    for (auto &b : sink.batches)
+    {
+        for (auto &l : b.lines)
+        {
+            lines.push_back(&l);
+        }
+    }
+    REQUIRE(lines.size() == 2);
+
+    const KeyId kMessage = sink.keys.Find("message");
+    REQUIRE(kMessage != INVALID_KEY_ID);
+    const LogValue v0 = lines[0]->GetValue(kMessage);
+    const auto m0 = AsStringView(v0);
+    REQUIRE(m0.has_value());
+    CHECK(m0->contains("boom"));
+    CHECK(m0->contains("Traceback"));
+    CHECK(m0->contains("a.py"));
+    CHECK(m0->contains("During handling"));
+
+    const LogValue v1 = lines[1]->GetValue(kMessage);
+    const auto m1 = AsStringView(v1);
+    REQUIRE(m1.has_value());
+    CHECK(*m1 == "recovered");
+}
+
+TEST_CASE(
+    "RegexParser: headerAnchor overrides the header probe (static, cross-batch)",
+    "[regex_parser][multiline][header_anchor]"
+)
+{
+    using namespace loglib;
+
+    const std::string pattern = R"(^(?<ts>\d{4}-\d{2}-\d{2})\s+(?<level>\w+)\s+(?<message>.*)$)";
+    const RegexTemplate anchored{
+        .name = "test-header-anchor-static",
+        .pattern = pattern,
+        .sampleLines = {"2026-01-01 INFO ok"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::UntilNextHeader,
+        .headerAnchor = R"(^\d{4}-)",
+    };
+    const RegexTemplate extras[] = {anchored};
+    const ScopedExtraTemplates registration(extras);
+
+    internal::AdvancedParserOptions advanced;
+    advanced.batchSizeBytes = 24;
+
+    const TestLogFile file("regex_header_anchor_crossbatch.log");
+    file.Write(
+        "2026-01-01 ERROR boom\n"
+        "Traceback (most recent call last):\n"
+        "  File \"a.py\", line 7\n"
+        "During handling of the above exception, another exception occurred:\n"
+        "  File \"b.py\", line 9\n"
+        "2026-01-02 INFO recovered\n"
+    );
+
+    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
+    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    FileLineSource *sourcePtr = source.get();
+    internal::BufferingSink sink(std::move(source));
+
+    RegexParser::ParseStreaming(*sourcePtr, sink, ParserOptions{}, advanced, std::optional<std::string_view>{pattern});
+
+    LogData data = sink.TakeData();
+    const std::vector<std::string> errors = sink.TakeErrors();
+    for (const auto &e : errors)
+    {
+        UNSCOPED_INFO("parse error: " << e);
+    }
+    REQUIRE(errors.empty());
+    REQUIRE(data.Lines().size() == 2);
+
+    const KeyId kMessage = data.Keys().Find("message");
+    REQUIRE(kMessage != INVALID_KEY_ID);
+    const LogValue v0 = data.Lines()[0].GetValue(kMessage);
+    const auto m0 = AsStringView(v0);
+    REQUIRE(m0.has_value());
+    CHECK(m0->contains("boom"));
+    CHECK(m0->contains("Traceback"));
+    CHECK(m0->contains("a.py"));
+    CHECK(m0->contains("During handling"));
+    CHECK(m0->contains("b.py"));
+}
+
+TEST_CASE(
+    "RegexParser: bad headerAnchor surfaces a compile error (streaming)", "[regex_parser][multiline][header_anchor]"
+)
+{
+    using namespace loglib;
+
+    const std::string pattern = R"(^(?<ts>\d{4}-\d{2}-\d{2})\s+(?<level>\w+)\s+(?<message>.*)$)";
+    const RegexTemplate bad{
+        .name = "test-header-anchor-bad-streaming",
+        .pattern = pattern,
+        .sampleLines = {"2026-01-01 INFO ok"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::UntilNextHeader,
+        .headerAnchor = R"((?<a)",
+    };
+    const RegexTemplate extras[] = {bad};
+    const ScopedExtraTemplates registration(extras);
+
+    const RegexParser parser{std::string{pattern}};
+
+    const std::string payload = "2026-01-01 ERROR boom\nTraceback\n2026-01-02 INFO ok\n";
+    StreamLineSource source(
+        std::filesystem::path("anchor_bad_stream.log"), std::make_unique<StreamingInMemoryProducer>(payload)
+    );
+    CollectingStreamSink sink;
+    parser.ParseStreaming(source, sink, ParserOptions{});
+
+    REQUIRE(sink.finished);
+
+    std::vector<LogLine *> lines;
+    for (auto &b : sink.batches)
+    {
+        for (auto &l : b.lines)
+        {
+            lines.push_back(&l);
+        }
+    }
+    const auto errors = FlattenSinkErrors(sink);
+    REQUIRE(errors.size() == 1);
+    CHECK(errors.front().contains("Header anchor compile failed"));
+    CHECK(lines.empty());
+}
+
+TEST_CASE("RegexParser: bad headerAnchor surfaces a compile error (static)", "[regex_parser][multiline][header_anchor]")
+{
+    using namespace loglib;
+
+    const std::string pattern = R"(^(?<ts>\d{4}-\d{2}-\d{2})\s+(?<level>\w+)\s+(?<message>.*)$)";
+    const RegexTemplate bad{
+        .name = "test-header-anchor-bad-static",
+        .pattern = pattern,
+        .sampleLines = {"2026-01-01 INFO ok"},
+        .autoDetect = false,
+        .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+        .description = "",
+        .continuationMode = ContinuationMode::UntilNextHeader,
+        .headerAnchor = R"((?<a)",
+    };
+    const RegexTemplate extras[] = {bad};
+    const ScopedExtraTemplates registration(extras);
+
+    const TestLogFile file("regex_header_anchor_bad_static.log");
+    file.Write("2026-01-01 ERROR boom\nTraceback\n2026-01-02 INFO ok\n");
+
+    auto logFile = std::make_unique<LogFile>(file.GetFilePath());
+    auto source = std::make_unique<FileLineSource>(std::move(logFile));
+    FileLineSource *sourcePtr = source.get();
+    internal::BufferingSink sink(std::move(source));
+
+    RegexParser::ParseStreaming(
+        *sourcePtr, sink, ParserOptions{}, internal::AdvancedParserOptions{}, std::optional<std::string_view>{pattern}
+    );
+
+    LogData data = sink.TakeData();
+    const std::vector<std::string> errors = sink.TakeErrors();
+    REQUIRE(errors.size() == 1);
+    CHECK(errors.front().contains("Header anchor compile failed"));
+    CHECK(data.Lines().empty());
+}
+
+TEST_CASE(
+    "RegexParser: headerAnchor ignored when continuationMode != UntilNextHeader",
+    "[regex_parser][multiline][header_anchor]"
+)
+{
+    using namespace loglib;
+
+    const std::string pattern = R"(^(?<level>\w+)\s+(?<message>.*)$)";
+    const std::string payload = "error boom\n"
+                                "\tat com.example.Foo.bar(Foo.java:42)\n"
+                                "\tat com.example.Baz.qux(Baz.java:7)\n"
+                                "info recovered\n";
+
+    auto runOnce = [&](const std::string &anchor) {
+        const RegexTemplate extra{
+            .name = "test-header-anchor-ignored",
+            .pattern = pattern,
+            .sampleLines = {"info ok"},
+            .autoDetect = false,
+            .priority = USER_TEMPLATE_DEFAULT_PRIORITY,
+            .description = "",
+            .continuationMode = ContinuationMode::Indented,
+            .headerAnchor = anchor,
+        };
+        const RegexTemplate extras[] = {extra};
+        const ScopedExtraTemplates registration(extras);
+
+        const RegexParser parser{std::string{pattern}};
+        StreamLineSource source(
+            std::filesystem::path("anchor_ignored.log"), std::make_unique<StreamingInMemoryProducer>(payload)
+        );
+        CollectingStreamSink sink;
+        parser.ParseStreaming(source, sink, ParserOptions{});
+        REQUIRE(sink.finished);
+        CHECK(FlattenSinkErrors(sink).empty());
+
+        std::vector<std::string> joined;
+        for (auto &b : sink.batches)
+        {
+            for (auto &l : b.lines)
+            {
+                const auto value = l.GetValue("message");
+                const auto m = AsStringView(value);
+                REQUIRE(m.has_value());
+                joined.emplace_back(*m);
+            }
+        }
+        return joined;
+    };
+
+    const auto control = runOnce("");
+    const auto withAnchor = runOnce(R"(^\d{4}-)");
+    CHECK(control == withAnchor);
+}
+
+TEST_CASE("ValidateHeaderAnchor accepts empty [regex]", "[regex_parser][header_anchor]")
+{
+    std::string err = "stale";
+    CHECK(ValidateHeaderAnchor("", err));
+    CHECK(err.empty());
+}
+
+TEST_CASE("ValidateHeaderAnchor rejects patterns that fail to compile [regex]", "[regex_parser][header_anchor]")
+{
+    std::string err;
+    CHECK_FALSE(ValidateHeaderAnchor(R"((?<a)", err));
+    CHECK(err.contains("Header anchor compile failed"));
+}
+
+TEST_CASE("ValidateHeaderAnchor accepts patterns without named groups [regex]", "[regex_parser][header_anchor]")
+{
+    std::string err = "stale";
+    CHECK(ValidateHeaderAnchor(R"(^\d{4}-)", err));
+    CHECK(err.empty());
 }
 
 TEST_CASE("RegexParser handles empty file cleanly [regex]", "[regex_parser]")

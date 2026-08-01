@@ -16,6 +16,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <optional>
@@ -33,9 +34,109 @@ namespace loglib::internal
 constexpr size_t STREAMING_BATCH_FLUSH_LINES = 250;
 constexpr auto STREAMING_BATCH_FLUSH_INTERVAL = std::chrono::milliseconds(100);
 
+/// Maximum time a multi-line record may remain invisible while
+/// waiting for another header or EOF.
+constexpr auto STREAMING_PENDING_RECORD_MAX_AGE = std::chrono::milliseconds(500);
+
 /// Read buffer size for the live-tail loop. Matches `TailingBytesProducer`'s
 /// pre-fill chunk; small enough that each `Read` returns promptly.
 constexpr size_t STREAMING_READ_BUFFER_SIZE = 64 * 1024;
+
+/// Extend @p targetKey with separator-prefixed continuation bytes.
+/// Mmap-backed values require @p mmapBytes and are materialised into
+/// @p ownedArena. A bare `key=` is promoted without a leading separator.
+inline ContinuationSpliceOutcome ExtendContinuationTarget(
+    std::vector<std::pair<KeyId, CompactLogValue>> &values,
+    std::string &ownedArena,
+    KeyId targetKey,
+    std::string_view continuationBytes,
+    std::string_view mmapBytes = std::string_view{}
+)
+{
+    if (targetKey == INVALID_KEY_ID)
+    {
+        return ContinuationSpliceOutcome::MissingTarget;
+    }
+    if (continuationBytes.empty())
+    {
+        return ContinuationSpliceOutcome::Ok;
+    }
+
+    for (auto &kv : values)
+    {
+        if (kv.first != targetKey)
+        {
+            continue;
+        }
+        CompactLogValue &v = kv.second;
+        switch (v.tag)
+        {
+        case CompactTag::OwnedString:
+        {
+            const uint64_t offset = v.payload;
+            const uint32_t length = v.aux;
+            if (offset + length == ownedArena.size())
+            {
+                ownedArena.append(continuationBytes.data(), continuationBytes.size());
+                v.aux = static_cast<uint32_t>(static_cast<size_t>(length) + continuationBytes.size());
+            }
+            else
+            {
+                // Reserve before self-appending: reallocation would
+                // invalidate the source pointer, and overlap safety
+                // is not guaranteed.
+                ownedArena.reserve(ownedArena.size() + length + continuationBytes.size());
+                const uint64_t newOffset = ownedArena.size();
+                ownedArena.append(ownedArena.data() + offset, length);
+                ownedArena.append(continuationBytes.data(), continuationBytes.size());
+                v.payload = newOffset;
+                v.aux = static_cast<uint32_t>(static_cast<size_t>(length) + continuationBytes.size());
+            }
+            return ContinuationSpliceOutcome::Ok;
+        }
+        case CompactTag::Monostate:
+        {
+            // A bare `key=` has no preceding content to separate.
+            std::string_view bytes = continuationBytes;
+            if (!bytes.empty() && bytes.front() == '\n')
+            {
+                bytes.remove_prefix(1);
+            }
+            v.tag = CompactTag::OwnedString;
+            v.payload = ownedArena.size();
+            v.aux = static_cast<uint32_t>(bytes.size());
+            ownedArena.append(bytes.data(), bytes.size());
+            return ContinuationSpliceOutcome::Ok;
+        }
+        case CompactTag::MmapSlice:
+        {
+            // Materialise the mmap slice before extending it.
+            const uint64_t offset = v.payload;
+            const uint32_t length = v.aux;
+            if (mmapBytes.empty() || offset + length > mmapBytes.size())
+            {
+                return ContinuationSpliceOutcome::NonStringTarget;
+            }
+            const uint64_t newOffset = ownedArena.size();
+            ownedArena.append(mmapBytes.data() + offset, length);
+            ownedArena.append(continuationBytes.data(), continuationBytes.size());
+            v.tag = CompactTag::OwnedString;
+            v.payload = newOffset;
+            v.aux = static_cast<uint32_t>(static_cast<size_t>(length) + continuationBytes.size());
+            return ContinuationSpliceOutcome::Ok;
+        }
+        case CompactTag::DictRef:
+        case CompactTag::Int64:
+        case CompactTag::Uint64:
+        case CompactTag::Double:
+        case CompactTag::Bool:
+        case CompactTag::Timestamp:
+            return ContinuationSpliceOutcome::NonStringTarget;
+        }
+        return ContinuationSpliceOutcome::NonStringTarget;
+    }
+    return ContinuationSpliceOutcome::MissingTarget;
+}
 
 /// Format-agnostic live-tail entry point. Drains `source.Producer()`
 /// line-by-line, hands each non-blank line to @p decoder (must
@@ -48,6 +149,9 @@ constexpr size_t STREAMING_READ_BUFFER_SIZE = 64 * 1024;
 /// thread and read concurrently by the GUI; `StreamLineSource`'s
 /// internal mutex + deque storage make that safe.
 ///
+/// A `Continue` result extends the pending record's raw text and the
+/// field selected by `decoder.LastContinuationTarget()`. Pending
+/// records commit on `Emit`, EOF, or the maximum pending age.
 /// @p newKeyBaseline forwards to `BatchCoalescer`. Parsers that
 /// pre-intern keys into the sink's `KeyIndex` before calling here
 /// (e.g. `RegexParser`, whose schema comes from the pattern's
@@ -96,6 +200,147 @@ void RunStreamingParseLoop(
     std::string ownedArena;
     std::string lineError;
 
+    /// Mutable record held outside the coalescer until `AppendLine`
+    /// assigns its stable line ID.
+    struct PendingRecord
+    {
+        std::string rawText;
+        std::string ownedArena;
+        std::vector<std::pair<KeyId, CompactLogValue>> compactValues;
+        size_t startLineNumber = 0;
+        KeyId continuationTarget = INVALID_KEY_ID;
+        // Separator-prefixed continuation content for the target field.
+        // Blank physical lines are intentionally excluded.
+        std::string continuationBytes;
+        // Raw record suffix; unlike the field value, this preserves
+        // blank physical lines between continuations.
+        std::string rawTextAppendix;
+        // Blanks become record content only if another continuation follows.
+        size_t pendingBlanks = 0;
+        std::chrono::steady_clock::time_point openedAt;
+        /// Whether continuation bytes can be buffered safely. Invalid
+        /// targets are counted and dropped to bound memory use.
+        bool continuationAcceptsText = false;
+        /// Invalid-target continuations summarized at commit.
+        size_t droppedContinuationLines = 0;
+    };
+    std::optional<PendingRecord> pending;
+
+    // Reject invalid targets before buffering to keep memory bounded.
+    auto canAcceptContinuation = [](std::span<const std::pair<KeyId, CompactLogValue>> values, KeyId key) -> bool {
+        if (key == INVALID_KEY_ID)
+        {
+            return false;
+        }
+        for (const auto &kv : values)
+        {
+            if (kv.first != key)
+            {
+                continue;
+            }
+            switch (kv.second.tag)
+            {
+            case CompactTag::OwnedString:
+            case CompactTag::Monostate:
+            case CompactTag::MmapSlice:
+                return true;
+            case CompactTag::DictRef:
+            case CompactTag::Int64:
+            case CompactTag::Uint64:
+            case CompactTag::Double:
+            case CompactTag::Bool:
+            case CompactTag::Timestamp:
+                return false;
+            }
+            return false;
+        }
+        return false;
+    };
+
+    // Summarize each consecutive orphan run as one error.
+    size_t orphanRunFirstLine = 0;
+    size_t orphanRunLastLine = 0;
+    auto flushOrphanRun = [&]() {
+        if (orphanRunFirstLine == 0)
+        {
+            return;
+        }
+        std::string msg;
+        if (orphanRunFirstLine == orphanRunLastLine)
+        {
+            msg = fmt::format("Error on line {}: Orphaned continuation line.", orphanRunFirstLine);
+        }
+        else
+        {
+            msg = fmt::format(
+                "Error on lines {}-{}: {} orphaned continuation lines dropped.",
+                orphanRunFirstLine,
+                orphanRunLastLine,
+                orphanRunLastLine - orphanRunFirstLine + 1
+            );
+        }
+        coalescer.Pending().errors.emplace_back(std::move(msg));
+        orphanRunFirstLine = 0;
+        orphanRunLastLine = 0;
+    };
+
+    auto commitPending = [&]() {
+        if (!pending)
+        {
+            return;
+        }
+        PendingRecord rec = std::move(*pending);
+        pending.reset();
+
+        if (!rec.continuationBytes.empty())
+        {
+            const ContinuationSpliceOutcome outcome = ExtendContinuationTarget(
+                rec.compactValues, rec.ownedArena, rec.continuationTarget, rec.continuationBytes
+            );
+            if (outcome == ContinuationSpliceOutcome::Ok)
+            {
+                rec.rawText.append(rec.rawTextAppendix);
+            }
+            else
+            {
+                // Defensive: buffered targets should already be valid.
+                coalescer.Pending().errors.emplace_back(
+                    fmt::format(
+                        "Continuation lines dropped on line {}: {}.",
+                        rec.startLineNumber,
+                        outcome == ContinuationSpliceOutcome::MissingTarget
+                            ? "target field is not present in the record"
+                            : "target field is not a string"
+                    )
+                );
+            }
+        }
+        // Trailing blanks remain between-record separators.
+        if (rec.droppedContinuationLines > 0)
+        {
+            coalescer.Pending().errors.emplace_back(
+                fmt::format(
+                    "Continuation lines dropped on line {} ({} line{}): target field is not present in the record or "
+                    "is not a string.",
+                    rec.startLineNumber,
+                    rec.droppedContinuationLines,
+                    rec.droppedContinuationLines == 1 ? "" : "s"
+                )
+            );
+        }
+
+        std::sort(rec.compactValues.begin(), rec.compactValues.end(), [](const auto &a, const auto &b) {
+            return a.first < b.first;
+        });
+
+        const size_t lineId = source.AppendLine(std::move(rec.rawText), std::move(rec.ownedArena));
+        LogLine logLine(std::move(rec.compactValues), keys, source, lineId);
+        // Promote only after all continuations have joined the record.
+        promoteScratch.PromoteTimestamps(logLine, timeColumnsSpan, std::string_view{});
+        coalescer.Prime(rec.startLineNumber);
+        coalescer.Pending().lines.push_back(std::move(logLine));
+    };
+
     auto processLine = [&](std::string_view line) {
         std::string_view trimmed = line;
         if (!trimmed.empty() && trimmed.back() == '\r')
@@ -107,6 +352,12 @@ void RunStreamingParseLoop(
 
         if (trimmed.empty())
         {
+            flushOrphanRun();
+            // Delay classifying blanks until another continuation arrives.
+            if (pending && pending->continuationAcceptsText)
+            {
+                ++pending->pendingBlanks;
+            }
             return;
         }
 
@@ -114,6 +365,7 @@ void RunStreamingParseLoop(
             decoder.DecodeCompact(trimmed, keys, &promoteScratch.keyCache, compactValues, ownedArena, lineError);
         if (result == LineDecodeResult::Error)
         {
+            flushOrphanRun();
             coalescer.Pending().errors.emplace_back(
                 fmt::format("Error on line {}: {}", lineNumber, std::move(lineError))
             );
@@ -121,35 +373,74 @@ void RunStreamingParseLoop(
         }
         if (result == LineDecodeResult::Skip)
         {
-            // No row, no error. The line-number cursor is already
-            // advanced; used for header preludes (e.g. CSV).
+            flushOrphanRun();
             return;
         }
+        if (result == LineDecodeResult::Continue)
+        {
+            if (pending)
+            {
+                flushOrphanRun();
+                if (pending->continuationAcceptsText)
+                {
+                    // Preserve blanks in raw text, but not in the target field.
+                    if (pending->pendingBlanks > 0)
+                    {
+                        pending->rawTextAppendix.append(pending->pendingBlanks, '\n');
+                        pending->pendingBlanks = 0;
+                    }
+                    pending->continuationBytes.push_back('\n');
+                    pending->continuationBytes.append(trimmed.data(), trimmed.size());
+                    pending->rawTextAppendix.push_back('\n');
+                    pending->rawTextAppendix.append(trimmed.data(), trimmed.size());
+                }
+                else
+                {
+                    // Count invalid-target lines without retaining their bytes.
+                    ++pending->droppedContinuationLines;
+                    pending->pendingBlanks = 0;
+                }
+            }
+            else
+            {
+                if (orphanRunFirstLine == 0)
+                {
+                    orphanRunFirstLine = lineNumber;
+                }
+                orphanRunLastLine = lineNumber;
+            }
+            return;
+        }
+        // Keep new result variants from silently falling through as `Emit`.
+        assert(result == LineDecodeResult::Emit);
+        if (result != LineDecodeResult::Emit)
+        {
+            std::unreachable();
+        }
 
-        // `LogLine` ctor's debug `is_sorted` assertion requires
-        // ascending KeyIds; decoders may emit in source order.
-        std::sort(compactValues.begin(), compactValues.end(), [](const auto &a, const auto &b) {
-            return a.first < b.first;
-        });
+        // A new header seals the previous record.
+        flushOrphanRun();
+        commitPending();
 
-        // Atomic commit: `AppendLine` move-transfers both the raw
-        // bytes and the per-line arena under the source's mutex.
-        const size_t lineId = source.AppendLine(std::string(trimmed), std::move(ownedArena));
-        ownedArena.clear();
+        PendingRecord fresh;
+        fresh.rawText.assign(trimmed.data(), trimmed.size());
+        fresh.ownedArena = std::move(ownedArena);
+        fresh.compactValues = std::move(compactValues);
+        fresh.startLineNumber = lineNumber;
+        fresh.openedAt = std::chrono::steady_clock::now();
+        // Decoders that return `Continue` must expose its target.
+        if constexpr (requires { decoder.LastContinuationTarget(); })
+        {
+            fresh.continuationTarget = decoder.LastContinuationTarget();
+        }
+        fresh.continuationAcceptsText = canAcceptContinuation(
+            std::span<const std::pair<KeyId, CompactLogValue>>(fresh.compactValues), fresh.continuationTarget
+        );
+        pending = std::move(fresh);
 
-        LogLine logLine(std::move(compactValues), keys, source, lineId);
-        // Reset the moved-from vector to a known-empty valid state.
-        // `DecodeCompact` also calls `out.clear()` on entry, but the
-        // analyzer can't see through the template decoder's body, so
-        // this prevents a `clang-analyzer-cplusplus.Move` false positive
-        // when the next iteration calls `compactValues.begin()`.
+        // Reset moved-from buffers explicitly for clang-analyzer.
         compactValues.clear();
-        // Empty arena -> resolution falls through to the line's
-        // `LineSource *` (i.e. `StreamLineSource::ResolveOwnedBytes`).
-        promoteScratch.PromoteTimestamps(logLine, timeColumnsSpan, std::string_view{});
-
-        coalescer.Prime(lineNumber);
-        coalescer.Pending().lines.push_back(std::move(logLine));
+        ownedArena.clear();
     };
 
     bool reachedEof = false;
@@ -173,6 +464,15 @@ void RunStreamingParseLoop(
             }
             else
             {
+                // Bound how long a quiet producer keeps a record invisible.
+                if (pending)
+                {
+                    const auto age = std::chrono::steady_clock::now() - pending->openedAt;
+                    if (age >= STREAMING_PENDING_RECORD_MAX_AGE)
+                    {
+                        commitPending();
+                    }
+                }
                 coalescer.TryFlush(false);
                 producer->WaitForBytes(STREAMING_BATCH_FLUSH_INTERVAL);
                 continue;
@@ -210,6 +510,10 @@ void RunStreamingParseLoop(
         processLine(line);
         carry.clear();
     }
+
+    // Flush pending records and orphan summaries before the terminal batch.
+    flushOrphanRun();
+    commitPending();
 
     coalescer.Finish(nextLineNumber, stopToken.stop_requested());
 }

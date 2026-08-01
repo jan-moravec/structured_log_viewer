@@ -338,17 +338,20 @@ loglib::StreamedBatch QtStreamingLogSink::CoalesceLocked(std::vector<loglib::Str
     size_t lineOffsetCount = 0;
     size_t errorCount = 0;
     size_t newKeyCount = 0;
+    size_t multiLineSpanCount = 0;
     for (const auto &batch : batches)
     {
         lineRows += batch.lines.size();
         lineOffsetCount += batch.localLineOffsets.size();
         errorCount += batch.errors.size();
         newKeyCount += batch.newKeys.size();
+        multiLineSpanCount += batch.multiLineSpans.size();
     }
     out.lines.reserve(lineRows);
     out.localLineOffsets.reserve(lineOffsetCount);
     out.errors.reserve(errorCount);
     out.newKeys.reserve(newKeyCount);
+    out.multiLineSpans.reserve(multiLineSpanCount);
     out.firstLineNumber = batches.front().firstLineNumber;
     for (auto &batch : batches)
     {
@@ -356,6 +359,8 @@ loglib::StreamedBatch QtStreamingLogSink::CoalesceLocked(std::vector<loglib::Str
         std::ranges::move(batch.localLineOffsets, std::back_inserter(out.localLineOffsets));
         std::ranges::move(batch.errors, std::back_inserter(out.errors));
         std::ranges::move(batch.newKeys, std::back_inserter(out.newKeys));
+        // Span indices are absolute, so concatenation needs no rebasing.
+        std::ranges::move(batch.multiLineSpans, std::back_inserter(out.multiLineSpans));
     }
     return out;
 }

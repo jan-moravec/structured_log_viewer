@@ -4,9 +4,11 @@
 #include "key_index.hpp"
 #include "line_source.hpp"
 #include "log_line.hpp"
+#include "log_parse_sink.hpp"
 #include "stream_line_source.hpp"
 
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -81,7 +83,12 @@ public:
     /// Append a parsed batch. `lineOffsets` populates
     /// `LogFile::mLineOffsets` for file sources; the live-tail path
     /// passes an empty vector (the source owns its per-line storage).
-    void AppendBatch(std::vector<LogLine> lines, const std::vector<uint64_t> &lineOffsets);
+    /// Registers @p multiLineSpans after their offsets are appended.
+    void AppendBatch(
+        std::vector<LogLine> lines,
+        const std::vector<uint64_t> &lineOffsets,
+        std::span<const MultiLineRecordSpan> multiLineSpans = {}
+    );
 
 private:
     std::vector<std::unique_ptr<LineSource>> mSources;

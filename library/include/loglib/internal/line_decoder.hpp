@@ -20,15 +20,29 @@ namespace loglib::internal
 ///    The loop still advances the line-number cursor.
 ///  - `Error`: emit no row; the loop wraps @p errorOut as
 ///    "Error on line N: ...".
+///  - `Continue`: defer emission and let the parse loop append this
+///    line to the preceding record. Without a preceding `Emit`, the
+///    line is reported as an orphaned continuation.
 enum class LineDecodeResult : uint8_t
 {
     Emit,
     Skip,
     Error,
+    Continue,
+};
+
+/// Outcome of extending a record's continuation target.
+/// `MissingTarget` includes absent optional captures;
+/// `NonStringTarget` includes unavailable mmap-backed strings.
+enum class ContinuationSpliceOutcome : uint8_t
+{
+    Ok,
+    MissingTarget,
+    NonStringTarget,
 };
 
 /// Format-specific record decoder for the streaming pipeline.
-/// `RunStreamingParseLoop` feeds one record at a time and stays
+/// `RunStreamingParseLoop` feeds one physical line at a time and stays
 /// format-agnostic; per-format code implements this concept.
 ///
 /// The pipeline pre-filters empty/blank lines, so @p line is non-empty.
@@ -42,6 +56,8 @@ enum class LineDecodeResult : uint8_t
 ///
 /// Implementations may carry per-run scratch state (simdjson parser,
 /// padded buffers, CSV header latch, etc.) as member fields.
+/// Decoders returning `Continue` must also expose
+/// `LastContinuationTarget()` with the field to extend.
 template <class T>
 concept CompactLineDecoder = requires(
     T &decoder,
