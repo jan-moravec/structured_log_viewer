@@ -32,7 +32,7 @@ using ExportFormat = slv::exports::ExportFormat;
 /// docs cannot drift apart.
 struct FormatEntry
 {
-    ExportFormat format;
+    ExportFormat format = ExportFormat::JsonLines;
     QString label;      // "JSON Lines"
     QString extension;  // "jsonl" (no leading dot)
     QString fileFilter; // "JSON Lines (*.jsonl);;All Files (*)"
@@ -117,7 +117,7 @@ ExportDialog::ExportDialog(
     layout->addLayout(form);
 
     mFormatCombo = new QComboBox(this);
-    QSettings settings;
+    const QSettings settings;
     const int savedFormat = settings.value(QStringLiteral("ui/lastExportFormat"), static_cast<int>(ExportFormat::JsonLines)).toInt();
     // Fall back to shipped defaults when nothing is persisted.
     const bool savedIncludeHeader =
@@ -292,7 +292,7 @@ void ExportDialog::OnAccept()
     // Reflect the normalised path back so what the user sees
     // matches what `Configuration()` will return.
     mDestinationEdit->setText(QDir::toNativeSeparators(path));
-    QFileInfo info(path);
+    const QFileInfo info(path);
     if (info.isDir())
     {
         QMessageBox::warning(this, tr("Export"), tr("The destination points to a directory."));

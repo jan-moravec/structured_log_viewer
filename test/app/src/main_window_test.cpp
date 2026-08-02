@@ -2674,6 +2674,7 @@ private slots:
 
         auto *tableView = mWindow->findChild<LogTableView *>();
         QVERIFY(tableView != nullptr);
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage): false positive; prior `QVERIFY` aborts on null.
         QVERIFY(tableView->selectionModel() != nullptr);
 
         loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);

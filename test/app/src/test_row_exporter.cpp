@@ -161,11 +161,11 @@ public:
         }
         return {};
     }
-    [[nodiscard]] std::string_view ResolveMmapBytes(std::uint64_t, std::uint32_t, std::size_t) const noexcept override
+    [[nodiscard]] std::string_view ResolveMmapBytes(std::uint64_t /*ownerId*/, std::uint32_t /*offset*/, std::size_t /*length*/) const noexcept override
     {
         return {};
     }
-    [[nodiscard]] std::string_view ResolveOwnedBytes(std::uint64_t, std::uint32_t, std::size_t) const noexcept override
+    [[nodiscard]] std::string_view ResolveOwnedBytes(std::uint64_t /*ownerId*/, std::uint32_t /*offset*/, std::size_t /*length*/) const noexcept override
     {
         return {};
     }
@@ -173,7 +173,7 @@ public:
     {
         return {};
     }
-    std::uint64_t AppendOwnedBytes(std::size_t, std::string_view) override
+    std::uint64_t AppendOwnedBytes(std::size_t /*lineId*/, std::string_view /*bytes*/) override
     {
         return 0;
     }
@@ -181,7 +181,7 @@ public:
     {
         return false;
     }
-    void EvictBefore(std::size_t) override {}
+    void EvictBefore(std::size_t /*lineId*/) override {}
     [[nodiscard]] std::size_t FirstAvailableLineId() const noexcept override
     {
         return 1;
@@ -207,10 +207,20 @@ public:
         mPath += std::to_string(nsecs);
         std::filesystem::create_directories(mPath, ec);
     }
-    ~ScopedTempDir()
+    ~ScopedTempDir() noexcept
     {
-        std::error_code ec;
-        std::filesystem::remove_all(mPath, ec);
+        try
+        {
+            std::error_code ec;
+            std::filesystem::remove_all(mPath, ec);
+        }
+        catch (...) // NOLINT(bugprone-empty-catch)
+        {
+            // Best-effort cleanup: fine to swallow any exception
+            // (e.g. std::bad_alloc from the internal directory
+            // iterator). The test harness will still succeed; the
+            // OS reclaims the temp directory on the next reboot.
+        }
     }
     ScopedTempDir(const ScopedTempDir &) = delete;
     ScopedTempDir &operator=(const ScopedTempDir &) = delete;
@@ -250,7 +260,17 @@ loglib::LogTable BuildFixtureTable(std::vector<std::string> rawLines, std::size_
     {
         loglib::LogMap map;
         map["ts"] = loglib::TimeStamp{t0 + std::chrono::microseconds(static_cast<std::int64_t>(i * 1000))};
-        map["level"] = std::string(i % 3 == 0 ? "info" : (i % 3 == 1 ? "warn" : "error"));
+        const auto levelSlot = i % 3;
+        const char *levelText = "error";
+        if (levelSlot == 0)
+        {
+            levelText = "info";
+        }
+        else if (levelSlot == 1)
+        {
+            levelText = "warn";
+        }
+        map["level"] = std::string(levelText);
         map["message"] = std::string("hello, \"world\"\n#") + std::to_string(i);
         map["count"] = static_cast<std::int64_t>(i);
         map["ratio"] = static_cast<double>(i) * 0.5;
@@ -270,13 +290,13 @@ loglib::LogTable BuildFixtureTable(std::vector<std::string> rawLines, std::size_
 
     loglib::LogConfigurationManager manager;
     manager.SetConfiguration(std::move(config));
-    return loglib::LogTable(std::move(data), std::move(manager));
+    return {std::move(data), std::move(manager)};
 }
 
 /// Read a small file into memory. Used by the atomic-rename test.
 std::string ReadFile(const std::filesystem::path &path)
 {
-    std::ifstream file(path, std::ios::binary);
+    const std::ifstream file(path, std::ios::binary);
     std::stringstream ss;
     ss << file.rdbuf();
     return ss.str();
@@ -358,7 +378,7 @@ void RowExporterTest::TestJsonLinesTypedValues()
 
     std::vector<int> rows = {0, 1};
     std::vector<std::size_t> cols = {0, 1, 2, 3, 4, 5};
-    RowSource source{
+    const RowSource source{
         .table = &table,
         .sourceRows = rows,
         .visibleColumns = cols,
@@ -405,7 +425,7 @@ void RowExporterTest::TestJsonLinesTypeFidelityOnSyntheticRows()
     std::vector<int> rows(ROW_COUNT);
     std::iota(rows.begin(), rows.end(), 0);
     std::vector<std::size_t> cols;
-    RowSource source{
+    const RowSource source{
         .table = &table,
         .sourceRows = rows,
         .visibleColumns = cols,
@@ -450,7 +470,7 @@ void RowExporterTest::TestCsvRfc4180Quoting()
     // `"world"` and a `\n`, so RFC 4180 requires quoting + inner-`"`
     // doubling.
     std::vector<std::size_t> cols = {1, 2};
-    RowSource source{
+    const RowSource source{
         .table = &table,
         .sourceRows = rows,
         .visibleColumns = cols,
@@ -476,7 +496,7 @@ void RowExporterTest::TestCsvHeaderToggle()
     std::vector<std::size_t> cols = {1, 3};
 
     {
-        RowSource src{.table = &table, .sourceRows = rows, .visibleColumns = cols, .includeAllFieldsForJson = false, .includeHeaderRow = true};
+        const RowSource src{.table = &table, .sourceRows = rows, .visibleColumns = cols, .includeAllFieldsForJson = false, .includeHeaderRow = true};
         MemorySink sink;
         auto exporter = slv::exports::MakeExporter(ExportFormat::Csv);
         exporter->Run(src, sink, loglib::StopToken{});
@@ -485,7 +505,7 @@ void RowExporterTest::TestCsvHeaderToggle()
         QVERIFY(out.startsWith(QStringLiteral("Level,Count\n")));
     }
     {
-        RowSource src{.table = &table, .sourceRows = rows, .visibleColumns = cols, .includeAllFieldsForJson = false, .includeHeaderRow = false};
+        const RowSource src{.table = &table, .sourceRows = rows, .visibleColumns = cols, .includeAllFieldsForJson = false, .includeHeaderRow = false};
         MemorySink sink;
         auto exporter = slv::exports::MakeExporter(ExportFormat::Csv);
         exporter->Run(src, sink, loglib::StopToken{});
@@ -533,7 +553,7 @@ void RowExporterTest::TestCsvFormulaInjectionNeutralised()
 
     std::vector<int> rows = {0, 1, 2, 3};
     std::vector<std::size_t> cols = {0};
-    RowSource src{
+    const RowSource src{
         .table = &table,
         .sourceRows = rows,
         .visibleColumns = cols,
@@ -596,7 +616,7 @@ void RowExporterTest::TestJsonLinesDoubleTypeStability()
 
     std::vector<int> rows = {0, 1, 2, 3};
     std::vector<std::size_t> cols;
-    RowSource src{
+    const RowSource src{
         .table = &table,
         .sourceRows = rows,
         .visibleColumns = cols,
@@ -624,7 +644,7 @@ void RowExporterTest::TestMarkdownPipeAndNewlineHandling()
 {
     // Feed a row with a literal `|` in the message; the Markdown
     // exporter must escape it, otherwise the row would split.
-    std::vector<std::string> raws = {"raw1"};
+    const std::vector<std::string> raws = {"raw1"};
     auto stream = std::make_unique<loglib::StreamLineSource>(std::filesystem::path("fixture.md"), nullptr);
     stream->AppendLine("raw1", {});
     auto *sourcePtr = stream.get();
@@ -644,7 +664,7 @@ void RowExporterTest::TestMarkdownPipeAndNewlineHandling()
 
     std::vector<int> rows = {0};
     std::vector<std::size_t> cols = {0};
-    RowSource src{.table = &table, .sourceRows = rows, .visibleColumns = cols, .includeAllFieldsForJson = false, .includeHeaderRow = true};
+    const RowSource src{.table = &table, .sourceRows = rows, .visibleColumns = cols, .includeAllFieldsForJson = false, .includeHeaderRow = true};
 
     MemorySink sink;
     auto exporter = slv::exports::MakeExporter(ExportFormat::Markdown);
@@ -669,7 +689,7 @@ void RowExporterTest::TestSnapshotEchoesRawBytes()
 
     std::vector<int> rows = {0, 1};
     std::vector<std::size_t> cols;
-    RowSource src{.table = &table, .sourceRows = rows, .visibleColumns = cols};
+    const RowSource src{.table = &table, .sourceRows = rows, .visibleColumns = cols};
 
     MemorySink sink;
     auto exporter = slv::exports::MakeExporter(ExportFormat::Snapshot);
@@ -711,7 +731,7 @@ void RowExporterTest::TestSnapshotSkipsUnavailableRows()
 
     std::vector<int> rows = {0, 1, 2, 3};
     std::vector<std::size_t> cols;
-    RowSource src{.table = &table, .sourceRows = rows, .visibleColumns = cols};
+    const RowSource src{.table = &table, .sourceRows = rows, .visibleColumns = cols};
 
     MemorySink sink;
     auto exporter = slv::exports::MakeExporter(ExportFormat::Snapshot);
@@ -739,7 +759,7 @@ void RowExporterTest::TestSinkWriteFailurePropagatesFromAllFormats()
     // Lines / Snapshot ignore `visibleColumns` so the narrower
     // list still exercises them fully.
     std::vector<std::size_t> cols = {1, 2, 3, 4, 5};
-    RowSource src{
+    const RowSource src{
         .table = &table,
         .sourceRows = rows,
         .visibleColumns = cols,
@@ -813,7 +833,7 @@ void RowExporterTest::TestCancelLeavesNoPartialFile()
     std::vector<int> rows(ROW_COUNT);
     std::iota(rows.begin(), rows.end(), 0);
     std::vector<std::size_t> cols;
-    RowSource src{
+    const RowSource src{
         .table = &table,
         .sourceRows = rows,
         .visibleColumns = cols,
@@ -821,7 +841,7 @@ void RowExporterTest::TestCancelLeavesNoPartialFile()
         .includeHeaderRow = false,
     };
 
-    ScopedTempDir dir;
+    const ScopedTempDir dir;
     const auto destination = dir.FilePath("cancel_target.jsonl");
     const std::filesystem::path tempPath = destination.string() + ".tmp";
 
@@ -852,7 +872,7 @@ void RowExporterTest::TestCancelLeavesNoPartialFile()
 
 void RowExporterTest::TestFileSinkAtomicRename()
 {
-    ScopedTempDir dir;
+    const ScopedTempDir dir;
     const auto destination = dir.FilePath("atomic.txt");
     const std::filesystem::path tempPath = destination.string() + ".tmp";
 

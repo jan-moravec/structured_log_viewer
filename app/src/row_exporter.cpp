@@ -35,15 +35,19 @@ constexpr size_t STOP_POLL_INTERVAL_ROWS = 4096;
 /// the row boundary without buffering the whole export.
 constexpr size_t ROW_SCRATCH_RESERVE = 512;
 
+/// Bytes below this threshold are C0 control characters that
+/// JSON strings must escape (RFC 8259 §7).
+constexpr unsigned char JSON_CONTROL_CHAR_LIMIT = 0x20;
+
 /// Append a JSON-escaped copy of @p input to @p out (RFC 8259 §7).
-/// Bytes >= 0x20 pass through verbatim (UTF-8 safe); control bytes
-/// without a short escape use `\u00XX`.
+/// Bytes >= JSON_CONTROL_CHAR_LIMIT pass through verbatim (UTF-8
+/// safe); control bytes without a short escape use `\u00XX`.
 void AppendJsonEscaped(std::string &out, std::string_view input)
 {
     out.reserve(out.size() + input.size() + 2);
-    for (size_t i = 0; i < input.size(); ++i)
+    for (const char c : input)
     {
-        const auto ch = static_cast<unsigned char>(input[i]);
+        const auto ch = static_cast<unsigned char>(c);
         switch (ch)
         {
         case '"':
@@ -68,7 +72,7 @@ void AppendJsonEscaped(std::string &out, std::string_view input)
             out.append("\\t");
             break;
         default:
-            if (ch < 0x20)
+            if (ch < JSON_CONTROL_CHAR_LIMIT)
             {
                 fmt::format_to(std::back_inserter(out), "\\u{:04x}", static_cast<unsigned>(ch));
             }

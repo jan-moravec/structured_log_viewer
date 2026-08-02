@@ -3776,7 +3776,7 @@ void MainWindow::BeginAsyncExport(
     // Share the plan + sink so the worker capture cannot race the
     // finished-slot re-reading its members. Build the sink up-front
     // so open failures surface synchronously.
-    std::shared_ptr<slv::exports::ExportPlan> sharedPlan(std::move(plan));
+    const std::shared_ptr<slv::exports::ExportPlan> sharedPlan(std::move(plan));
     std::shared_ptr<slv::exports::FileSink> sink;
     try
     {
@@ -3937,8 +3937,13 @@ void MainWindow::CancelInFlightExport()
     {
         mExportWatcher->waitForFinished();
     }
-    catch (const std::exception &)
+    catch (const std::exception &) // NOLINT(bugprone-empty-catch)
     {
+        // Intentional: we're tearing down the export because the
+        // session is about to disappear (or MainWindow is being
+        // destroyed). ExportCancelled and I/O errors from the
+        // worker are both expected and there is no UI context
+        // left to report them into.
     }
     mExportWatcher->setFuture(QFuture<void>{});
     TeardownExportProgress();

@@ -27,7 +27,7 @@ std::string DescribeErrno(int err)
     {
         return "unknown error";
     }
-    return std::string(buf);
+    return {buf};
 #else
     // Two `strerror_r` shapes exist: the XSI variant returns
     // `int` (0 on success, writes into `buf`); the GNU variant
