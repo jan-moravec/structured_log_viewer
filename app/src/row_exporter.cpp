@@ -26,20 +26,18 @@ namespace slv::exports
 namespace
 {
 
-/// Poll the stop token every N rows. Keeps the check off the
-/// per-cell fast path while capping cancel latency to a few ms
-/// even on million-row exports.
+/// Stop-token poll cadence. Keeps the check off the per-cell hot
+/// path while capping cancel latency to a few ms even on
+/// million-row exports.
 constexpr size_t STOP_POLL_INTERVAL_ROWS = 4096;
 
-/// Small write batching: exporters build a per-row `std::string`
-/// scratch and flush it to the sink at the end of the row. Keeps
-/// `fwrite` calls large without holding the whole export in memory.
+/// Per-row `std::string` scratch capacity. Batches `fwrite` at
+/// the row boundary without buffering the whole export.
 constexpr size_t ROW_SCRATCH_RESERVE = 512;
 
 /// Append a JSON-escaped copy of @p input to @p out (RFC 8259 §7).
-/// Non-string bytes above 0x1F pass through verbatim (UTF-8 safe).
-/// Control bytes below 0x20 that don't have a short escape use
-/// `\u00XX`.
+/// Bytes >= 0x20 pass through verbatim (UTF-8 safe); control bytes
+/// without a short escape use `\u00XX`.
 void AppendJsonEscaped(std::string &out, std::string_view input)
 {
     out.reserve(out.size() + input.size() + 2);
@@ -83,19 +81,16 @@ void AppendJsonEscaped(std::string &out, std::string_view input)
     }
 }
 
-/// Serialise a `TimeStamp` as ISO 8601 with microsecond precision
-/// in UTC. `date::format` with `%FT%T` on a UTC zoned_time already
-/// includes fractional seconds derived from the underlying
-/// precision (microseconds), and the trailing `Z` is appended
-/// literally so the output is unambiguously UTC.
+/// Serialise a `TimeStamp` as ISO 8601 UTC with microsecond
+/// precision. `%FT%T` on a UTC `sys_time` already includes the
+/// fractional seconds; the literal trailing `Z` marks UTC
+/// unambiguously.
 ///
-/// The caller is expected to have already opened the JSON string
-/// (`"`) before this call and to close it (`"`) after. The failure
-/// fallback stays inside those quotes and emits the raw microsecond
-/// count as a decimal string -- valid JSON, still human-inspectable,
-/// but no longer ISO-parseable. A downstream reader that requires
-/// an ISO string should treat any purely-numeric content between the
-/// quotes as a diagnostic value rather than an instant.
+/// Caller has already opened / must close the enclosing JSON
+/// string. On far-future / far-past values that overflow
+/// `date::format`'s tables the fallback emits the raw microsecond
+/// count instead -- still valid JSON inside the caller's quotes,
+/// but not ISO-parseable.
 void AppendIsoTimestamp(std::string &out, loglib::TimeStamp ts)
 {
     try
@@ -106,11 +101,6 @@ void AppendIsoTimestamp(std::string &out, loglib::TimeStamp ts)
     }
     catch (const std::exception &)
     {
-        // `date::format` throws on far-future / far-past values past
-        // its internal tables. Emit the raw microsecond count so the
-        // row is still emitted (rather than aborting the export);
-        // the JSON stays valid because we're already inside a `"…"`
-        // opened by the caller.
         fmt::format_to(std::back_inserter(out), "{}", ts.time_since_epoch().count());
     }
 }
@@ -150,20 +140,14 @@ void AppendLogValueAsJson(std::string &out, const loglib::LogValue &value)
                 }
                 else
                 {
-                    // `fmt`'s default double formatting matches JSON
-                    // number grammar (no locale, no thousands sep,
-                    // shortest round-trip). `{}` uses the shortest
-                    // form that round-trips.
-                    //
-                    // Type-stability post-fix: whole-valued doubles
-                    // (`1.0`, `-3.0`, ...) format as `1` / `-3` under
-                    // default fmt shortest rules, which is valid JSON
-                    // but re-parses as an integer -- annoying when a
-                    // downstream reader keys behaviour off `typeof`
-                    // (Python's `json`, JS `Number.isInteger`, jq).
-                    // Detect the case and append `.0` so a Floating
-                    // column always survives round-trip as a
-                    // fractional literal.
+                    // `fmt`'s `{}` is a shortest round-trip that
+                    // matches JSON number grammar (no locale, no
+                    // thousands sep). Whole-valued doubles come out
+                    // as `1` / `-3`, which is valid JSON but
+                    // re-parses as an integer in typed readers
+                    // (Python `json`, JS `Number.isInteger`, jq).
+                    // Append `.0` in that case so a Floating column
+                    // survives round-trip as a fractional literal.
                     const std::size_t before = out.size();
                     fmt::format_to(std::back_inserter(out), "{}", arg);
                     const std::string_view emitted(out.data() + before, out.size() - before);
@@ -200,8 +184,8 @@ void AppendLogValueAsJson(std::string &out, const loglib::LogValue &value)
     );
 }
 
-/// Poll the stop token, throwing `ExportCancelled` if the user hit
-/// Cancel. Called between rows.
+/// Throw `ExportCancelled` when the user hit Cancel. Called
+/// between row batches.
 void PollStop(const loglib::StopToken &token)
 {
     if (token.stop_requested())
@@ -211,8 +195,7 @@ void PollStop(const loglib::StopToken &token)
 }
 
 /// Materialise every present field on @p line as `(key, LogValue)`
-/// pairs. Skips monostate slots (a `LogLine` should not carry them
-/// in practice, but be defensive).
+/// pairs. Defensively skips monostate slots.
 std::vector<std::pair<std::string_view, loglib::LogValue>>
 MaterialiseRow(const loglib::LogLine &line, const loglib::KeyIndex &keys)
 {
@@ -326,26 +309,22 @@ public:
         void *progressUserData) override;
 
 private:
-    /// Append @p cell to @p out, quoted per RFC 4180 iff it
+    /// Append @p cell to @p out, quoted per RFC 4180 when it
     /// contains `,`, `"`, `\r`, or `\n`.
     ///
-    /// **CSV formula-injection defense**: cells whose first byte is
-    /// `=` or `@` are additionally prefixed with `'` and force-
-    /// quoted. Excel / Google Sheets / LibreOffice treat these as
-    /// formula / DDE prefixes and will *evaluate* the cell contents
-    /// when the CSV is opened — a well-known vector (OWASP CSV
-    /// Injection) that turns a shared log dump into arbitrary code
-    /// execution on the recipient's machine. The `'` sentinel makes
-    /// spreadsheets render the cell as literal text; plain text
-    /// readers see `'=...` inside the quotes and can strip the
-    /// sentinel if they need the raw value. Leading `+` / `-` are
-    /// deliberately NOT rewritten because they also start every
-    /// negative / signed number in the log and mangling those would
-    /// break arithmetic in the vast majority of real spreadsheets.
+    /// **CSV formula-injection defense**: cells starting with `=`
+    /// or `@` are prefixed with `'` and force-quoted. Excel /
+    /// Sheets / LibreOffice would otherwise *evaluate* those cells
+    /// on open (OWASP CSV Injection) -- a shared log dump becomes
+    /// arbitrary code execution on the recipient's machine. The
+    /// `'` sentinel forces literal-text rendering; plain readers
+    /// see `'=...` and can strip it. Leading `+` / `-` are NOT
+    /// rewritten because they also start every negative number in
+    /// the log.
     static void AppendCsvCell(std::string &out, std::string_view cell);
 
-    /// True iff @p cell begins with a character a spreadsheet reader
-    /// would interpret as a formula / DDE prefix.
+    /// True iff @p cell starts with a spreadsheet formula / DDE
+    /// prefix (`=` or `@`).
     [[nodiscard]] static bool IsFormulaTrigger(std::string_view cell) noexcept
     {
         if (cell.empty())
@@ -370,10 +349,9 @@ void CsvExporter::AppendCsvCell(std::string &out, std::string_view cell)
     out.push_back('"');
     if (formulaTrigger)
     {
-        // Neutralise formula evaluation. `'` inside a quoted CSV cell
-        // is not itself a special character (no doubling required)
-        // and every spreadsheet treats the following content as
-        // literal text.
+        // The `'` sentinel forces spreadsheets to treat the cell
+        // as literal text. Not a CSV special character, so no
+        // doubling required inside the quoted cell.
         out.push_back('\'');
     }
     for (const char c : cell)
@@ -421,10 +399,9 @@ void CsvExporter::Run(
                 AppendCsvCell(scratch, config.columns[col].header);
             }
         }
-        // RFC 4180 line ending is CRLF; also accepted by every
-        // CSV reader we care about. Use LF-only for cross-platform
-        // consistency with the rest of the exports (Excel accepts
-        // both).
+        // LF only for cross-platform consistency with the other
+        // export formats. RFC 4180 says CRLF but every reader we
+        // care about (Excel included) accepts LF.
         scratch.push_back('\n');
         sink.Write(scratch);
         scratch.clear();
@@ -439,9 +416,9 @@ void CsvExporter::Run(
             PollStop(stopToken);
         }
         const int sourceRow = source.sourceRows[slot];
-        // Bounds match JsonLines / Snapshot: skip both negative and
-        // past-the-end indices so a mid-export FIFO eviction on the
-        // GUI thread doesn't hand us a row that has been dropped.
+        // Skip negative / past-the-end indices so a mid-export
+        // FIFO eviction on the GUI thread cannot hand us a
+        // dropped row.
         if (sourceRow < 0 || static_cast<size_t>(sourceRow) >= lines.size())
         {
             continue;
@@ -519,19 +496,15 @@ void SnapshotExporter::Run(
         {
             continue;
         }
-        // Only per-row `RawLine` failures are swallowed: `std::out_of_range`
-        // when a live-tail FIFO has evicted the line, `std::runtime_error`
-        // when the backing source (mmapped file, network stream) has gone
-        // away since the plan was snapshotted, codec-specific errors on
-        // partially-decoded compressed inputs. Skipping the row matches
-        // the "best-effort per row" contract; aborting the whole export
-        // over a single evicted line is worse UX.
-        //
-        // Sink writes are NOT inside the try: an I/O failure (disk full,
-        // network share dropped) MUST abort the export so the caller
-        // drops the sink and unlinks the temp file. Otherwise repeated
-        // swallowed writes leave a truncated / interleaved file on disk
-        // and the user sees a false "success" toast.
+        // Only per-row `RawLine` failures are swallowed: FIFO
+        // eviction (`out_of_range`), backing source gone
+        // (`runtime_error`), codec errors on partial compressed
+        // inputs. Skipping matches the "best-effort per row"
+        // contract; aborting over a single evicted line is worse
+        // UX. Sink writes stay outside the try -- an I/O failure
+        // MUST abort the export so `~FileSink` unlinks the temp
+        // file, otherwise the user sees a false "success" toast
+        // on a truncated file.
         std::string raw;
         try
         {
@@ -570,10 +543,9 @@ public:
         void *progressUserData) override;
 
 private:
-    /// Append @p cell to @p out with Markdown-table-cell escaping:
-    ///   - `|` -> `\|` (pipe would break the row).
-    ///   - `\r`, `\n`, `\t` -> single space (Markdown table cells
-    ///     cannot span lines).
+    /// Markdown-table-cell escaping:
+    ///   - `|` -> `\|` (would break the row otherwise).
+    ///   - `\r`, `\n`, `\t` -> single space (cells cannot span lines).
     ///   - `\\` -> `\\\\` (so a literal backslash before a special
     ///     char is not misread as an escape).
     static void AppendMarkdownCell(std::string &out, std::string_view cell);
@@ -653,9 +625,9 @@ void MarkdownExporter::Run(
             PollStop(stopToken);
         }
         const int sourceRow = source.sourceRows[slot];
-        // Bounds match JsonLines / Snapshot: skip both negative and
-        // past-the-end indices so a mid-export FIFO eviction on the
-        // GUI thread doesn't hand us a row that has been dropped.
+        // Skip negative / past-the-end indices; matches JsonLines
+        // / Snapshot so a mid-export FIFO eviction on the GUI
+        // thread cannot hand us a dropped row.
         if (sourceRow < 0 || static_cast<size_t>(sourceRow) >= lines.size())
         {
             continue;
@@ -688,12 +660,10 @@ void MarkdownExporter::Run(
 
 } // namespace
 
-// Trailing `return` after an exhaustive switch is deliberately omitted:
-// the compiler's `-Wswitch` (and MSVC C4062) catches a missing arm
-// when a new `ExportFormat` is added, instead of the runtime returning
-// a stealth default (`"txt"` / `"Unknown"` / `nullptr`). The `assert`
-// hardens the release build against a corrupt / out-of-range enum
-// value cast in from persisted settings.
+// No `return` after the exhaustive switch: `-Wswitch` (MSVC
+// C4062) will catch a new `ExportFormat` that forgets an arm.
+// The `assert` handles the "corrupt enum from persisted
+// settings" case in release builds.
 const char *ExtensionFor(ExportFormat format) noexcept
 {
     switch (format)

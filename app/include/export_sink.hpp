@@ -9,22 +9,17 @@
 namespace slv::exports
 {
 
-/// Byte sink for the export pipeline.
-///
-/// v1 has only one implementation (`FileSink`) that writes to a
-/// temp file and atomically renames on `Finish`. The interface is
-/// pinned so future compressed sinks (`GzipSink`, `ZstdSink`) and
-/// container-section sinks (for the full-state export bundle) can
-/// slot in without touching the `RowExporter` implementations.
+/// Byte sink for the export pipeline. The interface is kept
+/// minimal so future compressed / container sinks can slot in
+/// without touching `RowExporter` implementations.
 ///
 /// Contract:
-///   - `Write` may buffer; callers should not assume bytes have
-///     reached disk. `Finish` performs any flush + finalise.
+///   - `Write` may buffer; `Finish` performs the flush + finalise.
 ///   - `Finish` must be called exactly once on the success path.
 ///     Destruction without `Finish` is treated as an abort and
-///     leaves no partial file behind (temp file is unlinked).
+///     leaves no partial file behind.
 ///   - Any method may throw `std::runtime_error` on I/O failure;
-///     the sink is left in an unusable state after a throw.
+///     the sink is unusable after a throw.
 class ExportSink
 {
 public:
@@ -51,23 +46,18 @@ public:
     virtual void Finish() = 0;
 };
 
-/// File-backed sink writing to `<destination>.tmp` and renaming
-/// atomically on `Finish`. Mirrors the pattern used in
-/// `library/src/log_configuration.cpp` (Save).
-///
-/// Destruction without a successful `Finish` unlinks the temp
-/// file. This guarantees a cancelled export leaves no partial
-/// file in the destination path.
+/// File-backed sink: writes to `<destination>.tmp` and renames
+/// atomically on `Finish`, so a cancelled or failed export never
+/// leaves a partial file at the destination path. Same pattern
+/// used by `library/src/log_configuration.cpp` (Save).
 class FileSink final : public ExportSink
 {
 public:
     /// Opens `<destination>.tmp` for buffered writing. Throws on
-    /// open failure. The destination path is remembered for the
-    /// atomic-rename in `Finish`.
+    /// open failure.
     explicit FileSink(std::filesystem::path destination);
 
-    /// Aborts the write (unlinks temp file) if `Finish` was not
-    /// called successfully.
+    /// Unlinks the temp file if `Finish` was not called successfully.
     ~FileSink() override;
 
     FileSink(const FileSink &) = delete;
@@ -77,9 +67,8 @@ public:
 
     void Write(std::string_view bytes) override;
 
-    /// Flushes and closes the temp file, then renames it onto the
-    /// destination path. Idempotent: a second call is a no-op.
-    /// Throws on flush / close / rename failure.
+    /// Flush, close, and atomically rename the temp file onto the
+    /// destination. Idempotent; throws on flush/close/rename failure.
     void Finish() override;
 
     /// True iff `Finish` has completed successfully. Test seam.
@@ -97,9 +86,8 @@ public:
 private:
     std::filesystem::path mDestination;
     std::filesystem::path mTempPath;
-    // Using FILE* (not std::ofstream) so bufferered writes go through a
-    // single well-defined buffer size and errors on write / flush /
-    // close surface as std::runtime_error uniformly.
+    // FILE* (not std::ofstream): single well-defined buffer and
+    // uniform error reporting for write / flush / close failures.
     std::FILE *mFile = nullptr;
     bool mFinished = false;
 };

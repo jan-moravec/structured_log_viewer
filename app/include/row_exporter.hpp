@@ -17,9 +17,9 @@
 namespace slv::exports
 {
 
-/// Supported export formats. New formats append at the end so
-/// persisted user preferences (last-used format via QSettings)
-/// stay stable.
+/// Supported export formats. New formats must append at the end
+/// so persisted `QSettings` values keep pointing to the same
+/// format across upgrades.
 enum class ExportFormat : int
 {
     JsonLines = 0,
@@ -35,46 +35,43 @@ enum class ExportFormat : int
 /// the QFileDialog filter string).
 [[nodiscard]] const char *LabelFor(ExportFormat format) noexcept;
 
-/// Read-only view over one row-export session. The consumer thread
-/// treats this as a materialised snapshot: `table` and the vectors
-/// referenced by the spans must outlive the export.
-///
-/// Ownership of the underlying vectors lives on `ExportPlan` (see
-/// below) so the async worker gets a self-contained bundle.
+/// Read-only view over one row-export run. The consumer treats
+/// this as a materialised snapshot: `table` and the vectors behind
+/// the spans must outlive the export. Ownership of the vectors
+/// lives on `ExportPlan` so the async worker gets a self-contained
+/// bundle.
 struct RowSource
 {
-    /// The `LogTable` to read cell values from. Reads are `const`
-    /// and safe from a background thread as long as no writer is
-    /// running (guaranteed by the GUI-thread snapshot pattern).
+    /// Table to read cells from. Safe to read from a worker thread
+    /// as long as no writer is running (guaranteed by the
+    /// GUI-thread snapshot pattern).
     const loglib::LogTable *table = nullptr;
 
-    /// Source-model row indices in display order (i.e. proxy row
-    /// `P` maps to `sourceRows[P]`). Filters and sort are already
+    /// Source-model row indices in display order (proxy row `P`
+    /// maps to `sourceRows[P]`). Filters and sort are already
     /// applied.
     std::span<const int> sourceRows;
 
-    /// Column indices (into `table->Configuration().Configuration().columns`)
-    /// to emit for the column-oriented formats (CSV / Markdown /
-    /// JSON Lines-visible-only). Values are the display order, not
-    /// necessarily contiguous. For JSON Lines with the "include
-    /// all fields" toggle, the exporter walks the row's actual
-    /// (KeyId, Value) pairs and this vector is unused.
+    /// Columns to emit for column-oriented formats (CSV / Markdown),
+    /// in display order. Indices into `LogConfiguration::columns`.
+    /// Unused when JSON Lines has `includeAllFieldsForJson=true`
+    /// (which walks every (KeyId, Value) pair on the row) and
+    /// unused by Snapshot (row-shape format).
     std::span<const size_t> visibleColumns;
 
-    /// If true, JSON Lines emits every field on the row (round-trip
-    /// fidelity) rather than only `visibleColumns`. CSV / Markdown
-    /// ignore this flag.
+    /// If true, JSON Lines emits every field on the row for
+    /// round-trip fidelity; otherwise it uses `visibleColumns`.
+    /// Ignored by CSV / Markdown / Snapshot.
     bool includeAllFieldsForJson = true;
 
-    /// If true, CSV / Markdown emit a header row before the data.
-    /// JSON Lines / Snapshot ignore this flag.
+    /// If true, CSV / Markdown emit a header row. Ignored by
+    /// JSON Lines / Snapshot.
     bool includeHeaderRow = true;
 };
 
-/// Progress callback signature. `rowsWritten` is monotonically
-/// increasing; `totalRows` is the size of `RowSource::sourceRows`.
-/// Return value is ignored (cancellation flows through the stop
-/// token, not the return value).
+/// Progress callback. `rowsWritten` is monotonically increasing;
+/// `totalRows` is the size of `RowSource::sourceRows`. Cancellation
+/// flows through the stop token, not the return value.
 using ProgressCallback = void (*)(void *userData, size_t rowsWritten, size_t totalRows);
 
 /// Abstract row-oriented exporter. One instance per export run.
@@ -82,13 +79,13 @@ using ProgressCallback = void (*)(void *userData, size_t rowsWritten, size_t tot
 /// Contract:
 ///   - `Run` walks `RowSource::sourceRows` in order and streams
 ///     bytes to @p sink.
-///   - `Run` polls @p stopToken between rows (at most every N rows
-///     to keep overhead down). On stop-requested it throws
-///     `ExportCancelled` so the caller can distinguish user cancel
-///     from I/O error.
-///   - `Run` does NOT call `sink.Finish()`; that is the caller's
-///     responsibility so a `try / catch` boundary can drop the
-///     sink before the atomic-rename side effect.
+///   - `Run` polls @p stopToken periodically (batched to keep
+///     overhead down) and throws `ExportCancelled` on stop, so the
+///     caller can distinguish user cancel from I/O error.
+///   - `Run` does NOT call `sink.Finish()`; the caller must call
+///     it on the success path. This keeps the atomic-rename side
+///     effect behind a `try` boundary so a mid-run throw unlinks
+///     the temp file via `~FileSink`.
 class RowExporter
 {
 public:
@@ -100,8 +97,8 @@ public:
     RowExporter(RowExporter &&) = delete;
     RowExporter &operator=(RowExporter &&) = delete;
 
-    /// Emit @p source through @p sink. Progress callback may be
-    /// null. Throws `ExportCancelled` on user cancel, or
+    /// Emit @p source through @p sink. @p progress may be null.
+    /// Throws `ExportCancelled` on user cancel or
     /// `std::runtime_error` on I/O / serialization failure.
     virtual void
     Run(const RowSource &source,
@@ -111,10 +108,9 @@ public:
         void *progressUserData = nullptr) = 0;
 };
 
-/// Sentinel exception distinguishing user-cancel from other
-/// std::exceptions (matches the `DecompressionCancelled` idiom in
-/// `loglib::internal`). Not a `std::runtime_error` so plain error
-/// handlers do not silently swallow it.
+/// Sentinel exception for user-cancel. Deliberately not a
+/// `std::runtime_error` so that plain error handlers do not
+/// silently swallow it. Mirrors `DecompressionCancelled`.
 class ExportCancelled : public std::exception
 {
 public:
@@ -127,31 +123,29 @@ public:
 /// Factory: return a fresh exporter for @p format.
 [[nodiscard]] std::unique_ptr<RowExporter> MakeExporter(ExportFormat format);
 
-/// Self-contained bundle handed off to the async worker. Owns the
-/// snapshot vectors that back `RowSource`'s spans so the worker's
-/// lifetime is independent of the GUI thread's state.
+/// Self-contained bundle handed off to the async worker. Owns
+/// the snapshot vectors backing `RowSource`'s spans, so the
+/// worker's lifetime is independent of GUI-thread state.
 struct ExportPlan
 {
     ExportFormat format = ExportFormat::JsonLines;
 
-    /// Snapshot of proxy display order at export-start time.
+    /// Proxy display order snapshotted at export-start time.
     std::vector<int> sourceRows;
 
-    /// Snapshot of visible columns in display order.
+    /// Visible columns in display order.
     std::vector<size_t> visibleColumns;
 
     bool includeAllFieldsForJson = true;
     bool includeHeaderRow = true;
 
-    /// The table (borrowed pointer) plus a stable ref to the
-    /// configuration used for column headers / print formats. The
-    /// caller guarantees these outlive the worker: `LogTable` and
-    /// `LogConfiguration` are stable across the export because the
-    /// GUI thread has quiesced its writers.
+    /// Borrowed table pointer. The caller guarantees `LogTable`
+    /// (and its `LogConfiguration`) outlive the worker; the GUI
+    /// thread quiesces every writer for the duration of the export.
     const loglib::LogTable *table = nullptr;
 
-    /// Destination path. The `FileSink` prepends `.tmp` and
-    /// renames on success.
+    /// Destination path. `FileSink` writes to `<destination>.tmp`
+    /// and atomically renames on success.
     std::filesystem::path destination;
 
     /// Build a `RowSource` view over the plan.

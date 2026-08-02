@@ -281,9 +281,9 @@ constexpr int DECOMPRESSION_POLL_INTERVAL_MS = 200;
 // completing under half a second never flash it.
 constexpr int DECOMPRESSION_DIALOG_DEFER_MS = 500;
 
-// Same cadence + defer thresholds for the filtered-row export
-// progress dialog. Small exports never flash the dialog; large
-// exports keep the UI responsive at ~5 Hz progress updates.
+// Filtered-row export uses the same cadence + defer as
+// decompression: small exports never flash the dialog, large
+// exports update at ~5 Hz.
 constexpr int EXPORT_POLL_INTERVAL_MS = 200;
 constexpr int EXPORT_DIALOG_DEFER_MS = 500;
 
@@ -1890,9 +1890,7 @@ MainWindow::~MainWindow()
     // future so the queued `finished` signal can't fire against a
     // half-destructed MainWindow.
     CancelInFlightDecompression();
-    // Same for the export worker: request stop, wait, and detach
-    // the future so a queued `finished` cannot reach us after
-    // destruction.
+    // Same for the export worker.
     CancelInFlightExport();
     // Explicitly reset the model here (rather than relying on
     // `~LogModel`) so its mmap unmaps before the destructor destroys
@@ -2466,10 +2464,9 @@ void MainWindow::NewSession()
     mTableView->sortByColumn(-1, Qt::AscendingOrder);
     mSortFilterProxyModel->SetFilterExpression(loglib::CompiledFilterExpression{});
 
-    // Cancel the export worker BEFORE resetting the model. The
-    // worker reads `LogTable` from a background thread; the reset
-    // below tears down `LogTable`'s row / key storage. Any other
-    // order is a data race.
+    // Cancel the export worker BEFORE the reset: the worker
+    // reads `LogTable` from a background thread and the reset
+    // below tears down its storage. Any other order is a race.
     CancelInFlightExport();
 
     // RAII latch so the synchronous `streamingFinished(Cancelled)`
@@ -2756,16 +2753,14 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
 
 void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
 {
-    // Cancel the export worker up-front, regardless of `mode`. The
-    // destructive branch below needs it before `mModel->Reset()`
-    // tears down `LogTable`, but non-destructive Append also has to
-    // cancel: `AppendStreaming` will mutate `LogTable` / `KeyIndex`
-    // from a streaming worker while the export worker is still
-    // reading them. `setEnabled(false)` blocks that path from the
-    // GUI, but cross-instance CLI forwarding (`OpenFilesForCli`)
-    // bypasses the disabled state and reaches this function directly.
-    // Unconditional cancel closes the race at the one funnel every
-    // open path shares. Safe to call when no export is in flight.
+    // Cancel the export worker up-front for every `mode`. The
+    // destructive branch needs it before `mModel->Reset()`; the
+    // non-destructive Append branch needs it because
+    // `AppendStreaming` will mutate `LogTable` / `KeyIndex` while
+    // the export is still reading them. `setEnabled(false)` blocks
+    // that path from the GUI but cross-instance CLI forwarding
+    // (`OpenFilesForCli`) bypasses it. Safe to call when nothing
+    // is in flight.
     CancelInFlightExport();
 
     // Live-tail / network sessions are single-source: a new
@@ -3560,8 +3555,6 @@ void MainWindow::OnDecompressionFinished()
 
 std::vector<int> MainWindow::CollectExportSourceRows(bool selectionOnly) const
 {
-    // Empty guard: callers already gate on `mModel->rowCount() == 0`,
-    // but be defensive in case a test seam calls this without one.
     if (mModel == nullptr || mSortFilterProxyModel == nullptr)
     {
         return {};
@@ -3573,24 +3566,20 @@ std::vector<int> MainWindow::CollectExportSourceRows(bool selectionOnly) const
         return {};
     }
 
-    // Selection filter for the display-order walk below. Empty
-    // vector => no selection filter (export the whole filtered
-    // view). Non-empty => a `[outer proxy row] -> keep?` flag map,
-    // populated in `O(selection.size())`.
+    // `[outer proxy row] -> keep?` flag map for the display-order
+    // walk below. Empty means "no selection filter"; non-empty
+    // restricts to the selected outer rows.
     std::vector<bool> selectedOuterRows;
     if (selectionOnly && mTableView != nullptr && mTableView->selectionModel() != nullptr)
     {
         const QModelIndexList selected = mTableView->selectionModel()->selectedRows();
-        // `selectedRows()` returns indexes in the view's model,
-        // which is `mSortFilterProxyModel` (the outermost proxy).
+        // Indexes are minted against `mSortFilterProxyModel`
+        // (the outermost proxy the view sees).
         selectedOuterRows.assign(static_cast<std::size_t>(filteredCount), false);
         for (const QModelIndex &idx : selected)
         {
             if (idx.model() != mSortFilterProxyModel)
             {
-                // Defensive: an index minted against a stale model
-                // would be nonsense here. Skip rather than trip an
-                // assertion on the worker thread.
                 continue;
             }
             const int row = idx.row();
@@ -3602,13 +3591,11 @@ std::vector<int> MainWindow::CollectExportSourceRows(bool selectionOnly) const
     }
 
     // Walk the outer proxy in display order and resolve each row
-    // down to the LogModel via the full proxy chain (`view ->
+    // down through the full proxy chain (`view ->
     // SortFilterProxyModel -> RowOrderProxyModel -> LogModel`).
-    // Iterating the *outer* proxy is what pins the export to the
-    // user's visible sort order, including the newest-first flip
-    // that `RowOrderProxyModel` applies -- iterating a lower proxy
-    // (or reading `sortSourceModel()->mapToSource` once) would
-    // silently drop that layer.
+    // Iterating the outermost proxy is what pins the export to
+    // the user's visible order, including the newest-first flip
+    // -- a single `mapToSource` would silently drop that layer.
     std::vector<int> sourceRows;
     sourceRows.reserve(static_cast<std::size_t>(filteredCount));
     for (int outerRow = 0; outerRow < filteredCount; ++outerRow)
@@ -3637,9 +3624,6 @@ std::vector<int> MainWindow::CollectExportSourceRows(bool selectionOnly) const
 
 void MainWindow::ExportFilteredRows()
 {
-    // Gate the entry: nothing to export if the model is empty.
-    // We check the *filtered* row count here so a user with all
-    // rows filtered out gets a specific "no rows match" message.
     if (mModel == nullptr || mSortFilterProxyModel == nullptr)
     {
         return;
@@ -3650,28 +3634,21 @@ void MainWindow::ExportFilteredRows()
         return;
     }
 
-    // Refuse to run two exports concurrently. The dialog is
-    // window-modal but the user could dispatch this via the shortcut
-    // while the progress dialog is deferred (< 500 ms).
+    // No overlapping exports: the shortcut can fire during the
+    // < 500 ms window before the progress dialog appears.
     if (mExportInFlight)
     {
         return;
     }
 
-    // Refuse to start an export while the model is being mutated by
-    // a live stream / bulk load. The worker reads `LogTable` from a
-    // background thread and there is no lock protecting appends,
-    // FIFO evictions, or `KeyIndex` mutations. Bulk loads finish
-    // quickly (retry after `streamingFinished`); live-tail sessions
-    // need an explicit Pause / Stop first.
+    // The worker reads `LogTable` from a background thread with
+    // no lock, so refuse to start while the model is being mutated
+    // by a live stream / bulk load. Bulk loads finish quickly
+    // (retry after `streamingFinished`); live-tail needs Stop
+    // (not Pause -- Pause leaves the producer streaming into a
+    // buffer that would flush on resume and race the export).
     if (mModel->IsStreamingActive() || mDecompressionInFlight)
     {
-        // Live-tail exports require Stop, not Pause: pause only halts the
-        // sink drain (`QtStreamingLogSink::SetPaused`) but leaves the
-        // producer streaming into a buffer that would flush on resume,
-        // racing with the export worker's read of `LogTable`.
-        // `IsStreamingActive()` stays true across pause, so this branch
-        // fires either way -- the guidance below must match the guard.
         const QString detail = IsLiveTailSession()
             ? tr("Stop the live-tail session (Ctrl+Shift+X) before exporting.")
             : tr("Wait for the current file load to finish, then retry.");
@@ -3679,17 +3656,11 @@ void MainWindow::ExportFilteredRows()
         return;
     }
 
-    // Snapshot proxy row order + visible column set on the GUI
-    // thread BEFORE the dialog opens. This isn't strictly required
-    // (the dialog is modal so the model can't mutate under us) but
-    // it keeps the row-count preview honest even against a
-    // late-arriving live-tail batch and lets us hand a fully-owned
-    // plan to the worker without touching Qt models on the worker
-    // thread.
+    // Snapshot proxy row order + visible columns up-front so we
+    // can hand a self-owned plan to the worker without touching
+    // Qt models from a background thread.
     const int filteredCount = mSortFilterProxyModel->rowCount();
 
-    // Determine selection count (for the dialog's "export selection
-    // only" toggle).
     std::size_t selectionCount = 0;
     if (mTableView != nullptr && mTableView->selectionModel() != nullptr)
     {
@@ -3726,11 +3697,9 @@ void MainWindow::ExportFilteredRows()
     {
         return;
     }
-    // `RememberLastExportDir` is deferred to `OnExportFinished`'s
-    // success branch so that a failed export (bad path, permission
-    // denied, disk full) does not stick as the remembered directory.
-    // Kept separate from `ui/lastOpenDir` so a one-off export to a
-    // shared drive does not retarget the next File -> Open dialog.
+    // `RememberLastExportDir` is deferred to the success branch of
+    // `OnExportFinished` so a failed export (bad path, perms, disk
+    // full) does not stick as the remembered directory.
 
     std::vector<int> sourceRows = CollectExportSourceRows(config.selectionOnly);
 
@@ -3740,9 +3709,8 @@ void MainWindow::ExportFilteredRows()
         return;
     }
 
-    // Visible column snapshot. Column-oriented formats (CSV /
-    // Markdown) respect `includeHiddenColumns`. JSON / Snapshot
-    // are row-shape formats and don't consult this vector.
+    // CSV / Markdown honour `includeHiddenColumns`; JSON /
+    // Snapshot are row-shape and ignore this vector.
     std::vector<std::size_t> visibleColumns;
     const auto &configuration = mModel->Configuration();
     visibleColumns.reserve(configuration.columns.size());
@@ -3754,7 +3722,6 @@ void MainWindow::ExportFilteredRows()
         }
     }
 
-    // Format-specific mapping onto the plan flags.
     auto plan = std::make_unique<slv::exports::ExportPlan>();
     plan->format = config.format;
     plan->sourceRows = std::move(sourceRows);
@@ -3762,9 +3729,7 @@ void MainWindow::ExportFilteredRows()
     plan->includeAllFieldsForJson = true; // v1: JSON always includes every field.
     plan->includeHeaderRow = config.includeHeaderRow;
     plan->table = &mModel->Table();
-    // Use the wide-path overload on Windows so non-ASCII filenames
-    // (Cyrillic, CJK, ...) survive the round-trip through
-    // `<filesystem>`. See `qstring_path.hpp` for details.
+    // Preserve non-ASCII filenames on Windows -- see `qstring_path.hpp`.
     plan->destination = logapp::QStringToFsPath(config.destination);
 
     const QString formatLabel = QString::fromLatin1(slv::exports::LabelFor(config.format));
@@ -3775,8 +3740,8 @@ void MainWindow::BeginAsyncExport(
     std::unique_ptr<slv::exports::ExportPlan> plan, const QString &destination, const QString &formatLabel
 )
 {
-    // Fresh per-run stop-source. Prevents a leftover cancel from
-    // a prior export bleeding into this one.
+    // Fresh per-run stop source so a leftover cancel from a prior
+    // export cannot bleed into this one.
     mExportStopSource = loglib::StopSource{};
     mExportRowsWritten.storeRelaxed(0);
     mExportRowsTotal.storeRelaxed(static_cast<qint64>(plan->sourceRows.size()));
@@ -3786,24 +3751,21 @@ void MainWindow::BeginAsyncExport(
     mExportStartedAt = std::chrono::steady_clock::now();
     mExportInFlight = true;
 
-    // Disable the main window for the entire export. The
-    // `QProgressDialog` below defers appearance by 500 ms
-    // (`EXPORT_DIALOG_DEFER_MS`); without this the user can drag a
-    // column header, add a filter, or trigger a session switch during
-    // that window and race the worker on `LogTable::MoveColumn` /
-    // `KeyIndex` mutations. The dialog is a separate top-level
-    // widget, so its Cancel button stays interactive; the window
-    // frame's OS-managed close button still delivers `closeEvent`,
-    // which pre-cancels the worker before teardown.
+    // Disable the main window for the whole export. The progress
+    // dialog defers appearance by `EXPORT_DIALOG_DEFER_MS`; during
+    // that window the user could otherwise drag a column, edit a
+    // filter, or trigger a session switch and race the worker on
+    // `LogTable` / `KeyIndex` mutations. The dialog is a separate
+    // top-level widget so its Cancel stays interactive; the
+    // OS-managed window close still fires `closeEvent`, which
+    // pre-cancels the worker.
     setEnabled(false);
 
     ShowExportProgress();
     if (mExportProgressDialog)
     {
-        // `%L1` (not `%1`) so the row count picks up the user's locale
-        // grouping, matching the polling label and the completion toast
-        // below. `arg(qulonglong)` avoids narrowing on 32-bit builds
-        // where `std::size_t` is `unsigned int`.
+        // `%L1` for locale-grouped digits; `qulonglong` avoids
+        // narrowing where `size_t` is 32-bit.
         mExportProgressDialog->setLabelText(
             tr("Exporting %L1 rows to %2\nPreparing\u2026")
                 .arg(static_cast<qulonglong>(plan->sourceRows.size()))
@@ -3811,10 +3773,9 @@ void MainWindow::BeginAsyncExport(
         );
     }
 
-    // Own the plan on the shared_ptr side so the worker capture
-    // does not race with the finished slot re-reading its members.
-    // Same for the sink: build it up-front (so open failures
-    // surface before we hand off to the worker).
+    // Share the plan + sink so the worker capture cannot race the
+    // finished-slot re-reading its members. Build the sink up-front
+    // so open failures surface synchronously.
     std::shared_ptr<slv::exports::ExportPlan> sharedPlan(std::move(plan));
     std::shared_ptr<slv::exports::FileSink> sink;
     try
@@ -3823,9 +3784,7 @@ void MainWindow::BeginAsyncExport(
     }
     catch (const std::exception &e)
     {
-        // Open-time failure surfaces synchronously: teardown the
-        // dialog, re-enable the window, and report as a normal error
-        // toast.
+        // Open failed synchronously: tear down and toast.
         mExportInFlight = false;
         TeardownExportProgress();
         setEnabled(true);
@@ -3840,11 +3799,11 @@ void MainWindow::BeginAsyncExport(
     const auto stopToken = mExportStopSource.get_token();
     auto *rowsWrittenAtomic = &mExportRowsWritten;
 
-    // Worker: synchronously drive the exporter into the sink. On
-    // cancel or error, throws propagate out of `QtConcurrent::run`
-    // and land on `waitForFinished()` in the finished slot. The
-    // progress callback publishes into the GUI atomic; the poll
-    // timer picks it up on the next tick.
+    // Worker: drive the exporter into the sink synchronously.
+    // Throws propagate out of `QtConcurrent::run` and land on
+    // `waitForFinished()` in the finished slot; the progress
+    // callback publishes into the GUI atomic that the poll timer
+    // reads on the next tick.
     // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
     auto future = QtConcurrent::run([sharedPlan, sink, stopToken, rowsWrittenAtomic]() {
         auto exporter = slv::exports::MakeExporter(sharedPlan->format);
@@ -3852,18 +3811,17 @@ void MainWindow::BeginAsyncExport(
         {
             throw std::runtime_error("Unsupported export format");
         }
-        // Free function so the capture list stays empty and there
-        // is no risk of the lambda outliving the atomic (userData
-        // is the atomic itself, whose lifetime is `MainWindow`).
+        // Free-function callback: keeps the capture list empty
+        // and matches the C-style ProgressCallback signature.
         auto progressCb = +[](void *userData, size_t rowsWritten, size_t /*total*/) {
             auto *dst = static_cast<QAtomicInteger<qint64> *>(userData);
             dst->storeRelaxed(static_cast<qint64>(rowsWritten));
         };
         exporter->Run(sharedPlan->View(), *sink, stopToken, progressCb, rowsWrittenAtomic);
-        // `RowExporter::Run` deliberately does NOT call `Finish`
-        // so that a mid-export throw can unwind through the sink's
-        // destructor and unlink the temp file. Success path is
-        // exactly one `Finish` call after `Run` returns cleanly.
+        // `RowExporter::Run` never calls `Finish`, so a mid-run
+        // throw unwinds through `~FileSink` and unlinks the temp
+        // file. Success path is exactly one `Finish` after `Run`
+        // returns cleanly.
         sink->Finish();
         rowsWrittenAtomic->storeRelaxed(static_cast<qint64>(sharedPlan->sourceRows.size()));
     });
@@ -3913,14 +3871,11 @@ void MainWindow::ShowExportProgress()
             {
                 const int pct = static_cast<int>((static_cast<qint64>(PROGRESS_PERCENT_MAX) * written) / total);
                 mExportProgressDialog->setValue(std::min(pct, PROGRESS_PERCENT_MAX));
-                // `QProgressDialog::setValue` calls `processEvents` on
-                // its visible dialog. A queued `finished` slot (from
-                // the export worker completing during that pump) can
-                // run `TeardownExportProgress` and clear
-                // `mExportInFlight` between `setValue` above and
-                // `setLabelText` below. Re-check both, otherwise we'd
-                // repaint a stale label onto a torn-down dialog and
-                // briefly flash it back on screen.
+                // `setValue` pumps events on a visible dialog, so
+                // a queued `finished` slot can tear us down between
+                // `setValue` and `setLabelText`. Re-check to avoid
+                // repainting a stale label and flashing the dialog
+                // back on screen.
                 if (!mExportInFlight || !mExportProgressDialog)
                 {
                     return;
@@ -3965,10 +3920,8 @@ void MainWindow::CancelInFlightExport()
     {
         mExportDestinationPath.clear();
         mExportFormatLabel.clear();
-        // Only re-enable if we actually disabled: this helper is
-        // called on every session-switch and from `~MainWindow`, so
-        // the guard keeps us from bouncing enabled state on paths
-        // where no export was running.
+        // Only re-enable when we actually disabled -- this helper
+        // is called on every session switch and from `~MainWindow`.
         if (wasInFlight)
         {
             setEnabled(true);
@@ -3976,21 +3929,16 @@ void MainWindow::CancelInFlightExport()
         return;
     }
     mExportStopSource.request_stop();
-    // `waitForFinished()` re-throws any exception the worker let
-    // escape (including `ExportCancelled`, which is the *normal*
-    // outcome of a cancel). Swallow every std::exception here so
-    // this helper stays safe to call from destructors and other
-    // no-throw contexts (the destructor already invokes us before
-    // touching model state).
+    // `waitForFinished` re-throws whatever the worker let escape
+    // (`ExportCancelled` on the normal cancel path, plus any I/O
+    // error). Swallow both so this helper stays safe to call from
+    // destructors and other no-throw contexts.
     try
     {
         mExportWatcher->waitForFinished();
     }
     catch (const std::exception &)
     {
-        // Expected on cancel; ignored on any other worker throw
-        // because there is no user-visible surface here (the toast
-        // slot has already been detached below).
     }
     mExportWatcher->setFuture(QFuture<void>{});
     TeardownExportProgress();
@@ -4010,10 +3958,8 @@ void MainWindow::OnExportFinished()
     }
     mExportInFlight = false;
     TeardownExportProgress();
-    // Re-enable the window before any modal toast so error dialogs
-    // land against a live parent (a `QMessageBox` shown against a
-    // disabled parent still works, but the greyed-out backdrop reads
-    // as "app is frozen").
+    // Re-enable before any modal toast so error dialogs land on a
+    // live parent (a greyed-out backdrop reads as "app frozen").
     setEnabled(true);
 
     if (mExportWatcher == nullptr)
@@ -4025,9 +3971,9 @@ void MainWindow::OnExportFinished()
     bool cancelled = false;
     try
     {
-        // `waitForFinished()` re-throws any exception the worker
-        // let escape. `result()` overload is unavailable for
-        // `QFuture<void>`; wait+observe is the documented idiom.
+        // `waitForFinished` re-throws whatever the worker let
+        // escape. `QFuture<void>` has no `result()`; wait+observe
+        // is the documented idiom.
         mExportWatcher->waitForFinished();
     }
     catch (const slv::exports::ExportCancelled &)
@@ -4065,8 +4011,8 @@ void MainWindow::OnExportFinished()
                                 .arg(mExportFormatLabel)
                                 .arg(HumanDuration(elapsed));
         statusBar()->showMessage(msg, STATUS_BAR_MESSAGE_TIMEOUT_MS);
-        // Only remember the destination directory on a successful
-        // export. See the deferral note in `ExportFilteredRows`.
+        // Only remember on success -- see the deferral note in
+        // `ExportFilteredRows`.
         RememberLastExportDir(mExportDestinationPath);
     }
 
@@ -4207,9 +4153,8 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     // immediately afterwards.
     AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
 
-    // Cancel the export worker BEFORE `mModel->Reset()` tears down
-    // `LogTable`'s storage; the worker reads it from a background
-    // thread with no lock, so any other order is a data race.
+    // Cancel the export worker before the reset; see `NewSession`
+    // for the race.
     CancelInFlightExport();
 
     // RAII latch: see `NewSession` for why we need to suppress the
@@ -4353,9 +4298,8 @@ void MainWindow::OpenNetworkStream()
 
     AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
 
-    // Cancel the export worker BEFORE `mModel->Reset()` tears down
-    // `LogTable`'s storage; the worker reads it from a background
-    // thread with no lock, so any other order is a data race.
+    // Cancel the export worker before the reset; see `NewSession`
+    // for the race.
     CancelInFlightExport();
 
     const SessionSwitchScope switchGuard(*this);
@@ -4684,10 +4628,8 @@ QString MainWindow::DefaultExportDir() const
     {
         return remembered;
     }
-    // First-run fallback: seed from the shared "last dialog dir" so
-    // the Export dialog opens somewhere familiar instead of the
-    // platform Documents root. Only the export's own writes update
-    // `ui/lastExportDir`, so the fallback is one-way.
+    // First-run fallback: seed from the shared "last dialog dir"
+    // (one-way -- only exports update `ui/lastExportDir`).
     return DefaultOpenDir();
 }
 
@@ -6174,9 +6116,8 @@ void MainWindow::closeEvent(QCloseEvent *event)
     // user code (nested event loops from `QMessageBox` inside
     // `ShowParseErrors`) between the snapshot and the state reset.
     CancelInFlightDecompression();
-    // Same for the export worker: closeEvent runs before ~MainWindow,
-    // so we cancel here to close the "close while worker is running"
-    // window. The destructor's Cancel is a defensive backstop.
+    // Cancel the export worker here (closeEvent runs before
+    // ~MainWindow); the destructor's Cancel is a defensive backstop.
     CancelInFlightExport();
 
     // Final flush so the restore-on-launch loop captures user
@@ -6805,9 +6746,9 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         mSortFilterProxyModel->SetFilterExpression(loglib::CompiledFilterExpression{});
         mTableView->sortByColumn(-1, Qt::AscendingOrder);
 
-        // Cancel the export worker BEFORE resetting the model; the
-        // worker reads `LogTable` from a background thread with no
-        // lock, and `Reset()` below tears down its storage.
+        // Cancel the export worker before the reset: the worker
+        // reads `LogTable` from a background thread and the reset
+        // below tears down its storage.
         CancelInFlightExport();
 
         // See `NewSession` for the session-switch latch rationale.

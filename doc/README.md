@@ -706,6 +706,7 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 | Open network stream            | `Ctrl+Shift+L`      |
 | Save configuration             | `Ctrl+S`            |
 | Save session                   | `Ctrl+Shift+S`      |
+| Export filtered rows           | `Ctrl+E`            |
 | Find                           | `Ctrl+F`            |
 | Go to Line                     | `Ctrl+G`            |
 | Go to Timestamp                | `Ctrl+Shift+G`      |

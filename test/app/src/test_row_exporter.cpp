@@ -1,11 +1,8 @@
-// Focused tests for the row-exporter formatters
-// (`slv::exports::JsonLinesExporter`, `CsvExporter`, `SnapshotExporter`,
-// `MarkdownExporter`) and the `ExportSink` atomic-rename contract.
-//
-// Kept out of the monolithic `apptest` binary so a regression in one
-// arm surfaces here directly. Uses `QTEST_GUILESS_MAIN`: exporters
-// are pure C++ (no widgets), and formatting `TimeStamp` via
-// `date::format` on a UTC `sys_time` needs no tzdata bootstrap.
+// Focused tests for the row-exporter formatters and the
+// `ExportSink` atomic-rename contract. Kept out of the monolithic
+// `apptest` binary so a regression in one format surfaces here
+// directly. `QTEST_GUILESS_MAIN` because the exporters are pure
+// C++ and UTC `date::format` needs no tzdata bootstrap.
 
 #include "export_sink.hpp"
 #include "row_exporter.hpp"
@@ -71,11 +68,11 @@ private:
     bool mFinished = false;
 };
 
-/// `MemorySink` that throws `std::runtime_error` on the Nth `Write`.
-/// Used to pin the "sink I/O failure aborts the export" contract:
-/// the snapshot exporter used to have a broad `catch (std::exception)`
-/// that swallowed sink throws alongside `RawLine` throws, silently
-/// truncating the output on a full-disk / dropped-share failure.
+/// `MemorySink` that throws `std::runtime_error` on the Nth
+/// `Write`. Regression seam for the "sink I/O failure aborts the
+/// export" contract: the snapshot exporter used to have a broad
+/// `catch (std::exception)` that swallowed sink throws and
+/// silently truncated the output on disk-full / dropped-share.
 class ThrowOnNthWriteSink : public slv::exports::ExportSink
 {
 public:
@@ -122,9 +119,9 @@ private:
 };
 
 /// Mock `LineSource` that throws configurable exception types per
-/// line. Lets the snapshot exporter tests confirm that the exception
-/// handler catches every `std::exception`, not just
-/// `std::out_of_range` (the pre-fix narrow catch).
+/// line. Lets the snapshot tests confirm the handler catches every
+/// `std::exception`, not just `std::out_of_range` (the pre-fix
+/// narrow catch).
 class ThrowingLineSource final : public loglib::LineSource
 {
 public:
@@ -204,7 +201,8 @@ public:
         std::error_code ec;
         mPath = std::filesystem::temp_directory_path(ec);
         mPath /= "slv_export_test";
-        // Randomise: two concurrent test binaries must not collide.
+        // Suffix with a monotonic tick so concurrent test binaries
+        // don't collide.
         auto nsecs = std::chrono::steady_clock::now().time_since_epoch().count();
         mPath += std::to_string(nsecs);
         std::filesystem::create_directories(mPath, ec);
@@ -228,11 +226,10 @@ private:
     std::filesystem::path mPath;
 };
 
-/// Build a small fixed-schema `LogTable` for the exporter tests. Rows
-/// carry: `ts` (Time), `level` (String), `message` (String), `count`
-/// (Integer), `ratio` (Floating), `ok` (Boolean). The raw source lines
-/// mimic the original JSON so `SnapshotExporter` has something to
-/// echo verbatim.
+/// Fixed-schema `LogTable` for the exporter tests: `ts` (Time),
+/// `level` (String), `message` (String), `count` (Integer),
+/// `ratio` (Floating), `ok` (Boolean). Raw source lines are the
+/// original JSON so `SnapshotExporter` has bytes to echo.
 loglib::LogTable BuildFixtureTable(std::vector<std::string> rawLines, std::size_t rowCount)
 {
     auto stream = std::make_unique<loglib::StreamLineSource>(
@@ -298,10 +295,9 @@ private slots:
     /// numbers, timestamps as ISO 8601 UTC.
     static void TestJsonLinesTypedValues();
 
-    /// JSON Lines round-trips row data: exporting a table and
-    /// re-parsing each JSON line gives equivalent typed values.
-    /// Uses a simple hand-rolled JSON reader (no glaze dependency
-    /// in the test itself) so we exercise the wire format directly.
+    /// JSON Lines round-trips row data: every row is a JSON
+    /// object with the expected keys. Exercises the wire format
+    /// directly (no glaze dependency in the test itself).
     static void TestJsonLinesTypeFidelityOnSyntheticRows();
 
     /// CSV escaping per RFC 4180: `,`, `"`, `\n` require quotes;
@@ -312,49 +308,43 @@ private slots:
     /// CSV header row respects `includeHeaderRow`.
     static void TestCsvHeaderToggle();
 
-    /// CSV formula-injection defense: cells whose first byte is `=`
-    /// or `@` are prefixed with `'` and force-quoted, so opening the
-    /// CSV in Excel / Sheets / Calc does not evaluate the cell
-    /// content as a formula. Leading `+` / `-` are deliberately left
-    /// alone (they start every negative number in the log).
+    /// CSV formula-injection defense: cells starting with `=` or
+    /// `@` are prefixed with `'` and force-quoted so a spreadsheet
+    /// won't evaluate them on open. Leading `+` / `-` are
+    /// deliberately left alone (they start every negative number).
     static void TestCsvFormulaInjectionNeutralised();
 
-    /// Whole-valued doubles emit a trailing `.0` in JSON Lines so a
-    /// downstream reader keying off `typeof` (Python's `json`, jq,
-    /// JS `Number.isInteger`) still sees a fractional literal.
+    /// Whole-valued doubles get a trailing `.0` in JSON Lines so
+    /// typed readers (Python `json`, jq, `Number.isInteger`) still
+    /// see a fractional literal.
     static void TestJsonLinesDoubleTypeStability();
 
-    /// Markdown escapes `|` and collapses embedded whitespace so a
-    /// multi-line value cannot break the row layout.
+    /// Markdown escapes `|` and collapses embedded whitespace so
+    /// multi-line values cannot break the row layout.
     static void TestMarkdownPipeAndNewlineHandling();
 
-    /// Snapshot echoes the raw source bytes for each row, one
-    /// record per output line, including embedded multi-line
-    /// content (which stays intact via `LineSource::RawLine`).
+    /// Snapshot echoes the raw source bytes verbatim, one record
+    /// per output line.
     static void TestSnapshotEchoesRawBytes();
 
-    /// Snapshot swallows every `RawLine` failure so a single evicted
-    /// / broken row cannot abort the whole export. Regression guard
-    /// for the earlier `catch (const std::out_of_range &)`, which
-    /// would let anything else escape.
+    /// Snapshot swallows every `RawLine` failure so a single
+    /// evicted / broken row cannot abort the export. Guard
+    /// against the pre-fix narrow `catch (out_of_range&)` that
+    /// let anything else escape.
     static void TestSnapshotSkipsUnavailableRows();
 
-    /// Sink write failures (disk full, network drop) MUST propagate
-    /// out of `RowExporter::Run` regardless of format so the caller
-    /// drops the sink and `~FileSink` unlinks the `.tmp`. Regression
-    /// guard for a snapshot-exporter bug that swallowed the write
-    /// throw alongside `RawLine` throws, leaving a truncated file on
-    /// disk and a false "success" toast for the user.
+    /// Sink write failures (disk full, network drop) MUST
+    /// propagate out of `Run` for every format, so `~FileSink`
+    /// unlinks the `.tmp` and the user doesn't see a false
+    /// "success" toast on a truncated file.
     static void TestSinkWriteFailurePropagatesFromAllFormats();
 
-    /// A stop request mid-export unwinds via `ExportCancelled` and
-    /// the `FileSink` leaves no partial file behind on
-    /// destruction (temp file is unlinked).
+    /// Cancel mid-export unwinds via `ExportCancelled` and
+    /// `~FileSink` leaves no partial file behind.
     static void TestCancelLeavesNoPartialFile();
 
-    /// The `FileSink` writes to `<destination>.tmp` and atomically
-    /// renames on `Finish`. Assert the temp file disappears and
-    /// only the destination exists post-`Finish`.
+    /// `FileSink` writes to `<destination>.tmp` and atomically
+    /// renames on `Finish`; the temp file must disappear.
     static void TestFileSinkAtomicRename();
 };
 
@@ -387,10 +377,9 @@ void RowExporterTest::TestJsonLinesTypedValues()
     // First line: integer count == 0, boolean ok == true, ratio == 0.
     QVERIFY(lines[0].contains(QStringLiteral("\"count\":0")));
     QVERIFY(lines[0].contains(QStringLiteral("\"ok\":true")));
-    // `ratio` is a Floating column; the exporter forces a trailing
-    // `.0` on whole-valued doubles so consumers keying off type
-    // (`Number.isInteger`, Python's `json`, jq) see a fractional
-    // literal instead of an integer.
+    // `ratio` is a Floating column; whole-valued doubles carry
+    // the forced trailing `.0` (see
+    // `TestJsonLinesDoubleTypeStability`).
     QVERIFY(lines[0].contains(QStringLiteral("\"ratio\":0.0")));
     QVERIFY(lines[0].contains(QStringLiteral("\"ts\":\"2023-11-14T22:13:20")));
     // Second line: count == 1, ok == false, ratio == 0.5.
@@ -507,12 +496,9 @@ void RowExporterTest::TestCsvHeaderToggle()
 
 void RowExporterTest::TestCsvFormulaInjectionNeutralised()
 {
-    // Build a fixture whose `message` column carries a spreadsheet
-    // formula payload (the canonical `=cmd|...` DDE attack + Google
-    // Sheets `@import` / `+SUM` variants). We drive the exporter
-    // directly with cell strings via a stub `LogValue`-backed row
-    // rather than through `LogTable::GetValueOrFormatted` so we get
-    // exact control over the cell bytes.
+    // Fixture: canonical `=cmd|...` DDE payload plus the Sheets
+    // `@import` / `+SUM` variants. Feeds raw cell bytes rather
+    // than going through `GetValueOrFormatted` for exact control.
     std::vector<std::string> raws = {"raw1", "raw2", "raw3", "raw4"};
     auto stream = std::make_unique<loglib::StreamLineSource>(std::filesystem::path("fixture.csv"), nullptr);
     for (auto &raw : raws)
@@ -578,10 +564,9 @@ void RowExporterTest::TestCsvFormulaInjectionNeutralised()
 
 void RowExporterTest::TestJsonLinesDoubleTypeStability()
 {
-    // A floating column carrying whole-valued doubles used to emit
-    // `"ratio":0` / `"ratio":1` under the default fmt shortest-round-
-    // trip, which re-parses as an integer in every JSON reader with
-    // typed numbers. Pin the trailing `.0`.
+    // Whole-valued doubles used to serialise as `"ratio":0` under
+    // default fmt shortest-round-trip, which re-parses as an
+    // integer in typed JSON readers. Pin the trailing `.0`.
     std::vector<std::string> raws = {"row 0", "row 1", "row 2", "row 3"};
     auto stream = std::make_unique<loglib::StreamLineSource>(std::filesystem::path("fixture.jsonl"), nullptr);
     for (auto &raw : raws)
@@ -676,11 +661,9 @@ void RowExporterTest::TestMarkdownPipeAndNewlineHandling()
 
 void RowExporterTest::TestSnapshotEchoesRawBytes()
 {
-    // Use raw lines that the `StreamLineSource` echoes back
-    // verbatim through `RawLine`. Multi-line content is not
-    // possible here (StreamLineSource strips newlines on append),
-    // but the roundtrip through Snapshot is exact for what
-    // `RawLine` returns.
+    // `StreamLineSource::RawLine` echoes each appended line
+    // verbatim (multi-line records are not possible via
+    // AppendLine, which strips newlines).
     std::vector<std::string> raws = {"line one", "line two"};
     const auto table = BuildFixtureTable(std::move(raws), 2);
 
@@ -697,12 +680,10 @@ void RowExporterTest::TestSnapshotEchoesRawBytes()
 
 void RowExporterTest::TestSnapshotSkipsUnavailableRows()
 {
-    // Build a fixture whose source throws on lineIds 2 and 3
-    // (`runtime_error` and `logic_error` respectively) but returns
-    // ordinary text for lineIds 1 and 4. The exporter must swallow
-    // every throw and still emit the surviving rows -- pre-fix
-    // behaviour caught only `std::out_of_range` and aborted the
-    // whole export on either of the other two.
+    // Source throws `runtime_error` on lineId 2 and `logic_error`
+    // on lineId 3; the exporter must swallow both and still emit
+    // lineIds 1 and 4. Pre-fix catch was narrow (`out_of_range`
+    // only) and aborted the whole export.
     std::unordered_map<std::size_t, ThrowingLineSource::ThrowMode> throwSpec = {
         {2, ThrowingLineSource::ThrowMode::RuntimeError},
         {3, ThrowingLineSource::ThrowMode::LogicError},
@@ -734,9 +715,8 @@ void RowExporterTest::TestSnapshotSkipsUnavailableRows()
 
     MemorySink sink;
     auto exporter = slv::exports::MakeExporter(ExportFormat::Snapshot);
-    // Must not throw: broadened `catch (std::exception&)` swallows
-    // every `RawLine` failure so a single evicted / broken row cannot
-    // abort the export.
+    // Must NOT throw: the broadened `catch (std::exception&)`
+    // swallows every per-row failure.
     exporter->Run(src, sink, loglib::StopToken{});
 
     // Only lineIds 1 and 4 survive; the middle two were skipped.
@@ -745,22 +725,19 @@ void RowExporterTest::TestSnapshotSkipsUnavailableRows()
 
 void RowExporterTest::TestSinkWriteFailurePropagatesFromAllFormats()
 {
-    // Two-row fixture -- each exporter emits at least one write per
-    // row plus (for column formats) an optional header write, so
-    // failing on write index 1 exercises the mid-export failure path
-    // for every format regardless of whether the header row is on.
+    // Two-row fixture: each format emits at least one write per
+    // row (plus an optional header for column formats) so failing
+    // on write index 1 hits every format regardless of the header
+    // toggle.
     std::vector<std::string> raws = {"first raw line", "second raw line"};
     const auto table = BuildFixtureTable(std::move(raws), 2);
 
     std::vector<int> rows = {0, 1};
-    // Skip the Time column (index 0) for CSV / Markdown: their
-    // formatter path (`LogTable::GetValueOrFormatted` ->
-    // `FormatLogValue` -> `date::zoned_time{CurrentZone(), ...}`)
-    // needs a bootstrapped tzdata that `QTEST_GUILESS_MAIN` does
-    // not set up. JSON Lines / Snapshot do not consult
-    // `visibleColumns` here (Snapshot echoes raw bytes; JSON
-    // materialises the full row via `MaterialiseRow`) so the
-    // narrower list still exercises them fully.
+    // Skip the Time column: CSV / Markdown format it through
+    // `date::zoned_time{CurrentZone(), ...}` which needs tzdata
+    // bootstrapping that `QTEST_GUILESS_MAIN` does not do. JSON
+    // Lines / Snapshot ignore `visibleColumns` so the narrower
+    // list still exercises them fully.
     std::vector<std::size_t> cols = {1, 2, 3, 4, 5};
     RowSource src{
         .table = &table,
@@ -822,7 +799,8 @@ void RowExporterTest::TestSinkWriteFailurePropagatesFromAllFormats()
 
 void RowExporterTest::TestCancelLeavesNoPartialFile()
 {
-    // Big enough that a mid-stream cancel definitely triggers.
+    // Large enough that the first stop-poll iteration triggers
+    // before the loop finishes.
     constexpr std::size_t ROW_COUNT = 20000;
     std::vector<std::string> raws;
     raws.reserve(ROW_COUNT);

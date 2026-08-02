@@ -21,23 +21,21 @@
 namespace
 {
 
-/// Soft warning threshold for Markdown exports. Above this, the
-/// output becomes unwieldy in typical Markdown renderers.
+/// Soft warning threshold: Markdown renderers slow down badly
+/// past this many rows.
 constexpr std::size_t MARKDOWN_SOFT_WARNING_ROWS = 10000;
 
 using ExportFormat = slv::exports::ExportFormat;
 
-/// Format-catalogue view. `label` and `extension` are pulled from
+/// Per-format catalogue entry. `label` and `extension` come from
 /// `slv::exports` so the dialog, the completion toast, and the
-/// documentation cannot drift out of sync. Only the file-dialog
-/// filter string is dialog-local; it derives from the same
-/// extension.
+/// docs cannot drift apart.
 struct FormatEntry
 {
     ExportFormat format;
-    QString label;      // e.g. "JSON Lines"
-    QString extension;  // e.g. "jsonl" (no leading dot)
-    QString fileFilter; // e.g. "JSON Lines (*.jsonl);;All Files (*)"
+    QString label;      // "JSON Lines"
+    QString extension;  // "jsonl" (no leading dot)
+    QString fileFilter; // "JSON Lines (*.jsonl);;All Files (*)"
 };
 
 std::array<FormatEntry, 4> BuildFormatEntries()
@@ -58,7 +56,6 @@ std::array<FormatEntry, 4> BuildFormatEntries()
             .format = fmt,
             .label = label,
             .extension = ext,
-            // "JSON Lines (*.jsonl);;All Files (*)"; single source of truth.
             .fileFilter = QStringLiteral("%1 (*.%2);;All Files (*)").arg(label, ext),
         };
     }
@@ -122,7 +119,7 @@ ExportDialog::ExportDialog(
     mFormatCombo = new QComboBox(this);
     QSettings settings;
     const int savedFormat = settings.value(QStringLiteral("ui/lastExportFormat"), static_cast<int>(ExportFormat::JsonLines)).toInt();
-    // Toggle defaults: match the shipped defaults if nothing is persisted.
+    // Fall back to shipped defaults when nothing is persisted.
     const bool savedIncludeHeader =
         settings.value(QStringLiteral("ui/lastExportIncludeHeader"), true).toBool();
     const bool savedIncludeHidden =
@@ -132,9 +129,8 @@ ExportDialog::ExportDialog(
     for (size_t i = 0; i < entries.size(); ++i)
     {
         const auto &entry = entries[i];
-        // Combo entries read "JSON Lines (*.jsonl)" — the glob is a
-        // hint at the suggested extension, useful even before the
-        // user opens the Browse dialog.
+        // Combo entry reads "JSON Lines (*.jsonl)" -- shows the
+        // suggested extension before the user opens Browse.
         const QString displayLabel = QStringLiteral("%1 (*.%2)").arg(entry.label, entry.extension);
         mFormatCombo->addItem(displayLabel, static_cast<int>(entry.format));
         if (static_cast<int>(entry.format) == savedFormat)
@@ -202,10 +198,9 @@ ExportDialog::ExportDialog(
     mRowSizeWarning->setVisible(false);
     layout->addWidget(mRowSizeWarning);
 
-    // Live-tail exports must be preceded by a Stop, not a Pause: a
-    // paused sink still buffers producer batches that would flush on
-    // resume and race the export worker's `LogTable` read. The gate
-    // in `MainWindow::ExportFilteredRows` matches this wording.
+    // Live-tail exports require Stop, not Pause: a paused sink
+    // still buffers producer batches that would flush on resume
+    // and race the export worker's `LogTable` read.
     mLiveTailNote = new QLabel(
         tr("Note: live-tail streaming must be stopped (Ctrl+Shift+X) before an "
            "export can start. The exported view is a snapshot of the currently "
@@ -236,15 +231,10 @@ ExportDialog::Config ExportDialog::Configuration() const
 {
     Config cfg;
     cfg.format = static_cast<ExportFormat>(mFormatCombo->currentData().toInt());
-    // Trim leading/trailing whitespace so the value handed to
-    // `QStringToFsPath` matches the value that `OnAccept` validated
-    // for emptiness / directory existence / overwrite. Without this
-    // the two paths can diverge: `OnAccept` validates the trimmed
-    // path but skips the widget write-back when the user already
-    // typed a known extension, leaving surrounding whitespace in
-    // the raw text. On Windows a trailing space produces a filename
-    // the shell silently normalises away; on POSIX it addresses a
-    // genuinely different (unvalidated) path.
+    // Trim whitespace so the returned path matches what `OnAccept`
+    // validated. Otherwise a trailing space silently addresses a
+    // different (unvalidated) path on POSIX and gets normalised
+    // away by the Windows shell.
     cfg.destination = mDestinationEdit->text().trimmed();
     cfg.selectionOnly = mSelectionOnly->isEnabled() && mSelectionOnly->isChecked();
     cfg.includeHeaderRow = mIncludeHeader->isChecked();
@@ -290,24 +280,17 @@ void ExportDialog::OnAccept()
         QMessageBox::warning(this, tr("Export"), tr("Choose a destination file."));
         return;
     }
-    // Auto-append the format's extension when the user typed (or
-    // browsed to) a path with no suffix at all. Distinct from
-    // `UpdateExtensionSuggestion`, which only rewrites *known* format
-    // extensions -- we deliberately preserve any suffix the user
-    // typed themselves (`.txt`, `.dat`, ...) even when it doesn't
-    // match the format, because forcing a swap there overrides an
-    // explicit user choice. `QFileInfo::suffix()` returns the last
-    // component after the final `.`; empty means "no dot in the
-    // filename component".
+    // Auto-append the format extension only when the user typed
+    // *no* suffix. Distinct from `UpdateExtensionSuggestion`,
+    // which rewrites known format extensions; unknown user-typed
+    // suffixes (`.txt`, `.dat`, ...) are preserved.
     const auto &entry = EntryFor(static_cast<ExportFormat>(mFormatCombo->currentData().toInt()));
     if (QFileInfo(path).suffix().isEmpty())
     {
         path += QStringLiteral(".") + entry.extension;
     }
-    // Always reflect the normalised (trimmed + possibly extended)
-    // path back into the widget. This keeps the visible state and
-    // `Configuration()` output aligned with what we validate below,
-    // even when no suffix append happened.
+    // Reflect the normalised path back so what the user sees
+    // matches what `Configuration()` will return.
     mDestinationEdit->setText(QDir::toNativeSeparators(path));
     QFileInfo info(path);
     if (info.isDir())
@@ -341,11 +324,9 @@ void ExportDialog::OnAccept()
 
     QSettings settings;
     settings.setValue(QStringLiteral("ui/lastExportFormat"), mFormatCombo->currentData().toInt());
-    // Persist the column-format-relevant toggles too so a user who
-    // routinely exports CSV with hidden columns doesn't have to
-    // re-check the box every time. `Export selection only` is
-    // deliberately NOT persisted: it depends on the *current*
-    // selection existing, which is a per-open condition.
+    // Persist the column-format toggles too. `Export selection
+    // only` is deliberately NOT persisted; it depends on a live
+    // selection.
     settings.setValue(QStringLiteral("ui/lastExportIncludeHeader"), mIncludeHeader->isChecked());
     settings.setValue(QStringLiteral("ui/lastExportIncludeHidden"), mIncludeHidden->isChecked());
     accept();
@@ -393,7 +374,7 @@ void ExportDialog::UpdateExtensionSuggestion()
     }
     if (!StripKnownExtension(path))
     {
-        // Path has some unknown or missing extension; leave it alone.
+        // Unknown or missing suffix: leave the user's text alone.
         return;
     }
     const auto &entry = EntryFor(static_cast<ExportFormat>(mFormatCombo->currentData().toInt()));

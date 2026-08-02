@@ -15,11 +15,11 @@ namespace slv::exports
 namespace
 {
 
+// Portable, thread-safe errno formatting. `strerror` is not
+// thread-safe on some libc's and is deprecated on MSVC (C4996);
+// the `_s` / `_r` variants are the canonical replacements.
 std::string DescribeErrno(int err)
 {
-    // Portable, thread-safe errno formatting. `strerror` is deprecated
-    // on MSVC (C4996) and not thread-safe on some libc's; the `_s` /
-    // `_r` variants are the canonical replacements.
     constexpr size_t BUF_SIZE = 256;
     char buf[BUF_SIZE] = {0};
 #ifdef _WIN32
@@ -29,27 +29,17 @@ std::string DescribeErrno(int err)
     }
     return std::string(buf);
 #else
-    // Two `strerror_r` shapes exist and both compile under GCC / libc:
-    //   * XSI (`_POSIX_C_SOURCE >= 200112L && !_GNU_SOURCE`) -- returns
-    //     `int` (0 on success), writes into `buf`.
-    //   * GNU (`_GNU_SOURCE`, the glibc default) -- returns `char *`,
-    //     which may or may not point at `buf`; writing into `buf` is
-    //     optional. Discarding the return value here would leave `buf`
-    //     empty on glibc, giving a blank error message.
-    //
-    // Dispatch on the return type at compile time so both shapes work
-    // regardless of which one the current build has enabled.
+    // Two `strerror_r` shapes exist: the XSI variant returns
+    // `int` (0 on success, writes into `buf`); the GNU variant
+    // (glibc default) returns `char *` that may or may not point
+    // at `buf`. Dispatch on the return type so both shapes work.
     auto result = strerror_r(err, buf, BUF_SIZE);
     if constexpr (std::is_same_v<decltype(result), char *>)
     {
-        // GNU: pointer we must dereference. May be `buf` or a static
-        // internal string.
         return std::string(result != nullptr ? result : "unknown error");
     }
     else
     {
-        // XSI: int return; success writes into `buf`, non-zero means
-        // the call itself failed (unknown errno, buffer too small).
         if (result != 0)
         {
             return "unknown error";
@@ -59,15 +49,12 @@ std::string DescribeErrno(int err)
 #endif
 }
 
-// Portable fopen wrapper: MSVC deprecates the plain `fopen` and
-// prefers `_wfopen_s` for wide paths so this side of the sink
-// keeps Unicode filenames intact on Windows.
+// MSVC deprecates plain `fopen`; the `_wfopen_s` overload is
+// what keeps Unicode filenames intact on Windows.
 std::FILE *OpenForWriteBinary(const std::filesystem::path &path)
 {
 #ifdef _WIN32
     std::FILE *file = nullptr;
-    // `_wfopen_s` returns 0 on success; the errno on failure is
-    // reported via the return value directly.
     const errno_t err = _wfopen_s(&file, path.wstring().c_str(), L"wb");
     if (err != 0 || file == nullptr)
     {
@@ -107,9 +94,8 @@ FileSink::~FileSink()
         (void)std::fclose(mFile);
         mFile = nullptr;
     }
-    // Best-effort cleanup: any error here means the temp file
-    // outlives the process, which is a minor cosmetic issue; not
-    // worth propagating from a destructor.
+    // Best-effort: an error here just leaves the .tmp on disk,
+    // not worth propagating from a destructor.
     std::error_code ec;
     std::filesystem::remove(mTempPath, ec);
 }
@@ -142,14 +128,12 @@ void FileSink::Finish()
     {
         throw std::runtime_error("FileSink::Finish on a closed sink");
     }
-    // Flush then close; both are checked because network shares
-    // and deferred-write filesystems only surface I/O errors at
-    // flush or close time.
+    // Check both: network shares and deferred-write filesystems
+    // only surface I/O errors at flush / close time.
     if (std::fflush(mFile) != 0)
     {
         const std::string reason = DescribeErrno(errno);
-        // We're already throwing about the flush failure; the close
-        // result is irrelevant beyond releasing the OS handle.
+        // Already throwing; close is just to release the handle.
         (void)std::fclose(mFile);
         mFile = nullptr;
         throw std::runtime_error("Failed to flush '" + mTempPath.string() + "': " + reason);
@@ -166,9 +150,9 @@ void FileSink::Finish()
     std::filesystem::rename(mTempPath, mDestination, ec);
     if (ec)
     {
-        // Rename can fail cross-device or if the destination is
-        // held open by another process. Fall back to copy + remove
-        // for the cross-device case; the held-open case still surfaces.
+        // Rename fails cross-device or when the destination is
+        // held open. Fall back to copy + remove for the cross-
+        // device case; anything else propagates as a throw.
         if (ec == std::errc::cross_device_link)
         {
             std::error_code copyEc;
