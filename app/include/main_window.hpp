@@ -79,6 +79,11 @@ class RegexTemplatesEditor;
 class HighlightRuleSet;
 class HighlightRulesEditor;
 
+namespace slv::exports
+{
+struct ExportPlan;
+} // namespace slv::exports
+
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -337,6 +342,16 @@ public:
     {
         return mModel;
     }
+
+    /// Source-model row indices that `File -> Export Filtered
+    /// Rows...` would walk, in the same top-to-bottom order the
+    /// user sees. Respects every proxy layer (`LogFilterModel`
+    /// sort, `RowOrderProxyModel` newest-first flip); when
+    /// @p selectionOnly is true, restricts to the current
+    /// selection. Public so tests can pin ordering without
+    /// going through the modal `ExportDialog`; production code
+    /// should use `ExportFilteredRows` instead.
+    [[nodiscard]] std::vector<int> CollectExportSourceRows(bool selectionOnly) const;
 
     /// Owned `AnchorManager`; non-null after construction.
     [[nodiscard]] AnchorManager *Anchors() const noexcept
@@ -691,6 +706,14 @@ private slots:
     /// Loads either shape; missing session fields default to inert
     /// values.
     void LoadConfiguration();
+
+    /// "Export Filtered Rows\u2026" -- pops the export dialog and
+    /// dispatches an async worker that writes the current filter
+    /// slice in one of the four supported formats (`JSON Lines`,
+    /// `CSV`, `Source snapshot`, `Markdown table`). Progress and
+    /// cancel run through a modal-per-window `QProgressDialog`;
+    /// user cancel unwinds via `slv::exports::ExportCancelled`.
+    void ExportFilteredRows();
 
     /// Show the `ConfigurationDiagnosticsDialog` (constructed lazily).
     /// A second call raises the existing instance.
@@ -1199,6 +1222,15 @@ private:
 
     /// Persists the directory of @p path as the last-used dialog dir.
     void RememberLastOpenDir(const QString &path);
+
+    /// Last-used export directory (`ui/lastExportDir`), kept
+    /// separate from `ui/lastOpenDir` so a one-off export to a
+    /// shared drive doesn't retarget the next `File -> Open...`
+    /// dialog. Falls back to `DefaultOpenDir()` on first use.
+    [[nodiscard]] QString DefaultExportDir() const;
+
+    /// Persists the directory of @p path under `ui/lastExportDir`.
+    void RememberLastExportDir(const QString &path);
 
     /// Appends shortcut text to each action's tooltip and mirrors the
     /// tooltip into `statusTip()`. Skips actions whose tooltip already
@@ -1787,6 +1819,74 @@ private:
     /// Wall-clock start of the current decompression, for the
     /// post-success status-bar toast.
     std::chrono::steady_clock::time_point mDecompressionStartedAt;
+
+    // --------------------------- Filtered-row export -----------------
+    // Async orchestration for `File -> Export Filtered Rows...`.
+    // Mirrors the decompression block above: fresh `StopSource` per
+    // run, own `QFutureWatcher<void>`, modal-per-window
+    // `QProgressDialog` with `minimumDuration`-deferred show, atomic
+    // progress counter polled by a `QTimer`.
+
+    /// Watcher for the export future; re-armed per run.
+    QFutureWatcher<void> *mExportWatcher = nullptr;
+
+    /// True while a worker is running. Guards the finished slot
+    /// against stale queued call-outs (see `mDecompressionInFlight`).
+    bool mExportInFlight = false;
+
+    /// Stop source paired with the current worker.
+    /// `QProgressDialog::canceled` calls `request_stop()`; the
+    /// exporter polls it between row batches (see
+    /// `slv::exports::STOP_POLL_INTERVAL_ROWS`).
+    loglib::StopSource mExportStopSource;
+
+    /// Rows-written counter, written by the worker, read by the
+    /// poll timer. `qint64` for `QAtomicInteger`.
+    QAtomicInteger<qint64> mExportRowsWritten = 0;
+    QAtomicInteger<qint64> mExportRowsTotal = 0;
+
+    /// 200 ms poll timer that pumps the atomics into the progress
+    /// dialog.
+    QTimer *mExportPollTimer = nullptr;
+
+    /// Modal-per-window progress dialog. `QPointer` because
+    /// `deleteLater` may run between the finished slot and
+    /// destruction.
+    QPointer<QProgressDialog> mExportProgressDialog;
+
+    /// Destination path (user-facing) so the finished-slot toast
+    /// can name the file after the plan is gone.
+    QString mExportDestinationPath;
+
+    /// Human-readable format name for the label ("JSON Lines").
+    QString mExportFormatLabel;
+
+    /// Wall-clock start of the current export, for the success toast.
+    std::chrono::steady_clock::time_point mExportStartedAt;
+
+    /// Kick off the async export worker. Models on
+    /// `BeginAsyncDecompression`.
+    void BeginAsyncExport(
+        std::unique_ptr<slv::exports::ExportPlan> plan, const QString &destination, const QString &formatLabel
+    );
+
+    /// Show the export progress dialog (deferred via
+    /// `minimumDuration`).
+    void ShowExportProgress();
+
+    /// Reset dialog + poll timer without deleting them (reused
+    /// across runs).
+    void TeardownExportProgress();
+
+    /// Handle worker completion (success / cancel / error) and
+    /// drive the user-facing toast or message.
+    void OnExportFinished();
+
+    /// Cancel any in-flight export and reset scratch state. Safe
+    /// to call when nothing is running.
+    void CancelInFlightExport();
+
+    // --------------------------- Session mode ------------------------
 
     /// Streaming session kind; gates UI variants. Set on open,
     /// cleared in `streamingFinished`. Underlying type pinned to

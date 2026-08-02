@@ -35,6 +35,21 @@
 #        annotate lines inside `<xfilesystem_abi.h>`. Any user code
 #        touching `std::filesystem` (decompression, file-open, etc.)
 #        reproduces the trace, so the whole check is disabled here.
+#   -misc-non-private-member-variables-in-classes
+#   (and its `cppcoreguidelines-non-private-member-variables-in-classes`
+#    alias):
+#        POD-like plan / snapshot structs (e.g. `slv::exports::ExportPlan`,
+#        `slv::exports::RowSource`) intentionally expose their data
+#        members to callers and still carry a convenience helper
+#        (`View()`, ...). The check's actual target is "leaky class
+#        with mixed visibility", which does not apply when *all*
+#        members are public. Matches the semantics already in
+#        `test/.clang-tidy` (Catch2 / QtTest fixtures follow the same
+#        struct-with-public-fields idiom). The
+#        `IgnoreClassesWithAllMemberVariablesBeingPublic` option is
+#        also set as a belt-and-suspenders backstop; cpp-linter-action
+#        does not always honour it on nested `.clang-tidy` files, so
+#        the outright disable is the primary silencer.
 
 InheritParentConfig: true
 
@@ -44,7 +59,16 @@ Checks: >
   -readability-redundant-access-specifiers,
   -cppcoreguidelines-redundant-access-specifiers,
   -readability-convert-member-functions-to-static,
-  -clang-analyzer-optin.core.EnumCastOutOfRange
+  -clang-analyzer-optin.core.EnumCastOutOfRange,
+  -misc-non-private-member-variables-in-classes,
+  -cppcoreguidelines-non-private-member-variables-in-classes
 
 CheckOptions:
   - { key: readability-identifier-naming.PublicMethodCase, value: aNy_CasE }
+
+  # Belt-and-suspenders backstop for the disabled
+  # `misc-non-private-member-variables-in-classes` check above --
+  # future toolchains that flip the check back on via a different
+  # alias still bypass it for the `struct { ... }; helper();`
+  # aggregate pattern used by `ExportPlan` / `RowSource`.
+  - { key: misc-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic, value: true }

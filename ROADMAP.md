@@ -16,7 +16,7 @@ For the architecture each item plugs into, see [CONTRIBUTING.md → Architecture
   - [4. ~~Bookmark notes on anchors~~ (shipped)](#4-bookmark-notes-on-anchors)
   - [5. ~~Boolean filter expressions (AND / OR / NOT)~~ (shipped)](#5-boolean-filter-expressions-and--or--not)
   - [6. ~~Multi-line records (stack traces and continuation lines)~~ (shipped)](#6-multi-line-records-stack-traces-and-continuation-lines)
-  - [7. Export filtered rows](#7-export-filtered-rows)
+  - [7. ~~Export filtered rows~~ (shipped)](#7-export-filtered-rows)
   - [8. ~~Goto line / Goto timestamp~~ (shipped)](#8-goto-line--goto-timestamp)
   - [9. Stdin / pipe input](#9-stdin--pipe-input)
   - [10. Headless / scriptable CLI mode](#10-headless--scriptable-cli-mode)
@@ -41,6 +41,7 @@ For the architecture each item plugs into, see [CONTRIBUTING.md → Architecture
   - [27. Scratchpad / notes panel](#27-scratchpad--notes-panel)
   - [28. Pipe selection to external command](#28-pipe-selection-to-external-command)
   - [29. AI / LLM assistance panel](#29-ai--llm-assistance-panel)
+  - [30. Full-session export bundle](#30-full-session-export-bundle)
 - [Explicit non-goals](#explicit-non-goals)
 - [Process](#process)
 - [Comparative feature matrix](#comparative-feature-matrix)
@@ -157,26 +158,28 @@ Blank lines join a record only when followed by another continuation; trailing a
 
 **Non-goals.** Regex matching still happens per physical line; continuation handling appends bytes after the header match. JSON/CSV record framing and expanded in-cell rendering are unchanged.
 
-### 7. Export filtered rows
+### 7. ~~Export filtered rows~~
 
-**Why.** Today the only way to share a slice of a log is `Ctrl+C` → JSON paste. lnav, LogSleuth, Logan, LogViewPlus, OtrosLogViewer all expose **File → Export**. Common ask for handing artifacts to non-engineers (PMs, customer support).
+> **Shipped.** **File → Export Filtered Rows…** exports the current
+> filtered + sorted view (or just the selection) as **JSON Lines**,
+> **CSV**, **Source snapshot** (raw on-disk bytes per row, same shape
+> as `Ctrl+C`), or **Markdown table**. The dialog previews the row
+> count, remembers the last format via `QSettings`, suggests an
+> extension per format, and warns on large Markdown exports. Progress
+> and cancel run through the same `QFutureWatcher` +
+> `loglib::StopSource` + deferred `QProgressDialog` pattern as async
+> decompression; cancellation leaves no partial file on disk because
+> `FileSink` writes to `<dest>.tmp` and atomically renames on
+> `Finish`. See
+> [`doc/README.md § Exporting Filtered Rows`](doc/README.md#exporting-filtered-rows).
 
-**Scope.** A new **File → Export Filtered Rows…** dialog. Output formats:
-
-- **JSON Lines** — one parsed record per line; useful for re-importing into another tool.
-- **CSV** — current visible-column set with the configured header.
-- **NDJSON snapshot** — the original on-disk bytes for each row (the same shape as today's `Ctrl+C`).
-- **Markdown table** — small dumps for tickets / chat.
-
-Exports respect the current filter set and sort order; an explicit "Export selection only" toggle limits to selected rows.
-
-**Non-goals (v1).** Streaming export (continuous flush to disk as new lines arrive — defer to v1.x), exports with attachments (anchors / notes), per-column transformations.
-
-**Approach.** Reuse the per-column formatter that drives `LogTableView`. The export runs on a `QThread` so the GUI stays responsive on million-row exports. Progress + cancel via the modal-per-window `QProgressDialog` pattern introduced by item 1's async decompression path (`QFutureWatcher` + `loglib::StopSource`) — Save Configuration is fully synchronous today and has no progress UI to model on.
-
-**Acceptance bar.** Exporting 1 M rows to NDJSON completes in `< 5 s` on a warm cache. JSON Lines round-trips back through `File → Open…` byte-identically.
-
-**Touches.** `app`: new `app/include/export_dialog.hpp` + `.cpp`, `MainWindow::SaveConfiguration` neighbourhood for menu wiring.
+**Non-goals (v1).** Streaming export (continuous flush to disk as
+new lines arrive — defer to v1.x), exports with attachments
+(anchors / notes), per-column transformations. **Full session
+export** — a single compressed archive bundling all log lines with
+configuration, session, and anchors, intended for sharing an entire
+investigation with a colleague — is out of scope here and tracked
+separately below.
 
 ### 8. ~~Goto line / Goto timestamp~~
 
@@ -302,6 +305,27 @@ lnav's `!` shell hand-off, Logan's tabbed terminal. Right-click selection → **
 ### 29. AI / LLM assistance panel
 
 Logan, LogLens. A side panel where the user can ask "summarise these 200 rows", "what changed between window A and window B", "which requests look suspicious". Optional, off-by-default, requires a user-supplied API key or local model endpoint. Increasingly expected by 2026 buyers but **not** something we want to be required for the core triage workflow.
+
+### 30. Full-session export bundle
+
+**Why.** [Item 7](#7-export-filtered-rows) exports rows. This item exports the **entire investigation** as a single shareable file: the raw log bytes for every retained line, the full `LogConfiguration` (columns, filters, sort, source, anchors + notes, highlight rules), and the session metadata. Recipient double-clicks the bundle and lands on the exact same view, at the exact same row, with the same filter set, same anchors, same colours. Faster than "here are three log files, a JSON config, and three screenshots of my filter dialog".
+
+**Scope.** A new **File → Export Session Bundle…** entry, sibling to Export Filtered Rows. Output is a single file with an `.slvbundle` (working name) extension, structured as:
+
+- A small header identifying format + version.
+- The full `LogConfiguration` payload as Glaze JSON (already exists — same on-disk format as `File → Save Configuration`).
+- Session metadata: source descriptor, session mode (Static / LiveTail / Network), open-window UUIDs, timestamps.
+- Log payload: for each retained line, the raw bytes as returned by `LineSource::RawLine`, plus its 1-based `lineId` for stable anchor / bookmark references across the round-trip.
+
+The whole file is streamed through `zstd` (already linked for decompression — item 1's compressed-input work) so a 1 GiB live-tail buffer compresses to something a chat / email can carry. **File → Open…** learns to detect the bundle and drive the loader against an in-memory `LineSource` instead of a filesystem path, so bundles round-trip losslessly regardless of whether the original files still exist on disk.
+
+**Non-goals (v1 of this item).** Streaming continuation ("keep the tail growing after the bundle is opened"), diffing two bundles, GUI-side integrity signatures. Bundles are static snapshots.
+
+**Approach.** Reuse the same `ExportSink` / async-worker pattern shipped in item 7 so the UX (progress dialog, cancel, atomic-rename via `FileSink`) is identical. Encoder / decoder land in `loglib` (bundle format is a pure `loglib` concern; the GUI just wires the menu action). The `LineSource` abstraction already allows an in-memory implementation, so the loader side is a `BundleLineSource` variant.
+
+**Acceptance bar.** Round-trip: export a session with 1 M lines + 20 anchors + 5 highlight rules + a non-trivial filter, reopen the bundle, and end up on the same source-model row with all state intact. Bundle size for a typical 100 MiB JSON log is `<10 MiB` under zstd default level.
+
+**Touches.** `loglib`: new `session_bundle_writer.{hpp,cpp}` + `session_bundle_reader.{hpp,cpp}`, sibling in-memory `LineSource` implementation. `app`: new menu action, `MainWindow::ExportSessionBundle` slot mirroring `ExportFilteredRows`, bundle detection in the existing **File → Open…** dispatch.
 
 ## Explicit non-goals
 

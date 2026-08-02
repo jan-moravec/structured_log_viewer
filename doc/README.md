@@ -312,6 +312,24 @@ Duplicate header names are disambiguated as `header [key]` in both menus so colu
 
 See [Anchors](#anchors) for marking and navigating between specific rows.
 
+### Exporting Filtered Rows
+
+**File → Export Filtered Rows…** writes the currently visible view — the current filter set applied to the current sort order — out to disk in one of four formats. Use it to hand a slice of a log to a colleague, attach a small excerpt to a ticket, or re-ingest a filtered view into another tool.
+
+- **JSON Lines** (`.jsonl`) — one JSON object per row containing every field the row actually carried, not just the visible columns. Booleans are native JSON, integers and doubles are numeric literals (no quotes), and timestamps are ISO 8601 with microsecond precision in UTC (`YYYY-MM-DDTHH:MM:SS.ffffffZ`) so the file round-trips unambiguously through **File → Open…** without depending on the reader's time zone.
+- **CSV** (`.csv`) — the currently visible columns only, rendered with the same per-column formatter the table uses. RFC 4180 quoting: cells containing `,`, `"`, or `\n` are wrapped in `"…"` and embedded `"` is doubled. The "Include header row" toggle emits the column headers as the first line.
+- **Source snapshot** (`.log`) — the original on-disk bytes for each row, one record per output line, exactly matching what `Ctrl+C` would place on the clipboard. Multi-line records are preserved verbatim. This is the format to pick when you want the raw log excerpt rather than the parsed view.
+- **Markdown table** (`.md`) — the currently visible columns as a GitHub-flavoured Markdown table. Cell text has `|` escaped and internal newlines collapsed to spaces so the row layout can't break. Large exports flip a soft warning because Markdown renderers slow down past a few thousand rows.
+
+The dialog:
+
+- Previews the row count before you commit, and switches to "**N of M** rows (selection only)" when *Export selection only* is checked.
+- Suggests an extension appropriate to the chosen format and swaps it automatically when you switch formats (any unrecognised extension you typed is preserved).
+- Remembers the last format you picked via `QSettings` so the next export defaults to the same output.
+- Refuses to start until the destination directory exists; overwriting an existing file requires an explicit confirmation.
+
+Exports run on a worker thread with a deferred-appearance `QProgressDialog` — quick exports never flash a dialog, longer ones show progress and a **Cancel** button. Cancelling is safe: the writer streams into `<destination>.tmp` and atomically renames on success, so a cancelled export leaves neither the destination nor the temp file behind. The same guarantee applies to write failures mid-export.
+
 ### Inspecting a Record
 
 For per-row drill-down, Structured Log Viewer ships a **Record Details** pane that shows every parsed field plus the raw source record. Open it any of three ways:
@@ -688,6 +706,7 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 | Open network stream            | `Ctrl+Shift+L`      |
 | Save configuration             | `Ctrl+S`            |
 | Save session                   | `Ctrl+Shift+S`      |
+| Export filtered rows           | `Ctrl+E`            |
 | Find                           | `Ctrl+F`            |
 | Go to Line                     | `Ctrl+G`            |
 | Go to Timestamp                | `Ctrl+Shift+G`      |
