@@ -40,7 +40,7 @@ std::string DescribeErrno(int err)
     auto describe = [&buf](auto result) -> std::string {
         if constexpr (std::is_pointer_v<decltype(result)>)
         {
-            return std::string(result != nullptr ? result : "unknown error");
+            return {result != nullptr ? result : "unknown error"};
         }
         else
         {
@@ -48,7 +48,7 @@ std::string DescribeErrno(int err)
             {
                 return "unknown error";
             }
-            return std::string(buf);
+            return {buf};
         }
     };
     return describe(strerror_r(err, buf, BUF_SIZE));

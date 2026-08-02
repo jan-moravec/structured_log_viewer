@@ -48,3 +48,12 @@ Checks: >
 
 CheckOptions:
   - { key: readability-identifier-naming.PublicMethodCase, value: aNy_CasE }
+
+  # POD-like plan / snapshot structs (e.g. `slv::exports::ExportPlan`,
+  # `slv::exports::RowSource`) intentionally expose their data members
+  # to callers and still carry a convenience helper (`View()` etc.).
+  # The default rule flags every public field when the class also has
+  # any member function; the point of this check is "leaky class with
+  # mixed visibility", which does not apply when *all* members are
+  # public. Ignore that pattern here.
+  - { key: misc-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic, value: true }

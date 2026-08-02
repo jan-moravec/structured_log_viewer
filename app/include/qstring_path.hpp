@@ -21,9 +21,9 @@ namespace logapp
 [[nodiscard]] inline std::filesystem::path QStringToFsPath(const QString &path)
 {
 #ifdef Q_OS_WIN
-    return std::filesystem::path(path.toStdWString());
+    return {path.toStdWString()};
 #else
-    return std::filesystem::path(path.toStdString());
+    return {path.toStdString()};
 #endif
 }
 
