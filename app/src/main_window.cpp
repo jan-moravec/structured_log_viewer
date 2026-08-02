@@ -3649,9 +3649,8 @@ void MainWindow::ExportFilteredRows()
     // buffer that would flush on resume and race the export).
     if (mModel->IsStreamingActive() || mDecompressionInFlight)
     {
-        const QString detail = IsLiveTailSession()
-            ? tr("Stop the live-tail session (Ctrl+Shift+X) before exporting.")
-            : tr("Wait for the current file load to finish, then retry.");
+        const QString detail = IsLiveTailSession() ? tr("Stop the live-tail session (Ctrl+Shift+X) before exporting.")
+                                                   : tr("Wait for the current file load to finish, then retry.");
         QMessageBox::information(this, tr("Export Filtered Rows"), detail);
         return;
     }
@@ -3766,11 +3765,9 @@ void MainWindow::BeginAsyncExport(
     {
         // `%L1` for locale-grouped digits; `qulonglong` avoids
         // narrowing where `size_t` is 32-bit.
-        mExportProgressDialog->setLabelText(
-            tr("Exporting %L1 rows to %2\nPreparing\u2026")
-                .arg(static_cast<qulonglong>(plan->sourceRows.size()))
-                .arg(QFileInfo(destination).fileName())
-        );
+        mExportProgressDialog->setLabelText(tr("Exporting %L1 rows to %2\nPreparing\u2026")
+                                                .arg(static_cast<qulonglong>(plan->sourceRows.size()))
+                                                .arg(QFileInfo(destination).fileName()));
     }
 
     // Share the plan + sink so the worker capture cannot race the
@@ -3880,13 +3877,11 @@ void MainWindow::ShowExportProgress()
                 {
                     return;
                 }
-                mExportProgressDialog->setLabelText(
-                    tr("Exporting %1 rows to %2\n%L3 of %L4 rows written")
-                        .arg(total)
-                        .arg(QFileInfo(mExportDestinationPath).fileName())
-                        .arg(written)
-                        .arg(total)
-                );
+                mExportProgressDialog->setLabelText(tr("Exporting %1 rows to %2\n%L3 of %L4 rows written")
+                                                        .arg(total)
+                                                        .arg(QFileInfo(mExportDestinationPath).fileName())
+                                                        .arg(written)
+                                                        .arg(total));
             }
             else
             {
@@ -3998,8 +3993,7 @@ void MainWindow::OnExportFinished()
     if (cancelled)
     {
         statusBar()->showMessage(
-            tr("Export cancelled: %1").arg(QFileInfo(mExportDestinationPath).fileName()),
-            STATUS_BAR_MESSAGE_TIMEOUT_MS
+            tr("Export cancelled: %1").arg(QFileInfo(mExportDestinationPath).fileName()), STATUS_BAR_MESSAGE_TIMEOUT_MS
         );
     }
     else if (!errorEntry.isEmpty())

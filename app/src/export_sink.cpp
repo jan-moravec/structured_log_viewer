@@ -77,9 +77,7 @@ FileSink::FileSink(std::filesystem::path destination)
     mFile = OpenForWriteBinary(mTempPath);
     if (mFile == nullptr)
     {
-        throw std::runtime_error(
-            "Failed to open '" + mTempPath.string() + "' for writing: " + DescribeErrno(errno)
-        );
+        throw std::runtime_error("Failed to open '" + mTempPath.string() + "' for writing: " + DescribeErrno(errno));
     }
 }
 
@@ -176,8 +174,7 @@ void FileSink::Finish()
             std::error_code cleanupEc;
             std::filesystem::remove(mTempPath, cleanupEc);
             throw std::runtime_error(
-                "Failed to rename '" + mTempPath.string() + "' to '" + mDestination.string() +
-                "': " + ec.message()
+                "Failed to rename '" + mTempPath.string() + "' to '" + mDestination.string() + "': " + ec.message()
             );
         }
     }

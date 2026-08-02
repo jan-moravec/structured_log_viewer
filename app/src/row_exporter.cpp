@@ -200,8 +200,9 @@ void PollStop(const loglib::StopToken &token)
 
 /// Materialise every present field on @p line as `(key, LogValue)`
 /// pairs. Defensively skips monostate slots.
-std::vector<std::pair<std::string_view, loglib::LogValue>>
-MaterialiseRow(const loglib::LogLine &line, const loglib::KeyIndex &keys)
+std::vector<std::pair<std::string_view, loglib::LogValue>> MaterialiseRow(
+    const loglib::LogLine &line, const loglib::KeyIndex &keys
+)
 {
     const auto compact = line.CompactValues();
     std::vector<std::pair<std::string_view, loglib::LogValue>> out;
@@ -229,12 +230,13 @@ MaterialiseRow(const loglib::LogLine &line, const loglib::KeyIndex &keys)
 class JsonLinesExporter final : public RowExporter
 {
 public:
-    void
-    Run(const RowSource &source,
+    void Run(
+        const RowSource &source,
         ExportSink &sink,
         const loglib::StopToken &stopToken,
         ProgressCallback progress,
-        void *progressUserData) override;
+        void *progressUserData
+    ) override;
 };
 
 void JsonLinesExporter::Run(
@@ -305,12 +307,13 @@ void JsonLinesExporter::Run(
 class CsvExporter final : public RowExporter
 {
 public:
-    void
-    Run(const RowSource &source,
+    void Run(
+        const RowSource &source,
         ExportSink &sink,
         const loglib::StopToken &stopToken,
         ProgressCallback progress,
-        void *progressUserData) override;
+        void *progressUserData
+    ) override;
 
 private:
     /// Append @p cell to @p out, quoted per RFC 4180 when it
@@ -463,12 +466,13 @@ void CsvExporter::Run(
 class SnapshotExporter final : public RowExporter
 {
 public:
-    void
-    Run(const RowSource &source,
+    void Run(
+        const RowSource &source,
         ExportSink &sink,
         const loglib::StopToken &stopToken,
         ProgressCallback progress,
-        void *progressUserData) override;
+        void *progressUserData
+    ) override;
 };
 
 void SnapshotExporter::Run(
@@ -539,12 +543,13 @@ void SnapshotExporter::Run(
 class MarkdownExporter final : public RowExporter
 {
 public:
-    void
-    Run(const RowSource &source,
+    void Run(
+        const RowSource &source,
         ExportSink &sink,
         const loglib::StopToken &stopToken,
         ProgressCallback progress,
-        void *progressUserData) override;
+        void *progressUserData
+    ) override;
 
 private:
     /// Markdown-table-cell escaping:

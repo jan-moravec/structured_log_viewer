@@ -104,7 +104,9 @@ ExportDialog::ExportDialog(
     bool isLiveTail,
     QWidget *parent
 )
-    : QDialog(parent), mRowCountFiltered(rowCountFiltered), mRowCountSelected(rowCountSelected),
+    : QDialog(parent),
+      mRowCountFiltered(rowCountFiltered),
+      mRowCountSelected(rowCountSelected),
       mDefaultDir(std::move(defaultDir))
 {
     setWindowTitle(tr("Export Filtered Rows"));
@@ -118,12 +120,11 @@ ExportDialog::ExportDialog(
 
     mFormatCombo = new QComboBox(this);
     const QSettings settings;
-    const int savedFormat = settings.value(QStringLiteral("ui/lastExportFormat"), static_cast<int>(ExportFormat::JsonLines)).toInt();
+    const int savedFormat =
+        settings.value(QStringLiteral("ui/lastExportFormat"), static_cast<int>(ExportFormat::JsonLines)).toInt();
     // Fall back to shipped defaults when nothing is persisted.
-    const bool savedIncludeHeader =
-        settings.value(QStringLiteral("ui/lastExportIncludeHeader"), true).toBool();
-    const bool savedIncludeHidden =
-        settings.value(QStringLiteral("ui/lastExportIncludeHidden"), false).toBool();
+    const bool savedIncludeHeader = settings.value(QStringLiteral("ui/lastExportIncludeHeader"), true).toBool();
+    const bool savedIncludeHidden = settings.value(QStringLiteral("ui/lastExportIncludeHidden"), false).toBool();
     int selectedIndex = 0;
     const auto &entries = FormatEntries();
     for (size_t i = 0; i < entries.size(); ++i)
@@ -262,9 +263,7 @@ void ExportDialog::OnBrowseClicked()
     {
         start = mDefaultDir;
     }
-    const QString chosen = QFileDialog::getSaveFileName(
-        this, tr("Choose Export Destination"), start, entry.fileFilter
-    );
+    const QString chosen = QFileDialog::getSaveFileName(this, tr("Choose Export Destination"), start, entry.fileFilter);
     if (chosen.isEmpty())
     {
         return;
@@ -301,9 +300,7 @@ void ExportDialog::OnAccept()
     if (!info.absoluteDir().exists())
     {
         QMessageBox::warning(
-            this,
-            tr("Export"),
-            tr("Destination directory does not exist:\n%1").arg(info.absoluteDir().absolutePath())
+            this, tr("Export"), tr("Destination directory does not exist:\n%1").arg(info.absoluteDir().absolutePath())
         );
         return;
     }
@@ -338,12 +335,10 @@ void ExportDialog::RefreshPreview()
         (mSelectionOnly->isEnabled() && mSelectionOnly->isChecked()) ? mRowCountSelected : mRowCountFiltered;
     if (mSelectionOnly->isEnabled() && mSelectionOnly->isChecked())
     {
-        mPreviewLabel->setText(
-            tr("Will export %L1 row(s) (%L2 selected of %L3 in the current filter).")
-                .arg(effective)
-                .arg(mRowCountSelected)
-                .arg(mRowCountFiltered)
-        );
+        mPreviewLabel->setText(tr("Will export %L1 row(s) (%L2 selected of %L3 in the current filter).")
+                                   .arg(effective)
+                                   .arg(mRowCountSelected)
+                                   .arg(mRowCountFiltered));
     }
     else
     {

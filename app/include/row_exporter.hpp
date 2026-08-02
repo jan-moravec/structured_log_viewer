@@ -100,12 +100,13 @@ public:
     /// Emit @p source through @p sink. @p progress may be null.
     /// Throws `ExportCancelled` on user cancel or
     /// `std::runtime_error` on I/O / serialization failure.
-    virtual void
-    Run(const RowSource &source,
+    virtual void Run(
+        const RowSource &source,
         ExportSink &sink,
         const loglib::StopToken &stopToken,
         ProgressCallback progress = nullptr,
-        void *progressUserData = nullptr) = 0;
+        void *progressUserData = nullptr
+    ) = 0;
 };
 
 /// Sentinel exception for user-cancel. Deliberately not a

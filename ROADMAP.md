@@ -166,19 +166,20 @@ Blank lines join a record only when followed by another continuation; trailing a
 > as `Ctrl+C`), or **Markdown table**. The dialog previews the row
 > count, remembers the last format via `QSettings`, suggests an
 > extension per format, and warns on large Markdown exports. Progress
-> + cancel run through the same `QFutureWatcher` + `loglib::StopSource`
-> + deferred `QProgressDialog` pattern as async decompression;
-> cancellation leaves no partial file on disk because `FileSink`
-> writes to `<dest>.tmp` and atomically renames on `Finish`. See
+> and cancel run through the same `QFutureWatcher` +
+> `loglib::StopSource` + deferred `QProgressDialog` pattern as async
+> decompression; cancellation leaves no partial file on disk because
+> `FileSink` writes to `<dest>.tmp` and atomically renames on
+> `Finish`. See
 > [`doc/README.md § Exporting Filtered Rows`](doc/README.md#exporting-filtered-rows).
 
 **Non-goals (v1).** Streaming export (continuous flush to disk as
 new lines arrive — defer to v1.x), exports with attachments
 (anchors / notes), per-column transformations. **Full session
-export** — a single compressed archive bundling all log lines
-+ configuration + session + anchors, intended for sharing an
-entire investigation with a colleague — is out of scope here and
-tracked separately below.
+export** — a single compressed archive bundling all log lines with
+configuration, session, and anchors, intended for sharing an entire
+investigation with a colleague — is out of scope here and tracked
+separately below.
 
 ### 8. ~~Goto line / Goto timestamp~~
 

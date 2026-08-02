@@ -161,11 +161,15 @@ public:
         }
         return {};
     }
-    [[nodiscard]] std::string_view ResolveMmapBytes(std::uint64_t /*ownerId*/, std::uint32_t /*offset*/, std::size_t /*length*/) const noexcept override
+    [[nodiscard]] std::string_view ResolveMmapBytes(
+        std::uint64_t /*ownerId*/, std::uint32_t /*offset*/, std::size_t /*length*/
+    ) const noexcept override
     {
         return {};
     }
-    [[nodiscard]] std::string_view ResolveOwnedBytes(std::uint64_t /*ownerId*/, std::uint32_t /*offset*/, std::size_t /*length*/) const noexcept override
+    [[nodiscard]] std::string_view ResolveOwnedBytes(
+        std::uint64_t /*ownerId*/, std::uint32_t /*offset*/, std::size_t /*length*/
+    ) const noexcept override
     {
         return {};
     }
@@ -181,7 +185,9 @@ public:
     {
         return false;
     }
-    void EvictBefore(std::size_t /*lineId*/) override {}
+    void EvictBefore(std::size_t /*lineId*/) override
+    {
+    }
     [[nodiscard]] std::size_t FirstAvailableLineId() const noexcept override
     {
         return 1;
@@ -242,9 +248,7 @@ private:
 /// original JSON so `SnapshotExporter` has bytes to echo.
 loglib::LogTable BuildFixtureTable(std::vector<std::string> rawLines, std::size_t rowCount)
 {
-    auto stream = std::make_unique<loglib::StreamLineSource>(
-        std::filesystem::path("fixture.jsonl"), nullptr
-    );
+    auto stream = std::make_unique<loglib::StreamLineSource>(std::filesystem::path("fixture.jsonl"), nullptr);
     for (auto &raw : rawLines)
     {
         stream->AppendLine(std::move(raw), {});
@@ -281,12 +285,28 @@ loglib::LogTable BuildFixtureTable(std::vector<std::string> rawLines, std::size_
     loglib::LogData data(std::move(stream), std::move(lines), std::move(keys));
 
     loglib::LogConfiguration config;
-    config.columns.push_back({.header = "Time", .keys = {"ts"}, .printFormat = "%FT%T", .type = loglib::LogConfiguration::Type::Time, .parseFormats = {"%FT%T"}});
-    config.columns.push_back({.header = "Level", .keys = {"level"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::String});
-    config.columns.push_back({.header = "Message", .keys = {"message"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::String});
-    config.columns.push_back({.header = "Count", .keys = {"count"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::Integer});
-    config.columns.push_back({.header = "Ratio", .keys = {"ratio"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::Floating});
-    config.columns.push_back({.header = "OK", .keys = {"ok"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::Boolean});
+    config.columns.push_back(
+        {.header = "Time",
+         .keys = {"ts"},
+         .printFormat = "%FT%T",
+         .type = loglib::LogConfiguration::Type::Time,
+         .parseFormats = {"%FT%T"}}
+    );
+    config.columns.push_back(
+        {.header = "Level", .keys = {"level"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::String}
+    );
+    config.columns.push_back(
+        {.header = "Message", .keys = {"message"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::String}
+    );
+    config.columns.push_back(
+        {.header = "Count", .keys = {"count"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::Integer}
+    );
+    config.columns.push_back(
+        {.header = "Ratio", .keys = {"ratio"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::Floating}
+    );
+    config.columns.push_back(
+        {.header = "OK", .keys = {"ok"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::Boolean}
+    );
 
     loglib::LogConfigurationManager manager;
     manager.SetConfiguration(std::move(config));
@@ -449,12 +469,13 @@ void RowExporterTest::TestJsonLinesTypeFidelityOnSyntheticRows()
     const QString first = QString::fromUtf8(full.left(full.indexOf('\n')));
     QVERIFY(first.startsWith(QLatin1Char('{')));
     QVERIFY(first.endsWith(QLatin1Char('}')));
-    for (const QString &key : {QStringLiteral("\"ts\""),
-                                QStringLiteral("\"level\""),
-                                QStringLiteral("\"message\""),
-                                QStringLiteral("\"count\""),
-                                QStringLiteral("\"ratio\""),
-                                QStringLiteral("\"ok\"")})
+    for (const QString &key :
+         {QStringLiteral("\"ts\""),
+          QStringLiteral("\"level\""),
+          QStringLiteral("\"message\""),
+          QStringLiteral("\"count\""),
+          QStringLiteral("\"ratio\""),
+          QStringLiteral("\"ok\"")})
     {
         QVERIFY2(first.contains(key), qPrintable(QStringLiteral("first JSON row missing key: ") + key));
     }
@@ -496,7 +517,13 @@ void RowExporterTest::TestCsvHeaderToggle()
     std::vector<std::size_t> cols = {1, 3};
 
     {
-        const RowSource src{.table = &table, .sourceRows = rows, .visibleColumns = cols, .includeAllFieldsForJson = false, .includeHeaderRow = true};
+        const RowSource src{
+            .table = &table,
+            .sourceRows = rows,
+            .visibleColumns = cols,
+            .includeAllFieldsForJson = false,
+            .includeHeaderRow = true
+        };
         MemorySink sink;
         auto exporter = slv::exports::MakeExporter(ExportFormat::Csv);
         exporter->Run(src, sink, loglib::StopToken{});
@@ -505,7 +532,13 @@ void RowExporterTest::TestCsvHeaderToggle()
         QVERIFY(out.startsWith(QStringLiteral("Level,Count\n")));
     }
     {
-        const RowSource src{.table = &table, .sourceRows = rows, .visibleColumns = cols, .includeAllFieldsForJson = false, .includeHeaderRow = false};
+        const RowSource src{
+            .table = &table,
+            .sourceRows = rows,
+            .visibleColumns = cols,
+            .includeAllFieldsForJson = false,
+            .includeHeaderRow = false
+        };
         MemorySink sink;
         auto exporter = slv::exports::MakeExporter(ExportFormat::Csv);
         exporter->Run(src, sink, loglib::StopToken{});
@@ -530,10 +563,10 @@ void RowExporterTest::TestCsvFormulaInjectionNeutralised()
     loglib::KeyIndex keys;
     std::vector<loglib::LogLine> lines;
     const std::array<std::string, 4> payloads = {
-        std::string("=cmd|'/c calc'!A1"),  // classic formula injection
-        std::string("@SUM(1+1)"),           // DDE prefix
-        std::string("+2+3"),                // benign leading `+` -- must NOT be neutralised
-        std::string("-42"),                 // benign negative number -- must NOT be neutralised
+        std::string("=cmd|'/c calc'!A1"), // classic formula injection
+        std::string("@SUM(1+1)"),         // DDE prefix
+        std::string("+2+3"),              // benign leading `+` -- must NOT be neutralised
+        std::string("-42"),               // benign negative number -- must NOT be neutralised
     };
     for (std::size_t i = 0; i < payloads.size(); ++i)
     {
@@ -657,14 +690,22 @@ void RowExporterTest::TestMarkdownPipeAndNewlineHandling()
     loglib::LogData data(std::move(stream), std::move(lines), std::move(keys));
 
     loglib::LogConfiguration config;
-    config.columns.push_back({.header = "Msg", .keys = {"message"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::String});
+    config.columns.push_back(
+        {.header = "Msg", .keys = {"message"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::String}
+    );
     loglib::LogConfigurationManager manager;
     manager.SetConfiguration(std::move(config));
     const loglib::LogTable table(std::move(data), std::move(manager));
 
     std::vector<int> rows = {0};
     std::vector<std::size_t> cols = {0};
-    const RowSource src{.table = &table, .sourceRows = rows, .visibleColumns = cols, .includeAllFieldsForJson = false, .includeHeaderRow = true};
+    const RowSource src{
+        .table = &table,
+        .sourceRows = rows,
+        .visibleColumns = cols,
+        .includeAllFieldsForJson = false,
+        .includeHeaderRow = true
+    };
 
     MemorySink sink;
     auto exporter = slv::exports::MakeExporter(ExportFormat::Markdown);
@@ -786,10 +827,8 @@ void RowExporterTest::TestSinkWriteFailurePropagatesFromAllFormats()
         catch (const slv::exports::ExportCancelled &)
         {
             // Not this: we didn't cancel, we failed to write.
-            QFAIL(qPrintable(
-                QStringLiteral("format %1 wrongly surfaced ExportCancelled on write failure")
-                    .arg(slv::exports::LabelFor(format))
-            ));
+            QFAIL(qPrintable(QStringLiteral("format %1 wrongly surfaced ExportCancelled on write failure")
+                                 .arg(slv::exports::LabelFor(format))));
         }
         catch (const std::runtime_error &)
         {
@@ -797,22 +836,20 @@ void RowExporterTest::TestSinkWriteFailurePropagatesFromAllFormats()
         }
         QVERIFY2(
             threw,
-            qPrintable(
-                QStringLiteral("format %1 swallowed a sink write failure -- exports over a "
-                               "network share / full disk would silently truncate")
-                    .arg(slv::exports::LabelFor(format))
+            qPrintable(QStringLiteral(
+                           "format %1 swallowed a sink write failure -- exports over a "
+                           "network share / full disk would silently truncate"
             )
+                           .arg(slv::exports::LabelFor(format)))
         );
         // Sink saw exactly the writes it accepted before the throw
         // plus the throwing write itself. If the exporter had kept
         // going after the failure, `WriteCount` would be higher.
         QVERIFY2(
             sink.WriteCount() == std::size_t(2),
-            qPrintable(
-                QStringLiteral("format %1: expected WriteCount==2 after throw on write index 1, got %2")
-                    .arg(slv::exports::LabelFor(format))
-                    .arg(sink.WriteCount())
-            )
+            qPrintable(QStringLiteral("format %1: expected WriteCount==2 after throw on write index 1, got %2")
+                           .arg(slv::exports::LabelFor(format))
+                           .arg(sink.WriteCount()))
         );
     }
 }
