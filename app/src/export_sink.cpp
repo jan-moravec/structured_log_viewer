@@ -32,20 +32,26 @@ std::string DescribeErrno(int err)
     // Two `strerror_r` shapes exist: the XSI variant returns
     // `int` (0 on success, writes into `buf`); the GNU variant
     // (glibc default) returns `char *` that may or may not point
-    // at `buf`. Dispatch on the return type so both shapes work.
-    auto result = strerror_r(err, buf, BUF_SIZE);
-    if constexpr (std::is_same_v<decltype(result), char *>)
-    {
-        return std::string(result != nullptr ? result : "unknown error");
-    }
-    else
-    {
-        if (result != 0)
+    // at `buf`. Dispatch on the return type via a generic lambda
+    // (a template) so both branches are only *instantiated* for
+    // the shape that actually returns the matching type; a plain
+    // `if constexpr` in a non-template context would parse-check
+    // both branches and reject `result != nullptr` on XSI.
+    auto describe = [&buf](auto result) -> std::string {
+        if constexpr (std::is_pointer_v<decltype(result)>)
         {
-            return "unknown error";
+            return std::string(result != nullptr ? result : "unknown error");
         }
-        return std::string(buf);
-    }
+        else
+        {
+            if (result != 0)
+            {
+                return "unknown error";
+            }
+            return std::string(buf);
+        }
+    };
+    return describe(strerror_r(err, buf, BUF_SIZE));
 #endif
 }
 
