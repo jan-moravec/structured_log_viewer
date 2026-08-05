@@ -5,11 +5,11 @@
 
 #include <cstddef>
 
+class QCheckBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
 class QSpinBox;
-class QToolButton;
 class QWidget;
 
 /// Modal dialog for **File -> Export Session Bundle...**.
@@ -63,7 +63,7 @@ private:
 
     QLineEdit *mDestinationEdit = nullptr;
     QPushButton *mBrowseButton = nullptr;
-    QToolButton *mAdvancedToggle = nullptr;
+    QCheckBox *mAdvancedToggle = nullptr;
     QWidget *mAdvancedContainer = nullptr;
     QSpinBox *mCompressionLevelSpin = nullptr;
     QSpinBox *mWorkersSpin = nullptr;

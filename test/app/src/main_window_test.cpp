@@ -24248,6 +24248,77 @@ private slots:
         QVERIFY(!wired->ActiveSessionUuid().isEmpty());
     }
 
+    void TestSessionBundleAppliesEmbeddedHighlightRulesToLoadedRows()
+    {
+        // Regression: opening a bundle mirrored the embedded
+        // `highlightRules` into `LogConfiguration` but never called
+        // `HighlightRuleSet::SetRules`. The editor listed the rule
+        // but no row was ever painted -- `LastMatchFor(row)` stayed
+        // `nullopt` for every source row. The fix mirrors the
+        // config-load path in `ApplyConfigurationFile` and installs
+        // the rules against the runtime match cache.
+        const QTemporaryDir sessionsDir;
+        const QTemporaryDir bundleDir;
+        QVERIFY(sessionsDir.isValid());
+        QVERIFY(bundleDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
+
+        // Two-row source with a `severity` column so the rule has
+        // an unambiguous key to bind against. Only the second row
+        // should paint because the rule matches `severity == "err"`.
+        const QString bundle = WriteBundleFixture(
+            bundleDir,
+            {
+                QStringLiteral(R"({"severity":"info","msg":"first"})"),
+                QStringLiteral(R"({"severity":"err","msg":"second"})"),
+            },
+            [](loglib::LogConfiguration &configuration) {
+                loglib::LogConfiguration::HighlightRule rule{};
+                rule.name = "Errors";
+                rule.enabled = true;
+                rule.columnKeys = {"severity"};
+                rule.type = loglib::LogConfiguration::HighlightRule::Type::String;
+                rule.matchType = loglib::LogConfiguration::HighlightRule::Match::Exactly;
+                rule.filterString = "err";
+                rule.foregroundIndex = 2;
+                rule.backgroundIndex = 0;
+                rule.bold = true;
+                configuration.highlightRules = {rule};
+            }
+        );
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        QCOMPARE(
+            wired->OpenMixedFilesForTest({bundle}, MainWindow::OpenMode::Replace),
+            MainWindow::MixedInputDispatch::QueuedLogsOnly
+        );
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(wired->Model()->rowCount(), 2);
+        // Configuration mirror carries the rule regardless of the
+        // fix, so this alone doesn't prove the bug is gone -- but
+        // it's a useful precondition for the real assertion below.
+        QCOMPARE(wired->Model()->Configuration().highlightRules.size(), static_cast<size_t>(1));
+
+        HighlightRuleSet *const highlights = wired->Highlights();
+        QVERIFY(highlights != nullptr);
+        QCOMPARE(highlights->Rules().size(), static_cast<size_t>(1));
+        QVERIFY(highlights->HasActiveRules());
+        QCOMPARE(highlights->InactiveCount(), static_cast<size_t>(0));
+
+        // The core assertion: the runtime match cache must reflect
+        // the rule against the loaded rows. Before the fix,
+        // `LastMatchFor(1)` returned `nullopt` because
+        // `SetRules` was never invoked and the cache was empty.
+        QVERIFY(!highlights->LastMatchFor(0).has_value());
+        const std::optional<std::size_t> secondMatch = highlights->LastMatchFor(1);
+        QVERIFY(secondMatch.has_value());
+        QCOMPARE(*secondMatch, static_cast<std::size_t>(0));
+    }
+
     void TestSupersedingBundleDecompressionClearsEmbeddedConfigIntent()
     {
         const QTemporaryDir sessionsDir;

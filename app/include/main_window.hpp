@@ -603,17 +603,20 @@ public:
     {
         return mDecompressionInFlight;
     }
-    /// Test-only accessor for `mApplyEmbeddedBundleConfigForNextOpen`.
+    /// Test-only accessor: is an embedded-config intent currently
+    /// armed for a pending bundle open? Returns `true` iff
+    /// `mApplyEmbeddedBundleConfigForPath` is non-empty.
     [[nodiscard]] bool AppliesEmbeddedBundleConfigForNextOpenForTest() const noexcept
     {
-        return mApplyEmbeddedBundleConfigForNextOpen;
+        return !mApplyEmbeddedBundleConfigForPath.isEmpty();
     }
     /// Test-only: fake a bundle decompression that gets superseded
     /// before it finishes, so tests can assert the embedded-config
-    /// intent is cleared.
+    /// intent is cleared. The dummy path is opaque -- `CancelInFlight`
+    /// clears the intent regardless of value.
     void SimulateSupersededBundleDecompressionForTest()
     {
-        mApplyEmbeddedBundleConfigForNextOpen = true;
+        mApplyEmbeddedBundleConfigForPath = QStringLiteral("simulated-bundle.slvbundle");
         mDecompressionInFlight = true;
         CancelInFlightDecompression();
     }
@@ -1894,11 +1897,32 @@ private:
     /// Wall-clock start of the current export, for the success toast.
     std::chrono::steady_clock::time_point mExportStartedAt;
 
-    /// Set true while a lone destructive bundle open is pending so
-    /// `OnDecompressionFinished` knows to apply the metadata
-    /// configuration. Append, restored-session, and explicit-config
-    /// paths leave the active configuration untouched.
-    bool mApplyEmbeddedBundleConfigForNextOpen = false;
+    /// Path of the pending bundle whose embedded configuration
+    /// should be applied when `OnDecompressionFinished` fires.
+    /// Empty means "no intent armed"; a non-empty value names the
+    /// exact `.slvbundle` that armed it. Binding the intent to a
+    /// specific file path (rather than a bare `bool`) is
+    /// load-bearing:
+    ///
+    ///   - When two bundle opens queue back to back (Bundle A then
+    ///     Bundle B, both arming), the earlier decompression must
+    ///     not consume Bundle B's arm and apply A's metadata.
+    ///     Last-arm-wins: dropping B overwrites the path, so A's
+    ///     `OnDecompressionFinished` sees a mismatch and skips.
+    ///
+    ///   - When a non-arming file (a `.gz` on empty model in Append
+    ///     mode) is already decompressing and the user then drops a
+    ///     bundle, the `.gz`'s finish handler must not clear the
+    ///     bundle's armed intent. The path also guards the reverse:
+    ///     by the time the bundle finishes decompressing, the
+    ///     `.gz`'s streaming may already have populated
+    ///     `mCurrentSource`, in which case applying the bundle's
+    ///     config would stomp the live session. The consume site
+    ///     re-checks `mCurrentSource` emptiness for this reason.
+    ///
+    /// Append, restored-session, and explicit-config paths leave
+    /// the active configuration untouched by keeping this empty.
+    QString mApplyEmbeddedBundleConfigForPath;
 
     /// Kick off the async export worker. Models on
     /// `BeginAsyncDecompression`.

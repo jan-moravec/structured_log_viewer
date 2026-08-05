@@ -2,6 +2,7 @@
 
 #include <loglib/session_bundle.hpp>
 
+#include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFileDialog>
@@ -9,14 +10,13 @@
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLayout>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSettings>
-#include <QSizePolicy>
 #include <QSpinBox>
 #include <QThread>
-#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -30,6 +30,12 @@ constexpr int DEFAULT_ZSTD_LEVEL = 3;
 constexpr int MAX_WORKER_THREADS = 64;
 constexpr int WORKER_THREAD_CAP = 8;
 constexpr int DIALOG_PREFERRED_WIDTH = 560;
+/// Left indent for the advanced-options form, in device-independent
+/// pixels. Chosen to line the form up with the text of the
+/// `Advanced options` checkbox label rather than its indicator
+/// square, giving the section a disclosure-group feel without a
+/// frame.
+constexpr int ADVANCED_FORM_INDENT_PX = 16;
 
 /// QSettings keys for the bundle-encoder knobs.
 constexpr auto SETTINGS_LEVEL = "session_bundle/compression_level";
@@ -141,27 +147,27 @@ SessionBundleDialog::SessionBundleDialog(
     mLiveTailNote->setVisible(isLiveTail);
     form->addRow(mLiveTailNote);
 
-    // Advanced-options disclosure. Rendered as a native `QToolButton`
-    // with a rotating arrow (right = collapsed, down = expanded) so
-    // it reads as a proper collapsible header rather than a checkbox.
-    // The container stays collapsed on every launch so casual users
-    // never see the encoder knobs; persisted values still apply if
-    // they were tweaked before.
-    mAdvancedToggle = new QToolButton(this);
-    mAdvancedToggle->setText(tr("Advanced options"));
-    mAdvancedToggle->setCheckable(true);
+    // Advanced-options panel: a plain `QCheckBox` toggles a sibling
+    // container widget in the dialog's outer layout. A checkable
+    // `QGroupBox` was tempting for the free title-bar checkbox, but
+    // even flat and with a zero-margin wrapper layout it kept its
+    // internal title padding, leaving a visible empty strip under
+    // the title whenever the interior was hidden -- and the toggle
+    // handler had to fight `sizeHint()` returning the wrong value
+    // mid-transition, producing a visible jump. Using a checkbox +
+    // sibling container avoids both problems: hiding the container
+    // truly removes its space, and the height change happens in one
+    // clean step. The panel stays closed on every launch; persisted
+    // values still apply if they were tweaked before.
+    mAdvancedToggle = new QCheckBox(tr("Advanced options"), this);
     mAdvancedToggle->setChecked(false);
-    mAdvancedToggle->setAutoRaise(true);
-    mAdvancedToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    mAdvancedToggle->setArrowType(Qt::RightArrow);
-    mAdvancedToggle->setCursor(Qt::PointingHandCursor);
-    mAdvancedToggle->setFocusPolicy(Qt::StrongFocus);
-    mAdvancedToggle->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
 
     mAdvancedContainer = new QWidget(this);
-    mAdvancedContainer->setVisible(false);
     auto *advancedForm = new QFormLayout(mAdvancedContainer);
-    advancedForm->setContentsMargins(0, 0, 0, 0);
+    // Indent the form slightly so it visually associates with the
+    // checkbox above it, mimicking a disclosure-triangle group
+    // without borrowing `QGroupBox`'s frame overhead.
+    advancedForm->setContentsMargins(ADVANCED_FORM_INDENT_PX, 0, 0, 0);
 
     mCompressionLevelSpin = new QSpinBox(mAdvancedContainer);
     mCompressionLevelSpin->setRange(MIN_ZSTD_LEVEL, MAX_ZSTD_LEVEL);
@@ -186,12 +192,21 @@ SessionBundleDialog::SessionBundleDialog(
     );
     advancedForm->addRow(tr("Worker threads:"), mWorkersSpin);
 
-    connect(mAdvancedToggle, &QToolButton::toggled, this, [this](bool checked) {
-        mAdvancedToggle->setArrowType(checked ? Qt::DownArrow : Qt::RightArrow);
+    mAdvancedContainer->setVisible(false);
+
+    connect(mAdvancedToggle, &QCheckBox::toggled, this, [this](bool checked) {
         mAdvancedContainer->setVisible(checked);
-        // Reflow height only. Using `adjustSize()` here would also
-        // snap width back to `sizeHint().width()`, discarding any
-        // manual resize the user did.
+        // Activate the layout before reading `sizeHint()` so the
+        // change in the container's visibility is already reflected
+        // in the dialog's preferred height -- otherwise the resize
+        // uses the pre-toggle hint and the dialog visibly snaps a
+        // second time on the next layout pass. Width is preserved
+        // to respect any manual resize the user did; `adjustSize()`
+        // would clobber it.
+        if (auto *lay = layout())
+        {
+            lay->activate();
+        }
         resize(width(), sizeHint().height());
     });
 

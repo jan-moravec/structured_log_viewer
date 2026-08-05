@@ -2752,22 +2752,29 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
     {
         // Arm the embedded-config intent AFTER `StartStreamingOpenQueue`
         // returns. Its destructive path calls `CancelInFlightDecompression`,
-        // which clears the flag if a prior decode was in flight; arming
-        // afterwards keeps this open's intent alive across that cancel.
-        // `OnDecompressionFinished` is delivered via Qt's queued signal
-        // loop, so the ordering is race-free.
+        // which clears the intent if a prior decode was in flight;
+        // arming afterwards keeps this open's intent alive across that
+        // cancel. `OnDecompressionFinished` is delivered via Qt's
+        // queued signal loop, so the ordering is race-free.
         //
-        // Only *set* the flag here (never clear): a non-arming open
+        // Only *set* the path here (never clear): a non-arming open
         // (mixed input, or a plain-file append behind a still-decoding
         // bundle) must not stomp an intent armed by an earlier bundle
-        // whose decompression is still pending in the queue.
+        // whose decompression is still pending in the queue. A later
+        // arming drop *does* overwrite -- last-arm-wins semantics
+        // keep the intent bound to the user's most recent action.
         const bool armEmbeddedBundleIntent =
             bundleCount == 1 && logPaths.size() == 1 &&
             (logMode == OpenMode::Replace || (mModel->rowCount() == 0 && !mCurrentSource.has_value()));
+        // `logPaths.size() == 1` in the arm branch guarantees the
+        // sole entry is the bundle (any config paths went to
+        // `configPaths`, and the bundleCount check ensures no
+        // non-bundle logs got mixed in).
+        const QString bundlePath = armEmbeddedBundleIntent ? logPaths.front() : QString();
         StartStreamingOpenQueue(files, logMode);
         if (armEmbeddedBundleIntent)
         {
-            mApplyEmbeddedBundleConfigForNextOpen = true;
+            mApplyEmbeddedBundleConfigForPath = bundlePath;
         }
         return MixedInputResult{.outcome = MixedInputDispatch::QueuedLogsOnly, .appliedConfigPath = QString()};
     }
@@ -3299,7 +3306,19 @@ void MainWindow::BeginAsyncDecompression(
     // WebKit-specific and misclassifies `QAtomicInteger *` captures
     // -- they are `this` members guarded by `mDecompressionInFlight`.
     // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
-    const bool isSessionBundle = IsSessionBundlePath(originalPath);
+    //
+    // Route through the bundle path only when BOTH the extension
+    // and the sniffed codec agree. `IsSessionBundlePath` is a pure
+    // string check on the extension; if a file is named
+    // `foo.slvbundle` but its contents are actually gzip (or any
+    // other non-zstd stream), setting `discardFirstLine = true`
+    // would trip `DecompressingByteSource`'s zstd-only guard with
+    // a confusing "discardFirstLine is only supported for zstd
+    // streams" error. Falling back to the general log path lets
+    // the user recover: the file decompresses as if it were a
+    // regular compressed log, without the bundle header dance.
+    const bool isSessionBundle =
+        IsSessionBundlePath(originalPath) && codec == loglib::internal::DecompressingByteSource::Codec::Zstd;
     // Convert on the GUI thread via `QStringToFsPath` so non-ASCII
     // bundle names survive the hop into the worker (see the
     // `file_size` note above).
@@ -3463,7 +3482,7 @@ void MainWindow::CancelInFlightDecompression()
         // `DispatchMixedOpenInput` re-arms this flag AFTER
         // `StartStreamingOpenQueue` returns, so a bundle-replaces-
         // bundle open still keeps its own intent.
-        mApplyEmbeddedBundleConfigForNextOpen = false;
+        mApplyEmbeddedBundleConfigForPath.clear();
     }
 
     if (mDecompressionWatcher == nullptr)
@@ -3570,7 +3589,7 @@ void MainWindow::OnDecompressionFinished()
 
     if (cancelled)
     {
-        mApplyEmbeddedBundleConfigForNextOpen = false;
+        mApplyEmbeddedBundleConfigForPath.clear();
         // User cancels surface as a status-bar toast, not a modal.
         // The queue drain continues so the rest of the batch still
         // opens.
@@ -3590,7 +3609,7 @@ void MainWindow::OnDecompressionFinished()
 
     if (!errorEntry.isEmpty())
     {
-        mApplyEmbeddedBundleConfigForNextOpen = false;
+        mApplyEmbeddedBundleConfigForPath.clear();
         mPendingDecompressionErrors.push_back(errorEntry.toStdString());
         // Clear scratch fields BEFORE draining -- a compressed
         // follow-up would re-enter `BeginAsyncDecompression` and
@@ -3610,7 +3629,25 @@ void MainWindow::OnDecompressionFinished()
         return;
     }
 
-    if (bundleMetadata.has_value() && mApplyEmbeddedBundleConfigForNextOpen)
+    // Two-part gate on applying the embedded configuration:
+    //   1. The armed path must match the file whose decompression
+    //      just finished. Without this, a bundle whose arm was
+    //      superseded by a *later* bundle drop would apply its
+    //      metadata to the (now-)wrong session -- last-arm-wins
+    //      keeps the semantics predictable when two bundles queue
+    //      back-to-back.
+    //   2. `mCurrentSource` must still be empty, meaning no
+    //      earlier queued file (typically a `.gz` opened in Append
+    //      mode onto an initially-empty model) has already claimed
+    //      the session. The bundle's own source setup runs later
+    //      in this function (via `ContinueOpenAfterPrepared`), so
+    //      at this point the source is only set when *something
+    //      else* populated it.
+    const bool armedForThisFile =
+        !mApplyEmbeddedBundleConfigForPath.isEmpty() &&
+        mApplyEmbeddedBundleConfigForPath == mDecompressionOriginalPath;
+    const bool sessionStillFresh = !mCurrentSource.has_value();
+    if (bundleMetadata.has_value() && armedForThisFile && sessionStillFresh)
     {
         loglib::LogConfiguration embedded = std::move(bundleMetadata->configuration);
         const std::string displayPath =
@@ -3640,13 +3677,64 @@ void MainWindow::OnDecompressionFinished()
         mPendingApplySortFromConfig = true;
         if (mAnchors != nullptr)
         {
-            (void)mAnchors->Replace(mModel->Configuration().anchors);
+            // Future-schema colour slots are clamped (not dropped)
+            // so bookmark positions + notes survive a downgrade;
+            // surface the count for parity with the config-load
+            // and restored-session paths. Otherwise a bundle
+            // written by a future build with additional palette
+            // slots would silently degrade its anchors on this
+            // build with no user-visible hint.
+            const std::size_t clampedAnchorCount = mAnchors->Replace(mModel->Configuration().anchors);
+            if (clampedAnchorCount > 0)
+            {
+                statusBar()->showMessage(
+                    tr("%1 anchor(s) from a newer schema had their colour clamped to slot %2.")
+                        .arg(static_cast<qulonglong>(clampedAnchorCount))
+                        .arg(static_cast<qulonglong>(loglib::ANCHOR_PALETTE_SIZE)),
+                    STATUS_BAR_MESSAGE_TIMEOUT_MS
+                );
+            }
         }
         RebuildFiltersFromConfiguration();
+
+        // Install the embedded highlight rules against the current
+        // columns. `SetConfiguration` above copies them into the
+        // configuration manager, but the runtime match cache
+        // (`mHighlights`) is a separate object that has to be told
+        // explicitly -- otherwise the rules show up in the editor
+        // but no row is ever painted. Mirrors the config-load path
+        // in `ApplyConfigurationFile`; the row-match cache seeds
+        // empty here because the streaming parse has not populated
+        // rows yet, and the `rowsInserted` hook fills it as the
+        // batches arrive.
+        if (mHighlights != nullptr)
+        {
+            const auto &appliedConfig = mModel->Configuration();
+            mHighlights->SetRules(appliedConfig.highlightRules, appliedConfig.columns, &mModel->Table());
+            const std::size_t inactive = mHighlights->InactiveCount();
+            if (inactive > 0)
+            {
+                statusBar()->showMessage(
+                    tr("%1 highlight rule(s) inactive against the loaded columns.")
+                        .arg(static_cast<qulonglong>(inactive)),
+                    STATUS_BAR_MESSAGE_TIMEOUT_MS
+                );
+            }
+            if (mHighlightRulesEditor != nullptr)
+            {
+                mHighlightRulesEditor->SetColumns(appliedConfig.columns);
+                mHighlightRulesEditor->SetRules(appliedConfig.highlightRules);
+            }
+        }
     }
-    if (bundleMetadata.has_value())
+    // Clear the intent regardless of whether we actually applied
+    // it. If this file was armed but the session had already been
+    // populated by an earlier queued file, the intent is exhausted
+    // -- we do not want a later `OnDecompressionFinished` for a
+    // completely unrelated file to re-consider it.
+    if (bundleMetadata.has_value() && armedForThisFile)
     {
-        mApplyEmbeddedBundleConfigForNextOpen = false;
+        mApplyEmbeddedBundleConfigForPath.clear();
     }
 
     // Success. Emit the "Decompressed X -> Y in Zs" toast before

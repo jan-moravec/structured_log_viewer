@@ -11,10 +11,15 @@
 #include <glaze/glaze.hpp>
 #include <zstd.h>
 
+#include <algorithm>
+#include <array>
+#include <atomic>
 #include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <optional>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -45,6 +50,66 @@ void PollStop(const StopToken &token)
     {
         throw SessionBundleCancelled{};
     }
+}
+
+/// Build a per-writer temporary path that is unique within a process
+/// and (statistically) between processes.
+///
+/// The previous implementation hard-coded `destination + ".tmp"`,
+/// which lets two concurrent writes to the same destination
+/// clobber each other's staging file. Even benign parallelism -- a
+/// user re-exporting on top of an autosave that is still finishing,
+/// two tests exercising the writer against a shared path, or two
+/// background workers racing to persist a session -- would race
+/// on the shared `.tmp` and produce a corrupted final file after
+/// the atomic rename.
+///
+/// The suffix format is `.<seed>.<counter>.tmp`:
+///   - `seed` is drawn once per process from `std::random_device`.
+///     Two processes writing to the same directory get different
+///     seeds, so their staging files can't collide.
+///   - `counter` is a process-wide atomic counter. Two concurrent
+///     writers in the same process get distinct counter values,
+///     so their staging files can't collide either.
+///
+/// Kept human-eyeballable at the debug level (hex digits, no
+/// PID-style leaks) but random enough that a stale abandoned
+/// `.tmp` file (from a previous run whose `catch (...)` cleanup
+/// didn't reach) will not be reused unless the seed collides,
+/// which is O(2^-64) between runs.
+std::filesystem::path MakeStagingTempPath(const std::filesystem::path &destination)
+{
+    constexpr unsigned int RANDOM_DEVICE_BITS = 32U;
+    constexpr std::size_t SUFFIX_BUFFER_SIZE = 64;
+
+    static const std::uint64_t PROCESS_SEED = []() {
+        std::random_device rd;
+        return (static_cast<std::uint64_t>(rd()) << RANDOM_DEVICE_BITS) | static_cast<std::uint64_t>(rd());
+    }();
+    static std::atomic<std::uint64_t> counter{0};
+
+    const std::uint64_t next = counter.fetch_add(1, std::memory_order_relaxed);
+    std::array<char, SUFFIX_BUFFER_SIZE> suffix{};
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg,cert-err33-c) -- fixed-size buffer, format is trusted.
+    const int written = std::snprintf(
+        suffix.data(), suffix.size(), ".%016llx.%016llx.tmp",
+        static_cast<unsigned long long>(PROCESS_SEED),
+        static_cast<unsigned long long>(next)
+    );
+    if (written <= 0 || static_cast<std::size_t>(written) >= suffix.size())
+    {
+        // `snprintf` failure or unexpected truncation: fall back to a
+        // deterministic-but-still-unique suffix so the write can proceed.
+        // The counter alone is sufficient for in-process uniqueness.
+        std::filesystem::path result = destination;
+        result += ".";
+        result += std::to_string(next);
+        result += ".tmp";
+        return result;
+    }
+    std::filesystem::path result = destination;
+    result += suffix.data();
+    return result;
 }
 
 class FileHandle
@@ -282,17 +347,35 @@ void PopulateAnchorMatches(
     {
         const LogLine &line = lines[row];
         const auto *source = line.Source();
+        // Skip rows with no source: they cannot be anchor targets.
+        // Without this guard, an anchor whose `locator` is empty
+        // (e.g. from a corrupted or hand-edited config) would false-
+        // match every null-source row that happens to share its
+        // `lineId`, producing a nonsensical dense-row remap that
+        // gets persisted into the bundle's embedded anchors.
+        // Legitimate anchors always reference a source file, so
+        // requiring `source != nullptr` is the correct semantics.
+        if (source == nullptr)
+        {
+            continue;
+        }
+        auto cacheIt = canonicalCache.find(source);
+        if (cacheIt == canonicalCache.end())
+        {
+            cacheIt =
+                canonicalCache.emplace(source, CanonicalizeSourceLocator(source->Path(), options)).first;
+        }
         AnchorLookupKey key;
         key.lineId = static_cast<std::uint64_t>(line.LineId());
-        if (source != nullptr)
+        key.locator = cacheIt->second;
+        // Belt-and-braces: even for a real source, if the canonical
+        // locator normalized to the empty string (custom
+        // `canonicalizeSourceLocator` returning "" for a path outside
+        // the recognised session root, for instance) we must not let
+        // an anchor with an empty `locator` false-match against it.
+        if (key.locator.empty())
         {
-            auto cacheIt = canonicalCache.find(source);
-            if (cacheIt == canonicalCache.end())
-            {
-                cacheIt =
-                    canonicalCache.emplace(source, CanonicalizeSourceLocator(source->Path(), options)).first;
-            }
-            key.locator = cacheIt->second;
+            continue;
         }
         auto it = wanted.find(key);
         if (it == wanted.end())
@@ -345,6 +428,42 @@ void RemapAnchors(
     configuration.anchors = std::move(remapped);
 }
 
+/// strftime format that matches `AppendTimestampJson`'s output:
+/// ISO-8601 with a `T` date-time separator, microsecond fraction,
+/// and a trailing `Z`. Kept in the writer so the writer's format
+/// choice and the reader's parse configuration cannot drift.
+constexpr std::string_view BUNDLE_TIME_PARSE_FORMAT = "%FT%T";
+
+/// Ensure every `Type::Time` column in @p configuration has a
+/// `parseFormat` capable of parsing the ISO-8601 timestamps this
+/// writer emits. Auto-detected Time columns already ship with
+/// `%FT%T` in their defaults, so this is a no-op there. Manually
+/// configured columns (e.g. `parseFormats = {"%d/%m/%Y %H:%M:%S"}`)
+/// would otherwise round-trip to 100% mismatched timestamps on
+/// import because the exported values are always ISO-8601 UTC,
+/// regardless of how the source produced them.
+///
+/// Prepended, not appended, so the fast-path ISO parser is tried
+/// first: it beats `date::from_stream` by roughly an order of
+/// magnitude on the hot import loop.
+void NormalizeTimeColumnParseFormats(LogConfiguration &configuration)
+{
+    for (auto &column : configuration.columns)
+    {
+        if (column.type != LogConfiguration::Type::Time)
+        {
+            continue;
+        }
+        const auto exists = std::ranges::any_of(column.parseFormats, [](const std::string &format) {
+            return format == BUNDLE_TIME_PARSE_FORMAT;
+        });
+        if (!exists)
+        {
+            column.parseFormats.insert(column.parseFormats.begin(), std::string(BUNDLE_TIME_PARSE_FORMAT));
+        }
+    }
+}
+
 std::string SerializeCompactConfiguration(const LogConfiguration &configuration)
 {
     std::string json;
@@ -366,9 +485,36 @@ void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesy
     // and omitted.
     if (::MoveFileExW(temporary.c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING) == 0)
     {
+        const unsigned long win32Error = ::GetLastError();
+        // `ERROR_SHARING_VIOLATION` (32) is by far the most common
+        // failure users hit on Windows: they still have the target
+        // file open in another viewer, an antivirus scanner has a
+        // transient handle on it, or a sync client (OneDrive /
+        // Dropbox) is uploading it. Surfacing the bare Win32 code
+        // is opaque -- the user cannot correlate "error 32" with
+        // "close the file"; pair the code with the exact remediation.
+        constexpr unsigned long ERROR_SHARING_VIOLATION_CODE = 32U;
+        constexpr unsigned long ERROR_ACCESS_DENIED_CODE = 5U;
+        const std::string destUtf8 = internal::PathToUtf8(destination);
+        if (win32Error == ERROR_SHARING_VIOLATION_CODE)
+        {
+            throw std::runtime_error(
+                "Session bundle: cannot replace '" + destUtf8 +
+                "' because another program has it open (Windows error 32, ERROR_SHARING_VIOLATION). "
+                "Close the file in the other program (log viewer, editor, antivirus scan, sync client) and try again."
+            );
+        }
+        if (win32Error == ERROR_ACCESS_DENIED_CODE)
+        {
+            throw std::runtime_error(
+                "Session bundle: cannot replace '" + destUtf8 +
+                "' due to a permissions error (Windows error 5, ERROR_ACCESS_DENIED). "
+                "Check that you can write to the destination folder and that the target file is not read-only."
+            );
+        }
         throw std::runtime_error(
-            "Session bundle: atomic replacement failed with Windows error " +
-            std::to_string(static_cast<unsigned long>(::GetLastError()))
+            "Session bundle: atomic replacement of '" + destUtf8 +
+            "' failed with Windows error " + std::to_string(win32Error)
         );
     }
 #else
@@ -376,7 +522,10 @@ void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesy
     std::filesystem::rename(temporary, destination, error);
     if (error)
     {
-        throw std::runtime_error("Session bundle: atomic replacement failed: " + error.message());
+        throw std::runtime_error(
+            "Session bundle: atomic replacement of '" + internal::PathToUtf8(destination) +
+            "' failed: " + error.message()
+        );
     }
 #endif
 }
@@ -406,6 +555,7 @@ void WriteSessionBundle(
     }
 
     LogConfiguration embedded = configuration;
+    NormalizeTimeColumnParseFormats(embedded);
 
     // `locators` holds the display path (raw UTF-8) while
     // `locatorDedupKeys` holds the canonical byte-equality form
@@ -435,8 +585,10 @@ void WriteSessionBundle(
         throw std::length_error("Session bundle metadata exceeds the 64 MiB limit");
     }
 
-    std::filesystem::path temporary = destination;
-    temporary += ".tmp";
+    // Per-writer staging path (see `MakeStagingTempPath`): the
+    // previous fixed `.tmp` suffix could race with a concurrent
+    // export to the same destination.
+    const std::filesystem::path temporary = MakeStagingTempPath(destination);
     std::error_code ignored;
     std::filesystem::remove(temporary, ignored);
 

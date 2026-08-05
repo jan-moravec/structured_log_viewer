@@ -130,32 +130,51 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
     }
 
     int64_t fractionalUs = 0;
+    // Walk any suffix as: optional `.ffffff` fractional part, then an
+    // optional trailing `Z` UTC marker. Accepting `Z` here is what
+    // makes session-bundle timestamps round-trip: the writer emits
+    // `%FT%T` (or `%F %T`) followed by `Z`, and the generic
+    // `date::parse` fallback for `%FT%T%Ez` / `%F %T%Ez` does not
+    // recognise a literal `Z` as an offset. Anything past `Z`
+    // remains a fast-path miss and falls back to `date::parse`.
     if (sv.size() > PREFIX_LEN)
     {
-        if (sv[PREFIX_LEN] != '.')
+        size_t cursor = PREFIX_LEN;
+        if (sv[cursor] == '.')
+        {
+            const size_t fractionStart = cursor + 1;
+            const size_t maxFractionEnd = std::min(sv.size(), fractionStart + FRACTION_DIGITS_SCALE);
+            size_t fractionEnd = fractionStart;
+            while (fractionEnd < maxFractionEnd && sv[fractionEnd] >= '0' && sv[fractionEnd] <= '9')
+            {
+                ++fractionEnd;
+            }
+            const size_t fractionLen = fractionEnd - fractionStart;
+            // Empty fraction after `.` isn't ISO-8601. `>6` digits
+            // still falls through to `date::parse` because we cap
+            // the scan at `FRACTION_DIGITS_SCALE`; a 7th digit stops
+            // the loop and the residue check below rejects it.
+            if (fractionLen == 0)
+            {
+                return false;
+            }
+            for (size_t i = fractionStart; i < fractionEnd; ++i)
+            {
+                fractionalUs = (fractionalUs * DECIMAL_RADIX) + (sv[i] - '0');
+            }
+            for (size_t i = fractionLen; i < FRACTION_DIGITS_SCALE; ++i)
+            {
+                fractionalUs *= DECIMAL_RADIX;
+            }
+            cursor = fractionEnd;
+        }
+        if (cursor < sv.size() && sv[cursor] == 'Z')
+        {
+            ++cursor;
+        }
+        if (cursor != sv.size())
         {
             return false;
-        }
-        const size_t fractionStart = PREFIX_LEN + 1;
-        const size_t maxFractionEnd = std::min(sv.size(), fractionStart + FRACTION_DIGITS_SCALE);
-        size_t fractionEnd = fractionStart;
-        while (fractionEnd < maxFractionEnd && sv[fractionEnd] >= '0' && sv[fractionEnd] <= '9')
-        {
-            ++fractionEnd;
-        }
-        const size_t fractionLen = fractionEnd - fractionStart;
-        // Empty / >6-digit fractions fall back to `date::parse`.
-        if (fractionLen == 0 || fractionEnd != sv.size())
-        {
-            return false;
-        }
-        for (size_t i = fractionStart; i < fractionEnd; ++i)
-        {
-            fractionalUs = (fractionalUs * DECIMAL_RADIX) + (sv[i] - '0');
-        }
-        for (size_t i = fractionLen; i < FRACTION_DIGITS_SCALE; ++i)
-        {
-            fractionalUs *= DECIMAL_RADIX;
         }
     }
 

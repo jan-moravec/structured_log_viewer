@@ -58,8 +58,17 @@ void AppendJsonEscaped(std::string &out, std::string_view input)
 /// its surrounding quotes. Out-of-range values that `date::format`
 /// cannot render fall back to unquoted `null` so round-trip readers
 /// see a missing timestamp instead of a bogus string.
+///
+/// The `savedSize` snapshot + `resize` on the exception path is
+/// load-bearing: without it, an in-flight failure would leave a
+/// dangling opening `"` in @p out. The row's closing `}` would then
+/// land inside a string literal, invalidating not just this row but
+/// every JSONL line downstream. The rollback pattern keeps the
+/// per-row output well-formed even when a single field cannot be
+/// serialised.
 void AppendTimestampJson(std::string &out, TimeStamp timestamp)
 {
+    const std::size_t savedSize = out.size();
     try
     {
         const date::sys_time<std::chrono::microseconds> time{timestamp.time_since_epoch()};
@@ -70,6 +79,7 @@ void AppendTimestampJson(std::string &out, TimeStamp timestamp)
     }
     catch (const std::exception &)
     {
+        out.resize(savedSize);
         out.append("null");
     }
 }
