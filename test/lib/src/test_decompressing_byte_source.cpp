@@ -235,10 +235,9 @@ TEST_CASE("DecompressingByteSource: passthrough for empty file", "[Decompressing
 TEST_CASE("DecompressingByteSource: discardFirstLine rejects non-zstd inputs", "[DecompressingByteSource]")
 {
     // `discardFirstLine` is only plumbed through the zstd decoder;
-    // for every other codec the option used to be silently ignored,
-    // which produced empty `DiscardedFirstLine()` and left the
-    // metadata bytes embedded in the decoded stream. Reject the
-    // combination upfront so misuse fails at construction time.
+    // every other codec must reject the combination upfront so
+    // misuse fails at construction rather than silently leaving the
+    // metadata bytes in the decoded stream.
     const std::string content = SampleContent(4 * 1024);
     DecompressingByteSource::Options options;
     options.discardFirstLine = true;

@@ -33,16 +33,15 @@ using namespace bench;
 namespace
 {
 
-/// RAII-owned temp path (bundle destination). Unlinks on scope exit
-/// plus the writer's `<path>.tmp` sibling used by atomic rename.
+/// RAII-owned bundle destination path. Unlinks the file plus the
+/// writer's `<path>.tmp` sibling on scope exit.
 class TempBundlePath
 {
 public:
     TempBundlePath()
     {
-        // Atomic counter so parallel benchmarks (or a future async
-        // fixture) don't race on the same name. Benchmarks run
-        // sequentially today; the atomic is drift-proofing.
+        // Atomic counter is drift-proofing for future parallel runs;
+        // benchmarks are sequential today.
         static std::atomic<int> counter{0};
         const auto tmpDir = std::filesystem::temp_directory_path();
         do
@@ -71,9 +70,8 @@ private:
 };
 
 /// Build a large `LogTable` from a JSON fixture identical (bytes) to
-/// the `[large]` parser benchmarks -- same seed, same timestamps, same
-/// record shape. Timezone init is required because the fixture uses
-/// timestamp columns.
+/// the `[large]` parser benchmarks -- same seed, timestamps, and
+/// record shape. Requires timezone init for the timestamp columns.
 loglib::LogTable BuildLargeJsonTable(std::size_t &outBytes, std::size_t &outRecordCount)
 {
     const TestStructuredLogFile testFile(

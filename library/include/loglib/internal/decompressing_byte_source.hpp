@@ -106,10 +106,12 @@ public:
         /// Hard cap; throws `DecompressionSizeCapExceeded` if
         /// exceeded. Zero disables the cap.
         std::size_t maxDecompressedBytes = DEFAULT_MAX_DECOMPRESSED_BYTES;
-        /// Remove the first decompressed line from the temp file and
-        /// retain it in DiscardedFirstLine(). Used by `.slvbundle`
-        /// metadata without introducing a bundle-specific line source.
+        /// Strip the first decompressed line and keep it in
+        /// `DiscardedFirstLine()`. Lets `.slvbundle` metadata piggyback
+        /// on the generic decoder without a bundle-specific line source.
         bool discardFirstLine = false;
+        /// Cap on the first-line buffer, so a pathological bundle with
+        /// no newline can't grow it without bound.
         std::size_t maxDiscardedFirstLineBytes = 64U * 1024U * 1024U;
     };
 
@@ -160,6 +162,9 @@ public:
     /// Size of the decompressed temp file, in bytes. Zero when
     /// `WasDecompressed()` is false.
     [[nodiscard]] std::size_t DecompressedSize() const noexcept;
+
+    /// Bytes stripped by `Options::discardFirstLine`, without the
+    /// terminating newline. Empty when the option was off.
     [[nodiscard]] const std::string &DiscardedFirstLine() const noexcept;
 
 private:

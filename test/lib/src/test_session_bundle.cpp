@@ -240,12 +240,10 @@ TEST_CASE("session bundle metadata preserves investigation configuration and fla
     REQUIRE(restored.source.has_value());
     CHECK(restored.source->kind == loglib::LogConfiguration::Source::Kind::File);
     CHECK(restored.source->format == loglib::LogConfiguration::Source::Format::Json);
-    // `locators` is the display path (raw case, native separators);
-    // `locatorDedupKeys` is the canonical form. Without a caller-
-    // supplied canonicalizer both fall back to `path::u8string()`,
-    // so this default-options test expects them to match byte-for-
-    // byte. The canonicalization contract is exercised separately
-    // in the `canonicalizeSourceLocator` test case below.
+    // With no canonicalizer set, both `locators` and
+    // `locatorDedupKeys` fall back to `path::u8string()`, so this
+    // default-options test expects them to match. The canonicalizer
+    // contract is exercised in the dedicated test below.
     CHECK(restored.source->locators == std::vector<std::string>{bundle.Path().string()});
     CHECK(restored.source->locatorDedupKeys == std::vector<std::string>{bundle.Path().string()});
     CHECK(restored.source->regexPattern.empty());
@@ -257,13 +255,10 @@ TEST_CASE(
 )
 {
     // The GUI wires `canonicalizeSourceLocator` to `CanonicalLocator`
-    // so anchor locators round-trip. The same callback must produce
-    // the embedded `Source::locatorDedupKeys` so that
-    // `AppendLocator`-style callers on the receiving side see a
-    // dedup key in the canonical shape. Otherwise a mixed-case
-    // bundle would import once with a lowercase key from
-    // `MainWindow::OnDecompressionFinished` and a second time with
-    // the raw case if opened by a non-GUI consumer.
+    // so anchors round-trip. The same callback must also shape
+    // `Source::locatorDedupKeys`; otherwise a mixed-case bundle
+    // would import with two different keys depending on the
+    // consumer (GUI vs. non-GUI).
     TempPath source(".jsonl");
     TempPath bundle(".slvbundle");
     Write(source.Path(), R"({"msg":"x"})" "\n");
@@ -330,12 +325,11 @@ TEST_CASE("session bundle anchors are densely remapped and detached anchors are 
 
 TEST_CASE("canonicalizeSourceLocator bridges canonicalized anchors to raw source paths", "[SessionBundle]")
 {
-    // Simulates the production wiring where `AnchorManager` stores
-    // anchor locators canonicalized (lowercased on Windows,
-    // forward-slashed) while `line.Source()->Path()` still holds the
-    // raw filesystem path. Without the callback the writer would
-    // silently drop every anchor because `path::u8string()` doesn't
-    // match the canonical form.
+    // Mirrors production: `AnchorManager` stores canonicalized
+    // locators while `line.Source()->Path()` is the raw filesystem
+    // path. Without the callback the writer silently drops every
+    // anchor because `path::u8string()` doesn't match the canonical
+    // form.
     TempPath source(".jsonl");
     TempPath bundle(".slvbundle");
     Write(source.Path(), R"({"msg":"a0"})" "\n" R"({"msg":"a1"})" "\n");
@@ -371,10 +365,9 @@ TEST_CASE("canonicalizeSourceLocator bridges canonicalized anchors to raw source
     const auto anchors =
         loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.anchors;
     REQUIRE(anchors.size() == 2);
-    // Anchors flatten to the canonical destination form so their
-    // `locator` matches `Source::locatorDedupKeys` byte-for-byte on
-    // the receiving side (the canonicalizer runs against the
-    // destination path too, keeping the same shape).
+    // Anchors flatten to the canonical destination form so they
+    // match `Source::locatorDedupKeys` on the receiving side (the
+    // canonicalizer runs against the destination path too).
     const std::string canonicalBundle = "canonical://" + bundle.Path().string();
     CHECK(anchors[0].locator == canonicalBundle);
     CHECK(anchors[0].lineId == 0);

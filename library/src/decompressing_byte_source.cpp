@@ -986,12 +986,8 @@ DecompressingByteSource::DecompressingByteSource(
     if (mCompressedSize == 0)
     {
         // Empty file: passthrough. `discardFirstLine` has no line
-        // to consume here; a caller that requested one is almost
-        // certainly staring at a truncated bundle and should hear
-        // about it instead of silently receiving an empty
-        // `DiscardedFirstLine()`. Uses `invalid_argument` to match
-        // the plain / non-zstd branches below -- all three are
-        // caller misuse, not runtime I/O failures.
+        // to consume, so fail loudly (likely a truncated bundle)
+        // instead of silently returning an empty first line.
         if (options.discardFirstLine)
         {
             throw std::invalid_argument(
@@ -1005,12 +1001,10 @@ DecompressingByteSource::DecompressingByteSource(
     mCodec = DetectCodec({magic.data(), magic.size()});
     if (mCodec == Codec::None)
     {
-        // Uncompressed: passthrough. Same rationale as above --
-        // silently ignoring the discard here (previous behaviour)
-        // would hand the caller the full file with an empty
-        // metadata string, so a plain `.jsonl` mistakenly opened
-        // through the bundle path would parse the metadata line
-        // as row 1.
+        // Uncompressed passthrough. Silently ignoring the discard
+        // would leave the metadata line embedded in the returned
+        // file, so a plain `.jsonl` opened through the bundle path
+        // would parse it as row 1.
         if (options.discardFirstLine)
         {
             throw std::invalid_argument(
@@ -1022,11 +1016,9 @@ DecompressingByteSource::DecompressingByteSource(
     }
     if (options.discardFirstLine && mCodec != Codec::Zstd)
     {
-        // Only the zstd path plumbs `discardFirstLine` through
-        // decode. Every other codec silently ignored it before,
-        // which returned an empty `DiscardedFirstLine()` and left
-        // the metadata line embedded in the decoded output --
-        // subtle enough to hide bugs. Fail loudly instead.
+        // Only the zstd decode path plumbs `discardFirstLine`; fail
+        // loudly rather than silently leaving the metadata line in
+        // the decoded output.
         throw std::invalid_argument(
             fmt::format(
                 "discardFirstLine is only supported for zstd streams; '{}' uses {}",

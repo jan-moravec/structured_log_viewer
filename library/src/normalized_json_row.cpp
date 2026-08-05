@@ -54,13 +54,10 @@ void AppendJsonEscaped(std::string &out, std::string_view input)
     }
 }
 
-/// Serialize @p timestamp as a JSON value including its surrounding
-/// quotes. On `date::format` failure (out-of-range values that fall
-/// outside the ISO-8601 formatter's supported range) the fallback
-/// emits an unquoted `null` -- previously the fallback wrote the raw
-/// epoch count as a bare number inside quotes, producing a JSON
-/// string that no downstream reader would recognise as a timestamp,
-/// silently downgrading the value to text on round-trip.
+/// Serialize @p timestamp as an ISO-8601 UTC JSON string, including
+/// its surrounding quotes. Out-of-range values that `date::format`
+/// cannot render fall back to unquoted `null` so round-trip readers
+/// see a missing timestamp instead of a bogus string.
 void AppendTimestampJson(std::string &out, TimeStamp timestamp)
 {
     try

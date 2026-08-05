@@ -19,8 +19,7 @@
 namespace
 {
 
-/// QSettings keys for bundle-encoder knobs. Same organisation the
-/// rest of the app uses.
+/// QSettings keys for the bundle-encoder knobs.
 constexpr auto SETTINGS_LEVEL = "session_bundle/compression_level";
 constexpr auto SETTINGS_WORKERS = "session_bundle/workers";
 constexpr auto SETTINGS_LAST_DIR = "session_bundle/last_dir";
@@ -30,12 +29,10 @@ QString BundleFileFilter()
     return QStringLiteral("Session bundle (*%1);;All Files (*)").arg(loglib::SESSION_BUNDLE_EXTENSION);
 }
 
-/// Appends the `.slvbundle` extension to @p path unless it already
-/// carries one (case-insensitive). Preserves an empty input so that
-/// callers can distinguish "user cleared the field" from "user typed
-/// a bare stem": returning `".slvbundle"` here would silently promote
-/// an empty destination into a hidden dotfile in the CWD and defeat
-/// the emptiness guard in `OnAccept` / `MainWindow::ExportSessionBundle`.
+/// Appends `.slvbundle` to @p path unless it already carries it
+/// (case-insensitive). Empty input is preserved so the emptiness
+/// guards in `OnAccept` / `MainWindow::ExportSessionBundle` still
+/// fire -- otherwise `""` would become a `.slvbundle` dotfile.
 QString AppendBundleExtensionIfMissing(QString path)
 {
     if (path.isEmpty())
@@ -51,15 +48,11 @@ QString AppendBundleExtensionIfMissing(QString path)
 }
 
 /// Read an int from QSettings, falling back to @p defaultValue when
-/// the stored value is missing, unparsable, or outside the inclusive
-/// range `[minValue, maxValue]`.
-///
-/// `QSpinBox::setValue` silently clamps out-of-range values to the
-/// spinbox's own range, so a corrupted `0` would end up at the
-/// minimum (fastest / worst compression) rather than the intended
-/// balanced default. Validate up front so the user gets the default
-/// they expect after a corrupted or partial write to the settings
-/// backing store.
+/// the stored value is missing, unparsable, or outside
+/// `[minValue, maxValue]`. Without this, `QSpinBox::setValue` would
+/// silently clamp a corrupted value to the spinbox range and give
+/// the user, say, the fastest/worst compression instead of the
+/// intended balanced default.
 int ClampedSettingsInt(const QSettings &settings, const char *key, int defaultValue, int minValue, int maxValue)
 {
     bool ok = false;
@@ -87,7 +80,6 @@ SessionBundleDialog::SessionBundleDialog(
     setModal(true);
 
     auto *form = new QFormLayout;
-    // The main row includes a line-edit + browse button.
     auto *destinationRow = new QHBoxLayout;
     mDestinationEdit = new QLineEdit(this);
     mDestinationEdit->setToolTip(
@@ -175,11 +167,9 @@ void SessionBundleDialog::OnBrowseClicked()
                                    ? QDir(mDefaultDir).filePath(QStringLiteral("session%1")
                                                                     .arg(QString::fromLatin1(loglib::SESSION_BUNDLE_EXTENSION)))
                                    : seed;
-    // `QFileDialog::DontConfirmOverwrite` disables Qt's built-in
-    // Save-As overwrite prompt so `OnAccept` remains the single
-    // source of truth for the confirmation. Without this, the
-    // Browse-then-Export path shows the prompt twice (once from
-    // Qt, once from `OnAccept`).
+    // Suppress Qt's built-in Save-As overwrite prompt so `OnAccept`
+    // is the sole confirmation site; otherwise Browse-then-Export
+    // shows the prompt twice.
     const QString chosen = QFileDialog::getSaveFileName(
         this,
         tr("Export Session Bundle"),
@@ -197,11 +187,9 @@ void SessionBundleDialog::OnBrowseClicked()
 
 void SessionBundleDialog::OnAccept()
 {
-    // Emptiness check runs on the *pre-append* trimmed text: a bare
-    // empty field would otherwise be silently rescued by
-    // `AppendBundleExtensionIfMissing` (used to append the extension
-    // unconditionally, so `""` became `".slvbundle"` and this
-    // validation was dead code).
+    // Emptiness check runs on the *pre-append* text so an empty
+    // field is rejected rather than silently promoted to a
+    // `.slvbundle` dotfile.
     const QString trimmed = mDestinationEdit->text().trimmed();
     if (trimmed.isEmpty())
     {
@@ -209,9 +197,9 @@ void SessionBundleDialog::OnAccept()
         return;
     }
     const QString dest = AppendBundleExtensionIfMissing(trimmed);
-    // Warn on overwrite -- Qt's `getSaveFileName` handles this only
-    // when the user goes through the file dialog; hand-typed paths
-    // bypass it, so re-check.
+    // Re-check overwrite here too: Qt's `getSaveFileName` prompt only
+    // fires for browse-picked paths, so hand-typed paths would slip
+    // through.
     const QFileInfo destInfo(dest);
     if (destInfo.exists())
     {

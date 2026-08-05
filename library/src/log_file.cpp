@@ -55,13 +55,10 @@ void HintSequential(const mio::mmap_source &mmap)
 } // namespace
 
 LogFile::LogFile(std::filesystem::path filePath)
-    // Passes `filePath` twice by value: each parameter is
-    // independently copy-constructed. Trying to save a copy with
-    // `std::move` on one argument is unsafe here -- function
-    // argument evaluation order is unspecified, so the move could
-    // observably run before the copy and leave the copy source
-    // empty (which is exactly the bug that caused the tests to
-    // report `File '' does not exist`).
+    // Two independent copies on purpose. Moving one argument here is
+    // unsafe: C++ leaves argument evaluation order unspecified, so a
+    // move could observably run before the copy and empty the source
+    // (previously caused a `File '' does not exist` failure).
     : LogFile(filePath, filePath)
 {
 }
@@ -86,14 +83,10 @@ LogFile::LogFile(std::filesystem::path storagePath, std::filesystem::path logica
     if (size > 0)
     {
         std::error_code ec;
-        // Pass the wide path on Windows so non-ASCII names (Cyrillic,
-        // CJK, ...) open. `path::string()` returns Active Code Page
-        // bytes on Windows, but mio's `basic_mmap::map(std::string&)`
-        // interprets its argument as UTF-8 and converts to wide with
-        // `MultiByteToWideChar(CP_UTF8, ...)`. The two encodings only
-        // agree on ASCII, so any non-ASCII byte in the ACP form
-        // silently becomes garbage on the Windows API call. `wstring`
-        // (Windows) / UTF-8 via `path::u8string` (POSIX) are lossless.
+        // Pass a lossless encoding to mio: wide on Windows and UTF-8
+        // on POSIX. `path::string()` returns ACP bytes on Windows
+        // that mio then reinterprets as UTF-8, which mangles any
+        // non-ASCII path.
 #ifdef _WIN32
         mMmap = mio::make_mmap_source(mStoragePath.wstring(), 0, mio::map_entire_file, ec);
 #else

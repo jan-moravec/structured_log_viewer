@@ -208,9 +208,9 @@ std::string CanonicalizeSourceLocator(
     return internal::PathToUtf8(path);
 }
 
-/// Composite key for the anchor index below. `std::string` (not
-/// `string_view`) because the canonicalizer returns by value and the
-/// resulting bytes must outlive the loop that inserts them.
+/// Composite key for the anchor index below. Stores by `std::string`
+/// because the canonicalizer returns by value; the bytes must outlive
+/// the insertion loop.
 struct AnchorLookupKey
 {
     std::string locator;
@@ -235,8 +235,8 @@ struct AnchorLookupKeyHash
 
 /// One slot per anchor in the wanted-set. `found=false` means the
 /// scan has not yet matched a row; `ambiguous=true` means the same
-/// `(canonical locator, lineId)` matched twice and the anchor
-/// resolves to no dense row (dropped, like the previous sentinel).
+/// `(canonical locator, lineId)` matched more than once, so the
+/// anchor cannot resolve to a single dense row and is dropped.
 struct AnchorMatchSlot
 {
     std::uint64_t row = 0;
@@ -245,9 +245,8 @@ struct AnchorMatchSlot
 };
 
 /// Wanted-set keyed on anchor lookup pairs. Sized by the anchor
-/// count (typically a handful) rather than by `lines.size()`, so a
-/// billion-row table with two anchors doesn't allocate ~100 GiB of
-/// hash-map buckets. Complexity stays O(A + N).
+/// count (typically a handful), not by `lines.size()`, so a billion
+/// rows with two anchors don't blow up the map. O(A + N) overall.
 using AnchorWantedSet = std::unordered_map<AnchorLookupKey, AnchorMatchSlot, AnchorLookupKeyHash>;
 
 AnchorWantedSet BuildAnchorWantedSet(const std::vector<LogConfiguration::AnchorEntry> &anchors)
@@ -256,11 +255,9 @@ AnchorWantedSet BuildAnchorWantedSet(const std::vector<LogConfiguration::AnchorE
     wanted.reserve(anchors.size());
     for (const auto &anchor : anchors)
     {
-        // `try_emplace`: duplicate anchor keys collapse to a single
-        // slot. A duplicate anchor list would only cause the same
-        // remapping to be emitted once, but we preserve the caller's
-        // list on the output side (see `RemapAnchors`) -- the wanted
-        // set is only used to resolve rows.
+        // `try_emplace`: duplicate anchor keys collapse to one slot.
+        // The wanted-set only resolves rows; `RemapAnchors` preserves
+        // the caller's original list on the output side.
         wanted.try_emplace(AnchorLookupKey{.locator = anchor.locator, .lineId = anchor.lineId});
     }
     return wanted;
@@ -276,10 +273,9 @@ void PopulateAnchorMatches(
     {
         return;
     }
-    // Canonicalization is per-source (typically ~1 source, at most
-    // a handful) but `lines.size()` is millions. Cache by `Source*`
-    // so the QString round-trip in `canonicalizeSourceLocator`
-    // runs once per source rather than once per row.
+    // Cache canonical locators per `Source*` so the (potentially
+    // expensive) `canonicalizeSourceLocator` callback runs once per
+    // source rather than once per row.
     std::unordered_map<const LineSource *, std::string> canonicalCache;
 
     for (std::size_t row = 0; row < lines.size(); ++row)
@@ -310,8 +306,8 @@ void PopulateAnchorMatches(
         }
         else
         {
-            // Duplicate `(locator, lineId)` -> ambiguous. Anchor
-            // drops rather than pointing at a possibly-wrong row.
+            // Duplicate `(locator, lineId)`: drop rather than pick
+            // an arbitrary row.
             it->second.ambiguous = true;
         }
     }
@@ -365,9 +361,9 @@ std::string SerializeCompactConfiguration(const LogConfiguration &configuration)
 void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesystem::path &destination)
 {
 #ifdef _WIN32
-    // `MOVEFILE_WRITE_THROUGH` only affects cross-volume copies, so
-    // dropping it saves a flag but does not change behaviour here
-    // (temp file sits next to the destination on the same volume).
+    // Temp file lives next to the destination on the same volume,
+    // so `MOVEFILE_WRITE_THROUGH` (a cross-volume knob) is a no-op
+    // and omitted.
     if (::MoveFileExW(temporary.c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING) == 0)
     {
         throw std::runtime_error(
@@ -411,14 +407,12 @@ void WriteSessionBundle(
 
     LogConfiguration embedded = configuration;
 
-    // `locators` is display-shape (raw UTF-8 path); `locatorDedupKeys`
-    // is the canonical form used for byte-equality dedup elsewhere
-    // (lowercased with forward slashes on Windows via
+    // `locators` holds the display path (raw UTF-8) while
+    // `locatorDedupKeys` holds the canonical byte-equality form
+    // (Windows: lowercased with forward slashes via
     // `logapp::CanonicalLocator`). Anchors also flatten to the
-    // canonical locator so `AnchorEntry::locator` matches the dedup
-    // key after import -- otherwise a Windows round-trip would drop
-    // every anchor because the case-preserving display path never
-    // matches the lowercased anchor locator.
+    // canonical locator so they match the dedup key after import;
+    // otherwise a Windows round-trip drops every anchor.
     const std::string displayLocator = internal::PathToUtf8(destination);
     const std::string dedupLocator = CanonicalizeSourceLocator(destination, options);
     RemapAnchors(embedded, lines, dedupLocator, options);
@@ -474,15 +468,10 @@ void WriteSessionBundle(
         PollStop(options.stopToken);
         writer.Finish();
         file.Close();
-        // Fire the final tick exactly once. The inner loop already
-        // emits at `(row + 1, lines.size())` when
-        // `(row + 1) % PROGRESS_INTERVAL_ROWS == 0`, so a row count
-        // that lands on an interval boundary would otherwise see
-        // two `progress(lines.size(), lines.size())` calls (harmless
-        // but confuses GUI throttling / test expectations). Skip the
-        // tail call when the loop already delivered it; still fire
-        // when there were zero rows so callers see one terminal
-        // tick even for an empty bundle.
+        // Fire the terminal progress tick exactly once. Skip it if
+        // the row count landed on an interval boundary (the loop
+        // already emitted `(N, N)`); still fire for an empty bundle
+        // so callers always see one final tick.
         const bool loopEmittedFinalTick =
             !lines.empty() && (lines.size() % PROGRESS_INTERVAL_ROWS) == 0;
         if (options.progress && !loopEmittedFinalTick)

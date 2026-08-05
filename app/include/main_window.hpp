@@ -546,9 +546,8 @@ public:
     /// without running a real open path.
     void SetCurrentSourceForTest(std::optional<loglib::LogConfiguration::Source> source);
 
-    /// Test-only accessor for `mCurrentSource`. Lets tests inspect
-    /// the descriptor after an open / load without piercing the
-    /// mirroring dance into `LogConfiguration::source`.
+    /// Test-only read accessor for `mCurrentSource`; lets tests
+    /// inspect the descriptor after an open or load.
     [[nodiscard]] const std::optional<loglib::LogConfiguration::Source> &CurrentSourceForTest() const noexcept;
 
     /// Test-only accessor for the source label used by
@@ -604,10 +603,14 @@ public:
     {
         return mDecompressionInFlight;
     }
+    /// Test-only accessor for `mApplyEmbeddedBundleConfigForNextOpen`.
     [[nodiscard]] bool AppliesEmbeddedBundleConfigForNextOpenForTest() const noexcept
     {
         return mApplyEmbeddedBundleConfigForNextOpen;
     }
+    /// Test-only: fake a bundle decompression that gets superseded
+    /// before it finishes, so tests can assert the embedded-config
+    /// intent is cleared.
     void SimulateSupersededBundleDecompressionForTest()
     {
         mApplyEmbeddedBundleConfigForNextOpen = true;
@@ -734,13 +737,11 @@ private slots:
     /// user cancel unwinds via `slv::exports::ExportCancelled`.
     void ExportFilteredRows();
 
-    /// "Export Session Bundle\u2026" -- pops the session-bundle
-    /// dialog and dispatches an async worker that writes a
-    /// `.slvbundle` archive containing every retained row plus the
-    /// full `LogConfiguration` (columns, filters, sort, source,
-    /// anchors, highlight rules). Shares the same
-    /// `mExportInFlight` / `mExportStopSource` /
-    /// `mExportProgressDialog` machinery as filtered-row exports,
+    /// "Export Session Bundle\u2026" -- pops the bundle dialog and
+    /// dispatches an async worker that writes a `.slvbundle` archive
+    /// containing every retained row plus the full `LogConfiguration`.
+    /// Shares the `mExportInFlight` / `mExportStopSource` /
+    /// `mExportProgressDialog` machinery with filtered-row exports,
     /// so only one export of either kind runs at a time.
     void ExportSessionBundle();
 
@@ -1893,9 +1894,10 @@ private:
     /// Wall-clock start of the current export, for the success toast.
     std::chrono::steady_clock::time_point mExportStartedAt;
 
-    /// Apply metadata configuration only for a lone destructive bundle
-    /// open. Append, restored-session, and explicit-config paths leave
-    /// the active configuration untouched.
+    /// Set true while a lone destructive bundle open is pending so
+    /// `OnDecompressionFinished` knows to apply the metadata
+    /// configuration. Append, restored-session, and explicit-config
+    /// paths leave the active configuration untouched.
     bool mApplyEmbeddedBundleConfigForNextOpen = false;
 
     /// Kick off the async export worker. Models on
@@ -1904,10 +1906,10 @@ private:
         std::unique_ptr<slv::exports::ExportPlan> plan, const QString &destination, const QString &formatLabel
     );
 
-    /// Kick off the async session-bundle worker. Mirrors
-    /// `BeginAsyncExport`: same in-flight guard, same progress /
-    /// cancel plumbing, but the payload is a `WriteSessionBundle`
-    /// call rather than a `RowExporter::Run`.
+    /// Kick off the async bundle-write worker. Mirrors
+    /// `BeginAsyncExport`: same in-flight guard and progress/cancel
+    /// plumbing, but the payload is `WriteSessionBundle` rather
+    /// than `RowExporter::Run`.
     void BeginAsyncBundleExport(
         std::filesystem::path destination,
         int compressionLevel,
@@ -1941,10 +1943,9 @@ private:
         Static,
         LiveTail,
     };
-    /// True while `mExportWatcher`'s future is running a bundle
-    /// write, false when it's running a filtered-row export. Used
-    /// by `OnExportFinished` to pick the right toast wording and
-    /// exception vocabulary.
+    /// True while `mExportWatcher` is running a bundle write, false
+    /// for a filtered-row export. `OnExportFinished` uses it to pick
+    /// the right toast wording and exception vocabulary.
     bool mExportIsBundle = false;
 
     SessionMode mSessionMode = SessionMode::Idle;

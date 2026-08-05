@@ -122,18 +122,15 @@ namespace
 {
 
 /// True when @p path's extension case-insensitively matches
-/// `loglib::SESSION_BUNDLE_EXTENSION`. Centralised because the
-/// three original call sites drifted between `QFileInfo::suffix()`
-/// (no dot) and `path::extension()` (with dot), which is exactly
-/// the kind of split that silently breaks if the constant ever
-/// changes.
+/// `loglib::SESSION_BUNDLE_EXTENSION`. Centralised so every call site
+/// uses the same normalisation (`QFileInfo::suffix()` drops the dot,
+/// `path::extension()` keeps it -- a split that silently breaks if
+/// the constant is renamed).
 [[nodiscard]] bool IsSessionBundlePath(const QString &path)
 {
-    // `SESSION_BUNDLE_EXTENSION` is dot-prefixed (".slvbundle") while
-    // `QFileInfo::suffix()` returns the extension without its dot;
-    // strip the leading dot once so the comparison stays symmetric.
-    // Pinned at build time so the invariant can't silently regress
-    // into a runtime-only no-op guard.
+    // Strip the leading dot from the dot-prefixed constant so both
+    // sides of the comparison drop it. `static_assert` pins the
+    // invariant at build time.
     static_assert(
         loglib::SESSION_BUNDLE_EXTENSION[0] == '.' && loglib::SESSION_BUNDLE_EXTENSION[1] != '\0',
         "SESSION_BUNDLE_EXTENSION must be a dot-prefixed, non-empty extension"
@@ -2698,10 +2695,10 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
     // typical JSONL logs before Glaze sees them. Empty strings are
     // filtered (CLI drops them but drag-drop / dialog don't).
     //
-    // Session bundles are sniffed BEFORE the configuration probe so
-    // their compressed bytes never reach Glaze's tolerant JSON
-    // parser. The extension identifies the bundle contract while
-    // `LooksLikeSessionBundle` verifies standard zstd frame magic.
+    // Bundles are sniffed BEFORE the configuration probe so their
+    // compressed bytes never reach Glaze's tolerant JSON parser: the
+    // extension declares intent and `LooksLikeSessionBundle` verifies
+    // the zstd frame magic.
     QStringList configPaths;
     QStringList logPaths;
     configPaths.reserve(files.size());
@@ -2754,20 +2751,16 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
     if (configPaths.isEmpty())
     {
         // Arm the embedded-config intent AFTER `StartStreamingOpenQueue`
-        // so a bundle-supersedes-bundle open keeps its own intent:
-        // `StartStreamingOpenQueue` synchronously runs
-        // `CancelInFlightDecompression` on its destructive path, which
-        // clears the flag when a prior decode was in flight. Setting
-        // the flag afterwards guarantees this open's intent survives
-        // that cancellation. `OnDecompressionFinished` is delivered
-        // through Qt's queued-signal event loop, so this ordering is
-        // race-free even for a dispatched-and-immediately-completed
-        // worker.
+        // returns. Its destructive path calls `CancelInFlightDecompression`,
+        // which clears the flag if a prior decode was in flight; arming
+        // afterwards keeps this open's intent alive across that cancel.
+        // `OnDecompressionFinished` is delivered via Qt's queued signal
+        // loop, so the ordering is race-free.
         //
-        // Only *set* the flag here (never clear it): a non-arming open
+        // Only *set* the flag here (never clear): a non-arming open
         // (mixed input, or a plain-file append behind a still-decoding
         // bundle) must not stomp an intent armed by an earlier bundle
-        // whose decompression is still pending in the append queue.
+        // whose decompression is still pending in the queue.
         const bool armEmbeddedBundleIntent =
             bundleCount == 1 && logPaths.size() == 1 &&
             (logMode == OpenMode::Replace || (mModel->rowCount() == 0 && !mCurrentSource.has_value()));
@@ -2826,8 +2819,8 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
 
     // Live-tail / network sessions are single-source: a new
     // static-files open implicitly tears them down regardless of
-    // `mode`. Static files, including compressed files and session
-    // bundles, use the normal append/replace queue semantics.
+    // `mode`. Static files (plain, compressed, or bundle) all follow
+    // the normal append/replace queue semantics.
     const bool destructive = (mode == OpenMode::Replace) || (mSessionMode == SessionMode::LiveTail);
 
     if (destructive)
@@ -3265,9 +3258,8 @@ void MainWindow::BeginAsyncDecompression(
     // Up-front compressed size lets the poll timer compute a
     // percentage without waiting for the worker's first tick.
     std::error_code sizeEc;
-    // `QStringToFsPath` (not `toStdString`): Windows `path(std::string)`
-    // decodes as ACP, so non-ASCII filenames would silently be
-    // mis-encoded and `file_size` would return a "not found" error.
+    // Use `QStringToFsPath` -- on Windows `path(std::string)` decodes
+    // as ACP so non-ASCII filenames would produce a "not found" error.
     // MSVC's <filesystem> flag-cast trips clang-analyzer's enum-cast check.
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     const auto compressedSize = std::filesystem::file_size(logapp::QStringToFsPath(originalPath), sizeEc);
@@ -3308,10 +3300,9 @@ void MainWindow::BeginAsyncDecompression(
     // -- they are `this` members guarded by `mDecompressionInFlight`.
     // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
     const bool isSessionBundle = IsSessionBundlePath(originalPath);
-    // Convert on the GUI thread via `QStringToFsPath` (native wide on
-    // Windows, UTF-8 elsewhere) so non-ASCII bundle names survive the
-    // hop into the worker. `QString::toStdString()` would silently ACP-
-    // decode as UTF-8 on Windows and fail to open Cyrillic/CJK paths.
+    // Convert on the GUI thread via `QStringToFsPath` so non-ASCII
+    // bundle names survive the hop into the worker (see the
+    // `file_size` note above).
     const std::filesystem::path input = logapp::QStringToFsPath(originalPath);
     auto future = QtConcurrent::run([input, sharedBytesIn, sharedTotal, stopToken, isSessionBundle]() {
         // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
@@ -3464,15 +3455,14 @@ void MainWindow::CancelInFlightDecompression()
     mDecompressionInFlight = false;
     if (wasInFlight)
     {
-        // Discard the outgoing decode's embedded-config intent so a
-        // session-boundary cancel (LiveTail switch, network open, load
-        // configuration, close, ...) doesn't leak it into whatever the
-        // caller loads next. `DispatchMixedOpenInput` re-arms this flag
-        // AFTER `StartStreamingOpenQueue` returns, so a bundle-supersedes
-        // -bundle open still sees its own intent survive this clear.
-        // Guarded on `wasInFlight` so a lone bundle open (no prior
-        // decompression) doesn't wipe the intent between its arming
-        // point and the fresh worker that will consume it.
+        // Discard the cancelled decode's embedded-config intent so a
+        // session-boundary cancel (LiveTail switch, network open,
+        // load configuration, close, ...) doesn't leak it into
+        // whatever loads next. Guarded on `wasInFlight` so a fresh
+        // bundle open doesn't wipe the intent it just armed.
+        // `DispatchMixedOpenInput` re-arms this flag AFTER
+        // `StartStreamingOpenQueue` returns, so a bundle-replaces-
+        // bundle open still keeps its own intent.
         mApplyEmbeddedBundleConfigForNextOpen = false;
     }
 
@@ -3550,12 +3540,12 @@ void MainWindow::OnDecompressionFinished()
     {
         errorEntry = tr("Failed to decompress '%1': unknown error").arg(mDecompressionOriginalPath);
     }
-    // Bundle metadata parsing runs AFTER the decompression try/catch so
-    // a malformed / non-bundle payload surfaces as a bundle error, not a
-    // "Failed to decompress" toast that would mislead users who renamed
-    // a foreign `.zst` file to `.slvbundle`. The first line has already
-    // been consumed by the DBS options plumbing, so a failure is
-    // terminal for this file either way.
+    // Parse bundle metadata AFTER the decompression try/catch so a
+    // malformed / non-bundle payload surfaces as a bundle error
+    // rather than a misleading "Failed to decompress" toast (users
+    // who rename `.zst` to `.slvbundle` see the right message).
+    // The first line was already consumed by the DBS options plumbing,
+    // so a failure is terminal for this file.
     if (errorEntry.isEmpty() && !cancelled && dbs && IsSessionBundlePath(mDecompressionOriginalPath))
     {
         try
@@ -3687,11 +3677,8 @@ void MainWindow::OnDecompressionFinished()
     // codec bytes as JSONL. MSVC evaluates arguments right-to-left,
     // so the primary target was hitting this order.
     //
-    // `QStringToFsPath` (not `toStdString`): the failure-path fallback
-    // must round-trip non-ASCII names correctly, otherwise the
-    // fallback path would fail to open Cyrillic/CJK originals on
-    // Windows even though the primary decompressed-temp branch above
-    // handles them.
+    // `QStringToFsPath` (not `toStdString`): the fallback must
+    // round-trip non-ASCII names on Windows too.
     const std::filesystem::path effectivePath =
         dbs ? dbs->EffectivePath() : logapp::QStringToFsPath(mDecompressionOriginalPath);
 
@@ -4012,10 +3999,10 @@ void MainWindow::ExportSessionBundle()
         QMessageBox::information(this, tr("Export Session Bundle"), detail);
         return;
     }
-    // Row count across ALL retained rows in the session. Bundle scope
-    // is always "everything", not the current filter -- filters are
-    // stored in the bundle so the receiving side reproduces the same
-    // view without slicing the payload.
+    // Bundles always contain every retained row (never the current
+    // filter). The active filter travels in the bundle configuration,
+    // so the receiving side reproduces the same view without
+    // pre-slicing the payload.
     const std::size_t rowCount = mModel->Table().Data().Lines().size();
     const std::size_t sourceCount = mModel->Table().Data().Sources().size();
 
@@ -4025,14 +4012,9 @@ void MainWindow::ExportSessionBundle()
         const QString primary = QString::fromStdString(mCurrentSource->locators.front());
         const QFileInfo info(primary);
         defaultStem = info.completeBaseName();
-        // Re-exporting a bundle carries the `.slvbundle` extension into
-        // the stem via `completeBaseName` when the original file had
-        // an extra dot (e.g. `foo.bar.slvbundle` -> stem `foo.bar`).
-        // The re-export path would then append `.slvbundle` again,
-        // yielding `foo.bar.slvbundle` -- correct, but for the simple
-        // `foo.slvbundle` case `completeBaseName` returns `foo`, which
-        // is already what we want. The extra guard below covers the
-        // pathological case of a re-exported bundle keeping the marker.
+        // Strip a trailing `.slvbundle` if it survived
+        // `completeBaseName` (only happens for pathological names like
+        // `foo.slvbundle.slvbundle`); the dialog re-adds it.
         if (IsSessionBundlePath(primary) && defaultStem.endsWith(
                 QLatin1String(loglib::SESSION_BUNDLE_EXTENSION), Qt::CaseInsensitive))
         {
@@ -4042,9 +4024,8 @@ void MainWindow::ExportSessionBundle()
     if (defaultStem.isEmpty())
     {
         // No filesystem-derived name (network stream, restored empty
-        // config, ...): fall back to a timestamped "session-YYYYMMDD-
-        // hhmmss" stem so successive exports from the same runtime
-        // session don't collide on the default filename.
+        // config, ...): use a timestamped stem so successive exports
+        // don't collide on the default filename.
         defaultStem = QStringLiteral("session-%1").arg(
             QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-hhmmss"))
         );
@@ -4063,10 +4044,9 @@ void MainWindow::ExportSessionBundle()
         return;
     }
 
-    // Mirror live UI state (expression / sort / anchors / source) into
-    // `LogConfiguration` before we snapshot it. The bundle payload
-    // captures the mirrored state so the receiving side reproduces
-    // exactly what the user is looking at.
+    // Mirror live UI state (expression / sort / anchors / source)
+    // into `LogConfiguration` so the bundle payload matches what the
+    // user is looking at.
     MirrorSessionStateToConfiguration();
 
     BeginAsyncBundleExport(
@@ -4082,22 +4062,18 @@ void MainWindow::BeginAsyncBundleExport(
     mExportRowsWritten.storeRelaxed(0);
     mExportRowsTotal.storeRelaxed(static_cast<qint64>(mModel->Table().Data().Lines().size()));
 
-    // Route the display path through `FsPathToQString` (native
-    // wide on Windows, UTF-8 elsewhere) so non-ASCII destination
-    // filenames aren't mojibake in the progress dialog, error
-    // toasts, status bar, or the "last used dir" QSettings entry
-    // that `OnExportFinished` writes back through
-    // `RememberLastExportDir`. The pre-fix `path::string()` +
-    // `QString::fromStdString` combo silently ACP-decodes as UTF-8
-    // on Windows.
+    // Use `FsPathToQString` (native wide on Windows, UTF-8 elsewhere)
+    // so non-ASCII destination filenames render correctly in the
+    // progress dialog, error toasts, status bar, and the "last used
+    // dir" QSettings entry `RememberLastExportDir` writes back.
     mExportDestinationPath = logapp::FsPathToQString(destination);
     mExportFormatLabel = tr("Session bundle");
     mExportStartedAt = std::chrono::steady_clock::now();
     mExportInFlight = true;
     mExportIsBundle = true;
 
-    // Same rationale as `BeginAsyncExport`: disable while the worker
-    // reads `LogTable` without locking.
+    // Same rationale as `BeginAsyncExport`: disable the UI while the
+    // worker reads `LogTable` without locking.
     setEnabled(false);
 
     ShowExportProgress();
@@ -4109,22 +4085,15 @@ void MainWindow::BeginAsyncBundleExport(
     }
 
     // Snapshot `LogConfiguration` on the calling thread so the worker
-    // sees a stable copy even if the user edits filters mid-encode.
-    // (The `setEnabled(false)` above precludes most edits, but the
-    // GUI thread still runs and could mutate anchors via signals.)
+    // sees a stable copy even if a signal mutates anchors mid-encode
+    // (the `setEnabled(false)` above blocks most user edits but not
+    // GUI-thread signals).
     //
-    // Include runtime-only anchors in the snapshot. The writer
-    // flattens every retained row into the bundle and remaps anchors
-    // to the destination bundle locator and dense row ids. This does
-    // not mutate the live configuration used by autosave.
-    //
-    // `AnchorManager`'s header contract says save paths use
-    // `Entries()` (which drops runtime-only anchors whose in-memory
-    // `lineId` is unstable across sessions). Bundle export is
-    // deliberately the exception: the bundle re-establishes a stable
-    // dense row space so runtime-only anchors can be remapped to it
-    // and survive the round-trip. The autosave / session-save code
-    // paths still use `Entries()`.
+    // Bundle export is the one save path that includes runtime-only
+    // anchors: the writer remaps every anchor to the destination
+    // bundle's dense row space, so their otherwise-unstable
+    // in-memory `lineId`s become stable on round-trip. Regular
+    // save / autosave still uses `Entries()` (see `AnchorManager`).
     loglib::LogConfiguration configSnapshot = mModel->Configuration();
     if (mAnchors != nullptr)
     {
@@ -4135,11 +4104,10 @@ void MainWindow::BeginAsyncBundleExport(
     const auto stopToken = mExportStopSource.get_token();
     auto *rowsWrittenAtomic = &mExportRowsWritten;
 
-    // Worker: package the write options, invoke the library encoder,
-    // and let exceptions propagate to `QFutureWatcher::waitForFinished`.
-    // The writer walks every retained row without skipping, so the
-    // denominator we seeded on the GUI thread (`Data().Lines().size()`)
-    // is exact -- only the numerator needs live updates.
+    // Worker: package options, invoke the library encoder, and let
+    // exceptions propagate to `QFutureWatcher::waitForFinished`.
+    // The writer walks every retained row, so the denominator we
+    // seeded on the GUI thread is exact -- only the numerator ticks.
     // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
     auto future = QtConcurrent::run([tablePtr,
                                      configSnapshot,
@@ -4155,12 +4123,11 @@ void MainWindow::BeginAsyncBundleExport(
         options.progress = [rowsWrittenAtomic](std::uint64_t rowsWritten, std::uint64_t /*rowsTotal*/) {
             rowsWrittenAtomic->storeRelaxed(static_cast<qint64>(rowsWritten));
         };
-        // Canonicalize source paths the same way `AnchorManager::Key`
-        // does (via `LogModel::mCanonicalLocatorCache`). Without this
-        // the writer compares raw-case `path::u8string()` against the
-        // canonical (lowercase on Windows) `anchor.locator` and
-        // silently drops every exported anchor. See the option's
-        // documentation in `session_bundle.hpp`.
+        // Match `AnchorManager::Key`'s canonicalisation so anchors
+        // resolve on Windows. Without this the writer compares raw
+        // `path::u8string()` against the canonical anchor locator and
+        // silently drops every exported anchor. See the option's docs
+        // in `session_bundle.hpp`.
         options.canonicalizeSourceLocator = [](const std::filesystem::path &path) {
             return logapp::CanonicalLocator(logapp::FsPathToQString(path)).toStdString();
         };
@@ -4838,10 +4805,9 @@ QString CurrentSourceLabel(const std::optional<loglib::LogConfiguration::Source>
     // Non-const so the trailing `return first` can move; see
     // clang-tidy `performance-no-automatic-move`.
     QString first = QString::fromStdString(source->locators.front());
-    // Bundles surface here as `Kind::File` too (the receiver
-    // overwrites the embedded locator with the current path in
-    // `OnDecompressionFinished`), so the file-basename branch
-    // naturally covers them.
+    // Bundles surface as `Kind::File` (the receiver rewrites the
+    // embedded locator to the current path in
+    // `OnDecompressionFinished`), so this branch covers them too.
     if (source->kind == loglib::LogConfiguration::Source::Kind::File)
     {
         QString basename = QFileInfo(first).fileName();
@@ -4931,9 +4897,9 @@ void MainWindow::UpdateWindowTitle()
     // Proxy-icon hint for OS title bars (macOS shows the file glyph;
     // recent Windows uses it for jumplist grouping). Only meaningful
     // for file sources; cleared otherwise (`NetworkStream` locators
-    // are producer URIs, not paths). Bundles surface here as
-    // `Kind::File` with a locator rebased to the local `.slvbundle`
-    // path, so the glyph resolves correctly for them too.
+    // are producer URIs, not paths). Bundles reach here as
+    // `Kind::File` with the locator rebased to the local `.slvbundle`,
+    // so the glyph resolves for them too.
     if (mCurrentSource.has_value() && mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::File &&
         !mCurrentSource->locators.empty())
     {
@@ -6363,8 +6329,7 @@ bool MainWindow::ShouldAutoSaveSession(SessionMode justFinishedMode) const
     const auto &source = *mCurrentSource;
     if (source.kind != loglib::LogConfiguration::Source::Kind::File)
     {
-        // Network-stream locators are producer URIs, not paths; the
-        // producer must be re-bound manually next launch.
+        // Network streams: locator is a producer URI, not a path.
         return false;
     }
     if (justFinishedMode == SessionMode::LiveTail)
