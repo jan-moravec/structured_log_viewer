@@ -282,6 +282,57 @@ TEST_CASE("session bundle anchors are densely remapped and detached anchors are 
     CHECK(anchors[1].note == "first B");
 }
 
+TEST_CASE("canonicalizeSourceLocator bridges canonicalized anchors to raw source paths", "[SessionBundle]")
+{
+    // Simulates the production wiring where `AnchorManager` stores
+    // anchor locators canonicalized (lowercased on Windows,
+    // forward-slashed) while `line.Source()->Path()` still holds the
+    // raw filesystem path. Without the callback the writer would
+    // silently drop every anchor because `path::u8string()` doesn't
+    // match the canonical form.
+    TempPath source(".jsonl");
+    TempPath bundle(".slvbundle");
+    Write(source.Path(), R"({"msg":"a0"})" "\n" R"({"msg":"a1"})" "\n");
+    loglib::LogTable table = ParseTable(source.Path());
+
+    // Force a canonical form that does not equal `path::u8string()`.
+    const std::string canonicalLocator = "canonical://" + source.Path().string();
+
+    loglib::LogConfiguration configuration = table.Configuration().Configuration();
+    configuration.anchors = {
+        {.locator = canonicalLocator, .lineId = 0, .colorIndex = 1, .note = "kept"},
+        {.locator = canonicalLocator, .lineId = 1, .colorIndex = 2, .note = "also kept"},
+    };
+
+    // Sanity: without the callback the writer drops both anchors --
+    // the canonical form does not match `PathToUtf8(source->Path())`.
+    {
+        TempPath unbridged(".slvbundle");
+        loglib::WriteSessionBundle(table, configuration, unbridged.Path());
+        auto decoded = DecodeBundle(unbridged.Path());
+        const auto anchors =
+            loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.anchors;
+        CHECK(anchors.empty());
+    }
+
+    loglib::SessionBundleWriteOptions options;
+    options.canonicalizeSourceLocator = [](const std::filesystem::path &p) {
+        return "canonical://" + p.string();
+    };
+    loglib::WriteSessionBundle(table, configuration, bundle.Path(), options);
+
+    auto decoded = DecodeBundle(bundle.Path());
+    const auto anchors =
+        loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.anchors;
+    REQUIRE(anchors.size() == 2);
+    CHECK(anchors[0].locator == bundle.Path().string());
+    CHECK(anchors[0].lineId == 0);
+    CHECK(anchors[0].note == "kept");
+    CHECK(anchors[1].locator == bundle.Path().string());
+    CHECK(anchors[1].lineId == 1);
+    CHECK(anchors[1].note == "also kept");
+}
+
 TEST_CASE("session bundle cancellation before write preserves destination and leaves no temp", "[SessionBundle]")
 {
     TempPath source(".jsonl");

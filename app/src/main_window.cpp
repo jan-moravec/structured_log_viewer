@@ -3579,9 +3579,15 @@ void MainWindow::OnDecompressionFinished()
         embedded.source->kind = loglib::LogConfiguration::Source::Kind::File;
         loglib::ClearLocators(*embedded.source);
         loglib::AppendLocator(*embedded.source, displayPath, dedupKey);
+        // Anchor locators mirror `Source::locatorDedupKeys` (canonical,
+        // lowercased on Windows) so `AnchorManager::Key` comparisons
+        // hit -- see the class comment on `AnchorManager::Key`. The
+        // earlier `displayPath` (case-preserved) form silently
+        // mismatched `AnchorKeyForRow` on Windows and dropped every
+        // anchor from a reopened bundle.
         for (auto &anchor : embedded.anchors)
         {
-            anchor.locator = displayPath;
+            anchor.locator = dedupKey;
         }
 
         mModel->ConfigurationManager().SetConfiguration(std::move(embedded));
@@ -4082,6 +4088,15 @@ void MainWindow::BeginAsyncBundleExport(
                     rowsTotalAtomic->storeRelaxed(static_cast<qint64>(rowsTotal));
                 }
             }
+        };
+        // Canonicalize source paths the same way `AnchorManager::Key`
+        // does (via `LogModel::mCanonicalLocatorCache`). Without this
+        // the writer compares raw-case `path::u8string()` against the
+        // canonical (lowercase on Windows) `anchor.locator` and
+        // silently drops every exported anchor. See the option's
+        // documentation in `session_bundle.hpp`.
+        options.canonicalizeSourceLocator = [](const std::filesystem::path &path) {
+            return logapp::CanonicalLocator(logapp::FsPathToQString(path)).toStdString();
         };
         loglib::WriteSessionBundle(*tablePtr, configSnapshot, destination, options);
     });

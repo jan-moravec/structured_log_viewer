@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -36,7 +37,6 @@ namespace
 
 constexpr std::size_t MAX_RECORD_BYTES = 256U * 1024U * 1024U;
 constexpr std::size_t MAX_METADATA_BYTES = 64U * 1024U * 1024U;
-constexpr std::size_t MAX_BUNDLE_ROWS = 1'000'000'000U;
 constexpr std::size_t PROGRESS_INTERVAL_ROWS = 4096;
 
 void PollStop(const StopToken &token)
@@ -89,14 +89,20 @@ public:
         {
             return;
         }
-        if (std::fflush(mFile) != 0 || std::fclose(mFile) != 0)
+        // Split flush + close so the FILE* is always released. Under
+        // `||` short-circuiting a failed `fflush` would skip `fclose`
+        // and leak the handle -- and by then `mFile = nullptr` has
+        // disarmed the destructor's fallback close, so the OS
+        // handle would live until process exit.
+        const bool flushOk = std::fflush(mFile) == 0;
+        const bool closeOk = std::fclose(mFile) == 0;
+        mFile = nullptr;
+        if (!flushOk || !closeOk)
         {
-            mFile = nullptr;
             throw std::runtime_error(
                 "Session bundle: failed to flush '" + internal::PathToUtf8(mPath) + "'"
             );
         }
-        mFile = nullptr;
     }
 
 private:
@@ -190,43 +196,104 @@ private:
     std::vector<char> mOutput;
 };
 
+std::string CanonicalizeSourceLocator(
+    const std::filesystem::path &path,
+    const SessionBundleWriteOptions &options
+)
+{
+    if (options.canonicalizeSourceLocator)
+    {
+        return options.canonicalizeSourceLocator(path);
+    }
+    return internal::PathToUtf8(path);
+}
+
+/// Composite key for the dense-id index below. `std::string` (not
+/// `string_view`) because the canonicalizer returns by value and the
+/// resulting bytes must outlive the loop that inserts them.
+struct AnchorLookupKey
+{
+    std::string locator;
+    std::uint64_t lineId = 0;
+
+    friend bool operator==(const AnchorLookupKey &, const AnchorLookupKey &) = default;
+};
+
+struct AnchorLookupKeyHash
+{
+    std::size_t operator()(const AnchorLookupKey &key) const noexcept
+    {
+        constexpr std::size_t GOLDEN_RATIO_HASH = 0x9E3779B9U;
+        constexpr std::size_t LEFT_SHIFT = 6U;
+        constexpr std::size_t RIGHT_SHIFT = 2U;
+        const std::size_t locatorHash = std::hash<std::string>{}(key.locator);
+        const std::size_t lineIdHash = std::hash<std::uint64_t>{}(key.lineId);
+        return locatorHash ^
+               (lineIdHash + GOLDEN_RATIO_HASH + (locatorHash << LEFT_SHIFT) + (locatorHash >> RIGHT_SHIFT));
+    }
+};
+
+/// Build a `(canonical locator, lineId) -> row` index in one pass so
+/// anchor remapping is O(A + N) instead of the previous O(A * N) with
+/// a canonicalizer call per line per anchor. Duplicate keys record
+/// the second-hit sentinel so an ambiguous anchor is dropped just
+/// like the earlier explicit search.
+using AnchorRowIndex = std::unordered_map<AnchorLookupKey, std::optional<std::uint64_t>, AnchorLookupKeyHash>;
+
+AnchorRowIndex BuildAnchorRowIndex(
+    const std::vector<LogLine> &lines,
+    const SessionBundleWriteOptions &options
+)
+{
+    AnchorRowIndex index;
+    index.reserve(lines.size());
+    for (std::size_t row = 0; row < lines.size(); ++row)
+    {
+        const LogLine &line = lines[row];
+        const auto *source = line.Source();
+        AnchorLookupKey key;
+        key.lineId = static_cast<std::uint64_t>(line.LineId());
+        if (source != nullptr)
+        {
+            key.locator = CanonicalizeSourceLocator(source->Path(), options);
+        }
+        auto [it, inserted] = index.try_emplace(std::move(key), static_cast<std::uint64_t>(row));
+        if (!inserted)
+        {
+            // Duplicate `(locator, lineId)` -> ambiguous. Mark
+            // sentinel so the anchor is dropped rather than pointing
+            // at a possibly-wrong row.
+            it->second.reset();
+        }
+    }
+    return index;
+}
+
 void RemapAnchors(
     LogConfiguration &configuration,
     const std::vector<LogLine> &lines,
-    std::string_view flattenedLocator
+    std::string_view flattenedLocator,
+    const SessionBundleWriteOptions &options
 )
 {
+    if (configuration.anchors.empty())
+    {
+        return;
+    }
+    const AnchorRowIndex index = BuildAnchorRowIndex(lines, options);
     std::vector<LogConfiguration::AnchorEntry> remapped;
     remapped.reserve(configuration.anchors.size());
     for (const auto &anchor : configuration.anchors)
     {
-        std::optional<std::uint64_t> denseId;
-        for (std::size_t row = 0; row < lines.size(); ++row)
-        {
-            const LogLine &line = lines[row];
-            if (line.LineId() != anchor.lineId || line.Source() == nullptr)
-            {
-                continue;
-            }
-            const std::string sourceLocator = internal::PathToUtf8(line.Source()->Path());
-            if (anchor.locator != sourceLocator && !(anchor.locator.empty() && sourceLocator.empty()))
-            {
-                continue;
-            }
-            if (denseId.has_value())
-            {
-                denseId.reset();
-                break;
-            }
-            denseId = static_cast<std::uint64_t>(row);
-        }
-        if (!denseId.has_value())
+        const AnchorLookupKey lookup{.locator = anchor.locator, .lineId = anchor.lineId};
+        const auto it = index.find(lookup);
+        if (it == index.end() || !it->second.has_value())
         {
             continue;
         }
         auto copy = anchor;
         copy.locator.assign(flattenedLocator);
-        copy.lineId = *denseId;
+        copy.lineId = *it->second;
         remapped.push_back(std::move(copy));
     }
     configuration.anchors = std::move(remapped);
@@ -286,14 +353,14 @@ void WriteSessionBundle(
 
     const auto &lines = table.Data().Lines();
     const auto &keys = table.Data().Keys();
-    if (lines.size() > MAX_BUNDLE_ROWS)
+    if (lines.size() > SESSION_BUNDLE_MAX_ROWS)
     {
         throw std::length_error("Session bundle row count exceeds the one-billion-row limit");
     }
 
     LogConfiguration embedded = configuration;
     const std::string physicalLocator = internal::PathToUtf8(destination);
-    RemapAnchors(embedded, lines, physicalLocator);
+    RemapAnchors(embedded, lines, physicalLocator, options);
     embedded.source = LogConfiguration::Source{
         .kind = LogConfiguration::Source::Kind::File,
         .format = LogConfiguration::Source::Format::Json,

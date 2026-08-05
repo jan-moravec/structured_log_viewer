@@ -38,6 +38,27 @@ struct SessionBundleWriteOptions
 
     /// Progress in source-model rows. Called on the writer thread.
     std::function<void(std::uint64_t rowsWritten, std::uint64_t rowsTotal)> progress;
+
+    /// Optional canonicalizer for source paths used during anchor
+    /// remapping.
+    ///
+    /// `LogConfiguration::AnchorEntry::locator` is documented as
+    /// matching `Source::locatorDedupKeys` — canonical, and on
+    /// Windows lowercased with forward-slashed separators. The
+    /// writer must therefore compare each anchor against a form of
+    /// `line.Source()->Path()` in the SAME canonical shape or every
+    /// anchor is silently dropped from the exported bundle.
+    ///
+    /// When set, the writer calls this on `line.Source()->Path()`
+    /// before comparing to `anchor.locator`. GUI callers must pass a
+    /// wrapper around `logapp::CanonicalLocator` (or an equivalent
+    /// helper) so the canonical shape matches whatever produced the
+    /// entries fed via `configuration.anchors`.
+    ///
+    /// When unset, the writer falls back to `path::u8string()`,
+    /// which is only correct when the caller-provided anchor
+    /// locators are raw path strings (test fixtures).
+    std::function<std::string(const std::filesystem::path &)> canonicalizeSourceLocator;
 };
 
 /// Metadata stored on the first decompressed JSONL line.
@@ -96,5 +117,11 @@ void WriteSessionBundle(
 /// Current on-disk format version emitted by `WriteSessionBundle`.
 /// This shape has no legacy compatibility: readers require exactly v1.
 constexpr std::uint32_t SESSION_BUNDLE_FORMAT_VERSION = 1;
+
+/// Upper bound on `rowCount` for both the writer (refuses to encode
+/// more) and the reader (refuses to decode more). Duplicated in the
+/// two translation units would silently disagree if bumped; keep the
+/// single definition here.
+constexpr std::uint64_t SESSION_BUNDLE_MAX_ROWS = 1'000'000'000ULL;
 
 } // namespace loglib

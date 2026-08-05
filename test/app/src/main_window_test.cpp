@@ -24226,10 +24226,24 @@ private slots:
         );
         QVERIFY(!wired->windowTitle().contains(QStringLiteral("[Bundle]")));
         QCOMPARE(wired->Model()->Configuration().anchors.size(), static_cast<size_t>(1));
+        // Anchor locators match `Source::locatorDedupKeys` (canonical,
+        // lowercased on Windows) so `AnchorManager::Key` comparisons
+        // hit; the earlier code stored `CanonicalDisplayPath` here
+        // and silently mismatched `AnchorKeyForRow` on Windows.
         QCOMPARE(
             wired->Model()->Configuration().anchors.front().locator,
-            logapp::CanonicalDisplayPath(moved).toStdString()
+            logapp::CanonicalLocator(moved).toStdString()
         );
+        // The anchor must actually be reachable through `LogModel`
+        // (fixture anchored line-id 1 -> source row 1). This guards
+        // the load-side canonicalization regression: without it,
+        // `AnchorSlotForRow` returns nullopt because the manager's
+        // stored key does not match the row's canonical locator.
+        QVERIFY(wired->Anchors() != nullptr);
+        QVERIFY(wired->Anchors()->Count() == 1);
+        const std::optional<std::uint8_t> slot = wired->Model()->AnchorSlotForRow(1);
+        QVERIFY(slot.has_value());
+        QCOMPARE(*slot, static_cast<std::uint8_t>(0));
 
         const QList<RecentSessionEntry> recent = manager.List();
         QCOMPARE(recent.size(), 1);

@@ -985,7 +985,17 @@ DecompressingByteSource::DecompressingByteSource(
 
     if (mCompressedSize == 0)
     {
-        // Empty file: passthrough.
+        // Empty file: passthrough. `discardFirstLine` has no line
+        // to consume here; a caller that requested one is almost
+        // certainly staring at a truncated bundle and should hear
+        // about it instead of silently receiving an empty
+        // `DiscardedFirstLine()`.
+        if (options.discardFirstLine)
+        {
+            throw std::runtime_error(
+                fmt::format("Cannot discard first line from empty file '{}'", mDisplayPath.string())
+            );
+        }
         return;
     }
 
@@ -993,8 +1003,35 @@ DecompressingByteSource::DecompressingByteSource(
     mCodec = DetectCodec({magic.data(), magic.size()});
     if (mCodec == Codec::None)
     {
-        // Uncompressed: passthrough.
+        // Uncompressed: passthrough. Same rationale as above --
+        // silently ignoring the discard here (previous behaviour)
+        // would hand the caller the full file with an empty
+        // metadata string, so a plain `.jsonl` mistakenly opened
+        // through the bundle path would parse the metadata line
+        // as row 1.
+        if (options.discardFirstLine)
+        {
+            throw std::invalid_argument(
+                fmt::format("discardFirstLine requires a compressed input; '{}' is not compressed",
+                            mDisplayPath.string())
+            );
+        }
         return;
+    }
+    if (options.discardFirstLine && mCodec != Codec::Zstd)
+    {
+        // Only the zstd path plumbs `discardFirstLine` through
+        // decode. Every other codec silently ignored it before,
+        // which returned an empty `DiscardedFirstLine()` and left
+        // the metadata line embedded in the decoded output --
+        // subtle enough to hide bugs. Fail loudly instead.
+        throw std::invalid_argument(
+            fmt::format(
+                "discardFirstLine is only supported for zstd streams; '{}' uses {}",
+                mDisplayPath.string(),
+                CodecName(mCodec)
+            )
+        );
     }
 
     // Compressed: stream-decode into a temp file. Any exception must

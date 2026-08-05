@@ -47,7 +47,6 @@ namespace loglib
 
 SessionBundleMetadata ParseSessionBundleMetadata(std::string_view json)
 {
-    constexpr std::uint64_t MAX_BUNDLE_ROWS = 1'000'000'000ULL;
     internal::SessionBundleMetadataEnvelope envelope;
     const auto error = glz::read<internal::LOG_CONFIG_OPTS>(envelope, json);
     if (error)
@@ -67,7 +66,7 @@ SessionBundleMetadata ParseSessionBundleMetadata(std::string_view json)
             " (expected " + std::to_string(SESSION_BUNDLE_FORMAT_VERSION) + ")"
         );
     }
-    if (envelope.bundle->rowCount > MAX_BUNDLE_ROWS)
+    if (envelope.bundle->rowCount > SESSION_BUNDLE_MAX_ROWS)
     {
         throw SessionBundleReadError("Session bundle row count exceeds the one-billion-row limit");
     }
