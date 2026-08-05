@@ -651,6 +651,42 @@ TEST_CASE("successful session bundle write atomically replaces destination", "[S
     CHECK(loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).rowCount == 1);
 }
 
+TEST_CASE("session bundle writer preserves unrelated .tmp siblings in the destination directory", "[SessionBundle]")
+{
+    // B2 regression: the previous writer preface issued an
+    // unconditional `std::filesystem::remove(<destination>.tmp)`
+    // before opening its staging file, so a stray sibling could be
+    // silently deleted. Since switching to exclusive `CREATE_NEW` /
+    // `O_EXCL` opens plus a randomised suffix, the writer must
+    // leave every non-matching `.tmp` untouched.
+    TempPath source(".jsonl");
+    TempPath bundle(".slvbundle");
+    Write(source.Path(), R"({"msg":"only"})" "\n");
+
+    // Pre-plant a decoy that shares the destination's basename but
+    // is not the writer's exact staging name (the seeded suffix is
+    // per-process and unpredictable from here). The pattern still
+    // matches the sweep the destructor runs, so the decoy would
+    // have been reaped on teardown; we snapshot the contents up
+    // front and inspect them before the destructor fires.
+    const std::filesystem::path decoy = std::filesystem::path(bundle.Path().string() + ".manual-decoy.tmp");
+    constexpr std::string_view DECOY_CONTENTS = "manual-decoy-must-survive-write";
+    Write(decoy, DECOY_CONTENTS);
+
+    loglib::LogTable table = ParseTable(source.Path());
+    loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path());
+
+    CHECK(loglib::LooksLikeSessionBundle(bundle.Path()));
+    REQUIRE(std::filesystem::exists(decoy));
+    CHECK(Read(decoy) == std::string(DECOY_CONTENTS));
+
+    // Remove the decoy manually so the destructor's sweep does not
+    // race with our post-hoc read. The destructor still runs its
+    // scan, which is a no-op once the decoy is gone.
+    std::error_code cleanupError;
+    std::filesystem::remove(decoy, cleanupError);
+}
+
 TEST_CASE("session bundle metadata rejects malformed envelope versions and excessive rows", "[SessionBundle]")
 {
     CHECK_THROWS_AS(loglib::ParseSessionBundleMetadata("not json"), loglib::SessionBundleReadError);

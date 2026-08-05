@@ -33,8 +33,11 @@ using namespace bench;
 namespace
 {
 
-/// RAII-owned bundle destination path. Unlinks the file plus the
-/// writer's `<path>.tmp` sibling on scope exit.
+/// RAII-owned bundle destination path. Unlinks the file plus any
+/// staging siblings the writer might have left behind on scope
+/// exit -- the writer picks a randomised `<path>.<seed>.<counter>.tmp`
+/// suffix per call, so a benchmark that aborts mid-write can leave
+/// files that a fixed `<path>.tmp` sweep would miss.
 class TempBundlePath
 {
 public:
@@ -55,7 +58,32 @@ public:
     {
         std::error_code ec;
         std::filesystem::remove(mPath, ec);
-        std::filesystem::remove(std::filesystem::path(mPath.string() + ".tmp"), ec);
+        // Sweep every `<basename>*.tmp` sibling; the writer's suffix
+        // is randomised per invocation so we cannot know the exact
+        // name up front. Comparing on `native()` avoids the UTF-8
+        // vs. wide re-encode on Windows.
+        const auto parent = mPath.parent_path();
+        std::error_code iterEc;
+        if (!std::filesystem::exists(parent, iterEc))
+        {
+            return;
+        }
+        const auto basename = mPath.filename().native();
+        const std::filesystem::path::string_type tmpSuffix =
+            std::filesystem::path(".tmp").native();
+        for (const auto &entry : std::filesystem::directory_iterator(parent, iterEc))
+        {
+            const auto name = entry.path().filename().native();
+            if (name == basename)
+            {
+                continue;
+            }
+            if (name.starts_with(basename) && name.ends_with(tmpSuffix))
+            {
+                std::error_code rmEc;
+                std::filesystem::remove(entry.path(), rmEc);
+            }
+        }
     }
 
     TempBundlePath(const TempBundlePath &) = delete;

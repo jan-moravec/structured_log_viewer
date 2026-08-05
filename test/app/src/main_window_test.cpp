@@ -35,6 +35,7 @@
 #include <loglib/filter_expression.hpp>
 #include <loglib/internal/advanced_parser_options.hpp>
 #include <loglib/internal/compact_log_value.hpp>
+#include <loglib/internal/decompressing_byte_source.hpp>
 #include <loglib/internal/log_configuration_glaze_meta.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
@@ -24402,6 +24403,78 @@ private slots:
         QVERIFY(wired->CurrentSourceForTest().has_value());
         QCOMPARE(wired->CurrentSourceForTest()->kind, loglib::LogConfiguration::Source::Kind::File);
         QCOMPARE(wired->CurrentSourceForTest()->locators.size(), static_cast<size_t>(2));
+    }
+
+    // U1 coverage: exporting a bundle from an active live-tail
+    // session must stop the tail (so the writer walks a stable
+    // `LogTable::Data().Lines()`), keep the rows already delivered,
+    // and produce a valid bundle at the requested destination. The
+    // shipped path shows a `QMessageBox::question` before stopping;
+    // `SetSuppressDialogsForTest(true)` auto-accepts, exercising
+    // the same stop-and-snapshot flow the user sees on `Ok`.
+    void TestSessionBundleExportSnapshotsAndStopsLiveTailSession()
+    {
+        const QTemporaryDir sessionsDir;
+        const QTemporaryDir bundleDir;
+        QVERIFY(sessionsDir.isValid());
+        QVERIFY(bundleDir.isValid());
+        SessionHistoryManager manager(
+            QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>()
+        );
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
+        wired->SetSuppressDialogsForTest(true);
+
+        auto restore = qScopeGuard([&wired]() {
+            wired->SetSessionModeForTest(MainWindow::TestSessionMode::Idle);
+        });
+        wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
+
+        LogModel *const model = wired->Model();
+        QVERIFY(model != nullptr);
+        loglib::StreamLineSource &streamSource = BeginSyntheticStreamSession(*model);
+        QtStreamingLogSink *sink = model->Sink();
+        QVERIFY(sink != nullptr);
+        loglib::KeyIndex &keys = sink->Keys();
+        const loglib::KeyId valueKey = keys.GetOrInsert(std::string("value"));
+
+        constexpr size_t ROW_COUNT = 12;
+        sink->OnBatch(MakeSyntheticBatch(streamSource, keys, valueKey, 1, ROW_COUNT, /*declareNewKey=*/true));
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), static_cast<int>(ROW_COUNT));
+        QVERIFY(model->IsStreamingActive());
+
+        const QString destination = bundleDir.filePath(QStringLiteral("livetail-snapshot.slvbundle"));
+        wired->ExportSessionBundleToPathForTest(destination);
+
+        // The live-tail stop happens synchronously inside
+        // `ExportSessionBundleToPathForTest` before the async
+        // writer is armed, so `IsStreamingActive` must already
+        // read `false` and the rows must already be retained.
+        QVERIFY2(
+            !model->IsStreamingActive(),
+            "Live-tail bundle export must stop the streaming pipeline before it dispatches the writer."
+        );
+        QCOMPARE(model->rowCount(), static_cast<int>(ROW_COUNT));
+
+        // Wait for the async writer to finish. The polling loop is
+        // aligned with the other async-export tests in this suite.
+        QTRY_VERIFY_WITH_TIMEOUT(!wired->IsExportInFlightForTest(), 5000);
+        QCoreApplication::processEvents();
+
+        // Bundle file must exist and be a valid session bundle.
+        const auto destPath = logapp::QStringToFsPath(destination);
+        QVERIFY2(std::filesystem::exists(destPath), "Bundle export must produce the requested destination file.");
+        QVERIFY(loglib::LooksLikeSessionBundle(destPath));
+
+        // Round-trip the metadata envelope so we know the writer
+        // did not truncate mid-row (the primary regression this
+        // test guards against).
+        loglib::internal::DecompressingByteSource::Options options;
+        options.discardFirstLine = true;
+        loglib::internal::DecompressingByteSource decoded(destPath, {}, {}, options);
+        const loglib::SessionBundleMetadata metadata =
+            loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine());
+        QCOMPARE(metadata.rowCount, static_cast<std::uint64_t>(ROW_COUNT));
     }
 
 

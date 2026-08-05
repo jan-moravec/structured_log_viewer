@@ -4079,13 +4079,57 @@ void MainWindow::ExportSessionBundle()
     {
         return;
     }
-    if (mModel->IsStreamingActive() || mDecompressionInFlight)
+    if (mDecompressionInFlight)
     {
-        const QString detail = IsLiveTailSession()
-                                   ? tr("Stop the live-tail session (Ctrl+Shift+X) before exporting a session bundle.")
-                                   : tr("Wait for the current file load to finish, then retry.");
-        QMessageBox::information(this, tr("Export Session Bundle"), detail);
+        // A load pass is still in-flight; there is nothing coherent
+        // to snapshot yet. Ask the user to wait rather than force a
+        // partial export.
+        QMessageBox::information(
+            this,
+            tr("Export Session Bundle"),
+            tr("Wait for the current file load to finish, then retry.")
+        );
         return;
+    }
+    if (mModel->IsStreamingActive())
+    {
+        if (!IsLiveTailSession())
+        {
+            // Non-live-tail streaming means we are still ingesting a
+            // one-shot file. Blocking is correct: partway through the
+            // initial load, a bundle would be missing rows.
+            QMessageBox::information(
+                this,
+                tr("Export Session Bundle"),
+                tr("Wait for the current file load to finish, then retry.")
+            );
+            return;
+        }
+        // Live tail: offer a snapshot-and-stop. `Sink::Pause()` alone
+        // is not enough here -- queued batches can still land in
+        // `LogTable` while the writer walks `Data().Lines()`, which
+        // would produce a bundle whose row count disagrees with the
+        // metadata envelope. `StopStream` (via `StopAndKeepRows`) is
+        // the existing barrier that guarantees a stable table before
+        // we start encoding.
+#ifdef LOGAPP_BUILD_TESTING
+        if (!mSuppressDialogsForTest)
+#endif
+        {
+            const auto response = QMessageBox::question(
+                this,
+                tr("Export Session Bundle"),
+                tr("Exporting a bundle will stop the live-tail session. Existing rows are captured "
+                   "in the bundle, but new lines from the tailed source are not preserved. Continue?"),
+                QMessageBox::Ok | QMessageBox::Cancel,
+                QMessageBox::Ok
+            );
+            if (response != QMessageBox::Ok)
+            {
+                return;
+            }
+        }
+        StopStream();
     }
     // Bundles always contain every retained row (never the current
     // filter). The active filter travels in the bundle configuration,
@@ -4138,6 +4182,43 @@ void MainWindow::ExportSessionBundle()
 
     BeginAsyncBundleExport(
         logapp::QStringToFsPath(config.destination), config.compressionLevel, config.totalWorkers
+    );
+}
+
+void MainWindow::ExportSessionBundleToPathForTest(const QString &destination)
+{
+    // Replay `ExportSessionBundle`'s pre-flight without the
+    // `SessionBundleDialog`. Under `SetSuppressDialogsForTest(true)`
+    // the live-tail branch skips its own `QMessageBox::question` too
+    // (same `LOGAPP_BUILD_TESTING` guard), so this exercises the
+    // full stop-and-snapshot path in tests.
+    if (destination.isEmpty())
+    {
+        return;
+    }
+    if (mModel->rowCount() == 0)
+    {
+        return;
+    }
+    if (mExportInFlight || mDecompressionInFlight)
+    {
+        return;
+    }
+    if (mModel->IsStreamingActive())
+    {
+        if (!IsLiveTailSession())
+        {
+            return;
+        }
+        StopStream();
+    }
+    MirrorSessionStateToConfiguration();
+    constexpr int DEFAULT_TEST_COMPRESSION_LEVEL = 3;
+    constexpr int DEFAULT_TEST_TOTAL_WORKERS = 0;
+    BeginAsyncBundleExport(
+        logapp::QStringToFsPath(destination),
+        DEFAULT_TEST_COMPRESSION_LEVEL,
+        DEFAULT_TEST_TOTAL_WORKERS
     );
 }
 

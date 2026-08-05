@@ -635,6 +635,27 @@ public:
         }
     }
 
+    /// Test seam replaying the post-dialog body of
+    /// `ExportSessionBundle`. Runs the same streaming pre-flight
+    /// (including the live-tail stop-and-snapshot branch) and then
+    /// dispatches `BeginAsyncBundleExport` against @p destination
+    /// with the zstd defaults. The `SessionBundleDialog` is
+    /// bypassed because it does not participate in
+    /// `SetSuppressDialogsForTest`; callers pump the event loop to
+    /// wait for `OnExportFinished`. No-op if the model is empty,
+    /// an export is already in flight, or a decompression is
+    /// pending -- matching the guards in `ExportSessionBundle`.
+    void ExportSessionBundleToPathForTest(const QString &destination);
+
+    /// Test-only accessor for the in-flight export flag. Companion
+    /// to `IsDecompressionInFlightForTest`; lets tests spin on
+    /// `mExportInFlight` becoming `false` without racing on wall
+    /// clock timeouts.
+    [[nodiscard]] bool IsExportInFlightForTest() const noexcept
+    {
+        return mExportInFlight;
+    }
+
     /// Test seam replaying the anchor-note commit path without a
     /// modal `QInputDialog`. Applies the same row-must-be-anchored
     /// guard, then forwards @p note to `SetAnchorNote` (which

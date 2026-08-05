@@ -141,7 +141,8 @@ SessionBundleDialog::SessionBundleDialog(
 
     mLiveTailNote = new QLabel(this);
     mLiveTailNote->setText(
-        tr("Live-tail snapshot: continued streaming after the export is not preserved.")
+        tr("Live-tail snapshot: the tail session stops when the export starts. Existing rows are "
+           "captured in the bundle, but subsequent streaming from the tailed source is not preserved.")
     );
     mLiveTailNote->setWordWrap(true);
     mLiveTailNote->setVisible(isLiveTail);

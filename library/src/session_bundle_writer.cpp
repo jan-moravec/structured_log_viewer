@@ -33,6 +33,12 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <fcntl.h>
+#include <io.h>
+#else
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 namespace loglib
@@ -112,17 +118,113 @@ std::filesystem::path MakeStagingTempPath(const std::filesystem::path &destinati
     return result;
 }
 
+enum class ExclusiveOpenStatus
+{
+    Ok,
+    AlreadyExists,
+    OtherError,
+};
+
+/// Open @p path exclusively for binary writing. Fails cleanly (rather
+/// than truncating) if the file already exists so the writer can
+/// retry with a fresh suffix instead of clobbering a concurrent
+/// writer's staging file. The seed+counter naming in
+/// `MakeStagingTempPath` makes an actual collision astronomically
+/// unlikely; this is the safety net that turns an unreproducible
+/// bug into a bounded retry.
+///
+/// Localised here rather than in `path_encoding.hpp` so the Win32
+/// headers this needs (`CreateFileW`, `_open_osfhandle`) stay
+/// contained in the one translation unit that requires them.
+std::FILE *OpenExclusiveForBinaryWrite(
+    const std::filesystem::path &path, ExclusiveOpenStatus &outStatus
+) noexcept
+{
+    outStatus = ExclusiveOpenStatus::OtherError;
+#ifdef _WIN32
+    // `HANDLE` is a Windows typedef for `void *`, so any const-
+    // qualified form reads as "pointer const" not "pointee const";
+    // suppress the clang-tidy warning that treats the typedef as
+    // ambiguous. The pointer must not be reassigned once
+    // `CreateFileW` returns.
+    // NOLINTNEXTLINE(misc-misplaced-const)
+    HANDLE const handle = ::CreateFileW(
+        path.native().c_str(),
+        GENERIC_WRITE,
+        0, // no sharing while we are actively writing the staging file
+        nullptr,
+        CREATE_NEW, // fails with ERROR_FILE_EXISTS if the file exists
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
+    if (handle == INVALID_HANDLE_VALUE)
+    {
+        const unsigned long win32Error = ::GetLastError();
+        outStatus = (win32Error == ERROR_FILE_EXISTS || win32Error == ERROR_ALREADY_EXISTS)
+                        ? ExclusiveOpenStatus::AlreadyExists
+                        : ExclusiveOpenStatus::OtherError;
+        return nullptr;
+    }
+    // NOLINTNEXTLINE(performance-no-int-to-ptr) -- CRT idiom; `_open_osfhandle` takes intptr_t by design.
+    const int fd = ::_open_osfhandle(reinterpret_cast<intptr_t>(handle), _O_BINARY);
+    if (fd == -1)
+    {
+        // `_open_osfhandle` failure keeps the HANDLE alive; close it
+        // manually so we do not leak the underlying kernel object.
+        ::CloseHandle(handle);
+        outStatus = ExclusiveOpenStatus::OtherError;
+        return nullptr;
+    }
+    std::FILE *fp = ::_fdopen(fd, "wb");
+    if (fp == nullptr)
+    {
+        // `_close` on a CRT fd also releases the wrapped HANDLE, so
+        // there is nothing else to unwind here.
+        ::_close(fd);
+        outStatus = ExclusiveOpenStatus::OtherError;
+        return nullptr;
+    }
+    outStatus = ExclusiveOpenStatus::Ok;
+    return fp;
+#else
+    const int fd = ::open(
+        path.c_str(),
+        O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+        S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH
+    );
+    if (fd == -1)
+    {
+        outStatus =
+            (errno == EEXIST) ? ExclusiveOpenStatus::AlreadyExists : ExclusiveOpenStatus::OtherError;
+        return nullptr;
+    }
+    std::FILE *fp = ::fdopen(fd, "wb");
+    if (fp == nullptr)
+    {
+        ::close(fd);
+        outStatus = ExclusiveOpenStatus::OtherError;
+        return nullptr;
+    }
+    outStatus = ExclusiveOpenStatus::Ok;
+    return fp;
+#endif
+}
+
 class FileHandle
 {
 public:
-    explicit FileHandle(const std::filesystem::path &path)
-        : mPath(path), mFile(internal::OpenFileForBinaryWrite(path))
+    /// Adopt @p alreadyOpen (from `OpenExclusiveForBinaryWrite`).
+    /// Ownership transfers unconditionally; passing a null pointer
+    /// is a programming error and traps loudly rather than
+    /// silently producing a handle that no-ops every write.
+    explicit FileHandle(std::filesystem::path path, std::FILE *alreadyOpen)
+        : mPath(std::move(path)), mFile(alreadyOpen)
     {
         if (mFile == nullptr)
         {
             throw std::runtime_error(
-                "Session bundle: failed to open '" + internal::PathToUtf8(path) +
-                "' for writing (errno " + std::to_string(errno) + ")"
+                "Session bundle: FileHandle received a null FILE* for '" +
+                internal::PathToUtf8(mPath) + "'"
             );
         }
     }
@@ -148,32 +250,140 @@ public:
         }
     }
 
+    /// Flush userspace + kernel buffers, then close. Every layer
+    /// runs unconditionally: skipping `fclose` after a failed
+    /// `fflush` would leak the FILE*, and skipping the durable-sync
+    /// step after a successful flush would leave a `.tmp` that is
+    /// not power-fail safe once `ReplaceAtomically` renames it into
+    /// place. See the `SyncToDisk` helper below for the platform
+    /// break-down.
     void Close()
     {
         if (mFile == nullptr)
         {
             return;
         }
-        // Split flush + close so the FILE* is always released. Under
-        // `||` short-circuiting a failed `fflush` would skip `fclose`
-        // and leak the handle -- and by then `mFile = nullptr` has
+        // Split flush + sync + close so the FILE* is always released.
+        // Short-circuiting on a failed step would skip `fclose` and
+        // leak the handle -- and by then `mFile = nullptr` has
         // disarmed the destructor's fallback close, so the OS
         // handle would live until process exit.
         const bool flushOk = std::fflush(mFile) == 0;
+        const bool syncOk = flushOk && SyncToDisk(mFile);
         const bool closeOk = std::fclose(mFile) == 0;
         mFile = nullptr;
-        if (!flushOk || !closeOk)
+        if (!flushOk || !syncOk || !closeOk)
         {
             throw std::runtime_error(
-                "Session bundle: failed to flush '" + internal::PathToUtf8(mPath) + "'"
+                "Session bundle: failed to durably flush '" + internal::PathToUtf8(mPath) + "'"
             );
         }
     }
 
 private:
+    /// Push the kernel-side page cache for @p file to durable
+    /// storage. On Windows this is `FlushFileBuffers`; on POSIX
+    /// it is `fsync`. Called between `fflush` and `fclose` so a
+    /// hard crash between `WriteSessionBundle`'s `file.Close()`
+    /// and its subsequent `ReplaceAtomically` cannot leave a
+    /// `.tmp` whose contents are on disk in name only. The
+    /// rename itself is atomic on both platforms, so once we
+    /// sync + rename the destination is fully durable.
+    static bool SyncToDisk(std::FILE *file) noexcept
+    {
+#ifdef _WIN32
+        const int fd = ::_fileno(file);
+        if (fd == -1)
+        {
+            return false;
+        }
+        // NOLINTNEXTLINE(performance-no-int-to-ptr) -- CRT idiom; `_get_osfhandle` returns intptr_t by design.
+        auto *const handle = reinterpret_cast<HANDLE>(::_get_osfhandle(fd));
+        if (handle == INVALID_HANDLE_VALUE)
+        {
+            return false;
+        }
+        return ::FlushFileBuffers(handle) != 0;
+#else
+        const int fd = ::fileno(file);
+        if (fd == -1)
+        {
+            return false;
+        }
+        return ::fsync(fd) == 0;
+#endif
+    }
+
     std::filesystem::path mPath;
     std::FILE *mFile = nullptr;
 };
+
+/// Retry-capable staging-file open. Rotates through fresh names from
+/// `MakeStagingTempPath` on collision and gives up after a bounded
+/// number of attempts. On failure `outTemporary` is left untouched;
+/// on success it holds the path that was actually opened, ready to
+/// hand to `ReplaceAtomically` later.
+std::FILE *OpenStagingFileWithRetry(
+    const std::filesystem::path &destination, std::filesystem::path &outTemporary
+)
+{
+    // The `MakeStagingTempPath` suffix draws from a 64-bit random
+    // seed plus a process-local monotonic counter, so an actual
+    // collision requires either a seed match between two processes
+    // (~2^-64) or a leftover staging file from a previous run whose
+    // catch-block cleanup did not reach. Eight attempts trivially
+    // covers both cases and still fails fast if the destination
+    // directory is fundamentally not writable.
+    constexpr int MAX_ATTEMPTS = 8;
+
+    ExclusiveOpenStatus lastStatus = ExclusiveOpenStatus::OtherError;
+#ifdef _WIN32
+    unsigned long lastWin32Error = 0;
+#else
+    int lastErrno = 0;
+#endif
+    std::filesystem::path attemptedPath;
+    for (int attempt = 0; attempt < MAX_ATTEMPTS; ++attempt)
+    {
+        attemptedPath = MakeStagingTempPath(destination);
+        ExclusiveOpenStatus status = ExclusiveOpenStatus::OtherError;
+        std::FILE *fp = OpenExclusiveForBinaryWrite(attemptedPath, status);
+        if (status == ExclusiveOpenStatus::Ok)
+        {
+            outTemporary = attemptedPath;
+            return fp;
+        }
+        // Snapshot the OS error before another syscall clobbers it.
+#ifdef _WIN32
+        lastWin32Error = ::GetLastError();
+#else
+        lastErrno = errno;
+#endif
+        lastStatus = status;
+        if (status != ExclusiveOpenStatus::AlreadyExists)
+        {
+            // Hard I/O error (permission denied, no such directory,
+            // out of file handles, ...). Retrying under a different
+            // suffix will not help; propagate immediately.
+            break;
+        }
+        // Collision: fall through and generate a fresh suffix.
+    }
+    std::string reason;
+#ifdef _WIN32
+    reason = "Windows error " + std::to_string(lastWin32Error);
+#else
+    reason = "errno " + std::to_string(lastErrno);
+#endif
+    if (lastStatus == ExclusiveOpenStatus::AlreadyExists)
+    {
+        reason += " (staging path collided " + std::to_string(MAX_ATTEMPTS) + " times)";
+    }
+    throw std::runtime_error(
+        "Session bundle: failed to open staging file for '" + internal::PathToUtf8(destination) +
+        "': " + reason
+    );
+}
 
 class ZstdWriter
 {
@@ -493,10 +703,8 @@ void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesy
         // Dropbox) is uploading it. Surfacing the bare Win32 code
         // is opaque -- the user cannot correlate "error 32" with
         // "close the file"; pair the code with the exact remediation.
-        constexpr unsigned long ERROR_SHARING_VIOLATION_CODE = 32U;
-        constexpr unsigned long ERROR_ACCESS_DENIED_CODE = 5U;
         const std::string destUtf8 = internal::PathToUtf8(destination);
-        if (win32Error == ERROR_SHARING_VIOLATION_CODE)
+        if (win32Error == ERROR_SHARING_VIOLATION)
         {
             throw std::runtime_error(
                 "Session bundle: cannot replace '" + destUtf8 +
@@ -504,7 +712,7 @@ void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesy
                 "Close the file in the other program (log viewer, editor, antivirus scan, sync client) and try again."
             );
         }
-        if (win32Error == ERROR_ACCESS_DENIED_CODE)
+        if (win32Error == ERROR_ACCESS_DENIED)
         {
             throw std::runtime_error(
                 "Session bundle: cannot replace '" + destUtf8 +
@@ -587,30 +795,43 @@ void WriteSessionBundle(
 
     // Per-writer staging path (see `MakeStagingTempPath`): the
     // previous fixed `.tmp` suffix could race with a concurrent
-    // export to the same destination.
-    const std::filesystem::path temporary = MakeStagingTempPath(destination);
-    std::error_code ignored;
-    std::filesystem::remove(temporary, ignored);
+    // export to the same destination. `OpenStagingFileWithRetry`
+    // opens the file exclusively (`CREATE_NEW` / `O_EXCL`) and
+    // rotates through fresh names on the astronomically unlikely
+    // collision so a stale sibling from a crashed run cannot be
+    // silently truncated.
+    std::filesystem::path temporary;
+    std::FILE *stagingFile = OpenStagingFileWithRetry(destination, temporary);
 
     try
     {
-        FileHandle file(temporary);
+        FileHandle file(temporary, stagingFile);
+        // `FileHandle` now owns the FILE*; null out the local so the
+        // catch(...) block below does not double-close it.
+        stagingFile = nullptr;
         ZstdWriter writer(file, options);
         writer.Write(metadata);
 
+        // Hoisted row buffer: reused (clear + append) across every
+        // row so the amortised capacity survives the loop. Prior to
+        // the out-parameter overload this loop allocated a fresh
+        // `std::string` per row, which is a measurable fraction of
+        // the write cost at multi-million-row scale.
+        std::string rowBuffer;
         for (std::size_t row = 0; row < lines.size(); ++row)
         {
             if ((row % PROGRESS_INTERVAL_ROWS) == 0)
             {
                 PollStop(options.stopToken);
             }
-            std::string json = internal::SerializeNormalizedJsonRow(lines[row], keys);
-            if (json.size() > MAX_RECORD_BYTES)
+            rowBuffer.clear();
+            internal::SerializeNormalizedJsonRow(lines[row], keys, rowBuffer);
+            if (rowBuffer.size() > MAX_RECORD_BYTES)
             {
                 throw std::length_error("Session bundle row exceeds the 256 MiB limit");
             }
-            json.push_back('\n');
-            writer.Write(json);
+            rowBuffer.push_back('\n');
+            writer.Write(rowBuffer);
             if (options.progress && ((row + 1) % PROGRESS_INTERVAL_ROWS) == 0)
             {
                 options.progress(row + 1, lines.size());
@@ -634,6 +855,16 @@ void WriteSessionBundle(
     }
     catch (...)
     {
+        // Ownership rescue: if the exception fired between
+        // `OpenStagingFileWithRetry` returning and `FileHandle`
+        // taking over, close the raw handle before removing the
+        // staging file. Once `FileHandle` has ownership the local
+        // is nulled out and this branch is a no-op.
+        if (stagingFile != nullptr)
+        {
+            (void)std::fclose(stagingFile);
+            stagingFile = nullptr;
+        }
         std::error_code cleanupError;
         std::filesystem::remove(temporary, cleanupError);
         throw;

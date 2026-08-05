@@ -85,7 +85,8 @@ void JsonLinesExporter::Run(
             continue;
         }
         const auto &line = lines[static_cast<size_t>(sourceRow)];
-        scratch = loglib::internal::SerializeNormalizedJsonRow(line, keys);
+        scratch.clear();
+        loglib::internal::SerializeNormalizedJsonRow(line, keys, scratch);
         scratch.push_back('\n');
         sink.Write(scratch);
 

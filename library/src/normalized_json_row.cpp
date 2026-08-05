@@ -24,10 +24,31 @@ constexpr std::size_t ROW_RESERVE_BYTES = 512;
 
 void AppendJsonEscaped(std::string &out, std::string_view input)
 {
-    // Reserve for the common case (no control bytes). A wide-row export
-    // otherwise triggers repeated small growths on top of the per-row
-    // 512-byte reserve, and this hot loop runs once per string value.
-    out.reserve(out.size() + input.size() + 2);
+    // Peek once to size the reserve before the append loop. A pure
+    // `size + 2` reserve is a lower bound that guarantees no growth
+    // only on the zero-escape common case; strings with control
+    // bytes or embedded quotes/backslashes would otherwise trigger
+    // one or two reallocations per value on top of the per-row
+    // 512-byte reserve. The scan is cheap and the loop runs once
+    // per string value across every exported row.
+    //
+    // `* 6` covers the pessimistic `\u00xx` expansion for control
+    // bytes; the two other escape classes (`\"`, `\\`) only double,
+    // but a single scan cannot distinguish them cheaply so we pay
+    // the wider reserve when *any* escape is present.
+    constexpr std::size_t ESCAPE_WORST_CASE_MULTIPLIER = 6U;
+    bool hasEscape = false;
+    for (const char c : input)
+    {
+        const auto ch = static_cast<unsigned char>(c);
+        if (ch < JSON_CONTROL_CHAR_LIMIT || ch == '"' || ch == '\\')
+        {
+            hasEscape = true;
+            break;
+        }
+    }
+    const std::size_t worstCase = hasEscape ? input.size() * ESCAPE_WORST_CASE_MULTIPLIER : input.size();
+    out.reserve(out.size() + worstCase + 2);
     for (const char c : input)
     {
         const auto ch = static_cast<unsigned char>(c);
@@ -132,10 +153,15 @@ void AppendValue(std::string &out, const LogValue &value)
 
 } // namespace
 
-std::string SerializeNormalizedJsonRow(const LogLine &line, const KeyIndex &keys)
+void SerializeNormalizedJsonRow(const LogLine &line, const KeyIndex &keys, std::string &out)
 {
-    std::string out;
-    out.reserve(ROW_RESERVE_BYTES);
+    // Reserve on the first call against a fresh (or `clear()`ed)
+    // buffer so hot loops that reuse @p out do not pay a growth
+    // penalty on their first-few rows before capacity stabilises.
+    if (out.capacity() < ROW_RESERVE_BYTES)
+    {
+        out.reserve(ROW_RESERVE_BYTES);
+    }
     out.push_back('{');
     bool first = true;
     for (const auto &[keyId, slot] : line.CompactValues())
@@ -160,6 +186,12 @@ std::string SerializeNormalizedJsonRow(const LogLine &line, const KeyIndex &keys
         AppendValue(out, value);
     }
     out.push_back('}');
+}
+
+std::string SerializeNormalizedJsonRow(const LogLine &line, const KeyIndex &keys)
+{
+    std::string out;
+    SerializeNormalizedJsonRow(line, keys, out);
     return out;
 }
 
