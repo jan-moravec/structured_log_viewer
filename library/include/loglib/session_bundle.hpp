@@ -111,7 +111,11 @@ void WriteSessionBundle(
 /// Parse and validate the first decompressed JSONL line.
 [[nodiscard]] SessionBundleMetadata ParseSessionBundleMetadata(std::string_view json);
 
-/// Cheap sniff for the standard zstd frame magic.
+/// Cheap sniff that accepts every zstd input the decoder handles.
+/// Delegates to `DecompressingByteSource::SniffCodec`, so a leading
+/// skippable frame preceding a standard zstd frame is also
+/// recognised. Returns `false` for missing files, unreadable files,
+/// or non-zstd magic without throwing.
 [[nodiscard]] bool LooksLikeSessionBundle(const std::filesystem::path &file) noexcept;
 
 /// Current on-disk format version emitted by `WriteSessionBundle`.

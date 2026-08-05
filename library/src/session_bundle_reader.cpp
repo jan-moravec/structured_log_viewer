@@ -1,14 +1,11 @@
 #include "loglib/session_bundle.hpp"
 
+#include "loglib/internal/decompressing_byte_source.hpp"
 #include "loglib/internal/log_configuration_glaze_meta.hpp"
 #include "loglib/internal/log_configuration_glaze_opts.hpp"
-#include "loglib/internal/path_encoding.hpp"
 
 #include <glaze/glaze.hpp>
 
-#include <array>
-#include <cstdio>
-#include <cstring>
 #include <optional>
 #include <string>
 
@@ -81,16 +78,14 @@ SessionBundleMetadata ParseSessionBundleMetadata(std::string_view json)
 
 bool LooksLikeSessionBundle(const std::filesystem::path &file) noexcept
 {
-    std::FILE *stream = internal::OpenFileForBinaryRead(file);
-    if (stream == nullptr)
-    {
-        return false;
-    }
-    std::array<unsigned char, 4> magic{};
-    const std::size_t count = std::fread(magic.data(), 1, magic.size(), stream);
-    (void)std::fclose(stream);
-    constexpr std::array<unsigned char, 4> ZSTD_MAGIC{0x28, 0xb5, 0x2f, 0xfd};
-    return count == magic.size() && std::memcmp(magic.data(), ZSTD_MAGIC.data(), magic.size()) == 0;
+    // Delegate to `DecompressingByteSource::SniffCodec` so we accept
+    // every byte layout the decoder itself would accept as zstd,
+    // including a leading skippable frame (magic
+    // `0x184D2A5?`) followed by a real zstd frame. A hand-rolled
+    // check against the standard-frame magic would false-negative
+    // such inputs even though the decoder handles them.
+    return internal::DecompressingByteSource::SniffCodec(file) ==
+           internal::DecompressingByteSource::Codec::Zstd;
 }
 
 } // namespace loglib

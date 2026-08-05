@@ -131,14 +131,17 @@ namespace
 {
     // `SESSION_BUNDLE_EXTENSION` is dot-prefixed (".slvbundle") while
     // `QFileInfo::suffix()` returns the extension without its dot;
-    // trim the leading dot once so the comparison stays symmetric.
-    const QLatin1String bundleExtWithDot(loglib::SESSION_BUNDLE_EXTENSION);
-    if (bundleExtWithDot.size() <= 1)
-    {
-        return false;
-    }
-    const QLatin1String bundleExt(bundleExtWithDot.data() + 1, bundleExtWithDot.size() - 1);
-    return QFileInfo(path).suffix().compare(bundleExt, Qt::CaseInsensitive) == 0;
+    // strip the leading dot once so the comparison stays symmetric.
+    // Pinned at build time so the invariant can't silently regress
+    // into a runtime-only no-op guard.
+    static_assert(
+        loglib::SESSION_BUNDLE_EXTENSION[0] == '.' && loglib::SESSION_BUNDLE_EXTENSION[1] != '\0',
+        "SESSION_BUNDLE_EXTENSION must be a dot-prefixed, non-empty extension"
+    );
+    return QFileInfo(path).suffix().compare(
+               QLatin1String(loglib::SESSION_BUNDLE_EXTENSION + 1),
+               Qt::CaseInsensitive
+           ) == 0;
 }
 
 /// Walk @p expression and return true iff any leaf's `columnKeys`
@@ -2750,10 +2753,29 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
 
     if (configPaths.isEmpty())
     {
-        mApplyEmbeddedBundleConfigForNextOpen =
+        // Arm the embedded-config intent AFTER `StartStreamingOpenQueue`
+        // so a bundle-supersedes-bundle open keeps its own intent:
+        // `StartStreamingOpenQueue` synchronously runs
+        // `CancelInFlightDecompression` on its destructive path, which
+        // clears the flag when a prior decode was in flight. Setting
+        // the flag afterwards guarantees this open's intent survives
+        // that cancellation. `OnDecompressionFinished` is delivered
+        // through Qt's queued-signal event loop, so this ordering is
+        // race-free even for a dispatched-and-immediately-completed
+        // worker.
+        //
+        // Only *set* the flag here (never clear it): a non-arming open
+        // (mixed input, or a plain-file append behind a still-decoding
+        // bundle) must not stomp an intent armed by an earlier bundle
+        // whose decompression is still pending in the append queue.
+        const bool armEmbeddedBundleIntent =
             bundleCount == 1 && logPaths.size() == 1 &&
             (logMode == OpenMode::Replace || (mModel->rowCount() == 0 && !mCurrentSource.has_value()));
         StartStreamingOpenQueue(files, logMode);
+        if (armEmbeddedBundleIntent)
+        {
+            mApplyEmbeddedBundleConfigForNextOpen = true;
+        }
         return MixedInputResult{.outcome = MixedInputDispatch::QueuedLogsOnly, .appliedConfigPath = QString()};
     }
 
@@ -3435,10 +3457,15 @@ void MainWindow::CancelInFlightDecompression()
     mDecompressionInFlight = false;
     if (wasInFlight)
     {
-        // A superseded bundle decode must not leave its fresh-open
-        // metadata intent armed for the replacement file. Do not clear
-        // this when no decode existed: a lone bundle Replace sets the
-        // intent before this reset helper runs, then arms its own worker.
+        // Discard the outgoing decode's embedded-config intent so a
+        // session-boundary cancel (LiveTail switch, network open, load
+        // configuration, close, ...) doesn't leak it into whatever the
+        // caller loads next. `DispatchMixedOpenInput` re-arms this flag
+        // AFTER `StartStreamingOpenQueue` returns, so a bundle-supersedes
+        // -bundle open still sees its own intent survive this clear.
+        // Guarded on `wasInFlight` so a lone bundle open (no prior
+        // decompression) doesn't wipe the intent between its arming
+        // point and the fresh worker that will consume it.
         mApplyEmbeddedBundleConfigForNextOpen = false;
     }
 
@@ -4790,13 +4817,11 @@ QString CurrentSourceLabel(const std::optional<loglib::LogConfiguration::Source>
     // Non-const so the trailing `return first` can move; see
     // clang-tidy `performance-no-automatic-move`.
     QString first = QString::fromStdString(source->locators.front());
-    // Bundle-loaded sessions carry the exporter's original file path
-    // in `locators` (possibly from a different machine); the basename
-    // is a friendlier label than a full foreign path, and the
-    // "[bundle]" badge in `UpdateWindowTitle` disambiguates from a
-    // live `Kind::File` source.
-    const bool useBasename = source->kind == loglib::LogConfiguration::Source::Kind::File;
-    if (useBasename)
+    // Bundles surface here as `Kind::File` too (the receiver
+    // overwrites the embedded locator with the current path in
+    // `OnDecompressionFinished`), so the file-basename branch
+    // naturally covers them.
+    if (source->kind == loglib::LogConfiguration::Source::Kind::File)
     {
         QString basename = QFileInfo(first).fileName();
         if (!basename.isEmpty())
@@ -4884,10 +4909,10 @@ void MainWindow::UpdateWindowTitle()
 
     // Proxy-icon hint for OS title bars (macOS shows the file glyph;
     // recent Windows uses it for jumplist grouping). Only meaningful
-    // for `Kind::File`: `NetworkStream` locators are producer URIs and
-    // `Bundle` locators name the exporter's original path (which may
-    // not exist on the recipient's disk). Cleared for both so the OS
-    // doesn't paint a dead file glyph.
+    // for file sources; cleared otherwise (`NetworkStream` locators
+    // are producer URIs, not paths). Bundles surface here as
+    // `Kind::File` with a locator rebased to the local `.slvbundle`
+    // path, so the glyph resolves correctly for them too.
     if (mCurrentSource.has_value() && mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::File &&
         !mCurrentSource->locators.empty())
     {

@@ -154,8 +154,18 @@ void SessionBundleDialog::OnBrowseClicked()
                                    ? QDir(mDefaultDir).filePath(QStringLiteral("session%1")
                                                                     .arg(QString::fromLatin1(loglib::SESSION_BUNDLE_EXTENSION)))
                                    : seed;
+    // `QFileDialog::DontConfirmOverwrite` disables Qt's built-in
+    // Save-As overwrite prompt so `OnAccept` remains the single
+    // source of truth for the confirmation. Without this, the
+    // Browse-then-Export path shows the prompt twice (once from
+    // Qt, once from `OnAccept`).
     const QString chosen = QFileDialog::getSaveFileName(
-        this, tr("Export Session Bundle"), startPath, BundleFileFilter()
+        this,
+        tr("Export Session Bundle"),
+        startPath,
+        BundleFileFilter(),
+        nullptr,
+        QFileDialog::DontConfirmOverwrite
     );
     if (chosen.isEmpty())
     {

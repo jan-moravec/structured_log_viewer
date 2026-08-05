@@ -425,7 +425,18 @@ void WriteSessionBundle(
         PollStop(options.stopToken);
         writer.Finish();
         file.Close();
-        if (options.progress)
+        // Fire the final tick exactly once. The inner loop already
+        // emits at `(row + 1, lines.size())` when
+        // `(row + 1) % PROGRESS_INTERVAL_ROWS == 0`, so a row count
+        // that lands on an interval boundary would otherwise see
+        // two `progress(lines.size(), lines.size())` calls (harmless
+        // but confuses GUI throttling / test expectations). Skip the
+        // tail call when the loop already delivered it; still fire
+        // when there were zero rows so callers see one terminal
+        // tick even for an empty bundle.
+        const bool loopEmittedFinalTick =
+            !lines.empty() && (lines.size() % PROGRESS_INTERVAL_ROWS) == 0;
+        if (options.progress && !loopEmittedFinalTick)
         {
             options.progress(lines.size(), lines.size());
         }
