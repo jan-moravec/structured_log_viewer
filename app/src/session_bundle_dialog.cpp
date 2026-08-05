@@ -2,6 +2,7 @@
 
 #include <loglib/session_bundle.hpp>
 
+#include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFileDialog>
@@ -14,15 +15,40 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QSpinBox>
+#include <QThread>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 namespace
 {
+
+constexpr int MIN_ZSTD_LEVEL = 1;
+constexpr int MAX_ZSTD_LEVEL = 22;
+constexpr int DEFAULT_ZSTD_LEVEL = 3;
+constexpr int MAX_WORKER_THREADS = 64;
+constexpr int WORKER_THREAD_CAP = 8;
+constexpr int DIALOG_PREFERRED_WIDTH = 560;
 
 /// QSettings keys for the bundle-encoder knobs.
 constexpr auto SETTINGS_LEVEL = "session_bundle/compression_level";
 constexpr auto SETTINGS_WORKERS = "session_bundle/workers";
 constexpr auto SETTINGS_LAST_DIR = "session_bundle/last_dir";
+
+/// Sensible worker-thread default: match the machine's cores up to
+/// `WORKER_THREAD_CAP`. Past the cap zstd sees diminishing returns for
+/// typical bundle sizes and starts contending with the rest of the
+/// app. Falls back to zstd's single-threaded path on single-core /
+/// unknown-topology systems.
+int DefaultWorkerThreads() noexcept
+{
+    const int ideal = QThread::idealThreadCount();
+    if (ideal <= 1)
+    {
+        return 0;
+    }
+    return std::min(ideal, WORKER_THREAD_CAP);
+}
 
 QString BundleFileFilter()
 {
@@ -68,8 +94,7 @@ int ClampedSettingsInt(const QSettings &settings, const char *key, int defaultVa
 
 SessionBundleDialog::SessionBundleDialog(
     std::size_t rowCount,
-    std::size_t sourceCount,
-    QString defaultStem,
+    const QString &defaultStem,
     QString defaultDir,
     bool isLiveTail,
     QWidget *parent
@@ -98,46 +123,61 @@ SessionBundleDialog::SessionBundleDialog(
     const QString seedName = QStringLiteral("%1%2").arg(defaultStem, QString::fromLatin1(loglib::SESSION_BUNDLE_EXTENSION));
     mDestinationEdit->setText(QDir(effectiveDir).filePath(seedName));
 
-    mCompressionLevelSpin = new QSpinBox(this);
-    mCompressionLevelSpin->setRange(1, 22);
-    mCompressionLevelSpin->setValue(ClampedSettingsInt(settings, SETTINGS_LEVEL, 3, 1, 22));
-    mCompressionLevelSpin->setToolTip(
-        tr("zstd compression level. 1 = fastest / worst compression, 22 = slowest / best. "
-           "3 matches zstd's balanced default and is a good choice for interactive sharing.")
-    );
-    form->addRow(tr("Compression level:"), mCompressionLevelSpin);
-
-    mWorkersSpin = new QSpinBox(this);
-    mWorkersSpin->setRange(0, 64);
-    mWorkersSpin->setSpecialValueText(tr("Single-threaded"));
-    mWorkersSpin->setValue(ClampedSettingsInt(settings, SETTINGS_WORKERS, 0, 0, 64));
-    mWorkersSpin->setToolTip(
-        tr("zstd worker threads for the single bundle frame. "
-           "0 uses zstd's single-threaded path; positive values enable zstd multi-threading.")
-    );
-    form->addRow(tr("Worker threads:"), mWorkersSpin);
-
     mPreviewLabel = new QLabel(this);
     mPreviewLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     mPreviewLabel->setText(
-        tr("The bundle will contain %L1 row(s) from %L2 source(s), plus the current filter, sort, "
-           "anchor, and highlight-rule state. All retained rows are exported -- filters do not "
-           "restrict the payload; they are stored so the receiving copy of the app reproduces the "
-           "same view.")
+        tr("Exports %L1 rows with the current filter, sort, anchors, and highlight rules.")
             .arg(static_cast<qulonglong>(rowCount))
-            .arg(static_cast<qulonglong>(sourceCount))
     );
     mPreviewLabel->setWordWrap(true);
     form->addRow(mPreviewLabel);
 
     mLiveTailNote = new QLabel(this);
     mLiveTailNote->setText(
-        tr("Live-tail note: the bundle captures a point-in-time snapshot of the currently "
-           "retained rows. Continued streaming after the export is not preserved.")
+        tr("Live-tail snapshot: continued streaming after the export is not preserved.")
     );
     mLiveTailNote->setWordWrap(true);
     mLiveTailNote->setVisible(isLiveTail);
     form->addRow(mLiveTailNote);
+
+    // Advanced-options disclosure. The container stays collapsed on
+    // every launch so casual users never see the encoder knobs; the
+    // persisted values still apply if they were tweaked before.
+    mAdvancedToggle = new QCheckBox(tr("Advanced options"), this);
+    mAdvancedContainer = new QWidget(this);
+    mAdvancedContainer->setVisible(false);
+    auto *advancedForm = new QFormLayout(mAdvancedContainer);
+    advancedForm->setContentsMargins(0, 0, 0, 0);
+
+    mCompressionLevelSpin = new QSpinBox(mAdvancedContainer);
+    mCompressionLevelSpin->setRange(MIN_ZSTD_LEVEL, MAX_ZSTD_LEVEL);
+    mCompressionLevelSpin->setValue(
+        ClampedSettingsInt(settings, SETTINGS_LEVEL, DEFAULT_ZSTD_LEVEL, MIN_ZSTD_LEVEL, MAX_ZSTD_LEVEL)
+    );
+    mCompressionLevelSpin->setToolTip(
+        tr("zstd compression level. 1 = fastest / worst compression, 22 = slowest / best. "
+           "3 matches zstd's balanced default and is a good choice for interactive sharing.")
+    );
+    advancedForm->addRow(tr("Compression level:"), mCompressionLevelSpin);
+
+    mWorkersSpin = new QSpinBox(mAdvancedContainer);
+    mWorkersSpin->setRange(0, MAX_WORKER_THREADS);
+    mWorkersSpin->setSpecialValueText(tr("Single-threaded"));
+    mWorkersSpin->setValue(
+        ClampedSettingsInt(settings, SETTINGS_WORKERS, DefaultWorkerThreads(), 0, MAX_WORKER_THREADS)
+    );
+    mWorkersSpin->setToolTip(
+        tr("zstd worker threads for the single bundle frame. "
+           "0 uses zstd's single-threaded path; positive values enable zstd multi-threading.")
+    );
+    advancedForm->addRow(tr("Worker threads:"), mWorkersSpin);
+
+    connect(mAdvancedToggle, &QCheckBox::toggled, mAdvancedContainer, &QWidget::setVisible);
+    // Resize the dialog to hug its (now smaller / larger) contents
+    // whenever the advanced section toggles.
+    connect(mAdvancedToggle, &QCheckBox::toggled, this, [this](bool) {
+        adjustSize();
+    });
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     buttons->button(QDialogButtonBox::Ok)->setText(tr("Export"));
@@ -146,9 +186,11 @@ SessionBundleDialog::SessionBundleDialog(
 
     auto *layout = new QVBoxLayout(this);
     layout->addLayout(form);
+    layout->addWidget(mAdvancedToggle);
+    layout->addWidget(mAdvancedContainer);
     layout->addWidget(buttons);
 
-    resize(560, sizeHint().height());
+    resize(DIALOG_PREFERRED_WIDTH, sizeHint().height());
 }
 
 SessionBundleDialog::Config SessionBundleDialog::Configuration() const

@@ -5,17 +5,20 @@
 
 #include <cstddef>
 
+class QCheckBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
 class QSpinBox;
+class QWidget;
 
 /// Modal dialog for **File -> Export Session Bundle...**.
 ///
-/// Collects a destination path and encoder knobs (compression level,
-/// worker budget) for the `.slvbundle` archive. Does not run the
-/// export itself: the caller reads `Configuration()` after `accept()`
-/// and dispatches the async worker (see
+/// Collects a destination path for the `.slvbundle` archive; the
+/// encoder knobs (compression level, worker count) live under an
+/// "Advanced options" section that stays collapsed by default. Does
+/// not run the export itself: the caller reads `Configuration()`
+/// after `accept()` and dispatches the async worker (see
 /// `MainWindow::ExportSessionBundle`).
 ///
 /// Bundle scope is always "everything retained" (all rows plus every
@@ -37,14 +40,12 @@ public:
 
     /// @p rowCount    retained rows across all sources; drives the
     ///                preview label.
-    /// @p sourceCount original `LineSource`s flattened into the bundle.
     /// @p defaultStem filename stem used to seed the destination.
     /// @p defaultDir  starting directory for the browse dialog.
     /// @p isLiveTail  show the live-tail snapshot caveat when true.
     SessionBundleDialog(
         std::size_t rowCount,
-        std::size_t sourceCount,
-        QString defaultStem,
+        const QString &defaultStem,
         QString defaultDir,
         bool isLiveTail,
         QWidget *parent = nullptr
@@ -62,6 +63,8 @@ private:
 
     QLineEdit *mDestinationEdit = nullptr;
     QPushButton *mBrowseButton = nullptr;
+    QCheckBox *mAdvancedToggle = nullptr;
+    QWidget *mAdvancedContainer = nullptr;
     QSpinBox *mCompressionLevelSpin = nullptr;
     QSpinBox *mWorkersSpin = nullptr;
     QLabel *mPreviewLabel = nullptr;

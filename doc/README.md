@@ -341,7 +341,7 @@ A v1 bundle is a standard checksummed zstd stream. Its decompressed content is J
 
 All original sources are deliberately flattened into that single JSONL source. Original file paths, source boundaries, raw formatting, parser settings, and original line IDs are discarded. Anchors are remapped to dense flattened row IDs and rebased to the bundle path; moving the bundle before opening it rebases the embedded source and anchors again to the new location. To inspect a bundle outside the app, run `zstd -d bundle.slvbundle -o bundle.jsonl` (or `unzstd`) and use any text or `jq` JSONL workflow.
 
-- The export dialog exposes the destination path, a **Compression level** control (1 = fastest / worst, 22 = slowest / best, 3 = default), and a **Worker threads** control. `0` selects zstd's single-threaded path; positive values set `ZSTD_c_nbWorkers`.
+- The export dialog only asks for a destination path. Encoder knobs (compression level and worker threads) live under an **Advanced options** disclosure that stays collapsed by default; sensible defaults (zstd level 3, worker count matched to the machine's cores up to 8) are used unless you open the section and change them.
 - Live-tail and network sessions export only the rows still retained at capture time. Reopening does not restart the original producer.
 - The writer streams into `<destination>.tmp`, enables the zstd frame checksum, and atomically replaces the destination only after a successful final flush. Cancellation or failure removes the temporary output.
 

@@ -4004,7 +4004,6 @@ void MainWindow::ExportSessionBundle()
     // so the receiving side reproduces the same view without
     // pre-slicing the payload.
     const std::size_t rowCount = mModel->Table().Data().Lines().size();
-    const std::size_t sourceCount = mModel->Table().Data().Sources().size();
 
     QString defaultStem;
     if (mCurrentSource.has_value() && !mCurrentSource->locators.empty())
@@ -4032,7 +4031,7 @@ void MainWindow::ExportSessionBundle()
     }
 
     SessionBundleDialog dialog(
-        rowCount, sourceCount, defaultStem, DefaultExportDir(), IsLiveTailSession(), this
+        rowCount, defaultStem, DefaultExportDir(), IsLiveTailSession(), this
     );
     if (dialog.exec() != QDialog::Accepted)
     {
