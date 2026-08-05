@@ -2,7 +2,6 @@
 
 #include <loglib/session_bundle.hpp>
 
-#include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFileDialog>
@@ -14,8 +13,10 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSettings>
+#include <QSizePolicy>
 #include <QSpinBox>
 #include <QThread>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -140,10 +141,23 @@ SessionBundleDialog::SessionBundleDialog(
     mLiveTailNote->setVisible(isLiveTail);
     form->addRow(mLiveTailNote);
 
-    // Advanced-options disclosure. The container stays collapsed on
-    // every launch so casual users never see the encoder knobs; the
-    // persisted values still apply if they were tweaked before.
-    mAdvancedToggle = new QCheckBox(tr("Advanced options"), this);
+    // Advanced-options disclosure. Rendered as a native `QToolButton`
+    // with a rotating arrow (right = collapsed, down = expanded) so
+    // it reads as a proper collapsible header rather than a checkbox.
+    // The container stays collapsed on every launch so casual users
+    // never see the encoder knobs; persisted values still apply if
+    // they were tweaked before.
+    mAdvancedToggle = new QToolButton(this);
+    mAdvancedToggle->setText(tr("Advanced options"));
+    mAdvancedToggle->setCheckable(true);
+    mAdvancedToggle->setChecked(false);
+    mAdvancedToggle->setAutoRaise(true);
+    mAdvancedToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    mAdvancedToggle->setArrowType(Qt::RightArrow);
+    mAdvancedToggle->setCursor(Qt::PointingHandCursor);
+    mAdvancedToggle->setFocusPolicy(Qt::StrongFocus);
+    mAdvancedToggle->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+
     mAdvancedContainer = new QWidget(this);
     mAdvancedContainer->setVisible(false);
     auto *advancedForm = new QFormLayout(mAdvancedContainer);
@@ -172,11 +186,13 @@ SessionBundleDialog::SessionBundleDialog(
     );
     advancedForm->addRow(tr("Worker threads:"), mWorkersSpin);
 
-    connect(mAdvancedToggle, &QCheckBox::toggled, mAdvancedContainer, &QWidget::setVisible);
-    // Resize the dialog to hug its (now smaller / larger) contents
-    // whenever the advanced section toggles.
-    connect(mAdvancedToggle, &QCheckBox::toggled, this, [this](bool) {
-        adjustSize();
+    connect(mAdvancedToggle, &QToolButton::toggled, this, [this](bool checked) {
+        mAdvancedToggle->setArrowType(checked ? Qt::DownArrow : Qt::RightArrow);
+        mAdvancedContainer->setVisible(checked);
+        // Reflow height only. Using `adjustSize()` here would also
+        // snap width back to `sizeHint().width()`, discarding any
+        // manual resize the user did.
+        resize(width(), sizeHint().height());
     });
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
