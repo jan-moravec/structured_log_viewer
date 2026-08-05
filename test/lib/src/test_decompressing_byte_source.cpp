@@ -257,7 +257,7 @@ TEST_CASE("DecompressingByteSource: discardFirstLine rejects non-zstd inputs", "
     {
         const TempBinaryFile fixture(".log");
         fixture.WriteBytes({});
-        CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), {}, {}, options), std::runtime_error);
+        CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), {}, {}, options), std::invalid_argument);
     }
     SECTION("gzip input")
     {

@@ -989,10 +989,12 @@ DecompressingByteSource::DecompressingByteSource(
         // to consume here; a caller that requested one is almost
         // certainly staring at a truncated bundle and should hear
         // about it instead of silently receiving an empty
-        // `DiscardedFirstLine()`.
+        // `DiscardedFirstLine()`. Uses `invalid_argument` to match
+        // the plain / non-zstd branches below -- all three are
+        // caller misuse, not runtime I/O failures.
         if (options.discardFirstLine)
         {
-            throw std::runtime_error(
+            throw std::invalid_argument(
                 fmt::format("Cannot discard first line from empty file '{}'", mDisplayPath.string())
             );
         }

@@ -53,6 +53,13 @@ void HintSequential(const mio::mmap_source &mmap)
 } // namespace
 
 LogFile::LogFile(std::filesystem::path filePath)
+    // Passes `filePath` twice by value: each parameter is
+    // independently copy-constructed. Trying to save a copy with
+    // `std::move` on one argument is unsafe here -- function
+    // argument evaluation order is unspecified, so the move could
+    // observably run before the copy and leave the copy source
+    // empty (which is exactly the bug that caused the tests to
+    // report `File '' does not exist`).
     : LogFile(filePath, filePath)
 {
 }

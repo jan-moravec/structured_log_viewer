@@ -68,7 +68,9 @@ SessionBundleMetadata ParseSessionBundleMetadata(std::string_view json)
     }
     if (envelope.bundle->rowCount > SESSION_BUNDLE_MAX_ROWS)
     {
-        throw SessionBundleReadError("Session bundle row count exceeds the one-billion-row limit");
+        throw SessionBundleReadError(
+            "Session bundle row count exceeds the " + std::to_string(SESSION_BUNDLE_MAX_ROWS) + "-row limit"
+        );
     }
     return SessionBundleMetadata{
         .formatVersion = envelope.bundle->formatVersion,

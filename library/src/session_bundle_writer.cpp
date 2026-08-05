@@ -245,6 +245,12 @@ AnchorRowIndex BuildAnchorRowIndex(
     const SessionBundleWriteOptions &options
 )
 {
+    // Canonicalization is per-source (typically ~1 source, at most a
+    // handful) but `lines.size()` is millions. Cache by `Source*` so
+    // the QString round-trip in `canonicalizeSourceLocator` runs once
+    // per source rather than once per row.
+    std::unordered_map<const LineSource *, std::string> canonicalCache;
+
     AnchorRowIndex index;
     index.reserve(lines.size());
     for (std::size_t row = 0; row < lines.size(); ++row)
@@ -255,7 +261,13 @@ AnchorRowIndex BuildAnchorRowIndex(
         key.lineId = static_cast<std::uint64_t>(line.LineId());
         if (source != nullptr)
         {
-            key.locator = CanonicalizeSourceLocator(source->Path(), options);
+            auto cacheIt = canonicalCache.find(source);
+            if (cacheIt == canonicalCache.end())
+            {
+                cacheIt =
+                    canonicalCache.emplace(source, CanonicalizeSourceLocator(source->Path(), options)).first;
+            }
+            key.locator = cacheIt->second;
         }
         auto [it, inserted] = index.try_emplace(std::move(key), static_cast<std::uint64_t>(row));
         if (!inserted)
@@ -315,11 +327,10 @@ std::string SerializeCompactConfiguration(const LogConfiguration &configuration)
 void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesystem::path &destination)
 {
 #ifdef _WIN32
-    if (::MoveFileExW(
-            temporary.c_str(),
-            destination.c_str(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
-        ) == 0)
+    // `MOVEFILE_WRITE_THROUGH` only affects cross-volume copies, so
+    // dropping it saves a flag but does not change behaviour here
+    // (temp file sits next to the destination on the same volume).
+    if (::MoveFileExW(temporary.c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING) == 0)
     {
         throw std::runtime_error(
             "Session bundle: atomic replacement failed with Windows error " +
@@ -355,7 +366,9 @@ void WriteSessionBundle(
     const auto &keys = table.Data().Keys();
     if (lines.size() > SESSION_BUNDLE_MAX_ROWS)
     {
-        throw std::length_error("Session bundle row count exceeds the one-billion-row limit");
+        throw std::length_error(
+            "Session bundle row count exceeds the " + std::to_string(SESSION_BUNDLE_MAX_ROWS) + "-row limit"
+        );
     }
 
     LogConfiguration embedded = configuration;

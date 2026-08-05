@@ -121,6 +121,26 @@
 namespace
 {
 
+/// True when @p path's extension case-insensitively matches
+/// `loglib::SESSION_BUNDLE_EXTENSION`. Centralised because the
+/// three original call sites drifted between `QFileInfo::suffix()`
+/// (no dot) and `path::extension()` (with dot), which is exactly
+/// the kind of split that silently breaks if the constant ever
+/// changes.
+[[nodiscard]] bool IsSessionBundlePath(const QString &path)
+{
+    // `SESSION_BUNDLE_EXTENSION` is dot-prefixed (".slvbundle") while
+    // `QFileInfo::suffix()` returns the extension without its dot;
+    // trim the leading dot once so the comparison stays symmetric.
+    const QLatin1String bundleExtWithDot(loglib::SESSION_BUNDLE_EXTENSION);
+    if (bundleExtWithDot.size() <= 1)
+    {
+        return false;
+    }
+    const QLatin1String bundleExt(bundleExtWithDot.data() + 1, bundleExtWithDot.size() - 1);
+    return QFileInfo(path).suffix().compare(bundleExt, Qt::CaseInsensitive) == 0;
+}
+
 /// Walk @p expression and return true iff any leaf's `columnKeys`
 /// currently fails to resolve against @p columns. Used as a gate
 /// on `columnsInserted`: a new column can never *change* a leaf's
@@ -2690,22 +2710,7 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
         {
             continue;
         }
-        const std::filesystem::path fsPath = logapp::QStringToFsPath(file);
-        // Compare the extension via `u8string` so encoding is not a
-        // factor: `path::extension().string()` returns the Active
-        // Code Page on Windows, which round-trips wrong for a
-        // hypothetical non-ASCII extension. `SESSION_BUNDLE_EXTENSION`
-        // is ASCII today so the current build is safe either way;
-        // the form below stays honest against future format tweaks
-        // and matches the encoding discipline the rest of this file
-        // uses.
-        const std::u8string extU8 = fsPath.extension().u8string();
-        const QString normalisedExt =
-            QString::fromUtf8(reinterpret_cast<const char *>(extU8.data()), static_cast<int>(extU8.size()));
-        const bool extMatches = normalisedExt.compare(
-            QLatin1String(loglib::SESSION_BUNDLE_EXTENSION), Qt::CaseInsensitive
-        ) == 0;
-        if (extMatches && loglib::LooksLikeSessionBundle(fsPath))
+        if (IsSessionBundlePath(file) && loglib::LooksLikeSessionBundle(logapp::QStringToFsPath(file)))
         {
             ++bundleCount;
             logPaths.append(file);
@@ -3277,8 +3282,7 @@ void MainWindow::BeginAsyncDecompression(
     // WebKit-specific and misclassifies `QAtomicInteger *` captures
     // -- they are `this` members guarded by `mDecompressionInFlight`.
     // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
-    const bool isSessionBundle =
-        QFileInfo(originalPath).suffix().compare(QStringLiteral("slvbundle"), Qt::CaseInsensitive) == 0;
+    const bool isSessionBundle = IsSessionBundlePath(originalPath);
     auto future = QtConcurrent::run([originalPath, sharedBytesIn, sharedTotal, stopToken, isSessionBundle]() {
         const std::filesystem::path input(originalPath.toStdString());
         // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
@@ -3498,12 +3502,6 @@ void MainWindow::OnDecompressionFinished()
     try
     {
         dbs = mDecompressionWatcher->result();
-        if (dbs && QFileInfo(mDecompressionOriginalPath)
-                       .suffix()
-                       .compare(QStringLiteral("slvbundle"), Qt::CaseInsensitive) == 0)
-        {
-            bundleMetadata.emplace(loglib::ParseSessionBundleMetadata(dbs->DiscardedFirstLine()));
-        }
     }
     catch (const loglib::internal::DecompressionCancelled &)
     {
@@ -3517,6 +3515,29 @@ void MainWindow::OnDecompressionFinished()
     catch (...)
     {
         errorEntry = tr("Failed to decompress '%1': unknown error").arg(mDecompressionOriginalPath);
+    }
+    // Bundle metadata parsing runs AFTER the decompression try/catch so
+    // a malformed / non-bundle payload surfaces as a bundle error, not a
+    // "Failed to decompress" toast that would mislead users who renamed
+    // a foreign `.zst` file to `.slvbundle`. The first line has already
+    // been consumed by the DBS options plumbing, so a failure is
+    // terminal for this file either way.
+    if (errorEntry.isEmpty() && !cancelled && dbs && IsSessionBundlePath(mDecompressionOriginalPath))
+    {
+        try
+        {
+            bundleMetadata.emplace(loglib::ParseSessionBundleMetadata(dbs->DiscardedFirstLine()));
+        }
+        catch (const loglib::SessionBundleVersionError &e)
+        {
+            errorEntry = tr("Cannot open session bundle '%1': %2")
+                             .arg(mDecompressionOriginalPath, QString::fromLocal8Bit(e.what()));
+        }
+        catch (const loglib::SessionBundleReadError &e)
+        {
+            errorEntry = tr("'%1' is not a valid session bundle: %2")
+                             .arg(mDecompressionOriginalPath, QString::fromLocal8Bit(e.what()));
+        }
     }
 
     // Detach the future so a follow-up decompression re-arms
@@ -3961,8 +3982,22 @@ void MainWindow::ExportSessionBundle()
     QString defaultStem;
     if (mCurrentSource.has_value() && !mCurrentSource->locators.empty())
     {
-        const QFileInfo info(QString::fromStdString(mCurrentSource->locators.front()));
+        const QString primary = QString::fromStdString(mCurrentSource->locators.front());
+        const QFileInfo info(primary);
         defaultStem = info.completeBaseName();
+        // Re-exporting a bundle carries the `.slvbundle` extension into
+        // the stem via `completeBaseName` when the original file had
+        // an extra dot (e.g. `foo.bar.slvbundle` -> stem `foo.bar`).
+        // The re-export path would then append `.slvbundle` again,
+        // yielding `foo.bar.slvbundle` -- correct, but for the simple
+        // `foo.slvbundle` case `completeBaseName` returns `foo`, which
+        // is already what we want. The extra guard below covers the
+        // pathological case of a re-exported bundle keeping the marker.
+        if (IsSessionBundlePath(primary) && defaultStem.endsWith(
+                QLatin1String(loglib::SESSION_BUNDLE_EXTENSION), Qt::CaseInsensitive))
+        {
+            defaultStem.chop(QLatin1String(loglib::SESSION_BUNDLE_EXTENSION).size());
+        }
     }
     if (defaultStem.isEmpty())
     {
@@ -4051,43 +4086,26 @@ void MainWindow::BeginAsyncBundleExport(
 
     const auto stopToken = mExportStopSource.get_token();
     auto *rowsWrittenAtomic = &mExportRowsWritten;
-    auto *rowsTotalAtomic = &mExportRowsTotal;
 
     // Worker: package the write options, invoke the library encoder,
     // and let exceptions propagate to `QFutureWatcher::waitForFinished`.
-    // The progress callback drives *both* the numerator (`rowsWritten`)
-    // and the denominator (`mExportRowsTotal`); the initial denominator
-    // set by the caller was a pre-plan upper bound (`Data().Lines()`
-    // size), and the writer refines it once eviction / empty-raw skips
-    // have been counted.
+    // The writer walks every retained row without skipping, so the
+    // denominator we seeded on the GUI thread (`Data().Lines().size()`)
+    // is exact -- only the numerator needs live updates.
     // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
     auto future = QtConcurrent::run([tablePtr,
                                      configSnapshot,
                                      destination = std::move(destination),
                                      stopToken,
                                      rowsWrittenAtomic,
-                                     rowsTotalAtomic,
                                      compressionLevel,
                                      totalWorkers]() {
         loglib::SessionBundleWriteOptions options;
         options.compressionLevel = compressionLevel;
         options.totalWorkers = totalWorkers;
         options.stopToken = stopToken;
-        options.progress = [rowsWrittenAtomic, rowsTotalAtomic](
-                               std::uint64_t rowsWritten, std::uint64_t rowsTotal) {
+        options.progress = [rowsWrittenAtomic](std::uint64_t rowsWritten, std::uint64_t /*rowsTotal*/) {
             rowsWrittenAtomic->storeRelaxed(static_cast<qint64>(rowsWritten));
-            // Rebase the denominator only when the writer supplies a
-            // non-zero, tighter value. Zero means "no update yet"; a
-            // larger value would be a step backwards versus the
-            // pre-plan estimate seeded by the caller.
-            if (rowsTotal > 0)
-            {
-                const auto current = static_cast<std::uint64_t>(rowsTotalAtomic->loadRelaxed());
-                if (current == 0 || rowsTotal <= current)
-                {
-                    rowsTotalAtomic->storeRelaxed(static_cast<qint64>(rowsTotal));
-                }
-            }
         };
         // Canonicalize source paths the same way `AnchorManager::Key`
         // does (via `LogModel::mCanonicalLocatorCache`). Without this

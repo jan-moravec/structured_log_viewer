@@ -176,17 +176,6 @@ void ParseCsvLine(
         const KeyId keyId = columnKeys[columnIndex];
         ++columnIndex;
 
-        // Bundle reload may hand us a schema with sentinel entries
-        // (empty header name in `cellSchema`, or a column without
-        // any `keys` in `LogConfiguration.columns`). Silently drop
-        // the cell rather than binding a real value to
-        // `INVALID_KEY_ID`, which would otherwise clog `KeyIndex`
-        // lookups with a phantom slot.
-        if (keyId == INVALID_KEY_ID)
-        {
-            return;
-        }
-
         if (cell.value.empty() && !cell.wasQuoted)
         {
             return;
@@ -380,17 +369,6 @@ class CsvLineDecoder
 {
 public:
     CsvLineDecoder() = default;
-
-    /// Bundle-reload constructor: skip the header-latch step and use
-    /// @p preloadedColumnKeys as the column mapping. The writer strips
-    /// the CSV header on export (it was consumed at parse time and
-    /// never became a `LogLine`) so the reload path must supply the
-    /// mapping externally, reconstructed from
-    /// `LogConfiguration::columns` in reader-visible order.
-    explicit CsvLineDecoder(std::vector<KeyId> preloadedColumnKeys)
-        : mHeaderConsumed(true), mColumnKeys(std::move(preloadedColumnKeys))
-    {
-    }
 
     internal::LineDecodeResult DecodeCompact(
         std::string_view line,

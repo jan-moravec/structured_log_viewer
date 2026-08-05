@@ -24,6 +24,10 @@ constexpr std::size_t ROW_RESERVE_BYTES = 512;
 
 void AppendJsonEscaped(std::string &out, std::string_view input)
 {
+    // Reserve for the common case (no control bytes). A wide-row export
+    // otherwise triggers repeated small growths on top of the per-row
+    // 512-byte reserve, and this hot loop runs once per string value.
+    out.reserve(out.size() + input.size() + 2);
     for (const char c : input)
     {
         const auto ch = static_cast<unsigned char>(c);
