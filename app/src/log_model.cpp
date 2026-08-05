@@ -3,6 +3,7 @@
 #include "anchor_manager.hpp"
 #include "highlight_rule_set.hpp"
 #include "icon_loader.hpp"
+#include "qstring_path.hpp"
 #include "qt_streaming_log_sink.hpp"
 #include "streaming_control.hpp"
 #include "theme_control.hpp"
@@ -1511,7 +1512,14 @@ void LogModel::PrewarmCanonicalLocatorCache()
         {
             continue;
         }
-        std::string canonical = logapp::CanonicalLocator(QString::fromStdString(source->Path().string())).toStdString();
+        // `logapp::FsPathToQString` routes through `path::wstring()`
+        // on Windows so non-ASCII locators aren't ACP-mangled before
+        // `CanonicalLocator` normalises them. A mangled canonical
+        // locator would silently break anchor lookup for any source
+        // whose path contains non-ASCII bytes: an anchor stored under
+        // the correct locator would fail to match the mojibake key
+        // this cache produced.
+        std::string canonical = logapp::CanonicalLocator(logapp::FsPathToQString(source->Path())).toStdString();
         mCanonicalLocatorCache.emplace(source, std::move(canonical));
     }
 }

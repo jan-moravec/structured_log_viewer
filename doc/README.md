@@ -330,6 +330,25 @@ The dialog:
 
 Exports run on a worker thread with a deferred-appearance `QProgressDialog` — quick exports never flash a dialog, longer ones show progress and a **Cancel** button. Cancelling is safe: the writer streams into `<destination>.tmp` and atomically renames on success, so a cancelled export leaves neither the destination nor the temp file behind. The same guarantee applies to write failures mid-export.
 
+### Exporting a Session Bundle
+
+**File → Export Session Bundle…** (`Ctrl+Shift+E`) packages every retained source-model row plus the current `LogConfiguration` (columns, filters, sort, anchors + notes, and highlight rules) into one `.slvbundle` file. The scope is always "everything retained": the current filter, sort, and selection do not change which rows are written because that view state is embedded for the recipient.
+
+A v1 bundle is a standard checksummed zstd stream. Its decompressed content is JSON Lines:
+
+1. A compact metadata object: `{"__slv_bundle__":{"formatVersion":1,"rowCount":…,"configuration":{…}}}`.
+2. One normalized typed JSON object per retained row. Booleans and numbers remain native JSON values and timestamps use the same normalized UTC representation as JSON Lines export.
+
+All original sources are deliberately flattened into that single JSONL source. Original file paths, source boundaries, raw formatting, parser settings, and original line IDs are discarded. Anchors are remapped to dense flattened row IDs and rebased to the bundle path; moving the bundle before opening it rebases the embedded source and anchors again to the new location. To inspect a bundle outside the app, run `zstd -d bundle.slvbundle -o bundle.jsonl` (or `unzstd`) and use any text or `jq` JSONL workflow.
+
+- The export dialog exposes the destination path, a **Compression level** control (1 = fastest / worst, 22 = slowest / best, 3 = default), and a **Worker threads** control. `0` selects zstd's single-threaded path; positive values set `ZSTD_c_nbWorkers`.
+- Live-tail and network sessions export only the rows still retained at capture time. Reopening does not restart the original producer.
+- The writer streams into `<destination>.tmp`, enables the zstd frame checksum, and atomically replaces the destination only after a successful final flush. Cancellation or failure removes the temporary output.
+
+**File → Open…** (including drag-and-drop) sends `.slvbundle` through the shared compressed-file path. `DecompressingByteSource` writes a TEMP JSONL file while retaining and removing the metadata line; the normal `LogFile` / `FileLineSource` / `JsonParser` flow parses the remaining rows. The TEMP owner's lifetime is attached to the mapped `LogFile`, including Windows-safe unmap-before-delete ordering.
+
+After opening, a bundle is a normal static compressed file (`Source::Kind::File`) whose locator is the physical `.slvbundle` path. Append/replace, Recent Sessions, autosave, and restore behave exactly as for other static files. Embedded configuration is only the default for a fresh lone bundle open; an explicit configuration, an existing append session, or a restored autosave remains authoritative, and later user changes take precedence.
+
 ### Inspecting a Record
 
 For per-row drill-down, Structured Log Viewer ships a **Record Details** pane that shows every parsed field plus the raw source record. Open it any of three ways:

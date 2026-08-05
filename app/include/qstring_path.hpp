@@ -27,4 +27,26 @@ namespace logapp
 #endif
 }
 
+/// Inverse of `QStringToFsPath`: render a `std::filesystem::path`
+/// as a `QString` without dropping non-ASCII bytes.
+///
+/// `QString::fromStdString(path.string())` is the pattern that
+/// looks right and is wrong on Windows: `path::string()` returns
+/// bytes in the Active Code Page, but `QString::fromStdString`
+/// decodes as UTF-8. Non-ASCII paths become mojibake anywhere the
+/// result is displayed (status bar, dialog labels, tooltips).
+///
+/// On Windows we route through `path::wstring()` (native UTF-16,
+/// lossless via `QString::fromStdWString`); on POSIX the narrow
+/// string is already UTF-8. Use at every `<filesystem>` ->
+/// `QString` boundary.
+[[nodiscard]] inline QString FsPathToQString(const std::filesystem::path &path)
+{
+#ifdef Q_OS_WIN
+    return QString::fromStdWString(path.wstring());
+#else
+    return QString::fromStdString(path.string());
+#endif
+}
+
 } // namespace logapp

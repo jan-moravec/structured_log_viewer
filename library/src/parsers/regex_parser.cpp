@@ -1092,7 +1092,10 @@ std::string ResolvePattern(const std::optional<std::string> &explicitPattern, co
 /// pipeline. Both presets behave identically for a single-batch
 /// error pass, but the symmetry keeps call sites consistent.
 void EmitErrorAndFinish(
-    LogParseSink &sink, std::string_view message, std::optional<size_t> newKeyBaseline, bool streaming = false
+    LogParseSink &sink,
+    std::string_view message,
+    std::optional<size_t> newKeyBaseline,
+    bool streaming = false
 )
 {
     sink.OnStarted();

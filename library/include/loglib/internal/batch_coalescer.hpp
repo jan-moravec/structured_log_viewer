@@ -69,7 +69,18 @@ public:
     bool TryFlush(bool force);
 
     /// Emit a final batch (empty if nothing buffered, primed at
-    /// @p fallbackLineNumber) and forward `OnFinished(@p wasCancelled)`.
+    /// @p fallbackLineNumber) but do NOT call `OnFinished`. Used by
+    /// callers that stitch multiple parse loops into one streaming
+    /// session and emit a single `OnFinished` at the outer boundary
+    /// (multi-source bundle reload). After this call the coalescer
+    /// is spent -- callers must not reuse it, since `mPending` has
+    /// been drained and the sink is now expecting either another
+    /// batch or the terminal `OnFinished`.
+    void FlushTail(size_t fallbackLineNumber);
+
+    /// Convenience wrapper: `FlushTail` + `sink.OnFinished(wasCancelled)`.
+    /// Preferred by single-shot parse loops (streaming, static) that
+    /// own the full sink lifecycle.
     void Finish(size_t fallbackLineNumber, bool wasCancelled);
 
 private:

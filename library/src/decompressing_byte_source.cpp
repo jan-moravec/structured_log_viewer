@@ -825,7 +825,10 @@ void DecodeZstd(
     const DecompressingByteSource::ProgressCallback &progress,
     const StopToken &stopToken,
     std::size_t &decompressedSize,
-    std::size_t maxDecompressedBytes
+    std::size_t maxDecompressedBytes,
+    bool discardFirstLine,
+    std::size_t maxDiscardedFirstLineBytes,
+    std::string &discardedFirstLine
 )
 {
     ZSTD_DCtx *dctx = ::ZSTD_createDCtx();
@@ -859,6 +862,7 @@ void DecodeZstd(
 
     std::size_t consumed = 0;
     std::size_t lastResult = 0;
+    bool firstLineComplete = !discardFirstLine;
 
     while (true)
     {
@@ -896,7 +900,37 @@ void DecodeZstd(
                     )
                 );
             }
-            WriteOutput(out, output.dst, output.pos, tempPath, sourcePath, decompressedSize, maxDecompressedBytes);
+            std::string_view produced(static_cast<const char *>(output.dst), output.pos);
+            if (!firstLineComplete)
+            {
+                const std::size_t newline = produced.find('\n');
+                const std::size_t prefixSize = newline == std::string_view::npos ? produced.size() : newline;
+                if (discardedFirstLine.size() + prefixSize > maxDiscardedFirstLineBytes)
+                {
+                    throw std::runtime_error(
+                        fmt::format("First decompressed line in '{}' exceeds metadata limit", sourcePath.string())
+                    );
+                }
+                discardedFirstLine.append(produced.data(), prefixSize);
+                if (newline != std::string_view::npos)
+                {
+                    firstLineComplete = true;
+                    produced.remove_prefix(newline + 1);
+                }
+                else
+                {
+                    produced = {};
+                }
+            }
+            WriteOutput(
+                out,
+                produced.data(),
+                produced.size(),
+                tempPath,
+                sourcePath,
+                decompressedSize,
+                maxDecompressedBytes
+            );
             lastResult = result;
         }
 
@@ -912,6 +946,10 @@ void DecodeZstd(
         throw std::runtime_error(
             fmt::format("Unexpected EOF in zstd stream '{}' at input byte {}", sourcePath.string(), consumed)
         );
+    }
+    if (!firstLineComplete)
+    {
+        throw std::runtime_error(fmt::format("Compressed stream '{}' has no metadata line terminator", sourcePath.string()));
     }
 }
 
@@ -1030,7 +1068,10 @@ DecompressingByteSource::DecompressingByteSource(
                 progress,
                 stopToken,
                 mDecompressedSize,
-                maxDecompressedBytes
+                maxDecompressedBytes,
+                options.discardFirstLine,
+                options.maxDiscardedFirstLineBytes,
+                mDiscardedFirstLine
             );
             break;
         case Codec::None:
@@ -1068,7 +1109,8 @@ DecompressingByteSource::DecompressingByteSource(DecompressingByteSource &&other
       mCodec(other.mCodec),
       mCompressedSize(other.mCompressedSize),
       mDecompressedSize(other.mDecompressedSize),
-      mOwnsTempFile(other.mOwnsTempFile)
+      mOwnsTempFile(other.mOwnsTempFile),
+      mDiscardedFirstLine(std::move(other.mDiscardedFirstLine))
 {
     other.mCodec = Codec::None;
     other.mCompressedSize = 0;
@@ -1087,6 +1129,7 @@ DecompressingByteSource &DecompressingByteSource::operator=(DecompressingByteSou
         mCompressedSize = other.mCompressedSize;
         mDecompressedSize = other.mDecompressedSize;
         mOwnsTempFile = other.mOwnsTempFile;
+        mDiscardedFirstLine = std::move(other.mDiscardedFirstLine);
         other.mCodec = Codec::None;
         other.mCompressedSize = 0;
         other.mDecompressedSize = 0;
@@ -1135,6 +1178,11 @@ std::size_t DecompressingByteSource::CompressedSize() const noexcept
 std::size_t DecompressingByteSource::DecompressedSize() const noexcept
 {
     return mDecompressedSize;
+}
+
+const std::string &DecompressingByteSource::DiscardedFirstLine() const noexcept
+{
+    return mDiscardedFirstLine;
 }
 
 DecompressingByteSource::Codec DecompressingByteSource::SniffCodec(const std::filesystem::path &input) noexcept

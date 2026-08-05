@@ -1,24 +1,18 @@
 #include "row_exporter.hpp"
 
-#include <loglib/internal/compact_log_value.hpp>
+#include <loglib/internal/normalized_json_row.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/line_source.hpp>
 #include <loglib/log_data.hpp>
 #include <loglib/log_line.hpp>
 #include <loglib/log_value.hpp>
 
-#include <date/date.h>
-#include <date/tz.h>
 #include <fmt/format.h>
 
 #include <cassert>
-#include <cmath>
 #include <cstddef>
-#include <cstdint>
 #include <string>
 #include <string_view>
-#include <utility>
-#include <variant>
 
 namespace slv::exports
 {
@@ -35,159 +29,6 @@ constexpr size_t STOP_POLL_INTERVAL_ROWS = 4096;
 /// the row boundary without buffering the whole export.
 constexpr size_t ROW_SCRATCH_RESERVE = 512;
 
-/// Bytes below this threshold are C0 control characters that
-/// JSON strings must escape (RFC 8259 §7).
-constexpr unsigned char JSON_CONTROL_CHAR_LIMIT = 0x20;
-
-/// Append a JSON-escaped copy of @p input to @p out (RFC 8259 §7).
-/// Bytes >= JSON_CONTROL_CHAR_LIMIT pass through verbatim (UTF-8
-/// safe); control bytes without a short escape use `\u00XX`.
-void AppendJsonEscaped(std::string &out, std::string_view input)
-{
-    out.reserve(out.size() + input.size() + 2);
-    for (const char c : input)
-    {
-        const auto ch = static_cast<unsigned char>(c);
-        switch (ch)
-        {
-        case '"':
-            out.append("\\\"");
-            break;
-        case '\\':
-            out.append("\\\\");
-            break;
-        case '\b':
-            out.append("\\b");
-            break;
-        case '\f':
-            out.append("\\f");
-            break;
-        case '\n':
-            out.append("\\n");
-            break;
-        case '\r':
-            out.append("\\r");
-            break;
-        case '\t':
-            out.append("\\t");
-            break;
-        default:
-            if (ch < JSON_CONTROL_CHAR_LIMIT)
-            {
-                fmt::format_to(std::back_inserter(out), "\\u{:04x}", static_cast<unsigned>(ch));
-            }
-            else
-            {
-                out.push_back(static_cast<char>(ch));
-            }
-            break;
-        }
-    }
-}
-
-/// Serialise a `TimeStamp` as ISO 8601 UTC with microsecond
-/// precision. `%FT%T` on a UTC `sys_time` already includes the
-/// fractional seconds; the literal trailing `Z` marks UTC
-/// unambiguously.
-///
-/// Caller has already opened / must close the enclosing JSON
-/// string. On far-future / far-past values that overflow
-/// `date::format`'s tables the fallback emits the raw microsecond
-/// count instead -- still valid JSON inside the caller's quotes,
-/// but not ISO-parseable.
-void AppendIsoTimestamp(std::string &out, loglib::TimeStamp ts)
-{
-    try
-    {
-        const date::sys_time<std::chrono::microseconds> sysTime{ts.time_since_epoch()};
-        out.append(date::format("%FT%T", sysTime));
-        out.push_back('Z');
-    }
-    catch (const std::exception &)
-    {
-        fmt::format_to(std::back_inserter(out), "{}", ts.time_since_epoch().count());
-    }
-}
-
-/// Serialise a `LogValue` as a JSON value (typed).
-///
-/// Rules:
-///   - `std::monostate` -> `null` (caller should have skipped, but
-///     defensive).
-///   - `bool` -> `true` / `false`.
-///   - `int64` / `uint64` -> JSON integer.
-///   - `double` -> JSON number; NaN / Inf serialise as `null`
-///     (JSON has no representation).
-///   - `string_view` / `string` -> JSON-escaped string.
-///   - `TimeStamp` -> ISO 8601 UTC string.
-void AppendLogValueAsJson(std::string &out, const loglib::LogValue &value)
-{
-    std::visit(
-        [&out]<class T>(const T &arg) {
-            if constexpr (std::is_same_v<T, std::monostate>)
-            {
-                out.append("null");
-            }
-            else if constexpr (std::is_same_v<T, bool>)
-            {
-                out.append(arg ? "true" : "false");
-            }
-            else if constexpr (std::is_same_v<T, std::int64_t> || std::is_same_v<T, std::uint64_t>)
-            {
-                fmt::format_to(std::back_inserter(out), "{}", arg);
-            }
-            else if constexpr (std::is_same_v<T, double>)
-            {
-                if (!std::isfinite(arg))
-                {
-                    out.append("null");
-                }
-                else
-                {
-                    // `fmt`'s `{}` is a shortest round-trip that
-                    // matches JSON number grammar (no locale, no
-                    // thousands sep). Whole-valued doubles come out
-                    // as `1` / `-3`, which is valid JSON but
-                    // re-parses as an integer in typed readers
-                    // (Python `json`, JS `Number.isInteger`, jq).
-                    // Append `.0` in that case so a Floating column
-                    // survives round-trip as a fractional literal.
-                    const std::size_t before = out.size();
-                    fmt::format_to(std::back_inserter(out), "{}", arg);
-                    const std::string_view emitted(out.data() + before, out.size() - before);
-                    if (emitted.find_first_of(".eE") == std::string_view::npos)
-                    {
-                        out.append(".0");
-                    }
-                }
-            }
-            else if constexpr (std::is_same_v<T, std::string_view>)
-            {
-                out.push_back('"');
-                AppendJsonEscaped(out, arg);
-                out.push_back('"');
-            }
-            else if constexpr (std::is_same_v<T, std::string>)
-            {
-                out.push_back('"');
-                AppendJsonEscaped(out, std::string_view(arg));
-                out.push_back('"');
-            }
-            else if constexpr (std::is_same_v<T, loglib::TimeStamp>)
-            {
-                out.push_back('"');
-                AppendIsoTimestamp(out, arg);
-                out.push_back('"');
-            }
-            else
-            {
-                static_assert(std::is_same_v<T, void>, "non-exhaustive AppendLogValueAsJson");
-            }
-        },
-        value
-    );
-}
-
 /// Throw `ExportCancelled` when the user hit Cancel. Called
 /// between row batches.
 void PollStop(const loglib::StopToken &token)
@@ -196,31 +37,6 @@ void PollStop(const loglib::StopToken &token)
     {
         throw ExportCancelled{};
     }
-}
-
-/// Materialise every present field on @p line as `(key, LogValue)`
-/// pairs. Defensively skips monostate slots.
-std::vector<std::pair<std::string_view, loglib::LogValue>> MaterialiseRow(
-    const loglib::LogLine &line, const loglib::KeyIndex &keys
-)
-{
-    const auto compact = line.CompactValues();
-    std::vector<std::pair<std::string_view, loglib::LogValue>> out;
-    out.reserve(compact.size());
-    for (const auto &[keyId, slot] : compact)
-    {
-        if (slot.tag == loglib::internal::CompactTag::Monostate)
-        {
-            continue;
-        }
-        loglib::LogValue value = slot.Materialise(line.Source(), line.LineId(), keyId);
-        if (std::holds_alternative<std::monostate>(value))
-        {
-            continue;
-        }
-        out.emplace_back(keys.KeyOf(keyId), std::move(value));
-    }
-    return out;
 }
 
 // -----------------------------------------------------------------
@@ -269,24 +85,8 @@ void JsonLinesExporter::Run(
             continue;
         }
         const auto &line = lines[static_cast<size_t>(sourceRow)];
-        const auto row = MaterialiseRow(line, keys);
-
-        scratch.clear();
-        scratch.push_back('{');
-        bool first = true;
-        for (const auto &[key, value] : row)
-        {
-            if (!first)
-            {
-                scratch.push_back(',');
-            }
-            first = false;
-            scratch.push_back('"');
-            AppendJsonEscaped(scratch, key);
-            scratch.append("\":");
-            AppendLogValueAsJson(scratch, value);
-        }
-        scratch.append("}\n");
+        scratch = loglib::internal::SerializeNormalizedJsonRow(line, keys);
+        scratch.push_back('\n');
         sink.Write(scratch);
 
         if (progress != nullptr && ((slot + 1) % STOP_POLL_INTERVAL_ROWS) == 0)

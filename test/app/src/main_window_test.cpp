@@ -18,10 +18,12 @@
 #include "parse_errors_dock.hpp"
 #include "preferences_editor.hpp"
 #include "qt_streaming_log_sink.hpp"
+#include "qstring_path.hpp"
 #include "record_detail_dock.hpp"
 #include "record_detail_widget.hpp"
 #include "record_detail_window.hpp"
 #include "row_order_proxy_model.hpp"
+#include "session_bundle_dialog.hpp"
 #include "session_history_manager.hpp"
 #include "single_instance_guard.hpp"
 #include "streaming_control.hpp"
@@ -46,7 +48,9 @@
 #include <loglib/parser_options.hpp>
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/parsers/logfmt_parser.hpp>
+#include <loglib/parse_file.hpp>
 #include <loglib/query_parser.hpp>
+#include <loglib/session_bundle.hpp>
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
@@ -59,6 +63,7 @@
 #include <QAbstractItemDelegate>
 #include <QAbstractItemModel>
 #include <QAction>
+#include <QApplication>
 #include <QBrush>
 #include <QCheckBox>
 #include <QClipboard>
@@ -107,6 +112,7 @@
 #include <QTableView>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -283,6 +289,32 @@ private:
     QTemporaryDir mDir;
     QString mPath;
 };
+
+QString WriteBundleFixture(
+    const QTemporaryDir &directory,
+    const QStringList &lines,
+    const std::function<void(loglib::LogConfiguration &)> &configure
+)
+{
+    TempJsonFile source(lines);
+    loglib::ParseResult parsed = loglib::ParseFile(logapp::QStringToFsPath(source.Path()));
+    loglib::LogConfigurationManager manager;
+    manager.Update(parsed.data);
+    loglib::LogTable table(std::move(parsed.data), std::move(manager));
+    loglib::LogConfiguration configuration = table.Configuration().Configuration();
+    configure(configuration);
+    for (auto &anchor : configuration.anchors)
+    {
+        if (anchor.locator.empty())
+        {
+            anchor.locator = source.Path().toStdString();
+        }
+    }
+
+    const QString path = directory.filePath(QStringLiteral("fixture.slvbundle"));
+    loglib::WriteSessionBundle(table, configuration, logapp::QStringToFsPath(path));
+    return path;
+}
 
 // Gzip-compress @p bytes into a self-contained gzip stream
 // (windowBits = 15 + 16). In-TU helper for the transparent-
@@ -13011,7 +13043,7 @@ private slots:
         QVERIFY(finishedSpy.isValid());
 
         mWindow->OpenFilesForTest({fixtureA.Path()}, MainWindow::OpenMode::Append);
-        QVERIFY(finishedSpy.wait(5000));
+        QTRY_VERIFY_WITH_TIMEOUT(finishedSpy.count() >= 1, 5000);
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), fixtureLinesA.size());
 
@@ -24148,6 +24180,147 @@ private slots:
 
         QCOMPARE(wired->Model()->rowCount(), 2);
     }
+
+    void TestSessionBundleUsesNormalCompressedFileOpen()
+    {
+        const QTemporaryDir sessionsDir;
+        const QTemporaryDir bundleDir;
+        QVERIFY(sessionsDir.isValid());
+        QVERIFY(bundleDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
+
+        const QString original = WriteBundleFixture(
+            bundleDir,
+            {QStringLiteral(R"({"value":1,"msg":"first"})"), QStringLiteral(R"({"value":2,"msg":"second"})")},
+            [](loglib::LogConfiguration &configuration) {
+                configuration.columns.at(0).header = "Embedded value";
+                configuration.sort = {.columnIndex = 0, .descending = true};
+                configuration.anchors = {{.locator = {}, .lineId = 1, .colorIndex = 0, .note = "moved"}};
+            }
+        );
+        const QString moved = bundleDir.filePath(QStringLiteral("renamed.slvbundle"));
+        QVERIFY(QFile::rename(original, moved));
+
+        QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        QCOMPARE(
+            wired->OpenMixedFilesForTest({moved}, MainWindow::OpenMode::Replace),
+            MainWindow::MixedInputDispatch::QueuedLogsOnly
+        );
+        QVERIFY(finishedSpy.wait(5000));
+        QCoreApplication::processEvents();
+
+        QCOMPARE(wired->Model()->rowCount(), 2);
+        QCOMPARE(QString::fromStdString(wired->Model()->Configuration().columns.at(0).header), QString("Embedded value"));
+        QCOMPARE(wired->FilterModel()->SortColumn(), 0);
+        QCOMPARE(wired->FilterModel()->SortOrder(), Qt::DescendingOrder);
+
+        const auto &source = wired->CurrentSourceForTest();
+        QVERIFY(source.has_value());
+        QCOMPARE(source->kind, loglib::LogConfiguration::Source::Kind::File);
+        QCOMPARE(source->locators, std::vector<std::string>{logapp::CanonicalDisplayPath(moved).toStdString()});
+        QCOMPARE(
+            source->locatorDedupKeys,
+            std::vector<std::string>{logapp::CanonicalLocator(moved).toStdString()}
+        );
+        QVERIFY(!wired->windowTitle().contains(QStringLiteral("[Bundle]")));
+        QCOMPARE(wired->Model()->Configuration().anchors.size(), static_cast<size_t>(1));
+        QCOMPARE(
+            wired->Model()->Configuration().anchors.front().locator,
+            logapp::CanonicalDisplayPath(moved).toStdString()
+        );
+
+        const QList<RecentSessionEntry> recent = manager.List();
+        QCOMPARE(recent.size(), 1);
+        QVERIFY(!wired->ActiveSessionUuid().isEmpty());
+    }
+
+    void TestSupersedingBundleDecompressionClearsEmbeddedConfigIntent()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
+        wired->SimulateSupersededBundleDecompressionForTest();
+        QVERIFY(!wired->AppliesEmbeddedBundleConfigForNextOpenForTest());
+    }
+
+    void TestSessionBundleAutosaveConfigOverridesEmbeddedDefault()
+    {
+        const QTemporaryDir sessionsDir;
+        const QTemporaryDir bundleDir;
+        QVERIFY(sessionsDir.isValid());
+        QVERIFY(bundleDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+
+        const QString bundle = WriteBundleFixture(
+            bundleDir,
+            {QStringLiteral(R"({"msg":"saved"})")},
+            [](loglib::LogConfiguration &configuration) { configuration.columns.at(0).header = "Embedded"; }
+        );
+
+        QString uuid;
+        {
+            auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
+            QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+            wired->OpenMixedFilesForTest({bundle}, MainWindow::OpenMode::Replace);
+            QTRY_VERIFY_WITH_TIMEOUT(finishedSpy.count() >= 1, 5000);
+
+            loglib::LogConfiguration changed = wired->Model()->Configuration();
+            changed.columns.at(0).header = "Autosaved";
+            wired->Model()->ConfigurationManager().SetConfiguration(std::move(changed));
+            wired->Model()->NotifyConfigurationReplaced();
+            wired->AutoSaveSessionSnapshot();
+            uuid = wired->ActiveSessionUuid();
+            QVERIFY(!uuid.isEmpty());
+        }
+
+        auto restored = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
+        QSignalSpy restoredSpy(restored->Model(), &LogModel::streamingFinished);
+        restored->OpenRecentSessionForTest(uuid);
+        QTRY_VERIFY_WITH_TIMEOUT(restoredSpy.count() >= 1, 5000);
+        QCOMPARE(
+            QString::fromStdString(restored->Model()->Configuration().columns.at(0).header),
+            QString("Autosaved")
+        );
+    }
+
+    void TestAppendingSessionBundlePreservesActiveConfiguration()
+    {
+        const QTemporaryDir sessionsDir;
+        const QTemporaryDir bundleDir;
+        QVERIFY(sessionsDir.isValid());
+        QVERIFY(bundleDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
+
+        const TempJsonFile initial({QStringLiteral(R"({"msg":"plain"})")});
+        QSignalSpy initialSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->OpenFilesForTest({initial.Path()}, MainWindow::OpenMode::Replace);
+        QTRY_VERIFY_WITH_TIMEOUT(initialSpy.count() >= 1, 5000);
+
+        loglib::LogConfiguration active = wired->Model()->Configuration();
+        active.columns.at(0).header = "Active";
+        wired->Model()->ConfigurationManager().SetConfiguration(std::move(active));
+        wired->Model()->NotifyConfigurationReplaced();
+
+        const QString bundle = WriteBundleFixture(
+            bundleDir,
+            {QStringLiteral(R"({"msg":"bundled"})")},
+            [](loglib::LogConfiguration &configuration) { configuration.columns.at(0).header = "Embedded"; }
+        );
+        QSignalSpy appendSpy(wired->Model(), &LogModel::streamingFinished);
+        wired->OpenMixedFilesForTest({bundle}, MainWindow::OpenMode::Append);
+        QTRY_VERIFY_WITH_TIMEOUT(appendSpy.count() >= 1, 5000);
+
+        QCOMPARE(wired->Model()->rowCount(), 2);
+        QCOMPARE(QString::fromStdString(wired->Model()->Configuration().columns.at(0).header), QString("Active"));
+        QVERIFY(wired->CurrentSourceForTest().has_value());
+        QCOMPARE(wired->CurrentSourceForTest()->kind, loglib::LogConfiguration::Source::Kind::File);
+        QCOMPARE(wired->CurrentSourceForTest()->locators.size(), static_cast<size_t>(2));
+    }
+
 
     // CLI variant: `app cfg.json log.json` applies the cfg first
     // and streams the log under it.

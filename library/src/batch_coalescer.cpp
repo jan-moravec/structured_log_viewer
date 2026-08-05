@@ -76,7 +76,7 @@ bool BatchCoalescer::TryFlush(bool force)
     return true;
 }
 
-void BatchCoalescer::Finish(size_t fallbackLineNumber, bool wasCancelled)
+void BatchCoalescer::FlushTail(size_t fallbackLineNumber)
 {
     const bool hasContent =
         mPrimed || mKeys.Size() > mPrevKeyCount || !mPending.errors.empty() || !mPending.localLineOffsets.empty();
@@ -98,6 +98,11 @@ void BatchCoalescer::Finish(size_t fallbackLineNumber, bool wasCancelled)
         DrainNewKeysInto(tail);
         mSink.OnBatch(std::move(tail));
     }
+}
+
+void BatchCoalescer::Finish(size_t fallbackLineNumber, bool wasCancelled)
+{
+    FlushTail(fallbackLineNumber);
     mSink.OnFinished(wasCancelled);
 }
 

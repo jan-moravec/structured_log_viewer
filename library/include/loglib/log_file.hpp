@@ -23,6 +23,10 @@ class LogFile
 public:
     /// Throws `std::runtime_error` if the file cannot be opened or mapped.
     explicit LogFile(std::filesystem::path filePath);
+    /// Map @p storagePath while exposing @p logicalPath through GetPath().
+    /// Used for decompressed temporary storage whose source identity must
+    /// remain the physical compressed file.
+    LogFile(std::filesystem::path storagePath, std::filesystem::path logicalPath);
 
     /// Explicit `= default` spelling makes the rule-of-five
     /// explicit. Reverse-declaration-order member destruction
@@ -106,6 +110,7 @@ public:
 
 private:
     std::filesystem::path mPath;
+    std::filesystem::path mStoragePath;
 
     /// Post-mmap RAII anchor; see `AttachLifetimeAnchor`. Declared
     /// **before** `mMmap` so reverse-declaration destruction

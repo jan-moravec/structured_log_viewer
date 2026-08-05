@@ -18,6 +18,7 @@ struct ParserOptions
     /// continuations of the preceding record's last source-order field.
     /// Has no effect on other parsers.
     bool multilineLogfmt = true;
+
 };
 
 } // namespace loglib

@@ -53,14 +53,19 @@ void HintSequential(const mio::mmap_source &mmap)
 } // namespace
 
 LogFile::LogFile(std::filesystem::path filePath)
-    : mPath(std::move(filePath))
+    : LogFile(filePath, filePath)
+{
+}
+
+LogFile::LogFile(std::filesystem::path storagePath, std::filesystem::path logicalPath)
+    : mPath(std::move(logicalPath)), mStoragePath(std::move(storagePath))
 {
     // MSVC's <filesystem> casts a combined bitmask back to __std_fs_stats_flags;
     // clang's analyzer flags the value as out-of-range. False positive in stdlib.
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
-    if (!std::filesystem::exists(mPath))
+    if (!std::filesystem::exists(mStoragePath))
     {
-        throw std::runtime_error(fmt::format("File '{}' does not exist.", mPath.string()));
+        throw std::runtime_error(fmt::format("File '{}' does not exist.", mStoragePath.string()));
     }
 
     // Empty files: skip mmap (some platforms reject zero-byte mappings); the
@@ -68,14 +73,16 @@ LogFile::LogFile(std::filesystem::path filePath)
     // MSVC's <filesystem> casts a combined bitmask back to __std_fs_stats_flags;
     // clang's analyzer flags the value as out-of-range. False positive in stdlib.
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
-    const auto size = std::filesystem::file_size(mPath);
+    const auto size = std::filesystem::file_size(mStoragePath);
     if (size > 0)
     {
         std::error_code ec;
-        mMmap = mio::make_mmap_source(mPath.string(), 0, mio::map_entire_file, ec);
+        mMmap = mio::make_mmap_source(mStoragePath.string(), 0, mio::map_entire_file, ec);
         if (ec)
         {
-            throw std::runtime_error(fmt::format("Failed to memory-map file '{}': {}", mPath.string(), ec.message()));
+            throw std::runtime_error(
+                fmt::format("Failed to memory-map file '{}': {}", mStoragePath.string(), ec.message())
+            );
         }
         HintSequential(mMmap);
     }

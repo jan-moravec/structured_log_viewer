@@ -106,6 +106,11 @@ public:
         /// Hard cap; throws `DecompressionSizeCapExceeded` if
         /// exceeded. Zero disables the cap.
         std::size_t maxDecompressedBytes = DEFAULT_MAX_DECOMPRESSED_BYTES;
+        /// Remove the first decompressed line from the temp file and
+        /// retain it in DiscardedFirstLine(). Used by `.slvbundle`
+        /// metadata without introducing a bundle-specific line source.
+        bool discardFirstLine = false;
+        std::size_t maxDiscardedFirstLineBytes = 64U * 1024U * 1024U;
     };
 
     /// Sniff @p input and (if compressed) decode to a temp file.
@@ -155,6 +160,7 @@ public:
     /// Size of the decompressed temp file, in bytes. Zero when
     /// `WasDecompressed()` is false.
     [[nodiscard]] std::size_t DecompressedSize() const noexcept;
+    [[nodiscard]] const std::string &DiscardedFirstLine() const noexcept;
 
 private:
     void ReleaseTempFile() noexcept;
@@ -166,6 +172,7 @@ private:
     std::size_t mDecompressedSize = 0;
     /// True when `mEffectivePath` is a temp file owned by this object.
     bool mOwnsTempFile = false;
+    std::string mDiscardedFirstLine;
 };
 
 /// Human-readable codec name (`"gzip"`, `"bzip2"`, `"xz"`, `"zstd"`,
