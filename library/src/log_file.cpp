@@ -1,5 +1,7 @@
 #include "loglib/log_file.hpp"
 
+#include "loglib/internal/path_encoding.hpp"
+
 #include <fmt/format.h>
 
 #include <cassert>
@@ -72,7 +74,7 @@ LogFile::LogFile(std::filesystem::path storagePath, std::filesystem::path logica
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     if (!std::filesystem::exists(mStoragePath))
     {
-        throw std::runtime_error(fmt::format("File '{}' does not exist.", mStoragePath.string()));
+        throw std::runtime_error(fmt::format("File '{}' does not exist.", internal::PathToUtf8(mStoragePath)));
     }
 
     // Empty files: skip mmap (some platforms reject zero-byte mappings); the
@@ -84,12 +86,24 @@ LogFile::LogFile(std::filesystem::path storagePath, std::filesystem::path logica
     if (size > 0)
     {
         std::error_code ec;
-        mMmap = mio::make_mmap_source(mStoragePath.string(), 0, mio::map_entire_file, ec);
+        // Pass the wide path on Windows so non-ASCII names (Cyrillic,
+        // CJK, ...) open. `path::string()` returns Active Code Page
+        // bytes on Windows, but mio's `basic_mmap::map(std::string&)`
+        // interprets its argument as UTF-8 and converts to wide with
+        // `MultiByteToWideChar(CP_UTF8, ...)`. The two encodings only
+        // agree on ASCII, so any non-ASCII byte in the ACP form
+        // silently becomes garbage on the Windows API call. `wstring`
+        // (Windows) / UTF-8 via `path::u8string` (POSIX) are lossless.
+#ifdef _WIN32
+        mMmap = mio::make_mmap_source(mStoragePath.wstring(), 0, mio::map_entire_file, ec);
+#else
+        mMmap = mio::make_mmap_source(internal::PathToUtf8(mStoragePath), 0, mio::map_entire_file, ec);
+#endif
         if (ec)
         {
-            throw std::runtime_error(
-                fmt::format("Failed to memory-map file '{}': {}", mStoragePath.string(), ec.message())
-            );
+            throw std::runtime_error(fmt::format(
+                "Failed to memory-map file '{}': {}", internal::PathToUtf8(mStoragePath), ec.message()
+            ));
         }
         HintSequential(mMmap);
     }

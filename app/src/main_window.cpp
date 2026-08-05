@@ -3265,9 +3265,12 @@ void MainWindow::BeginAsyncDecompression(
     // Up-front compressed size lets the poll timer compute a
     // percentage without waiting for the worker's first tick.
     std::error_code sizeEc;
+    // `QStringToFsPath` (not `toStdString`): Windows `path(std::string)`
+    // decodes as ACP, so non-ASCII filenames would silently be
+    // mis-encoded and `file_size` would return a "not found" error.
     // MSVC's <filesystem> flag-cast trips clang-analyzer's enum-cast check.
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
-    const auto compressedSize = std::filesystem::file_size(std::filesystem::path(originalPath.toStdString()), sizeEc);
+    const auto compressedSize = std::filesystem::file_size(logapp::QStringToFsPath(originalPath), sizeEc);
     mDecompressionTotalBytesIn.storeRelaxed(sizeEc ? 0 : static_cast<qint64>(compressedSize));
 
     mDecompressionOriginalPath = originalPath;
@@ -3305,8 +3308,12 @@ void MainWindow::BeginAsyncDecompression(
     // -- they are `this` members guarded by `mDecompressionInFlight`.
     // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
     const bool isSessionBundle = IsSessionBundlePath(originalPath);
-    auto future = QtConcurrent::run([originalPath, sharedBytesIn, sharedTotal, stopToken, isSessionBundle]() {
-        const std::filesystem::path input(originalPath.toStdString());
+    // Convert on the GUI thread via `QStringToFsPath` (native wide on
+    // Windows, UTF-8 elsewhere) so non-ASCII bundle names survive the
+    // hop into the worker. `QString::toStdString()` would silently ACP-
+    // decode as UTF-8 on Windows and fail to open Cyrillic/CJK paths.
+    const std::filesystem::path input = logapp::QStringToFsPath(originalPath);
+    auto future = QtConcurrent::run([input, sharedBytesIn, sharedTotal, stopToken, isSessionBundle]() {
         // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
         auto progressCb = [sharedBytesIn, sharedTotal](const loglib::internal::DecompressingByteSource::Progress &p) {
             // Relaxed: the GUI only needs a recent-enough snapshot.
@@ -3679,8 +3686,14 @@ void MainWindow::OnDecompressionFinished()
     // path would be handed to `LogFile::mmap`, silently parsing raw
     // codec bytes as JSONL. MSVC evaluates arguments right-to-left,
     // so the primary target was hitting this order.
+    //
+    // `QStringToFsPath` (not `toStdString`): the failure-path fallback
+    // must round-trip non-ASCII names correctly, otherwise the
+    // fallback path would fail to open Cyrillic/CJK originals on
+    // Windows even though the primary decompressed-temp branch above
+    // handles them.
     const std::filesystem::path effectivePath =
-        dbs ? dbs->EffectivePath() : std::filesystem::path(mDecompressionOriginalPath.toStdString());
+        dbs ? dbs->EffectivePath() : logapp::QStringToFsPath(mDecompressionOriginalPath);
 
     // Hand off to the shared continuation. The shared_ptr keeps
     // the temp file alive across the parse hand-off;
@@ -4104,6 +4117,14 @@ void MainWindow::BeginAsyncBundleExport(
     // flattens every retained row into the bundle and remaps anchors
     // to the destination bundle locator and dense row ids. This does
     // not mutate the live configuration used by autosave.
+    //
+    // `AnchorManager`'s header contract says save paths use
+    // `Entries()` (which drops runtime-only anchors whose in-memory
+    // `lineId` is unstable across sessions). Bundle export is
+    // deliberately the exception: the bundle re-establishes a stable
+    // dense row space so runtime-only anchors can be remapped to it
+    // and survive the round-trip. The autosave / session-save code
+    // paths still use `Entries()`.
     loglib::LogConfiguration configSnapshot = mModel->Configuration();
     if (mAnchors != nullptr)
     {

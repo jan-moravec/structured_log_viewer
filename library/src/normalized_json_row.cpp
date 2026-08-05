@@ -54,17 +54,26 @@ void AppendJsonEscaped(std::string &out, std::string_view input)
     }
 }
 
-void AppendTimestamp(std::string &out, TimeStamp timestamp)
+/// Serialize @p timestamp as a JSON value including its surrounding
+/// quotes. On `date::format` failure (out-of-range values that fall
+/// outside the ISO-8601 formatter's supported range) the fallback
+/// emits an unquoted `null` -- previously the fallback wrote the raw
+/// epoch count as a bare number inside quotes, producing a JSON
+/// string that no downstream reader would recognise as a timestamp,
+/// silently downgrading the value to text on round-trip.
+void AppendTimestampJson(std::string &out, TimeStamp timestamp)
 {
     try
     {
         const date::sys_time<std::chrono::microseconds> time{timestamp.time_since_epoch()};
+        out.push_back('"');
         out.append(date::format("%FT%T", time));
         out.push_back('Z');
+        out.push_back('"');
     }
     catch (const std::exception &)
     {
-        fmt::format_to(std::back_inserter(out), "{}", timestamp.time_since_epoch().count());
+        out.append("null");
     }
 }
 
@@ -107,9 +116,7 @@ void AppendValue(std::string &out, const LogValue &value)
             }
             else if constexpr (std::is_same_v<T, TimeStamp>)
             {
-                out.push_back('"');
-                AppendTimestamp(out, arg);
-                out.push_back('"');
+                AppendTimestampJson(out, arg);
             }
         },
         value

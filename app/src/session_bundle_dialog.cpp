@@ -50,6 +50,27 @@ QString AppendBundleExtensionIfMissing(QString path)
     return path;
 }
 
+/// Read an int from QSettings, falling back to @p defaultValue when
+/// the stored value is missing, unparsable, or outside the inclusive
+/// range `[minValue, maxValue]`.
+///
+/// `QSpinBox::setValue` silently clamps out-of-range values to the
+/// spinbox's own range, so a corrupted `0` would end up at the
+/// minimum (fastest / worst compression) rather than the intended
+/// balanced default. Validate up front so the user gets the default
+/// they expect after a corrupted or partial write to the settings
+/// backing store.
+int ClampedSettingsInt(const QSettings &settings, const char *key, int defaultValue, int minValue, int maxValue)
+{
+    bool ok = false;
+    const int stored = settings.value(key, defaultValue).toInt(&ok);
+    if (!ok || stored < minValue || stored > maxValue)
+    {
+        return defaultValue;
+    }
+    return stored;
+}
+
 } // namespace
 
 SessionBundleDialog::SessionBundleDialog(
@@ -87,7 +108,7 @@ SessionBundleDialog::SessionBundleDialog(
 
     mCompressionLevelSpin = new QSpinBox(this);
     mCompressionLevelSpin->setRange(1, 22);
-    mCompressionLevelSpin->setValue(settings.value(SETTINGS_LEVEL, 3).toInt());
+    mCompressionLevelSpin->setValue(ClampedSettingsInt(settings, SETTINGS_LEVEL, 3, 1, 22));
     mCompressionLevelSpin->setToolTip(
         tr("zstd compression level. 1 = fastest / worst compression, 22 = slowest / best. "
            "3 matches zstd's balanced default and is a good choice for interactive sharing.")
@@ -97,7 +118,7 @@ SessionBundleDialog::SessionBundleDialog(
     mWorkersSpin = new QSpinBox(this);
     mWorkersSpin->setRange(0, 64);
     mWorkersSpin->setSpecialValueText(tr("Single-threaded"));
-    mWorkersSpin->setValue(settings.value(SETTINGS_WORKERS, 0).toInt());
+    mWorkersSpin->setValue(ClampedSettingsInt(settings, SETTINGS_WORKERS, 0, 0, 64));
     mWorkersSpin->setToolTip(
         tr("zstd worker threads for the single bundle frame. "
            "0 uses zstd's single-threaded path; positive values enable zstd multi-threading.")

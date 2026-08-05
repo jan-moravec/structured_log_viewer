@@ -208,7 +208,7 @@ std::string CanonicalizeSourceLocator(
     return internal::PathToUtf8(path);
 }
 
-/// Composite key for the dense-id index below. `std::string` (not
+/// Composite key for the anchor index below. `std::string` (not
 /// `string_view`) because the canonicalizer returns by value and the
 /// resulting bytes must outlive the loop that inserts them.
 struct AnchorLookupKey
@@ -233,26 +233,55 @@ struct AnchorLookupKeyHash
     }
 };
 
-/// Build a `(canonical locator, lineId) -> row` index in one pass so
-/// anchor remapping is O(A + N) instead of the previous O(A * N) with
-/// a canonicalizer call per line per anchor. Duplicate keys record
-/// the second-hit sentinel so an ambiguous anchor is dropped just
-/// like the earlier explicit search.
-using AnchorRowIndex = std::unordered_map<AnchorLookupKey, std::optional<std::uint64_t>, AnchorLookupKeyHash>;
+/// One slot per anchor in the wanted-set. `found=false` means the
+/// scan has not yet matched a row; `ambiguous=true` means the same
+/// `(canonical locator, lineId)` matched twice and the anchor
+/// resolves to no dense row (dropped, like the previous sentinel).
+struct AnchorMatchSlot
+{
+    std::uint64_t row = 0;
+    bool found = false;
+    bool ambiguous = false;
+};
 
-AnchorRowIndex BuildAnchorRowIndex(
+/// Wanted-set keyed on anchor lookup pairs. Sized by the anchor
+/// count (typically a handful) rather than by `lines.size()`, so a
+/// billion-row table with two anchors doesn't allocate ~100 GiB of
+/// hash-map buckets. Complexity stays O(A + N).
+using AnchorWantedSet = std::unordered_map<AnchorLookupKey, AnchorMatchSlot, AnchorLookupKeyHash>;
+
+AnchorWantedSet BuildAnchorWantedSet(const std::vector<LogConfiguration::AnchorEntry> &anchors)
+{
+    AnchorWantedSet wanted;
+    wanted.reserve(anchors.size());
+    for (const auto &anchor : anchors)
+    {
+        // `try_emplace`: duplicate anchor keys collapse to a single
+        // slot. A duplicate anchor list would only cause the same
+        // remapping to be emitted once, but we preserve the caller's
+        // list on the output side (see `RemapAnchors`) -- the wanted
+        // set is only used to resolve rows.
+        wanted.try_emplace(AnchorLookupKey{.locator = anchor.locator, .lineId = anchor.lineId});
+    }
+    return wanted;
+}
+
+void PopulateAnchorMatches(
+    AnchorWantedSet &wanted,
     const std::vector<LogLine> &lines,
     const SessionBundleWriteOptions &options
 )
 {
-    // Canonicalization is per-source (typically ~1 source, at most a
-    // handful) but `lines.size()` is millions. Cache by `Source*` so
-    // the QString round-trip in `canonicalizeSourceLocator` runs once
-    // per source rather than once per row.
+    if (wanted.empty())
+    {
+        return;
+    }
+    // Canonicalization is per-source (typically ~1 source, at most
+    // a handful) but `lines.size()` is millions. Cache by `Source*`
+    // so the QString round-trip in `canonicalizeSourceLocator`
+    // runs once per source rather than once per row.
     std::unordered_map<const LineSource *, std::string> canonicalCache;
 
-    AnchorRowIndex index;
-    index.reserve(lines.size());
     for (std::size_t row = 0; row < lines.size(); ++row)
     {
         const LogLine &line = lines[row];
@@ -269,16 +298,23 @@ AnchorRowIndex BuildAnchorRowIndex(
             }
             key.locator = cacheIt->second;
         }
-        auto [it, inserted] = index.try_emplace(std::move(key), static_cast<std::uint64_t>(row));
-        if (!inserted)
+        auto it = wanted.find(key);
+        if (it == wanted.end())
         {
-            // Duplicate `(locator, lineId)` -> ambiguous. Mark
-            // sentinel so the anchor is dropped rather than pointing
-            // at a possibly-wrong row.
-            it->second.reset();
+            continue;
+        }
+        if (!it->second.found)
+        {
+            it->second.row = static_cast<std::uint64_t>(row);
+            it->second.found = true;
+        }
+        else
+        {
+            // Duplicate `(locator, lineId)` -> ambiguous. Anchor
+            // drops rather than pointing at a possibly-wrong row.
+            it->second.ambiguous = true;
         }
     }
-    return index;
 }
 
 void RemapAnchors(
@@ -292,20 +328,22 @@ void RemapAnchors(
     {
         return;
     }
-    const AnchorRowIndex index = BuildAnchorRowIndex(lines, options);
+    AnchorWantedSet wanted = BuildAnchorWantedSet(configuration.anchors);
+    PopulateAnchorMatches(wanted, lines, options);
+
     std::vector<LogConfiguration::AnchorEntry> remapped;
     remapped.reserve(configuration.anchors.size());
     for (const auto &anchor : configuration.anchors)
     {
         const AnchorLookupKey lookup{.locator = anchor.locator, .lineId = anchor.lineId};
-        const auto it = index.find(lookup);
-        if (it == index.end() || !it->second.has_value())
+        const auto it = wanted.find(lookup);
+        if (it == wanted.end() || !it->second.found || it->second.ambiguous)
         {
             continue;
         }
         auto copy = anchor;
         copy.locator.assign(flattenedLocator);
-        copy.lineId = *it->second;
+        copy.lineId = it->second.row;
         remapped.push_back(std::move(copy));
     }
     configuration.anchors = std::move(remapped);
@@ -372,20 +410,31 @@ void WriteSessionBundle(
     }
 
     LogConfiguration embedded = configuration;
-    const std::string physicalLocator = internal::PathToUtf8(destination);
-    RemapAnchors(embedded, lines, physicalLocator, options);
+
+    // `locators` is display-shape (raw UTF-8 path); `locatorDedupKeys`
+    // is the canonical form used for byte-equality dedup elsewhere
+    // (lowercased with forward slashes on Windows via
+    // `logapp::CanonicalLocator`). Anchors also flatten to the
+    // canonical locator so `AnchorEntry::locator` matches the dedup
+    // key after import -- otherwise a Windows round-trip would drop
+    // every anchor because the case-preserving display path never
+    // matches the lowercased anchor locator.
+    const std::string displayLocator = internal::PathToUtf8(destination);
+    const std::string dedupLocator = CanonicalizeSourceLocator(destination, options);
+    RemapAnchors(embedded, lines, dedupLocator, options);
     embedded.source = LogConfiguration::Source{
         .kind = LogConfiguration::Source::Kind::File,
         .format = LogConfiguration::Source::Format::Json,
-        .locators = {physicalLocator},
-        .locatorDedupKeys = {physicalLocator},
+        .locators = {displayLocator},
+        .locatorDedupKeys = {dedupLocator},
         .regexPattern = {},
     };
 
     const std::string configJson = SerializeCompactConfiguration(embedded);
     std::string metadata =
-        "{\"__slv_bundle__\":{\"formatVersion\":1,\"rowCount\":" +
-        std::to_string(static_cast<std::uint64_t>(lines.size())) +
+        "{\"__slv_bundle__\":{\"formatVersion\":" +
+        std::to_string(SESSION_BUNDLE_FORMAT_VERSION) +
+        ",\"rowCount\":" + std::to_string(static_cast<std::uint64_t>(lines.size())) +
         ",\"configuration\":" + configJson + "}}\n";
     if (metadata.size() > MAX_METADATA_BYTES)
     {
