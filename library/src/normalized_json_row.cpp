@@ -146,7 +146,7 @@ void SerializeNormalizedJsonRow(const LogLine &line, const KeyIndex &keys, std::
         {
             continue;
         }
-        LogValue value = slot.Materialise(line.Source(), line.LineId(), keyId);
+        const LogValue value = slot.Materialise(line.Source(), line.LineId(), keyId);
         if (std::holds_alternative<std::monostate>(value))
         {
             continue;

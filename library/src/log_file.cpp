@@ -54,9 +54,7 @@ void HintSequential(const mio::mmap_source &mmap)
 
 } // namespace
 
-LogFile::LogFile(std::filesystem::path filePath)
-    // Copy both arguments before the delegating call; evaluation order
-    // would make a copy-and-move pair unsafe.
+LogFile::LogFile(const std::filesystem::path &filePath)
     : LogFile(filePath, filePath)
 {
 }

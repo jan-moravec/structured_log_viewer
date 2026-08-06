@@ -811,7 +811,7 @@ void DecodeZstd(
                         fmt::format("First decompressed line in '{}' exceeds metadata limit", sourcePath.string())
                     );
                 }
-                discardedFirstLine.append(produced.data(), prefixSize);
+                discardedFirstLine.append(produced.substr(0, prefixSize));
                 if (newline != std::string_view::npos)
                 {
                     firstLineComplete = true;

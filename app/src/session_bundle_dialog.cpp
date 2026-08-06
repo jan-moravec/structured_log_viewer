@@ -108,7 +108,7 @@ SessionBundleDialog::SessionBundleDialog(
     form->addRow(tr("Destination:"), destinationRow);
 
     // Seed the destination with `<default-dir>/<stem>.slvbundle`.
-    QSettings settings;
+    const QSettings settings;
     const QString rememberedDir = settings.value(SETTINGS_LAST_DIR, mDefaultDir).toString();
     const QString effectiveDir = rememberedDir.isEmpty() ? mDefaultDir : rememberedDir;
     const QString seedName = QStringLiteral("%1%2").arg(defaultStem, QString::fromLatin1(loglib::SESSION_BUNDLE_EXTENSION));

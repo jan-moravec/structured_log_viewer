@@ -188,6 +188,7 @@ public:
     {
         if (mFile != nullptr)
         {
+            // NOLINTNEXTLINE(cppcoreguidelines-owning-memory,cert-err33-c)
             (void)std::fclose(mFile);
         }
     }
@@ -215,6 +216,7 @@ public:
         // Always close, even if flushing or syncing fails.
         const bool flushOk = std::fflush(mFile) == 0;
         const bool syncOk = flushOk && SyncToDisk(mFile);
+        // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
         const bool closeOk = std::fclose(mFile) == 0;
         mFile = nullptr;
         if (!flushOk || !syncOk || !closeOk)
@@ -349,7 +351,7 @@ public:
 
     void Write(std::string_view bytes)
     {
-        ZSTD_inBuffer input{bytes.data(), bytes.size(), 0};
+        ZSTD_inBuffer input{.src = bytes.data(), .size = bytes.size(), .pos = 0};
         while (input.pos < input.size)
         {
             Drain(input, ZSTD_e_continue);
@@ -358,7 +360,7 @@ public:
 
     void Finish()
     {
-        ZSTD_inBuffer input{nullptr, 0, 0};
+        ZSTD_inBuffer input{.src = nullptr, .size = 0, .pos = 0};
         std::size_t remaining = 1;
         while (remaining != 0)
         {
@@ -380,7 +382,7 @@ private:
 
     std::size_t Drain(ZSTD_inBuffer &input, ZSTD_EndDirective directive)
     {
-        ZSTD_outBuffer output{mOutput.data(), mOutput.size(), 0};
+        ZSTD_outBuffer output{.dst = mOutput.data(), .size = mOutput.size(), .pos = 0};
         const std::size_t result = ZSTD_compressStream2(mContext, &output, &input, directive);
         if (ZSTD_isError(result))
         {
@@ -667,11 +669,11 @@ void WriteSessionBundle(
     };
 
     const std::string configJson = SerializeCompactConfiguration(embedded);
-    std::string metadata =
-        "{\"__slv_bundle__\":{\"formatVersion\":" +
+    const std::string metadata =
+        R"({"__slv_bundle__":{"formatVersion":)" +
         std::to_string(SESSION_BUNDLE_FORMAT_VERSION) +
-        ",\"rowCount\":" + std::to_string(static_cast<std::uint64_t>(lines.size())) +
-        ",\"configuration\":" + configJson + "}}\n";
+        R"(,"rowCount":)" + std::to_string(static_cast<std::uint64_t>(lines.size())) +
+        R"(,"configuration":)" + configJson + "}}\n";
     if (metadata.size() > MAX_METADATA_BYTES)
     {
         throw std::length_error("Session bundle metadata exceeds the 64 MiB limit");
@@ -728,6 +730,7 @@ void WriteSessionBundle(
         // Close the raw handle if ownership transfer did not complete.
         if (stagingFile != nullptr)
         {
+            // NOLINTNEXTLINE(cppcoreguidelines-owning-memory,cert-err33-c)
             (void)std::fclose(stagingFile);
             stagingFile = nullptr;
         }

@@ -43,39 +43,49 @@ public:
         // benchmarks are sequential today.
         static std::atomic<int> counter{0};
         const auto tmpDir = std::filesystem::temp_directory_path();
-        do
+        while (true)
         {
             const int n = ++counter;
             mPath = tmpDir / (std::string("slv_bench_bundle_") + std::to_string(n) + ".slvbundle");
-        } while (std::filesystem::exists(mPath));
+            if (!std::filesystem::exists(mPath))
+            {
+                break;
+            }
+        }
     }
 
     ~TempBundlePath()
     {
-        std::error_code ec;
-        std::filesystem::remove(mPath, ec);
-        // Sweep randomized staging names using native path strings.
-        const auto parent = mPath.parent_path();
-        std::error_code iterEc;
-        if (!std::filesystem::exists(parent, iterEc))
+        try
         {
-            return;
+            std::error_code ec;
+            std::filesystem::remove(mPath, ec);
+            // Sweep randomized staging names using native path strings.
+            const auto parent = mPath.parent_path();
+            std::error_code iterEc;
+            if (!std::filesystem::exists(parent, iterEc))
+            {
+                return;
+            }
+            const auto basename = mPath.filename().native();
+            const std::filesystem::path::string_type tmpSuffix =
+                std::filesystem::path(".tmp").native();
+            for (const auto &entry : std::filesystem::directory_iterator(parent, iterEc))
+            {
+                const auto name = entry.path().filename().native();
+                if (name == basename)
+                {
+                    continue;
+                }
+                if (name.starts_with(basename) && name.ends_with(tmpSuffix))
+                {
+                    std::error_code rmEc;
+                    std::filesystem::remove(entry.path(), rmEc);
+                }
+            }
         }
-        const auto basename = mPath.filename().native();
-        const std::filesystem::path::string_type tmpSuffix =
-            std::filesystem::path(".tmp").native();
-        for (const auto &entry : std::filesystem::directory_iterator(parent, iterEc))
+        catch (...) // NOLINT(bugprone-empty-catch): destructor must not throw during benchmark teardown.
         {
-            const auto name = entry.path().filename().native();
-            if (name == basename)
-            {
-                continue;
-            }
-            if (name.starts_with(basename) && name.ends_with(tmpSuffix))
-            {
-                std::error_code rmEc;
-                std::filesystem::remove(entry.path(), rmEc);
-            }
         }
     }
 
@@ -106,7 +116,7 @@ loglib::LogTable BuildLargeJsonTable(std::size_t &outBytes, std::size_t &outReco
 
     InitializeTimezoneData();
 
-    JsonParser parser;
+    const JsonParser parser;
     ParseResult result = ParseFile(parser, testFile.GetFilePath());
     REQUIRE(result.errors.empty());
     REQUIRE(result.data.Lines().size() == outRecordCount);
@@ -186,7 +196,7 @@ TEST_CASE("Read session bundle (JSON, 1'000'000 lines)", "[.][benchmark][session
         [&]() {
             internal::DecompressingByteSource::Options options;
             options.discardFirstLine = true;
-            internal::DecompressingByteSource decoded(bundlePath.Path(), {}, {}, options);
+            const internal::DecompressingByteSource decoded(bundlePath.Path(), {}, {}, options);
             const SessionBundleMetadata metadata = ParseSessionBundleMetadata(decoded.DiscardedFirstLine());
             REQUIRE(metadata.rowCount == recordCount);
             const ParseResult parsed = ParseFile(decoded.EffectivePath());
@@ -220,7 +230,7 @@ TEST_CASE("Round-trip session bundle (JSON, 1'000'000 lines)", "[.][benchmark][s
 
             internal::DecompressingByteSource::Options options;
             options.discardFirstLine = true;
-            internal::DecompressingByteSource decoded(dest.Path(), {}, {}, options);
+            const internal::DecompressingByteSource decoded(dest.Path(), {}, {}, options);
             const SessionBundleMetadata metadata = ParseSessionBundleMetadata(decoded.DiscardedFirstLine());
             REQUIRE(metadata.rowCount == recordCount);
             const ParseResult parsed = ParseFile(decoded.EffectivePath());

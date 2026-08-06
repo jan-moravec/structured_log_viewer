@@ -11,6 +11,8 @@
 
 namespace loglib::internal
 {
+namespace
+{
 
 struct SessionBundleMetadataFields
 {
@@ -24,8 +26,10 @@ struct SessionBundleMetadataEnvelope
     std::optional<SessionBundleMetadataFields> bundle;
 };
 
+} // namespace
 } // namespace loglib::internal
 
+// NOLINTBEGIN(readability-identifier-naming)
 template <> struct glz::meta<loglib::internal::SessionBundleMetadataFields>
 {
     using T = loglib::internal::SessionBundleMetadataFields;
@@ -38,6 +42,7 @@ template <> struct glz::meta<loglib::internal::SessionBundleMetadataEnvelope>
     using T = loglib::internal::SessionBundleMetadataEnvelope;
     static constexpr auto value = object("__slv_bundle__", &T::bundle);
 };
+// NOLINTEND(readability-identifier-naming)
 
 namespace loglib
 {

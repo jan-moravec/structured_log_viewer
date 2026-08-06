@@ -22,7 +22,7 @@ class LogFile
 {
 public:
     /// Throws `std::runtime_error` if the file cannot be opened or mapped.
-    explicit LogFile(std::filesystem::path filePath);
+    explicit LogFile(const std::filesystem::path &filePath);
     /// Map @p storagePath while reporting @p logicalPath as the source.
     LogFile(std::filesystem::path storagePath, std::filesystem::path logicalPath);
 

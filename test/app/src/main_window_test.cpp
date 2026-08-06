@@ -297,7 +297,7 @@ QString WriteBundleFixture(
     const std::function<void(loglib::LogConfiguration &)> &configure
 )
 {
-    TempJsonFile source(lines);
+    const TempJsonFile source(lines);
     loglib::ParseResult parsed = loglib::ParseFile(logapp::QStringToFsPath(source.Path()));
     loglib::LogConfigurationManager manager;
     manager.Update(parsed.data);
@@ -24294,7 +24294,7 @@ private slots:
         // First verify the embedded rule reached configuration.
         QCOMPARE(wired->Model()->Configuration().highlightRules.size(), static_cast<size_t>(1));
 
-        HighlightRuleSet *const highlights = wired->Highlights();
+        const HighlightRuleSet *const highlights = wired->Highlights();
         QVERIFY(highlights != nullptr);
         QCOMPARE(highlights->Rules().size(), static_cast<size_t>(1));
         QVERIFY(highlights->HasActiveRules());
@@ -24334,7 +24334,7 @@ private slots:
         QString uuid;
         {
             auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
-            QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
+            const QSignalSpy finishedSpy(wired->Model(), &LogModel::streamingFinished);
             wired->OpenMixedFilesForTest({bundle}, MainWindow::OpenMode::Replace);
             QTRY_VERIFY_WITH_TIMEOUT(finishedSpy.count() >= 1, 5000);
 
@@ -24348,7 +24348,7 @@ private slots:
         }
 
         auto restored = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
-        QSignalSpy restoredSpy(restored->Model(), &LogModel::streamingFinished);
+        const QSignalSpy restoredSpy(restored->Model(), &LogModel::streamingFinished);
         restored->OpenRecentSessionForTest(uuid);
         QTRY_VERIFY_WITH_TIMEOUT(restoredSpy.count() >= 1, 5000);
         QCOMPARE(
@@ -24367,7 +24367,7 @@ private slots:
         auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
         const TempJsonFile initial({QStringLiteral(R"({"msg":"plain"})")});
-        QSignalSpy initialSpy(wired->Model(), &LogModel::streamingFinished);
+        const QSignalSpy initialSpy(wired->Model(), &LogModel::streamingFinished);
         wired->OpenFilesForTest({initial.Path()}, MainWindow::OpenMode::Replace);
         QTRY_VERIFY_WITH_TIMEOUT(initialSpy.count() >= 1, 5000);
 
@@ -24381,7 +24381,7 @@ private slots:
             {QStringLiteral(R"({"msg":"bundled"})")},
             [](loglib::LogConfiguration &configuration) { configuration.columns.at(0).header = "Embedded"; }
         );
-        QSignalSpy appendSpy(wired->Model(), &LogModel::streamingFinished);
+        const QSignalSpy appendSpy(wired->Model(), &LogModel::streamingFinished);
         wired->OpenMixedFilesForTest({bundle}, MainWindow::OpenMode::Append);
         QTRY_VERIFY_WITH_TIMEOUT(appendSpy.count() >= 1, 5000);
 
@@ -24446,7 +24446,7 @@ private slots:
         // Parse metadata to catch truncated output.
         loglib::internal::DecompressingByteSource::Options options;
         options.discardFirstLine = true;
-        loglib::internal::DecompressingByteSource decoded(destPath, {}, {}, options);
+        const loglib::internal::DecompressingByteSource decoded(destPath, {}, {}, options);
         const loglib::SessionBundleMetadata metadata =
             loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine());
         QCOMPARE(metadata.rowCount, static_cast<std::uint64_t>(ROW_COUNT));

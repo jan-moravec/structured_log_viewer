@@ -3267,11 +3267,6 @@ void MainWindow::BeginAsyncDecompression(
     auto *sharedBytesIn = &mDecompressionBytesIn;
     auto *sharedTotal = &mDecompressionTotalBytesIn;
 
-    // The `clang-analyzer-webkit.UncountedLambdaCapturesChecker` is
-    // WebKit-specific and misclassifies `QAtomicInteger *` captures
-    // -- they are `this` members guarded by `mDecompressionInFlight`.
-    // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
-    //
     // Bundle metadata stripping requires both the extension and zstd.
     const bool isSessionBundle =
         IsSessionBundlePath(originalPath) && codec == loglib::internal::DecompressingByteSource::Codec::Zstd;
@@ -3279,6 +3274,12 @@ void MainWindow::BeginAsyncDecompression(
     // bundle names survive the hop into the worker (see the
     // `file_size` note above).
     const std::filesystem::path input = logapp::QStringToFsPath(originalPath);
+    // `clang-analyzer-webkit.UncountedLambdaCapturesChecker` is WebKit-specific
+    // and misclassifies `QAtomicInteger *` captures -- they are `this` members
+    // guarded by `mDecompressionInFlight`. `bugprone-exception-escape` is a
+    // false positive on `QtConcurrent::run`, which stores any escaped
+    // exception into the returned `QFuture`.
+    // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker,bugprone-exception-escape)
     auto future = QtConcurrent::run([input, sharedBytesIn, sharedTotal, stopToken, isSessionBundle]() {
         // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
         auto progressCb = [sharedBytesIn, sharedTotal](const loglib::internal::DecompressingByteSource::Progress &p) {
@@ -4133,7 +4134,9 @@ void MainWindow::BeginAsyncBundleExport(
     auto *rowsWrittenAtomic = &mExportRowsWritten;
 
     // Let worker exceptions propagate through the future.
-    // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
+    // The WebKit lambda-captures checker misclassifies `QAtomicInteger *`
+    // captures; `rowsWrittenAtomic` is a `this` member outliving the job.
+    // NOLINTBEGIN(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
     auto future = QtConcurrent::run([tablePtr,
                                      configSnapshot,
                                      destination = std::move(destination),
@@ -4154,6 +4157,7 @@ void MainWindow::BeginAsyncBundleExport(
         };
         loglib::WriteSessionBundle(*tablePtr, configSnapshot, destination, options);
     });
+    // NOLINTEND(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
 
     if (mExportWatcher == nullptr)
     {
