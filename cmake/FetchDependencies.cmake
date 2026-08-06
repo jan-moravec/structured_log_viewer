@@ -116,7 +116,7 @@ if(NOT USE_SYSTEM_GLAZE)
     FetchContent_Declare(
         glaze
         GIT_REPOSITORY https://github.com/stephenberry/glaze.git
-        GIT_TAG v7.9.1
+        GIT_TAG v8.0.0
         SYSTEM
         EXCLUDE_FROM_ALL
     )
@@ -129,7 +129,7 @@ if(NOT USE_SYSTEM_SIMDJSON)
     FetchContent_Declare(
         simdjson
         GIT_REPOSITORY https://github.com/simdjson/simdjson.git
-        GIT_TAG v4.6.5
+        GIT_TAG v4.6.6
         SYSTEM
         EXCLUDE_FROM_ALL
     )
