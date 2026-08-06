@@ -42,7 +42,7 @@ repos:
     rev: v2.4.3
     hooks:
       - id: codespell
-        args: [--ignore-words-list=merrors]
+        args: ["--ignore-words-list=merrors,worstcase"]
 
   - repo: https://github.com/Mateusz-Grzelinski/actionlint-py
     rev: v1.7.12.24

@@ -552,7 +552,10 @@ public:
 
     /// Test-only accessor for the source label used by
     /// `UpdateStreamingStatus`.
-    [[nodiscard]] const QString &StreamingFileNameForTest() const noexcept { return mStreamingFileName; }
+    [[nodiscard]] const QString &StreamingFileNameForTest() const noexcept
+    {
+        return mStreamingFileName;
+    }
 
     /// Test-only entry to `ShowRowContextMenu` so tests can pin
     /// right-click selection-adoption rules without a real mouse
@@ -1912,11 +1915,7 @@ private:
     /// `BeginAsyncExport`: same in-flight guard and progress/cancel
     /// plumbing, but the payload is `WriteSessionBundle` rather
     /// than `RowExporter::Run`.
-    void BeginAsyncBundleExport(
-        std::filesystem::path destination,
-        int compressionLevel,
-        int totalWorkers
-    );
+    void BeginAsyncBundleExport(std::filesystem::path destination, int compressionLevel, int totalWorkers);
 
     /// Show the export progress dialog (deferred via
     /// `minimumDuration`).

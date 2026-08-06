@@ -84,8 +84,7 @@ SessionBundleMetadata ParseSessionBundleMetadata(std::string_view json)
 bool LooksLikeSessionBundle(const std::filesystem::path &file) noexcept
 {
     // Keep sniffing behavior identical to the decoder.
-    return internal::DecompressingByteSource::SniffCodec(file) ==
-           internal::DecompressingByteSource::Codec::Zstd;
+    return internal::DecompressingByteSource::SniffCodec(file) == internal::DecompressingByteSource::Codec::Zstd;
 }
 
 } // namespace loglib

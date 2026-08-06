@@ -129,10 +129,8 @@ namespace
         loglib::SESSION_BUNDLE_EXTENSION[0] == '.' && loglib::SESSION_BUNDLE_EXTENSION[1] != '\0',
         "SESSION_BUNDLE_EXTENSION must be a dot-prefixed, non-empty extension"
     );
-    return QFileInfo(path).suffix().compare(
-               QLatin1String(loglib::SESSION_BUNDLE_EXTENSION + 1),
-               Qt::CaseInsensitive
-           ) == 0;
+    return QFileInfo(path).suffix().compare(QLatin1String(loglib::SESSION_BUNDLE_EXTENSION + 1), Qt::CaseInsensitive) ==
+           0;
 }
 
 /// Return whether any filter leaf fails to resolve against @p columns.
@@ -1950,8 +1948,8 @@ bool MainWindow::InitializeTimezoneDatabase()
     }
     catch (std::exception &e)
     {
-        qCritical().noquote() << "Fatal: failed to initialize timezone database at"
-                              << logapp::FsPathToQString(tzdata) << ":" << e.what();
+        qCritical().noquote() << "Fatal: failed to initialize timezone database at" << logapp::FsPathToQString(tzdata)
+                              << ":" << e.what();
         return false;
     }
 
@@ -3093,9 +3091,7 @@ bool MainWindow::ContinueOpenAfterPrepared(
     std::unique_ptr<loglib::LogFile> logFile;
     try
     {
-        logFile = std::make_unique<loglib::LogFile>(
-            effectivePath, logapp::QStringToFsPath(originalPath)
-        );
+        logFile = std::make_unique<loglib::LogFile>(effectivePath, logapp::QStringToFsPath(originalPath));
     }
     catch (const std::exception &e)
     {
@@ -3576,16 +3572,13 @@ void MainWindow::OnDecompressionFinished()
 
     // Apply only the latest armed bundle to a still-empty session.
     const bool armedForThisFile =
-        !mApplyEmbeddedBundleConfigForPath.isEmpty() &&
-        mApplyEmbeddedBundleConfigForPath == mDecompressionOriginalPath;
+        !mApplyEmbeddedBundleConfigForPath.isEmpty() && mApplyEmbeddedBundleConfigForPath == mDecompressionOriginalPath;
     const bool sessionStillFresh = !mCurrentSource.has_value();
     if (bundleMetadata.has_value() && armedForThisFile && sessionStillFresh)
     {
         loglib::LogConfiguration embedded = std::move(bundleMetadata->configuration);
-        const std::string displayPath =
-            logapp::CanonicalDisplayPath(mDecompressionOriginalPath).toStdString();
-        const std::string dedupKey =
-            logapp::CanonicalLocator(mDecompressionOriginalPath).toStdString();
+        const std::string displayPath = logapp::CanonicalDisplayPath(mDecompressionOriginalPath).toStdString();
+        const std::string dedupKey = logapp::CanonicalLocator(mDecompressionOriginalPath).toStdString();
         if (!embedded.source.has_value())
         {
             embedded.source.emplace();
@@ -3977,9 +3970,7 @@ void MainWindow::ExportSessionBundle()
         // to snapshot yet. Ask the user to wait rather than force a
         // partial export.
         QMessageBox::information(
-            this,
-            tr("Export Session Bundle"),
-            tr("Wait for the current file load to finish, then retry.")
+            this, tr("Export Session Bundle"), tr("Wait for the current file load to finish, then retry.")
         );
         return;
     }
@@ -3989,9 +3980,7 @@ void MainWindow::ExportSessionBundle()
         {
             // A one-shot file must finish loading before export.
             QMessageBox::information(
-                this,
-                tr("Export Session Bundle"),
-                tr("Wait for the current file load to finish, then retry.")
+                this, tr("Export Session Bundle"), tr("Wait for the current file load to finish, then retry.")
             );
             return;
         }
@@ -4026,8 +4015,8 @@ void MainWindow::ExportSessionBundle()
         defaultStem = info.completeBaseName();
         // Avoid repeating the extension for names such as
         // `foo.slvbundle.slvbundle`.
-        if (IsSessionBundlePath(primary) && defaultStem.endsWith(
-                QLatin1String(loglib::SESSION_BUNDLE_EXTENSION), Qt::CaseInsensitive))
+        if (IsSessionBundlePath(primary) &&
+            defaultStem.endsWith(QLatin1String(loglib::SESSION_BUNDLE_EXTENSION), Qt::CaseInsensitive))
         {
             defaultStem.chop(QLatin1String(loglib::SESSION_BUNDLE_EXTENSION).size());
         }
@@ -4035,14 +4024,11 @@ void MainWindow::ExportSessionBundle()
     if (defaultStem.isEmpty())
     {
         // Give non-file sources a collision-resistant default name.
-        defaultStem = QStringLiteral("session-%1").arg(
-            QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-hhmmss"))
-        );
+        defaultStem =
+            QStringLiteral("session-%1").arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-hhmmss")));
     }
 
-    SessionBundleDialog dialog(
-        rowCount, defaultStem, DefaultExportDir(), IsLiveTailSession(), this
-    );
+    SessionBundleDialog dialog(rowCount, defaultStem, DefaultExportDir(), IsLiveTailSession(), this);
     if (dialog.exec() != QDialog::Accepted)
     {
         return;
@@ -4056,9 +4042,7 @@ void MainWindow::ExportSessionBundle()
     // Copy current view state into the embedded configuration.
     MirrorSessionStateToConfiguration();
 
-    BeginAsyncBundleExport(
-        logapp::QStringToFsPath(config.destination), config.compressionLevel, config.totalWorkers
-    );
+    BeginAsyncBundleExport(logapp::QStringToFsPath(config.destination), config.compressionLevel, config.totalWorkers);
 }
 
 void MainWindow::ExportSessionBundleToPathForTest(const QString &destination)
@@ -4088,15 +4072,11 @@ void MainWindow::ExportSessionBundleToPathForTest(const QString &destination)
     constexpr int DEFAULT_TEST_COMPRESSION_LEVEL = 3;
     constexpr int DEFAULT_TEST_TOTAL_WORKERS = 0;
     BeginAsyncBundleExport(
-        logapp::QStringToFsPath(destination),
-        DEFAULT_TEST_COMPRESSION_LEVEL,
-        DEFAULT_TEST_TOTAL_WORKERS
+        logapp::QStringToFsPath(destination), DEFAULT_TEST_COMPRESSION_LEVEL, DEFAULT_TEST_TOTAL_WORKERS
     );
 }
 
-void MainWindow::BeginAsyncBundleExport(
-    std::filesystem::path destination, int compressionLevel, int totalWorkers
-)
+void MainWindow::BeginAsyncBundleExport(std::filesystem::path destination, int compressionLevel, int totalWorkers)
 {
     mExportStopSource = loglib::StopSource{};
     mExportRowsWritten.storeRelaxed(0);
@@ -4322,8 +4302,8 @@ void MainWindow::OnExportFinished()
     }
     catch (const std::exception &e)
     {
-        const QString label = mExportIsBundle ? tr("Failed to export session bundle '%1': %2")
-                                              : tr("Failed to export '%1': %2");
+        const QString label =
+            mExportIsBundle ? tr("Failed to export session bundle '%1': %2") : tr("Failed to export '%1': %2");
         errorEntry = label.arg(mExportDestinationPath, QString::fromLocal8Bit(e.what()));
     }
     catch (...)
@@ -4339,12 +4319,8 @@ void MainWindow::OnExportFinished()
 
     if (cancelled)
     {
-        const QString msg = wasBundle
-                                ? tr("Session bundle export cancelled: %1")
-                                : tr("Export cancelled: %1");
-        statusBar()->showMessage(
-            msg.arg(QFileInfo(mExportDestinationPath).fileName()), STATUS_BAR_MESSAGE_TIMEOUT_MS
-        );
+        const QString msg = wasBundle ? tr("Session bundle export cancelled: %1") : tr("Export cancelled: %1");
+        statusBar()->showMessage(msg.arg(QFileInfo(mExportDestinationPath).fileName()), STATUS_BAR_MESSAGE_TIMEOUT_MS);
     }
     else if (!errorEntry.isEmpty())
     {
@@ -4354,16 +4330,15 @@ void MainWindow::OnExportFinished()
     {
         const auto elapsed = std::chrono::steady_clock::now() - mExportStartedAt;
         const qint64 rows = mExportRowsWritten.loadRelaxed();
-        const QString msg = wasBundle
-                                ? tr("Exported session bundle with %L1 rows to %2 in %3")
-                                      .arg(rows)
-                                      .arg(QFileInfo(mExportDestinationPath).fileName())
-                                      .arg(HumanDuration(elapsed))
-                                : tr("Exported %L1 rows to %2 (%3) in %4")
-                                      .arg(rows)
-                                      .arg(QFileInfo(mExportDestinationPath).fileName())
-                                      .arg(mExportFormatLabel)
-                                      .arg(HumanDuration(elapsed));
+        const QString msg = wasBundle ? tr("Exported session bundle with %L1 rows to %2 in %3")
+                                            .arg(rows)
+                                            .arg(QFileInfo(mExportDestinationPath).fileName())
+                                            .arg(HumanDuration(elapsed))
+                                      : tr("Exported %L1 rows to %2 (%3) in %4")
+                                            .arg(rows)
+                                            .arg(QFileInfo(mExportDestinationPath).fileName())
+                                            .arg(mExportFormatLabel)
+                                            .arg(HumanDuration(elapsed));
         statusBar()->showMessage(msg, STATUS_BAR_MESSAGE_TIMEOUT_MS);
         // Only remember on success -- see the deferral note in
         // `ExportFilteredRows`.

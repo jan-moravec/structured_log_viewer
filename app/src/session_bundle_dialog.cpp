@@ -84,11 +84,7 @@ int ClampedSettingsInt(const QSettings &settings, const char *key, int defaultVa
 } // namespace
 
 SessionBundleDialog::SessionBundleDialog(
-    std::size_t rowCount,
-    const QString &defaultStem,
-    QString defaultDir,
-    bool isLiveTail,
-    QWidget *parent
+    std::size_t rowCount, const QString &defaultStem, QString defaultDir, bool isLiveTail, QWidget *parent
 )
     : QDialog(parent), mDefaultDir(std::move(defaultDir))
 {
@@ -111,15 +107,14 @@ SessionBundleDialog::SessionBundleDialog(
     const QSettings settings;
     const QString rememberedDir = settings.value(SETTINGS_LAST_DIR, mDefaultDir).toString();
     const QString effectiveDir = rememberedDir.isEmpty() ? mDefaultDir : rememberedDir;
-    const QString seedName = QStringLiteral("%1%2").arg(defaultStem, QString::fromLatin1(loglib::SESSION_BUNDLE_EXTENSION));
+    const QString seedName =
+        QStringLiteral("%1%2").arg(defaultStem, QString::fromLatin1(loglib::SESSION_BUNDLE_EXTENSION));
     mDestinationEdit->setText(QDir(effectiveDir).filePath(seedName));
 
     mPreviewLabel = new QLabel(this);
     mPreviewLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    mPreviewLabel->setText(
-        tr("Exports %L1 rows with the current filter, sort, anchors, and highlight rules.")
-            .arg(static_cast<qulonglong>(rowCount))
-    );
+    mPreviewLabel->setText(tr("Exports %L1 rows with the current filter, sort, anchors, and highlight rules.")
+                               .arg(static_cast<qulonglong>(rowCount)));
     mPreviewLabel->setWordWrap(true);
     form->addRow(mPreviewLabel);
 
@@ -202,18 +197,14 @@ SessionBundleDialog::Config SessionBundleDialog::Configuration() const
 void SessionBundleDialog::OnBrowseClicked()
 {
     const QString seed = mDestinationEdit->text().trimmed();
-    const QString startPath = seed.isEmpty()
-                                   ? QDir(mDefaultDir).filePath(QStringLiteral("session%1")
-                                                                    .arg(QString::fromLatin1(loglib::SESSION_BUNDLE_EXTENSION)))
-                                   : seed;
+    const QString startPath =
+        seed.isEmpty()
+            ? QDir(mDefaultDir)
+                  .filePath(QStringLiteral("session%1").arg(QString::fromLatin1(loglib::SESSION_BUNDLE_EXTENSION)))
+            : seed;
     // `OnAccept` handles overwrite confirmation for all paths.
     const QString chosen = QFileDialog::getSaveFileName(
-        this,
-        tr("Export Session Bundle"),
-        startPath,
-        BundleFileFilter(),
-        nullptr,
-        QFileDialog::DontConfirmOverwrite
+        this, tr("Export Session Bundle"), startPath, BundleFileFilter(), nullptr, QFileDialog::DontConfirmOverwrite
     );
     if (chosen.isEmpty())
     {

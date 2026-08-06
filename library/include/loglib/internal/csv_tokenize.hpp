@@ -27,8 +27,7 @@ struct CsvCell
 /// final empty cell.
 ///
 /// @p quotedScratch stores unescaped quoted cells.
-template <class Emit>
-bool TokenizeCsvLine(std::string_view line, std::string &quotedScratch, Emit emit)
+template <class Emit> bool TokenizeCsvLine(std::string_view line, std::string &quotedScratch, Emit emit)
 {
     const char *const data = line.data();
     const std::size_t end = line.size();

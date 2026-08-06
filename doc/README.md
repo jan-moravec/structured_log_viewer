@@ -337,7 +337,7 @@ Exports run on a worker thread with a deferred-appearance `QProgressDialog` — 
 A v1 bundle is a standard checksummed zstd stream. Its decompressed content is JSON Lines:
 
 1. A compact metadata object: `{"__slv_bundle__":{"formatVersion":1,"rowCount":…,"configuration":{…}}}`.
-2. One normalized typed JSON object per retained row. Booleans and numbers remain native JSON values and timestamps use the same normalized UTC representation as JSON Lines export.
+1. One normalized typed JSON object per retained row. Booleans and numbers remain native JSON values and timestamps use the same normalized UTC representation as JSON Lines export.
 
 All original sources are deliberately flattened into that single JSONL source. Original file paths, source boundaries, raw formatting, parser settings, and original line IDs are discarded. Anchors are remapped to dense flattened row IDs and rebased to the bundle path; moving the bundle before opening it rebases the embedded source and anchors again to the new location. To inspect a bundle outside the app, run `zstd -d bundle.slvbundle -o bundle.jsonl` (or `unzstd`) and use any text or `jq` JSONL workflow.
 

@@ -87,9 +87,9 @@ LogFile::LogFile(std::filesystem::path storagePath, std::filesystem::path logica
 #endif
         if (ec)
         {
-            throw std::runtime_error(fmt::format(
-                "Failed to memory-map file '{}': {}", internal::PathToUtf8(mStoragePath), ec.message()
-            ));
+            throw std::runtime_error(
+                fmt::format("Failed to memory-map file '{}': {}", internal::PathToUtf8(mStoragePath), ec.message())
+            );
         }
         HintSequential(mMmap);
     }

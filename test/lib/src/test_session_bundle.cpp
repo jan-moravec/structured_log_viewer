@@ -55,7 +55,10 @@ public:
     TempPath(TempPath &&) = delete;
     TempPath &operator=(TempPath &&) = delete;
 
-    [[nodiscard]] const std::filesystem::path &Path() const noexcept { return mPath; }
+    [[nodiscard]] const std::filesystem::path &Path() const noexcept
+    {
+        return mPath;
+    }
 
     /// Legacy deterministic staging path used by compatibility tests.
     [[nodiscard]] std::filesystem::path TemporaryPath() const
@@ -76,13 +79,10 @@ public:
         }
         const std::string basename = mPath.filename().string();
         const std::filesystem::directory_iterator iter(parent, error);
-        return std::ranges::any_of(
-            iter,
-            [&basename](const std::filesystem::directory_entry &entry) {
-                const std::string name = entry.path().filename().string();
-                return name != basename && name.starts_with(basename) && name.ends_with(".tmp");
-            }
-        );
+        return std::ranges::any_of(iter, [&basename](const std::filesystem::directory_entry &entry) {
+            const std::string name = entry.path().filename().string();
+            return name != basename && name.starts_with(basename) && name.ends_with(".tmp");
+        });
     }
 
 private:
@@ -159,8 +159,7 @@ void Write(const std::filesystem::path &path, std::string_view bytes)
 {
     std::string compressed;
     compressed.resize(ZSTD_compressBound(input.size()));
-    const std::size_t size =
-        ZSTD_compress(compressed.data(), compressed.size(), input.data(), input.size(), 1);
+    const std::size_t size = ZSTD_compress(compressed.data(), compressed.size(), input.data(), input.size(), 1);
     if (ZSTD_isError(size))
     {
         throw std::runtime_error(ZSTD_getErrorName(size));
@@ -225,7 +224,11 @@ TEST_CASE("session bundle metadata preserves investigation configuration and fla
 {
     const TempPath source(".jsonl");
     const TempPath bundle(".slvbundle");
-    Write(source.Path(), R"({"service":"auth","count":4})" "\n");
+    Write(
+        source.Path(),
+        R"({"service":"auth","count":4})"
+        "\n"
+    );
     const loglib::LogTable table = ParseTable(source.Path());
 
     loglib::LogConfiguration configuration;
@@ -316,10 +319,7 @@ TEST_CASE("session bundle metadata preserves investigation configuration and fla
     CHECK(restored.source->regexPattern.empty());
 }
 
-TEST_CASE(
-    "session bundle uses canonicalizeSourceLocator for embedded source dedup key",
-    "[SessionBundle]"
-)
+TEST_CASE("session bundle uses canonicalizeSourceLocator for embedded source dedup key", "[SessionBundle]")
 {
     // The GUI wires `canonicalizeSourceLocator` to `CanonicalLocator`
     // so anchors round-trip. The same callback must also shape
@@ -328,7 +328,11 @@ TEST_CASE(
     // consumer (GUI vs. non-GUI).
     const TempPath source(".jsonl");
     const TempPath bundle(".slvbundle");
-    Write(source.Path(), R"({"msg":"x"})" "\n");
+    Write(
+        source.Path(),
+        R"({"msg":"x"})"
+        "\n"
+    );
     loglib::LogTable table = ParseTable(source.Path());
 
     loglib::SessionBundleWriteOptions options;
@@ -347,10 +351,7 @@ TEST_CASE(
     CHECK(restored.source->locators == std::vector<std::string>{bundle.Path().string()});
     // Dedup key runs through the callback, matching the shape
     // anchors are compared against.
-    CHECK(
-        restored.source->locatorDedupKeys ==
-        std::vector<std::string>{"canonical://" + bundle.Path().string()}
-    );
+    CHECK(restored.source->locatorDedupKeys == std::vector<std::string>{"canonical://" + bundle.Path().string()});
 }
 
 TEST_CASE("session bundle anchors are densely remapped and detached anchors are dropped", "[SessionBundle]")
@@ -358,8 +359,18 @@ TEST_CASE("session bundle anchors are densely remapped and detached anchors are 
     const TempPath sourceA(".a.jsonl");
     const TempPath sourceB(".b.jsonl");
     const TempPath bundle(".slvbundle");
-    Write(sourceA.Path(), R"({"msg":"a0"})" "\n" R"({"msg":"a1"})" "\n");
-    Write(sourceB.Path(), R"({"msg":"b0"})" "\n");
+    Write(
+        sourceA.Path(),
+        R"({"msg":"a0"})"
+        "\n"
+        R"({"msg":"a1"})"
+        "\n"
+    );
+    Write(
+        sourceB.Path(),
+        R"({"msg":"b0"})"
+        "\n"
+    );
 
     loglib::ParseResult parsedA = loglib::ParseFile(sourceA.Path());
     loglib::ParseResult parsedB = loglib::ParseFile(sourceB.Path());
@@ -379,8 +390,7 @@ TEST_CASE("session bundle anchors are densely remapped and detached anchors are 
     loglib::WriteSessionBundle(table, configuration, bundle.Path());
 
     auto decoded = DecodeBundle(bundle.Path());
-    const auto anchors =
-        loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.anchors;
+    const auto anchors = loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.anchors;
     REQUIRE(anchors.size() == 2);
     CHECK(anchors[0].locator == bundle.Path().string());
     CHECK(anchors[0].lineId == 1);
@@ -399,7 +409,13 @@ TEST_CASE("canonicalizeSourceLocator bridges canonicalized anchors to raw source
     // form.
     const TempPath source(".jsonl");
     const TempPath bundle(".slvbundle");
-    Write(source.Path(), R"({"msg":"a0"})" "\n" R"({"msg":"a1"})" "\n");
+    Write(
+        source.Path(),
+        R"({"msg":"a0"})"
+        "\n"
+        R"({"msg":"a1"})"
+        "\n"
+    );
     loglib::LogTable table = ParseTable(source.Path());
 
     // Force a canonical form that does not equal `PathToUtf8()`.
@@ -417,20 +433,16 @@ TEST_CASE("canonicalizeSourceLocator bridges canonicalized anchors to raw source
         const TempPath unbridged(".slvbundle");
         loglib::WriteSessionBundle(table, configuration, unbridged.Path());
         auto decoded = DecodeBundle(unbridged.Path());
-        const auto anchors =
-            loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.anchors;
+        const auto anchors = loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.anchors;
         CHECK(anchors.empty());
     }
 
     loglib::SessionBundleWriteOptions options;
-    options.canonicalizeSourceLocator = [](const std::filesystem::path &p) {
-        return "canonical://" + p.string();
-    };
+    options.canonicalizeSourceLocator = [](const std::filesystem::path &p) { return "canonical://" + p.string(); };
     loglib::WriteSessionBundle(table, configuration, bundle.Path(), options);
 
     auto decoded = DecodeBundle(bundle.Path());
-    const auto anchors =
-        loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.anchors;
+    const auto anchors = loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.anchors;
     REQUIRE(anchors.size() == 2);
     // Anchors flatten to the canonical destination form so they
     // match `Source::locatorDedupKeys` on the receiving side (the
@@ -450,8 +462,16 @@ TEST_CASE("session bundle drops anchors whose `(locator, lineId)` matches multip
     const TempPath sourceA(".a.jsonl");
     const TempPath sourceB(".b.jsonl");
     const TempPath bundle(".slvbundle");
-    Write(sourceA.Path(), R"({"msg":"a0"})" "\n");
-    Write(sourceB.Path(), R"({"msg":"b0"})" "\n");
+    Write(
+        sourceA.Path(),
+        R"({"msg":"a0"})"
+        "\n"
+    );
+    Write(
+        sourceB.Path(),
+        R"({"msg":"b0"})"
+        "\n"
+    );
 
     loglib::ParseResult parsedA = loglib::ParseFile(sourceA.Path());
     loglib::ParseResult parsedB = loglib::ParseFile(sourceB.Path());
@@ -473,8 +493,7 @@ TEST_CASE("session bundle drops anchors whose `(locator, lineId)` matches multip
     loglib::WriteSessionBundle(table, configuration, bundle.Path(), options);
 
     auto decoded = DecodeBundle(bundle.Path());
-    const auto anchors =
-        loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.anchors;
+    const auto anchors = loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.anchors;
     CHECK(anchors.empty());
 }
 
@@ -483,7 +502,13 @@ TEST_CASE("session bundle drops anchors with an empty `locator`", "[SessionBundl
     // Empty locators cannot identify a source row.
     const TempPath source(".jsonl");
     const TempPath bundle(".slvbundle");
-    Write(source.Path(), R"({"msg":"a0"})" "\n" R"({"msg":"a1"})" "\n");
+    Write(
+        source.Path(),
+        R"({"msg":"a0"})"
+        "\n"
+        R"({"msg":"a1"})"
+        "\n"
+    );
     loglib::LogTable table = ParseTable(source.Path());
 
     loglib::LogConfiguration configuration = table.Configuration().Configuration();
@@ -495,8 +520,7 @@ TEST_CASE("session bundle drops anchors with an empty `locator`", "[SessionBundl
     loglib::WriteSessionBundle(table, configuration, bundle.Path());
 
     auto decoded = DecodeBundle(bundle.Path());
-    const auto anchors =
-        loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.anchors;
+    const auto anchors = loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration.anchors;
     CHECK(anchors.empty());
 }
 
@@ -504,19 +528,24 @@ TEST_CASE("session bundle round-trips non-ASCII destination paths", "[SessionBun
 {
     // Non-ASCII destinations must survive writing and reopening.
     const TempPath source(".jsonl");
-    Write(source.Path(), R"({"msg":"row"})" "\n");
+    Write(
+        source.Path(),
+        R"({"msg":"row"})"
+        "\n"
+    );
     loglib::LogTable table = ParseTable(source.Path());
 
     static std::atomic<unsigned> counter{0};
     // Use explicit UTF-8 bytes to avoid compiler charset dependence.
-    const std::string utf8Filename =
-        "slv-bundle-"
-        "\xC5\xBE"     // U+017E z-with-caron
-        "\xC3\xA9"     // U+00E9 e-acute
-        "\xE6\x97\xA5" // U+65E5 CJK "day"
-        "-" + std::to_string(++counter) + ".slvbundle";
+    const std::string utf8Filename = "slv-bundle-"
+                                     "\xC5\xBE"     // U+017E z-with-caron
+                                     "\xC3\xA9"     // U+00E9 e-acute
+                                     "\xE6\x97\xA5" // U+65E5 CJK "day"
+                                     "-" +
+                                     std::to_string(++counter) + ".slvbundle";
     // Avoid Windows active-code-page conversion.
-    const std::filesystem::path bundlePath = std::filesystem::temp_directory_path() / loglib::internal::Utf8ToPath(utf8Filename);
+    const std::filesystem::path bundlePath =
+        std::filesystem::temp_directory_path() / loglib::internal::Utf8ToPath(utf8Filename);
     std::error_code cleanupError;
     std::filesystem::remove(bundlePath, cleanupError);
     try
@@ -543,7 +572,11 @@ TEST_CASE("session bundle cancellation before write preserves destination and le
 {
     const TempPath source(".jsonl");
     const TempPath bundle(".slvbundle");
-    Write(source.Path(), R"({"msg":"row"})" "\n");
+    Write(
+        source.Path(),
+        R"({"msg":"row"})"
+        "\n"
+    );
     Write(bundle.Path(), "existing destination");
     loglib::LogTable table = ParseTable(source.Path());
 
@@ -594,7 +627,11 @@ TEST_CASE("successful session bundle write atomically replaces destination", "[S
 {
     const TempPath source(".jsonl");
     const TempPath bundle(".slvbundle");
-    Write(source.Path(), R"({"msg":"replacement"})" "\n");
+    Write(
+        source.Path(),
+        R"({"msg":"replacement"})"
+        "\n"
+    );
     Write(bundle.Path(), "old destination");
     loglib::LogTable table = ParseTable(source.Path());
 
@@ -612,7 +649,11 @@ TEST_CASE("session bundle writer preserves unrelated .tmp siblings in the destin
     // The writer must not remove unrelated `.tmp` siblings.
     const TempPath source(".jsonl");
     const TempPath bundle(".slvbundle");
-    Write(source.Path(), R"({"msg":"only"})" "\n");
+    Write(
+        source.Path(),
+        R"({"msg":"only"})"
+        "\n"
+    );
 
     // Plant a decoy that resembles, but is not, a staging file.
     const std::filesystem::path decoy = std::filesystem::path(bundle.Path().string() + ".manual-decoy.tmp");
@@ -636,15 +677,11 @@ TEST_CASE("session bundle metadata rejects malformed envelope versions and exces
     CHECK_THROWS_AS(loglib::ParseSessionBundleMetadata("not json"), loglib::SessionBundleReadError);
     CHECK_THROWS_AS(loglib::ParseSessionBundleMetadata("{}"), loglib::SessionBundleReadError);
     CHECK_THROWS_AS(
-        loglib::ParseSessionBundleMetadata(
-            R"({"__slv_bundle__":{"formatVersion":0,"rowCount":0,"configuration":{}}})"
-        ),
+        loglib::ParseSessionBundleMetadata(R"({"__slv_bundle__":{"formatVersion":0,"rowCount":0,"configuration":{}}})"),
         loglib::SessionBundleVersionError
     );
     CHECK_THROWS_AS(
-        loglib::ParseSessionBundleMetadata(
-            R"({"__slv_bundle__":{"formatVersion":2,"rowCount":0,"configuration":{}}})"
-        ),
+        loglib::ParseSessionBundleMetadata(R"({"__slv_bundle__":{"formatVersion":2,"rowCount":0,"configuration":{}}})"),
         loglib::SessionBundleVersionError
     );
     CHECK_THROWS_AS(
@@ -659,7 +696,11 @@ TEST_CASE("LooksLikeSessionBundle distinguishes plain input from produced zstd b
 {
     const TempPath plain(".jsonl");
     const TempPath bundle(".slvbundle");
-    Write(plain.Path(), R"({"msg":"plain"})" "\n");
+    Write(
+        plain.Path(),
+        R"({"msg":"plain"})"
+        "\n"
+    );
     CHECK_FALSE(loglib::LooksLikeSessionBundle(plain.Path()));
 
     loglib::LogTable table = ParseTable(plain.Path());
@@ -674,17 +715,17 @@ TEST_CASE("session bundle round-trips ISO-8601 Time column values", "[SessionBun
     const TempPath bundle(".slvbundle");
     Write(
         source.Path(),
-        R"({"ts":"2025-04-25T12:34:56.123456","msg":"row0"})" "\n"
-        R"({"ts":"2025-04-25T12:34:57.789012","msg":"row1"})" "\n"
+        R"({"ts":"2025-04-25T12:34:56.123456","msg":"row0"})"
+        "\n"
+        R"({"ts":"2025-04-25T12:34:57.789012","msg":"row1"})"
+        "\n"
     );
 
     loglib::LogTable table = ParseTableWithTimestamps(source.Path());
     // Confirm the source table contains typed timestamps.
     REQUIRE(table.Data().Lines().size() == 2);
-    const loglib::TimeStamp originalRow0 =
-        std::get<loglib::TimeStamp>(table.Data().Lines()[0].GetValue("ts"));
-    const loglib::TimeStamp originalRow1 =
-        std::get<loglib::TimeStamp>(table.Data().Lines()[1].GetValue("ts"));
+    const loglib::TimeStamp originalRow0 = std::get<loglib::TimeStamp>(table.Data().Lines()[0].GetValue("ts"));
+    const loglib::TimeStamp originalRow1 = std::get<loglib::TimeStamp>(table.Data().Lines()[1].GetValue("ts"));
 
     loglib::WriteSessionBundle(table, table.Configuration().Configuration(), bundle.Path());
 
@@ -699,15 +740,16 @@ TEST_CASE("session bundle round-trips ISO-8601 Time column values", "[SessionBun
     CHECK(std::get<loglib::TimeStamp>(reloaded.Data().Lines()[1].GetValue("ts")) == originalRow1);
 }
 
-TEST_CASE(
-    "session bundle prepends bundle-canonical Time parseFormat to embedded configuration",
-    "[SessionBundle]"
-)
+TEST_CASE("session bundle prepends bundle-canonical Time parseFormat to embedded configuration", "[SessionBundle]")
 {
     // Embedded Time columns must parse the normalized bundle format.
     const TempPath source(".jsonl");
     const TempPath bundle(".slvbundle");
-    Write(source.Path(), R"({"ts":"25/04/2025 12:34:56","msg":"row"})" "\n");
+    Write(
+        source.Path(),
+        R"({"ts":"25/04/2025 12:34:56","msg":"row"})"
+        "\n"
+    );
     loglib::LogTable table = ParseTable(source.Path());
 
     loglib::LogConfiguration configuration = table.Configuration().Configuration();
@@ -727,17 +769,15 @@ TEST_CASE(
     const loglib::LogConfiguration restored =
         loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration;
 
-    const auto tsColumn =
-        std::ranges::find_if(restored.columns, [](const loglib::LogConfiguration::Column &column) {
-            return column.keys.size() == 1 && column.keys.front() == "ts";
-        });
+    const auto tsColumn = std::ranges::find_if(restored.columns, [](const loglib::LogConfiguration::Column &column) {
+        return column.keys.size() == 1 && column.keys.front() == "ts";
+    });
     REQUIRE(tsColumn != restored.columns.end());
     CHECK(tsColumn->type == loglib::LogConfiguration::Type::Time);
     REQUIRE(tsColumn->parseFormats.size() >= 2);
     // Keep the fast ISO parser first.
     CHECK(tsColumn->parseFormats.front() == "%FT%T");
-    CHECK(std::ranges::find(tsColumn->parseFormats, std::string("%d/%m/%Y %H:%M:%S")) !=
-          tsColumn->parseFormats.end());
+    CHECK(std::ranges::find(tsColumn->parseFormats, std::string("%d/%m/%Y %H:%M:%S")) != tsColumn->parseFormats.end());
 }
 
 TEST_CASE("bundle metadata extraction enforces first-line cap and newline", "[SessionBundle]")
@@ -746,22 +786,15 @@ TEST_CASE("bundle metadata extraction enforces first-line cap and newline", "[Se
     const TempPath unterminated(".slvbundle");
     Write(oversized.Path(), CompressZstd("0123456789\n{}\n"));
     Write(
-        unterminated.Path(),
-        CompressZstd(R"({"__slv_bundle__":{"formatVersion":1,"rowCount":0,"configuration":{}}})")
+        unterminated.Path(), CompressZstd(R"({"__slv_bundle__":{"formatVersion":1,"rowCount":0,"configuration":{}}})")
     );
 
     loglib::internal::DecompressingByteSource::Options capped;
     capped.discardFirstLine = true;
     capped.maxDiscardedFirstLineBytes = 8;
-    CHECK_THROWS_AS(
-        loglib::internal::DecompressingByteSource(oversized.Path(), {}, {}, capped),
-        std::runtime_error
-    );
+    CHECK_THROWS_AS(loglib::internal::DecompressingByteSource(oversized.Path(), {}, {}, capped), std::runtime_error);
 
     loglib::internal::DecompressingByteSource::Options normal;
     normal.discardFirstLine = true;
-    CHECK_THROWS_AS(
-        loglib::internal::DecompressingByteSource(unterminated.Path(), {}, {}, normal),
-        std::runtime_error
-    );
+    CHECK_THROWS_AS(loglib::internal::DecompressingByteSource(unterminated.Path(), {}, {}, normal), std::runtime_error);
 }

@@ -20,9 +20,7 @@ namespace loglib::internal
 /// Convert UTF-8 bytes to a portable filesystem path.
 [[nodiscard]] inline std::filesystem::path Utf8ToPath(std::string_view utf8)
 {
-    return std::filesystem::path(
-        std::u8string(reinterpret_cast<const char8_t *>(utf8.data()), utf8.size())
-    );
+    return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(utf8.data()), utf8.size()));
 }
 
 /// Open a binary file for reading, using the wide path on Windows.

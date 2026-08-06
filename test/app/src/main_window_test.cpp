@@ -17,8 +17,8 @@
 #include "main_window.hpp"
 #include "parse_errors_dock.hpp"
 #include "preferences_editor.hpp"
-#include "qt_streaming_log_sink.hpp"
 #include "qstring_path.hpp"
+#include "qt_streaming_log_sink.hpp"
 #include "record_detail_dock.hpp"
 #include "record_detail_widget.hpp"
 #include "record_detail_window.hpp"
@@ -46,10 +46,10 @@
 #include <loglib/log_parse_sink.hpp>
 #include <loglib/log_processing.hpp>
 #include <loglib/log_value.hpp>
+#include <loglib/parse_file.hpp>
 #include <loglib/parser_options.hpp>
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/parsers/logfmt_parser.hpp>
-#include <loglib/parse_file.hpp>
 #include <loglib/query_parser.hpp>
 #include <loglib/session_bundle.hpp>
 #include <loglib/stop_token.hpp>
@@ -24213,7 +24213,9 @@ private slots:
         QCoreApplication::processEvents();
 
         QCOMPARE(wired->Model()->rowCount(), 2);
-        QCOMPARE(QString::fromStdString(wired->Model()->Configuration().columns.at(0).header), QString("Embedded value"));
+        QCOMPARE(
+            QString::fromStdString(wired->Model()->Configuration().columns.at(0).header), QString("Embedded value")
+        );
         QCOMPARE(wired->FilterModel()->SortColumn(), 0);
         QCOMPARE(wired->FilterModel()->SortOrder(), Qt::DescendingOrder);
 
@@ -24221,18 +24223,14 @@ private slots:
         QVERIFY(source.has_value());
         QCOMPARE(source->kind, loglib::LogConfiguration::Source::Kind::File);
         QCOMPARE(source->locators, std::vector<std::string>{logapp::CanonicalDisplayPath(moved).toStdString()});
-        QCOMPARE(
-            source->locatorDedupKeys,
-            std::vector<std::string>{logapp::CanonicalLocator(moved).toStdString()}
-        );
+        QCOMPARE(source->locatorDedupKeys, std::vector<std::string>{logapp::CanonicalLocator(moved).toStdString()});
         QVERIFY(!wired->windowTitle().contains(QStringLiteral("[Bundle]")));
         QCOMPARE(wired->Model()->Configuration().anchors.size(), static_cast<size_t>(1));
         // Anchor locators must match `Source::locatorDedupKeys`
         // (canonical form) so `AnchorManager::Key` compares hit; the
         // display path silently mismatched on Windows.
         QCOMPARE(
-            wired->Model()->Configuration().anchors.front().locator,
-            logapp::CanonicalLocator(moved).toStdString()
+            wired->Model()->Configuration().anchors.front().locator, logapp::CanonicalLocator(moved).toStdString()
         );
         // Fixture anchored line-id 1 -> source row 1 must actually be
         // reachable through `LogModel`. Guards a load-side
@@ -24326,9 +24324,9 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
 
         const QString bundle = WriteBundleFixture(
-            bundleDir,
-            {QStringLiteral(R"({"msg":"saved"})")},
-            [](loglib::LogConfiguration &configuration) { configuration.columns.at(0).header = "Embedded"; }
+            bundleDir, {QStringLiteral(R"({"msg":"saved"})")}, [](loglib::LogConfiguration &configuration) {
+                configuration.columns.at(0).header = "Embedded";
+            }
         );
 
         QString uuid;
@@ -24351,10 +24349,7 @@ private slots:
         const QSignalSpy restoredSpy(restored->Model(), &LogModel::streamingFinished);
         restored->OpenRecentSessionForTest(uuid);
         QTRY_VERIFY_WITH_TIMEOUT(restoredSpy.count() >= 1, 5000);
-        QCOMPARE(
-            QString::fromStdString(restored->Model()->Configuration().columns.at(0).header),
-            QString("Autosaved")
-        );
+        QCOMPARE(QString::fromStdString(restored->Model()->Configuration().columns.at(0).header), QString("Autosaved"));
     }
 
     void TestAppendingSessionBundlePreservesActiveConfiguration()
@@ -24377,9 +24372,9 @@ private slots:
         wired->Model()->NotifyConfigurationReplaced();
 
         const QString bundle = WriteBundleFixture(
-            bundleDir,
-            {QStringLiteral(R"({"msg":"bundled"})")},
-            [](loglib::LogConfiguration &configuration) { configuration.columns.at(0).header = "Embedded"; }
+            bundleDir, {QStringLiteral(R"({"msg":"bundled"})")}, [](loglib::LogConfiguration &configuration) {
+                configuration.columns.at(0).header = "Embedded";
+            }
         );
         const QSignalSpy appendSpy(wired->Model(), &LogModel::streamingFinished);
         wired->OpenMixedFilesForTest({bundle}, MainWindow::OpenMode::Append);
@@ -24399,15 +24394,11 @@ private slots:
         const QTemporaryDir bundleDir;
         QVERIFY(sessionsDir.isValid());
         QVERIFY(bundleDir.isValid());
-        SessionHistoryManager manager(
-            QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>()
-        );
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
         auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
         wired->SetSuppressDialogsForTest(true);
 
-        auto restore = qScopeGuard([&wired]() {
-            wired->SetSessionModeForTest(MainWindow::TestSessionMode::Idle);
-        });
+        auto restore = qScopeGuard([&wired]() { wired->SetSessionModeForTest(MainWindow::TestSessionMode::Idle); });
         wired->SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
 
         LogModel *const model = wired->Model();
@@ -24447,11 +24438,9 @@ private slots:
         loglib::internal::DecompressingByteSource::Options options;
         options.discardFirstLine = true;
         const loglib::internal::DecompressingByteSource decoded(destPath, {}, {}, options);
-        const loglib::SessionBundleMetadata metadata =
-            loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine());
+        const loglib::SessionBundleMetadata metadata = loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine());
         QCOMPARE(metadata.rowCount, static_cast<std::uint64_t>(ROW_COUNT));
     }
-
 
     // CLI variant: `app cfg.json log.json` applies the cfg first
     // and streams the log under it.

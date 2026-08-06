@@ -89,10 +89,10 @@ ctest --preset relwithdebinfo-benchmark
 ## Diagnosing a test failure
 
 1. Rerun the same failing test once with the same preset. This distinguishes a repeatable failure from known filesystem-timing flakes.
-2. Reproduce with `-V` and the narrowest useful `-R` or `-L` filter. Test presets already enable output on failure.
-3. Inspect the failing assertion and relevant changes. `git log -S <TestName>` and `git blame` can provide context, but history alone does **not** prove a runtime failure predates the branch.
-4. Do not stash changes and rebuild a large target merely to make an unsupported “pre-existing” claim. If a baseline run is necessary, weigh its cost and use an isolated worktree or CI result.
-5. Do not silence flakiness by disabling a test. Record it with an issue or a referenced TODO; new preset exclusions require explicit justification.
+1. Reproduce with `-V` and the narrowest useful `-R` or `-L` filter. Test presets already enable output on failure.
+1. Inspect the failing assertion and relevant changes. `git log -S <TestName>` and `git blame` can provide context, but history alone does **not** prove a runtime failure predates the branch.
+1. Do not stash changes and rebuild a large target merely to make an unsupported “pre-existing” claim. If a baseline run is necessary, weigh its cost and use an isolated worktree or CI result.
+1. Do not silence flakiness by disabling a test. Record it with an issue or a referenced TODO; new preset exclusions require explicit justification.
 
 ## Validation by change type
 

@@ -6,7 +6,7 @@ namespace loglib
 {
 class KeyIndex;
 class LogLine;
-}
+} // namespace loglib
 
 namespace loglib::internal
 {

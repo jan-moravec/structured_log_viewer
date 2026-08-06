@@ -823,13 +823,7 @@ void DecodeZstd(
                 }
             }
             WriteOutput(
-                out,
-                produced.data(),
-                produced.size(),
-                tempPath,
-                sourcePath,
-                decompressedSize,
-                maxDecompressedBytes
+                out, produced.data(), produced.size(), tempPath, sourcePath, decompressedSize, maxDecompressedBytes
             );
             lastResult = result;
         }
@@ -849,7 +843,9 @@ void DecodeZstd(
     }
     if (!firstLineComplete)
     {
-        throw std::runtime_error(fmt::format("Compressed stream '{}' has no metadata line terminator", sourcePath.string()));
+        throw std::runtime_error(
+            fmt::format("Compressed stream '{}' has no metadata line terminator", sourcePath.string())
+        );
     }
 }
 
@@ -908,8 +904,9 @@ DecompressingByteSource::DecompressingByteSource(
         if (options.discardFirstLine)
         {
             throw std::invalid_argument(
-                fmt::format("discardFirstLine requires a compressed input; '{}' is not compressed",
-                            mDisplayPath.string())
+                fmt::format(
+                    "discardFirstLine requires a compressed input; '{}' is not compressed", mDisplayPath.string()
+                )
             );
         }
         return;

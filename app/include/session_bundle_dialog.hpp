@@ -35,11 +35,7 @@ public:
     /// @p defaultDir  starting directory for the browse dialog.
     /// @p isLiveTail  show the live-tail snapshot caveat when true.
     SessionBundleDialog(
-        std::size_t rowCount,
-        const QString &defaultStem,
-        QString defaultDir,
-        bool isLiveTail,
-        QWidget *parent = nullptr
+        std::size_t rowCount, const QString &defaultStem, QString defaultDir, bool isLiveTail, QWidget *parent = nullptr
     );
 
     /// Only meaningful after `exec()` returned `Accepted`.

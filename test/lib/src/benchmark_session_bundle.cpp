@@ -68,8 +68,7 @@ public:
                 return;
             }
             const auto basename = mPath.filename().native();
-            const std::filesystem::path::string_type tmpSuffix =
-                std::filesystem::path(".tmp").native();
+            const std::filesystem::path::string_type tmpSuffix = std::filesystem::path(".tmp").native();
             for (const auto &entry : std::filesystem::directory_iterator(parent, iterEc))
             {
                 const auto name = entry.path().filename().native();
@@ -94,7 +93,10 @@ public:
     TempBundlePath(TempBundlePath &&) = delete;
     TempBundlePath &operator=(TempBundlePath &&) = delete;
 
-    [[nodiscard]] const std::filesystem::path &Path() const noexcept { return mPath; }
+    [[nodiscard]] const std::filesystem::path &Path() const noexcept
+    {
+        return mPath;
+    }
 
 private:
     std::filesystem::path mPath;
@@ -144,7 +146,8 @@ TEST_CASE("Write session bundle (JSON, 1'000'000 lines)", "[.][benchmark][sessio
     const LogConfiguration &cfg = table.Configuration().Configuration();
 
     RunTimedSamples(
-        "WriteSessionBundle 1'000'000 JSON entries (level=3, single-threaded)", 3,
+        "WriteSessionBundle 1'000'000 JSON entries (level=3, single-threaded)",
+        3,
         {.bytes = bytes, .lines = recordCount},
         [&]() {
             const TempBundlePath dest;
@@ -191,7 +194,8 @@ TEST_CASE("Read session bundle (JSON, 1'000'000 lines)", "[.][benchmark][session
     );
 
     RunTimedSamples(
-        "Decompress and parse session bundle (1'000'000 JSON entries)", 3,
+        "Decompress and parse session bundle (1'000'000 JSON entries)",
+        3,
         {.bytes = bytes, .lines = recordCount},
         [&]() {
             internal::DecompressingByteSource::Options options;
@@ -220,8 +224,7 @@ TEST_CASE("Round-trip session bundle (JSON, 1'000'000 lines)", "[.][benchmark][s
     const LogConfiguration &cfg = table.Configuration().Configuration();
 
     RunTimedSamples(
-        "Round-trip 1'000'000 JSON entries (write + read)", 3, {.bytes = bytes, .lines = recordCount},
-        [&]() {
+        "Round-trip 1'000'000 JSON entries (write + read)", 3, {.bytes = bytes, .lines = recordCount}, [&]() {
             const TempBundlePath dest;
             SessionBundleWriteOptions writeOpts;
             writeOpts.compressionLevel = 3;

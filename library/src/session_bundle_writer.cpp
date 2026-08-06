@@ -32,12 +32,12 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
-#include <windows.h>
 #include <fcntl.h>
 #include <io.h>
+#include <windows.h>
 #else
-#include <fcntl.h>
 #include <sys/stat.h>
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -74,7 +74,9 @@ std::filesystem::path MakeStagingTempPath(const std::filesystem::path &destinati
     std::array<char, SUFFIX_BUFFER_SIZE> suffix{};
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg,cert-err33-c) -- fixed-size buffer, format is trusted.
     const int written = std::snprintf(
-        suffix.data(), suffix.size(), ".%016llx.%016llx.tmp",
+        suffix.data(),
+        suffix.size(),
+        ".%016llx.%016llx.tmp",
         static_cast<unsigned long long>(PROCESS_SEED),
         static_cast<unsigned long long>(next)
     );
@@ -100,9 +102,7 @@ enum class ExclusiveOpenStatus
 };
 
 /// Open @p path for binary writing without replacing an existing file.
-std::FILE *OpenExclusiveForBinaryWrite(
-    const std::filesystem::path &path, ExclusiveOpenStatus &outStatus
-) noexcept
+std::FILE *OpenExclusiveForBinaryWrite(const std::filesystem::path &path, ExclusiveOpenStatus &outStatus) noexcept
 {
     outStatus = ExclusiveOpenStatus::OtherError;
 #ifdef _WIN32
@@ -145,15 +145,10 @@ std::FILE *OpenExclusiveForBinaryWrite(
     outStatus = ExclusiveOpenStatus::Ok;
     return fp;
 #else
-    const int fd = ::open(
-        path.c_str(),
-        O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
-        S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH
-    );
+    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
     if (fd == -1)
     {
-        outStatus =
-            (errno == EEXIST) ? ExclusiveOpenStatus::AlreadyExists : ExclusiveOpenStatus::OtherError;
+        outStatus = (errno == EEXIST) ? ExclusiveOpenStatus::AlreadyExists : ExclusiveOpenStatus::OtherError;
         return nullptr;
     }
     std::FILE *fp = ::fdopen(fd, "wb");
@@ -178,8 +173,7 @@ public:
         if (mFile == nullptr)
         {
             throw std::runtime_error(
-                "Session bundle: FileHandle received a null FILE* for '" +
-                internal::PathToUtf8(mPath) + "'"
+                "Session bundle: FileHandle received a null FILE* for '" + internal::PathToUtf8(mPath) + "'"
             );
         }
     }
@@ -200,9 +194,7 @@ public:
     {
         if (!bytes.empty() && std::fwrite(bytes.data(), 1, bytes.size(), mFile) != bytes.size())
         {
-            throw std::runtime_error(
-                "Session bundle: short write to '" + internal::PathToUtf8(mPath) + "'"
-            );
+            throw std::runtime_error("Session bundle: short write to '" + internal::PathToUtf8(mPath) + "'");
         }
     }
 
@@ -221,9 +213,7 @@ public:
         mFile = nullptr;
         if (!flushOk || !syncOk || !closeOk)
         {
-            throw std::runtime_error(
-                "Session bundle: failed to durably flush '" + internal::PathToUtf8(mPath) + "'"
-            );
+            throw std::runtime_error("Session bundle: failed to durably flush '" + internal::PathToUtf8(mPath) + "'");
         }
     }
 
@@ -259,9 +249,7 @@ private:
 };
 
 /// Open a unique staging file, retrying name collisions.
-std::FILE *OpenStagingFileWithRetry(
-    const std::filesystem::path &destination, std::filesystem::path &outTemporary
-)
+std::FILE *OpenStagingFileWithRetry(const std::filesystem::path &destination, std::filesystem::path &outTemporary)
 {
     // Multiple attempts also handle stale files from an interrupted run.
     constexpr int MAX_ATTEMPTS = 8;
@@ -308,8 +296,7 @@ std::FILE *OpenStagingFileWithRetry(
         reason += " (staging path collided " + std::to_string(MAX_ATTEMPTS) + " times)";
     }
     throw std::runtime_error(
-        "Session bundle: failed to open staging file for '" + internal::PathToUtf8(destination) +
-        "': " + reason
+        "Session bundle: failed to open staging file for '" + internal::PathToUtf8(destination) + "': " + reason
     );
 }
 
@@ -331,8 +318,7 @@ public:
             if (ZSTD_isError(result))
             {
                 throw std::runtime_error(
-                    std::string("Session bundle: zstd worker configuration failed: ") +
-                    ZSTD_getErrorName(result)
+                    std::string("Session bundle: zstd worker configuration failed: ") + ZSTD_getErrorName(result)
                 );
             }
         }
@@ -399,10 +385,7 @@ private:
     std::vector<char> mOutput;
 };
 
-std::string CanonicalizeSourceLocator(
-    const std::filesystem::path &path,
-    const SessionBundleWriteOptions &options
-)
+std::string CanonicalizeSourceLocator(const std::filesystem::path &path, const SessionBundleWriteOptions &options)
 {
     if (options.canonicalizeSourceLocator)
     {
@@ -463,9 +446,7 @@ AnchorWantedSet BuildAnchorWantedSet(const std::vector<LogConfiguration::AnchorE
 }
 
 void PopulateAnchorMatches(
-    AnchorWantedSet &wanted,
-    const std::vector<LogLine> &lines,
-    const SessionBundleWriteOptions &options
+    AnchorWantedSet &wanted, const std::vector<LogLine> &lines, const SessionBundleWriteOptions &options
 )
 {
     if (wanted.empty())
@@ -487,8 +468,7 @@ void PopulateAnchorMatches(
         auto cacheIt = canonicalCache.find(source);
         if (cacheIt == canonicalCache.end())
         {
-            cacheIt =
-                canonicalCache.emplace(source, CanonicalizeSourceLocator(source->Path(), options)).first;
+            cacheIt = canonicalCache.emplace(source, CanonicalizeSourceLocator(source->Path(), options)).first;
         }
         AnchorLookupKey key;
         key.lineId = static_cast<std::uint64_t>(line.LineId());
@@ -612,8 +592,8 @@ void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesy
             );
         }
         throw std::runtime_error(
-            "Session bundle: atomic replacement of '" + destUtf8 +
-            "' failed with Windows error " + std::to_string(win32Error)
+            "Session bundle: atomic replacement of '" + destUtf8 + "' failed with Windows error " +
+            std::to_string(win32Error)
         );
     }
 #else
@@ -670,10 +650,8 @@ void WriteSessionBundle(
 
     const std::string configJson = SerializeCompactConfiguration(embedded);
     const std::string metadata =
-        R"({"__slv_bundle__":{"formatVersion":)" +
-        std::to_string(SESSION_BUNDLE_FORMAT_VERSION) +
-        R"(,"rowCount":)" + std::to_string(static_cast<std::uint64_t>(lines.size())) +
-        R"(,"configuration":)" + configJson + "}}\n";
+        R"({"__slv_bundle__":{"formatVersion":)" + std::to_string(SESSION_BUNDLE_FORMAT_VERSION) + R"(,"rowCount":)" +
+        std::to_string(static_cast<std::uint64_t>(lines.size())) + R"(,"configuration":)" + configJson + "}}\n";
     if (metadata.size() > MAX_METADATA_BYTES)
     {
         throw std::length_error("Session bundle metadata exceeds the 64 MiB limit");
@@ -717,8 +695,7 @@ void WriteSessionBundle(
         writer.Finish();
         file.Close();
         // Emit one terminal progress update, including for empty bundles.
-        const bool loopEmittedFinalTick =
-            !lines.empty() && (lines.size() % PROGRESS_INTERVAL_ROWS) == 0;
+        const bool loopEmittedFinalTick = !lines.empty() && (lines.size() % PROGRESS_INTERVAL_ROWS) == 0;
         if (options.progress && !loopEmittedFinalTick)
         {
             options.progress(lines.size(), lines.size());

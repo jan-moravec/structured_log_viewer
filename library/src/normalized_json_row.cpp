@@ -43,13 +43,27 @@ void AppendJsonEscaped(std::string &out, std::string_view input)
         const auto ch = static_cast<unsigned char>(c);
         switch (ch)
         {
-        case '"': out.append("\\\""); break;
-        case '\\': out.append("\\\\"); break;
-        case '\b': out.append("\\b"); break;
-        case '\f': out.append("\\f"); break;
-        case '\n': out.append("\\n"); break;
-        case '\r': out.append("\\r"); break;
-        case '\t': out.append("\\t"); break;
+        case '"':
+            out.append("\\\"");
+            break;
+        case '\\':
+            out.append("\\\\");
+            break;
+        case '\b':
+            out.append("\\b");
+            break;
+        case '\f':
+            out.append("\\f");
+            break;
+        case '\n':
+            out.append("\\n");
+            break;
+        case '\r':
+            out.append("\\r");
+            break;
+        case '\t':
+            out.append("\\t");
+            break;
         default:
             if (ch < JSON_CONTROL_CHAR_LIMIT)
             {
