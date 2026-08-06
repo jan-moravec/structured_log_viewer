@@ -546,6 +546,17 @@ public:
     /// without running a real open path.
     void SetCurrentSourceForTest(std::optional<loglib::LogConfiguration::Source> source);
 
+    /// Test-only read accessor for `mCurrentSource`; lets tests
+    /// inspect the descriptor after an open or load.
+    [[nodiscard]] const std::optional<loglib::LogConfiguration::Source> &CurrentSourceForTest() const noexcept;
+
+    /// Test-only accessor for the source label used by
+    /// `UpdateStreamingStatus`.
+    [[nodiscard]] const QString &StreamingFileNameForTest() const noexcept
+    {
+        return mStreamingFileName;
+    }
+
     /// Test-only entry to `ShowRowContextMenu` so tests can pin
     /// right-click selection-adoption rules without a real mouse
     /// event. Callers should close any popup that opens.
@@ -595,6 +606,18 @@ public:
     {
         return mDecompressionInFlight;
     }
+    /// Return whether a pending bundle may apply embedded configuration.
+    [[nodiscard]] bool AppliesEmbeddedBundleConfigForNextOpenForTest() const noexcept
+    {
+        return !mApplyEmbeddedBundleConfigForPath.isEmpty();
+    }
+    /// Simulate superseding a pending bundle decompression.
+    void SimulateSupersededBundleDecompressionForTest()
+    {
+        mApplyEmbeddedBundleConfigForPath = QStringLiteral("simulated-bundle.slvbundle");
+        mDecompressionInFlight = true;
+        CancelInFlightDecompression();
+    }
 
     /// Test-only cancel injection: raises the same stop request
     /// `QProgressDialog::canceled` sends. Needed because the dialog
@@ -608,6 +631,16 @@ public:
         {
             mDecompressionStopSource.request_stop();
         }
+    }
+
+    /// Export a bundle without showing the dialog, using production
+    /// preflight checks and default zstd settings.
+    void ExportSessionBundleToPathForTest(const QString &destination);
+
+    /// Return whether an export worker is active.
+    [[nodiscard]] bool IsExportInFlightForTest() const noexcept
+    {
+        return mExportInFlight;
     }
 
     /// Test seam replaying the anchor-note commit path without a
@@ -714,6 +747,10 @@ private slots:
     /// cancel run through a modal-per-window `QProgressDialog`;
     /// user cancel unwinds via `slv::exports::ExportCancelled`.
     void ExportFilteredRows();
+
+    /// Export all retained rows and view state to `.slvbundle`.
+    /// Shares asynchronous export state with filtered-row export.
+    void ExportSessionBundle();
 
     /// Show the `ConfigurationDiagnosticsDialog` (constructed lazily).
     /// A second call raises the existing instance.
@@ -1864,11 +1901,21 @@ private:
     /// Wall-clock start of the current export, for the success toast.
     std::chrono::steady_clock::time_point mExportStartedAt;
 
+    /// Bundle path allowed to apply embedded configuration. Empty
+    /// disables it; replacing the path gives the latest open priority.
+    QString mApplyEmbeddedBundleConfigForPath;
+
     /// Kick off the async export worker. Models on
     /// `BeginAsyncDecompression`.
     void BeginAsyncExport(
         std::unique_ptr<slv::exports::ExportPlan> plan, const QString &destination, const QString &formatLabel
     );
+
+    /// Kick off the async bundle-write worker. Mirrors
+    /// `BeginAsyncExport`: same in-flight guard and progress/cancel
+    /// plumbing, but the payload is `WriteSessionBundle` rather
+    /// than `RowExporter::Run`.
+    void BeginAsyncBundleExport(std::filesystem::path destination, int compressionLevel, int totalWorkers);
 
     /// Show the export progress dialog (deferred via
     /// `minimumDuration`).
@@ -1897,6 +1944,11 @@ private:
         Static,
         LiveTail,
     };
+    /// True while `mExportWatcher` is running a bundle write, false
+    /// for a filtered-row export. `OnExportFinished` uses it to pick
+    /// the right toast wording and exception vocabulary.
+    bool mExportIsBundle = false;
+
     SessionMode mSessionMode = SessionMode::Idle;
 
     /// Mirror of `mSessionMode` retained across `streamingFinished`

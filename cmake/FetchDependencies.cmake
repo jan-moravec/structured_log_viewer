@@ -540,7 +540,8 @@ if(NOT USE_SYSTEM_ZSTD)
         set(ZSTD_BUILD_STATIC ON)
         set(ZSTD_BUILD_TESTS OFF)
         set(ZSTD_BUILD_CONTRIB OFF)
-        set(ZSTD_MULTITHREAD_SUPPORT OFF)
+        # Required for session-bundle `ZSTD_c_nbWorkers` support.
+        set(ZSTD_MULTITHREAD_SUPPORT ON)
         set(ZSTD_LEGACY_SUPPORT OFF)
         set(BUILD_SHARED_LIBS OFF)
         set(CMAKE_POLICY_VERSION_MINIMUM 3.28) # silence zstd's older cmake_minimum_required

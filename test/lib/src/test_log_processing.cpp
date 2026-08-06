@@ -178,6 +178,35 @@ TEST_CASE("TryParseIsoTimestamp accepts valid inputs", "[log_processing][iso8601
         REQUIRE(TryParseIsoTimestamp("1969-12-31T23:00:00", 'T', out));
         CHECK(out == TimeStamp{std::chrono::microseconds{-3600000000LL}});
     }
+
+    // Session bundles emit UTC timestamps with a trailing `Z`.
+    SECTION("Trailing Z after seconds")
+    {
+        TimeStamp out{};
+        REQUIRE(TryParseIsoTimestamp("2025-04-25T12:34:56Z", 'T', out));
+        CHECK(out == expectedNoFraction);
+    }
+
+    SECTION("Trailing Z after millisecond fraction")
+    {
+        TimeStamp out{};
+        REQUIRE(TryParseIsoTimestamp("2025-04-25T12:34:56.123Z", 'T', out));
+        CHECK(out == expectedMs);
+    }
+
+    SECTION("Trailing Z after microsecond fraction")
+    {
+        TimeStamp out{};
+        REQUIRE(TryParseIsoTimestamp("2025-04-25T12:34:56.123456Z", 'T', out));
+        CHECK(out == expectedUs);
+    }
+
+    SECTION("Trailing Z with space date/time separator")
+    {
+        TimeStamp out{};
+        REQUIRE(TryParseIsoTimestamp("2025-04-25 12:34:56.123Z", ' ', out));
+        CHECK(out == expectedMs);
+    }
 }
 
 TEST_CASE("TryParseIsoTimestamp rejects malformed inputs", "[log_processing][iso8601_fast_path]")
@@ -230,25 +259,31 @@ TEST_CASE("TryParseIsoTimestamp rejects malformed inputs", "[log_processing][iso
 
     SECTION("Trailing garbage after seconds")
     {
-        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56Z", 'T', out));
+        // Numeric offsets remain on the generic parser path.
         CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56+00:00", 'T', out));
+        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56ZZ", 'T', out));
+        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56Zx", 'T', out));
     }
 
     SECTION("Empty fractional after dot")
     {
         CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56.", 'T', out));
+        // `.` followed only by `Z` is not a valid ISO-8601 fraction.
+        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56.Z", 'T', out));
     }
 
     SECTION("Sub-microsecond fractional precision")
     {
         // 7+ digits must fall through to the slow path; no precision loss.
         CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56.1234567", 'T', out));
+        // `Z` does not make excess precision valid.
+        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56.1234567Z", 'T', out));
     }
 
     SECTION("Trailing garbage after fractional digits")
     {
-        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56.123Z", 'T', out));
         CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56.123x", 'T', out));
+        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56.123Zx", 'T', out));
     }
 }
 

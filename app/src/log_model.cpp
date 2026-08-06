@@ -3,6 +3,7 @@
 #include "anchor_manager.hpp"
 #include "highlight_rule_set.hpp"
 #include "icon_loader.hpp"
+#include "qstring_path.hpp"
 #include "qt_streaming_log_sink.hpp"
 #include "streaming_control.hpp"
 #include "theme_control.hpp"
@@ -1511,7 +1512,8 @@ void LogModel::PrewarmCanonicalLocatorCache()
         {
             continue;
         }
-        std::string canonical = logapp::CanonicalLocator(QString::fromStdString(source->Path().string())).toStdString();
+        // Preserve non-ASCII paths in Windows anchor keys.
+        std::string canonical = logapp::CanonicalLocator(logapp::FsPathToQString(source->Path())).toStdString();
         mCanonicalLocatorCache.emplace(source, std::move(canonical));
     }
 }

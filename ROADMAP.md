@@ -41,7 +41,7 @@ For the architecture each item plugs into, see [CONTRIBUTING.md → Architecture
   - [27. Scratchpad / notes panel](#27-scratchpad--notes-panel)
   - [28. Pipe selection to external command](#28-pipe-selection-to-external-command)
   - [29. AI / LLM assistance panel](#29-ai--llm-assistance-panel)
-  - [30. Full-session export bundle](#30-full-session-export-bundle)
+  - [30. ~~Full-session export bundle~~ (shipped)](#30-full-session-export-bundle)
 - [Explicit non-goals](#explicit-non-goals)
 - [Process](#process)
 - [Comparative feature matrix](#comparative-feature-matrix)
@@ -71,7 +71,7 @@ The roadmap aims to close the **mainstream desktop log-viewer expectations** bef
 
 Beyond the per-item list, three themes run through the roadmap:
 
-1. **Pre-release ergonomics.** Close the "table stakes" gaps any reviewer will flag in a head-to-head against Klogg or lnav: compressed files, histogram strip, highlight rules, bookmark notes, AND/OR filters, ~~multi-line records~~ (shipped), export, goto, stdin, headless mode.
+1. **Pre-release ergonomics.** Close the "table stakes" gaps any reviewer will flag in a head-to-head against Klogg or lnav: compressed files, histogram strip, highlight rules, bookmark notes, AND/OR filters, ~~multi-line records~~ (shipped), filtered/session export, goto, stdin, headless mode.
 1. **Structured-log power user.** Lean into what `loglib` already does well — typed columns, level promotion, the regex-template registry — with features that only make sense on structured data: SQL queries over typed rows, per-cell quick filters, pattern clustering by template key, time-gap detection across the first `Type::Time` column.
 1. **Scale and performance.** Preserve the existing performance envelope (see [CONTRIBUTING.md → Benchmarking](CONTRIBUTING.md#benchmarking)) as features land. Each Tier 1 / 2 item below documents whether it needs a new benchmark or a regression check against the [Acceptance bar](CONTRIBUTING.md#acceptance-bar).
 
@@ -175,11 +175,8 @@ Blank lines join a record only when followed by another continuation; trailing a
 
 **Non-goals (v1).** Streaming export (continuous flush to disk as
 new lines arrive — defer to v1.x), exports with attachments
-(anchors / notes), per-column transformations. **Full session
-export** — a single compressed archive bundling all log lines with
-configuration, session, and anchors, intended for sharing an entire
-investigation with a colleague — is out of scope here and tracked
-separately below.
+(anchors / notes), and per-column transformations. Full-session
+export shipped separately as [item 30](#30-full-session-export-bundle).
 
 ### 8. ~~Goto line / Goto timestamp~~
 
@@ -306,26 +303,23 @@ lnav's `!` shell hand-off, Logan's tabbed terminal. Right-click selection → **
 
 Logan, LogLens. A side panel where the user can ask "summarise these 200 rows", "what changed between window A and window B", "which requests look suspicious". Optional, off-by-default, requires a user-supplied API key or local model endpoint. Increasingly expected by 2026 buyers but **not** something we want to be required for the core triage workflow.
 
-### 30. Full-session export bundle
+### 30. ~~Full-session export bundle~~
 
-**Why.** [Item 7](#7-export-filtered-rows) exports rows. This item exports the **entire investigation** as a single shareable file: the raw log bytes for every retained line, the full `LogConfiguration` (columns, filters, sort, source, anchors + notes, highlight rules), and the session metadata. Recipient double-clicks the bundle and lands on the exact same view, at the exact same row, with the same filter set, same anchors, same colours. Faster than "here are three log files, a JSON config, and three screenshots of my filter dialog".
+Landed as **File → Export Session Bundle…** (`Ctrl+Shift+E`). A v1 bundle is one standard checksummed zstd stream. Decompressed content is JSON Lines: a compact `{"__slv_bundle__":{...}}` metadata object containing `formatVersion`, `rowCount`, and the full configuration, followed by one normalized typed JSON object per retained source-model row.
 
-**Scope.** A new **File → Export Session Bundle…** entry, sibling to Export Filtered Rows. Output is a single file with an `.slvbundle` (working name) extension, structured as:
+**Why.** [Item 7](#7-export-filtered-rows) exports the visible view. This item exports every retained row plus the investigation state: columns, filters, sort, anchors + notes, and highlight rules. Recipient double-clicks the bundle and lands on the same configured view without needing the original files.
 
-- A small header identifying format + version.
-- The full `LogConfiguration` payload as Glaze JSON (already exists — same on-disk format as `File → Save Configuration`).
-- Session metadata: source descriptor, session mode (Static / LiveTail / Network), open-window UUIDs, timestamps.
-- Log payload: for each retained line, the raw bytes as returned by `LineSource::RawLine`, plus its 1-based `lineId` for stable anchor / bookmark references across the round-trip.
+**Scope and deliberate flattening.** All original sources become one normalized JSONL source. Original paths, source boundaries, raw formatting, parser settings, and line IDs are discarded. Anchors are remapped to dense flattened row IDs and rebased to the bundle locator. This makes the file portable and inspectable with standard `zstd -d` / `unzstd` plus ordinary text or `jq` tools, while repeated JSON keys compress efficiently.
 
-The whole file is streamed through `zstd` (already linked for decompression — item 1's compressed-input work) so a 1 GiB live-tail buffer compresses to something a chat / email can carry. **File → Open…** learns to detect the bundle and drive the loader against an in-memory `LineSource` instead of a filesystem path, so bundles round-trip losslessly regardless of whether the original files still exist on disk.
+**Open path.** `DecompressingByteSource` streams the frame to a TEMP JSONL file, removes and retains the metadata line, and hands the remaining records to the normal `LogFile` / `FileLineSource` / `JsonParser` path. The bundle then behaves as a regular compressed static file (`Source::Kind::File`): append/replace, autosave, restore, and Recent Sessions all use the normal machinery. Embedded configuration is a default only for a fresh lone open; explicit configuration, append state, restored autosave, and later edits take precedence.
 
 **Non-goals (v1 of this item).** Streaming continuation ("keep the tail growing after the bundle is opened"), diffing two bundles, GUI-side integrity signatures. Bundles are static snapshots.
 
-**Approach.** Reuse the same `ExportSink` / async-worker pattern shipped in item 7 so the UX (progress dialog, cancel, atomic-rename via `FileSink`) is identical. Encoder / decoder land in `loglib` (bundle format is a pure `loglib` concern; the GUI just wires the menu action). The `LineSource` abstraction already allows an in-memory implementation, so the loader side is a `BundleLineSource` variant.
+**Approach.** `WriteSessionBundle` and `ParseSessionBundleMetadata` live in `loglib`; typed row serialization is shared with JSON Lines export through `SerializeNormalizedJsonRow`. The writer preserves cancellation, progress, metadata/row/size limits, zstd checksum, unique staging, durable flush, and atomic replacement. Temporary-file ownership is attached to `LogFile` so Windows unmaps before deletion.
 
-**Acceptance bar.** Round-trip: export a session with 1 M lines + 20 anchors + 5 highlight rules + a non-trivial filter, reopen the bundle, and end up on the same source-model row with all state intact. Bundle size for a typical 100 MiB JSON log is `<10 MiB` under zstd default level.
+**Acceptance bar.** Export 1 M retained rows + 20 anchors + 5 highlight rules + a non-trivial filter, reopen through the normal static path, and recover the flattened rows and configured view with anchors attached to their remapped rows.
 
-**Touches.** `loglib`: new `session_bundle_writer.{hpp,cpp}` + `session_bundle_reader.{hpp,cpp}`, sibling in-memory `LineSource` implementation. `app`: new menu action, `MainWindow::ExportSessionBundle` slot mirroring `ExportFilteredRows`, bundle detection in the existing **File → Open…** dispatch.
+**Touches.** `loglib`: `session_bundle.hpp`, writer/metadata reader, shared normalized-row serializer, and decompression first-line support. `app`: export action plus bundle detection/config-default handling inside the existing static compressed-file queue.
 
 ## Explicit non-goals
 
@@ -381,7 +375,8 @@ Reference snapshot from the survey that informed the roadmap (June 2026). `✓` 
 | Time-range zoom / jump-by-N-min             |  ~ time filter   |     ✓     |       |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
 | Timeshift (per-file clock offset)           |                  |           |       |     ✓     |             |         |              |           |       |
 | Encoding auto-detect (UTF-16, cp125x)       |                  |           |   ✓   |     ✓     |      ✓      |    ✓    |              |           |       |
-| Export filtered rows (CSV / JSON / MD)      |                  |     ✓     |   ~   |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
+| Export filtered rows (CSV / JSON / MD)      |        ✓         |     ✓     |   ~   |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
+| Full-session export bundle                  |        ✓         |           |       |           |             |         |              |           |       |
 | Diff view of two files                      |                  |           |       |           |      ~      |         |              |           |   ✓   |
 | Pattern clustering / similar-line grouping  |                  |           |       |           |             |         |              |           |   ✓   |
 | Time-gap detection                          |                  |           |       |           |             |         |              |           |   ✓   |

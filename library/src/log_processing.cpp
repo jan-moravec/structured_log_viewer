@@ -130,32 +130,42 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
     }
 
     int64_t fractionalUs = 0;
+    // Accept an optional fractional part followed by an optional `Z`.
     if (sv.size() > PREFIX_LEN)
     {
-        if (sv[PREFIX_LEN] != '.')
+        size_t cursor = PREFIX_LEN;
+        if (sv[cursor] == '.')
+        {
+            const size_t fractionStart = cursor + 1;
+            const size_t maxFractionEnd = std::min(sv.size(), fractionStart + FRACTION_DIGITS_SCALE);
+            size_t fractionEnd = fractionStart;
+            while (fractionEnd < maxFractionEnd && sv[fractionEnd] >= '0' && sv[fractionEnd] <= '9')
+            {
+                ++fractionEnd;
+            }
+            const size_t fractionLen = fractionEnd - fractionStart;
+            // Reject empty and longer-than-microsecond fractions here.
+            if (fractionLen == 0)
+            {
+                return false;
+            }
+            for (size_t i = fractionStart; i < fractionEnd; ++i)
+            {
+                fractionalUs = (fractionalUs * DECIMAL_RADIX) + (sv[i] - '0');
+            }
+            for (size_t i = fractionLen; i < FRACTION_DIGITS_SCALE; ++i)
+            {
+                fractionalUs *= DECIMAL_RADIX;
+            }
+            cursor = fractionEnd;
+        }
+        if (cursor < sv.size() && sv[cursor] == 'Z')
+        {
+            ++cursor;
+        }
+        if (cursor != sv.size())
         {
             return false;
-        }
-        const size_t fractionStart = PREFIX_LEN + 1;
-        const size_t maxFractionEnd = std::min(sv.size(), fractionStart + FRACTION_DIGITS_SCALE);
-        size_t fractionEnd = fractionStart;
-        while (fractionEnd < maxFractionEnd && sv[fractionEnd] >= '0' && sv[fractionEnd] <= '9')
-        {
-            ++fractionEnd;
-        }
-        const size_t fractionLen = fractionEnd - fractionStart;
-        // Empty / >6-digit fractions fall back to `date::parse`.
-        if (fractionLen == 0 || fractionEnd != sv.size())
-        {
-            return false;
-        }
-        for (size_t i = fractionStart; i < fractionEnd; ++i)
-        {
-            fractionalUs = (fractionalUs * DECIMAL_RADIX) + (sv[i] - '0');
-        }
-        for (size_t i = fractionLen; i < FRACTION_DIGITS_SCALE; ++i)
-        {
-            fractionalUs *= DECIMAL_RADIX;
         }
     }
 

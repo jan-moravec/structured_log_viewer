@@ -23,6 +23,8 @@ Three ingestion modes are available:
 
 Two dockable visualisations complement the main table: the **Histogram** dock (`View → Histogram`, `Ctrl+H`) plots row count per time bucket, stacked and coloured by canonical log level, with click-to-jump and drag-to-time-filter over the first `Type::Time` column; and the **Overview Rail** (`View → Overview Rail`, `Ctrl+Shift+R`, on by default) is a thin vertical strip along the right edge of the table that condenses the whole proxy-filtered stream into level-tinted buckets with anchor bands, current-search tick marks, and a live viewport indicator. Both surfaces stay in lock-step with the sort, filter, and anchor state.
 
+**Session bundles** (`File → Export Session Bundle…`, `Ctrl+Shift+E`) package every retained row with columns, filters, sort, anchors, and highlight rules in one portable `.slvbundle` file. Reopening the bundle restores the configured view without the original logs.
+
 Four structured-log formats ship out of the box:
 
 - **JSON Lines / NDJSON** — one JSON object per line.

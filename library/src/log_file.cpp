@@ -1,5 +1,7 @@
 #include "loglib/log_file.hpp"
 
+#include "loglib/internal/path_encoding.hpp"
+
 #include <fmt/format.h>
 
 #include <cassert>
@@ -52,15 +54,20 @@ void HintSequential(const mio::mmap_source &mmap)
 
 } // namespace
 
-LogFile::LogFile(std::filesystem::path filePath)
-    : mPath(std::move(filePath))
+LogFile::LogFile(const std::filesystem::path &filePath)
+    : LogFile(filePath, filePath)
+{
+}
+
+LogFile::LogFile(std::filesystem::path storagePath, std::filesystem::path logicalPath)
+    : mPath(std::move(logicalPath)), mStoragePath(std::move(storagePath))
 {
     // MSVC's <filesystem> casts a combined bitmask back to __std_fs_stats_flags;
     // clang's analyzer flags the value as out-of-range. False positive in stdlib.
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
-    if (!std::filesystem::exists(mPath))
+    if (!std::filesystem::exists(mStoragePath))
     {
-        throw std::runtime_error(fmt::format("File '{}' does not exist.", mPath.string()));
+        throw std::runtime_error(fmt::format("File '{}' does not exist.", internal::PathToUtf8(mStoragePath)));
     }
 
     // Empty files: skip mmap (some platforms reject zero-byte mappings); the
@@ -68,14 +75,21 @@ LogFile::LogFile(std::filesystem::path filePath)
     // MSVC's <filesystem> casts a combined bitmask back to __std_fs_stats_flags;
     // clang's analyzer flags the value as out-of-range. False positive in stdlib.
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
-    const auto size = std::filesystem::file_size(mPath);
+    const auto size = std::filesystem::file_size(mStoragePath);
     if (size > 0)
     {
         std::error_code ec;
-        mMmap = mio::make_mmap_source(mPath.string(), 0, mio::map_entire_file, ec);
+        // Pass mio a lossless native path encoding.
+#ifdef _WIN32
+        mMmap = mio::make_mmap_source(mStoragePath.wstring(), 0, mio::map_entire_file, ec);
+#else
+        mMmap = mio::make_mmap_source(internal::PathToUtf8(mStoragePath), 0, mio::map_entire_file, ec);
+#endif
         if (ec)
         {
-            throw std::runtime_error(fmt::format("Failed to memory-map file '{}': {}", mPath.string(), ec.message()));
+            throw std::runtime_error(
+                fmt::format("Failed to memory-map file '{}': {}", internal::PathToUtf8(mStoragePath), ec.message())
+            );
         }
         HintSequential(mMmap);
     }
@@ -202,12 +216,7 @@ void LogFile::AttachLifetimeAnchor(std::shared_ptr<void> anchor) noexcept
 {
     if (mLifetimeAnchor)
     {
-        // Compose incoming + existing anchors so both survive to
-        // `~LogFile` (unmap first, then release composite). A plain
-        // assign would drop the previous anchor immediately, and
-        // on Windows that silently leaks the temp file (`remove`
-        // returns false while the mmap is open). Defensive branch --
-        // production callers attach exactly once.
+        // Keep both anchors alive until after unmapping.
         struct AnchorPair
         {
             std::shared_ptr<void> previous;
