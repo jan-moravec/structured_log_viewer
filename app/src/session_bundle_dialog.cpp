@@ -30,11 +30,7 @@ constexpr int DEFAULT_ZSTD_LEVEL = 3;
 constexpr int MAX_WORKER_THREADS = 64;
 constexpr int WORKER_THREAD_CAP = 8;
 constexpr int DIALOG_PREFERRED_WIDTH = 560;
-/// Left indent for the advanced-options form, in device-independent
-/// pixels. Chosen to line the form up with the text of the
-/// `Advanced options` checkbox label rather than its indicator
-/// square, giving the section a disclosure-group feel without a
-/// frame.
+/// Align the advanced form with the checkbox label.
 constexpr int ADVANCED_FORM_INDENT_PX = 16;
 
 /// QSettings keys for the bundle-encoder knobs.
@@ -42,11 +38,7 @@ constexpr auto SETTINGS_LEVEL = "session_bundle/compression_level";
 constexpr auto SETTINGS_WORKERS = "session_bundle/workers";
 constexpr auto SETTINGS_LAST_DIR = "session_bundle/last_dir";
 
-/// Sensible worker-thread default: match the machine's cores up to
-/// `WORKER_THREAD_CAP`. Past the cap zstd sees diminishing returns for
-/// typical bundle sizes and starts contending with the rest of the
-/// app. Falls back to zstd's single-threaded path on single-core /
-/// unknown-topology systems.
+/// Use up to `WORKER_THREAD_CAP` workers; zero means single-threaded.
 int DefaultWorkerThreads() noexcept
 {
     const int ideal = QThread::idealThreadCount();
@@ -62,10 +54,7 @@ QString BundleFileFilter()
     return QStringLiteral("Session bundle (*%1);;All Files (*)").arg(loglib::SESSION_BUNDLE_EXTENSION);
 }
 
-/// Appends `.slvbundle` to @p path unless it already carries it
-/// (case-insensitive). Empty input is preserved so the emptiness
-/// guards in `OnAccept` / `MainWindow::ExportSessionBundle` still
-/// fire -- otherwise `""` would become a `.slvbundle` dotfile.
+/// Append `.slvbundle` when needed, preserving empty input.
 QString AppendBundleExtensionIfMissing(QString path)
 {
     if (path.isEmpty())
@@ -80,12 +69,7 @@ QString AppendBundleExtensionIfMissing(QString path)
     return path;
 }
 
-/// Read an int from QSettings, falling back to @p defaultValue when
-/// the stored value is missing, unparsable, or outside
-/// `[minValue, maxValue]`. Without this, `QSpinBox::setValue` would
-/// silently clamp a corrupted value to the spinbox range and give
-/// the user, say, the fastest/worst compression instead of the
-/// intended balanced default.
+/// Read a bounded setting or return @p defaultValue.
 int ClampedSettingsInt(const QSettings &settings, const char *key, int defaultValue, int minValue, int maxValue)
 {
     bool ok = false;
@@ -148,26 +132,13 @@ SessionBundleDialog::SessionBundleDialog(
     mLiveTailNote->setVisible(isLiveTail);
     form->addRow(mLiveTailNote);
 
-    // Advanced-options panel: a plain `QCheckBox` toggles a sibling
-    // container widget in the dialog's outer layout. A checkable
-    // `QGroupBox` was tempting for the free title-bar checkbox, but
-    // even flat and with a zero-margin wrapper layout it kept its
-    // internal title padding, leaving a visible empty strip under
-    // the title whenever the interior was hidden -- and the toggle
-    // handler had to fight `sizeHint()` returning the wrong value
-    // mid-transition, producing a visible jump. Using a checkbox +
-    // sibling container avoids both problems: hiding the container
-    // truly removes its space, and the height change happens in one
-    // clean step. The panel stays closed on every launch; persisted
-    // values still apply if they were tweaked before.
+    // A sibling container collapses without `QGroupBox` title padding.
     mAdvancedToggle = new QCheckBox(tr("Advanced options"), this);
     mAdvancedToggle->setChecked(false);
 
     mAdvancedContainer = new QWidget(this);
     auto *advancedForm = new QFormLayout(mAdvancedContainer);
-    // Indent the form slightly so it visually associates with the
-    // checkbox above it, mimicking a disclosure-triangle group
-    // without borrowing `QGroupBox`'s frame overhead.
+    // Visually nest the form under the disclosure checkbox.
     advancedForm->setContentsMargins(ADVANCED_FORM_INDENT_PX, 0, 0, 0);
 
     mCompressionLevelSpin = new QSpinBox(mAdvancedContainer);
@@ -197,13 +168,7 @@ SessionBundleDialog::SessionBundleDialog(
 
     connect(mAdvancedToggle, &QCheckBox::toggled, this, [this](bool checked) {
         mAdvancedContainer->setVisible(checked);
-        // Activate the layout before reading `sizeHint()` so the
-        // change in the container's visibility is already reflected
-        // in the dialog's preferred height -- otherwise the resize
-        // uses the pre-toggle hint and the dialog visibly snaps a
-        // second time on the next layout pass. Width is preserved
-        // to respect any manual resize the user did; `adjustSize()`
-        // would clobber it.
+        // Refresh the height immediately while preserving user-set width.
         if (auto *lay = layout())
         {
             lay->activate();
@@ -241,9 +206,7 @@ void SessionBundleDialog::OnBrowseClicked()
                                    ? QDir(mDefaultDir).filePath(QStringLiteral("session%1")
                                                                     .arg(QString::fromLatin1(loglib::SESSION_BUNDLE_EXTENSION)))
                                    : seed;
-    // Suppress Qt's built-in Save-As overwrite prompt so `OnAccept`
-    // is the sole confirmation site; otherwise Browse-then-Export
-    // shows the prompt twice.
+    // `OnAccept` handles overwrite confirmation for all paths.
     const QString chosen = QFileDialog::getSaveFileName(
         this,
         tr("Export Session Bundle"),
@@ -261,9 +224,7 @@ void SessionBundleDialog::OnBrowseClicked()
 
 void SessionBundleDialog::OnAccept()
 {
-    // Emptiness check runs on the *pre-append* text so an empty
-    // field is rejected rather than silently promoted to a
-    // `.slvbundle` dotfile.
+    // Validate before appending the extension.
     const QString trimmed = mDestinationEdit->text().trimmed();
     if (trimmed.isEmpty())
     {
@@ -271,9 +232,7 @@ void SessionBundleDialog::OnAccept()
         return;
     }
     const QString dest = AppendBundleExtensionIfMissing(trimmed);
-    // Re-check overwrite here too: Qt's `getSaveFileName` prompt only
-    // fires for browse-picked paths, so hand-typed paths would slip
-    // through.
+    // Confirm both browsed and manually entered destinations here.
     const QFileInfo destInfo(dest);
     if (destInfo.exists())
     {

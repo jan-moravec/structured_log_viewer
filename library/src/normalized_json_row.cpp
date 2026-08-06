@@ -24,18 +24,7 @@ constexpr std::size_t ROW_RESERVE_BYTES = 512;
 
 void AppendJsonEscaped(std::string &out, std::string_view input)
 {
-    // Peek once to size the reserve before the append loop. A pure
-    // `size + 2` reserve is a lower bound that guarantees no growth
-    // only on the zero-escape common case; strings with control
-    // bytes or embedded quotes/backslashes would otherwise trigger
-    // one or two reallocations per value on top of the per-row
-    // 512-byte reserve. The scan is cheap and the loop runs once
-    // per string value across every exported row.
-    //
-    // `* 6` covers the pessimistic `\u00xx` expansion for control
-    // bytes; the two other escape classes (`\"`, `\\`) only double,
-    // but a single scan cannot distinguish them cheaply so we pay
-    // the wider reserve when *any* escape is present.
+    // Reserve for the worst `\u00xx` expansion when escaping is needed.
     constexpr std::size_t ESCAPE_WORST_CASE_MULTIPLIER = 6U;
     bool hasEscape = false;
     for (const char c : input)
@@ -75,18 +64,7 @@ void AppendJsonEscaped(std::string &out, std::string_view input)
     }
 }
 
-/// Serialize @p timestamp as an ISO-8601 UTC JSON string, including
-/// its surrounding quotes. Out-of-range values that `date::format`
-/// cannot render fall back to unquoted `null` so round-trip readers
-/// see a missing timestamp instead of a bogus string.
-///
-/// The `savedSize` snapshot + `resize` on the exception path is
-/// load-bearing: without it, an in-flight failure would leave a
-/// dangling opening `"` in @p out. The row's closing `}` would then
-/// land inside a string literal, invalidating not just this row but
-/// every JSONL line downstream. The rollback pattern keeps the
-/// per-row output well-formed even when a single field cannot be
-/// serialised.
+/// Append an ISO-8601 UTC JSON string, or `null` if formatting fails.
 void AppendTimestampJson(std::string &out, TimeStamp timestamp)
 {
     const std::size_t savedSize = out.size();
@@ -155,9 +133,7 @@ void AppendValue(std::string &out, const LogValue &value)
 
 void SerializeNormalizedJsonRow(const LogLine &line, const KeyIndex &keys, std::string &out)
 {
-    // Reserve on the first call against a fresh (or `clear()`ed)
-    // buffer so hot loops that reuse @p out do not pay a growth
-    // penalty on their first-few rows before capacity stabilises.
+    // Keep a useful minimum capacity for callers that reuse the buffer.
     if (out.capacity() < ROW_RESERVE_BYTES)
     {
         out.reserve(ROW_RESERVE_BYTES);

@@ -101,7 +101,7 @@ You can open a finished log file in two ways:
 1. **File → Open…** (`Ctrl+O`) — opens a file picker that auto-detects whether the selected file is a log or a [configuration](#configurations) file, *and* whether a log file is JSON Lines, logfmt, CSV, or one of the built-in [regex templates](#supported-input-formats).
 1. **Drag & drop** one or more files onto the main window.
 
-The file dialog defaults to a filter that lists `*.json`, `*.jsonl`, `*.ndjson`, `*.logfmt`, `*.csv`, `*.log`, and `*.txt`, plus their `.gz` / `.bz2` / `.xz` / `.zst` variants (see [Compressed inputs](#compressed-inputs)); switch it to **All Files (\*.\*)** to pick anything else (including unsuffixed files). The actual format is decided by content sniffing, not by extension, so the extension only affects what the picker shows — not how the file is parsed. The detected format is recorded on the active session so reopening a saved session keeps the same parser.
+The file dialog defaults to a filter that lists `*.json`, `*.jsonl`, `*.ndjson`, `*.logfmt`, `*.csv`, `*.log`, and `*.txt`, plus their `.gz` / `.bz2` / `.xz` / `.zst` variants (see [Compressed inputs](#compressed-inputs)); switch it to **All Files (\*.\*)** to pick anything else, including unsuffixed files and `.slvbundle` [session bundles](#exporting-a-session-bundle). Regular log formats are detected by content, so their extensions only affect the picker. Bundle recognition requires both the `.slvbundle` extension and zstd content.
 
 Opening multiple files at once **merges** their records into a single table; the files are queued and parsed sequentially while sharing one column layout. Mixing formats across the queue is supported — each file is sniffed individually, and any file whose bytes start with a supported codec's magic number is transparently decompressed in a worker thread with a cancellable progress dialog before it enters the format-detection step (see [Compressed inputs](#compressed-inputs)). If parsing errors occur, the first 20 are shown in a dialog when the queue drains; the rest are summarized as "… and N more error(s)". Decompression failures surface under a separate `Error Decompressing File` batch so they stay visually distinct from open failures. The status bar shows `Parsing <file> — N lines, M errors` while the queue is in flight, using the *original* filename even when the file was decompressed.
 
@@ -342,12 +342,13 @@ A v1 bundle is a standard checksummed zstd stream. Its decompressed content is J
 All original sources are deliberately flattened into that single JSONL source. Original file paths, source boundaries, raw formatting, parser settings, and original line IDs are discarded. Anchors are remapped to dense flattened row IDs and rebased to the bundle path; moving the bundle before opening it rebases the embedded source and anchors again to the new location. To inspect a bundle outside the app, run `zstd -d bundle.slvbundle -o bundle.jsonl` (or `unzstd`) and use any text or `jq` JSONL workflow.
 
 - The export dialog only asks for a destination path. Encoder knobs (compression level and worker threads) live under an **Advanced options** disclosure that stays collapsed by default; sensible defaults (zstd level 3, worker count matched to the machine's cores up to 8) are used unless you open the section and change them.
-- Live-tail and network sessions export only the rows still retained at capture time. Reopening does not restart the original producer.
-- The writer streams into `<destination>.tmp`, enables the zstd frame checksum, and atomically replaces the destination only after a successful final flush. Cancellation or failure removes the temporary output.
+- Exporting an active live-tail or network session asks for confirmation, stops the producer, and captures the rows retained at that point. Reopening does not restart the producer.
+- Export is unavailable while a static or compressed file is still loading.
+- A deferred progress dialog reports rows written and supports cancellation. The writer uses a unique sibling staging file, enables the zstd frame checksum, flushes it to disk, and then atomically replaces the destination. Cancellation or failure removes the staging file without changing the destination.
 
-**File → Open…** (including drag-and-drop) sends `.slvbundle` through the shared compressed-file path. `DecompressingByteSource` writes a TEMP JSONL file while retaining and removing the metadata line; the normal `LogFile` / `FileLineSource` / `JsonParser` flow parses the remaining rows. The TEMP owner's lifetime is attached to the mapped `LogFile`, including Windows-safe unmap-before-delete ordering.
+Open a bundle by drag-and-drop or by selecting **All Files (\*.\*)** in **File → Open…**. `DecompressingByteSource` writes a temporary JSONL file while retaining and removing the metadata line; the normal `LogFile` / `FileLineSource` / `JsonParser` flow parses the remaining rows. The temporary file is deleted after its mapping closes, including on Windows.
 
-After opening, a bundle is a normal static compressed file (`Source::Kind::File`) whose locator is the physical `.slvbundle` path. Append/replace, Recent Sessions, autosave, and restore behave exactly as for other static files. Embedded configuration is only the default for a fresh lone bundle open; an explicit configuration, an existing append session, or a restored autosave remains authoritative, and later user changes take precedence.
+After opening, a bundle is a normal static compressed file (`Source::Kind::File`) whose locator is the physical `.slvbundle` path. Append/replace, Recent Sessions, autosave, and restore behave exactly as for other static files. Embedded configuration applies only when one bundle is opened alone into a fresh session. Mixed opens, appends, explicit configurations, restored autosaves, and later edits keep their existing configuration.
 
 ### Inspecting a Record
 
@@ -726,6 +727,7 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 | Save configuration             | `Ctrl+S`            |
 | Save session                   | `Ctrl+Shift+S`      |
 | Export filtered rows           | `Ctrl+E`            |
+| Export session bundle          | `Ctrl+Shift+E`      |
 | Find                           | `Ctrl+F`            |
 | Go to Line                     | `Ctrl+G`            |
 | Go to Timestamp                | `Ctrl+Shift+G`      |

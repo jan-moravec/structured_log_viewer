@@ -9,11 +9,8 @@ namespace loglib::internal
 
 /// One cell from a CSV record.
 ///
-/// `wasQuoted` disables typed-value detection at the parser layer
-/// (mirroring logfmt: a quoted value is always a literal string).
-/// `fromScratch` means `value` points into the caller-supplied
-/// scratch buffer (`""`-unescaped) and must be copied before the
-/// next cell overwrites it.
+/// Quoted cells remain strings. `fromScratch` means `value` points
+/// into the caller's unescape buffer and must be copied before reuse.
 struct CsvCell
 {
     std::string_view value;
@@ -21,17 +18,15 @@ struct CsvCell
     bool fromScratch = false;
 };
 
-/// RFC 4180 cell tokenizer. Walks @p line and calls @p emit per cell.
-/// Returns false on an unterminated quoted cell (already-emitted cells
-/// are kept). @p quotedScratch holds `""`-unescaped bytes across calls.
+/// Tokenize one CSV record using RFC 4180 quoting with lax recovery.
+/// Calls @p emit per cell and rejects unterminated quoted cells.
 ///
 /// Grammar: cells separated by `,`; a leading `"` opens a quoted cell
 /// closed by an unescaped `"`, with `""` decoded to a literal `"`; an
 /// unquoted cell ends at the next `,` or EOL; a trailing `,` emits one
 /// final empty cell.
 ///
-/// Kept separate from `csv_parser.cpp` so the static and streaming
-/// CSV paths share the exact same tokenisation.
+/// @p quotedScratch stores unescaped quoted cells.
 template <class Emit>
 bool TokenizeCsvLine(std::string_view line, std::string &quotedScratch, Emit emit)
 {
@@ -98,9 +93,8 @@ bool TokenizeCsvLine(std::string_view line, std::string &quotedScratch, Emit emi
             }
             emit(cell);
 
-            // After a quoted cell, only `,` or EOL is conformant;
-            // tolerate stray bytes by skipping to the next `,`
-            // (matches logfmt's lax stance).
+            // Tolerate bytes after a closing quote by skipping to
+            // the next comma.
             if (i >= end)
             {
                 return true;
@@ -122,8 +116,7 @@ bool TokenizeCsvLine(std::string_view line, std::string &quotedScratch, Emit emi
             }
             if (i >= end)
             {
-                // e.g. `"a"x` -- the quoted cell is the last one; don't
-                // emit a spurious trailing empty.
+                // `"a"x` ends with the quoted cell, not an empty one.
                 return true;
             }
             ++i;

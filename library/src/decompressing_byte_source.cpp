@@ -37,36 +37,27 @@ namespace loglib::internal
 namespace
 {
 
-/// Streaming I/O buffer size for every codec. 64 KiB balances
-/// worker-thread RSS against per-chunk overhead (zlib inflate wants
-/// >=16 KiB feeds).
+/// Shared 64 KiB codec buffer size.
 constexpr std::size_t CHUNK_SIZE = 64 * 1024;
 
 /// Bytes read for the codec probe. Matches the widest supported
 /// magic (`.xz` is 6 bytes).
 constexpr std::size_t MAGIC_MAX_BYTES = 6;
 
-/// Codec magic-byte prefixes. Detection is content-first, so these
-/// are extension-agnostic.
+/// Extension-independent codec signatures.
 constexpr std::array<std::uint8_t, 2> GZIP_MAGIC = {0x1f, 0x8b};
 constexpr std::array<std::uint8_t, 3> BZIP2_MAGIC = {'B', 'Z', 'h'};
 constexpr std::array<std::uint8_t, 6> XZ_MAGIC = {0xfd, '7', 'z', 'X', 'Z', 0x00};
 constexpr std::array<std::uint8_t, 4> ZSTD_MAGIC = {0x28, 0xb5, 0x2f, 0xfd};
 
-/// Zstd skippable-frame magic (RFC 8878 §3.1.2): LE 32-bit range
-/// `[0x184D2A50, 0x184D2A5F]`, i.e. `<0x5?> 0x2A 0x4D 0x18` on disk
-/// -- only the low nibble of byte 0 varies.
+/// Zstd skippable-frame magic range from RFC 8878 §3.1.2.
 constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE0_MASK = 0xF0;
 constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE0_VALUE = 0x50;
 constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE1 = 0x2A;
 constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE2 = 0x4D;
 constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE3 = 0x18;
 
-/// A valid `.zst` stream may begin with a skippable frame instead
-/// of the normal zstd magic. `ZSTD_decompressStream` skips these
-/// transparently, so treating them as `Codec::Zstd` handles producers
-/// that prepend a skippable frame (dictionary IDs, custom headers)
-/// instead of misclassifying such files as uncompressed.
+/// Return whether bytes start with a zstd skippable frame.
 [[nodiscard]] bool IsZstdSkippableMagic(std::span<const std::uint8_t> haystack) noexcept
 {
     return haystack.size() >= 4 &&
@@ -84,9 +75,7 @@ constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE3 = 0x18;
     return std::memcmp(haystack.data(), needle.data(), needle.size()) == 0;
 }
 
-/// Read up to @p max bytes from the start of @p path. Throws on I/O
-/// error. Used by the ctor (path already known to exist from
-/// `file_size`); `SniffCodec` uses the noexcept sibling below.
+/// Read up to @p max leading bytes, throwing on open failure.
 [[nodiscard]] std::vector<std::uint8_t> ReadMagic(const std::filesystem::path &path, std::size_t max)
 {
     std::ifstream stream(path, std::ios::binary);
@@ -101,9 +90,7 @@ constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE3 = 0x18;
     return out;
 }
 
-/// Non-throwing sibling of `ReadMagic`. Returns empty on any I/O
-/// error so `SniffCodec` collapses to `Codec::None` and the
-/// downstream `LogFile` ctor produces the open-error message.
+/// Non-throwing `ReadMagic`; returns empty on I/O failure.
 [[nodiscard]] std::vector<std::uint8_t> TryReadMagic(const std::filesystem::path &path, std::size_t max) noexcept
 {
     try
@@ -147,10 +134,7 @@ constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE3 = 0x18;
     return Codec::None;
 }
 
-/// Build a unique candidate path under `temp_directory_path()`.
-/// Suffix combines `random_device`, steady_clock, and a process-local
-/// counter so parallel workers don't collide. The file is not
-/// created here -- the caller opens it exclusively.
+/// Build a unique candidate path in the system temp directory.
 [[nodiscard]] std::filesystem::path MakeTempPath()
 {
     std::error_code ec;
@@ -171,9 +155,7 @@ constexpr std::uint8_t ZSTD_SKIPPABLE_MAGIC_BYTE3 = 0x18;
     return base / fmt::format("slv-decompressed-{:016x}{:016x}{:08x}.tmp", r1, r2, c);
 }
 
-/// RAII wrapper around a `std::FILE*`. Preferred over `std::ofstream`
-/// for the temp file: buffered `fwrite` has a predictable failure
-/// surface and a native handle we can `fflush` at close.
+/// RAII wrapper around `std::FILE*`.
 class FileHandle
 {
 public:
@@ -228,27 +210,7 @@ private:
     std::FILE *mHandle = nullptr;
 };
 
-// Open @p path exclusively (fail if it already exists).
-//
-// Windows: `_wfopen_s` with `wbxN` -- `x` is C11 "create new; fail if
-// exists" and `N` marks the HANDLE non-inheritable so a spawned
-// child can't observe our temp fd. Native wide path so long / non-
-// ASCII names round-trip.
-//
-// Confidentiality (Windows): the temp file inherits the parent
-// directory's DACL. Per-user `%TEMP%` is already restricted; we
-// don't set an explicit DACL because a redirected `%TEMP%` is the
-// only case where it would matter and paying the Win32 surface for
-// it isn't worth it.
-//
-// POSIX: `open(O_WRONLY | O_CREAT | O_EXCL, 0600)` is the canonical
-// safe-tempfile idiom -- kernel-enforced exclusive create (stronger
-// than a random-name check), owner-only rwx, and `O_CLOEXEC`
-// matching the Windows `N` no-inherit intent. `fdopen` layers a
-// `FILE*` for compatibility with the rest of the pipeline.
-/// EEXIST on either platform means "target already existed"; the
-/// caller retries with a fresh candidate. Anything else is a hard
-/// error.
+/// Collision error returned by exclusive temp-file creation.
 constexpr int TEMP_FILE_COLLISION_ERRNO = EEXIST;
 
 /// Result of a single `TryOpenExclusive` attempt.
@@ -278,14 +240,7 @@ struct OpenExclusiveResult
 #ifdef O_CLOEXEC
     flags |= O_CLOEXEC;
 #endif
-    // Native `path.c_str()` (not `path.string().c_str()`):
-    // `string()` transcodes to the generic narrow encoding, which
-    // can mangle a valid native path (non-UTF-8 POSIX locales,
-    // Darwin NFD quirks) and fail an `open()` that `ifstream(path)`
-    // handled fine. Matches `_wfopen_s(path.native())` above.
-    // POSIX `open()` is a variadic function only because the `mode`
-    // arg is conditionally used with `O_CREAT`; there is no
-    // non-variadic replacement to pick.
+    // Use native path bytes and owner-only permissions.
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg,cppcoreguidelines-pro-type-cstyle-cast,hicpp-vararg)
     const int fd = ::open(path.c_str(), flags, S_IRUSR | S_IWUSR);
     if (fd < 0)
@@ -299,9 +254,7 @@ struct OpenExclusiveResult
     if (raw == nullptr)
     {
         const int savedErrno = errno;
-        // We own the fd + a newly-created file; both need cleanup
-        // to avoid leaks. Reports as a hard failure (open succeeded,
-        // so it's not a collision).
+        // Clean up the descriptor and newly created file.
         ::close(fd);
         std::error_code ignoreEc;
         std::filesystem::remove(path, ignoreEc);
@@ -311,12 +264,7 @@ struct OpenExclusiveResult
 #endif
 }
 
-/// `MakeTempPath` + `TryOpenExclusive` retry loop. Collisions are
-/// vanishingly unlikely per attempt but happen often enough under
-/// parallel workers on shared CI `%TEMP%` to be worth retrying
-/// rather than failing outright. Bounded attempt count so a broken
-/// temp dir (read-only, AV blocking every name) still fails fast.
-/// Returns the created path via @p outPath.
+/// Create a unique temp file, retrying bounded name collisions.
 [[nodiscard]] FileHandle OpenExclusiveWithRetry(std::filesystem::path &outPath)
 {
     constexpr int MAX_ATTEMPTS = 8;
@@ -325,12 +273,7 @@ struct OpenExclusiveResult
     for (int attempt = 0; attempt < MAX_ATTEMPTS; ++attempt)
     {
         std::filesystem::path candidate = MakeTempPath();
-        // clang-analyzer doesn't trace `FILE*` ownership through the
-        // `FileHandle` RAII wrapper inside `OpenExclusiveResult`, so
-        // it flags this call site as `unix.Stream: Opened stream
-        // never closed`. On the success branch we move the handle
-        // out; on the collision / hard-fail branch `~FileHandle` on
-        // the local `result` at the end of the iteration closes it.
+        // Ownership moves on success; otherwise `result` closes it.
         // NOLINTNEXTLINE(clang-analyzer-unix.Stream)
         OpenExclusiveResult result = TryOpenExclusive(candidate);
         if (result.handle.IsOpen())
@@ -363,12 +306,7 @@ void WriteAll(FileHandle &out, const void *data, std::size_t bytes, const std::f
     }
 }
 
-/// Write @p bytes bytes to @p out, update the running output
-/// counter, and enforce the size cap. Cap check runs after the
-/// write so the counter reflects what's on disk; the ctor's
-/// `catch (...)` unlinks the partial temp file on throw.
-/// `maxDecompressedBytes == 0` disables the cap. Single choke point
-/// for the check -- do not bypass with codec-local counter updates.
+/// Write output, update its size, and enforce the configured cap.
 void WriteOutput(
     FileHandle &out,
     const void *data,
@@ -459,9 +397,7 @@ void DecodeGzip(
     std::array<Bytef, CHUNK_SIZE> outBuf{};
 
     std::size_t consumed = 0;
-    // `ret` persists across read iterations: a member can end
-    // exactly when `avail_in` hits 0, so we defer the reset for
-    // the next concatenated member until fresh input arrives.
+    // Preserve end-of-member state across chunk boundaries.
     int ret = Z_OK;
     for (;;)
     {
@@ -484,17 +420,7 @@ void DecodeGzip(
             break;
         }
 
-        // Drain this chunk. Continue while there is buffered output
-        // to flush (`avail_out == 0`) or unconsumed input
-        // (`avail_in > 0`) so a member boundary can straddle a
-        // chunk and highly-compressible members can keep producing
-        // output after their input is exhausted.
-        //
-        // The inner `ObservePoll` bounds cancel latency to one
-        // `inflate` call (~64 KiB of output) rather than the full
-        // chunk drain: a 64 KiB compressed chunk can expand to
-        // many MB, so polling only per-read stalls cancels for
-        // seconds. Matches DecodeXz / DecodeZstd.
+        // Drain all input/output and poll between inflate calls.
         while (true)
         {
             if (ret == Z_STREAM_END)
@@ -505,9 +431,7 @@ void DecodeGzip(
                     // next read to see if another follows.
                     break;
                 }
-                // Trailing bytes after a member end -> concatenated
-                // member; reset before decoding. `ret` is
-                // overwritten by the `inflate` call below.
+                // Reset before the next concatenated member.
                 if (::inflateReset(&strm) != Z_OK)
                 {
                     throw std::runtime_error(
@@ -603,8 +527,7 @@ void DecodeBzip2(
     std::array<char, CHUNK_SIZE> outBuf{};
 
     std::size_t consumed = 0;
-    // See DecodeGzip: `ret` persists across reads so a member ending
-    // at the chunk edge defers its reset to the next iteration.
+    // Preserve end-of-member state across chunk boundaries.
     int ret = BZ_OK;
     for (;;)
     {
@@ -625,9 +548,7 @@ void DecodeBzip2(
             break;
         }
 
-        // Drain buffered output and remaining input, straddling
-        // member boundaries. Inner-loop poll bounds cancel latency
-        // to one `BZ2_bzDecompress` call. See DecodeGzip.
+        // Drain all input/output and poll between decoder calls.
         while (true)
         {
             if (ret == BZ_STREAM_END)
@@ -636,9 +557,7 @@ void DecodeBzip2(
                 {
                     break;
                 }
-                // Concatenated bz2 stream: tear down + re-init for
-                // the next member. `ret` is overwritten by the
-                // `BZ2_bzDecompress` call below.
+                // Reinitialize for the next concatenated member.
                 if (::BZ2_bzDecompressEnd(&strm) != BZ_OK || ::BZ2_bzDecompressInit(&strm, 0, 0) != BZ_OK)
                 {
                     throw std::runtime_error(
@@ -682,13 +601,8 @@ void DecodeBzip2(
 
 // --- xz / lzma ---------------------------------------------------------
 
-// Decodes .xz / .lzma via liblzma's multi-threaded decoder
-// (`lzma_stream_decoder_mt`). Single-block streams (the common
-// `xz file` output) fall back to single-threaded decoding
-// transparently; only `xz -T <N>` / `--block-size` output gains
-// parallelism -- so this is a strict >= vs. the ST decoder.
-// `mt.timeout` yields an idle LZMA_OK every ~100 ms, keeping cancel
-// latency comparable to the other codecs via `ObservePoll`.
+// Use liblzma's multi-threaded decoder; single-block streams fall
+// back to one worker.
 void DecodeXz(
     std::ifstream &in,
     FileHandle &out,
@@ -703,9 +617,7 @@ void DecodeXz(
 {
     lzma_stream strm = LZMA_STREAM_INIT;
 
-    // Clamp to 1 when `lzma_cputhreads()` returns 0 (platform can't
-    // report CPU count) so the MT decoder still builds a valid
-    // single-worker pipeline.
+    // Unknown CPU count falls back to one worker.
     std::uint32_t threads = ::lzma_cputhreads();
     if (threads == 0)
     {
@@ -716,18 +628,13 @@ void DecodeXz(
     // Stream through concatenated members like the ST decoder does.
     mt.flags = LZMA_CONCATENATED;
     mt.threads = threads;
-    // Poll window: bounds the wall-clock gap between the stop token
-    // being set and the next `ObservePoll` seeing it. 100 ms keeps
-    // cancel latency comparable to the ST codec paths.
+    // Bound cancellation latency while liblzma is idle.
     constexpr std::uint32_t XZ_MT_POLL_WINDOW_MS = 100;
     mt.timeout = XZ_MT_POLL_WINDOW_MS;
     // Hard cap: never fail with `LZMA_MEMLIMIT_ERROR`. Any file the
     // ST decoder accepts must still open here.
     mt.memlimit_stop = UINT64_MAX;
-    // Soft cap: liblzma silently reduces active workers when it
-    // would exceed this. `physmem / 4` is the upstream default;
-    // fall back to 512 MiB when physmem is unknown (sandbox etc.)
-    // so the MT scheduler always has room.
+    // Limit threading memory to 25% of RAM, or 512 MiB if unknown.
     constexpr std::uint64_t XZ_MEMLIMIT_FALLBACK_MIB = 512;
     constexpr unsigned MIB_TO_BYTES_SHIFT = 20;
     constexpr unsigned PHYSMEM_FRACTION_SHIFT = 2; // physmem / 4
@@ -788,11 +695,7 @@ void DecodeXz(
             consumed += static_cast<std::size_t>(gotSigned);
         }
 
-        // Poll every iteration, not just per fresh read.
-        // `lzma_code` can spend many output buffers draining a
-        // single 64 KiB input chunk, so per-read polling would
-        // scale cancel latency with output size. Matches
-        // DecodeZstd's inner loop.
+        // Poll between decoder calls, not only between input reads.
         ObservePoll(consumed, totalBytesIn, progress, stopToken);
 
         strm.next_out = outBuf.data();
@@ -882,10 +785,7 @@ void DecodeZstd(
         ZSTD_inBuffer input{.src = inBuf.data(), .size = static_cast<std::size_t>(gotSigned), .pos = 0};
         while (input.pos < input.size)
         {
-            // Poll per decompressStream call to bound cancel
-            // latency to one call; a highly-compressible frame
-            // can expand a 64 KiB chunk over many iterations.
-            // Matches the other codecs' inner-loop polling.
+            // Poll between decoder calls for highly compressed frames.
             ObservePoll(consumed, totalBytesIn, progress, stopToken);
             ZSTD_outBuffer output{.dst = outBuf.data(), .size = outBuf.size(), .pos = 0};
             const std::size_t result = ::ZSTD_decompressStream(dctx, &output, &input);
@@ -1028,11 +928,7 @@ DecompressingByteSource::DecompressingByteSource(
         );
     }
 
-    // Compressed: stream-decode into a temp file. Any exception must
-    // delete the partial temp file before propagating. `mOwnsTempFile`
-    // is set only after `OpenExclusiveWithRetry` succeeds so an
-    // earlier throw (e.g. opening the input) does not trigger a
-    // `ReleaseTempFile()` on a file that never existed.
+    // Decode to an owned temp file and remove it on failure.
     std::ifstream inStream(mDisplayPath, std::ios::binary);
     if (!inStream.is_open())
     {

@@ -78,9 +78,7 @@ SessionBundleMetadata ParseSessionBundleMetadata(std::string_view json)
 
 bool LooksLikeSessionBundle(const std::filesystem::path &file) noexcept
 {
-    // Delegate to `SniffCodec` so every zstd shape the decoder
-    // accepts (including a leading skippable frame at magic
-    // `0x184D2A5?`) is recognised here too.
+    // Keep sniffing behavior identical to the decoder.
     return internal::DecompressingByteSource::SniffCodec(file) ==
            internal::DecompressingByteSource::Codec::Zstd;
 }

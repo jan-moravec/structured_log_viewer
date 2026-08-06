@@ -39,12 +39,7 @@ public:
         std::error_code error;
         std::filesystem::remove(mPath, error);
         std::filesystem::remove(TemporaryPath(), error);
-        // The writer now uses a per-invocation staging suffix
-        // (`<basename>.<seed>.<counter>.tmp`), so a legacy
-        // `<basename>.tmp` won't match every case. Sweep the
-        // parent directory for any leftover staging files that
-        // share this destination's basename to keep the test temp
-        // dir clean when a test aborted mid-write.
+        // Remove randomized staging names left by an interrupted test.
         RemoveStagingSiblings();
     }
 
@@ -55,11 +50,7 @@ public:
 
     [[nodiscard]] const std::filesystem::path &Path() const noexcept { return mPath; }
 
-    /// The pre-fix (deterministic) staging path. Kept for tests that
-    /// only care whether the *specific* legacy path is absent; use
-    /// `HasStagingFiles()` for the general "no staging file remains"
-    /// invariant, since the writer now picks a unique suffix per
-    /// call and this path may never have existed.
+    /// Legacy deterministic staging path used by compatibility tests.
     [[nodiscard]] std::filesystem::path TemporaryPath() const
     {
         std::filesystem::path temporary = mPath;
@@ -67,11 +58,7 @@ public:
         return temporary;
     }
 
-    /// Return `true` iff any staging file (`<basename>*.tmp`) is
-    /// present in the destination directory. Used by the cleanup
-    /// invariants that previously spelled `!exists(TemporaryPath())`
-    /// and became trivially-true when the writer switched to
-    /// suffix-randomised staging paths.
+    /// Return whether any staging sibling remains.
     [[nodiscard]] bool HasStagingFiles() const
     {
         const std::filesystem::path parent = mPath.parent_path();
@@ -148,12 +135,7 @@ void Write(const std::filesystem::path &path, std::string_view bytes)
     return loglib::LogTable(std::move(parsed.data), std::move(manager));
 }
 
-/// Variant of `ParseTable` that also promotes `Type::Time` columns
-/// so their compact values are `TimeStamp` (not raw strings). The
-/// static `ParseFile` path builds a `LogTable` without ever running
-/// `ParseTimestamps`, so a caller that wants to test the serialized
-/// TimeStamp form -- as opposed to the original string bytes -- has
-/// to promote explicitly before writing the bundle.
+/// Parse a table and promote timestamp columns before serialization.
 [[nodiscard]] loglib::LogTable ParseTableWithTimestamps(const std::filesystem::path &path)
 {
     loglib::ParseResult parsed = loglib::ParseFile(path);
@@ -324,7 +306,7 @@ TEST_CASE("session bundle metadata preserves investigation configuration and fla
     CHECK(restored.source->kind == loglib::LogConfiguration::Source::Kind::File);
     CHECK(restored.source->format == loglib::LogConfiguration::Source::Format::Json);
     // With no canonicalizer set, both `locators` and
-    // `locatorDedupKeys` fall back to `path::u8string()`, so this
+    // `locatorDedupKeys` use `internal::PathToUtf8()`, so this
     // default-options test expects them to match. The canonicalizer
     // contract is exercised in the dedicated test below.
     CHECK(restored.source->locators == std::vector<std::string>{bundle.Path().string()});
@@ -411,14 +393,14 @@ TEST_CASE("canonicalizeSourceLocator bridges canonicalized anchors to raw source
     // Mirrors production: `AnchorManager` stores canonicalized
     // locators while `line.Source()->Path()` is the raw filesystem
     // path. Without the callback the writer silently drops every
-    // anchor because `path::u8string()` doesn't match the canonical
+    // anchor because `PathToUtf8()` doesn't match the canonical
     // form.
     TempPath source(".jsonl");
     TempPath bundle(".slvbundle");
     Write(source.Path(), R"({"msg":"a0"})" "\n" R"({"msg":"a1"})" "\n");
     loglib::LogTable table = ParseTable(source.Path());
 
-    // Force a canonical form that does not equal `path::u8string()`.
+    // Force a canonical form that does not equal `PathToUtf8()`.
     const std::string canonicalLocator = "canonical://" + source.Path().string();
 
     loglib::LogConfiguration configuration = table.Configuration().Configuration();
@@ -462,14 +444,7 @@ TEST_CASE("canonicalizeSourceLocator bridges canonicalized anchors to raw source
 
 TEST_CASE("session bundle drops anchors whose `(locator, lineId)` matches multiple flattened rows", "[SessionBundle]")
 {
-    // `Merge` promotes both source files' lines into a single
-    // `LogData`, and both `sourceA` and `sourceB` were parsed from
-    // scratch, so they share the low-numbered `LineId` space
-    // starting at 0. If the anchor's locator canonicalizes to the
-    // *same* string against both sources (via the callback) the
-    // wanted-set finds two candidates for one `(locator, lineId)`
-    // key and must drop rather than pick arbitrarily -- otherwise
-    // the anchor would move to an unpredictable row on export.
+    // Both sources map `(locator, lineId)` to the same anchor key.
     TempPath sourceA(".a.jsonl");
     TempPath sourceB(".b.jsonl");
     TempPath bundle(".slvbundle");
@@ -490,8 +465,7 @@ TEST_CASE("session bundle drops anchors whose `(locator, lineId)` matches multip
         {.locator = "collapsed", .lineId = 0, .colorIndex = 1, .note = "ambiguous - drop me"},
     };
 
-    // Force both sources to canonicalize to the same string, so
-    // the wanted-set sees them both match `(collapsed, 0)`.
+    // Force the ambiguous canonical locator.
     loglib::SessionBundleWriteOptions options;
     options.canonicalizeSourceLocator = [](const std::filesystem::path &) { return std::string("collapsed"); };
     loglib::WriteSessionBundle(table, configuration, bundle.Path(), options);
@@ -504,14 +478,7 @@ TEST_CASE("session bundle drops anchors whose `(locator, lineId)` matches multip
 
 TEST_CASE("session bundle drops anchors with an empty `locator`", "[SessionBundle]")
 {
-    // An anchor whose `locator` is the empty string could
-    // previously false-match every null-source row (any auto-
-    // synthesised row with no `Source*`) or, with a custom
-    // canonicalizer that yields "" for an unrecognised path, every
-    // row from that source. The writer must not carry such
-    // anchors through: they cannot uniquely resolve to a real
-    // flattened row and would surface as meaningless bookmarks on
-    // the receiving side.
+    // Empty locators cannot identify a source row.
     TempPath source(".jsonl");
     TempPath bundle(".slvbundle");
     Write(source.Path(), R"({"msg":"a0"})" "\n" R"({"msg":"a1"})" "\n");
@@ -533,33 +500,20 @@ TEST_CASE("session bundle drops anchors with an empty `locator`", "[SessionBundl
 
 TEST_CASE("session bundle round-trips non-ASCII destination paths", "[SessionBundle]")
 {
-    // Windows relies on wide-string filesystem APIs; POSIX treats
-    // path bytes as opaque. Either way, the writer must survive a
-    // destination whose filename contains code points outside the
-    // ASCII range without corrupting the anchor locator or the
-    // atomic-replace path. This regressed once in review because
-    // an intermediate `.string()` call implicitly narrowed on
-    // Windows.
+    // Non-ASCII destinations must survive writing and reopening.
     TempPath source(".jsonl");
     Write(source.Path(), R"({"msg":"row"})" "\n");
     loglib::LogTable table = ParseTable(source.Path());
 
     static std::atomic<unsigned> counter{0};
-    // U+017E z-with-caron, U+00E9 e-acute, U+65E5 CJK "day"
-    // exercise the full 1/2/3-byte UTF-8 ranges. Spelled with
-    // explicit UTF-8 byte escapes so the test source stays
-    // ASCII-safe and does not depend on source-file encoding or
-    // compiler default charset settings.
+    // Use explicit UTF-8 bytes to avoid compiler charset dependence.
     const std::string utf8Filename =
         "slv-bundle-"
         "\xC5\xBE"     // U+017E z-with-caron
         "\xC3\xA9"     // U+00E9 e-acute
         "\xE6\x97\xA5" // U+65E5 CJK "day"
         "-" + std::to_string(++counter) + ".slvbundle";
-    // On Windows, `filesystem::path(std::string)` reinterprets the
-    // bytes in the active code page, silently mangling the non-ASCII
-    // suffix. Route through `Utf8ToPath` so both sides of the round
-    // trip agree on the byte layout.
+    // Avoid Windows active-code-page conversion.
     std::filesystem::path bundlePath = std::filesystem::temp_directory_path() / loglib::internal::Utf8ToPath(utf8Filename);
     std::error_code cleanupError;
     std::filesystem::remove(bundlePath, cleanupError);
@@ -653,22 +607,12 @@ TEST_CASE("successful session bundle write atomically replaces destination", "[S
 
 TEST_CASE("session bundle writer preserves unrelated .tmp siblings in the destination directory", "[SessionBundle]")
 {
-    // B2 regression: the previous writer preface issued an
-    // unconditional `std::filesystem::remove(<destination>.tmp)`
-    // before opening its staging file, so a stray sibling could be
-    // silently deleted. Since switching to exclusive `CREATE_NEW` /
-    // `O_EXCL` opens plus a randomised suffix, the writer must
-    // leave every non-matching `.tmp` untouched.
+    // The writer must not remove unrelated `.tmp` siblings.
     TempPath source(".jsonl");
     TempPath bundle(".slvbundle");
     Write(source.Path(), R"({"msg":"only"})" "\n");
 
-    // Pre-plant a decoy that shares the destination's basename but
-    // is not the writer's exact staging name (the seeded suffix is
-    // per-process and unpredictable from here). The pattern still
-    // matches the sweep the destructor runs, so the decoy would
-    // have been reaped on teardown; we snapshot the contents up
-    // front and inspect them before the destructor fires.
+    // Plant a decoy that resembles, but is not, a staging file.
     const std::filesystem::path decoy = std::filesystem::path(bundle.Path().string() + ".manual-decoy.tmp");
     constexpr std::string_view DECOY_CONTENTS = "manual-decoy-must-survive-write";
     Write(decoy, DECOY_CONTENTS);
@@ -680,9 +624,7 @@ TEST_CASE("session bundle writer preserves unrelated .tmp siblings in the destin
     REQUIRE(std::filesystem::exists(decoy));
     CHECK(Read(decoy) == std::string(DECOY_CONTENTS));
 
-    // Remove the decoy manually so the destructor's sweep does not
-    // race with our post-hoc read. The destructor still runs its
-    // scan, which is a no-op once the decoy is gone.
+    // Remove the decoy before fixture cleanup.
     std::error_code cleanupError;
     std::filesystem::remove(decoy, cleanupError);
 }
@@ -725,13 +667,7 @@ TEST_CASE("LooksLikeSessionBundle distinguishes plain input from produced zstd b
 
 TEST_CASE("session bundle round-trips ISO-8601 Time column values", "[SessionBundle]")
 {
-    // Regression: the writer emits timestamps as `%FT%T.ffffffZ` --
-    // ISO-8601 UTC with a trailing `Z`. Before this fix the ISO
-    // fast-path (`TryParseIsoTimestamp`) rejected the `Z` outright
-    // and `date::parse("%FT%T%Ez", ...)` also did not accept a bare
-    // `Z`, so re-parsing a bundle that carried a Time column left
-    // every row as an un-promoted string -- exactly the "100%
-    // mismatch" the Configuration Diagnostics dialog reports.
+    // Normalized UTC timestamps must remain typed after reopening.
     TempPath source(".jsonl");
     TempPath bundle(".slvbundle");
     Write(
@@ -741,8 +677,7 @@ TEST_CASE("session bundle round-trips ISO-8601 Time column values", "[SessionBun
     );
 
     loglib::LogTable table = ParseTableWithTimestamps(source.Path());
-    // Auto-detect promotes `ts` to `Type::Time`; sanity-check the
-    // in-memory table before we go through the bundle round-trip.
+    // Confirm the source table contains typed timestamps.
     REQUIRE(table.Data().Lines().size() == 2);
     const loglib::TimeStamp originalRow0 =
         std::get<loglib::TimeStamp>(table.Data().Lines()[0].GetValue("ts"));
@@ -753,8 +688,7 @@ TEST_CASE("session bundle round-trips ISO-8601 Time column values", "[SessionBun
 
     auto decoded = DecodeBundle(bundle.Path());
     const std::string jsonl = Read(decoded.EffectivePath());
-    // Confirm the writer's on-disk form matches what the fast path
-    // now accepts: ISO-8601 with `T` separator and trailing `Z`.
+    // Confirm the normalized on-disk UTC form.
     CHECK(jsonl.contains(R"("ts":"2025-04-25T12:34:56.123456Z")"));
 
     loglib::LogTable reloaded = ParseTableWithTimestamps(decoded.EffectivePath());
@@ -768,22 +702,14 @@ TEST_CASE(
     "[SessionBundle]"
 )
 {
-    // A user who pins `parseFormats = {"%d/%m/%Y %H:%M:%S"}` and
-    // then exports would otherwise get an un-openable bundle: the
-    // writer serialises to ISO-8601 UTC no matter what the source
-    // format was, and the embedded config would still only know how
-    // to parse the original custom format. The writer prepends the
-    // bundle-canonical `%FT%T` so the re-imported session can parse
-    // its own contents even when the user's original format cannot.
+    // Embedded Time columns must parse the normalized bundle format.
     TempPath source(".jsonl");
     TempPath bundle(".slvbundle");
     Write(source.Path(), R"({"ts":"25/04/2025 12:34:56","msg":"row"})" "\n");
     loglib::LogTable table = ParseTable(source.Path());
 
     loglib::LogConfiguration configuration = table.Configuration().Configuration();
-    // Force a non-ISO parseFormat that cannot parse the writer's
-    // ISO-8601 output. Also disable auto-detect so the default
-    // `%FT%T` seeding path is skipped.
+    // Use a custom source format with auto-detection disabled.
     for (auto &column : configuration.columns)
     {
         if (column.keys.size() == 1 && column.keys.front() == "ts")
@@ -806,8 +732,7 @@ TEST_CASE(
     REQUIRE(tsColumn != restored.columns.end());
     CHECK(tsColumn->type == loglib::LogConfiguration::Type::Time);
     REQUIRE(tsColumn->parseFormats.size() >= 2);
-    // Fast-path candidate must be first so the hot import loop hits
-    // it before the slower `date::from_stream` fallback.
+    // Keep the fast ISO parser first.
     CHECK(tsColumn->parseFormats.front() == "%FT%T");
     CHECK(std::ranges::find(tsColumn->parseFormats, std::string("%d/%m/%Y %H:%M:%S")) !=
           tsColumn->parseFormats.end());

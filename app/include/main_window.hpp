@@ -603,17 +603,12 @@ public:
     {
         return mDecompressionInFlight;
     }
-    /// Test-only accessor: is an embedded-config intent currently
-    /// armed for a pending bundle open? Returns `true` iff
-    /// `mApplyEmbeddedBundleConfigForPath` is non-empty.
+    /// Return whether a pending bundle may apply embedded configuration.
     [[nodiscard]] bool AppliesEmbeddedBundleConfigForNextOpenForTest() const noexcept
     {
         return !mApplyEmbeddedBundleConfigForPath.isEmpty();
     }
-    /// Test-only: fake a bundle decompression that gets superseded
-    /// before it finishes, so tests can assert the embedded-config
-    /// intent is cleared. The dummy path is opaque -- `CancelInFlight`
-    /// clears the intent regardless of value.
+    /// Simulate superseding a pending bundle decompression.
     void SimulateSupersededBundleDecompressionForTest()
     {
         mApplyEmbeddedBundleConfigForPath = QStringLiteral("simulated-bundle.slvbundle");
@@ -635,22 +630,11 @@ public:
         }
     }
 
-    /// Test seam replaying the post-dialog body of
-    /// `ExportSessionBundle`. Runs the same streaming pre-flight
-    /// (including the live-tail stop-and-snapshot branch) and then
-    /// dispatches `BeginAsyncBundleExport` against @p destination
-    /// with the zstd defaults. The `SessionBundleDialog` is
-    /// bypassed because it does not participate in
-    /// `SetSuppressDialogsForTest`; callers pump the event loop to
-    /// wait for `OnExportFinished`. No-op if the model is empty,
-    /// an export is already in flight, or a decompression is
-    /// pending -- matching the guards in `ExportSessionBundle`.
+    /// Export a bundle without showing the dialog, using production
+    /// preflight checks and default zstd settings.
     void ExportSessionBundleToPathForTest(const QString &destination);
 
-    /// Test-only accessor for the in-flight export flag. Companion
-    /// to `IsDecompressionInFlightForTest`; lets tests spin on
-    /// `mExportInFlight` becoming `false` without racing on wall
-    /// clock timeouts.
+    /// Return whether an export worker is active.
     [[nodiscard]] bool IsExportInFlightForTest() const noexcept
     {
         return mExportInFlight;
@@ -761,12 +745,8 @@ private slots:
     /// user cancel unwinds via `slv::exports::ExportCancelled`.
     void ExportFilteredRows();
 
-    /// "Export Session Bundle\u2026" -- pops the bundle dialog and
-    /// dispatches an async worker that writes a `.slvbundle` archive
-    /// containing every retained row plus the full `LogConfiguration`.
-    /// Shares the `mExportInFlight` / `mExportStopSource` /
-    /// `mExportProgressDialog` machinery with filtered-row exports,
-    /// so only one export of either kind runs at a time.
+    /// Export all retained rows and view state to `.slvbundle`.
+    /// Shares asynchronous export state with filtered-row export.
     void ExportSessionBundle();
 
     /// Show the `ConfigurationDiagnosticsDialog` (constructed lazily).
@@ -1918,31 +1898,8 @@ private:
     /// Wall-clock start of the current export, for the success toast.
     std::chrono::steady_clock::time_point mExportStartedAt;
 
-    /// Path of the pending bundle whose embedded configuration
-    /// should be applied when `OnDecompressionFinished` fires.
-    /// Empty means "no intent armed"; a non-empty value names the
-    /// exact `.slvbundle` that armed it. Binding the intent to a
-    /// specific file path (rather than a bare `bool`) is
-    /// load-bearing:
-    ///
-    ///   - When two bundle opens queue back to back (Bundle A then
-    ///     Bundle B, both arming), the earlier decompression must
-    ///     not consume Bundle B's arm and apply A's metadata.
-    ///     Last-arm-wins: dropping B overwrites the path, so A's
-    ///     `OnDecompressionFinished` sees a mismatch and skips.
-    ///
-    ///   - When a non-arming file (a `.gz` on empty model in Append
-    ///     mode) is already decompressing and the user then drops a
-    ///     bundle, the `.gz`'s finish handler must not clear the
-    ///     bundle's armed intent. The path also guards the reverse:
-    ///     by the time the bundle finishes decompressing, the
-    ///     `.gz`'s streaming may already have populated
-    ///     `mCurrentSource`, in which case applying the bundle's
-    ///     config would stomp the live session. The consume site
-    ///     re-checks `mCurrentSource` emptiness for this reason.
-    ///
-    /// Append, restored-session, and explicit-config paths leave
-    /// the active configuration untouched by keeping this empty.
+    /// Bundle path allowed to apply embedded configuration. Empty
+    /// disables it; replacing the path gives the latest open priority.
     QString mApplyEmbeddedBundleConfigForPath;
 
     /// Kick off the async export worker. Models on

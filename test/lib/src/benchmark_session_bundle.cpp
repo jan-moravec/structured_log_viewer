@@ -33,11 +33,7 @@ using namespace bench;
 namespace
 {
 
-/// RAII-owned bundle destination path. Unlinks the file plus any
-/// staging siblings the writer might have left behind on scope
-/// exit -- the writer picks a randomised `<path>.<seed>.<counter>.tmp`
-/// suffix per call, so a benchmark that aborts mid-write can leave
-/// files that a fixed `<path>.tmp` sweep would miss.
+/// RAII bundle path that also removes unique staging siblings.
 class TempBundlePath
 {
 public:
@@ -58,10 +54,7 @@ public:
     {
         std::error_code ec;
         std::filesystem::remove(mPath, ec);
-        // Sweep every `<basename>*.tmp` sibling; the writer's suffix
-        // is randomised per invocation so we cannot know the exact
-        // name up front. Comparing on `native()` avoids the UTF-8
-        // vs. wide re-encode on Windows.
+        // Sweep randomized staging names using native path strings.
         const auto parent = mPath.parent_path();
         std::error_code iterEc;
         if (!std::filesystem::exists(parent, iterEc))

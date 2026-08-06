@@ -23,33 +23,21 @@ constexpr const char *SESSION_BUNDLE_EXTENSION = ".slvbundle";
 /// Encoder options for the single zstd frame.
 struct SessionBundleWriteOptions
 {
-    /// zstd compression level (1 = fastest / worst, 22 = slowest / best,
-    /// 3 = zstd's balanced default). Clamped by zstd to its permitted
-    /// range at encode time.
+    /// zstd compression level; 3 is the balanced default.
     int compressionLevel = 3;
 
     /// Number of zstd workers. Zero uses zstd's single-threaded path.
     int totalWorkers = 0;
 
-    /// Cooperative cancellation. When `stopToken.stop_requested()`
-    /// flips to true, the writer throws `SessionBundleCancelled` and
-    /// unlinks the in-flight temp file before returning.
+    /// Cooperative cancellation. The writer removes its staging file
+    /// before throwing `SessionBundleCancelled`.
     StopToken stopToken;
 
     /// Progress in source-model rows. Called on the writer thread.
     std::function<void(std::uint64_t rowsWritten, std::uint64_t rowsTotal)> progress;
 
-    /// Canonicalizer applied to `line.Source()->Path()` before it
-    /// is compared to `anchor.locator` during anchor remapping.
-    ///
-    /// `AnchorEntry::locator` shares the shape of
-    /// `Source::locatorDedupKeys` (canonical, lowercased with
-    /// forward slashes on Windows). Without a matching canonicalizer
-    /// every anchor is silently dropped from the bundle. GUI callers
-    /// wire this to `logapp::CanonicalLocator`; leaving it unset
-    /// falls back to `path::u8string()` and is only correct when the
-    /// caller-supplied anchor locators are already raw path strings
-    /// (typical for test fixtures).
+    /// Convert source paths to the same form as `AnchorEntry::locator`
+    /// before remapping anchors. Defaults to a raw UTF-8 path.
     std::function<std::string(const std::filesystem::path &)> canonicalizeSourceLocator;
 };
 
@@ -61,9 +49,7 @@ struct SessionBundleMetadata
     LogConfiguration configuration;
 };
 
-/// Thrown by `WriteSessionBundle` when its `StopToken` fires.
-/// Distinct from `slv::exports::ExportCancelled` so callers can tell
-/// bundle and row-export cancellations apart without matching text.
+/// Thrown when bundle writing is cancelled.
 class SessionBundleCancelled : public std::exception
 {
 public:
@@ -73,9 +59,7 @@ public:
     }
 };
 
-/// Format-version mismatch: the bundle's `formatVersion` is not
-/// what this build understands. Distinct type so the GUI can show
-/// an "upgrade required" message instead of a generic parse error.
+/// Thrown when the bundle version is unsupported.
 class SessionBundleVersionError : public std::runtime_error
 {
 public:
@@ -89,9 +73,8 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-/// Write metadata plus every retained source-model row as compact
-/// JSONL inside one checksummed zstd frame. The destination is
-/// replaced atomically only after a successful final flush.
+/// Write metadata and every retained row as JSONL in one checksummed
+/// zstd frame. Replace the destination only after a durable flush.
 void WriteSessionBundle(
     const LogTable &table,
     const LogConfiguration &configuration,
@@ -102,19 +85,14 @@ void WriteSessionBundle(
 /// Parse and validate the first decompressed JSONL line.
 [[nodiscard]] SessionBundleMetadata ParseSessionBundleMetadata(std::string_view json);
 
-/// Cheap sniff that accepts every zstd input the decoder handles
-/// (including a leading skippable frame before the standard frame,
-/// via `DecompressingByteSource::SniffCodec`). Returns `false` for
-/// missing / unreadable files or non-zstd magic; never throws.
+/// Return whether @p file has zstd input accepted by the decoder.
+/// Missing, unreadable, and non-zstd files return false.
 [[nodiscard]] bool LooksLikeSessionBundle(const std::filesystem::path &file) noexcept;
 
-/// On-disk format version emitted by `WriteSessionBundle`. Readers
-/// require exactly this version; there is no legacy compatibility.
+/// Exact on-disk version emitted and accepted by this build.
 constexpr std::uint32_t SESSION_BUNDLE_FORMAT_VERSION = 1;
 
-/// Shared cap on `rowCount` enforced by both writer and reader.
-/// Kept as a single definition so a future bump can't silently
-/// desync the two.
+/// Maximum row count accepted by the writer and reader.
 constexpr std::uint64_t SESSION_BUNDLE_MAX_ROWS = 1'000'000'000ULL;
 
 } // namespace loglib

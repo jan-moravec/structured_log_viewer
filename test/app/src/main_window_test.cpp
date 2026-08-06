@@ -24251,13 +24251,7 @@ private slots:
 
     void TestSessionBundleAppliesEmbeddedHighlightRulesToLoadedRows()
     {
-        // Regression: opening a bundle mirrored the embedded
-        // `highlightRules` into `LogConfiguration` but never called
-        // `HighlightRuleSet::SetRules`. The editor listed the rule
-        // but no row was ever painted -- `LastMatchFor(row)` stayed
-        // `nullopt` for every source row. The fix mirrors the
-        // config-load path in `ApplyConfigurationFile` and installs
-        // the rules against the runtime match cache.
+        // Regression: embedded rules must populate the runtime cache.
         const QTemporaryDir sessionsDir;
         const QTemporaryDir bundleDir;
         QVERIFY(sessionsDir.isValid());
@@ -24265,9 +24259,7 @@ private slots:
         SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
         auto wired = std::make_unique<MainWindow>(mTheme.data(), &manager, nullptr);
 
-        // Two-row source with a `severity` column so the rule has
-        // an unambiguous key to bind against. Only the second row
-        // should paint because the rule matches `severity == "err"`.
+        // Only the second row matches `severity == "err"`.
         const QString bundle = WriteBundleFixture(
             bundleDir,
             {
@@ -24299,9 +24291,7 @@ private slots:
         QCoreApplication::processEvents();
 
         QCOMPARE(wired->Model()->rowCount(), 2);
-        // Configuration mirror carries the rule regardless of the
-        // fix, so this alone doesn't prove the bug is gone -- but
-        // it's a useful precondition for the real assertion below.
+        // First verify the embedded rule reached configuration.
         QCOMPARE(wired->Model()->Configuration().highlightRules.size(), static_cast<size_t>(1));
 
         HighlightRuleSet *const highlights = wired->Highlights();
@@ -24310,10 +24300,7 @@ private slots:
         QVERIFY(highlights->HasActiveRules());
         QCOMPARE(highlights->InactiveCount(), static_cast<size_t>(0));
 
-        // The core assertion: the runtime match cache must reflect
-        // the rule against the loaded rows. Before the fix,
-        // `LastMatchFor(1)` returned `nullopt` because
-        // `SetRules` was never invoked and the cache was empty.
+        // Then verify the runtime cache evaluated it.
         QVERIFY(!highlights->LastMatchFor(0).has_value());
         const std::optional<std::size_t> secondMatch = highlights->LastMatchFor(1);
         QVERIFY(secondMatch.has_value());
@@ -24405,13 +24392,7 @@ private slots:
         QCOMPARE(wired->CurrentSourceForTest()->locators.size(), static_cast<size_t>(2));
     }
 
-    // U1 coverage: exporting a bundle from an active live-tail
-    // session must stop the tail (so the writer walks a stable
-    // `LogTable::Data().Lines()`), keep the rows already delivered,
-    // and produce a valid bundle at the requested destination. The
-    // shipped path shows a `QMessageBox::question` before stopping;
-    // `SetSuppressDialogsForTest(true)` auto-accepts, exercising
-    // the same stop-and-snapshot flow the user sees on `Ok`.
+    // Bundle export stops live tail before snapshotting retained rows.
     void TestSessionBundleExportSnapshotsAndStopsLiveTailSession()
     {
         const QTemporaryDir sessionsDir;
@@ -24446,29 +24427,23 @@ private slots:
         const QString destination = bundleDir.filePath(QStringLiteral("livetail-snapshot.slvbundle"));
         wired->ExportSessionBundleToPathForTest(destination);
 
-        // The live-tail stop happens synchronously inside
-        // `ExportSessionBundleToPathForTest` before the async
-        // writer is armed, so `IsStreamingActive` must already
-        // read `false` and the rows must already be retained.
+        // The stream stops synchronously before the writer starts.
         QVERIFY2(
             !model->IsStreamingActive(),
             "Live-tail bundle export must stop the streaming pipeline before it dispatches the writer."
         );
         QCOMPARE(model->rowCount(), static_cast<int>(ROW_COUNT));
 
-        // Wait for the async writer to finish. The polling loop is
-        // aligned with the other async-export tests in this suite.
+        // Wait for the asynchronous writer.
         QTRY_VERIFY_WITH_TIMEOUT(!wired->IsExportInFlightForTest(), 5000);
         QCoreApplication::processEvents();
 
-        // Bundle file must exist and be a valid session bundle.
+        // Verify the produced bundle.
         const auto destPath = logapp::QStringToFsPath(destination);
         QVERIFY2(std::filesystem::exists(destPath), "Bundle export must produce the requested destination file.");
         QVERIFY(loglib::LooksLikeSessionBundle(destPath));
 
-        // Round-trip the metadata envelope so we know the writer
-        // did not truncate mid-row (the primary regression this
-        // test guards against).
+        // Parse metadata to catch truncated output.
         loglib::internal::DecompressingByteSource::Options options;
         options.discardFirstLine = true;
         loglib::internal::DecompressingByteSource decoded(destPath, {}, {}, options);

@@ -20,13 +20,10 @@ namespace slv::exports
 namespace
 {
 
-/// Stop-token poll cadence. Keeps the check off the per-cell hot
-/// path while capping cancel latency to a few ms even on
-/// million-row exports.
+/// Poll cancellation every 256 rows.
 constexpr size_t STOP_POLL_INTERVAL_ROWS = 4096;
 
-/// Per-row `std::string` scratch capacity. Batches `fwrite` at
-/// the row boundary without buffering the whole export.
+/// Initial per-row output capacity.
 constexpr size_t ROW_SCRATCH_RESERVE = 512;
 
 /// Throw `ExportCancelled` when the user hit Cancel. Called
@@ -117,18 +114,8 @@ public:
     ) override;
 
 private:
-    /// Append @p cell to @p out, quoted per RFC 4180 when it
-    /// contains `,`, `"`, `\r`, or `\n`.
-    ///
-    /// **CSV formula-injection defense**: cells starting with `=`
-    /// or `@` are prefixed with `'` and force-quoted. Excel /
-    /// Sheets / LibreOffice would otherwise *evaluate* those cells
-    /// on open (OWASP CSV Injection) -- a shared log dump becomes
-    /// arbitrary code execution on the recipient's machine. The
-    /// `'` sentinel forces literal-text rendering; plain readers
-    /// see `'=...` and can strip it. Leading `+` / `-` are NOT
-    /// rewritten because they also start every negative number in
-    /// the log.
+    /// Append one RFC 4180 cell. Prefix `=` and `@` values with `'`
+    /// to prevent spreadsheet formula injection.
     static void AppendCsvCell(std::string &out, std::string_view cell);
 
     /// True iff @p cell starts with a spreadsheet formula / DDE
@@ -157,9 +144,7 @@ void CsvExporter::AppendCsvCell(std::string &out, std::string_view cell)
     out.push_back('"');
     if (formulaTrigger)
     {
-        // The `'` sentinel forces spreadsheets to treat the cell
-        // as literal text. Not a CSV special character, so no
-        // doubling required inside the quoted cell.
+        // The leading apostrophe forces literal spreadsheet text.
         out.push_back('\'');
     }
     for (const char c : cell)
@@ -207,9 +192,7 @@ void CsvExporter::Run(
                 AppendCsvCell(scratch, config.columns[col].header);
             }
         }
-        // LF only for cross-platform consistency with the other
-        // export formats. RFC 4180 says CRLF but every reader we
-        // care about (Excel included) accepts LF.
+        // Use LF consistently across export formats.
         scratch.push_back('\n');
         sink.Write(scratch);
         scratch.clear();
@@ -305,15 +288,7 @@ void SnapshotExporter::Run(
         {
             continue;
         }
-        // Only per-row `RawLine` failures are swallowed: FIFO
-        // eviction (`out_of_range`), backing source gone
-        // (`runtime_error`), codec errors on partial compressed
-        // inputs. Skipping matches the "best-effort per row"
-        // contract; aborting over a single evicted line is worse
-        // UX. Sink writes stay outside the try -- an I/O failure
-        // MUST abort the export so `~FileSink` unlinks the temp
-        // file, otherwise the user sees a false "success" toast
-        // on a truncated file.
+        // Skip unavailable source rows, but let sink failures abort.
         std::string raw;
         try
         {
@@ -353,11 +328,8 @@ public:
     ) override;
 
 private:
-    /// Markdown-table-cell escaping:
-    ///   - `|` -> `\|` (would break the row otherwise).
-    ///   - `\r`, `\n`, `\t` -> single space (cells cannot span lines).
-    ///   - `\\` -> `\\\\` (so a literal backslash before a special
-    ///     char is not misread as an escape).
+    /// Escape pipes/backslashes and collapse whitespace for a
+    /// single-line Markdown table cell.
     static void AppendMarkdownCell(std::string &out, std::string_view cell);
 };
 
@@ -470,10 +442,7 @@ void MarkdownExporter::Run(
 
 } // namespace
 
-// No `return` after the exhaustive switch: `-Wswitch` (MSVC
-// C4062) will catch a new `ExportFormat` that forgets an arm.
-// The `assert` handles the "corrupt enum from persisted
-// settings" case in release builds.
+// Compiler warnings catch missing enum cases; assert handles bad values.
 const char *ExtensionFor(ExportFormat format) noexcept
 {
     switch (format)

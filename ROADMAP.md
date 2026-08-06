@@ -41,7 +41,7 @@ For the architecture each item plugs into, see [CONTRIBUTING.md → Architecture
   - [27. Scratchpad / notes panel](#27-scratchpad--notes-panel)
   - [28. Pipe selection to external command](#28-pipe-selection-to-external-command)
   - [29. AI / LLM assistance panel](#29-ai--llm-assistance-panel)
-  - [30. Full-session export bundle](#30-full-session-export-bundle)
+  - [30. ~~Full-session export bundle~~ (shipped)](#30-full-session-export-bundle)
 - [Explicit non-goals](#explicit-non-goals)
 - [Process](#process)
 - [Comparative feature matrix](#comparative-feature-matrix)
@@ -71,7 +71,7 @@ The roadmap aims to close the **mainstream desktop log-viewer expectations** bef
 
 Beyond the per-item list, three themes run through the roadmap:
 
-1. **Pre-release ergonomics.** Close the "table stakes" gaps any reviewer will flag in a head-to-head against Klogg or lnav: compressed files, histogram strip, highlight rules, bookmark notes, AND/OR filters, ~~multi-line records~~ (shipped), export, goto, stdin, headless mode.
+1. **Pre-release ergonomics.** Close the "table stakes" gaps any reviewer will flag in a head-to-head against Klogg or lnav: compressed files, histogram strip, highlight rules, bookmark notes, AND/OR filters, ~~multi-line records~~ (shipped), filtered/session export, goto, stdin, headless mode.
 1. **Structured-log power user.** Lean into what `loglib` already does well — typed columns, level promotion, the regex-template registry — with features that only make sense on structured data: SQL queries over typed rows, per-cell quick filters, pattern clustering by template key, time-gap detection across the first `Type::Time` column.
 1. **Scale and performance.** Preserve the existing performance envelope (see [CONTRIBUTING.md → Benchmarking](CONTRIBUTING.md#benchmarking)) as features land. Each Tier 1 / 2 item below documents whether it needs a new benchmark or a regression check against the [Acceptance bar](CONTRIBUTING.md#acceptance-bar).
 
@@ -175,11 +175,8 @@ Blank lines join a record only when followed by another continuation; trailing a
 
 **Non-goals (v1).** Streaming export (continuous flush to disk as
 new lines arrive — defer to v1.x), exports with attachments
-(anchors / notes), per-column transformations. **Full session
-export** — a single compressed archive bundling all log lines with
-configuration, session, and anchors, intended for sharing an entire
-investigation with a colleague — is out of scope here and tracked
-separately below.
+(anchors / notes), and per-column transformations. Full-session
+export shipped separately as [item 30](#30-full-session-export-bundle).
 
 ### 8. ~~Goto line / Goto timestamp~~
 
@@ -306,7 +303,7 @@ lnav's `!` shell hand-off, Logan's tabbed terminal. Right-click selection → **
 
 Logan, LogLens. A side panel where the user can ask "summarise these 200 rows", "what changed between window A and window B", "which requests look suspicious". Optional, off-by-default, requires a user-supplied API key or local model endpoint. Increasingly expected by 2026 buyers but **not** something we want to be required for the core triage workflow.
 
-### 30. Full-session export bundle ✓ (shipped)
+### 30. ~~Full-session export bundle~~
 
 Landed as **File → Export Session Bundle…** (`Ctrl+Shift+E`). A v1 bundle is one standard checksummed zstd stream. Decompressed content is JSON Lines: a compact `{"__slv_bundle__":{...}}` metadata object containing `formatVersion`, `rowCount`, and the full configuration, followed by one normalized typed JSON object per retained source-model row.
 
@@ -318,7 +315,7 @@ Landed as **File → Export Session Bundle…** (`Ctrl+Shift+E`). A v1 bundle is
 
 **Non-goals (v1 of this item).** Streaming continuation ("keep the tail growing after the bundle is opened"), diffing two bundles, GUI-side integrity signatures. Bundles are static snapshots.
 
-**Approach.** `WriteSessionBundle` and `ParseSessionBundleMetadata` live in `loglib`; typed row serialization is shared with JSON Lines export through `SerializeNormalizedJsonRow`. The writer preserves cancellation, progress, metadata/row/size limits, zstd checksum, and atomic replacement. TEMP ownership is attached to `LogFile` so Windows unmaps before deletion.
+**Approach.** `WriteSessionBundle` and `ParseSessionBundleMetadata` live in `loglib`; typed row serialization is shared with JSON Lines export through `SerializeNormalizedJsonRow`. The writer preserves cancellation, progress, metadata/row/size limits, zstd checksum, unique staging, durable flush, and atomic replacement. Temporary-file ownership is attached to `LogFile` so Windows unmaps before deletion.
 
 **Acceptance bar.** Export 1 M retained rows + 20 anchors + 5 highlight rules + a non-trivial filter, reopen through the normal static path, and recover the flattened rows and configured view with anchors attached to their remapped rows.
 
@@ -378,7 +375,8 @@ Reference snapshot from the survey that informed the roadmap (June 2026). `✓` 
 | Time-range zoom / jump-by-N-min             |  ~ time filter   |     ✓     |       |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
 | Timeshift (per-file clock offset)           |                  |           |       |     ✓     |             |         |              |           |       |
 | Encoding auto-detect (UTF-16, cp125x)       |                  |           |   ✓   |     ✓     |      ✓      |    ✓    |              |           |       |
-| Export filtered rows (CSV / JSON / MD)      |                  |     ✓     |   ~   |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
+| Export filtered rows (CSV / JSON / MD)      |        ✓         |     ✓     |   ~   |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
+| Full-session export bundle                  |        ✓         |           |       |           |             |         |              |           |       |
 | Diff view of two files                      |                  |           |       |           |      ~      |         |              |           |   ✓   |
 | Pattern clustering / similar-line grouping  |                  |           |       |           |             |         |              |           |   ✓   |
 | Time-gap detection                          |                  |           |       |           |             |         |              |           |   ✓   |

@@ -130,13 +130,7 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
     }
 
     int64_t fractionalUs = 0;
-    // Walk any suffix as: optional `.ffffff` fractional part, then an
-    // optional trailing `Z` UTC marker. Accepting `Z` here is what
-    // makes session-bundle timestamps round-trip: the writer emits
-    // `%FT%T` (or `%F %T`) followed by `Z`, and the generic
-    // `date::parse` fallback for `%FT%T%Ez` / `%F %T%Ez` does not
-    // recognise a literal `Z` as an offset. Anything past `Z`
-    // remains a fast-path miss and falls back to `date::parse`.
+    // Accept an optional fractional part followed by an optional `Z`.
     if (sv.size() > PREFIX_LEN)
     {
         size_t cursor = PREFIX_LEN;
@@ -150,10 +144,7 @@ bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out)
                 ++fractionEnd;
             }
             const size_t fractionLen = fractionEnd - fractionStart;
-            // Empty fraction after `.` isn't ISO-8601. `>6` digits
-            // still falls through to `date::parse` because we cap
-            // the scan at `FRACTION_DIGITS_SCALE`; a 7th digit stops
-            // the loop and the residue check below rejects it.
+            // Reject empty and longer-than-microsecond fractions here.
             if (fractionLen == 0)
             {
                 return false;

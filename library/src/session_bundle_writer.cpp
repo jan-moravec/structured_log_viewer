@@ -58,31 +58,7 @@ void PollStop(const StopToken &token)
     }
 }
 
-/// Build a per-writer temporary path that is unique within a process
-/// and (statistically) between processes.
-///
-/// The previous implementation hard-coded `destination + ".tmp"`,
-/// which lets two concurrent writes to the same destination
-/// clobber each other's staging file. Even benign parallelism -- a
-/// user re-exporting on top of an autosave that is still finishing,
-/// two tests exercising the writer against a shared path, or two
-/// background workers racing to persist a session -- would race
-/// on the shared `.tmp` and produce a corrupted final file after
-/// the atomic rename.
-///
-/// The suffix format is `.<seed>.<counter>.tmp`:
-///   - `seed` is drawn once per process from `std::random_device`.
-///     Two processes writing to the same directory get different
-///     seeds, so their staging files can't collide.
-///   - `counter` is a process-wide atomic counter. Two concurrent
-///     writers in the same process get distinct counter values,
-///     so their staging files can't collide either.
-///
-/// Kept human-eyeballable at the debug level (hex digits, no
-/// PID-style leaks) but random enough that a stale abandoned
-/// `.tmp` file (from a previous run whose `catch (...)` cleanup
-/// didn't reach) will not be reused unless the seed collides,
-/// which is O(2^-64) between runs.
+/// Build a sibling staging path unique across concurrent writers.
 std::filesystem::path MakeStagingTempPath(const std::filesystem::path &destination)
 {
     constexpr unsigned int RANDOM_DEVICE_BITS = 32U;
@@ -104,9 +80,7 @@ std::filesystem::path MakeStagingTempPath(const std::filesystem::path &destinati
     );
     if (written <= 0 || static_cast<std::size_t>(written) >= suffix.size())
     {
-        // `snprintf` failure or unexpected truncation: fall back to a
-        // deterministic-but-still-unique suffix so the write can proceed.
-        // The counter alone is sufficient for in-process uniqueness.
+        // The counter still prevents in-process collisions.
         std::filesystem::path result = destination;
         result += ".";
         result += std::to_string(next);
@@ -125,28 +99,14 @@ enum class ExclusiveOpenStatus
     OtherError,
 };
 
-/// Open @p path exclusively for binary writing. Fails cleanly (rather
-/// than truncating) if the file already exists so the writer can
-/// retry with a fresh suffix instead of clobbering a concurrent
-/// writer's staging file. The seed+counter naming in
-/// `MakeStagingTempPath` makes an actual collision astronomically
-/// unlikely; this is the safety net that turns an unreproducible
-/// bug into a bounded retry.
-///
-/// Localised here rather than in `path_encoding.hpp` so the Win32
-/// headers this needs (`CreateFileW`, `_open_osfhandle`) stay
-/// contained in the one translation unit that requires them.
+/// Open @p path for binary writing without replacing an existing file.
 std::FILE *OpenExclusiveForBinaryWrite(
     const std::filesystem::path &path, ExclusiveOpenStatus &outStatus
 ) noexcept
 {
     outStatus = ExclusiveOpenStatus::OtherError;
 #ifdef _WIN32
-    // `HANDLE` is a Windows typedef for `void *`, so any const-
-    // qualified form reads as "pointer const" not "pointee const";
-    // suppress the clang-tidy warning that treats the typedef as
-    // ambiguous. The pointer must not be reassigned once
-    // `CreateFileW` returns.
+    // `HANDLE const` makes the handle value immutable.
     // NOLINTNEXTLINE(misc-misplaced-const)
     HANDLE const handle = ::CreateFileW(
         path.native().c_str(),
@@ -169,8 +129,7 @@ std::FILE *OpenExclusiveForBinaryWrite(
     const int fd = ::_open_osfhandle(reinterpret_cast<intptr_t>(handle), _O_BINARY);
     if (fd == -1)
     {
-        // `_open_osfhandle` failure keeps the HANDLE alive; close it
-        // manually so we do not leak the underlying kernel object.
+        // `_open_osfhandle` does not take ownership on failure.
         ::CloseHandle(handle);
         outStatus = ExclusiveOpenStatus::OtherError;
         return nullptr;
@@ -178,8 +137,7 @@ std::FILE *OpenExclusiveForBinaryWrite(
     std::FILE *fp = ::_fdopen(fd, "wb");
     if (fp == nullptr)
     {
-        // `_close` on a CRT fd also releases the wrapped HANDLE, so
-        // there is nothing else to unwind here.
+        // Closing the CRT descriptor also releases the HANDLE.
         ::_close(fd);
         outStatus = ExclusiveOpenStatus::OtherError;
         return nullptr;
@@ -213,10 +171,7 @@ std::FILE *OpenExclusiveForBinaryWrite(
 class FileHandle
 {
 public:
-    /// Adopt @p alreadyOpen (from `OpenExclusiveForBinaryWrite`).
-    /// Ownership transfers unconditionally; passing a null pointer
-    /// is a programming error and traps loudly rather than
-    /// silently producing a handle that no-ops every write.
+    /// Take ownership of @p alreadyOpen.
     explicit FileHandle(std::filesystem::path path, std::FILE *alreadyOpen)
         : mPath(std::move(path)), mFile(alreadyOpen)
     {
@@ -250,24 +205,14 @@ public:
         }
     }
 
-    /// Flush userspace + kernel buffers, then close. Every layer
-    /// runs unconditionally: skipping `fclose` after a failed
-    /// `fflush` would leak the FILE*, and skipping the durable-sync
-    /// step after a successful flush would leave a `.tmp` that is
-    /// not power-fail safe once `ReplaceAtomically` renames it into
-    /// place. See the `SyncToDisk` helper below for the platform
-    /// break-down.
+    /// Flush userspace and kernel buffers, then close.
     void Close()
     {
         if (mFile == nullptr)
         {
             return;
         }
-        // Split flush + sync + close so the FILE* is always released.
-        // Short-circuiting on a failed step would skip `fclose` and
-        // leak the handle -- and by then `mFile = nullptr` has
-        // disarmed the destructor's fallback close, so the OS
-        // handle would live until process exit.
+        // Always close, even if flushing or syncing fails.
         const bool flushOk = std::fflush(mFile) == 0;
         const bool syncOk = flushOk && SyncToDisk(mFile);
         const bool closeOk = std::fclose(mFile) == 0;
@@ -281,14 +226,7 @@ public:
     }
 
 private:
-    /// Push the kernel-side page cache for @p file to durable
-    /// storage. On Windows this is `FlushFileBuffers`; on POSIX
-    /// it is `fsync`. Called between `fflush` and `fclose` so a
-    /// hard crash between `WriteSessionBundle`'s `file.Close()`
-    /// and its subsequent `ReplaceAtomically` cannot leave a
-    /// `.tmp` whose contents are on disk in name only. The
-    /// rename itself is atomic on both platforms, so once we
-    /// sync + rename the destination is fully durable.
+    /// Flush @p file to durable storage.
     static bool SyncToDisk(std::FILE *file) noexcept
     {
 #ifdef _WIN32
@@ -318,22 +256,12 @@ private:
     std::FILE *mFile = nullptr;
 };
 
-/// Retry-capable staging-file open. Rotates through fresh names from
-/// `MakeStagingTempPath` on collision and gives up after a bounded
-/// number of attempts. On failure `outTemporary` is left untouched;
-/// on success it holds the path that was actually opened, ready to
-/// hand to `ReplaceAtomically` later.
+/// Open a unique staging file, retrying name collisions.
 std::FILE *OpenStagingFileWithRetry(
     const std::filesystem::path &destination, std::filesystem::path &outTemporary
 )
 {
-    // The `MakeStagingTempPath` suffix draws from a 64-bit random
-    // seed plus a process-local monotonic counter, so an actual
-    // collision requires either a seed match between two processes
-    // (~2^-64) or a leftover staging file from a previous run whose
-    // catch-block cleanup did not reach. Eight attempts trivially
-    // covers both cases and still fails fast if the destination
-    // directory is fundamentally not writable.
+    // Multiple attempts also handle stale files from an interrupted run.
     constexpr int MAX_ATTEMPTS = 8;
 
     ExclusiveOpenStatus lastStatus = ExclusiveOpenStatus::OtherError;
@@ -362,9 +290,7 @@ std::FILE *OpenStagingFileWithRetry(
         lastStatus = status;
         if (status != ExclusiveOpenStatus::AlreadyExists)
         {
-            // Hard I/O error (permission denied, no such directory,
-            // out of file handles, ...). Retrying under a different
-            // suffix will not help; propagate immediately.
+            // A new suffix cannot fix an I/O error.
             break;
         }
         // Collision: fall through and generate a fresh suffix.
@@ -519,9 +445,7 @@ struct AnchorMatchSlot
     bool ambiguous = false;
 };
 
-/// Wanted-set keyed on anchor lookup pairs. Sized by the anchor
-/// count (typically a handful), not by `lines.size()`, so a billion
-/// rows with two anchors don't blow up the map. O(A + N) overall.
+/// Anchor lookup table sized by anchor count, not row count.
 using AnchorWantedSet = std::unordered_map<AnchorLookupKey, AnchorMatchSlot, AnchorLookupKeyHash>;
 
 AnchorWantedSet BuildAnchorWantedSet(const std::vector<LogConfiguration::AnchorEntry> &anchors)
@@ -530,9 +454,7 @@ AnchorWantedSet BuildAnchorWantedSet(const std::vector<LogConfiguration::AnchorE
     wanted.reserve(anchors.size());
     for (const auto &anchor : anchors)
     {
-        // `try_emplace`: duplicate anchor keys collapse to one slot.
-        // The wanted-set only resolves rows; `RemapAnchors` preserves
-        // the caller's original list on the output side.
+        // Duplicate anchor keys share one lookup slot.
         wanted.try_emplace(AnchorLookupKey{.locator = anchor.locator, .lineId = anchor.lineId});
     }
     return wanted;
@@ -548,23 +470,14 @@ void PopulateAnchorMatches(
     {
         return;
     }
-    // Cache canonical locators per `Source*` so the (potentially
-    // expensive) `canonicalizeSourceLocator` callback runs once per
-    // source rather than once per row.
+    // Canonicalize each source once.
     std::unordered_map<const LineSource *, std::string> canonicalCache;
 
     for (std::size_t row = 0; row < lines.size(); ++row)
     {
         const LogLine &line = lines[row];
         const auto *source = line.Source();
-        // Skip rows with no source: they cannot be anchor targets.
-        // Without this guard, an anchor whose `locator` is empty
-        // (e.g. from a corrupted or hand-edited config) would false-
-        // match every null-source row that happens to share its
-        // `lineId`, producing a nonsensical dense-row remap that
-        // gets persisted into the bundle's embedded anchors.
-        // Legitimate anchors always reference a source file, so
-        // requiring `source != nullptr` is the correct semantics.
+        // Rows without a source cannot resolve an anchor locator.
         if (source == nullptr)
         {
             continue;
@@ -578,11 +491,7 @@ void PopulateAnchorMatches(
         AnchorLookupKey key;
         key.lineId = static_cast<std::uint64_t>(line.LineId());
         key.locator = cacheIt->second;
-        // Belt-and-braces: even for a real source, if the canonical
-        // locator normalized to the empty string (custom
-        // `canonicalizeSourceLocator` returning "" for a path outside
-        // the recognised session root, for instance) we must not let
-        // an anchor with an empty `locator` false-match against it.
+        // Empty canonical locators cannot identify an anchor source.
         if (key.locator.empty())
         {
             continue;
@@ -638,24 +547,11 @@ void RemapAnchors(
     configuration.anchors = std::move(remapped);
 }
 
-/// strftime format that matches `AppendTimestampJson`'s output:
-/// ISO-8601 with a `T` date-time separator, microsecond fraction,
-/// and a trailing `Z`. Kept in the writer so the writer's format
-/// choice and the reader's parse configuration cannot drift.
+/// Parse format matching the bundle's normalized UTC timestamps.
 constexpr std::string_view BUNDLE_TIME_PARSE_FORMAT = "%FT%T";
 
-/// Ensure every `Type::Time` column in @p configuration has a
-/// `parseFormat` capable of parsing the ISO-8601 timestamps this
-/// writer emits. Auto-detected Time columns already ship with
-/// `%FT%T` in their defaults, so this is a no-op there. Manually
-/// configured columns (e.g. `parseFormats = {"%d/%m/%Y %H:%M:%S"}`)
-/// would otherwise round-trip to 100% mismatched timestamps on
-/// import because the exported values are always ISO-8601 UTC,
-/// regardless of how the source produced them.
-///
-/// Prepended, not appended, so the fast-path ISO parser is tried
-/// first: it beats `date::from_stream` by roughly an order of
-/// magnitude on the hot import loop.
+/// Ensure Time columns can parse the bundle's normalized timestamps.
+/// Prepend the format so the fast ISO parser runs first.
 void NormalizeTimeColumnParseFormats(LogConfiguration &configuration)
 {
     for (auto &column : configuration.columns)
@@ -690,19 +586,12 @@ std::string SerializeCompactConfiguration(const LogConfiguration &configuration)
 void ReplaceAtomically(const std::filesystem::path &temporary, const std::filesystem::path &destination)
 {
 #ifdef _WIN32
-    // Temp file lives next to the destination on the same volume,
-    // so `MOVEFILE_WRITE_THROUGH` (a cross-volume knob) is a no-op
-    // and omitted.
+    // Same-volume staging enables atomic replacement. `FileHandle::Close`
+    // durably flushes the file before this rename.
     if (::MoveFileExW(temporary.c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING) == 0)
     {
         const unsigned long win32Error = ::GetLastError();
-        // `ERROR_SHARING_VIOLATION` (32) is by far the most common
-        // failure users hit on Windows: they still have the target
-        // file open in another viewer, an antivirus scanner has a
-        // transient handle on it, or a sync client (OneDrive /
-        // Dropbox) is uploading it. Surfacing the bare Win32 code
-        // is opaque -- the user cannot correlate "error 32" with
-        // "close the file"; pair the code with the exact remediation.
+        // Give common Windows errors actionable messages.
         const std::string destUtf8 = internal::PathToUtf8(destination);
         if (win32Error == ERROR_SHARING_VIOLATION)
         {
@@ -765,12 +654,7 @@ void WriteSessionBundle(
     LogConfiguration embedded = configuration;
     NormalizeTimeColumnParseFormats(embedded);
 
-    // `locators` holds the display path (raw UTF-8) while
-    // `locatorDedupKeys` holds the canonical byte-equality form
-    // (Windows: lowercased with forward slashes via
-    // `logapp::CanonicalLocator`). Anchors also flatten to the
-    // canonical locator so they match the dedup key after import;
-    // otherwise a Windows round-trip drops every anchor.
+    // Keep a display path and a canonical locator for source/anchor keys.
     const std::string displayLocator = internal::PathToUtf8(destination);
     const std::string dedupLocator = CanonicalizeSourceLocator(destination, options);
     RemapAnchors(embedded, lines, dedupLocator, options);
@@ -793,30 +677,19 @@ void WriteSessionBundle(
         throw std::length_error("Session bundle metadata exceeds the 64 MiB limit");
     }
 
-    // Per-writer staging path (see `MakeStagingTempPath`): the
-    // previous fixed `.tmp` suffix could race with a concurrent
-    // export to the same destination. `OpenStagingFileWithRetry`
-    // opens the file exclusively (`CREATE_NEW` / `O_EXCL`) and
-    // rotates through fresh names on the astronomically unlikely
-    // collision so a stale sibling from a crashed run cannot be
-    // silently truncated.
+    // Open a unique sibling so concurrent exports cannot share staging.
     std::filesystem::path temporary;
     std::FILE *stagingFile = OpenStagingFileWithRetry(destination, temporary);
 
     try
     {
         FileHandle file(temporary, stagingFile);
-        // `FileHandle` now owns the FILE*; null out the local so the
-        // catch(...) block below does not double-close it.
+        // Ownership has moved to `FileHandle`.
         stagingFile = nullptr;
         ZstdWriter writer(file, options);
         writer.Write(metadata);
 
-        // Hoisted row buffer: reused (clear + append) across every
-        // row so the amortised capacity survives the loop. Prior to
-        // the out-parameter overload this loop allocated a fresh
-        // `std::string` per row, which is a measurable fraction of
-        // the write cost at multi-million-row scale.
+        // Reuse row storage across the hot loop.
         std::string rowBuffer;
         for (std::size_t row = 0; row < lines.size(); ++row)
         {
@@ -841,10 +714,7 @@ void WriteSessionBundle(
         PollStop(options.stopToken);
         writer.Finish();
         file.Close();
-        // Fire the terminal progress tick exactly once. Skip it if
-        // the row count landed on an interval boundary (the loop
-        // already emitted `(N, N)`); still fire for an empty bundle
-        // so callers always see one final tick.
+        // Emit one terminal progress update, including for empty bundles.
         const bool loopEmittedFinalTick =
             !lines.empty() && (lines.size() % PROGRESS_INTERVAL_ROWS) == 0;
         if (options.progress && !loopEmittedFinalTick)
@@ -855,11 +725,7 @@ void WriteSessionBundle(
     }
     catch (...)
     {
-        // Ownership rescue: if the exception fired between
-        // `OpenStagingFileWithRetry` returning and `FileHandle`
-        // taking over, close the raw handle before removing the
-        // staging file. Once `FileHandle` has ownership the local
-        // is nulled out and this branch is a no-op.
+        // Close the raw handle if ownership transfer did not complete.
         if (stagingFile != nullptr)
         {
             (void)std::fclose(stagingFile);

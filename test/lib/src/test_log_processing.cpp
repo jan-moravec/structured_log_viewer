@@ -179,10 +179,7 @@ TEST_CASE("TryParseIsoTimestamp accepts valid inputs", "[log_processing][iso8601
         CHECK(out == TimeStamp{std::chrono::microseconds{-3600000000LL}});
     }
 
-    // Regression for the session-bundle round-trip: the writer emits
-    // ISO-8601 UTC with a trailing `Z`, so the fast path must accept
-    // it (a plain `%FT%T` / `%F %T` never contained `Z` before, so
-    // this is a strict widening of the accepted grammar).
+    // Session bundles emit UTC timestamps with a trailing `Z`.
     SECTION("Trailing Z after seconds")
     {
         TimeStamp out{};
@@ -262,10 +259,7 @@ TEST_CASE("TryParseIsoTimestamp rejects malformed inputs", "[log_processing][iso
 
     SECTION("Trailing garbage after seconds")
     {
-        // `Z` is accepted (see the positive-cases test); numeric
-        // offsets like `+HH:MM` still fall through to the generic
-        // `date::parse` path because handling them in the fast path
-        // is not worth the complexity.
+        // Numeric offsets remain on the generic parser path.
         CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56+00:00", 'T', out));
         CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56ZZ", 'T', out));
         CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56Zx", 'T', out));
@@ -282,9 +276,7 @@ TEST_CASE("TryParseIsoTimestamp rejects malformed inputs", "[log_processing][iso
     {
         // 7+ digits must fall through to the slow path; no precision loss.
         CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56.1234567", 'T', out));
-        // Also rejected when the 7th digit precedes a `Z`; the fast
-        // path caps the scan at 6 digits, and the leftover `7Z`
-        // fails the tail residue check.
+        // `Z` does not make excess precision valid.
         CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56.1234567Z", 'T', out));
     }
 

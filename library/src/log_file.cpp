@@ -55,10 +55,8 @@ void HintSequential(const mio::mmap_source &mmap)
 } // namespace
 
 LogFile::LogFile(std::filesystem::path filePath)
-    // Two independent copies on purpose. Moving one argument here is
-    // unsafe: C++ leaves argument evaluation order unspecified, so a
-    // move could observably run before the copy and empty the source
-    // (previously caused a `File '' does not exist` failure).
+    // Copy both arguments before the delegating call; evaluation order
+    // would make a copy-and-move pair unsafe.
     : LogFile(filePath, filePath)
 {
 }
@@ -83,10 +81,7 @@ LogFile::LogFile(std::filesystem::path storagePath, std::filesystem::path logica
     if (size > 0)
     {
         std::error_code ec;
-        // Pass a lossless encoding to mio: wide on Windows and UTF-8
-        // on POSIX. `path::string()` returns ACP bytes on Windows
-        // that mio then reinterprets as UTF-8, which mangles any
-        // non-ASCII path.
+        // Pass mio a lossless native path encoding.
 #ifdef _WIN32
         mMmap = mio::make_mmap_source(mStoragePath.wstring(), 0, mio::map_entire_file, ec);
 #else
@@ -223,12 +218,7 @@ void LogFile::AttachLifetimeAnchor(std::shared_ptr<void> anchor) noexcept
 {
     if (mLifetimeAnchor)
     {
-        // Compose incoming + existing anchors so both survive to
-        // `~LogFile` (unmap first, then release composite). A plain
-        // assign would drop the previous anchor immediately, and
-        // on Windows that silently leaks the temp file (`remove`
-        // returns false while the mmap is open). Defensive branch --
-        // production callers attach exactly once.
+        // Keep both anchors alive until after unmapping.
         struct AnchorPair
         {
             std::shared_ptr<void> previous;

@@ -540,11 +540,7 @@ if(NOT USE_SYSTEM_ZSTD)
         set(ZSTD_BUILD_STATIC ON)
         set(ZSTD_BUILD_TESTS OFF)
         set(ZSTD_BUILD_CONTRIB OFF)
-        # Multithread support enables `ZSTD_c_nbWorkers`, used by the
-        # session-bundle writer to compress each source's payload in
-        # parallel via zstd's own worker pool. Adds a tiny pthread
-        # shim on POSIX and `_beginthreadex` on Windows; no extra
-        # runtime DLL beyond what zstd already ships.
+        # Required for session-bundle `ZSTD_c_nbWorkers` support.
         set(ZSTD_MULTITHREAD_SUPPORT ON)
         set(ZSTD_LEGACY_SUPPORT OFF)
         set(BUILD_SHARED_LIBS OFF)
