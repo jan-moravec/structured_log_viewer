@@ -145,6 +145,7 @@ std::FILE *OpenExclusiveForBinaryWrite(const std::filesystem::path &path, Exclus
     outStatus = ExclusiveOpenStatus::Ok;
     return fp;
 #else
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) -- POSIX `open` is variadic by design; the mode argument only applies with `O_CREAT`.
     const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
     if (fd == -1)
     {

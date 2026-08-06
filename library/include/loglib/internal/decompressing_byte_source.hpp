@@ -78,6 +78,9 @@ public:
     /// Default 32 GiB decompressed-output cap.
     static constexpr std::size_t DEFAULT_MAX_DECOMPRESSED_BYTES = std::size_t{32} << 30;
 
+    /// Default 64 MiB cap on the discarded first line.
+    static constexpr std::size_t DEFAULT_MAX_DISCARDED_FIRST_LINE_BYTES = std::size_t{64} << 20;
+
     struct Options
     {
         /// Hard cap; throws `DecompressionSizeCapExceeded` if
@@ -86,7 +89,7 @@ public:
         /// Remove the first line and expose it via `DiscardedFirstLine()`.
         bool discardFirstLine = false;
         /// Maximum buffered first-line size.
-        std::size_t maxDiscardedFirstLineBytes = 64U * 1024U * 1024U;
+        std::size_t maxDiscardedFirstLineBytes = DEFAULT_MAX_DISCARDED_FIRST_LINE_BYTES;
     };
 
     /// Sniff @p input and decode compressed content to a temp file.

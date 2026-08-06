@@ -14,20 +14,20 @@ namespace loglib::internal
 [[nodiscard]] inline std::string PathToUtf8(const std::filesystem::path &path)
 {
     const auto u8 = path.u8string();
-    return std::string(reinterpret_cast<const char *>(u8.data()), u8.size());
+    return {reinterpret_cast<const char *>(u8.data()), u8.size()};
 }
 
 /// Convert UTF-8 bytes to a portable filesystem path.
 [[nodiscard]] inline std::filesystem::path Utf8ToPath(std::string_view utf8)
 {
-    return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(utf8.data()), utf8.size()));
+    return std::filesystem::path{std::u8string{reinterpret_cast<const char8_t *>(utf8.data()), utf8.size()}};
 }
 
 /// Open a binary file for reading, using the wide path on Windows.
-/// Returns `nullptr` and sets `errno` on failure.
+/// Returns `nullptr` and sets `errno` on failure. Caller owns the FILE*.
 [[nodiscard]] inline std::FILE *OpenFileForBinaryRead(const std::filesystem::path &path) noexcept
 {
-#if defined(_WIN32)
+#ifdef _WIN32
     std::FILE *fp = nullptr;
     if (_wfopen_s(&fp, path.native().c_str(), L"rb") != 0)
     {
@@ -35,14 +35,16 @@ namespace loglib::internal
     }
     return fp;
 #else
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory) -- caller closes the FILE*.
     return std::fopen(path.c_str(), "rb");
 #endif
 }
 
 /// Open a binary file for writing, using the wide path on Windows.
+/// Caller owns the FILE*.
 [[nodiscard]] inline std::FILE *OpenFileForBinaryWrite(const std::filesystem::path &path) noexcept
 {
-#if defined(_WIN32)
+#ifdef _WIN32
     std::FILE *fp = nullptr;
     if (_wfopen_s(&fp, path.native().c_str(), L"wb") != 0)
     {
@@ -50,6 +52,7 @@ namespace loglib::internal
     }
     return fp;
 #else
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory) -- caller closes the FILE*.
     return std::fopen(path.c_str(), "wb");
 #endif
 }
