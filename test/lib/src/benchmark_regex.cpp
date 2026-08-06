@@ -466,7 +466,13 @@ TEST_CASE(
         return run.elapsed - run.appendTotal;
     };
 
-    constexpr std::size_t HEADER_ANCHOR_SAMPLES = REGEX_BENCH_SAMPLES * 2;
+    // More samples than the standard `REGEX_BENCH_SAMPLES` because
+    // `bestRatio` is min-of-N: a larger sample pool gives min a better
+    // chance of catching a clean run on noisy / shared hosts. 24
+    // samples per config lands the benchmark's total wall-clock cost
+    // around ~30s on a 500 MB/s host, which is well within the
+    // `release-benchmark` step's tolerance.
+    constexpr std::size_t HEADER_ANCHOR_SAMPLES = REGEX_BENCH_SAMPLES * 6;
     std::vector<std::chrono::nanoseconds> baselineSamples;
     std::vector<std::chrono::nanoseconds> anchoredSamples;
     baselineSamples.reserve(HEADER_ANCHOR_SAMPLES);
@@ -483,28 +489,43 @@ TEST_CASE(
     };
     const auto baselineMean = meanOf(baselineSamples);
     const auto anchoredMean = meanOf(anchoredSamples);
+    // Best-of-N (min elapsed) filters out OS scheduling noise / paging
+    // spikes and reflects the intrinsic parse-loop speed for each
+    // config. Matches the `low = min_element(elapsed)` convention in
+    // `benchmark_log_filter.cpp`. Mean-of-N was flaky as a hard gate
+    // on shared CI hosts (a single outlier sample drags the ratio
+    // through the CHECK floor).
+    const auto baselineBest = *std::ranges::min_element(baselineSamples);
+    const auto anchoredBest = *std::ranges::min_element(anchoredSamples);
 
     const double bytesMB = static_cast<double>(bytes) / (1024.0 * 1024.0);
-    const double baselineSec = std::chrono::duration<double>(baselineMean).count();
-    const double anchoredSec = std::chrono::duration<double>(anchoredMean).count();
-    const double baselineMBps = baselineSec == 0.0 ? 0.0 : bytesMB / baselineSec;
-    const double anchoredMBps = anchoredSec == 0.0 ? 0.0 : bytesMB / anchoredSec;
-    const double ratio = baselineMBps == 0.0 ? 0.0 : anchoredMBps / baselineMBps;
+    const double baselineMeanSec = std::chrono::duration<double>(baselineMean).count();
+    const double anchoredMeanSec = std::chrono::duration<double>(anchoredMean).count();
+    const double baselineBestSec = std::chrono::duration<double>(baselineBest).count();
+    const double anchoredBestSec = std::chrono::duration<double>(anchoredBest).count();
+    const double baselineMeanMBps = baselineMeanSec == 0.0 ? 0.0 : bytesMB / baselineMeanSec;
+    const double anchoredMeanMBps = anchoredMeanSec == 0.0 ? 0.0 : bytesMB / anchoredMeanSec;
+    const double baselineBestMBps = baselineBestSec == 0.0 ? 0.0 : bytesMB / baselineBestSec;
+    const double anchoredBestMBps = anchoredBestSec == 0.0 ? 0.0 : bytesMB / anchoredBestSec;
+    const double meanRatio = baselineMeanMBps == 0.0 ? 0.0 : anchoredMeanMBps / baselineMeanMBps;
+    const double bestRatio = baselineBestMBps == 0.0 ? 0.0 : anchoredBestMBps / baselineBestMBps;
     WARN(
-        "Python-traceback header anchor (parse-loop only): baseline (main-pattern probe) "
-        << baselineMBps << " MB/s vs anchored " << anchoredMBps << " MB/s => " << ratio << "x speedup"
+        "Python-traceback header anchor (parse-loop only): mean baseline (main-pattern probe) "
+        << baselineMeanMBps << " MB/s vs anchored " << anchoredMeanMBps << " MB/s => " << meanRatio
+        << "x mean speedup; best baseline " << baselineBestMBps << " MB/s vs anchored " << anchoredBestMBps
+        << " MB/s => " << bestRatio << "x best speedup"
     );
 
-    // The dedicated-anchor path was expected to run ~3% faster than
-    // the full-pattern probe, but the observed ratio is dominated by
-    // parse-loop timing variance on shared / heterogeneous hosts:
-    // macos-15 CI has landed at 1.020x (post-merge push run
-    // 31089238430) and an MSVC-Release Windows dev box at 0.993x on
-    // the same fixture. The regression signal we care about ("anchor
-    // is not catastrophically slower than the main-pattern probe") is
-    // already visible in the WARN line above, so this benchmark stays
-    // WARN-only -- matching every other benchmark in this file and
-    // the "benchmarks are a manual review convention" policy in
-    // CONTRIBUTING.md. Reviewers compare the printed speedup against
-    // the prior commit; there is no hard CI gate to flake.
+    // Best-of-N ratio: the intrinsic speedup the dedicated-anchor
+    // path provides when the runner isn't stalling on OS noise. The
+    // 1.03x target is documented in the multi-line-records PR (#83)
+    // test plan. Asserting against `bestRatio` (rather than
+    // `meanRatio`) matches the `min_element`-based CHECK convention
+    // in `benchmark_log_filter.cpp` and, combined with the 24
+    // samples per config above, survives the shared-runner variance
+    // that flaked the mean-based gate on macos-15 (run 31089238430,
+    // mean 1.020x) and on MSVC-Release (mean 0.993x on a noisy
+    // sample, mean 1.229x on a clean one, best-of-24 ratio measured
+    // at 1.040-1.121x across six back-to-back local runs).
+    CHECK(bestRatio >= 1.03);
 }
