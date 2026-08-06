@@ -88,6 +88,8 @@ set(PROJECT_SOURCES
     include/row_exporter.hpp
     src/export_dialog.cpp
     include/export_dialog.hpp
+    src/session_bundle_dialog.cpp
+    include/session_bundle_dialog.hpp
     src/record_detail_widget.cpp
     include/record_detail_widget.hpp
     src/record_detail_dock.cpp

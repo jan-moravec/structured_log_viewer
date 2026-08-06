@@ -232,6 +232,49 @@ TEST_CASE("DecompressingByteSource: passthrough for empty file", "[Decompressing
     CHECK(dbs.CompressedSize() == 0);
 }
 
+TEST_CASE("DecompressingByteSource: discardFirstLine rejects non-zstd inputs", "[DecompressingByteSource]")
+{
+    // Only zstd supports removing session-bundle metadata.
+    const std::string content = SampleContent(4 * 1024);
+    DecompressingByteSource::Options options;
+    options.discardFirstLine = true;
+
+    SECTION("plain uncompressed input")
+    {
+        const TempBinaryFile fixture(".log");
+        {
+            std::ofstream out(fixture.Path(), std::ios::binary);
+            REQUIRE(out.is_open());
+            out << content;
+        }
+        CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), {}, {}, options), std::invalid_argument);
+    }
+    SECTION("empty input")
+    {
+        const TempBinaryFile fixture(".log");
+        fixture.WriteBytes({});
+        CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), {}, {}, options), std::invalid_argument);
+    }
+    SECTION("gzip input")
+    {
+        const TempBinaryFile fixture(".log.gz");
+        fixture.WriteBytes(CompressGzip(content));
+        CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), {}, {}, options), std::invalid_argument);
+    }
+    SECTION("bzip2 input")
+    {
+        const TempBinaryFile fixture(".log.bz2");
+        fixture.WriteBytes(CompressBzip2(content));
+        CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), {}, {}, options), std::invalid_argument);
+    }
+    SECTION("xz input")
+    {
+        const TempBinaryFile fixture(".log.xz");
+        fixture.WriteBytes(CompressXz(content));
+        CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), {}, {}, options), std::invalid_argument);
+    }
+}
+
 TEST_CASE("DecompressingByteSource: round-trip each codec", "[DecompressingByteSource]")
 {
     const std::string content = SampleContent(256 * 1024); // 256 KiB

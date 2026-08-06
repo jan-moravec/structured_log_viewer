@@ -12,11 +12,7 @@
 namespace loglib::internal
 {
 
-/// Thrown when the `StopToken` observes a stop mid-decode.
-/// Deliberately not a `std::runtime_error`: callers must distinguish
-/// user cancels (toast, keep draining) from I/O / codec failures
-/// (error dialog), and `catch (const std::runtime_error &)` must
-/// not absorb cancels.
+/// Thrown when decompression is cancelled.
 class DecompressionCancelled : public std::exception
 {
 public:
@@ -35,10 +31,7 @@ private:
     std::string mWhat;
 };
 
-/// Thrown when the decompressed payload would exceed the configured
-/// size cap. Distinct type so callers can surface a specific "too
-/// large" message. Not a `std::runtime_error`, same rationale as
-/// `DecompressionCancelled`.
+/// Thrown when decompressed output exceeds the configured cap.
 class DecompressionSizeCapExceeded : public std::exception
 {
 public:
@@ -56,24 +49,10 @@ private:
     std::string mWhat;
 };
 
-/// RAII pre-open filter for transparent decompression of `gzip`,
-/// `bzip2`, `xz`, and `zstd` single-file streams.
+/// RAII decoder for gzip, bzip2, xz, and zstd files.
 ///
-/// The ctor sniffs @p input for a codec magic; when found, it streams
-/// the output into a temp file under `temp_directory_path()` and
-/// exposes it via `EffectivePath()`. Uncompressed / empty input:
-/// `EffectivePath() == DisplayPath() == input`.
-///
-/// The temp file's lifetime is bound to this object. Keep it alive
-/// for as long as any reference (e.g. mmap) into the temp file lives.
-///
-/// Failure modes:
-///   - Cancellation: throws `DecompressionCancelled` after cleanup.
-///   - I/O / codec failure: throws `std::runtime_error` with codec
-///     name + byte-offset context after cleanup.
-///
-/// Not thread-safe. Movable, but do not access an instance from
-/// multiple threads concurrently.
+/// Compressed input is streamed to an owned temp file exposed through
+/// `EffectivePath()`. Plain input is returned unchanged. Not thread-safe.
 class DecompressingByteSource
 {
 public:
@@ -96,22 +75,25 @@ public:
 
     using ProgressCallback = std::function<void(const Progress &)>;
 
-    /// Default size cap on decompressed output. 32 GiB comfortably
-    /// covers realistic logs (even a highly compressible 500 MiB
-    /// `.xz`) while bounding zip-bomb inputs.
+    /// Default 32 GiB decompressed-output cap.
     static constexpr std::size_t DEFAULT_MAX_DECOMPRESSED_BYTES = std::size_t{32} << 30;
+
+    /// Default 64 MiB cap on the discarded first line.
+    static constexpr std::size_t DEFAULT_MAX_DISCARDED_FIRST_LINE_BYTES = std::size_t{64} << 20;
 
     struct Options
     {
         /// Hard cap; throws `DecompressionSizeCapExceeded` if
         /// exceeded. Zero disables the cap.
         std::size_t maxDecompressedBytes = DEFAULT_MAX_DECOMPRESSED_BYTES;
+        /// Remove the first line and expose it via `DiscardedFirstLine()`.
+        bool discardFirstLine = false;
+        /// Maximum buffered first-line size.
+        std::size_t maxDiscardedFirstLineBytes = DEFAULT_MAX_DISCARDED_FIRST_LINE_BYTES;
     };
 
-    /// Sniff @p input and (if compressed) decode to a temp file.
-    /// @p progress fires after each 64 KiB input chunk on the calling
-    /// thread; may be null. @p stopToken is polled between chunks;
-    /// on stop, throws `DecompressionCancelled` after cleanup.
+    /// Sniff @p input and decode compressed content to a temp file.
+    /// Progress and cancellation are checked between input chunks.
     DecompressingByteSource(
         std::filesystem::path input, const ProgressCallback &progress = {}, const StopToken &stopToken = {}
     );
@@ -123,12 +105,8 @@ public:
         std::filesystem::path input, const ProgressCallback &progress, const StopToken &stopToken, Options options
     );
 
-    /// noexcept magic-byte sniff (reads up to 6 bytes). Returns the
-    /// detected codec, or `Codec::None` for uncompressed / empty /
-    /// unreadable files. Callers use this to pick "sync fast path
-    /// vs async worker" without paying for a full ctor. I/O failure
-    /// collapses to `Codec::None` so the downstream `LogFile` ctor
-    /// produces the canonical open-error message.
+    /// Detect a codec from up to six magic bytes. Plain, empty, and
+    /// unreadable files return `Codec::None`.
     [[nodiscard]] static Codec SniffCodec(const std::filesystem::path &input) noexcept;
 
     ~DecompressingByteSource();
@@ -156,6 +134,10 @@ public:
     /// `WasDecompressed()` is false.
     [[nodiscard]] std::size_t DecompressedSize() const noexcept;
 
+    /// Bytes stripped by `Options::discardFirstLine`, without the
+    /// terminating newline. Empty when the option was off.
+    [[nodiscard]] const std::string &DiscardedFirstLine() const noexcept;
+
 private:
     void ReleaseTempFile() noexcept;
 
@@ -166,6 +148,7 @@ private:
     std::size_t mDecompressedSize = 0;
     /// True when `mEffectivePath` is a temp file owned by this object.
     bool mOwnsTempFile = false;
+    std::string mDiscardedFirstLine;
 };
 
 /// Human-readable codec name (`"gzip"`, `"bzip2"`, `"xz"`, `"zstd"`,
