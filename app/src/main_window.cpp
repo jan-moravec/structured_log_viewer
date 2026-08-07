@@ -4638,6 +4638,18 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
         return loglib::MakeParserForFormat(format, regexPattern);
     };
     mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
+
+    // Surface the two non-obvious properties of a stdin session in
+    // one place: it always opens in a fresh window (a running primary
+    // cannot inherit an FD from a secondary launcher, so `main()`
+    // treats `--stdin` / `-` as an implicit `--new-instance`) and it
+    // does not join the Recent Sessions rotation (see
+    // `ShouldAutoSaveSession`). One status-bar hint is cheap and
+    // saves a support round-trip.
+    statusBar()->showMessage(
+        tr("Reading from standard input. This session runs in its own window and will not be added to Recent Sessions."),
+        STATUS_BAR_MESSAGE_TIMEOUT_MS
+    );
 }
 
 void MainWindow::OpenNetworkStream()
@@ -6599,6 +6611,40 @@ void MainWindow::SaveConfiguration()
 
 void MainWindow::SaveSession()
 {
+    // A stdin session's "source" is a placeholder locator (e.g.
+    // `standard input`) that cannot be reopened; a `Full` save would
+    // serialise a stanza the load path can only reject with an info
+    // popup. Offer to demote to `ColumnsOnly` so columns/filters/
+    // highlights round-trip cleanly and the on-disk config omits the
+    // useless source field entirely.
+    loglib::SaveScope effectiveScope = loglib::SaveScope::Full;
+    if (mCurrentSource.has_value() && mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::Stdin)
+    {
+#ifdef LOGAPP_BUILD_TESTING
+        if (mSuppressDialogsForTest)
+        {
+            effectiveScope = loglib::SaveScope::ColumnsOnly;
+        }
+        else
+#endif
+        {
+            const auto choice = QMessageBox::question(
+                this,
+                tr("Save Session (stdin)"),
+                tr("This session was read from standard input, which cannot be reopened later. "
+                   "The columns, filters, and highlights can still be saved so they apply to a "
+                   "future run.\n\nSave columns and filters only?"),
+                QMessageBox::Save | QMessageBox::Cancel,
+                QMessageBox::Save
+            );
+            if (choice != QMessageBox::Save)
+            {
+                return;
+            }
+            effectiveScope = loglib::SaveScope::ColumnsOnly;
+        }
+    }
+
     const QString file =
         QFileDialog::getSaveFileName(this, tr("Save Session"), DefaultOpenDir(), tr("JSON (*.json);;All Files (*)"));
     if (file.isEmpty())
@@ -6608,7 +6654,7 @@ void MainWindow::SaveSession()
     RememberLastOpenDir(file);
     try
     {
-        DoSaveConfiguration(file, loglib::SaveScope::Full);
+        DoSaveConfiguration(file, effectiveScope);
     }
     catch (std::exception &e)
     {

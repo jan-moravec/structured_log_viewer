@@ -38,11 +38,6 @@ namespace
 
 constexpr size_t INITIAL_FIELD_CAPACITY = 16;
 
-/// Cap on bytes scanned by `IsValid` for the false-positive guard.
-/// Matches the shared `loglib::PROBE_BYTES_BUDGET`; kept as a
-/// local alias so the callsite below reads self-contained.
-constexpr size_t IS_VALID_PROBE_BYTES = PROBE_BYTES_BUDGET;
-
 constexpr std::string_view UTF8_BOM = "\xEF\xBB\xBF";
 
 using internal::CsvCell;
@@ -535,10 +530,12 @@ void AppendValueAsCell(std::string &out, const LogValue &value)
 
 bool CsvParser::IsValidBytes(std::string_view sniffBuffer) const
 {
+    // `sniffBuffer` is bounded to `PROBE_BYTES_BUDGET` by the caller
+    // (`ReadProbeHead` or `AutoDetectParser::DrainPeek`), so no inner
+    // byte-cap is needed here -- the two `while (cursor < size)`
+    // loops terminate on their own.
     std::string scratch;
-
     size_t cursor = 0;
-    size_t bytesScanned = 0;
 
     std::string_view firstView;
     std::string firstStripped;
@@ -547,13 +544,8 @@ bool CsvParser::IsValidBytes(std::string_view sniffBuffer) const
     {
         const internal::ProbeLine probe = internal::NextProbeLine(sniffBuffer, cursor);
         cursor = probe.nextOffset;
-        bytesScanned += probe.bytesConsumed;
         if (probe.line.empty())
         {
-            if (bytesScanned >= IS_VALID_PROBE_BYTES)
-            {
-                return false;
-            }
             continue;
         }
         firstStripped = std::string(StripBom(probe.line));
@@ -582,13 +574,8 @@ bool CsvParser::IsValidBytes(std::string_view sniffBuffer) const
     {
         const internal::ProbeLine probe = internal::NextProbeLine(sniffBuffer, cursor);
         cursor = probe.nextOffset;
-        bytesScanned += probe.bytesConsumed;
         if (probe.line.empty())
         {
-            if (bytesScanned >= IS_VALID_PROBE_BYTES)
-            {
-                return false;
-            }
             continue;
         }
         const auto rowCellCount = CountCsvCells(probe.line, scratch);

@@ -67,10 +67,20 @@ struct ParsedCli
     // as an unknown short option. `--stdin` flows through the
     // parser normally so `--help` documents it and typos surface
     // as unknown-option warnings.
+    //
+    // `args[0]` is the program name -- `QCommandLineParser` and
+    // Qt in general expect it in-place, and a hypothetical exe
+    // renamed to just `-` should not be misinterpreted as the
+    // stdin sentinel. Skip index 0 in the pre-strip.
     QStringList filteredArgs;
     filteredArgs.reserve(args.size());
-    for (const QString &arg : args)
+    if (!args.isEmpty())
     {
+        filteredArgs.append(args.first());
+    }
+    for (qsizetype i = 1; i < args.size(); ++i)
+    {
+        const QString &arg = args.at(i);
         if (arg == QStringLiteral("-"))
         {
             result.readStdin = true;

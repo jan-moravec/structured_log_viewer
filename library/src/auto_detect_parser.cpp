@@ -93,7 +93,19 @@ void AutoDetectParser::ParseStreaming(StreamLineSource &source, LogParseSink &si
 
     std::string peek = DrainPeek(*producer, mPeekBytes, options.stopToken);
 
-    if (peek.empty())
+    // Caller-supplied `initialCarry` semantically prefixes the
+    // producer's stream (bytes already consumed by an earlier
+    // stage). Combine them for both detection and delivery so the
+    // resolved parser sees `<caller carry> || <peek> || <future
+    // producer bytes>` in-order, and so the detector inspects the
+    // same head bytes the parser will see.
+    std::string combined;
+    combined.reserve(options.initialCarry.size() + peek.size());
+    combined.append(options.initialCarry);
+    combined.append(peek);
+    options.initialCarry.clear();
+
+    if (combined.empty())
     {
         // Nothing to detect on: either the caller cancelled before
         // any bytes arrived, or the producer closed empty. Delegate
@@ -103,9 +115,9 @@ void AutoDetectParser::ParseStreaming(StreamLineSource &source, LogParseSink &si
         return;
     }
 
-    const DetectedFormat detected = DetectFormatFromBytes(peek);
+    const DetectedFormat detected = DetectFormatFromBytes(combined);
     const std::unique_ptr<LogParser> resolved = MakeParserForFormat(detected.format, detected.regexPattern);
-    options.initialCarry = std::move(peek);
+    options.initialCarry = std::move(combined);
     resolved->ParseStreaming(source, sink, std::move(options));
 }
 

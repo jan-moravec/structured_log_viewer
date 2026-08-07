@@ -38,11 +38,6 @@ constexpr size_t INITIAL_FIELD_CAPACITY = 16;
 /// `std::lower_bound`. Same threshold the JSON parser uses.
 constexpr size_t INSERT_SORTED_LOWER_BOUND_THRESHOLD = 8;
 
-/// Cap on bytes scanned by `IsValid` for the false-positive guard.
-/// Matches the shared `loglib::PROBE_BYTES_BUDGET`; kept as a
-/// local alias so the callsite below reads self-contained.
-constexpr size_t IS_VALID_PROBE_BYTES = PROBE_BYTES_BUDGET;
-
 void InsertSorted(
     std::vector<std::pair<KeyId, internal::CompactLogValue>> &out, KeyId id, internal::CompactLogValue value
 )
@@ -795,19 +790,16 @@ void AppendValueAsString(std::string &out, const LogValue &value)
 
 bool LogfmtParser::IsValidBytes(std::string_view sniffBuffer) const
 {
+    // `sniffBuffer` is bounded to `PROBE_BYTES_BUDGET` by the caller
+    // (`ReadProbeHead` or `AutoDetectParser::DrainPeek`), so the
+    // `while (cursor < size)` termination is enough.
     size_t cursor = 0;
-    size_t bytesScanned = 0;
     while (cursor < sniffBuffer.size())
     {
         const internal::ProbeLine probe = internal::NextProbeLine(sniffBuffer, cursor);
         cursor = probe.nextOffset;
-        bytesScanned += probe.bytesConsumed;
         if (probe.line.empty())
         {
-            if (bytesScanned >= IS_VALID_PROBE_BYTES)
-            {
-                return false;
-            }
             continue;
         }
         return LineLooksLikeLogfmt(probe.line);

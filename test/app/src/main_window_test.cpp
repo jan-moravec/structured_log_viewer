@@ -23369,6 +23369,22 @@ private slots:
         QCOMPARE(parsed.files.size(), 1);
     }
 
+    void TestCliParserDashAtArgv0IsNotInterpretedAsStdin()
+    {
+        // Regression: the `-` pre-strip used to iterate all of
+        // `args`, including `args[0]` (the program name). A
+        // hypothetical exe renamed to just `-` (or a mis-shaped
+        // `QCoreApplication::arguments()` in test code) would then
+        // set `readStdin`. The fix skips index 0 in the pre-strip.
+        const QStringList args = {
+            QStringLiteral("-"),
+            QStringLiteral("only.log"),
+        };
+        const logapp::ParsedCli parsed = logapp::ParseCli(args, QProcessEnvironment());
+        QVERIFY(!parsed.readStdin);
+        QCOMPARE(parsed.files.size(), 1);
+    }
+
     // `Clear` empties the index, deletes every per-uuid JSON, and
     // resets the last-session pointer.
     void TestSessionHistoryClearWipesEverything()

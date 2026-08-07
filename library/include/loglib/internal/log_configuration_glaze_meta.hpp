@@ -49,9 +49,14 @@ template <> struct glz::meta<loglib::LeafRule::Match>
 template <> struct glz::meta<loglib::LogConfiguration::Source::Kind>
 {
     using enum loglib::LogConfiguration::Source::Kind;
-    // Append `Kind::Stdin` at the end so pre-Stdin builds still
-    // see a valid enum for legacy on-disk sessions -- and because
-    // `Kind::Stdin` is one-shot (never actually persisted).
+    // Append `Kind::Stdin` at the end so pre-Stdin builds still see a
+    // valid enum for legacy on-disk sessions. Auto-save never persists
+    // stdin (`MainWindow::ShouldAutoSaveSession` filters non-`File`
+    // kinds) and user-triggered `Save Session` demotes to
+    // `SaveScope::ColumnsOnly` after a confirmation dialog -- so a
+    // `"stdin"` value on disk is possible only from third-party tools
+    // or a very old build that predated that guard. The load path
+    // handles it gracefully via an info popup.
     static constexpr std::array keys{"file", "networkStream", "stdin"};
     static constexpr std::array value{File, NetworkStream, Stdin};
 };

@@ -258,3 +258,54 @@ TEST_CASE("AutoDetectParser (file path) uses DetectFormatForPath under the hood"
     const loglib::DetectedFormat detected = loglib::DetectFormatForPath(filePath);
     CHECK(detected.format == loglib::LogConfiguration::Source::Format::Logfmt);
 }
+
+TEST_CASE("AutoDetectParser routes regex-template bytes to a regex parse", "[AutoDetectParser]")
+{
+    // Standard syslog-ish header that the built-in regex catalog
+    // recognises. Two record lines so we can assert row count.
+    const std::string bytes =
+        "2025-08-07T09:00:00Z INFO svc: first message\n"
+        "2025-08-07T09:00:01Z WARN svc: second message\n";
+
+    auto producer = std::make_unique<BufferedBytesProducer>(bytes);
+    StreamLineSource source(std::filesystem::path("<auto>"), std::move(producer));
+
+    CollectingSink sink;
+    RunStreaming(AutoDetectParser(), source, sink, {}, std::chrono::seconds(2));
+
+    CHECK(sink.finished.load());
+    CHECK_FALSE(sink.finishedCancelled.load());
+    // Regex format resolved at least *some* rows; the exact count
+    // depends on which template matched, so require >= 1 rather
+    // than pinning to a specific catalog member.
+    CHECK(sink.rowCount.load() >= 1);
+}
+
+TEST_CASE("AutoDetectParser composes with a caller-supplied initialCarry", "[AutoDetectParser]")
+{
+    // Regression: `ParseStreaming(StreamLineSource&, ...)` used to
+    // clobber `options.initialCarry` when a caller pre-fed bytes.
+    // Now the adapter prepends peek to any prior carry so the
+    // resolved parser sees the full in-order stream.
+    //
+    // Split the JSON across the carry / producer boundary: the
+    // producer holds a valid probe head (first line -> JSON), and
+    // the caller pre-fed a second full line via `initialCarry`.
+    // Both must land as rows.
+    const std::string producerBytes = R"({"msg":"from-producer"})"
+                                      "\n";
+    const std::string carryBytes = R"({"msg":"from-carry"})"
+                                   "\n";
+
+    auto producer = std::make_unique<BufferedBytesProducer>(producerBytes);
+    StreamLineSource source(std::filesystem::path("<auto>"), std::move(producer));
+
+    CollectingSink sink;
+    ParserOptions options;
+    options.initialCarry = carryBytes;
+    RunStreaming(AutoDetectParser(), source, sink, std::move(options), std::chrono::seconds(2));
+
+    CHECK(sink.finished.load());
+    CHECK_FALSE(sink.finishedCancelled.load());
+    CHECK(sink.rowCount.load() == 2);
+}

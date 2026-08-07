@@ -181,10 +181,26 @@ public:
         bool expected = false;
         if (!mStopRequested.compare_exchange_strong(expected, true))
         {
-            if (mWorker.joinable() && std::this_thread::get_id() != mWorker.get_id())
+            // Another thread already won the CAS and is (or has been)
+            // driving the cancel/join sequence. `std::thread::join`
+            // itself is not safe from multiple threads -- a second
+            // `join()` on the same underlying handle is UB -- so we
+            // must NOT touch `mWorker` here. Instead park on the
+            // `mStopFinished` latch: the winner sets it under
+            // `mStopFinishedLock` after `mWorker.join()` returns.
+            //
+            // Re-entrant call from the worker thread itself (`Stop()`
+            // invoked from within `WorkerMain`, e.g. via a chained
+            // owner destructor) never reaches the latch: it would
+            // self-deadlock. Return immediately in that case; the
+            // winner will observe `mStopFinished` once the worker
+            // function actually returns.
+            if (std::this_thread::get_id() == mWorker.get_id())
             {
-                mWorker.join();
+                return;
             }
+            std::unique_lock<std::mutex> lock(mStopFinishedLock);
+            mStopFinishedCv.wait(lock, [this] { return mStopFinished.load(std::memory_order_acquire); });
             return;
         }
 
@@ -279,6 +295,16 @@ public:
             CloseNative(h);
         }
 #endif
+
+        // Release any peer `Stop()` calls that CAS-lost above and are
+        // parked on the latch. Publish *after* the join + handle close
+        // so a peer's post-return observation sees a fully quiesced
+        // producer.
+        {
+            std::lock_guard<std::mutex> lock(mStopFinishedLock);
+            mStopFinished.store(true, std::memory_order_release);
+        }
+        mStopFinishedCv.notify_all();
     }
 
     [[nodiscard]] bool IsClosed() const noexcept
@@ -350,6 +376,14 @@ private:
     std::atomic<std::size_t> mDropped{0};
     std::atomic<bool> mClosed{false};
     std::atomic<bool> mStopRequested{false};
+    // Signalled by the CAS-winning `Stop()` call after `mWorker.join()`
+    // returns (and, on Windows, after the deferred `CloseHandle`).
+    // CAS-losing peers park on `mStopFinishedCv` until then instead of
+    // touching `mWorker` themselves -- `std::thread::join` is not
+    // callable from multiple threads.
+    std::mutex mStopFinishedLock;
+    std::condition_variable mStopFinishedCv;
+    std::atomic<bool> mStopFinished{false};
     std::thread mWorker;
 };
 

@@ -297,3 +297,47 @@ TEST_CASE("StdinBytesProducer Stop is idempotent", "[StdinBytesProducer]")
     producer->Stop();
     CHECK(producer->IsClosed());
 }
+
+TEST_CASE("StdinBytesProducer Stop is safe under concurrent callers", "[StdinBytesProducer]")
+{
+    // Regression: two threads racing `Stop()` used to both call
+    // `mWorker.join()` on the CAS-loser branch (UB). Peers now
+    // park on a "stop finished" latch until the CAS winner
+    // publishes it, so all peer returns imply a fully quiesced
+    // producer.
+    constexpr int PEER_COUNT = 8;
+    Pipe pipe;
+    auto producer = StdinBytesProducerTestAccess::Create(pipe.TakeReadEndOpaque(), {});
+    REQUIRE(producer != nullptr);
+
+    std::atomic<int> ready{0};
+    std::atomic<bool> go{false};
+    std::vector<std::thread> peers;
+    peers.reserve(PEER_COUNT);
+    for (int i = 0; i < PEER_COUNT; ++i)
+    {
+        peers.emplace_back([&] {
+            ready.fetch_add(1, std::memory_order_release);
+            while (!go.load(std::memory_order_acquire))
+            {
+                std::this_thread::yield();
+            }
+            producer->Stop();
+        });
+    }
+
+    while (ready.load(std::memory_order_acquire) < PEER_COUNT)
+    {
+        std::this_thread::yield();
+    }
+    go.store(true, std::memory_order_release);
+
+    for (auto &t : peers)
+    {
+        t.join();
+    }
+
+    // Every peer's `Stop()` return has to imply the producer is
+    // observably closed, regardless of which thread won the CAS.
+    CHECK(producer->IsClosed());
+}

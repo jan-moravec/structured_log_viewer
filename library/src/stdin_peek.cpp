@@ -49,13 +49,6 @@ namespace
 /// which case the caller should stop peeking.
 bool WaitForStdinReadable(std::chrono::steady_clock::time_point deadline)
 {
-    const auto now = std::chrono::steady_clock::now();
-    if (now >= deadline)
-    {
-        return false;
-    }
-    const auto remainingMs =
-        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
 #ifdef _WIN32
     const HANDLE stdinHandle = ::GetStdHandle(STD_INPUT_HANDLE);
     if (stdinHandle == INVALID_HANDLE_VALUE || stdinHandle == nullptr)
@@ -66,22 +59,24 @@ bool WaitForStdinReadable(std::chrono::steady_clock::time_point deadline)
     // that works on anonymous pipes (the redirect case for
     // `producer | slv -`). It also correctly reports EOF
     // (returns 0 with ERROR_BROKEN_PIPE), in which case the
-    // subsequent `ReadFile` returns 0 too — treated as done.
+    // subsequent `ReadFile` returns 0 too -- treated as done.
     // For regular files (`slv --stdin < file.log`) reads never
     // block, so the peek-then-sleep loop degenerates into
     // pure reads.
     constexpr DWORD POLL_INTERVAL_MS = 20;
-    const auto pollUntil = std::chrono::steady_clock::now() +
-                           std::chrono::milliseconds(remainingMs);
     while (true)
     {
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            return false;
+        }
         DWORD available = 0;
         DWORD leftInMessage = 0;
         const BOOL ok = ::PeekNamedPipe(stdinHandle, nullptr, 0, nullptr, &available, &leftInMessage);
         if (ok == 0)
         {
             // Not a pipe (regular file / unknown): fall through
-            // and let `ReadFile` handle it — on a real file it
+            // and let `ReadFile` handle it -- on a real file it
             // returns immediately, and on the interactive path
             // the caller was supposed to bail via
             // `IsStdinInteractive`.
@@ -91,13 +86,16 @@ bool WaitForStdinReadable(std::chrono::steady_clock::time_point deadline)
         {
             return true;
         }
-        if (std::chrono::steady_clock::now() >= pollUntil)
-        {
-            return false;
-        }
         ::Sleep(POLL_INTERVAL_MS);
     }
 #else
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline)
+    {
+        return false;
+    }
+    const auto remainingMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
     ::pollfd pfd{};
     pfd.fd = STDIN_FILENO;
     pfd.events = POLLIN;
