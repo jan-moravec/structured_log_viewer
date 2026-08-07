@@ -4509,11 +4509,32 @@ void MainWindow::OpenLogStreamForTest(const QString &filePath)
 
 void MainWindow::OpenStdinStream()
 {
+    // Refuse an interactive stdin outright. A bare `slv -` at a
+    // terminal would otherwise freeze the GUI thread inside
+    // `StdinPeek` waiting for the user to type
+    // `PROBE_BYTES_BUDGET` bytes.
+    if (loglib::internal::IsStdinInteractive())
+    {
+        ShowParseErrors(
+            tr("Error Opening Standard Input"),
+            {"Standard input is a terminal, not a pipe or a redirected file. "
+             "Pipe log data into the viewer (e.g. `mysvc | slv -`) or redirect "
+             "from a file (`slv --stdin < mylog.log`)."}
+        );
+        return;
+    }
+
     // Peek synchronously on the GUI thread before spawning the
     // producer so the peek and the producer's own reads observe
     // the *same* stdin (a single OS-level FD). Any bytes that
     // come after the peek belong to the producer.
-    std::string peek = loglib::internal::StdinPeek(loglib::PROBE_BYTES_BUDGET);
+    //
+    // Cap the wait so a very slow producer does not stall the UI
+    // indefinitely: whatever bytes arrived by the deadline feed
+    // the detector, and the streaming loop takes over on empty
+    // (falls back to `JsonParser`).
+    constexpr auto STDIN_PEEK_TIMEOUT = std::chrono::milliseconds(500);
+    std::string peek = loglib::internal::StdinPeek(loglib::PROBE_BYTES_BUDGET, STDIN_PEEK_TIMEOUT);
 
     std::unique_ptr<loglib::StdinBytesProducer> producer;
     try

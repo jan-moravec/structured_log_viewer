@@ -228,10 +228,46 @@ public:
 #endif
         mCv.notify_all();
 
+#ifdef _WIN32
+        // Race guard: `CancelIoEx` above only cancels
+        // *currently pending* IO. If the worker snapshotted
+        // `mHandle` but has not yet entered `ReadFile` by the
+        // time we reached this point, that first cancel is a
+        // no-op and the worker's next `ReadFile` would block
+        // indefinitely. Loop `WaitForSingleObject` with a short
+        // interval and re-cancel on each miss until the worker
+        // exits. Both `CancelIoEx` and `CancelSynchronousIo`
+        // are idempotent, so re-issuing is safe. `Sleep(0)` /
+        // short waits keep the busy loop off a spin.
+        if (mWorker.joinable() && std::this_thread::get_id() != mWorker.get_id())
+        {
+            const HANDLE threadHandle = mWorker.native_handle();
+            constexpr DWORD CANCEL_POLL_INTERVAL_MS = 25;
+            while (true)
+            {
+                const DWORD waitResult = ::WaitForSingleObject(threadHandle, CANCEL_POLL_INTERVAL_MS);
+                if (waitResult == WAIT_OBJECT_0 || waitResult == WAIT_FAILED)
+                {
+                    break;
+                }
+                if (IsValidNative(handleSnapshot))
+                {
+                    ::CancelIoEx(handleSnapshot, nullptr);
+                }
+                // Belt-and-braces: target the worker thread's
+                // pending synchronous IO directly. Covers any
+                // fresh `ReadFile` issued after the last
+                // `CancelIoEx`.
+                ::CancelSynchronousIo(threadHandle);
+            }
+            mWorker.join();
+        }
+#else
         if (mWorker.joinable() && std::this_thread::get_id() != mWorker.get_id())
         {
             mWorker.join();
         }
+#endif
 
 #ifdef _WIN32
         // Safe to close now: the worker has exited so no in-
@@ -272,6 +308,17 @@ private:
                 handle = mHandle;
             }
             if (!IsValidNative(handle))
+            {
+                break;
+            }
+            // Double-check after snapshotting the handle to close
+            // the race with `Stop()`: if Stop set `mStopRequested`
+            // + fired `CancelIoEx` before we entered `ReadNative`,
+            // the cancel would be a no-op and the blocking read
+            // would hang. Stop() also retries the cancel from a
+            // wait-loop, but bailing out here avoids the pending
+            // syscall entirely.
+            if (mStopRequested.load(std::memory_order_acquire))
             {
                 break;
             }

@@ -9,6 +9,8 @@
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
 
+#include <test_common/temp_dir.hpp>
+
 #include <catch2/catch_all.hpp>
 
 #include <algorithm>
@@ -17,10 +19,8 @@
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <mutex>
-#include <random>
 #include <span>
 #include <string>
 #include <string_view>
@@ -33,9 +33,9 @@ using loglib::BytesProducer;
 using loglib::KeyIndex;
 using loglib::LogParseSink;
 using loglib::ParserOptions;
-using loglib::StopSource;
 using loglib::StreamedBatch;
 using loglib::StreamLineSource;
+using test_common::TempDir;
 
 namespace
 {
@@ -168,42 +168,6 @@ void RunStreaming(
     }
 }
 
-class TempDir
-{
-public:
-    TempDir()
-    {
-        auto base = std::filesystem::temp_directory_path();
-        std::random_device rd;
-        std::mt19937_64 gen(rd());
-        const std::uint64_t suffix = gen();
-        mPath = base / ("loglib_auto_detect_test_" + std::to_string(suffix));
-        std::filesystem::create_directories(mPath);
-    }
-
-    // NOLINTNEXTLINE(bugprone-exception-escape)
-    ~TempDir() noexcept
-    {
-        std::error_code ec;
-        std::filesystem::remove_all(mPath, ec);
-    }
-
-    TempDir(const TempDir &) = delete;
-    TempDir &operator=(const TempDir &) = delete;
-
-    [[nodiscard]] std::filesystem::path Write(const std::string &name, std::string_view contents) const
-    {
-        const auto path = mPath / name;
-        std::ofstream out(path, std::ios::binary);
-        REQUIRE(out.is_open());
-        out.write(contents.data(), static_cast<std::streamsize>(contents.size()));
-        return path;
-    }
-
-private:
-    std::filesystem::path mPath;
-};
-
 } // namespace
 
 TEST_CASE("AutoDetectParser IsValidBytes accepts anything", "[AutoDetectParser]")
@@ -287,7 +251,7 @@ TEST_CASE("AutoDetectParser (file path) uses DetectFormatForPath under the hood"
     // logic (`DetectFormatForPath`) reaches the right verdict on
     // a small on-disk fixture. The `AutoDetectParser`
     // `FileLineSource` overload is a one-liner around this call.
-    const TempDir dir;
+    const TempDir dir("auto_detect");
     const auto filePath =
         dir.Write("routing.log", "level=info message=first\nlevel=warn message=second\n");
 

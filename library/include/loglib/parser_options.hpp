@@ -21,12 +21,15 @@ struct ParserOptions
     bool multilineLogfmt = true;
 
     /// Bytes already consumed from the producer that must be
-    /// reprocessed as the first input of the streaming loop. Used by
-    /// `AutoDetectParser` (network-stream auto-detect) to hand the
-    /// bytes it drained during format detection back to the resolved
+    /// reprocessed as the first input of the streaming loop. Used
+    /// by `AutoDetectParser` (network-stream auto-detect) and by
+    /// the stdin path (`MainWindow::OpenStdinStream`) to hand the
+    /// bytes drained during format detection back to the resolved
     /// parser without swapping the producer. Non-empty only on the
     /// streaming (`StreamLineSource`) path; the static-file path
-    /// ignores it. Empty by default; existing callers pay nothing.
+    /// has nowhere to splice the carry and asserts it is empty
+    /// (see `internal::RunStaticParserPipeline`). Empty by default;
+    /// existing callers pay nothing.
     std::string initialCarry;
 };
 

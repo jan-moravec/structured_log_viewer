@@ -2,12 +2,10 @@
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_parser.hpp>
 
+#include <test_common/temp_dir.hpp>
+
 #include <catch2/catch_all.hpp>
 
-#include <cstdio>
-#include <filesystem>
-#include <fstream>
-#include <random>
 #include <string>
 #include <string_view>
 
@@ -16,49 +14,7 @@ using loglib::DetectFormatForPath;
 using loglib::DetectFormatFromBytes;
 using loglib::LogConfiguration;
 using loglib::MakeParserForFormat;
-
-namespace
-{
-
-/// Test scratch directory. Each test gets its own so parallel
-/// `ctest -j` runs don't collide.
-class TempDir
-{
-public:
-    TempDir()
-    {
-        auto base = std::filesystem::temp_directory_path();
-        std::random_device rd;
-        std::mt19937_64 gen(rd());
-        const std::uint64_t suffix = gen();
-        mPath = base / ("loglib_format_detection_test_" + std::to_string(suffix));
-        std::filesystem::create_directories(mPath);
-    }
-
-    // NOLINTNEXTLINE(bugprone-exception-escape)
-    ~TempDir() noexcept
-    {
-        std::error_code ec;
-        std::filesystem::remove_all(mPath, ec);
-    }
-
-    TempDir(const TempDir &) = delete;
-    TempDir &operator=(const TempDir &) = delete;
-
-    [[nodiscard]] std::filesystem::path Write(const std::string &name, std::string_view contents) const
-    {
-        const auto path = mPath / name;
-        std::ofstream out(path, std::ios::binary);
-        REQUIRE(out.is_open());
-        out.write(contents.data(), static_cast<std::streamsize>(contents.size()));
-        return path;
-    }
-
-private:
-    std::filesystem::path mPath;
-};
-
-} // namespace
+using test_common::TempDir;
 
 TEST_CASE("DetectFormatFromBytes parity with DetectFormatForPath", "[FormatDetection]")
 {
@@ -66,7 +22,7 @@ TEST_CASE("DetectFormatFromBytes parity with DetectFormatForPath", "[FormatDetec
     // the input is a path (file open + head read) or a raw byte
     // slice (network, stdin). The parity test is the whole point
     // of hoisting the detector into loglib.
-    const TempDir dir;
+    const TempDir dir("format_detection");
 
     struct Case
     {

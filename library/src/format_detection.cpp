@@ -23,35 +23,31 @@ DetectedFormat DetectFormatFromBytes(std::string_view sniffBuffer)
         return {};
     }
 
-    for (int i = 0; i < static_cast<int>(LogFactory::Parser::Count); ++i)
+    // Walk the auto-detect probe order defined by `LogFactory::Parser`.
+    // `Regex` is special-cased because we need the matched template's
+    // pattern, not just a yes/no verdict; the other three formats map
+    // directly onto their `LogConfiguration::Source::Format` value.
+    struct Probe
     {
-        const auto parserType = static_cast<LogFactory::Parser>(i);
-        if (parserType == LogFactory::Parser::Regex)
+        LogFactory::Parser parser;
+        LogConfiguration::Source::Format format;
+    };
+    static constexpr Probe SIMPLE_PROBES[] = {
+        {LogFactory::Parser::Json, LogConfiguration::Source::Format::Json},
+        {LogFactory::Parser::Logfmt, LogConfiguration::Source::Format::Logfmt},
+        {LogFactory::Parser::Csv, LogConfiguration::Source::Format::Csv},
+    };
+    for (const Probe &probe : SIMPLE_PROBES)
+    {
+        const std::unique_ptr<LogParser> instance = LogFactory::Create(probe.parser);
+        if (instance->IsValidBytes(sniffBuffer))
         {
-            // Special-cased like `loglib::ParseFile(path)`: we need
-            // the matched template's pattern, not a bare yes/no.
-            if (std::optional<RegexTemplate> tmpl = DetectRegexTemplateFromBytes(sniffBuffer); tmpl.has_value())
-            {
-                return {.format = LogConfiguration::Source::Format::Regex, .regexPattern = std::move(tmpl->pattern)};
-            }
-            continue;
+            return {.format = probe.format, .regexPattern = {}};
         }
-
-        const std::unique_ptr<LogParser> probe = LogFactory::Create(parserType);
-        if (probe->IsValidBytes(sniffBuffer))
-        {
-            switch (parserType)
-            {
-            case LogFactory::Parser::Logfmt:
-                return {.format = LogConfiguration::Source::Format::Logfmt};
-            case LogFactory::Parser::Csv:
-                return {.format = LogConfiguration::Source::Format::Csv};
-            case LogFactory::Parser::Json:
-            case LogFactory::Parser::Regex:
-            case LogFactory::Parser::Count:
-                return {.format = LogConfiguration::Source::Format::Json};
-            }
-        }
+    }
+    if (std::optional<RegexTemplate> tmpl = DetectRegexTemplateFromBytes(sniffBuffer); tmpl.has_value())
+    {
+        return {.format = LogConfiguration::Source::Format::Regex, .regexPattern = std::move(tmpl->pattern)};
     }
     return {};
 }

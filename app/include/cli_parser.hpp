@@ -50,23 +50,6 @@ struct ParsedCli
         )
     );
     parser.addOption(newInstanceOption);
-    // `-` alone is a longstanding UNIX convention for "read stdin";
-    // `--stdin` is the long form so PowerShell users who cannot pass
-    // a bare `-` (parsed as a partial argument) still have an entry
-    // point. Pre-strip both from argv so `QCommandLineParser` does
-    // not choke on the bare dash (it would otherwise reject it as
-    // an unknown short option under `ParseAsLongOptions`).
-    QStringList filteredArgs;
-    filteredArgs.reserve(args.size());
-    for (const QString &arg : args)
-    {
-        if (arg == QStringLiteral("-") || arg == QStringLiteral("--stdin"))
-        {
-            result.readStdin = true;
-            continue;
-        }
-        filteredArgs.append(arg);
-    }
     const QCommandLineOption stdinOption(
         QStringLiteral("stdin"),
         QStringLiteral("Read log lines from standard input (equivalent to passing `-`).")
@@ -78,6 +61,24 @@ struct ParsedCli
         QStringLiteral("[files...]")
     );
 
+    // `-` alone is the longstanding UNIX convention for "read
+    // stdin". Pre-strip it so `QCommandLineParser` (which we run
+    // in `ParseAsLongOptions` mode) doesn't reject the bare dash
+    // as an unknown short option. `--stdin` flows through the
+    // parser normally so `--help` documents it and typos surface
+    // as unknown-option warnings.
+    QStringList filteredArgs;
+    filteredArgs.reserve(args.size());
+    for (const QString &arg : args)
+    {
+        if (arg == QStringLiteral("-"))
+        {
+            result.readStdin = true;
+            continue;
+        }
+        filteredArgs.append(arg);
+    }
+
     // `parse()` does not exit on error; surface the diagnostic but
     // still keep the parsed positionals and flags.
     if (!parser.parse(filteredArgs))
@@ -86,6 +87,10 @@ struct ParsedCli
     }
 
     result.allowNewInstance = parser.isSet(newInstanceOption);
+    if (parser.isSet(stdinOption))
+    {
+        result.readStdin = true;
+    }
 
     const QString envOverride = env.value(QStringLiteral("LOGAPP_NEW_INSTANCE"));
     if (envOverride == QStringLiteral("1") || envOverride.compare(QStringLiteral("true"), Qt::CaseInsensitive) == 0)

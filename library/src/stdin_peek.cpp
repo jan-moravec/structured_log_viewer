@@ -1,5 +1,7 @@
 #include "loglib/internal/stdin_peek.hpp"
 
+#include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -11,6 +13,7 @@
 #include <windows.h>
 #include <io.h>
 #else
+#include <poll.h>
 #include <unistd.h>
 #include <cerrno>
 #endif
@@ -18,7 +21,104 @@
 namespace loglib::internal
 {
 
-std::string StdinPeek(std::size_t budget)
+bool IsStdinInteractive() noexcept
+{
+#ifdef _WIN32
+    const HANDLE stdinHandle = ::GetStdHandle(STD_INPUT_HANDLE);
+    if (stdinHandle == INVALID_HANDLE_VALUE || stdinHandle == nullptr)
+    {
+        return false;
+    }
+    // FILE_TYPE_CHAR covers both an interactive console and the
+    // (rare) case of a printer / raw character device redirected
+    // onto FD 0. Either would block the peek loop unboundedly;
+    // treat both as "interactive".
+    return ::GetFileType(stdinHandle) == FILE_TYPE_CHAR;
+#else
+    return ::isatty(STDIN_FILENO) != 0;
+#endif
+}
+
+namespace
+{
+
+/// Wait for stdin to become readable, or until @p deadline
+/// elapses. Returns true when at least one byte is available
+/// (or EOF is observable, which `read`/`ReadFile` will report on
+/// the next call). Returns false on timeout / hard error, in
+/// which case the caller should stop peeking.
+bool WaitForStdinReadable(std::chrono::steady_clock::time_point deadline)
+{
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline)
+    {
+        return false;
+    }
+    const auto remainingMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+#ifdef _WIN32
+    const HANDLE stdinHandle = ::GetStdHandle(STD_INPUT_HANDLE);
+    if (stdinHandle == INVALID_HANDLE_VALUE || stdinHandle == nullptr)
+    {
+        return false;
+    }
+    // `PeekNamedPipe` is the only non-blocking readiness probe
+    // that works on anonymous pipes (the redirect case for
+    // `producer | slv -`). It also correctly reports EOF
+    // (returns 0 with ERROR_BROKEN_PIPE), in which case the
+    // subsequent `ReadFile` returns 0 too — treated as done.
+    // For regular files (`slv --stdin < file.log`) reads never
+    // block, so the peek-then-sleep loop degenerates into
+    // pure reads.
+    constexpr DWORD POLL_INTERVAL_MS = 20;
+    const auto pollUntil = std::chrono::steady_clock::now() +
+                           std::chrono::milliseconds(remainingMs);
+    while (true)
+    {
+        DWORD available = 0;
+        DWORD leftInMessage = 0;
+        const BOOL ok = ::PeekNamedPipe(stdinHandle, nullptr, 0, nullptr, &available, &leftInMessage);
+        if (ok == 0)
+        {
+            // Not a pipe (regular file / unknown): fall through
+            // and let `ReadFile` handle it — on a real file it
+            // returns immediately, and on the interactive path
+            // the caller was supposed to bail via
+            // `IsStdinInteractive`.
+            return true;
+        }
+        if (available > 0)
+        {
+            return true;
+        }
+        if (std::chrono::steady_clock::now() >= pollUntil)
+        {
+            return false;
+        }
+        ::Sleep(POLL_INTERVAL_MS);
+    }
+#else
+    ::pollfd pfd{};
+    pfd.fd = STDIN_FILENO;
+    pfd.events = POLLIN;
+    const int rc = ::poll(&pfd, 1, static_cast<int>(std::min<std::int64_t>(remainingMs, INT32_MAX)));
+    if (rc < 0)
+    {
+        // EINTR: caller loops with a fresh deadline slice; any
+        // other error is terminal for the peek.
+        return errno == EINTR;
+    }
+    if (rc == 0)
+    {
+        return false;
+    }
+    return (pfd.revents & (POLLIN | POLLHUP | POLLERR)) != 0;
+#endif
+}
+
+} // namespace
+
+std::string StdinPeek(std::size_t budget, std::chrono::milliseconds timeout)
 {
     if (budget == 0)
     {
@@ -28,24 +128,23 @@ std::string StdinPeek(std::size_t budget)
     std::string out;
     out.reserve(budget);
 
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+
+    constexpr std::size_t SCRATCH_BYTES = 4096;
+    char scratch[SCRATCH_BYTES];
+
 #ifdef _WIN32
-    // `GetStdHandle(STD_INPUT_HANDLE)` returns a HANDLE for the
-    // process's stdin. It is safe to `ReadFile` on it directly;
-    // the returned handle is *not* to be closed here (it is a
-    // shared process-wide standard handle).
     const HANDLE stdinHandle = ::GetStdHandle(STD_INPUT_HANDLE);
     if (stdinHandle == INVALID_HANDLE_VALUE || stdinHandle == nullptr)
     {
         return out;
     }
-    // Fixed-size scratch buffer so we don't have to grow `out`'s
-    // internal buffer while `ReadFile` writes into it. 4 KiB is
-    // one page; the OS routes pipe / console reads through the
-    // same syscall regardless.
-    constexpr DWORD SCRATCH_BYTES = 4096;
-    char scratch[SCRATCH_BYTES];
     while (out.size() < budget)
     {
+        if (!WaitForStdinReadable(deadline))
+        {
+            break;
+        }
         const DWORD want = static_cast<DWORD>(std::min<std::size_t>(SCRATCH_BYTES, budget - out.size()));
         DWORD got = 0;
         if (::ReadFile(stdinHandle, scratch, want, &got, nullptr) == 0)
@@ -63,10 +162,12 @@ std::string StdinPeek(std::size_t budget)
         out.append(scratch, got);
     }
 #else
-    constexpr std::size_t SCRATCH_BYTES = 4096;
-    char scratch[SCRATCH_BYTES];
     while (out.size() < budget)
     {
+        if (!WaitForStdinReadable(deadline))
+        {
+            break;
+        }
         const std::size_t want = std::min<std::size_t>(SCRATCH_BYTES, budget - out.size());
         const ::ssize_t got = ::read(STDIN_FILENO, scratch, want);
         if (got > 0)
@@ -79,7 +180,6 @@ std::string StdinPeek(std::size_t budget)
             // Clean EOF.
             break;
         }
-        // got == -1: retry on EINTR, bail on anything else.
         if (errno == EINTR)
         {
             continue;

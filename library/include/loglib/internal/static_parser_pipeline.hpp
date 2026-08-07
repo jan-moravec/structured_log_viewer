@@ -21,6 +21,7 @@
 #include <oneapi/tbb/parallel_pipeline.h>
 
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -194,6 +195,14 @@ void RunStaticParserPipeline(
     std::optional<size_t> newKeyBaseline = std::nullopt
 )
 {
+    // `ParserOptions::initialCarry` is a streaming-only mechanism
+    // (see `parser_options.hpp`); the static file pipeline reads
+    // from the mmap directly and has nowhere to splice the carry
+    // in. A non-empty carry here means a caller wired an
+    // `AutoDetectParser`-style handoff onto a `FileLineSource`,
+    // which would silently drop bytes.
+    assert(options.initialCarry.empty() && "initialCarry is streaming-only; static file parses must not set it");
+
     LogFile &file = source.File();
 
     sink.OnStarted();
