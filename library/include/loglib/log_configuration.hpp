@@ -110,7 +110,12 @@ struct LogConfiguration
         enum class Kind
         {
             File,
-            NetworkStream
+            NetworkStream,
+            /// Standard-input pipe (`slv -` / `slv --stdin`).
+            /// One-shot per session; not persisted for auto-reopen
+            /// (see `MainWindow::ShouldAutoSaveSession`). Locator is
+            /// the synthetic display name `<stdin>`.
+            Stdin
         };
 
         /// Parser the source was opened with. Persisted because

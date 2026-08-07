@@ -59,6 +59,8 @@ add_library(
     src/parsers/logfmt_parser.cpp
     src/parsers/regex_parser.cpp
     src/regex_templates.cpp
+    src/stdin_bytes_producer.cpp
+    src/stdin_peek.cpp
     ${REGEX_TEMPLATES_EMBEDDED_SRC}
     src/clang_tidy_stubs/regex_template_glaze_meta.cpp
     src/theme.cpp

@@ -49,8 +49,11 @@ template <> struct glz::meta<loglib::LeafRule::Match>
 template <> struct glz::meta<loglib::LogConfiguration::Source::Kind>
 {
     using enum loglib::LogConfiguration::Source::Kind;
-    static constexpr std::array keys{"file", "networkStream"};
-    static constexpr std::array value{File, NetworkStream};
+    // Append `Kind::Stdin` at the end so pre-Stdin builds still
+    // see a valid enum for legacy on-disk sessions -- and because
+    // `Kind::Stdin` is one-shot (never actually persisted).
+    static constexpr std::array keys{"file", "networkStream", "stdin"};
+    static constexpr std::array value{File, NetworkStream, Stdin};
 };
 
 template <> struct glz::meta<loglib::LogConfiguration::Source::Format>

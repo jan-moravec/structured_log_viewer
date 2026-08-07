@@ -32,9 +32,11 @@
 #include <loglib/bytes_producer.hpp>
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
+#include <loglib/auto_detect_parser.hpp>
 #include <loglib/format_detection.hpp>
 #include <loglib/internal/ascii_case.hpp>
 #include <loglib/internal/decompressing_byte_source.hpp>
+#include <loglib/internal/stdin_peek.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_factory.hpp>
 #include <loglib/log_file.hpp>
@@ -46,6 +48,7 @@
 #include <loglib/parsers/regex_parser.hpp>
 #include <loglib/regex_templates.hpp>
 #include <loglib/session_bundle.hpp>
+#include <loglib/stdin_bytes_producer.hpp>
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
@@ -2349,23 +2352,34 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
     const auto &source = *mCurrentSource;
     if (source.kind != loglib::LogConfiguration::Source::Kind::File)
     {
-        // Legacy NetworkStream snapshots stored the producer URI as
-        // a locator; we cannot reopen them, the user must re-bind
-        // manually via "Open Network Stream...".
+        // Non-File sessions (network streams, stdin) stored the
+        // producer URI or `<stdin>` as a locator; we cannot reopen
+        // them from a snapshot. The user must re-bind manually via
+        // "Open Network Stream..." (or, for stdin, re-launch with
+        // `-` / `--stdin` -- stdin sessions are not persisted, but
+        // filters loaded from a bundle can still land in this
+        // branch).
         if (informIfNonFile)
         {
 #ifdef LOGAPP_BUILD_TESTING
             if (!mSuppressDialogsForTest)
 #endif
             {
-                QMessageBox::information(
-                    this,
-                    QStringLiteral("Network Stream Session"),
-                    QStringLiteral(
-                        "This recent session was a network stream; the columns and filters have been "
-                        "restored, but the producer must be re-bound manually via 'Open Network Stream...'."
-                    )
-                );
+                const bool isStdin = source.kind == loglib::LogConfiguration::Source::Kind::Stdin;
+                const QString title = isStdin ? QStringLiteral("Standard Input Session")
+                                              : QStringLiteral("Network Stream Session");
+                const QString body =
+                    isStdin
+                        ? QStringLiteral(
+                              "This recent session was a stdin capture; the columns and filters have been "
+                              "restored, but stdin cannot be reopened. Relaunch with `-` or `--stdin` to "
+                              "read from a new pipe."
+                          )
+                        : QStringLiteral(
+                              "This recent session was a network stream; the columns and filters have been "
+                              "restored, but the producer must be re-bound manually via 'Open Network Stream...'."
+                          );
+                QMessageBox::information(this, title, body);
             }
         }
         // Non-File: no streaming either; consume the deferral so
@@ -4493,6 +4507,118 @@ void MainWindow::OpenLogStreamForTest(const QString &filePath)
     OpenLogStreamFromPath(filePath);
 }
 
+void MainWindow::OpenStdinStream()
+{
+    // Peek synchronously on the GUI thread before spawning the
+    // producer so the peek and the producer's own reads observe
+    // the *same* stdin (a single OS-level FD). Any bytes that
+    // come after the peek belong to the producer.
+    std::string peek = loglib::internal::StdinPeek(loglib::PROBE_BYTES_BUDGET);
+
+    std::unique_ptr<loglib::StdinBytesProducer> producer;
+    try
+    {
+        producer = std::make_unique<loglib::StdinBytesProducer>();
+    }
+    catch (const std::exception &e)
+    {
+        ShowParseErrors(
+            tr("Error Opening Standard Input"), {std::string("Failed to attach to stdin: ") + e.what()}
+        );
+        return;
+    }
+
+    OpenStdinStreamFromProducer(std::move(producer), std::move(peek));
+}
+
+#ifdef LOGAPP_BUILD_TESTING
+void MainWindow::OpenStdinStreamForTest(std::unique_ptr<loglib::BytesProducer> producer, std::string peek)
+{
+    OpenStdinStreamFromProducer(std::move(producer), std::move(peek));
+}
+#endif
+
+void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProducer> producer, std::string peek)
+{
+    if (producer == nullptr)
+    {
+        return;
+    }
+
+    // Same rationale as `OpenLogStreamFromPath`: surface and drop
+    // the pending queue before AutoSave + reset.
+    const int discardedQueuedFiles = static_cast<int>(mPendingOpenFiles.size());
+    if (discardedQueuedFiles > 0)
+    {
+        statusBar()->showMessage(
+            tr("Discarded %n queued file(s) before opening standard input.", nullptr, discardedQueuedFiles),
+            STATUS_BAR_MESSAGE_TIMEOUT_MS
+        );
+        mPendingOpenFiles.clear();
+    }
+
+    AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
+    CancelInFlightExport();
+
+    const SessionSwitchScope switchGuard(*this);
+
+    mModel->Reset();
+    ClearAllFilters();
+    if (mAnchors != nullptr)
+    {
+        mAnchors->ClearAll();
+    }
+    if (mParseErrorsDock != nullptr)
+    {
+        mParseErrorsDock->ResetSessionState();
+    }
+    mStreamingErrorsCut = 0;
+    CancelInFlightDecompression();
+    DetachAutoSaveUuid();
+
+    const std::string displayName = producer->DisplayName();
+    mStreamingFileName = QString::fromStdString(displayName);
+
+    // Detect the format from the peek so the resolved parser is
+    // pinned before the first parse batch. Empty peek falls back
+    // to JSON (matches `DetectFormatFromBytes`'s "nothing matched"
+    // branch), which is a safe default: an empty stdin session
+    // produces zero rows either way.
+    const loglib::DetectedFormat detected = loglib::DetectFormatFromBytes(peek);
+    mCurrentSource = loglib::LogConfiguration::Source{
+        .kind = loglib::LogConfiguration::Source::Kind::Stdin,
+        .format = detected.format,
+        .locators = {displayName},
+        .locatorDedupKeys = {displayName},
+        .regexPattern = detected.regexPattern,
+    };
+    mSessionMode = SessionMode::LiveTail;
+    mStreamingLineCount = 0;
+    mStreamingErrorCount = 0;
+    mFirstStreamingBatchSeen = false;
+    SetConfigurationUiEnabled(false);
+    StartLiveTailTicker();
+    UpdateStreamingStatus();
+    UpdateStreamToolbarVisibility();
+    UpdateWindowTitle();
+    ApplyDisplayOrder();
+
+    auto config = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
+    loglib::ParserOptions options;
+    options.configuration = std::move(config);
+    // Feed the peeked bytes back to the resolved parser so the
+    // stream is delivered in full (peek + subsequent bytes).
+    options.initialCarry = std::move(peek);
+
+    auto streamSource = std::make_unique<loglib::StreamLineSource>(std::filesystem::path(displayName), std::move(producer));
+    const auto format = mCurrentSource->format;
+    std::string regexPattern = mCurrentSource->regexPattern;
+    auto parserFactory = [format, regexPattern = std::move(regexPattern)]() {
+        return loglib::MakeParserForFormat(format, regexPattern);
+    };
+    mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
+}
+
 void MainWindow::OpenNetworkStream()
 {
     NetworkStreamDialog dialog(mRegexTemplateRegistry, this);
@@ -4588,6 +4714,14 @@ void MainWindow::OpenNetworkStream()
     // Network-stream locator is a producer URI, not a filesystem
     // path -- no canonicalisation applies, so dedup key == display.
     // Both arrays populated so the parallel-array invariant holds.
+    //
+    // AutoDetect is a session-time only signal: the resolved format
+    // is `Json` until the first bytes arrive (`AutoDetectParser`
+    // reclassifies on the fly). Persisting `Json` for the mostly-
+    // decorative `mCurrentSource.format` matches the old behaviour
+    // (default combobox pick) and keeps snapshots forward-compatible
+    // with older builds that don't know about auto-detect.
+    const bool autoDetect = cfg.format == NetworkStreamDialog::Format::AutoDetect;
     const loglib::LogConfiguration::Source::Format dialogFormat = [&] {
         switch (cfg.format)
         {
@@ -4598,6 +4732,7 @@ void MainWindow::OpenNetworkStream()
         case NetworkStreamDialog::Format::Regex:
             return loglib::LogConfiguration::Source::Format::Regex;
         case NetworkStreamDialog::Format::Json:
+        case NetworkStreamDialog::Format::AutoDetect:
             break;
         }
         return loglib::LogConfiguration::Source::Format::Json;
@@ -4628,6 +4763,18 @@ void MainWindow::OpenNetworkStream()
     // display string serves as the LineSource's opaque identity.
     auto streamSource =
         std::make_unique<loglib::StreamLineSource>(std::filesystem::path(displayName), std::move(producer));
+    // AutoDetect: hand off an `AutoDetectParser` -- it peeks the
+    // producer's initial bytes, chooses the concrete parser, and
+    // hands the pre-read bytes back via `initialCarry`. Manual
+    // formats keep the eager, pinned parser factory.
+    if (autoDetect)
+    {
+        auto parserFactory = []() -> std::unique_ptr<loglib::LogParser> {
+            return std::make_unique<loglib::AutoDetectParser>();
+        };
+        mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
+        return;
+    }
     const loglib::LogConfiguration::Source::Format format =
         mCurrentSource ? mCurrentSource->format : loglib::LogConfiguration::Source::Format::Json;
     std::string regexPattern = mCurrentSource ? mCurrentSource->regexPattern : std::string{};

@@ -17,11 +17,15 @@ namespace logapp
 /// canonicalised against the caller's CWD. `allowNewInstance` is
 /// true when `--new-instance` is set or `LOGAPP_NEW_INSTANCE` is
 /// `1` / `true` (the env override is useful for CI runs that
-/// spawn many windows).
+/// spawn many windows). `readStdin` is true when either `-` (as a
+/// positional) or `--stdin` was passed; `main()` opens a live-tail
+/// session over the process's `stdin` in that case, after any
+/// `--files` were opened.
 struct ParsedCli
 {
     QStringList files;
     bool allowNewInstance = false;
+    bool readStdin = false;
 };
 
 /// Parse CLI arguments. Unknown flags are reported to stderr but
@@ -46,6 +50,28 @@ struct ParsedCli
         )
     );
     parser.addOption(newInstanceOption);
+    // `-` alone is a longstanding UNIX convention for "read stdin";
+    // `--stdin` is the long form so PowerShell users who cannot pass
+    // a bare `-` (parsed as a partial argument) still have an entry
+    // point. Pre-strip both from argv so `QCommandLineParser` does
+    // not choke on the bare dash (it would otherwise reject it as
+    // an unknown short option under `ParseAsLongOptions`).
+    QStringList filteredArgs;
+    filteredArgs.reserve(args.size());
+    for (const QString &arg : args)
+    {
+        if (arg == QStringLiteral("-") || arg == QStringLiteral("--stdin"))
+        {
+            result.readStdin = true;
+            continue;
+        }
+        filteredArgs.append(arg);
+    }
+    const QCommandLineOption stdinOption(
+        QStringLiteral("stdin"),
+        QStringLiteral("Read log lines from standard input (equivalent to passing `-`).")
+    );
+    parser.addOption(stdinOption);
     parser.addPositionalArgument(
         QStringLiteral("files"),
         QStringLiteral("Optional list of log files (or session JSONs) to open on launch."),
@@ -54,7 +80,7 @@ struct ParsedCli
 
     // `parse()` does not exit on error; surface the diagnostic but
     // still keep the parsed positionals and flags.
-    if (!parser.parse(args))
+    if (!parser.parse(filteredArgs))
     {
         ::logapp::LogWarning() << "Unrecognised CLI argument:" << parser.errorText();
     }

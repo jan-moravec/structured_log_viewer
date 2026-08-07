@@ -178,11 +178,43 @@ The following are **out of scope** for the current Stream Mode implementation:
 
 - **Compressed live-tail** — Stream Mode follows uncompressed files only. Static opens of `.gz` / `.bz2` / `.xz` / `.zst` files work (see [Compressed inputs](#compressed-inputs)); Stream Mode's rotation handling likewise only tracks uncompressed rotations.
 - **Pulling rotated history off disk** — the viewer does not read `app.log.1` to recover lines older than the in-memory cap.
-- **stdin / named-pipe sources** — only file tailing is wired up; for network ingestion see [Network Stream Mode](#network-stream-mode-tcp--udp).
+- **stdin / named-pipe sources** — Stream Mode targets rotate-safe files; piped input goes through the dedicated [Standard-Input Mode](#reading-from-standard-input), and network ingestion through [Network Stream Mode](#network-stream-mode-tcp--udp).
 - **Auto-detect "this file is being actively written → open in Stream Mode"** — Stream Mode is always an explicit `File → Open Log Stream…` action.
 - **Per-file or per-session retention overrides** — the retention cap is a single application-wide setting.
 - **Streaming for arbitrary formats** — JSON Lines, logfmt, CSV, and regex templates are first-class; ad-hoc text and alternative delimiters still need a parser.
 - **True multi-line regex matching** — PCRE2 matches each physical header line. Continuation modes append later lines to the last capture; the main pattern is not re-run over the joined record.
+
+## Reading from standard input
+
+Pipe a producer's stdout directly into the viewer with the POSIX convention `slv -`. The synonym `slv --stdin` is provided for PowerShell where a bare `-` is treated as a partial argument. The launch opens a live-tail session backed by the process's standard input; the toolbar, retention cap, Pause / Follow newest / Stop, search, filters, and configurations all behave the same as [Stream Mode](#stream-mode-live-tail) once the session is open.
+
+```sh
+# JSON Lines producer piped directly
+myservice --log-json | slv -
+
+# Kubernetes pod logs
+kubectl logs deploy/api -f | slv -
+
+# Combining files and stdin (files load first, stdin becomes the current session)
+slv preload.log -
+```
+
+**Format auto-detection.** The first `PROBE_BYTES_BUDGET` (16 KiB) bytes are peeked synchronously on launch and run through the same `DetectFormatFromBytes` probe used by static file opens and network auto-detect. The resolved parser sees the peek plus every subsequent byte, so nothing is dropped or duplicated. JSON Lines, logfmt, CSV, and every registered regex template are detected automatically; empty or ambiguous input falls back to JSON.
+
+**Single-instance interaction.** A stdin launch always behaves like `--new-instance` (each process owns its own pipe; the primary cannot inherit an FD from a secondary). Restore-on-launch is also skipped for stdin sessions, so `myservice | slv -` never re-opens yesterday's session on top of the live pipe.
+
+**Session persistence.** Stdin sessions are never persisted to Recent Sessions or the auto-reopen set — the pipe cannot be reopened after this process exits. Filters and column tweaks made during the session can still be exported via **Save Configuration…** and reloaded on any future file / stream / pipe run.
+
+**Shutdown.** `Ctrl+C` on the producer side, closing the terminal, or piping from a finite source (e.g. `cat file.json | slv -`) all cleanly close stdin. The producer's worker unblocks, the parser drains, and the visible rows remain as a static snapshot until you take another action. Closing the viewer while the pipe is still open also tears down cleanly.
+
+### PowerShell caveat
+
+Under `powershell.exe` and `pwsh.exe`, redirecting native command output through `|` converts every write into a `System.String` object; the shell then re-encodes each object with the current output encoding before the target process sees it. That is usually fine for text logs, but two side effects are worth knowing:
+
+- **Encoding drift** — non-ASCII bytes may be transcoded to UTF-16 and back through `[Console]::OutputEncoding`. Set `$OutputEncoding = [System.Text.UTF8Encoding]::new()` and `[Console]::OutputEncoding = $OutputEncoding` before the pipe to keep UTF-8 producers intact.
+- **`-` argument parsing** — PowerShell's parser treats a bare `-` as a partial argument in some contexts. Use the long form `--stdin` if you see `The argument '-' is invalid` or similar. Both forms produce the same session.
+
+CMD, WSL, and macOS/Linux shells preserve raw bytes end-to-end and need no special setup.
 
 ## Network Stream Mode (TCP / UDP)
 
@@ -193,7 +225,7 @@ Network Stream Mode listens on a local TCP or UDP port and ingests structured lo
 Use **File → Open Network Stream…** (`Ctrl+Shift+L`). The dialog asks for:
 
 - **Protocol** — TCP or UDP.
-- **Format** — JSON Lines, logfmt, CSV, or **Regex template**. Network ingestion has no file to sniff, so the parser is selected explicitly and persisted with the session. **CSV caveat:** the first inbound line sets the schema for every TCP client; coordinate column names and order or use one producer. **Regex template:** the picker lists the merged built-in and user catalog plus *Custom…*. Continuation metadata is resolved by exact pattern lookup in that catalog; a genuinely unregistered custom pattern remains single-line.
+- **Format** — **Auto-detect** (recommended default), JSON Lines, logfmt, CSV, or **Regex template**. *Auto-detect* peeks the first bytes off the socket and runs the same probe file and stdin openings use, so an untagged producer stream lands in the right parser without extra configuration; the peek is fed to the resolved parser via `ParserOptions::initialCarry`, so no bytes are lost. Pick a manual format when the initial line is genuinely ambiguous (short JSON that also looks like logfmt, an empty first regex line, etc.). **CSV caveat:** the first inbound line sets the schema for every TCP client; coordinate column names and order or use one producer. **Regex template:** the picker lists the merged built-in and user catalog plus *Custom…*. Continuation metadata is resolved by exact pattern lookup in that catalog; a genuinely unregistered custom pattern remains single-line.
 - **Bind address** — `0.0.0.0` (IPv4 any), `::` (IPv6 dual-stack), `127.0.0.1` / `::1` (loopback only), or a specific interface IP.
 - **Port** — the listening port. `0` requests an OS-assigned ephemeral port (handy for ad-hoc local testing).
 - **Max concurrent clients (TCP)** — hard cap on simultaneous accepted connections (default 16). New connections beyond this are accepted-and-immediately-closed.

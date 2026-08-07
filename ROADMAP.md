@@ -182,19 +182,11 @@ export shipped separately as [item 30](#30-full-session-export-bundle).
 
 > **Shipped.** **Edit → Go to Line…** (`Ctrl+G`) jumps to a 1-based source-model row (line 1 is the earliest retained row; streaming FIFO eviction may have dropped older rows so numbers need not match the source file). **Edit → Go to Timestamp…** (`Ctrl+Shift+G`) accepts every format the timestamp column already parses, two ISO 8601 fallbacks (`%FT%T` and `%F %T`), and the relative shortcuts `-Nh` / `-Nm` (case-insensitive; `+N` and bare `N` also mean "N ago", matching lnav / less). Naive inputs (no `%z` / `%Z`) are interpreted in the display TZ (`loglib::CurrentZone()`) and shifted to UTC via `loglib::LocalMicrosecondsSinceEpochToUtc`. Search takes one of three branches: an O(log N) source-row binary search when the timestamps are monotonic and no user sort is active (guarded by `LogModel::TimestampsAreMonotonic()`, which flips false on multi-file `Append` / rotation / clock skew); an O(N_visible) outer-proxy walk when monotonicity has broken; an O(N_visible) display-order scan under a user sort. See [`doc/README.md § Jumping to a Line or Timestamp`](doc/README.md#jumping-to-a-line-or-timestamp).
 
-### 9. Stdin / pipe input
+### 9. ~~Stdin / pipe input~~
 
-**Why.** Critical for ad-hoc developer use: `mytool | structured_log_viewer -`. Supported by lnav, Klogg, Logan, logq, logana. Today the only pull-from-program path is the TCP / UDP listener, which is overkill for `kubectl logs | ...`.
+> **Shipped.** `slv -` and `slv --stdin` open a live-tail session over the process's standard input. Format is auto-detected from the first `PROBE_BYTES_BUDGET` bytes via the same `DetectFormatFromBytes` probe file opens use; the peek is fed to the resolved parser through `ParserOptions::initialCarry` so no bytes are lost. `EOF` on stdin closes the source cleanly; `Ctrl+C` on the producer side unblocks the worker within the standard `Stop()` budget. The stdin session is never persisted (`ShouldAutoSaveSession` rejects any non-`File` kind), and the CLI implicitly forces `--new-instance` so a piped launch never forwards to an already-running primary that cannot see the pipe. The Network Stream dialog also learned the same auto-detect option (`Format::AutoDetect`, now the default first-launch pick) via `AutoDetectParser`, which peeks the first bytes off the socket before delegating to the resolved parser.
 
-**Scope.** A new CLI flag `-` (or `--stdin`) opens a fake "session" backed by stdin. Format is auto-detected from the first batch of lines (same probe used for static files). Live-update as new bytes arrive; treat `EOF` on stdin as the producer closing the source (mirrors `Stop` semantics). Drag & drop and `File → Open…` are unaffected.
-
-**Non-goals (v1).** Bidirectional stdio (reading a control command from stdin), piping to multiple windows.
-
-**Approach.** Add a `StdinBytesProducer : public BytesProducer` next to `TailingBytesProducer`. The producer runs on its own thread, reads with `fread` in 64 KiB chunks, hands bytes to the existing `StreamLineSource`. `MainWindow::OpenFilesForCli` learns to recognise `"-"` and routes to a new `OpenStdinStream` slot that mirrors `OpenLogStreamFromPath` but with a different producer.
-
-**Acceptance bar.** `cat 10M.jsonl | structured_log_viewer -` ingests at parity with `File → Open Log Stream…` on the same file. `Ctrl+C` on the producer cleanly tears down the session.
-
-**Touches.** `loglib`: `library/include/loglib/stdin_bytes_producer.hpp` + `.cpp`. `app`: `MainWindow::OpenFilesForCli` argv parse + a new `OpenStdinStream` slot.
+See [`doc/README.md § Reading from standard input`](doc/README.md#reading-from-standard-input) for shell examples.
 
 ### 10. Headless / scriptable CLI mode
 

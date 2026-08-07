@@ -31,6 +31,11 @@ class time_zone;
 // `loglib::EnumDictionary` is referenced via `ResolveEnumDictionary` below;
 // the full type comes in transitively through `log_filter_model.hpp`.
 
+namespace loglib
+{
+class BytesProducer;
+} // namespace loglib
+
 #include <QAction>
 #include <QApplication>
 #include <QAtomicInteger>
@@ -211,6 +216,28 @@ public:
     /// so pre-loaded configuration filters survive into the new
     /// session.
     void OpenFilesForCli(const QStringList &files);
+
+    /// Open a live-tail session over the process's standard input.
+    /// The CLI parses `-` / `--stdin` in argv and routes here via
+    /// `main()`. Session shape mirrors `OpenNetworkStream` (live-
+    /// tail, `Kind::Stdin`, non-persisted): stdin is one-shot per
+    /// process, so there's nothing to reopen on restart.
+    ///
+    /// Format detection: `loglib::internal::StdinPeek` synchronously
+    /// reads up to `PROBE_BYTES_BUDGET` bytes on the GUI thread,
+    /// runs `DetectFormatFromBytes`, and hands the peek back to the
+    /// resolved parser via `ParserOptions::initialCarry` so no
+    /// bytes are lost.
+    void OpenStdinStream();
+
+    /// Shared body of `OpenStdinStream` and its test seam. Takes a
+    /// pre-built producer plus the peek bytes already drained from
+    /// that stream. Public so `OpenStdinStreamForTest` (below,
+    /// guarded by `LOGAPP_BUILD_TESTING`) can forward to it
+    /// without also having to be publicly declared outside test
+    /// builds. Production callers should use `OpenStdinStream()`
+    /// instead.
+    void OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProducer> producer, std::string peek);
 
     /// The auto-save uuid pinned to this window, or empty if none.
     /// Used by `main()`'s `aboutToQuit` snapshot.
@@ -578,6 +605,14 @@ public:
     /// Lets tests exercise the live-tail open path without a real
     /// modal `QFileDialog`.
     void OpenLogStreamForTest(const QString &filePath);
+
+    /// Drive the body of `OpenStdinStream` with a caller-supplied
+    /// producer and pre-drained peek. Lets tests exercise the
+    /// stdin open path without touching FD 0 (which would let a
+    /// running IDE / VS test host's stdin leak into the session).
+    /// Ownership of @p producer is transferred to the streaming
+    /// source.
+    void OpenStdinStreamForTest(std::unique_ptr<loglib::BytesProducer> producer, std::string peek);
 
     /// Test-only forwarder to `NewSession`.
     void NewSessionForTest()

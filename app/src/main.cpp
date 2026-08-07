@@ -136,6 +136,7 @@ int main(int argc, char *argv[])
         logapp::ParseCli(QCoreApplication::arguments(), QProcessEnvironment::systemEnvironment());
     QStringList cliFiles = parsed.files;
     const bool allowNewInstance = parsed.allowNewInstance;
+    const bool readStdin = parsed.readStdin;
 
     // Drain pre-`TryAcquire` `QFileOpenEvent`s into `cliFiles` so
     // a forwarding secondary actually forwards what the user
@@ -151,15 +152,25 @@ int main(int argc, char *argv[])
 
     // Single-instance coordinator. A secondary forwards its files
     // to the primary and exits.
+    //
+    // `-` / `--stdin` cannot be forwarded across processes (each
+    // process has its own stdin FD), so a stdin launch behaves like
+    // an implicit `--new-instance`. Skipping the forward keeps this
+    // process alive to actually consume its stdin; otherwise the
+    // pipe reader on the far end would silently attach to a primary
+    // that never opens stdin.
+    const bool effectiveAllowNewInstance = allowNewInstance || readStdin;
     SingleInstanceGuard instanceGuard;
-    if (!instanceGuard.TryAcquire(cliFiles, allowNewInstance))
+    if (!instanceGuard.TryAcquire(cliFiles, effectiveAllowNewInstance))
     {
         return 0;
     }
 
     // `--new-instance` peers must not mutate the canonical primary's
-    // `openWindowsAtQuit`.
-    SessionHistoryManager::SetPublishingEnabled(!allowNewInstance);
+    // `openWindowsAtQuit`. The stdin fallback also opts out of
+    // publish since a stdin session is inherently one-shot per
+    // process (see `MainWindow::ShouldAutoSaveSession`).
+    SessionHistoryManager::SetPublishingEnabled(!effectiveAllowNewInstance);
 
     // Init the IANA timezone database before any timestamp work
     // (restore-on-launch rehydrates filters that format timestamps).
@@ -205,6 +216,15 @@ int main(int argc, char *argv[])
         w.OpenFilesForCli(cliFiles);
     }
 
+    // Open stdin *after* any positional files so the stdin session
+    // wins the "current session" slot (users piping a live stream
+    // will look at that, not the static preload). `OpenStdinStream`
+    // also handles the empty-files case cleanly.
+    if (readStdin)
+    {
+        w.OpenStdinStream();
+    }
+
     // Track peer windows so we can close + reap them before
     // `historyManager` goes out of scope (avoids a latent UAF if
     // `aboutToQuit` runs after the manager).
@@ -222,9 +242,11 @@ int main(int argc, char *argv[])
     };
 
     // Restore-on-launch (Preferences toggle). Skipped when CLI
-    // files are present or `--new-instance` is set.
+    // files, `--new-instance`, or `-` / `--stdin` are involved: the
+    // stdin launch has already opened its own session and any
+    // restore would immediately clobber it.
     const bool restoreEnabled = SessionHistoryManager::RestoreLastSessionOnLaunch();
-    if (cliFiles.isEmpty() && restoreEnabled && !allowNewInstance)
+    if (cliFiles.isEmpty() && restoreEnabled && !allowNewInstance && !readStdin)
     {
         // Atomic read + wipe so a crash mid-restore cannot loop us.
         QStringList previouslyOpen = SessionHistoryManager::TakeOpenWindowsAtQuit();

@@ -23310,6 +23310,65 @@ private slots:
         );
     }
 
+    void TestCliParserRecognisesBareDashAsStdin()
+    {
+        // POSIX convention: `-` on its own means "read stdin".
+        // The parser pre-strips it from argv so `QCommandLineParser`
+        // (in `ParseAsLongOptions` mode) does not choke on the
+        // bare dash.
+        const QStringList args = {
+            QStringLiteral("StructuredLogViewer"),
+            QStringLiteral("-"),
+        };
+        const logapp::ParsedCli parsed = logapp::ParseCli(args, QProcessEnvironment());
+        QVERIFY(parsed.readStdin);
+        QVERIFY(parsed.files.isEmpty());
+        QVERIFY(!parsed.allowNewInstance);
+    }
+
+    void TestCliParserRecognisesLongStdinFlag()
+    {
+        // `--stdin` is the PowerShell-friendly long form; some
+        // shells eat a lone `-`.
+        const QStringList args = {
+            QStringLiteral("StructuredLogViewer"),
+            QStringLiteral("--stdin"),
+        };
+        const logapp::ParsedCli parsed = logapp::ParseCli(args, QProcessEnvironment());
+        QVERIFY(parsed.readStdin);
+        QVERIFY(parsed.files.isEmpty());
+    }
+
+    void TestCliParserStdinCoexistsWithFileArgs()
+    {
+        // `slv preload.log -` should open the preload file *and*
+        // then attach to stdin. Files and readStdin are independent
+        // signals, main() consumes them in order.
+        const QStringList args = {
+            QStringLiteral("StructuredLogViewer"),
+            QStringLiteral("preload.log"),
+            QStringLiteral("-"),
+        };
+        const logapp::ParsedCli parsed = logapp::ParseCli(args, QProcessEnvironment());
+        QVERIFY(parsed.readStdin);
+        QCOMPARE(parsed.files.size(), 1);
+        QVERIFY(parsed.files.front().endsWith(QStringLiteral("preload.log"), Qt::CaseInsensitive));
+    }
+
+    void TestCliParserStdinDefaultsToFalseWithoutFlag()
+    {
+        // Sanity: an ordinary launch does not accidentally opt
+        // into stdin (which would deadlock the app waiting on
+        // FD 0).
+        const QStringList args = {
+            QStringLiteral("StructuredLogViewer"),
+            QStringLiteral("only.log"),
+        };
+        const logapp::ParsedCli parsed = logapp::ParseCli(args, QProcessEnvironment());
+        QVERIFY(!parsed.readStdin);
+        QCOMPARE(parsed.files.size(), 1);
+    }
+
     // `Clear` empties the index, deletes every per-uuid JSON, and
     // resets the last-session pointer.
     void TestSessionHistoryClearWipesEverything()

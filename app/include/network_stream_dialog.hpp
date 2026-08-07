@@ -37,11 +37,19 @@ public:
     };
 
     /// Wire format on the socket. Network streams have nothing on
-    /// disk to sniff, so the parser must be picked here. The choice
-    /// round-trips through `QSettings` so the next session defaults
-    /// to the previous pick.
+    /// disk to sniff, so historically the parser had to be picked
+    /// up front. `AutoDetect` (the default) now peeks the first
+    /// bytes of the connection and picks the same way file /
+    /// stdin sources do. Manual formats are kept for cases where
+    /// the initial line is ambiguous (short JSON that also looks
+    /// like logfmt, or a regex template with an empty first line)
+    /// and for parity with the pre-auto-detect UX.
+    ///
+    /// The choice round-trips through `QSettings` so the next
+    /// session defaults to the previous pick.
     enum class Format
     {
+        AutoDetect,
         Json,
         Logfmt,
         Csv,
@@ -55,7 +63,7 @@ public:
     struct Config
     {
         Protocol protocol = Protocol::Tcp;
-        Format format = Format::Json;
+        Format format = Format::AutoDetect;
         /// PCRE2 pattern; only populated when `format == Regex`.
         /// Either the selected template's pattern or a free-text
         /// user-supplied one.
