@@ -41,6 +41,7 @@ add_executable(
     "src/test_regex_templates.cpp"
     "src/test_session_bundle.cpp"
     "src/test_stdin_bytes_producer.cpp"
+    "src/test_stdin_peek.cpp"
     "src/test_stream_line_source.cpp"
     "src/test_stream_stop_teardown.cpp"
     "src/test_tailing_bytes_producer.cpp"

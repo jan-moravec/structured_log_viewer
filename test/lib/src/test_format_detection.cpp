@@ -6,6 +6,7 @@
 
 #include <catch2/catch_all.hpp>
 
+#include <filesystem>
 #include <string>
 #include <string_view>
 
@@ -55,6 +56,61 @@ time=2026-01-01T00:00:01Z level=warn message=there
         CHECK(byBytes.format == c.expected);
         CHECK(byPath.regexPattern == byBytes.regexPattern);
     }
+}
+
+TEST_CASE(
+    "DetectFormatFromBytes and DetectFormatForPath agree on regex-format bytes and pattern", "[FormatDetection]"
+)
+{
+    // Regression guard for the regex branch: both entry points must
+    // report `Format::Regex` *and* the exact same `regexPattern`
+    // (the resolved built-in template's compiled pattern), so a
+    // stdin/network-stream open produces the same on-disk source
+    // stanza as a file open of the same bytes.
+    const TempDir dir("format_detection_regex");
+
+    struct Case
+    {
+        const char *name;
+        std::string_view bytes;
+    };
+    const Case cases[] = {
+        {"syslog_rfc3164.log",
+         "Apr 28 04:02:03 host-a systemd: System starting\n"
+         "Jun 27 01:47:20 host-b configd[17]: network changed\n"},
+        {"apache_common.log",
+         R"(127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /apache_pb.gif HTTP/1.0" 200 2326)"
+         "\n"
+         R"(10.1.10.51 - - [23/Dec/2014:21:20:35 +0000] "POST /api/1/rest/foo HTTP/1.1" 200 -)"
+         "\n"},
+    };
+
+    for (const Case &c : cases)
+    {
+        CAPTURE(c.name);
+        const DetectedFormat byPath = DetectFormatForPath(dir.Write(c.name, c.bytes));
+        const DetectedFormat byBytes = DetectFormatFromBytes(c.bytes);
+        CHECK(byPath.format == LogConfiguration::Source::Format::Regex);
+        CHECK(byBytes.format == LogConfiguration::Source::Format::Regex);
+        CHECK_FALSE(byBytes.regexPattern.empty());
+        CHECK(byPath.regexPattern == byBytes.regexPattern);
+    }
+}
+
+TEST_CASE("DetectFormatForPath on a missing file falls back to default Json", "[FormatDetection]")
+{
+    // `ReadProbeHead` returns an empty string when the file cannot
+    // be opened; `DetectFormatFromBytes({})` then hands back the
+    // default `Format::Json` verdict with an empty pattern. The
+    // header contract at `format_detection.hpp` promises this
+    // exact fallback -- stdin / network-stream callers rely on it
+    // to keep spinning a parser instead of dead-ending.
+    const std::filesystem::path missing = "definitely_not_a_real_file_1741d61e.log";
+    REQUIRE_FALSE(std::filesystem::exists(missing));
+
+    const DetectedFormat detected = DetectFormatForPath(missing);
+    CHECK(detected.format == LogConfiguration::Source::Format::Json);
+    CHECK(detected.regexPattern.empty());
 }
 
 TEST_CASE("DetectFormatFromBytes on empty buffer yields default Json", "[FormatDetection]")

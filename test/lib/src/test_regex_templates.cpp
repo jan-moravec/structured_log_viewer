@@ -9,6 +9,7 @@
 #include <catch2/catch_all.hpp>
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <span>
 #include <string>
@@ -107,6 +108,106 @@ TEST_CASE("DetectRegexTemplate identifies Apache CLF samples [regex_templates]",
     const auto detected = DetectRegexTemplate(file.GetFilePath());
     REQUIRE(detected.has_value());
     CHECK(detected->name == "Apache/nginx Common Log Format");
+}
+
+TEST_CASE(
+    "DetectRegexTemplateFromBytes identifies every built-in template's sample lines [regex_templates]",
+    "[regex_templates]"
+)
+{
+    // Per-template detection sweep. For every built-in `t`:
+    //   feed `t.sampleLines` (concatenated + newline-terminated) into
+    //   `DetectRegexTemplateFromBytes`, which walks the merged
+    //   registry stable-sorted by priority. Assert that:
+    //     * detection returns *some* template,
+    //     * the detected template's pattern parses every sample line
+    //       (guarantees the resolved template is a real fit, not a
+    //       lucky substring),
+    //     * the detected name matches `t.name`.
+    //
+    // Templates whose own sample text is shadowed at detection time
+    // by a lower-priority-number sibling are listed in
+    // `KNOWN_SHADOWS`. The sweep then expects the shadowing template
+    // to win the probe rather than the shadowed one. The shadow's
+    // pattern still matches at least `IS_VALID_MIN_MATCHES=2` of the
+    // shadowed sample lines (that is why it wins), but not
+    // necessarily *every* line -- so the "parse every sample under
+    // the detected pattern" cross-check is only run for
+    // self-detecting templates.
+    //
+    // Curated shadows are load-bearing regression guards: if a
+    // future refactor tightens Zap's or Apache error's pattern (or
+    // reshuffles the Java / spdlog sample lines), the shadowing will
+    // vanish and this list will need to shrink -- surfacing the
+    // change instead of hiding it.
+    //
+    // Contrast with the sweep at "Built-in regex templates compile
+    // and parse their sample lines" above, which pins each template
+    // by handing it its own pattern; this test instead runs the
+    // whole probe pipeline the way `AutoDetectParser` and
+    // `MainWindow::OpenLogStreamFromPath` would.
+    struct Shadow
+    {
+        std::string_view sampleTemplate;
+        std::string_view expectedName;
+    };
+    constexpr std::array<Shadow, 2> KNOWN_SHADOWS{{
+        // Java sample lines 2 and 4 use the ISO-8601 `T` / offset
+        // shape that Zap's pattern (priority 10) accepts; Java lives
+        // at priority 20 so Zap wins the probe.
+        {"Java / log4j / SLF4J Logback", "Uber Zap (console)"},
+        // spdlog's `[timestamp] [logger] [level] message` shape
+        // fits Apache error's generic `[X] [Y] message` grammar
+        // (priority 15) with `[logger]` captured as `level`; spdlog
+        // itself is priority 20, so Apache error wins.
+        {"spdlog", "Apache error log"},
+    }};
+
+    const auto builtins = BuiltinRegexTemplates();
+    REQUIRE_FALSE(builtins.empty());
+
+    for (const RegexTemplate &t : builtins)
+    {
+        INFO("template: " << t.name);
+        REQUIRE(t.sampleLines.size() >= 2); // IS_VALID_MIN_MATCHES
+
+        std::string sniff;
+        for (const std::string &line : t.sampleLines)
+        {
+            sniff.append(line);
+            sniff.push_back('\n');
+        }
+
+        const auto detected = DetectRegexTemplateFromBytes(sniff);
+        REQUIRE(detected.has_value());
+
+        std::string_view expectedName = t.name;
+        const auto shadow = std::ranges::find_if(KNOWN_SHADOWS, [&](const Shadow &s) {
+            return s.sampleTemplate == std::string_view(t.name);
+        });
+        const bool isShadowed = shadow != KNOWN_SHADOWS.end();
+        if (isShadowed)
+        {
+            expectedName = shadow->expectedName;
+        }
+        CHECK(detected->name == expectedName);
+
+        // For self-detecting templates only, cross-check that the
+        // resolved pattern parses every sample line. Skipped for
+        // shadowed entries: by construction the shadow's pattern
+        // only needs to match the probe threshold, not the whole
+        // fixture, so a strict parse-count assertion would fire
+        // spuriously.
+        if (!isShadowed)
+        {
+            const ParseResult result = ParseLinesWith(
+                detected->pattern, std::span<const std::string>(t.sampleLines),
+                "regex_templates_sweep_" + SlugifyName(t.name) + ".log"
+            );
+            CHECK(result.errors.empty());
+            CHECK(result.data.Lines().size() == t.sampleLines.size());
+        }
+    }
 }
 
 TEST_CASE("FindBuiltinByPattern round-trips every registry entry [regex_templates]", "[regex_templates]")
