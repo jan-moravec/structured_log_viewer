@@ -18,6 +18,7 @@ embed_regex_templates(
 add_library(
     loglib
     STATIC
+    src/auto_detect_parser.cpp
     src/batch_coalescer.cpp
     src/buffering_sink.cpp
     src/bytes_producer.cpp
