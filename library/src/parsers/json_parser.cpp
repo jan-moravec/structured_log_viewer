@@ -4,11 +4,13 @@
 #include "loglib/internal/advanced_parser_options.hpp"
 #include "loglib/internal/compact_log_value.hpp"
 #include "loglib/internal/line_decoder.hpp"
+#include "loglib/internal/probe_line_view.hpp"
 #include "loglib/internal/static_parser_pipeline.hpp"
 #include "loglib/internal/streaming_parse_loop.hpp"
 #include "loglib/internal/timestamp_promotion.hpp"
 #include "loglib/log_file.hpp"
 #include "loglib/log_line.hpp"
+#include "loglib/log_parser.hpp"
 #include "loglib/log_processing.hpp"
 #include "loglib/stream_line_source.hpp"
 
@@ -632,29 +634,26 @@ void DecodeJsonBatch(
 
 } // namespace
 
-bool JsonParser::IsValid(const std::filesystem::path &file) const
+bool JsonParser::IsValidBytes(std::string_view sniffBuffer) const
 {
-    std::ifstream stream(file);
-    if (!stream.is_open())
+    std::size_t cursor = 0;
+    while (cursor < sniffBuffer.size())
     {
-        return false;
-    }
-
-    std::string line;
-    while (std::getline(stream, line))
-    {
-        if (!line.empty() && line.back() == '\r')
+        const internal::ProbeLine probe = internal::NextProbeLine(sniffBuffer, cursor);
+        cursor = probe.nextOffset;
+        if (probe.line.empty())
         {
-            line.pop_back();
+            continue;
         }
-        if (!line.empty())
-        {
-            simdjson::ondemand::parser parser;
-            auto doc = parser.iterate(simdjson::pad(line));
-            return !doc.get_object().error();
-        }
+        // simdjson::pad returns a padded view that aliases its
+        // string argument; keep the padded buffer alive for the
+        // duration of the parse (matches the historical
+        // std::getline flow, which held `line` as a local).
+        std::string padded(probe.line);
+        simdjson::ondemand::parser parser;
+        auto doc = parser.iterate(simdjson::pad(padded));
+        return !doc.get_object().error();
     }
-
     return false;
 }
 

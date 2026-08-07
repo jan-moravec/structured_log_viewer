@@ -5,8 +5,8 @@
 #include "../log_parser.hpp"
 #include "../parser_options.hpp"
 
-#include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace loglib
 {
@@ -36,7 +36,10 @@ struct AdvancedParserOptions;
 class LogfmtParser : public LogParser
 {
 public:
-    bool IsValid(const std::filesystem::path &file) const override;
+    /// Probe: the first non-blank line of @p sniffBuffer must look
+    /// like `key=value` pairs (see `LineLooksLikeLogfmt`). Bounded
+    /// by `PROBE_BYTES_BUDGET` when called via the file shim.
+    bool IsValidBytes(std::string_view sniffBuffer) const override;
 
     /// Static parse over @p source's mmap. Each emitted `LogLine`
     /// carries `&source` and its 0-based file-line id.

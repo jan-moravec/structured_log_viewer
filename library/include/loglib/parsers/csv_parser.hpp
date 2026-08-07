@@ -5,8 +5,8 @@
 #include "../log_parser.hpp"
 #include "../parser_options.hpp"
 
-#include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace loglib
 {
@@ -49,7 +49,11 @@ struct AdvancedParserOptions;
 class CsvParser : public LogParser
 {
 public:
-    bool IsValid(const std::filesystem::path &file) const override;
+    /// Probe: @p sniffBuffer must contain a header line that looks
+    /// like a CSV header (`HeaderLineLooksLikeCsv`) plus a second
+    /// non-blank line with the same cell count. Bounded by
+    /// `PROBE_BYTES_BUDGET` when called via the file shim.
+    bool IsValidBytes(std::string_view sniffBuffer) const override;
 
     /// Static parse: eagerly parses the header to build the
     /// `column -> KeyId` map, then runs the TBB pipeline; Stage B

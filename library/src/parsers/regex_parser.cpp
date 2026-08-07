@@ -5,11 +5,13 @@
 #include "loglib/internal/classify_bare_scalar.hpp"
 #include "loglib/internal/compact_log_value.hpp"
 #include "loglib/internal/line_decoder.hpp"
+#include "loglib/internal/probe_line_view.hpp"
 #include "loglib/internal/regex_template_probe_list.hpp"
 #include "loglib/internal/static_parser_pipeline.hpp"
 #include "loglib/internal/streaming_parse_loop.hpp"
 #include "loglib/log_file.hpp"
 #include "loglib/log_line.hpp"
+#include "loglib/log_parser.hpp"
 #include "loglib/log_processing.hpp"
 #include "loglib/regex_templates.hpp"
 #include "loglib/stream_line_source.hpp"
@@ -39,8 +41,8 @@ namespace
 {
 
 /// Bytes scanned by `IsValid` / `DetectRegexTemplate` before giving
-/// up. Matches CSV's probe budget.
-constexpr size_t IS_VALID_PROBE_BYTES = 16 * 1024;
+/// up. Matches the shared `loglib::PROBE_BYTES_BUDGET`.
+constexpr size_t IS_VALID_PROBE_BYTES = PROBE_BYTES_BUDGET;
 
 /// Minimum number of non-blank probe lines a template must match for
 /// auto-detection to claim the file. Two is enough to rule out the
@@ -479,41 +481,34 @@ bool MatchesFullyForProbe(const CompiledPattern &cp, std::string_view line)
 /// probe line only, leaving the rest of the byte stream untouched.
 constexpr std::string_view UTF8_BOM = "\xEF\xBB\xBF";
 
-/// File-level probe shared by `IsValid` and `DetectRegexTemplate`.
+/// Byte-buffer probe shared by `IsValid` and `DetectRegexTemplate`.
 /// Walks the merged auto-detect registry (built-ins + any
 /// `autoDetect=true` extras from `SetExtraRegexTemplates`) in
 /// probe order and returns the first entry that matches at least
-/// `IS_VALID_MIN_MATCHES` of the first ~16 KiB of non-blank lines,
-/// or nullptr. Built-ins probe before user templates by
-/// construction — see `CompiledProbeSnapshot`.
-const RegexTemplate *ProbeAutoDetectTemplates(const std::filesystem::path &file)
+/// `IS_VALID_MIN_MATCHES` of the first non-blank lines from
+/// @p sniffBuffer, or nullptr. Built-ins probe before user
+/// templates by construction — see `CompiledProbeSnapshot`.
+const RegexTemplate *ProbeAutoDetectTemplates(std::string_view sniffBuffer)
 {
-    std::ifstream stream(file);
-    if (!stream.is_open())
-    {
-        return nullptr;
-    }
-
     std::vector<std::string> probeLines;
     probeLines.reserve(IS_VALID_PROBE_MAX_LINES);
-    std::string line;
+    size_t cursor = 0;
     size_t bytesScanned = 0;
     bool firstLine = true;
-    while (std::getline(stream, line))
+    while (cursor < sniffBuffer.size())
     {
-        if (firstLine && std::string_view(line).starts_with(UTF8_BOM))
+        const internal::ProbeLine probe = internal::NextProbeLine(sniffBuffer, cursor);
+        cursor = probe.nextOffset;
+        bytesScanned += probe.bytesConsumed;
+        std::string_view lineView = probe.line;
+        if (firstLine && lineView.starts_with(UTF8_BOM))
         {
-            line.erase(0, UTF8_BOM.size());
+            lineView.remove_prefix(UTF8_BOM.size());
         }
         firstLine = false;
-        if (!line.empty() && line.back() == '\r')
+        if (!lineView.empty())
         {
-            line.pop_back();
-        }
-        bytesScanned += line.size() + 1;
-        if (!line.empty())
-        {
-            probeLines.push_back(line);
+            probeLines.emplace_back(lineView);
         }
         if (bytesScanned >= IS_VALID_PROBE_BYTES || probeLines.size() >= IS_VALID_PROBE_MAX_LINES)
         {
@@ -1116,9 +1111,9 @@ RegexParser::RegexParser(std::string pattern)
 {
 }
 
-bool RegexParser::IsValid(const std::filesystem::path &file) const
+bool RegexParser::IsValidBytes(std::string_view sniffBuffer) const
 {
-    return ProbeAutoDetectTemplates(file) != nullptr;
+    return ProbeAutoDetectTemplates(sniffBuffer) != nullptr;
 }
 
 void RegexParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options) const
@@ -1390,6 +1385,15 @@ std::string RegexParser::ToString(const LogLine &line) const
     return out;
 }
 
+std::optional<RegexTemplate> DetectRegexTemplateFromBytes(std::string_view sniffBuffer)
+{
+    if (const RegexTemplate *tmpl = ProbeAutoDetectTemplates(sniffBuffer); tmpl != nullptr)
+    {
+        return *tmpl;
+    }
+    return std::nullopt;
+}
+
 std::optional<RegexTemplate> DetectRegexTemplate(const std::filesystem::path &file)
 {
     // Copy the matched template out of the snapshot before
@@ -1398,11 +1402,12 @@ std::optional<RegexTemplate> DetectRegexTemplate(const std::filesystem::path &fi
     // raw pointer. `RegexTemplate` is a handful of short strings
     // — the copy cost is negligible next to the file I/O the
     // probe just paid for.
-    if (const RegexTemplate *tmpl = ProbeAutoDetectTemplates(file); tmpl != nullptr)
+    const std::string head = ReadProbeHead(file, IS_VALID_PROBE_BYTES);
+    if (head.empty())
     {
-        return *tmpl;
+        return std::nullopt;
     }
-    return std::nullopt;
+    return DetectRegexTemplateFromBytes(head);
 }
 
 bool ValidateRegexPattern(std::string_view pattern, std::string &errorOut)

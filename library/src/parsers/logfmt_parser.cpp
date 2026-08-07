@@ -5,10 +5,12 @@
 #include "loglib/internal/classify_bare_scalar.hpp"
 #include "loglib/internal/compact_log_value.hpp"
 #include "loglib/internal/line_decoder.hpp"
+#include "loglib/internal/probe_line_view.hpp"
 #include "loglib/internal/static_parser_pipeline.hpp"
 #include "loglib/internal/streaming_parse_loop.hpp"
 #include "loglib/log_file.hpp"
 #include "loglib/log_line.hpp"
+#include "loglib/log_parser.hpp"
 #include "loglib/log_processing.hpp"
 #include "loglib/stream_line_source.hpp"
 
@@ -37,7 +39,9 @@ constexpr size_t INITIAL_FIELD_CAPACITY = 16;
 constexpr size_t INSERT_SORTED_LOWER_BOUND_THRESHOLD = 8;
 
 /// Cap on bytes scanned by `IsValid` for the false-positive guard.
-constexpr size_t IS_VALID_PROBE_BYTES = 16 * 1024;
+/// Matches the shared `loglib::PROBE_BYTES_BUDGET`; kept as a
+/// local alias so the callsite below reads self-contained.
+constexpr size_t IS_VALID_PROBE_BYTES = PROBE_BYTES_BUDGET;
 
 void InsertSorted(
     std::vector<std::pair<KeyId, internal::CompactLogValue>> &out, KeyId id, internal::CompactLogValue value
@@ -789,24 +793,16 @@ void AppendValueAsString(std::string &out, const LogValue &value)
 
 } // namespace
 
-bool LogfmtParser::IsValid(const std::filesystem::path &file) const
+bool LogfmtParser::IsValidBytes(std::string_view sniffBuffer) const
 {
-    std::ifstream stream(file);
-    if (!stream.is_open())
-    {
-        return false;
-    }
-
-    std::string line;
+    size_t cursor = 0;
     size_t bytesScanned = 0;
-    while (std::getline(stream, line))
+    while (cursor < sniffBuffer.size())
     {
-        if (!line.empty() && line.back() == '\r')
-        {
-            line.pop_back();
-        }
-        bytesScanned += line.size() + 1;
-        if (line.empty())
+        const internal::ProbeLine probe = internal::NextProbeLine(sniffBuffer, cursor);
+        cursor = probe.nextOffset;
+        bytesScanned += probe.bytesConsumed;
+        if (probe.line.empty())
         {
             if (bytesScanned >= IS_VALID_PROBE_BYTES)
             {
@@ -814,9 +810,8 @@ bool LogfmtParser::IsValid(const std::filesystem::path &file) const
             }
             continue;
         }
-        return LineLooksLikeLogfmt(line);
+        return LineLooksLikeLogfmt(probe.line);
     }
-
     return false;
 }
 

@@ -45,6 +45,7 @@ add_library(
     src/log_filter.cpp
     src/log_level.cpp
     src/log_line.cpp
+    src/log_parser.cpp
     src/log_processing.cpp
     src/log_table.cpp
     src/normalized_json_row.cpp

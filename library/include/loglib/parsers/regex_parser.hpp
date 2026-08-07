@@ -71,16 +71,18 @@ public:
     /// the pipeline.
     explicit RegexParser(std::string pattern);
 
-    /// Probe the file's first non-blank lines against every
+    /// Probe @p sniffBuffer's first non-blank lines against every
     /// `autoDetect=true` entry in the merged registry (built-ins
     /// + user templates registered via `SetExtraRegexTemplates`).
     /// Returns `true` on the first template whose pattern matches
     /// enough sample lines. Built-ins probe before user templates
     /// so a careless user priority can't steal a match from a
-    /// shipped template. Bounded so we don't read large files
-    /// just to refuse them. Custom patterns that aren't registered
-    /// as a template are not auto-detectable here.
-    bool IsValid(const std::filesystem::path &file) const override;
+    /// shipped template. Bounded by the caller's supplied buffer
+    /// (`PROBE_BYTES_BUDGET` when called via the file shim), so we
+    /// don't read large files just to refuse them. Custom patterns
+    /// that aren't registered as a template are not auto-detectable
+    /// here.
+    bool IsValidBytes(std::string_view sniffBuffer) const override;
 
     /// Static-file parse. Pattern is read from
     /// `options.configuration->source->regexPattern` unless the
@@ -138,6 +140,15 @@ private:
 /// the earlier pointer flavour could dangle if the snapshot it
 /// aliased dropped its last reference.
 [[nodiscard]] std::optional<RegexTemplate> DetectRegexTemplate(const std::filesystem::path &file);
+
+/// Byte-buffer variant used by `AutoDetectParser` (network
+/// streams) and by stdin auto-detect. Same probe semantics as the
+/// file overload; the caller must supply at most
+/// `PROBE_BYTES_BUDGET` bytes if it wants parity with static-file
+/// detection (larger buffers are accepted but scanned in full).
+/// Named distinctly from `DetectRegexTemplate` so a `std::string`
+/// argument never resolves here by accident.
+[[nodiscard]] std::optional<RegexTemplate> DetectRegexTemplateFromBytes(std::string_view sniffBuffer);
 
 /// Compile-only validation for GUI surfaces (e.g. the Network
 /// Stream dialog) to front-load pattern errors before they'd
