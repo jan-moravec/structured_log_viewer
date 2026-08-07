@@ -32,6 +32,7 @@
 #include <loglib/bytes_producer.hpp>
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
+#include <loglib/format_detection.hpp>
 #include <loglib/internal/ascii_case.hpp>
 #include <loglib/internal/decompressing_byte_source.hpp>
 #include <loglib/log_configuration.hpp>
@@ -611,87 +612,17 @@ QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &se
     return lines.join(QLatin1Char('\n'));
 }
 
-/// Build the parser matching @p format. All open paths route through
-/// here so the parser tracks the persisted `Source::format` instead
-/// of being hard-coded at the call sites. @p regexPattern is only
-/// consulted for `Regex`; an empty pattern yields a probe-only
-/// parser that surfaces a single "empty pattern" error through the
-/// sink.
-std::unique_ptr<loglib::LogParser> MakeParserForFormat(
-    loglib::LogConfiguration::Source::Format format, std::string_view regexPattern = {}
-)
-{
-    switch (format)
-    {
-    case loglib::LogConfiguration::Source::Format::Logfmt:
-        return std::make_unique<loglib::LogfmtParser>();
-    case loglib::LogConfiguration::Source::Format::Csv:
-        return std::make_unique<loglib::CsvParser>();
-    case loglib::LogConfiguration::Source::Format::Regex:
-        // Pin the pattern on the parser instance directly rather
-        // than relying on `ParserOptions::configuration->source->
-        // regexPattern`: some callers pass an unrelated snapshot,
-        // and the explicit-pattern ctor short-circuits the lookup.
-        return std::make_unique<loglib::RegexParser>(std::string(regexPattern));
-    case loglib::LogConfiguration::Source::Format::Json:
-        return std::make_unique<loglib::JsonParser>();
-    }
-    return std::make_unique<loglib::JsonParser>();
-}
-
-/// Output of `DetectFormatForPath`: the detected format and, for
-/// `Regex`, the matched template's pattern (built-in or user).
-/// `regexPattern` is empty for every other format and for files
-/// nothing claimed.
-struct DetectedFormat
-{
-    loglib::LogConfiguration::Source::Format format = loglib::LogConfiguration::Source::Format::Json;
-    std::string regexPattern;
-};
-
-/// Sniff @p file and return the first format whose parser accepts
-/// it, matching `loglib::ParseFile(path)`'s order (JSON, logfmt,
-/// CSV, Regex). For `Regex` we call `loglib::DetectRegexTemplate`,
-/// which walks the merged catalog (built-ins ∪ user templates
-/// injected via `loglib::SetExtraRegexTemplates`) in priority
-/// order; the matched template's pattern is carried through so
-/// callers can persist it on `mCurrentSource->regexPattern`.
-/// Falls back to `Json` when nothing matches so the parse surfaces
-/// the bytes as errors instead of silently doing nothing.
-DetectedFormat DetectFormatForPath(const std::filesystem::path &file)
-{
-    for (int i = 0; i < static_cast<int>(loglib::LogFactory::Parser::Count); ++i)
-    {
-        const auto parserType = static_cast<loglib::LogFactory::Parser>(i);
-        if (parserType == loglib::LogFactory::Parser::Regex)
-        {
-            // Special-cased like `loglib::ParseFile(path)`: we need
-            // the matched template's pattern, not a bare yes/no.
-            if (const std::optional<loglib::RegexTemplate> tmpl = loglib::DetectRegexTemplate(file); tmpl.has_value())
-            {
-                return {.format = loglib::LogConfiguration::Source::Format::Regex, .regexPattern = tmpl->pattern};
-            }
-            continue;
-        }
-
-        const std::unique_ptr<loglib::LogParser> probe = loglib::LogFactory::Create(parserType);
-        if (probe->IsValid(file))
-        {
-            switch (parserType)
-            {
-            case loglib::LogFactory::Parser::Logfmt:
-                return {.format = loglib::LogConfiguration::Source::Format::Logfmt, .regexPattern = std::string{}};
-            case loglib::LogFactory::Parser::Csv:
-                return {.format = loglib::LogConfiguration::Source::Format::Csv, .regexPattern = std::string{}};
-            case loglib::LogFactory::Parser::Json:
-            case loglib::LogFactory::Parser::Regex:
-            case loglib::LogFactory::Parser::Count:
-                return {.format = loglib::LogConfiguration::Source::Format::Json, .regexPattern = std::string{}};
-            }
-        }
-    }
-    return {.format = loglib::LogConfiguration::Source::Format::Json, .regexPattern = std::string{}};
-}
+// Format detection + parser factory used to live here as
+// anon-namespace helpers. They were hoisted into loglib
+// (`loglib/format_detection.hpp`) so stdin auto-detect and
+// network-stream auto-detect (`AutoDetectParser`) can share the
+// same "same bytes -> same format" probe. Every call site
+// (`main_window.cpp:3148`, `:3192`, and `OpenLogStreamFromPath`
+// / `OpenStdinStream` / `OpenNetworkStream`) now uses the
+// loglib versions.
+using loglib::DetectedFormat;
+using loglib::DetectFormatForPath;
+using loglib::MakeParserForFormat;
 
 } // namespace
 

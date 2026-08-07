@@ -1,11 +1,14 @@
 #include "loglib/parse_file.hpp"
 
 #include "loglib/file_line_source.hpp"
+#include "loglib/format_detection.hpp"
 #include "loglib/internal/buffering_sink.hpp"
+#include "loglib/log_configuration.hpp"
 #include "loglib/log_factory.hpp"
 #include "loglib/log_file.hpp"
 #include "loglib/log_parser.hpp"
 #include "loglib/parser_options.hpp"
+#include "loglib/parsers/json_parser.hpp"
 #include "loglib/parsers/regex_parser.hpp"
 #include "loglib/regex_templates.hpp"
 
@@ -13,9 +16,10 @@
 
 #include <filesystem>
 #include <memory>
-#include <optional>
 #include <stdexcept>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace loglib
 {
@@ -51,34 +55,33 @@ ParseResult ParseFile(const LogParser &parser, const std::filesystem::path &file
 
 ParseResult ParseFile(const std::filesystem::path &file)
 {
-    for (int i = 0; i < static_cast<int>(LogFactory::Parser::Count); ++i)
+    // Route through the shared byte-buffer probe so `ParseFile`
+    // and the GUI's `DetectFormatForPath` cannot disagree on the
+    // format for the same file. The single head read is
+    // negligible next to the parse itself.
+    const std::string head = ReadProbeHead(file, PROBE_BYTES_BUDGET);
+    if (head.empty())
     {
-        const auto parserType = static_cast<LogFactory::Parser>(i);
+        throw std::runtime_error(fmt::format("Input file '{}' could not be parsed.", file.string()));
+    }
 
-        // `Regex` needs special handling: the factory-built parser
-        // is probe-only (no pinned pattern), so a plain
-        // `ParseFile(*parser, file)` would emit the "empty pattern"
-        // error even after `IsValid` identified the matching
-        // template. Detect the template and build a parser pinned
-        // to its pattern instead.
-        if (parserType == LogFactory::Parser::Regex)
+    const DetectedFormat detected = DetectFormatFromBytes(head);
+    // `DetectFormatFromBytes` returns `Format::Json` both on a
+    // successful JSON probe and on the "nothing matched"
+    // fallback. Verify the JSON case explicitly so unknown
+    // content still surfaces as an unparseable-file error rather
+    // than being silently pushed through the JSON parser.
+    if (detected.format == LogConfiguration::Source::Format::Json)
+    {
+        JsonParser probe;
+        if (!probe.IsValidBytes(head))
         {
-            if (const std::optional<RegexTemplate> tmpl = DetectRegexTemplate(file); tmpl.has_value())
-            {
-                const RegexParser parser(tmpl->pattern);
-                return ParseFile(parser, file);
-            }
-            continue;
-        }
-
-        const std::unique_ptr<LogParser> parser = LogFactory::Create(parserType);
-        if (parser->IsValid(file))
-        {
-            return ParseFile(*parser, file);
+            throw std::runtime_error(fmt::format("Input file '{}' could not be parsed.", file.string()));
         }
     }
 
-    throw std::runtime_error(fmt::format("Input file '{}' could not be parsed.", file.string()));
+    const std::unique_ptr<LogParser> parser = MakeParserForFormat(detected.format, detected.regexPattern);
+    return ParseFile(*parser, file);
 }
 // NOLINTEND(clang-analyzer-optin.core.EnumCastOutOfRange)
 
