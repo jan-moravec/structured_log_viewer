@@ -346,14 +346,14 @@ TEST_CASE("TryParseSyslogRfc3164Timestamp accepts valid inputs", "[log_processin
         {
             year -= 1;
         }
-        const date::year_month_day ymd{
-            date::year{year}, date::month{month}, date::day{static_cast<unsigned>(day)}
-        };
+        const date::year_month_day ymd{date::year{year}, date::month{month}, date::day{static_cast<unsigned>(day)}};
         const auto days = date::sys_days{ymd};
-        return TimeStamp{std::chrono::duration_cast<std::chrono::microseconds>(days.time_since_epoch()) +
-                         std::chrono::duration_cast<std::chrono::microseconds>(
-                             std::chrono::seconds{(hour * 3600) + (minute * 60) + second}
-                         )};
+        return TimeStamp{
+            std::chrono::duration_cast<std::chrono::microseconds>(days.time_since_epoch()) +
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::seconds{(hour * 3600) + (minute * 60) + second}
+            )
+        };
     };
 
     SECTION("Space-padded single-digit day (`%e` shape, canonical RFC 3164)")
@@ -380,9 +380,18 @@ TEST_CASE("TryParseSyslogRfc3164Timestamp accepts valid inputs", "[log_processin
     SECTION("Every month abbreviation parses")
     {
         static constexpr std::array<std::string_view, 12> STAMPS = {
-            "Jan  1 00:00:00", "Feb  1 00:00:00", "Mar  1 00:00:00", "Apr  1 00:00:00",
-            "May  1 00:00:00", "Jun  1 00:00:00", "Jul  1 00:00:00", "Aug  1 00:00:00",
-            "Sep  1 00:00:00", "Oct  1 00:00:00", "Nov  1 00:00:00", "Dec  1 00:00:00",
+            "Jan  1 00:00:00",
+            "Feb  1 00:00:00",
+            "Mar  1 00:00:00",
+            "Apr  1 00:00:00",
+            "May  1 00:00:00",
+            "Jun  1 00:00:00",
+            "Jul  1 00:00:00",
+            "Aug  1 00:00:00",
+            "Sep  1 00:00:00",
+            "Oct  1 00:00:00",
+            "Nov  1 00:00:00",
+            "Dec  1 00:00:00",
         };
         for (unsigned i = 0; i < STAMPS.size(); ++i)
         {

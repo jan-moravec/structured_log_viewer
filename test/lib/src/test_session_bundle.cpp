@@ -329,7 +329,11 @@ TEST_CASE("session bundle rewrites Stdin source kind to File", "[SessionBundle]"
     // builds cannot parse and that has no reopen path.
     const TempPath source(".jsonl");
     const TempPath bundle(".slvbundle");
-    Write(source.Path(), R"({"msg":"one"})""\n");
+    Write(
+        source.Path(),
+        R"({"msg":"one"})"
+        "\n"
+    );
     const loglib::LogTable table = ParseTable(source.Path());
 
     loglib::LogConfiguration configuration;

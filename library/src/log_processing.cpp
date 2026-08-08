@@ -372,9 +372,7 @@ bool TryParseSyslogRfc3164Timestamp(std::string_view sv, TimeStamp &out)
         year -= 1;
     }
 
-    const date::year_month_day ymd{
-        date::year{year}, date::month{month}, date::day{static_cast<unsigned>(day)}
-    };
+    const date::year_month_day ymd{date::year{year}, date::month{month}, date::day{static_cast<unsigned>(day)}};
     if (!ymd.ok())
     {
         return false;

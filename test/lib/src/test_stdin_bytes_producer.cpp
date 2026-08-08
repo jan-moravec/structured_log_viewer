@@ -74,9 +74,11 @@ std::string DrainUntil(StdinBytesProducer &producer, std::chrono::milliseconds d
             break;
         }
         const auto remaining = deadline - elapsed;
-        producer.WaitForBytes(std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::min<std::chrono::steady_clock::duration>(remaining, ScaledMs(25ms))
-        ));
+        producer.WaitForBytes(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::min<std::chrono::steady_clock::duration>(remaining, ScaledMs(25ms))
+            )
+        );
     }
     return accumulated;
 }

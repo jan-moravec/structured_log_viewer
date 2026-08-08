@@ -23,9 +23,9 @@
 #endif
 #include <windows.h>
 #else
+#include <cerrno>
 #include <fcntl.h>
 #include <unistd.h>
-#include <cerrno>
 #endif
 
 namespace loglib
@@ -78,8 +78,13 @@ NativeHandle DuplicateStdin()
     HANDLE dup = nullptr;
     auto *const currentProc = ::GetCurrentProcess();
     if (::DuplicateHandle(
-            currentProc, stdinHandle, currentProc, &dup, /*dwDesiredAccess=*/0,
-            /*bInheritHandle=*/FALSE, DUPLICATE_SAME_ACCESS
+            currentProc,
+            stdinHandle,
+            currentProc,
+            &dup,
+            /*dwDesiredAccess=*/0,
+            /*bInheritHandle=*/FALSE,
+            DUPLICATE_SAME_ACCESS
         ) == 0)
     {
         throw std::runtime_error("StdinBytesProducer: DuplicateHandle(stdin) failed");
@@ -389,7 +394,10 @@ private:
 
 } // namespace internal
 
-StdinBytesProducer::StdinBytesProducer() : StdinBytesProducer(Options{}) {}
+StdinBytesProducer::StdinBytesProducer()
+    : StdinBytesProducer(Options{})
+{
+}
 
 StdinBytesProducer::StdinBytesProducer(Options options)
     : mImpl(std::make_unique<internal::StdinBytesProducerImpl>(DuplicateStdin(), std::move(options)))

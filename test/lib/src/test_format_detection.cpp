@@ -155,8 +155,7 @@ TEST_CASE("MakeParserForFormat returns a usable parser for every format", "[Form
         std::string_view probe;
     };
     const Case cases[] = {
-        {.format = LogConfiguration::Source::Format::Json,
-         .probe = R"({"a":1}
+        {.format = LogConfiguration::Source::Format::Json, .probe = R"({"a":1}
 {"b":2}
 )"},
         {.format = LogConfiguration::Source::Format::Logfmt, .probe = "a=1 b=2\nc=3 d=4\n"},
