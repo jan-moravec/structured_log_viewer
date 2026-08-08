@@ -46,20 +46,29 @@ struct StdinBytesProducerTestAccess;
 class StdinBytesProducer final : public BytesProducer
 {
 public:
+    /// Default read syscall size. 64 KiB amortises syscall cost
+    /// across a typical console-piped writer's chunk boundary and
+    /// matches `TailingBytesProducer` so throughput profiles
+    /// compare like-for-like.
+    static constexpr std::size_t DEFAULT_READ_CHUNK_BYTES = 64UZ * 1024UZ;
+
+    /// Default soft cap on the internal byte queue (64 MiB).
+    /// Sized to match `TcpServerProducer` so all live-tail
+    /// producers share the same back-pressure envelope.
+    static constexpr std::size_t DEFAULT_QUEUE_CAP_BYTES = 64UZ * 1024UZ * 1024UZ;
+
     /// Tuning knobs, mostly for tests.
     struct Options
     {
-        /// Bytes per stdin read syscall. 64 KiB amortises syscall
-        /// cost across a typical console-piped writer's chunk
-        /// boundary. Sized to match `TailingBytesProducer` so
-        /// throughput profiles compare like-for-like.
-        std::size_t readChunkBytes = 64 * 1024;
+        /// Bytes per stdin read syscall. See
+        /// `DEFAULT_READ_CHUNK_BYTES` for the sizing rationale.
+        std::size_t readChunkBytes = DEFAULT_READ_CHUNK_BYTES;
 
         /// Soft cap on the internal byte queue. 0 disables the
         /// cap. When the parser can't keep up, oldest bytes are
         /// dropped to the next newline boundary (identical
         /// semantics to `TcpServerProducer`).
-        std::size_t queueCapBytes = 64 * 1024 * 1024;
+        std::size_t queueCapBytes = DEFAULT_QUEUE_CAP_BYTES;
 
         /// Display name shown in the status bar / window title.
         /// The default `<stdin>` matches shell convention; tests

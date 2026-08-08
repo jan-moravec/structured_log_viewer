@@ -25,6 +25,7 @@
 #else
 #include <cerrno>
 #include <fcntl.h>
+#include <poll.h>
 #include <unistd.h>
 #endif
 
@@ -141,6 +142,40 @@ long long ReadNative(NativeHandle handle, char *buffer, std::size_t size)
 #endif
 }
 
+#ifndef _WIN32
+/// POSIX self-pipe: pair of FDs used to wake the worker's blocking
+/// `poll` without closing the input FD out from under a concurrent
+/// `read`. Setting both ends `FD_CLOEXEC` avoids leaks across a
+/// possible future `fork`+`exec`; setting the write end
+/// `O_NONBLOCK` lets `Stop()` post a wake without ever blocking on
+/// a full pipe buffer.
+///
+/// Throws `std::runtime_error` on failure so the ctor never leaves
+/// the impl half-initialised.
+void MakeSelfPipe(int fds[2])
+{
+    if (::pipe(fds) != 0)
+    {
+        throw std::runtime_error("StdinBytesProducer: pipe() (wake) failed");
+    }
+    const int readFlags = ::fcntl(fds[0], F_GETFD, 0);
+    if (readFlags >= 0)
+    {
+        ::fcntl(fds[0], F_SETFD, readFlags | FD_CLOEXEC);
+    }
+    const int writeFlags = ::fcntl(fds[1], F_GETFD, 0);
+    if (writeFlags >= 0)
+    {
+        ::fcntl(fds[1], F_SETFD, writeFlags | FD_CLOEXEC);
+    }
+    const int writeStatus = ::fcntl(fds[1], F_GETFL, 0);
+    if (writeStatus >= 0)
+    {
+        ::fcntl(fds[1], F_SETFL, writeStatus | O_NONBLOCK);
+    }
+}
+#endif
+
 } // namespace
 
 namespace internal
@@ -156,6 +191,18 @@ public:
         {
             throw std::runtime_error("StdinBytesProducer: invalid native handle");
         }
+#ifndef _WIN32
+        // Self-pipe wake FDs are set up before the worker starts.
+        // `Stop()` writes a byte to `mWakeWrite` to unblock the
+        // worker's `poll`; the input FD is only closed once the
+        // worker has fully exited, side-stepping the POSIX data
+        // race between a concurrent `close(fd)` and `read(fd)`
+        // that TSan (correctly) flags on the FD table.
+        int wakeFds[2] = {-1, -1};
+        MakeSelfPipe(wakeFds);
+        mWakeRead = wakeFds[0];
+        mWakeWrite = wakeFds[1];
+#endif
         mWorker = std::thread([this] { WorkerMain(); });
     }
 
@@ -209,8 +256,8 @@ public:
             return;
         }
 
-        // Unblock a pending `Read` / `ReadFile` on the worker
-        // thread. Publish `mClosed` first so any concurrent
+        // Unblock the worker so it can observe `mStopRequested`
+        // and return. Publish `mClosed` first so any concurrent
         // `WaitForBytes` observes it on the next wake.
         //
         // Windows: `CloseHandle` while another thread is inside
@@ -219,13 +266,22 @@ public:
         // the pending IO, join the worker, then close.
         //
         // POSIX: `close(fd)` while another thread is inside
-        // `read(fd)` returns `EBADF` from `read` on Linux and
-        // most modern kernels; we close now, join, and rely on
-        // `ReadNative`'s `EBADF` handling.
+        // `read(fd)` is a documented data race on the FD table
+        // (TSan flags it, and the kernel is only guaranteed to
+        // unblock the read on modern Linux -- not on macOS, BSD,
+        // or older kernels). Wake the worker through a self-pipe
+        // instead: it polls `[mHandle, mWakeRead]` between reads,
+        // observes the wake byte, drops out of the loop, and
+        // returns cleanly; `close(mHandle)` runs only after the
+        // worker has joined.
+#ifdef _WIN32
         NativeHandle handleSnapshot = INVALID_NATIVE;
+#endif
         {
             const std::scoped_lock lock(mLock);
+#ifdef _WIN32
             handleSnapshot = mHandle;
+#endif
             mClosed.store(true, std::memory_order_release);
         }
 
@@ -235,16 +291,26 @@ public:
             ::CancelIoEx(handleSnapshot, nullptr);
         }
 #else
-        // Take ownership of the FD before closing so the worker's
-        // final `read` sees an invalid FD (EBADF), which is
-        // treated as EOF in `ReadNative`.
+        // Post a wake byte through the self-pipe. Retry on
+        // `EINTR`; `EAGAIN` means the wake byte is already
+        // buffered and the worker will observe it on its next
+        // `poll`. Any other error means the pipe is unusable;
+        // fall through -- `mStopRequested` is already set, so
+        // the worker will still exit on its next iteration once
+        // the current `read` unblocks.
+        for (;;)
         {
-            const std::scoped_lock lock(mLock);
-            mHandle = INVALID_NATIVE;
-        }
-        if (IsValidNative(handleSnapshot))
-        {
-            CloseNative(handleSnapshot);
+            const char b = 0;
+            const ::ssize_t rc = ::write(mWakeWrite, &b, 1);
+            if (rc == 1)
+            {
+                break;
+            }
+            if (rc < 0 && errno == EINTR)
+            {
+                continue;
+            }
+            break;
         }
 #endif
         mCv.notify_all();
@@ -290,14 +356,24 @@ public:
         }
 #endif
 
-#ifdef _WIN32
-        // Safe to close now: the worker has exited so no in-
-        // flight `ReadFile` remains on this handle.
+        // Safe to close now: the worker has exited so no in-flight
+        // `ReadFile` / `read` remains on this handle.
         {
             const std::scoped_lock lock(mLock);
             const NativeHandle h = mHandle;
             mHandle = INVALID_NATIVE;
             CloseNative(h);
+        }
+#ifndef _WIN32
+        if (mWakeRead >= 0)
+        {
+            ::close(mWakeRead);
+            mWakeRead = -1;
+        }
+        if (mWakeWrite >= 0)
+        {
+            ::close(mWakeWrite);
+            mWakeWrite = -1;
         }
 #endif
 
@@ -353,6 +429,36 @@ private:
             {
                 break;
             }
+#ifndef _WIN32
+            // Wait for the input FD or the self-pipe wake FD to
+            // become readable. On wake we exit cleanly; the read
+            // FD is only ever closed after `join()`, so no
+            // concurrent `close(fd)` races the `read(fd)` below.
+            struct ::pollfd pfds[2];
+            pfds[0].fd = handle;
+            pfds[0].events = POLLIN;
+            pfds[0].revents = 0;
+            pfds[1].fd = mWakeRead;
+            pfds[1].events = POLLIN;
+            pfds[1].revents = 0;
+            const int prc = ::poll(pfds, 2, -1);
+            if (prc < 0)
+            {
+                if (errno == EINTR)
+                {
+                    continue;
+                }
+                break;
+            }
+            if ((pfds[1].revents & (POLLIN | POLLHUP | POLLERR)) != 0)
+            {
+                break;
+            }
+            if ((pfds[0].revents & (POLLIN | POLLHUP | POLLERR)) == 0)
+            {
+                continue;
+            }
+#endif
             const long long got = ReadNative(handle, chunk.data(), chunk.size());
             if (got > 0)
             {
@@ -376,6 +482,13 @@ private:
     mutable std::mutex mLock;
     std::condition_variable mCv;
     NativeHandle mHandle = INVALID_NATIVE;
+#ifndef _WIN32
+    // POSIX self-pipe used to wake the worker's `poll` without
+    // closing the input FD from a concurrent thread. See `Stop()`
+    // for the full rationale.
+    int mWakeRead = -1;
+    int mWakeWrite = -1;
+#endif
     StdinBytesProducer::Options mOptions;
     LineBytesQueue mQueue;
     std::atomic<std::size_t> mDropped{0};
