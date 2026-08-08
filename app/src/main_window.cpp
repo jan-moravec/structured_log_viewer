@@ -4592,12 +4592,14 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
     // branch), which is a safe default: an empty stdin session
     // produces zero rows either way.
     const loglib::DetectedFormat detected = loglib::DetectFormatFromBytes(peek);
+    const auto format = detected.format;
+    std::string regexPattern = detected.regexPattern;
     mCurrentSource = loglib::LogConfiguration::Source{
         .kind = loglib::LogConfiguration::Source::Kind::Stdin,
-        .format = detected.format,
+        .format = format,
         .locators = {displayName},
         .locatorDedupKeys = {displayName},
-        .regexPattern = detected.regexPattern,
+        .regexPattern = regexPattern,
     };
     mSessionMode = SessionMode::LiveTail;
     mStreamingLineCount = 0;
@@ -4619,8 +4621,6 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
 
     auto streamSource =
         std::make_unique<loglib::StreamLineSource>(std::filesystem::path(displayName), std::move(producer));
-    const auto format = mCurrentSource->format;
-    std::string regexPattern = mCurrentSource->regexPattern;
     auto parserFactory = [format, regexPattern = std::move(regexPattern)]() {
         return loglib::MakeParserForFormat(format, regexPattern);
     };

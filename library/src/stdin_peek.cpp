@@ -24,7 +24,7 @@ namespace loglib::internal
 bool IsStdinInteractive() noexcept
 {
 #ifdef _WIN32
-    const HANDLE stdinHandle = ::GetStdHandle(STD_INPUT_HANDLE);
+    auto *const stdinHandle = ::GetStdHandle(STD_INPUT_HANDLE);
     if (stdinHandle == INVALID_HANDLE_VALUE || stdinHandle == nullptr)
     {
         return false;
@@ -50,7 +50,7 @@ namespace
 bool WaitForStdinReadable(std::chrono::steady_clock::time_point deadline)
 {
 #ifdef _WIN32
-    const HANDLE stdinHandle = ::GetStdHandle(STD_INPUT_HANDLE);
+    auto *const stdinHandle = ::GetStdHandle(STD_INPUT_HANDLE);
     if (stdinHandle == INVALID_HANDLE_VALUE || stdinHandle == nullptr)
     {
         return false;
@@ -130,7 +130,7 @@ std::string StdinPeek(std::size_t budget, std::chrono::milliseconds timeout)
     char scratch[SCRATCH_BYTES];
 
 #ifdef _WIN32
-    const HANDLE stdinHandle = ::GetStdHandle(STD_INPUT_HANDLE);
+    auto *const stdinHandle = ::GetStdHandle(STD_INPUT_HANDLE);
     if (stdinHandle == INVALID_HANDLE_VALUE || stdinHandle == nullptr)
     {
         return out;

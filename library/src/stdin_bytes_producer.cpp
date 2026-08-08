@@ -70,13 +70,13 @@ void CloseNative(NativeHandle h) noexcept
 NativeHandle DuplicateStdin()
 {
 #ifdef _WIN32
-    const HANDLE stdinHandle = ::GetStdHandle(STD_INPUT_HANDLE);
+    auto *const stdinHandle = ::GetStdHandle(STD_INPUT_HANDLE);
     if (stdinHandle == INVALID_HANDLE_VALUE || stdinHandle == nullptr)
     {
         throw std::runtime_error("StdinBytesProducer: GetStdHandle(STD_INPUT_HANDLE) failed");
     }
     HANDLE dup = nullptr;
-    const HANDLE currentProc = ::GetCurrentProcess();
+    auto *const currentProc = ::GetCurrentProcess();
     if (::DuplicateHandle(
             currentProc, stdinHandle, currentProc, &dup, /*dwDesiredAccess=*/0,
             /*bInheritHandle=*/FALSE, DUPLICATE_SAME_ACCESS
@@ -166,7 +166,7 @@ public:
 
     std::size_t Read(std::span<char> buffer)
     {
-        std::lock_guard<std::mutex> lock(mLock);
+        const std::scoped_lock lock(mLock);
         return mQueue.Read(buffer);
     }
 
@@ -219,7 +219,7 @@ public:
         // `ReadNative`'s `EBADF` handling.
         NativeHandle handleSnapshot = INVALID_NATIVE;
         {
-            std::lock_guard<std::mutex> lock(mLock);
+            const std::scoped_lock lock(mLock);
             handleSnapshot = mHandle;
             mClosed.store(true, std::memory_order_release);
         }
@@ -234,7 +234,7 @@ public:
         // final `read` sees an invalid FD (EBADF), which is
         // treated as EOF in `ReadNative`.
         {
-            std::lock_guard<std::mutex> lock(mLock);
+            const std::scoped_lock lock(mLock);
             mHandle = INVALID_NATIVE;
         }
         if (IsValidNative(handleSnapshot))
@@ -257,7 +257,7 @@ public:
         // short waits keep the busy loop off a spin.
         if (mWorker.joinable() && std::this_thread::get_id() != mWorker.get_id())
         {
-            const HANDLE threadHandle = mWorker.native_handle();
+            auto *const threadHandle = mWorker.native_handle();
             constexpr DWORD CANCEL_POLL_INTERVAL_MS = 25;
             while (true)
             {
@@ -289,7 +289,7 @@ public:
         // Safe to close now: the worker has exited so no in-
         // flight `ReadFile` remains on this handle.
         {
-            std::lock_guard<std::mutex> lock(mLock);
+            const std::scoped_lock lock(mLock);
             const NativeHandle h = mHandle;
             mHandle = INVALID_NATIVE;
             CloseNative(h);
@@ -301,7 +301,7 @@ public:
         // so a peer's post-return observation sees a fully quiesced
         // producer.
         {
-            std::lock_guard<std::mutex> lock(mStopFinishedLock);
+            const std::scoped_lock lock(mStopFinishedLock);
             mStopFinished.store(true, std::memory_order_release);
         }
         mStopFinishedCv.notify_all();
@@ -330,7 +330,7 @@ private:
         {
             NativeHandle handle = INVALID_NATIVE;
             {
-                std::lock_guard<std::mutex> lock(mLock);
+                const std::scoped_lock lock(mLock);
                 handle = mHandle;
             }
             if (!IsValidNative(handle))
@@ -351,7 +351,7 @@ private:
             const long long got = ReadNative(handle, chunk.data(), chunk.size());
             if (got > 0)
             {
-                std::lock_guard<std::mutex> lock(mLock);
+                const std::scoped_lock lock(mLock);
                 mQueue.Append(chunk.data(), static_cast<std::size_t>(got), mOptions.queueCapBytes, mDropped);
                 mCv.notify_all();
                 continue;
@@ -362,7 +362,7 @@ private:
         }
 
         {
-            std::lock_guard<std::mutex> lock(mLock);
+            const std::scoped_lock lock(mLock);
             mClosed.store(true, std::memory_order_release);
         }
         mCv.notify_all();
@@ -396,7 +396,7 @@ StdinBytesProducer::StdinBytesProducer(Options options)
 {
 }
 
-StdinBytesProducer::StdinBytesProducer(FromRawTag, void *opaqueHandle, Options options)
+StdinBytesProducer::StdinBytesProducer(FromRawTag /*tag*/, void *opaqueHandle, Options options)
 {
 #ifdef _WIN32
     mImpl = std::make_unique<internal::StdinBytesProducerImpl>(static_cast<HANDLE>(opaqueHandle), std::move(options));

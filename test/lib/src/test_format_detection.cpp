@@ -32,19 +32,19 @@ TEST_CASE("DetectFormatFromBytes parity with DetectFormatForPath", "[FormatDetec
         LogConfiguration::Source::Format expected;
     };
     const Case cases[] = {
-        {"json.log",
-         R"({"timestamp":"2026-01-01T00:00:00Z","level":"info","message":"hi"}
+        {.name = "json.log",
+         .bytes = R"({"timestamp":"2026-01-01T00:00:00Z","level":"info","message":"hi"}
 {"timestamp":"2026-01-01T00:00:01Z","level":"warn","message":"there"}
 )",
-         LogConfiguration::Source::Format::Json},
-        {"logfmt.log",
-         R"(time=2026-01-01T00:00:00Z level=info message=hi
+         .expected = LogConfiguration::Source::Format::Json},
+        {.name = "logfmt.log",
+         .bytes = R"(time=2026-01-01T00:00:00Z level=info message=hi
 time=2026-01-01T00:00:01Z level=warn message=there
 )",
-         LogConfiguration::Source::Format::Logfmt},
-        {"csv.log",
-         "timestamp,level,message\n2026-01-01T00:00:00Z,info,hi\n2026-01-01T00:00:01Z,warn,there\n",
-         LogConfiguration::Source::Format::Csv},
+         .expected = LogConfiguration::Source::Format::Logfmt},
+        {.name = "csv.log",
+         .bytes = "timestamp,level,message\n2026-01-01T00:00:00Z,info,hi\n2026-01-01T00:00:01Z,warn,there\n",
+         .expected = LogConfiguration::Source::Format::Csv},
     };
 
     for (const Case &c : cases)
@@ -69,14 +69,14 @@ TEST_CASE("DetectFormatFromBytes and DetectFormatForPath agree on regex-format b
         std::string_view bytes;
     };
     const Case cases[] = {
-        {"syslog_rfc3164.log",
-         "Apr 28 04:02:03 host-a systemd: System starting\n"
-         "Jun 27 01:47:20 host-b configd[17]: network changed\n"},
-        {"apache_common.log",
-         R"(127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /apache_pb.gif HTTP/1.0" 200 2326)"
-         "\n"
-         R"(10.1.10.51 - - [23/Dec/2014:21:20:35 +0000] "POST /api/1/rest/foo HTTP/1.1" 200 -)"
-         "\n"},
+        {.name = "syslog_rfc3164.log",
+         .bytes = "Apr 28 04:02:03 host-a systemd: System starting\n"
+                  "Jun 27 01:47:20 host-b configd[17]: network changed\n"},
+        {.name = "apache_common.log",
+         .bytes = R"(127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /apache_pb.gif HTTP/1.0" 200 2326)"
+                  "\n"
+                  R"(10.1.10.51 - - [23/Dec/2014:21:20:35 +0000] "POST /api/1/rest/foo HTTP/1.1" 200 -)"
+                  "\n"},
     };
 
     for (const Case &c : cases)
@@ -155,12 +155,12 @@ TEST_CASE("MakeParserForFormat returns a usable parser for every format", "[Form
         std::string_view probe;
     };
     const Case cases[] = {
-        {LogConfiguration::Source::Format::Json,
-         R"({"a":1}
+        {.format = LogConfiguration::Source::Format::Json,
+         .probe = R"({"a":1}
 {"b":2}
 )"},
-        {LogConfiguration::Source::Format::Logfmt, "a=1 b=2\nc=3 d=4\n"},
-        {LogConfiguration::Source::Format::Csv, "a,b\n1,2\n3,4\n"},
+        {.format = LogConfiguration::Source::Format::Logfmt, .probe = "a=1 b=2\nc=3 d=4\n"},
+        {.format = LogConfiguration::Source::Format::Csv, .probe = "a,b\n1,2\n3,4\n"},
     };
 
     for (const Case &c : cases)

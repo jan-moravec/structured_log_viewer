@@ -61,7 +61,7 @@ public:
 
     std::size_t Read(std::span<char> buffer) override
     {
-        std::lock_guard<std::mutex> lock(mLock);
+        const std::scoped_lock lock(mLock);
         const std::size_t remaining = mBytes.size() - mCursor;
         if (remaining == 0)
         {
@@ -89,7 +89,7 @@ public:
 
     [[nodiscard]] bool IsClosed() const noexcept override
     {
-        std::lock_guard<std::mutex> lock(mLock);
+        const std::scoped_lock lock(mLock);
         return mClosed.load(std::memory_order_acquire) && mCursor >= mBytes.size();
     }
 
@@ -301,7 +301,7 @@ public:
 
     std::size_t Read(std::span<char> buffer) override
     {
-        std::unique_lock<std::mutex> lock(mLock);
+        const std::unique_lock<std::mutex> lock(mLock);
         if (mChunkCursor >= mChunks.size())
         {
             mClosed.store(true, std::memory_order_release);
@@ -342,7 +342,7 @@ public:
     {
         mStop.store(true, std::memory_order_release);
         mClosed.store(true, std::memory_order_release);
-        std::lock_guard<std::mutex> lock(mLock);
+        const std::scoped_lock lock(mLock);
         mCv.notify_all();
     }
 

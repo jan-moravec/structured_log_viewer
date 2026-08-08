@@ -232,7 +232,7 @@ struct AssumedNowFields
 
 AssumedNowFields AssumedNow()
 {
-    static const AssumedNowFields cached = []() {
+    static const AssumedNowFields CACHED = []() {
         const auto today = date::floor<date::days>(std::chrono::system_clock::now());
         const date::year_month_day ymd{today};
         return AssumedNowFields{
@@ -240,20 +240,25 @@ AssumedNowFields AssumedNow()
             .month = static_cast<unsigned>(ymd.month()),
         };
     }();
-    return cached;
+    return CACHED;
 }
 
 /// Case-sensitive lookup for RFC 3164's English month abbreviations.
 /// Returns 1-based month index (`1..12`) or 0 on miss.
-unsigned MatchSyslogMonth(const char *p) noexcept
+unsigned MatchSyslogMonth(std::string_view sv) noexcept
 {
+    static constexpr size_t MONTH_ABBREV_LEN = 3;
+    if (sv.size() < MONTH_ABBREV_LEN)
+    {
+        return 0;
+    }
     static constexpr std::array<std::string_view, 12> MONTHS = {
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
     };
     for (unsigned i = 0; i < MONTHS.size(); ++i)
     {
         const auto &m = MONTHS[i];
-        if (p[0] == m[0] && p[1] == m[1] && p[2] == m[2])
+        if (sv[0] == m[0] && sv[1] == m[1] && sv[2] == m[2])
         {
             return i + 1;
         }
@@ -272,7 +277,7 @@ bool TryParseSyslogRfc3164Timestamp(std::string_view sv, TimeStamp &out)
         return false;
     }
 
-    const unsigned month = MatchSyslogMonth(sv.data());
+    const unsigned month = MatchSyslogMonth(sv);
     if (month == 0)
     {
         return false;
@@ -302,7 +307,8 @@ bool TryParseSyslogRfc3164Timestamp(std::string_view sv, TimeStamp &out)
         day = (day * DECIMAL_RADIX) + (sv[cursor] - '0');
         ++cursor;
     }
-    if (day < 1 || day > 31)
+    constexpr int MAX_DAY_INCLUSIVE = 31;
+    if (day < 1 || day > MAX_DAY_INCLUSIVE)
     {
         return false;
     }
@@ -319,6 +325,11 @@ bool TryParseSyslogRfc3164Timestamp(std::string_view sv, TimeStamp &out)
     {
         return false;
     }
+    // Byte offsets within the `HH:MM:SS` tail.
+    constexpr size_t MINUTE_COLON_OFFSET = 2;
+    constexpr size_t MINUTE_DIGITS_TAIL_OFFSET = 3;
+    constexpr size_t SECOND_COLON_OFFSET = 5;
+    constexpr size_t SECOND_DIGITS_TAIL_OFFSET = 6;
     int hour = 0;
     int minute = 0;
     int second = 0;
@@ -326,19 +337,19 @@ bool TryParseSyslogRfc3164Timestamp(std::string_view sv, TimeStamp &out)
     {
         return false;
     }
-    if (sv[cursor + 2] != ':')
+    if (sv[cursor + MINUTE_COLON_OFFSET] != ':')
     {
         return false;
     }
-    if (!ParseFixedDigits(sv.data() + cursor + 3, 2, minute))
+    if (!ParseFixedDigits(sv.data() + cursor + MINUTE_DIGITS_TAIL_OFFSET, 2, minute))
     {
         return false;
     }
-    if (sv[cursor + 5] != ':')
+    if (sv[cursor + SECOND_COLON_OFFSET] != ':')
     {
         return false;
     }
-    if (!ParseFixedDigits(sv.data() + cursor + 6, 2, second))
+    if (!ParseFixedDigits(sv.data() + cursor + SECOND_DIGITS_TAIL_OFFSET, 2, second))
     {
         return false;
     }

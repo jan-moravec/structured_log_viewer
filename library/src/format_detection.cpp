@@ -31,8 +31,8 @@ std::optional<DetectedFormat> TryDetectFormatFromBytes(std::string_view sniffBuf
         LogConfiguration::Source::Format format;
     };
     static constexpr Probe HEAD_PROBES[] = {
-        {LogFactory::Parser::Json, LogConfiguration::Source::Format::Json},
-        {LogFactory::Parser::Logfmt, LogConfiguration::Source::Format::Logfmt},
+        {.parser = LogFactory::Parser::Json, .format = LogConfiguration::Source::Format::Json},
+        {.parser = LogFactory::Parser::Logfmt, .format = LogConfiguration::Source::Format::Logfmt},
     };
     for (const Probe &probe : HEAD_PROBES)
     {

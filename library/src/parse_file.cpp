@@ -71,7 +71,7 @@ ParseResult ParseFile(const std::filesystem::path &file)
     // than being silently pushed through the JSON parser.
     if (detected.format == LogConfiguration::Source::Format::Json)
     {
-        JsonParser probe;
+        const JsonParser probe;
         if (!probe.IsValidBytes(head))
         {
             throw std::runtime_error(fmt::format("Input file '{}' could not be parsed.", file.string()));

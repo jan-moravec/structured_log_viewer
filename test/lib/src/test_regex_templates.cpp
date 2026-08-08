@@ -127,12 +127,12 @@ TEST_CASE(
         // Java sample lines 2 and 4 use the ISO-8601 `T` / offset
         // shape that Zap's pattern (priority 10) accepts; Java lives
         // at priority 20 so Zap wins the probe.
-        {"Java / log4j / SLF4J Logback", "Uber Zap (console)"},
+        {.sampleTemplate = "Java / log4j / SLF4J Logback", .expectedName = "Uber Zap (console)"},
         // spdlog's `[timestamp] [logger] [level] message` shape
         // fits Apache error's generic `[X] [Y] message` grammar
         // (priority 15) with `[logger]` captured as `level`; spdlog
         // itself is priority 20, so Apache error wins.
-        {"spdlog", "Apache error log"},
+        {.sampleTemplate = "spdlog", .expectedName = "Apache error log"},
     }};
 
     const auto builtins = BuiltinRegexTemplates();

@@ -147,7 +147,7 @@ void AutoDetectParser::ParseStreaming(StreamLineSource &source, LogParseSink &si
         return;
     }
 
-    std::string peek = DrainPeek(*producer, mPeekBytes, mPeekTimeout, options.stopToken);
+    const std::string peek = DrainPeek(*producer, mPeekBytes, mPeekTimeout, options.stopToken);
 
     // Caller-supplied `initialCarry` semantically prefixes the
     // producer's stream (bytes already consumed by an earlier

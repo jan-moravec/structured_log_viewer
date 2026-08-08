@@ -115,7 +115,7 @@ TEST_CASE("StdinPeek honours the byte budget", "[StdinPeek]")
 
     // Producer writes more than the budget wants; only the first
     // `budget` bytes may be drained.
-    std::string payload(4096, 'x');
+    const std::string payload(4096, 'x');
     pipe.Write(payload);
     pipe.CloseWrite();
 
@@ -181,17 +181,21 @@ TEST_CASE("StdinPeek bytes + DetectFormatFromBytes agree with DetectFormatForPat
         loglib::LogConfiguration::Source::Format expected;
     };
     const Sample samples[] = {
-        {"json",
-         R"({"level":"info","message":"first"}
+        {.label = "json",
+         .bytes = R"({"level":"info","message":"first"}
 {"level":"warn","message":"second"}
 )",
-         loglib::LogConfiguration::Source::Format::Json},
-        {"logfmt", "level=info msg=first\nlevel=warn msg=second\n", loglib::LogConfiguration::Source::Format::Logfmt},
-        {"csv", "level,message\ninfo,first\nwarn,second\n", loglib::LogConfiguration::Source::Format::Csv},
-        {"regex-syslog",
-         "Apr 28 04:02:03 host-a systemd: System starting\n"
-         "Jun 27 01:47:20 host-b configd[17]: network changed\n",
-         loglib::LogConfiguration::Source::Format::Regex},
+         .expected = loglib::LogConfiguration::Source::Format::Json},
+        {.label = "logfmt",
+         .bytes = "level=info msg=first\nlevel=warn msg=second\n",
+         .expected = loglib::LogConfiguration::Source::Format::Logfmt},
+        {.label = "csv",
+         .bytes = "level,message\ninfo,first\nwarn,second\n",
+         .expected = loglib::LogConfiguration::Source::Format::Csv},
+        {.label = "regex-syslog",
+         .bytes = "Apr 28 04:02:03 host-a systemd: System starting\n"
+                  "Jun 27 01:47:20 host-b configd[17]: network changed\n",
+         .expected = loglib::LogConfiguration::Source::Format::Regex},
     };
 
     for (const Sample &s : samples)
