@@ -154,6 +154,9 @@ TEST_CASE(
         REQUIRE(detected.has_value());
 
         std::string_view expectedName = t.name;
+        // NOLINTNEXTLINE(readability-qualified-auto): std::array iterator
+        // type is implementation-defined -- libstdc++ exposes raw pointers,
+        // MSVC uses class iterators. Keeping plain `auto` compiles portably.
         const auto shadow = std::ranges::find_if(KNOWN_SHADOWS, [&](const Shadow &s) {
             return s.sampleTemplate == std::string_view(t.name);
         });

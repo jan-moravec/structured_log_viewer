@@ -2,6 +2,7 @@
 
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 
 #ifndef _WIN32
 #include <cstdint>
@@ -101,6 +102,11 @@ public:
 #else
         const int fd = mRead;
         mRead = -1;
+        // Packing a POSIX fd into an opaque `void *` matches the
+        // convention documented on
+        // `StdinBytesProducerTestAccess::Create`; a fresh
+        // pointer value is fabricated by design.
+        // NOLINTNEXTLINE(performance-no-int-to-ptr)
         return reinterpret_cast<void *>(static_cast<std::intptr_t>(fd));
 #endif
     }
@@ -126,7 +132,7 @@ public:
             throw std::runtime_error("test_common::Pipe: Write called after CloseWrite");
         }
         const ::ssize_t got = ::write(mWrite, bytes.data(), bytes.size());
-        if (got != static_cast<::ssize_t>(bytes.size()))
+        if (got < 0 || std::cmp_not_equal(got, bytes.size()))
         {
             throw std::runtime_error("test_common::Pipe: write() failed or short-wrote");
         }
