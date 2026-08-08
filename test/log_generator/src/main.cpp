@@ -19,10 +19,8 @@
 //                           `--tls-skip-verify` (self-signed dev), or
 //                           `--tls-cert` / `--tls-key` (mTLS).
 //   * `udp://host:port`     UDP datagram per line -> `UdpServerProducer`.
-//   * `stdout://` (or bare `--output -`) writes each line to the
-//                            process's standard output and reroutes
-//                            every diagnostic print to stderr so the
-//                            stream stays parseable by `slv -`.
+//   * `stdout://`, bare `stdout`, `--target -`, or `--output -`
+//     writes each line to stdout and sends diagnostics to stderr.
 //
 // Every record carries a `line_number` field (0-based, monotonic,
 // rotation-agnostic); gaps in the sequence at the consumer indicate
@@ -685,7 +683,7 @@ int main(int argc, char *argv[])
         .help(
             "Output file path (overwritten if it already exists, unless --append). A bare '-' is "
             "shorthand for '--target stdout://' and writes every generated line to standard "
-            "output (useful for piping into `slv -`). When --output is omitted the default base "
+            "output (useful for piping into StructuredLogViewer). When --output is omitted the default base "
             "name is `generated` plus the format's extension (generated.jsonl for --format json, "
             "generated.logfmt for --format logfmt, generated.csv for --format csv, "
             "generated_<slug>.log for a regex-template slug)."
@@ -718,8 +716,7 @@ int main(int argc, char *argv[])
         .implicit_value(true)
         .help(
             "Suppress the 'writing / wrote / rotated' progress lines. Errors still print to stderr. "
-            "Handy when the terminal shows stderr next to a piped-to-`slv -` stdout stream and you "
-            "want the console fully clean."
+            "Useful when stderr is shown beside a piped stdout stream."
         );
 
     program.add_argument("-t", "--timeout")
@@ -774,11 +771,11 @@ int main(int argc, char *argv[])
             "URL-style output destination. Supersedes --output when set. "
             "Examples: file:///tmp/foo.jsonl, stdout:// (or the bare word "
             "'stdout'/'-'; writes each line to stdout and reroutes "
-            "diagnostics to stderr so `slv -` can consume the stream), "
+            "diagnostics to stderr for a downstream viewer), "
             "tcp://127.0.0.1:5141, tcp+tls://example:6514, "
-            "udp://127.0.0.1:5142. When unset, --output is used (file "
-            "mode). The --roll-* flags require file mode and are "
-            "rejected for network / stdout targets."
+            "udp://127.0.0.1:5142. When unset, --output selects a file "
+            "or stdout via '-'. The --roll-* flags require a file target and are "
+            "rejected for network / stdout streams."
         );
 
     program.add_argument("--tls-ca")
@@ -961,13 +958,8 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // When the log stream is stdout we MUST keep every diagnostic
-    // print out of the pipe -- otherwise `slv -` would treat the
-    // "log_generator: ..." lines as log records. `diag` selects the
-    // right stream once, so every downstream `<<` picks the correct
-    // destination without per-callsite branching. `--quiet` swaps to
-    // a discarded `std::ofstream{}` (never opened) so the formatter
-    // chain is dropped cheaply.
+    // Keep diagnostics out of stdout log streams. `diag` selects the
+    // destination once; `--quiet` sends it to an unopened stream.
     std::ofstream nullSink;
     const auto selectDiag = [&]() -> std::ostream & {
         if (quiet)
@@ -1204,11 +1196,8 @@ int main(int argc, char *argv[])
             std::cout << serialized << '\n';
             if (!std::cout.good())
             {
-                // A downstream `slv -` closing early (e.g. user hits
-                // the window close button) surfaces here as a broken
-                // pipe / stream error. Treat that as a clean exit
-                // rather than an error so shell pipelines don't need
-                // to special-case SIGPIPE.
+                // A downstream consumer may close early. Treat the
+                // broken pipe as a clean pipeline exit.
                 return 0;
             }
         }
@@ -1263,9 +1252,7 @@ int main(int argc, char *argv[])
             }
             else if (target.kind == TargetKind::Stdout)
             {
-                // stdout is line-buffered under a terminal but fully
-                // buffered under a pipe; flush explicitly so `slv -`
-                // sees streaming progress instead of a big burst.
+                // Pipes fully buffer stdout, so flush each delayed line.
                 std::cout.flush();
             }
             if (sleepMs > 0)

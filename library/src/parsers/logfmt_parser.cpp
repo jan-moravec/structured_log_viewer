@@ -790,9 +790,8 @@ void AppendValueAsString(std::string &out, const LogValue &value)
 
 bool LogfmtParser::IsValidBytes(std::string_view sniffBuffer) const
 {
-    // `sniffBuffer` is bounded to `PROBE_BYTES_BUDGET` by the caller
-    // (`ReadProbeHead` or `AutoDetectParser::DrainPeek`), so the
-    // `while (cursor < size)` termination is enough.
+    // Callers cap `sniffBuffer` at `PROBE_BYTES_BUDGET`, so the
+    // cursor bound is sufficient.
     size_t cursor = 0;
     while (cursor < sniffBuffer.size())
     {

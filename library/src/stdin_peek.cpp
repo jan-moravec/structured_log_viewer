@@ -10,12 +10,12 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
-#include <windows.h>
 #include <io.h>
+#include <windows.h>
 #else
+#include <cerrno>
 #include <poll.h>
 #include <unistd.h>
-#include <cerrno>
 #endif
 
 namespace loglib::internal
@@ -56,11 +56,10 @@ bool WaitForStdinReadable(std::chrono::steady_clock::time_point deadline)
         return false;
     }
     // `PeekNamedPipe` is the only non-blocking readiness probe
-    // that works on anonymous pipes (the redirect case for
-    // `producer | slv -`). It also correctly reports EOF
+    // that works on anonymous pipes. It also correctly reports EOF
     // (returns 0 with ERROR_BROKEN_PIPE), in which case the
     // subsequent `ReadFile` returns 0 too -- treated as done.
-    // For regular files (`slv --stdin < file.log`) reads never
+    // For redirected regular files, reads never
     // block, so the peek-then-sleep loop degenerates into
     // pure reads.
     constexpr DWORD POLL_INTERVAL_MS = 20;
@@ -94,8 +93,7 @@ bool WaitForStdinReadable(std::chrono::steady_clock::time_point deadline)
     {
         return false;
     }
-    const auto remainingMs =
-        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+    const auto remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
     ::pollfd pfd{};
     pfd.fd = STDIN_FILENO;
     pfd.events = POLLIN;

@@ -143,9 +143,7 @@ private:
 
 /// Byte-buffer variant used by `AutoDetectParser` (network
 /// streams) and by stdin auto-detect. Same probe semantics as the
-/// file overload; the caller must supply at most
-/// `PROBE_BYTES_BUDGET` bytes if it wants parity with static-file
-/// detection (larger buffers are accepted but scanned in full).
+/// file overload. At most `PROBE_BYTES_BUDGET` bytes are scanned.
 /// Named distinctly from `DetectRegexTemplate` so a `std::string`
 /// argument never resolves here by accident.
 [[nodiscard]] std::optional<RegexTemplate> DetectRegexTemplateFromBytes(std::string_view sniffBuffer);

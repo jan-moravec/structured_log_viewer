@@ -23,22 +23,8 @@ std::optional<DetectedFormat> TryDetectFormatFromBytes(std::string_view sniffBuf
         return std::nullopt;
     }
 
-    // Probe order (specific-before-generic):
-    //  1. JSON  -- anchored on `{` / `[` at the first non-whitespace
-    //     byte, essentially free.
-    //  2. Logfmt -- anchored on `key=` shape, also cheap.
-    //  3. Regex templates -- each ships an anchored PCRE pattern
-    //     matched against the first non-blank lines. This tier
-    //     runs BEFORE CSV because CSV's `IsValidBytes` is
-    //     satisfied by any input with a consistent per-line comma
-    //     count, which false-positives on formats whose timestamp
-    //     uses `,SSS` for milliseconds (Java Logback, log4j2,
-    //     SLF4J default PatternLayout). Regex-template probes are
-    //     bounded to `PROBE_BYTES_BUDGET` bytes and the compiled
-    //     patterns are process-lifetime-cached, so this ordering
-    //     costs a fixed handful of microseconds per open.
-    //  4. CSV -- last-resort generic fallback for a comma-separated
-    //     shape that none of the shipped templates recognise.
+    // Probe specific formats before generic CSV: JSON, logfmt,
+    // regex templates, then CSV.
     struct Probe
     {
         LogFactory::Parser parser;
@@ -62,7 +48,8 @@ std::optional<DetectedFormat> TryDetectFormatFromBytes(std::string_view sniffBuf
             .format = LogConfiguration::Source::Format::Regex, .regexPattern = std::move(tmpl->pattern)
         };
     }
-    if (const std::unique_ptr<LogParser> csv = LogFactory::Create(LogFactory::Parser::Csv); csv->IsValidBytes(sniffBuffer))
+    if (const std::unique_ptr<LogParser> csv = LogFactory::Create(LogFactory::Parser::Csv);
+        csv->IsValidBytes(sniffBuffer))
     {
         return DetectedFormat{.format = LogConfiguration::Source::Format::Csv, .regexPattern = {}};
     }
@@ -84,9 +71,7 @@ DetectedFormat DetectFormatForPath(const std::filesystem::path &file)
     return DetectFormatFromBytes(head);
 }
 
-std::unique_ptr<LogParser> MakeParserForFormat(
-    LogConfiguration::Source::Format format, std::string_view regexPattern
-)
+std::unique_ptr<LogParser> MakeParserForFormat(LogConfiguration::Source::Format format, std::string_view regexPattern)
 {
     switch (format)
     {

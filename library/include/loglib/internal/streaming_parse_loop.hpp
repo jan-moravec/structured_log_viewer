@@ -447,11 +447,8 @@ void RunStreamingParseLoop(
         ownedArena.clear();
     };
 
-    // Scan any pre-seeded `initialCarry` up front so the resolved
-    // parser downstream of `AutoDetectParser` emits rows without
-    // waiting for the producer to yield fresh bytes (which might
-    // never arrive on a bursty network stream). Zero-cost when the
-    // default empty `initialCarry` leaves `carry` empty here.
+    // Emit complete lines already present in `initialCarry` before
+    // waiting for more producer bytes.
     auto scanCarry = [&]() {
         size_t scanStart = 0;
         while (scanStart < carry.size())

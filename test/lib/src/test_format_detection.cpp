@@ -58,15 +58,9 @@ time=2026-01-01T00:00:01Z level=warn message=there
     }
 }
 
-TEST_CASE(
-    "DetectFormatFromBytes and DetectFormatForPath agree on regex-format bytes and pattern", "[FormatDetection]"
-)
+TEST_CASE("DetectFormatFromBytes and DetectFormatForPath agree on regex-format bytes and pattern", "[FormatDetection]")
 {
-    // Regression guard for the regex branch: both entry points must
-    // report `Format::Regex` *and* the exact same `regexPattern`
-    // (the resolved built-in template's compiled pattern), so a
-    // stdin/network-stream open produces the same on-disk source
-    // stanza as a file open of the same bytes.
+    // Both entry points must return the same regex format and pattern.
     const TempDir dir("format_detection_regex");
 
     struct Case
@@ -103,7 +97,7 @@ TEST_CASE(
     "[FormatDetection]"
 )
 {
-    // Java/Logback / log4j2 / SLF4J default PatternLayout emits
+    // Java Logback / log4j2 / SLF4J default PatternLayout emits
     // `2026-01-01 12:00:00,123 LEVEL ...` where the sole comma is
     // the millisecond decimal. `CsvParser::IsValidBytes` accepts
     // any input with a consistent 2-cell-per-line comma count, so
@@ -128,12 +122,8 @@ TEST_CASE(
 
 TEST_CASE("DetectFormatForPath on a missing file falls back to default Json", "[FormatDetection]")
 {
-    // `ReadProbeHead` returns an empty string when the file cannot
-    // be opened; `DetectFormatFromBytes({})` then hands back the
-    // default `Format::Json` verdict with an empty pattern. The
-    // header contract at `format_detection.hpp` promises this
-    // exact fallback -- stdin / network-stream callers rely on it
-    // to keep spinning a parser instead of dead-ending.
+    // Missing file -> empty probe -> the same JSON fallback as an
+    // empty byte buffer.
     const std::filesystem::path missing = "definitely_not_a_real_file_1741d61e.log";
     REQUIRE_FALSE(std::filesystem::exists(missing));
 

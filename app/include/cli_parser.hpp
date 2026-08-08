@@ -20,7 +20,7 @@ namespace logapp
 /// spawn many windows). `readStdin` is true when either `-` (as a
 /// positional) or `--stdin` was passed; `main()` opens a live-tail
 /// session over the process's `stdin` in that case, after any
-/// `--files` were opened.
+/// positional file paths were opened.
 struct ParsedCli
 {
     QStringList files;
@@ -51,8 +51,7 @@ struct ParsedCli
     );
     parser.addOption(newInstanceOption);
     const QCommandLineOption stdinOption(
-        QStringLiteral("stdin"),
-        QStringLiteral("Read log lines from standard input (equivalent to passing `-`).")
+        QStringLiteral("stdin"), QStringLiteral("Read log lines from standard input (equivalent to passing `-`).")
     );
     parser.addOption(stdinOption);
     parser.addPositionalArgument(

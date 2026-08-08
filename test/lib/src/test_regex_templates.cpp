@@ -115,37 +115,9 @@ TEST_CASE(
     "[regex_templates]"
 )
 {
-    // Per-template detection sweep. For every built-in `t`:
-    //   feed `t.sampleLines` (concatenated + newline-terminated) into
-    //   `DetectRegexTemplateFromBytes`, which walks the merged
-    //   registry stable-sorted by priority. Assert that:
-    //     * detection returns *some* template,
-    //     * the detected template's pattern parses every sample line
-    //       (guarantees the resolved template is a real fit, not a
-    //       lucky substring),
-    //     * the detected name matches `t.name`.
-    //
-    // Templates whose own sample text is shadowed at detection time
-    // by a lower-priority-number sibling are listed in
-    // `KNOWN_SHADOWS`. The sweep then expects the shadowing template
-    // to win the probe rather than the shadowed one. The shadow's
-    // pattern still matches at least `IS_VALID_MIN_MATCHES=2` of the
-    // shadowed sample lines (that is why it wins), but not
-    // necessarily *every* line -- so the "parse every sample under
-    // the detected pattern" cross-check is only run for
-    // self-detecting templates.
-    //
-    // Curated shadows are load-bearing regression guards: if a
-    // future refactor tightens Zap's or Apache error's pattern (or
-    // reshuffles the Java / spdlog sample lines), the shadowing will
-    // vanish and this list will need to shrink -- surfacing the
-    // change instead of hiding it.
-    //
-    // Contrast with the sweep at "Built-in regex templates compile
-    // and parse their sample lines" above, which pins each template
-    // by handing it its own pattern; this test instead runs the
-    // whole probe pipeline the way `AutoDetectParser` and
-    // `MainWindow::OpenLogStreamFromPath` would.
+    // Exercise full registry detection for every built-in sample.
+    // `KNOWN_SHADOWS` records cases where a higher-precedence
+    // template (lower numeric priority) intentionally wins.
     struct Shadow
     {
         std::string_view sampleTemplate;
@@ -192,16 +164,12 @@ TEST_CASE(
         }
         CHECK(detected->name == expectedName);
 
-        // For self-detecting templates only, cross-check that the
-        // resolved pattern parses every sample line. Skipped for
-        // shadowed entries: by construction the shadow's pattern
-        // only needs to match the probe threshold, not the whole
-        // fixture, so a strict parse-count assertion would fire
-        // spuriously.
+        // Non-shadowed templates must parse every sample line.
         if (!isShadowed)
         {
             const ParseResult result = ParseLinesWith(
-                detected->pattern, std::span<const std::string>(t.sampleLines),
+                detected->pattern,
+                std::span<const std::string>(t.sampleLines),
                 "regex_templates_sweep_" + SlugifyName(t.name) + ".log"
             );
             CHECK(result.errors.empty());

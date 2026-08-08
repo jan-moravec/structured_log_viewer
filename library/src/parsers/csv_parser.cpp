@@ -530,10 +530,8 @@ void AppendValueAsCell(std::string &out, const LogValue &value)
 
 bool CsvParser::IsValidBytes(std::string_view sniffBuffer) const
 {
-    // `sniffBuffer` is bounded to `PROBE_BYTES_BUDGET` by the caller
-    // (`ReadProbeHead` or `AutoDetectParser::DrainPeek`), so no inner
-    // byte-cap is needed here -- the two `while (cursor < size)`
-    // loops terminate on their own.
+    // Callers cap `sniffBuffer` at `PROBE_BYTES_BUDGET`, so the
+    // cursor bounds are sufficient.
     std::string scratch;
     size_t cursor = 0;
 

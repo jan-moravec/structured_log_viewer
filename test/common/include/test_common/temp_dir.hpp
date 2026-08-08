@@ -17,9 +17,7 @@ namespace test_common
 /// Removes the directory (and everything in it) on destruction on
 /// a best-effort basis; a failed cleanup only leaks a temp dir.
 ///
-/// This is a header-only helper because the test targets that need
-/// it are already header-heavy (Catch2, benchmarks); pulling it out
-/// of two `test_*.cpp` files keeps the fixture behaviour identical.
+/// Header-only so test targets share identical fixture behaviour.
 class TempDir
 {
 public:

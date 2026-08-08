@@ -10,12 +10,10 @@ namespace loglib::internal
 /// True when the process's standard input is an interactive
 /// terminal / console (as opposed to a pipe, redirected file, or
 /// closed handle). Used by the stdin session opener to refuse the
-/// "bare `slv -` at a TTY" case up front rather than freezing the
-/// GUI thread inside `StdinPeek` waiting for the user to type
-/// `PROBE_BYTES_BUDGET` bytes.
+/// bare-terminal case before `StdinPeek` can block the GUI thread.
 ///
-/// Windows: `GetFileType(GetStdHandle(STD_INPUT_HANDLE))` returns
-/// `FILE_TYPE_CHAR` for consoles. POSIX: `isatty(STDIN_FILENO)`.
+/// Windows treats every `FILE_TYPE_CHAR` handle as interactive;
+/// POSIX uses `isatty(STDIN_FILENO)`.
 /// Both return false on a closed / invalid stdin, which is the
 /// safer default (an invalid handle triggers a soft error later,
 /// not a UI hang).

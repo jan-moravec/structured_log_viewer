@@ -220,23 +220,12 @@ public:
     /// Open a live-tail session over the process's standard input.
     /// The CLI parses `-` / `--stdin` in argv and routes here via
     /// `main()`. Session shape mirrors `OpenNetworkStream` (live-
-    /// tail, `Kind::Stdin`, non-persisted): stdin is one-shot per
-    /// process, so there's nothing to reopen on restart.
-    ///
-    /// Format detection: `loglib::internal::StdinPeek` synchronously
-    /// reads up to `PROBE_BYTES_BUDGET` bytes on the GUI thread,
-    /// runs `DetectFormatFromBytes`, and hands the peek back to the
-    /// resolved parser via `ParserOptions::initialCarry` so no
-    /// bytes are lost.
+    /// tail, `Kind::Stdin`, excluded from Recent Sessions): stdin is
+    /// one-shot per process, so there's nothing to reopen on restart.
     void OpenStdinStream();
 
-    /// Shared body of `OpenStdinStream` and its test seam. Takes a
-    /// pre-built producer plus the peek bytes already drained from
-    /// that stream. Public so `OpenStdinStreamForTest` (below,
-    /// guarded by `LOGAPP_BUILD_TESTING`) can forward to it
-    /// without also having to be publicly declared outside test
-    /// builds. Production callers should use `OpenStdinStream()`
-    /// instead.
+    /// Shared implementation for `OpenStdinStream` and its test
+    /// seam. Takes ownership of the producer and its pre-read bytes.
     void OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProducer> producer, std::string peek);
 
     /// The auto-save uuid pinned to this window, or empty if none.
@@ -606,12 +595,8 @@ public:
     /// modal `QFileDialog`.
     void OpenLogStreamForTest(const QString &filePath);
 
-    /// Drive the body of `OpenStdinStream` with a caller-supplied
-    /// producer and pre-drained peek. Lets tests exercise the
-    /// stdin open path without touching FD 0 (which would let a
-    /// running IDE / VS test host's stdin leak into the session).
-    /// Ownership of @p producer is transferred to the streaming
-    /// source.
+    /// Test seam; forwards a producer and pre-read bytes to
+    /// `OpenStdinStreamFromProducer`.
     void OpenStdinStreamForTest(std::unique_ptr<loglib::BytesProducer> producer, std::string peek);
 
     /// Test-only forwarder to `NewSession`.

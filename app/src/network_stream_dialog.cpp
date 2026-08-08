@@ -109,9 +109,7 @@ NetworkStreamDialog::NetworkStreamDialog(RegexTemplateRegistry *registry, QWidge
 
     connect(mTcpRadio, &QRadioButton::toggled, this, &NetworkStreamDialog::OnProtocolChanged);
 
-    // Format picker. No file to sniff for a network stream, so the
-    // user picks up front. Combobox (not radios) leaves room for
-    // future formats.
+    // Format picker with auto-detect and manual overrides.
     auto *formatBox = new QGroupBox(tr("Format"), this);
     auto *formatLayout = new QHBoxLayout(formatBox);
     mFormat = new QComboBox(formatBox);
@@ -122,7 +120,7 @@ NetworkStreamDialog::NetworkStreamDialog(RegexTemplateRegistry *registry, QWidge
     mFormat->addItem(tr("Regex template"), QVariant::fromValue(static_cast<int>(Format::Regex)));
     mFormat->setToolTip(
         tr("Wire format of the bytes flowing over the socket. "
-           "Auto-detect peeks the first bytes and picks the same parser file / stdin sources use; "
+           "Auto-detect chooses the parser the same way file and stdin sources do; "
            "override manually only when the initial line is ambiguous or you need a specific regex "
            "template. "
            "For CSV, the first inbound line is treated as the header; if multiple TCP clients "

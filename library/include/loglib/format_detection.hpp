@@ -14,7 +14,7 @@ namespace loglib
 
 /// Auto-detection result: the matched format and, for `Regex`, the
 /// matched template's pattern (built-in or user). `regexPattern`
-/// is empty for every other format and for content nothing claimed.
+/// is empty for non-Regex formats and when no probe matched.
 struct DetectedFormat
 {
     LogConfiguration::Source::Format format = LogConfiguration::Source::Format::Json;
@@ -32,12 +32,8 @@ struct DetectedFormat
 /// stream). This overload cannot distinguish "JSON was actually
 /// claimed" from "nothing claimed, defaulting to JSON".
 ///
-/// Every input surface funnels through this function:
-///   - Static file opens (`MainWindow::DetectFormatForPath`)
-///   - Live-tail file opens (`MainWindow::OpenLogStreamFromPath`)
-///   - Stdin (`MainWindow::OpenStdinStream`)
-///   - Network stream auto-detect (`AutoDetectParser`)
-/// so "same bytes → same format" holds across every input path.
+/// Used by file, stdin, and network detection so identical bytes
+/// produce identical results.
 [[nodiscard]] DetectedFormat DetectFormatFromBytes(std::string_view sniffBuffer);
 
 /// Like `DetectFormatFromBytes`, but returns `std::nullopt` when
@@ -66,10 +62,8 @@ struct DetectedFormat
 /// empty @p regexPattern with `Format::Regex` builds a parser
 /// that surfaces a single "empty pattern" error through the sink.
 ///
-/// Historically `MakeParserForFormat` lived in
-/// `app/src/main_window.cpp`; hoisting it to the library lets
-/// `AutoDetectParser` (below) build the resolved parser without
-/// pulling in the app layer.
+/// Kept in the library so `AutoDetectParser` can resolve formats
+/// without depending on the app layer.
 [[nodiscard]] std::unique_ptr<LogParser> MakeParserForFormat(
     LogConfiguration::Source::Format format, std::string_view regexPattern = {}
 );

@@ -21,18 +21,12 @@
 namespace test_common
 {
 
-/// RAII wrapper around a platform pipe. Owns both ends up front;
-/// the read-end can be borrowed (`ReadEnd`) for callers that keep
-/// their own reference (`StdinRedirect` for the `StdinPeek`
-/// fixture) or transferred outright (`TakeReadEndOpaque`) for
-/// callers that need to hand the read-end into another owner
-/// (`StdinBytesProducerTestAccess::Create` for the producer
-/// fixture). Once transferred, `CloseRead` becomes a no-op so
-/// the destructor leaves the transferee's handle alone.
+/// RAII wrapper around a platform pipe. The read end can be borrowed
+/// with `ReadEnd` or transferred with `TakeReadEndOpaque`; after a
+/// transfer, `CloseRead` is a no-op.
 ///
-/// This is a header-only helper so both call sites can share the
-/// same platform-branchy Windows / POSIX code without an extra
-/// static library. Setup / write failures throw
+/// Header-only so tests can share platform-specific Windows/POSIX code
+/// without a separate static library. Setup / write failures throw
 /// `std::runtime_error`; Catch2 surfaces the exception message
 /// alongside the failing assertion with no extra plumbing.
 class Pipe
@@ -111,10 +105,8 @@ public:
 #endif
     }
 
-    /// Write @p bytes to the write-end. Throws if the platform
-    /// call short-writes or fails; pipes don't short-write for
-    /// the small payloads tests use so a partial write signals
-    /// a broken fixture, not a byte-count race.
+    /// Write @p bytes to the write end. For these small fixtures, a
+    /// short write is treated as an error.
     void Write(std::string_view bytes) const
     {
 #ifdef _WIN32
@@ -123,8 +115,7 @@ public:
             throw std::runtime_error("test_common::Pipe: Write called after CloseWrite");
         }
         DWORD written = 0;
-        const BOOL ok =
-            ::WriteFile(mWrite, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr);
+        const BOOL ok = ::WriteFile(mWrite, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr);
         if (ok == 0 || written != bytes.size())
         {
             throw std::runtime_error("test_common::Pipe: WriteFile failed or short-wrote");

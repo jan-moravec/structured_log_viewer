@@ -55,10 +55,8 @@ ParseResult ParseFile(const LogParser &parser, const std::filesystem::path &file
 
 ParseResult ParseFile(const std::filesystem::path &file)
 {
-    // Route through the shared byte-buffer probe so `ParseFile`
-    // and the GUI's `DetectFormatForPath` cannot disagree on the
-    // format for the same file. The single head read is
-    // negligible next to the parse itself.
+    // Use the shared probe so `ParseFile` and
+    // `DetectFormatForPath` agree on the same file.
     const std::string head = ReadProbeHead(file, PROBE_BYTES_BUDGET);
     if (head.empty())
     {

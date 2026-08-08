@@ -39,10 +39,7 @@ constexpr std::size_t PEEK_CHUNK_BYTES = 4096;
 constexpr auto PEEK_WAIT_INTERVAL = std::chrono::milliseconds(100);
 
 std::string DrainPeek(
-    BytesProducer &producer,
-    std::size_t peekBudget,
-    std::chrono::milliseconds peekTimeout,
-    const StopToken &stopToken
+    BytesProducer &producer, std::size_t peekBudget, std::chrono::milliseconds peekTimeout, const StopToken &stopToken
 )
 {
     std::string peek;
@@ -87,8 +84,7 @@ std::string DrainPeek(
             // `PEEK_WAIT_INTERVAL`. `duration_cast` truncates
             // toward zero; guard against a zero-duration park
             // by breaking out instead.
-            const auto remaining =
-                std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
             const auto waitFor = std::min(remaining, PEEK_WAIT_INTERVAL);
             if (waitFor <= std::chrono::milliseconds::zero())
             {
@@ -129,9 +125,9 @@ void AutoDetectParser::ParseStreaming(FileLineSource &source, LogParseSink &sink
     // deep inside the pipeline, and clear the carry in release so
     // the delegate does not inherit garbage.
     assert(
-        options.initialCarry.empty()
-        && "AutoDetectParser::ParseStreaming(FileLineSource, ...) does not support initialCarry; use the "
-           "StreamLineSource overload"
+        options.initialCarry.empty() &&
+        "AutoDetectParser::ParseStreaming(FileLineSource, ...) does not support initialCarry; use the "
+        "StreamLineSource overload"
     );
     options.initialCarry.clear();
     const DetectedFormat detected = DetectFormatForPath(source.Path());
@@ -167,10 +163,8 @@ void AutoDetectParser::ParseStreaming(StreamLineSource &source, LogParseSink &si
 
     if (combined.empty())
     {
-        // Nothing to detect on: either the caller cancelled before
-        // any bytes arrived, or the producer closed empty. Delegate
-        // to `JsonParser` so the streaming loop emits its terminal
-        // batch cleanly.
+        // Stop, timeout, or EOF may leave no bytes to detect.
+        // Delegate to JSON so the normal sink lifecycle still runs.
         JsonParser().ParseStreaming(source, sink, std::move(options));
         return;
     }

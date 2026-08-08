@@ -41,9 +41,8 @@ using test_common::TempDir;
 namespace
 {
 
-/// Byte-array producer: hands the entire buffer to the parser in
-/// small chunks, then reports EOF. Threaded, so `WaitForBytes`
-/// eventually resolves without spinning the caller.
+/// In-memory producer that returns small chunks, then EOF.
+/// `WaitForBytes` is a no-op because bytes are immediately available.
 class BufferedBytesProducer final : public BytesProducer
 {
 public:
@@ -81,8 +80,6 @@ public:
 
     void WaitForBytes(std::chrono::milliseconds /*timeout*/) override
     {
-        // Bytes are always available until the buffer drains, at
-        // which point `IsClosed` flips. No parking required.
     }
 
     void Stop() noexcept override
@@ -109,9 +106,8 @@ private:
     std::atomic<bool> mClosed{false};
 };
 
-/// Sink that concatenates parsed row payloads. Simple string
-/// aggregation is enough to assert "the resolved parser saw the
-/// bytes"; format-specific decoding is covered elsewhere.
+/// Sink that counts parsed rows; format-specific decoding is tested
+/// elsewhere.
 class CollectingSink final : public LogParseSink
 {
 public:
@@ -142,9 +138,8 @@ private:
     KeyIndex mKeys;
 };
 
-/// Runs `parser.ParseStreaming(source, sink, options)` on a
-/// dedicated worker with a bounded wall-clock deadline. Returns
-/// once the worker joins.
+/// Runs `ParseStreaming` on a worker and waits up to @p deadline for
+/// completion before joining it.
 void RunStreaming(
     const loglib::LogParser &parser,
     StreamLineSource &source,
@@ -253,8 +248,7 @@ TEST_CASE("AutoDetectParser (file path) uses DetectFormatForPath under the hood"
     // a small on-disk fixture. The `AutoDetectParser`
     // `FileLineSource` overload is a one-liner around this call.
     const TempDir dir("auto_detect");
-    const auto filePath =
-        dir.Write("routing.log", "level=info message=first\nlevel=warn message=second\n");
+    const auto filePath = dir.Write("routing.log", "level=info message=first\nlevel=warn message=second\n");
 
     const loglib::DetectedFormat detected = loglib::DetectFormatForPath(filePath);
     CHECK(detected.format == loglib::LogConfiguration::Source::Format::Logfmt);
@@ -262,11 +256,9 @@ TEST_CASE("AutoDetectParser (file path) uses DetectFormatForPath under the hood"
 
 TEST_CASE("AutoDetectParser routes regex-template bytes to a regex parse", "[AutoDetectParser]")
 {
-    // Standard syslog-ish header that the built-in regex catalog
-    // recognises. Two record lines so we can assert row count.
-    const std::string bytes =
-        "2025-08-07T09:00:00Z INFO svc: first message\n"
-        "2025-08-07T09:00:01Z WARN svc: second message\n";
+    // Standard syslog-like lines recognised by the built-in catalog.
+    const std::string bytes = "2025-08-07T09:00:00Z INFO svc: first message\n"
+                              "2025-08-07T09:00:01Z WARN svc: second message\n";
 
     auto producer = std::make_unique<BufferedBytesProducer>(bytes);
     StreamLineSource source(std::filesystem::path("<auto>"), std::move(producer));
@@ -285,13 +277,12 @@ TEST_CASE("AutoDetectParser routes regex-template bytes to a regex parse", "[Aut
 namespace
 {
 
-/// Byte-array producer whose `Read` yields chunks separated by a
+/// In-memory producer whose `Read` yields chunks separated by a
 /// fixed delay. The first chunk is released immediately; each
 /// subsequent chunk becomes readable @p gap after the previous
 /// one drained. Between chunks, `Read` returns 0 and
 /// `WaitForBytes` blocks up to the passed timeout waiting for the
-/// release timer. Models a slow network sender / a stdin producer
-/// that only wakes on newline flushes.
+/// release timer. Models a slow network sender.
 class SlowBytesProducer final : public BytesProducer
 {
 public:
@@ -410,16 +401,17 @@ TEST_CASE("AutoDetectParser composes with a caller-supplied initialCarry", "[Aut
 
 TEST_CASE("AutoDetectParser short-circuits the peek once detection commits", "[AutoDetectParser]")
 {
-    // Chunk 1 delivers a full JSON line, which is enough for
-    // `TryDetectFormatFromBytes` to commit to `Json`. Chunk 2 is
-    // delayed by 30 s -- if the peek loop waited for the full
-    // deadline (also set to 30 s below) instead of returning
-    // early on the first verdict, the test would time out.
+    // The first chunk identifies JSON; the second is delayed 30 s.
+    // Detection must commit within 2 s, before the 30 s peek deadline.
     std::vector<std::string> chunks;
-    chunks.emplace_back(R"({"level":"info","message":"early"})"
-                        "\n");
-    chunks.emplace_back(R"({"level":"warn","message":"late"})"
-                        "\n");
+    chunks.emplace_back(
+        R"({"level":"info","message":"early"})"
+        "\n"
+    );
+    chunks.emplace_back(
+        R"({"level":"warn","message":"late"})"
+        "\n"
+    );
     auto producer = std::make_unique<SlowBytesProducer>(std::move(chunks), std::chrono::milliseconds(30000));
     StreamLineSource source(std::filesystem::path("<auto>"), std::move(producer));
 
@@ -427,10 +419,6 @@ TEST_CASE("AutoDetectParser short-circuits the peek once detection commits", "[A
     ParserOptions options;
     loglib::StopSource stopSource;
     options.stopToken = stopSource.get_token();
-    // Explicit 30-second peek deadline to prove that early
-    // detection (and not the deadline) is what unblocks the
-    // peek. If the loop instead waited for the deadline we would
-    // hang for 30 seconds.
     const AutoDetectParser parser(loglib::PROBE_BYTES_BUDGET, std::chrono::milliseconds(30000));
     const auto startedAt = std::chrono::steady_clock::now();
     std::thread worker([&] { parser.ParseStreaming(source, sink, std::move(options)); });
@@ -441,9 +429,6 @@ TEST_CASE("AutoDetectParser short-circuits the peek once detection commits", "[A
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     CHECK(sink.started.load());
-    // If the peek short-circuited we get to `OnStarted` in well
-    // under 30 seconds. A 2-second bound is loose enough to
-    // absorb CI jitter but tight enough to catch a regression.
     CHECK(std::chrono::steady_clock::now() - startedAt < std::chrono::milliseconds(2000));
 
     stopSource.request_stop();
@@ -464,8 +449,10 @@ TEST_CASE("AutoDetectParser deadline caps the peek on an unrecognised producer",
     // allows plus the full 5 s gap.
     std::vector<std::string> chunks;
     chunks.emplace_back("   \n   \n"); // two blank lines, no verdict
-    chunks.emplace_back(R"({"msg":"late"})"
-                        "\n");
+    chunks.emplace_back(
+        R"({"msg":"late"})"
+        "\n"
+    );
     auto producer = std::make_unique<SlowBytesProducer>(std::move(chunks), std::chrono::milliseconds(5000));
     StreamLineSource source(std::filesystem::path("<auto>"), std::move(producer));
 
@@ -486,8 +473,7 @@ TEST_CASE("AutoDetectParser deadline caps the peek on an unrecognised producer",
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     CHECK(sink.started.load());
-    // Must have handed off to the delegate well within our
-    // patience budget (deadline plus a healthy startup slack).
+    // Allow startup slack beyond the 200 ms peek deadline.
     CHECK(std::chrono::steady_clock::now() - startedAt < std::chrono::milliseconds(2000));
 
     stopSource.request_stop();

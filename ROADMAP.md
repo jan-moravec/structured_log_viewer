@@ -18,7 +18,7 @@ For the architecture each item plugs into, see [CONTRIBUTING.md → Architecture
   - [6. ~~Multi-line records (stack traces and continuation lines)~~ (shipped)](#6-multi-line-records-stack-traces-and-continuation-lines)
   - [7. ~~Export filtered rows~~ (shipped)](#7-export-filtered-rows)
   - [8. ~~Goto line / Goto timestamp~~ (shipped)](#8-goto-line--goto-timestamp)
-  - [9. Stdin / pipe input](#9-stdin--pipe-input)
+  - [9. ~~Stdin / pipe input~~ (shipped)](#9-stdin--pipe-input)
   - [10. Headless / scriptable CLI mode](#10-headless--scriptable-cli-mode)
 - [Tier 2 — `v1.x` strong differentiators](#tier-2--v1x-strong-differentiators)
   - [11. Pulling rotated history off disk](#11-pulling-rotated-history-off-disk)
@@ -71,7 +71,7 @@ The roadmap aims to close the **mainstream desktop log-viewer expectations** bef
 
 Beyond the per-item list, three themes run through the roadmap:
 
-1. **Pre-release ergonomics.** Close the "table stakes" gaps any reviewer will flag in a head-to-head against Klogg or lnav: compressed files, histogram strip, highlight rules, bookmark notes, AND/OR filters, ~~multi-line records~~ (shipped), filtered/session export, goto, stdin, headless mode.
+1. **Pre-release ergonomics.** Close the "table stakes" gaps any reviewer will flag in a head-to-head against Klogg or lnav: compressed files, histogram strip, highlight rules, bookmark notes, AND/OR filters, ~~multi-line records~~ (shipped), filtered/session export, goto, ~~stdin~~ (shipped), headless mode.
 1. **Structured-log power user.** Lean into what `loglib` already does well — typed columns, level promotion, the regex-template registry — with features that only make sense on structured data: SQL queries over typed rows, per-cell quick filters, pattern clustering by template key, time-gap detection across the first `Type::Time` column.
 1. **Scale and performance.** Preserve the existing performance envelope (see [CONTRIBUTING.md → Benchmarking](CONTRIBUTING.md#benchmarking)) as features land. Each Tier 1 / 2 item below documents whether it needs a new benchmark or a regression check against the [Acceptance bar](CONTRIBUTING.md#acceptance-bar).
 
@@ -89,11 +89,11 @@ Each of the ten items below closes a gap that reviewers and first-time users rou
 
 **Non-goals (v1).** `.zip` / `.tar.gz` multi-member archives (extract first), encrypted archives, live-tail of a compressed file (the producer would need to re-decompress on every truncate; defer to a v1.x ticket if there's demand).
 
-**Approach.** Add a `DecompressingByteSource` layer beneath `FileLineSource`. Sniff the first 6 bytes of the file in `MainWindow::DetectFormatForPath` (already the central format-sniff point) and pick a decompressor before the existing format probe runs. Bytes flow into a memory-mapped staging buffer (small files) or a streaming decoder feeding a temp file (large files) so the rest of the static pipeline (mmap + TBB) sees a uniform byte source. Dependencies: prefer system `zlib` / `libbz2` / `liblzma` / `libzstd` where present, FetchContent fallback. Add license-bundle entries for all four codecs to [`cmake/BundleLicenses.cmake`](cmake/BundleLicenses.cmake) (none were previously registered).
+**Approach.** `DecompressingByteSource` sniffs codec magic before `loglib::DetectFormatForPath` runs. It streams decoded bytes to a temp file so the static mmap + TBB pipeline sees a normal file. Dependencies prefer system `zlib` / `libbz2` / `liblzma` / `libzstd`, with FetchContent fallbacks.
 
 **Acceptance bar.** Open one ~500 MiB JSONL file compressed with each of the four codecs in `< 2 ×` the time of the uncompressed equivalent. Existing parser benchmarks unchanged (the decompression path is upstream of them). Unit tests for each codec with truncated / corrupt input must surface a parse error rather than crash.
 
-**Touches.** `loglib`: new `library/include/loglib/internal/decompressing_byte_source.hpp` + `.cpp`. `app`: `MainWindow::DetectFormatForPath`, `StartStreamingOpenQueue`. Docs: [`doc/README.md`](doc/README.md) supported-extensions section.
+**Touches.** `loglib`: `internal/decompressing_byte_source.hpp` + `.cpp`. `app`: `MainWindow::StreamNextPendingFile` and async decompression helpers. Docs: [`doc/README.md`](doc/README.md) supported-extensions section.
 
 ### 2. ~~Histogram / activity-rate strip~~
 
@@ -184,7 +184,7 @@ export shipped separately as [item 30](#30-full-session-export-bundle).
 
 ### 9. ~~Stdin / pipe input~~
 
-> **Shipped.** `slv -` and `slv --stdin` open a live-tail session over the process's standard input. Format is auto-detected from the first `PROBE_BYTES_BUDGET` bytes via the same `DetectFormatFromBytes` probe file opens use; the peek is fed to the resolved parser through `ParserOptions::initialCarry` so no bytes are lost. `EOF` on stdin closes the source cleanly; `Ctrl+C` on the producer side unblocks the worker within the standard `Stop()` budget. The stdin session is never persisted (`ShouldAutoSaveSession` rejects any non-`File` kind), and the CLI implicitly forces `--new-instance` so a piped launch never forwards to an already-running primary that cannot see the pipe. The Network Stream dialog also learned the same auto-detect option (`Format::AutoDetect`, now the default first-launch pick) via `AutoDetectParser`, which peeks the first bytes off the socket before delegating to the resolved parser.
+> **Shipped.** `StructuredLogViewer -` and `StructuredLogViewer --stdin` open a live-tail session over standard input with 16 KiB format detection, JSON Lines fallback, implicit `--new-instance`, no session persistence, and the same controls as file tailing. The Network Stream dialog also defaults to Auto-detect.
 
 See [`doc/README.md § Reading from standard input`](doc/README.md#reading-from-standard-input) for shell examples.
 
@@ -195,7 +195,7 @@ See [`doc/README.md § Reading from standard input`](doc/README.md#reading-from-
 **Scope.** A `--no-gui` (or `-n`) flag that runs the existing `loglib` pipeline against the requested source, applies filters / sort, then writes the result through the [item 7](#7-export-filtered-rows) export path and exits. Flags:
 
 - `--source <path | ->` (file, stdin, or `tcp://...` / `udp://...`).
-- `--format <json|logfmt|csv|regex>` (overrides auto-detect; required for stdin in v1).
+- `--format <json|logfmt|csv|regex>` (optional override for auto-detect).
 - `--filter <expression>` (uses the [item 5](#5-boolean-filter-expressions-and--or--not) text syntax).
 - `--since <timestamp|relative>` / `--until <timestamp|relative>`.
 - `--columns <a,b,c>` (whitelist).
@@ -352,7 +352,7 @@ Reference snapshot from the survey that informed the roadmap (June 2026). `✓` 
 | TLS for network ingestion                   |        ✓         |           |       |           |             |         |              |           |       |
 | Compressed file (gz / bz2 / zst / zip)      |        ✓         |     ✓     |   ~   |           |      ✓      |    ✓    |              |     ~     |       |
 | Pulling rotated history off disk            |                  |     ✓     |       |           |             |    ~    |              |           |       |
-| stdin / pipe input                          |                  |     ✓     |   ✓   |           |             |         |              |           |   ~   |
+| stdin / pipe input                          |        ✓         |     ✓     |   ✓   |           |             |         |              |           |   ~   |
 | Per-row colouring by level                  |        ✓         |     ✓     |       |     ~     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
 | User-defined highlight rules                |        ✓         |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |           |   ✓   |
 | Bookmarks with notes / comments             |        ✓         |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |     ~     |   ✓   |

@@ -36,14 +36,9 @@ public:
         Udp,
     };
 
-    /// Wire format on the socket. Network streams have nothing on
-    /// disk to sniff, so historically the parser had to be picked
-    /// up front. `AutoDetect` (the default) now peeks the first
-    /// bytes of the connection and picks the same way file /
-    /// stdin sources do. Manual formats are kept for cases where
-    /// the initial line is ambiguous (short JSON that also looks
-    /// like logfmt, or a regex template with an empty first line)
-    /// and for parity with the pre-auto-detect UX.
+    /// Wire format on the socket. `AutoDetect` (the default) chooses
+    /// from the initial bytes. Manual formats handle ambiguous input
+    /// or pin a specific regex template.
     ///
     /// The choice round-trips through `QSettings` so the next
     /// session defaults to the previous pick.

@@ -23341,9 +23341,8 @@ private slots:
 
     void TestCliParserStdinCoexistsWithFileArgs()
     {
-        // `slv preload.log -` should open the preload file *and*
-        // then attach to stdin. Files and readStdin are independent
-        // signals, main() consumes them in order.
+        // The parser preserves both signals. `main()` opens files
+        // first, then stdin replaces queued and in-flight work.
         const QStringList args = {
             QStringLiteral("StructuredLogViewer"),
             QStringLiteral("preload.log"),
@@ -23357,9 +23356,7 @@ private slots:
 
     void TestCliParserStdinDefaultsToFalseWithoutFlag()
     {
-        // Sanity: an ordinary launch does not accidentally opt
-        // into stdin (which would deadlock the app waiting on
-        // FD 0).
+        // An ordinary launch must not opt into stdin.
         const QStringList args = {
             QStringLiteral("StructuredLogViewer"),
             QStringLiteral("only.log"),
@@ -23373,7 +23370,7 @@ private slots:
     {
         // Regression: the `-` pre-strip used to iterate all of
         // `args`, including `args[0]` (the program name). A
-        // hypothetical exe renamed to just `-` (or a mis-shaped
+        // hypothetical exe renamed to just `-` (or malformed
         // `QCoreApplication::arguments()` in test code) would then
         // set `readStdin`. The fix skips index 0 in the pre-strip.
         const QStringList args = {

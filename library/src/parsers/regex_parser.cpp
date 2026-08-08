@@ -40,8 +40,8 @@ namespace loglib
 namespace
 {
 
-/// Bytes scanned by `IsValid` / `DetectRegexTemplate` before giving
-/// up. Matches the shared `loglib::PROBE_BYTES_BUDGET`.
+/// Bytes scanned by `IsValidBytes` and
+/// `DetectRegexTemplateFromBytes`.
 constexpr size_t IS_VALID_PROBE_BYTES = PROBE_BYTES_BUDGET;
 
 /// Minimum number of non-blank probe lines a template must match for
@@ -481,7 +481,8 @@ bool MatchesFullyForProbe(const CompiledPattern &cp, std::string_view line)
 /// probe line only, leaving the rest of the byte stream untouched.
 constexpr std::string_view UTF8_BOM = "\xEF\xBB\xBF";
 
-/// Byte-buffer probe shared by `IsValid` and `DetectRegexTemplate`.
+/// Shared by `RegexParser::IsValidBytes` and
+/// `DetectRegexTemplateFromBytes`.
 /// Walks the merged auto-detect registry (built-ins + any
 /// `autoDetect=true` extras from `SetExtraRegexTemplates`) in
 /// probe order and returns the first entry that matches at least

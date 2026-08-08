@@ -15,8 +15,7 @@ struct ProbeLine
     std::string_view line;
 
     /// Cumulative bytes consumed from the input, including the
-    /// terminating `\n` if one was found. Matches the accounting
-    /// `IS_VALID_PROBE_BYTES` did against `std::getline`.
+    /// terminating `\n` if one was found.
     std::size_t bytesConsumed = 0;
 
     /// Position of the first byte *after* this line in the input,
@@ -30,10 +29,9 @@ struct ProbeLine
     bool terminated = false;
 };
 
-/// Extract the line at @p offset from @p bytes. Returns
-/// `std::nullopt`-equivalent (nextOffset == bytes.size() and empty
-/// line) when the cursor is at end. Trailing `\r` is stripped from
-/// the returned view.
+/// Extract the line at @p offset from @p bytes. At end-of-buffer,
+/// returns an empty `ProbeLine` with `nextOffset == bytes.size()`.
+/// Trailing `\r` is stripped from the returned view.
 [[nodiscard]] inline ProbeLine NextProbeLine(std::string_view bytes, std::size_t offset)
 {
     ProbeLine result;

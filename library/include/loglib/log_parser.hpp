@@ -24,23 +24,16 @@ struct ParseResult
     std::vector<std::string> errors;
 };
 
-/// Shared cap on bytes scanned by every parser's `IsValid` probe
-/// (JSON, logfmt, CSV, regex). Also the head-read size used by the
-/// non-virtual `IsValid(path)` shim on `LogParser`, and the peek
-/// budget used by `AutoDetectParser` for network streams and by
-/// `MainWindow::OpenStdinStream` for pipe input. Keeping every
-/// probe on the same budget guarantees "same bytes -> same format"
-/// across static files, live-tail files, stdin, and network
-/// auto-detect.
+/// Maximum bytes inspected during format detection.
+/// Shared by file, stdin, and network probes so identical bytes
+/// produce identical results.
 inline constexpr std::size_t PROBE_BYTES_BUDGET = 16 * 1024;
 
 /// Base class for log-format parsers. New formats implement the
-/// byte-buffer `IsValid(std::string_view)`, both `ParseStreaming`
+/// byte-buffer `IsValidBytes(std::string_view)`, both `ParseStreaming`
 /// overloads, and `ToString`. The file-based `IsValid` is a
 /// non-virtual shim that reads up to `PROBE_BYTES_BUDGET` bytes
-/// and forwards to the byte-buffer overload -- so the probe logic
-/// lives in exactly one place per parser and can be reused
-/// verbatim for stdin / network auto-detect.
+/// and forwards to `IsValidBytes`.
 ///
 /// The synchronous "parse a file" helper is `loglib::ParseFile`
 /// (see `parse_file.hpp`); production GUI code uses
@@ -55,11 +48,9 @@ public:
     /// of @p sniffBuffer, and should treat a partial trailing line
     /// (no terminating `\n`) the same as a complete line -- the
     /// buffer may have been truncated by the caller's probe budget.
-    /// Called from `IsValid(path)` below (via `ReadProbeHead`),
-    /// from `AutoDetectParser`, and from the app-level
-    /// `DetectFormatFromBytes` iterator. Named distinctly from
-    /// `IsValid` so calls to the file shim with a `std::string`
-    /// path never resolve to the byte-buffer overload by accident.
+    /// Used by `IsValid(path)`, `AutoDetectParser`, and the shared
+    /// format-detection functions. The distinct name prevents a
+    /// `std::string` path from selecting this overload accidentally.
     virtual bool IsValidBytes(std::string_view sniffBuffer) const = 0;
 
     /// Read up to `PROBE_BYTES_BUDGET` bytes from @p file into a

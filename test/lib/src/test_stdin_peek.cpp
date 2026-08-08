@@ -163,22 +163,17 @@ TEST_CASE("StdinPeek stops at the timeout when the producer is silent", "[StdinP
     // masking a true "peek never returned" regression.
     CHECK(elapsed < timeout * 4);
 
-    // Let the late writer drain into the (still-attached but now
-    // ignored) pipe so its join doesn't outlive the fixture.
+    // Join the late writer before the pipe fixture is destroyed.
     lateWriter.join();
     pipe.CloseWrite();
 }
 
-TEST_CASE(
-    "StdinPeek bytes + DetectFormatFromBytes agree with DetectFormatForPath on the same content", "[StdinPeek]"
-)
+TEST_CASE("StdinPeek bytes + DetectFormatFromBytes agree with DetectFormatForPath on the same content", "[StdinPeek]")
 {
     // The stdin path drives its format decision through the
     // `peek -> DetectFormatFromBytes -> initialCarry` handshake.
     // File-backed opens go through `DetectFormatForPath`. Assert
-    // both entry points reach the same verdict for identical
-    // bytes so the two ingest routes are indistinguishable to a
-    // saved configuration.
+    // both entry points reach the same verdict for identical bytes.
     struct Sample
     {
         std::string_view label;

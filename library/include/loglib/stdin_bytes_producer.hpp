@@ -15,11 +15,11 @@ namespace internal
 {
 class StdinBytesProducerImpl; // pimpl forward decl
 struct StdinBytesProducerTestAccess;
-}
+} // namespace internal
 
 /// `BytesProducer` over the process's standard input. Used by the
-/// stdin CLI path (`slv -` / `slv --stdin`) and any future feature
-/// that wants to consume a pipe. Bytes flow one direction, EOF is
+/// stdin CLI path (`StructuredLogViewer -` / `--stdin`) and any
+/// future feature that consumes a pipe. Bytes flow one direction, EOF is
 /// terminal: unlike `TailingBytesProducer` there is nothing to
 /// rotate or recover.
 ///

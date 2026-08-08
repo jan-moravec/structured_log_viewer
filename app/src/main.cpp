@@ -166,10 +166,8 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    // `--new-instance` peers must not mutate the canonical primary's
-    // `openWindowsAtQuit`. The stdin fallback also opts out of
-    // publish since a stdin session is inherently one-shot per
-    // process (see `MainWindow::ShouldAutoSaveSession`).
+    // Explicit or stdin-implied new instances must not publish the
+    // canonical primary's `openWindowsAtQuit` state.
     SessionHistoryManager::SetPublishingEnabled(!effectiveAllowNewInstance);
 
     // Init the IANA timezone database before any timestamp work
@@ -216,10 +214,8 @@ int main(int argc, char *argv[])
         w.OpenFilesForCli(cliFiles);
     }
 
-    // Open stdin *after* any positional files so the stdin session
-    // wins the "current session" slot (users piping a live stream
-    // will look at that, not the static preload). `OpenStdinStream`
-    // also handles the empty-files case cleanly.
+    // Stdin opens last and replaces any queued or in-flight file
+    // opens, making the pipe the current session.
     if (readStdin)
     {
         w.OpenStdinStream();
@@ -241,10 +237,9 @@ int main(int argc, char *argv[])
         peers.append(QPointer<MainWindow>(peer));
     };
 
-    // Restore-on-launch (Preferences toggle). Skipped when CLI
-    // files, `--new-instance`, or `-` / `--stdin` are involved: the
-    // stdin launch has already opened its own session and any
-    // restore would immediately clobber it.
+    // Restore-on-launch is skipped for CLI files and new-instance
+    // launches. Stdin is also skipped because it already replaced
+    // the current session.
     const bool restoreEnabled = SessionHistoryManager::RestoreLastSessionOnLaunch();
     if (cliFiles.isEmpty() && restoreEnabled && !allowNewInstance && !readStdin)
     {

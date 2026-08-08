@@ -111,7 +111,7 @@ struct LogConfiguration
         {
             File,
             NetworkStream,
-            /// Standard-input pipe (`slv -` / `slv --stdin`).
+            /// Standard-input pipe (`StructuredLogViewer -` / `--stdin`).
             /// One-shot per session; not persisted for auto-reopen
             /// (see `MainWindow::ShouldAutoSaveSession`). Locator is
             /// the synthetic display name `<stdin>`.
@@ -266,7 +266,7 @@ struct LogConfiguration
 /// columns and for editor-driven pins that leave the list empty.
 /// Kept in a single place so the three seed sites
 /// (`LogConfigurationManager::Update`, `::AppendKeys`, and
-/// `LogTable::SetColumnType(Time)`) never drift.
+/// `LogTable::OnUserChangedColumnType`) never drift.
 ///
 /// Order matters: the promotion loop tries formats in list order and
 /// stops on the first match. ISO 8601 variants come first because
