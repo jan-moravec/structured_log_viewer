@@ -158,20 +158,23 @@ void MakeSelfPipe(int fds[2])
     {
         throw std::runtime_error("StdinBytesProducer: pipe() (wake) failed");
     }
-    const int readFlags = ::fcntl(fds[0], F_GETFD, 0);
+    // `fcntl` is a POSIX variadic API; the cppcoreguidelines
+    // vararg check has no non-vararg alternative here. NOLINTs are
+    // per-call to keep the intent obvious at each site.
+    const int readFlags = ::fcntl(fds[0], F_GETFD, 0); // NOLINT(cppcoreguidelines-pro-type-vararg,hicpp-vararg)
     if (readFlags >= 0)
     {
-        ::fcntl(fds[0], F_SETFD, readFlags | FD_CLOEXEC);
+        ::fcntl(fds[0], F_SETFD, readFlags | FD_CLOEXEC); // NOLINT(cppcoreguidelines-pro-type-vararg,hicpp-vararg)
     }
-    const int writeFlags = ::fcntl(fds[1], F_GETFD, 0);
+    const int writeFlags = ::fcntl(fds[1], F_GETFD, 0); // NOLINT(cppcoreguidelines-pro-type-vararg,hicpp-vararg)
     if (writeFlags >= 0)
     {
-        ::fcntl(fds[1], F_SETFD, writeFlags | FD_CLOEXEC);
+        ::fcntl(fds[1], F_SETFD, writeFlags | FD_CLOEXEC); // NOLINT(cppcoreguidelines-pro-type-vararg,hicpp-vararg)
     }
-    const int writeStatus = ::fcntl(fds[1], F_GETFL, 0);
+    const int writeStatus = ::fcntl(fds[1], F_GETFL, 0); // NOLINT(cppcoreguidelines-pro-type-vararg,hicpp-vararg)
     if (writeStatus >= 0)
     {
-        ::fcntl(fds[1], F_SETFL, writeStatus | O_NONBLOCK);
+        ::fcntl(fds[1], F_SETFL, writeStatus | O_NONBLOCK); // NOLINT(cppcoreguidelines-pro-type-vararg,hicpp-vararg)
     }
 }
 #endif

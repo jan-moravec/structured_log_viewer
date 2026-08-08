@@ -1,5 +1,6 @@
 #pragma once
 
+#include <bit>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -104,10 +105,13 @@ public:
         mRead = -1;
         // Packing a POSIX fd into an opaque `void *` matches the
         // convention documented on
-        // `StdinBytesProducerTestAccess::Create`; a fresh
-        // pointer value is fabricated by design.
-        // NOLINTNEXTLINE(performance-no-int-to-ptr)
-        return reinterpret_cast<void *>(static_cast<std::intptr_t>(fd));
+        // `StdinBytesProducerTestAccess::Create`. `std::bit_cast`
+        // makes the fabricated pointer value explicit (no
+        // implicit int-to-ptr conversion) and requires equal-size
+        // source and destination; on every supported platform
+        // `intptr_t` and `void *` are the same width.
+        static_assert(sizeof(std::intptr_t) == sizeof(void *));
+        return std::bit_cast<void *>(static_cast<std::intptr_t>(fd));
 #endif
     }
 
