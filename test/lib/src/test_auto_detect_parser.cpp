@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
@@ -281,6 +282,103 @@ TEST_CASE("AutoDetectParser routes regex-template bytes to a regex parse", "[Aut
     CHECK(sink.rowCount.load() >= 1);
 }
 
+namespace
+{
+
+/// Byte-array producer whose `Read` yields chunks separated by a
+/// fixed delay. The first chunk is released immediately; each
+/// subsequent chunk becomes readable @p gap after the previous
+/// one drained. Between chunks, `Read` returns 0 and
+/// `WaitForBytes` blocks up to the passed timeout waiting for the
+/// release timer. Models a slow network sender / a stdin producer
+/// that only wakes on newline flushes.
+class SlowBytesProducer final : public BytesProducer
+{
+public:
+    SlowBytesProducer(std::vector<std::string> chunks, std::chrono::milliseconds gap)
+        : mChunks(std::move(chunks)), mGap(gap), mNextReleaseAt(std::chrono::steady_clock::now())
+    {
+    }
+
+    ~SlowBytesProducer() override
+    {
+        Stop();
+    }
+
+    SlowBytesProducer(const SlowBytesProducer &) = delete;
+    SlowBytesProducer &operator=(const SlowBytesProducer &) = delete;
+
+    std::size_t Read(std::span<char> buffer) override
+    {
+        std::unique_lock<std::mutex> lock(mLock);
+        if (mChunkCursor >= mChunks.size())
+        {
+            mClosed.store(true, std::memory_order_release);
+            return 0;
+        }
+        if (std::chrono::steady_clock::now() < mNextReleaseAt)
+        {
+            return 0;
+        }
+        const std::string &chunk = mChunks[mChunkCursor];
+        const std::size_t remaining = chunk.size() - mByteCursor;
+        const std::size_t give = std::min(remaining, buffer.size());
+        std::memcpy(buffer.data(), chunk.data() + mByteCursor, give);
+        mByteCursor += give;
+        if (mByteCursor >= chunk.size())
+        {
+            ++mChunkCursor;
+            mByteCursor = 0;
+            mNextReleaseAt = std::chrono::steady_clock::now() + mGap;
+            if (mChunkCursor >= mChunks.size())
+            {
+                mClosed.store(true, std::memory_order_release);
+            }
+        }
+        return give;
+    }
+
+    void WaitForBytes(std::chrono::milliseconds timeout) override
+    {
+        std::unique_lock<std::mutex> lock(mLock);
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        mCv.wait_until(lock, std::min(deadline, mNextReleaseAt), [&] {
+            return mStop.load(std::memory_order_acquire) || std::chrono::steady_clock::now() >= mNextReleaseAt;
+        });
+    }
+
+    void Stop() noexcept override
+    {
+        mStop.store(true, std::memory_order_release);
+        mClosed.store(true, std::memory_order_release);
+        std::lock_guard<std::mutex> lock(mLock);
+        mCv.notify_all();
+    }
+
+    [[nodiscard]] bool IsClosed() const noexcept override
+    {
+        return mClosed.load(std::memory_order_acquire);
+    }
+
+    [[nodiscard]] std::string DisplayName() const override
+    {
+        return "slow";
+    }
+
+private:
+    mutable std::mutex mLock;
+    std::condition_variable mCv;
+    std::vector<std::string> mChunks;
+    std::size_t mChunkCursor = 0;
+    std::size_t mByteCursor = 0;
+    std::chrono::milliseconds mGap;
+    std::chrono::steady_clock::time_point mNextReleaseAt;
+    std::atomic<bool> mStop{false};
+    std::atomic<bool> mClosed{false};
+};
+
+} // namespace
+
 TEST_CASE("AutoDetectParser composes with a caller-supplied initialCarry", "[AutoDetectParser]")
 {
     // Regression: `ParseStreaming(StreamLineSource&, ...)` used to
@@ -308,4 +406,94 @@ TEST_CASE("AutoDetectParser composes with a caller-supplied initialCarry", "[Aut
     CHECK(sink.finished.load());
     CHECK_FALSE(sink.finishedCancelled.load());
     CHECK(sink.rowCount.load() == 2);
+}
+
+TEST_CASE("AutoDetectParser short-circuits the peek once detection commits", "[AutoDetectParser]")
+{
+    // Chunk 1 delivers a full JSON line, which is enough for
+    // `TryDetectFormatFromBytes` to commit to `Json`. Chunk 2 is
+    // delayed by 30 s -- if the peek loop waited for the full
+    // deadline (also set to 30 s below) instead of returning
+    // early on the first verdict, the test would time out.
+    std::vector<std::string> chunks;
+    chunks.emplace_back(R"({"level":"info","message":"early"})"
+                        "\n");
+    chunks.emplace_back(R"({"level":"warn","message":"late"})"
+                        "\n");
+    auto producer = std::make_unique<SlowBytesProducer>(std::move(chunks), std::chrono::milliseconds(30000));
+    StreamLineSource source(std::filesystem::path("<auto>"), std::move(producer));
+
+    CollectingSink sink;
+    ParserOptions options;
+    loglib::StopSource stopSource;
+    options.stopToken = stopSource.get_token();
+    // Explicit 30-second peek deadline to prove that early
+    // detection (and not the deadline) is what unblocks the
+    // peek. If the loop instead waited for the deadline we would
+    // hang for 30 seconds.
+    const AutoDetectParser parser(loglib::PROBE_BYTES_BUDGET, std::chrono::milliseconds(30000));
+    const auto startedAt = std::chrono::steady_clock::now();
+    std::thread worker([&] { parser.ParseStreaming(source, sink, std::move(options)); });
+
+    const auto giveUpAt = startedAt + std::chrono::milliseconds(2000);
+    while (!sink.started.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < giveUpAt)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    CHECK(sink.started.load());
+    // If the peek short-circuited we get to `OnStarted` in well
+    // under 30 seconds. A 2-second bound is loose enough to
+    // absorb CI jitter but tight enough to catch a regression.
+    CHECK(std::chrono::steady_clock::now() - startedAt < std::chrono::milliseconds(2000));
+
+    stopSource.request_stop();
+    if (worker.joinable())
+    {
+        worker.join();
+    }
+    CHECK(sink.finished.load());
+}
+
+TEST_CASE("AutoDetectParser deadline caps the peek on an unrecognised producer", "[AutoDetectParser]")
+{
+    // First chunk is nothing but whitespace/gibberish that no
+    // probe claims. Second chunk (delayed) contains a JSON line
+    // but arrives after the peek deadline. The adapter must fall
+    // through to the fallback parser (`JsonParser`) instead of
+    // blocking the peek loop for as long as `mPeekTimeout`
+    // allows plus the full 5 s gap.
+    std::vector<std::string> chunks;
+    chunks.emplace_back("   \n   \n"); // two blank lines, no verdict
+    chunks.emplace_back(R"({"msg":"late"})"
+                        "\n");
+    auto producer = std::make_unique<SlowBytesProducer>(std::move(chunks), std::chrono::milliseconds(5000));
+    StreamLineSource source(std::filesystem::path("<auto>"), std::move(producer));
+
+    CollectingSink sink;
+    const auto startedAt = std::chrono::steady_clock::now();
+    ParserOptions options;
+    loglib::StopSource stopSource;
+    options.stopToken = stopSource.get_token();
+    // Explicit 200 ms peek deadline -- shorter than the default
+    // to keep the test snappy while still comfortably longer
+    // than the chunk-arrival latency of the first release.
+    const AutoDetectParser parser(loglib::PROBE_BYTES_BUDGET, std::chrono::milliseconds(200));
+    std::thread worker([&] { parser.ParseStreaming(source, sink, std::move(options)); });
+
+    const auto giveUpAt = startedAt + std::chrono::milliseconds(2000);
+    while (!sink.started.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < giveUpAt)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    CHECK(sink.started.load());
+    // Must have handed off to the delegate well within our
+    // patience budget (deadline plus a healthy startup slack).
+    CHECK(std::chrono::steady_clock::now() - startedAt < std::chrono::milliseconds(2000));
+
+    stopSource.request_stop();
+    if (worker.joinable())
+    {
+        worker.join();
+    }
+    CHECK(sink.finished.load());
 }

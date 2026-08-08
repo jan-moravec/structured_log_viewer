@@ -4517,9 +4517,10 @@ void MainWindow::OpenStdinStream()
     {
         ShowParseErrors(
             tr("Error Opening Standard Input"),
-            {"Standard input is a terminal, not a pipe or a redirected file. "
-             "Pipe log data into the viewer (e.g. `mysvc | slv -`) or redirect "
-             "from a file (`slv --stdin < mylog.log`)."}
+            {tr("Standard input is a terminal, not a pipe or a redirected file. "
+                "Pipe log data into the viewer (e.g. `mysvc | slv -`) or redirect "
+                "from a file (`slv --stdin < mylog.log`).")
+                 .toStdString()}
         );
         return;
     }
@@ -4544,7 +4545,8 @@ void MainWindow::OpenStdinStream()
     catch (const std::exception &e)
     {
         ShowParseErrors(
-            tr("Error Opening Standard Input"), {std::string("Failed to attach to stdin: ") + e.what()}
+            tr("Error Opening Standard Input"),
+            {tr("Failed to attach to stdin: %1").arg(QString::fromUtf8(e.what())).toStdString()}
         );
         return;
     }

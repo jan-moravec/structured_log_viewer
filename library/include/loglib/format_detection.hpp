@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -21,15 +22,15 @@ struct DetectedFormat
 };
 
 /// Sniff @p sniffBuffer and return the first format whose parser
-/// accepts it, matching `loglib::ParseFile(path)`'s order (JSON,
-/// logfmt, CSV, Regex). For `Regex` we call
-/// `DetectRegexTemplateFromBytes`, which walks the merged catalog
-/// (built-ins ∪ user templates injected via
-/// `SetExtraRegexTemplates`) in priority order; the matched
-/// template's pattern is carried through so callers can persist
-/// it on `LogConfiguration::Source::regexPattern`. Falls back to
-/// `Json` when nothing matches so the parse surfaces the bytes as
-/// errors instead of silently doing nothing.
+/// accepts it, mirroring `TryDetectFormatFromBytes` but folding the
+/// "no probe matched" case into a defaulted `{Format::Json, ""}`
+/// so callers that always need *some* parser (the streaming loop,
+/// `ParseFile(path)`) can chain without an `.value_or()`.
+///
+/// Prefer `TryDetectFormatFromBytes` when the caller can act on
+/// "not yet confident" (e.g. keep peeking on a slow network
+/// stream). This overload cannot distinguish "JSON was actually
+/// claimed" from "nothing claimed, defaulting to JSON".
 ///
 /// Every input surface funnels through this function:
 ///   - Static file opens (`MainWindow::DetectFormatForPath`)
@@ -38,6 +39,19 @@ struct DetectedFormat
 ///   - Network stream auto-detect (`AutoDetectParser`)
 /// so "same bytes → same format" holds across every input path.
 [[nodiscard]] DetectedFormat DetectFormatFromBytes(std::string_view sniffBuffer);
+
+/// Like `DetectFormatFromBytes`, but returns `std::nullopt` when
+/// no probe claimed the buffer (empty input, or content that no
+/// parser recognises). Used by `AutoDetectParser` to short-circuit
+/// the peek loop as soon as a definitive verdict is available:
+/// `DetectFormatFromBytes` would report the fallback `Json` in
+/// that case, which is indistinguishable from a real JSON hit and
+/// would prematurely stop peeking on a bursty non-JSON producer
+/// whose first few bytes hadn't yet formed a recognisable line.
+///
+/// The probe order matches `DetectFormatFromBytes` exactly: JSON,
+/// logfmt, regex templates, CSV.
+[[nodiscard]] std::optional<DetectedFormat> TryDetectFormatFromBytes(std::string_view sniffBuffer);
 
 /// File-based convenience wrapper. Reads up to `PROBE_BYTES_BUDGET`
 /// bytes from @p file via `ReadProbeHead` and forwards to

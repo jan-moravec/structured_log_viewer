@@ -4,6 +4,7 @@
 #include <loglib/log_parser.hpp>
 
 #include <loglib_test/scaled_ms.hpp>
+#include <test_common/pipe.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -30,118 +31,11 @@
 using loglib::internal::IsStdinInteractive;
 using loglib::internal::StdinPeek;
 using loglib_test::ScaledMs;
+using test_common::Pipe;
 using namespace std::chrono_literals;
 
 namespace
 {
-
-/// RAII wrapper around a platform pipe. Owns the write-end for the
-/// duration of the test; the read-end is transferred into stdin
-/// through `StdinRedirect`.
-class Pipe
-{
-public:
-    Pipe()
-    {
-#ifdef _WIN32
-        SECURITY_ATTRIBUTES sa{};
-        sa.nLength = sizeof(sa);
-        sa.bInheritHandle = FALSE;
-        HANDLE readEnd = nullptr;
-        HANDLE writeEnd = nullptr;
-        const BOOL ok = ::CreatePipe(&readEnd, &writeEnd, &sa, /*nSize=*/0);
-        REQUIRE(ok != 0);
-        mRead = readEnd;
-        mWrite = writeEnd;
-#else
-        int fds[2] = {-1, -1};
-        const int rc = ::pipe(fds);
-        REQUIRE(rc == 0);
-        mRead = fds[0];
-        mWrite = fds[1];
-#endif
-    }
-
-    // NOLINTNEXTLINE(bugprone-exception-escape)
-    ~Pipe() noexcept
-    {
-        CloseWrite();
-        CloseRead();
-    }
-
-    Pipe(const Pipe &) = delete;
-    Pipe &operator=(const Pipe &) = delete;
-
-    void Write(std::string_view bytes) const
-    {
-#ifdef _WIN32
-        REQUIRE(mWrite != nullptr);
-        DWORD written = 0;
-        const BOOL ok = ::WriteFile(mWrite, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr);
-        REQUIRE(ok != 0);
-        REQUIRE(written == bytes.size());
-#else
-        REQUIRE(mWrite >= 0);
-        const ::ssize_t got = ::write(mWrite, bytes.data(), bytes.size());
-        REQUIRE(got == static_cast<::ssize_t>(bytes.size()));
-#endif
-    }
-
-    void CloseWrite() noexcept
-    {
-#ifdef _WIN32
-        if (mWrite != nullptr)
-        {
-            ::CloseHandle(mWrite);
-            mWrite = nullptr;
-        }
-#else
-        if (mWrite >= 0)
-        {
-            ::close(mWrite);
-            mWrite = -1;
-        }
-#endif
-    }
-
-    void CloseRead() noexcept
-    {
-#ifdef _WIN32
-        if (mRead != nullptr)
-        {
-            ::CloseHandle(mRead);
-            mRead = nullptr;
-        }
-#else
-        if (mRead >= 0)
-        {
-            ::close(mRead);
-            mRead = -1;
-        }
-#endif
-    }
-
-#ifdef _WIN32
-    [[nodiscard]] HANDLE ReadEnd() const noexcept
-    {
-        return mRead;
-    }
-#else
-    [[nodiscard]] int ReadEnd() const noexcept
-    {
-        return mRead;
-    }
-#endif
-
-private:
-#ifdef _WIN32
-    HANDLE mRead = nullptr;
-    HANDLE mWrite = nullptr;
-#else
-    int mRead = -1;
-    int mWrite = -1;
-#endif
-};
 
 /// RAII helper: swap the process's standard input for @p pipe's
 /// read end. Restores the previous stdin in the destructor so

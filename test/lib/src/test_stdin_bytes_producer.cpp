@@ -1,6 +1,7 @@
 #include <loglib/stdin_bytes_producer.hpp>
 
 #include <loglib_test/scaled_ms.hpp>
+#include <test_common/pipe.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -9,7 +10,6 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
-#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <span>
@@ -18,140 +18,14 @@
 #include <thread>
 #include <utility>
 
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#else
-#include <errno.h>
-#include <fcntl.h>
-#include <unistd.h>
-#endif
-
 using loglib::StdinBytesProducer;
 using loglib::internal::StdinBytesProducerTestAccess;
 using loglib_test::ScaledMs;
+using test_common::Pipe;
 using namespace std::chrono_literals;
 
 namespace
 {
-
-/// RAII wrapper around a platform pipe. Owns the write-end;
-/// hands the read-end over to `StdinBytesProducer` via
-/// `StdinBytesProducerTestAccess::Create`. On teardown the
-/// write-end is closed so any producer still attached observes
-/// EOF and stops cleanly.
-class Pipe
-{
-public:
-    Pipe()
-    {
-#ifdef _WIN32
-        SECURITY_ATTRIBUTES sa{};
-        sa.nLength = sizeof(sa);
-        sa.bInheritHandle = FALSE;
-        HANDLE readEnd = nullptr;
-        HANDLE writeEnd = nullptr;
-        const BOOL ok = ::CreatePipe(&readEnd, &writeEnd, &sa, /*nSize=*/0);
-        REQUIRE(ok != 0);
-        mRead = readEnd;
-        mWrite = writeEnd;
-#else
-        int fds[2] = {-1, -1};
-        const int rc = ::pipe(fds);
-        REQUIRE(rc == 0);
-        mRead = fds[0];
-        mWrite = fds[1];
-#endif
-    }
-
-    // Teardown ignores errors because the test may already have
-    // closed both ends manually.
-    // NOLINTNEXTLINE(bugprone-exception-escape)
-    ~Pipe() noexcept
-    {
-        CloseWrite();
-        CloseRead();
-    }
-
-    Pipe(const Pipe &) = delete;
-    Pipe &operator=(const Pipe &) = delete;
-
-    /// Transfer the read-end to the producer; the pipe drops
-    /// its own reference so `CloseRead` becomes a no-op.
-    [[nodiscard]] void *TakeReadEndOpaque()
-    {
-#ifdef _WIN32
-        HANDLE h = mRead;
-        mRead = nullptr;
-        return static_cast<void *>(h);
-#else
-        const int fd = mRead;
-        mRead = -1;
-        return reinterpret_cast<void *>(static_cast<std::intptr_t>(fd));
-#endif
-    }
-
-    void Write(std::string_view bytes) const
-    {
-#ifdef _WIN32
-        REQUIRE(mWrite != nullptr);
-        DWORD written = 0;
-        const BOOL ok =
-            ::WriteFile(mWrite, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr);
-        REQUIRE(ok != 0);
-        REQUIRE(written == bytes.size());
-#else
-        REQUIRE(mWrite >= 0);
-        const ::ssize_t got = ::write(mWrite, bytes.data(), bytes.size());
-        REQUIRE(got == static_cast<::ssize_t>(bytes.size()));
-#endif
-    }
-
-    void CloseWrite() noexcept
-    {
-#ifdef _WIN32
-        if (mWrite != nullptr)
-        {
-            ::CloseHandle(mWrite);
-            mWrite = nullptr;
-        }
-#else
-        if (mWrite >= 0)
-        {
-            ::close(mWrite);
-            mWrite = -1;
-        }
-#endif
-    }
-
-    void CloseRead() noexcept
-    {
-#ifdef _WIN32
-        if (mRead != nullptr)
-        {
-            ::CloseHandle(mRead);
-            mRead = nullptr;
-        }
-#else
-        if (mRead >= 0)
-        {
-            ::close(mRead);
-            mRead = -1;
-        }
-#endif
-    }
-
-private:
-#ifdef _WIN32
-    HANDLE mRead = nullptr;
-    HANDLE mWrite = nullptr;
-#else
-    int mRead = -1;
-    int mWrite = -1;
-#endif
-};
 
 /// Small-timeout drain helper. Reads from the producer until
 /// @p predicate matches or @p deadline elapses. Returns the
@@ -219,9 +93,8 @@ TEST_CASE("StdinBytesProducer delivers pipe bytes end-to-end", "[StdinBytesProdu
     pipe.Write("world\n");
     pipe.CloseWrite();
 
-    const std::string drained = DrainUntil(*producer, ScaledMs(2000ms), [](const std::string &acc) {
-        return acc.find("world\n") != std::string::npos;
-    });
+    const std::string drained =
+        DrainUntil(*producer, ScaledMs(2000ms), [](const std::string &acc) { return acc.contains("world\n"); });
     CHECK(drained == "hello\nworld\n");
 }
 

@@ -16,11 +16,11 @@
 namespace loglib
 {
 
-DetectedFormat DetectFormatFromBytes(std::string_view sniffBuffer)
+std::optional<DetectedFormat> TryDetectFormatFromBytes(std::string_view sniffBuffer)
 {
     if (sniffBuffer.empty())
     {
-        return {};
+        return std::nullopt;
     }
 
     // Probe order (specific-before-generic):
@@ -53,18 +53,25 @@ DetectedFormat DetectFormatFromBytes(std::string_view sniffBuffer)
         const std::unique_ptr<LogParser> instance = LogFactory::Create(probe.parser);
         if (instance->IsValidBytes(sniffBuffer))
         {
-            return {.format = probe.format, .regexPattern = {}};
+            return DetectedFormat{.format = probe.format, .regexPattern = {}};
         }
     }
     if (std::optional<RegexTemplate> tmpl = DetectRegexTemplateFromBytes(sniffBuffer); tmpl.has_value())
     {
-        return {.format = LogConfiguration::Source::Format::Regex, .regexPattern = std::move(tmpl->pattern)};
+        return DetectedFormat{
+            .format = LogConfiguration::Source::Format::Regex, .regexPattern = std::move(tmpl->pattern)
+        };
     }
     if (const std::unique_ptr<LogParser> csv = LogFactory::Create(LogFactory::Parser::Csv); csv->IsValidBytes(sniffBuffer))
     {
-        return {.format = LogConfiguration::Source::Format::Csv, .regexPattern = {}};
+        return DetectedFormat{.format = LogConfiguration::Source::Format::Csv, .regexPattern = {}};
     }
-    return {};
+    return std::nullopt;
+}
+
+DetectedFormat DetectFormatFromBytes(std::string_view sniffBuffer)
+{
+    return TryDetectFormatFromBytes(sniffBuffer).value_or(DetectedFormat{});
 }
 
 DetectedFormat DetectFormatForPath(const std::filesystem::path &file)
