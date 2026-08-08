@@ -19,6 +19,10 @@
 //                           `--tls-skip-verify` (self-signed dev), or
 //                           `--tls-cert` / `--tls-key` (mTLS).
 //   * `udp://host:port`     UDP datagram per line -> `UdpServerProducer`.
+//   * `stdout://` (or bare `--output -`) writes each line to the
+//                            process's standard output and reroutes
+//                            every diagnostic print to stderr so the
+//                            stream stays parseable by `slv -`.
 //
 // Every record carries a `line_number` field (0-based, monotonic,
 // rotation-agnostic); gaps in the sequence at the consumer indicate
@@ -51,6 +55,11 @@
 #include <system_error>
 #include <thread>
 #include <utility>
+
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
 
 namespace
 {
@@ -359,6 +368,7 @@ RollStrategy ParseRollStrategy(const std::string &text)
 enum class TargetKind
 {
     File,
+    Stdout,
     Tcp,
     TcpTls,
     Udp,
@@ -376,6 +386,16 @@ struct ParsedTarget
 // silently falling back to file mode.
 ParsedTarget ParseTarget(const std::string &target)
 {
+    // Bare `stdout` (no `://`) is the shell-friendly synonym for
+    // `stdout://`. Kept above the generic no-scheme branch so it wins
+    // even without a trailing slash pair.
+    if (target == "stdout" || target == "-")
+    {
+        ParsedTarget out;
+        out.kind = TargetKind::Stdout;
+        return out;
+    }
+
     auto schemeAt = target.find("://");
     if (schemeAt == std::string::npos)
     {
@@ -388,6 +408,23 @@ ParsedTarget ParseTarget(const std::string &target)
 
     const std::string scheme = target.substr(0, schemeAt);
     const std::string rest = target.substr(schemeAt + 3);
+
+    if (scheme == "stdout")
+    {
+        // `stdout://` (with an empty authority/path) is the URL-form
+        // synonym for bare `stdout`. Anything after the `://` is a
+        // typo -- reject it so users don't silently pipe to the wrong
+        // place.
+        if (!rest.empty())
+        {
+            throw std::invalid_argument(
+                "--target 'stdout://" + rest + "' does not accept a path or host; use bare 'stdout://'"
+            );
+        }
+        ParsedTarget out;
+        out.kind = TargetKind::Stdout;
+        return out;
+    }
 
     if (scheme == "file")
     {
@@ -422,7 +459,7 @@ ParsedTarget ParseTarget(const std::string &target)
     else
     {
         throw std::invalid_argument(
-            "unknown --target scheme '" + scheme + "' (expected file://, tcp://, tcp+tls://, udp://)"
+            "unknown --target scheme '" + scheme + "' (expected file://, stdout://, tcp://, tcp+tls://, udp://)"
         );
     }
 
@@ -646,10 +683,12 @@ int main(int argc, char *argv[])
     program.add_argument("-o", "--output")
         .default_value(std::string{})
         .help(
-            "Output file path (overwritten if it already exists, unless --append). When --output is "
-            "omitted the default base name is `generated` plus the format's extension "
-            "(generated.jsonl for --format json, generated.logfmt for --format logfmt, "
-            "generated.csv for --format csv, generated_<slug>.log for a regex-template slug)."
+            "Output file path (overwritten if it already exists, unless --append). A bare '-' is "
+            "shorthand for '--target stdout://' and writes every generated line to standard "
+            "output (useful for piping into `slv -`). When --output is omitted the default base "
+            "name is `generated` plus the format's extension (generated.jsonl for --format json, "
+            "generated.logfmt for --format logfmt, generated.csv for --format csv, "
+            "generated_<slug>.log for a regex-template slug)."
         );
 
     // No `.choices(...)`: the regex-template shortlist is resolved at
@@ -672,6 +711,15 @@ int main(int argc, char *argv[])
         .help(
             "Print the --format shortlist (wire formats + regex-template synthesizers with slugs, "
             "display names, and descriptions) and exit."
+        );
+
+    program.add_argument("-q", "--quiet")
+        .default_value(false)
+        .implicit_value(true)
+        .help(
+            "Suppress the 'writing / wrote / rotated' progress lines. Errors still print to stderr. "
+            "Handy when the terminal shows stderr next to a piped-to-`slv -` stdout stream and you "
+            "want the console fully clean."
         );
 
     program.add_argument("-t", "--timeout")
@@ -724,10 +772,13 @@ int main(int argc, char *argv[])
     program.add_argument("--target")
         .help(
             "URL-style output destination. Supersedes --output when set. "
-            "Examples: file:///tmp/foo.jsonl, tcp://127.0.0.1:5141, "
-            "tcp+tls://example:6514, udp://127.0.0.1:5142. When unset, "
-            "--output is used (file mode). The --roll-* flags require "
-            "file mode and are rejected for network targets."
+            "Examples: file:///tmp/foo.jsonl, stdout:// (or the bare word "
+            "'stdout'/'-'; writes each line to stdout and reroutes "
+            "diagnostics to stderr so `slv -` can consume the stream), "
+            "tcp://127.0.0.1:5141, tcp+tls://example:6514, "
+            "udp://127.0.0.1:5142. When unset, --output is used (file "
+            "mode). The --roll-* flags require file mode and are "
+            "rejected for network / stdout targets."
         );
 
     program.add_argument("--tls-ca")
@@ -814,8 +865,10 @@ int main(int argc, char *argv[])
     // Empty `--output` means "derive from format": `generated.<ext>`
     // for wire formats, `generated_<slug>.log` for regex-template
     // slugs. The argparse default is empty so `--help` doesn't bias
-    // toward JSON.
+    // toward JSON. A bare `-` is shorthand for `--target stdout://`
+    // and skips filename derivation entirely.
     auto outputArg = program.get<std::string>("--output");
+    const bool outputIsStdoutShorthand = outputArg == "-";
     if (outputArg.empty())
     {
         if (pickedTemplate != nullptr)
@@ -837,6 +890,7 @@ int main(int argc, char *argv[])
     const auto rollLinesText = program.get<std::string>("--roll-lines");
     const auto rollStrategyText = program.get<std::string>("--roll-strategy");
     const auto keepRolledInt = program.get<int>("--keep-rolled");
+    const auto quiet = program.get<bool>("--quiet");
 
     std::uint64_t targetBytes = 0;
     std::uint64_t targetLines = 0;
@@ -844,8 +898,15 @@ int main(int argc, char *argv[])
     std::uint64_t rollLines = 0;
     RollStrategy strategy{RollStrategy::Rename};
     ParsedTarget target;
-    target.kind = TargetKind::File;
-    target.filePath = outputPath.string();
+    if (outputIsStdoutShorthand)
+    {
+        target.kind = TargetKind::Stdout;
+    }
+    else
+    {
+        target.kind = TargetKind::File;
+        target.filePath = outputPath.string();
+    }
     int timeoutMinMs = 0;
     int timeoutMaxMs = 0;
     try
@@ -886,18 +947,47 @@ int main(int argc, char *argv[])
     const bool rollingEnabled = rollBytes != 0 || rollLines != 0;
     const bool isNetworkTarget =
         target.kind == TargetKind::Tcp || target.kind == TargetKind::TcpTls || target.kind == TargetKind::Udp;
+    const bool isStdoutTarget = target.kind == TargetKind::Stdout;
 
-    if (isNetworkTarget && rollingEnabled)
+    if ((isNetworkTarget || isStdoutTarget) && rollingEnabled)
     {
         std::cerr << "--roll-size / --roll-lines require a file target; rotation is not meaningful for "
-                     "tcp/udp streams.\n";
+                     "tcp/udp/stdout streams.\n";
         return 1;
     }
-    if (isNetworkTarget && append)
+    if ((isNetworkTarget || isStdoutTarget) && append)
     {
         std::cerr << "--append requires a file target.\n";
         return 1;
     }
+
+    // When the log stream is stdout we MUST keep every diagnostic
+    // print out of the pipe -- otherwise `slv -` would treat the
+    // "log_generator: ..." lines as log records. `diag` selects the
+    // right stream once, so every downstream `<<` picks the correct
+    // destination without per-callsite branching. `--quiet` swaps to
+    // a discarded `std::ofstream{}` (never opened) so the formatter
+    // chain is dropped cheaply.
+    std::ofstream nullSink;
+    const auto selectDiag = [&]() -> std::ostream & {
+        if (quiet)
+        {
+            return nullSink;
+        }
+        return isStdoutTarget ? std::cerr : std::cout;
+    };
+    std::ostream &diag = selectDiag();
+
+#ifdef _WIN32
+    // stdout defaults to text mode on Windows, which translates every
+    // '\n' into "\r\n" on write. That would leave stray CRs at the
+    // start of every log record on the consumer side, so switch to
+    // binary before the first write.
+    if (isStdoutTarget)
+    {
+        (void)_setmode(_fileno(stdout), _O_BINARY);
+    }
+#endif
 
     // Network sinks. At most one is non-null; both null means file mode.
     std::unique_ptr<test_common::TcpLogClient> tcpClient;
@@ -928,6 +1018,19 @@ int main(int argc, char *argv[])
             headerBytes = WriteFormatHeader(out, format, schema);
         }
         targetDescription = "file://" + filePath.string();
+    }
+    else if (target.kind == TargetKind::Stdout)
+    {
+        const std::string header = format.writeHeader(schema);
+        if (!header.empty())
+        {
+            std::cout << header << '\n';
+            // Header is always the first thing on the pipe, so flush
+            // immediately -- the consumer's format auto-detect looks
+            // at the leading bytes.
+            std::cout.flush();
+        }
+        targetDescription = "stdout://";
     }
     else if (target.kind == TargetKind::Udp)
     {
@@ -981,8 +1084,9 @@ int main(int argc, char *argv[])
 
     // Schema-bearing formats (CSV) need their header sent over the
     // network sink too; `WriteFormatHeader` above only handled the
-    // file path. No-op for JSON / logfmt (empty `writeHeader`).
-    if (target.kind != TargetKind::File)
+    // file path (the stdout branch emits its own header inline).
+    // No-op for JSON / logfmt (empty `writeHeader`).
+    if (target.kind != TargetKind::File && target.kind != TargetKind::Stdout)
     {
         const std::string header = format.writeHeader(schema);
         if (!header.empty())
@@ -1025,24 +1129,23 @@ int main(int argc, char *argv[])
     const std::string timeoutDescription =
         timeoutMinMs == timeoutMaxMs ? std::to_string(timeoutMinMs) + "ms"
                                      : std::to_string(timeoutMinMs) + "-" + std::to_string(timeoutMaxMs) + "ms";
-    std::cout << "log_generator: writing"
-              << " up to "
-              << (targetBytes == 0 ? std::string{"unbounded bytes"} : std::to_string(targetBytes) + " bytes") << ", "
-              << (targetLines == 0 ? std::string{"unbounded lines"} : std::to_string(targetLines) + " lines") << " to "
-              << targetDescription << " (format=" << formatLabel << ", timeout=" << timeoutDescription
-              << ", seed=" << seed << ", append=" << (append ? "true" : "false");
+    diag << "log_generator: writing"
+         << " up to " << (targetBytes == 0 ? std::string{"unbounded bytes"} : std::to_string(targetBytes) + " bytes")
+         << ", " << (targetLines == 0 ? std::string{"unbounded lines"} : std::to_string(targetLines) + " lines")
+         << " to " << targetDescription << " (format=" << formatLabel << ", timeout=" << timeoutDescription
+         << ", seed=" << seed << ", append=" << (append ? "true" : "false");
     if (rollingEnabled)
     {
-        std::cout << ", roll=" << rollStrategyText << " every "
-                  << (rollBytes == 0 ? std::string{"-"} : std::to_string(rollBytes) + "B") << "/"
-                  << (rollLines == 0 ? std::string{"-"} : std::to_string(rollLines) + " lines") << ", keep "
-                  << keepRolled << " backups";
+        diag << ", roll=" << rollStrategyText << " every "
+             << (rollBytes == 0 ? std::string{"-"} : std::to_string(rollBytes) + "B") << "/"
+             << (rollLines == 0 ? std::string{"-"} : std::to_string(rollLines) + " lines") << ", keep " << keepRolled
+             << " backups";
     }
-    std::cout << ")\n";
+    diag << ")\n";
 
     if (targetBytes == 0 && targetLines == 0)
     {
-        std::cout << "log_generator: both --size and --lines are 0; running until interrupted (Ctrl+C).\n";
+        diag << "log_generator: both --size and --lines are 0; running until interrupted (Ctrl+C).\n";
     }
 
     std::mt19937 rng(seed);
@@ -1096,6 +1199,19 @@ int main(int argc, char *argv[])
                 return 1;
             }
         }
+        else if (target.kind == TargetKind::Stdout)
+        {
+            std::cout << serialized << '\n';
+            if (!std::cout.good())
+            {
+                // A downstream `slv -` closing early (e.g. user hits
+                // the window close button) surfaces here as a broken
+                // pipe / stream error. Treat that as a clean exit
+                // rather than an error so shell pipelines don't need
+                // to special-case SIGPIPE.
+                return 0;
+            }
+        }
         else if (udpClient)
         {
             try
@@ -1145,6 +1261,13 @@ int main(int argc, char *argv[])
             {
                 out.flush();
             }
+            else if (target.kind == TargetKind::Stdout)
+            {
+                // stdout is line-buffered under a terminal but fully
+                // buffered under a pipe; flush explicitly so `slv -`
+                // sees streaming progress instead of a big burst.
+                std::cout.flush();
+            }
             if (sleepMs > 0)
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
@@ -1174,9 +1297,8 @@ int main(int argc, char *argv[])
             // intentionally tracks only random-record bytes for the summary.
             bytesInFile = headerBytesAfterRotate;
             linesInFile = 0;
-            std::cout << "log_generator: rotated #" << rotationCount << " (" << rollStrategyText
-                      << "), continuing into " << filePath << " (total so far: " << totalLines << " lines, "
-                      << totalBytes << " bytes)\n";
+            diag << "log_generator: rotated #" << rotationCount << " (" << rollStrategyText << "), continuing into "
+                 << filePath << " (total so far: " << totalLines << " lines, " << totalBytes << " bytes)\n";
         }
     }
 
@@ -1184,6 +1306,12 @@ int main(int argc, char *argv[])
     {
         out.flush();
         out.close();
+    }
+    else if (target.kind == TargetKind::Stdout)
+    {
+        // Final flush so the last batch of records reaches the pipe
+        // before we tear down `std::cout`'s buffer.
+        std::cout.flush();
     }
     if (tcpClient)
     {
@@ -1197,8 +1325,7 @@ int main(int argc, char *argv[])
     const auto elapsed = std::chrono::steady_clock::now() - start;
     const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
 
-    std::cout << "log_generator: wrote " << totalLines << " lines, " << totalBytes << " bytes in " << elapsedMs
-              << " ms (" << rotationCount << " rotation" << (rotationCount == 1 ? "" : "s") << ", " << targetDescription
-              << ")\n";
+    diag << "log_generator: wrote " << totalLines << " lines, " << totalBytes << " bytes in " << elapsedMs << " ms ("
+         << rotationCount << " rotation" << (rotationCount == 1 ? "" : "s") << ", " << targetDescription << ")\n";
     return 0;
 }

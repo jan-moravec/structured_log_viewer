@@ -97,6 +97,35 @@ TEST_CASE(
     }
 }
 
+TEST_CASE(
+    "DetectFormatFromBytes prefers a matching regex template over CSV when a comma-decimal timestamp would "
+    "false-positive as CSV",
+    "[FormatDetection]"
+)
+{
+    // Java/Logback / log4j2 / SLF4J default PatternLayout emits
+    // `2026-01-01 12:00:00,123 LEVEL ...` where the sole comma is
+    // the millisecond decimal. `CsvParser::IsValidBytes` accepts
+    // any input with a consistent 2-cell-per-line comma count, so
+    // without the regex-templates-before-CSV probe order this
+    // Java stream was silently misparsed as a 2-column CSV --
+    // splitting each row at the `,SSS` boundary and lumping level,
+    // thread, logger, and message into the second cell.
+    //
+    // Regression guard for the fix: the shipped
+    // "Java / log4j / SLF4J Logback" template matches these
+    // lines, so the detector must land on `Format::Regex` with a
+    // non-empty pattern, not on `Format::Csv`.
+    constexpr std::string_view JAVA_STREAM =
+        "2026-01-01 12:00:00,123 INFO  [main] com.example.App - Application starting\n"
+        "2026-01-01 12:00:00,456 WARN  [http-nio-8080-exec-1] o.s.web.servlet.PageNotFound - No mapping\n"
+        "2026-01-01 12:00:00,789 ERROR [pool-1-thread-3] com.example.Worker$Inner - Task failed\n";
+
+    const DetectedFormat detected = DetectFormatFromBytes(JAVA_STREAM);
+    CHECK(detected.format == LogConfiguration::Source::Format::Regex);
+    CHECK_FALSE(detected.regexPattern.empty());
+}
+
 TEST_CASE("DetectFormatForPath on a missing file falls back to default Json", "[FormatDetection]")
 {
     // `ReadProbeHead` returns an empty string when the file cannot

@@ -280,7 +280,7 @@ void LogConfigurationManager::Update(const LogData &logData)
                         .keys = {key},
                         .printFormat = "%F %H:%M:%S",
                         .type = LogConfiguration::Type::Time,
-                        .parseFormats = {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
+                        .parseFormats = DefaultTimeParseFormats(),
                     }
                 );
                 // Bubble the freshly-appended timestamp column to
@@ -327,7 +327,7 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
                     .keys = {key},
                     .printFormat = "%F %H:%M:%S",
                     .type = LogConfiguration::Type::Time,
-                    .parseFormats = {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"}
+                    .parseFormats = DefaultTimeParseFormats(),
                 }
             );
         }

@@ -262,6 +262,44 @@ struct LogConfiguration
 /// promotion.
 [[nodiscard]] bool IsLogLevelKey(const std::string &key);
 
+/// Default `parseFormats` seed for freshly-detected `Type::Time`
+/// columns and for editor-driven pins that leave the list empty.
+/// Kept in a single place so the three seed sites
+/// (`LogConfigurationManager::Update`, `::AppendKeys`, and
+/// `LogTable::SetColumnType(Time)`) never drift.
+///
+/// Order matters: the promotion loop tries formats in list order and
+/// stops on the first match. ISO 8601 variants come first because
+/// they cover the JSON / logfmt / RFC 5424 lion's share (fast path
+/// via `Iso8601_T` / `Iso8601_Space` -- see
+/// `ClassifyTimestampFormat`). Non-ISO tail formats target the
+/// shipped regex-template shapes so their timestamps promote to
+/// `Type::Timestamp` without the user editing the column:
+///   * `%d/%b/%Y:%H:%M:%S %z` -- Apache/nginx CLF (Combined + Common
+///     + AWS CloudFront and every downstream that inherits CLF).
+///   * `%b %e %H:%M:%S` / `%b %d %H:%M:%S` -- RFC 3164 syslog
+///     header (Mmm  D HH:MM:SS, space- or zero-padded day; no year).
+///     Routes to the `SyslogRfc3164NoYear` fast path which injects
+///     the current year via the standard month-rollover heuristic.
+///
+/// Each addition here widens the auto-parse net; keep new entries
+/// specific enough that `date::from_stream` fails deterministically
+/// on non-matching inputs (character-class-level anchors: literal
+/// `/`, `:`, `-`, ...). A too-permissive format at the tail can
+/// misclassify a numeric column as `Type::Time`.
+[[nodiscard]] inline std::vector<std::string> DefaultTimeParseFormats()
+{
+    return {
+        "%FT%T%Ez",
+        "%F %T%Ez",
+        "%FT%T",
+        "%F %T",
+        "%d/%b/%Y:%H:%M:%S %z",
+        "%b %e %H:%M:%S",
+        "%b %d %H:%M:%S",
+    };
+}
+
 /// Index of the first `Type::Time` column in @p configuration, or -1.
 /// Single source of truth for "which column is the canonical timestamp"
 /// (Record Details summary, row right-click time-filter menu, ...).

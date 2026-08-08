@@ -23,21 +23,32 @@ DetectedFormat DetectFormatFromBytes(std::string_view sniffBuffer)
         return {};
     }
 
-    // Walk the auto-detect probe order defined by `LogFactory::Parser`.
-    // `Regex` is special-cased because we need the matched template's
-    // pattern, not just a yes/no verdict; the other three formats map
-    // directly onto their `LogConfiguration::Source::Format` value.
+    // Probe order (specific-before-generic):
+    //  1. JSON  -- anchored on `{` / `[` at the first non-whitespace
+    //     byte, essentially free.
+    //  2. Logfmt -- anchored on `key=` shape, also cheap.
+    //  3. Regex templates -- each ships an anchored PCRE pattern
+    //     matched against the first non-blank lines. This tier
+    //     runs BEFORE CSV because CSV's `IsValidBytes` is
+    //     satisfied by any input with a consistent per-line comma
+    //     count, which false-positives on formats whose timestamp
+    //     uses `,SSS` for milliseconds (Java Logback, log4j2,
+    //     SLF4J default PatternLayout). Regex-template probes are
+    //     bounded to `PROBE_BYTES_BUDGET` bytes and the compiled
+    //     patterns are process-lifetime-cached, so this ordering
+    //     costs a fixed handful of microseconds per open.
+    //  4. CSV -- last-resort generic fallback for a comma-separated
+    //     shape that none of the shipped templates recognise.
     struct Probe
     {
         LogFactory::Parser parser;
         LogConfiguration::Source::Format format;
     };
-    static constexpr Probe SIMPLE_PROBES[] = {
+    static constexpr Probe HEAD_PROBES[] = {
         {LogFactory::Parser::Json, LogConfiguration::Source::Format::Json},
         {LogFactory::Parser::Logfmt, LogConfiguration::Source::Format::Logfmt},
-        {LogFactory::Parser::Csv, LogConfiguration::Source::Format::Csv},
     };
-    for (const Probe &probe : SIMPLE_PROBES)
+    for (const Probe &probe : HEAD_PROBES)
     {
         const std::unique_ptr<LogParser> instance = LogFactory::Create(probe.parser);
         if (instance->IsValidBytes(sniffBuffer))
@@ -48,6 +59,10 @@ DetectedFormat DetectFormatFromBytes(std::string_view sniffBuffer)
     if (std::optional<RegexTemplate> tmpl = DetectRegexTemplateFromBytes(sniffBuffer); tmpl.has_value())
     {
         return {.format = LogConfiguration::Source::Format::Regex, .regexPattern = std::move(tmpl->pattern)};
+    }
+    if (const std::unique_ptr<LogParser> csv = LogFactory::Create(LogFactory::Parser::Csv); csv->IsValidBytes(sniffBuffer))
+    {
+        return {.format = LogConfiguration::Source::Format::Csv, .regexPattern = {}};
     }
     return {};
 }

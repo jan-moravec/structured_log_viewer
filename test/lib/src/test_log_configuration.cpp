@@ -237,8 +237,15 @@ TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfiguration
     CHECK(manager.Configuration().columns[2].header == "newKey");
 
     CHECK(manager.Configuration().columns[0].printFormat == "%F %H:%M:%S");
-    REQUIRE(manager.Configuration().columns[0].parseFormats.size() == 4);
-    CHECK(manager.Configuration().columns[0].parseFormats[0] == "%FT%T%Ez");
+    // Default seed keeps ISO 8601 first (fast path via
+    // `Iso8601_T` / `Iso8601_Space`) and appends non-ISO shapes
+    // (Apache CLF at present) so shipped regex-template
+    // timestamps promote without an editor round-trip. See
+    // `DefaultTimeParseFormats` for the authoritative list.
+    const auto &seeded = manager.Configuration().columns[0].parseFormats;
+    REQUIRE(seeded == loglib::DefaultTimeParseFormats());
+    CHECK(seeded.front() == "%FT%T%Ez");
+    CHECK(std::ranges::find(seeded, std::string("%d/%b/%Y:%H:%M:%S %z")) != seeded.end());
 }
 
 // `IsKeyInAnyColumn` cache-invalidation tests: every mutating path

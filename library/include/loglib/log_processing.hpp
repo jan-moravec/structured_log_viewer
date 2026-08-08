@@ -25,9 +25,19 @@ enum class TimestampFormatKind : std::uint8_t
     Generic,
     Iso8601_T,
     Iso8601_Space,
+    /// RFC 3164 header: `Mmm  D HH:MM:SS` (space-padded day, English
+    /// month abbreviation, no year, no timezone). The RFC pins the
+    /// English abbreviations, so a manual fast path is preferable
+    /// to `date::from_stream` -- the latter goes through `%b` /
+    /// `strftime` and depends on the process locale (breaks on
+    /// non-`C` hosts). The parser injects the year via the standard
+    /// "if parsed month > current month, use previous year" rollover
+    /// heuristic since RFC 3164 doesn't carry a year field.
+    SyslogRfc3164NoYear,
 };
 
-/// Returns the fast-path kind for @p format (`"%FT%T"` / `"%F %T"`), else `Generic`.
+/// Returns the fast-path kind for @p format (`"%FT%T"` / `"%F %T"` /
+/// `"%b %e %H:%M:%S"` / `"%b %d %H:%M:%S"`), else `Generic`.
 TimestampFormatKind ClassifyTimestampFormat(std::string_view format);
 
 /// Per-line carry-over for the "remember the last successful (keyId, format)"
@@ -50,6 +60,16 @@ struct TimestampParseScratch
 /// six fractional digits; @p dateTimeSep is `'T'` or `' '`. An epoch-zero
 /// result is reported as a failure (legacy contract).
 bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out);
+
+/// RFC 3164 header fast path. Accepts `Mmm dHH:MM:SS` and
+/// `Mmm  D HH:MM:SS` (either zero-padded `%d` or space-padded `%e`
+/// day). English month abbreviations only (`Jan` -- `Dec`) because
+/// RFC 3164 §4.1.2 mandates them; a `date::from_stream("%b ...")`
+/// path would depend on the process locale and break on non-`C`
+/// hosts. Year is injected via the standard "if parsed month is
+/// later than current month, roll back one year" heuristic since
+/// the RFC 3164 header omits a year field.
+bool TryParseSyslogRfc3164Timestamp(std::string_view sv, TimeStamp &out);
 
 /// Slow-path `date::parse` fallback; reuses @p scratch across calls.
 bool TryParseGenericTimestamp(
