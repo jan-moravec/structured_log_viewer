@@ -19,7 +19,7 @@ For the architecture each item plugs into, see [CONTRIBUTING.md → Architecture
   - [7. ~~Export filtered rows~~ (shipped)](#7-export-filtered-rows)
   - [8. ~~Goto line / Goto timestamp~~ (shipped)](#8-goto-line--goto-timestamp)
   - [9. ~~Stdin / pipe input~~ (shipped)](#9-stdin--pipe-input)
-  - [10. Headless / scriptable CLI mode](#10-headless--scriptable-cli-mode)
+  - [10. Complete `loglib`'s Qt-independence](#10-complete-loglibs-qt-independence)
 - [Tier 2 — `v1.x` strong differentiators](#tier-2--v1x-strong-differentiators)
   - [11. Pulling rotated history off disk](#11-pulling-rotated-history-off-disk)
   - [12. Saved searches and named views](#12-saved-searches-and-named-views)
@@ -42,6 +42,7 @@ For the architecture each item plugs into, see [CONTRIBUTING.md → Architecture
   - [28. Pipe selection to external command](#28-pipe-selection-to-external-command)
   - [29. AI / LLM assistance panel](#29-ai--llm-assistance-panel)
   - [30. ~~Full-session export bundle~~ (shipped)](#30-full-session-export-bundle)
+  - [31. Sibling `slv` CLI](#31-sibling-slv-cli)
 - [Explicit non-goals](#explicit-non-goals)
 - [Process](#process)
 - [Comparative feature matrix](#comparative-feature-matrix)
@@ -71,13 +72,13 @@ The roadmap aims to close the **mainstream desktop log-viewer expectations** bef
 
 Beyond the per-item list, three themes run through the roadmap:
 
-1. **Pre-release ergonomics.** Close the "table stakes" gaps any reviewer will flag in a head-to-head against Klogg or lnav: compressed files, histogram strip, highlight rules, bookmark notes, AND/OR filters, ~~multi-line records~~ (shipped), filtered/session export, goto, ~~stdin~~ (shipped), headless mode.
+1. **Pre-release ergonomics.** Close the "table stakes" gaps any reviewer will flag in a head-to-head against Klogg or lnav: compressed files, histogram strip, highlight rules, bookmark notes, AND/OR filters, ~~multi-line records~~ (shipped), filtered/session export, goto, ~~stdin~~ (shipped), and finalising `loglib`'s Qt-independence so the parse / filter / export core is testable and reusable outside the GUI.
 1. **Structured-log power user.** Lean into what `loglib` already does well — typed columns, level promotion, the regex-template registry — with features that only make sense on structured data: SQL queries over typed rows, per-cell quick filters, pattern clustering by template key, time-gap detection across the first `Type::Time` column.
 1. **Scale and performance.** Preserve the existing performance envelope (see [CONTRIBUTING.md → Benchmarking](CONTRIBUTING.md#benchmarking)) as features land. Each Tier 1 / 2 item below documents whether it needs a new benchmark or a regression check against the [Acceptance bar](CONTRIBUTING.md#acceptance-bar).
 
 ## Tier 1 — Pre-`v1` release-blocking ergonomics
 
-Each of the ten items below closes a gap that reviewers and first-time users routinely flag against direct competitors. They should all land before `v1.0`. Items are listed in suggested implementation order; the order also roughly tracks how much code surface each touches.
+Each of the ten items below either closes a competitor-gap reviewers and first-time users routinely flag, or hardens a piece of the codebase we don't want to ship `v1.0` without. They should all land before `v1.0`. Items are listed in suggested implementation order; the order also roughly tracks how much code surface each touches.
 
 ### 1. ~~Transparent decompression of `.gz` / `.bz2` / `.xz` / `.zst`~~
 
@@ -188,28 +189,26 @@ export shipped separately as [item 30](#30-full-session-export-bundle).
 
 See [`doc/README.md § Reading from standard input`](doc/README.md#reading-from-standard-input) for shell examples.
 
-### 10. Headless / scriptable CLI mode
+### 10. Complete `loglib`'s Qt-independence
 
-**Why.** lnav's `-n` / `-c` flags are the most cited reason engineers script lnav into CI / triage runbooks. A minimal headless mode unlocks one-shot triage (`structured_log_viewer --filter 'level=error' --since '-1h' --export errors.jsonl`) without spinning up Qt.
+**Why.** `loglib` was designed Qt-free and most of the machinery — parsers, decompression, streaming, filter evaluation, session bundles, exports — already lives in the library. A handful of *view* semantics still bleed into `app/`, though: `LogFilterModel`'s display-order sort comparator, the visible-column whitelist, the relative-time / ISO fallback parser behind Goto Timestamp, and the `slv::exports` files that physically live in `app/` despite having zero Qt includes. Before we tag `v1.0` the library should be a clean, self-contained, well-tested triage core — (a) fewer things silently regress when the GUI is refactored, (b) `loglib`'s own tests can exercise sort / projection / timestamp parsing directly without a `QTest` harness, and (c) future sibling hosts (the [`slv` CLI](#31-sibling-slv-cli), a hypothetical read-only web viewer) do not need to fork logic that already exists.
 
-**Scope.** A `--no-gui` (or `-n`) flag that runs the existing `loglib` pipeline against the requested source, applies filters / sort, then writes the result through the [item 7](#7-export-filtered-rows) export path and exits. Flags:
+**Scope.**
 
-- `--source <path | ->` (file, stdin, or `tcp://...` / `udp://...`).
-- `--format <json|logfmt|csv|regex>` (optional override for auto-detect).
-- `--filter <expression>` (uses the [item 5](#5-boolean-filter-expressions-and--or--not) text syntax).
-- `--since <timestamp|relative>` / `--until <timestamp|relative>`.
-- `--columns <a,b,c>` (whitelist).
-- `--sort <column>[:asc|desc]`.
-- `--export <format>` and `--out <path>` (or stdout if `-`).
-- Exit code is non-zero on parse failure or no matching rows (configurable via `--allow-empty`).
+- Relocate the export layer (`export_sink`, `row_exporter`, and the `slv::exports` namespace) from `app/` to `library/`. No behavioural change; `app/` links against it through `loglib`.
+- Extract `LogFilterModel`'s sort comparator into a `loglib::RowOrdering` type that the Qt proxy consumes.
+- Extract the visible-column projection into a `loglib::ColumnProjection`.
+- Extract the user-facing timestamp parser (relative shortcuts `-1h` / `-30m`, ISO fallbacks, TZ handling) from the Goto Timestamp dialog into `loglib::ParseUserTimestamp`.
+- Audit `app/` for other spots where `loglib`-shaped logic still lives on the Qt side. Anything that fits the "no Qt types in the signature" bar should follow.
+- Add / expand `loglib` unit tests so each extracted piece has direct Catch2 coverage independent of `QTest`, and cover previously GUI-only edge cases (mixed-column sort stability, timestamp TZ round-trips, projection with missing keys) at the library layer.
 
-**Non-goals (v1).** SQL queries (item 21 — when SQL lands, expose it as `--sql`), live tail in headless (`--follow` defers to v1.x), interactive prompts.
+**Non-goals (v1).** No user-visible feature change. No new codepath. This is a move-and-rename hygiene pass; test parity before and after is the acceptance bar. Actually shipping a headless binary is a separate item — see [31. Sibling `slv` CLI](#31-sibling-slv-cli).
 
-**Approach.** Build a separate `slv` binary that links against `loglib` only (no Qt dependency). The existing `loglib::ParseFile` / streaming harnesses already do all the work; the binary is a thin argument parser + filter evaluator + exporter. The two binaries (`StructuredLogViewer` GUI, `slv` CLI) ship in the same package.
+**Approach.** Land the moves and extractions in small PRs — one per bullet — so bisection stays cheap if any test regresses. For each extraction: introduce the `loglib` type first with its Catch2 tests, then thread the Qt code through it in a follow-up. Keep the old `app/`-side symbols behind thin adapters until every caller has migrated, then delete them.
 
-**Acceptance bar.** Round-trip parity with the GUI: a filter expression that selects 1234 rows in the GUI exports exactly 1234 rows on the CLI. Cold-start `< 100 ms` overhead vs the raw `loglib` benchmarks.
+**Acceptance bar.** Every existing test still passes (Qt smoke tests, Catch2 unit tests, `clang-asan-ubsan`, `clang-tsan`, `clang-coverage`). Coverage of the extracted logic goes up under `clang-coverage`; each extracted `loglib` type has at least one dedicated Catch2 file. `app/` no longer contains files with `slv::` namespaces. `loglib` public headers stay Qt-free — an `rg '#include\s*<Q' library/include/` returns zero matches, same as today.
 
-**Touches.** New `cli/` directory mirroring `app/`'s structure. `cmake/`: a new `slv` target. CI: extend the build matrix to build the CLI on every platform.
+**Touches.** `library/`: new `include/loglib/exports/`, `include/loglib/row_ordering.hpp`, `include/loglib/column_projection.hpp`, `include/loglib/user_timestamp.hpp` (or equivalent), plus a moved-in `library/src/exports/`. `app/`: include-path updates and thin adapters where Qt classes project onto the new `loglib` types (e.g. `LogFilterModel::lessThan` delegates to `loglib::RowOrdering`). `test/lib/`: new Catch2 tests per extracted piece. `test/app/`: unchanged expectations, adjust includes only if necessary.
 
 ## Tier 2 — `v1.x` strong differentiators
 
@@ -312,6 +311,29 @@ Landed as **File → Export Session Bundle…** (`Ctrl+Shift+E`). A v1 bundle is
 **Acceptance bar.** Export 1 M retained rows + 20 anchors + 5 highlight rules + a non-trivial filter, reopen through the normal static path, and recover the flattened rows and configured view with anchors attached to their remapped rows.
 
 **Touches.** `loglib`: `session_bundle.hpp`, writer/metadata reader, shared normalized-row serializer, and decompression first-line support. `app`: export action plus bundle detection/config-default handling inside the existing static compressed-file queue.
+
+### 31. Sibling `slv` CLI
+
+**Why.** lnav's `-n` / `-c` flags are the most cited reason engineers script lnav into CI / triage runbooks. A headless companion binary unlocks one-shot triage (`slv --filter 'level=error' --since '-1h' --export errors.jsonl`) without spinning up Qt. This is a **sibling product** to the viewer, not a viewer feature — a user who only opens the GUI gains nothing from it — so it lives outside the release-blocker set. Depends on [item 10](#10-complete-loglibs-qt-independence): with the extraction pass complete, `slv` is a thin argument parser wired to `loglib::ParseFile` / `loglib::RowOrdering` / `loglib::ColumnProjection` / `loglib::exports`.
+
+**Scope.** A standalone `slv` binary that runs the existing `loglib` pipeline against the requested source, applies filters / sort, then writes the result through the [item 7](#7-export-filtered-rows) export path and exits. Flags:
+
+- `--source <path | ->` (file, stdin, or `tcp://...` / `udp://...`).
+- `--format <json|logfmt|csv|regex>` (optional override for auto-detect).
+- `--filter <expression>` (uses the [item 5](#5-boolean-filter-expressions-and--or--not) text syntax).
+- `--since <timestamp|relative>` / `--until <timestamp|relative>`.
+- `--columns <a,b,c>` (whitelist).
+- `--sort <column>[:asc|desc]`.
+- `--export <format>` and `--out <path>` (or stdout if `-`).
+- Exit code is non-zero on parse failure or no matching rows (configurable via `--allow-empty`).
+
+**Non-goals (v1 of this item).** SQL queries ([item 21](#21-sql-query-interface) — when SQL lands, expose it as `--sql`), live tail in headless (`--follow` defers to a later CLI ticket), interactive prompts, TLS material discovery for `tcp://` sources (spec separately if there is demand).
+
+**Approach.** Build a separate `slv` binary that links against `loglib` only (no Qt dependency). The two binaries — `StructuredLogViewer` GUI, `slv` CLI — ship in the same package. Argument parsing is hand-rolled or via a small header-only library; no Qt.
+
+**Acceptance bar.** Round-trip parity with the GUI: a filter expression that selects 1234 rows in the GUI exports exactly 1234 rows on the CLI. Cold-start `< 100 ms` overhead vs the raw `loglib` benchmarks.
+
+**Touches.** New `cli/` directory mirroring `app/`'s structure. `cmake/`: a new `slv` target. CI: extend the build matrix to build the CLI on every platform. Packaging: second binary in the installer / MSI / macOS notarisation flows. Docs: a `doc/cli.md` (or a new section in `doc/README.md`).
 
 ## Explicit non-goals
 
