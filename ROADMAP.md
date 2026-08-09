@@ -214,9 +214,9 @@ See [`doc/README.md § Reading from standard input`](doc/README.md#reading-from-
 
 These items aren't required to ship `v1` but are the most-requested follow-ups in alternative tools' issue trackers. The order is suggested but not strict; pick whichever one a contributor is most motivated to land.
 
-### 11. Pulling rotated history off disk
+### 11. ~~Pulling rotated history off disk~~
 
-When the user opens `app.log`, also surface `app.log.1`, `app.log.2`, `app.log.1.gz`, `app.log-2025-04-28`, etc. as the older prefix of the merged view. Detection is by sibling-filename glob (`<stem>.[0-9]+(.gz|.bz2|.xz|.zst)?` and the dated variants). The configuration grows an optional `rotationFollowMode` so users can opt out per session. Works with [item 1](#1-transparent-decompression-of-gz--bz2--xz--zst) for the compressed companions. Lnav is the reference; the existing static multi-file merge already provides the join logic.
+> **Shipped.** Opening `app.log` also loads its rotated companions (`app.log.1`, `app.log.2.gz`, `app.log-2025-04-28`, `app-2025-04-28.log`, …) as the older prefix of the merged view. Live-tail benefits too: the siblings replay as a static prefix, then the primary is tailed with no data gap. Auto-detection is on by default and can be turned off per session (Settings → Auto-detect rotated log history) or per launch (`--no-rotation-history`). See [`doc/README.md § Auto-loading rotated history`](doc/README.md#auto-loading-rotated-history).
 
 ### 12. Saved searches and named views
 

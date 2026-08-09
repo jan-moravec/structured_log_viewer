@@ -103,6 +103,25 @@ Opening multiple files at once **merges** their records into a single table; the
 
 For a file that is **still being written**, use [Stream Mode](#stream-mode-live-tail) instead — static mode parses the bytes that exist when you opened the file and stops there.
 
+## Auto-loading rotated history
+
+Opening a log file (in either **static** or **stream** mode) automatically detects the file's rotated companions and loads them as the older prefix of the merged view. This works for the two dominant on-disk conventions:
+
+- **Numbered logrotate suffixes** — `app.log`, `app.log.1`, `app.log.2`, …; higher numbers are older. Optional codec suffix (`.gz` / `.bz2` / `.xz` / `.zst`) is understood transparently.
+- **Dated logrotate suffixes** — `app.log-2025-04-28`, `app.log.2025-04-28`, `app.log_2025-04-28`, and the stem-inserted variant `app-2025-04-28.log`, again with optional codec suffix.
+
+The files stream into the table in chronological order (oldest first, primary last), so a `Ctrl+G` / `Ctrl+Shift+G` search sees every line the disk still has, and a Stream Mode open on `app.log` first replays the older segments as a static prefix and *then* attaches the live tail — no data gap across the rotation boundary. Only companions in the same directory are considered; unrelated files, files under a different extension family, and `.slvbundle` inputs are left untouched.
+
+If you drop a set of files that all belong to one rotation family (e.g. `[app.log.2, app.log, app.log.1]`) the viewer smart-sorts them into chronological order regardless of the drop order. Selections that span multiple families keep their user-visible order between families; each family is sorted internally.
+
+**Opting out.**
+
+- Session-scope: **Settings → Auto-detect rotated log history** toggles the feature for the current session and persists as a global preference (`ui/autoDetectRotatedHistory`). Off by default only when the preference has been changed.
+- Launch-scope: pass `--no-rotation-history` on the command line to skip auto-detection for the whole launch (mirrors `LOGAPP_NEW_INSTANCE` in behaviour). The setting persists for the process, not the window.
+- One-shot: after a successful expansion, a status-bar toast reads *"Loaded N rotated companion(s) alongside &lt;primary&gt;."* and **Settings → Undo rotated history expansion** becomes enabled — one click reopens just the primary in Replace mode.
+
+Session persistence: the auto-loaded companions are recorded in `Source::locators` in the same load order, so **Save Session…** and **File → Recent Sessions → …** reopen the same merged view without a fresh directory scan. The per-session flag is stored under `Source::followRotationSiblings` (default `true`) so a session that opted out stays opted out across reloads.
+
 ## Stream Mode (live tail)
 
 Stream Mode opens a single log file and continuously tails it: it pre-fills the table with the last `N` complete lines on disk and then appends every new line as it is written. The mode is targeted at developer workflows where you want to watch a service's log as you reproduce a bug or run a smoke test, without alt-tabbing to a terminal.
@@ -172,8 +191,7 @@ While a stream is active the **Configuration** menus (Save / Load) and **Setting
 
 The following are **out of scope** for the current Stream Mode implementation:
 
-- **Compressed live-tail** — Stream Mode follows uncompressed files only. Static opens of `.gz` / `.bz2` / `.xz` / `.zst` files work (see [Compressed inputs](#compressed-inputs)); Stream Mode's rotation handling likewise only tracks uncompressed rotations.
-- **Pulling rotated history off disk** — the viewer does not read `app.log.1` to recover lines older than the in-memory cap.
+- **Compressed live-tail** — Stream Mode follows uncompressed files only. Static opens of `.gz` / `.bz2` / `.xz` / `.zst` files work (see [Compressed inputs](#compressed-inputs)); Stream Mode's rotation handling likewise only tracks uncompressed rotations. Compressed *historical* rotations opened as siblings of a live-tail session go through the static-open decompression path — see [Auto-loading rotated history](#auto-loading-rotated-history).
 - **stdin / named-pipe sources** — Stream Mode targets rotate-safe files; piped input goes through [Reading from standard input](#reading-from-standard-input), and network ingestion through [Network Stream Mode](#network-stream-mode-tcp--udp).
 - **Auto-detect "this file is being actively written → open in Stream Mode"** — Stream Mode is always an explicit `File → Open Log Stream…` action.
 - **Per-file or per-session retention overrides** — the retention cap is a single application-wide setting.

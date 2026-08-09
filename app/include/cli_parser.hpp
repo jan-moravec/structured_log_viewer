@@ -20,12 +20,17 @@ namespace logapp
 /// spawn many windows). `readStdin` is true when either `-` (as a
 /// positional) or `--stdin` was passed; `main()` opens a live-tail
 /// session over the process's `stdin` in that case, after any
-/// positional file paths were opened.
+/// positional file paths were opened. `disableRotationHistory` is
+/// true when `--no-rotation-history` was passed; it overrides the
+/// user's global preference for this one launch and stops the
+/// rotated-siblings expander from prepending older segments in
+/// front of the requested files.
 struct ParsedCli
 {
     QStringList files;
     bool allowNewInstance = false;
     bool readStdin = false;
+    bool disableRotationHistory = false;
 };
 
 /// Parse CLI arguments. Unknown flags are reported to stderr but
@@ -54,6 +59,15 @@ struct ParsedCli
         QStringLiteral("stdin"), QStringLiteral("Read log lines from standard input (equivalent to passing `-`).")
     );
     parser.addOption(stdinOption);
+    const QCommandLineOption noRotationHistoryOption(
+        QStringLiteral("no-rotation-history"),
+        QStringLiteral(
+            "Do not auto-detect and load rotated companion files (`app.log.1`, "
+            "`app.log-2025-04-28.gz`, ...) alongside the opened primary. Overrides "
+            "the global preference for this launch."
+        )
+    );
+    parser.addOption(noRotationHistoryOption);
     parser.addPositionalArgument(
         QStringLiteral("files"),
         QStringLiteral("Optional list of log files (or session JSONs) to open on launch."),
@@ -99,6 +113,10 @@ struct ParsedCli
     if (parser.isSet(stdinOption))
     {
         result.readStdin = true;
+    }
+    if (parser.isSet(noRotationHistoryOption))
+    {
+        result.disableRotationHistory = true;
     }
 
     const QString envOverride = env.value(QStringLiteral("LOGAPP_NEW_INSTANCE"));

@@ -209,6 +209,10 @@ int main(int argc, char *argv[])
         cliFiles.append(pendingFromOs);
     }
 
+    // Forward `--no-rotation-history` before opening any file so
+    // the first open respects the launch override.
+    w.SetRotationHistoryLaunchOverride(parsed.disableRotationHistory);
+
     if (!cliFiles.isEmpty())
     {
         w.OpenFilesForCli(cliFiles);

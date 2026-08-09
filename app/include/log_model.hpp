@@ -177,6 +177,23 @@ public:
         LogParserFactory parserFactory = {}
     );
 
+    /// Append a live-tail source onto an already-active (or
+    /// just-finished) static-file session, reusing the existing
+    /// `KeyIndex` and rows. Companion to
+    /// `AppendStreaming(FileLineSource...)`, but for the
+    /// tail-after-historical-prefix case: rotated siblings are
+    /// streamed as static files first, then the primary is tailed
+    /// through this overload. Producer rotation/status callbacks
+    /// are wired the same way as `BeginStreaming(stream, ...)`, and
+    /// the retention cap is *not* re-applied — the caller decides
+    /// whether to override before invoking (usually the sibling
+    /// prefix already applied its cap).
+    loglib::StopToken AppendStreaming(
+        std::unique_ptr<loglib::StreamLineSource> source,
+        loglib::ParserOptions options,
+        LogParserFactory parserFactory = {}
+    );
+
     /// Test-only: install @p source and arm the sink without spawning a
     /// worker. Pair with `EndStreaming(...)` or `Reset()`.
     loglib::StopToken BeginStreamingForSyncTest(std::unique_ptr<loglib::LineSource> source);

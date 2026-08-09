@@ -79,7 +79,9 @@ template <> struct glz::meta<loglib::LogConfiguration::Source>
         "locatorDedupKeys",
         &T::locatorDedupKeys,
         "regexPattern",
-        &T::regexPattern
+        &T::regexPattern,
+        "followRotationSiblings",
+        &T::followRotationSiblings
     );
 };
 

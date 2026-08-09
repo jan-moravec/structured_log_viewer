@@ -12843,6 +12843,140 @@ private slots:
         );
     }
 
+    // Rotation-siblings: opening `app.log` alone auto-prepends its
+    // rotated companions in oldest -> newest order. The merged view
+    // holds every line and the persisted source lists all locators.
+    void TestOpenFilesExpandsRotationSiblings()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        // Three files in one rotation family. Higher N is older so
+        // the expected row order is: sibling.2 lines, sibling.1
+        // lines, primary lines.
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
+        const QString olderPath = dir.filePath(QStringLiteral("app.log.2"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(primaryPath, R"({"msg":"primary-0"})""\n" R"({"msg":"primary-1"})""\n");
+        write(oldPath, R"({"msg":"gen1-0"})""\n");
+        write(olderPath, R"({"msg":"gen2-0"})""\n" R"({"msg":"gen2-1"})""\n");
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        // Route through the mixed dispatcher (the user-facing entry
+        // point) so the rotation-siblings expander gets a chance to
+        // run. `OpenFilesForTest` calls `StartStreamingOpenQueue`
+        // directly and would bypass the expansion.
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        while (finishedSpy.count() < 3)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "three per-file streamingFinished emits expected");
+        }
+        QCoreApplication::processEvents();
+
+        // 2 (gen2) + 1 (gen1) + 2 (primary) = 5 rows.
+        QCOMPARE(model->rowCount(), 5);
+    }
+
+    // Rotation-siblings smart sort: user drops
+    // `[app.log.2, app.log, app.log.1]`. Even though the order is
+    // wrong, the partitioner reshuffles to `app.log.2, app.log.1,
+    // app.log` (oldest first) so the merged view is chronological.
+    void TestMultiFileDropSmartSortsRotationFamily()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
+        const QString olderPath = dir.filePath(QStringLiteral("app.log.2"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(primaryPath, R"({"msg":"p"})""\n");
+        write(oldPath, R"({"msg":"g1"})""\n");
+        write(olderPath, R"({"msg":"g2"})""\n");
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        // User-order: newer, primary, older. Expander must
+        // reshuffle to oldest -> newest. Route through the mixed
+        // dispatcher; `OpenFilesForTest` would bypass the expander.
+        (void)mWindow->OpenMixedFilesForTest({oldPath, primaryPath, olderPath}, MainWindow::OpenMode::Replace);
+        while (finishedSpy.count() < 3)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "three per-file streamingFinished emits expected");
+        }
+        QCoreApplication::processEvents();
+
+        QCOMPARE(model->rowCount(), 3);
+
+        const QTemporaryDir savedDir;
+        QVERIFY(savedDir.isValid());
+        const QString sessionPath = savedDir.filePath(QStringLiteral("rotation-sorted.json"));
+        mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
+
+        loglib::LogConfigurationManager probe;
+        probe.Load(sessionPath.toStdString());
+        QVERIFY(probe.Configuration().source.has_value());
+        // Locators reflect the expansion order (oldest first, primary last).
+        const auto &locators = probe.Configuration().source->locators;
+        QCOMPARE(locators.size(), static_cast<std::size_t>(3));
+        QCOMPARE(QString::fromStdString(locators[0]), logapp::CanonicalDisplayPath(olderPath));
+        QCOMPARE(QString::fromStdString(locators[1]), logapp::CanonicalDisplayPath(oldPath));
+        QCOMPARE(QString::fromStdString(locators[2]), logapp::CanonicalDisplayPath(primaryPath));
+    }
+
+    // Rotation-siblings opt-out: with the global pref off, opening
+    // `app.log` does *not* pull in sibling files.
+    void TestRotationSiblingsOptOutViaLaunchOverride()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString olderPath = dir.filePath(QStringLiteral("app.log.1"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(primaryPath, R"({"msg":"p"})""\n");
+        write(olderPath, R"({"msg":"g1"})""\n");
+
+        // CLI override: no rotation history.
+        mWindow->SetRotationHistoryLaunchOverride(true);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        // Route through the mixed dispatcher so the (skipped) expander
+        // runs. With the override on, no siblings are added.
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        QVERIFY2(finishedSpy.wait(5000), "single-file open must finish");
+        QCoreApplication::processEvents();
+
+        // Only the primary was streamed; the older segment was
+        // deliberately skipped.
+        QCOMPARE(model->rowCount(), 1);
+        mWindow->SetRotationHistoryLaunchOverride(false);
+    }
+
     // Regression: a multi-file open must sniff each queued file
     // independently, not reuse the first file's format for the rest.
     // Before the fix, a JSON Lines + logfmt queue tried to parse the

@@ -373,6 +373,92 @@ loglib::StopToken LogModel::AppendStreaming(
     return stopToken;
 }
 
+loglib::StopToken LogModel::AppendStreaming(
+    std::unique_ptr<loglib::StreamLineSource> source, loglib::ParserOptions options, LogParserFactory parserFactory
+)
+{
+    Q_ASSERT(source);
+    Q_ASSERT(mStreamingWatcher == nullptr || !mStreamingWatcher->isRunning());
+
+    // Empty factory = legacy contract: spawn a `JsonParser`.
+    if (!parserFactory)
+    {
+        parserFactory = []() -> std::unique_ptr<loglib::LogParser> { return std::make_unique<loglib::JsonParser>(); };
+    }
+
+    QtStreamingLogSink *sinkForWorker = mSink;
+    loglib::StreamLineSource *streamSourcePtr = source.get();
+
+    // Splice the new source in without resetting rows/keys. Mirrors
+    // `AppendStreaming(FileLineSource...)`: the sibling prefix stays
+    // visible, the tail extends it. No reserve-by-file-size like the
+    // FileLineSource path; stream sources don't have a static size.
+    mLogTable.AppendStreaming(std::move(source));
+
+    // Cache the new source's locator (see `BeginStreamingShared`).
+    PrewarmCanonicalLocatorCache();
+
+    // Arm the sink for the new worker without resetting counters or
+    // wiping rows; `Arm()` bumps the generation.
+    const loglib::StopToken stopToken = mSink->Arm();
+    options.stopToken = stopToken;
+    mStreamingActive = true;
+
+    // Subscribe to producer rotation/status hooks. Callbacks fire from
+    // the producer thread; re-emit queued so the GUI sees them on the
+    // model's thread. `QPointer` handles destruction mid-hop.
+    const QPointer<LogModel> self(this);
+    if (loglib::BytesProducer *producer = streamSourcePtr->Producer(); producer != nullptr)
+    {
+        producer->SetRotationCallback([self]() {
+            if (!self)
+            {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                self.data(),
+                [self]() {
+                    if (self)
+                    {
+                        emit self->rotationDetected();
+                    }
+                },
+                Qt::QueuedConnection
+            );
+        });
+        producer->SetStatusCallback([self](loglib::SourceStatus status) {
+            if (!self)
+            {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                self.data(),
+                [self, status]() {
+                    if (self)
+                    {
+                        emit self->sourceStatusChanged(status);
+                    }
+                },
+                Qt::QueuedConnection
+            );
+        });
+    }
+
+    const QFuture<void> future = QtConcurrent::run([sinkForWorker,
+                                                    streamSourcePtr,
+                                                    capturedOptions = std::move(options),
+                                                    capturedFactory = std::move(parserFactory)]() mutable {
+        RunParserWorkerWithBoundary(sinkForWorker, [&] {
+            const std::unique_ptr<loglib::LogParser> parser = capturedFactory();
+            Q_ASSERT(parser);
+            parser->ParseStreaming(*streamSourcePtr, *sinkForWorker, std::move(capturedOptions));
+        });
+    });
+
+    mStreamingWatcher->setFuture(future);
+    return stopToken;
+}
+
 loglib::StopToken LogModel::BeginStreaming(
     std::unique_ptr<loglib::StreamLineSource> source, loglib::ParserOptions options, LogParserFactory parserFactory
 )

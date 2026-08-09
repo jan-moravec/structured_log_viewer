@@ -34,6 +34,7 @@ class time_zone;
 namespace loglib
 {
 class BytesProducer;
+class TailingBytesProducer;
 } // namespace loglib
 
 #include <QAction>
@@ -216,6 +217,19 @@ public:
     /// so pre-loaded configuration filters survive into the new
     /// session.
     void OpenFilesForCli(const QStringList &files);
+
+    /// Toggle the CLI-driven one-shot opt-out for
+    /// rotated-history expansion. When true, every open through
+    /// `DispatchMixedOpenInput` / `OpenLogStreamFromPath` skips
+    /// sibling detection regardless of the persisted preference or
+    /// per-session flag, and newly-created sessions are seeded with
+    /// `Source::followRotationSiblings = false`. Persists for the
+    /// life of the process (not the window).
+    void SetRotationHistoryLaunchOverride(bool disable) noexcept
+    {
+        mDisableRotationHistoryOverride = disable;
+        SyncRotationHistoryActionCheckedState();
+    }
 
     /// Open a live-tail session over the process's standard input.
     /// The CLI parses `-` / `--stdin` in argv and routes here via
@@ -1173,6 +1187,62 @@ private:
     /// `QFileDialog`.
     void OpenLogStreamFromPath(const QString &file);
 
+    /// Attach a live-tail on `mPendingLiveTailPrimary` once the
+    /// static sibling prefix has drained. Invoked from
+    /// `OnStreamingFinished` when the queue is empty and the
+    /// pending primary is non-empty. Clears the pending state and
+    /// flips `mSessionMode` from `Static` to `LiveTail`.
+    void ContinueLiveTailAfterPrefix();
+
+    /// True iff the current process should attempt rotation-sibling
+    /// expansion for new opens. Consults both the global preference
+    /// (`QSettings ui/autoDetectRotatedHistory`, default `true`)
+    /// and the CLI launch override. Session-level flags on
+    /// `mCurrentSource->followRotationSiblings` further gate
+    /// drops-into-session; those are consulted at the call site.
+    [[nodiscard]] bool ShouldAutoDetectRotationHistory() const noexcept;
+
+    /// Expand @p logPaths in place: for each entry, if the current
+    /// preference is on and the path has rotation-siblings on disk
+    /// (or looks like a rotated sibling itself), prepend the older
+    /// segments and, when multiple entries in @p logPaths belong to
+    /// one family, deduplicate them into the correct order.
+    ///
+    /// Bundles and configuration JSONs are already filtered out
+    /// upstream; this helper additionally skips any residual
+    /// bundle-like path defensively. `mCurrentSource`'s existing
+    /// locators are used to dedup against files already loaded into
+    /// the session, so drops-into-session don't re-add
+    /// already-visible siblings.
+    ///
+    /// Returns the expanded list of paths. When no expansion
+    /// happens, the returned list is byte-equal to the input in
+    /// order. The number of *added* files (excluding the caller's
+    /// originals) is written to @p addedOut for the status-bar
+    /// affordance.
+    [[nodiscard]] QStringList ExpandLogPathsWithRotationSiblings(const QStringList &logPaths, int &addedOut) const;
+
+    /// Show a status-bar toast after a rotation-siblings expansion
+    /// and enable the `Undo Rotated History Expansion` action.
+    void ShowRotationHistoryToast(int addedCount, const QString &primary);
+
+    /// Undo the most recent rotation-siblings expansion: destructive
+    /// reset + reopen `mLastRotationExpansionPrimary` alone. No-op
+    /// when the field is empty. Disabled by the action guard once
+    /// the user has touched the view (filters/anchors/sort applied
+    /// since the expansion).
+    void UndoRotationExpansion();
+
+    /// Reflect the value of the current
+    /// `Source::followRotationSiblings` (or the global pref when no
+    /// source is bound) on the checkable Preferences action.
+    void SyncRotationHistoryActionCheckedState();
+
+    /// Handler for the Preferences toggle. Writes the new value
+    /// through `QSettings` and, when a session is loaded, updates
+    /// `mCurrentSource->followRotationSiblings` in step.
+    void OnRotationHistoryPrefToggled(bool enabled);
+
     /// Path-based save / load shared by the dialog slots and the
     /// test seams. `DoSaveConfiguration` mirrors session state and
     /// writes the slice selected by @p scope; throws on failure.
@@ -1518,6 +1588,16 @@ private:
     QAction *mActionToggleFind = nullptr;
     /// Toggle action for `mParseErrorsDock`.
     QAction *mActionToggleParseErrors = nullptr;
+
+    /// Checkable Settings action for the "Auto-detect rotated log
+    /// history" preference. Wired up in the constructor after
+    /// `ui->menuSettings` exists.
+    QAction *mActionAutoDetectRotationHistory = nullptr;
+
+    /// One-shot "Undo rotated history" action enabled after each
+    /// successful expansion, disabled once the user filters / sorts
+    /// / anchors any row (see `SyncRotationHistoryActionCheckedState`).
+    QAction *mActionUndoRotationExpansion = nullptr;
     /// Status-bar indicator that surfaces when the parse-errors dock
     /// has entries; clicking it opens the dock.
     QPushButton *mParseErrorsStatusButton = nullptr;
@@ -1806,6 +1886,46 @@ private:
 
     /// Files queued by `StartStreamingOpenQueue`.
     QStringList mPendingOpenFiles;
+
+    /// When non-empty, the last file in a rotation-siblings-plus-
+    /// live-tail open. Set by `OpenLogStreamFromPath` right before
+    /// draining `mPendingOpenFiles` with the sibling prefix; read
+    /// by `OnStreamingFinished` when the queue drains, at which
+    /// point the primary is tailed via
+    /// `LogModel::AppendStreaming(StreamLineSource, ...)`.
+    /// Cleared by every destructive teardown so a stale primary
+    /// can't fire against a subsequent session.
+    QString mPendingLiveTailPrimary;
+
+    /// Retention override remembered across a sibling-prefix load.
+    /// Populated by `OpenLogStreamFromPath` before the prefix drain
+    /// so `ContinueLiveTailAfterPrefix` can restore the live-tail
+    /// retention cap the sibling static path bypassed.
+    size_t mPendingLiveTailRetention = 0;
+
+    /// The `TailingBytesProducer` constructed up-front for the
+    /// primary (so early-open errors surface immediately) but kept
+    /// aside across the static-prefix drain. Moved into the tail
+    /// `StreamLineSource` by `ContinueLiveTailAfterPrefix`.
+    std::unique_ptr<loglib::TailingBytesProducer> mPendingLiveTailProducer;
+
+    /// CLI `--no-rotation-history` override. Persists for the life
+    /// of the process (not the session) so a launch with the flag
+    /// stays opted-out across `New Session` / `Open`. Toggled off
+    /// only by the preferences menu (which also flips the global
+    /// pref).
+    bool mDisableRotationHistoryOverride = false;
+
+    /// Primary file that owns the current window's most recent
+    /// rotation-history expansion (empty when no auto-expansion has
+    /// happened). Consumed by the status-bar `Undo` affordance to
+    /// resurrect a plain open of just the primary.
+    QString mLastRotationExpansionPrimary;
+
+    /// Count of siblings added by the most recent expansion. Kept
+    /// alongside `mLastRotationExpansionPrimary` so the toast can
+    /// say "Loaded N companion(s)" without recomputing.
+    int mLastRotationExpansionCount = 0;
 
     /// File-open errors collected while draining `mPendingOpenFiles`.
     /// Drained under the `tr("Error Opening File")` title.

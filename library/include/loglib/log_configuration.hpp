@@ -148,6 +148,18 @@ struct LogConfiguration
         /// matching template name (if any) is resolved at display
         /// time via `loglib::FindTemplateByPattern`.
         std::string regexPattern;
+
+        /// Governs whether *future* file additions to this session
+        /// (drops-into-session, "add file" menu) should re-run the
+        /// rotation-sibling expander. On session restore `locators`
+        /// remains authoritative -- no re-scan happens against the
+        /// stored primary. Defaults to `true` so a fresh session
+        /// inherits the global preference's default.
+        ///
+        /// Older configurations without this field load as `true`
+        /// courtesy of `error_on_unknown_keys=false` and the
+        /// default-on-missing behaviour of the Glaze meta.
+        bool followRotationSiblings = true;
     };
 
     /// A persisted bookmark on one log line.
