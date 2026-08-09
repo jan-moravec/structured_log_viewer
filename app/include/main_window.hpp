@@ -34,7 +34,6 @@ class time_zone;
 namespace loglib
 {
 class BytesProducer;
-class TailingBytesProducer;
 } // namespace loglib
 
 #include <QAction>
@@ -223,8 +222,14 @@ public:
     /// `DispatchMixedOpenInput` / `OpenLogStreamFromPath` skips
     /// sibling detection regardless of the persisted preference or
     /// per-session flag, and newly-created sessions are seeded with
-    /// `Source::followRotationSiblings = false`. Persists for the
-    /// life of the process (not the window).
+    /// `Source::followRotationSiblings = false`.
+    ///
+    /// Scope is per-`MainWindow` (the backing member is not
+    /// static): each peer window carries its own override. That
+    /// keeps `--no-rotation-history` forwarded through the
+    /// single-instance guard from leaking into unrelated peers.
+    /// Cleared by loading or restoring a session, so the persisted
+    /// choice wins after the launch settles.
     ///
     /// Not `noexcept`: the checkbox-sync helper reaches `QSettings`,
     /// which can allocate and (on backend errors) throw.
@@ -635,8 +640,7 @@ public:
     /// `ContinueLiveTailAfterPrefix`.
     [[nodiscard]] bool HasPendingLiveTailForTest() const noexcept
     {
-        return !mPendingLiveTailPrimary.isEmpty() || mPendingLiveTailProducer != nullptr
-               || mPendingLiveTailRetention != 0;
+        return !mPendingLiveTailPrimary.isEmpty() || mPendingLiveTailRetention != 0;
     }
 
     /// Test seam: seed a stale pending live-tail state to simulate
@@ -644,9 +648,7 @@ public:
     /// `HasPendingLiveTailForTest`, the two lets tests assert that
     /// destructive-open resets clear the state. `primary` becomes
     /// `mPendingLiveTailPrimary`; the retention argument mirrors
-    /// `mPendingLiveTailRetention`. `mPendingLiveTailProducer` is
-    /// left null -- the current tests only care about the flag
-    /// bookkeeping, not that a real producer is present.
+    /// `mPendingLiveTailRetention`.
     void SeedPendingLiveTailForTest(const QString &primary, size_t retention) noexcept
     {
         mPendingLiveTailPrimary = primary;
@@ -654,10 +656,10 @@ public:
     }
 
     /// Test seam: reproduce the "all siblings failed synchronously"
-    /// rescue path from `StreamNextPendingFile`. Constructs a real
-    /// `TailingBytesProducer` on @p primary, seeds
-    /// `mPendingLiveTail*`, forces `mSessionMode = Idle` +
-    /// `mCurrentSource = nullopt` (matching the state when no
+    /// rescue path from `StreamNextPendingFile`. Seeds
+    /// `mPendingLiveTail*` (producer is created lazily inside
+    /// `ContinueLiveTailAfterPrefix`), forces `mSessionMode = Idle`
+    /// + `mCurrentSource = nullopt` (matching the state when no
     /// sibling ever reached `ContinueOpenAfterPrepared`), then
     /// calls the live-tail promotion helper. Lets tests assert
     /// the promotion disables the configuration UI without having
@@ -1298,7 +1300,8 @@ private:
     /// (`QSettings ui/autoDetectRotatedHistory`, default `true`)
     /// and the CLI launch override. Session-level flags on
     /// `mCurrentSource->followRotationSiblings` further gate
-    /// drops-into-session; those are consulted at the call site.
+    /// drops-into-session; those are consulted at the call site
+    /// (or via `EffectiveAutoDetectRotationHistory`).
     ///
     /// Not `noexcept`: `QSettings` construction and `.value()` can
     /// allocate memory and (on failing platforms) throw. A truly
@@ -1306,6 +1309,13 @@ private:
     /// `OnRotationHistoryPrefToggled`; the current cost is one map
     /// lookup per open so caching is not worth the complexity.
     [[nodiscard]] bool ShouldAutoDetectRotationHistory() const;
+
+    /// Effective rotation-history preference matching the Settings
+    /// checkbox: global/CLI gate AND the bound session's
+    /// `followRotationSiblings` (when a session is loaded). Stream
+    /// Mode snapshots this *before* tearing down the outgoing
+    /// session so an unchecked box cannot expand on the next open.
+    [[nodiscard]] bool EffectiveAutoDetectRotationHistory() const;
 
     /// Drop the "Undo rotated history expansion" affordance state.
     /// Called from every destructive session-boundary path so the
@@ -1374,9 +1384,17 @@ private:
     /// happens, the returned list is byte-equal to the input in
     /// order. The number of *added* files (excluding the caller's
     /// originals) is written to @p addedOut for the status-bar
-    /// affordance.
+    /// affordance. When @p primaryOut is non-null it receives the
+    /// canonical display path of the FIRST family that actually
+    /// contributed a non-zero add count, so callers can anchor the
+    /// sibling toast on the expanded family's primary rather than
+    /// on some unrelated caller input. Empty when nothing was
+    /// added.
     [[nodiscard]] QStringList ExpandLogPathsWithRotationSiblings(
-        const QStringList &logPaths, int &addedOut, RotationSourceGating gating
+        const QStringList &logPaths,
+        int &addedOut,
+        RotationSourceGating gating,
+        QString *primaryOut = nullptr
     ) const;
 
     /// Show a status-bar toast after a rotation-siblings expansion
@@ -2052,11 +2070,14 @@ private:
     /// Files queued by `StartStreamingOpenQueue`.
     QStringList mPendingOpenFiles;
 
-    /// When non-empty, the last file in a rotation-siblings-plus-
-    /// live-tail open. Set by `OpenLogStreamFromPath` right before
-    /// draining `mPendingOpenFiles` with the sibling prefix; read
-    /// by `OnStreamingFinished` when the queue drains, at which
-    /// point the primary is tailed via
+    /// When non-empty, the active primary for a rotation-siblings-
+    /// plus-live-tail open (the series primary after derotation,
+    /// e.g. `app.log` even when the user picked `app.log.2`). Set
+    /// by `OpenLogStreamFromPath` right before draining
+    /// `mPendingOpenFiles` with the historical prefix; read by
+    /// `OnStreamingFinished` when the queue drains, at which point
+    /// `ContinueLiveTailAfterPrefix` constructs the
+    /// `TailingBytesProducer` and attaches via
     /// `LogModel::AppendStreaming(StreamLineSource, ...)`.
     /// Cleared by every destructive teardown so a stale primary
     /// can't fire against a subsequent session.
@@ -2067,12 +2088,6 @@ private:
     /// so `ContinueLiveTailAfterPrefix` can restore the live-tail
     /// retention cap the sibling static path bypassed.
     size_t mPendingLiveTailRetention = 0;
-
-    /// The `TailingBytesProducer` constructed up-front for the
-    /// primary (so early-open errors surface immediately) but kept
-    /// aside across the static-prefix drain. Moved into the tail
-    /// `StreamLineSource` by `ContinueLiveTailAfterPrefix`.
-    std::unique_ptr<loglib::TailingBytesProducer> mPendingLiveTailProducer;
 
     /// CLI `--no-rotation-history` override. Persists across
     /// `New Session` / `Open` so a launch with the flag stays

@@ -351,18 +351,18 @@ std::optional<std::filesystem::path> DeriveRotationPrimary(const std::filesystem
 /// codec extensions we recognise as a rotated-log compression
 /// suffix. Kept in sync with the `compressTail` regex fragment
 /// in `BuildMatchers`.
+///
+/// Routes through the shared `ToLower` helper so a stray UTF-8
+/// continuation byte in the input never gets corrupted by a
+/// naive per-byte `std::tolower`. Extensions are ASCII in
+/// practice, but the discipline matches the rest of the file.
 bool IsRecognisedCodecExt(std::string_view ext)
 {
     if (ext.empty())
     {
         return false;
     }
-    std::string lower;
-    lower.reserve(ext.size());
-    for (const char c : ext)
-    {
-        lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-    }
+    const std::string lower = ToLower(std::string(ext));
     return lower == "gz" || lower == "bz2" || lower == "xz" || lower == "zst";
 }
 
@@ -667,10 +667,14 @@ PartitionedSelection PartitionAsRotationSeries(std::span<const std::filesystem::
                 // absent). Insert it before the primary as an
                 // additional dated/numbered candidate; without a
                 // rank we prepend to keep the primary last.
+                // Origin is `CallerListed` -- lying about it
+                // (e.g. claiming `NumberedSuffix`) would defeat
+                // any downstream "auto-discovered vs. user-listed"
+                // heuristic that reads `origin` alone.
                 RotatedFile extra;
                 extra.path = paths[i];
                 extra.canonicalKey = k;
-                extra.origin = RotatedFile::Origin::NumberedSuffix;
+                extra.origin = RotatedFile::Origin::CallerListed;
                 // Insert just before the primary (which sits at end).
                 if (series.files.empty())
                 {

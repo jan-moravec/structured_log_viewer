@@ -35,9 +35,20 @@ struct RotatedFile
 {
     enum class Origin
     {
+        /// The active primary of the series (last entry).
         Primary,
+        /// Classified as `<primary>.<N>` (optionally compressed).
         NumberedSuffix,
-        DatedSuffix
+        /// Classified as a dated variant (tailing or stem-inserted).
+        DatedSuffix,
+        /// Neither pattern matched, but the caller explicitly listed
+        /// this file under the series in `PartitionAsRotationSeries`.
+        /// Only produced by the partitioner's union step; the
+        /// enumerator never returns this origin. Callers that need
+        /// to distinguish "auto-discovered by rotation detection"
+        /// from "listed by the user" should treat this value the
+        /// same as a caller input, not a rotation companion.
+        CallerListed,
     };
 
     std::filesystem::path path;

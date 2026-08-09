@@ -4,6 +4,7 @@
 
 #include <catch2/catch_all.hpp>
 
+#include <algorithm>
 #include <filesystem>
 #include <span>
 #include <string>
@@ -18,13 +19,20 @@ using test_common::TempDir;
 namespace
 {
 
+// UTF-8 filename via `u8string()`; a raw `path::string()` throws
+// on Windows when the wide-string filename contains a character
+// the active code page cannot represent (Cyrillic, CJK, ...).
+// Fixtures below currently use ASCII names but the helper is
+// shared, and a future non-ASCII fixture would crash inside
+// `path::string()` before reaching any assertion.
 std::vector<std::string> Basenames(const RotationSeries &series)
 {
     std::vector<std::string> out;
     out.reserve(series.files.size());
     for (const RotatedFile &rf : series.files)
     {
-        out.push_back(rf.path.filename().string());
+        const std::u8string u8 = rf.path.filename().u8string();
+        out.emplace_back(reinterpret_cast<const char *>(u8.data()), u8.size());
     }
     return out;
 }
@@ -285,6 +293,55 @@ TEST_CASE("PartitionAsRotationSeries: lone log with no siblings stays in residua
     CHECK(partitioned.series.empty());
     REQUIRE(partitioned.residual.size() == 1);
     CHECK(partitioned.residual.front().filename().string() == "app.log");
+}
+
+TEST_CASE(
+    "PartitionAsRotationSeries: caller-listed rotated input that no longer exists on disk "
+    "reports Origin::CallerListed",
+    "[RotationSiblings]"
+)
+{
+    // Regression: the partitioner's "union step" folds caller
+    // inputs that group under a family primary but that the
+    // enumerator did not classify on disk (e.g. the caller
+    // recorded the file in a session, but by the time the file
+    // is reopened the rotated segment has since been deleted /
+    // moved). Pre-fix the code labelled these paths
+    // `Origin::NumberedSuffix`, which is a lie: downstream
+    // heuristics that read `origin` alone to distinguish
+    // "auto-discovered by rotation detection" from "listed by
+    // the caller" would wrongly count them as auto-added
+    // siblings and arm the sibling toast / Undo affordance for
+    // a set the user assembled by hand.
+    //
+    // Reproduce the case with a phantom rotated file: `app.log`
+    // and `app.log.1` exist on disk, the caller lists
+    // `[app.log.5]` (which does *not* exist). `DeriveRotationPrimary`
+    // maps `app.log.5` -> `app.log`; the enumerator walks the
+    // directory and finds only `app.log.1` (plus reattaching
+    // `app.log` as the primary). The union step then folds
+    // `app.log.5` into the series -- and that entry is the one
+    // whose origin must read `CallerListed`.
+    const TempDir dir("rotation_partition_caller_listed");
+    (void)dir.Write("app.log", "primary");
+    (void)dir.Write("app.log.1", "older");
+    const auto phantom = dir.Path() / "app.log.5"; // deliberately NOT written to disk
+
+    const std::vector<std::filesystem::path> input{phantom};
+    const auto partitioned = PartitionAsRotationSeries(std::span<const std::filesystem::path>(input));
+    REQUIRE(partitioned.series.size() == 1);
+    const auto &series = partitioned.series.front();
+    // Family has 3 entries: existing `.1` (Numbered), the
+    // caller-listed phantom `.5` (CallerListed), then the
+    // primary (Primary).
+    REQUIRE(series.files.size() == 3);
+    CHECK(series.files.back().origin == RotatedFile::Origin::Primary);
+
+    const auto it = std::find_if(series.files.begin(), series.files.end(), [](const RotatedFile &rf) {
+        return rf.path.filename() == std::filesystem::path("app.log.5");
+    });
+    REQUIRE(it != series.files.end());
+    CHECK(it->origin == RotatedFile::Origin::CallerListed);
 }
 
 TEST_CASE("PartitionAsRotationSeries: mixed families and a residual", "[RotationSiblings]")

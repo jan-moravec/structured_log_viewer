@@ -38,11 +38,20 @@ constexpr int MAGIC_FRAME_PEEK_BYTES =
     static_cast<int>(sizeof(quint32)) + MAGIC_BYTES + static_cast<int>(sizeof(quint8));
 
 /// Wire schema version after `WIRE_MAGIC`. Bump on payload changes.
-/// Version 2: magic + version + `QStringList` files +
-/// `quint32 truncatedCount`.
-constexpr quint8 WIRE_VERSION = 2;
+/// - Version 2: magic + version + `QStringList` files +
+///   `quint32 truncatedCount`.
+/// - Version 3 (this build): same as v2 plus a trailing
+///   `quint32 launchFlags` bitmask (see
+///   `SingleInstanceGuard::LaunchFlags`). Older primaries never
+///   see this field because v3 secondaries write it after the
+///   fields v2 expected, but a v2 primary would misclassify the
+///   extra bytes as buffer overrun; MIN_SUPPORTED stays at 2 so a
+///   v2 secondary (older binary talking to a newer primary) still
+///   works -- the primary emits `LaunchFlags::None` for the
+///   missing field.
+constexpr quint8 WIRE_VERSION = 3;
 constexpr quint8 WIRE_VERSION_MIN_SUPPORTED = 2;
-constexpr quint8 WIRE_VERSION_MAX_SUPPORTED = 2;
+constexpr quint8 WIRE_VERSION_MAX_SUPPORTED = 3;
 
 /// Connect / write timeouts. Tight so an unreachable primary
 /// degrades to running uncoordinated rather than stalling launch.
@@ -167,12 +176,17 @@ void SingleInstanceGuard::SetSocketNameForTest(const QString &name)
     mSocketName = name;
 }
 
-bool SingleInstanceGuard::TryAcquire(const QStringList &forwardFiles, bool allowNewInstance)
+bool SingleInstanceGuard::TryAcquire(
+    const QStringList &forwardFiles, bool allowNewInstance, LaunchFlagsBitmask launchFlags
+)
 {
     if (allowNewInstance)
     {
         // `--new-instance` bypass: run uncoordinated without
-        // touching the canonical primary's socket.
+        // touching the canonical primary's socket. `launchFlags`
+        // is intentionally ignored here -- the caller is running
+        // this process directly, so any flag effect happens in the
+        // caller's own `MainWindow` setup, not on the wire.
         return true;
     }
 
@@ -192,7 +206,11 @@ bool SingleInstanceGuard::TryAcquire(const QStringList &forwardFiles, bool allow
     // Serialise up front so we can enforce `MAX_PAYLOAD_BYTES`
     // before any round-trip. Long paths can blow past the byte
     // cap with 256 entries, so pop tail entries on overrun.
-    auto serialise = [&trimmed, &truncatedCount]() {
+    // `launchFlags` is a fixed 4-byte suffix; it cannot itself
+    // push the payload over the cap, so it does not participate
+    // in the shrink loop.
+    const quint32 launchFlagsRaw = static_cast<quint32>(launchFlags);
+    auto serialise = [&trimmed, &truncatedCount, launchFlagsRaw]() {
         QByteArray buf;
         QDataStream stream(&buf, QIODevice::WriteOnly);
         stream.setVersion(QDataStream::Qt_6_0);
@@ -200,6 +218,7 @@ bool SingleInstanceGuard::TryAcquire(const QStringList &forwardFiles, bool allow
         stream << static_cast<quint8>(WIRE_VERSION);
         stream << trimmed;
         stream << truncatedCount;
+        stream << launchFlagsRaw;
         return buf;
     };
     QByteArray payload = serialise();
@@ -409,6 +428,37 @@ void SingleInstanceGuard::HandleNewConnection()
             {
                 return; // Wait for more bytes.
             }
+            // `launchFlags` was added in wire version 3. For older
+            // (v2) peers the extra bytes are absent, so default to
+            // `None` -- matches the pre-v3 behaviour where every
+            // forwarded launch used the receiver's own defaults.
+            //
+            // Note the two-step decode: we tentatively read the
+            // extra field on a copy of the stream so a v3 peer
+            // that has sent everything except the trailing flags
+            // (partial write) still falls through to "wait for
+            // more bytes" rather than emitting with `None`.
+            quint32 launchFlagsRaw = 0;
+            if (version >= 3)
+            {
+                QDataStream flagsPeek(buffer);
+                flagsPeek.setVersion(QDataStream::Qt_6_0);
+                QByteArray unused;
+                flagsPeek >> unused;
+                quint8 v = 0;
+                flagsPeek >> v;
+                QStringList f;
+                flagsPeek >> f;
+                quint32 t = 0;
+                flagsPeek >> t;
+                quint32 raw = 0;
+                flagsPeek >> raw;
+                if (flagsPeek.status() != QDataStream::Ok)
+                {
+                    return; // Trailing field still in flight.
+                }
+                launchFlagsRaw = raw;
+            }
             // Defence in depth: enforce the count cap post-decode
             // in case a peer packed many short files past the limit.
             if (files.size() > MAX_FORWARDED_FILES)
@@ -417,7 +467,19 @@ void SingleInstanceGuard::HandleNewConnection()
                 truncatedCount += overrun;
                 files = files.mid(0, MAX_FORWARDED_FILES);
             }
-            emit openWindowRequested(files, static_cast<int>(truncatedCount));
+            // Rebuild the bitmask by testing each known bit
+            // rather than casting the raw `quint32`: a future
+            // process running against this build might advertise
+            // bits we don't understand, and silently promoting them
+            // to `LaunchFlags` values would launder unknown state
+            // into our peer window. Unknown bits are dropped, which
+            // matches the "unknown feature -> use defaults" rule.
+            LaunchFlagsBitmask launchFlags;
+            if ((launchFlagsRaw & static_cast<quint32>(LaunchFlags::DisableRotationHistory)) != 0)
+            {
+                launchFlags |= LaunchFlags::DisableRotationHistory;
+            }
+            emit openWindowRequested(files, static_cast<int>(truncatedCount), launchFlags);
             socket->disconnectFromServer();
         };
 
