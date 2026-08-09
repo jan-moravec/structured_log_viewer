@@ -205,8 +205,8 @@ TEST_CASE("PartitionAsRotationSeries handles multi-family drop", "[RotationSibli
     REQUIRE(partitioned.series.size() == 2);
     CHECK(partitioned.residual.empty());
     // First series: whichever primary appears earliest in the
-    // input. `appOne` derotates to `app.log` at position 0 →ing so
-    // the `app` family wins first slot.
+    // input. `appOne` derotates to `app.log` at position 0, so
+    // the `app` family wins the first slot.
     const auto firstNames = Basenames(partitioned.series.front());
     REQUIRE(firstNames.size() == 2);
     CHECK(firstNames.front() == "app.log.1");
@@ -398,6 +398,32 @@ TEST_CASE(
     CHECK(partitioned.residual.back().filename().string() == "app.log.10000000000000");
 }
 
+TEST_CASE(
+    "EnumerateRotatedSiblings returns primary-only when the primary is compressed",
+    "[RotationSiblings]"
+)
+{
+    // Regression: opening `app.log.gz` (a compressed file) as the
+    // primary must NOT pull in siblings of the *uncompressed*
+    // `app.log`. `SplitStemExt` for `app.log.gz` returns
+    // `stem="app.log", ext="gz"`, which lets the stem-inserted
+    // dated regex spuriously accept `app.log-2025-04-28.gz` as a
+    // sibling of `app.log.gz` even though it is actually a
+    // rotated companion of `app.log`. The enumerator should bail
+    // early when the primary basename ends in a recognised codec
+    // extension, since a compressed file is not itself part of a
+    // rotation family.
+    const TempDir dir("rotation_compressed_primary_bails");
+    (void)dir.Write("app.log", "uncompressed primary");
+    const auto compressedPrimary = dir.Write("app.log.gz", "compressed");
+    (void)dir.Write("app.log-2025-04-28.gz", "sibling of the uncompressed primary");
+
+    const RotationSeries series = EnumerateRotatedSiblings(compressedPrimary);
+    REQUIRE(series.files.size() == 1);
+    CHECK(series.files.front().path.filename().string() == "app.log.gz");
+    CHECK(series.files.front().origin == RotatedFile::Origin::Primary);
+}
+
 #if !defined(_WIN32)
 TEST_CASE("CanonicalKeyForPath preserves case on non-Windows platforms", "[RotationSiblings]")
 {
@@ -423,3 +449,64 @@ TEST_CASE("CanonicalKeyForPath preserves case on non-Windows platforms", "[Rotat
     CHECK(upperKey != lowerKey);
 }
 #endif
+
+TEST_CASE("CanonicalKeyForPath produces UTF-8 bytes for non-ASCII paths", "[RotationSiblings]")
+{
+    // Regression on two fronts:
+    //   * `CanonicalKeyForPath` used to run `path::generic_string()`,
+    //     which on Windows narrows the wide path through the
+    //     active code page. The app-layer `CanonicalLocator`
+    //     produces UTF-8, so the two byte flavours never matched
+    //     for non-ASCII paths -- drop-into-session dedup silently
+    //     missed and duplicate rows accumulated on every drop.
+    //   * Worse, on Windows `path::generic_string()` *throws*
+    //     `std::system_error` when the wide-string path contains
+    //     a character the ACP can't represent (Cyrillic, CJK,
+    //     accented). That propagated out of the sibling-expander
+    //     and aborted the entire open flow. The current impl
+    //     routes through `path::generic_u8string()` which is
+    //     lossless on every platform and never throws.
+    // Passing a `path` constructed from a UTF-8 `char8_t` literal
+    // exercises the same underlying wide-string storage on Windows
+    // without touching the ACP.
+    const std::filesystem::path p(u8"/logs/\u65e5\u5fd7/app.log"); // /logs/日志/app.log
+    std::string key;
+    REQUIRE_NOTHROW(key = loglib::CanonicalKeyForPath(p));
+    // The `日志` characters are three UTF-8 bytes each. Check the
+    // literal UTF-8 byte sequence appears somewhere in the key --
+    // an ACP-narrowed key (e.g. CP-1252 on Windows) would replace
+    // them with `?` fallbacks and this substring search would fail.
+    const std::string_view utf8Marker(reinterpret_cast<const char *>(u8"\u65e5\u5fd7"), 6);
+    CHECK(key.contains(utf8Marker));
+}
+
+TEST_CASE(
+    "EnumerateRotatedSiblings does not throw when the primary basename is non-ASCII",
+    "[RotationSiblings]"
+)
+{
+    // Regression: `EnumerateRotatedSiblings` used to call
+    // `primary.filename().string()` (and a matching `.string()`
+    // on every walked directory entry). On Windows, `.string()`
+    // throws `std::system_error` when the wide-string path
+    // contains a character not representable in the active code
+    // page -- Cyrillic, CJK, and accented Latin trip it. The
+    // exception propagated out of the module and aborted the
+    // caller's open flow, in blatant violation of the module's
+    // "advisory / best-effort" contract. Even against a
+    // non-existent primary the helper must return cleanly (empty
+    // series) rather than throw.
+    const std::filesystem::path nonAsciiPrimary(u8"/nonexistent/\u65e5\u5fd7/\u041f\u0440\u0438\u043c\u0435\u0440.log");
+    RotationSeries series;
+    REQUIRE_NOTHROW(series = EnumerateRotatedSiblings(nonAsciiPrimary));
+    // The parent dir doesn't exist so no siblings can be
+    // enumerated, but `EnumerateRotatedSiblings` always
+    // reattaches the primary itself as the final `Origin::Primary`
+    // entry (callers rely on `series.files.back()` for the
+    // primary). What matters here is that the call *completed*
+    // without throwing on the non-ASCII path -- the pre-fix
+    // implementation aborted inside `.string()` before ever
+    // reaching this point.
+    REQUIRE(series.files.size() == 1);
+    CHECK(series.files.front().origin == RotatedFile::Origin::Primary);
+}

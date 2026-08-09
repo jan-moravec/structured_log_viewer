@@ -62,6 +62,17 @@ public:
     [[nodiscard]] StreamLineSource *FrontStreamSource() noexcept;
     [[nodiscard]] const StreamLineSource *FrontStreamSource() const noexcept;
 
+    /// Last `StreamLineSource` in `Sources()`, or nullptr. Used by
+    /// `LogModel::ActiveProducer` on the sibling-prefix-plus-live-tail
+    /// path: after `AppendStreaming(StreamLineSource,...)`, the
+    /// sibling `FileLineSource`s sit at the front and only
+    /// `Back*` reaches the tail's producer. Without this the
+    /// teardown path would never call `producer->Stop()` on the
+    /// tailing worker and would rely purely on source destruction
+    /// to unblock the parser -- which can hang on IO-blocked reads.
+    [[nodiscard]] StreamLineSource *BackStreamSource() noexcept;
+    [[nodiscard]] const StreamLineSource *BackStreamSource() const noexcept;
+
     const std::vector<LogLine> &Lines() const;
     std::vector<LogLine> &Lines();
 

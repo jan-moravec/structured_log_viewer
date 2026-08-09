@@ -231,7 +231,15 @@ std::filesystem::path FindTzdata(std::vector<std::filesystem::path> &searched)
         return exists && !ec;
     };
 
-    const auto appDir = std::filesystem::path(QCoreApplication::applicationDirPath().toStdString());
+    // `QStringToFsPath` (not `path(applicationDirPath().toStdString())`)
+    // so a non-ASCII install root survives on Windows -- e.g.
+    // `C:/Users/\u4e2d\u6587/StructuredLogViewer/tzdata`. The
+    // `path(std::string)` constructor decodes as the active code
+    // page on Windows, which turns UTF-8 bytes from
+    // `QString::toStdString()` into mojibake and makes the tzdata
+    // discovery fail before it even reaches the fallback list.
+    // See `qstring_path.hpp` for the hazard.
+    const auto appDir = logapp::QStringToFsPath(QCoreApplication::applicationDirPath());
     if (!appDir.empty() && pushAndCheck(appDir / "tzdata"))
     {
         return searched.back();
@@ -2675,7 +2683,7 @@ void MainWindow::ShowRotationHistoryToast(int addedCount, const QString &primary
 
 void MainWindow::UndoRotationExpansion()
 {
-    if (mLastRotationExpansionOriginalInputs.isEmpty() || mLastRotationExpansionCount <= 0)
+    if (mLastRotationExpansionOriginalInputs.isEmpty())
     {
         return;
     }
@@ -2683,17 +2691,32 @@ void MainWindow::UndoRotationExpansion()
     // sees us in a clean slate and can't re-arm the undo button off
     // its own expansion.
     const QStringList originalInputs = std::move(mLastRotationExpansionOriginalInputs);
+    const bool wasLiveTail = mLastRotationExpansionWasLiveTail;
     ClearRotationExpansionUndoState();
     // The reopen goes through the classifier again but we set the
     // launch override so no siblings get pulled in this time. The
-    // override is one-shot: restored by the follow-up call.
-    // Reopening the FULL original list (not just a single "primary")
-    // is what makes multi-file selections survive the undo -- e.g.
-    // `[app.log, other.log]` where `app.log`'s family expanded must
-    // resurrect both entries, not just whichever one was `back()`.
+    // override is one-shot: restored after the follow-up dispatch.
     const bool priorOverride = mDisableRotationHistoryOverride;
     mDisableRotationHistoryOverride = true;
-    DispatchMixedOpenInput(originalInputs, OpenMode::Replace);
+    if (wasLiveTail)
+    {
+        // Live-tail undo must go back through `OpenLogStreamFromPath`
+        // so the primary is tailed again -- routing through the
+        // static-open queue would silently demote a Stream Mode view
+        // to a one-shot Static open. Only single-file undos land
+        // here (the live-tail entry point captures `{file}` as its
+        // originals), so `first()` is unambiguous.
+        OpenLogStreamFromPath(originalInputs.first());
+    }
+    else
+    {
+        // Reopening the FULL original list (not just a single "primary")
+        // is what makes multi-file selections survive the undo -- e.g.
+        // `[app.log, other.log]` where `app.log`'s family expanded
+        // must resurrect both entries, not just whichever one was
+        // `back()`.
+        DispatchMixedOpenInput(originalInputs, OpenMode::Replace);
+    }
     mDisableRotationHistoryOverride = priorOverride;
 }
 
@@ -2713,7 +2736,7 @@ void MainWindow::SyncRotationHistoryActionCheckedState()
 void MainWindow::ClearRotationExpansionUndoState() noexcept
 {
     mLastRotationExpansionOriginalInputs.clear();
-    mLastRotationExpansionCount = 0;
+    mLastRotationExpansionWasLiveTail = false;
     if (mActionUndoRotationExpansion != nullptr)
     {
         mActionUndoRotationExpansion->setEnabled(false);
@@ -2727,10 +2750,30 @@ void MainWindow::ClearPendingLiveTailPromotion() noexcept
     mPendingLiveTailRetention = 0;
 }
 
+void MainWindow::SetRotationHistoryLaunchOverride(bool disable)
+{
+    // Kept out-of-line so `main_window.hpp`'s TUs don't have to see
+    // `SyncRotationHistoryActionCheckedState`'s implementation.
+    mDisableRotationHistoryOverride = disable;
+    SyncRotationHistoryActionCheckedState();
+}
+
 void MainWindow::OnRotationHistoryPrefToggled(bool enabled)
 {
     QSettings settings;
-    settings.setValue(QStringLiteral("ui/autoDetectRotatedHistory"), enabled);
+    // Only touch `QSettings` when the effective value actually
+    // changes -- Qt's `QAction::toggled` fires on every state set,
+    // including programmatic `setChecked` from
+    // `SyncRotationHistoryActionCheckedState`. Skipping the no-op
+    // write avoids trip-wiring the settings backend and side-steps
+    // spurious `fileChanged` notifications on backends that watch
+    // the underlying file.
+    const bool previousStored =
+        settings.value(QStringLiteral("ui/autoDetectRotatedHistory"), true).toBool();
+    if (previousStored != enabled)
+    {
+        settings.setValue(QStringLiteral("ui/autoDetectRotatedHistory"), enabled);
+    }
 
     // Explicit menu action wins over the CLI launch flag. Without
     // this, a user who launched with `--no-rotation-history` and
@@ -2851,6 +2894,28 @@ QStringList MainWindow::ExpandLogPathsWithRotationSiblings(
     std::unordered_set<std::string> emittedKeys;
     emittedKeys.reserve(fsPaths.size());
 
+    // "Auto-discovered" count is the surface that drives the
+    // sibling toast and the Undo affordance -- both are only
+    // meaningful when the expander *added* something the user
+    // didn't already type. Precompute the canonical keys of the
+    // caller's original selection so a family whose "extra"
+    // members were all hand-picked (e.g. dropping
+    // `[app.log, app.log.1]` on disk where no other siblings
+    // exist) contributes zero to `addedOut`. Without this the
+    // series loop below counted every non-primary member,
+    // producing a false "Loaded 1 companion(s)" toast and a
+    // resurrect-only Undo action that merely reordered the two
+    // user-picked files. The set is keyed by the same
+    // `CanonicalKeyForPath` the partitioner used to build
+    // `rf.canonicalKey`, so comparisons round-trip on every
+    // platform (see `library/src/rotation_siblings.cpp`).
+    std::unordered_set<std::string> userSelectedKeys;
+    userSelectedKeys.reserve(fsPaths.size());
+    for (const std::filesystem::path &fp : fsPaths)
+    {
+        userSelectedKeys.insert(loglib::CanonicalKeyForPath(fp));
+    }
+
     // Emit series first (each in oldest-first order); a residual
     // path that also appeared in a series is not re-emitted. Series
     // land in the order their earliest listed member was seen in
@@ -2868,9 +2933,21 @@ QStringList MainWindow::ExpandLogPathsWithRotationSiblings(
             {
                 continue;
             }
-            const QString display = logapp::CanonicalDisplayPath(QString::fromStdString(rf.path.string()));
+            // `FsPathToQString` (not `QString::fromStdString(path.string())`)
+            // so non-ASCII filenames survive on Windows -- `path::string()`
+            // narrows the wide path through the active code page and Qt6
+            // then re-decodes those bytes as UTF-8, producing mojibake
+            // that the queue would fail to open. See `qstring_path.hpp`.
+            const QString display = logapp::CanonicalDisplayPath(logapp::FsPathToQString(rf.path));
             expanded.append(display);
-            if (rf.origin != loglib::RotatedFile::Origin::Primary)
+            // Only count files that were BOTH auto-discovered
+            // (`origin != Primary`) AND not already in the caller's
+            // input list. Otherwise `[app.log, app.log.1]` with no
+            // other siblings on disk would falsely report 1 added,
+            // firing the sibling toast and arming the Undo action
+            // over a set the user assembled by hand.
+            if (rf.origin != loglib::RotatedFile::Origin::Primary
+                && !userSelectedKeys.contains(rf.canonicalKey))
             {
                 ++seriesAdded;
             }
@@ -2890,7 +2967,7 @@ QStringList MainWindow::ExpandLogPathsWithRotationSiblings(
         {
             continue;
         }
-        expanded.append(logapp::CanonicalDisplayPath(QString::fromStdString(rp.string())));
+        expanded.append(logapp::CanonicalDisplayPath(logapp::FsPathToQString(rp)));
     }
 
     // Re-insert bundle / empty entries at the end. A bundle dropped
@@ -3012,7 +3089,7 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
             // `app.log`'s family expanded, would land the undo on
             // `other.log` and lose the family entirely.
             mLastRotationExpansionOriginalInputs = logPaths;
-            mLastRotationExpansionCount = addedSiblings;
+            mLastRotationExpansionWasLiveTail = false;
             // Toast anchor: caller's last input. For a single-file
             // drop this is the primary; for a multi-file drop it is
             // whatever the user saw last in their selection. The
@@ -3077,7 +3154,7 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
         // `StartStreamingOpenQueue`. Set here to defeat any such
         // teardown, mirroring the `QueuedLogsOnly` branch above.
         mLastRotationExpansionOriginalInputs = logPaths;
-        mLastRotationExpansionCount = addedSiblings;
+        mLastRotationExpansionWasLiveTail = false;
         ShowRotationHistoryToast(addedSiblings, logPaths.back());
     }
     return MixedInputResult{.outcome = MixedInputDispatch::AppliedConfigThenLogs, .appliedConfigPath = configPath};
@@ -3357,9 +3434,6 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
     if (result == StreamingResult::Failed)
     {
         mCurrentSource.reset();
-        // Re-sync so the rotation-history menu tick returns to
-        // "global preference" (no session-scope opt-out to honour).
-        SyncRotationHistoryActionCheckedState();
         // Failure here is on the parse worker, not the decompression
         // worker, but defensively cancel any decompression that
         // might be queued behind the failed parse so it doesn't
@@ -3369,6 +3443,15 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
         // mmap'd rows from previously-successful appends.
         CancelInFlightDecompression();
     }
+
+    // Rotation-history menu tick reflects the effective preference
+    // *and* the currently-bound `Source::followRotationSiblings`.
+    // Sync on every terminal (Success / Cancelled / Failed) so a
+    // mid-drain Stop can't leave the tick out of step with a
+    // session that's about to unbind (Failed) or with a session
+    // whose flag was mutated by an intervening menu toggle. The
+    // QSettings read behind this is cheap.
+    SyncRotationHistoryActionCheckedState();
 
     // Apply the deferred sort before the auto-save below so the
     // mirror reads the applied sort from the proxy. Runs on every
@@ -3407,8 +3490,15 @@ void MainWindow::StreamNextPendingFile()
         // `LogFile`'s open below has the same property, so this
         // isn't the tightest link -- if remote I/O becomes a
         // supported use-case, fold both into the async worker.
-        const auto codec =
-            loglib::internal::DecompressingByteSource::SniffCodec(std::filesystem::path(file.toStdString()));
+        // `QStringToFsPath` (not `path(file.toStdString())`) so
+        // non-ASCII log filenames survive on Windows -- the
+        // `path(std::string)` constructor decodes as the active
+        // code page there, and any file whose name contains
+        // non-ASCII characters would silently fail codec sniffing
+        // (spurious `Codec::None`) or fail to open at all. See
+        // `qstring_path.hpp` for the hazard.
+        const std::filesystem::path filePath = logapp::QStringToFsPath(file);
+        const auto codec = loglib::internal::DecompressingByteSource::SniffCodec(filePath);
         if (codec != loglib::internal::DecompressingByteSource::Codec::None)
         {
             // Compressed: dispatch async so the GUI stays responsive.
@@ -3421,7 +3511,7 @@ void MainWindow::StreamNextPendingFile()
 
         // Uncompressed fast path. On sync error (`false` return),
         // continue draining the queue.
-        if (ContinueOpenAfterPrepared(file, std::filesystem::path(file.toStdString()), nullptr))
+        if (ContinueOpenAfterPrepared(file, filePath, nullptr))
         {
             return;
         }
@@ -4832,7 +4922,12 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     const size_t retention =
         (mModel->RetentionCap() != 0) ? mModel->RetentionCap() : StreamingControl::RetentionLines();
 
-    const std::filesystem::path filePath(file.toStdString());
+    // `QStringToFsPath` (not `path(file.toStdString())`) so a
+    // non-ASCII primary path survives on Windows -- otherwise
+    // `TailingBytesProducer::open` would receive an ACP-narrowed
+    // path and either fail with "not found" or, worse, land on a
+    // completely unrelated file. See `qstring_path.hpp`.
+    const std::filesystem::path filePath = logapp::QStringToFsPath(file);
     std::unique_ptr<loglib::TailingBytesProducer> source;
     try
     {
@@ -4868,7 +4963,10 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
             {
                 continue;
             }
-            siblingPrefix.append(logapp::CanonicalDisplayPath(QString::fromStdString(rf.path.string())));
+            // `FsPathToQString` (see the matching call in
+            // `ExpandLogPathsWithRotationSiblings`) so non-ASCII
+            // sibling filenames survive on Windows.
+            siblingPrefix.append(logapp::CanonicalDisplayPath(logapp::FsPathToQString(rf.path)));
             ++addedSiblings;
         }
     }
@@ -4956,10 +5054,14 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
         mPendingLiveTailRetention = retention;
         // Single-file live-tail open: the "original inputs" list is
         // just the primary the user picked. Undo reopens plain
-        // `[file]` without expansion, which lands on the fast path
-        // in `OpenLogStreamFromPath` (empty `siblingPrefix`).
+        // `[file]` without expansion via `OpenLogStreamFromPath`
+        // (empty `siblingPrefix` path). The `WasLiveTail` marker is
+        // what routes `UndoRotationExpansion` back through the
+        // live-tail entry point instead of the static-open queue --
+        // without it, a user who Undoes a Stream Mode expansion
+        // would be silently demoted to a one-shot Static open.
         mLastRotationExpansionOriginalInputs = QStringList{file};
-        mLastRotationExpansionCount = addedSiblings;
+        mLastRotationExpansionWasLiveTail = true;
         // Force `mSessionMode` and `mCurrentSource` back to the
         // idle-session baseline. `mModel->Reset()` above is
         // suppressed by `SessionSwitchScope`, which means the
@@ -4994,7 +5096,11 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     {
         const std::string displayPath = logapp::CanonicalDisplayPath(file).toStdString();
         const std::string dedupKey = logapp::CanonicalLocator(file).toStdString();
-        DetectedFormat detected = DetectFormatForPath(std::filesystem::path(file.toStdString()));
+        // `QStringToFsPath` (not `path(file.toStdString())`) so a
+        // non-ASCII primary path survives on Windows; the
+        // `path(std::string)` constructor decodes as ACP there and
+        // format detection would miss the extension entirely.
+        DetectedFormat detected = DetectFormatForPath(logapp::QStringToFsPath(file));
         mCurrentSource = loglib::LogConfiguration::Source{
             .kind = loglib::LogConfiguration::Source::Kind::File,
             .format = detected.format,
@@ -5065,7 +5171,10 @@ void MainWindow::ContinueLiveTailAfterPrefix()
     std::unique_ptr<loglib::TailingBytesProducer> producer = std::move(mPendingLiveTailProducer);
     mPendingLiveTailProducer.reset();
 
-    const std::filesystem::path filePath(primary.toStdString());
+    // `QStringToFsPath` (not `path(primary.toStdString())`) so a
+    // non-ASCII primary path survives on Windows; see
+    // `qstring_path.hpp` for the ACP vs UTF-8 hazard.
+    const std::filesystem::path filePath = logapp::QStringToFsPath(primary);
     const std::string displayPath = logapp::CanonicalDisplayPath(primary).toStdString();
     const std::string dedupKey = logapp::CanonicalLocator(primary).toStdString();
 
@@ -5252,6 +5361,20 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
     mStreamingErrorsCut = 0;
     CancelInFlightDecompression();
     DetachAutoSaveUuid();
+    // Drop any sibling-prefix live-tail promotion still parked from
+    // a prior `OpenLogStreamFromPath` whose drain didn't reach
+    // `ContinueLiveTailAfterPrefix`. Without this, the fresh stdin
+    // session's own `OnStreamingFinished(Success)` (e.g. on EOF)
+    // re-enters the sibling-prefix branch and attaches the OLD
+    // file's tail onto the stdin session. Match the destructive
+    // teardown in `OpenLogStreamFromPath`, `StartStreamingOpenQueue`,
+    // and `ApplyLoadedConfiguration`.
+    ClearPendingLiveTailPromotion();
+    ClearRotationExpansionUndoState();
+    // Rotation-history menu tick reflects `mCurrentSource->followRotationSiblings`
+    // when a source is bound; refresh now that the outgoing session-
+    // scope override is gone.
+    SyncRotationHistoryActionCheckedState();
 
     const std::string displayName = producer->DisplayName();
     mStreamingFileName = QString::fromStdString(displayName);
@@ -5393,6 +5516,19 @@ void MainWindow::OpenNetworkStream()
     // the new network-stream session. Export was already cancelled above.
     CancelInFlightDecompression();
     DetachAutoSaveUuid();
+    // Drop any sibling-prefix live-tail promotion still parked from
+    // a prior `OpenLogStreamFromPath` whose drain didn't reach
+    // `ContinueLiveTailAfterPrefix`. Without this, the fresh network
+    // session's own `OnStreamingFinished(Success)` re-enters the
+    // sibling-prefix branch and attaches the OLD file's tail onto
+    // the network session. Match the destructive teardown in
+    // `OpenLogStreamFromPath`, `OpenStdinStreamFromProducer`,
+    // `StartStreamingOpenQueue`, and `ApplyLoadedConfiguration`.
+    ClearPendingLiveTailPromotion();
+    ClearRotationExpansionUndoState();
+    // Refresh so the rotation-history menu tick reflects the
+    // "no source bound" baseline rather than the outgoing session.
+    SyncRotationHistoryActionCheckedState();
 
     mStreamingFileName = QString::fromStdString(displayName);
     // Network-stream locator is a producer URI, not a filesystem
@@ -6863,8 +6999,11 @@ void MainWindow::TriggerRescueLiveTailForTest(const QString &primary, size_t ret
     // reachable.
     mPendingLiveTailPrimary = primary;
     mPendingLiveTailRetention = retention;
+    // `QStringToFsPath` (not `path(primary.toStdString())`) so a
+    // non-ASCII primary path survives on Windows; see
+    // `qstring_path.hpp` for the ACP vs UTF-8 hazard.
     mPendingLiveTailProducer =
-        std::make_unique<loglib::TailingBytesProducer>(std::filesystem::path(primary.toStdString()), retention);
+        std::make_unique<loglib::TailingBytesProducer>(logapp::QStringToFsPath(primary), retention);
     mSessionMode = SessionMode::Idle;
     mCurrentSource.reset();
     SetConfigurationUiEnabled(true);

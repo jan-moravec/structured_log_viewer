@@ -13647,24 +13647,43 @@ private slots:
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
         std::error_code ec;
+        // `QStringToFsPath` (not `toStdString()`) so a non-ASCII
+        // `QTemporaryDir` root -- possible when the user's TEMP
+        // sits under a Unicode profile -- reaches `canonical`
+        // undamaged. `toStdString()` returns UTF-8 which
+        // `std::filesystem::path(std::string&)` then re-interprets
+        // through the Windows active code page, producing a mangled
+        // path that `canonical` may fail on.
         const std::filesystem::path rootFs =
-            std::filesystem::canonical(std::filesystem::path(dir.path().toStdString()), ec);
+            std::filesystem::canonical(logapp::QStringToFsPath(dir.path()), ec);
         QVERIFY2(!ec, "canonical(root) must succeed on a valid QTemporaryDir");
+        // `generic_string()` on Windows narrows through the active code
+        // page; use `generic_wstring()` to preserve non-ASCII bytes
+        // faithfully. On non-Windows there is no code-page conversion.
+#ifdef Q_OS_WIN
+        const QString root = QString::fromStdWString(rootFs.generic_wstring());
+#else
         const QString root = QString::fromStdString(rootFs.generic_string());
+#endif
 
-        // Mixed case in each leaf so the test would catch a
-        // regression that lower-cased in only one helper.
+        // Mixed case in each leaf plus a Cyrillic leaf so the test
+        // catches both the casing- and the encoding-parity axes.
+        // Before the encoding fix, `CanonicalKeyForPath` narrowed
+        // the wide Windows path through the active code page while
+        // `CanonicalLocator` produced UTF-8, so any non-ASCII path
+        // failed the parity check silently.
         const QStringList relatives{
             QStringLiteral("App.log"),
             QStringLiteral("dir/Nested/File.LOG"),
             QStringLiteral("subdir/app.log.1"),
             QStringLiteral("app-2025-08-01.log.gz"),
+            QStringLiteral(u"\u65e5\u5fd7/app.log"), // 日志/app.log
         };
         for (const QString &rel : relatives)
         {
             const QString p = root + QLatin1Char('/') + rel;
             const std::string appKey = logapp::CanonicalLocator(p).toStdString();
-            const std::string libKey = loglib::CanonicalKeyForPath(std::filesystem::path(p.toStdString()));
+            const std::string libKey = loglib::CanonicalKeyForPath(logapp::QStringToFsPath(p));
             QVERIFY2(
                 appKey == libKey,
                 qPrintable(
@@ -13688,6 +13707,152 @@ private slots:
     // `ExpandLogPathsWithRotationSiblings(..., Append)` used those
     // stale keys as "already loaded", filtered out every user
     // selection whose canonical key matched, and produced an empty
+    // Regression: dropping `[app.log, app.log.1]` when both are the
+    // only members of the family on disk must NOT report any
+    // auto-added siblings. Before the fix,
+    // `ExpandLogPathsWithRotationSiblings` counted every emitted
+    // file whose `origin != Primary`, which conflated
+    // "auto-discovered by rotation detection" with "not the
+    // primary of its series". The user's hand-picked `app.log.1`
+    // (Older origin) tripped the counter to 1, firing a false
+    // "Loaded 1 companion(s)" toast and arming the Undo action --
+    // an Undo that would only reorder the two hand-picked files
+    // on click, since no actual auto-added content exists.
+    void TestExplicitlySelectedSiblingsAreNotCountedAsAutoAdded()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(primaryPath, R"({"msg":"p"})""\n");
+        write(oldPath, R"({"msg":"g1"})""\n");
+        // No third sibling on disk -- the family is exactly the
+        // two files the user picked. `PartitionAsRotationSeries`
+        // still groups them into one series (that's correct: they
+        // ARE a rotation family), but nothing was auto-discovered.
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        (void)mWindow->OpenMixedFilesForTest(
+            {primaryPath, oldPath}, MainWindow::OpenMode::Replace
+        );
+        // Two files stream: both drain to completion.
+        for (int i = 0; i < 2; ++i)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "both hand-picked files must stream to completion");
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 2);
+
+        // The expander DID group the two files into a series
+        // (correct partitioning), but its "auto-added" count must
+        // be zero because both members came from the caller's
+        // input. That in turn keeps the toast silent and the
+        // Undo action disabled -- undoing something the user
+        // didn't ask for would be user-hostile.
+        QVERIFY2(
+            !mWindow->IsUndoRotationExpansionEnabledForTest(),
+            "Undo action must stay disabled when nothing was auto-discovered"
+        );
+        QVERIFY2(
+            mWindow->LastRotationExpansionOriginalInputsForTest().isEmpty(),
+            "originals list must stay empty when nothing was auto-discovered"
+        );
+    }
+
+    // Regression: the sibling-expander used to build
+    // `std::filesystem::path` values via
+    // `std::filesystem::path(QString::toStdString())`, which on
+    // Windows decodes as the active code page. UTF-8 bytes from
+    // `QString::toStdString()` turned into mojibake there, so
+    // any non-ASCII primary would silently drop its siblings
+    // (partition fails to walk the wrong-encoded parent path)
+    // OR the expander would emit paths the queue could not open.
+    // Verified through the app-layer `QStringToFsPath` /
+    // `FsPathToQString` helpers.
+    void TestNonAsciiSiblingPathRoundTripsThroughExpansion()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        // Cyrillic subdirectory + Chinese basename so the test
+        // exercises non-ASCII on both the parent and the leaf.
+        // `QStringToFsPath` lets us construct these under an
+        // ASCII `QTemporaryDir` root.
+        const QString subdir = dir.filePath(QStringLiteral(u"\u65e5\u5fd7")); // 日志
+        std::error_code createEc;
+        // Non-throwing overload -- a permissions failure creating
+        // the non-ASCII directory would otherwise throw a
+        // `filesystem_error` that QtTest can only report as
+        // "Caught unhandled exception" and then crash on unwind.
+        // Skip cleanly instead so downstream slots still run.
+        std::filesystem::create_directory(logapp::QStringToFsPath(subdir), createEc);
+        if (createEc)
+        {
+            QSKIP("could not create non-ASCII subdirectory under QTemporaryDir");
+        }
+        const QString primaryPath =
+            subdir + QLatin1Char('/') + QStringLiteral(u"\u041f\u0440\u0438\u043c\u0435\u0440.log"); // Пример.log
+        const QString oldPath = primaryPath + QStringLiteral(".1");
+        const auto write = [](const QString &p, const QString &content) -> bool {
+            // `std::ofstream(std::filesystem::path)` is a C++20 ctor
+            // overload; on Windows it routes through `_wfopen` and
+            // handles wide paths natively (see `qstring_path.hpp`
+            // for why we can't round-trip through `toStdString()`).
+            std::ofstream stream(logapp::QStringToFsPath(p), std::ios::binary);
+            if (!stream.is_open())
+            {
+                return false;
+            }
+            stream << content.toStdString();
+            return static_cast<bool>(stream);
+        };
+        if (!write(primaryPath, R"({"msg":"p"})""\n") || !write(oldPath, R"({"msg":"g1"})""\n"))
+        {
+            QSKIP("could not write non-ASCII log fixtures under QTemporaryDir");
+        }
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        // Static Replace so both files land as `FileLineSource`s
+        // and the expander's path-to-QString round-trip has to
+        // survive the queue's own re-open. Live-tail would only
+        // exercise half the round-trip (the tail hits its own
+        // producer construction).
+        (void)mWindow->OpenMixedFilesForTest(
+            {primaryPath}, MainWindow::OpenMode::Replace
+        );
+        for (int i = 0; i < 2; ++i)
+        {
+            QVERIFY2(
+                finishedSpy.wait(5000),
+                "primary + auto-detected sibling must both stream (round-trip must not mangle non-ASCII)"
+            );
+        }
+        QCoreApplication::processEvents();
+        // Before the encoding fix, this landed 0 rows on Windows
+        // (the ACP-narrowed sibling path missed the actual file)
+        // or 1 row (the primary opened, the sibling was mojibake
+        // and failed to open, `mPendingOpenErrors` grew instead).
+        QCOMPARE(model->rowCount(), 2);
+        QVERIFY2(
+            mWindow->IsUndoRotationExpansionEnabledForTest(),
+            "the sibling really was auto-discovered -- Undo affordance must arm"
+        );
+    }
+
     // open queue -- landing the user on an empty view. This is the
     // same "empty view" hazard the `Ignore` branch guards
     // destructive Replace opens against.
@@ -13745,6 +13910,165 @@ private slots:
                                       "stale locatorDedupKeys must not filter fresh selections")
                            .arg(model->rowCount()))
         );
+    }
+
+    // Regression: `OpenStdinStreamFromProducer` must scrub any
+    // pending sibling-prefix live-tail state carried from a prior
+    // `OpenLogStreamFromPath` whose drain did not resolve. Without
+    // this, the fresh stdin session's own `OnStreamingFinished`
+    // (Success on EOF, or a queued Cancelled) re-enters the
+    // sibling-prefix branch and attaches the OLD file's tail onto
+    // the stdin session -- clobbering both `mCurrentSource` and the
+    // streaming filename with an unrelated file. `OpenNetworkStream`
+    // has the identical hazard: see the shared teardown discipline
+    // documented alongside `ClearPendingLiveTailPromotion`.
+    void TestOpenStdinStreamClearsPendingLiveTailPromotion()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString stalePrimary = dir.filePath(QStringLiteral("stale.log"));
+        // Also arm the sibling-Undo affordance so we can assert the
+        // stdin teardown scrubs both bookkeeping surfaces, not just
+        // the pending live-tail primary.
+        mWindow->SeedPendingLiveTailForTest(stalePrimary, /*retention=*/64);
+        mWindow->SeedLastRotationExpansionForTest(
+            /*originalInputs=*/QStringList{stalePrimary}, /*wasLiveTail=*/true
+        );
+        QVERIFY(mWindow->HasPendingLiveTailForTest());
+        QVERIFY(!mWindow->LastRotationExpansionOriginalInputsForTest().isEmpty());
+
+        // Minimal `BytesProducer` stub: hands over one JSON line, then
+        // reports terminal EOF so the stdin parser exits cleanly and
+        // fires `OnStreamingFinished(Success)`.
+        class StubProducer final : public loglib::BytesProducer
+        {
+        public:
+            explicit StubProducer(std::string bytes)
+                : mBytes(std::move(bytes))
+            {
+            }
+            size_t Read(std::span<char> buffer) override
+            {
+                if (mCursor >= mBytes.size())
+                {
+                    mClosed = true;
+                    return 0;
+                }
+                const size_t available = mBytes.size() - mCursor;
+                const size_t n = std::min(available, buffer.size());
+                std::memcpy(buffer.data(), mBytes.data() + mCursor, n);
+                mCursor += n;
+                if (mCursor >= mBytes.size())
+                {
+                    mClosed = true;
+                }
+                return n;
+            }
+            void WaitForBytes(std::chrono::milliseconds) override
+            {
+            }
+            void Stop() noexcept override
+            {
+                mClosed = true;
+            }
+            [[nodiscard]] bool IsClosed() const noexcept override
+            {
+                return mClosed;
+            }
+            [[nodiscard]] std::string DisplayName() const override
+            {
+                return "test-stdin";
+            }
+
+        private:
+            std::string mBytes;
+            size_t mCursor = 0;
+            bool mClosed = false;
+        };
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        std::string peek(R"({"msg":"stdin"})""\n");
+        auto producer = std::make_unique<StubProducer>(peek);
+        mWindow->OpenStdinStreamForTest(std::move(producer), peek);
+
+        // Scrub happens synchronously at the top of the open path,
+        // before the async parser worker starts.
+        QVERIFY2(
+            !mWindow->HasPendingLiveTailForTest(),
+            "OpenStdinStreamFromProducer must scrub stale pending live-tail state"
+        );
+        QVERIFY2(
+            mWindow->LastRotationExpansionOriginalInputsForTest().isEmpty(),
+            "OpenStdinStreamFromProducer must scrub outgoing Undo-rotation affordance"
+        );
+
+        // Drain the async streaming so this test doesn't leave a
+        // running session behind for the next slot.
+        (void)finishedSpy.wait(5000);
+        QCoreApplication::processEvents();
+    }
+
+    // Regression: undoing a rotation expansion that fired from a
+    // live-tail entry point (`OpenLogStreamFromPath`) must route
+    // the reopen back through the live-tail path -- routing through
+    // `DispatchMixedOpenInput` would silently demote the Stream Mode
+    // view to a one-shot Static open. Captured by the
+    // `mLastRotationExpansionWasLiveTail` marker in
+    // `UndoRotationExpansion`.
+    void TestUndoRotationExpansionOnLiveTailStaysLiveTail()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(primaryPath, R"({"msg":"p"})""\n");
+        write(oldPath, R"({"msg":"g1"})""\n");
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        // Live-tail open. The sibling static prefix streams first
+        // (`Success` on drain), then `ContinueLiveTailAfterPrefix`
+        // attaches the primary as a live tail.
+        mWindow->OpenLogStreamForTest(primaryPath);
+        QVERIFY2(finishedSpy.wait(5000), "sibling drain must finish before the tail attaches");
+        QCoreApplication::processEvents();
+        QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::LiveTail);
+        QVERIFY(mWindow->IsUndoRotationExpansionEnabledForTest());
+
+        // Undo. Must reopen the primary through `OpenLogStreamFromPath`
+        // (LiveTail again), NOT through the static-open queue.
+        // Before the fix, `UndoRotationExpansion` dispatched via
+        // `DispatchMixedOpenInput`, silently landing the user in
+        // Static mode.
+        finishedSpy.clear();
+        mWindow->UndoRotationExpansionForTest();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::LiveTail);
+        // Affordance is one-shot: consumed by the undo.
+        QVERIFY(!mWindow->IsUndoRotationExpansionEnabledForTest());
+        // No pending sibling promotion after the fast-path
+        // `OpenLogStreamFromPath` reopen (siblings suppressed by the
+        // one-shot override).
+        QVERIFY(!mWindow->HasPendingLiveTailForTest());
+
+        // Clean up so the next slot starts idle.
+        mWindow->NewSessionForTest();
+        QCoreApplication::processEvents();
     }
 
     // Regression: a multi-file open must sniff each queued file

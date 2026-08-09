@@ -270,7 +270,19 @@ void LogModel::BeginStreamingShared(std::unique_ptr<loglib::LineSource> source)
 
 loglib::BytesProducer *LogModel::ActiveProducer() noexcept
 {
-    if (loglib::StreamLineSource *streamSource = mLogTable.Data().FrontStreamSource(); streamSource != nullptr)
+    // Live tail can sit at either end of the source list:
+    //   - `BeginStreaming(StreamLineSource,...)` -> only source is the stream (front).
+    //   - `AppendStreaming(StreamLineSource,...)` -> stream comes after the
+    //     sibling `FileLineSource` prefix, so the tail lives at the BACK.
+    // We prefer the back-most stream source so the sibling-prefix
+    // + live-tail path (`OpenLogStreamFromPath` with rotation
+    // history) still gets a producer to `Stop()` at teardown.
+    // Without this, `~LogModel` and `TeardownStreamingSessionInternal`
+    // never signal the `TailingBytesProducer` and the parser worker
+    // only unblocks when the source is destroyed by
+    // `mLogTable.Reset()` -- a race that can hang teardown on an
+    // IO-blocked read.
+    if (loglib::StreamLineSource *streamSource = mLogTable.Data().BackStreamSource(); streamSource != nullptr)
     {
         return streamSource->Producer();
     }

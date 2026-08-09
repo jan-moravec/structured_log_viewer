@@ -50,14 +50,54 @@ constexpr auto REGEX_CASE_FLAGS =
     std::regex::flag_type{};
 #endif
 
+/// UTF-8 rendering of a filesystem path (or path component). All
+/// per-filename regex matching, deduplication, and canonical-key
+/// derivation in this file runs through UTF-8 `std::string`
+/// buffers -- never `path::string()`. On Windows the latter
+/// narrows through the active code page and *throws*
+/// `std::system_error` when the wide-string path contains a
+/// character the ACP can't represent. Non-ASCII log filenames
+/// (Cyrillic, CJK, accented) trip this in the wild; propagating
+/// the exception through `EnumerateRotatedSiblings` would abort
+/// the entire open flow, when the code contract for the module
+/// is "advisory, best-effort".
+[[nodiscard]] std::string PathToUtf8(const std::filesystem::path &p)
+{
+    // `u8string()` returns `std::u8string`; the underlying bytes
+    // are already UTF-8 so a `reinterpret_cast` is safe (only the
+    // character type differs).
+    const std::u8string u8 = p.u8string();
+    return {reinterpret_cast<const char *>(u8.data()), u8.size()};
+}
+
 /// ASCII-only lowercase. Callers use this both for
 /// case-insensitive filename comparisons on Windows/macOS and for
 /// the shared canonical dedup-key form.
+///
+/// Deliberately byte-wise ASCII: called on UTF-8 buffers (see
+/// `CanonicalKeyForPath`) where a naive `std::tolower` on
+/// multi-byte continuation bytes would corrupt them. The trade-off
+/// is that mixed-case accented filenames (`Ë` vs `ë`) will not
+/// collapse via this helper, whereas the Qt-side `CanonicalLocator`
+/// (`app/include/uuid_utils.hpp`) uses `QString::toLower` and does
+/// fold them. In practice Windows log paths are ASCII at the
+/// directory-name level, so this only bites real users on
+/// pathological names; if we ever need full Unicode case-fold
+/// parity, both helpers have to switch together.
 std::string ToLower(std::string s)
 {
+    // UTF-8 continuation bytes have the top bit set; anything below
+    // `ASCII_UPPER_BOUND` is a single-byte code point where per-byte
+    // `std::tolower` is well-defined. Split out for clarity vs the
+    // clang-tidy `magic-number` lint.
+    constexpr unsigned char ASCII_UPPER_BOUND = 0x80;
     for (char &c : s)
     {
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        const auto b = static_cast<unsigned char>(c);
+        if (b < ASCII_UPPER_BOUND)
+        {
+            c = static_cast<char>(std::tolower(b));
+        }
     }
     return s;
 }
@@ -170,7 +210,7 @@ SiblingMatchers BuildMatchers(std::string_view primaryBasename, std::string_view
 
 std::optional<Candidate> ClassifySibling(const std::filesystem::path &siblingPath, const SiblingMatchers &m)
 {
-    const std::string filename = siblingPath.filename().string();
+    const std::string filename = PathToUtf8(siblingPath.filename());
     std::smatch sm;
 
     if (std::regex_match(filename, sm, m.numbered))
@@ -229,7 +269,7 @@ std::optional<Candidate> ClassifySibling(const std::filesystem::path &siblingPat
 /// `.bashrc`), returns `(basename, "")`.
 std::pair<std::string, std::string> SplitStemExt(const std::filesystem::path &primary)
 {
-    const std::string filename = primary.filename().string();
+    const std::string filename = PathToUtf8(primary.filename());
     const auto dot = filename.rfind('.');
     // Leading dot ("./.foo") -- not an extension separator; treat
     // as ext-less.
@@ -247,7 +287,7 @@ std::pair<std::string, std::string> SplitStemExt(const std::filesystem::path &pr
 /// selecting `app.log.2` alone still triggers `app.log`'s series.
 std::optional<std::filesystem::path> DeriveRotationPrimary(const std::filesystem::path &path)
 {
-    const std::string filename = path.filename().string();
+    const std::string filename = PathToUtf8(path.filename());
     if (filename.empty())
     {
         return std::nullopt;
@@ -307,6 +347,25 @@ std::optional<std::filesystem::path> DeriveRotationPrimary(const std::filesystem
     return std::nullopt;
 }
 
+/// True iff @p ext (without the leading dot) is one of the
+/// codec extensions we recognise as a rotated-log compression
+/// suffix. Kept in sync with the `compressTail` regex fragment
+/// in `BuildMatchers`.
+bool IsRecognisedCodecExt(std::string_view ext)
+{
+    if (ext.empty())
+    {
+        return false;
+    }
+    std::string lower;
+    lower.reserve(ext.size());
+    for (const char c : ext)
+    {
+        lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    return lower == "gz" || lower == "bz2" || lower == "xz" || lower == "zst";
+}
+
 std::vector<Candidate> EnumerateCandidates(const std::filesystem::path &primary)
 {
     std::vector<Candidate> candidates;
@@ -317,12 +376,23 @@ std::vector<Candidate> EnumerateCandidates(const std::filesystem::path &primary)
         return candidates;
     }
 
-    const std::string primaryBasename = primary.filename().string();
+    const std::string primaryBasename = PathToUtf8(primary.filename());
     if (primaryBasename.empty())
     {
         return candidates;
     }
     const auto [stem, ext] = SplitStemExt(primary);
+    // A compressed primary (`app.log.gz`) is not itself part of a
+    // rotation family -- the uncompressed `app.log` is. Enumerating
+    // siblings against the compressed name produces false positives:
+    // the stem-inserted regex built from `stem="app.log", ext="gz"`
+    // spuriously accepts `app.log-2025-04-28.gz`, which is actually
+    // a sibling of the *uncompressed* primary. Bail early so the
+    // caller sees only the primary itself in the returned series.
+    if (IsRecognisedCodecExt(ext))
+    {
+        return candidates;
+    }
     const SiblingMatchers matchers = BuildMatchers(primaryBasename, stem, ext);
 
     // Case-insensitive filesystems reach the loop below through the
@@ -350,7 +420,7 @@ std::vector<Candidate> EnumerateCandidates(const std::filesystem::path &primary)
     {
         const std::filesystem::directory_entry &entry = *it;
         std::filesystem::path path = entry.path();
-        const std::string filename = path.filename().string();
+        const std::string filename = PathToUtf8(path.filename());
         const std::string filenameKey =
 #if defined(_WIN32) || defined(__APPLE__)
             ToLower(filename);
@@ -394,26 +464,29 @@ std::string CanonicalKeyForPath(const std::filesystem::path &path)
     //     and mixed slashes without requiring the path to exist.
     //   - Forward slashes so a saved key round-trips across
     //     platforms.
-    //   - Lower-case ONLY on Windows. This intentionally mirrors
-    //     the app-layer `CanonicalLocator`
-    //     (`app/include/uuid_utils.hpp`), which populates
-    //     `Source::locatorDedupKeys`. Both key flavours are
-    //     compared against each other in
-    //     `MainWindow::ExpandLogPathsWithRotationSiblings`: the
-    //     `alreadyLoaded` set is built from `CanonicalLocator`
-    //     output while the partitioner's `rf.canonicalKey` uses
-    //     this helper, so any casing divergence silently defeats
-    //     the "already in session" dedup. Historically this
-    //     helper also lower-cased on macOS to match the
-    //     platform-default case-insensitive APFS/HFS+, but that
-    //     broke drop-into-session dedup for every macOS user --
-    //     paths like `/Users/...` always contain uppercase, so
-    //     the two key flavours never matched. If we later want
-    //     case-insensitive comparison on macOS, `CanonicalLocator`
-    //     has to move first and this helper follows in the same
-    //     PR. Linux is always case-sensitive: `App.log` and
-    //     `app.log` are two distinct files and must produce
-    //     distinct keys.
+    //   - UTF-8 encoded via `generic_u8string()` so the byte
+    //     sequence matches Qt's `QString::toStdString()` output on
+    //     every platform. Using `generic_string()` here would narrow
+    //     the wide Windows path through the active code page and
+    //     produce bytes that never match the UTF-8 key the app-layer
+    //     `CanonicalLocator` (`app/include/uuid_utils.hpp`) writes
+    //     into `Source::locatorDedupKeys`. Any encoding divergence
+    //     silently defeats the "already in session" dedup in
+    //     `MainWindow::ExpandLogPathsWithRotationSiblings` and lets
+    //     the same rotated companion get re-appended on every
+    //     drop-into-session for users with non-ASCII log paths.
+    //   - Lower-case ONLY on Windows. Intentionally mirrors the
+    //     app-layer `CanonicalLocator`. Historically this helper
+    //     also lower-cased on macOS to match the platform-default
+    //     case-insensitive APFS/HFS+, but that broke drop-into-
+    //     session dedup for every macOS user -- paths like
+    //     `/Users/...` always contain uppercase, so the two key
+    //     flavours never matched. If we later want case-insensitive
+    //     comparison on macOS, `CanonicalLocator` has to move first
+    //     and this helper follows in the same PR. Linux is always
+    //     case-sensitive: `App.log` and `app.log` are two distinct
+    //     files and must produce distinct keys.
+    //
     // The library helper exists so unit tests can share a
     // canonicaliser without depending on Qt.
     std::error_code ec;
@@ -422,7 +495,17 @@ std::string CanonicalKeyForPath(const std::filesystem::path &path)
     {
         normalised = path;
     }
-    std::string s = normalised.generic_string();
+    // `generic_u8string()` (not `generic_string()`) so the byte
+    // sequence is UTF-8 on every platform AND unambiguously
+    // uses forward slashes. `generic_string()` on Windows narrows
+    // through the active code page and *throws*
+    // `std::system_error` when the wide-string path contains a
+    // character the ACP can't represent (Cyrillic, CJK, etc.) --
+    // that would abort the entire caller flow, breaking this
+    // module's advisory contract. See `PathToUtf8` for the same
+    // discipline elsewhere in the file.
+    const std::u8string u8 = normalised.generic_u8string();
+    std::string s(reinterpret_cast<const char *>(u8.data()), u8.size());
 #if defined(_WIN32)
     return ToLower(std::move(s));
 #else

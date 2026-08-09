@@ -228,11 +228,7 @@ public:
     ///
     /// Not `noexcept`: the checkbox-sync helper reaches `QSettings`,
     /// which can allocate and (on backend errors) throw.
-    void SetRotationHistoryLaunchOverride(bool disable)
-    {
-        mDisableRotationHistoryOverride = disable;
-        SyncRotationHistoryActionCheckedState();
-    }
+    void SetRotationHistoryLaunchOverride(bool disable);
 
     /// Test seam: query the current process-wide CLI opt-out flag.
     [[nodiscard]] bool RotationHistoryLaunchOverrideForTest() const noexcept
@@ -683,6 +679,25 @@ public:
     [[nodiscard]] const QStringList &LastRotationExpansionOriginalInputsForTest() const noexcept
     {
         return mLastRotationExpansionOriginalInputs;
+    }
+
+    /// Test seam: seed the sibling-Undo affordance the same way the
+    /// dispatch helpers do. `originalInputs` becomes what a
+    /// subsequent `UndoRotationExpansion` reopens; `wasLiveTail`
+    /// routes the undo through `OpenLogStreamFromPath` instead of
+    /// the static-open queue. Also enables the "Undo rotated
+    /// history expansion" action so `IsUndoRotationExpansionEnabledForTest`
+    /// reflects the seeded state. Lets destructive-open regression
+    /// tests assert that the affordance is scrubbed without having
+    /// to synthesise a full sibling drain.
+    void SeedLastRotationExpansionForTest(const QStringList &originalInputs, bool wasLiveTail) noexcept
+    {
+        mLastRotationExpansionOriginalInputs = originalInputs;
+        mLastRotationExpansionWasLiveTail = wasLiveTail;
+        if (mActionUndoRotationExpansion != nullptr)
+        {
+            mActionUndoRotationExpansion->setEnabled(!originalInputs.isEmpty());
+        }
     }
 
     /// Test seam: is the "Undo rotated history expansion" menu
@@ -2082,10 +2097,14 @@ private:
     /// `app.log` family entirely).
     QStringList mLastRotationExpansionOriginalInputs;
 
-    /// Count of siblings added by the most recent expansion. Kept
-    /// alongside `mLastRotationExpansionOriginalInputs` so the toast
-    /// can say "Loaded N companion(s)" without recomputing.
-    int mLastRotationExpansionCount = 0;
+    /// True iff the most recent expansion originated from a
+    /// live-tail entry point (`OpenLogStreamFromPath`). Drives the
+    /// dispatch in `UndoRotationExpansion`: a live-tail expansion
+    /// must be undone through `OpenLogStreamFromPath` so the primary
+    /// is tailed again, not through the static-open queue -- the
+    /// latter would silently demote a Stream Mode view to a
+    /// one-shot Static open.
+    bool mLastRotationExpansionWasLiveTail = false;
 
     /// File-open errors collected while draining `mPendingOpenFiles`.
     /// Drained under the `tr("Error Opening File")` title.
