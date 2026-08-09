@@ -562,6 +562,9 @@ public:
     };
     void SetSessionModeForTest(TestSessionMode mode);
 
+    /// Test-only reader for the current session mode.
+    [[nodiscard]] TestSessionMode SessionModeForTest() const noexcept;
+
     /// Test-only entry to the `TryLoadAsConfiguration` path
     /// (production gates it behind `QFileDialog`).
     bool TryLoadAsConfigurationForTest(const QString &file);
@@ -649,6 +652,42 @@ public:
     {
         mPendingLiveTailPrimary = primary;
         mPendingLiveTailRetention = retention;
+    }
+
+    /// Test seam: reproduce the "all siblings failed synchronously"
+    /// rescue path from `StreamNextPendingFile`. Constructs a real
+    /// `TailingBytesProducer` on @p primary, seeds
+    /// `mPendingLiveTail*`, forces `mSessionMode = Idle` +
+    /// `mCurrentSource = nullopt` (matching the state when no
+    /// sibling ever reached `ContinueOpenAfterPrepared`), then
+    /// calls the live-tail promotion helper. Lets tests assert
+    /// the promotion disables the configuration UI without having
+    /// to stage broken siblings on disk.
+    void TriggerRescueLiveTailForTest(const QString &primary, size_t retention);
+
+    /// Test seam: forward to the private `UndoRotationExpansion` so
+    /// tests can exercise the undo affordance without simulating a
+    /// menu click.
+    void UndoRotationExpansionForTest()
+    {
+        UndoRotationExpansion();
+    }
+
+    /// Test seam: read the caller's original path list captured by
+    /// the most recent rotation-siblings expansion. Empty when no
+    /// expansion has happened. Used by tests to assert that
+    /// multi-file selections survive `UndoRotationExpansion`.
+    [[nodiscard]] const QStringList &LastRotationExpansionOriginalInputsForTest() const noexcept
+    {
+        return mLastRotationExpansionOriginalInputs;
+    }
+
+    /// Test seam: is the "Undo rotated history expansion" menu
+    /// action currently enabled? Reflects whether the most recent
+    /// expansion is still resurrect-able.
+    [[nodiscard]] bool IsUndoRotationExpansionEnabledForTest() const noexcept
+    {
+        return mActionUndoRotationExpansion != nullptr && mActionUndoRotationExpansion->isEnabled();
     }
 
     /// Test seam; forwards a producer and pre-read bytes to
@@ -1252,24 +1291,35 @@ private:
     ///
     /// Bundles and configuration JSONs are already filtered out
     /// upstream; this helper additionally skips any residual
-    /// bundle-like path defensively. `mCurrentSource`'s existing
-    /// locators are used to dedup against files already loaded into
-    /// the session, so drops-into-session don't re-add
-    /// already-visible siblings.
+    /// bundle-like path defensively. When @p mode is `Append`,
+    /// `mCurrentSource`'s existing locators are used to dedup
+    /// against files already loaded into the session, so
+    /// drops-into-session don't re-add already-visible siblings,
+    /// and its `followRotationSiblings` opt-out is honoured. When
+    /// @p mode is `Replace`, the current session is about to be
+    /// destroyed by the caller; the expander therefore ignores
+    /// `mCurrentSource` entirely so a fresh session picks up
+    /// companions regardless of the outgoing session's opt-out
+    /// or its already-loaded locator set (both of which would
+    /// otherwise erroneously suppress the fresh expansion, in the
+    /// latter case potentially returning an empty list when the
+    /// user re-opens the same family).
     ///
     /// Returns the expanded list of paths. When no expansion
     /// happens, the returned list is byte-equal to the input in
     /// order. The number of *added* files (excluding the caller's
     /// originals) is written to @p addedOut for the status-bar
     /// affordance.
-    [[nodiscard]] QStringList ExpandLogPathsWithRotationSiblings(const QStringList &logPaths, int &addedOut) const;
+    [[nodiscard]] QStringList
+    ExpandLogPathsWithRotationSiblings(const QStringList &logPaths, int &addedOut, OpenMode mode) const;
 
     /// Show a status-bar toast after a rotation-siblings expansion
     /// and enable the `Undo Rotated History Expansion` action.
     void ShowRotationHistoryToast(int addedCount, const QString &primary);
 
     /// Undo the most recent rotation-siblings expansion: destructive
-    /// reset + reopen `mLastRotationExpansionPrimary` alone. No-op
+    /// reset + reopen `mLastRotationExpansionOriginalInputs` (the
+    /// user's original selection, minus companion expansion). No-op
     /// when the field is empty. Disabled by the action guard once
     /// the user has touched the view (filters/anchors/sort applied
     /// since the expansion).
@@ -1968,15 +2018,22 @@ private:
     /// flag, so leaving it set would silently defeat a menu toggle.
     bool mDisableRotationHistoryOverride = false;
 
-    /// Primary file that owns the current window's most recent
-    /// rotation-history expansion (empty when no auto-expansion has
-    /// happened). Consumed by the status-bar `Undo` affordance to
-    /// resurrect a plain open of just the primary.
-    QString mLastRotationExpansionPrimary;
+    /// The caller's ORIGINAL log path list at the moment the most
+    /// recent rotation-history expansion fired. Empty when no
+    /// auto-expansion has happened. `UndoRotationExpansion` reopens
+    /// this exact list (with the one-shot rotation override on) so
+    /// the user gets their original selection back -- multi-file
+    /// drops included. Storing only the "primary" here would drop
+    /// every companion the user picked, and worse, `logPaths.back()`
+    /// is not guaranteed to be the primary of the expanded family
+    /// (e.g. `[app.log, other.log]` where `app.log` is the family
+    /// that expanded would land `other.log` here and lose the
+    /// `app.log` family entirely).
+    QStringList mLastRotationExpansionOriginalInputs;
 
     /// Count of siblings added by the most recent expansion. Kept
-    /// alongside `mLastRotationExpansionPrimary` so the toast can
-    /// say "Loaded N companion(s)" without recomputing.
+    /// alongside `mLastRotationExpansionOriginalInputs` so the toast
+    /// can say "Loaded N companion(s)" without recomputing.
     int mLastRotationExpansionCount = 0;
 
     /// File-open errors collected while draining `mPendingOpenFiles`.

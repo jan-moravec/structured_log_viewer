@@ -13175,6 +13175,324 @@ private slots:
         QCoreApplication::processEvents();
     }
 
+    // Regression: an `OpenMode::Replace` open must not inherit the
+    // *outgoing* session's `locatorDedupKeys` when the expander
+    // resolves rotation-siblings. Before the fix, re-opening the same
+    // rotation family after having already loaded it in a prior
+    // session would deduplicate every discovered sibling (including
+    // the primary the user just picked) against the dead session's
+    // locators, and `StartStreamingOpenQueue` would receive an empty
+    // list -- leaving the user with an empty view even though the
+    // files were still on disk.
+    void TestReplaceReopenOfSameRotationFamilyStreamsAllFiles()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(primaryPath, R"({"msg":"p"})""\n");
+        write(oldPath, R"({"msg":"g1"})""\n");
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        // First Replace open: two files stream (primary + sibling)
+        // and the session's `locatorDedupKeys` picks up both.
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        for (int i = 0; i < 2; ++i)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "two per-file streamingFinished emits expected");
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 2);
+        {
+            const auto &source = mWindow->CurrentSourceForTest();
+            QVERIFY(source.has_value());
+            QCOMPARE(source->locatorDedupKeys.size(), static_cast<std::size_t>(2));
+        }
+
+        // Second Replace open of the *same* primary. The destructive
+        // reset in `StartStreamingOpenQueue` will drop the outgoing
+        // session, so the expander must not gate off its
+        // `locatorDedupKeys`. Before the fix this landed an empty
+        // model.
+        finishedSpy.clear();
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        for (int i = 0; i < 2; ++i)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "second Replace must stream both files again");
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 2);
+    }
+
+    // Regression: a Replace open must not inherit the outgoing
+    // session's `followRotationSiblings=false` opt-out. Loaded
+    // configurations can pin the session-level flag off while the
+    // global preference stays on; a fresh Replace open should honour
+    // the current global preference, not the dying session's flag.
+    void TestReplaceOpenIgnoresPriorSessionOptOutFromLoadedConfig()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(primaryPath, R"({"msg":"p"})""\n");
+        write(oldPath, R"({"msg":"g1"})""\n");
+
+        // Simulate a loaded config that pinned session opt-out to
+        // `false` even though the global preference is on. Point the
+        // fake source at a completely different, unrelated path so
+        // its dedup keys can't accidentally mask the fresh family.
+        loglib::LogConfiguration::Source spoof;
+        spoof.kind = loglib::LogConfiguration::Source::Kind::File;
+        spoof.format = loglib::LogConfiguration::Source::Format::Json;
+        spoof.locators = {dir.filePath(QStringLiteral("unrelated.log")).toStdString()};
+        spoof.locatorDedupKeys = spoof.locators;
+        spoof.followRotationSiblings = false;
+        mWindow->SetCurrentSourceForTest(spoof);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        // Fresh Replace open of a file with a rotation sibling. The
+        // outgoing spoofed session had `followRotationSiblings=false`;
+        // the expander must ignore that on Replace and expand.
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        for (int i = 0; i < 2; ++i)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "Replace must expand siblings despite stale opt-out");
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 2);
+    }
+
+    // Regression: when `OpenLogStreamFromPath` staged a live-tail on
+    // a primary and started a historical sibling-prefix drain, a
+    // user-initiated Stop mid-drain must NOT silently discard the
+    // primary tail the user explicitly asked for. Before the fix,
+    // the `Cancelled` terminal from `StopAndKeepRows` fell through
+    // to the "clear pending live tail" branch in
+    // `OnStreamingFinished`, leaving the user with a partial static
+    // view and no live updates on the primary.
+    void TestSiblingPrefixLiveTailSurvivesStopMidDrain()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(primaryPath, R"({"msg":"p"})""\n");
+        // Bulk-write a large sibling so the sibling drain doesn't
+        // finish before we can call StopAndKeepRows mid-drain.
+        QString bigContent;
+        bigContent.reserve(200000 * 20);
+        for (int i = 0; i < 200000; ++i)
+        {
+            bigContent += QStringLiteral(R"({"msg":"g%1"})""\n").arg(i);
+        }
+        write(oldPath, bigContent);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        mWindow->OpenLogStreamForTest(primaryPath);
+
+        QTRY_VERIFY_WITH_TIMEOUT(model->IsStreamingActive(), 5000);
+        QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::Static);
+        QVERIFY(mWindow->HasPendingLiveTailForTest());
+
+        model->StopAndKeepRows();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::LiveTail);
+        QVERIFY2(
+            !mWindow->HasPendingLiveTailForTest(),
+            "pending live-tail slots must be consumed by the promotion"
+        );
+        const auto &source = mWindow->CurrentSourceForTest();
+        QVERIFY(source.has_value());
+        const std::string primaryKey = logapp::CanonicalLocator(primaryPath).toStdString();
+        const bool sawPrimary = std::any_of(
+            source->locatorDedupKeys.begin(),
+            source->locatorDedupKeys.end(),
+            [&primaryKey](const std::string &k) { return k == primaryKey; }
+        );
+        QVERIFY2(sawPrimary, "promoted live tail must append primary to the source locators");
+
+        mWindow->NewSessionForTest();
+        QCoreApplication::processEvents();
+    }
+
+    // Regression: `UndoRotationExpansion` must resurrect the
+    // CALLER's original path list, not just a single "primary".
+    // Before the fix, only `logPaths.back()` was captured, so a
+    // multi-file drop like `[app.log, other.log]` where `app.log`
+    // had rotation siblings would (a) collapse the undo target to
+    // just `other.log` (losing `app.log` and its family entirely),
+    // and (b) drop every non-last file from the user's selection.
+    void TestUndoRotationExpansionResurrectsMultiFileSelection()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
+        const QString otherPath = dir.filePath(QStringLiteral("other.log"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(primaryPath, R"({"msg":"p"})""\n");
+        write(oldPath, R"({"msg":"g1"})""\n");
+        write(otherPath, R"({"msg":"o"})""\n");
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        // Multi-file open: `app.log`'s family expands (one sibling),
+        // `other.log` has no siblings and passes through unchanged.
+        // Three per-file `streamingFinished` emits: the sibling, the
+        // primary, and `other.log`.
+        (void)mWindow->OpenMixedFilesForTest(
+            {primaryPath, otherPath}, MainWindow::OpenMode::Replace
+        );
+        for (int i = 0; i < 3; ++i)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "three per-file streamingFinished emits expected");
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 3);
+
+        // Fix precondition: the caller's ORIGINAL list survives here
+        // (both entries), not just `logPaths.back()`. The pre-fix
+        // code captured `otherPath` alone, which would have made
+        // the undo lose `app.log` entirely.
+        const QStringList captured = mWindow->LastRotationExpansionOriginalInputsForTest();
+        QCOMPARE(captured.size(), 2);
+        QCOMPARE(captured[0], primaryPath);
+        QCOMPARE(captured[1], otherPath);
+        QVERIFY(mWindow->IsUndoRotationExpansionEnabledForTest());
+
+        // Undo. The one-shot rotation override suppresses expansion,
+        // so the redo streams exactly `[app.log, other.log]` -- two
+        // files -- and lands two rows. Before the fix, the redo
+        // would have streamed only `other.log` (one row) and lost
+        // `app.log` entirely.
+        finishedSpy.clear();
+        mWindow->UndoRotationExpansionForTest();
+        for (int i = 0; i < 2; ++i)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "two per-file streamingFinished emits expected on undo");
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 2);
+
+        const auto &source = mWindow->CurrentSourceForTest();
+        QVERIFY(source.has_value());
+        // Both primaries must be present in the fresh source's
+        // locators. The old sibling (`app.log.1`) must NOT be:
+        // the override told the expander to stay put.
+        const std::string primaryKey = logapp::CanonicalLocator(primaryPath).toStdString();
+        const std::string otherKey = logapp::CanonicalLocator(otherPath).toStdString();
+        const std::string siblingKey = logapp::CanonicalLocator(oldPath).toStdString();
+        const auto hasKey = [&source](const std::string &k) {
+            return std::any_of(
+                source->locatorDedupKeys.begin(),
+                source->locatorDedupKeys.end(),
+                [&k](const std::string &existing) { return existing == k; }
+            );
+        };
+        QVERIFY2(hasKey(primaryKey), "undo must resurrect the app.log primary");
+        QVERIFY2(hasKey(otherKey), "undo must resurrect the other.log primary");
+        QVERIFY2(!hasKey(siblingKey), "undo must not re-attach the sibling this time");
+
+        // The undo consumed the stored inputs -- the affordance is
+        // one-shot.
+        QVERIFY(mWindow->LastRotationExpansionOriginalInputsForTest().isEmpty());
+        QVERIFY(!mWindow->IsUndoRotationExpansionEnabledForTest());
+    }
+
+    // Regression: when every rotation sibling fails synchronously,
+    // `StreamNextPendingFile`'s rescue branch is the only path that
+    // promotes the pending live tail. Before the fix, this branch
+    // reached `ContinueLiveTailAfterPrefix` without any prior call
+    // to `SetConfigurationUiEnabled(false)` (no sibling reached
+    // `ContinueOpenAfterPrepared`), so the live tail armed with
+    // Save/Load Configuration + column drag still reachable -- the
+    // exact race the gate was introduced to prevent.
+    void TestRescueBranchLiveTailDisablesConfigurationUi()
+    {
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        QVERIFY(tableView != nullptr);
+        const QHeaderView *header = tableView->horizontalHeader();
+        QVERIFY(header != nullptr);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        {
+            std::ofstream stream(primaryPath.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << R"({"msg":"p"})""\n";
+        }
+
+        // Force the "no prior disable" precondition: after this
+        // call, header drag is enabled and the config actions are
+        // reachable. That's the state the rescue branch inherits
+        // when every sibling failed synchronously (no
+        // `ContinueOpenAfterPrepared` ran).
+        mWindow->SetConfigurationUiEnabledForTest(true);
+        QVERIFY2(header->sectionsMovable(), "precondition: header drag must be armed before the rescue");
+        QCOMPARE(header->contextMenuPolicy(), Qt::CustomContextMenu);
+
+        // Fire the promotion path directly. In production this is
+        // reached via `StreamNextPendingFile`'s
+        // `if (!IsSessionActive()) { ContinueLiveTailAfterPrefix(); }`
+        // rescue after every sibling failed.
+        mWindow->TriggerRescueLiveTailForTest(primaryPath, /*retention=*/0);
+        QCoreApplication::processEvents();
+
+        // After the fix, `ContinueLiveTailAfterPrefix` itself gates
+        // the configuration UI before arming the parser.
+        QVERIFY2(
+            !header->sectionsMovable(),
+            "rescue-branch live tail must disable header drag before arming the parser"
+        );
+        QCOMPARE(header->contextMenuPolicy(), Qt::NoContextMenu);
+
+        // Cleanup: fresh session drops the tail's worker thread and
+        // resets UI state for the next test.
+        mWindow->NewSessionForTest();
+        QCoreApplication::processEvents();
+    }
+
     // Regression: a multi-file open must sniff each queued file
     // independently, not reuse the first file's format for the rest.
     // Before the fix, a JSON Lines + logfmt queue tried to parse the

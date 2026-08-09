@@ -2499,7 +2499,7 @@ void MainWindow::NewSession()
     mPendingLiveTailPrimary.clear();
     mPendingLiveTailProducer.reset();
     mPendingLiveTailRetention = 0;
-    mLastRotationExpansionPrimary.clear();
+    mLastRotationExpansionOriginalInputs.clear();
     mLastRotationExpansionCount = 0;
     if (mActionUndoRotationExpansion != nullptr)
     {
@@ -2676,12 +2676,15 @@ void MainWindow::ShowRotationHistoryToast(int addedCount, const QString &primary
 
 void MainWindow::UndoRotationExpansion()
 {
-    if (mLastRotationExpansionPrimary.isEmpty() || mLastRotationExpansionCount <= 0)
+    if (mLastRotationExpansionOriginalInputs.isEmpty() || mLastRotationExpansionCount <= 0)
     {
         return;
     }
-    const QString primary = mLastRotationExpansionPrimary;
-    mLastRotationExpansionPrimary.clear();
+    // Move-out first so the follow-up dispatch's destructive reset
+    // sees us in a clean slate and can't re-arm the undo button off
+    // its own expansion.
+    const QStringList originalInputs = std::move(mLastRotationExpansionOriginalInputs);
+    mLastRotationExpansionOriginalInputs.clear();
     mLastRotationExpansionCount = 0;
     if (mActionUndoRotationExpansion != nullptr)
     {
@@ -2690,9 +2693,13 @@ void MainWindow::UndoRotationExpansion()
     // The reopen goes through the classifier again but we set the
     // launch override so no siblings get pulled in this time. The
     // override is one-shot: restored by the follow-up call.
+    // Reopening the FULL original list (not just a single "primary")
+    // is what makes multi-file selections survive the undo -- e.g.
+    // `[app.log, other.log]` where `app.log`'s family expanded must
+    // resurrect both entries, not just whichever one was `back()`.
     const bool priorOverride = mDisableRotationHistoryOverride;
     mDisableRotationHistoryOverride = true;
-    DispatchMixedOpenInput(QStringList{primary}, OpenMode::Replace);
+    DispatchMixedOpenInput(originalInputs, OpenMode::Replace);
     mDisableRotationHistoryOverride = priorOverride;
 }
 
@@ -2748,7 +2755,8 @@ bool MainWindow::ShouldAutoDetectRotationHistory() const noexcept
     return settings.value(QStringLiteral("ui/autoDetectRotatedHistory"), true).toBool();
 }
 
-QStringList MainWindow::ExpandLogPathsWithRotationSiblings(const QStringList &logPaths, int &addedOut) const
+QStringList
+MainWindow::ExpandLogPathsWithRotationSiblings(const QStringList &logPaths, int &addedOut, OpenMode mode) const
 {
     addedOut = 0;
     if (logPaths.isEmpty() || !ShouldAutoDetectRotationHistory())
@@ -2756,10 +2764,20 @@ QStringList MainWindow::ExpandLogPathsWithRotationSiblings(const QStringList &lo
         return logPaths;
     }
 
+    // `Replace` opens are about to tear down the outgoing session
+    // via `StartStreamingOpenQueue`'s destructive branch. Reading
+    // `mCurrentSource` here would let the previous session's
+    // per-session opt-out or already-loaded dedup keys gate a
+    // fresh expansion -- in the dedup case, re-opening the same
+    // rotation family after a prior session could even return an
+    // empty list (both primary and siblings deduped out) and land
+    // the user on an empty view.
+    const bool consultCurrentSource = (mode == OpenMode::Append);
+
     // Session-scope opt-out: if a session is already loaded and the
     // user turned expansion off for it, honour that regardless of
     // the global pref.
-    if (mCurrentSource.has_value() && !mCurrentSource->followRotationSiblings)
+    if (consultCurrentSource && mCurrentSource.has_value() && !mCurrentSource->followRotationSiblings)
     {
         return logPaths;
     }
@@ -2768,7 +2786,7 @@ QStringList MainWindow::ExpandLogPathsWithRotationSiblings(const QStringList &lo
     // canonical keys. Drops-into-session should not re-add locators
     // already visible in the table.
     std::unordered_set<std::string> alreadyLoaded;
-    if (mCurrentSource.has_value())
+    if (consultCurrentSource && mCurrentSource.has_value())
     {
         alreadyLoaded.reserve(mCurrentSource->locatorDedupKeys.size());
         for (const std::string &k : mCurrentSource->locatorDedupKeys)
@@ -2950,25 +2968,31 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
         // still sees the same one-entry list on the other side.
         int addedSiblings = 0;
         const QStringList expandedLogPaths =
-            armEmbeddedBundleIntent ? logPaths : ExpandLogPathsWithRotationSiblings(logPaths, addedSiblings);
-        if (addedSiblings > 0 && expandedLogPaths.size() >= 1)
-        {
-            // The primary the user actually asked for is the newest
-            // entry (or, when the caller listed multiple, the last
-            // one to appear before any expansion). We take
-            // `logPaths.back()` -- the caller-visible "most recent"
-            // -- for the undo affordance.
-            mLastRotationExpansionPrimary = logPaths.back();
-            mLastRotationExpansionCount = addedSiblings;
-        }
+            armEmbeddedBundleIntent ? logPaths : ExpandLogPathsWithRotationSiblings(logPaths, addedSiblings, logMode);
         StartStreamingOpenQueue(expandedLogPaths, logMode);
         if (armEmbeddedBundleIntent)
         {
             mApplyEmbeddedBundleConfigForPath = bundlePath;
         }
-        if (addedSiblings > 0)
+        if (addedSiblings > 0 && expandedLogPaths.size() >= 1)
         {
-            ShowRotationHistoryToast(addedSiblings, mLastRotationExpansionPrimary);
+            // Set AFTER `StartStreamingOpenQueue` so the destructive
+            // Replace-mode teardown inside it cannot clobber the
+            // fresh undo state. Store the CALLER's original path
+            // list so a follow-up `UndoRotationExpansion` reopens
+            // exactly what the user dropped -- multi-file selections
+            // included. Storing `logPaths.back()` here would collapse
+            // a multi-file selection down to a single file and, in
+            // the mixed `[app.log, other.log]` case where only
+            // `app.log`'s family expanded, would land the undo on
+            // `other.log` and lose the family entirely.
+            mLastRotationExpansionOriginalInputs = logPaths;
+            mLastRotationExpansionCount = addedSiblings;
+            // Toast uses `logPaths.back()` as a display anchor; it's
+            // the caller-visible "most recent" file. The toast also
+            // (re-)enables the Undo affordance -- the destructive
+            // teardown disabled it above.
+            ShowRotationHistoryToast(addedSiblings, logPaths.back());
         }
         return MixedInputResult{.outcome = MixedInputDispatch::QueuedLogsOnly, .appliedConfigPath = QString()};
     }
@@ -3003,16 +3027,22 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
         return MixedInputResult{.outcome = MixedInputDispatch::QueuedLogsOnly, .appliedConfigPath = QString()};
     }
     int addedSiblings = 0;
-    const QStringList expandedLogPaths = ExpandLogPathsWithRotationSiblings(logPaths, addedSiblings);
-    if (addedSiblings > 0)
-    {
-        mLastRotationExpansionPrimary = logPaths.back();
-        mLastRotationExpansionCount = addedSiblings;
-    }
+    // Post-`DoLoadConfiguration`: `mCurrentSource` now reflects the
+    // just-loaded config's source. Consult it (Append semantics) so
+    // the config's opt-out / already-listed locators still gate.
+    const QStringList expandedLogPaths =
+        ExpandLogPathsWithRotationSiblings(logPaths, addedSiblings, OpenMode::Append);
     StartStreamingOpenQueue(expandedLogPaths, OpenMode::Append);
     if (addedSiblings > 0)
     {
-        ShowRotationHistoryToast(addedSiblings, mLastRotationExpansionPrimary);
+        // Set AFTER `StartStreamingOpenQueue`: even in `Append` mode
+        // it is possible for the outgoing session to have been a
+        // live tail, which trips the destructive teardown inside
+        // `StartStreamingOpenQueue`. Set here to defeat any such
+        // teardown, mirroring the `QueuedLogsOnly` branch above.
+        mLastRotationExpansionOriginalInputs = logPaths;
+        mLastRotationExpansionCount = addedSiblings;
+        ShowRotationHistoryToast(addedSiblings, logPaths.back());
     }
     return MixedInputResult{.outcome = MixedInputDispatch::AppliedConfigThenLogs, .appliedConfigPath = configPath};
 }
@@ -3068,7 +3098,7 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
         mPendingLiveTailPrimary.clear();
         mPendingLiveTailProducer.reset();
         mPendingLiveTailRetention = 0;
-        mLastRotationExpansionPrimary.clear();
+        mLastRotationExpansionOriginalInputs.clear();
         mLastRotationExpansionCount = 0;
         if (mActionUndoRotationExpansion != nullptr)
         {
@@ -3188,16 +3218,44 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
     }
 
     // Sibling-prefix into live-tail: the static queue has drained
-    // and the pending primary is ready to be tailed. Promote and
-    // stay in the streaming state (no teardown, no auto-save).
-    if (result == StreamingResult::Success && !mPendingLiveTailPrimary.isEmpty())
+    // (Success on normal drain) or was cut short by a
+    // Cancelled/Failed terminal (user-initiated Stop mid-drain, or
+    // a future worker-boundary `Failed`). The user explicitly asked
+    // to Stream Mode the primary, and its producer is still
+    // healthy -- promote it regardless of the prefix drain's
+    // outcome. Silently discarding the tail on Stop violates the
+    // Stream-Mode contract. Destructive-open teardown paths clear
+    // `mPendingLiveTailPrimary` before reaching this slot, so a
+    // Replace / New Session that happened to fire an intervening
+    // `Cancelled` will not wrong-attach onto a fresh session.
+    if (!mPendingLiveTailPrimary.isEmpty() && mPendingLiveTailProducer)
     {
-        ContinueLiveTailAfterPrefix();
+        if (result == StreamingResult::Success)
+        {
+            // Normal-drain case: no enclosing teardown is on the
+            // stack, so promote synchronously (the existing contract
+            // -- some tests observe LiveTail state right after
+            // `streamingFinished(Success)` without pumping events).
+            ContinueLiveTailAfterPrefix();
+            return;
+        }
+        // Non-success terminal (Cancelled/Failed): we may be nested
+        // inside `LogModel::TeardownStreamingSessionInternal`, called
+        // via `sendPostedEvents` -> queued sink `OnFinished`.
+        // Promoting synchronously here would let the outer teardown
+        // continue with `DropPendingBatches` (which wipes the newly
+        // armed sink) and a second `streamingFinished(Cancelled)`
+        // emit (which would clobber `mSessionMode` back to Idle).
+        // Defer the promotion so it runs after the outer teardown
+        // unwinds; a normal `processEvents()` pump lets it fire.
+        QMetaObject::invokeMethod(
+            this, [this]() { ContinueLiveTailAfterPrefix(); }, Qt::QueuedConnection
+        );
         return;
     }
-    // Failure / cancel drops the pending primary so it can't fire
-    // against a subsequent session.
-    if (!mPendingLiveTailPrimary.isEmpty())
+    // Defensive scrub if only one half of the pending state is set
+    // (the other was already consumed / cleared upstream).
+    if (!mPendingLiveTailPrimary.isEmpty() || mPendingLiveTailProducer)
     {
         mPendingLiveTailPrimary.clear();
         mPendingLiveTailProducer.reset();
@@ -4859,7 +4917,7 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     // The outgoing session's expansion-undo affordance no longer
     // applies to the new session. Match the destructive-open
     // teardown in `StartStreamingOpenQueue`.
-    mLastRotationExpansionPrimary.clear();
+    mLastRotationExpansionOriginalInputs.clear();
     mLastRotationExpansionCount = 0;
     if (mActionUndoRotationExpansion != nullptr)
     {
@@ -4875,7 +4933,11 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
         mPendingDecompressionErrors.clear();
         mPendingLiveTailPrimary = file;
         mPendingLiveTailRetention = retention;
-        mLastRotationExpansionPrimary = file;
+        // Single-file live-tail open: the "original inputs" list is
+        // just the primary the user picked. Undo reopens plain
+        // `[file]` without expansion, which lands on the fast path
+        // in `OpenLogStreamFromPath` (empty `siblingPrefix`).
+        mLastRotationExpansionOriginalInputs = QStringList{file};
         mLastRotationExpansionCount = addedSiblings;
         // Force `mSessionMode` and `mCurrentSource` back to the
         // idle-session baseline. `mModel->Reset()` above is
@@ -4962,6 +5024,21 @@ void MainWindow::ContinueLiveTailAfterPrefix()
         mPendingLiveTailRetention = 0;
         return;
     }
+
+    // Gate the configuration UI before arming the parser, matching
+    // the discipline of every other live-tail entry point
+    // (`OpenLogStreamFromPath`, `OpenStdinStreamFromProducer`,
+    // `OpenNetworkStream`). In the normal sibling-prefix path the
+    // first sibling's `ContinueOpenAfterPrepared` already flipped
+    // this to `false`, so the call is idempotent. In the rescue
+    // path triggered from `StreamNextPendingFile` (every sibling
+    // failed synchronously, so no sibling ever reached
+    // `ContinueOpenAfterPrepared`) this is the ONLY place that
+    // disables Save/Load Configuration, Preferences, and column
+    // reorder before the tail parser starts. Without it those
+    // controls would race the streaming pipeline the same way
+    // `SetConfigurationUiEnabled` was introduced to prevent.
+    SetConfigurationUiEnabled(false);
     const QString primary = mPendingLiveTailPrimary;
     mPendingLiveTailPrimary.clear();
     const size_t retention = mPendingLiveTailRetention;
@@ -5386,7 +5463,16 @@ void MainWindow::StopStream()
     // on them. `mCurrentSource` survives -- those rows still came
     // from that source.
     mModel->StopAndKeepRows();
-    mStreamingFileName.clear();
+    // `StopAndKeepRows` synchronously emits `streamingFinished`,
+    // which invokes `OnStreamingFinished`. If a sibling-prefix
+    // live-tail was pending, that slot promotes it -- flipping
+    // `mSessionMode` to `LiveTail` and setting `mStreamingFileName`
+    // to the primary's file name. Clearing here would stomp the
+    // freshly-armed tail's label; skip in that case.
+    if (!IsLiveTailSession())
+    {
+        mStreamingFileName.clear();
+    }
 }
 
 void MainWindow::OnRotationDetected()
@@ -6714,6 +6800,20 @@ void MainWindow::SetSessionModeForTest(TestSessionMode mode)
     }
 }
 
+MainWindow::TestSessionMode MainWindow::SessionModeForTest() const noexcept
+{
+    switch (mSessionMode)
+    {
+    case SessionMode::Idle:
+        return TestSessionMode::Idle;
+    case SessionMode::Static:
+        return TestSessionMode::Static;
+    case SessionMode::LiveTail:
+        return TestSessionMode::LiveTail;
+    }
+    return TestSessionMode::Idle;
+}
+
 bool MainWindow::TryLoadAsConfigurationForTest(const QString &file)
 {
     return TryLoadAsConfiguration(file);
@@ -6722,6 +6822,27 @@ bool MainWindow::TryLoadAsConfigurationForTest(const QString &file)
 void MainWindow::SetConfigurationUiEnabledForTest(bool enabled)
 {
     SetConfigurationUiEnabled(enabled);
+}
+
+void MainWindow::TriggerRescueLiveTailForTest(const QString &primary, size_t retention)
+{
+    // Recreate the state at the moment the rescue branch of
+    // `StreamNextPendingFile` fires: every sibling failed
+    // synchronously, so no sibling ever reached
+    // `ContinueOpenAfterPrepared` -- the session is inactive
+    // (`!IsSessionActive()`) and, critically, the configuration UI
+    // was never disabled. `ContinueLiveTailAfterPrefix` must
+    // therefore be the one to gate the UI, otherwise the live tail
+    // would arm with Save/Load Configuration + column drag still
+    // reachable.
+    mPendingLiveTailPrimary = primary;
+    mPendingLiveTailRetention = retention;
+    mPendingLiveTailProducer =
+        std::make_unique<loglib::TailingBytesProducer>(std::filesystem::path(primary.toStdString()), retention);
+    mSessionMode = SessionMode::Idle;
+    mCurrentSource.reset();
+    SetConfigurationUiEnabled(true);
+    ContinueLiveTailAfterPrefix();
 }
 
 void MainWindow::SaveConfigurationToPathForTest(const QString &path, loglib::SaveScope scope)
