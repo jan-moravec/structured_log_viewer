@@ -12977,6 +12977,204 @@ private slots:
         mWindow->SetRotationHistoryLaunchOverride(false);
     }
 
+    // Regression: launching with `--no-rotation-history` sets the
+    // process-wide override. If the user then clicks the menu
+    // `Settings -> Auto-detect rotated log history` back ON, the
+    // override must clear -- otherwise the checkbox says "on" while
+    // `ShouldAutoDetectRotationHistory` still short-circuits to
+    // false, and the next open silently ignores the tick.
+    void TestRotationHistoryMenuToggleClearsCliOverride()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString olderPath = dir.filePath(QStringLiteral("app.log.1"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(primaryPath, R"({"msg":"p"})""\n");
+        write(olderPath, R"({"msg":"g1"})""\n");
+
+        // Simulate the CLI launch flag.
+        mWindow->SetRotationHistoryLaunchOverride(true);
+        QVERIFY(mWindow->RotationHistoryLaunchOverrideForTest());
+
+        // User re-ticks the menu box (they didn't remember the CLI).
+        // Both directions must clear the process-wide override so the
+        // effective behaviour tracks the checkbox state.
+        mWindow->SimulateRotationHistoryMenuToggleForTest(true);
+        QVERIFY2(
+            !mWindow->RotationHistoryLaunchOverrideForTest(),
+            "menu toggle must clear the launch-time CLI override"
+        );
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        // With the override gone the family expands as usual: two
+        // files stream (primary + `app.log.1`).
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        for (int i = 0; i < 2; ++i)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "two per-file streamingFinished emits expected");
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 2);
+    }
+
+    // Regression: toggling the menu OFF while a session is loaded
+    // must mirror onto the current source and update the menu tick;
+    // toggling ON again clears the CLI override and re-mirrors.
+    void TestRotationHistoryMenuTogglePersistsOntoCurrentSource()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(primaryPath, R"({"msg":"p"})""\n");
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        QVERIFY2(finishedSpy.wait(5000), "single-file open must finish");
+        QCoreApplication::processEvents();
+
+        // Session seeded with the default (follow=true).
+        {
+            const auto &source = mWindow->CurrentSourceForTest();
+            QVERIFY(source.has_value());
+            QVERIFY(source->followRotationSiblings);
+        }
+
+        // User opts out via menu.
+        mWindow->SimulateRotationHistoryMenuToggleForTest(false);
+        {
+            const auto &source = mWindow->CurrentSourceForTest();
+            QVERIFY(source.has_value());
+            QVERIFY2(
+                !source->followRotationSiblings,
+                "menu toggle OFF must mirror onto the session source"
+            );
+        }
+
+        // User reverses their decision.
+        mWindow->SimulateRotationHistoryMenuToggleForTest(true);
+        {
+            const auto &source = mWindow->CurrentSourceForTest();
+            QVERIFY(source.has_value());
+            QVERIFY2(
+                source->followRotationSiblings,
+                "menu toggle ON must re-enable the session-scope flag"
+            );
+        }
+    }
+
+    // Regression: sibling regex must be case-insensitive on
+    // Windows/macOS filesystems where `App.LOG.1` names the same
+    // family as `app.log`. Linux stays byte-strict; the slot is
+    // still declared there so moc can find it (moc has no built-in
+    // knowledge of `_WIN32`) but the assertion is skipped.
+    void TestRotationSiblingsAreCaseInsensitiveOnWindowsAndMac()
+    {
+#if defined(_WIN32) || defined(__APPLE__)
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        // Mixed-case sibling: case-sensitive regex would drop this.
+        const QString upperPath = dir.filePath(QStringLiteral("App.LOG.1"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(primaryPath, R"({"msg":"p"})""\n");
+        write(upperPath, R"({"msg":"g1"})""\n");
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        for (int i = 0; i < 2; ++i)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "two per-file streamingFinished emits expected");
+        }
+        QCoreApplication::processEvents();
+        // Both files streamed: sibling was picked up despite the
+        // case difference.
+        QCOMPARE(model->rowCount(), 2);
+#else
+        QSKIP("Case-insensitive sibling matching is Windows/macOS only.");
+#endif
+    }
+
+    // Regression: `OpenLogStreamFromPath` must scrub any pending
+    // sibling-prefix live-tail state carried from a prior invocation
+    // where the sibling drain didn't reach `ContinueLiveTailAfterPrefix`
+    // (all siblings failed synchronously, an in-flight decompression
+    // was cancelled by a session switch, ...). Without the scrub the
+    // fresh session inherits a stale `mPendingLiveTailPrimary`, and
+    // its first `OnStreamingFinished(Success)` would attach a live
+    // tail of the *wrong file* onto the new session.
+    void TestOpenLogStreamFromPathClearsStalePendingLiveTail()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString fakeStalePrimary = dir.filePath(QStringLiteral("stale-primary.log"));
+        const QString freshLog = dir.filePath(QStringLiteral("fresh.log"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(freshLog, R"({"msg":"fresh"})""\n");
+
+        // Simulate a stale pending live-tail state left over from a
+        // prior sibling drain that never resolved. `NewSession` and
+        // `StartStreamingOpenQueue`'s destructive branch both clear
+        // this; `OpenLogStreamFromPath` must too.
+        mWindow->SeedPendingLiveTailForTest(fakeStalePrimary, /*retention=*/128);
+        QVERIFY(mWindow->HasPendingLiveTailForTest());
+
+        // Live-tail open on an unrelated file. The reset section at
+        // the top of `OpenLogStreamFromPath` must scrub the stale
+        // state *before* the sibling / non-sibling branch runs, so
+        // no `ContinueLiveTailAfterPrefix` mis-fires against the
+        // (bogus) primary.
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        mWindow->OpenLogStreamForTest(freshLog);
+
+        // With the fix in place, the stale pending state is cleared
+        // synchronously at the top of the open path (before the
+        // async stream even starts).
+        QVERIFY2(
+            !mWindow->HasPendingLiveTailForTest(),
+            "destructive open must scrub stale pending live-tail state"
+        );
+
+        // Drain the async streaming so this test doesn't leave a
+        // running session behind for the next slot.
+        (void)finishedSpy.wait(5000);
+        QCoreApplication::processEvents();
+    }
+
     // Regression: a multi-file open must sniff each queued file
     // independently, not reuse the first file's format for the rest.
     // Before the fix, a JSON Lines + logfmt queue tried to parse the

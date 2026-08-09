@@ -231,6 +231,23 @@ public:
         SyncRotationHistoryActionCheckedState();
     }
 
+    /// Test seam: query the current process-wide CLI opt-out flag.
+    [[nodiscard]] bool RotationHistoryLaunchOverrideForTest() const noexcept
+    {
+        return mDisableRotationHistoryOverride;
+    }
+
+    /// Test seam: simulate the user clicking
+    /// `Settings -> Auto-detect rotated log history`. The real menu
+    /// action is wired to `OnRotationHistoryPrefToggled` via the
+    /// action's `toggled(bool)` signal; this helper exercises the
+    /// same slot without needing to synthesize a `QAction::toggled`
+    /// through the menu.
+    void SimulateRotationHistoryMenuToggleForTest(bool enabled)
+    {
+        OnRotationHistoryPrefToggled(enabled);
+    }
+
     /// Open a live-tail session over the process's standard input.
     /// The CLI parses `-` / `--stdin` in argv and routes here via
     /// `main()`. Session shape mirrors `OpenNetworkStream` (live-
@@ -608,6 +625,31 @@ public:
     /// Lets tests exercise the live-tail open path without a real
     /// modal `QFileDialog`.
     void OpenLogStreamForTest(const QString &filePath);
+
+    /// Test seam: is a sibling-prefix live-tail promotion pending?
+    /// `OpenLogStreamFromPath`'s sibling branch parks the primary
+    /// here between the sibling drain and the tail attach. Cleared
+    /// on any destructive-open teardown, and by
+    /// `ContinueLiveTailAfterPrefix`.
+    [[nodiscard]] bool HasPendingLiveTailForTest() const noexcept
+    {
+        return !mPendingLiveTailPrimary.isEmpty() || mPendingLiveTailProducer != nullptr
+               || mPendingLiveTailRetention != 0;
+    }
+
+    /// Test seam: seed a stale pending live-tail state to simulate
+    /// a prior sibling drain that never resolved. Combined with
+    /// `HasPendingLiveTailForTest`, the two lets tests assert that
+    /// destructive-open resets clear the state. `primary` becomes
+    /// `mPendingLiveTailPrimary`; the retention argument mirrors
+    /// `mPendingLiveTailRetention`. `mPendingLiveTailProducer` is
+    /// left null -- the current tests only care about the flag
+    /// bookkeeping, not that a real producer is present.
+    void SeedPendingLiveTailForTest(const QString &primary, size_t retention) noexcept
+    {
+        mPendingLiveTailPrimary = primary;
+        mPendingLiveTailRetention = retention;
+    }
 
     /// Test seam; forwards a producer and pre-read bytes to
     /// `OpenStdinStreamFromProducer`.
@@ -1594,9 +1636,16 @@ private:
     /// `ui->menuSettings` exists.
     QAction *mActionAutoDetectRotationHistory = nullptr;
 
-    /// One-shot "Undo rotated history" action enabled after each
-    /// successful expansion, disabled once the user filters / sorts
-    /// / anchors any row (see `SyncRotationHistoryActionCheckedState`).
+    /// One-shot "Undo rotated history" action, enabled after each
+    /// successful auto-expansion and disabled again when the user
+    /// leaves that expansion via any of:
+    ///   - clicking Undo (self-consume),
+    ///   - `New Session`,
+    ///   - a destructive `Open` (Replace),
+    ///   - a session load from disk.
+    /// User-visible view edits (filters, sort, anchors) do NOT
+    /// disable it: the button is only about the historical vs.
+    /// primary open decision, not the current selection state.
     QAction *mActionUndoRotationExpansion = nullptr;
     /// Status-bar indicator that surfaces when the parse-errors dock
     /// has entries; clicking it opens the dock.
@@ -1909,11 +1958,14 @@ private:
     /// `StreamLineSource` by `ContinueLiveTailAfterPrefix`.
     std::unique_ptr<loglib::TailingBytesProducer> mPendingLiveTailProducer;
 
-    /// CLI `--no-rotation-history` override. Persists for the life
-    /// of the process (not the session) so a launch with the flag
-    /// stays opted-out across `New Session` / `Open`. Toggled off
-    /// only by the preferences menu (which also flips the global
-    /// pref).
+    /// CLI `--no-rotation-history` override. Persists across
+    /// `New Session` / `Open` so a launch with the flag stays
+    /// opted-out for the whole process. Cleared by any explicit
+    /// toggle of `Settings -> Auto-detect rotated log history`
+    /// (either direction) so the checkbox state is always
+    /// consistent with the effective behaviour --
+    /// `ShouldAutoDetectRotationHistory` short-circuits on this
+    /// flag, so leaving it set would silently defeat a menu toggle.
     bool mDisableRotationHistoryOverride = false;
 
     /// Primary file that owns the current window's most recent

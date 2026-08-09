@@ -185,9 +185,12 @@ public:
     /// streamed as static files first, then the primary is tailed
     /// through this overload. Producer rotation/status callbacks
     /// are wired the same way as `BeginStreaming(stream, ...)`, and
-    /// the retention cap is *not* re-applied — the caller decides
-    /// whether to override before invoking (usually the sibling
-    /// prefix already applied its cap).
+    /// the retention cap is *not* touched here — the caller decides
+    /// whether to override before invoking. Note that the static
+    /// prefix path drains unbounded (siblings are historical rows
+    /// the user asked to see): a subsequent `SetRetentionCap`
+    /// applied at the tail-attach seam will FIFO-evict any excess
+    /// historical rows to enforce the cap on the combined session.
     loglib::StopToken AppendStreaming(
         std::unique_ptr<loglib::StreamLineSource> source,
         loglib::ParserOptions options,

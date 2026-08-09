@@ -118,6 +118,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <system_error>
 #include <unordered_set>
 #include <utility>
@@ -2504,6 +2505,11 @@ void MainWindow::NewSession()
     {
         mActionUndoRotationExpansion->setEnabled(false);
     }
+    // `mCurrentSource` was reset above; the sibling-history menu
+    // tick reflects `mCurrentSource->followRotationSiblings` when
+    // it exists, so refresh it now that the session-scope override
+    // is gone.
+    SyncRotationHistoryActionCheckedState();
     // The configuration that requested the deferred sort is gone.
     mPendingApplySortFromConfig = false;
     // Drop the Goto Timestamp / Goto Line sticky inputs: a value
@@ -2615,6 +2621,10 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         // pre-dates the parallel-array schema split.
         mCurrentSource = mModel->Configuration().source;
         logapp::BackfillLocatorDedupKeys(mCurrentSource);
+        // The loaded session's `followRotationSiblings` may differ
+        // from the global preference; re-sync so the menu tick
+        // reflects the incoming session's opt-in / opt-out state.
+        SyncRotationHistoryActionCheckedState();
 
         // Bulk-replace anchors before RebuildFiltersFromConfiguration
         // mirrors the (now empty) `AnchorManager` back onto disk.
@@ -2704,15 +2714,25 @@ void MainWindow::OnRotationHistoryPrefToggled(bool enabled)
     QSettings settings;
     settings.setValue(QStringLiteral("ui/autoDetectRotatedHistory"), enabled);
 
+    // Explicit menu action wins over the CLI launch flag. Without
+    // this, a user who launched with `--no-rotation-history` and
+    // then re-ticks the menu box would see the box tick reappear
+    // but the feature would still be off (the CLI override
+    // short-circuits `ShouldAutoDetectRotationHistory`). Clearing
+    // it on either direction keeps "checkbox state == effective
+    // behaviour".
+    mDisableRotationHistoryOverride = false;
+
     // When a session is currently loaded, mirror the setting onto
-    // the source descriptor so drops-into-session respect it. The
-    // dedicated `mDisableRotationHistoryOverride` (CLI) is a
-    // process-wide override and is left alone here.
+    // the source descriptor so drops-into-session respect it.
     if (mCurrentSource.has_value())
     {
         mCurrentSource->followRotationSiblings = enabled;
         mModel->ConfigurationManager().SetSource(mCurrentSource);
     }
+    // Re-sync so the checkbox displays the effective state after
+    // the override clear (and any session-side mirror above).
+    SyncRotationHistoryActionCheckedState();
 }
 
 bool MainWindow::ShouldAutoDetectRotationHistory() const noexcept
@@ -2767,18 +2787,20 @@ QStringList MainWindow::ExpandLogPathsWithRotationSiblings(const QStringList &lo
 
     std::vector<std::filesystem::path> fsPaths;
     fsPaths.reserve(logPaths.size());
-    QStringList residualBundlesOrEmpty;
-    residualBundlesOrEmpty.reserve(logPaths.size());
+    // Bundle / empty inputs bypass the expander entirely -- we keep
+    // them in caller order and re-attach after the expansion result.
+    QStringList nonExpandableInputs;
+    nonExpandableInputs.reserve(logPaths.size());
     for (const QString &p : logPaths)
     {
         if (p.isEmpty())
         {
-            residualBundlesOrEmpty.append(p);
+            nonExpandableInputs.append(p);
             continue;
         }
         if (IsSessionBundlePath(p) && loglib::LooksLikeSessionBundle(logapp::QStringToFsPath(p)))
         {
-            residualBundlesOrEmpty.append(p);
+            nonExpandableInputs.append(p);
             continue;
         }
         fsPaths.push_back(logapp::QStringToFsPath(p));
@@ -2837,12 +2859,11 @@ QStringList MainWindow::ExpandLogPathsWithRotationSiblings(const QStringList &lo
         expanded.append(logapp::CanonicalDisplayPath(QString::fromStdString(rp.string())));
     }
 
-    // Re-insert bundle / empty entries at their original positions.
-    // Simple approach: append them at the end so a bundle dropped
-    // alongside logs still gets opened (the classifier upstream
-    // decides ordering). If callers need strict preservation they
-    // pre-classify before invoking this helper.
-    for (const QString &p : residualBundlesOrEmpty)
+    // Re-insert bundle / empty entries at the end. A bundle dropped
+    // alongside logs still gets opened; strict interleaving of
+    // bundle-vs-log ordering is the upstream classifier's job, not
+    // the expander's.
+    for (const QString &p : nonExpandableInputs)
     {
         expanded.append(p);
     }
@@ -3053,6 +3074,10 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
         {
             mActionUndoRotationExpansion->setEnabled(false);
         }
+        // `mCurrentSource` was reset above; refresh the rotation
+        // history menu tick to reflect the global preference (no
+        // session opt-out to honour yet).
+        SyncRotationHistoryActionCheckedState();
     }
     else if (mModel->IsStreamingActive() || mDecompressionInFlight)
     {
@@ -3246,6 +3271,9 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
     if (result == StreamingResult::Failed)
     {
         mCurrentSource.reset();
+        // Re-sync so the rotation-history menu tick returns to
+        // "global preference" (no session-scope opt-out to honour).
+        SyncRotationHistoryActionCheckedState();
         // Failure here is on the parse worker, not the decompression
         // worker, but defensively cancel any decompression that
         // might be queued behind the failed parse so it doesn't
@@ -3317,6 +3345,23 @@ void MainWindow::StreamNextPendingFile()
     // now. When a session did arm, `OnStreamingFinished` drains them.
     if (!IsSessionActive())
     {
+        // Sibling-prefix-into-live-tail rescue: if every sibling
+        // failed synchronously (permission errors, corrupt `.gz`,
+        // ...) `OnStreamingFinished` never fires, so
+        // `ContinueLiveTailAfterPrefix` is never reached. Without
+        // this branch the `TailingBytesProducer` sitting in
+        // `mPendingLiveTailProducer` keeps its worker thread and
+        // watcher running against the primary until the next
+        // destructive open, and the user's live-tail request
+        // silently vanishes.
+        //
+        // Promote the tail before showing the error dialog so the
+        // primary is at least tailing while the user reads about
+        // the sibling failures.
+        if (!mPendingLiveTailPrimary.isEmpty() && mPendingLiveTailProducer)
+        {
+            ContinueLiveTailAfterPrefix();
+        }
         if (!mPendingOpenErrors.empty())
         {
             ShowParseErrors(tr("Error Opening File"), mPendingOpenErrors);
@@ -3404,12 +3449,13 @@ bool MainWindow::ContinueOpenAfterPrepared(
             .regexPattern = std::move(detected.regexPattern),
         };
         // Seed the per-session opt-out from the current effective
-        // preference (global pref AND-ed with any CLI override). A
-        // future user toggle of `Settings -> Auto-detect rotated log
-        // history` mirrors onto this same flag, so drops-into-
-        // session pick up the choice without a restart.
-        mCurrentSource->followRotationSiblings =
-            ShouldAutoDetectRotationHistory() && !mDisableRotationHistoryOverride;
+        // preference. `ShouldAutoDetectRotationHistory` already
+        // folds the CLI override into its result; a future user
+        // toggle of `Settings -> Auto-detect rotated log history`
+        // mirrors onto this same flag, so drops-into-session pick
+        // up the choice without a restart.
+        mCurrentSource->followRotationSiblings = ShouldAutoDetectRotationHistory();
+        SyncRotationHistoryActionCheckedState();
     }
     else if (mCurrentSource.has_value() && mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::File)
     {
@@ -4796,6 +4842,29 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     // `RemoveOpenWindowUuid` drop that session from the multi-
     // window restore set even though the user only switched views.
     DetachAutoSaveUuid();
+    // Drop any pending sibling-prefix promotion state carried from
+    // the outgoing session. Without this, a prior call whose
+    // sibling drain didn't reach `ContinueLiveTailAfterPrefix`
+    // (e.g. all siblings failed synchronously *and* the rescue
+    // branch in `StreamNextPendingFile` didn't fire, or a Reset
+    // interrupted an async decompression mid-drain) would leak
+    // the stale primary/producer into the next session --
+    // `OnStreamingFinished` for the fresh session would then
+    // attach a live tail of the *wrong file* onto it. Matches the
+    // teardown in `NewSession` and `StartStreamingOpenQueue`'s
+    // destructive branch.
+    mPendingLiveTailPrimary.clear();
+    mPendingLiveTailProducer.reset();
+    mPendingLiveTailRetention = 0;
+    // The outgoing session's expansion-undo affordance no longer
+    // applies to the new session. Match the destructive-open
+    // teardown in `StartStreamingOpenQueue`.
+    mLastRotationExpansionPrimary.clear();
+    mLastRotationExpansionCount = 0;
+    if (mActionUndoRotationExpansion != nullptr)
+    {
+        mActionUndoRotationExpansion->setEnabled(false);
+    }
 
     // Sibling-prefix branch: siblings go through the static queue
     // first, then the tail is appended in `OnStreamingFinished`.
@@ -4808,6 +4877,23 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
         mPendingLiveTailRetention = retention;
         mLastRotationExpansionPrimary = file;
         mLastRotationExpansionCount = addedSiblings;
+        // Force `mSessionMode` and `mCurrentSource` back to the
+        // idle-session baseline. `mModel->Reset()` above is
+        // suppressed by `SessionSwitchScope`, which means the
+        // outgoing session's `mSessionMode` and `mCurrentSource`
+        // would otherwise leak in. Two consequences without this:
+        //   - `ContinueOpenAfterPrepared`'s
+        //     `isFirstFileInSession = !IsSessionActive()` check
+        //     would misfire, sending the first sibling into the
+        //     "append locator" branch instead of the "seed source"
+        //     branch.
+        //   - The all-siblings-fail rescue in
+        //     `StreamNextPendingFile` gates on `!IsSessionActive()`,
+        //     which would then never trigger and the pending
+        //     `TailingBytesProducer` would leak.
+        mSessionMode = SessionMode::Idle;
+        mCurrentSource.reset();
+        SyncRotationHistoryActionCheckedState();
         // The static-queue path sets `mSessionMode = Static` on the
         // first file inside `ContinueOpenAfterPrepared`; the mode is
         // flipped to `LiveTail` when the tail attaches. Keep the
@@ -4833,9 +4919,11 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
             .locatorDedupKeys = {dedupKey},
             .regexPattern = std::move(detected.regexPattern),
         };
-        mCurrentSource->followRotationSiblings =
-            ShouldAutoDetectRotationHistory() && !mDisableRotationHistoryOverride;
+        // `ShouldAutoDetectRotationHistory` already folds the CLI
+        // override; no double-AND with `mDisableRotationHistoryOverride`.
+        mCurrentSource->followRotationSiblings = ShouldAutoDetectRotationHistory();
     }
+    SyncRotationHistoryActionCheckedState();
     mSessionMode = SessionMode::LiveTail;
     mStreamingLineCount = 0;
     mStreamingErrorCount = 0;
@@ -4901,7 +4989,12 @@ void MainWindow::ContinueLiveTailAfterPrefix()
     }
     else
     {
-        // Fallback: first sibling failed before setting the source.
+        // Fallback: every sibling failed synchronously (see the
+        // early-promotion branch in `StreamNextPendingFile`) or
+        // `ContinueOpenAfterPrepared` never ran. Detect the format
+        // fresh from the primary. Seed the per-session opt-out
+        // here (the primary-branch above already inherits it from
+        // the first sibling `ContinueOpenAfterPrepared` opened).
         DetectedFormat detected = DetectFormatForPath(filePath);
         mCurrentSource = loglib::LogConfiguration::Source{
             .kind = loglib::LogConfiguration::Source::Kind::File,
@@ -4910,13 +5003,20 @@ void MainWindow::ContinueLiveTailAfterPrefix()
             .locatorDedupKeys = {dedupKey},
             .regexPattern = std::move(detected.regexPattern),
         };
+        // `ShouldAutoDetectRotationHistory` already folds the CLI
+        // override; no double-AND with `mDisableRotationHistoryOverride`.
+        mCurrentSource->followRotationSiblings = ShouldAutoDetectRotationHistory();
     }
-    mCurrentSource->followRotationSiblings =
-        ShouldAutoDetectRotationHistory() && !mDisableRotationHistoryOverride;
+    SyncRotationHistoryActionCheckedState();
 
     // Promote to live-tail. Retention override was captured pre-
-    // reset above; re-apply it now that the tail is being armed
-    // (the static prefix path leaves the cap at 0).
+    // reset above; re-apply it now that the tail is being armed.
+    // NOTE: the static prefix path drained unbounded, so a
+    // historical prefix longer than `retention` gets FIFO-evicted
+    // by `SetRetentionCap` here. Not a bug -- the retention cap is
+    // a memory ceiling for the whole session -- but the toast at
+    // `OpenLogStreamFromPath` already told the user about the
+    // expansion, so a follow-up trim just enforces the cap.
     mSessionMode = SessionMode::LiveTail;
     mStreamingFileName = QFileInfo(primary).fileName();
     if (retention > 0)
@@ -4940,7 +5040,21 @@ void MainWindow::ContinueLiveTailAfterPrefix()
     auto parserFactory = [format, regexPattern = std::move(regexPattern)]() {
         return MakeParserForFormat(format, regexPattern);
     };
-    mModel->AppendStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
+    // Route through `BeginStreaming` when no sibling ever streamed
+    // (e.g. every sibling failed synchronously in
+    // `StreamNextPendingFile`, and this call was fired by the
+    // rescue branch there). `AppendStreaming` assumes a prior
+    // `BeginStreaming` armed the sink and set `LogTable::IsStreaming`;
+    // calling it on a fresh model would leave the enum-promotion
+    // heuristics misconfigured and the sink un-armed.
+    if (mModel->IsStreamingActive() || mModel->rowCount() > 0)
+    {
+        mModel->AppendStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
+    }
+    else
+    {
+        mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
+    }
 }
 
 void MainWindow::OpenLogStreamForTest(const QString &filePath)
@@ -7733,6 +7847,10 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         // Backfill the parallel dedup-keys array for older JSON.
         mCurrentSource = mModel->Configuration().source;
         logapp::BackfillLocatorDedupKeys(mCurrentSource);
+        // The loaded session's `followRotationSiblings` may differ
+        // from the global preference; re-sync so the menu tick
+        // reflects the incoming session's opt-in / opt-out state.
+        SyncRotationHistoryActionCheckedState();
 
         // Bulk-replace anchors from the loaded vector. Future-schema
         // colour slots are clamped (not dropped) so bookmark

@@ -30,6 +30,38 @@ using SortRank = std::int64_t;
 /// `NUMBERED_RANK_BASE - N` so higher `N` (older log) sorts first.
 constexpr SortRank NUMBERED_RANK_BASE = 1'000'000'000LL;
 
+/// Upper bound on accepted `<primary>.<N>` numbered suffixes. Any
+/// value at or above this rolls the sort key into the "dated" range
+/// (`days_since_epoch`, low thousands), breaking the invariant
+/// that numbered siblings always sort after dated ones. Real
+/// logrotate configurations peak in the low hundreds; the cap is
+/// generous but finite.
+constexpr std::int64_t MAX_ACCEPTED_NUMBERED_SUFFIX = NUMBERED_RANK_BASE - 1;
+
+/// Filesystems on Windows and macOS are case-insensitive by
+/// default: `App.LOG.1` and `app.log.1` name the same rotation
+/// family. On those platforms the sibling regex must run
+/// case-insensitively; Linux/BSD stay case-sensitive to match the
+/// OS behaviour.
+constexpr auto REGEX_CASE_FLAGS =
+#if defined(_WIN32) || defined(__APPLE__)
+    std::regex::icase;
+#else
+    std::regex::flag_type{};
+#endif
+
+/// ASCII-only lowercase. Callers use this both for
+/// case-insensitive filename comparisons on Windows/macOS and for
+/// the shared canonical dedup-key form.
+std::string ToLower(std::string s)
+{
+    for (char &c : s)
+    {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return s;
+}
+
 /// Regex-escape @p literal into a POSIX-ECMAScript pattern.
 std::string EscapeForRegex(std::string_view literal)
 {
@@ -111,7 +143,7 @@ struct SiblingMatchers
 
 SiblingMatchers BuildMatchers(std::string_view primaryBasename, std::string_view primaryStem, std::string_view primaryExt)
 {
-    static constexpr auto REGEX_FLAGS = std::regex::ECMAScript | std::regex::optimize;
+    static constexpr auto REGEX_FLAGS = std::regex::ECMAScript | std::regex::optimize | REGEX_CASE_FLAGS;
     const std::string escBase = EscapeForRegex(primaryBasename);
     const std::string compressTail = R"((?:\.(?:gz|bz2|xz|zst))?)";
 
@@ -146,7 +178,13 @@ std::optional<Candidate> ClassifySibling(const std::filesystem::path &siblingPat
         std::int64_t n = 0;
         const std::string capture = sm[1].str();
         const auto [ptr, ec] = std::from_chars(capture.data(), capture.data() + capture.size(), n);
-        if (ec == std::errc{} && n >= 1)
+        // Reject `.0` (logrotate starts at .1) and any value that
+        // would collide with the "dated" rank range. `from_chars`
+        // returns `std::errc::result_out_of_range` for values
+        // beyond `int64_t`; both branches map to "skip this file"
+        // so a pathological `app.log.99999999999999` doesn't quietly
+        // reorder the family.
+        if (ec == std::errc{} && n >= 1 && n <= MAX_ACCEPTED_NUMBERED_SUFFIX)
         {
             return Candidate{
                 .path = siblingPath,
@@ -215,16 +253,15 @@ std::optional<std::filesystem::path> DeriveRotationPrimary(const std::filesystem
         return std::nullopt;
     }
 
+    static constexpr auto DERIVE_REGEX_FLAGS = std::regex::ECMAScript | std::regex::optimize | REGEX_CASE_FLAGS;
     static const std::regex NUMBERED_TAILING(
-        R"(^(.+?)\.[0-9]+(?:\.(?:gz|bz2|xz|zst))?$)", std::regex::ECMAScript | std::regex::optimize
+        R"(^(.+?)\.[0-9]+(?:\.(?:gz|bz2|xz|zst))?$)", DERIVE_REGEX_FLAGS
     );
     static const std::regex DATED_TAILING(
-        R"(^(.+?)[-._]\d{4}-\d{2}-\d{2}(?:\.(?:gz|bz2|xz|zst))?$)",
-        std::regex::ECMAScript | std::regex::optimize
+        R"(^(.+?)[-._]\d{4}-\d{2}-\d{2}(?:\.(?:gz|bz2|xz|zst))?$)", DERIVE_REGEX_FLAGS
     );
     static const std::regex DATED_INFIX(
-        R"(^(.+?)[-._]\d{4}-\d{2}-\d{2}\.([A-Za-z0-9]+)(?:\.(?:gz|bz2|xz|zst))?$)",
-        std::regex::ECMAScript | std::regex::optimize
+        R"(^(.+?)[-._]\d{4}-\d{2}-\d{2}\.([A-Za-z0-9]+)(?:\.(?:gz|bz2|xz|zst))?$)", DERIVE_REGEX_FLAGS
     );
 
     std::smatch m;
@@ -232,14 +269,23 @@ std::optional<std::filesystem::path> DeriveRotationPrimary(const std::filesystem
     {
         return path.parent_path() / m[1].str();
     }
+    // Check the "tailing" pattern (`<primary>-<date>[.<compression>]`)
+    // *before* the stem-inserted variant. Both regexes accept a
+    // compressed dated sibling like `app.log-2025-04-28.gz`, but
+    // `DATED_INFIX` misclassifies it: it greedy-matches `.gz` as the
+    // filename's extension and produces the bogus primary
+    // `app.log.gz` instead of the correct `app.log`. Only names that
+    // genuinely have text between the date and the compression
+    // suffix (e.g. `app-2025-04-28.log.gz`) fall through to the
+    // stem-inserted branch.
+    if (std::regex_match(filename, m, DATED_TAILING))
+    {
+        return path.parent_path() / m[1].str();
+    }
     if (std::regex_match(filename, m, DATED_INFIX))
     {
         // Stem-inserted dated variant: rebuild `<stem>.<ext>`.
         return path.parent_path() / (m[1].str() + "." + m[2].str());
-    }
-    if (std::regex_match(filename, m, DATED_TAILING))
-    {
-        return path.parent_path() / m[1].str();
     }
     return std::nullopt;
 }
@@ -262,6 +308,18 @@ std::vector<Candidate> EnumerateCandidates(const std::filesystem::path &primary)
     const auto [stem, ext] = SplitStemExt(primary);
     const SiblingMatchers matchers = BuildMatchers(primaryBasename, stem, ext);
 
+    // Case-insensitive filesystems reach the loop below through the
+    // icase-aware `matchers`; the "skip the primary itself" check
+    // must match that. Comparing lower-cased forms on those
+    // platforms lets `App.LOG` reach `app.log` and vice versa; a
+    // case-sensitive host stays byte-strict.
+    const std::string primaryBasenameKey =
+#if defined(_WIN32) || defined(__APPLE__)
+        ToLower(primaryBasename);
+#else
+        primaryBasename;
+#endif
+
     // Best-effort walk. Errors on individual entries are silently
     // skipped; the module is advisory.
     std::filesystem::directory_iterator it(dir, std::filesystem::directory_options::skip_permission_denied, ec);
@@ -276,7 +334,13 @@ std::vector<Candidate> EnumerateCandidates(const std::filesystem::path &primary)
         const std::filesystem::directory_entry &entry = *it;
         std::filesystem::path path = entry.path();
         const std::string filename = path.filename().string();
-        if (filename == primaryBasename)
+        const std::string filenameKey =
+#if defined(_WIN32) || defined(__APPLE__)
+            ToLower(filename);
+#else
+            filename;
+#endif
+        if (filenameKey == primaryBasenameKey)
         {
             // Primary itself; the caller reattaches it after sorting.
             it.increment(ec);
@@ -302,15 +366,6 @@ std::vector<Candidate> EnumerateCandidates(const std::filesystem::path &primary)
         }
     }
     return candidates;
-}
-
-std::string ToLower(std::string s)
-{
-    for (char &c : s)
-    {
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    }
-    return s;
 }
 
 } // namespace

@@ -237,6 +237,41 @@ TEST_CASE("PartitionAsRotationSeries selecting a rotated sibling alone still fin
     CHECK(names.back() == "app.log");
 }
 
+TEST_CASE(
+    "PartitionAsRotationSeries derives the correct primary for a compressed dated sibling",
+    "[RotationSiblings]"
+)
+{
+    // Regression: `DeriveRotationPrimary` used to check the
+    // stem-inserted dated pattern (`app-2025-04-28.log`) *before*
+    // the tailing dated pattern (`app.log-2025-04-28`), so a
+    // compressed dated sibling like `app.log-2025-04-28.gz` would
+    // greedy-match the compression suffix as the "extension" and
+    // yield the bogus primary `app.log.gz`. The correct primary is
+    // `app.log`, and the family must pull in the plain-suffix
+    // siblings sitting next to it.
+    const TempDir dir("rotation_partition_dated_compressed_derives");
+    (void)dir.Write("app.log", "primary");
+    (void)dir.Write("app.log-2025-04-27", "yesterday");
+    const auto compressedDated = dir.Write("app.log-2025-04-28.gz", "today rotated");
+
+    const std::vector<std::filesystem::path> input{compressedDated};
+    const auto partitioned = PartitionAsRotationSeries(std::span<const std::filesystem::path>(input));
+    REQUIRE(partitioned.series.size() == 1);
+    CHECK(partitioned.residual.empty());
+    const auto names = Basenames(partitioned.series.front());
+    // Three siblings (oldest -> newest): the earlier plain-suffix
+    // date, the compressed one, then the primary.
+    REQUIRE(names.size() == 3);
+    // Note: `2025-04-28.gz` (today's rotation) sorts newer than
+    // `2025-04-27` (yesterday), so it lands second, and `app.log`
+    // (the primary) is always last.
+    CHECK(names.front() == "app.log-2025-04-27");
+    CHECK(names[1] == "app.log-2025-04-28.gz");
+    CHECK(names.back() == "app.log");
+    CHECK(partitioned.series.front().files.back().origin == RotatedFile::Origin::Primary);
+}
+
 TEST_CASE("PartitionAsRotationSeries: lone log with no siblings stays in residual", "[RotationSiblings]")
 {
     // A lone `app.log` with nothing else in its directory should
@@ -270,4 +305,64 @@ TEST_CASE("PartitionAsRotationSeries: mixed families and a residual", "[Rotation
     REQUIRE(names.size() == 2);
     CHECK(names.front() == "app.log.1");
     CHECK(names.back() == "app.log");
+}
+
+#if defined(_WIN32) || defined(__APPLE__)
+TEST_CASE("EnumerateRotatedSiblings is case-insensitive on Windows/macOS", "[RotationSiblings]")
+{
+    // Windows / APFS filesystems compare filenames without regard to
+    // case. `App.LOG.1` names the same rotation family as `app.log`.
+    // On Linux the same test would be a decoy (see the negative case
+    // above), so this expectation is platform-gated.
+    const TempDir dir("rotation_case_insensitive");
+    (void)dir.Write("app.log", "primary");
+    (void)dir.Write("App.LOG.1", "one older, weird case");
+    (void)dir.Write("APP.log.2.GZ", "two older, ALL CAPS + upper ext");
+
+    const RotationSeries series = EnumerateRotatedSiblings(dir.Path() / "app.log");
+    // 3 entries: primary + 2 siblings. Byte-strict comparison would
+    // reject the mixed-case ones and yield only the primary.
+    REQUIRE(series.files.size() == 3);
+    // The primary always sits last (Origin::Primary).
+    CHECK(series.files.back().origin == RotatedFile::Origin::Primary);
+}
+#endif
+
+TEST_CASE(
+    "EnumerateRotatedSiblings rejects pathological numbered suffixes", "[RotationSiblings]"
+)
+{
+    // A numeric suffix that would overflow `MAX_ACCEPTED_NUMBERED_SUFFIX`
+    // must not silently reorder the family. logrotate configurations
+    // never reach these values in practice; guard against pathological
+    // input regardless.
+    const TempDir dir("rotation_numbered_overflow");
+    (void)dir.Write("app.log", "primary");
+    (void)dir.Write("app.log.1", "sane sibling");
+    // 1e13 is well above `MAX_ACCEPTED_NUMBERED_SUFFIX` (~1e9) and
+    // would wrap the sort key into the "dated" rank range.
+    (void)dir.Write("app.log.10000000000000", "pathological");
+
+    const RotationSeries series = EnumerateRotatedSiblings(dir.Path() / "app.log");
+    // The primary and the sane sibling; the pathological file is
+    // ignored (its rank would collide with the dated range).
+    REQUIRE(series.files.size() == 2);
+    CHECK(series.files.front().path.filename().string() == "app.log.1");
+    CHECK(series.files.back().path.filename().string() == "app.log");
+}
+
+TEST_CASE("EnumerateRotatedSiblings rejects `.0` numbered suffix", "[RotationSiblings]")
+{
+    // logrotate starts at `.1`; `.0` is either a user typo or a
+    // homegrown archive naming convention. Either way it is not part
+    // of the family (accepting it would emit two "primary" entries).
+    const TempDir dir("rotation_numbered_zero");
+    (void)dir.Write("app.log", "primary");
+    (void)dir.Write("app.log.0", "not a rotated sibling");
+    (void)dir.Write("app.log.1", "actually rotated");
+
+    const RotationSeries series = EnumerateRotatedSiblings(dir.Path() / "app.log");
+    REQUIRE(series.files.size() == 2);
+    CHECK(series.files.front().path.filename().string() == "app.log.1");
+    CHECK(series.files.back().path.filename().string() == "app.log");
 }
