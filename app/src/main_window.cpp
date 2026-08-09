@@ -29,11 +29,14 @@
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
+#include <loglib/auto_detect_parser.hpp>
 #include <loglib/bytes_producer.hpp>
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
+#include <loglib/format_detection.hpp>
 #include <loglib/internal/ascii_case.hpp>
 #include <loglib/internal/decompressing_byte_source.hpp>
+#include <loglib/internal/stdin_peek.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_factory.hpp>
 #include <loglib/log_file.hpp>
@@ -45,6 +48,7 @@
 #include <loglib/parsers/regex_parser.hpp>
 #include <loglib/regex_templates.hpp>
 #include <loglib/session_bundle.hpp>
+#include <loglib/stdin_bytes_producer.hpp>
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
@@ -611,87 +615,11 @@ QString FormatTzdataNotFoundMessage(const std::vector<std::filesystem::path> &se
     return lines.join(QLatin1Char('\n'));
 }
 
-/// Build the parser matching @p format. All open paths route through
-/// here so the parser tracks the persisted `Source::format` instead
-/// of being hard-coded at the call sites. @p regexPattern is only
-/// consulted for `Regex`; an empty pattern yields a probe-only
-/// parser that surfaces a single "empty pattern" error through the
-/// sink.
-std::unique_ptr<loglib::LogParser> MakeParserForFormat(
-    loglib::LogConfiguration::Source::Format format, std::string_view regexPattern = {}
-)
-{
-    switch (format)
-    {
-    case loglib::LogConfiguration::Source::Format::Logfmt:
-        return std::make_unique<loglib::LogfmtParser>();
-    case loglib::LogConfiguration::Source::Format::Csv:
-        return std::make_unique<loglib::CsvParser>();
-    case loglib::LogConfiguration::Source::Format::Regex:
-        // Pin the pattern on the parser instance directly rather
-        // than relying on `ParserOptions::configuration->source->
-        // regexPattern`: some callers pass an unrelated snapshot,
-        // and the explicit-pattern ctor short-circuits the lookup.
-        return std::make_unique<loglib::RegexParser>(std::string(regexPattern));
-    case loglib::LogConfiguration::Source::Format::Json:
-        return std::make_unique<loglib::JsonParser>();
-    }
-    return std::make_unique<loglib::JsonParser>();
-}
-
-/// Output of `DetectFormatForPath`: the detected format and, for
-/// `Regex`, the matched template's pattern (built-in or user).
-/// `regexPattern` is empty for every other format and for files
-/// nothing claimed.
-struct DetectedFormat
-{
-    loglib::LogConfiguration::Source::Format format = loglib::LogConfiguration::Source::Format::Json;
-    std::string regexPattern;
-};
-
-/// Sniff @p file and return the first format whose parser accepts
-/// it, matching `loglib::ParseFile(path)`'s order (JSON, logfmt,
-/// CSV, Regex). For `Regex` we call `loglib::DetectRegexTemplate`,
-/// which walks the merged catalog (built-ins ∪ user templates
-/// injected via `loglib::SetExtraRegexTemplates`) in priority
-/// order; the matched template's pattern is carried through so
-/// callers can persist it on `mCurrentSource->regexPattern`.
-/// Falls back to `Json` when nothing matches so the parse surfaces
-/// the bytes as errors instead of silently doing nothing.
-DetectedFormat DetectFormatForPath(const std::filesystem::path &file)
-{
-    for (int i = 0; i < static_cast<int>(loglib::LogFactory::Parser::Count); ++i)
-    {
-        const auto parserType = static_cast<loglib::LogFactory::Parser>(i);
-        if (parserType == loglib::LogFactory::Parser::Regex)
-        {
-            // Special-cased like `loglib::ParseFile(path)`: we need
-            // the matched template's pattern, not a bare yes/no.
-            if (const std::optional<loglib::RegexTemplate> tmpl = loglib::DetectRegexTemplate(file); tmpl.has_value())
-            {
-                return {.format = loglib::LogConfiguration::Source::Format::Regex, .regexPattern = tmpl->pattern};
-            }
-            continue;
-        }
-
-        const std::unique_ptr<loglib::LogParser> probe = loglib::LogFactory::Create(parserType);
-        if (probe->IsValid(file))
-        {
-            switch (parserType)
-            {
-            case loglib::LogFactory::Parser::Logfmt:
-                return {.format = loglib::LogConfiguration::Source::Format::Logfmt, .regexPattern = std::string{}};
-            case loglib::LogFactory::Parser::Csv:
-                return {.format = loglib::LogConfiguration::Source::Format::Csv, .regexPattern = std::string{}};
-            case loglib::LogFactory::Parser::Json:
-            case loglib::LogFactory::Parser::Regex:
-            case loglib::LogFactory::Parser::Count:
-                return {.format = loglib::LogConfiguration::Source::Format::Json, .regexPattern = std::string{}};
-            }
-        }
-    }
-    return {.format = loglib::LogConfiguration::Source::Format::Json, .regexPattern = std::string{}};
-}
+// Shared format detection keeps file, stdin, and network opens
+// consistent.
+using loglib::DetectedFormat;
+using loglib::DetectFormatForPath;
+using loglib::MakeParserForFormat;
 
 } // namespace
 
@@ -2418,23 +2346,28 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
     const auto &source = *mCurrentSource;
     if (source.kind != loglib::LogConfiguration::Source::Kind::File)
     {
-        // Legacy NetworkStream snapshots stored the producer URI as
-        // a locator; we cannot reopen them, the user must re-bind
-        // manually via "Open Network Stream...".
+        // Network and stdin locators cannot be reopened. Stdin can
+        // still reach this branch through a manual or legacy bundle.
         if (informIfNonFile)
         {
 #ifdef LOGAPP_BUILD_TESTING
             if (!mSuppressDialogsForTest)
 #endif
             {
-                QMessageBox::information(
-                    this,
-                    QStringLiteral("Network Stream Session"),
-                    QStringLiteral(
-                        "This recent session was a network stream; the columns and filters have been "
-                        "restored, but the producer must be re-bound manually via 'Open Network Stream...'."
-                    )
-                );
+                const bool isStdin = source.kind == loglib::LogConfiguration::Source::Kind::Stdin;
+                const QString title =
+                    isStdin ? QStringLiteral("Standard Input Session") : QStringLiteral("Network Stream Session");
+                const QString body =
+                    isStdin ? QStringLiteral(
+                                  "This saved session includes a stdin source; the columns and filters have been "
+                                  "restored, but stdin cannot be reopened. Relaunch with `-` or `--stdin` to "
+                                  "read from a new pipe."
+                              )
+                            : QStringLiteral(
+                                  "This recent session was a network stream; the columns and filters have been "
+                                  "restored, but the producer must be re-bound manually via 'Open Network Stream...'."
+                              );
+                QMessageBox::information(this, title, body);
             }
         }
         // Non-File: no streaming either; consume the deferral so
@@ -4562,6 +4495,144 @@ void MainWindow::OpenLogStreamForTest(const QString &filePath)
     OpenLogStreamFromPath(filePath);
 }
 
+void MainWindow::OpenStdinStream()
+{
+    // Refuse interactive stdin before the synchronous peek can
+    // block the GUI thread.
+    if (loglib::internal::IsStdinInteractive())
+    {
+        ShowParseErrors(
+            tr("Error Opening Standard Input"),
+            {tr("Standard input is a terminal, not a pipe or a redirected file. "
+                "Pipe log data into the viewer (e.g. `mysvc | StructuredLogViewer -`) or redirect "
+                "from a file (`StructuredLogViewer --stdin < mylog.log`).")
+                 .toStdString()}
+        );
+        return;
+    }
+
+    // Peek synchronously on the GUI thread before spawning the
+    // producer so the peek and the producer's own reads observe
+    // the *same* stdin (a single OS-level FD). Any bytes that
+    // come after the peek belong to the producer.
+    //
+    // Cap the wait so slow producers cannot stall startup. Empty
+    // or unmatched input defaults to JSON before streaming starts.
+    constexpr auto STDIN_PEEK_TIMEOUT = std::chrono::milliseconds(500);
+    std::string peek = loglib::internal::StdinPeek(loglib::PROBE_BYTES_BUDGET, STDIN_PEEK_TIMEOUT);
+
+    std::unique_ptr<loglib::StdinBytesProducer> producer;
+    try
+    {
+        producer = std::make_unique<loglib::StdinBytesProducer>();
+    }
+    catch (const std::exception &e)
+    {
+        ShowParseErrors(
+            tr("Error Opening Standard Input"),
+            {tr("Failed to attach to stdin: %1").arg(QString::fromUtf8(e.what())).toStdString()}
+        );
+        return;
+    }
+
+    OpenStdinStreamFromProducer(std::move(producer), std::move(peek));
+}
+
+#ifdef LOGAPP_BUILD_TESTING
+void MainWindow::OpenStdinStreamForTest(std::unique_ptr<loglib::BytesProducer> producer, std::string peek)
+{
+    OpenStdinStreamFromProducer(std::move(producer), std::move(peek));
+}
+#endif
+
+void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProducer> producer, std::string peek)
+{
+    if (producer == nullptr)
+    {
+        return;
+    }
+
+    // Same rationale as `OpenLogStreamFromPath`: surface and drop
+    // the pending queue before AutoSave + reset.
+    const int discardedQueuedFiles = static_cast<int>(mPendingOpenFiles.size());
+    if (discardedQueuedFiles > 0)
+    {
+        statusBar()->showMessage(
+            tr("Discarded %n queued file(s) before opening standard input.", nullptr, discardedQueuedFiles),
+            STATUS_BAR_MESSAGE_TIMEOUT_MS
+        );
+        mPendingOpenFiles.clear();
+    }
+
+    AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
+    CancelInFlightExport();
+
+    const SessionSwitchScope switchGuard(*this);
+
+    mModel->Reset();
+    ClearAllFilters();
+    if (mAnchors != nullptr)
+    {
+        mAnchors->ClearAll();
+    }
+    if (mParseErrorsDock != nullptr)
+    {
+        mParseErrorsDock->ResetSessionState();
+    }
+    mStreamingErrorsCut = 0;
+    CancelInFlightDecompression();
+    DetachAutoSaveUuid();
+
+    const std::string displayName = producer->DisplayName();
+    mStreamingFileName = QString::fromStdString(displayName);
+
+    // Detect the format from the peek so the resolved parser is
+    // pinned before the first parse batch. Empty peek falls back
+    // to JSON (matches `DetectFormatFromBytes`'s "nothing matched"
+    // branch), which is a safe default: an empty stdin session
+    // produces zero rows either way.
+    const loglib::DetectedFormat detected = loglib::DetectFormatFromBytes(peek);
+    const auto format = detected.format;
+    std::string regexPattern = detected.regexPattern;
+    mCurrentSource = loglib::LogConfiguration::Source{
+        .kind = loglib::LogConfiguration::Source::Kind::Stdin,
+        .format = format,
+        .locators = {displayName},
+        .locatorDedupKeys = {displayName},
+        .regexPattern = regexPattern,
+    };
+    mSessionMode = SessionMode::LiveTail;
+    mStreamingLineCount = 0;
+    mStreamingErrorCount = 0;
+    mFirstStreamingBatchSeen = false;
+    SetConfigurationUiEnabled(false);
+    StartLiveTailTicker();
+    UpdateStreamingStatus();
+    UpdateStreamToolbarVisibility();
+    UpdateWindowTitle();
+    ApplyDisplayOrder();
+
+    auto config = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
+    loglib::ParserOptions options;
+    options.configuration = std::move(config);
+    // Feed the peeked bytes back to the resolved parser so the
+    // stream is delivered in full (peek + subsequent bytes).
+    options.initialCarry = std::move(peek);
+
+    auto streamSource =
+        std::make_unique<loglib::StreamLineSource>(std::filesystem::path(displayName), std::move(producer));
+    auto parserFactory = [format, regexPattern = std::move(regexPattern)]() {
+        return loglib::MakeParserForFormat(format, regexPattern);
+    };
+    mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
+
+    // Explain the Recent Sessions exclusion.
+    statusBar()->showMessage(
+        tr("Reading from standard input. This session will not be added to Recent Sessions."),
+        STATUS_BAR_MESSAGE_TIMEOUT_MS
+    );
+}
+
 void MainWindow::OpenNetworkStream()
 {
     NetworkStreamDialog dialog(mRegexTemplateRegistry, this);
@@ -4657,6 +4728,10 @@ void MainWindow::OpenNetworkStream()
     // Network-stream locator is a producer URI, not a filesystem
     // path -- no canonicalisation applies, so dedup key == display.
     // Both arrays populated so the parallel-array invariant holds.
+    //
+    // AutoDetect is session-only. Keep `Json` in the source metadata
+    // until `AutoDetectParser` resolves the stream.
+    const bool autoDetect = cfg.format == NetworkStreamDialog::Format::AutoDetect;
     const loglib::LogConfiguration::Source::Format dialogFormat = [&] {
         switch (cfg.format)
         {
@@ -4667,6 +4742,7 @@ void MainWindow::OpenNetworkStream()
         case NetworkStreamDialog::Format::Regex:
             return loglib::LogConfiguration::Source::Format::Regex;
         case NetworkStreamDialog::Format::Json:
+        case NetworkStreamDialog::Format::AutoDetect:
             break;
         }
         return loglib::LogConfiguration::Source::Format::Json;
@@ -4697,6 +4773,16 @@ void MainWindow::OpenNetworkStream()
     // display string serves as the LineSource's opaque identity.
     auto streamSource =
         std::make_unique<loglib::StreamLineSource>(std::filesystem::path(displayName), std::move(producer));
+    // Auto-detect peeks and replays initial bytes; manual formats
+    // keep their pinned parser factory.
+    if (autoDetect)
+    {
+        auto parserFactory = []() -> std::unique_ptr<loglib::LogParser> {
+            return std::make_unique<loglib::AutoDetectParser>();
+        };
+        mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
+        return;
+    }
     const loglib::LogConfiguration::Source::Format format =
         mCurrentSource ? mCurrentSource->format : loglib::LogConfiguration::Source::Format::Json;
     std::string regexPattern = mCurrentSource ? mCurrentSource->regexPattern : std::string{};
@@ -6500,6 +6586,39 @@ void MainWindow::SaveConfiguration()
 
 void MainWindow::SaveSession()
 {
+    // A stdin session's `<stdin>` locator cannot be reopened; a `Full` save would
+    // serialise a stanza the load path can only reject with an info
+    // popup. Offer to demote to `ColumnsOnly` so columns/filters/
+    // highlights round-trip cleanly and the on-disk config omits the
+    // useless source field entirely.
+    loglib::SaveScope effectiveScope = loglib::SaveScope::Full;
+    if (mCurrentSource.has_value() && mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::Stdin)
+    {
+#ifdef LOGAPP_BUILD_TESTING
+        if (mSuppressDialogsForTest)
+        {
+            effectiveScope = loglib::SaveScope::ColumnsOnly;
+        }
+        else
+#endif
+        {
+            const auto choice = QMessageBox::question(
+                this,
+                tr("Save Session (stdin)"),
+                tr("This session was read from standard input, which cannot be reopened later. "
+                   "The columns, filters, and highlights can still be saved so they apply to a "
+                   "future run.\n\nSave columns and filters only?"),
+                QMessageBox::Save | QMessageBox::Cancel,
+                QMessageBox::Save
+            );
+            if (choice != QMessageBox::Save)
+            {
+                return;
+            }
+            effectiveScope = loglib::SaveScope::ColumnsOnly;
+        }
+    }
+
     const QString file =
         QFileDialog::getSaveFileName(this, tr("Save Session"), DefaultOpenDir(), tr("JSON (*.json);;All Files (*)"));
     if (file.isEmpty())
@@ -6509,7 +6628,7 @@ void MainWindow::SaveSession()
     RememberLastOpenDir(file);
     try
     {
-        DoSaveConfiguration(file, loglib::SaveScope::Full);
+        DoSaveConfiguration(file, effectiveScope);
     }
     catch (std::exception &e)
     {

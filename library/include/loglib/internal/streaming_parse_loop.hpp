@@ -192,7 +192,11 @@ void RunStreamingParseLoop(
 
     size_t nextLineNumber = 1;
 
-    std::string carry;
+    // Seed `carry` from `options.initialCarry` so a wrapping parser
+    // (e.g. `AutoDetectParser`) can hand back bytes it already
+    // consumed from the producer during format detection. Zero cost
+    // on the default path where `initialCarry` is empty.
+    std::string carry = options.initialCarry;
     std::vector<char> readBuffer(STREAMING_READ_BUFFER_SIZE);
 
     // Reused per line; move-transferred into the source on success.
@@ -443,6 +447,38 @@ void RunStreamingParseLoop(
         ownedArena.clear();
     };
 
+    // Emit complete lines already present in `initialCarry` before
+    // waiting for more producer bytes.
+    auto scanCarry = [&]() {
+        size_t scanStart = 0;
+        while (scanStart < carry.size())
+        {
+            const size_t newlineRel = carry.find('\n', scanStart);
+            if (newlineRel == std::string::npos)
+            {
+                break;
+            }
+            std::string_view line(carry.data() + scanStart, newlineRel - scanStart);
+            processLine(line);
+            scanStart = newlineRel + 1;
+
+            if (stopToken.stop_requested())
+            {
+                break;
+            }
+        }
+        if (scanStart > 0)
+        {
+            carry.erase(0, scanStart);
+        }
+    };
+
+    if (!carry.empty() && !stopToken.stop_requested())
+    {
+        scanCarry();
+        coalescer.TryFlush(false);
+    }
+
     bool reachedEof = false;
     while (!reachedEof)
     {
@@ -479,27 +515,7 @@ void RunStreamingParseLoop(
             }
         }
 
-        size_t scanStart = 0;
-        while (scanStart < carry.size())
-        {
-            const size_t newlineRel = carry.find('\n', scanStart);
-            if (newlineRel == std::string::npos)
-            {
-                break;
-            }
-            std::string_view line(carry.data() + scanStart, newlineRel - scanStart);
-            processLine(line);
-            scanStart = newlineRel + 1;
-
-            if (stopToken.stop_requested())
-            {
-                break;
-            }
-        }
-        if (scanStart > 0)
-        {
-            carry.erase(0, scanStart);
-        }
+        scanCarry();
 
         coalescer.TryFlush(false);
     }

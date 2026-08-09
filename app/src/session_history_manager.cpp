@@ -653,10 +653,11 @@ QString SessionHistoryManager::BuildLabel(const loglib::LogConfiguration &config
     }
 
     const QString primary = QString::fromStdString(configuration.source->locators.front());
-    // Network stream locators are URIs (e.g. `"TCP host:port"`);
+    // Non-file locators are synthetic (URIs, `<stdin>`);
     // `QFileInfo::fileName()` would mangle them.
     QString primaryLabel;
-    if (configuration.source->kind == loglib::LogConfiguration::Source::Kind::NetworkStream)
+    if (configuration.source->kind == loglib::LogConfiguration::Source::Kind::NetworkStream ||
+        configuration.source->kind == loglib::LogConfiguration::Source::Kind::Stdin)
     {
         primaryLabel = primary;
     }

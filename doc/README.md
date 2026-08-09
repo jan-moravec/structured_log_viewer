@@ -6,7 +6,7 @@ Structured Log Viewer is a Qt 6 desktop application for inspecting structured lo
 
 ## Supported Input Formats
 
-The application reads four structured-log formats out of the box. The format is auto-detected on `File → Open` and persisted with the session, so reopening a saved session reuses the same parser without re-prompting. Auto-detection probes JSON Lines first, then logfmt, then CSV; the regex-template format is tried **last** so the more specific formats always win on logs they understand.
+The application reads four structured-log formats out of the box. The format is auto-detected on open and persisted with the session. Probes run in this order: JSON Lines, logfmt, regex templates, then CSV. Regex templates precede generic CSV to avoid misclassifying timestamps that contain commas.
 
 **JSON Lines** (also known as NDJSON / JSOND): one JSON object per line.
 
@@ -79,20 +79,16 @@ This applies to static mode only. Live-tail (`Open Log Stream…`) does **not** 
 
 ## Ingestion modes
 
-Structured Log Viewer ingests logs through three distinct paths. Pick the one that matches what you are looking at:
+Structured Log Viewer has four ingestion modes:
 
-| Aspect                 | Static mode                                                            | Stream Mode (live tail)                                                                               | Network Stream Mode (TCP / UDP)                                                                  |
-| ---------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| **When to use**        | Post-mortem analysis of one or more *finished* log files.              | Watching a service's log file *as it is being written* — reproducing a bug, smoke-testing a release.  | Receiving structured logs pushed over the network — distributed services, dev loopback firehose. |
-| **How to open**        | `File → Open…` (`Ctrl+O`) or drag & drop. The format is auto-detected. | `File → Open Log Stream…` (`Ctrl+Shift+O`). Drag & drop always uses static mode.                      | `File → Open Network Stream…` (`Ctrl+Shift+L`); pick the format in the dialog.                   |
-| **Source per session** | One or many files; multi-file opens are **merged** into one table.     | Exactly one file.                                                                                     | One TCP listener (multiple concurrent clients allowed) or one UDP listener.                      |
-| **Reads bytes via**    | Memory-mapped; parsed in parallel through the TBB pipeline.            | Buffered tail-reader; parsed line-by-line in a single worker.                                         | Asio TCP accept loop (with optional TLS) or Asio UDP receive loop; same line-by-line worker.     |
-| **Memory**             | Whole file is parsed and held; row count grows with the file.          | Bounded by a configurable **retention cap** (default 10 000 lines, FIFO-evicted).                     | Same retention cap as Stream Mode; back-pressure also drops oldest *bytes* if the parser stalls. |
-| **Reacts to new data** | No. The on-screen rows are a snapshot of the file at open time.        | Yes. New lines appear within ~250 ms of being written; survives `logrotate` and in-place truncations. | Yes. Each `\n`-terminated record lands as a new row as soon as it is received.                   |
-| **Stream toolbar**     | Hidden.                                                                | Pause / Follow newest / Stop visible while a session is active.                                       | Same toolbar as Stream Mode.                                                                     |
-| **Configuration menu** | Available between opens; disabled while a parse is in flight.          | Disabled for the lifetime of the session (the parser holds an immutable configuration snapshot).      | Same — disabled for the lifetime of the session.                                                 |
+| Mode               | Open with                                      | Source                                            | Lifetime and persistence                         |
+| ------------------ | ---------------------------------------------- | ------------------------------------------------- | ------------------------------------------------ |
+| **Static**         | `File → Open…` (`Ctrl+O`) or drag and drop     | One or more finished files, merged into one table | Snapshot; eligible for session auto-save         |
+| **Stream**         | `File → Open Log Stream…` (`Ctrl+Shift+O`)     | One growing file                                  | Live tail with rotation handling; not auto-saved |
+| **Standard input** | `StructuredLogViewer -` or `--stdin`           | One pipe or redirected file                       | Live until EOF; never auto-saved                 |
+| **Network**        | `File → Open Network Stream…` (`Ctrl+Shift+L`) | One TCP or UDP listener                           | Live until stopped; not auto-saved               |
 
-In Stream Mode and Network Stream Mode, **Stop** ends the session but keeps the visible rows around as a static snapshot you can keep filtering, sorting, and copying — handy when you only realised mid-tail that the bug already happened. Opening a new source (in any mode) clears the table first.
+All modes detect JSON Lines, logfmt, CSV, and registered regex templates. Network mode defaults to Auto-detect but also allows a manual format. Stream, stdin, and network modes share the retention cap and Pause / Follow newest / Stop controls. **Stop** ends any live session; EOF ends stdin the same way. Rows remain as a static snapshot. **Save Configuration…**, **Save Session…**, **Load Configuration…**, and **Preferences** are disabled until the live source ends.
 
 ## Static Mode (Open files)
 
@@ -178,22 +174,58 @@ The following are **out of scope** for the current Stream Mode implementation:
 
 - **Compressed live-tail** — Stream Mode follows uncompressed files only. Static opens of `.gz` / `.bz2` / `.xz` / `.zst` files work (see [Compressed inputs](#compressed-inputs)); Stream Mode's rotation handling likewise only tracks uncompressed rotations.
 - **Pulling rotated history off disk** — the viewer does not read `app.log.1` to recover lines older than the in-memory cap.
-- **stdin / named-pipe sources** — only file tailing is wired up; for network ingestion see [Network Stream Mode](#network-stream-mode-tcp--udp).
+- **stdin / named-pipe sources** — Stream Mode targets rotate-safe files; piped input goes through [Reading from standard input](#reading-from-standard-input), and network ingestion through [Network Stream Mode](#network-stream-mode-tcp--udp).
 - **Auto-detect "this file is being actively written → open in Stream Mode"** — Stream Mode is always an explicit `File → Open Log Stream…` action.
 - **Per-file or per-session retention overrides** — the retention cap is a single application-wide setting.
 - **Streaming for arbitrary formats** — JSON Lines, logfmt, CSV, and regex templates are first-class; ad-hoc text and alternative delimiters still need a parser.
 - **True multi-line regex matching** — PCRE2 matches each physical header line. Continuation modes append later lines to the last capture; the main pattern is not re-run over the joined record.
 
+## Reading from standard input
+
+Pipe a producer's stdout into `StructuredLogViewer -`, or use `--stdin`. The launch opens a live-tail session with the same retention cap, toolbar, search, and filters as [Stream Mode](#stream-mode-live-tail). **Save Configuration…**, **Save Session…**, **Load Configuration…**, and **Preferences** remain disabled until EOF or **Stop**.
+
+```sh
+# JSON Lines producer piped directly
+myservice --log-json | StructuredLogViewer -
+
+# Kubernetes pod logs
+kubectl logs deploy/api -f | StructuredLogViewer -
+
+# Redirect a finished file
+StructuredLogViewer --stdin < file.jsonl
+```
+
+**Format auto-detection.** The viewer waits up to 500 ms for the first 16 KiB and applies the same probe used for files and network streams. JSON Lines, logfmt, CSV, and registered regex templates are detected automatically; empty or unmatched input defaults to JSON Lines. The peeked bytes are replayed to the parser.
+
+**Interactive input.** A terminal is rejected because waiting for typed input would block startup. Use a pipe or file redirection.
+
+**Single-instance interaction.** A stdin launch behaves like `--new-instance` because an existing process cannot inherit the new pipe. Restore-on-launch is skipped.
+
+**Positional files.** The CLI accepts files together with `-` / `--stdin`, but opening stdin clears in-flight and queued file opens. Use a separate window if you need both.
+
+**Session persistence.** Stdin sessions never appear in Recent Sessions or auto-reopen. After EOF or **Stop**, use **Save Configuration…** or **Save Session…** to save columns and filters; the `<stdin>` source is omitted.
+
+**Shutdown.** Producer exit, a finite redirected source, **Stop**, or closing the viewer ends the pipe cleanly. Retained rows remain available after EOF or **Stop**.
+
+### PowerShell caveat
+
+Under `powershell.exe` and `pwsh.exe`, redirecting native command output through `|` converts every write into a `System.String` object; the shell then re-encodes each object with the current output encoding before the target process sees it. That is usually fine for text logs, but two side effects are worth knowing:
+
+- **Encoding drift** — non-ASCII bytes may be transcoded to UTF-16 and back through `[Console]::OutputEncoding`. Set `$OutputEncoding = [System.Text.UTF8Encoding]::new()` and `[Console]::OutputEncoding = $OutputEncoding` before the pipe to keep UTF-8 producers intact.
+- **`-` argument parsing** — if PowerShell rejects a bare `-`, use `--stdin`. Both forms produce the same session.
+
+CMD, WSL, and macOS/Linux shells preserve raw bytes end-to-end and need no special setup.
+
 ## Network Stream Mode (TCP / UDP)
 
-Network Stream Mode listens on a local TCP or UDP port and ingests structured logs pushed to it by your application. It is intended for distributed services that cannot redirect their stdout/stderr to a file you can tail, and for "firehose into the GUI" loops during development. Each `\n`-terminated record becomes a row exactly the same way Stream Mode does, so the toolbar, retention cap, Pause / Follow newest / Stop, search, filters, and configurations all behave identically once the session is open.
+Network Stream Mode listens on a local TCP or UDP port and ingests structured logs pushed to it by your application. It is intended for distributed services that cannot redirect their stdout/stderr to a file you can tail, and for "firehose into the GUI" loops during development. Each `\n`-terminated record becomes a row exactly the same way Stream Mode does, with the same toolbar, retention cap, search, and filters. Configuration actions and Preferences remain disabled while the listener is active.
 
 ### Opening a network stream
 
 Use **File → Open Network Stream…** (`Ctrl+Shift+L`). The dialog asks for:
 
 - **Protocol** — TCP or UDP.
-- **Format** — JSON Lines, logfmt, CSV, or **Regex template**. Network ingestion has no file to sniff, so the parser is selected explicitly and persisted with the session. **CSV caveat:** the first inbound line sets the schema for every TCP client; coordinate column names and order or use one producer. **Regex template:** the picker lists the merged built-in and user catalog plus *Custom…*. Continuation metadata is resolved by exact pattern lookup in that catalog; a genuinely unregistered custom pattern remains single-line.
+- **Format** — **Auto-detect** (recommended default), JSON Lines, logfmt, CSV, or **Regex template**. *Auto-detect* peeks the first bytes off the socket and runs the same probe file and stdin openings use, so an untagged producer stream lands in the right parser without extra configuration; the peek is fed to the resolved parser via `ParserOptions::initialCarry`, so no bytes are lost. Pick a manual format when the initial line is genuinely ambiguous (short JSON that also looks like logfmt, an empty first regex line, etc.). **CSV caveat:** the first inbound line sets the schema for every TCP client; coordinate column names and order or use one producer. **Regex template:** the picker lists the merged built-in and user catalog plus *Custom…*. Continuation metadata is resolved by exact pattern lookup in that catalog; a genuinely unregistered custom pattern remains single-line.
 - **Bind address** — `0.0.0.0` (IPv4 any), `::` (IPv6 dual-stack), `127.0.0.1` / `::1` (loopback only), or a specific interface IP.
 - **Port** — the listening port. `0` requests an OS-assigned ephemeral port (handy for ad-hoc local testing).
 - **Max concurrent clients (TCP)** — hard cap on simultaneous accepted connections (default 16). New connections beyond this are accepted-and-immediately-closed.
@@ -652,13 +684,13 @@ Because `Open…` auto-detects configurations, double-clicking a saved configura
 
 ## Sessions and Recent Sessions
 
-A *session* is a saved configuration **plus the source** (file path(s) for static mode, tailed file for stream mode, listener URL for network stream mode) and the active sort. Loading a session re-opens the source automatically and re-applies the full view state — column layout, filters, sort, anchors — in one step.
+A *session* stores the configuration, sort, and source when that source can be represented. Static files reopen automatically. A file saved from Stream Mode reopens as a static snapshot; a saved network listener restores the view but must be opened again manually. Stdin sessions save columns and filters only because a pipe cannot be reopened.
 
-- **File → Save Session…** (`Ctrl+Shift+S`) writes the current view state, source, and sort to a `.json` file.
-- **File → Load Configuration or Session…** auto-detects whether the picked file is a configuration or a session and dispatches accordingly. Sessions re-open their source; configurations leave the table empty so you can open logs after loading.
+- **File → Save Session…** (`Ctrl+Shift+S`) writes the current view state and any reusable source to a `.json` file.
+- **File → Load Configuration or Session…** auto-detects the file type. Static sessions reopen their files; configurations and non-reopenable sources leave the table empty.
 - **File → Recent Sessions** lists the most recently auto-saved sessions. Click an entry to re-open it. The list is bounded by **Settings → Preferences… → Session History → Maximum Recent Sessions entries** (default 20); **Clear Recent Sessions** at the bottom of the submenu drops every entry.
 
-Auto-saved sessions are written silently in the background as you work, so closing and re-launching the app puts you back where you were when **Settings → Preferences… → Session History → Restore last session on launch** is enabled (default). Live-tail and network-stream sessions are auto-saved as well, but only the source identity is restored — the tail position is not.
+Only static-file sessions are auto-saved to Recent Sessions. Stream, stdin, and network sessions are excluded because their live producer cannot be restored.
 
 ### New Window vs New Session
 
@@ -708,7 +740,7 @@ Open **Settings → Preferences…** to change application-wide settings. The di
 
 **Session History** — applied transactionally on **Ok**.
 
-- **Restore last session on launch** — when on, the most recent auto-saved [session](#sessions-and-recent-sessions) is reopened automatically on startup. Only applies to the primary instance on a launch with no command-line files.
+- **Restore last session on launch** — when on, the most recent auto-saved [session](#sessions-and-recent-sessions) is reopened automatically on startup. Skipped for command-line files, `-` / `--stdin`, and new-instance launches.
 - **Maximum Recent Sessions entries** — cap on how many entries appear in **File → Recent Sessions**. Older entries are evicted as new sessions are saved.
 
 Click **Ok** to persist (stored via `QSettings` under the organization `jan-moravec` / application `StructuredLogViewer`), or **Cancel** to revert to the last saved values. The previous configuration is automatically restored the next time you launch the application.

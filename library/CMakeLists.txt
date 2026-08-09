@@ -18,6 +18,7 @@ embed_regex_templates(
 add_library(
     loglib
     STATIC
+    src/auto_detect_parser.cpp
     src/batch_coalescer.cpp
     src/buffering_sink.cpp
     src/bytes_producer.cpp
@@ -26,6 +27,7 @@ add_library(
     src/enum_dictionary.cpp
     src/file_identity.cpp
     src/file_line_source.cpp
+    src/format_detection.cpp
     src/histogram_bucket_index.cpp
     src/key_index.cpp
     src/parse_file.cpp
@@ -45,6 +47,7 @@ add_library(
     src/log_filter.cpp
     src/log_level.cpp
     src/log_line.cpp
+    src/log_parser.cpp
     src/log_processing.cpp
     src/log_table.cpp
     src/normalized_json_row.cpp
@@ -56,6 +59,8 @@ add_library(
     src/parsers/logfmt_parser.cpp
     src/parsers/regex_parser.cpp
     src/regex_templates.cpp
+    src/stdin_bytes_producer.cpp
+    src/stdin_peek.cpp
     ${REGEX_TEMPLATES_EMBEDDED_SRC}
     src/clang_tidy_stubs/regex_template_glaze_meta.cpp
     src/theme.cpp

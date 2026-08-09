@@ -1532,7 +1532,7 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Typ
         }
         if (column.parseFormats.empty())
         {
-            mConfiguration.SetColumnParseFormats(columnIndex, {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"});
+            mConfiguration.SetColumnParseFormats(columnIndex, DefaultTimeParseFormats());
         }
         BackfillTimestampColumn(
             mConfiguration.Configuration().columns[columnIndex],

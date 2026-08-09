@@ -49,8 +49,10 @@ template <> struct glz::meta<loglib::LeafRule::Match>
 template <> struct glz::meta<loglib::LogConfiguration::Source::Kind>
 {
     using enum loglib::LogConfiguration::Source::Kind;
-    static constexpr std::array keys{"file", "networkStream"};
-    static constexpr std::array value{File, NetworkStream};
+    // Append `Stdin` so existing `File` and `NetworkStream` ordinals
+    // remain stable in saved sessions. Stdin sessions are not auto-saved.
+    static constexpr std::array keys{"file", "networkStream", "stdin"};
+    static constexpr std::array value{File, NetworkStream, Stdin};
 };
 
 template <> struct glz::meta<loglib::LogConfiguration::Source::Format>

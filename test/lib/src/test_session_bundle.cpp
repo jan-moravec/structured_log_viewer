@@ -319,6 +319,43 @@ TEST_CASE("session bundle metadata preserves investigation configuration and fla
     CHECK(restored.source->regexPattern.empty());
 }
 
+TEST_CASE("session bundle rewrites Stdin source kind to File", "[SessionBundle]")
+{
+    // A stdin session's pipe is not reachable after the process
+    // exits, so `WriteSessionBundle` must flatten
+    // `Source::Kind::Stdin` down to `Kind::File` (pointing at the
+    // bundle itself). Without the rewrite, a restored stdin
+    // bundle would carry an on-disk "kind":"stdin" that older
+    // builds cannot parse and that has no reopen path.
+    const TempPath source(".jsonl");
+    const TempPath bundle(".slvbundle");
+    Write(
+        source.Path(),
+        R"({"msg":"one"})"
+        "\n"
+    );
+    const loglib::LogTable table = ParseTable(source.Path());
+
+    loglib::LogConfiguration configuration;
+    configuration.source = loglib::LogConfiguration::Source{
+        .kind = loglib::LogConfiguration::Source::Kind::Stdin,
+        .format = loglib::LogConfiguration::Source::Format::Logfmt,
+        .locators = {"<stdin>"},
+        .locatorDedupKeys = {"<stdin>"},
+        .regexPattern = {},
+    };
+
+    loglib::WriteSessionBundle(table, configuration, bundle.Path());
+    const auto decoded = DecodeBundle(bundle.Path());
+    const loglib::LogConfiguration restored =
+        loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine()).configuration;
+
+    REQUIRE(restored.source.has_value());
+    CHECK(restored.source->kind == loglib::LogConfiguration::Source::Kind::File);
+    CHECK(restored.source->locators == std::vector<std::string>{bundle.Path().string()});
+    CHECK(restored.source->locatorDedupKeys == std::vector<std::string>{bundle.Path().string()});
+}
+
 TEST_CASE("session bundle uses canonicalizeSourceLocator for embedded source dedup key", "[SessionBundle]")
 {
     // The GUI wires `canonicalizeSourceLocator` to `CanonicalLocator`

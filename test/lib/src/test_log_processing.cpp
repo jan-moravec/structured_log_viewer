@@ -7,6 +7,7 @@
 #include <catch2/catch_all.hpp>
 #include <date/tz.h>
 
+#include <array>
 #include <chrono>
 #include <regex>
 
@@ -207,6 +208,40 @@ TEST_CASE("TryParseIsoTimestamp accepts valid inputs", "[log_processing][iso8601
         REQUIRE(TryParseIsoTimestamp("2025-04-25 12:34:56.123Z", ' ', out));
         CHECK(out == expectedMs);
     }
+
+    // ISO 8601 §4.2.2.4 permits `,` as the fractional separator;
+    // Java Logback / log4j2 / SLF4J's default PatternLayout
+    // (`2024-04-28 04:02:03,123 INFO ...`) is the most visible
+    // downstream. The fast path handles both spellings so the
+    // shared `%FT%T` / `%F %T` parseFormat entries cover both
+    // without a dedicated Java-only format string.
+    SECTION("Comma fractional separator with space date/time separator")
+    {
+        TimeStamp out{};
+        REQUIRE(TryParseIsoTimestamp("2025-04-25 12:34:56,123", ' ', out));
+        CHECK(out == expectedMs);
+    }
+
+    SECTION("Comma fractional separator with T date/time separator")
+    {
+        TimeStamp out{};
+        REQUIRE(TryParseIsoTimestamp("2025-04-25T12:34:56,123", 'T', out));
+        CHECK(out == expectedMs);
+    }
+
+    SECTION("Comma fractional separator at microsecond precision")
+    {
+        TimeStamp out{};
+        REQUIRE(TryParseIsoTimestamp("2025-04-25T12:34:56,123456", 'T', out));
+        CHECK(out == expectedUs);
+    }
+
+    SECTION("Trailing Z after comma fractional")
+    {
+        TimeStamp out{};
+        REQUIRE(TryParseIsoTimestamp("2025-04-25T12:34:56,123Z", 'T', out));
+        CHECK(out == expectedMs);
+    }
 }
 
 TEST_CASE("TryParseIsoTimestamp rejects malformed inputs", "[log_processing][iso8601_fast_path]")
@@ -272,6 +307,13 @@ TEST_CASE("TryParseIsoTimestamp rejects malformed inputs", "[log_processing][iso
         CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56.Z", 'T', out));
     }
 
+    SECTION("Empty fractional after comma")
+    {
+        // Same rules apply to the ISO-8601 `,` separator as to `.`.
+        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56,", 'T', out));
+        CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56,Z", 'T', out));
+    }
+
     SECTION("Sub-microsecond fractional precision")
     {
         // 7+ digits must fall through to the slow path; no precision loss.
@@ -285,6 +327,137 @@ TEST_CASE("TryParseIsoTimestamp rejects malformed inputs", "[log_processing][iso
         CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56.123x", 'T', out));
         CHECK_FALSE(TryParseIsoTimestamp("2025-04-25T12:34:56.123Zx", 'T', out));
     }
+}
+
+TEST_CASE("TryParseSyslogRfc3164Timestamp accepts valid inputs", "[log_processing][syslog_rfc3164_fast_path]")
+{
+    // The parser injects the year via the "if parsed month is later
+    // than the wall-clock month, use the previous year" heuristic, so
+    // the concrete year the assertion sees depends on when the test
+    // runs. Guarding against wall-clock drift keeps the test stable
+    // across all months while still exercising the fast path.
+    const auto today = date::floor<date::days>(std::chrono::system_clock::now());
+    const date::year_month_day nowYmd{today};
+    const unsigned nowMonth = static_cast<unsigned>(nowYmd.month());
+
+    auto expected = [&](unsigned month, int day, int hour, int minute, int second) {
+        int year = static_cast<int>(nowYmd.year());
+        if (month > nowMonth)
+        {
+            year -= 1;
+        }
+        const date::year_month_day ymd{date::year{year}, date::month{month}, date::day{static_cast<unsigned>(day)}};
+        const auto days = date::sys_days{ymd};
+        return TimeStamp{
+            std::chrono::duration_cast<std::chrono::microseconds>(days.time_since_epoch()) +
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::seconds{(hour * 3600) + (minute * 60) + second}
+            )
+        };
+    };
+
+    SECTION("Space-padded single-digit day (`%e` shape, canonical RFC 3164)")
+    {
+        TimeStamp out{};
+        REQUIRE(TryParseSyslogRfc3164Timestamp("Aug  8 13:25:37", out));
+        CHECK(out == expected(8, 8, 13, 25, 37));
+    }
+
+    SECTION("Zero-padded single-digit day (`%d` shape emitted by some senders)")
+    {
+        TimeStamp out{};
+        REQUIRE(TryParseSyslogRfc3164Timestamp("Aug 08 13:25:37", out));
+        CHECK(out == expected(8, 8, 13, 25, 37));
+    }
+
+    SECTION("Two-digit day")
+    {
+        TimeStamp out{};
+        REQUIRE(TryParseSyslogRfc3164Timestamp("Dec 31 23:59:59", out));
+        CHECK(out == expected(12, 31, 23, 59, 59));
+    }
+
+    SECTION("Every month abbreviation parses")
+    {
+        static constexpr std::array<std::string_view, 12> STAMPS = {
+            "Jan  1 00:00:00",
+            "Feb  1 00:00:00",
+            "Mar  1 00:00:00",
+            "Apr  1 00:00:00",
+            "May  1 00:00:00",
+            "Jun  1 00:00:00",
+            "Jul  1 00:00:00",
+            "Aug  1 00:00:00",
+            "Sep  1 00:00:00",
+            "Oct  1 00:00:00",
+            "Nov  1 00:00:00",
+            "Dec  1 00:00:00",
+        };
+        for (unsigned i = 0; i < STAMPS.size(); ++i)
+        {
+            CAPTURE(STAMPS[i]);
+            TimeStamp out{};
+            REQUIRE(TryParseSyslogRfc3164Timestamp(STAMPS[i], out));
+            CHECK(out == expected(i + 1, 1, 0, 0, 0));
+        }
+    }
+}
+
+TEST_CASE("TryParseSyslogRfc3164Timestamp rejects malformed inputs", "[log_processing][syslog_rfc3164_fast_path]")
+{
+    TimeStamp out{};
+
+    SECTION("Empty and too-short strings")
+    {
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("", out));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 13:25", out));
+    }
+
+    SECTION("Unknown month abbreviation")
+    {
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Xyz  8 13:25:37", out));
+        // Case-sensitive on purpose -- RFC 3164 §4.1.2 pins the canonical spelling.
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("aug  8 13:25:37", out));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("AUG  8 13:25:37", out));
+    }
+
+    SECTION("Invalid day-of-month")
+    {
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Feb 30 12:00:00", out));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Jan  0 12:00:00", out));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Jan 32 12:00:00", out));
+    }
+
+    SECTION("Invalid hour / minute")
+    {
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 24:00:00", out));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 12:60:00", out));
+    }
+
+    SECTION("Trailing garbage after the seconds field")
+    {
+        // The parser accepts only the exact header; the caller is
+        // expected to strip surrounding record framing.
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 13:25:37 host", out));
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug  8 13:25:37Z", out));
+    }
+
+    SECTION("Missing separator space after month")
+    {
+        CHECK_FALSE(TryParseSyslogRfc3164Timestamp("Aug08 13:25:37", out));
+    }
+}
+
+TEST_CASE("ClassifyTimestampFormat maps syslog format strings to the fast path", "[log_processing]")
+{
+    // The classifier is what wires `%b %e %H:%M:%S` /
+    // `%b %d %H:%M:%S` into `TryParseSyslogRfc3164Timestamp`. Both
+    // day-padding shapes must land on the same fast-path kind so a
+    // sender variance never silently degrades to the slow generic
+    // parser.
+    CHECK(ClassifyTimestampFormat("%b %e %H:%M:%S") == TimestampFormatKind::SyslogRfc3164NoYear);
+    CHECK(ClassifyTimestampFormat("%b %d %H:%M:%S") == TimestampFormatKind::SyslogRfc3164NoYear);
+    CHECK(ClassifyTimestampFormat("%b %H:%M:%S") == TimestampFormatKind::Generic);
 }
 
 TEST_CASE("TryParseIsoTimestamp matches date::parse for representative inputs", "[log_processing][iso8601_fast_path]")

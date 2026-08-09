@@ -109,18 +109,20 @@ NetworkStreamDialog::NetworkStreamDialog(RegexTemplateRegistry *registry, QWidge
 
     connect(mTcpRadio, &QRadioButton::toggled, this, &NetworkStreamDialog::OnProtocolChanged);
 
-    // Format picker. No file to sniff for a network stream, so the
-    // user picks up front. Combobox (not radios) leaves room for
-    // future formats.
+    // Format picker with auto-detect and manual overrides.
     auto *formatBox = new QGroupBox(tr("Format"), this);
     auto *formatLayout = new QHBoxLayout(formatBox);
     mFormat = new QComboBox(formatBox);
+    mFormat->addItem(tr("Auto-detect (recommended)"), QVariant::fromValue(static_cast<int>(Format::AutoDetect)));
     mFormat->addItem(tr("JSON Lines"), QVariant::fromValue(static_cast<int>(Format::Json)));
     mFormat->addItem(tr("logfmt"), QVariant::fromValue(static_cast<int>(Format::Logfmt)));
     mFormat->addItem(tr("CSV"), QVariant::fromValue(static_cast<int>(Format::Csv)));
     mFormat->addItem(tr("Regex template"), QVariant::fromValue(static_cast<int>(Format::Regex)));
     mFormat->setToolTip(
         tr("Wire format of the bytes flowing over the socket. "
+           "Auto-detect chooses the parser the same way file and stdin sources do; "
+           "override manually only when the initial line is ambiguous or you need a specific regex "
+           "template. "
            "For CSV, the first inbound line is treated as the header; if multiple TCP clients "
            "connect, the first arriving line sets the column schema for every client \u2014 "
            "coordinate the header across producers or restrict CSV to a single producer. "
@@ -538,8 +540,15 @@ void NetworkStreamDialog::LoadFromSettings()
     {
         mTcpRadio->setChecked(true);
     }
-    const QString formatName = settings.value(KEY_FORMAT, "json").toString();
-    if (formatName.compare("logfmt", Qt::CaseInsensitive) == 0)
+    // Default to "auto" for new installs so first-time users pick
+    // up the recommended flow; existing installs read their prior
+    // choice.
+    const QString formatName = settings.value(KEY_FORMAT, "auto").toString();
+    if (formatName.compare("json", Qt::CaseInsensitive) == 0)
+    {
+        mFormat->setCurrentIndex(mFormat->findData(static_cast<int>(Format::Json)));
+    }
+    else if (formatName.compare("logfmt", Qt::CaseInsensitive) == 0)
     {
         mFormat->setCurrentIndex(mFormat->findData(static_cast<int>(Format::Logfmt)));
     }
@@ -553,7 +562,7 @@ void NetworkStreamDialog::LoadFromSettings()
     }
     else
     {
-        mFormat->setCurrentIndex(mFormat->findData(static_cast<int>(Format::Json)));
+        mFormat->setCurrentIndex(mFormat->findData(static_cast<int>(Format::AutoDetect)));
     }
 
     // Restore the prior pattern and resolve template-vs-custom by
@@ -607,8 +616,12 @@ void NetworkStreamDialog::SaveToSettings() const
     settings.setValue(KEY_PROTOCOL, mTcpRadio->isChecked() ? "tcp" : "udp");
     {
         const auto formatValue = mFormat->currentData().toInt();
-        const char *formatName = "json";
-        if (formatValue == static_cast<int>(Format::Logfmt))
+        const char *formatName = "auto";
+        if (formatValue == static_cast<int>(Format::Json))
+        {
+            formatName = "json";
+        }
+        else if (formatValue == static_cast<int>(Format::Logfmt))
         {
             formatName = "logfmt";
         }
@@ -644,7 +657,11 @@ NetworkStreamDialog::Config NetworkStreamDialog::Configuration() const
     out.protocol = mTcpRadio->isChecked() ? Protocol::Tcp : Protocol::Udp;
     {
         const auto formatValue = mFormat->currentData().toInt();
-        if (formatValue == static_cast<int>(Format::Logfmt))
+        if (formatValue == static_cast<int>(Format::Json))
+        {
+            out.format = Format::Json;
+        }
+        else if (formatValue == static_cast<int>(Format::Logfmt))
         {
             out.format = Format::Logfmt;
         }
@@ -658,7 +675,7 @@ NetworkStreamDialog::Config NetworkStreamDialog::Configuration() const
         }
         else
         {
-            out.format = Format::Json;
+            out.format = Format::AutoDetect;
         }
     }
     out.regexPattern = mRegexPattern->text();

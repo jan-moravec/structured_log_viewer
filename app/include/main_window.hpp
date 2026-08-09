@@ -31,6 +31,11 @@ class time_zone;
 // `loglib::EnumDictionary` is referenced via `ResolveEnumDictionary` below;
 // the full type comes in transitively through `log_filter_model.hpp`.
 
+namespace loglib
+{
+class BytesProducer;
+} // namespace loglib
+
 #include <QAction>
 #include <QApplication>
 #include <QAtomicInteger>
@@ -211,6 +216,17 @@ public:
     /// so pre-loaded configuration filters survive into the new
     /// session.
     void OpenFilesForCli(const QStringList &files);
+
+    /// Open a live-tail session over the process's standard input.
+    /// The CLI parses `-` / `--stdin` in argv and routes here via
+    /// `main()`. Session shape mirrors `OpenNetworkStream` (live-
+    /// tail, `Kind::Stdin`, excluded from Recent Sessions): stdin is
+    /// one-shot per process, so there's nothing to reopen on restart.
+    void OpenStdinStream();
+
+    /// Shared implementation for `OpenStdinStream` and its test
+    /// seam. Takes ownership of the producer and its pre-read bytes.
+    void OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProducer> producer, std::string peek);
 
     /// The auto-save uuid pinned to this window, or empty if none.
     /// Used by `main()`'s `aboutToQuit` snapshot.
@@ -578,6 +594,10 @@ public:
     /// Lets tests exercise the live-tail open path without a real
     /// modal `QFileDialog`.
     void OpenLogStreamForTest(const QString &filePath);
+
+    /// Test seam; forwards a producer and pre-read bytes to
+    /// `OpenStdinStreamFromProducer`.
+    void OpenStdinStreamForTest(std::unique_ptr<loglib::BytesProducer> producer, std::string peek);
 
     /// Test-only forwarder to `NewSession`.
     void NewSessionForTest()

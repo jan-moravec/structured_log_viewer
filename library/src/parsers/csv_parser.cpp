@@ -6,10 +6,12 @@
 #include "loglib/internal/compact_log_value.hpp"
 #include "loglib/internal/csv_tokenize.hpp"
 #include "loglib/internal/line_decoder.hpp"
+#include "loglib/internal/probe_line_view.hpp"
 #include "loglib/internal/static_parser_pipeline.hpp"
 #include "loglib/internal/streaming_parse_loop.hpp"
 #include "loglib/log_file.hpp"
 #include "loglib/log_line.hpp"
+#include "loglib/log_parser.hpp"
 #include "loglib/log_processing.hpp"
 #include "loglib/stream_line_source.hpp"
 
@@ -35,9 +37,6 @@ namespace
 {
 
 constexpr size_t INITIAL_FIELD_CAPACITY = 16;
-
-/// Cap on bytes scanned by `IsValid` for the false-positive guard.
-constexpr size_t IS_VALID_PROBE_BYTES = 16 * 1024;
 
 constexpr std::string_view UTF8_BOM = "\xEF\xBB\xBF";
 
@@ -529,43 +528,25 @@ void AppendValueAsCell(std::string &out, const LogValue &value)
 
 } // namespace
 
-bool CsvParser::IsValid(const std::filesystem::path &file) const
+bool CsvParser::IsValidBytes(std::string_view sniffBuffer) const
 {
-    std::ifstream stream(file);
-    if (!stream.is_open())
-    {
-        return false;
-    }
-
+    // Callers cap `sniffBuffer` at `PROBE_BYTES_BUDGET`, so the
+    // cursor bounds are sufficient.
     std::string scratch;
-    std::string line;
+    size_t cursor = 0;
 
     std::string_view firstView;
     std::string firstStripped;
-    size_t bytesScanned = 0;
     bool firstFound = false;
-    while (std::getline(stream, line))
+    while (cursor < sniffBuffer.size())
     {
-        std::string_view sv(line);
-        // Track `\r` so `bytesScanned` matches on-disk bytes; text-mode
-        // `getline` may already strip CR, in which case `+1` is correct.
-        bool hadCr = false;
-        if (!sv.empty() && sv.back() == '\r')
+        const internal::ProbeLine probe = internal::NextProbeLine(sniffBuffer, cursor);
+        cursor = probe.nextOffset;
+        if (probe.line.empty())
         {
-            sv.remove_suffix(1);
-            line.pop_back();
-            hadCr = true;
-        }
-        bytesScanned += line.size() + 1 + (hadCr ? 1u : 0u);
-        if (sv.empty())
-        {
-            if (bytesScanned >= IS_VALID_PROBE_BYTES)
-            {
-                return false;
-            }
             continue;
         }
-        firstStripped = std::string(StripBom(sv));
+        firstStripped = std::string(StripBom(probe.line));
         firstView = firstStripped;
         firstFound = true;
         break;
@@ -587,25 +568,15 @@ bool CsvParser::IsValid(const std::filesystem::path &file) const
     }
 
     // Second non-blank line must have the same cell count.
-    while (std::getline(stream, line))
+    while (cursor < sniffBuffer.size())
     {
-        std::string_view sv(line);
-        bool hadCr = false;
-        if (!sv.empty() && sv.back() == '\r')
+        const internal::ProbeLine probe = internal::NextProbeLine(sniffBuffer, cursor);
+        cursor = probe.nextOffset;
+        if (probe.line.empty())
         {
-            sv.remove_suffix(1);
-            hadCr = true;
-        }
-        bytesScanned += line.size() + 1 + (hadCr ? 1u : 0u);
-        if (sv.empty())
-        {
-            if (bytesScanned >= IS_VALID_PROBE_BYTES)
-            {
-                return false;
-            }
             continue;
         }
-        const auto rowCellCount = CountCsvCells(sv, scratch);
+        const auto rowCellCount = CountCsvCells(probe.line, scratch);
         if (!rowCellCount)
         {
             return false;

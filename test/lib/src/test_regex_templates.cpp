@@ -9,6 +9,7 @@
 #include <catch2/catch_all.hpp>
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <span>
 #include <string>
@@ -107,6 +108,79 @@ TEST_CASE("DetectRegexTemplate identifies Apache CLF samples [regex_templates]",
     const auto detected = DetectRegexTemplate(file.GetFilePath());
     REQUIRE(detected.has_value());
     CHECK(detected->name == "Apache/nginx Common Log Format");
+}
+
+TEST_CASE(
+    "DetectRegexTemplateFromBytes identifies every built-in template's sample lines [regex_templates]",
+    "[regex_templates]"
+)
+{
+    // Exercise full registry detection for every built-in sample.
+    // `KNOWN_SHADOWS` records cases where a higher-precedence
+    // template (lower numeric priority) intentionally wins.
+    struct Shadow
+    {
+        std::string_view sampleTemplate;
+        std::string_view expectedName;
+    };
+    constexpr std::array<Shadow, 2> KNOWN_SHADOWS{{
+        // Java sample lines 2 and 4 use the ISO-8601 `T` / offset
+        // shape that Zap's pattern (priority 10) accepts; Java lives
+        // at priority 20 so Zap wins the probe.
+        {.sampleTemplate = "Java / log4j / SLF4J Logback", .expectedName = "Uber Zap (console)"},
+        // spdlog's `[timestamp] [logger] [level] message` shape
+        // fits Apache error's generic `[X] [Y] message` grammar
+        // (priority 15) with `[logger]` captured as `level`; spdlog
+        // itself is priority 20, so Apache error wins.
+        {.sampleTemplate = "spdlog", .expectedName = "Apache error log"},
+    }};
+
+    const auto builtins = BuiltinRegexTemplates();
+    REQUIRE_FALSE(builtins.empty());
+
+    for (const RegexTemplate &t : builtins)
+    {
+        INFO("template: " << t.name);
+        REQUIRE(t.sampleLines.size() >= 2); // IS_VALID_MIN_MATCHES
+
+        std::string sniff;
+        for (const std::string &line : t.sampleLines)
+        {
+            sniff.append(line);
+            sniff.push_back('\n');
+        }
+
+        const auto detected = DetectRegexTemplateFromBytes(sniff);
+        REQUIRE(detected.has_value());
+
+        std::string_view expectedName = t.name;
+        // std::array iterator type is implementation-defined -- libstdc++
+        // exposes raw pointers, MSVC uses class iterators. Keeping plain
+        // `auto` compiles portably; suppress the qualified-auto suggestion
+        // that only makes sense on libstdc++.
+        const auto shadow = // NOLINT(readability-qualified-auto)
+            std::ranges::find_if(KNOWN_SHADOWS, [&](const Shadow &s) {
+                return s.sampleTemplate == std::string_view(t.name);
+            });
+        const bool isShadowed = shadow != KNOWN_SHADOWS.end();
+        if (isShadowed)
+        {
+            expectedName = shadow->expectedName;
+        }
+        CHECK(detected->name == expectedName);
+
+        // Non-shadowed templates must parse every sample line.
+        if (!isShadowed)
+        {
+            const ParseResult result = ParseLinesWith(
+                detected->pattern,
+                std::span<const std::string>(t.sampleLines),
+                "regex_templates_sweep_" + SlugifyName(t.name) + ".log"
+            );
+            CHECK(result.errors.empty());
+            CHECK(result.data.Lines().size() == t.sampleLines.size());
+        }
+    }
 }
 
 TEST_CASE("FindBuiltinByPattern round-trips every registry entry [regex_templates]", "[regex_templates]")

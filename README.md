@@ -15,10 +15,11 @@
 
 Structured Log Viewer is a C++ application consisting of a reusable library (`loglib`) for handling structured log data and a Qt-based GUI (`StructuredLogViewer`) for viewing, searching, and filtering the logs.
 
-Three ingestion modes are available:
+Four ingestion modes are available:
 
 - **Static mode** (`File → Open…`, drag & drop) opens one or more finished log files and parses them in parallel with the TBB pipeline. Any file whose bytes start with a supported codec's magic number (`.gz` / `.bz2` / `.xz` / `.zst`, detected by content rather than extension) is transparently decompressed through `loglib::internal::DecompressingByteSource` before parsing, with a cancellable per-window progress dialog and a 32 GiB zip-bomb cap. Use this for post-mortem analysis of complete logs.
 - **Stream Mode** (`File → Open Log Stream…`) tails a single file that is still being written, pre-fills the last *N* complete lines, then appends every new line as it arrives. It survives `logrotate` rotations, supports Pause / Follow newest / Stop, and bounds memory via a configurable retention cap. Use this when watching a live service.
+- **Standard-input mode** (`StructuredLogViewer -` / `--stdin`) reads a pipe or redirected file with the same streaming controls and retention cap as Stream Mode. The format is detected from the first 16 KiB.
 - **Network Stream Mode** (`File → Open Network Stream…`, `Ctrl+Shift+L`) listens on a TCP or UDP port and ingests structured logs pushed by your application. TCP supports many concurrent clients with line-granular interleaving and (when the binary is built with `LOGLIB_NETWORK_TLS=ON`) optional TLS via `asio::ssl`; UDP is one record per datagram and plaintext-only. Use this for distributed systems where redirecting stdout/stderr to a log file is not practical, or when you want a quick local-loopback firehose during development.
 
 Two dockable visualisations complement the main table: the **Histogram** dock (`View → Histogram`, `Ctrl+H`) plots row count per time bucket, stacked and coloured by canonical log level, with click-to-jump and drag-to-time-filter over the first `Type::Time` column; and the **Overview Rail** (`View → Overview Rail`, `Ctrl+Shift+R`, on by default) is a thin vertical strip along the right edge of the table that condenses the whole proxy-filtered stream into level-tinted buckets with anchor bands, current-search tick marks, and a live viewport indicator. Both surfaces stay in lock-step with the sort, filter, and anchor state.
@@ -34,7 +35,7 @@ Four structured-log formats ship out of the box:
 
 The 28 built-in regex templates cover syslog, Apache/nginx access and error logs, Google glog, PostgreSQL, MySQL/MariaDB, HAProxy, Uber Zap, Rails, Redis, Java / log4j / Logback, spdlog, Rust `env_logger`, Cisco ASA, BIND9, iptables, Squid, AWS access logs, NetScreen, Exim, MongoDB, and Docker / containerd CRI. Eleven opt into multi-line continuations. Sources include [lnav](https://github.com/tstack/lnav), [logstash-patterns-core](https://github.com/logstash-plugins/logstash-patterns-core), and vendor documentation.
 
-Static and live-tail file opens auto-detect the format; regex templates probe after JSON Lines, logfmt, and CSV. Network streams use an explicit format and template picker. `Settings → Regex templates...` manages the merged built-in and user catalog. User JSON files live under `<AppDataLocation>/regex_templates/`, shadow same-named built-ins, and can join auto-detection in `priority` order.
+Static files, live-tail files, stdin, and network streams (Auto-detect by default) detect the format from content. Probes run in this order: JSON Lines, logfmt, regex templates, then CSV. `Settings → Regex templates...` manages the merged built-in and user catalog. User JSON files live under `<AppDataLocation>/regex_templates/`, shadow same-named built-ins, and can join auto-detection in `priority` order.
 
 ## Application
 

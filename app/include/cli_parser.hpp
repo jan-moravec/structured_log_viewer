@@ -17,11 +17,15 @@ namespace logapp
 /// canonicalised against the caller's CWD. `allowNewInstance` is
 /// true when `--new-instance` is set or `LOGAPP_NEW_INSTANCE` is
 /// `1` / `true` (the env override is useful for CI runs that
-/// spawn many windows).
+/// spawn many windows). `readStdin` is true when either `-` (as a
+/// positional) or `--stdin` was passed; `main()` opens a live-tail
+/// session over the process's `stdin` in that case, after any
+/// positional file paths were opened.
 struct ParsedCli
 {
     QStringList files;
     bool allowNewInstance = false;
+    bool readStdin = false;
 };
 
 /// Parse CLI arguments. Unknown flags are reported to stderr but
@@ -46,20 +50,56 @@ struct ParsedCli
         )
     );
     parser.addOption(newInstanceOption);
+    const QCommandLineOption stdinOption(
+        QStringLiteral("stdin"), QStringLiteral("Read log lines from standard input (equivalent to passing `-`).")
+    );
+    parser.addOption(stdinOption);
     parser.addPositionalArgument(
         QStringLiteral("files"),
         QStringLiteral("Optional list of log files (or session JSONs) to open on launch."),
         QStringLiteral("[files...]")
     );
 
+    // `-` alone is the longstanding UNIX convention for "read
+    // stdin". Pre-strip it so `QCommandLineParser` (which we run
+    // in `ParseAsLongOptions` mode) doesn't reject the bare dash
+    // as an unknown short option. `--stdin` flows through the
+    // parser normally so `--help` documents it and typos surface
+    // as unknown-option warnings.
+    //
+    // `args[0]` is the program name -- `QCommandLineParser` and
+    // Qt in general expect it in-place, and a hypothetical exe
+    // renamed to just `-` should not be misinterpreted as the
+    // stdin sentinel. Skip index 0 in the pre-strip.
+    QStringList filteredArgs;
+    filteredArgs.reserve(args.size());
+    if (!args.isEmpty())
+    {
+        filteredArgs.append(args.first());
+    }
+    for (qsizetype i = 1; i < args.size(); ++i)
+    {
+        const QString &arg = args.at(i);
+        if (arg == QStringLiteral("-"))
+        {
+            result.readStdin = true;
+            continue;
+        }
+        filteredArgs.append(arg);
+    }
+
     // `parse()` does not exit on error; surface the diagnostic but
     // still keep the parsed positionals and flags.
-    if (!parser.parse(args))
+    if (!parser.parse(filteredArgs))
     {
         ::logapp::LogWarning() << "Unrecognised CLI argument:" << parser.errorText();
     }
 
     result.allowNewInstance = parser.isSet(newInstanceOption);
+    if (parser.isSet(stdinOption))
+    {
+        result.readStdin = true;
+    }
 
     const QString envOverride = env.value(QStringLiteral("LOGAPP_NEW_INSTANCE"));
     if (envOverride == QStringLiteral("1") || envOverride.compare(QStringLiteral("true"), Qt::CaseInsensitive) == 0)

@@ -5,8 +5,8 @@
 #include "../log_parser.hpp"
 #include "../parser_options.hpp"
 
-#include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace loglib
 {
@@ -23,7 +23,11 @@ struct AdvancedParserOptions;
 class JsonParser : public LogParser
 {
 public:
-    bool IsValid(const std::filesystem::path &file) const override;
+    /// Probe: the first non-blank line of @p sniffBuffer must parse
+    /// as a JSON object. Shared by the file-based `IsValid` shim
+    /// on the base class, by `AutoDetectParser` for network
+    /// streams, and by stdin auto-detect.
+    bool IsValidBytes(std::string_view sniffBuffer) const override;
 
     /// Static-file streaming parse over @p source's mmap. Each emitted
     /// `LogLine` carries `&source` and its 0-based file-line id.

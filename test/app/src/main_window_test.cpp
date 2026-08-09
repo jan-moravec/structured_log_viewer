@@ -23310,6 +23310,78 @@ private slots:
         );
     }
 
+    void TestCliParserRecognisesBareDashAsStdin()
+    {
+        // POSIX convention: `-` on its own means "read stdin".
+        // The parser pre-strips it from argv so `QCommandLineParser`
+        // (in `ParseAsLongOptions` mode) does not choke on the
+        // bare dash.
+        const QStringList args = {
+            QStringLiteral("StructuredLogViewer"),
+            QStringLiteral("-"),
+        };
+        const logapp::ParsedCli parsed = logapp::ParseCli(args, QProcessEnvironment());
+        QVERIFY(parsed.readStdin);
+        QVERIFY(parsed.files.isEmpty());
+        QVERIFY(!parsed.allowNewInstance);
+    }
+
+    void TestCliParserRecognisesLongStdinFlag()
+    {
+        // `--stdin` is the PowerShell-friendly long form; some
+        // shells eat a lone `-`.
+        const QStringList args = {
+            QStringLiteral("StructuredLogViewer"),
+            QStringLiteral("--stdin"),
+        };
+        const logapp::ParsedCli parsed = logapp::ParseCli(args, QProcessEnvironment());
+        QVERIFY(parsed.readStdin);
+        QVERIFY(parsed.files.isEmpty());
+    }
+
+    void TestCliParserStdinCoexistsWithFileArgs()
+    {
+        // The parser preserves both signals. `main()` opens files
+        // first, then stdin replaces queued and in-flight work.
+        const QStringList args = {
+            QStringLiteral("StructuredLogViewer"),
+            QStringLiteral("preload.log"),
+            QStringLiteral("-"),
+        };
+        const logapp::ParsedCli parsed = logapp::ParseCli(args, QProcessEnvironment());
+        QVERIFY(parsed.readStdin);
+        QCOMPARE(parsed.files.size(), 1);
+        QVERIFY(parsed.files.front().endsWith(QStringLiteral("preload.log"), Qt::CaseInsensitive));
+    }
+
+    void TestCliParserStdinDefaultsToFalseWithoutFlag()
+    {
+        // An ordinary launch must not opt into stdin.
+        const QStringList args = {
+            QStringLiteral("StructuredLogViewer"),
+            QStringLiteral("only.log"),
+        };
+        const logapp::ParsedCli parsed = logapp::ParseCli(args, QProcessEnvironment());
+        QVERIFY(!parsed.readStdin);
+        QCOMPARE(parsed.files.size(), 1);
+    }
+
+    void TestCliParserDashAtArgv0IsNotInterpretedAsStdin()
+    {
+        // Regression: the `-` pre-strip used to iterate all of
+        // `args`, including `args[0]` (the program name). A
+        // hypothetical exe renamed to just `-` (or malformed
+        // `QCoreApplication::arguments()` in test code) would then
+        // set `readStdin`. The fix skips index 0 in the pre-strip.
+        const QStringList args = {
+            QStringLiteral("-"),
+            QStringLiteral("only.log"),
+        };
+        const logapp::ParsedCli parsed = logapp::ParseCli(args, QProcessEnvironment());
+        QVERIFY(!parsed.readStdin);
+        QCOMPARE(parsed.files.size(), 1);
+    }
+
     // `Clear` empties the index, deletes every per-uuid JSON, and
     // resets the last-session pointer.
     void TestSessionHistoryClearWipesEverything()
