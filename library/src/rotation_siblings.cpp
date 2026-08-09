@@ -38,6 +38,19 @@ constexpr SortRank NUMBERED_RANK_BASE = 1'000'000'000LL;
 /// generous but finite.
 constexpr std::int64_t MAX_ACCEPTED_NUMBERED_SUFFIX = NUMBERED_RANK_BASE - 1;
 
+/// Upper bound on directory entries walked while looking for
+/// rotated siblings. `EnumerateRotatedSiblings` runs on the GUI
+/// thread of the app during every open flow (menu, drag-drop, CLI,
+/// recent-session bounce back). A pathological directory (a mail
+/// spool, a build cache, a corrupted network share) could hold
+/// hundreds of thousands of entries and stall the UI for seconds.
+/// Real rotated-log directories peak in the low tens; this cap
+/// is generous but bounds the worst case regardless of what the
+/// caller drops on. When exceeded the enumerator returns whatever
+/// it has already classified plus the primary -- the module is
+/// advisory, and truncated best-effort output beats a wedged UI.
+constexpr std::size_t MAX_ENUMERATED_DIRECTORY_ENTRIES = 4096;
+
 /// Filesystems on Windows and macOS are case-insensitive by
 /// default: `App.LOG.1` and `app.log.1` name the same rotation
 /// family. On those platforms the sibling regex must run
@@ -344,6 +357,19 @@ std::optional<std::filesystem::path> DeriveRotationPrimary(const std::filesystem
         // Stem-inserted dated variant: rebuild `<stem>.<ext>`.
         return path.parent_path() / (m[1].str() + "." + m[2].str());
     }
+    // Note: a bare compressed name like `app.log.gz` intentionally
+    // does NOT derotate. The three regexes above already handle
+    // compressed rotated segments (`app.log.1.gz`,
+    // `app.log-2025-04-28.gz`, `app-2025-04-28.log.gz`) via each
+    // pattern's optional codec-tail group. A bare `<primary>.gz`
+    // is ambiguous ("archive of the current primary" vs "an odd
+    // single-generation snapshot"); silently derotating it to the
+    // uncompressed primary would drop the user's opened file from
+    // the resulting series unless the enumerator learns to
+    // include compressed archives, which changes the semantics of
+    // `NumberedSuffix` / `DatedSuffix`. Leave that as a design
+    // decision for a follow-up rather than a stealth behaviour
+    // change.
     return std::nullopt;
 }
 
@@ -416,8 +442,17 @@ std::vector<Candidate> EnumerateCandidates(const std::filesystem::path &primary)
     }
     const std::filesystem::directory_iterator end;
 
+    std::size_t entriesWalked = 0;
     while (it != end)
     {
+        if (entriesWalked++ >= MAX_ENUMERATED_DIRECTORY_ENTRIES)
+        {
+            // Pathological directory; return whatever we've
+            // classified so far. Caller sees the primary plus any
+            // siblings we found before the cap. See
+            // `MAX_ENUMERATED_DIRECTORY_ENTRIES` for rationale.
+            break;
+        }
         const std::filesystem::directory_entry &entry = *it;
         std::filesystem::path path = entry.path();
         const std::string filename = PathToUtf8(path.filename());
@@ -459,9 +494,21 @@ std::vector<Candidate> EnumerateCandidates(const std::filesystem::path &primary)
 
 std::string CanonicalKeyForPath(const std::filesystem::path &path)
 {
-    // Best-effort canonical form:
-    //   - `weakly_canonical` normalises `..`, symlinks-that-exist,
-    //     and mixed slashes without requiring the path to exist.
+    // Best-effort canonical form. The exact rules matter because
+    // this key must byte-equal `logapp::CanonicalLocator`'s output
+    // (see `app/include/uuid_utils.hpp`) for the same input; any
+    // divergence silently defeats the "already in session" dedup
+    // in `MainWindow::ExpandLogPathsWithRotationSiblings`.
+    //
+    //   - `absolute()` + `lexically_normal()` (NOT `weakly_canonical`):
+    //     make the path absolute against CWD and collapse `.` /
+    //     `..` components *without* touching the filesystem.
+    //     `weakly_canonical` also resolves symlinks-that-exist,
+    //     which the Qt-side helper (`QFileInfo::absoluteFilePath`)
+    //     does NOT. Aligning here so a session saved under a
+    //     symlinked directory (e.g. macOS `/tmp -> /private/tmp`,
+    //     Linux `/var/log -> /mnt/logs`) matches the freshly
+    //     canonicalised key of the same file on the next drop.
     //   - Forward slashes so a saved key round-trips across
     //     platforms.
     //   - UTF-8 encoded via `generic_u8string()` so the byte
@@ -469,29 +516,32 @@ std::string CanonicalKeyForPath(const std::filesystem::path &path)
     //     every platform. Using `generic_string()` here would narrow
     //     the wide Windows path through the active code page and
     //     produce bytes that never match the UTF-8 key the app-layer
-    //     `CanonicalLocator` (`app/include/uuid_utils.hpp`) writes
-    //     into `Source::locatorDedupKeys`. Any encoding divergence
-    //     silently defeats the "already in session" dedup in
-    //     `MainWindow::ExpandLogPathsWithRotationSiblings` and lets
-    //     the same rotated companion get re-appended on every
-    //     drop-into-session for users with non-ASCII log paths.
+    //     `CanonicalLocator` writes into `Source::locatorDedupKeys`.
     //   - Lower-case ONLY on Windows. Intentionally mirrors the
-    //     app-layer `CanonicalLocator`. Historically this helper
-    //     also lower-cased on macOS to match the platform-default
-    //     case-insensitive APFS/HFS+, but that broke drop-into-
-    //     session dedup for every macOS user -- paths like
-    //     `/Users/...` always contain uppercase, so the two key
-    //     flavours never matched. If we later want case-insensitive
-    //     comparison on macOS, `CanonicalLocator` has to move first
-    //     and this helper follows in the same PR. Linux is always
-    //     case-sensitive: `App.log` and `app.log` are two distinct
-    //     files and must produce distinct keys.
+    //     app-layer `CanonicalLocator`. Linux is case-sensitive
+    //     (`App.log` and `app.log` are two distinct files). macOS's
+    //     default APFS/HFS+ is case-insensitive at the FS layer,
+    //     but `CanonicalLocator` preserves case there, so this
+    //     helper does too -- the two must move together.
     //
     // The library helper exists so unit tests can share a
     // canonicaliser without depending on Qt.
+    std::filesystem::path normalised;
     std::error_code ec;
-    std::filesystem::path normalised = std::filesystem::weakly_canonical(path, ec);
-    if (ec || normalised.empty())
+    // `absolute` only reads CWD; it does not stat the target and
+    // does not resolve symlinks (unlike `canonical` /
+    // `weakly_canonical`). `lexically_normal` is a pure syntactic
+    // pass. Both return the input unchanged on failure paths, so
+    // even a bogus / relative path degrades to "something UTF-8
+    // and forward-slashed" rather than throwing out of an
+    // advisory helper.
+    std::filesystem::path abs = std::filesystem::absolute(path, ec);
+    if (ec || abs.empty())
+    {
+        abs = path;
+    }
+    normalised = abs.lexically_normal();
+    if (normalised.empty())
     {
         normalised = path;
     }
@@ -550,6 +600,18 @@ PartitionedSelection PartitionAsRotationSeries(std::span<const std::filesystem::
         return out;
     }
 
+    // Canonicalise each input exactly once and reuse the cached
+    // key everywhere below. `CanonicalKeyForPath` allocates a
+    // fresh UTF-8 buffer each call, so pre-caching avoids a
+    // hot O(N * families) inner loop that would otherwise
+    // re-canonicalise every input for every emitted family.
+    std::vector<std::string> inputKeys;
+    inputKeys.reserve(paths.size());
+    for (const std::filesystem::path &p : paths)
+    {
+        inputKeys.push_back(CanonicalKeyForPath(p));
+    }
+
     // For each input path, determine the primary it should hang
     // under: either the path itself, or a derotated form when the
     // filename looks like `<primary>.<N>` / `<primary>-<date>` /
@@ -560,12 +622,13 @@ PartitionedSelection PartitionAsRotationSeries(std::span<const std::filesystem::
     inputByKey.reserve(paths.size());
     for (size_t i = 0; i < paths.size(); ++i)
     {
-        inputByKey.emplace(CanonicalKeyForPath(paths[i]), i);
+        inputByKey.emplace(inputKeys[i], i);
     }
 
     struct GroupEntry
     {
         std::filesystem::path primary;
+        std::string primaryKey; // cached canonical key of the primary
         size_t firstOrdinal = 0; // position of the first input contributing to this group
         size_t inputMemberCount = 0; // number of input paths that landed in this group
     };
@@ -573,35 +636,45 @@ PartitionedSelection PartitionAsRotationSeries(std::span<const std::filesystem::
     // group's earliest listed member sits in `paths` so we emit
     // series in the same order the user saw them.
     std::unordered_map<std::string, GroupEntry> groups;
-    std::unordered_map<std::string, std::string> memberToGroupKey; // canonical -> primary key
+    // Per-input group-owner: `memberOwner[i]` is the primary key
+    // of the group that absorbed `paths[i]`. A parallel vector
+    // (rather than a `std::unordered_map<selfKey, primaryKey>`)
+    // avoids a second hash lookup and lets the union step below
+    // filter members by ordinal index directly.
+    std::vector<std::string> memberOwner(paths.size());
     groups.reserve(paths.size());
-    memberToGroupKey.reserve(paths.size());
 
     for (size_t i = 0; i < paths.size(); ++i)
     {
         const std::filesystem::path &p = paths[i];
-        const std::string selfKey = CanonicalKeyForPath(p);
+        const std::string &selfKey = inputKeys[i];
 
         std::filesystem::path candidatePrimary = p;
+        std::string candidatePrimaryKey = selfKey;
         if (auto derived = DeriveRotationPrimary(p); derived.has_value())
         {
-            const std::string derivedKey = CanonicalKeyForPath(*derived);
+            std::string derivedKey = CanonicalKeyForPath(*derived);
             std::error_code ec;
             const bool derivedExists = std::filesystem::exists(*derived, ec);
             const bool derivedListed = inputByKey.contains(derivedKey);
             if (derivedExists || derivedListed)
             {
                 candidatePrimary = *derived;
+                candidatePrimaryKey = std::move(derivedKey);
             }
         }
 
-        const std::string primaryKey = CanonicalKeyForPath(candidatePrimary);
-        auto it = groups.find(primaryKey);
+        auto it = groups.find(candidatePrimaryKey);
         if (it == groups.end())
         {
             groups.emplace(
-                primaryKey,
-                GroupEntry{.primary = candidatePrimary, .firstOrdinal = i, .inputMemberCount = 1}
+                candidatePrimaryKey,
+                GroupEntry{
+                    .primary = candidatePrimary,
+                    .primaryKey = candidatePrimaryKey,
+                    .firstOrdinal = i,
+                    .inputMemberCount = 1,
+                }
             );
         }
         else
@@ -614,13 +687,18 @@ PartitionedSelection PartitionAsRotationSeries(std::span<const std::filesystem::
             it->second.firstOrdinal = std::min(i, it->second.firstOrdinal);
             ++it->second.inputMemberCount;
         }
-        memberToGroupKey[selfKey] = primaryKey;
+        memberOwner[i] = std::move(candidatePrimaryKey);
     }
 
     // Emit groups in `firstOrdinal` order so series match caller layout.
-    std::vector<std::pair<std::string, GroupEntry>> ordered(groups.begin(), groups.end());
-    std::sort(ordered.begin(), ordered.end(), [](const auto &a, const auto &b) {
-        return a.second.firstOrdinal < b.second.firstOrdinal;
+    std::vector<const GroupEntry *> ordered;
+    ordered.reserve(groups.size());
+    for (const auto &kv : groups)
+    {
+        ordered.push_back(&kv.second);
+    }
+    std::sort(ordered.begin(), ordered.end(), [](const GroupEntry *a, const GroupEntry *b) {
+        return a->firstOrdinal < b->firstOrdinal;
     });
 
     // A group is only a genuine "rotation family" if it either:
@@ -631,8 +709,9 @@ PartitionedSelection PartitionAsRotationSeries(std::span<const std::filesystem::
     // series.
     std::unordered_set<std::string> emittedInputKeys;
     emittedInputKeys.reserve(paths.size());
-    for (const auto &[primaryKey, entry] : ordered)
+    for (const GroupEntry *entryPtr : ordered)
     {
+        const GroupEntry &entry = *entryPtr;
         const size_t inputMemberCount = entry.inputMemberCount;
         RotationSeries series = EnumerateRotatedSiblings(entry.primary);
         const bool hasSiblingsOnDisk = series.files.size() > 1;
@@ -654,12 +733,11 @@ PartitionedSelection PartitionAsRotationSeries(std::span<const std::filesystem::
         }
         for (size_t i = 0; i < paths.size(); ++i)
         {
-            const std::string k = CanonicalKeyForPath(paths[i]);
-            auto ownerIt = memberToGroupKey.find(k);
-            if (ownerIt == memberToGroupKey.end() || ownerIt->second != primaryKey)
+            if (memberOwner[i] != entry.primaryKey)
             {
                 continue;
             }
+            const std::string &k = inputKeys[i];
             if (seen.insert(k).second)
             {
                 // Not classified on disk (e.g. user selected an
@@ -699,12 +777,12 @@ PartitionedSelection PartitionAsRotationSeries(std::span<const std::filesystem::
         out.series.push_back(std::move(series));
     }
 
-    for (const std::filesystem::path &p : paths)
+    for (size_t i = 0; i < paths.size(); ++i)
     {
-        const std::string k = CanonicalKeyForPath(p);
+        const std::string &k = inputKeys[i];
         if (!emittedInputKeys.contains(k))
         {
-            out.residual.push_back(p);
+            out.residual.push_back(paths[i]);
             emittedInputKeys.insert(k);
         }
     }

@@ -109,6 +109,11 @@ private:
     {
         QByteArray buffer;
         QTimer *idleTimer = nullptr;
+        /// True once we have decoded and emitted the peer's frame.
+        /// Subsequent `readyRead` invocations short-circuit -- a
+        /// stray extra byte from a buggy peer must not cause the
+        /// primary to spawn a second window off the same message.
+        bool frameConsumed = false;
     };
 
     /// Forget a disconnected socket. Called from the `disconnected`

@@ -381,6 +381,21 @@ void SingleInstanceGuard::HandleNewConnection()
             {
                 return; // Disconnected between signal and slot.
             }
+            if (it->frameConsumed)
+            {
+                // We already decoded and emitted this peer's frame.
+                // `disconnectFromServer` is asynchronous, so a
+                // buggy or malicious peer that keeps writing after
+                // its wire frame could deliver more bytes before
+                // the socket transitions to `UnconnectedState`.
+                // Without this latch the buffer would still contain
+                // the (already-emitted) frame and `readyRead` would
+                // spawn a second window off the same message.
+                // Drain any trailing bytes so the read pointer
+                // stays healthy but never re-decode.
+                (void)socket->readAll();
+                return;
+            }
             QByteArray &buffer = it->buffer;
             buffer.append(socket->readAll());
             if (buffer.size() > MAX_PAYLOAD_BYTES)
@@ -479,6 +494,16 @@ void SingleInstanceGuard::HandleNewConnection()
             {
                 launchFlags |= LaunchFlags::DisableRotationHistory;
             }
+            // Mark the frame consumed BEFORE the emit so a
+            // direct-connection slot that itself pumps the event
+            // loop (e.g. a modal dialog spawned by the receiving
+            // window) cannot re-enter `tryDecode` and decode the
+            // same buffered frame twice. Also free the buffer:
+            // we no longer need its contents and holding onto them
+            // would keep the payload memory live until the socket
+            // finishes closing.
+            it->frameConsumed = true;
+            it->buffer.clear();
             emit openWindowRequested(files, static_cast<int>(truncatedCount), launchFlags);
             socket->disconnectFromServer();
         };

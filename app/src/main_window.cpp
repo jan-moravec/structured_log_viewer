@@ -2693,6 +2693,11 @@ void MainWindow::UndoRotationExpansion()
     const QStringList originalInputs = std::move(mLastRotationExpansionOriginalInputs);
     const bool wasLiveTail = mLastRotationExpansionWasLiveTail;
     ClearRotationExpansionUndoState();
+    // Invariant guarded by the early return above -- but pin it
+    // explicitly so a future refactor that reorders these lines
+    // trips the assert instead of silently landing on
+    // `first()` / `Replace` opens with an empty list.
+    Q_ASSERT(!originalInputs.isEmpty());
     // The reopen goes through the classifier again but we set the
     // launch override so no siblings get pulled in this time. The
     // override is one-shot: restored after the follow-up dispatch.
@@ -5285,7 +5290,28 @@ void MainWindow::ContinueLiveTailAfterPrefix()
             tr("Error Opening Log Stream"),
             {std::string("Failed to open '") + primary.toStdString() + "' for streaming: " + e.what()}
         );
+        // Producer construction failed after the sibling prefix
+        // already drained. Leave the loaded prefix rows visible
+        // (users find them useful even without a tail), but
+        // demote the session back to a coherent Static / Idle
+        // state so the toolbar, title, and status bar stop
+        // advertising a live-tail that isn't running.
+        //
+        // Without this the session would linger in whatever mode
+        // the sibling drain left behind (`mSessionMode` still
+        // reads `Static` from the drain, `mStreamingFileName`
+        // still names the last sibling, the streaming ticker may
+        // still tick). Restoring a coherent idle state matches
+        // the discipline of `OpenLogStreamFromPath`'s fast-path
+        // catch, which also returns without arming the tail.
+        StopLiveTailTicker();
+        mSessionMode = (mModel->rowCount() > 0) ? SessionMode::Static : SessionMode::Idle;
+        mStreamingFileName.clear();
+        mFirstStreamingBatchSeen = false;
         SetConfigurationUiEnabled(true);
+        UpdateStreamToolbarVisibility();
+        UpdateStreamingStatus();
+        UpdateWindowTitle();
         return;
     }
 
@@ -8281,6 +8307,15 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         // The loaded session's `followRotationSiblings` may differ
         // from the global preference; re-sync so the menu tick
         // reflects the incoming session's opt-in / opt-out state.
+        //
+        // Note: `mDisableRotationHistoryOverride` is *not* cleared
+        // here. A user who launched with `--no-rotation-history`
+        // has expressed an intent for the whole process lifetime;
+        // loading a saved session that opts *in* to rotation
+        // history must still honour the CLI opt-out (otherwise a
+        // recent-session bounce back would silently override the
+        // CLI). The user can flip the menu action to clear the
+        // override -- see `OnRotationHistoryPrefToggled`.
         SyncRotationHistoryActionCheckedState();
 
         // Bulk-replace anchors from the loaded vector. Future-schema
