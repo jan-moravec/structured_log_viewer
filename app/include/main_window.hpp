@@ -225,7 +225,10 @@ public:
     /// per-session flag, and newly-created sessions are seeded with
     /// `Source::followRotationSiblings = false`. Persists for the
     /// life of the process (not the window).
-    void SetRotationHistoryLaunchOverride(bool disable) noexcept
+    ///
+    /// Not `noexcept`: the checkbox-sync helper reaches `QSettings`,
+    /// which can allocate and (on backend errors) throw.
+    void SetRotationHistoryLaunchOverride(bool disable)
     {
         mDisableRotationHistoryOverride = disable;
         SyncRotationHistoryActionCheckedState();
@@ -1281,7 +1284,60 @@ private:
     /// and the CLI launch override. Session-level flags on
     /// `mCurrentSource->followRotationSiblings` further gate
     /// drops-into-session; those are consulted at the call site.
-    [[nodiscard]] bool ShouldAutoDetectRotationHistory() const noexcept;
+    ///
+    /// Not `noexcept`: `QSettings` construction and `.value()` can
+    /// allocate memory and (on failing platforms) throw. A truly
+    /// noexcept variant would need a cached pref updated by
+    /// `OnRotationHistoryPrefToggled`; the current cost is one map
+    /// lookup per open so caching is not worth the complexity.
+    [[nodiscard]] bool ShouldAutoDetectRotationHistory() const;
+
+    /// Drop the "Undo rotated history expansion" affordance state.
+    /// Called from every destructive session-boundary path so the
+    /// action can't survive into an unrelated session and reopen
+    /// the previous session's files in Replace mode. Idempotent.
+    void ClearRotationExpansionUndoState() noexcept;
+
+    /// Discard any pending sibling-prefix live-tail promotion.
+    /// The primary/producer/retention triple is set by
+    /// `OpenLogStreamFromPath` while the sibling static queue
+    /// drains; if a session-switch tears the model down before
+    /// `OnStreamingFinished` can promote the tail, this scrubs the
+    /// stale state so the next session can't inherit it and attach
+    /// a live tail of the wrong file. Idempotent.
+    void ClearPendingLiveTailPromotion() noexcept;
+
+    /// Selects how `mCurrentSource` gates
+    /// `ExpandLogPathsWithRotationSiblings`. The two decisions
+    /// (opt-out check vs. dedup set) are split because a
+    /// config-load-then-open sits in between the two normal opens:
+    /// the loaded source's `followRotationSiblings` still
+    /// represents a genuine user choice, but its
+    /// `locatorDedupKeys` are stale (`DoLoadConfiguration` reset
+    /// the model, so no rows are actually visible).
+    enum class RotationSourceGating
+    {
+        /// Consult both `mCurrentSource->followRotationSiblings`
+        /// (session opt-out) and `mCurrentSource->locatorDedupKeys`
+        /// (already-loaded-in-session dedup). Drops-into-session.
+        HonourAll,
+        /// Ignore `mCurrentSource` entirely. Destructive Replace
+        /// opens use this: consulting the outgoing session's state
+        /// would let its per-session opt-out or already-loaded
+        /// locators erroneously suppress the fresh expansion, in
+        /// the dedup case potentially returning an empty list when
+        /// the user re-opens the same family.
+        Ignore,
+        /// Consult the opt-out but NOT the dedup keys. Post
+        /// `DoLoadConfiguration` in the mixed config-then-logs
+        /// path: the loaded source's flag still applies, but its
+        /// dedup keys describe a session that no longer exists
+        /// (model was reset), so gating on them would silently
+        /// filter out user-selected logs whose canonical key
+        /// happens to match a stale locator -- yielding an empty
+        /// open queue and an empty view.
+        HonourOptOutOnly,
+    };
 
     /// Expand @p logPaths in place: for each entry, if the current
     /// preference is on and the path has rotation-siblings on disk
@@ -1291,27 +1347,22 @@ private:
     ///
     /// Bundles and configuration JSONs are already filtered out
     /// upstream; this helper additionally skips any residual
-    /// bundle-like path defensively. When @p mode is `Append`,
-    /// `mCurrentSource`'s existing locators are used to dedup
-    /// against files already loaded into the session, so
-    /// drops-into-session don't re-add already-visible siblings,
-    /// and its `followRotationSiblings` opt-out is honoured. When
-    /// @p mode is `Replace`, the current session is about to be
-    /// destroyed by the caller; the expander therefore ignores
-    /// `mCurrentSource` entirely so a fresh session picks up
-    /// companions regardless of the outgoing session's opt-out
-    /// or its already-loaded locator set (both of which would
-    /// otherwise erroneously suppress the fresh expansion, in the
-    /// latter case potentially returning an empty list when the
-    /// user re-opens the same family).
+    /// bundle-like path defensively.
+    ///
+    /// @p gating controls how `mCurrentSource` is consulted; see
+    /// `RotationSourceGating` for the trade-offs. Callers must
+    /// pick deliberately, since silently gating on a stale
+    /// `Source` can produce an empty view (Bug 2 in the
+    /// rotation-siblings review).
     ///
     /// Returns the expanded list of paths. When no expansion
     /// happens, the returned list is byte-equal to the input in
     /// order. The number of *added* files (excluding the caller's
     /// originals) is written to @p addedOut for the status-bar
     /// affordance.
-    [[nodiscard]] QStringList
-    ExpandLogPathsWithRotationSiblings(const QStringList &logPaths, int &addedOut, OpenMode mode) const;
+    [[nodiscard]] QStringList ExpandLogPathsWithRotationSiblings(
+        const QStringList &logPaths, int &addedOut, RotationSourceGating gating
+    ) const;
 
     /// Show a status-bar toast after a rotation-siblings expansion
     /// and enable the `Undo Rotated History Expansion` action.

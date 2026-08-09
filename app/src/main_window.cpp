@@ -2495,16 +2495,10 @@ void MainWindow::NewSession()
     mPendingDecompressionErrors.clear();
     // Discard any pending sibling-prefix live-tail promotion so a
     // `New Session` mid-drain doesn't tail the primary onto the
-    // fresh (empty) session.
-    mPendingLiveTailPrimary.clear();
-    mPendingLiveTailProducer.reset();
-    mPendingLiveTailRetention = 0;
-    mLastRotationExpansionOriginalInputs.clear();
-    mLastRotationExpansionCount = 0;
-    if (mActionUndoRotationExpansion != nullptr)
-    {
-        mActionUndoRotationExpansion->setEnabled(false);
-    }
+    // fresh (empty) session, and drop the Undo affordance so it
+    // can't reach back into the previous session's files.
+    ClearPendingLiveTailPromotion();
+    ClearRotationExpansionUndoState();
     // `mCurrentSource` was reset above; the sibling-history menu
     // tick reflects `mCurrentSource->followRotationSiblings` when
     // it exists, so refresh it now that the session-scope override
@@ -2624,6 +2618,11 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         // The loaded session's `followRotationSiblings` may differ
         // from the global preference; re-sync so the menu tick
         // reflects the incoming session's opt-in / opt-out state.
+        // Also drop the Undo-rotation-history affordance: the
+        // caller-originals we captured for the previous view no
+        // longer describe *this* config's source, so an Undo click
+        // now would destructively reopen the wrong file list.
+        ClearRotationExpansionUndoState();
         SyncRotationHistoryActionCheckedState();
 
         // Bulk-replace anchors before RebuildFiltersFromConfiguration
@@ -2684,12 +2683,7 @@ void MainWindow::UndoRotationExpansion()
     // sees us in a clean slate and can't re-arm the undo button off
     // its own expansion.
     const QStringList originalInputs = std::move(mLastRotationExpansionOriginalInputs);
-    mLastRotationExpansionOriginalInputs.clear();
-    mLastRotationExpansionCount = 0;
-    if (mActionUndoRotationExpansion != nullptr)
-    {
-        mActionUndoRotationExpansion->setEnabled(false);
-    }
+    ClearRotationExpansionUndoState();
     // The reopen goes through the classifier again but we set the
     // launch override so no siblings get pulled in this time. The
     // override is one-shot: restored by the follow-up call.
@@ -2714,6 +2708,23 @@ void MainWindow::SyncRotationHistoryActionCheckedState()
     const bool globalPref = settings.value(QStringLiteral("ui/autoDetectRotatedHistory"), true).toBool();
     const bool sessionOff = mCurrentSource.has_value() && !mCurrentSource->followRotationSiblings;
     mActionAutoDetectRotationHistory->setChecked(globalPref && !sessionOff && !mDisableRotationHistoryOverride);
+}
+
+void MainWindow::ClearRotationExpansionUndoState() noexcept
+{
+    mLastRotationExpansionOriginalInputs.clear();
+    mLastRotationExpansionCount = 0;
+    if (mActionUndoRotationExpansion != nullptr)
+    {
+        mActionUndoRotationExpansion->setEnabled(false);
+    }
+}
+
+void MainWindow::ClearPendingLiveTailPromotion() noexcept
+{
+    mPendingLiveTailPrimary.clear();
+    mPendingLiveTailProducer.reset();
+    mPendingLiveTailRetention = 0;
 }
 
 void MainWindow::OnRotationHistoryPrefToggled(bool enabled)
@@ -2742,7 +2753,7 @@ void MainWindow::OnRotationHistoryPrefToggled(bool enabled)
     SyncRotationHistoryActionCheckedState();
 }
 
-bool MainWindow::ShouldAutoDetectRotationHistory() const noexcept
+bool MainWindow::ShouldAutoDetectRotationHistory() const
 {
     // Explicit CLI opt-out always wins.
     if (mDisableRotationHistoryOverride)
@@ -2750,13 +2761,16 @@ bool MainWindow::ShouldAutoDetectRotationHistory() const noexcept
         return false;
     }
     // Global preference (default on) reads through the same
-    // `QSettings` scope every other UI toggle uses.
+    // `QSettings` scope every other UI toggle uses. `QSettings`
+    // may throw on backend errors, hence the missing `noexcept`
+    // in the declaration.
     const QSettings settings;
     return settings.value(QStringLiteral("ui/autoDetectRotatedHistory"), true).toBool();
 }
 
-QStringList
-MainWindow::ExpandLogPathsWithRotationSiblings(const QStringList &logPaths, int &addedOut, OpenMode mode) const
+QStringList MainWindow::ExpandLogPathsWithRotationSiblings(
+    const QStringList &logPaths, int &addedOut, RotationSourceGating gating
+) const
 {
     addedOut = 0;
     if (logPaths.isEmpty() || !ShouldAutoDetectRotationHistory())
@@ -2764,29 +2778,31 @@ MainWindow::ExpandLogPathsWithRotationSiblings(const QStringList &logPaths, int 
         return logPaths;
     }
 
-    // `Replace` opens are about to tear down the outgoing session
-    // via `StartStreamingOpenQueue`'s destructive branch. Reading
-    // `mCurrentSource` here would let the previous session's
-    // per-session opt-out or already-loaded dedup keys gate a
-    // fresh expansion -- in the dedup case, re-opening the same
-    // rotation family after a prior session could even return an
-    // empty list (both primary and siblings deduped out) and land
-    // the user on an empty view.
-    const bool consultCurrentSource = (mode == OpenMode::Append);
+    // See `RotationSourceGating` (header) for the semantics behind
+    // each branch. The two gates are split because the
+    // config-then-logs path in `DispatchMixedOpenInput` needs the
+    // opt-out check (loaded config's flag is a genuine choice) but
+    // NOT the dedup gate (loaded config's `locatorDedupKeys` are
+    // stale after the reset -- gating on them can filter out every
+    // user-selected file and land on an empty view).
+    const bool consultOptOut = (gating != RotationSourceGating::Ignore);
+    const bool consultDedup = (gating == RotationSourceGating::HonourAll);
 
-    // Session-scope opt-out: if a session is already loaded and the
-    // user turned expansion off for it, honour that regardless of
-    // the global pref.
-    if (consultCurrentSource && mCurrentSource.has_value() && !mCurrentSource->followRotationSiblings)
+    // Session-scope opt-out: if a session is already loaded (or a
+    // config was just loaded) and the user turned expansion off,
+    // honour that regardless of the global pref.
+    if (consultOptOut && mCurrentSource.has_value() && !mCurrentSource->followRotationSiblings)
     {
         return logPaths;
     }
 
     // Build the "already loaded" dedup set from `mCurrentSource`'s
     // canonical keys. Drops-into-session should not re-add locators
-    // already visible in the table.
+    // already visible in the table; `HonourOptOutOnly` skips this
+    // because the model was just reset and no rows are actually
+    // visible yet.
     std::unordered_set<std::string> alreadyLoaded;
-    if (consultCurrentSource && mCurrentSource.has_value())
+    if (consultDedup && mCurrentSource.has_value())
     {
         alreadyLoaded.reserve(mCurrentSource->locatorDedupKeys.size());
         for (const std::string &k : mCurrentSource->locatorDedupKeys)
@@ -2966,15 +2982,24 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
         // insertion point. Bundles are skipped inside the expander;
         // `armEmbeddedBundleIntent`'s single-bundle case therefore
         // still sees the same one-entry list on the other side.
+        //
+        // `Replace` opens tear down the outgoing session before the
+        // queue drains -- gating on the outgoing `mCurrentSource`
+        // would erroneously suppress companions the fresh session
+        // is entitled to. `Append` opens keep the outgoing session,
+        // so its opt-out and already-loaded locators both apply.
+        const RotationSourceGating logOnlyGating =
+            (logMode == OpenMode::Append) ? RotationSourceGating::HonourAll : RotationSourceGating::Ignore;
         int addedSiblings = 0;
-        const QStringList expandedLogPaths =
-            armEmbeddedBundleIntent ? logPaths : ExpandLogPathsWithRotationSiblings(logPaths, addedSiblings, logMode);
+        const QStringList expandedLogPaths = armEmbeddedBundleIntent
+                                                 ? logPaths
+                                                 : ExpandLogPathsWithRotationSiblings(logPaths, addedSiblings, logOnlyGating);
         StartStreamingOpenQueue(expandedLogPaths, logMode);
         if (armEmbeddedBundleIntent)
         {
             mApplyEmbeddedBundleConfigForPath = bundlePath;
         }
-        if (addedSiblings > 0 && expandedLogPaths.size() >= 1)
+        if (addedSiblings > 0)
         {
             // Set AFTER `StartStreamingOpenQueue` so the destructive
             // Replace-mode teardown inside it cannot clobber the
@@ -2988,10 +3013,11 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
             // `other.log` and lose the family entirely.
             mLastRotationExpansionOriginalInputs = logPaths;
             mLastRotationExpansionCount = addedSiblings;
-            // Toast uses `logPaths.back()` as a display anchor; it's
-            // the caller-visible "most recent" file. The toast also
-            // (re-)enables the Undo affordance -- the destructive
-            // teardown disabled it above.
+            // Toast anchor: caller's last input. For a single-file
+            // drop this is the primary; for a multi-file drop it is
+            // whatever the user saw last in their selection. The
+            // toast also (re-)enables the Undo affordance -- the
+            // destructive teardown disabled it above.
             ShowRotationHistoryToast(addedSiblings, logPaths.back());
         }
         return MixedInputResult{.outcome = MixedInputDispatch::QueuedLogsOnly, .appliedConfigPath = QString()};
@@ -3027,11 +3053,21 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
         return MixedInputResult{.outcome = MixedInputDispatch::QueuedLogsOnly, .appliedConfigPath = QString()};
     }
     int addedSiblings = 0;
-    // Post-`DoLoadConfiguration`: `mCurrentSource` now reflects the
-    // just-loaded config's source. Consult it (Append semantics) so
-    // the config's opt-out / already-listed locators still gate.
+    // Post-`DoLoadConfiguration`: `mCurrentSource` reflects the
+    // just-loaded config's source. Honour its
+    // `followRotationSiblings` (a genuine user choice saved with
+    // the config), but IGNORE its `locatorDedupKeys` -- those
+    // describe files that were part of the *previous* session,
+    // which `DoLoadConfiguration` just tore down via `mModel->Reset()`.
+    // Treating those stale keys as "already loaded" would silently
+    // filter out any user-selected log whose canonical key matches
+    // (a very common case: users load the same config every time
+    // they open the same log), potentially yielding an empty open
+    // queue and landing the user on an empty view -- the same
+    // "empty view" hazard the `Ignore` branch guards `Replace`
+    // opens against.
     const QStringList expandedLogPaths =
-        ExpandLogPathsWithRotationSiblings(logPaths, addedSiblings, OpenMode::Append);
+        ExpandLogPathsWithRotationSiblings(logPaths, addedSiblings, RotationSourceGating::HonourOptOutOnly);
     StartStreamingOpenQueue(expandedLogPaths, OpenMode::Append);
     if (addedSiblings > 0)
     {
@@ -3094,16 +3130,10 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
         CancelInFlightDecompression();
         // Drop any pending live-tail primary so a Replace during a
         // sibling-prefix drain cannot fire the tail against the new
+        // session, and drop the Undo affordance from the outgoing
         // session.
-        mPendingLiveTailPrimary.clear();
-        mPendingLiveTailProducer.reset();
-        mPendingLiveTailRetention = 0;
-        mLastRotationExpansionOriginalInputs.clear();
-        mLastRotationExpansionCount = 0;
-        if (mActionUndoRotationExpansion != nullptr)
-        {
-            mActionUndoRotationExpansion->setEnabled(false);
-        }
+        ClearPendingLiveTailPromotion();
+        ClearRotationExpansionUndoState();
         // `mCurrentSource` was reset above; refresh the rotation
         // history menu tick to reflect the global preference (no
         // session opt-out to honour yet).
@@ -3257,9 +3287,7 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
     // (the other was already consumed / cleared upstream).
     if (!mPendingLiveTailPrimary.isEmpty() || mPendingLiveTailProducer)
     {
-        mPendingLiveTailPrimary.clear();
-        mPendingLiveTailProducer.reset();
-        mPendingLiveTailRetention = 0;
+        ClearPendingLiveTailPromotion();
     }
 
     // Snapshot the mode before resetting so the auto-save gate
@@ -4911,18 +4939,11 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     // attach a live tail of the *wrong file* onto it. Matches the
     // teardown in `NewSession` and `StartStreamingOpenQueue`'s
     // destructive branch.
-    mPendingLiveTailPrimary.clear();
-    mPendingLiveTailProducer.reset();
-    mPendingLiveTailRetention = 0;
+    ClearPendingLiveTailPromotion();
     // The outgoing session's expansion-undo affordance no longer
     // applies to the new session. Match the destructive-open
     // teardown in `StartStreamingOpenQueue`.
-    mLastRotationExpansionOriginalInputs.clear();
-    mLastRotationExpansionCount = 0;
-    if (mActionUndoRotationExpansion != nullptr)
-    {
-        mActionUndoRotationExpansion->setEnabled(false);
-    }
+    ClearRotationExpansionUndoState();
 
     // Sibling-prefix branch: siblings go through the static queue
     // first, then the tail is appended in `OnStreamingFinished`.
@@ -5019,9 +5040,7 @@ void MainWindow::ContinueLiveTailAfterPrefix()
     if (mPendingLiveTailPrimary.isEmpty() || !mPendingLiveTailProducer)
     {
         // Nothing to promote; clear any residual state defensively.
-        mPendingLiveTailPrimary.clear();
-        mPendingLiveTailProducer.reset();
-        mPendingLiveTailRetention = 0;
+        ClearPendingLiveTailPromotion();
         return;
     }
 
@@ -5086,20 +5105,18 @@ void MainWindow::ContinueLiveTailAfterPrefix()
     }
     SyncRotationHistoryActionCheckedState();
 
-    // Promote to live-tail. Retention override was captured pre-
-    // reset above; re-apply it now that the tail is being armed.
-    // NOTE: the static prefix path drained unbounded, so a
-    // historical prefix longer than `retention` gets FIFO-evicted
-    // by `SetRetentionCap` here. Not a bug -- the retention cap is
-    // a memory ceiling for the whole session -- but the toast at
-    // `OpenLogStreamFromPath` already told the user about the
-    // expansion, so a follow-up trim just enforces the cap.
+    // Promote to live-tail. The retention override is applied
+    // *after* the parser is armed below, because `BeginStreaming`
+    // (used in the rescue branch when no sibling ever streamed)
+    // unconditionally re-initialises `mRetentionCap` from
+    // `StreamingControl::RetentionLines()` inside
+    // `BeginStreamingShared`. Pre-setting the cap here would be
+    // silently clobbered on that path. NOTE: the static prefix
+    // path drained unbounded, so a historical prefix longer than
+    // `retention` gets FIFO-evicted by `SetRetentionCap` -- not a
+    // bug, the cap is a memory ceiling for the whole session.
     mSessionMode = SessionMode::LiveTail;
     mStreamingFileName = QFileInfo(primary).fileName();
-    if (retention > 0)
-    {
-        mModel->SetRetentionCap(retention);
-    }
     StartLiveTailTicker();
     UpdateStreamingStatus();
     UpdateStreamToolbarVisibility();
@@ -5131,6 +5148,15 @@ void MainWindow::ContinueLiveTailAfterPrefix()
     else
     {
         mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
+    }
+    // Apply the caller's captured retention AFTER the parser is
+    // armed so `BeginStreaming`'s reinitialisation cannot overwrite
+    // it. In the `AppendStreaming` branch the sink's cap is already
+    // whatever the sibling prefix ran with -- overriding here
+    // re-enforces the user's captured intent uniformly.
+    if (retention > 0)
+    {
+        mModel->SetRetentionCap(retention);
     }
 }
 
@@ -6811,7 +6837,7 @@ MainWindow::TestSessionMode MainWindow::SessionModeForTest() const noexcept
     case SessionMode::LiveTail:
         return TestSessionMode::LiveTail;
     }
-    return TestSessionMode::Idle;
+    Q_UNREACHABLE_RETURN(TestSessionMode::Idle);
 }
 
 bool MainWindow::TryLoadAsConfigurationForTest(const QString &file)
@@ -7926,6 +7952,17 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         mPendingOpenFiles.clear();
         mPendingOpenErrors.clear();
         mPendingDecompressionErrors.clear();
+        // The outgoing session's Undo-rotation-history affordance
+        // and any half-drained sibling-prefix promotion no longer
+        // apply to the newly loaded config. Mirrors the teardowns
+        // in `NewSession`, `StartStreamingOpenQueue`'s Replace
+        // branch, and `OpenLogStreamFromPath`. Without this, a user
+        // who loads a session JSON mid-rotation-drain would keep
+        // the previous session's Undo enabled -- clicking it would
+        // reopen the previous session's files in Replace mode and
+        // clobber the freshly loaded configuration.
+        ClearPendingLiveTailPromotion();
+        ClearRotationExpansionUndoState();
         mSessionMode = SessionMode::Idle;
         mLastTerminalSessionMode = SessionMode::Idle;
         mStreamingFileName.clear();

@@ -366,3 +366,60 @@ TEST_CASE("EnumerateRotatedSiblings rejects `.0` numbered suffix", "[RotationSib
     CHECK(series.files.front().path.filename().string() == "app.log.1");
     CHECK(series.files.back().path.filename().string() == "app.log");
 }
+
+TEST_CASE(
+    "PartitionAsRotationSeries rejects `.0` and pathological numbered suffixes for derivation",
+    "[RotationSiblings]"
+)
+{
+    // Regression: `DeriveRotationPrimary` used to accept any
+    // `<primary>.<N>` numeric suffix (including `.0` and overflow
+    // values), so a lone drop of `app.log.0` next to a real
+    // `app.log` was pulled into the family via the union step in
+    // `PartitionAsRotationSeries`. This contradicted the strict
+    // `>= 1 && <= MAX_ACCEPTED_NUMBERED_SUFFIX` filter that
+    // `ClassifySibling` applies inside `EnumerateRotatedSiblings`.
+    // The partitioner now rejects the same suffixes at derivation
+    // time so the two entry points agree.
+    const TempDir dir("rotation_partition_reject_zero_and_overflow");
+    (void)dir.Write("app.log", "primary");
+    const auto zeroPath = dir.Write("app.log.0", "not a rotated sibling");
+    const auto overflowPath =
+        dir.Write("app.log.10000000000000", "pathological, would collide with dated rank range");
+
+    // Drop `[app.log.0, app.log.10000000000000]` alone. Neither
+    // derotates to `app.log`, so both end up as residuals rather
+    // than being smuggled into a synthetic single-family series.
+    const std::vector<std::filesystem::path> input{zeroPath, overflowPath};
+    const auto partitioned = PartitionAsRotationSeries(std::span<const std::filesystem::path>(input));
+    CHECK(partitioned.series.empty());
+    REQUIRE(partitioned.residual.size() == 2);
+    CHECK(partitioned.residual.front().filename().string() == "app.log.0");
+    CHECK(partitioned.residual.back().filename().string() == "app.log.10000000000000");
+}
+
+#if !defined(_WIN32)
+TEST_CASE("CanonicalKeyForPath preserves case on non-Windows platforms", "[RotationSiblings]")
+{
+    // Regression on two fronts:
+    //   * On Linux the helper used to lower-case unconditionally,
+    //     collapsing `App.log` and `app.log` (two distinct files on
+    //     a case-sensitive FS) into the same key -- which either
+    //     silently dropped the second file from
+    //     `PartitionAsRotationSeries` or merged unrelated files
+    //     into one "family".
+    //   * On macOS the helper lower-cased to match the platform's
+    //     case-insensitive default FS, but the app-layer
+    //     `CanonicalLocator` (which populates
+    //     `Source::locatorDedupKeys`) did NOT. macOS paths always
+    //     contain uppercase (`/Users/...`), so the two key
+    //     flavours never matched and drop-into-session dedup in
+    //     `MainWindow::ExpandLogPathsWithRotationSiblings` always
+    //     missed -- causing duplicate rows on every drop.
+    // The current contract: lower-case only on Windows; every
+    // other platform preserves case. This mirrors `CanonicalLocator`.
+    const std::string upperKey = loglib::CanonicalKeyForPath("/logs/App.log");
+    const std::string lowerKey = loglib::CanonicalKeyForPath("/logs/app.log");
+    CHECK(upperKey != lowerKey);
+}
+#endif

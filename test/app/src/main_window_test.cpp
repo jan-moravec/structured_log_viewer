@@ -51,6 +51,7 @@
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/parsers/logfmt_parser.hpp>
 #include <loglib/query_parser.hpp>
+#include <loglib/rotation_siblings.hpp>
 #include <loglib/session_bundle.hpp>
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
@@ -13491,6 +13492,259 @@ private slots:
         // resets UI state for the next test.
         mWindow->NewSessionForTest();
         QCoreApplication::processEvents();
+    }
+
+    // Regression: a `File → Load Configuration...` (or any code
+    // path through `ApplyLoadedConfiguration`) mid-way through the
+    // life of a rotation-expanded session must scrub the outgoing
+    // Undo-rotation affordance and any pending sibling-prefix
+    // live-tail state. Before the fix, `ApplyLoadedConfiguration`
+    // left `mLastRotationExpansionOriginalInputs` and
+    // `mPendingLiveTail*` populated; clicking Settings → Undo
+    // Rotated History Expansion afterwards would destructively
+    // reopen the previous session's files (Replace mode), clobbering
+    // the just-loaded configuration.
+    void TestApplyLoadedConfigurationClearsRotationExpansionState()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString olderPath = dir.filePath(QStringLiteral("app.log.1"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(primaryPath, R"({"msg":"p"})""\n");
+        write(olderPath, R"({"msg":"g1"})""\n");
+
+        // First open: two files stream (primary + sibling), the
+        // Undo affordance arms.
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        for (int i = 0; i < 2; ++i)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "two per-file streamingFinished emits expected");
+        }
+        QCoreApplication::processEvents();
+        QVERIFY(mWindow->IsUndoRotationExpansionEnabledForTest());
+        QCOMPARE(mWindow->LastRotationExpansionOriginalInputsForTest().size(), 1);
+
+        // Also seed a pending live-tail slot to prove the same code
+        // path scrubs both classes of state. In production this
+        // would sit here after a sibling drain that never resolved;
+        // for the assertion we only care about the flag clearing.
+        mWindow->SeedPendingLiveTailForTest(primaryPath, /*retention=*/64);
+        QVERIFY(mWindow->HasPendingLiveTailForTest());
+
+        // Save a full-session JSON of the current view; we will
+        // load it back through `LoadConfigurationFromPathForTest`
+        // which reaches `ApplyLoadedConfiguration`.
+        const QTemporaryDir savedDir;
+        QVERIFY(savedDir.isValid());
+        const QString sessionPath = savedDir.filePath(QStringLiteral("saved.json"));
+        mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
+
+        // File → Load Configuration...: this is the exact code path
+        // where the bug lived.
+        mWindow->LoadConfigurationFromPathForTest(sessionPath);
+        QCoreApplication::processEvents();
+
+        // After the fix, the load scrubs both the Undo affordance
+        // and the pending live-tail state.
+        QVERIFY2(
+            !mWindow->IsUndoRotationExpansionEnabledForTest(),
+            "loading a config must disable Undo Rotated History Expansion"
+        );
+        QVERIFY2(
+            mWindow->LastRotationExpansionOriginalInputsForTest().isEmpty(),
+            "loading a config must clear the stored original-inputs list"
+        );
+        QVERIFY2(
+            !mWindow->HasPendingLiveTailForTest(),
+            "loading a config must scrub any half-drained sibling-prefix live-tail state"
+        );
+    }
+
+    // Regression: `TryLoadAsConfiguration` (the lone-config refresh
+    // path that keeps existing rows) also clears the Undo affordance.
+    // Without this, refreshing the columns/filters of a
+    // rotation-expanded view via drop-open of a JSON config would
+    // leave Undo pointing at the pre-refresh file list -- clicking
+    // it would then Replace-mode reopen those files and discard the
+    // rows the refresh was meant to keep visible.
+    void TestTryLoadAsConfigurationClearsUndoRotationExpansion()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString olderPath = dir.filePath(QStringLiteral("app.log.1"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(primaryPath, R"({"msg":"p"})""\n");
+        write(olderPath, R"({"msg":"g1"})""\n");
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        for (int i = 0; i < 2; ++i)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "two per-file streamingFinished emits expected");
+        }
+        QCoreApplication::processEvents();
+        QVERIFY(mWindow->IsUndoRotationExpansionEnabledForTest());
+
+        // Save a columns-only slice so `TryLoadAsConfiguration`
+        // takes the "existing rows survive" branch on reload.
+        const QTemporaryDir savedDir;
+        QVERIFY(savedDir.isValid());
+        const QString columnsPath = savedDir.filePath(QStringLiteral("cols.json"));
+        mWindow->SaveConfigurationToPathForTest(columnsPath, loglib::SaveScope::ColumnsOnly);
+
+        QVERIFY(mWindow->TryLoadAsConfigurationForTest(columnsPath));
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            !mWindow->IsUndoRotationExpansionEnabledForTest(),
+            "TryLoadAsConfiguration must disable Undo Rotated History Expansion"
+        );
+        QVERIFY2(
+            mWindow->LastRotationExpansionOriginalInputsForTest().isEmpty(),
+            "TryLoadAsConfiguration must clear the stored original-inputs list"
+        );
+    }
+
+    // Regression: `CanonicalKeyForPath` (loglib) and
+    // `CanonicalLocator` (app layer) must agree on the same input
+    // path for a set of platform-stable roots. The two functions
+    // implement independent normalisation (`weakly_canonical` vs
+    // `QFileInfo::absoluteFilePath` + lower-case), so they can
+    // diverge (a) when one lower-cases and the other does not, or
+    // (b) when one resolves symlinks and the other does not.
+    // `ExpandLogPathsWithRotationSiblings` compares one flavour
+    // against the other in the `alreadyLoaded` dedup, so any
+    // divergence makes drop-into-session dedup silently miss and
+    // produces duplicate rows on every drop.
+    //
+    // This test targets divergence (a) -- the casing mismatch that
+    // silently broke drop-into-session dedup on macOS -- so it
+    // uses an already-canonicalised root (`std::filesystem::canonical`
+    // on the temp dir) to sidestep the orthogonal `/tmp` -> `/private/tmp`
+    // symlink expansion that `weakly_canonical` performs and
+    // `QFileInfo::absoluteFilePath` does not.
+    void TestCanonicalKeyAndCanonicalLocatorAgree()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        std::error_code ec;
+        const std::filesystem::path rootFs =
+            std::filesystem::canonical(std::filesystem::path(dir.path().toStdString()), ec);
+        QVERIFY2(!ec, "canonical(root) must succeed on a valid QTemporaryDir");
+        const QString root = QString::fromStdString(rootFs.generic_string());
+
+        // Mixed case in each leaf so the test would catch a
+        // regression that lower-cased in only one helper.
+        const QStringList relatives{
+            QStringLiteral("App.log"),
+            QStringLiteral("dir/Nested/File.LOG"),
+            QStringLiteral("subdir/app.log.1"),
+            QStringLiteral("app-2025-08-01.log.gz"),
+        };
+        for (const QString &rel : relatives)
+        {
+            const QString p = root + QLatin1Char('/') + rel;
+            const std::string appKey = logapp::CanonicalLocator(p).toStdString();
+            const std::string libKey = loglib::CanonicalKeyForPath(std::filesystem::path(p.toStdString()));
+            QVERIFY2(
+                appKey == libKey,
+                qPrintable(
+                    QStringLiteral("CanonicalLocator vs CanonicalKeyForPath mismatch for %1:\n"
+                                   "  app: %2\n  lib: %3")
+                        .arg(p)
+                        .arg(QString::fromStdString(appKey))
+                        .arg(QString::fromStdString(libKey))
+                )
+            );
+        }
+    }
+
+    // Regression: opening `[config.json, app.log]` where the config
+    // was saved from a previous session containing `app.log` must
+    // still stream `app.log` into the fresh view. Before the fix,
+    // `DoLoadConfiguration` reset the model but then
+    // `mCurrentSource->locatorDedupKeys` was populated from the
+    // loaded config's *saved* `Source` -- which lists exactly the
+    // files the user is re-opening. The subsequent
+    // `ExpandLogPathsWithRotationSiblings(..., Append)` used those
+    // stale keys as "already loaded", filtered out every user
+    // selection whose canonical key matched, and produced an empty
+    // open queue -- landing the user on an empty view. This is the
+    // same "empty view" hazard the `Ignore` branch guards
+    // destructive Replace opens against.
+    void TestConfigThenLogsIgnoresStaleLocatorDedup()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(primaryPath, R"({"msg":"row-A"})""\n");
+
+        // First session: open the log and save a full-session config.
+        // The saved config's `Source::locatorDedupKeys` will contain
+        // `primaryPath`'s canonical key -- exactly the collision the
+        // bug hinges on.
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        QVERIFY2(finishedSpy.wait(5000), "primary must stream to completion");
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 1);
+
+        const QTemporaryDir savedDir;
+        QVERIFY(savedDir.isValid());
+        const QString sessionPath = savedDir.filePath(QStringLiteral("saved.json"));
+        mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
+
+        // New session so the outgoing state cannot cross-contaminate
+        // the assertion (`mCurrentSource` cleared, model empty).
+        mWindow->NewSessionForTest();
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 0);
+        QVERIFY(!mWindow->CurrentSourceForTest().has_value());
+
+        // Mixed drop: `[saved.json, app.log]`. Before the fix, the
+        // expander would filter `app.log` out (matches a stale
+        // locator from the loaded config) and stream nothing.
+        finishedSpy.clear();
+        const MainWindow::MixedInputDispatch outcome =
+            mWindow->OpenMixedFilesForTest({sessionPath, primaryPath}, MainWindow::OpenMode::Replace);
+        QCOMPARE(outcome, MainWindow::MixedInputDispatch::AppliedConfigThenLogs);
+        QVERIFY2(finishedSpy.wait(5000), "post-config log must stream to completion");
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            model->rowCount() >= 1,
+            qPrintable(QStringLiteral("post-config `app.log` open produced %1 rows -- "
+                                      "stale locatorDedupKeys must not filter fresh selections")
+                           .arg(model->rowCount()))
+        );
     }
 
     // Regression: a multi-file open must sniff each queued file

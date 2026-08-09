@@ -89,9 +89,12 @@ CMakeUserPresets.json
 /test_*.txt
 /test_*.log
 
-# Third-party AI dev tasks helper (cloned alongside, not part of the project)
-ai-dev-tasks-main/
-tasks/
+# Third-party AI dev tasks helper (cloned alongside, not part of the project),
+# plus the local `tasks/` scratch dir the helper writes its plans into. Both
+# are anchored to the repo root so any deeper `tasks/` folder a future feature
+# adds (e.g. a CI job or a docs section) is not silently hidden from git.
+/ai-dev-tasks-main/
+/tasks/
 # Benchmark scratch dirs (one per investigation, freely named).
 # Pattern keeps `.bench-results/`, `.bench-results-prefix/`, etc. out.
 .bench-results*/

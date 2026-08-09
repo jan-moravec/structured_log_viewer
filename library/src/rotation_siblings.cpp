@@ -254,8 +254,16 @@ std::optional<std::filesystem::path> DeriveRotationPrimary(const std::filesystem
     }
 
     static constexpr auto DERIVE_REGEX_FLAGS = std::regex::ECMAScript | std::regex::optimize | REGEX_CASE_FLAGS;
+    // Capture both the stem and the numeric suffix so we can apply
+    // the same "sane range" filter `ClassifySibling` uses. Without
+    // this the partitioner would happily treat `app.log.0` and
+    // `app.log.99999999999999` as siblings of `app.log` even though
+    // `EnumerateRotatedSiblings` rejects those on-disk. Consistent
+    // rejection is important because the partitioner's union step
+    // would otherwise insert the rejected candidate into the series
+    // with a fabricated origin.
     static const std::regex NUMBERED_TAILING(
-        R"(^(.+?)\.[0-9]+(?:\.(?:gz|bz2|xz|zst))?$)", DERIVE_REGEX_FLAGS
+        R"(^(.+?)\.([0-9]+)(?:\.(?:gz|bz2|xz|zst))?$)", DERIVE_REGEX_FLAGS
     );
     static const std::regex DATED_TAILING(
         R"(^(.+?)[-._]\d{4}-\d{2}-\d{2}(?:\.(?:gz|bz2|xz|zst))?$)", DERIVE_REGEX_FLAGS
@@ -267,7 +275,16 @@ std::optional<std::filesystem::path> DeriveRotationPrimary(const std::filesystem
     std::smatch m;
     if (std::regex_match(filename, m, NUMBERED_TAILING))
     {
-        return path.parent_path() / m[1].str();
+        const std::string capture = m[2].str();
+        std::int64_t n = 0;
+        const auto [ptr, ec] = std::from_chars(capture.data(), capture.data() + capture.size(), n);
+        if (ec == std::errc{} && n >= 1 && n <= MAX_ACCEPTED_NUMBERED_SUFFIX)
+        {
+            return path.parent_path() / m[1].str();
+        }
+        // Fall through: `.0` or an out-of-range suffix is not part
+        // of any recognised family. Dated variants below may still
+        // match on the same filename (unlikely but harmless).
     }
     // Check the "tailing" pattern (`<primary>-<date>[.<compression>]`)
     // *before* the stem-inserted variant. Both regexes accept a
@@ -377,10 +394,27 @@ std::string CanonicalKeyForPath(const std::filesystem::path &path)
     //     and mixed slashes without requiring the path to exist.
     //   - Forward slashes so a saved key round-trips across
     //     platforms.
-    //   - Lower-case so Windows / mixed-case filesystems dedup
-    //     `App.LOG` against `app.log`.
-    // The app layer has its own `CanonicalLocator` that also does
-    // this; the library helper exists so unit tests can share a
+    //   - Lower-case ONLY on Windows. This intentionally mirrors
+    //     the app-layer `CanonicalLocator`
+    //     (`app/include/uuid_utils.hpp`), which populates
+    //     `Source::locatorDedupKeys`. Both key flavours are
+    //     compared against each other in
+    //     `MainWindow::ExpandLogPathsWithRotationSiblings`: the
+    //     `alreadyLoaded` set is built from `CanonicalLocator`
+    //     output while the partitioner's `rf.canonicalKey` uses
+    //     this helper, so any casing divergence silently defeats
+    //     the "already in session" dedup. Historically this
+    //     helper also lower-cased on macOS to match the
+    //     platform-default case-insensitive APFS/HFS+, but that
+    //     broke drop-into-session dedup for every macOS user --
+    //     paths like `/Users/...` always contain uppercase, so
+    //     the two key flavours never matched. If we later want
+    //     case-insensitive comparison on macOS, `CanonicalLocator`
+    //     has to move first and this helper follows in the same
+    //     PR. Linux is always case-sensitive: `App.log` and
+    //     `app.log` are two distinct files and must produce
+    //     distinct keys.
+    // The library helper exists so unit tests can share a
     // canonicaliser without depending on Qt.
     std::error_code ec;
     std::filesystem::path normalised = std::filesystem::weakly_canonical(path, ec);
@@ -389,7 +423,11 @@ std::string CanonicalKeyForPath(const std::filesystem::path &path)
         normalised = path;
     }
     std::string s = normalised.generic_string();
+#if defined(_WIN32)
     return ToLower(std::move(s));
+#else
+    return s;
+#endif
 }
 
 RotationSeries EnumerateRotatedSiblings(const std::filesystem::path &primary)
@@ -446,6 +484,7 @@ PartitionedSelection PartitionAsRotationSeries(std::span<const std::filesystem::
     {
         std::filesystem::path primary;
         size_t firstOrdinal = 0; // position of the first input contributing to this group
+        size_t inputMemberCount = 0; // number of input paths that landed in this group
     };
     // Preserve caller order: `firstOrdinal` remembers where each
     // group's earliest listed member sits in `paths` so we emit
@@ -477,13 +516,20 @@ PartitionedSelection PartitionAsRotationSeries(std::span<const std::filesystem::
         auto it = groups.find(primaryKey);
         if (it == groups.end())
         {
-            groups.emplace(primaryKey, GroupEntry{.primary = candidatePrimary, .firstOrdinal = i});
+            groups.emplace(
+                primaryKey,
+                GroupEntry{.primary = candidatePrimary, .firstOrdinal = i, .inputMemberCount = 1}
+            );
         }
-        else if (i < it->second.firstOrdinal)
+        else
         {
-            // Unlikely (map insert order) but keep the invariant:
-            // firstOrdinal is the earliest input index for the group.
-            it->second.firstOrdinal = i;
+            // Keep the invariant: `firstOrdinal` is the earliest
+            // input index that landed in this group. Iteration
+            // order over `paths` is monotonic so the min is almost
+            // always `it->second.firstOrdinal`, but the explicit
+            // `min` documents the invariant clearly.
+            it->second.firstOrdinal = std::min(i, it->second.firstOrdinal);
+            ++it->second.inputMemberCount;
         }
         memberToGroupKey[selfKey] = primaryKey;
     }
@@ -504,14 +550,7 @@ PartitionedSelection PartitionAsRotationSeries(std::span<const std::filesystem::
     emittedInputKeys.reserve(paths.size());
     for (const auto &[primaryKey, entry] : ordered)
     {
-        size_t inputMemberCount = 0;
-        for (const auto &[memberKey, ownerKey] : memberToGroupKey)
-        {
-            if (ownerKey == primaryKey)
-            {
-                ++inputMemberCount;
-            }
-        }
+        const size_t inputMemberCount = entry.inputMemberCount;
         RotationSeries series = EnumerateRotatedSiblings(entry.primary);
         const bool hasSiblingsOnDisk = series.files.size() > 1;
         const bool multipleInputsInGroup = inputMemberCount > 1;

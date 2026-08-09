@@ -116,7 +116,7 @@ If you drop a set of files that all belong to one rotation family (e.g. `[app.lo
 
 **Opting out.**
 
-- Session-scope: **Settings → Auto-detect rotated log history** toggles the feature for the current session and persists as a global preference (`ui/autoDetectRotatedHistory`). Off by default only when the preference has been changed.
+- Session-scope: **Settings → Auto-detect rotated log history** toggles the feature. It is **on** by default and persists as a global preference (`ui/autoDetectRotatedHistory`) shared by every window on the same user profile. When a session is loaded, the checkbox also mirrors onto `Source::followRotationSiblings` so drops-into-session honour the per-session choice.
 - Launch-scope: pass `--no-rotation-history` on the command line to skip auto-detection for the whole launch (mirrors `LOGAPP_NEW_INSTANCE` in behaviour). The setting persists for the process, not the window.
 - One-shot: after a successful expansion, a status-bar toast reads *"Loaded N rotated companion(s) alongside &lt;primary&gt;."* and **Settings → Undo rotated history expansion** becomes enabled — one click reopens just the primary in Replace mode.
 
