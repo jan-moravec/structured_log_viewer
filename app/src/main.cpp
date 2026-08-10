@@ -161,9 +161,7 @@ int main(int argc, char *argv[])
     // that never opens stdin.
     const bool effectiveAllowNewInstance = allowNewInstance || readStdin;
     SingleInstanceGuard instanceGuard;
-    // Assemble the per-launch bitmask. `--no-rotation-history` is
-    // the only bit today; add new bits alongside this one and keep
-    // the wire schema in `single_instance_guard.cpp` in sync.
+    // Forward per-launch options to an existing primary process.
     SingleInstanceGuard::LaunchFlagsBitmask launchFlags;
     if (parsed.disableRotationHistory)
     {
@@ -217,8 +215,7 @@ int main(int argc, char *argv[])
         cliFiles.append(pendingFromOs);
     }
 
-    // Forward `--no-rotation-history` before opening any file so
-    // the first open respects the launch override.
+    // Apply the launch override before opening files.
     w.SetRotationHistoryLaunchOverride(parsed.disableRotationHistory);
 
     if (!cliFiles.isEmpty())
@@ -379,9 +376,7 @@ int main(int argc, char *argv[])
             child->show();
             child->raise();
             child->activateWindow();
-            // Apply per-launch flags BEFORE opening any file so the
-            // first open honours the CLI override -- matches the
-            // primary-process ordering above.
+            // Apply forwarded flags before opening files.
             child->SetRotationHistoryLaunchOverride(
                 forwardedFlags.testFlag(SingleInstanceGuard::LaunchFlags::DisableRotationHistory)
             );

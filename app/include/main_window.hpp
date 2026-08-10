@@ -217,36 +217,18 @@ public:
     /// session.
     void OpenFilesForCli(const QStringList &files);
 
-    /// Toggle the CLI-driven one-shot opt-out for
-    /// rotated-history expansion. When true, every open through
-    /// `DispatchMixedOpenInput` / `OpenLogStreamFromPath` skips
-    /// sibling detection regardless of the persisted preference or
-    /// per-session flag, and newly-created sessions are seeded with
-    /// `Source::followRotationSiblings = false`.
-    ///
-    /// Scope is per-`MainWindow` (the backing member is not
-    /// static): each peer window carries its own override. That
-    /// keeps `--no-rotation-history` forwarded through the
-    /// single-instance guard from leaking into unrelated peers.
-    /// Cleared by loading or restoring a session, so the persisted
-    /// choice wins after the launch settles.
-    ///
-    /// Not `noexcept`: the checkbox-sync helper reaches `QSettings`,
-    /// which can allocate and (on backend errors) throw.
+    /// Set this window's CLI rotation-history opt-out. It overrides
+    /// global and session preferences until the user toggles the
+    /// corresponding Settings action.
     void SetRotationHistoryLaunchOverride(bool disable);
 
-    /// Test seam: query the current process-wide CLI opt-out flag.
+    /// Test-only reader for this window's CLI opt-out.
     [[nodiscard]] bool RotationHistoryLaunchOverrideForTest() const noexcept
     {
         return mDisableRotationHistoryOverride;
     }
 
-    /// Test seam: simulate the user clicking
-    /// `Settings -> Auto-detect rotated log history`. The real menu
-    /// action is wired to `OnRotationHistoryPrefToggled` via the
-    /// action's `toggled(bool)` signal; this helper exercises the
-    /// same slot without needing to synthesize a `QAction::toggled`
-    /// through the menu.
+    /// Test-only entry to the rotation-history Settings handler.
     void SimulateRotationHistoryMenuToggleForTest(bool enabled)
     {
         OnRotationHistoryPrefToggled(enabled);
@@ -633,65 +615,36 @@ public:
     /// modal `QFileDialog`.
     void OpenLogStreamForTest(const QString &filePath);
 
-    /// Test seam: is a sibling-prefix live-tail promotion pending?
-    /// `OpenLogStreamFromPath`'s sibling branch parks the primary
-    /// here between the sibling drain and the tail attach. Cleared
-    /// on any destructive-open teardown, and by
-    /// `ContinueLiveTailAfterPrefix`.
+    /// Test-only check for a pending historical-prefix promotion.
     [[nodiscard]] bool HasPendingLiveTailForTest() const noexcept
     {
         return !mPendingLiveTailPrimary.isEmpty() || mPendingLiveTailRetention != 0;
     }
 
-    /// Test seam: seed a stale pending live-tail state to simulate
-    /// a prior sibling drain that never resolved. Combined with
-    /// `HasPendingLiveTailForTest`, the two lets tests assert that
-    /// destructive-open resets clear the state. `primary` becomes
-    /// `mPendingLiveTailPrimary`; the retention argument mirrors
-    /// `mPendingLiveTailRetention`.
+    /// Test-only setter for pending live-tail promotion state.
     void SeedPendingLiveTailForTest(const QString &primary, size_t retention) noexcept
     {
         mPendingLiveTailPrimary = primary;
         mPendingLiveTailRetention = retention;
     }
 
-    /// Test seam: reproduce the "all siblings failed synchronously"
-    /// rescue path from `StreamNextPendingFile`. Seeds
-    /// `mPendingLiveTail*` (producer is created lazily inside
-    /// `ContinueLiveTailAfterPrefix`), forces `mSessionMode = Idle`
-    /// + `mCurrentSource = nullopt` (matching the state when no
-    /// sibling ever reached `ContinueOpenAfterPrepared`), then
-    /// calls the live-tail promotion helper. Lets tests assert
-    /// the promotion disables the configuration UI without having
-    /// to stage broken siblings on disk.
+    /// Test-only entry to the no-prefix live-tail rescue path.
     void TriggerRescueLiveTailForTest(const QString &primary, size_t retention);
 
-    /// Test seam: forward to the private `UndoRotationExpansion` so
-    /// tests can exercise the undo affordance without simulating a
-    /// menu click.
+    /// Test-only entry to `UndoRotationExpansion`.
     void UndoRotationExpansionForTest()
     {
         UndoRotationExpansion();
     }
 
-    /// Test seam: read the caller's original path list captured by
-    /// the most recent rotation-siblings expansion. Empty when no
-    /// expansion has happened. Used by tests to assert that
-    /// multi-file selections survive `UndoRotationExpansion`.
+    /// Original inputs captured for the most recent expansion.
     [[nodiscard]] const QStringList &LastRotationExpansionOriginalInputsForTest() const noexcept
     {
         return mLastRotationExpansionOriginalInputs;
     }
 
-    /// Test seam: seed the sibling-Undo affordance the same way the
-    /// dispatch helpers do. `originalInputs` becomes what a
-    /// subsequent `UndoRotationExpansion` reopens; `wasLiveTail`
-    /// routes the undo through `OpenLogStreamFromPath` instead of
-    /// the static-open queue. Also enables the "Undo rotated
-    /// history expansion" action so `IsUndoRotationExpansionEnabledForTest`
-    /// reflects the seeded state. Lets destructive-open regression
-    /// tests assert that the affordance is scrubbed without having
-    /// to synthesise a full sibling drain.
+    /// Seed expansion-undo state. Live-tail state reopens through
+    /// `OpenLogStreamFromPath`; other state uses the static queue.
     void SeedLastRotationExpansionForTest(const QStringList &originalInputs, bool wasLiveTail) noexcept
     {
         mLastRotationExpansionOriginalInputs = originalInputs;
@@ -702,9 +655,7 @@ public:
         }
     }
 
-    /// Test seam: is the "Undo rotated history expansion" menu
-    /// action currently enabled? Reflects whether the most recent
-    /// expansion is still resurrect-able.
+    /// Test-only reader for the expansion-undo action state.
     [[nodiscard]] bool IsUndoRotationExpansionEnabledForTest() const noexcept
     {
         return mActionUndoRotationExpansion != nullptr && mActionUndoRotationExpansion->isEnabled();
@@ -1288,108 +1239,40 @@ private:
     /// `QFileDialog`.
     void OpenLogStreamFromPath(const QString &file);
 
-    /// Attach a live-tail on `mPendingLiveTailPrimary` once the
-    /// static sibling prefix has drained. Invoked from
-    /// `OnStreamingFinished` when the queue is empty and the
-    /// pending primary is non-empty. Clears the pending state and
-    /// flips `mSessionMode` from `Static` to `LiveTail`.
+    /// Attach the pending live tail after its static prefix drains.
     void ContinueLiveTailAfterPrefix();
 
-    /// True iff the current process should attempt rotation-sibling
-    /// expansion for new opens. Consults both the global preference
-    /// (`QSettings ui/autoDetectRotatedHistory`, default `true`)
-    /// and the CLI launch override. Session-level flags on
-    /// `mCurrentSource->followRotationSiblings` further gate
-    /// drops-into-session; those are consulted at the call site
-    /// (or via `EffectiveAutoDetectRotationHistory`).
-    ///
-    /// Not `noexcept`: `QSettings` construction and `.value()` can
-    /// allocate memory and (on failing platforms) throw. A truly
-    /// noexcept variant would need a cached pref updated by
-    /// `OnRotationHistoryPrefToggled`; the current cost is one map
-    /// lookup per open so caching is not worth the complexity.
+    /// Global rotation-history preference after applying the CLI
+    /// override. Session-level gating is handled separately.
     [[nodiscard]] bool ShouldAutoDetectRotationHistory() const;
 
-    /// Effective rotation-history preference matching the Settings
-    /// checkbox: global/CLI gate AND the bound session's
-    /// `followRotationSiblings` (when a session is loaded). Stream
-    /// Mode snapshots this *before* tearing down the outgoing
-    /// session so an unchecked box cannot expand on the next open.
+    /// Rotation-history preference after global, CLI, and session gates.
     [[nodiscard]] bool EffectiveAutoDetectRotationHistory() const;
 
-    /// Drop the "Undo rotated history expansion" affordance state.
-    /// Called from every destructive session-boundary path so the
-    /// action can't survive into an unrelated session and reopen
-    /// the previous session's files in Replace mode. Idempotent.
+    /// Clear expansion-undo state at a destructive session boundary.
     void ClearRotationExpansionUndoState() noexcept;
 
-    /// Discard any pending sibling-prefix live-tail promotion.
-    /// The primary/producer/retention triple is set by
-    /// `OpenLogStreamFromPath` while the sibling static queue
-    /// drains; if a session-switch tears the model down before
-    /// `OnStreamingFinished` can promote the tail, this scrubs the
-    /// stale state so the next session can't inherit it and attach
-    /// a live tail of the wrong file. Idempotent.
+    /// Clear a pending historical-prefix promotion so it cannot
+    /// attach to a later session.
     void ClearPendingLiveTailPromotion() noexcept;
 
-    /// Selects how `mCurrentSource` gates
-    /// `ExpandLogPathsWithRotationSiblings`. The two decisions
-    /// (opt-out check vs. dedup set) are split because a
-    /// config-load-then-open sits in between the two normal opens:
-    /// the loaded source's `followRotationSiblings` still
-    /// represents a genuine user choice, but its
-    /// `locatorDedupKeys` are stale (`DoLoadConfiguration` reset
-    /// the model, so no rows are actually visible).
+    /// Controls whether expansion consults the current source's
+    /// opt-out and locator deduplication state.
     enum class RotationSourceGating
     {
-        /// Consult both `mCurrentSource->followRotationSiblings`
-        /// (session opt-out) and `mCurrentSource->locatorDedupKeys`
-        /// (already-loaded-in-session dedup). Drops-into-session.
+        /// Apply both the session opt-out and loaded-locator deduplication.
         HonourAll,
-        /// Ignore `mCurrentSource` entirely. Destructive Replace
-        /// opens use this: consulting the outgoing session's state
-        /// would let its per-session opt-out or already-loaded
-        /// locators erroneously suppress the fresh expansion, in
-        /// the dedup case potentially returning an empty list when
-        /// the user re-opens the same family.
+        /// Ignore the outgoing source during a destructive replacement.
         Ignore,
-        /// Consult the opt-out but NOT the dedup keys. Post
-        /// `DoLoadConfiguration` in the mixed config-then-logs
-        /// path: the loaded source's flag still applies, but its
-        /// dedup keys describe a session that no longer exists
-        /// (model was reset), so gating on them would silently
-        /// filter out user-selected logs whose canonical key
-        /// happens to match a stale locator -- yielding an empty
-        /// open queue and an empty view.
+        /// Apply the session opt-out but ignore stale locator keys.
         HonourOptOutOnly,
     };
 
-    /// Expand @p logPaths in place: for each entry, if the current
-    /// preference is on and the path has rotation-siblings on disk
-    /// (or looks like a rotated sibling itself), prepend the older
-    /// segments and, when multiple entries in @p logPaths belong to
-    /// one family, deduplicate them into the correct order.
-    ///
-    /// Bundles and configuration JSONs are already filtered out
-    /// upstream; this helper additionally skips any residual
-    /// bundle-like path defensively.
-    ///
-    /// @p gating controls how `mCurrentSource` is consulted; see
-    /// `RotationSourceGating` for the trade-offs. Callers must
-    /// pick deliberately, since silently gating on a stale
-    /// `Source` can produce an empty view (Bug 2 in the
-    /// rotation-siblings review).
-    ///
-    /// Returns the expanded list of paths. When no expansion
-    /// happens, the returned list is byte-equal to the input in
-    /// order. The number of *added* files (excluding the caller's
-    /// originals) is written to @p addedOut for the status-bar
-    /// affordance. When @p primaryOut is non-null it receives the
-    /// canonical display path of the FIRST family that actually
-    /// contributed a non-zero add count, so callers can anchor the
-    /// sibling toast on the expanded family's primary rather than
-    /// on some unrelated caller input. Empty when nothing was
-    /// added.
+    /// Expand rotation families in oldest-first order and deduplicate
+    /// them according to @p gating. Bundles pass through unchanged.
+    /// @p addedOut counts only auto-discovered paths absent from the
+    /// input. @p primaryOut receives the first expanded family's
+    /// canonical primary, or remains empty when nothing was added.
     [[nodiscard]] QStringList ExpandLogPathsWithRotationSiblings(
         const QStringList &logPaths,
         int &addedOut,
@@ -1397,26 +1280,16 @@ private:
         QString *primaryOut = nullptr
     ) const;
 
-    /// Show a status-bar toast after a rotation-siblings expansion
-    /// and enable the `Undo Rotated History Expansion` action.
+    /// Report an expansion and enable its Undo action.
     void ShowRotationHistoryToast(int addedCount, const QString &primary);
 
-    /// Undo the most recent rotation-siblings expansion: destructive
-    /// reset + reopen `mLastRotationExpansionOriginalInputs` (the
-    /// user's original selection, minus companion expansion). No-op
-    /// when the field is empty. Disabled by the action guard once
-    /// the user has touched the view (filters/anchors/sort applied
-    /// since the expansion).
+    /// Reopen the original inputs without rotation expansion.
     void UndoRotationExpansion();
 
-    /// Reflect the value of the current
-    /// `Source::followRotationSiblings` (or the global pref when no
-    /// source is bound) on the checkable Preferences action.
+    /// Sync the Settings action to the effective preference.
     void SyncRotationHistoryActionCheckedState();
 
-    /// Handler for the Preferences toggle. Writes the new value
-    /// through `QSettings` and, when a session is loaded, updates
-    /// `mCurrentSource->followRotationSiblings` in step.
+    /// Persist the preference and mirror it to the current source.
     void OnRotationHistoryPrefToggled(bool enabled);
 
     /// Path-based save / load shared by the dialog slots and the
@@ -1765,21 +1638,10 @@ private:
     /// Toggle action for `mParseErrorsDock`.
     QAction *mActionToggleParseErrors = nullptr;
 
-    /// Checkable Settings action for the "Auto-detect rotated log
-    /// history" preference. Wired up in the constructor after
-    /// `ui->menuSettings` exists.
+    /// Checkable rotation-history Settings action.
     QAction *mActionAutoDetectRotationHistory = nullptr;
 
-    /// One-shot "Undo rotated history" action, enabled after each
-    /// successful auto-expansion and disabled again when the user
-    /// leaves that expansion via any of:
-    ///   - clicking Undo (self-consume),
-    ///   - `New Session`,
-    ///   - a destructive `Open` (Replace),
-    ///   - a session load from disk.
-    /// User-visible view edits (filters, sort, anchors) do NOT
-    /// disable it: the button is only about the historical vs.
-    /// primary open decision, not the current selection state.
+    /// Enabled while the current session can undo its expansion.
     QAction *mActionUndoRotationExpansion = nullptr;
     /// Status-bar indicator that surfaces when the parse-errors dock
     /// has entries; clicking it opens the dock.
@@ -2070,55 +1932,20 @@ private:
     /// Files queued by `StartStreamingOpenQueue`.
     QStringList mPendingOpenFiles;
 
-    /// When non-empty, the active primary for a rotation-siblings-
-    /// plus-live-tail open (the series primary after derotation,
-    /// e.g. `app.log` even when the user picked `app.log.2`). Set
-    /// by `OpenLogStreamFromPath` right before draining
-    /// `mPendingOpenFiles` with the historical prefix; read by
-    /// `OnStreamingFinished` when the queue drains, at which point
-    /// `ContinueLiveTailAfterPrefix` constructs the
-    /// `TailingBytesProducer` and attaches via
-    /// `LogModel::AppendStreaming(StreamLineSource, ...)`.
-    /// Cleared by every destructive teardown so a stale primary
-    /// can't fire against a subsequent session.
+    /// Primary to tail after the queued historical prefix drains.
+    /// Destructive session changes must clear it.
     QString mPendingLiveTailPrimary;
 
-    /// Retention override remembered across a sibling-prefix load.
-    /// Populated by `OpenLogStreamFromPath` before the prefix drain
-    /// so `ContinueLiveTailAfterPrefix` can restore the live-tail
-    /// retention cap the sibling static path bypassed.
+    /// Retention cap saved across a historical-prefix load.
     size_t mPendingLiveTailRetention = 0;
 
-    /// CLI `--no-rotation-history` override. Persists across
-    /// `New Session` / `Open` so a launch with the flag stays
-    /// opted-out for the whole process. Cleared by any explicit
-    /// toggle of `Settings -> Auto-detect rotated log history`
-    /// (either direction) so the checkbox state is always
-    /// consistent with the effective behaviour --
-    /// `ShouldAutoDetectRotationHistory` short-circuits on this
-    /// flag, so leaving it set would silently defeat a menu toggle.
+    /// Per-window CLI opt-out, cleared by an explicit Settings toggle.
     bool mDisableRotationHistoryOverride = false;
 
-    /// The caller's ORIGINAL log path list at the moment the most
-    /// recent rotation-history expansion fired. Empty when no
-    /// auto-expansion has happened. `UndoRotationExpansion` reopens
-    /// this exact list (with the one-shot rotation override on) so
-    /// the user gets their original selection back -- multi-file
-    /// drops included. Storing only the "primary" here would drop
-    /// every companion the user picked, and worse, `logPaths.back()`
-    /// is not guaranteed to be the primary of the expanded family
-    /// (e.g. `[app.log, other.log]` where `app.log` is the family
-    /// that expanded would land `other.log` here and lose the
-    /// `app.log` family entirely).
+    /// Exact caller inputs restored by `UndoRotationExpansion`.
     QStringList mLastRotationExpansionOriginalInputs;
 
-    /// True iff the most recent expansion originated from a
-    /// live-tail entry point (`OpenLogStreamFromPath`). Drives the
-    /// dispatch in `UndoRotationExpansion`: a live-tail expansion
-    /// must be undone through `OpenLogStreamFromPath` so the primary
-    /// is tailed again, not through the static-open queue -- the
-    /// latter would silently demote a Stream Mode view to a
-    /// one-shot Static open.
+    /// Preserve live-tail mode when undoing the latest expansion.
     bool mLastRotationExpansionWasLiveTail = false;
 
     /// File-open errors collected while draining `mPendingOpenFiles`.

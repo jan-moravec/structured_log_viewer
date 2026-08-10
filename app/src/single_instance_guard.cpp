@@ -40,15 +40,9 @@ constexpr int MAGIC_FRAME_PEEK_BYTES =
 /// Wire schema version after `WIRE_MAGIC`. Bump on payload changes.
 /// - Version 2: magic + version + `QStringList` files +
 ///   `quint32 truncatedCount`.
-/// - Version 3 (this build): same as v2 plus a trailing
-///   `quint32 launchFlags` bitmask (see
-///   `SingleInstanceGuard::LaunchFlags`). Older primaries never
-///   see this field because v3 secondaries write it after the
-///   fields v2 expected, but a v2 primary would misclassify the
-///   extra bytes as buffer overrun; MIN_SUPPORTED stays at 2 so a
-///   v2 secondary (older binary talking to a newer primary) still
-///   works -- the primary emits `LaunchFlags::None` for the
-///   missing field.
+/// - Version 3: v2 plus a trailing `quint32 launchFlags`.
+///   This reader accepts v2 and defaults its flags to `None`; v2
+///   primaries do not accept v3 frames.
 constexpr quint8 WIRE_VERSION = 3;
 constexpr quint8 WIRE_VERSION_MIN_SUPPORTED = 2;
 constexpr quint8 WIRE_VERSION_MAX_SUPPORTED = 3;
@@ -183,10 +177,7 @@ bool SingleInstanceGuard::TryAcquire(
     if (allowNewInstance)
     {
         // `--new-instance` bypass: run uncoordinated without
-        // touching the canonical primary's socket. `launchFlags`
-        // is intentionally ignored here -- the caller is running
-        // this process directly, so any flag effect happens in the
-        // caller's own `MainWindow` setup, not on the wire.
+        // touching the canonical primary's socket.
         return true;
     }
 
@@ -206,9 +197,7 @@ bool SingleInstanceGuard::TryAcquire(
     // Serialise up front so we can enforce `MAX_PAYLOAD_BYTES`
     // before any round-trip. Long paths can blow past the byte
     // cap with 256 entries, so pop tail entries on overrun.
-    // `launchFlags` is a fixed 4-byte suffix; it cannot itself
-    // push the payload over the cap, so it does not participate
-    // in the shrink loop.
+    // Flags have fixed size; only the file list can shrink on retry.
     const auto launchFlagsRaw = static_cast<quint32>(launchFlags);
     auto serialise = [&trimmed, &truncatedCount, launchFlagsRaw]() {
         QByteArray buf;
@@ -383,16 +372,8 @@ void SingleInstanceGuard::HandleNewConnection()
             }
             if (it->frameConsumed)
             {
-                // We already decoded and emitted this peer's frame.
-                // `disconnectFromServer` is asynchronous, so a
-                // buggy or malicious peer that keeps writing after
-                // its wire frame could deliver more bytes before
-                // the socket transitions to `UnconnectedState`.
-                // Without this latch the buffer would still contain
-                // the (already-emitted) frame and `readyRead` would
-                // spawn a second window off the same message.
-                // Drain any trailing bytes so the read pointer
-                // stays healthy but never re-decode.
+                // Disconnect is asynchronous. Drain trailing bytes
+                // without decoding the already-emitted frame again.
                 (void)socket->readAll();
                 return;
             }
@@ -443,16 +424,9 @@ void SingleInstanceGuard::HandleNewConnection()
             {
                 return; // Wait for more bytes.
             }
-            // `launchFlags` was added in wire version 3. For older
-            // (v2) peers the extra bytes are absent, so default to
-            // `None` -- matches the pre-v3 behaviour where every
-            // forwarded launch used the receiver's own defaults.
-            //
-            // Note the two-step decode: we tentatively read the
-            // extra field on a copy of the stream so a v3 peer
-            // that has sent everything except the trailing flags
-            // (partial write) still falls through to "wait for
-            // more bytes" rather than emitting with `None`.
+            // Version 2 has no flags. Peek version 3 on a copied
+            // stream so a partial trailing field waits for more
+            // bytes instead of being mistaken for `None`.
             quint32 launchFlagsRaw = 0;
             if (version >= 3)
             {
@@ -482,26 +456,15 @@ void SingleInstanceGuard::HandleNewConnection()
                 truncatedCount += overrun;
                 files = files.mid(0, MAX_FORWARDED_FILES);
             }
-            // Rebuild the bitmask by testing each known bit
-            // rather than casting the raw `quint32`: a future
-            // process running against this build might advertise
-            // bits we don't understand, and silently promoting them
-            // to `LaunchFlags` values would launder unknown state
-            // into our peer window. Unknown bits are dropped, which
-            // matches the "unknown feature -> use defaults" rule.
+            // Preserve only known bits; unknown future flags use
+            // this version's default behaviour.
             LaunchFlagsBitmask launchFlags;
             if ((launchFlagsRaw & static_cast<quint32>(LaunchFlags::DisableRotationHistory)) != 0)
             {
                 launchFlags |= LaunchFlags::DisableRotationHistory;
             }
-            // Mark the frame consumed BEFORE the emit so a
-            // direct-connection slot that itself pumps the event
-            // loop (e.g. a modal dialog spawned by the receiving
-            // window) cannot re-enter `tryDecode` and decode the
-            // same buffered frame twice. Also free the buffer:
-            // we no longer need its contents and holding onto them
-            // would keep the payload memory live until the socket
-            // finishes closing.
+            // Latch before emitting: a direct slot may pump events
+            // and re-enter this decoder before disconnect completes.
             it->frameConsumed = true;
             it->buffer.clear();
             emit openWindowRequested(files, static_cast<int>(truncatedCount), launchFlags);

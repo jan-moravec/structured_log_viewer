@@ -20,11 +20,8 @@ namespace logapp
 /// spawn many windows). `readStdin` is true when either `-` (as a
 /// positional) or `--stdin` was passed; `main()` opens a live-tail
 /// session over the process's `stdin` in that case, after any
-/// positional file paths were opened. `disableRotationHistory` is
-/// true when `--no-rotation-history` was passed; it overrides the
-/// user's global preference for this one launch and stops the
-/// rotated-siblings expander from prepending older segments in
-/// front of the requested files.
+/// positional file paths were opened. `disableRotationHistory`
+/// disables rotated-sibling expansion for this launch.
 struct ParsedCli
 {
     QStringList files;

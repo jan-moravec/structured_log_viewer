@@ -270,18 +270,9 @@ void LogModel::BeginStreamingShared(std::unique_ptr<loglib::LineSource> source)
 
 loglib::BytesProducer *LogModel::ActiveProducer() noexcept
 {
-    // Live tail can sit at either end of the source list:
-    //   - `BeginStreaming(StreamLineSource,...)` -> only source is the stream (front).
-    //   - `AppendStreaming(StreamLineSource,...)` -> stream comes after the
-    //     sibling `FileLineSource` prefix, so the tail lives at the BACK.
-    // We prefer the back-most stream source so the sibling-prefix
-    // + live-tail path (`OpenLogStreamFromPath` with rotation
-    // history) still gets a producer to `Stop()` at teardown.
-    // Without this, `~LogModel` and `TeardownStreamingSessionInternal`
-    // never signal the `TailingBytesProducer` and the parser worker
-    // only unblocks when the source is destroyed by
-    // `mLogTable.Reset()` -- a race that can hang teardown on an
-    // IO-blocked read.
+    // An appended live tail follows static sources, so prefer the
+    // back stream. Teardown must stop its producer before resetting
+    // the table or an I/O-blocked worker may not unblock.
     if (loglib::StreamLineSource *streamSource = mLogTable.Data().BackStreamSource(); streamSource != nullptr)
     {
         return streamSource->Producer();
@@ -392,7 +383,6 @@ loglib::StopToken LogModel::AppendStreaming(
     Q_ASSERT(source);
     Q_ASSERT(mStreamingWatcher == nullptr || !mStreamingWatcher->isRunning());
 
-    // Empty factory = legacy contract: spawn a `JsonParser`.
     if (!parserFactory)
     {
         parserFactory = []() -> std::unique_ptr<loglib::LogParser> { return std::make_unique<loglib::JsonParser>(); };
@@ -401,24 +391,18 @@ loglib::StopToken LogModel::AppendStreaming(
     QtStreamingLogSink *sinkForWorker = mSink;
     loglib::StreamLineSource *streamSourcePtr = source.get();
 
-    // Splice the new source in without resetting rows/keys. Mirrors
-    // `AppendStreaming(FileLineSource...)`: the sibling prefix stays
-    // visible, the tail extends it. No reserve-by-file-size like the
-    // FileLineSource path; stream sources don't have a static size.
+    // Preserve the static prefix while appending the tail.
     mLogTable.AppendStreaming(std::move(source));
 
-    // Cache the new source's locator (see `BeginStreamingShared`).
     PrewarmCanonicalLocatorCache();
 
-    // Arm the sink for the new worker without resetting counters or
-    // wiping rows; `Arm()` bumps the generation.
+    // Arm a new generation without resetting rows or counters.
     const loglib::StopToken stopToken = mSink->Arm();
     options.stopToken = stopToken;
     mStreamingActive = true;
 
-    // Subscribe to producer rotation/status hooks. Callbacks fire from
-    // the producer thread; re-emit queued so the GUI sees them on the
-    // model's thread. `QPointer` handles destruction mid-hop.
+    // Producer callbacks run off-thread. Queue them to the model's
+    // thread and use `QPointer` to tolerate destruction in transit.
     const QPointer<LogModel> self(this);
     if (loglib::BytesProducer *producer = streamSourcePtr->Producer(); producer != nullptr)
     {

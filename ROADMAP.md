@@ -21,7 +21,7 @@ For the architecture each item plugs into, see [CONTRIBUTING.md → Architecture
   - [9. ~~Stdin / pipe input~~ (shipped)](#9-stdin--pipe-input)
   - [10. Complete `loglib`'s Qt-independence](#10-complete-loglibs-qt-independence)
 - [Tier 2 — `v1.x` strong differentiators](#tier-2--v1x-strong-differentiators)
-  - [11. Pulling rotated history off disk](#11-pulling-rotated-history-off-disk)
+  - [11. ~~Pulling rotated history off disk~~ (shipped)](#11-pulling-rotated-history-off-disk)
   - [12. Saved searches and named views](#12-saved-searches-and-named-views)
   - [13. ~~Match overview rail / minimap~~ (shipped)](#13-match-overview-rail--minimap)
   - [14. Per-cell quick filter](#14-per-cell-quick-filter)
@@ -216,7 +216,7 @@ These items aren't required to ship `v1` but are the most-requested follow-ups i
 
 ### 11. ~~Pulling rotated history off disk~~
 
-> **Shipped.** Opening `app.log` also loads its rotated companions (`app.log.1`, `app.log.2.gz`, `app.log-2025-04-28`, `app-2025-04-28.log`, …) as the older prefix of the merged view. Live-tail benefits too: the siblings replay as a static prefix, then the primary is tailed with no data gap. Auto-detection is on by default and can be turned off per session (Settings → Auto-detect rotated log history) or per launch (`--no-rotation-history`). See [`doc/README.md § Auto-loading rotated history`](doc/README.md#auto-loading-rotated-history).
+> **Shipped.** Static and Stream Mode opens discover numbered and dated rotations, including compressed historical segments, and load them older-first before the active primary. The feature is on by default, supports application/session and per-launch opt-outs, and can undo an automatic expansion. See [`doc/README.md § Auto-loading rotated history`](doc/README.md#auto-loading-rotated-history).
 
 ### 12. Saved searches and named views
 
@@ -373,7 +373,7 @@ Reference snapshot from the survey that informed the roadmap (June 2026). `✓` 
 | Network ingestion (TCP / UDP)               |        ✓         |     ~     |       |           |             |    ✓    |              |           |       |
 | TLS for network ingestion                   |        ✓         |           |       |           |             |         |              |           |       |
 | Compressed file (gz / bz2 / zst / zip)      |        ✓         |     ✓     |   ~   |           |      ✓      |    ✓    |              |     ~     |       |
-| Pulling rotated history off disk            |                  |     ✓     |       |           |             |    ~    |              |           |       |
+| Pulling rotated history off disk            |        ✓         |     ✓     |       |           |             |    ~    |              |           |       |
 | stdin / pipe input                          |        ✓         |     ✓     |   ✓   |           |             |         |              |           |   ~   |
 | Per-row colouring by level                  |        ✓         |     ✓     |       |     ~     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
 | User-defined highlight rules                |        ✓         |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |           |   ✓   |

@@ -71,11 +71,11 @@ Static-mode opens (`File → Open…`, drag & drop, command-line arguments, sess
 - **xz / LZMA** (`.xz`).
 - **Zstandard** (`.zst`).
 
-Detection is by **content magic bytes**, not by file extension: a file named `app.log` that is actually gzipped is decompressed anyway, and a `.log.gz` file that is *not* gzipped goes straight to the plain-text path. Decompression writes to a temp file under the OS temp directory (`std::filesystem::temp_directory_path()`), streams through a bounded buffer so 500 MiB + inputs stay memory-safe, and reports progress in a modal-per-window dialog that shows the original filename, the codec, and a **Cancel** button. Cancelling deletes the partial temp file within one poll interval (~200 ms) and surfaces a `Decompression cancelled: <file>` status-bar toast rather than an error dialog. If the cancelled file was the only queued open, the app then returns to idle; if it was one of several files in a multi-file open, the drain continues with the next queued file — cancelling one decompression **does not** cancel the entire batch. (Use **File → New Session** or close the window to abort the whole queue.) A hard cap of 32 GiB on decompressed output guards against zip-bomb inputs and disk exhaustion; files that would exceed the cap surface a decompression error and leave the file unopened.
+Detection uses **content magic bytes**, not the filename: a gzipped `app.log` is decompressed, while a plain-text `.log.gz` is opened normally. A progress dialog lets you cancel the current file without cancelling the rest of a multi-file open. Corrupt inputs and files that exceed the 32 GiB decompressed-size safety limit are reported without leaving partial output behind.
 
-The window title, status bar, and Recent Sessions list always show the **original compressed path** — the temp path is a per-open implementation detail and only surfaces in the transient `Decompressed X → Y in Zs` toast that follows a successful decode. Sessions saved from a compressed source round-trip the compressed path, so a re-open re-runs decompression fresh rather than pointing at a stale temp file.
+The window title, status bar, and Recent Sessions list keep the **original compressed path**. Reopening a saved session decompresses the source again.
 
-This applies to static mode only. Live-tail (`Open Log Stream…`) does **not** decompress compressed rotations — see the [Non-goals](#non-goals) list under Stream Mode below.
+Direct compressed-file opens are static. Stream Mode cannot tail a compressed primary, but it can decompress compressed rotated history before tailing an uncompressed active log; see [Auto-loading rotated history](#auto-loading-rotated-history).
 
 ## Ingestion modes
 
@@ -105,22 +105,24 @@ For a file that is **still being written**, use [Stream Mode](#stream-mode-live-
 
 ## Auto-loading rotated history
 
-Opening a log file (in either **static** or **stream** mode) automatically detects the file's rotated companions and loads them as the older prefix of the merged view. This works for the two dominant on-disk conventions:
+Opening an active log—or one of its recognized rotated segments—in **Static** or **Stream** mode automatically loads companions from the same directory. The supported conventions are:
 
-- **Numbered logrotate suffixes** — `app.log`, `app.log.1`, `app.log.2`, …; higher numbers are older. Optional codec suffix (`.gz` / `.bz2` / `.xz` / `.zst`) is understood transparently.
-- **Dated logrotate suffixes** — `app.log-2025-04-28`, `app.log.2025-04-28`, `app.log_2025-04-28`, and the stem-inserted variant `app-2025-04-28.log`, again with optional codec suffix.
+- **Numbered suffixes:** `app.log.1`, `app.log.2`, …; higher numbers are older.
+- **Dated suffixes:** `app.log-2025-04-28`, `app.log.2025-04-28`, `app.log_2025-04-28`, or dates inserted before the extension, such as `app-2025-04-28.log`.
 
-The files stream into the table in chronological order (oldest first, primary last), so a `Ctrl+G` / `Ctrl+Shift+G` search sees every line the disk still has, and a Stream Mode open on `app.log` first replays the older segments as a static prefix and *then* attaches the live tail — no data gap across the rotation boundary. Opening a rotated segment in Stream Mode (e.g. `app.log.2`) derotates to the active primary the same way a static open does: older segments load as history and the live tail attaches to `app.log`. Only companions in the same directory are considered; unrelated files, files under a different extension family, and `.slvbundle` inputs are left untouched.
+Each rotated segment may end in `.gz`, `.bz2`, `.xz`, or `.zst`. A bare compressed file such as `app.log.gz` is not treated as an active rotation primary. Unrelated extension families and `.slvbundle` files are also left alone.
 
-If you drop a set of files that all belong to one rotation family (e.g. `[app.log.2, app.log, app.log.1]`) the viewer smart-sorts them into chronological order regardless of the drop order. Selections that span multiple families keep their user-visible order between families; each family is sorted internally. Numbered and dated siblings that share one primary are ordered within each naming scheme (dated by calendar day, numbered by descending suffix); when both schemes coexist, dated segments sort before numbered ones. Year-only suffixes such as `app.log.2024` are treated as numbered rotations, not dates.
+Within a family, dated segments sort earliest-first, numbered segments by descending suffix, and the active primary comes last. Year-only suffixes such as `app.log.2024` are numbered rotations, not dates. An out-of-order multi-file selection is sorted the same way; selections spanning several families keep the families in the order first encountered.
+
+Static Mode merges the resulting files in that order. Stream Mode first loads the historical segments as a static prefix, including compressed segments, and then tails the uncompressed active primary. Selecting `app.log.2` in Stream Mode therefore loads the family and tails `app.log`.
 
 **Opting out.**
 
-- Session-scope: **Settings → Auto-detect rotated log history** toggles the feature. It is **on** by default and persists as a global preference (`ui/autoDetectRotatedHistory`) shared by every window on the same user profile. When a session is loaded, the checkbox also mirrors onto `Source::followRotationSiblings` so drops-into-session honour the per-session choice. The checkbox shows the *effective* preference (global and session); Stream Mode snapshots that effective value before tearing down the outgoing session, so an unchecked box does not expand on the next stream open.
-- Launch-scope: pass `--no-rotation-history` on the command line to skip auto-detection for the launched window. The flag is per-window and (when the single-instance guard forwards a launch to an existing primary) is preserved on the wire so a secondary `slv --no-rotation-history …` behaves identically to a fresh primary. Loading or restoring a saved session clears the override, so the persisted per-session choice wins after the launch settles. To also bypass the single-instance guard entirely, combine with `--new-instance` (or set `LOGAPP_NEW_INSTANCE=1`).
-- One-shot: after a successful expansion, a status-bar toast reads *"Loaded N rotated companion(s) alongside &lt;primary&gt;."* (or, for Stream Mode derotation with no extra companions, *"Live-tailing &lt;primary&gt;; loaded older segment(s) as history."*) and **Settings → Undo rotated history expansion** becomes enabled — one click reopens the original selection (every path you dropped or picked, not only a single primary) with expansion suppressed. Live-tail undos stay in Stream Mode.
+- **Settings → Auto-detect rotated log history** is on by default and sets the application-wide preference. Saved full sessions also remember their choice; a restored opt-out remains off even when the application default is on. Toggling the menu updates both the default and the current session.
+- `StructuredLogViewer --no-rotation-history app.log` disables expansion for that launched window. The flag is preserved when a running primary instance opens a peer window, and remains active until the menu setting is changed. Combine it with `--new-instance` (or `LOGAPP_NEW_INSTANCE=1`) to bypass the single-instance guard.
+- When an open expands or derotates a family, **Settings → Undo rotated history expansion** reopens the original selection without auto-added companions. Multi-file selections are preserved, and a Stream Mode undo remains a live tail.
 
-Session persistence: the auto-loaded companions are recorded in `Source::locators` in the same load order, so **Save Session…** and **File → Recent Sessions → …** reopen the same merged view without a fresh directory scan. The per-session flag is stored under `Source::followRotationSiblings` (default `true`) so a session that opted out stays opted out across reloads.
+Full static-session saves record the expanded paths in load order and reopen that exact list without rescanning the directory. Older sessions that do not contain the opt-out field default to auto-loading history.
 
 When Stream Mode loads a historical prefix longer than the [retention cap](#retention-cap), a status-bar warning notes that older prefix rows may be trimmed once the live tail attaches — the cap is a memory ceiling for the whole session.
 
@@ -183,7 +185,7 @@ Stream Mode tolerates the common log-rotation patterns:
 - **In-place truncation** (`: > app.log`)
 - **Delete-then-recreate** (path disappears for a moment, then reappears)
 
-When a rotation is detected, the viewer keeps every line that is already in memory, switches to the new on-disk content, and briefly appends `— rotated` to the status bar so you can tell it happened. Rotation bursts within a 1 s window are coalesced into a single event. **Rotated content is not pulled back from disk**: only the lines you have already seen survive the rotation in memory.
+When a rotation is detected, the viewer keeps every line already in memory, switches to the new on-disk content, and briefly appends `— rotated` to the status bar. Rotation bursts within a 1 s window are coalesced. Rotated-history discovery runs only when the stream opens: after tailing starts, the viewer does not rescan newly created sibling files to recover bytes that were never read.
 
 ### Stop semantics and configuration menus
 
@@ -193,7 +195,7 @@ While a stream is active the **Configuration** menus (Save / Load) and **Setting
 
 The following are **out of scope** for the current Stream Mode implementation:
 
-- **Compressed live-tail** — Stream Mode follows uncompressed files only. Static opens of `.gz` / `.bz2` / `.xz` / `.zst` files work (see [Compressed inputs](#compressed-inputs)); Stream Mode's rotation handling likewise only tracks uncompressed rotations. Compressed *historical* rotations opened as siblings of a live-tail session go through the static-open decompression path — see [Auto-loading rotated history](#auto-loading-rotated-history).
+- **Compressed live-tail** — Stream Mode follows an uncompressed active file. Compressed historical siblings can still be loaded during the startup scan; see [Auto-loading rotated history](#auto-loading-rotated-history).
 - **stdin / named-pipe sources** — Stream Mode targets rotate-safe files; piped input goes through [Reading from standard input](#reading-from-standard-input), and network ingestion through [Network Stream Mode](#network-stream-mode-tcp--udp).
 - **Auto-detect "this file is being actively written → open in Stream Mode"** — Stream Mode is always an explicit `File → Open Log Stream…` action.
 - **Per-file or per-session retention overrides** — the retention cap is a single application-wide setting.

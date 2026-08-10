@@ -24,23 +24,13 @@ class SingleInstanceGuard : public QObject
     Q_OBJECT
     Q_DISABLE_COPY_MOVE(SingleInstanceGuard)
 public:
-    /// Bitmask of per-launch flags that a secondary process forwards
-    /// to the primary. Kept small on purpose: only flags whose scope
-    /// is "for this launch" belong here. Everything else lives in
-    /// `QSettings` or `LogConfiguration` where the primary can
-    /// consult it directly.
-    ///
-    /// Wire compatibility: bits map 1:1 onto the `quint32` field
-    /// appended after `truncatedCount` in wire version 3+. Reorder
-    /// only with a version bump; add new bits at the end.
+    /// Per-launch flags forwarded by a secondary process.
+    /// Wire values map directly to the v3+ `quint32` field. Never
+    /// reuse a bit; incompatible changes require a version bump.
     enum class LaunchFlags : quint32
     {
         None = 0,
-        /// `--no-rotation-history`: suppresses rotation-sibling
-        /// auto-detection for the resulting window. Without this
-        /// bit on the wire, the secondary's flag would be dropped
-        /// on the way to the primary and the CLI would silently
-        /// no-op whenever a primary already exists.
+        /// Disable rotation-sibling detection in the new window.
         DisableRotationHistory = 1u << 0,
     };
     Q_ENUM(LaunchFlags)
@@ -63,10 +53,7 @@ public:
     ///   `listen` here, which on Linux would unlink the canonical
     ///   socket file and silently zombie the existing primary.
     ///
-    /// @p launchFlags accumulates per-launch flags that the primary
-    /// should apply to the freshly-spawned peer window. Only used
-    /// on the forward path (unused when @p allowNewInstance is set
-    /// or when this process becomes the primary).
+    /// @p launchFlags is sent only when forwarding to a primary.
     [[nodiscard]] bool TryAcquire(
         const QStringList &forwardFiles, bool allowNewInstance, LaunchFlagsBitmask launchFlags = LaunchFlags::None
     );
@@ -91,10 +78,7 @@ signals:
     /// `MAX_FORWARDED_FILES`; the primary uses this to surface a
     /// status-bar warning so the user knows part of their input
     /// was dropped on the wire.
-    /// @p launchFlags carries the per-launch bitmask the secondary
-    /// sent (e.g. `--no-rotation-history`). Always
-    /// `LaunchFlags::None` for wire versions older than 3, so a
-    /// stale-binary secondary still funnels through cleanly.
+    /// @p launchFlags is `None` for wire versions before 3.
     void openWindowRequested(const QStringList &files, int truncatedCount, LaunchFlagsBitmask launchFlags);
 
 private:
@@ -109,10 +93,7 @@ private:
     {
         QByteArray buffer;
         QTimer *idleTimer = nullptr;
-        /// True once we have decoded and emitted the peer's frame.
-        /// Subsequent `readyRead` invocations short-circuit -- a
-        /// stray extra byte from a buggy peer must not cause the
-        /// primary to spawn a second window off the same message.
+        /// Prevents re-decoding while asynchronous disconnect is pending.
         bool frameConsumed = false;
     };
 
@@ -127,9 +108,6 @@ private:
 
 Q_DECLARE_OPERATORS_FOR_FLAGS(SingleInstanceGuard::LaunchFlagsBitmask)
 
-// Register the bitmask type with `QMetaType` so `QVariant` (used by
-// `QSignalSpy` when it captures signal arguments) can round-trip it
-// via `value<LaunchFlagsBitmask>()`. `Q_FLAG` inside the Q_OBJECT
-// registers the flags with the meta-*object*, but that is not the
-// same as the meta-*type* system `QVariant::value<T>()` consults.
+// `Q_FLAG` registers meta-object data; this also enables
+// `QVariant::value<LaunchFlagsBitmask>()`.
 Q_DECLARE_METATYPE(SingleInstanceGuard::LaunchFlagsBitmask)

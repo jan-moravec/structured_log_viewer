@@ -9,45 +9,19 @@
 namespace loglib
 {
 
-/// One file in a rotated log family. `path` is the on-disk path
-/// as it should be handed to the streaming open queue; `canonicalKey`
-/// is the deduplication key that matches
-/// `LogConfiguration::Source::locatorDedupKeys` (produced by the
-/// application-layer canonicaliser; the library computes a
-/// lower-cased forward-slash form here so its unit tests can run
-/// without a Qt dependency).
-///
-/// Rotated log detection recognises the two dominant on-disk
-/// layouts:
-///
-///   - Numbered logrotate suffixes: `app.log`, `app.log.1`,
-///     `app.log.2.gz`, ... where higher numbers are older.
-///   - Dated logrotate suffixes: `app.log-2025-04-28`,
-///     `app.log.2025-04-28`, `app.log_2025-04-28`, optionally
-///     followed by a compressed-codec extension. Earlier dates
-///     are older.
-///
-/// A returned `RotationSeries` is ordered oldest-first with the
-/// primary file appearing last, so callers that want to prepend
-/// history in front of the user-selected file can iterate the
-/// vector without further sorting.
+/// One file in a rotation family. `path` preserves the path used for
+/// opening; `canonicalKey` is the normalized UTF-8 deduplication key.
 struct RotatedFile
 {
     enum class Origin
     {
-        /// The active primary of the series (last entry).
+        /// Active primary; last when stored in a series.
         Primary,
-        /// Classified as `<primary>.<N>` (optionally compressed).
+        /// `<primary>.<N>`, optionally compressed.
         NumberedSuffix,
-        /// Classified as a dated variant (tailing or stem-inserted).
+        /// Dated suffix or stem-inserted date.
         DatedSuffix,
-        /// Neither pattern matched, but the caller explicitly listed
-        /// this file under the series in `PartitionAsRotationSeries`.
-        /// Only produced by the partitioner's union step; the
-        /// enumerator never returns this origin. Callers that need
-        /// to distinguish "auto-discovered by rotation detection"
-        /// from "listed by the user" should treat this value the
-        /// same as a caller input, not a rotation companion.
+        /// Explicit input added to a family but missed by enumeration.
         CallerListed,
     };
 
@@ -56,52 +30,38 @@ struct RotatedFile
     Origin origin = Origin::Primary;
 };
 
-/// Family of rotated log files rooted at one primary file.
-/// `files` is ordered oldest-first, primary last.
+/// Classified files are oldest-first within each naming convention.
+/// Unranked caller inputs precede the primary, which is always last.
 struct RotationSeries
 {
     std::filesystem::path primary;
     std::vector<RotatedFile> files;
 };
 
-/// Enumerate the rotated companions of @p primary that live in the
-/// same directory. Returns a `RotationSeries` containing at minimum
-/// the primary itself, ordered oldest-first. Non-existent primaries,
-/// unreadable directories, or "nothing matched" cases return the
-/// primary alone. All I/O is best-effort and errors are swallowed;
-/// call sites should treat this helper as advisory.
+/// Enumerates numbered and dated companions in @p primary's directory.
+/// Numbered suffixes sort by descending number and dated suffixes by date.
+/// Mixed families compare days since 1970 with `1,000,000,000 - N`;
+/// equal ranks have unspecified order.
+/// The primary is always present and last. Directory I/O is advisory:
+/// errors may return partial results, and no matches yield the primary alone.
 [[nodiscard]] RotationSeries EnumerateRotatedSiblings(const std::filesystem::path &primary);
 
-/// Partitioning result for `PartitionAsRotationSeries`.
 struct PartitionedSelection
 {
-    /// One entry per detected family. Each `files` vector is
-    /// oldest-first with the primary last, exactly like
-    /// `EnumerateRotatedSiblings`.
+    /// Detected families in caller order.
     std::vector<RotationSeries> series;
 
-    /// Files from the input that did not belong to any family
-    /// (their stems have no known rotation form and no sibling was
-    /// itself a match). Order preserved from the caller.
+    /// Inputs not assigned to a family, in caller order and deduplicated by key.
     std::vector<std::filesystem::path> residual;
 };
 
-/// Split @p paths into rotation families plus a residual bucket for
-/// unrelated files. Within each family the ordering matches
-/// `EnumerateRotatedSiblings` (oldest-first, primary last). Series
-/// appear in the order the earliest-listed member of each family
-/// was seen in @p paths so the caller-visible ordering of unrelated
-/// inputs is preserved.
-///
-/// Non-existent paths and paths outside the current filesystem are
-/// silently treated as residual, in line with the advisory
-/// semantics of the module.
+/// Splits @p paths into rotation families and residual inputs. Family
+/// ordering matches `EnumerateRotatedSiblings`; families are ordered by
+/// their earliest input member. Filesystem checks are best-effort.
 [[nodiscard]] PartitionedSelection PartitionAsRotationSeries(std::span<const std::filesystem::path> paths);
 
-/// Return the lower-cased, forward-slash canonical form of @p path
-/// used as the deduplication key in `RotatedFile::canonicalKey`.
-/// Exposed for tests and for the app layer to keep its own canonical
-/// key in lockstep with the library's.
+/// Returns a best-effort absolute, lexically normalized UTF-8 key with
+/// forward slashes. ASCII letters are lower-cased only on Windows.
 [[nodiscard]] std::string CanonicalKeyForPath(const std::filesystem::path &path);
 
 } // namespace loglib

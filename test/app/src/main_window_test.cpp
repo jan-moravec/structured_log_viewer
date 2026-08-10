@@ -12844,17 +12844,12 @@ private slots:
         );
     }
 
-    // Rotation-siblings: opening `app.log` alone auto-prepends its
-    // rotated companions in oldest -> newest order. The merged view
-    // holds every line and the persisted source lists all locators.
+    // Opening a primary prepends every sibling in oldest-first order.
     void TestOpenFilesExpandsRotationSiblings()
     {
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        // Three files in one rotation family. Higher N is older so
-        // the expected row order is: sibling.2 lines, sibling.1
-        // lines, primary lines.
         const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
@@ -12872,10 +12867,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        // Route through the mixed dispatcher (the user-facing entry
-        // point) so the rotation-siblings expander gets a chance to
-        // run. `OpenFilesForTest` calls `StartStreamingOpenQueue`
-        // directly and would bypass the expansion.
+        // The mixed dispatcher is required to exercise expansion.
         (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
         while (finishedSpy.count() < 3)
         {
@@ -12883,14 +12875,10 @@ private slots:
         }
         QCoreApplication::processEvents();
 
-        // 2 (gen2) + 1 (gen1) + 2 (primary) = 5 rows.
         QCOMPARE(model->rowCount(), 5);
     }
 
-    // Rotation-siblings smart sort: user drops
-    // `[app.log.2, app.log, app.log.1]`. Even though the order is
-    // wrong, the partitioner reshuffles to `app.log.2, app.log.1,
-    // app.log` (oldest first) so the merged view is chronological.
+    // A caller-listed rotation family is normalized to oldest-first order.
     void TestMultiFileDropSmartSortsRotationFamily()
     {
         auto *model = mWindow->Model();
@@ -12913,9 +12901,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        // User-order: newer, primary, older. Expander must
-        // reshuffle to oldest -> newest. Route through the mixed
-        // dispatcher; `OpenFilesForTest` would bypass the expander.
+        // The mixed dispatcher is required to exercise expansion.
         (void)mWindow->OpenMixedFilesForTest({oldPath, primaryPath, olderPath}, MainWindow::OpenMode::Replace);
         while (finishedSpy.count() < 3)
         {
@@ -12933,7 +12919,6 @@ private slots:
         loglib::LogConfigurationManager probe;
         probe.Load(sessionPath.toStdString());
         QVERIFY(probe.Configuration().source.has_value());
-        // Locators reflect the expansion order (oldest first, primary last).
         const auto &locators = probe.Configuration().source->locators;
         QCOMPARE(locators.size(), static_cast<std::size_t>(3));
         QCOMPARE(QString::fromStdString(locators[0]), logapp::CanonicalDisplayPath(olderPath));
@@ -12941,15 +12926,7 @@ private slots:
         QCOMPARE(QString::fromStdString(locators[2]), logapp::CanonicalDisplayPath(primaryPath));
     }
 
-    // M4 regression: when a caller drops a mixed list where only one
-    // family expands, the sibling-toast must anchor on the expanded
-    // family's PRIMARY (the file rotation detection actually pulled
-    // companions for), not on whichever file happened to be
-    // `logPaths.back()`. Without the fix the user reads
-    // "Loaded 1 rotated companion(s) alongside other.log" when the
-    // companions actually belong to `app.log`, which is a
-    // straight-up lie and disarms the mental model users use to
-    // decide whether to invoke Undo.
+    // The sibling toast names the expanded family, not the last input.
     void TestSiblingToastAnchorsOnExpandedFamilyPrimary()
     {
         auto *model = mWindow->Model();
@@ -12959,10 +12936,7 @@ private slots:
         QVERIFY(dir.isValid());
         const QString appPrimary = dir.filePath(QStringLiteral("app.log"));
         const QString appOlder = dir.filePath(QStringLiteral("app.log.1"));
-        // `other.log` has NO sibling on disk; it contributes only
-        // itself. Dropping it *after* `app.log` puts it at
-        // `logPaths.back()` -- the anchor slot the pre-fix code
-        // used.
+        // Keep an unrelated primary last to distinguish the toast anchor.
         const QString otherPrimary = dir.filePath(QStringLiteral("other.log"));
         const auto write = [](const QString &p, const QString &content) {
             std::ofstream stream(p.toStdString(), std::ios::binary);
@@ -12997,16 +12971,7 @@ private slots:
         );
     }
 
-    // M1 regression: the partitioner used to mislabel caller-listed
-    // paths as `NumberedSuffix` when they slotted into a series by
-    // key alone (no on-disk classification matched). That confuses
-    // the expander's counting heuristic, which reads `origin` to
-    // decide whether a file is "auto-discovered by rotation
-    // detection" or "listed by the user". After the fix, the
-    // partitioner uses `Origin::CallerListed` for such paths, and
-    // the expander no longer counts them as auto-added -- so
-    // `[app.log, app.log.1]` with no other siblings on disk reports
-    // zero additions and does NOT arm the sibling toast / Undo.
+    // Caller-listed family members do not arm rotation-expansion Undo.
     void TestExpanderDoesNotArmUndoWhenCallerListedEverySibling()
     {
         auto *model = mWindow->Model();
@@ -13028,7 +12993,6 @@ private slots:
         QVERIFY(finishedSpy.isValid());
 
         mWindow->statusBar()->clearMessage();
-        // Caller listed EVERY sibling. Nothing was auto-discovered.
         (void)mWindow->OpenMixedFilesForTest(
             {oldPath, primaryPath}, MainWindow::OpenMode::Replace
         );
@@ -13050,8 +13014,7 @@ private slots:
         );
     }
 
-    // Rotation-siblings opt-out: with the global pref off, opening
-    // `app.log` does *not* pull in sibling files.
+    // The launch override suppresses sibling expansion.
     void TestRotationSiblingsOptOutViaLaunchOverride()
     {
         auto *model = mWindow->Model();
@@ -13069,30 +13032,20 @@ private slots:
         write(primaryPath, R"({"msg":"p"})""\n");
         write(olderPath, R"({"msg":"g1"})""\n");
 
-        // CLI override: no rotation history.
         mWindow->SetRotationHistoryLaunchOverride(true);
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        // Route through the mixed dispatcher so the (skipped) expander
-        // runs. With the override on, no siblings are added.
         (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
         QVERIFY2(finishedSpy.wait(5000), "single-file open must finish");
         QCoreApplication::processEvents();
 
-        // Only the primary was streamed; the older segment was
-        // deliberately skipped.
         QCOMPARE(model->rowCount(), 1);
         mWindow->SetRotationHistoryLaunchOverride(false);
     }
 
-    // Regression: launching with `--no-rotation-history` sets the
-    // process-wide override. If the user then clicks the menu
-    // `Settings -> Auto-detect rotated log history` back ON, the
-    // override must clear -- otherwise the checkbox says "on" while
-    // `ShouldAutoDetectRotationHistory` still short-circuits to
-    // false, and the next open silently ignores the tick.
+    // Re-enabling rotation history clears the launch override.
     void TestRotationHistoryMenuToggleClearsCliOverride()
     {
         auto *model = mWindow->Model();
@@ -13110,13 +13063,9 @@ private slots:
         write(primaryPath, R"({"msg":"p"})""\n");
         write(olderPath, R"({"msg":"g1"})""\n");
 
-        // Simulate the CLI launch flag.
         mWindow->SetRotationHistoryLaunchOverride(true);
         QVERIFY(mWindow->RotationHistoryLaunchOverrideForTest());
 
-        // User re-ticks the menu box (they didn't remember the CLI).
-        // Both directions must clear the process-wide override so the
-        // effective behaviour tracks the checkbox state.
         mWindow->SimulateRotationHistoryMenuToggleForTest(true);
         QVERIFY2(
             !mWindow->RotationHistoryLaunchOverrideForTest(),
@@ -13126,8 +13075,6 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        // With the override gone the family expands as usual: two
-        // files stream (primary + `app.log.1`).
         (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
         for (int i = 0; i < 2; ++i)
         {
@@ -13137,9 +13084,7 @@ private slots:
         QCOMPARE(model->rowCount(), 2);
     }
 
-    // Regression: toggling the menu OFF while a session is loaded
-    // must mirror onto the current source and update the menu tick;
-    // toggling ON again clears the CLI override and re-mirrors.
+    // Menu changes mirror to the current source in both directions.
     void TestRotationHistoryMenuTogglePersistsOntoCurrentSource()
     {
         auto *model = mWindow->Model();
@@ -13161,14 +13106,12 @@ private slots:
         QVERIFY2(finishedSpy.wait(5000), "single-file open must finish");
         QCoreApplication::processEvents();
 
-        // Session seeded with the default (follow=true).
         {
             const auto &source = mWindow->CurrentSourceForTest();
             QVERIFY(source.has_value());
             QVERIFY(source->followRotationSiblings);
         }
 
-        // User opts out via menu.
         mWindow->SimulateRotationHistoryMenuToggleForTest(false);
         {
             const auto &source = mWindow->CurrentSourceForTest();
@@ -13179,7 +13122,6 @@ private slots:
             );
         }
 
-        // User reverses their decision.
         mWindow->SimulateRotationHistoryMenuToggleForTest(true);
         {
             const auto &source = mWindow->CurrentSourceForTest();
@@ -13191,11 +13133,8 @@ private slots:
         }
     }
 
-    // Regression: sibling regex must be case-insensitive on
-    // Windows/macOS filesystems where `App.LOG.1` names the same
-    // family as `app.log`. Linux stays byte-strict; the slot is
-    // still declared there so moc can find it (moc has no built-in
-    // knowledge of `_WIN32`) but the assertion is skipped.
+    // Windows and macOS match sibling names case-insensitively.
+    // Keep the slot declared on Linux so moc still discovers it.
     void TestRotationSiblingsAreCaseInsensitiveOnWindowsAndMac()
     {
 #if defined(_WIN32) || defined(__APPLE__)
@@ -13205,7 +13144,6 @@ private slots:
         const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
-        // Mixed-case sibling: case-sensitive regex would drop this.
         const QString upperPath = dir.filePath(QStringLiteral("App.LOG.1"));
         const auto write = [](const QString &p, const QString &content) {
             std::ofstream stream(p.toStdString(), std::ios::binary);
@@ -13223,22 +13161,13 @@ private slots:
             QVERIFY2(finishedSpy.wait(5000), "two per-file streamingFinished emits expected");
         }
         QCoreApplication::processEvents();
-        // Both files streamed: sibling was picked up despite the
-        // case difference.
         QCOMPARE(model->rowCount(), 2);
 #else
         QSKIP("Case-insensitive sibling matching is Windows/macOS only.");
 #endif
     }
 
-    // Regression: `OpenLogStreamFromPath` must scrub any pending
-    // sibling-prefix live-tail state carried from a prior invocation
-    // where the sibling drain didn't reach `ContinueLiveTailAfterPrefix`
-    // (all siblings failed synchronously, an in-flight decompression
-    // was cancelled by a session switch, ...). Without the scrub the
-    // fresh session inherits a stale `mPendingLiveTailPrimary`, and
-    // its first `OnStreamingFinished(Success)` would attach a live
-    // tail of the *wrong file* onto the new session.
+    // A new file stream clears stale sibling-prefix promotion state.
     void TestOpenLogStreamFromPathClearsStalePendingLiveTail()
     {
         auto *model = mWindow->Model();
@@ -13255,45 +13184,25 @@ private slots:
         };
         write(freshLog, R"({"msg":"fresh"})""\n");
 
-        // Simulate a stale pending live-tail state left over from a
-        // prior sibling drain that never resolved. `NewSession` and
-        // `StartStreamingOpenQueue`'s destructive branch both clear
-        // this; `OpenLogStreamFromPath` must too.
+        // Seed the unresolved state that a cancelled sibling drain can leave.
         mWindow->SeedPendingLiveTailForTest(fakeStalePrimary, /*retention=*/128);
         QVERIFY(mWindow->HasPendingLiveTailForTest());
 
-        // Live-tail open on an unrelated file. The reset section at
-        // the top of `OpenLogStreamFromPath` must scrub the stale
-        // state *before* the sibling / non-sibling branch runs, so
-        // no `ContinueLiveTailAfterPrefix` mis-fires against the
-        // (bogus) primary.
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
         mWindow->OpenLogStreamForTest(freshLog);
 
-        // With the fix in place, the stale pending state is cleared
-        // synchronously at the top of the open path (before the
-        // async stream even starts).
         QVERIFY2(
             !mWindow->HasPendingLiveTailForTest(),
             "destructive open must scrub stale pending live-tail state"
         );
 
-        // Drain the async streaming so this test doesn't leave a
-        // running session behind for the next slot.
+        // Leave no streaming worker for the next slot.
         (void)finishedSpy.wait(5000);
         QCoreApplication::processEvents();
     }
 
-    // Regression: an `OpenMode::Replace` open must not inherit the
-    // *outgoing* session's `locatorDedupKeys` when the expander
-    // resolves rotation-siblings. Before the fix, re-opening the same
-    // rotation family after having already loaded it in a prior
-    // session would deduplicate every discovered sibling (including
-    // the primary the user just picked) against the dead session's
-    // locators, and `StartStreamingOpenQueue` would receive an empty
-    // list -- leaving the user with an empty view even though the
-    // files were still on disk.
+    // Replace reopens ignore the outgoing session's deduplication keys.
     void TestReplaceReopenOfSameRotationFamilyStreamsAllFiles()
     {
         auto *model = mWindow->Model();
@@ -13314,8 +13223,6 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        // First Replace open: two files stream (primary + sibling)
-        // and the session's `locatorDedupKeys` picks up both.
         (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
         for (int i = 0; i < 2; ++i)
         {
@@ -13329,11 +13236,6 @@ private slots:
             QCOMPARE(source->locatorDedupKeys.size(), static_cast<std::size_t>(2));
         }
 
-        // Second Replace open of the *same* primary. The destructive
-        // reset in `StartStreamingOpenQueue` will drop the outgoing
-        // session, so the expander must not gate off its
-        // `locatorDedupKeys`. Before the fix this landed an empty
-        // model.
         finishedSpy.clear();
         (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
         for (int i = 0; i < 2; ++i)
@@ -13344,21 +13246,7 @@ private slots:
         QCOMPARE(model->rowCount(), 2);
     }
 
-    // Regression: a Replace open must honour the CHECKBOX-EFFECTIVE
-    // rotation-history preference, not just the global pref. When
-    // the visible `Settings -> Auto-detect rotated log history` tick
-    // is unchecked (because the bound session opted out even though
-    // the global pref is on), a fresh Replace open must NOT expand
-    // siblings -- the user's clearly-visible choice should govern.
-    //
-    // Historical note: an earlier revision had Replace ignore the
-    // session opt-out entirely (rationale: "the outgoing session is
-    // dying, its flag is stale"). That contradicted the tick's
-    // effective-state semantics that Stream Mode already honoured
-    // via its `wantRotationHistory` snapshot, and produced different
-    // behaviour depending on which entry point the user chose. The
-    // two paths now agree: unchecked box -> no expansion, either
-    // mode.
+    // Replace opens honor the current session's effective opt-out.
     void TestReplaceOpenHonoursSessionOptOutEffectivePreference()
     {
         auto *model = mWindow->Model();
@@ -13376,12 +13264,7 @@ private slots:
         write(primaryPath, R"({"msg":"p"})""\n");
         write(oldPath, R"({"msg":"g1"})""\n");
 
-        // Simulate a session that opted out of rotation history
-        // while the global preference stayed on -- the checkbox
-        // reads unchecked in this state (see
-        // `EffectiveAutoDetectRotationHistory`). Point the fake
-        // source at an unrelated path so its dedup keys cannot
-        // mask the fresh family via the `Ignore` gating either.
+        // Use an unrelated source so deduplication cannot mask the opt-out.
         loglib::LogConfiguration::Source spoof;
         spoof.kind = loglib::LogConfiguration::Source::Kind::File;
         spoof.format = loglib::LogConfiguration::Source::Format::Json;
@@ -13393,9 +13276,6 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        // Fresh Replace open. The visible tick reads unchecked, so
-        // no siblings should be pulled in -- only the primary the
-        // user picked streams. Row count == 1.
         (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
         QVERIFY2(finishedSpy.wait(5000), "single-file open must finish");
         QCoreApplication::processEvents();
@@ -13406,14 +13286,7 @@ private slots:
         );
     }
 
-    // Regression: when `OpenLogStreamFromPath` staged a live-tail on
-    // a primary and started a historical sibling-prefix drain, a
-    // user-initiated Stop mid-drain must NOT silently discard the
-    // primary tail the user explicitly asked for. Before the fix,
-    // the `Cancelled` terminal from `StopAndKeepRows` fell through
-    // to the "clear pending live tail" branch in
-    // `OnStreamingFinished`, leaving the user with a partial static
-    // view and no live updates on the primary.
+    // Stopping a sibling-prefix drain still promotes the requested live tail.
     void TestSiblingPrefixLiveTailSurvivesStopMidDrain()
     {
         auto *model = mWindow->Model();
@@ -13429,8 +13302,7 @@ private slots:
             stream << content.toStdString();
         };
         write(primaryPath, R"({"msg":"p"})""\n");
-        // Bulk-write a large sibling so the sibling drain doesn't
-        // finish before we can call StopAndKeepRows mid-drain.
+        // Keep the sibling drain active until StopAndKeepRows runs.
         QString bigContent;
         bigContent.reserve(200000 * 20);
         for (int i = 0; i < 200000; ++i)
@@ -13470,29 +13342,8 @@ private slots:
         QCoreApplication::processEvents();
     }
 
-    // Regression for the pre-queued `OnFinished(Success)` race
-    // documented in `MainWindow::OnStreamingFinished`'s
-    // sibling-prefix comment. `TestSiblingPrefixLiveTailSurvivesStopMidDrain`
-    // above covers the `Cancelled` branch (large sibling, Stop
-    // interrupts the parser). This slot exercises the `Success`
-    // branch: use a small sibling so the parser worker exits
-    // *before* the user clicks Stop, then avoid pumping GUI
-    // events so the queued sink `OnFinished(cancelled=false)`
-    // stays parked in the sink's event queue. Calling
-    // `StopAndKeepRows` from that state drains the queued event
-    // via `sendPostedEvents` *inside* the enclosing teardown --
-    // the exact reentrancy that pre-fix promoted the live tail
-    // synchronously, re-Armed the sink, and then let the outer
-    // teardown clobber the fresh session back to `Idle` with a
-    // spurious `streamingFinished(Cancelled)`.
-    //
-    // With the fix (`QueuedConnection` on every terminal
-    // result), promotion detaches from the teardown stack: the
-    // outer teardown sees `mSink->IsActive() == false` after
-    // the drain, marks `finishedAlreadyEmitted = true`, and
-    // skips the spurious `Cancelled` emit. The subsequent
-    // `processEvents()` runs the deferred promotion cleanly and
-    // the user lands in LiveTail as intended.
+    // A queued sibling Success must promote only after Stop teardown unwinds.
+    // Synchronous promotion is reentrant and lets teardown clobber the new tail.
     void TestSiblingPrefixLiveTailSurvivesStopAfterPreQueuedSuccess()
     {
         auto *model = mWindow->Model();
@@ -13508,9 +13359,7 @@ private slots:
             stream << content.toStdString();
         };
         write(primaryPath, R"({"msg":"p"})""\n");
-        // Small sibling: a handful of lines the parser worker
-        // will drain in well under 100 ms so we can race Stop
-        // against the pre-queued `OnFinished(false)`.
+        // Keep parsing short enough to queue Success before Stop.
         write(oldPath, R"({"msg":"g1"})""\n" R"({"msg":"g2"})""\n" R"({"msg":"g3"})""\n");
 
         const QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
@@ -13518,37 +13367,13 @@ private slots:
 
         mWindow->OpenLogStreamForTest(primaryPath);
 
-        // Wait for the streaming session to arm, then verify the
-        // sibling-prefix promotion is pending (the same
-        // precondition the mid-drain test uses).
         QTRY_VERIFY_WITH_TIMEOUT(model->IsStreamingActive(), 5000);
         QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::Static);
         QVERIFY(mWindow->HasPendingLiveTailForTest());
 
-        // Sleep on the GUI thread WITHOUT pumping events. The
-        // background parser worker exits during this window and
-        // posts `OnFinished(cancelled=false)` to the sink's event
-        // queue via `Qt::QueuedConnection`; because we never call
-        // `processEvents` / `QTest::qWait` / `spy.wait`, that
-        // event stays parked. This is the precondition the
-        // pre-fix code silently mishandled: `StopAndKeepRows`
-        // then flushed the pre-queued event *inside* the
-        // teardown, triggering the reentrancy.
-        //
-        // 100 ms is comfortably above the parser's runtime for
-        // three JSON lines on every supported CI worker; a
-        // pathological slowdown falls through the `QSignalSpy`
-        // backstop below.
+        // Do not pump GUI events; worker completion must remain queued for Stop.
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-        // Belt-and-braces: if the CI worker is so slow that the
-        // parser hasn't finished yet, treat the test as
-        // exercising the `Cancelled` branch instead (still a
-        // valid regression run of the sibling-prefix protocol,
-        // just not the specific `Success` reentrancy this slot
-        // targets). The `QTRY_VERIFY` below can't gate on "future
-        // finished but event queue not drained" without pumping
-        // events, so we accept both orderings here.
         model->StopAndKeepRows();
         QCoreApplication::processEvents();
 
@@ -13577,13 +13402,7 @@ private slots:
         QCoreApplication::processEvents();
     }
 
-    // Regression: `UndoRotationExpansion` must resurrect the
-    // CALLER's original path list, not just a single "primary".
-    // Before the fix, only `logPaths.back()` was captured, so a
-    // multi-file drop like `[app.log, other.log]` where `app.log`
-    // had rotation siblings would (a) collapse the undo target to
-    // just `other.log` (losing `app.log` and its family entirely),
-    // and (b) drop every non-last file from the user's selection.
+    // Rotation-expansion Undo restores every caller-listed path.
     void TestUndoRotationExpansionResurrectsMultiFileSelection()
     {
         auto *model = mWindow->Model();
@@ -13606,10 +13425,6 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        // Multi-file open: `app.log`'s family expands (one sibling),
-        // `other.log` has no siblings and passes through unchanged.
-        // Three per-file `streamingFinished` emits: the sibling, the
-        // primary, and `other.log`.
         (void)mWindow->OpenMixedFilesForTest(
             {primaryPath, otherPath}, MainWindow::OpenMode::Replace
         );
@@ -13620,21 +13435,12 @@ private slots:
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 3);
 
-        // Fix precondition: the caller's ORIGINAL list survives here
-        // (both entries), not just `logPaths.back()`. The pre-fix
-        // code captured `otherPath` alone, which would have made
-        // the undo lose `app.log` entirely.
         const QStringList captured = mWindow->LastRotationExpansionOriginalInputsForTest();
         QCOMPARE(captured.size(), 2);
         QCOMPARE(captured[0], primaryPath);
         QCOMPARE(captured[1], otherPath);
         QVERIFY(mWindow->IsUndoRotationExpansionEnabledForTest());
 
-        // Undo. The one-shot rotation override suppresses expansion,
-        // so the redo streams exactly `[app.log, other.log]` -- two
-        // files -- and lands two rows. Before the fix, the redo
-        // would have streamed only `other.log` (one row) and lost
-        // `app.log` entirely.
         finishedSpy.clear();
         mWindow->UndoRotationExpansionForTest();
         for (int i = 0; i < 2; ++i)
@@ -13646,9 +13452,6 @@ private slots:
 
         const auto &source = mWindow->CurrentSourceForTest();
         QVERIFY(source.has_value());
-        // Both primaries must be present in the fresh source's
-        // locators. The old sibling (`app.log.1`) must NOT be:
-        // the override told the expander to stay put.
         const std::string primaryKey = logapp::CanonicalLocator(primaryPath).toStdString();
         const std::string otherKey = logapp::CanonicalLocator(otherPath).toStdString();
         const std::string siblingKey = logapp::CanonicalLocator(oldPath).toStdString();
@@ -13663,20 +13466,11 @@ private slots:
         QVERIFY2(hasKey(otherKey), "undo must resurrect the other.log primary");
         QVERIFY2(!hasKey(siblingKey), "undo must not re-attach the sibling this time");
 
-        // The undo consumed the stored inputs -- the affordance is
-        // one-shot.
         QVERIFY(mWindow->LastRotationExpansionOriginalInputsForTest().isEmpty());
         QVERIFY(!mWindow->IsUndoRotationExpansionEnabledForTest());
     }
 
-    // Regression: when every rotation sibling fails synchronously,
-    // `StreamNextPendingFile`'s rescue branch is the only path that
-    // promotes the pending live tail. Before the fix, this branch
-    // reached `ContinueLiveTailAfterPrefix` without any prior call
-    // to `SetConfigurationUiEnabled(false)` (no sibling reached
-    // `ContinueOpenAfterPrepared`), so the live tail armed with
-    // Save/Load Configuration + column drag still reachable -- the
-    // exact race the gate was introduced to prevent.
+    // Rescue-path live-tail promotion disables configuration UI first.
     void TestRescueBranchLiveTailDisablesConfigurationUi()
     {
         auto *tableView = mWindow->findChild<LogTableView *>();
@@ -13693,46 +13487,26 @@ private slots:
             stream << R"({"msg":"p"})""\n";
         }
 
-        // Force the "no prior disable" precondition: after this
-        // call, header drag is enabled and the config actions are
-        // reachable. That's the state the rescue branch inherits
-        // when every sibling failed synchronously (no
-        // `ContinueOpenAfterPrepared` ran).
+        // Model the rescue path where no sibling disabled the UI.
         mWindow->SetConfigurationUiEnabledForTest(true);
         QVERIFY2(header->sectionsMovable(), "precondition: header drag must be armed before the rescue");
         QCOMPARE(header->contextMenuPolicy(), Qt::CustomContextMenu);
 
-        // Fire the promotion path directly. In production this is
-        // reached via `StreamNextPendingFile`'s
-        // `if (!IsSessionActive()) { ContinueLiveTailAfterPrefix(); }`
-        // rescue after every sibling failed.
+        // Trigger the otherwise timing-dependent rescue branch directly.
         mWindow->TriggerRescueLiveTailForTest(primaryPath, /*retention=*/0);
         QCoreApplication::processEvents();
 
-        // After the fix, `ContinueLiveTailAfterPrefix` itself gates
-        // the configuration UI before arming the parser.
         QVERIFY2(
             !header->sectionsMovable(),
             "rescue-branch live tail must disable header drag before arming the parser"
         );
         QCOMPARE(header->contextMenuPolicy(), Qt::NoContextMenu);
 
-        // Cleanup: fresh session drops the tail's worker thread and
-        // resets UI state for the next test.
         mWindow->NewSessionForTest();
         QCoreApplication::processEvents();
     }
 
-    // Regression: a `File → Load Configuration...` (or any code
-    // path through `ApplyLoadedConfiguration`) mid-way through the
-    // life of a rotation-expanded session must scrub the outgoing
-    // Undo-rotation affordance and any pending sibling-prefix
-    // live-tail state. Before the fix, `ApplyLoadedConfiguration`
-    // left `mLastRotationExpansionOriginalInputs` and
-    // `mPendingLiveTail*` populated; clicking Settings → Undo
-    // Rotated History Expansion afterwards would destructively
-    // reopen the previous session's files (Replace mode), clobbering
-    // the just-loaded configuration.
+    // Loading a configuration clears rotation Undo and pending promotion state.
     void TestApplyLoadedConfigurationClearsRotationExpansionState()
     {
         auto *model = mWindow->Model();
@@ -13750,8 +13524,6 @@ private slots:
         write(primaryPath, R"({"msg":"p"})""\n");
         write(olderPath, R"({"msg":"g1"})""\n");
 
-        // First open: two files stream (primary + sibling), the
-        // Undo affordance arms.
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
         (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
@@ -13763,28 +13535,18 @@ private slots:
         QVERIFY(mWindow->IsUndoRotationExpansionEnabledForTest());
         QCOMPARE(mWindow->LastRotationExpansionOriginalInputsForTest().size(), 1);
 
-        // Also seed a pending live-tail slot to prove the same code
-        // path scrubs both classes of state. In production this
-        // would sit here after a sibling drain that never resolved;
-        // for the assertion we only care about the flag clearing.
+        // Seed the second class of outgoing state cleared by a load.
         mWindow->SeedPendingLiveTailForTest(primaryPath, /*retention=*/64);
         QVERIFY(mWindow->HasPendingLiveTailForTest());
 
-        // Save a full-session JSON of the current view; we will
-        // load it back through `LoadConfigurationFromPathForTest`
-        // which reaches `ApplyLoadedConfiguration`.
         const QTemporaryDir savedDir;
         QVERIFY(savedDir.isValid());
         const QString sessionPath = savedDir.filePath(QStringLiteral("saved.json"));
         mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
 
-        // File → Load Configuration...: this is the exact code path
-        // where the bug lived.
         mWindow->LoadConfigurationFromPathForTest(sessionPath);
         QCoreApplication::processEvents();
 
-        // After the fix, the load scrubs both the Undo affordance
-        // and the pending live-tail state.
         QVERIFY2(
             !mWindow->IsUndoRotationExpansionEnabledForTest(),
             "loading a config must disable Undo Rotated History Expansion"
@@ -13799,13 +13561,7 @@ private slots:
         );
     }
 
-    // Regression: `TryLoadAsConfiguration` (the lone-config refresh
-    // path that keeps existing rows) also clears the Undo affordance.
-    // Without this, refreshing the columns/filters of a
-    // rotation-expanded view via drop-open of a JSON config would
-    // leave Undo pointing at the pre-refresh file list -- clicking
-    // it would then Replace-mode reopen those files and discard the
-    // rows the refresh was meant to keep visible.
+    // Configuration-only refresh clears stale rotation Undo state.
     void TestTryLoadAsConfigurationClearsUndoRotationExpansion()
     {
         auto *model = mWindow->Model();
@@ -13833,8 +13589,7 @@ private slots:
         QCoreApplication::processEvents();
         QVERIFY(mWindow->IsUndoRotationExpansionEnabledForTest());
 
-        // Save a columns-only slice so `TryLoadAsConfiguration`
-        // takes the "existing rows survive" branch on reload.
+        // Columns-only scope exercises the row-preserving refresh path.
         const QTemporaryDir savedDir;
         QVERIFY(savedDir.isValid());
         const QString columnsPath = savedDir.filePath(QStringLiteral("cols.json"));
@@ -13853,54 +13608,25 @@ private slots:
         );
     }
 
-    // Regression: `CanonicalKeyForPath` (loglib) and
-    // `CanonicalLocator` (app layer) must agree on the same input
-    // path for a set of platform-stable roots. The two functions
-    // implement independent normalisation (`weakly_canonical` vs
-    // `QFileInfo::absoluteFilePath` + lower-case), so they can
-    // diverge (a) when one lower-cases and the other does not, or
-    // (b) when one resolves symlinks and the other does not.
-    // `ExpandLogPathsWithRotationSiblings` compares one flavour
-    // against the other in the `alreadyLoaded` dedup, so any
-    // divergence makes drop-into-session dedup silently miss and
-    // produces duplicate rows on every drop.
-    //
-    // This test targets divergence (a) -- the casing mismatch that
-    // silently broke drop-into-session dedup on macOS -- so it
-    // uses an already-canonicalised root (`std::filesystem::canonical`
-    // on the temp dir) to sidestep the orthogonal `/tmp` -> `/private/tmp`
-    // symlink expansion that `weakly_canonical` performs and
-    // `QFileInfo::absoluteFilePath` does not.
+    // App and library canonical keys agree for case and Unicode.
+    // Canonicalize the root first to avoid macOS `/tmp` symlink differences.
     void TestCanonicalKeyAndCanonicalLocatorAgree()
     {
         const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         std::error_code ec;
-        // `QStringToFsPath` (not `toStdString()`) so a non-ASCII
-        // `QTemporaryDir` root -- possible when the user's TEMP
-        // sits under a Unicode profile -- reaches `canonical`
-        // undamaged. `toStdString()` returns UTF-8 which
-        // `std::filesystem::path(std::string&)` then re-interprets
-        // through the Windows active code page, producing a mangled
-        // path that `canonical` may fail on.
+        // Preserve Unicode temporary roots on Windows.
         const std::filesystem::path rootFs =
             std::filesystem::canonical(logapp::QStringToFsPath(dir.path()), ec);
         QVERIFY2(!ec, "canonical(root) must succeed on a valid QTemporaryDir");
-        // `generic_string()` on Windows narrows through the active code
-        // page; use `generic_wstring()` to preserve non-ASCII bytes
-        // faithfully. On non-Windows there is no code-page conversion.
+        // Avoid active-code-page narrowing on Windows.
 #ifdef Q_OS_WIN
         const QString root = QString::fromStdWString(rootFs.generic_wstring());
 #else
         const QString root = QString::fromStdString(rootFs.generic_string());
 #endif
 
-        // Mixed case in each leaf plus a Cyrillic leaf so the test
-        // catches both the casing- and the encoding-parity axes.
-        // Before the encoding fix, `CanonicalKeyForPath` narrowed
-        // the wide Windows path through the active code page while
-        // `CanonicalLocator` produced UTF-8, so any non-ASCII path
-        // failed the parity check silently.
+        // Cover mixed case and non-ASCII path components.
         const QStringList relatives{
             QStringLiteral("App.log"),
             QStringLiteral("dir/Nested/File.LOG"),
@@ -13926,27 +13652,7 @@ private slots:
         }
     }
 
-    // Regression: opening `[config.json, app.log]` where the config
-    // was saved from a previous session containing `app.log` must
-    // still stream `app.log` into the fresh view. Before the fix,
-    // `DoLoadConfiguration` reset the model but then
-    // `mCurrentSource->locatorDedupKeys` was populated from the
-    // loaded config's *saved* `Source` -- which lists exactly the
-    // files the user is re-opening. The subsequent
-    // `ExpandLogPathsWithRotationSiblings(..., Append)` used those
-    // stale keys as "already loaded", filtered out every user
-    // selection whose canonical key matched, and produced an empty
-    // Regression: dropping `[app.log, app.log.1]` when both are the
-    // only members of the family on disk must NOT report any
-    // auto-added siblings. Before the fix,
-    // `ExpandLogPathsWithRotationSiblings` counted every emitted
-    // file whose `origin != Primary`, which conflated
-    // "auto-discovered by rotation detection" with "not the
-    // primary of its series". The user's hand-picked `app.log.1`
-    // (Older origin) tripped the counter to 1, firing a false
-    // "Loaded 1 companion(s)" toast and arming the Undo action --
-    // an Undo that would only reorder the two hand-picked files
-    // on click, since no actual auto-added content exists.
+    // Explicitly selected siblings are not counted as auto-added.
     void TestExplicitlySelectedSiblingsAreNotCountedAsAutoAdded()
     {
         auto *model = mWindow->Model();
@@ -13963,10 +13669,6 @@ private slots:
         };
         write(primaryPath, R"({"msg":"p"})""\n");
         write(oldPath, R"({"msg":"g1"})""\n");
-        // No third sibling on disk -- the family is exactly the
-        // two files the user picked. `PartitionAsRotationSeries`
-        // still groups them into one series (that's correct: they
-        // ARE a rotation family), but nothing was auto-discovered.
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
@@ -13974,7 +13676,6 @@ private slots:
         (void)mWindow->OpenMixedFilesForTest(
             {primaryPath, oldPath}, MainWindow::OpenMode::Replace
         );
-        // Two files stream: both drain to completion.
         for (int i = 0; i < 2; ++i)
         {
             QVERIFY2(finishedSpy.wait(5000), "both hand-picked files must stream to completion");
@@ -13982,12 +13683,6 @@ private slots:
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 2);
 
-        // The expander DID group the two files into a series
-        // (correct partitioning), but its "auto-added" count must
-        // be zero because both members came from the caller's
-        // input. That in turn keeps the toast silent and the
-        // Undo action disabled -- undoing something the user
-        // didn't ask for would be user-hostile.
         QVERIFY2(
             !mWindow->IsUndoRotationExpansionEnabledForTest(),
             "Undo action must stay disabled when nothing was auto-discovered"
@@ -13998,16 +13693,7 @@ private slots:
         );
     }
 
-    // Regression: the sibling-expander used to build
-    // `std::filesystem::path` values via
-    // `std::filesystem::path(QString::toStdString())`, which on
-    // Windows decodes as the active code page. UTF-8 bytes from
-    // `QString::toStdString()` turned into mojibake there, so
-    // any non-ASCII primary would silently drop its siblings
-    // (partition fails to walk the wrong-encoded parent path)
-    // OR the expander would emit paths the queue could not open.
-    // Verified through the app-layer `QStringToFsPath` /
-    // `FsPathToQString` helpers.
+    // Sibling expansion round-trips non-ASCII paths without narrowing.
     void TestNonAsciiSiblingPathRoundTripsThroughExpansion()
     {
         auto *model = mWindow->Model();
@@ -14015,17 +13701,10 @@ private slots:
 
         const QTemporaryDir dir;
         QVERIFY(dir.isValid());
-        // Cyrillic subdirectory + Chinese basename so the test
-        // exercises non-ASCII on both the parent and the leaf.
-        // `QStringToFsPath` lets us construct these under an
-        // ASCII `QTemporaryDir` root.
+        // Exercise non-ASCII parent and basename components.
         const QString subdir = dir.filePath(QStringLiteral(u"\u65e5\u5fd7")); // 日志
         std::error_code createEc;
-        // Non-throwing overload -- a permissions failure creating
-        // the non-ASCII directory would otherwise throw a
-        // `filesystem_error` that QtTest can only report as
-        // "Caught unhandled exception" and then crash on unwind.
-        // Skip cleanly instead so downstream slots still run.
+        // Avoid a filesystem exception aborting later QtTest slots.
         std::filesystem::create_directory(logapp::QStringToFsPath(subdir), createEc);
         if (createEc)
         {
@@ -14035,10 +13714,7 @@ private slots:
             subdir + QLatin1Char('/') + QStringLiteral(u"\u041f\u0440\u0438\u043c\u0435\u0440.log"); // Пример.log
         const QString oldPath = primaryPath + QStringLiteral(".1");
         const auto write = [](const QString &p, const QString &content) -> bool {
-            // `std::ofstream(std::filesystem::path)` is a C++20 ctor
-            // overload; on Windows it routes through `_wfopen` and
-            // handles wide paths natively (see `qstring_path.hpp`
-            // for why we can't round-trip through `toStdString()`).
+            // The filesystem-path overload preserves wide paths on Windows.
             std::ofstream stream(logapp::QStringToFsPath(p), std::ios::binary);
             if (!stream.is_open())
             {
@@ -14055,11 +13731,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        // Static Replace so both files land as `FileLineSource`s
-        // and the expander's path-to-QString round-trip has to
-        // survive the queue's own re-open. Live-tail would only
-        // exercise half the round-trip (the tail hits its own
-        // producer construction).
+        // Static Replace exercises both expansion and queue reopening.
         (void)mWindow->OpenMixedFilesForTest(
             {primaryPath}, MainWindow::OpenMode::Replace
         );
@@ -14071,10 +13743,6 @@ private slots:
             );
         }
         QCoreApplication::processEvents();
-        // Before the encoding fix, this landed 0 rows on Windows
-        // (the ACP-narrowed sibling path missed the actual file)
-        // or 1 row (the primary opened, the sibling was mojibake
-        // and failed to open, `mPendingOpenErrors` grew instead).
         QCOMPARE(model->rowCount(), 2);
         QVERIFY2(
             mWindow->IsUndoRotationExpansionEnabledForTest(),
@@ -14082,9 +13750,7 @@ private slots:
         );
     }
 
-    // open queue -- landing the user on an empty view. This is the
-    // same "empty view" hazard the `Ignore` branch guards
-    // destructive Replace opens against.
+    // Config-then-log opens ignore locator keys loaded from the config.
     void TestConfigThenLogsIgnoresStaleLocatorDedup()
     {
         auto *model = mWindow->Model();
@@ -14100,10 +13766,6 @@ private slots:
         };
         write(primaryPath, R"({"msg":"row-A"})""\n");
 
-        // First session: open the log and save a full-session config.
-        // The saved config's `Source::locatorDedupKeys` will contain
-        // `primaryPath`'s canonical key -- exactly the collision the
-        // bug hinges on.
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
         (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
@@ -14116,16 +13778,11 @@ private slots:
         const QString sessionPath = savedDir.filePath(QStringLiteral("saved.json"));
         mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
 
-        // New session so the outgoing state cannot cross-contaminate
-        // the assertion (`mCurrentSource` cleared, model empty).
         mWindow->NewSessionForTest();
         QCoreApplication::processEvents();
         QCOMPARE(model->rowCount(), 0);
         QVERIFY(!mWindow->CurrentSourceForTest().has_value());
 
-        // Mixed drop: `[saved.json, app.log]`. Before the fix, the
-        // expander would filter `app.log` out (matches a stale
-        // locator from the loaded config) and stream nothing.
         finishedSpy.clear();
         const MainWindow::MixedInputDispatch outcome =
             mWindow->OpenMixedFilesForTest({sessionPath, primaryPath}, MainWindow::OpenMode::Replace);
@@ -14141,16 +13798,7 @@ private slots:
         );
     }
 
-    // Regression: `OpenStdinStreamFromProducer` must scrub any
-    // pending sibling-prefix live-tail state carried from a prior
-    // `OpenLogStreamFromPath` whose drain did not resolve. Without
-    // this, the fresh stdin session's own `OnStreamingFinished`
-    // (Success on EOF, or a queued Cancelled) re-enters the
-    // sibling-prefix branch and attaches the OLD file's tail onto
-    // the stdin session -- clobbering both `mCurrentSource` and the
-    // streaming filename with an unrelated file. `OpenNetworkStream`
-    // has the identical hazard: see the shared teardown discipline
-    // documented alongside `ClearPendingLiveTailPromotion`.
+    // Opening stdin clears pending file-tail promotion and rotation Undo.
     void TestOpenStdinStreamClearsPendingLiveTailPromotion()
     {
         auto *model = mWindow->Model();
@@ -14159,9 +13807,7 @@ private slots:
         const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString stalePrimary = dir.filePath(QStringLiteral("stale.log"));
-        // Also arm the sibling-Undo affordance so we can assert the
-        // stdin teardown scrubs both bookkeeping surfaces, not just
-        // the pending live-tail primary.
+        // Seed both outgoing bookkeeping surfaces.
         mWindow->SeedPendingLiveTailForTest(stalePrimary, /*retention=*/64);
         mWindow->SeedLastRotationExpansionForTest(
             /*originalInputs=*/QStringList{stalePrimary}, /*wasLiveTail=*/true
@@ -14169,9 +13815,7 @@ private slots:
         QVERIFY(mWindow->HasPendingLiveTailForTest());
         QVERIFY(!mWindow->LastRotationExpansionOriginalInputsForTest().isEmpty());
 
-        // Minimal `BytesProducer` stub: hands over one JSON line, then
-        // reports terminal EOF so the stdin parser exits cleanly and
-        // fires `OnStreamingFinished(Success)`.
+        // The stub reaches terminal EOF after one JSON line.
         class StubProducer final : public loglib::BytesProducer
         {
         public:
@@ -14225,8 +13869,6 @@ private slots:
         auto producer = std::make_unique<StubProducer>(peek);
         mWindow->OpenStdinStreamForTest(std::move(producer), peek);
 
-        // Scrub happens synchronously at the top of the open path,
-        // before the async parser worker starts.
         QVERIFY2(
             !mWindow->HasPendingLiveTailForTest(),
             "OpenStdinStreamFromProducer must scrub stale pending live-tail state"
@@ -14236,19 +13878,12 @@ private slots:
             "OpenStdinStreamFromProducer must scrub outgoing Undo-rotation affordance"
         );
 
-        // Drain the async streaming so this test doesn't leave a
-        // running session behind for the next slot.
+        // Leave no streaming worker for the next slot.
         (void)finishedSpy.wait(5000);
         QCoreApplication::processEvents();
     }
 
-    // Regression: undoing a rotation expansion that fired from a
-    // live-tail entry point (`OpenLogStreamFromPath`) must route
-    // the reopen back through the live-tail path -- routing through
-    // `DispatchMixedOpenInput` would silently demote the Stream Mode
-    // view to a one-shot Static open. Captured by the
-    // `mLastRotationExpansionWasLiveTail` marker in
-    // `UndoRotationExpansion`.
+    // Undo from Stream Mode reopens as a live tail, not a static view.
     void TestUndoRotationExpansionOnLiveTailStaysLiveTail()
     {
         auto *model = mWindow->Model();
@@ -14269,43 +13904,25 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        // Live-tail open. The sibling static prefix streams first
-        // (`Success` on drain), then `ContinueLiveTailAfterPrefix`
-        // attaches the primary as a live tail.
         mWindow->OpenLogStreamForTest(primaryPath);
         QVERIFY2(finishedSpy.wait(5000), "sibling drain must finish before the tail attaches");
         QCoreApplication::processEvents();
         QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::LiveTail);
         QVERIFY(mWindow->IsUndoRotationExpansionEnabledForTest());
 
-        // Undo. Must reopen the primary through `OpenLogStreamFromPath`
-        // (LiveTail again), NOT through the static-open queue.
-        // Before the fix, `UndoRotationExpansion` dispatched via
-        // `DispatchMixedOpenInput`, silently landing the user in
-        // Static mode.
         finishedSpy.clear();
         mWindow->UndoRotationExpansionForTest();
         QCoreApplication::processEvents();
 
         QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::LiveTail);
-        // Affordance is one-shot: consumed by the undo.
         QVERIFY(!mWindow->IsUndoRotationExpansionEnabledForTest());
-        // No pending sibling promotion after the fast-path
-        // `OpenLogStreamFromPath` reopen (siblings suppressed by the
-        // one-shot override).
         QVERIFY(!mWindow->HasPendingLiveTailForTest());
 
-        // Clean up so the next slot starts idle.
         mWindow->NewSessionForTest();
         QCoreApplication::processEvents();
     }
 
-    // Regression: Stream Mode must derotate a picked segment the
-    // same way static open does. Opening `app.log.2` via
-    // `Open Log Stream` should load older history and live-tail
-    // the active primary `app.log` -- not enumerate siblings of
-    // the literal basename `app.log.2` (which finds nothing useful)
-    // and tail the stale segment.
+    // Stream Mode derotates a picked segment to the active primary.
     void TestStreamModeDerotatesRotatedSegmentToActivePrimary()
     {
         auto *model = mWindow->Model();
@@ -14328,17 +13945,8 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        // Pick the oldest numbered segment in Stream Mode.
         mWindow->OpenLogStreamForTest(olderPath);
-        // Two static siblings (gen2 + gen1) each emit Success, then
-        // the live-tail attaches without a further Success from the
-        // stream worker in this fixture (empty follow-up). Wait for
-        // both prefix finishes; promotion is deferred via
-        // `QueuedConnection` on every terminal result (see the
-        // teardown-reentrancy comment in
-        // `MainWindow::OnStreamingFinished`), so the trailing
-        // `processEvents()` runs it before we observe LiveTail
-        // state.
+        // Both prefix completions precede the queued live-tail promotion.
         for (int i = 0; i < 2; ++i)
         {
             QVERIFY2(finishedSpy.wait(5000), "two sibling-prefix streamingFinished emits expected");
@@ -14363,7 +13971,6 @@ private slots:
         QVERIFY2(hasKey(primaryKey), "derotated live-tail must include the active primary");
         QVERIFY2(hasKey(olderKey), "picked segment must still appear in the historical prefix");
         QVERIFY2(hasKey(oldKey), "intermediate numbered sibling must be loaded");
-        // Oldest-first locators, primary last.
         QCOMPARE(source->locators.size(), static_cast<std::size_t>(3));
         QCOMPARE(QString::fromStdString(source->locators.back()), logapp::CanonicalDisplayPath(primaryPath));
 
@@ -14371,11 +13978,7 @@ private slots:
         QCoreApplication::processEvents();
     }
 
-    // Regression: when the Settings checkbox is unchecked because
-    // the bound session opted out (`followRotationSiblings=false`)
-    // while the global pref remains on, Stream Mode must honour the
-    // *effective* preference snapped before teardown -- not re-read
-    // the global pref alone after `mCurrentSource` is cleared.
+    // Stream Mode honors the bound session's effective opt-out.
     void TestStreamModeHonoursSessionOptOutEffectivePreference()
     {
         auto *model = mWindow->Model();
@@ -14395,7 +13998,7 @@ private slots:
         write(oldPath, R"({"msg":"g1"})""\n");
         write(otherPath, R"({"msg":"o"})""\n");
 
-        // Global pref on (default), but the bound session opted out.
+        // Keep the global preference on while the bound source opts out.
         mWindow->SimulateRotationHistoryMenuToggleForTest(true);
         loglib::LogConfiguration::Source optedOut{
             .kind = loglib::LogConfiguration::Source::Kind::File,
@@ -24659,11 +24262,7 @@ private slots:
         }
     }
 
-    // H1 regression: a v3 peer (built from the same binary as the
-    // primary) forwards `--no-rotation-history` as the trailing
-    // `quint32 launchFlags` field. The primary must decode the
-    // bit and re-emit it on the signal so the peer window can
-    // apply the launch override before the first open.
+    // A v3 peer forwards the rotation-history launch override.
     void TestSingleInstanceForwardsRotationHistoryDisable()
     {
         const QString socketName =
@@ -24676,9 +24275,7 @@ private slots:
         QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
         QVERIFY(spy.isValid());
 
-        // Wire format v3: magic + version(3) + files + truncatedCount
-        // + launchFlags. `LaunchFlags::DisableRotationHistory` maps
-        // to bit 0.
+        // V3 appends launch flags after the truncated-file count.
         QLocalSocket peer;
         peer.connectToServer(socketName);
         QVERIFY2(peer.waitForConnected(2000), "peer must connect to primary's socket");
@@ -24692,9 +24289,7 @@ private slots:
             out << static_cast<quint8>(3);
             out << files;
             out << static_cast<quint32>(0);
-            // Set only the `DisableRotationHistory` bit. Unknown
-            // bits above it are dropped by the primary (see
-            // wire decode in `single_instance_guard.cpp`).
+            // Set only the rotation-history-disable bit.
             out << static_cast<quint32>(1u << 0);
         }
         const qint64 written = peer.write(payload);
@@ -24707,10 +24302,6 @@ private slots:
         const auto args = spy.takeFirst();
         QCOMPARE(args.at(0).toStringList(), files);
         QCOMPARE(args.at(1).toInt(), 0);
-        // Third argument is the `LaunchFlagsBitmask`. Passing by
-        // const-reference (rather than value) avoids the copy
-        // `clang-tidy` would flag; using the meta-type registration
-        // above lets `QVariant::value<T>()` see the bits.
         const QVariant &flagsVariant = args.at(2);
         QVERIFY2(flagsVariant.isValid(), "signal must forward the LaunchFlags argument");
         const auto flags = flagsVariant.value<SingleInstanceGuard::LaunchFlagsBitmask>();
@@ -24726,10 +24317,7 @@ private slots:
         }
     }
 
-    // Backwards-compat regression: a v2 peer (older binary) that
-    // does not know about `launchFlags` must still be accepted, and
-    // the primary must emit `LaunchFlags::None` for the missing
-    // field rather than treating the frame as truncated.
+    // A legacy v2 peer decodes with no launch flags.
     void TestSingleInstanceLegacyVersion2StillAccepted()
     {
         const QString socketName =
@@ -24746,7 +24334,6 @@ private slots:
         peer.connectToServer(socketName);
         QVERIFY2(peer.waitForConnected(2000), "peer must connect to primary's socket");
 
-        // Legacy v2 payload -- no `launchFlags` trailer.
         const QStringList files{QStringLiteral("C:/logs/legacy.json")};
         QByteArray payload;
         {
