@@ -481,7 +481,7 @@ TEST_CASE(
     CHECK(series.files.front().origin == RotatedFile::Origin::Primary);
 }
 
-#if !defined(_WIN32)
+#ifndef _WIN32
 TEST_CASE("CanonicalKeyForPath preserves case on non-Windows platforms", "[RotationSiblings]")
 {
     // Regression on two fronts:

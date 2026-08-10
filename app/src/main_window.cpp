@@ -2911,7 +2911,7 @@ QStringList MainWindow::ExpandLogPathsWithRotationSiblings(
         return logPaths;
     }
 
-    loglib::PartitionedSelection partitioned =
+    const loglib::PartitionedSelection partitioned =
         loglib::PartitionAsRotationSeries(std::span<const std::filesystem::path>(fsPaths));
 
     std::unordered_set<std::string> emittedKeys;

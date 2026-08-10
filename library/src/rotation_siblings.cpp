@@ -454,7 +454,7 @@ std::vector<Candidate> EnumerateCandidates(const std::filesystem::path &primary)
             break;
         }
         const std::filesystem::directory_entry &entry = *it;
-        std::filesystem::path path = entry.path();
+        const std::filesystem::path path = entry.path();
         const std::string filename = PathToUtf8(path.filename());
         const std::string filenameKey =
 #if defined(_WIN32) || defined(__APPLE__)
@@ -556,7 +556,7 @@ std::string CanonicalKeyForPath(const std::filesystem::path &path)
     // discipline elsewhere in the file.
     const std::u8string u8 = normalised.generic_u8string();
     std::string s(reinterpret_cast<const char *>(u8.data()), u8.size());
-#if defined(_WIN32)
+#ifdef _WIN32
     return ToLower(std::move(s));
 #else
     return s;

@@ -12855,7 +12855,7 @@ private slots:
         // Three files in one rotation family. Higher N is older so
         // the expected row order is: sibling.2 lines, sibling.1
         // lines, primary lines.
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
         const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
@@ -12896,7 +12896,7 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
         const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
@@ -12955,7 +12955,7 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString appPrimary = dir.filePath(QStringLiteral("app.log"));
         const QString appOlder = dir.filePath(QStringLiteral("app.log.1"));
@@ -13012,7 +13012,7 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
         const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
@@ -13057,7 +13057,7 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
         const QString olderPath = dir.filePath(QStringLiteral("app.log.1"));
@@ -13098,7 +13098,7 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
         const QString olderPath = dir.filePath(QStringLiteral("app.log.1"));
@@ -13145,7 +13145,7 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
         const auto write = [](const QString &p, const QString &content) {
@@ -13202,7 +13202,7 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
         // Mixed-case sibling: case-sensitive regex would drop this.
@@ -13244,7 +13244,7 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString fakeStalePrimary = dir.filePath(QStringLiteral("stale-primary.log"));
         const QString freshLog = dir.filePath(QStringLiteral("fresh.log"));
@@ -13299,7 +13299,7 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
         const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
@@ -13364,7 +13364,7 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
         const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
@@ -13419,7 +13419,7 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
         const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
@@ -13439,7 +13439,7 @@ private slots:
         }
         write(oldPath, bigContent);
 
-        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        const QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
         mWindow->OpenLogStreamForTest(primaryPath);
@@ -13498,7 +13498,7 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
         const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
@@ -13513,7 +13513,7 @@ private slots:
         // against the pre-queued `OnFinished(false)`.
         write(oldPath, R"({"msg":"g1"})""\n" R"({"msg":"g2"})""\n" R"({"msg":"g3"})""\n");
 
-        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        const QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
         mWindow->OpenLogStreamForTest(primaryPath);
@@ -13589,7 +13589,7 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
         const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
@@ -13684,7 +13684,7 @@ private slots:
         const QHeaderView *header = tableView->horizontalHeader();
         QVERIFY(header != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
         {
@@ -13738,7 +13738,7 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
         const QString olderPath = dir.filePath(QStringLiteral("app.log.1"));
@@ -13811,7 +13811,7 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
         const QString olderPath = dir.filePath(QStringLiteral("app.log.1"));
@@ -13873,7 +13873,7 @@ private slots:
     // `QFileInfo::absoluteFilePath` does not.
     void TestCanonicalKeyAndCanonicalLocatorAgree()
     {
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         std::error_code ec;
         // `QStringToFsPath` (not `toStdString()`) so a non-ASCII
@@ -13952,7 +13952,7 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
         const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
@@ -14013,7 +14013,7 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         // Cyrillic subdirectory + Chinese basename so the test
         // exercises non-ASCII on both the parent and the leaf.
@@ -14090,7 +14090,7 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
         const auto write = [](const QString &p, const QString &content) {
@@ -14156,7 +14156,7 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString stalePrimary = dir.filePath(QStringLiteral("stale.log"));
         // Also arm the sibling-Undo affordance so we can assert the
@@ -14196,7 +14196,7 @@ private slots:
                 }
                 return n;
             }
-            void WaitForBytes(std::chrono::milliseconds) override
+            void WaitForBytes(std::chrono::milliseconds /*timeout*/) override
             {
             }
             void Stop() noexcept override
@@ -14221,7 +14221,7 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        std::string peek(R"({"msg":"stdin"})""\n");
+        const std::string peek(R"({"msg":"stdin"})""\n");
         auto producer = std::make_unique<StubProducer>(peek);
         mWindow->OpenStdinStreamForTest(std::move(producer), peek);
 
@@ -14254,7 +14254,7 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
         const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
@@ -14311,7 +14311,7 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
         const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
@@ -14381,7 +14381,7 @@ private slots:
         auto *model = mWindow->Model();
         QVERIFY(model != nullptr);
 
-        QTemporaryDir dir;
+        const QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
         const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));

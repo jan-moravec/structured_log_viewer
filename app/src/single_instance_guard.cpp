@@ -209,7 +209,7 @@ bool SingleInstanceGuard::TryAcquire(
     // `launchFlags` is a fixed 4-byte suffix; it cannot itself
     // push the payload over the cap, so it does not participate
     // in the shrink loop.
-    const quint32 launchFlagsRaw = static_cast<quint32>(launchFlags);
+    const auto launchFlagsRaw = static_cast<quint32>(launchFlags);
     auto serialise = [&trimmed, &truncatedCount, launchFlagsRaw]() {
         QByteArray buf;
         QDataStream stream(&buf, QIODevice::WriteOnly);
