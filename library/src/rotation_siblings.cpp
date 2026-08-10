@@ -34,12 +34,11 @@ constexpr std::int64_t MAX_ACCEPTED_NUMBERED_SUFFIX = NUMBERED_RANK_BASE - 1;
 constexpr std::size_t MAX_ENUMERATED_DIRECTORY_ENTRIES = 4096;
 
 /// Match case-insensitively on Windows/macOS and sensitively elsewhere.
-constexpr auto REGEX_CASE_FLAGS =
+constexpr auto REGEX_CASE_FLAGS = std::regex::ECMAScript
 #if defined(_WIN32) || defined(__APPLE__)
-    std::regex::icase;
-#else
-    std::regex::flag_type{};
+                                  | std::regex::icase
 #endif
+    ;
 
 /// Converts without locale-dependent narrowing; path matching uses UTF-8.
 [[nodiscard]] std::string PathToUtf8(const std::filesystem::path &p)
@@ -298,7 +297,7 @@ std::vector<Candidate> EnumerateCandidates(const std::filesystem::path &primary)
     const SiblingMatchers matchers = BuildMatchers(primaryBasename, stem, ext);
 
     // Use the same platform case rules for matching and primary exclusion.
-    const std::string primaryBasenameKey =
+    const std::string &primaryBasenameKey =
 #if defined(_WIN32) || defined(__APPLE__)
         ToLower(primaryBasename);
 #else
@@ -323,7 +322,7 @@ std::vector<Candidate> EnumerateCandidates(const std::filesystem::path &primary)
         const std::filesystem::directory_entry &entry = *it;
         const std::filesystem::path path = entry.path();
         const std::string filename = PathToUtf8(path.filename());
-        const std::string filenameKey =
+        const std::string &filenameKey =
 #if defined(_WIN32) || defined(__APPLE__)
             ToLower(filename);
 #else
