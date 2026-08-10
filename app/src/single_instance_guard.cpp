@@ -38,11 +38,14 @@ constexpr int MAGIC_FRAME_PEEK_BYTES =
     static_cast<int>(sizeof(quint32)) + MAGIC_BYTES + static_cast<int>(sizeof(quint8));
 
 /// Wire schema version after `WIRE_MAGIC`. Bump on payload changes.
-/// Version 2: magic + version + `QStringList` files +
-/// `quint32 truncatedCount`.
-constexpr quint8 WIRE_VERSION = 2;
+/// - Version 2: magic + version + `QStringList` files +
+///   `quint32 truncatedCount`.
+/// - Version 3: v2 plus a trailing `quint32 launchFlags`.
+///   This reader accepts v2 and defaults its flags to `None`; v2
+///   primaries do not accept v3 frames.
+constexpr quint8 WIRE_VERSION = 3;
 constexpr quint8 WIRE_VERSION_MIN_SUPPORTED = 2;
-constexpr quint8 WIRE_VERSION_MAX_SUPPORTED = 2;
+constexpr quint8 WIRE_VERSION_MAX_SUPPORTED = 3;
 
 /// Connect / write timeouts. Tight so an unreachable primary
 /// degrades to running uncoordinated rather than stalling launch.
@@ -167,7 +170,9 @@ void SingleInstanceGuard::SetSocketNameForTest(const QString &name)
     mSocketName = name;
 }
 
-bool SingleInstanceGuard::TryAcquire(const QStringList &forwardFiles, bool allowNewInstance)
+bool SingleInstanceGuard::TryAcquire(
+    const QStringList &forwardFiles, bool allowNewInstance, LaunchFlagsBitmask launchFlags
+)
 {
     if (allowNewInstance)
     {
@@ -192,7 +197,9 @@ bool SingleInstanceGuard::TryAcquire(const QStringList &forwardFiles, bool allow
     // Serialise up front so we can enforce `MAX_PAYLOAD_BYTES`
     // before any round-trip. Long paths can blow past the byte
     // cap with 256 entries, so pop tail entries on overrun.
-    auto serialise = [&trimmed, &truncatedCount]() {
+    // Flags have fixed size; only the file list can shrink on retry.
+    const auto launchFlagsRaw = static_cast<quint32>(launchFlags);
+    auto serialise = [&trimmed, &truncatedCount, launchFlagsRaw]() {
         QByteArray buf;
         QDataStream stream(&buf, QIODevice::WriteOnly);
         stream.setVersion(QDataStream::Qt_6_0);
@@ -200,6 +207,7 @@ bool SingleInstanceGuard::TryAcquire(const QStringList &forwardFiles, bool allow
         stream << static_cast<quint8>(WIRE_VERSION);
         stream << trimmed;
         stream << truncatedCount;
+        stream << launchFlagsRaw;
         return buf;
     };
     QByteArray payload = serialise();
@@ -362,6 +370,13 @@ void SingleInstanceGuard::HandleNewConnection()
             {
                 return; // Disconnected between signal and slot.
             }
+            if (it->frameConsumed)
+            {
+                // Disconnect is asynchronous. Drain trailing bytes
+                // without decoding the already-emitted frame again.
+                (void)socket->readAll();
+                return;
+            }
             QByteArray &buffer = it->buffer;
             buffer.append(socket->readAll());
             if (buffer.size() > MAX_PAYLOAD_BYTES)
@@ -409,6 +424,30 @@ void SingleInstanceGuard::HandleNewConnection()
             {
                 return; // Wait for more bytes.
             }
+            // Version 2 has no flags. Peek version 3 on a copied
+            // stream so a partial trailing field waits for more
+            // bytes instead of being mistaken for `None`.
+            quint32 launchFlagsRaw = 0;
+            if (version >= 3)
+            {
+                QDataStream flagsPeek(buffer);
+                flagsPeek.setVersion(QDataStream::Qt_6_0);
+                QByteArray unused;
+                flagsPeek >> unused;
+                quint8 v = 0;
+                flagsPeek >> v;
+                QStringList f;
+                flagsPeek >> f;
+                quint32 t = 0;
+                flagsPeek >> t;
+                quint32 raw = 0;
+                flagsPeek >> raw;
+                if (flagsPeek.status() != QDataStream::Ok)
+                {
+                    return; // Trailing field still in flight.
+                }
+                launchFlagsRaw = raw;
+            }
             // Defence in depth: enforce the count cap post-decode
             // in case a peer packed many short files past the limit.
             if (files.size() > MAX_FORWARDED_FILES)
@@ -417,7 +456,18 @@ void SingleInstanceGuard::HandleNewConnection()
                 truncatedCount += overrun;
                 files = files.mid(0, MAX_FORWARDED_FILES);
             }
-            emit openWindowRequested(files, static_cast<int>(truncatedCount));
+            // Preserve only known bits; unknown future flags use
+            // this version's default behaviour.
+            LaunchFlagsBitmask launchFlags;
+            if ((launchFlagsRaw & static_cast<quint32>(LaunchFlags::DisableRotationHistory)) != 0)
+            {
+                launchFlags |= LaunchFlags::DisableRotationHistory;
+            }
+            // Latch before emitting: a direct slot may pump events
+            // and re-enter this decoder before disconnect completes.
+            it->frameConsumed = true;
+            it->buffer.clear();
+            emit openWindowRequested(files, static_cast<int>(truncatedCount), launchFlags);
             socket->disconnectFromServer();
         };
 

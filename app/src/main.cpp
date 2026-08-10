@@ -161,7 +161,13 @@ int main(int argc, char *argv[])
     // that never opens stdin.
     const bool effectiveAllowNewInstance = allowNewInstance || readStdin;
     SingleInstanceGuard instanceGuard;
-    if (!instanceGuard.TryAcquire(cliFiles, effectiveAllowNewInstance))
+    // Forward per-launch options to an existing primary process.
+    SingleInstanceGuard::LaunchFlagsBitmask launchFlags;
+    if (parsed.disableRotationHistory)
+    {
+        launchFlags |= SingleInstanceGuard::LaunchFlags::DisableRotationHistory;
+    }
+    if (!instanceGuard.TryAcquire(cliFiles, effectiveAllowNewInstance, launchFlags))
     {
         return 0;
     }
@@ -208,6 +214,9 @@ int main(int argc, char *argv[])
     {
         cliFiles.append(pendingFromOs);
     }
+
+    // Apply the launch override before opening files.
+    w.SetRotationHistoryLaunchOverride(parsed.disableRotationHistory);
 
     if (!cliFiles.isEmpty())
     {
@@ -358,13 +367,17 @@ int main(int argc, char *argv[])
         &SingleInstanceGuard::openWindowRequested,
         &a,
         [&themeControl, &historyManager, &regexTemplateRegistry, &appendPeer](
-            const QStringList &files, int truncatedCount
+            const QStringList &files, int truncatedCount, SingleInstanceGuard::LaunchFlagsBitmask forwardedFlags
         ) {
             auto *child = new MainWindow(&themeControl, &historyManager, &regexTemplateRegistry, nullptr);
             child->setAttribute(Qt::WA_DeleteOnClose);
             child->show();
             child->raise();
             child->activateWindow();
+            // Apply forwarded flags before opening files.
+            child->SetRotationHistoryLaunchOverride(
+                forwardedFlags.testFlag(SingleInstanceGuard::LaunchFlags::DisableRotationHistory)
+            );
             if (!files.isEmpty())
             {
                 child->OpenFilesForCli(files);

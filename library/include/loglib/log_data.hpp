@@ -62,6 +62,11 @@ public:
     [[nodiscard]] StreamLineSource *FrontStreamSource() noexcept;
     [[nodiscard]] const StreamLineSource *FrontStreamSource() const noexcept;
 
+    /// Last `StreamLineSource` in `Sources()`, or nullptr. This may
+    /// differ from the front source when file history precedes a live tail.
+    [[nodiscard]] StreamLineSource *BackStreamSource() noexcept;
+    [[nodiscard]] const StreamLineSource *BackStreamSource() const noexcept;
+
     const std::vector<LogLine> &Lines() const;
     std::vector<LogLine> &Lines();
 

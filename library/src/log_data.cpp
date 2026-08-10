@@ -131,6 +131,30 @@ const StreamLineSource *LogData::FrontStreamSource() const noexcept
     return dynamic_cast<const StreamLineSource *>(mSources.front().get());
 }
 
+StreamLineSource *LogData::BackStreamSource() noexcept
+{
+    for (auto &source : std::views::reverse(mSources))
+    {
+        if (auto *ss = dynamic_cast<StreamLineSource *>(source.get()); ss != nullptr)
+        {
+            return ss;
+        }
+    }
+    return nullptr;
+}
+
+const StreamLineSource *LogData::BackStreamSource() const noexcept
+{
+    for (const auto &source : std::views::reverse(mSources))
+    {
+        if (const auto *ss = dynamic_cast<const StreamLineSource *>(source.get()); ss != nullptr)
+        {
+            return ss;
+        }
+    }
+    return nullptr;
+}
+
 const std::vector<LogLine> &LogData::Lines() const
 {
     return mLines;

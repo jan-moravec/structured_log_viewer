@@ -217,6 +217,23 @@ public:
     /// session.
     void OpenFilesForCli(const QStringList &files);
 
+    /// Set this window's CLI rotation-history opt-out. It overrides
+    /// global and session preferences until the user toggles the
+    /// corresponding Settings action.
+    void SetRotationHistoryLaunchOverride(bool disable);
+
+    /// Test-only reader for this window's CLI opt-out.
+    [[nodiscard]] bool RotationHistoryLaunchOverrideForTest() const noexcept
+    {
+        return mDisableRotationHistoryOverride;
+    }
+
+    /// Test-only entry to the rotation-history Settings handler.
+    void SimulateRotationHistoryMenuToggleForTest(bool enabled)
+    {
+        OnRotationHistoryPrefToggled(enabled);
+    }
+
     /// Open a live-tail session over the process's standard input.
     /// The CLI parses `-` / `--stdin` in argv and routes here via
     /// `main()`. Session shape mirrors `OpenNetworkStream` (live-
@@ -531,6 +548,9 @@ public:
     };
     void SetSessionModeForTest(TestSessionMode mode);
 
+    /// Test-only reader for the current session mode.
+    [[nodiscard]] TestSessionMode SessionModeForTest() const noexcept;
+
     /// Test-only entry to the `TryLoadAsConfiguration` path
     /// (production gates it behind `QFileDialog`).
     bool TryLoadAsConfigurationForTest(const QString &file);
@@ -594,6 +614,52 @@ public:
     /// Lets tests exercise the live-tail open path without a real
     /// modal `QFileDialog`.
     void OpenLogStreamForTest(const QString &filePath);
+
+    /// Test-only check for a pending historical-prefix promotion.
+    [[nodiscard]] bool HasPendingLiveTailForTest() const noexcept
+    {
+        return !mPendingLiveTailPrimary.isEmpty() || mPendingLiveTailRetention != 0;
+    }
+
+    /// Test-only setter for pending live-tail promotion state.
+    void SeedPendingLiveTailForTest(const QString &primary, size_t retention) noexcept
+    {
+        mPendingLiveTailPrimary = primary;
+        mPendingLiveTailRetention = retention;
+    }
+
+    /// Test-only entry to the no-prefix live-tail rescue path.
+    void TriggerRescueLiveTailForTest(const QString &primary, size_t retention);
+
+    /// Test-only entry to `UndoRotationExpansion`.
+    void UndoRotationExpansionForTest()
+    {
+        UndoRotationExpansion();
+    }
+
+    /// Original inputs captured for the most recent expansion.
+    [[nodiscard]] const QStringList &LastRotationExpansionOriginalInputsForTest() const noexcept
+    {
+        return mLastRotationExpansionOriginalInputs;
+    }
+
+    /// Seed expansion-undo state. Live-tail state reopens through
+    /// `OpenLogStreamFromPath`; other state uses the static queue.
+    void SeedLastRotationExpansionForTest(const QStringList &originalInputs, bool wasLiveTail) noexcept
+    {
+        mLastRotationExpansionOriginalInputs = originalInputs;
+        mLastRotationExpansionWasLiveTail = wasLiveTail;
+        if (mActionUndoRotationExpansion != nullptr)
+        {
+            mActionUndoRotationExpansion->setEnabled(!originalInputs.isEmpty());
+        }
+    }
+
+    /// Test-only reader for the expansion-undo action state.
+    [[nodiscard]] bool IsUndoRotationExpansionEnabledForTest() const noexcept
+    {
+        return mActionUndoRotationExpansion != nullptr && mActionUndoRotationExpansion->isEnabled();
+    }
 
     /// Test seam; forwards a producer and pre-read bytes to
     /// `OpenStdinStreamFromProducer`.
@@ -1173,6 +1239,56 @@ private:
     /// `QFileDialog`.
     void OpenLogStreamFromPath(const QString &file);
 
+    /// Attach the pending live tail after its static prefix drains.
+    void ContinueLiveTailAfterPrefix();
+
+    /// Global rotation-history preference after applying the CLI
+    /// override. Session-level gating is handled separately.
+    [[nodiscard]] bool ShouldAutoDetectRotationHistory() const;
+
+    /// Rotation-history preference after global, CLI, and session gates.
+    [[nodiscard]] bool EffectiveAutoDetectRotationHistory() const;
+
+    /// Clear expansion-undo state at a destructive session boundary.
+    void ClearRotationExpansionUndoState() noexcept;
+
+    /// Clear a pending historical-prefix promotion so it cannot
+    /// attach to a later session.
+    void ClearPendingLiveTailPromotion() noexcept;
+
+    /// Controls whether expansion consults the current source's
+    /// opt-out and locator deduplication state.
+    enum class RotationSourceGating
+    {
+        /// Apply both the session opt-out and loaded-locator deduplication.
+        HonourAll,
+        /// Ignore the outgoing source during a destructive replacement.
+        Ignore,
+        /// Apply the session opt-out but ignore stale locator keys.
+        HonourOptOutOnly,
+    };
+
+    /// Expand rotation families in oldest-first order and deduplicate
+    /// them according to @p gating. Bundles pass through unchanged.
+    /// @p addedOut counts only auto-discovered paths absent from the
+    /// input. @p primaryOut receives the first expanded family's
+    /// canonical primary, or remains empty when nothing was added.
+    [[nodiscard]] QStringList ExpandLogPathsWithRotationSiblings(
+        const QStringList &logPaths, int &addedOut, RotationSourceGating gating, QString *primaryOut = nullptr
+    ) const;
+
+    /// Report an expansion and enable its Undo action.
+    void ShowRotationHistoryToast(int addedCount, const QString &primary);
+
+    /// Reopen the original inputs without rotation expansion.
+    void UndoRotationExpansion();
+
+    /// Sync the Settings action to the effective preference.
+    void SyncRotationHistoryActionCheckedState();
+
+    /// Persist the preference and mirror it to the current source.
+    void OnRotationHistoryPrefToggled(bool enabled);
+
     /// Path-based save / load shared by the dialog slots and the
     /// test seams. `DoSaveConfiguration` mirrors session state and
     /// writes the slice selected by @p scope; throws on failure.
@@ -1518,6 +1634,12 @@ private:
     QAction *mActionToggleFind = nullptr;
     /// Toggle action for `mParseErrorsDock`.
     QAction *mActionToggleParseErrors = nullptr;
+
+    /// Checkable rotation-history Settings action.
+    QAction *mActionAutoDetectRotationHistory = nullptr;
+
+    /// Enabled while the current session can undo its expansion.
+    QAction *mActionUndoRotationExpansion = nullptr;
     /// Status-bar indicator that surfaces when the parse-errors dock
     /// has entries; clicking it opens the dock.
     QPushButton *mParseErrorsStatusButton = nullptr;
@@ -1806,6 +1928,22 @@ private:
 
     /// Files queued by `StartStreamingOpenQueue`.
     QStringList mPendingOpenFiles;
+
+    /// Primary to tail after the queued historical prefix drains.
+    /// Destructive session changes must clear it.
+    QString mPendingLiveTailPrimary;
+
+    /// Retention cap saved across a historical-prefix load.
+    size_t mPendingLiveTailRetention = 0;
+
+    /// Per-window CLI opt-out, cleared by an explicit Settings toggle.
+    bool mDisableRotationHistoryOverride = false;
+
+    /// Exact caller inputs restored by `UndoRotationExpansion`.
+    QStringList mLastRotationExpansionOriginalInputs;
+
+    /// Preserve live-tail mode when undoing the latest expansion.
+    bool mLastRotationExpansionWasLiveTail = false;
 
     /// File-open errors collected while draining `mPendingOpenFiles`.
     /// Drained under the `tr("Error Opening File")` title.

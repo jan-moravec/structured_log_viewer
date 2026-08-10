@@ -51,6 +51,7 @@
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/parsers/logfmt_parser.hpp>
 #include <loglib/query_parser.hpp>
+#include <loglib/rotation_siblings.hpp>
 #include <loglib/session_bundle.hpp>
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
@@ -12843,6 +12844,1365 @@ private slots:
         );
     }
 
+    // Opening a primary prepends every sibling in oldest-first order.
+    void TestOpenFilesExpandsRotationSiblings()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
+        const QString olderPath = dir.filePath(QStringLiteral("app.log.2"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(
+            primaryPath,
+            R"({"msg":"primary-0"})"
+            "\n"
+            R"({"msg":"primary-1"})"
+            "\n"
+        );
+        write(
+            oldPath,
+            R"({"msg":"gen1-0"})"
+            "\n"
+        );
+        write(
+            olderPath,
+            R"({"msg":"gen2-0"})"
+            "\n"
+            R"({"msg":"gen2-1"})"
+            "\n"
+        );
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        // The mixed dispatcher is required to exercise expansion.
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        while (finishedSpy.count() < 3)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "three per-file streamingFinished emits expected");
+        }
+        QCoreApplication::processEvents();
+
+        QCOMPARE(model->rowCount(), 5);
+    }
+
+    // A caller-listed rotation family is normalized to oldest-first order.
+    void TestMultiFileDropSmartSortsRotationFamily()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
+        const QString olderPath = dir.filePath(QStringLiteral("app.log.2"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            oldPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
+        write(
+            olderPath,
+            R"({"msg":"g2"})"
+            "\n"
+        );
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        // The mixed dispatcher is required to exercise expansion.
+        (void)mWindow->OpenMixedFilesForTest({oldPath, primaryPath, olderPath}, MainWindow::OpenMode::Replace);
+        while (finishedSpy.count() < 3)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "three per-file streamingFinished emits expected");
+        }
+        QCoreApplication::processEvents();
+
+        QCOMPARE(model->rowCount(), 3);
+
+        const QTemporaryDir savedDir;
+        QVERIFY(savedDir.isValid());
+        const QString sessionPath = savedDir.filePath(QStringLiteral("rotation-sorted.json"));
+        mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
+
+        loglib::LogConfigurationManager probe;
+        probe.Load(sessionPath.toStdString());
+        QVERIFY(probe.Configuration().source.has_value());
+        const auto &locators = probe.Configuration().source->locators;
+        QCOMPARE(locators.size(), static_cast<std::size_t>(3));
+        QCOMPARE(QString::fromStdString(locators[0]), logapp::CanonicalDisplayPath(olderPath));
+        QCOMPARE(QString::fromStdString(locators[1]), logapp::CanonicalDisplayPath(oldPath));
+        QCOMPARE(QString::fromStdString(locators[2]), logapp::CanonicalDisplayPath(primaryPath));
+    }
+
+    // The sibling toast names the expanded family, not the last input.
+    void TestSiblingToastAnchorsOnExpandedFamilyPrimary()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString appPrimary = dir.filePath(QStringLiteral("app.log"));
+        const QString appOlder = dir.filePath(QStringLiteral("app.log.1"));
+        // Keep an unrelated primary last to distinguish the toast anchor.
+        const QString otherPrimary = dir.filePath(QStringLiteral("other.log"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(
+            appPrimary,
+            R"({"msg":"a"})"
+            "\n"
+        );
+        write(
+            appOlder,
+            R"({"msg":"a-old"})"
+            "\n"
+        );
+        write(
+            otherPrimary,
+            R"({"msg":"o"})"
+            "\n"
+        );
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        mWindow->statusBar()->clearMessage();
+        (void)mWindow->OpenMixedFilesForTest({appPrimary, otherPrimary}, MainWindow::OpenMode::Replace);
+        while (finishedSpy.count() < 3)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "three per-file streamingFinished emits expected");
+        }
+        QCoreApplication::processEvents();
+
+        const QString message = mWindow->statusBar()->currentMessage();
+        QVERIFY2(
+            message.contains(QStringLiteral("app.log")),
+            qPrintable(QStringLiteral("toast must name the expanded family; got: '%1'").arg(message))
+        );
+        QVERIFY2(
+            !message.contains(QStringLiteral("other.log")),
+            qPrintable(QStringLiteral("toast must not name the unrelated caller input; got: '%1'").arg(message))
+        );
+    }
+
+    // Caller-listed family members do not arm rotation-expansion Undo.
+    void TestExpanderDoesNotArmUndoWhenCallerListedEverySibling()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            oldPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        mWindow->statusBar()->clearMessage();
+        (void)mWindow->OpenMixedFilesForTest({oldPath, primaryPath}, MainWindow::OpenMode::Replace);
+        while (finishedSpy.count() < 2)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "two per-file streamingFinished emits expected");
+        }
+        QCoreApplication::processEvents();
+
+        QCOMPARE(model->rowCount(), 2);
+        QVERIFY2(
+            !mWindow->IsUndoRotationExpansionEnabledForTest(),
+            "Undo must not arm when every 'sibling' was in the caller's own selection"
+        );
+        const QString message = mWindow->statusBar()->currentMessage();
+        QVERIFY2(
+            !message.contains(QStringLiteral("rotated companion")),
+            qPrintable(QStringLiteral("no sibling toast expected; got: '%1'").arg(message))
+        );
+    }
+
+    // The launch override suppresses sibling expansion.
+    void TestRotationSiblingsOptOutViaLaunchOverride()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString olderPath = dir.filePath(QStringLiteral("app.log.1"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            olderPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
+
+        mWindow->SetRotationHistoryLaunchOverride(true);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        QVERIFY2(finishedSpy.wait(5000), "single-file open must finish");
+        QCoreApplication::processEvents();
+
+        QCOMPARE(model->rowCount(), 1);
+        mWindow->SetRotationHistoryLaunchOverride(false);
+    }
+
+    // Re-enabling rotation history clears the launch override.
+    void TestRotationHistoryMenuToggleClearsCliOverride()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString olderPath = dir.filePath(QStringLiteral("app.log.1"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            olderPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
+
+        mWindow->SetRotationHistoryLaunchOverride(true);
+        QVERIFY(mWindow->RotationHistoryLaunchOverrideForTest());
+
+        mWindow->SimulateRotationHistoryMenuToggleForTest(true);
+        QVERIFY2(
+            !mWindow->RotationHistoryLaunchOverrideForTest(), "menu toggle must clear the launch-time CLI override"
+        );
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        for (int i = 0; i < 2; ++i)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "two per-file streamingFinished emits expected");
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 2);
+    }
+
+    // Menu changes mirror to the current source in both directions.
+    void TestRotationHistoryMenuTogglePersistsOntoCurrentSource()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        QVERIFY2(finishedSpy.wait(5000), "single-file open must finish");
+        QCoreApplication::processEvents();
+
+        {
+            const auto &source = mWindow->CurrentSourceForTest();
+            QVERIFY(source.has_value());
+            QVERIFY(source->followRotationSiblings);
+        }
+
+        mWindow->SimulateRotationHistoryMenuToggleForTest(false);
+        {
+            const auto &source = mWindow->CurrentSourceForTest();
+            QVERIFY(source.has_value());
+            QVERIFY2(!source->followRotationSiblings, "menu toggle OFF must mirror onto the session source");
+        }
+
+        mWindow->SimulateRotationHistoryMenuToggleForTest(true);
+        {
+            const auto &source = mWindow->CurrentSourceForTest();
+            QVERIFY(source.has_value());
+            QVERIFY2(source->followRotationSiblings, "menu toggle ON must re-enable the session-scope flag");
+        }
+    }
+
+    // Windows and macOS match sibling names case-insensitively.
+    // Keep the slot declared on Linux so moc still discovers it.
+    void TestRotationSiblingsAreCaseInsensitiveOnWindowsAndMac()
+    {
+#if defined(_WIN32) || defined(__APPLE__)
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString upperPath = dir.filePath(QStringLiteral("App.LOG.1"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            upperPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        for (int i = 0; i < 2; ++i)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "two per-file streamingFinished emits expected");
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 2);
+#else
+        QSKIP("Case-insensitive sibling matching is Windows/macOS only.");
+#endif
+    }
+
+    // A new file stream clears stale sibling-prefix promotion state.
+    void TestOpenLogStreamFromPathClearsStalePendingLiveTail()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString fakeStalePrimary = dir.filePath(QStringLiteral("stale-primary.log"));
+        const QString freshLog = dir.filePath(QStringLiteral("fresh.log"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(
+            freshLog,
+            R"({"msg":"fresh"})"
+            "\n"
+        );
+
+        // Seed the unresolved state that a cancelled sibling drain can leave.
+        mWindow->SeedPendingLiveTailForTest(fakeStalePrimary, /*retention=*/128);
+        QVERIFY(mWindow->HasPendingLiveTailForTest());
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        mWindow->OpenLogStreamForTest(freshLog);
+
+        QVERIFY2(!mWindow->HasPendingLiveTailForTest(), "destructive open must scrub stale pending live-tail state");
+
+        // Leave no streaming worker for the next slot.
+        (void)finishedSpy.wait(5000);
+        QCoreApplication::processEvents();
+    }
+
+    // Replace reopens ignore the outgoing session's deduplication keys.
+    void TestReplaceReopenOfSameRotationFamilyStreamsAllFiles()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            oldPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        for (int i = 0; i < 2; ++i)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "two per-file streamingFinished emits expected");
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 2);
+        {
+            const auto &source = mWindow->CurrentSourceForTest();
+            QVERIFY(source.has_value());
+            QCOMPARE(source->locatorDedupKeys.size(), static_cast<std::size_t>(2));
+        }
+
+        finishedSpy.clear();
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        for (int i = 0; i < 2; ++i)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "second Replace must stream both files again");
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 2);
+    }
+
+    // Replace opens honor the current session's effective opt-out.
+    void TestReplaceOpenHonoursSessionOptOutEffectivePreference()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            oldPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
+
+        // Use an unrelated source so deduplication cannot mask the opt-out.
+        loglib::LogConfiguration::Source spoof;
+        spoof.kind = loglib::LogConfiguration::Source::Kind::File;
+        spoof.format = loglib::LogConfiguration::Source::Format::Json;
+        spoof.locators = {dir.filePath(QStringLiteral("unrelated.log")).toStdString()};
+        spoof.locatorDedupKeys = spoof.locators;
+        spoof.followRotationSiblings = false;
+        mWindow->SetCurrentSourceForTest(spoof);
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        QVERIFY2(finishedSpy.wait(5000), "single-file open must finish");
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 1);
+        QVERIFY2(
+            !mWindow->IsUndoRotationExpansionEnabledForTest(),
+            "session opt-out must suppress the Undo affordance the same way an unchecked box does"
+        );
+    }
+
+    // Stopping a sibling-prefix drain still promotes the requested live tail.
+    void TestSiblingPrefixLiveTailSurvivesStopMidDrain()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        // Keep the sibling drain active until StopAndKeepRows runs.
+        QString bigContent;
+        bigContent.reserve(200000 * 20);
+        for (int i = 0; i < 200000; ++i)
+        {
+            bigContent += QStringLiteral(
+                              R"({"msg":"g%1"})"
+                              "\n"
+            )
+                              .arg(i);
+        }
+        write(oldPath, bigContent);
+
+        const QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        mWindow->OpenLogStreamForTest(primaryPath);
+
+        QTRY_VERIFY_WITH_TIMEOUT(model->IsStreamingActive(), 5000);
+        QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::Static);
+        QVERIFY(mWindow->HasPendingLiveTailForTest());
+
+        model->StopAndKeepRows();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::LiveTail);
+        QVERIFY2(!mWindow->HasPendingLiveTailForTest(), "pending live-tail slots must be consumed by the promotion");
+        const auto &source = mWindow->CurrentSourceForTest();
+        QVERIFY(source.has_value());
+        const std::string primaryKey = logapp::CanonicalLocator(primaryPath).toStdString();
+        const bool sawPrimary = std::any_of(
+            source->locatorDedupKeys.begin(), source->locatorDedupKeys.end(), [&primaryKey](const std::string &k) {
+                return k == primaryKey;
+            }
+        );
+        QVERIFY2(sawPrimary, "promoted live tail must append primary to the source locators");
+
+        mWindow->NewSessionForTest();
+        QCoreApplication::processEvents();
+    }
+
+    // A queued sibling Success must promote only after Stop teardown unwinds.
+    // Synchronous promotion is reentrant and lets teardown clobber the new tail.
+    void TestSiblingPrefixLiveTailSurvivesStopAfterPreQueuedSuccess()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        // Keep parsing short enough to queue Success before Stop.
+        write(
+            oldPath,
+            R"({"msg":"g1"})"
+            "\n"
+            R"({"msg":"g2"})"
+            "\n"
+            R"({"msg":"g3"})"
+            "\n"
+        );
+
+        const QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        mWindow->OpenLogStreamForTest(primaryPath);
+
+        QTRY_VERIFY_WITH_TIMEOUT(model->IsStreamingActive(), 5000);
+        QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::Static);
+        QVERIFY(mWindow->HasPendingLiveTailForTest());
+
+        // Do not pump GUI events; worker completion must remain queued for Stop.
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+        model->StopAndKeepRows();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::LiveTail);
+        QVERIFY2(
+            !mWindow->HasPendingLiveTailForTest(), "pending live-tail slots must be consumed by the deferred promotion"
+        );
+        QVERIFY2(
+            model->IsStreamingActive(),
+            "live-tail worker must remain active after teardown; a pre-fix reentrancy "
+            "would have clobbered mStreamingActive via a spurious streamingFinished(Cancelled)"
+        );
+
+        const auto &source = mWindow->CurrentSourceForTest();
+        QVERIFY(source.has_value());
+        const std::string primaryKey = logapp::CanonicalLocator(primaryPath).toStdString();
+        const bool sawPrimary = std::any_of(
+            source->locatorDedupKeys.begin(), source->locatorDedupKeys.end(), [&primaryKey](const std::string &k) {
+                return k == primaryKey;
+            }
+        );
+        QVERIFY2(sawPrimary, "promoted live tail must append primary to the source locators");
+
+        mWindow->NewSessionForTest();
+        QCoreApplication::processEvents();
+    }
+
+    // Rotation-expansion Undo restores every caller-listed path.
+    void TestUndoRotationExpansionResurrectsMultiFileSelection()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
+        const QString otherPath = dir.filePath(QStringLiteral("other.log"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            oldPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
+        write(
+            otherPath,
+            R"({"msg":"o"})"
+            "\n"
+        );
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        (void)mWindow->OpenMixedFilesForTest({primaryPath, otherPath}, MainWindow::OpenMode::Replace);
+        for (int i = 0; i < 3; ++i)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "three per-file streamingFinished emits expected");
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 3);
+
+        const QStringList captured = mWindow->LastRotationExpansionOriginalInputsForTest();
+        QCOMPARE(captured.size(), 2);
+        QCOMPARE(captured[0], primaryPath);
+        QCOMPARE(captured[1], otherPath);
+        QVERIFY(mWindow->IsUndoRotationExpansionEnabledForTest());
+
+        finishedSpy.clear();
+        mWindow->UndoRotationExpansionForTest();
+        for (int i = 0; i < 2; ++i)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "two per-file streamingFinished emits expected on undo");
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 2);
+
+        const auto &source = mWindow->CurrentSourceForTest();
+        QVERIFY(source.has_value());
+        const std::string primaryKey = logapp::CanonicalLocator(primaryPath).toStdString();
+        const std::string otherKey = logapp::CanonicalLocator(otherPath).toStdString();
+        const std::string siblingKey = logapp::CanonicalLocator(oldPath).toStdString();
+        const auto hasKey = [&source](const std::string &k) {
+            return std::any_of(
+                source->locatorDedupKeys.begin(), source->locatorDedupKeys.end(), [&k](const std::string &existing) {
+                    return existing == k;
+                }
+            );
+        };
+        QVERIFY2(hasKey(primaryKey), "undo must resurrect the app.log primary");
+        QVERIFY2(hasKey(otherKey), "undo must resurrect the other.log primary");
+        QVERIFY2(!hasKey(siblingKey), "undo must not re-attach the sibling this time");
+
+        QVERIFY(mWindow->LastRotationExpansionOriginalInputsForTest().isEmpty());
+        QVERIFY(!mWindow->IsUndoRotationExpansionEnabledForTest());
+    }
+
+    // Rescue-path live-tail promotion disables configuration UI first.
+    void TestRescueBranchLiveTailDisablesConfigurationUi()
+    {
+        auto *tableView = mWindow->findChild<LogTableView *>();
+        QVERIFY(tableView != nullptr);
+        const QHeaderView *header = tableView->horizontalHeader();
+        QVERIFY(header != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        {
+            std::ofstream stream(primaryPath.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << R"({"msg":"p"})"
+                      "\n";
+        }
+
+        // Model the rescue path where no sibling disabled the UI.
+        mWindow->SetConfigurationUiEnabledForTest(true);
+        QVERIFY2(header->sectionsMovable(), "precondition: header drag must be armed before the rescue");
+        QCOMPARE(header->contextMenuPolicy(), Qt::CustomContextMenu);
+
+        // Trigger the otherwise timing-dependent rescue branch directly.
+        mWindow->TriggerRescueLiveTailForTest(primaryPath, /*retention=*/0);
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            !header->sectionsMovable(), "rescue-branch live tail must disable header drag before arming the parser"
+        );
+        QCOMPARE(header->contextMenuPolicy(), Qt::NoContextMenu);
+
+        mWindow->NewSessionForTest();
+        QCoreApplication::processEvents();
+    }
+
+    // Loading a configuration clears rotation Undo and pending promotion state.
+    void TestApplyLoadedConfigurationClearsRotationExpansionState()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString olderPath = dir.filePath(QStringLiteral("app.log.1"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            olderPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        for (int i = 0; i < 2; ++i)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "two per-file streamingFinished emits expected");
+        }
+        QCoreApplication::processEvents();
+        QVERIFY(mWindow->IsUndoRotationExpansionEnabledForTest());
+        QCOMPARE(mWindow->LastRotationExpansionOriginalInputsForTest().size(), 1);
+
+        // Seed the second class of outgoing state cleared by a load.
+        mWindow->SeedPendingLiveTailForTest(primaryPath, /*retention=*/64);
+        QVERIFY(mWindow->HasPendingLiveTailForTest());
+
+        const QTemporaryDir savedDir;
+        QVERIFY(savedDir.isValid());
+        const QString sessionPath = savedDir.filePath(QStringLiteral("saved.json"));
+        mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
+
+        mWindow->LoadConfigurationFromPathForTest(sessionPath);
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            !mWindow->IsUndoRotationExpansionEnabledForTest(),
+            "loading a config must disable Undo Rotated History Expansion"
+        );
+        QVERIFY2(
+            mWindow->LastRotationExpansionOriginalInputsForTest().isEmpty(),
+            "loading a config must clear the stored original-inputs list"
+        );
+        QVERIFY2(
+            !mWindow->HasPendingLiveTailForTest(),
+            "loading a config must scrub any half-drained sibling-prefix live-tail state"
+        );
+    }
+
+    // Configuration-only refresh clears stale rotation Undo state.
+    void TestTryLoadAsConfigurationClearsUndoRotationExpansion()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString olderPath = dir.filePath(QStringLiteral("app.log.1"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            olderPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        for (int i = 0; i < 2; ++i)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "two per-file streamingFinished emits expected");
+        }
+        QCoreApplication::processEvents();
+        QVERIFY(mWindow->IsUndoRotationExpansionEnabledForTest());
+
+        // Columns-only scope exercises the row-preserving refresh path.
+        const QTemporaryDir savedDir;
+        QVERIFY(savedDir.isValid());
+        const QString columnsPath = savedDir.filePath(QStringLiteral("cols.json"));
+        mWindow->SaveConfigurationToPathForTest(columnsPath, loglib::SaveScope::ColumnsOnly);
+
+        QVERIFY(mWindow->TryLoadAsConfigurationForTest(columnsPath));
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            !mWindow->IsUndoRotationExpansionEnabledForTest(),
+            "TryLoadAsConfiguration must disable Undo Rotated History Expansion"
+        );
+        QVERIFY2(
+            mWindow->LastRotationExpansionOriginalInputsForTest().isEmpty(),
+            "TryLoadAsConfiguration must clear the stored original-inputs list"
+        );
+    }
+
+    // App and library canonical keys agree for case and Unicode.
+    // Canonicalize the root first to avoid macOS `/tmp` symlink differences.
+    void TestCanonicalKeyAndCanonicalLocatorAgree()
+    {
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        std::error_code ec;
+        // Preserve Unicode temporary roots on Windows.
+        const std::filesystem::path rootFs = std::filesystem::canonical(logapp::QStringToFsPath(dir.path()), ec);
+        QVERIFY2(!ec, "canonical(root) must succeed on a valid QTemporaryDir");
+        // Avoid active-code-page narrowing on Windows.
+#ifdef Q_OS_WIN
+        const QString root = QString::fromStdWString(rootFs.generic_wstring());
+#else
+        const QString root = QString::fromStdString(rootFs.generic_string());
+#endif
+
+        // Cover mixed case and non-ASCII path components.
+        const QStringList relatives{
+            QStringLiteral("App.log"),
+            QStringLiteral("dir/Nested/File.LOG"),
+            QStringLiteral("subdir/app.log.1"),
+            QStringLiteral("app-2025-08-01.log.gz"),
+            QStringLiteral(u"\u65e5\u5fd7/app.log"), // 日志/app.log
+        };
+        for (const QString &rel : relatives)
+        {
+            const QString p = root + QLatin1Char('/') + rel;
+            const std::string appKey = logapp::CanonicalLocator(p).toStdString();
+            const std::string libKey = loglib::CanonicalKeyForPath(logapp::QStringToFsPath(p));
+            QVERIFY2(
+                appKey == libKey,
+                qPrintable(QStringLiteral(
+                               "CanonicalLocator vs CanonicalKeyForPath mismatch for %1:\n"
+                               "  app: %2\n  lib: %3"
+                )
+                               .arg(p)
+                               .arg(QString::fromStdString(appKey))
+                               .arg(QString::fromStdString(libKey)))
+            );
+        }
+    }
+
+    // Explicitly selected siblings are not counted as auto-added.
+    void TestExplicitlySelectedSiblingsAreNotCountedAsAutoAdded()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            oldPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        (void)mWindow->OpenMixedFilesForTest({primaryPath, oldPath}, MainWindow::OpenMode::Replace);
+        for (int i = 0; i < 2; ++i)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "both hand-picked files must stream to completion");
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 2);
+
+        QVERIFY2(
+            !mWindow->IsUndoRotationExpansionEnabledForTest(),
+            "Undo action must stay disabled when nothing was auto-discovered"
+        );
+        QVERIFY2(
+            mWindow->LastRotationExpansionOriginalInputsForTest().isEmpty(),
+            "originals list must stay empty when nothing was auto-discovered"
+        );
+    }
+
+    // Sibling expansion round-trips non-ASCII paths without narrowing.
+    void TestNonAsciiSiblingPathRoundTripsThroughExpansion()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        // Exercise non-ASCII parent and basename components.
+        const QString subdir = dir.filePath(QStringLiteral(u"\u65e5\u5fd7")); // 日志
+        std::error_code createEc;
+        // Avoid a filesystem exception aborting later QtTest slots.
+        std::filesystem::create_directory(logapp::QStringToFsPath(subdir), createEc);
+        if (createEc)
+        {
+            QSKIP("could not create non-ASCII subdirectory under QTemporaryDir");
+        }
+        const QString primaryPath =
+            subdir + QLatin1Char('/') + QStringLiteral(u"\u041f\u0440\u0438\u043c\u0435\u0440.log"); // Пример.log
+        const QString oldPath = primaryPath + QStringLiteral(".1");
+        const auto write = [](const QString &p, const QString &content) -> bool {
+            // The filesystem-path overload preserves wide paths on Windows.
+            std::ofstream stream(logapp::QStringToFsPath(p), std::ios::binary);
+            if (!stream.is_open())
+            {
+                return false;
+            }
+            stream << content.toStdString();
+            return static_cast<bool>(stream);
+        };
+        if (!write(
+                primaryPath,
+                R"({"msg":"p"})"
+                "\n"
+            ) ||
+            !write(
+                oldPath,
+                R"({"msg":"g1"})"
+                "\n"
+            ))
+        {
+            QSKIP("could not write non-ASCII log fixtures under QTemporaryDir");
+        }
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        // Static Replace exercises both expansion and queue reopening.
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        for (int i = 0; i < 2; ++i)
+        {
+            QVERIFY2(
+                finishedSpy.wait(5000),
+                "primary + auto-detected sibling must both stream (round-trip must not mangle non-ASCII)"
+            );
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 2);
+        QVERIFY2(
+            mWindow->IsUndoRotationExpansionEnabledForTest(),
+            "the sibling really was auto-discovered -- Undo affordance must arm"
+        );
+    }
+
+    // Config-then-log opens ignore locator keys loaded from the config.
+    void TestConfigThenLogsIgnoresStaleLocatorDedup()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(
+            primaryPath,
+            R"({"msg":"row-A"})"
+            "\n"
+        );
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
+        QVERIFY2(finishedSpy.wait(5000), "primary must stream to completion");
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 1);
+
+        const QTemporaryDir savedDir;
+        QVERIFY(savedDir.isValid());
+        const QString sessionPath = savedDir.filePath(QStringLiteral("saved.json"));
+        mWindow->SaveConfigurationToPathForTest(sessionPath, loglib::SaveScope::Full);
+
+        mWindow->NewSessionForTest();
+        QCoreApplication::processEvents();
+        QCOMPARE(model->rowCount(), 0);
+        QVERIFY(!mWindow->CurrentSourceForTest().has_value());
+
+        finishedSpy.clear();
+        const MainWindow::MixedInputDispatch outcome =
+            mWindow->OpenMixedFilesForTest({sessionPath, primaryPath}, MainWindow::OpenMode::Replace);
+        QCOMPARE(outcome, MainWindow::MixedInputDispatch::AppliedConfigThenLogs);
+        QVERIFY2(finishedSpy.wait(5000), "post-config log must stream to completion");
+        QCoreApplication::processEvents();
+
+        QVERIFY2(
+            model->rowCount() >= 1,
+            qPrintable(QStringLiteral(
+                           "post-config `app.log` open produced %1 rows -- "
+                           "stale locatorDedupKeys must not filter fresh selections"
+            )
+                           .arg(model->rowCount()))
+        );
+    }
+
+    // Opening stdin clears pending file-tail promotion and rotation Undo.
+    void TestOpenStdinStreamClearsPendingLiveTailPromotion()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString stalePrimary = dir.filePath(QStringLiteral("stale.log"));
+        // Seed both outgoing bookkeeping surfaces.
+        mWindow->SeedPendingLiveTailForTest(stalePrimary, /*retention=*/64);
+        mWindow->SeedLastRotationExpansionForTest(
+            /*originalInputs=*/QStringList{stalePrimary}, /*wasLiveTail=*/true
+        );
+        QVERIFY(mWindow->HasPendingLiveTailForTest());
+        QVERIFY(!mWindow->LastRotationExpansionOriginalInputsForTest().isEmpty());
+
+        // The stub reaches terminal EOF after one JSON line.
+        class StubProducer final : public loglib::BytesProducer
+        {
+        public:
+            explicit StubProducer(std::string bytes)
+                : mBytes(std::move(bytes))
+            {
+            }
+            size_t Read(std::span<char> buffer) override
+            {
+                if (mCursor >= mBytes.size())
+                {
+                    mClosed = true;
+                    return 0;
+                }
+                const size_t available = mBytes.size() - mCursor;
+                const size_t n = std::min(available, buffer.size());
+                std::memcpy(buffer.data(), mBytes.data() + mCursor, n);
+                mCursor += n;
+                if (mCursor >= mBytes.size())
+                {
+                    mClosed = true;
+                }
+                return n;
+            }
+            void WaitForBytes(std::chrono::milliseconds /*timeout*/) override
+            {
+            }
+            void Stop() noexcept override
+            {
+                mClosed = true;
+            }
+            [[nodiscard]] bool IsClosed() const noexcept override
+            {
+                return mClosed;
+            }
+            [[nodiscard]] std::string DisplayName() const override
+            {
+                return "test-stdin";
+            }
+
+        private:
+            std::string mBytes;
+            size_t mCursor = 0;
+            bool mClosed = false;
+        };
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        const std::string peek(
+            R"({"msg":"stdin"})"
+            "\n"
+        );
+        auto producer = std::make_unique<StubProducer>(peek);
+        mWindow->OpenStdinStreamForTest(std::move(producer), peek);
+
+        QVERIFY2(
+            !mWindow->HasPendingLiveTailForTest(),
+            "OpenStdinStreamFromProducer must scrub stale pending live-tail state"
+        );
+        QVERIFY2(
+            mWindow->LastRotationExpansionOriginalInputsForTest().isEmpty(),
+            "OpenStdinStreamFromProducer must scrub outgoing Undo-rotation affordance"
+        );
+
+        // Leave no streaming worker for the next slot.
+        (void)finishedSpy.wait(5000);
+        QCoreApplication::processEvents();
+    }
+
+    // Undo from Stream Mode reopens as a live tail, not a static view.
+    void TestUndoRotationExpansionOnLiveTailStaysLiveTail()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            oldPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        mWindow->OpenLogStreamForTest(primaryPath);
+        QVERIFY2(finishedSpy.wait(5000), "sibling drain must finish before the tail attaches");
+        QCoreApplication::processEvents();
+        QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::LiveTail);
+        QVERIFY(mWindow->IsUndoRotationExpansionEnabledForTest());
+
+        finishedSpy.clear();
+        mWindow->UndoRotationExpansionForTest();
+        QCoreApplication::processEvents();
+
+        QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::LiveTail);
+        QVERIFY(!mWindow->IsUndoRotationExpansionEnabledForTest());
+        QVERIFY(!mWindow->HasPendingLiveTailForTest());
+
+        mWindow->NewSessionForTest();
+        QCoreApplication::processEvents();
+    }
+
+    // Stream Mode derotates a picked segment to the active primary.
+    void TestStreamModeDerotatesRotatedSegmentToActivePrimary()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
+        const QString olderPath = dir.filePath(QStringLiteral("app.log.2"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(
+            primaryPath,
+            R"({"msg":"primary"})"
+            "\n"
+        );
+        write(
+            oldPath,
+            R"({"msg":"gen1"})"
+            "\n"
+        );
+        write(
+            olderPath,
+            R"({"msg":"gen2"})"
+            "\n"
+        );
+
+        QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
+        QVERIFY(finishedSpy.isValid());
+
+        mWindow->OpenLogStreamForTest(olderPath);
+        // Both prefix completions precede the queued live-tail promotion.
+        for (int i = 0; i < 2; ++i)
+        {
+            QVERIFY2(finishedSpy.wait(5000), "two sibling-prefix streamingFinished emits expected");
+        }
+        QCoreApplication::processEvents();
+
+        QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::LiveTail);
+        QCOMPARE(mWindow->StreamingFileNameForTest(), QStringLiteral("app.log"));
+
+        const auto &source = mWindow->CurrentSourceForTest();
+        QVERIFY(source.has_value());
+        const std::string primaryKey = logapp::CanonicalLocator(primaryPath).toStdString();
+        const std::string olderKey = logapp::CanonicalLocator(olderPath).toStdString();
+        const std::string oldKey = logapp::CanonicalLocator(oldPath).toStdString();
+        const auto hasKey = [&source](const std::string &key) {
+            return std::any_of(
+                source->locatorDedupKeys.begin(), source->locatorDedupKeys.end(), [&key](const std::string &k) {
+                    return k == key;
+                }
+            );
+        };
+        QVERIFY2(hasKey(primaryKey), "derotated live-tail must include the active primary");
+        QVERIFY2(hasKey(olderKey), "picked segment must still appear in the historical prefix");
+        QVERIFY2(hasKey(oldKey), "intermediate numbered sibling must be loaded");
+        QCOMPARE(source->locators.size(), static_cast<std::size_t>(3));
+        QCOMPARE(QString::fromStdString(source->locators.back()), logapp::CanonicalDisplayPath(primaryPath));
+
+        mWindow->NewSessionForTest();
+        QCoreApplication::processEvents();
+    }
+
+    // Stream Mode honors the bound session's effective opt-out.
+    void TestStreamModeHonoursSessionOptOutEffectivePreference()
+    {
+        auto *model = mWindow->Model();
+        QVERIFY(model != nullptr);
+
+        const QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString primaryPath = dir.filePath(QStringLiteral("app.log"));
+        const QString oldPath = dir.filePath(QStringLiteral("app.log.1"));
+        const QString otherPath = dir.filePath(QStringLiteral("other.log"));
+        const auto write = [](const QString &p, const QString &content) {
+            std::ofstream stream(p.toStdString(), std::ios::binary);
+            QVERIFY2(stream.is_open(), "fixture write must succeed");
+            stream << content.toStdString();
+        };
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            oldPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
+        write(
+            otherPath,
+            R"({"msg":"o"})"
+            "\n"
+        );
+
+        // Keep the global preference on while the bound source opts out.
+        mWindow->SimulateRotationHistoryMenuToggleForTest(true);
+        loglib::LogConfiguration::Source optedOut{
+            .kind = loglib::LogConfiguration::Source::Kind::File,
+            .format = loglib::LogConfiguration::Source::Format::Json,
+            .locators = {logapp::CanonicalDisplayPath(otherPath).toStdString()},
+            .locatorDedupKeys = {logapp::CanonicalLocator(otherPath).toStdString()},
+            .followRotationSiblings = false,
+        };
+        mWindow->SetCurrentSourceForTest(optedOut);
+
+        mWindow->OpenLogStreamForTest(primaryPath);
+        QCoreApplication::processEvents();
+        QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::LiveTail);
+        QVERIFY2(
+            !mWindow->IsUndoRotationExpansionEnabledForTest(),
+            "session opt-out must suppress Stream Mode sibling expansion"
+        );
+
+        const auto &source = mWindow->CurrentSourceForTest();
+        QVERIFY(source.has_value());
+        QCOMPARE(source->locatorDedupKeys.size(), static_cast<std::size_t>(1));
+        QCOMPARE(QString::fromStdString(source->locatorDedupKeys.front()), logapp::CanonicalLocator(primaryPath));
+
+        mWindow->NewSessionForTest();
+        QCoreApplication::processEvents();
+    }
+
     // Regression: a multi-file open must sniff each queued file
     // independently, not reuse the first file's format for the rest.
     // Before the fix, a JSON Lines + logfmt queue tried to parse the
@@ -23068,6 +24428,110 @@ private slots:
         // does not under-count when a hostile peer ignores the
         // documented cap.
         QCOMPARE(args.at(1).toInt(), 44);
+
+        if (peer.state() != QLocalSocket::UnconnectedState)
+        {
+            peer.disconnectFromServer();
+            peer.waitForDisconnected(1000);
+        }
+    }
+
+    // A v3 peer forwards the rotation-history launch override.
+    void TestSingleInstanceForwardsRotationHistoryDisable()
+    {
+        const QString socketName =
+            QStringLiteral("slv-flag-") + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+
+        SingleInstanceGuard primary;
+        primary.SetSocketNameForTest(socketName);
+        QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
+
+        QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
+        QVERIFY(spy.isValid());
+
+        // V3 appends launch flags after the truncated-file count.
+        QLocalSocket peer;
+        peer.connectToServer(socketName);
+        QVERIFY2(peer.waitForConnected(2000), "peer must connect to primary's socket");
+
+        const QStringList files{QStringLiteral("C:/logs/only.json")};
+        QByteArray payload;
+        {
+            QDataStream out(&payload, QIODevice::WriteOnly);
+            out.setVersion(QDataStream::Qt_6_0);
+            out << QByteArray("STRUCTLOG");
+            out << static_cast<quint8>(3);
+            out << files;
+            out << static_cast<quint32>(0);
+            // Set only the rotation-history-disable bit.
+            out << static_cast<quint32>(1u << 0);
+        }
+        const qint64 written = peer.write(payload);
+        QCOMPARE(written, payload.size());
+        peer.flush();
+        peer.waitForBytesWritten(1000);
+
+        QVERIFY(spy.wait(2000));
+        QCOMPARE(spy.count(), 1);
+        const auto args = spy.takeFirst();
+        QCOMPARE(args.at(0).toStringList(), files);
+        QCOMPARE(args.at(1).toInt(), 0);
+        const QVariant &flagsVariant = args.at(2);
+        QVERIFY2(flagsVariant.isValid(), "signal must forward the LaunchFlags argument");
+        const auto flags = flagsVariant.value<SingleInstanceGuard::LaunchFlagsBitmask>();
+        QVERIFY2(
+            flags.testFlag(SingleInstanceGuard::LaunchFlags::DisableRotationHistory),
+            "v3 wire schema must round-trip --no-rotation-history to the primary"
+        );
+
+        if (peer.state() != QLocalSocket::UnconnectedState)
+        {
+            peer.disconnectFromServer();
+            peer.waitForDisconnected(1000);
+        }
+    }
+
+    // A legacy v2 peer decodes with no launch flags.
+    void TestSingleInstanceLegacyVersion2StillAccepted()
+    {
+        const QString socketName =
+            QStringLiteral("slv-legacy-") + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+
+        SingleInstanceGuard primary;
+        primary.SetSocketNameForTest(socketName);
+        QVERIFY(primary.TryAcquire({}, /*allowNewInstance=*/false));
+
+        QSignalSpy spy(&primary, &SingleInstanceGuard::openWindowRequested);
+        QVERIFY(spy.isValid());
+
+        QLocalSocket peer;
+        peer.connectToServer(socketName);
+        QVERIFY2(peer.waitForConnected(2000), "peer must connect to primary's socket");
+
+        const QStringList files{QStringLiteral("C:/logs/legacy.json")};
+        QByteArray payload;
+        {
+            QDataStream out(&payload, QIODevice::WriteOnly);
+            out.setVersion(QDataStream::Qt_6_0);
+            out << QByteArray("STRUCTLOG");
+            out << static_cast<quint8>(2);
+            out << files;
+            out << static_cast<quint32>(0);
+        }
+        peer.write(payload);
+        peer.flush();
+        peer.waitForBytesWritten(1000);
+
+        QVERIFY(spy.wait(2000));
+        QCOMPARE(spy.count(), 1);
+        const auto args = spy.takeFirst();
+        QCOMPARE(args.at(0).toStringList(), files);
+        QCOMPARE(args.at(1).toInt(), 0);
+        const auto flags = args.at(2).value<SingleInstanceGuard::LaunchFlagsBitmask>();
+        QVERIFY2(
+            !flags.testFlag(SingleInstanceGuard::LaunchFlags::DisableRotationHistory),
+            "v2 payload must decode to LaunchFlags::None"
+        );
 
         if (peer.state() != QLocalSocket::UnconnectedState)
         {

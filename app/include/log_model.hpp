@@ -177,6 +177,16 @@ public:
         LogParserFactory parserFactory = {}
     );
 
+    /// Append a live-tail source without resetting existing rows or
+    /// keys. Wires producer callbacks like `BeginStreaming` but
+    /// leaves the retention cap unchanged. Applying a cap afterward
+    /// may evict rows from an unbounded historical prefix.
+    loglib::StopToken AppendStreaming(
+        std::unique_ptr<loglib::StreamLineSource> source,
+        loglib::ParserOptions options,
+        LogParserFactory parserFactory = {}
+    );
+
     /// Test-only: install @p source and arm the sink without spawning a
     /// worker. Pair with `EndStreaming(...)` or `Reset()`.
     loglib::StopToken BeginStreamingForSyncTest(std::unique_ptr<loglib::LineSource> source);

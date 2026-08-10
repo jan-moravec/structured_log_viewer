@@ -148,6 +148,11 @@ struct LogConfiguration
         /// matching template name (if any) is resolved at display
         /// time via `loglib::FindTemplateByPattern`.
         std::string regexPattern;
+
+        /// Whether future file additions should include rotation siblings.
+        /// Restores use the persisted `locators` without rescanning.
+        /// Missing values default to `true` for older configurations.
+        bool followRotationSiblings = true;
     };
 
     /// A persisted bookmark on one log line.

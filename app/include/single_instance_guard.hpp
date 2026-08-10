@@ -24,6 +24,19 @@ class SingleInstanceGuard : public QObject
     Q_OBJECT
     Q_DISABLE_COPY_MOVE(SingleInstanceGuard)
 public:
+    /// Per-launch flags forwarded by a secondary process.
+    /// Wire values map directly to the v3+ `quint32` field. Never
+    /// reuse a bit; incompatible changes require a version bump.
+    enum class LaunchFlags : quint32
+    {
+        None = 0,
+        /// Disable rotation-sibling detection in the new window.
+        DisableRotationHistory = 1u << 0,
+    };
+    Q_ENUM(LaunchFlags)
+    Q_DECLARE_FLAGS(LaunchFlagsBitmask, LaunchFlags)
+    Q_FLAG(LaunchFlagsBitmask)
+
     explicit SingleInstanceGuard(QObject *parent = nullptr);
     ~SingleInstanceGuard() override;
 
@@ -39,7 +52,11 @@ public:
     ///   uncoordinated. We deliberately do NOT `removeServer` +
     ///   `listen` here, which on Linux would unlink the canonical
     ///   socket file and silently zombie the existing primary.
-    [[nodiscard]] bool TryAcquire(const QStringList &forwardFiles, bool allowNewInstance);
+    ///
+    /// @p launchFlags is sent only when forwarding to a primary.
+    [[nodiscard]] bool TryAcquire(
+        const QStringList &forwardFiles, bool allowNewInstance, LaunchFlagsBitmask launchFlags = LaunchFlags::None
+    );
 
     /// Socket name used by `QLocalServer`. Exposed for tests.
     [[nodiscard]] QString SocketName() const noexcept
@@ -61,7 +78,8 @@ signals:
     /// `MAX_FORWARDED_FILES`; the primary uses this to surface a
     /// status-bar warning so the user knows part of their input
     /// was dropped on the wire.
-    void openWindowRequested(const QStringList &files, int truncatedCount);
+    /// @p launchFlags is `None` for wire versions before 3.
+    void openWindowRequested(const QStringList &files, int truncatedCount, LaunchFlagsBitmask launchFlags);
 
 private:
     /// Default per-user socket name. Includes the platform username
@@ -75,6 +93,8 @@ private:
     {
         QByteArray buffer;
         QTimer *idleTimer = nullptr;
+        /// Prevents re-decoding while asynchronous disconnect is pending.
+        bool frameConsumed = false;
     };
 
     /// Forget a disconnected socket. Called from the `disconnected`
@@ -85,3 +105,9 @@ private:
     std::unique_ptr<QLocalServer> mServer;
     QHash<QLocalSocket *, ConnState> mConnections;
 };
+
+Q_DECLARE_OPERATORS_FOR_FLAGS(SingleInstanceGuard::LaunchFlagsBitmask)
+
+// `Q_FLAG` registers meta-object data; this also enables
+// `QVariant::value<LaunchFlagsBitmask>()`.
+Q_DECLARE_METATYPE(SingleInstanceGuard::LaunchFlagsBitmask)

@@ -52,6 +52,7 @@ add_library(
     src/log_table.cpp
     src/normalized_json_row.cpp
     src/query_parser.cpp
+    src/rotation_siblings.cpp
     src/session_bundle_writer.cpp
     src/session_bundle_reader.cpp
     src/parsers/csv_parser.cpp

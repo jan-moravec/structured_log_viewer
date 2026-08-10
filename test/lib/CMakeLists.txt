@@ -39,6 +39,7 @@ add_executable(
     "src/test_regex_template_generators.cpp"
     "src/test_regex_template_io.cpp"
     "src/test_regex_templates.cpp"
+    "src/test_rotation_siblings.cpp"
     "src/test_session_bundle.cpp"
     "src/test_stdin_bytes_producer.cpp"
     "src/test_stdin_peek.cpp"
