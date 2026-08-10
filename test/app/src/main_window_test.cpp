@@ -12860,9 +12860,25 @@ private slots:
             QVERIFY2(stream.is_open(), "fixture write must succeed");
             stream << content.toStdString();
         };
-        write(primaryPath, R"({"msg":"primary-0"})""\n" R"({"msg":"primary-1"})""\n");
-        write(oldPath, R"({"msg":"gen1-0"})""\n");
-        write(olderPath, R"({"msg":"gen2-0"})""\n" R"({"msg":"gen2-1"})""\n");
+        write(
+            primaryPath,
+            R"({"msg":"primary-0"})"
+            "\n"
+            R"({"msg":"primary-1"})"
+            "\n"
+        );
+        write(
+            oldPath,
+            R"({"msg":"gen1-0"})"
+            "\n"
+        );
+        write(
+            olderPath,
+            R"({"msg":"gen2-0"})"
+            "\n"
+            R"({"msg":"gen2-1"})"
+            "\n"
+        );
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
@@ -12894,9 +12910,21 @@ private slots:
             QVERIFY2(stream.is_open(), "fixture write must succeed");
             stream << content.toStdString();
         };
-        write(primaryPath, R"({"msg":"p"})""\n");
-        write(oldPath, R"({"msg":"g1"})""\n");
-        write(olderPath, R"({"msg":"g2"})""\n");
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            oldPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
+        write(
+            olderPath,
+            R"({"msg":"g2"})"
+            "\n"
+        );
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
@@ -12943,17 +12971,27 @@ private slots:
             QVERIFY2(stream.is_open(), "fixture write must succeed");
             stream << content.toStdString();
         };
-        write(appPrimary, R"({"msg":"a"})""\n");
-        write(appOlder, R"({"msg":"a-old"})""\n");
-        write(otherPrimary, R"({"msg":"o"})""\n");
+        write(
+            appPrimary,
+            R"({"msg":"a"})"
+            "\n"
+        );
+        write(
+            appOlder,
+            R"({"msg":"a-old"})"
+            "\n"
+        );
+        write(
+            otherPrimary,
+            R"({"msg":"o"})"
+            "\n"
+        );
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
         mWindow->statusBar()->clearMessage();
-        (void)mWindow->OpenMixedFilesForTest(
-            {appPrimary, otherPrimary}, MainWindow::OpenMode::Replace
-        );
+        (void)mWindow->OpenMixedFilesForTest({appPrimary, otherPrimary}, MainWindow::OpenMode::Replace);
         while (finishedSpy.count() < 3)
         {
             QVERIFY2(finishedSpy.wait(5000), "three per-file streamingFinished emits expected");
@@ -12986,16 +13024,22 @@ private slots:
             QVERIFY2(stream.is_open(), "fixture write must succeed");
             stream << content.toStdString();
         };
-        write(primaryPath, R"({"msg":"p"})""\n");
-        write(oldPath, R"({"msg":"g1"})""\n");
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            oldPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
         mWindow->statusBar()->clearMessage();
-        (void)mWindow->OpenMixedFilesForTest(
-            {oldPath, primaryPath}, MainWindow::OpenMode::Replace
-        );
+        (void)mWindow->OpenMixedFilesForTest({oldPath, primaryPath}, MainWindow::OpenMode::Replace);
         while (finishedSpy.count() < 2)
         {
             QVERIFY2(finishedSpy.wait(5000), "two per-file streamingFinished emits expected");
@@ -13029,8 +13073,16 @@ private slots:
             QVERIFY2(stream.is_open(), "fixture write must succeed");
             stream << content.toStdString();
         };
-        write(primaryPath, R"({"msg":"p"})""\n");
-        write(olderPath, R"({"msg":"g1"})""\n");
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            olderPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
 
         mWindow->SetRotationHistoryLaunchOverride(true);
 
@@ -13060,16 +13112,23 @@ private slots:
             QVERIFY2(stream.is_open(), "fixture write must succeed");
             stream << content.toStdString();
         };
-        write(primaryPath, R"({"msg":"p"})""\n");
-        write(olderPath, R"({"msg":"g1"})""\n");
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            olderPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
 
         mWindow->SetRotationHistoryLaunchOverride(true);
         QVERIFY(mWindow->RotationHistoryLaunchOverrideForTest());
 
         mWindow->SimulateRotationHistoryMenuToggleForTest(true);
         QVERIFY2(
-            !mWindow->RotationHistoryLaunchOverrideForTest(),
-            "menu toggle must clear the launch-time CLI override"
+            !mWindow->RotationHistoryLaunchOverrideForTest(), "menu toggle must clear the launch-time CLI override"
         );
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
@@ -13098,7 +13157,11 @@ private slots:
             QVERIFY2(stream.is_open(), "fixture write must succeed");
             stream << content.toStdString();
         };
-        write(primaryPath, R"({"msg":"p"})""\n");
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
@@ -13116,20 +13179,14 @@ private slots:
         {
             const auto &source = mWindow->CurrentSourceForTest();
             QVERIFY(source.has_value());
-            QVERIFY2(
-                !source->followRotationSiblings,
-                "menu toggle OFF must mirror onto the session source"
-            );
+            QVERIFY2(!source->followRotationSiblings, "menu toggle OFF must mirror onto the session source");
         }
 
         mWindow->SimulateRotationHistoryMenuToggleForTest(true);
         {
             const auto &source = mWindow->CurrentSourceForTest();
             QVERIFY(source.has_value());
-            QVERIFY2(
-                source->followRotationSiblings,
-                "menu toggle ON must re-enable the session-scope flag"
-            );
+            QVERIFY2(source->followRotationSiblings, "menu toggle ON must re-enable the session-scope flag");
         }
     }
 
@@ -13150,8 +13207,16 @@ private slots:
             QVERIFY2(stream.is_open(), "fixture write must succeed");
             stream << content.toStdString();
         };
-        write(primaryPath, R"({"msg":"p"})""\n");
-        write(upperPath, R"({"msg":"g1"})""\n");
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            upperPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
@@ -13182,7 +13247,11 @@ private slots:
             QVERIFY2(stream.is_open(), "fixture write must succeed");
             stream << content.toStdString();
         };
-        write(freshLog, R"({"msg":"fresh"})""\n");
+        write(
+            freshLog,
+            R"({"msg":"fresh"})"
+            "\n"
+        );
 
         // Seed the unresolved state that a cancelled sibling drain can leave.
         mWindow->SeedPendingLiveTailForTest(fakeStalePrimary, /*retention=*/128);
@@ -13192,10 +13261,7 @@ private slots:
         QVERIFY(finishedSpy.isValid());
         mWindow->OpenLogStreamForTest(freshLog);
 
-        QVERIFY2(
-            !mWindow->HasPendingLiveTailForTest(),
-            "destructive open must scrub stale pending live-tail state"
-        );
+        QVERIFY2(!mWindow->HasPendingLiveTailForTest(), "destructive open must scrub stale pending live-tail state");
 
         // Leave no streaming worker for the next slot.
         (void)finishedSpy.wait(5000);
@@ -13217,8 +13283,16 @@ private slots:
             QVERIFY2(stream.is_open(), "fixture write must succeed");
             stream << content.toStdString();
         };
-        write(primaryPath, R"({"msg":"p"})""\n");
-        write(oldPath, R"({"msg":"g1"})""\n");
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            oldPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
@@ -13261,8 +13335,16 @@ private slots:
             QVERIFY2(stream.is_open(), "fixture write must succeed");
             stream << content.toStdString();
         };
-        write(primaryPath, R"({"msg":"p"})""\n");
-        write(oldPath, R"({"msg":"g1"})""\n");
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            oldPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
 
         // Use an unrelated source so deduplication cannot mask the opt-out.
         loglib::LogConfiguration::Source spoof;
@@ -13301,13 +13383,21 @@ private slots:
             QVERIFY2(stream.is_open(), "fixture write must succeed");
             stream << content.toStdString();
         };
-        write(primaryPath, R"({"msg":"p"})""\n");
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
         // Keep the sibling drain active until StopAndKeepRows runs.
         QString bigContent;
         bigContent.reserve(200000 * 20);
         for (int i = 0; i < 200000; ++i)
         {
-            bigContent += QStringLiteral(R"({"msg":"g%1"})""\n").arg(i);
+            bigContent += QStringLiteral(
+                              R"({"msg":"g%1"})"
+                              "\n"
+            )
+                              .arg(i);
         }
         write(oldPath, bigContent);
 
@@ -13324,17 +13414,14 @@ private slots:
         QCoreApplication::processEvents();
 
         QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::LiveTail);
-        QVERIFY2(
-            !mWindow->HasPendingLiveTailForTest(),
-            "pending live-tail slots must be consumed by the promotion"
-        );
+        QVERIFY2(!mWindow->HasPendingLiveTailForTest(), "pending live-tail slots must be consumed by the promotion");
         const auto &source = mWindow->CurrentSourceForTest();
         QVERIFY(source.has_value());
         const std::string primaryKey = logapp::CanonicalLocator(primaryPath).toStdString();
         const bool sawPrimary = std::any_of(
-            source->locatorDedupKeys.begin(),
-            source->locatorDedupKeys.end(),
-            [&primaryKey](const std::string &k) { return k == primaryKey; }
+            source->locatorDedupKeys.begin(), source->locatorDedupKeys.end(), [&primaryKey](const std::string &k) {
+                return k == primaryKey;
+            }
         );
         QVERIFY2(sawPrimary, "promoted live tail must append primary to the source locators");
 
@@ -13358,9 +13445,21 @@ private slots:
             QVERIFY2(stream.is_open(), "fixture write must succeed");
             stream << content.toStdString();
         };
-        write(primaryPath, R"({"msg":"p"})""\n");
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
         // Keep parsing short enough to queue Success before Stop.
-        write(oldPath, R"({"msg":"g1"})""\n" R"({"msg":"g2"})""\n" R"({"msg":"g3"})""\n");
+        write(
+            oldPath,
+            R"({"msg":"g1"})"
+            "\n"
+            R"({"msg":"g2"})"
+            "\n"
+            R"({"msg":"g3"})"
+            "\n"
+        );
 
         const QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
@@ -13379,8 +13478,7 @@ private slots:
 
         QCOMPARE(mWindow->SessionModeForTest(), MainWindow::TestSessionMode::LiveTail);
         QVERIFY2(
-            !mWindow->HasPendingLiveTailForTest(),
-            "pending live-tail slots must be consumed by the deferred promotion"
+            !mWindow->HasPendingLiveTailForTest(), "pending live-tail slots must be consumed by the deferred promotion"
         );
         QVERIFY2(
             model->IsStreamingActive(),
@@ -13392,9 +13490,9 @@ private slots:
         QVERIFY(source.has_value());
         const std::string primaryKey = logapp::CanonicalLocator(primaryPath).toStdString();
         const bool sawPrimary = std::any_of(
-            source->locatorDedupKeys.begin(),
-            source->locatorDedupKeys.end(),
-            [&primaryKey](const std::string &k) { return k == primaryKey; }
+            source->locatorDedupKeys.begin(), source->locatorDedupKeys.end(), [&primaryKey](const std::string &k) {
+                return k == primaryKey;
+            }
         );
         QVERIFY2(sawPrimary, "promoted live tail must append primary to the source locators");
 
@@ -13418,16 +13516,26 @@ private slots:
             QVERIFY2(stream.is_open(), "fixture write must succeed");
             stream << content.toStdString();
         };
-        write(primaryPath, R"({"msg":"p"})""\n");
-        write(oldPath, R"({"msg":"g1"})""\n");
-        write(otherPath, R"({"msg":"o"})""\n");
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            oldPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
+        write(
+            otherPath,
+            R"({"msg":"o"})"
+            "\n"
+        );
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        (void)mWindow->OpenMixedFilesForTest(
-            {primaryPath, otherPath}, MainWindow::OpenMode::Replace
-        );
+        (void)mWindow->OpenMixedFilesForTest({primaryPath, otherPath}, MainWindow::OpenMode::Replace);
         for (int i = 0; i < 3; ++i)
         {
             QVERIFY2(finishedSpy.wait(5000), "three per-file streamingFinished emits expected");
@@ -13457,9 +13565,9 @@ private slots:
         const std::string siblingKey = logapp::CanonicalLocator(oldPath).toStdString();
         const auto hasKey = [&source](const std::string &k) {
             return std::any_of(
-                source->locatorDedupKeys.begin(),
-                source->locatorDedupKeys.end(),
-                [&k](const std::string &existing) { return existing == k; }
+                source->locatorDedupKeys.begin(), source->locatorDedupKeys.end(), [&k](const std::string &existing) {
+                    return existing == k;
+                }
             );
         };
         QVERIFY2(hasKey(primaryKey), "undo must resurrect the app.log primary");
@@ -13484,7 +13592,8 @@ private slots:
         {
             std::ofstream stream(primaryPath.toStdString(), std::ios::binary);
             QVERIFY2(stream.is_open(), "fixture write must succeed");
-            stream << R"({"msg":"p"})""\n";
+            stream << R"({"msg":"p"})"
+                      "\n";
         }
 
         // Model the rescue path where no sibling disabled the UI.
@@ -13497,8 +13606,7 @@ private slots:
         QCoreApplication::processEvents();
 
         QVERIFY2(
-            !header->sectionsMovable(),
-            "rescue-branch live tail must disable header drag before arming the parser"
+            !header->sectionsMovable(), "rescue-branch live tail must disable header drag before arming the parser"
         );
         QCOMPARE(header->contextMenuPolicy(), Qt::NoContextMenu);
 
@@ -13521,8 +13629,16 @@ private slots:
             QVERIFY2(stream.is_open(), "fixture write must succeed");
             stream << content.toStdString();
         };
-        write(primaryPath, R"({"msg":"p"})""\n");
-        write(olderPath, R"({"msg":"g1"})""\n");
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            olderPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
@@ -13576,8 +13692,16 @@ private slots:
             QVERIFY2(stream.is_open(), "fixture write must succeed");
             stream << content.toStdString();
         };
-        write(primaryPath, R"({"msg":"p"})""\n");
-        write(olderPath, R"({"msg":"g1"})""\n");
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            olderPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
@@ -13616,8 +13740,7 @@ private slots:
         QVERIFY(dir.isValid());
         std::error_code ec;
         // Preserve Unicode temporary roots on Windows.
-        const std::filesystem::path rootFs =
-            std::filesystem::canonical(logapp::QStringToFsPath(dir.path()), ec);
+        const std::filesystem::path rootFs = std::filesystem::canonical(logapp::QStringToFsPath(dir.path()), ec);
         QVERIFY2(!ec, "canonical(root) must succeed on a valid QTemporaryDir");
         // Avoid active-code-page narrowing on Windows.
 #ifdef Q_OS_WIN
@@ -13641,13 +13764,13 @@ private slots:
             const std::string libKey = loglib::CanonicalKeyForPath(logapp::QStringToFsPath(p));
             QVERIFY2(
                 appKey == libKey,
-                qPrintable(
-                    QStringLiteral("CanonicalLocator vs CanonicalKeyForPath mismatch for %1:\n"
-                                   "  app: %2\n  lib: %3")
-                        .arg(p)
-                        .arg(QString::fromStdString(appKey))
-                        .arg(QString::fromStdString(libKey))
+                qPrintable(QStringLiteral(
+                               "CanonicalLocator vs CanonicalKeyForPath mismatch for %1:\n"
+                               "  app: %2\n  lib: %3"
                 )
+                               .arg(p)
+                               .arg(QString::fromStdString(appKey))
+                               .arg(QString::fromStdString(libKey)))
             );
         }
     }
@@ -13667,15 +13790,21 @@ private slots:
             QVERIFY2(stream.is_open(), "fixture write must succeed");
             stream << content.toStdString();
         };
-        write(primaryPath, R"({"msg":"p"})""\n");
-        write(oldPath, R"({"msg":"g1"})""\n");
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            oldPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        (void)mWindow->OpenMixedFilesForTest(
-            {primaryPath, oldPath}, MainWindow::OpenMode::Replace
-        );
+        (void)mWindow->OpenMixedFilesForTest({primaryPath, oldPath}, MainWindow::OpenMode::Replace);
         for (int i = 0; i < 2; ++i)
         {
             QVERIFY2(finishedSpy.wait(5000), "both hand-picked files must stream to completion");
@@ -13723,7 +13852,16 @@ private slots:
             stream << content.toStdString();
             return static_cast<bool>(stream);
         };
-        if (!write(primaryPath, R"({"msg":"p"})""\n") || !write(oldPath, R"({"msg":"g1"})""\n"))
+        if (!write(
+                primaryPath,
+                R"({"msg":"p"})"
+                "\n"
+            ) ||
+            !write(
+                oldPath,
+                R"({"msg":"g1"})"
+                "\n"
+            ))
         {
             QSKIP("could not write non-ASCII log fixtures under QTemporaryDir");
         }
@@ -13732,9 +13870,7 @@ private slots:
         QVERIFY(finishedSpy.isValid());
 
         // Static Replace exercises both expansion and queue reopening.
-        (void)mWindow->OpenMixedFilesForTest(
-            {primaryPath}, MainWindow::OpenMode::Replace
-        );
+        (void)mWindow->OpenMixedFilesForTest({primaryPath}, MainWindow::OpenMode::Replace);
         for (int i = 0; i < 2; ++i)
         {
             QVERIFY2(
@@ -13764,7 +13900,11 @@ private slots:
             QVERIFY2(stream.is_open(), "fixture write must succeed");
             stream << content.toStdString();
         };
-        write(primaryPath, R"({"msg":"row-A"})""\n");
+        write(
+            primaryPath,
+            R"({"msg":"row-A"})"
+            "\n"
+        );
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
@@ -13792,8 +13932,10 @@ private slots:
 
         QVERIFY2(
             model->rowCount() >= 1,
-            qPrintable(QStringLiteral("post-config `app.log` open produced %1 rows -- "
-                                      "stale locatorDedupKeys must not filter fresh selections")
+            qPrintable(QStringLiteral(
+                           "post-config `app.log` open produced %1 rows -- "
+                           "stale locatorDedupKeys must not filter fresh selections"
+            )
                            .arg(model->rowCount()))
         );
     }
@@ -13865,7 +14007,10 @@ private slots:
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
 
-        const std::string peek(R"({"msg":"stdin"})""\n");
+        const std::string peek(
+            R"({"msg":"stdin"})"
+            "\n"
+        );
         auto producer = std::make_unique<StubProducer>(peek);
         mWindow->OpenStdinStreamForTest(std::move(producer), peek);
 
@@ -13898,8 +14043,16 @@ private slots:
             QVERIFY2(stream.is_open(), "fixture write must succeed");
             stream << content.toStdString();
         };
-        write(primaryPath, R"({"msg":"p"})""\n");
-        write(oldPath, R"({"msg":"g1"})""\n");
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            oldPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
@@ -13938,9 +14091,21 @@ private slots:
             QVERIFY2(stream.is_open(), "fixture write must succeed");
             stream << content.toStdString();
         };
-        write(primaryPath, R"({"msg":"primary"})""\n");
-        write(oldPath, R"({"msg":"gen1"})""\n");
-        write(olderPath, R"({"msg":"gen2"})""\n");
+        write(
+            primaryPath,
+            R"({"msg":"primary"})"
+            "\n"
+        );
+        write(
+            oldPath,
+            R"({"msg":"gen1"})"
+            "\n"
+        );
+        write(
+            olderPath,
+            R"({"msg":"gen2"})"
+            "\n"
+        );
 
         QSignalSpy finishedSpy(model, &LogModel::streamingFinished);
         QVERIFY(finishedSpy.isValid());
@@ -13963,9 +14128,9 @@ private slots:
         const std::string oldKey = logapp::CanonicalLocator(oldPath).toStdString();
         const auto hasKey = [&source](const std::string &key) {
             return std::any_of(
-                source->locatorDedupKeys.begin(),
-                source->locatorDedupKeys.end(),
-                [&key](const std::string &k) { return k == key; }
+                source->locatorDedupKeys.begin(), source->locatorDedupKeys.end(), [&key](const std::string &k) {
+                    return k == key;
+                }
             );
         };
         QVERIFY2(hasKey(primaryKey), "derotated live-tail must include the active primary");
@@ -13994,9 +14159,21 @@ private slots:
             QVERIFY2(stream.is_open(), "fixture write must succeed");
             stream << content.toStdString();
         };
-        write(primaryPath, R"({"msg":"p"})""\n");
-        write(oldPath, R"({"msg":"g1"})""\n");
-        write(otherPath, R"({"msg":"o"})""\n");
+        write(
+            primaryPath,
+            R"({"msg":"p"})"
+            "\n"
+        );
+        write(
+            oldPath,
+            R"({"msg":"g1"})"
+            "\n"
+        );
+        write(
+            otherPath,
+            R"({"msg":"o"})"
+            "\n"
+        );
 
         // Keep the global preference on while the bound source opts out.
         mWindow->SimulateRotationHistoryMenuToggleForTest(true);
@@ -14020,10 +14197,7 @@ private slots:
         const auto &source = mWindow->CurrentSourceForTest();
         QVERIFY(source.has_value());
         QCOMPARE(source->locatorDedupKeys.size(), static_cast<std::size_t>(1));
-        QCOMPARE(
-            QString::fromStdString(source->locatorDedupKeys.front()),
-            logapp::CanonicalLocator(primaryPath)
-        );
+        QCOMPARE(QString::fromStdString(source->locatorDedupKeys.front()), logapp::CanonicalLocator(primaryPath));
 
         mWindow->NewSessionForTest();
         QCoreApplication::processEvents();

@@ -367,9 +367,7 @@ int main(int argc, char *argv[])
         &SingleInstanceGuard::openWindowRequested,
         &a,
         [&themeControl, &historyManager, &regexTemplateRegistry, &appendPeer](
-            const QStringList &files,
-            int truncatedCount,
-            SingleInstanceGuard::LaunchFlagsBitmask forwardedFlags
+            const QStringList &files, int truncatedCount, SingleInstanceGuard::LaunchFlagsBitmask forwardedFlags
         ) {
             auto *child = new MainWindow(&themeControl, &historyManager, &regexTemplateRegistry, nullptr);
             child->setAttribute(Qt::WA_DeleteOnClose);

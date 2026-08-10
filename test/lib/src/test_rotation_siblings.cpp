@@ -218,10 +218,7 @@ TEST_CASE("PartitionAsRotationSeries selecting a rotated sibling alone still fin
     CHECK(names.back() == "app.log");
 }
 
-TEST_CASE(
-    "PartitionAsRotationSeries derives the correct primary for a compressed dated sibling",
-    "[RotationSiblings]"
-)
+TEST_CASE("PartitionAsRotationSeries derives the correct primary for a compressed dated sibling", "[RotationSiblings]")
 {
     // A compressed tail-dated sibling derives `app.log`, not `app.log.gz`.
     const TempDir dir("rotation_partition_dated_compressed_derives");
@@ -311,9 +308,7 @@ TEST_CASE("EnumerateRotatedSiblings is case-insensitive on Windows/macOS", "[Rot
 }
 #endif
 
-TEST_CASE(
-    "EnumerateRotatedSiblings rejects pathological numbered suffixes", "[RotationSiblings]"
-)
+TEST_CASE("EnumerateRotatedSiblings rejects pathological numbered suffixes", "[RotationSiblings]")
 {
     // Suffixes above the accepted limit are excluded from the family.
     const TempDir dir("rotation_numbered_overflow");
@@ -341,16 +336,14 @@ TEST_CASE("EnumerateRotatedSiblings rejects `.0` numbered suffix", "[RotationSib
 }
 
 TEST_CASE(
-    "PartitionAsRotationSeries rejects `.0` and pathological numbered suffixes for derivation",
-    "[RotationSiblings]"
+    "PartitionAsRotationSeries rejects `.0` and pathological numbered suffixes for derivation", "[RotationSiblings]"
 )
 {
     // Derivation applies the same numbered-suffix limits as enumeration.
     const TempDir dir("rotation_partition_reject_zero_and_overflow");
     (void)dir.Write("app.log", "primary");
     const auto zeroPath = dir.Write("app.log.0", "not a rotated sibling");
-    const auto overflowPath =
-        dir.Write("app.log.10000000000000", "pathological, would collide with dated rank range");
+    const auto overflowPath = dir.Write("app.log.10000000000000", "pathological, would collide with dated rank range");
 
     const std::vector<std::filesystem::path> input{zeroPath, overflowPath};
     const auto partitioned = PartitionAsRotationSeries(std::span<const std::filesystem::path>(input));
@@ -360,10 +353,7 @@ TEST_CASE(
     CHECK(partitioned.residual.back().filename().string() == "app.log.10000000000000");
 }
 
-TEST_CASE(
-    "EnumerateRotatedSiblings returns primary-only when the primary is compressed",
-    "[RotationSiblings]"
-)
+TEST_CASE("EnumerateRotatedSiblings returns primary-only when the primary is compressed", "[RotationSiblings]")
 {
     // A compressed primary never adopts the uncompressed file's siblings.
     const TempDir dir("rotation_compressed_primary_bails");
@@ -398,10 +388,7 @@ TEST_CASE("CanonicalKeyForPath produces UTF-8 bytes for non-ASCII paths", "[Rota
     CHECK(key.contains(utf8Marker));
 }
 
-TEST_CASE(
-    "EnumerateRotatedSiblings does not throw when the primary basename is non-ASCII",
-    "[RotationSiblings]"
-)
+TEST_CASE("EnumerateRotatedSiblings does not throw when the primary basename is non-ASCII", "[RotationSiblings]")
 {
     // Non-ASCII primary names remain best-effort and non-throwing.
     const std::filesystem::path nonAsciiPrimary(u8"/nonexistent/\u65e5\u5fd7/\u041f\u0440\u0438\u043c\u0435\u0440.log");

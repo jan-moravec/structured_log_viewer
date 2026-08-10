@@ -1274,10 +1274,7 @@ private:
     /// input. @p primaryOut receives the first expanded family's
     /// canonical primary, or remains empty when nothing was added.
     [[nodiscard]] QStringList ExpandLogPathsWithRotationSiblings(
-        const QStringList &logPaths,
-        int &addedOut,
-        RotationSourceGating gating,
-        QString *primaryOut = nullptr
+        const QStringList &logPaths, int &addedOut, RotationSourceGating gating, QString *primaryOut = nullptr
     ) const;
 
     /// Report an expansion and enable its Undo action.

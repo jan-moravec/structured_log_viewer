@@ -2,8 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
-#include <chrono>
 #include <charconv>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -110,9 +110,7 @@ std::optional<SortRank> DaysSinceEpoch(int year, unsigned month, unsigned day)
     {
         return std::nullopt;
     }
-    const std::chrono::year_month_day ymd{
-        std::chrono::year{year}, std::chrono::month{month}, std::chrono::day{day}
-    };
+    const std::chrono::year_month_day ymd{std::chrono::year{year}, std::chrono::month{month}, std::chrono::day{day}};
     if (!ymd.ok())
     {
         return std::nullopt;
@@ -136,7 +134,9 @@ struct SiblingMatchers
     std::optional<std::regex> stemDated;
 };
 
-SiblingMatchers BuildMatchers(std::string_view primaryBasename, std::string_view primaryStem, std::string_view primaryExt)
+SiblingMatchers BuildMatchers(
+    std::string_view primaryBasename, std::string_view primaryStem, std::string_view primaryExt
+)
 {
     static constexpr auto REGEX_FLAGS = std::regex::ECMAScript | std::regex::optimize | REGEX_CASE_FLAGS;
     const std::string escBase = EscapeForRegex(primaryBasename);
@@ -144,9 +144,7 @@ SiblingMatchers BuildMatchers(std::string_view primaryBasename, std::string_view
 
     SiblingMatchers m{
         .numbered = std::regex("^" + escBase + R"(\.([0-9]+))" + compressTail + "$", REGEX_FLAGS),
-        .datedSuffix = std::regex(
-            "^" + escBase + R"([-._](\d{4})-(\d{2})-(\d{2}))" + compressTail + "$", REGEX_FLAGS
-        ),
+        .datedSuffix = std::regex("^" + escBase + R"([-._](\d{4})-(\d{2})-(\d{2}))" + compressTail + "$", REGEX_FLAGS),
         .stemDated = std::nullopt,
     };
     // Without both parts, the stem-inserted form duplicates the suffix form.
@@ -154,9 +152,8 @@ SiblingMatchers BuildMatchers(std::string_view primaryBasename, std::string_view
     {
         const std::string escStem = EscapeForRegex(primaryStem);
         const std::string escExt = EscapeForRegex(primaryExt);
-        m.stemDated = std::regex(
-            "^" + escStem + R"([-._](\d{4})-(\d{2})-(\d{2})\.)" + escExt + compressTail + "$", REGEX_FLAGS
-        );
+        m.stemDated =
+            std::regex("^" + escStem + R"([-._](\d{4})-(\d{2})-(\d{2})\.)" + escExt + compressTail + "$", REGEX_FLAGS);
     }
     return m;
 }
@@ -189,9 +186,7 @@ std::optional<Candidate> ClassifySibling(const std::filesystem::path &siblingPat
         const unsigned day = static_cast<unsigned>(std::stoi(sm[3].str()));
         if (auto rank = DaysSinceEpoch(year, month, day); rank.has_value())
         {
-            return Candidate{
-                .path = siblingPath, .origin = RotatedFile::Origin::DatedSuffix, .sortRank = *rank
-            };
+            return Candidate{.path = siblingPath, .origin = RotatedFile::Origin::DatedSuffix, .sortRank = *rank};
         }
     }
 
@@ -202,9 +197,7 @@ std::optional<Candidate> ClassifySibling(const std::filesystem::path &siblingPat
         const unsigned day = static_cast<unsigned>(std::stoi(sm[3].str()));
         if (auto rank = DaysSinceEpoch(year, month, day); rank.has_value())
         {
-            return Candidate{
-                .path = siblingPath, .origin = RotatedFile::Origin::DatedSuffix, .sortRank = *rank
-            };
+            return Candidate{.path = siblingPath, .origin = RotatedFile::Origin::DatedSuffix, .sortRank = *rank};
         }
     }
 
@@ -236,9 +229,7 @@ std::optional<std::filesystem::path> DeriveRotationPrimary(const std::filesystem
 
     static constexpr auto DERIVE_REGEX_FLAGS = std::regex::ECMAScript | std::regex::optimize | REGEX_CASE_FLAGS;
     // Apply the same numbered-suffix range as `ClassifySibling`.
-    static const std::regex NUMBERED_TAILING(
-        R"(^(.+?)\.([0-9]+)(?:\.(?:gz|bz2|xz|zst))?$)", DERIVE_REGEX_FLAGS
-    );
+    static const std::regex NUMBERED_TAILING(R"(^(.+?)\.([0-9]+)(?:\.(?:gz|bz2|xz|zst))?$)", DERIVE_REGEX_FLAGS);
     static const std::regex DATED_TAILING(
         R"(^(.+?)[-._]\d{4}-\d{2}-\d{2}(?:\.(?:gz|bz2|xz|zst))?$)", DERIVE_REGEX_FLAGS
     );

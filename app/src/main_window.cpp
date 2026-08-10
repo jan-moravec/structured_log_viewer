@@ -1297,12 +1297,7 @@ MainWindow::MainWindow(
             tr("When opening a log file, also load its rotated companions (`app.log.1`, "
                "`app.log-2025-04-28.gz`, ...) as the older prefix of the merged view.")
         );
-        connect(
-            mActionAutoDetectRotationHistory,
-            &QAction::toggled,
-            this,
-            &MainWindow::OnRotationHistoryPrefToggled
-        );
+        connect(mActionAutoDetectRotationHistory, &QAction::toggled, this, &MainWindow::OnRotationHistoryPrefToggled);
         ui->menuSettings->addSeparator();
         ui->menuSettings->addAction(mActionAutoDetectRotationHistory);
 
@@ -2722,8 +2717,7 @@ void MainWindow::OnRotationHistoryPrefToggled(bool enabled)
 {
     QSettings settings;
     // Avoid redundant backend writes and resulting change notifications.
-    const bool previousStored =
-        settings.value(QStringLiteral("ui/autoDetectRotatedHistory"), true).toBool();
+    const bool previousStored = settings.value(QStringLiteral("ui/autoDetectRotatedHistory"), true).toBool();
     if (previousStored != enabled)
     {
         settings.setValue(QStringLiteral("ui/autoDetectRotatedHistory"), enabled);
@@ -2849,8 +2843,7 @@ QStringList MainWindow::ExpandLogPathsWithRotationSiblings(
     {
         int seriesAdded = 0;
         // Keep the actual family primary for the status message.
-        const QString seriesPrimaryDisplay =
-            logapp::CanonicalDisplayPath(logapp::FsPathToQString(series.primary));
+        const QString seriesPrimaryDisplay = logapp::CanonicalDisplayPath(logapp::FsPathToQString(series.primary));
         for (const loglib::RotatedFile &rf : series.files)
         {
             if (alreadyLoaded.contains(rf.canonicalKey))
@@ -2865,11 +2858,9 @@ QStringList MainWindow::ExpandLogPathsWithRotationSiblings(
             const QString display = logapp::CanonicalDisplayPath(logapp::FsPathToQString(rf.path));
             expanded.append(display);
             // Count only detected siblings not explicitly selected.
-            const bool autoDiscoveredByRotationDetection =
-                rf.origin == loglib::RotatedFile::Origin::NumberedSuffix
-                || rf.origin == loglib::RotatedFile::Origin::DatedSuffix;
-            if (autoDiscoveredByRotationDetection
-                && !userSelectedKeys.contains(rf.canonicalKey))
+            const bool autoDiscoveredByRotationDetection = rf.origin == loglib::RotatedFile::Origin::NumberedSuffix ||
+                                                           rf.origin == loglib::RotatedFile::Origin::DatedSuffix;
+            if (autoDiscoveredByRotationDetection && !userSelectedKeys.contains(rf.canonicalKey))
             {
                 ++seriesAdded;
             }
@@ -3223,9 +3214,7 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
     // Queuing preserves the required teardown-before-arm ordering.
     if (!mPendingLiveTailPrimary.isEmpty())
     {
-        QMetaObject::invokeMethod(
-            this, [this]() { ContinueLiveTailAfterPrefix(); }, Qt::QueuedConnection
-        );
+        QMetaObject::invokeMethod(this, [this]() { ContinueLiveTailAfterPrefix(); }, Qt::QueuedConnection);
         return;
     }
 
@@ -5018,8 +5007,7 @@ void MainWindow::ContinueLiveTailAfterPrefix()
     const size_t prefixRows = static_cast<size_t>(std::max(0, mModel->rowCount()));
     if (retention > 0 && prefixRows > retention)
     {
-        const int prefixRowsForPlural =
-            static_cast<int>(std::min<size_t>(prefixRows, std::numeric_limits<int>::max()));
+        const int prefixRowsForPlural = static_cast<int>(std::min<size_t>(prefixRows, std::numeric_limits<int>::max()));
         statusBar()->showMessage(
             tr("Historical prefix (%n line(s)) exceeds the stream retention cap (%L1); older prefix "
                "rows may be trimmed as the tail advances.",
