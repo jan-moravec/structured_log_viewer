@@ -13,117 +13,104 @@ class RecordDetailWidget;
 class QCloseEvent;
 struct SessionBindContext;
 
-/// Dockable host for a single `RecordDetailWidget`. Owned by
-/// `MainWindow`; lives next to the central table view.
-///
-/// The pinned row is tracked as a `QPersistentModelIndex` against
-/// the source model. Qt keeps it in lockstep with row insertions and
-/// removals (FIFO eviction in streaming mode):
-///   - if the pinned row survives an eviction, the index shifts with
-///     it and the content stays bound to the same record;
-///   - if it is evicted, the index goes invalid, `CurrentSourceRow()`
-///     returns -1, and the dock swaps to `EvictedRecordPlaceholder()`
-///     so the user can tell "never picked anything" from "the record
-///     I picked is gone".
-///
-/// Refresh work is gated on `IsVisibleForRefresh()` so a hidden /
-/// buried-tab dock skips rebuilds; the visibility hook refreshes once
-/// on re-surface, and `MainWindow::UpdateRecordDetailsFromSelection`
-/// re-pins from the selection.
-///
-/// Pinning column 0 assumes `LogModel` never removes columns (today
-/// only `beginInsertColumns` is emitted).
+/**
+ * @brief Dockable details view pinned to one source-model row.
+ *
+ * A `QPersistentModelIndex` follows surviving rows through insertions
+ * and removals. Eviction invalidates the pin and displays a dedicated
+ * placeholder. Expensive refreshes are skipped while the dock is not
+ * perceptually visible.
+ */
 class RecordDetailDock : public QDockWidget
 {
     Q_OBJECT
 
 public:
-    /// `model` is borrowed and must outlive the dock. `anchors` is
-    /// optional -- when supplied, the dock rebuilds its snapshot on
-    /// anchor mutations so the anchor-note subline stays live.
-    /// nullptr keeps the dock functional without the subline.
+    /**
+     * @brief Constructs a record-detail dock for borrowed sources.
+     * @param model Log model to observe.
+     * @param anchors Anchor manager to observe, or `nullptr`.
+     * @param parent Parent widget.
+     */
     RecordDetailDock(LogModel *model, AnchorManager *anchors = nullptr, QWidget *parent = nullptr);
 
-    /// Pin to @p sourceRow and refresh. Out-of-range rows clear the
-    /// view.
+    /**
+     * @brief Pins and displays a source row.
+     * @param sourceRow Source-model row; invalid rows clear the view.
+     */
     void ShowSourceRow(int sourceRow);
 
-    /// Reset to the default placeholder and forget any prior pin.
+    /** @brief Clears the pin and shows the default placeholder. */
     void Clear();
 
-    /// Current source row, or -1 if no row is pinned (e.g. the
-    /// pinned row was evicted).
+    /**
+     * @brief Returns the current pinned source row.
+     * @return Source row, or -1 when no live row is pinned.
+     */
     [[nodiscard]] int CurrentSourceRow() const noexcept;
 
+    /**
+     * @brief Returns the hosted detail widget.
+     * @return A borrowed pointer owned by the dock.
+     */
     [[nodiscard]] RecordDetailWidget *Widget() const noexcept
     {
         return mWidget;
     }
 
-    /// Task 5.7: swap the dock's active session context.
-    ///
-    /// Sequence (must stay this order):
-    ///   1. Save the currently-pinned source row into the
-    ///      outgoing session's `SessionRecordDetailPin`.
-    ///   2. Reset the `QPersistentModelIndex` *before* swapping
-    ///      the model pointer. Qt's persistent indexes are keyed
-    ///      by their `QAbstractItemModel *`; letting one survive
-    ///      into a new model risks a dangling reference the next
-    ///      time the outgoing model emits `layoutChanged`.
-    ///   3. Drop the scoped-connections bag so no in-flight slot
-    ///      dereferences a stale `mModel` / `mAnchors`.
-    ///   4. Swap the guarded aliases (`mModel`, `mAnchors`) from
-    ///      the incoming context.
-    ///   5. Reinstall the same subscriptions against the new
-    ///      pointers via `InstallSourceSubscriptions()`.
-    ///   6. Restore the incoming session's pin state (or show the
-    ///      default "select a row" placeholder if there is nothing
-    ///      to restore).
-    ///
-    /// A `SessionBindContext::MakeUnbound()` context detaches from
-    /// every session-owned source and shows the default
-    /// placeholder.
+    /**
+     * @brief Binds the detail dock to a session context.
+     * @param context Incoming session, model, and anchor sources.
+     *
+     * A changed binding saves the outgoing pin, invalidates the
+     * persistent index before replacing its model, reconnects source
+     * subscriptions, and restores the incoming pin. An identical
+     * non-null binding is a no-op. An unbound context detaches sources
+     * and shows the default placeholder. No ownership is transferred.
+     */
     void Bind(const SessionBindContext &context);
 
-    /// Explicit unbind. Equivalent to `Bind(SessionBindContext::
-    /// MakeUnbound())` but reads clearer at teardown call sites.
+    /** @brief Saves current pin state and releases borrowed session sources. */
     void Unbind();
 
-    /// Test seam: the session this dock currently mirrors state
-    /// into on Bind / Unbind. Null before the first Bind or after
-    /// an Unbind.
+    /**
+     * @brief Returns the currently bound session for tests.
+     * @return The borrowed session, or `nullptr` when unbound.
+     */
     [[nodiscard]] LogSession *boundSessionForTest() const noexcept
     {
         return mBoundSession.data();
     }
 
-    /// Should we pay for a refresh right now? Combines `isHidden()`
-    /// with the tracked `visibilityChanged` state so a tabified dock
-    /// whose tab is buried also skips work. Defaults to true so tests
-    /// that never realise the parent (offscreen QPA) keep working off
-    /// the `isHidden()` check alone. Public so `MainWindow` can apply
-    /// the same gate to selection-driven refreshes.
+    /**
+     * @brief Reports whether model-driven refresh work should run.
+     * @return True when the dock is perceptually visible.
+     */
     [[nodiscard]] bool IsVisibleForRefresh() const noexcept;
 
 signals:
-    /// User clicked "Open in new window". Argument is the current
-    /// source row, or -1 when no row is pinned.
+    /**
+     * @brief Requests opening the current record in another window.
+     * @param sourceRow Current source row, or -1 when no row is pinned.
+     */
     void openInNewWindowRequested(int sourceRow);
 
-    /// Emitted on genuine user dismissal (X button, system close).
-    /// Distinct from `visibilityChanged(false)`, which also fires on
-    /// tab inactivation in a tabified group.
+    /** @brief Emitted when the user closes the dock. */
     void closed();
 
 protected:
+    /**
+     * @brief Emits `closed()` after an accepted close.
+     * @param event Close event.
+     */
     void closeEvent(QCloseEvent *event) override;
 
 #ifdef LOGAPP_BUILD_TESTING
 public:
-    /// Counter for `RefreshFromModel`. Lets gating tests observe the
-    /// cheap-skip path directly rather than inferring it from content
-    /// equality (`SetContent` is idempotent, so equal payloads can't
-    /// distinguish "skipped" from "rebuilt to the same value").
+    /**
+     * @brief Returns the number of model refreshes for tests.
+     * @return Refresh invocation count.
+     */
     [[nodiscard]] int RefreshCountForTest() const noexcept
     {
         return mRefreshCount;
@@ -134,54 +121,35 @@ private:
     void RefreshFromModel();
     void OnOpenInNewWindowRequested();
 
-    /// Swap to `EvictedRecordPlaceholder()` without clearing
-    /// `mEverPinned`, so consecutive `rowsRemoved` events don't
-    /// ping-pong the placeholder text.
+    /** @brief Shows the evicted-record placeholder while retaining pin history. */
     void ShowEvictedPlaceholder();
 
-    /// Install the source subscriptions (modelReset / rowsRemoved /
-    /// dataChanged / columnsMoved / columnsInserted on the model,
-    /// anchorChanged / anchorNoteChanged / anchorsReset on the
-    /// anchor manager). Extracted so the ctor and `Bind` land the
-    /// same wiring against a possibly-different source pair.
+    /** @brief Installs subscriptions for the current source aliases. */
     void InstallSourceSubscriptions();
 
-    /// Save the currently-pinned source row into the currently-
-    /// bound session's `SessionRecordDetailPin`. No-op when no
-    /// session is bound.
+    /** @brief Saves the live pin and stable row identity into the bound session. */
     void SaveStateIntoBoundSession();
 
-    /// Reapply @p session's `SessionRecordDetailPin` -- pins the
-    /// stored row (via `ShowSourceRow`) or shows the appropriate
-    /// placeholder when nothing to restore.
+    /**
+     * @brief Restores a session's saved pin or placeholder state.
+     * @param session Session whose state should be restored, or `nullptr`.
+     */
     void RestoreStateFromSession(LogSession *session);
 
     QPointer<LogModel> mModel;
     QPointer<AnchorManager> mAnchors;
     RecordDetailWidget *mWidget = nullptr;
-    /// Persistent pin against the source model. Invalid means no
-    /// pin, or the pinned row was evicted.
+    // Persistent source-model pin; invalid when absent or evicted.
     QPersistentModelIndex mCurrentSourceIndex;
-    /// True from the first successful `ShowSourceRow` until the next
-    /// `Clear`. Distinguishes "never pinned" from "was pinned, then
-    /// evicted" in the `rowsRemoved` handler -- both leave
-    /// `mCurrentSourceIndex` invalid.
+    // Distinguishes a never-pinned record from an evicted pin.
     bool mEverPinned = false;
-    /// Tracks `visibilityChanged`. Stays true under offscreen QPA
-    /// (signal never fires there); flips false in a real session
-    /// when the dock's tab is buried.
+    // Tracks whether updates should refresh the visible dock.
     bool mPerceivedVisible = true;
 
-    /// Session-owned source subscriptions installed by
-    /// `InstallSourceSubscriptions` and reaped on the next
-    /// `Bind` (or on this dock's destruction). Explicitly
-    /// excludes the widget subscriptions (openInNewWindow,
-    /// dockLocationChanged, visibilityChanged) which live with
-    /// the dock and must survive every rebind.
+    // Subscriptions owned by the current source binding.
     ScopedConnections mSourceConnections;
 
-    /// Session this dock currently mirrors state into. Null before
-    /// the first `Bind` or after an explicit `Unbind`.
+    // Session whose record-detail state is currently mirrored.
     QPointer<LogSession> mBoundSession;
 #ifdef LOGAPP_BUILD_TESTING
     int mRefreshCount = 0;

@@ -6,33 +6,23 @@
 #include <utility>
 #include <vector>
 
-/// Move-only RAII bag of `QMetaObject::Connection` handles for one
-/// scoped subscription set (typically the connections a shared dock
-/// installs when it binds to the active `LogSession`).
-///
-/// Usage:
-/// ```cpp
-/// ScopedConnections scope;
-/// scope += connect(session, &LogSession::rowsChanged, dock, ...);
-/// scope += connect(view, &LogSessionView::selectionChanged, dock, ...);
-/// // ~ScopedConnections or `Clear()` disconnects everything in the bag.
-/// ```
-///
-/// Contract:
-///
-/// - `Clear` calls `QObject::disconnect` on every held connection and
-///   then empties the bag; safe to call repeatedly.
-/// - The destructor calls `Clear`.
-/// - `disconnect` on an already-invalid connection is documented as a
-///   no-op, so the bag is safe to destroy after either endpoint has
-///   already been torn down.
-/// - Move construction / move assignment transfer ownership; the
-///   moved-from bag is empty and its destructor is a no-op.
-/// - Copying is forbidden — a copy would double-disconnect.
+/**
+ * @brief Owns a scoped set of Qt connection handles.
+ *
+ * Destruction and `Clear()` disconnect every stored connection. The class is
+ * move-only; moving transfers the handles and empties the source.
+ */
 class ScopedConnections
 {
 public:
+    /**
+     * @brief Constructs an empty connection set.
+     */
     ScopedConnections() = default;
+
+    /**
+     * @brief Disconnects all stored connections.
+     */
     ~ScopedConnections()
     {
         Clear();
@@ -41,12 +31,25 @@ public:
     ScopedConnections(const ScopedConnections &) = delete;
     ScopedConnections &operator=(const ScopedConnections &) = delete;
 
+    /**
+     * @brief Transfers all connections from another set.
+     *
+     * @param other Set whose connections are transferred.
+     */
     ScopedConnections(ScopedConnections &&other) noexcept
         : mConnections(std::move(other.mConnections))
     {
         other.mConnections.clear();
     }
 
+    /**
+     * @brief Replaces the stored connections with another set's connections.
+     *
+     * Existing connections are disconnected before the transfer.
+     *
+     * @param other Set whose connections are transferred.
+     * @return A reference to this set.
+     */
     ScopedConnections &operator=(ScopedConnections &&other) noexcept
     {
         if (this != &other)
@@ -58,9 +61,13 @@ public:
         return *this;
     }
 
-    /// Adopt @p connection into the bag. Invalid connections
-    /// (default-constructed sentinel) are dropped silently so
-    /// callers can pass the result of `connect` unchecked.
+    /**
+     * @brief Adds a connection to the set.
+     *
+     * Invalid connections are ignored.
+     *
+     * @param connection Connection to adopt.
+     */
     void Add(QMetaObject::Connection connection)
     {
         if (connection)
@@ -69,21 +76,26 @@ public:
         }
     }
 
-    /// Same as `Add` but chainable for `scope += connect(...)`.
+    /**
+     * @brief Adds a connection and returns this set.
+     *
+     * @param connection Connection to adopt.
+     * @return A reference to this set.
+     */
     ScopedConnections &operator+=(QMetaObject::Connection connection)
     {
         Add(std::move(connection));
         return *this;
     }
 
-    /// Disconnect every held connection and empty the bag.
-    /// Idempotent; safe to call from a QObject destructor.
+    /**
+     * @brief Disconnects and removes every stored connection.
+     *
+     * This operation is idempotent.
+     */
     void Clear() noexcept
     {
-        // Iterate a moved-out local so a re-entrant `Clear` from a
-        // slot invoked by a `disconnect` cannot revisit the same
-        // connections. `disconnect` on an invalid Connection is a
-        // no-op per Qt's documented contract.
+        // Move handles aside so re-entrant clearing cannot revisit them.
         std::vector<QMetaObject::Connection> local;
         local.swap(mConnections);
         for (auto &connection : local)
@@ -92,11 +104,21 @@ public:
         }
     }
 
+    /**
+     * @brief Tests whether the set contains no connections.
+     *
+     * @return `true` when the set is empty.
+     */
     [[nodiscard]] bool Empty() const noexcept
     {
         return mConnections.empty();
     }
 
+    /**
+     * @brief Returns the number of stored connections.
+     *
+     * @return The connection count.
+     */
     [[nodiscard]] std::size_t Size() const noexcept
     {
         return mConnections.size();

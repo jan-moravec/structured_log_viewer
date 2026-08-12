@@ -29,13 +29,10 @@
 namespace
 {
 
-/// Cap on fan-restored peer windows; a pathological persisted set
-/// must not trap the launch in lock waits.
+// Bound startup work for unusually large persisted workspaces.
 constexpr int MAX_RESTORE_PEERS = 25;
 
-/// macOS `QFileOpenEvent` handler. Finder / `open` / "Open With..."
-/// deliver paths via this event. Events before the primary window
-/// is constructed queue; later ones forward to `OpenFilesForCli`.
+// Queue macOS file-open events until a live window can receive them.
 class FileOpenEventFilter : public QObject
 {
 public:
@@ -62,8 +59,7 @@ public:
         {
             return QObject::eventFilter(watched, event);
         }
-        // `QEvent::FileOpen` guarantees the dynamic type; Qt does
-        // not enable RTTI on `QEvent`.
+        // The event type guarantees this Qt-defined dynamic type.
         auto *fileOpen =
             static_cast<QFileOpenEvent *>(event); // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
         const QString path = fileOpen->file();
@@ -71,22 +67,11 @@ public:
         {
             return true;
         }
-        // Case-preserving display form; dedup keys are computed
-        // later in `StreamNextPendingFile`.
+        // Preserve display casing; the open queue performs deduplication.
         const QString displayPath = logapp::CanonicalDisplayPath(path);
         if (mLiveWindow != nullptr)
         {
-            // Post-tabs review-round bug #4 fix: route the
-            // incoming file to a fresh foreground tab so the
-            // MRU window's current investigation is not
-            // clobbered. Symmetric with the single-instance
-            // forward path in `main()` (see the
-            // `EnsureFreshActiveTab()` call site near the
-            // `SingleInstanceGuard` route branch). Before the
-            // fix, macOS "Open With..." forwarded files (via
-            // `QFileOpenEvent`) landed as an Append into
-            // whatever session was active, silently corrupting
-            // a busy tab.
+            // OS-open requests must not replace the active investigation.
             mLiveWindow->raise();
             mLiveWindow->activateWindow();
             mLiveWindow->EnsureFreshActiveTab();
@@ -113,28 +98,16 @@ int main(int argc, char *argv[])
     QCoreApplication::setOrganizationName("jan-moravec");
     QCoreApplication::setApplicationName("StructuredLogViewer");
 
-    // Install the macOS file-open handler before any event pump
-    // so pre-`exec()` deliveries are queued instead of dropped.
+    // Install before event processing so early macOS opens are retained.
     FileOpenEventFilter fileOpenFilter;
     qApp->installEventFilter(&fileOpenFilter);
 
-    // `ThemeControl` outlives every `MainWindow`: it's declared
-    // here so windows die first (their `themeChanged` connections
-    // auto-disconnect), then the theme controller, then
-    // `QApplication`.
+    // Windows hold non-owning pointers, so shared controllers outlive them.
     ThemeControl themeControl;
 
-    // Same lifetime story for the regex-template registry.
-    // Its constructor scans `<AppDataLocation>/regex_templates/`
-    // and hands the user slice to `loglib::SetExtraRegexTemplates`
-    // so the auto-detect probe sees user templates immediately.
-    // One registry per process (not per window) so peer windows
-    // share the same merged catalog and library injection.
+    // One process-wide registry keeps every window on the same template catalog.
     RegexTemplateRegistry regexTemplateRegistry;
-    // Best-effort cleanup of the legacy `appearance/*` keys from
-    // the pre-theme build. The `contains()` gate keeps the
-    // post-migration steady state free of `QSettings::sync` cost.
-    // Safe to remove after one release ships.
+    // Remove obsolete appearance keys only when they are present.
     {
         QSettings settings;
         if (settings.contains(QStringLiteral("appearance/style")))
@@ -153,9 +126,7 @@ int main(int argc, char *argv[])
     const bool allowNewInstance = parsed.allowNewInstance;
     const bool readStdin = parsed.readStdin;
 
-    // Drain pre-`TryAcquire` `QFileOpenEvent`s into `cliFiles` so
-    // a forwarding secondary actually forwards what the user
-    // double-clicked. A second drain runs after `TryAcquire`.
+    // Include early OS-open events in any single-instance forwarding.
     QCoreApplication::processEvents(QEventLoop::AllEvents, 0);
     {
         const QStringList preAcquirePending = fileOpenFilter.takePending();
@@ -165,18 +136,10 @@ int main(int argc, char *argv[])
         }
     }
 
-    // Single-instance coordinator. A secondary forwards its files
-    // to the primary and exits.
-    //
-    // `-` / `--stdin` cannot be forwarded across processes (each
-    // process has its own stdin FD), so a stdin launch behaves like
-    // an implicit `--new-instance`. Skipping the forward keeps this
-    // process alive to actually consume its stdin; otherwise the
-    // pipe reader on the far end would silently attach to a primary
-    // that never opens stdin.
+    // Stdin is process-local, so stdin launches cannot forward to the primary.
     const bool effectiveAllowNewInstance = allowNewInstance || readStdin;
     SingleInstanceGuard instanceGuard;
-    // Forward per-launch options to an existing primary process.
+    // Forward options that affect how the primary opens this launch.
     SingleInstanceGuard::LaunchFlagsBitmask launchFlags;
     if (parsed.disableRotationHistory)
     {
@@ -187,26 +150,21 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    // Explicit or stdin-implied new instances must not publish the
-    // canonical primary's `openWindowsAtQuit` state.
+    // Only the canonical primary publishes shared quit state.
     SessionHistoryManager::SetPublishingEnabled(!effectiveAllowNewInstance);
 
-    // Init the IANA timezone database before any timestamp work
-    // (restore-on-launch rehydrates filters that format timestamps).
+    // Restored filters may format timestamps during window construction.
     if (!MainWindow::InitializeTimezoneDatabase())
     {
         return 1;
     }
 
-    // Owned by main; outlives every window (closeEvent /
-    // aboutToQuit both deref the manager).
+    // Windows use this manager during close and quit callbacks.
     SessionHistoryManager historyManager(
         SessionHistoryManager::DefaultSessionsDir(), std::make_unique<QSettingsRecentsIndexStorage>()
     );
 
-    // Reap `<uuid>.json` files left behind by a crash between
-    // `WriteSnapshot`'s file write and its index update. Capped
-    // result feeds a status-bar hint.
+    // Reconcile snapshots that were written without an index update.
     const SessionHistoryManager::CleanupReport cleanupReport = historyManager.CleanupOrphanFiles();
 
     MainWindow w(&themeControl, &historyManager, &regexTemplateRegistry, nullptr);
@@ -222,15 +180,14 @@ int main(int argc, char *argv[])
     }
     fileOpenFilter.setLiveWindow(&w);
 
-    // Second drain for events that landed during startup
-    // (Finder double-click on macOS).
+    // Capture OS-open events delivered during startup.
     const QStringList pendingFromOs = fileOpenFilter.takePending();
     if (!pendingFromOs.isEmpty())
     {
         cliFiles.append(pendingFromOs);
     }
 
-    // Apply the launch override before opening files.
+    // The launch override must govern every source opened below.
     w.SetRotationHistoryLaunchOverride(parsed.disableRotationHistory);
 
     if (!cliFiles.isEmpty())
@@ -238,21 +195,16 @@ int main(int argc, char *argv[])
         w.OpenFilesForCli(cliFiles);
     }
 
-    // Stdin opens last and replaces any queued or in-flight file
-    // opens, making the pipe the current session.
+    // Stdin is authoritative and replaces file opens from the same launch.
     if (readStdin)
     {
         w.OpenStdinStream();
     }
 
-    // Track peer windows so we can close + reap them before
-    // `historyManager` goes out of scope (avoids a latent UAF if
-    // `aboutToQuit` runs after the manager).
+    // Peers must close before their non-owning history manager expires.
     QList<QPointer<MainWindow>> peers;
 
-    // Append a peer and compact null `QPointer`s. Hand-rolled
-    // `remove_if` so Qt version differences in `removeIf` /
-    // `std::erase_if` don't matter.
+    // Compact stale pointers whenever a peer is registered.
     auto appendPeer = [&peers](MainWindow *peer) {
         peers.erase(
             std::remove_if(peers.begin(), peers.end(), [](const QPointer<MainWindow> &p) { return p.isNull(); }),
@@ -261,31 +213,11 @@ int main(int argc, char *argv[])
         peers.append(QPointer<MainWindow>(peer));
     };
 
-    // Restore-on-launch is skipped for CLI files and new-instance
-    // launches. Stdin is also skipped because it already replaced
-    // the current session.
+    // Explicit launch inputs take precedence over workspace restoration.
     const bool restoreEnabled = SessionHistoryManager::RestoreLastSessionOnLaunch();
     if (cliFiles.isEmpty() && restoreEnabled && !allowNewInstance && !readStdin)
     {
-        // Task 8.7 grouped restore: prefer the workspace file
-        // (structured windows/tabs) when present; fall back to
-        // the flat `openWindowsAtQuit` list for backward
-        // compatibility with pre-8.x quit state.
-        //
-        // Post-tabs review-round bug #8 fix: previously we called
-        // `Take()` (atomic read + wipe) unconditionally and then
-        // truncated the in-memory copy to `MAX_RESTORE_PEERS`.
-        // For a workspace with more than 25 windows, the surplus
-        // was silently DROPPED from the on-disk store because
-        // the wipe happened before truncation. Now we `Read()`
-        // first, and if the count exceeds the cap we write the
-        // surplus BACK to the on-disk store so a subsequent
-        // launch can pick up the rest; only the count-under-cap
-        // common case uses the atomic `Take()` for its crash-
-        // loop protection. Split-write is done atomically via
-        // `Write()` (which itself writes via `QSaveFile`), so a
-        // crash between the split-write and the restore leaves
-        // exactly the surplus on-disk (idempotent).
+        // Prefer grouped workspace state; retain surplus windows for another launch.
         slv::persistence::Workspace workspace;
         {
             slv::persistence::Workspace peek = slv::persistence::WorkspacePersistence::Read();
@@ -303,16 +235,14 @@ int main(int argc, char *argv[])
             }
             else
             {
-                // Common case: atomic read+wipe protects against
-                // mid-restore crash loops.
+                // Atomic consumption prevents repeated restore crashes.
                 workspace = slv::persistence::WorkspacePersistence::Take();
             }
         }
         if (!workspace.windows.empty())
         {
             const std::size_t windowCount = workspace.windows.size();
-            // First window rebinds the freshly-constructed
-            // primary; subsequent windows are new peers.
+            // Reuse the primary for the first record and create peers for the rest.
             for (std::size_t i = 0; i < windowCount; ++i)
             {
                 MainWindow *target = nullptr;
@@ -333,7 +263,7 @@ int main(int argc, char *argv[])
         }
         else
         {
-            // Atomic read + wipe so a crash mid-restore cannot loop us.
+            // Consume the compatibility index atomically to avoid restore loops.
             QStringList previouslyOpen = SessionHistoryManager::TakeOpenWindowsAtQuit();
             if (previouslyOpen.size() > MAX_RESTORE_PEERS)
             {
@@ -344,8 +274,7 @@ int main(int argc, char *argv[])
             }
             if (!previouslyOpen.isEmpty())
             {
-                // First uuid -> existing primary; remainder -> peers.
-                // Dangling uuids are evicted so the menu stays clean.
+                // Reuse the primary and discard missing compatibility entries.
                 const QString primaryUuid = previouslyOpen.takeFirst();
                 const QString primaryPath = historyManager.PathForUuid(primaryUuid);
                 if (!primaryPath.isEmpty() && QFileInfo::exists(primaryPath))
@@ -376,8 +305,7 @@ int main(int argc, char *argv[])
             }
             else
             {
-                // Fallback for clean installs: restore the single most
-                // recent session.
+                // With no quit state, restore the most recent session.
                 const auto lastPath = historyManager.LastSessionPath();
                 if (lastPath.has_value())
                 {
@@ -387,17 +315,9 @@ int main(int argc, char *argv[])
         }
     }
 
-    // Safety-net for OS-driven quit (Cmd+Q, login teardown), where
-    // the event loop exits without `closeEvent` firing on every
-    // window.
-    //
-    // (1) flush + gather restorable uuids, (2) explicitly close
-    // peers so their `closeEvent` runs while the manager is alive,
-    // (3) one batched `AddOpenWindowUuids` after (2) so peers
-    // cannot strip their own uuids out of the set on close.
+    // OS-driven quit must flush all tabs before shared services are destroyed.
     QObject::connect(&a, &QCoreApplication::aboutToQuit, &a, [&peers] {
-        // `aboutToQuit` has been observed to fire twice on rare
-        // shutdown paths.
+        // Guard duplicate quit delivery.
         static QAtomicInt fired{0};
         if (fired.fetchAndOrAcquire(1) != 0)
         {
@@ -406,35 +326,10 @@ int main(int argc, char *argv[])
         QStringList restorable;
         slv::persistence::Workspace workspace;
         workspace.schemaVersion = slv::persistence::WorkspacePersistence::SCHEMA_VERSION;
-        // Snapshot the widget list because flush -> closeEvent
-        // can mutate it under-foot.
+        // Flushing and closing windows mutates the top-level widget list.
         const QList<QWidget *> topLevels = QApplication::topLevelWidgets();
 
-        // Phase 1: flush + gather; publish runs in phase 3.
-        //
-        // Multi-tab: walk EVERY hosted tab of every window so
-        // `AutoSaveAllHostedSessions` routes each per-tab save
-        // through the shell's alias-based helpers -- background
-        // tabs' state is preserved, not just the last-active tab
-        // of each window.
-        //
-        // Post-tabs review-round bug #H3 fix: the FLAT
-        // `openWindowsAtQuit` list (the pre-8.x legacy fallback
-        // consumed at line 337-349 below) treats one entry as
-        // ONE window (that's the pre-tabs contract and the
-        // reader still expects it). A prior revision published
-        // every per-tab uuid via `RestorableHostedSessionUuids`,
-        // so a 3-tab window would explode into 3 separate
-        // windows when a subsequent launch fell back to the
-        // legacy branch (i.e. a workspace-file write failure,
-        // an abnormal exit before the workspace publish, or a
-        // downgraded binary). Publish ONE uuid per window here
-        // (the active session's restorable uuid, matching the
-        // pre-tabs semantics); the full multi-tab layout lives
-        // in the grouped workspace record captured just below.
-        //
-        // Task 8.6: also snapshot each window's tab layout into
-        // the workspace record for grouped restore next launch.
+        // Save every tab, but publish one UUID per window in the compatibility index.
         for (QWidget *widget : topLevels)
         {
             auto *mw = qobject_cast<MainWindow *>(widget);
@@ -449,11 +344,7 @@ int main(int argc, char *argv[])
                 restorable.append(windowUuid);
             }
             slv::persistence::WorkspaceWindow snapshot = mw->CaptureWorkspaceWindow();
-            // MRU order: primary window is first in
-            // `topLevelWidgets()` on most platforms, but do not
-            // rely on that -- use focus/activation order via a
-            // stable adjacent sweep. For today we accept
-            // insertion order (matches `topLevelWidgets()`).
+            // Persist Qt's stable top-level order when explicit MRU data is unavailable.
             if (!snapshot.windowUuid.isEmpty())
             {
                 workspace.mruOrder.append(snapshot.windowUuid);
@@ -461,8 +352,7 @@ int main(int argc, char *argv[])
             workspace.windows.push_back(std::move(snapshot));
         }
 
-        // Phase 2: close peers; `closeEvent` -> `DetachAutoSaveUuid`
-        // strips any stale prior publish before phase 3 re-adds.
+        // Close peers before the final batch publish can be altered by close handlers.
         for (const QPointer<MainWindow> &peer : peers)
         {
             if (peer.isNull())
@@ -472,23 +362,13 @@ int main(int argc, char *argv[])
             peer->close();
         }
 
-        // Phase 3: batched publish. No-op under `--new-instance`.
+        // Publish only after every close handler has finished.
         SessionHistoryManager::AddOpenWindowUuids(restorable);
-        // Publish the workspace snapshot alongside the flat
-        // uuid list. Safe to publish even under `--new-instance`
-        // (the WorkspacePersistence::Write guard returns false
-        // silently). The flat list is kept for the current
-        // release so a downgraded binary can still restore.
+        // Keep the flat index for backward-compatible restore readers.
         (void)slv::persistence::WorkspacePersistence::Write(std::move(workspace));
     });
 
-    // Forwarded launches: route to the MRU (most-recently-focused)
-    // MainWindow when files are supplied so the incoming files
-    // land as new foreground tabs on the window the user was
-    // last looking at (task 8.11). An EMPTY file list still
-    // spawns a new peer to preserve the pre-8.x "second launch
-    // -> new window" UX and to give the user a clean surface
-    // when they explicitly launched a fresh instance.
+    // Route forwarded files to the active window; an empty request creates a peer.
     QObject::connect(
         &instanceGuard,
         &SingleInstanceGuard::openWindowRequested,
@@ -496,11 +376,7 @@ int main(int argc, char *argv[])
         [&themeControl, &historyManager, &regexTemplateRegistry, &appendPeer](
             const QStringList &files, int truncatedCount, SingleInstanceGuard::LaunchFlagsBitmask forwardedFlags
         ) {
-            // Locate the MRU MainWindow. `activeWindow()` reflects
-            // the last window Qt saw focus on this process; a
-            // null return (headless / minimized) falls back to
-            // the first MainWindow in `topLevelWidgets()`, then
-            // to a fresh peer.
+            // Fall back from Qt's active window to any existing main window.
             MainWindow *routeTarget = nullptr;
             if (!files.isEmpty())
             {
@@ -520,22 +396,13 @@ int main(int argc, char *argv[])
             }
             if (routeTarget != nullptr)
             {
-                // Route to existing MRU: `EnsureFreshActiveTab()`
-                // is called explicitly BELOW so a busy tab is
-                // not clobbered; `OpenFilesForCli` alone would
-                // Append into whatever tab was active. The
-                // incoming files land on the new foreground
-                // tab created by `EnsureFreshActiveTab`.
+                // Preserve a busy active tab before opening forwarded files.
                 routeTarget->raise();
                 routeTarget->activateWindow();
                 routeTarget->SetRotationHistoryLaunchOverride(
                     forwardedFlags.testFlag(SingleInstanceGuard::LaunchFlags::DisableRotationHistory)
                 );
-                // Give the incoming files their own tab so the
-                // MRU window's current investigation stays
-                // intact. `AddNewTab(true)` before the open
-                // is the same shape as the FR-24 "Open in
-                // New Tab" action.
+                // Forwarded files use the same non-destructive tab routing as OS opens.
                 routeTarget->EnsureFreshActiveTab();
                 routeTarget->OpenFilesForCli(files);
                 if (truncatedCount > 0)
@@ -552,9 +419,7 @@ int main(int argc, char *argv[])
                 }
                 return;
             }
-            // Empty-file forward: spawn a fresh peer (pre-8.x
-            // shape). Also covers the fallback branch where
-            // no MainWindow was reachable for routing.
+            // Empty requests and missing route targets need a fresh window.
             auto *child = new MainWindow(&themeControl, &historyManager, &regexTemplateRegistry, nullptr);
             child->setAttribute(Qt::WA_DeleteOnClose);
             child->show();

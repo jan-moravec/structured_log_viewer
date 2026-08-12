@@ -193,37 +193,12 @@ void RecordDetailDock::InstallSourceSubscriptions()
 
 void RecordDetailDock::Bind(const SessionBindContext &context)
 {
-    // Task 5.7: swap the active session context.
-    //
-    // Ordering is load-bearing (see class docstring):
-    //
-    //   1. Save outgoing session's pinned row.
-    //   2. Reset the QPersistentModelIndex BEFORE the model swap.
-    //      Persistent indexes are keyed by their model pointer;
-    //      keeping one alive across the swap risks a dangling
-    //      reference the next time the outgoing model emits a
-    //      layoutChanged.
-    //   3. Clear the scoped-connections bag BEFORE swapping the
-    //      guarded aliases so no in-flight slot dereferences the
-    //      stale pointers.
-    //   4. Swap `mModel` / `mAnchors` from the incoming context.
-    //   5. Re-install subscriptions against the new pointers.
-    //   6. Update `mBoundSession` (source of truth for the next
-    //      Save on Bind).
-    //   7. Restore the incoming session's pin (or show the
-    //      appropriate placeholder).
+    // Save first, then invalidate the persistent index and disconnect
+    // before replacing its model. Restore only after new subscriptions
+    // and the incoming session alias are installed.
 
-    // Same-session early-return: a redundant Bind on the same
-    // session would clear the persistent index, tear down every
-    // subscription, and reinstall them -- visible to the user as
-    // a placeholder flash between the Clear and the Restore.
-    // Mirrors `FindDock::Bind` / `AnchorsDock::Bind` short-circuit.
-    // Only fires when already bound; a fresh Bind (`mBoundSession`
-    // null) still runs the full sequence.
-    //
-    // Phase-5 invariant: a `LogSession` does not swap its model
-    // quintet in-place, so same-session implies same source
-    // pointers.
+    // Session source objects are stable for a session's lifetime,
+    // so a live same-session bind preserves the persistent index.
     LogSession *incoming = context.session.data();
     if (!mBoundSession.isNull() && mBoundSession.data() == incoming)
     {
@@ -262,14 +237,8 @@ void RecordDetailDock::SaveStateIntoBoundSession()
     const int currentRow = CurrentSourceRow();
     pin.pinnedSourceRow = currentRow;
     pin.everPinned = mEverPinned;
-    // Origin-review finding H4: persist a stable identity so a
-    // background-tab restore that runs after leading rows were
-    // evicted (streaming rotation, retention trim) points at the
-    // actual pinned line rather than whatever record now sits at
-    // the pre-eviction row number. Only meaningful when there is
-    // a live pin (`currentRow >= 0`); the `everPinned`-only
-    // eviction-latch case is already handled by the placeholder
-    // restore branch.
+    // Persist a stable identity so leading-row eviction cannot retarget
+    // the saved numeric row to a different record.
     pin.keyLocator.clear();
     pin.keyLineId = 0;
     if (currentRow >= 0 && mModel != nullptr)
@@ -295,13 +264,8 @@ void RecordDetailDock::RestoreStateFromSession(LogSession *session)
     }
     const auto &pin = session->RecordDetailPin();
 
-    // Prefer the stable key (finding H4) over the row number. A
-    // background tab that lost leading rows to eviction while
-    // inactive would otherwise resolve `pinnedSourceRow=N` to a
-    // completely different record. Key match falls back to row
-    // number when the key cannot be resolved (file rotated out,
-    // record compacted, etc.), and row number falls back to the
-    // eviction placeholder.
+    // Prefer stable identity over the numeric row, which can shift
+    // after leading-row eviction. Fall back to the saved row.
     if (mModel != nullptr && !pin.keyLocator.empty() && pin.keyLineId != 0)
     {
         AnchorManager::Key key;
@@ -321,9 +285,7 @@ void RecordDetailDock::RestoreStateFromSession(LogSession *session)
 
     if (pin.pinnedSourceRow >= 0)
     {
-        // ShowSourceRow revalidates against the current model's
-        // row count and clears cleanly if the row no longer
-        // exists (matches the pre-migration eviction path).
+        // ShowSourceRow revalidates against the current model.
         ShowSourceRow(pin.pinnedSourceRow);
         return;
     }

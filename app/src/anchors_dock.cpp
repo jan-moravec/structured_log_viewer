@@ -305,9 +305,7 @@ AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *
     // (`ClearAll`, `Replace`, multi-key ops) take the full-rebuild
     // path -- rare during active editing.
     //
-    // Task 5.5: the five session-owned-sender connects live in the
-    // `mSessionConnections` bag so Bind / Unbind can atomically
-    // disconnect them across a phase-6 tab switch.
+    // Session-owned sender connections are cleared together on rebind.
     InstallSessionSubscriptions();
 
     // Two paths into the jump handler: `itemDoubleClicked` is the
@@ -387,12 +385,7 @@ void AnchorsDock::CloseInPlaceEditors()
 
 void AnchorsDock::Bind(const SessionBindContext &context)
 {
-    // Same-session re-Bind: tearing down and re-installing is a
-    // no-op for the projection but a real cost for subscribers.
-    // Short-circuit only when EVERY guarded alias matches -- a
-    // same-session re-Bind that carries a different theme (or
-    // some future context field) still needs to run the full
-    // path so the swap is applied.
+    // Skip only when every live alias already matches the context.
     LogSession *outgoing = mBoundSession.data();
     LogSession *incoming = context.session.data();
     if (outgoing == incoming && outgoing != nullptr && mAnchors == context.anchors.data() &&
@@ -401,12 +394,7 @@ void AnchorsDock::Bind(const SessionBindContext &context)
         return;
     }
 
-    // Origin-review finding M9: save the outgoing session's
-    // currently-focused anchor by key so a phase-6 tab switch
-    // back to it restores the user's cursor into the anchor
-    // list. Only writes when we still have an outgoing session
-    // and a live tree with a current item; otherwise the
-    // incoming Restore path just leaves the current-item null.
+    // Save the outgoing current anchor by stable key for later restore.
     if (outgoing != nullptr && mTree != nullptr)
     {
         SessionAnchorsSelection &selection = outgoing->MutableAnchorsSelection();
@@ -422,24 +410,13 @@ void AnchorsDock::Bind(const SessionBindContext &context)
         }
     }
 
-    // Clear every session-scoped subscription before the pointer
-    // swap so a stale slot cannot fire against the incoming
-    // session's models mid-swap.
+    // Disconnect before swapping aliases.
     mSessionConnections.Clear();
 
-    // Close any inline note editor + clear tree focus so a mid-
-    // edit rebind does not double-write into the outgoing
-    // session's anchor manager.
+    // Prevent an editor commit into the outgoing anchor manager.
     CloseInPlaceEditors();
 
-    // Drop every tree item so a re-entrant `Refresh` observer
-    // during the swap sees the empty state. The subsequent
-    // `Refresh` below repopulates from the incoming session's
-    // `AnchorManager::Entries()`. Scope-guarded suppress so an
-    // allocator throw during `clear()` (item destructors do
-    // small allocations) does not leak the counter and
-    // permanently silence every subsequent note edit -- matches
-    // the pattern the six pre-existing sites in this file use.
+    // Clear under suppression so item destruction cannot write notes.
     {
         ++mSuppressItemChanged;
         const auto suppressGuard = qScopeGuard([this] { --mSuppressItemChanged; });
@@ -449,10 +426,7 @@ void AnchorsDock::Bind(const SessionBindContext &context)
         }
     }
 
-    // Refresh guarded aliases from the new context. `theme` is
-    // window-scoped in practice but the dock has always held it
-    // as a `QPointer` so a phase-6 context that carries a null
-    // theme (e.g. a test fixture) stays safe.
+    // A null incoming theme retains the window-scoped theme alias.
     mAnchors = context.anchors.data();
     mModel = context.model.data();
     if (context.theme != nullptr)
@@ -462,24 +436,12 @@ void AnchorsDock::Bind(const SessionBindContext &context)
 
     mBoundSession = incoming;
 
-    // Re-install the session-owned-sender connects against the new
-    // pointers. Safe with any combination of nulls; the tree
-    // stays empty in that case.
     InstallSessionSubscriptions();
 
-    // Refresh from the new session's anchor entries. `Refresh`
-    // is visibility-gated, so a buried dock defers the rebuild
-    // until the user opens it -- matching the pre-rebind
-    // behaviour.
+    // Hidden docks defer population until they become visible.
     Refresh();
 
-    // Restore the incoming session's selection AFTER Refresh
-    // populates the tree. Walk the freshly-built items looking
-    // for one whose stored key matches; skip silently if the
-    // saved key no longer resolves (anchor removed / model
-    // evicted). Skips when the tree stayed empty (Refresh
-    // deferred by visibility gate) -- the visibility-driven
-    // `RefreshAlways` on reveal reruns this path.
+    // Restore by stable key after the tree is populated.
     if (incoming != nullptr && mTree != nullptr && mTree->topLevelItemCount() > 0)
     {
         const SessionAnchorsSelection &selection = incoming->AnchorsSelection();
@@ -518,9 +480,7 @@ void AnchorsDock::Unbind()
     --mSuppressItemChanged;
     mAnchors = nullptr;
     mModel = nullptr;
-    // Leave `mTheme` intact -- it is window-scoped and does not
-    // die with the session (matches the ctor's semantics of
-    // treating theme as a borrowed non-owning app service).
+    // The window-scoped theme survives session unbinds.
     mBoundSession = nullptr;
 }
 

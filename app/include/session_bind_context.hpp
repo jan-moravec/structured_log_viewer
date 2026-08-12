@@ -12,105 +12,73 @@ class HighlightRuleSet;
 class ThemeControl;
 class QItemSelectionModel;
 
-/// Guarded, non-owning bundle of pointers a shared dock or dialog
-/// needs to bind to the "active session context" for one window.
-/// Every field is a `QPointer` (or an equivalent guarded handle) so
-/// a destroyed session leaves the context safely null, and a
-/// re-entrant `Bind` during teardown observes the same nulls.
-///
-/// A default-constructed context represents an explicit *empty*
-/// binding: docks in that state must clear their persistent model
-/// indexes, cancel debounce timers, and hide session-specific chrome
-/// (task 5.1). `SessionBindContext::MakeUnbound()` is a named alias
-/// for the default ctor that reads clearer at call sites; use it
-/// when the intent is "this dock has no active session right now".
-///
-/// The concrete pointers are populated in Phase 2 (LogSession) and
-/// Phase 3 (LogSessionView). Phase 5 wires each dock's Bind/Unbind
-/// contract to consume this context.
+/**
+ * @brief Bundles guarded, non-owning objects used to bind session UI.
+ *
+ * A default-constructed context is unbound. Session and view objects are
+ * guarded by `QPointer`, so destroying an object clears the corresponding
+ * handle.
+ */
 struct SessionBindContext
 {
-    /// Build a context from a live session + view pair. Reads
-    /// every session-owned pointer via the session's / view's
-    /// public accessors so a future addition to the struct
-    /// requires updating exactly this one factory (plus the
-    /// declaration + the `IsBound()` gate).
-    ///
-    /// `session` and `view` are collapsed to `MakeUnbound()` when
-    /// EITHER is null. All-or-nothing: a partial pair (session
-    /// with no view, or view with no session) is treated as
-    /// "no active session" so downstream Bind slots see one of the
-    /// two shapes -- fully bound or fully unbound -- and never a
-    /// half-populated context (origin-review finding M6). This
-    /// keeps callers that pass `activeSession()` /
-    /// `activeSessionView()` (both of which are safe to be null
-    /// during teardown) simple: they do not need to null-check
-    /// first.
-    ///
-    /// @param session  the origin session; its model quintet
-    ///                 populates the guarded pointers.
-    /// @param view     the paired view; its selection model
-    ///                 populates the guarded pointer.
-    /// @param theme    non-owning, window-scoped. Passed through
-    ///                 verbatim.
+    /**
+     * @brief Builds a context from a session and its view.
+     *
+     * If either required argument is null, the function returns an unbound
+     * context. The selection model may remain null while the view is being
+     * initialized or torn down.
+     *
+     * @param session Session that owns the models and state.
+     * @param view View paired with the session.
+     * @param theme Non-owning theme service; may be null.
+     * @return A bound context, or an unbound context for a partial pair.
+     */
     [[nodiscard]] static SessionBindContext FromSessionAndView(
         LogSession *session, LogSessionView *view, ThemeControl *theme = nullptr
     );
 
-    /// Named alias for the default ctor. Signals "no active
-    /// session" at the call site; docks passing through their
-    /// `Bind(SessionBindContext)` slot must treat this as
-    /// equivalent to a full unbind.
+    /**
+     * @brief Creates an explicitly unbound context.
+     *
+     * @return A context with all handles null.
+     */
     [[nodiscard]] static SessionBindContext MakeUnbound() noexcept
     {
         return SessionBindContext{};
     }
 
+    /** @brief Bound session. */
     QPointer<LogSession> session;
+    /** @brief View paired with the session. */
     QPointer<LogSessionView> view;
 
+    /** @brief Session source model. */
     QPointer<LogModel> model;
+    /** @brief Session row-order proxy. */
     QPointer<RowOrderProxyModel> rowOrderProxy;
+    /** @brief Session filter and sort proxy. */
     QPointer<LogFilterModel> filterProxy;
 
+    /** @brief Session anchor manager. */
     QPointer<AnchorManager> anchors;
+    /** @brief Session highlight rules. */
     QPointer<HighlightRuleSet> highlights;
 
+    /** @brief Optional view selection model. */
     QPointer<QItemSelectionModel> selection;
 
-    /// Non-owning. Windows share one `ThemeControl`; docks read
-    /// it for accessible palette contrast. May be null in test
-    /// fixtures that skip the themed constructor overload.
+    /** @brief Non-owning theme service; may be null. */
     ThemeControl *theme = nullptr;
 
-    /// True iff every session-owned pointer resolves to a live
-    /// object. Docks use this as the single unbind gate.
-    ///
-    /// Concretely, the checked fields are:
-    ///
-    ///   * `session`         — the `LogSession` itself,
-    ///   * `view`            — the paired `LogSessionView`,
-    ///   * `model`           — the session-owned `LogModel`,
-    ///   * `rowOrderProxy`   — the session-owned display-order proxy,
-    ///   * `filterProxy`     — the session-owned filter/sort proxy,
-    ///   * `anchors`         — the session-owned `AnchorManager`,
-    ///   * `highlights`      — the session-owned `HighlightRuleSet`.
-    ///
-    /// Deliberately NOT part of the gate:
-    ///
-    ///   * `selection`       — view-owned (`QTableView::selectionModel()`);
-    ///                         a bound context with no selection yet
-    ///                         is a legitimate transient state during
-    ///                         setup.
-    ///   * `theme`           — window-scoped; may legitimately be
-    ///                         null in test fixtures that skip the
-    ///                         themed constructor.
-    ///
-    /// If a new session-owned pointer is added to this struct, add
-    /// the corresponding `!field.isNull()` clause here AND extend
-    /// `TestIsBoundGatesOnEverySessionOwnedField` in
-    /// `dock_binding_test.cpp` so a future omission fails at CI
-    /// time rather than in a dock body against a null pointer.
+    /**
+     * @brief Tests whether all required session-owned objects are alive.
+     *
+     * The selection model and theme service are optional and do not affect
+     * the result.
+     *
+     * @return `true` when the session, view, models, anchors, and highlights
+     * are all available.
+     */
     [[nodiscard]] bool IsBound() const noexcept
     {
         return !session.isNull() && !view.isNull() && !model.isNull() && !rowOrderProxy.isNull() &&

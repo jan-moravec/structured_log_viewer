@@ -719,6 +719,42 @@ Only static-file sessions are auto-saved to Recent Sessions. Stream, stdin, and 
 - **File → New Window** (`Ctrl+Shift+N`) opens a second top-level window with an empty session. The two windows share the same Recent Sessions list and global preferences but each holds its own logs, filters, anchors, and panels. Useful for side-by-side comparison of two sources.
 - **File → New Session** (`Ctrl+N`) discards the current window's session (rows, filters, sort, source) and returns it to an empty view. Holding `Shift` while dragging or opening a file is the in-place equivalent for static sessions.
 
+## Tabs
+
+Every window hosts a tab strip for independent investigations. Each tab keeps its own rows, filters, sort, anchors, highlight rules, scroll position, and active work.
+
+### Opening and closing tabs
+
+- **File → New Tab** (`Ctrl+T`) opens an empty tab.
+- **File → Close Tab** (`Ctrl+W`) closes the current tab. Closing the last tab closes the window.
+- **File → Open in New Tab…** loads selected files into a new foreground tab.
+- A **Recent Sessions** entry opens in a foreground tab, reusing the active tab when it is empty. Files forwarded from the OS or another app instance follow the same empty-tab behavior in the most-recently-focused window.
+- Drag tabs to reorder them. Files dropped anywhere on the window target the active tab: the default appends, while holding `Shift` replaces.
+
+### Switching tabs
+
+- `Ctrl+Tab` and `Ctrl+Shift+Tab` cycle forward / backward through tabs. `Ctrl+PgDown` / `Ctrl+PgUp` mirror the same actions on keyboards where the Ctrl+Tab combo is easier to reach.
+- Every source type is available in every tab: static files, multi-file merges, compressed archives, session bundles, live-tail files, standard input, and TCP / UDP network streams can all run concurrently. Live-tail and network tabs keep ingesting in the background; you can leave a tail streaming while you triage a static file next to it.
+- The window title, status bar, docks, and menus follow the selected tab.
+
+### Tab labels and indicators
+
+- While a source operation is active, the tab uses its current display label (a file basename or the stdin / network producer label). When no display label is set, including an idle empty tab, it reads `Untitled`.
+- Tab chrome marks active work with `▶` while ingesting, `↻` while decompressing, `⇧` while exporting, `…` while parsing, and `⧖` while waiting for a source.
+- The label ends with `●` for unsaved session changes and `!` when parse errors are present.
+- Hovering shows the same unelided source label available to the tab. The tooltip also reports unsaved changes and the parse-error count.
+
+### Closing tabs safely
+
+Closing a tab stops its active work before removing it. Dirty file-backed tabs are saved to Recent Sessions. Dirty network and stdin tabs ask for **Discard / Cancel** because their live source cannot be recreated. Quitting applies the same rules to every tab.
+
+### Multi-window and restoration
+
+- **File → New Window** (`Ctrl+Shift+N`) opens another window with its own ordered tab strip.
+- On the next launch, the primary application restores each saved window, tab order, and active tab. File-backed sessions reopen when their saved session is available.
+- Network and stdin entries restore as empty `Untitled` tabs. They have no disconnected state or `∅` marker. Open the network stream again from **File → Open Network Stream…**; relaunch the application with `-` or `--stdin` to attach standard input again.
+- A tab that fails to reopen does not stop restoration of the remaining tabs or windows.
+
 ## Themes
 
 Structured Log Viewer ships a built-in theme catalogue covering both Light and Dark variants, plus high-contrast triage skins. The active theme drives the palette, optional Qt style override, fonts, level row tints (subtle by default; loud when **High contrast levels** is on), the level column icon-pill (when **Show level icons** is on), the eight [anchor](#anchors) swatches, and the sixteen-slot [highlight rules](#highlight-rules) palette.
@@ -771,35 +807,39 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 
 ## Keyboard Shortcuts
 
-| Action                         | Shortcut            |
-| ------------------------------ | ------------------- |
-| New session                    | `Ctrl+N`            |
-| New window                     | `Ctrl+Shift+N`      |
-| Open file(s)                   | `Ctrl+O`            |
-| Open log stream                | `Ctrl+Shift+O`      |
-| Open network stream            | `Ctrl+Shift+L`      |
-| Save configuration             | `Ctrl+S`            |
-| Save session                   | `Ctrl+Shift+S`      |
-| Export filtered rows           | `Ctrl+E`            |
-| Export session bundle          | `Ctrl+Shift+E`      |
-| Find                           | `Ctrl+F`            |
-| Go to Line                     | `Ctrl+G`            |
-| Go to Timestamp                | `Ctrl+Shift+G`      |
-| Copy selected rows             | `Ctrl+C`            |
-| Toggle Record Details pane     | `Ctrl+I`            |
-| Toggle Anchors panel           | `Ctrl+K`            |
-| Toggle Histogram panel         | `Ctrl+H`            |
-| Toggle Overview Rail           | `Ctrl+Shift+R`      |
-| Anchor selection (colour 1..8) | `Ctrl+1` … `Ctrl+8` |
-| Remove anchor from selection   | `Ctrl+0`            |
-| Clear every anchor             | `Ctrl+Shift+A`      |
-| Jump to next anchor            | `F2`                |
-| Jump to previous anchor        | `Shift+F2`          |
-| Edit anchor note               | `F4`                |
-| Pause / Resume stream          | `Ctrl+Shift+P`      |
-| Toggle Follow newest           | `Ctrl+Shift+T`      |
-| Stop stream                    | `Ctrl+Shift+X`      |
-| Show keyboard shortcuts        | `Ctrl+/`            |
+| Action                         | Shortcut                       |
+| ------------------------------ | ------------------------------ |
+| New tab                        | `Ctrl+T`                       |
+| Close tab                      | `Ctrl+W`                       |
+| Next tab                       | `Ctrl+Tab` / `Ctrl+PgDown`     |
+| Previous tab                   | `Ctrl+Shift+Tab` / `Ctrl+PgUp` |
+| New session                    | `Ctrl+N`                       |
+| New window                     | `Ctrl+Shift+N`                 |
+| Open file(s)                   | `Ctrl+O`                       |
+| Open log stream                | `Ctrl+Shift+O`                 |
+| Open network stream            | `Ctrl+Shift+L`                 |
+| Save configuration             | `Ctrl+S`                       |
+| Save session                   | `Ctrl+Shift+S`                 |
+| Export filtered rows           | `Ctrl+E`                       |
+| Export session bundle          | `Ctrl+Shift+E`                 |
+| Find                           | `Ctrl+F`                       |
+| Go to Line                     | `Ctrl+G`                       |
+| Go to Timestamp                | `Ctrl+Shift+G`                 |
+| Copy selected rows             | `Ctrl+C`                       |
+| Toggle Record Details pane     | `Ctrl+I`                       |
+| Toggle Anchors panel           | `Ctrl+K`                       |
+| Toggle Histogram panel         | `Ctrl+H`                       |
+| Toggle Overview Rail           | `Ctrl+Shift+R`                 |
+| Anchor selection (colour 1..8) | `Ctrl+1` … `Ctrl+8`            |
+| Remove anchor from selection   | `Ctrl+0`                       |
+| Clear every anchor             | `Ctrl+Shift+A`                 |
+| Jump to next anchor            | `F2`                           |
+| Jump to previous anchor        | `Shift+F2`                     |
+| Edit anchor note               | `F4`                           |
+| Pause / Resume stream          | `Ctrl+Shift+P`                 |
+| Toggle Follow newest           | `Ctrl+Shift+T`                 |
+| Stop stream                    | `Ctrl+Shift+X`                 |
+| Show keyboard shortcuts        | `Ctrl+/`                       |
 
 ## Troubleshooting
 

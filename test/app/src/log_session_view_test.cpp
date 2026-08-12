@@ -1,9 +1,5 @@
-// Direct `LogSessionView` unit tests (task 1.9 seeded; task 3.10
-// grows). Phase 3 wires the view up with a real `LogTableView` +
-// `OverviewRailModel` + `OverviewRailWidget` subtree; these tests
-// pin the ownership invariants that the shell now relies on
-// (`MainWindow::mTableView`, `mOverviewRailModel`,
-// `mOverviewRailWidget` are all non-owning aliases into the view).
+// Tests for `LogSessionView` behavior and ownership of its table
+// and overview-rail subtree.
 
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
@@ -43,12 +39,8 @@ private slots:
         QVERIFY(view->Session() == session.get());
     }
 
-    /// PRD §8.1 forbids a `LogSessionView` from outliving its
-    /// session in production, but the teardown races have to be
-    /// safe anyway (dialogs that hold a raw pointer to the view,
-    /// scheduled repaints, etc.). This test just pins the
-    /// `QPointer` guard: once the session is gone, `Session()`
-    /// returns `nullptr` instead of a dangling pointer.
+    // The guarded session pointer must clear if teardown destroys
+    // the session before its view.
     static void TestSessionPointerClearsWhenSessionDestroyedFirst()
     {
         auto session = std::make_unique<LogSession>();
@@ -59,14 +51,7 @@ private slots:
 
     static void TestViewOwnsTableRailAndRailModelAsChildren()
     {
-        // Task 3.2 / 3.3: `LogSessionView::Initialise` constructs
-        // the table view, overview-rail model, and overview-rail
-        // widget, and parents each of them on the view so the
-        // whole subtree tears down with the tab. Pin the parent
-        // chain so a future contributor who moves construction
-        // back onto the shell (or forgets `this` in a `new` call)
-        // breaks this test rather than silently leaking widgets
-        // onto the shell's parent chain.
+        // The view owns the complete table and overview-rail subtree.
         auto session = std::make_unique<LogSession>();
         auto view = std::make_unique<LogSessionView>(session.get());
 
@@ -81,22 +66,14 @@ private slots:
 
     static void TestOverviewRailStartsHidden()
     {
-        // Matches the pre-migration `MainWindow` behaviour: the
-        // rail is instantiated but explicitly hidden; the shell's
-        // toggle (`SetOverviewRailVisible`) reparents it into the
-        // table view via `LogTableView::AttachOverviewRail` when
-        // the user (or a persisted preference) turns it on. If
-        // the rail ever ships visible-by-default it would show up
-        // as an unrelated regression in every window-open test
-        // fixture, so keep this pin explicit.
-        //
+        // The rail is constructed hidden and attached to the table
+        // only when enabled.
         // Use `isHidden()` (not `!isVisible()`): the parent view
         // is never `show()`n in this test, so `isVisible()`
-        // returns false regardless of the rail's own state -- a
-        // regression that removes the explicit `hide()` call
-        // would still pass a `!isVisible()` assertion. `isHidden()`
-        // is only true when the widget was explicitly hidden
-        // (review finding #6).
+        // returns false regardless of the rail's own state.
+        // `!isVisible()` therefore cannot verify the explicit
+        // `hide()` call. `isHidden()`
+        // is only true when the widget was explicitly hidden.
         auto session = std::make_unique<LogSession>();
         auto view = std::make_unique<LogSessionView>(session.get());
         QVERIFY(view->OverviewRail()->isHidden());
@@ -104,15 +81,7 @@ private slots:
 
     static void TestTableViewFillsSessionViewLayout()
     {
-        // The pre-migration `MainWindow` created a full-margin
-        // `QVBoxLayout` on `ui->centralWidget` and dropped the
-        // table into it with stretch 1. The session view now
-        // reproduces that layout internally so the shell can
-        // just parent the view into the central widget and get
-        // the same visual result. Pin the "table is in the
-        // layout" invariant so a rewrite that swaps the layout
-        // shape (e.g. a split-pane refactor) still keeps the
-        // table on the main axis.
+        // The table occupies the session view's primary layout slot.
         auto session = std::make_unique<LogSession>();
         auto view = std::make_unique<LogSessionView>(session.get());
         auto *layout = qobject_cast<QVBoxLayout *>(view->layout());
@@ -121,13 +90,7 @@ private slots:
         QCOMPARE(layout->itemAt(0)->widget(), view->TableView());
     }
 
-    // -----------------------------------------------------------------
-    // Task 3.4: `SelectSourceRow` / `ScrollToProxyRow` -- with an
-    // empty model, both are expected to no-op silently. The
-    // `rowNotVisible()` signal is documented as the shell hook
-    // for stale-row feedback; `followTailDisengageRequested()` is
-    // the shell hook for pre-scroll `actionFollowTail` uncheck.
-    // -----------------------------------------------------------------
+    // Empty-model navigation behavior.
 
     static void TestSelectSourceRowOnEmptyModelEmitsRowNotVisible()
     {
@@ -152,13 +115,7 @@ private slots:
 
     static void TestScrollToProxyRowOutOfRangeDoesNotDisengageFollowTail()
     {
-        // Pre-migration behaviour: `ScrollToProxyRow` short-
-        // circuits on `proxyRow < 0 || proxyRow >= rowCount`
-        // BEFORE emitting `followTailDisengageRequested`. On an
-        // empty proxy any request row is out of range, so the
-        // signal must not fire. Post-review-3 finding rename:
-        // the previous name (`TestScrollToProxyRowEmitsFollowTailDisengage`)
-        // implied the opposite of what the assertion pins.
+        // Out-of-range rows return before follow-tail is disengaged.
         auto session = std::make_unique<LogSession>();
         auto view = std::make_unique<LogSessionView>(session.get());
         QSignalSpy spy(view.get(), &LogSessionView::followTailDisengageRequested);
@@ -166,9 +123,7 @@ private slots:
         QCOMPARE(spy.count(), 0);
     }
 
-    // -----------------------------------------------------------------
-    // Task 3.5: header-visibility apply pins.
-    // -----------------------------------------------------------------
+    // Header and delegate application behavior.
 
     static void TestApplyColumnVisibilityIsSafeOnEmptyModel()
     {
@@ -190,25 +145,15 @@ private slots:
         // null and take the early-return branch without touching
         // the table's delegate map.
         //
-        // Review finding #6 called out the previous test name as
-        // over-claiming: with no prior install, the detach branch
-        // never runs, so the test really pinned "safe null accept",
-        // not "detach after install". The install-then-detach
-        // scenario requires a live `LevelCellDelegate` (needs a
-        // `ThemeControl`) plus a populated model with icon-mode
-        // active, and belongs with the shell integration tests
-        // that already exercise the theme change path.
+        // No delegate has been installed, so this covers the safe
+        // null early-return path rather than detachment.
         auto session = std::make_unique<LogSession>();
         auto view = std::make_unique<LogSessionView>(session.get());
         view->ApplyLevelCellDelegate(nullptr);
         QVERIFY(view->TableView()->itemDelegateForColumn(0) == nullptr);
     }
 
-    // -----------------------------------------------------------------
-    // Task 3.6: Goto Line / Timestamp dialogs live on the view.
-    // The `Execute*` bodies + parser are exposed so tests can
-    // drive them without a modal.
-    // -----------------------------------------------------------------
+    // Navigation bodies and parsing are driven directly without modals.
 
     static void TestExecuteGotoLineOnEmptyModelEmitsStatusMessage()
     {
@@ -254,19 +199,8 @@ private slots:
 
     static void TestClearGotoStickyInputsOnEmptySessionIsSafe()
     {
-        // Review finding #6: the previous test claimed to verify
-        // `ClearGotoStickyInputs` resets a latched value, but
-        // `ExecuteGotoTimestamp` on an empty session short-circuits
-        // on the `rowCount() == 0` check BEFORE writing the
-        // sticky, so the "clear" was operating on an already-empty
-        // value. Rename to reflect what this actually tests: the
-        // clear method is a safe no-op on a never-set sticky.
-        //
-        // A real latch+clear pin lives in
-        // `TestClearGotoStickyInputsResetsLatchedValue` below (uses
-        // the `SetLastGotoTimestampInputForTest` seam so the test
-        // does not need a full parser fixture) and in `apptest`'s
-        // integration path `TestGotoTimestampStickyInputClearsOnNewSession`.
+        // An empty session returns before latching the timestamp;
+        // clearing an unset sticky value remains safe.
         auto session = std::make_unique<LogSession>();
         auto view = std::make_unique<LogSessionView>(session.get());
         view->ExecuteGotoTimestamp(QStringLiteral("bad-input"), std::chrono::system_clock::now());
@@ -277,16 +211,8 @@ private slots:
 
     static void TestClearGotoStickyInputsResetsLatchedValue()
     {
-        // Review-2 finding #4: pin the latch+clear cycle directly
-        // in the view suite (previously only covered by `apptest`
-        // integration). Seeds the latch via the test seam so the
-        // test does not need a populated `LogModel` with a time
-        // column, then verifies `ClearGotoStickyInputs` zeroes
-        // both the timestamp sticky (via the accessor) and the
-        // line sticky (via a second seed + subsequent
-        // observable-through-clear -- there is no direct
-        // `LastGotoLineInput` accessor since the pre-migration
-        // shell never exposed one).
+        // Seed through the test seam to avoid requiring a populated
+        // model with a timestamp column.
         auto session = std::make_unique<LogSession>();
         auto view = std::make_unique<LogSessionView>(session.get());
         view->SetLastGotoTimestampInputForTest(QStringLiteral("2024-04-28T10:00:02+00:00"));
@@ -295,11 +221,7 @@ private slots:
         QCOMPARE(view->LastGotoTimestampInput(), QString());
     }
 
-    // -----------------------------------------------------------------
-    // Task 3.4 continued: JumpToNewestRow / JumpToAnchor are safe
-    // no-ops on an empty session and emit the expected status
-    // messages on the "no anchors" branch.
-    // -----------------------------------------------------------------
+    // Empty-session jump behavior.
 
     static void TestJumpToNewestRowOnEmptyModelIsNoOp()
     {
@@ -322,9 +244,7 @@ private slots:
         QCOMPARE(spy.takeFirst().at(0).toString(), QStringLiteral("No anchors set."));
     }
 
-    // -----------------------------------------------------------------
-    // Task 3.7: per-tab progress strip lifecycle.
-    // -----------------------------------------------------------------
+    // Per-tab progress strip behavior.
 
     static void TestProgressStripStartsHidden()
     {
@@ -382,23 +302,12 @@ private slots:
         QVERIFY(bar == nullptr);
     }
 
-    // -----------------------------------------------------------------
-    // Review finding #1: a standalone `LogSessionView` must be
-    // independently model-bound. Before the fix, the shell set
-    // the table's model + anchor manager + selection defaults
-    // after view construction; a populated bare view could reach
-    // valid proxy indices while `selectionModel()` was still
-    // null. These tests pin the invariants so a future contributor
-    // removing the binding from `LogSessionView::Initialise` gets
-    // an immediate red bar.
-    // -----------------------------------------------------------------
+    // A standalone view is fully model-bound after construction.
 
     static void TestTableViewIsBoundToSessionFilterProxyOnConstruction()
     {
-        // The view's `Initialise` calls `mTableView->setModel(filterProxy)`
-        // before the ctor returns. A regression that reverts to
-        // the shell-driven binding would leave `model()` at the
-        // Qt-default null and this test would fail.
+        // `Initialise` binds the table to the session filter proxy
+        // before construction returns.
         auto session = std::make_unique<LogSession>();
         auto view = std::make_unique<LogSessionView>(session.get());
         QVERIFY(view->TableView()->model() != nullptr);
@@ -407,12 +316,8 @@ private slots:
 
     static void TestTableViewHasNonNullSelectionModelOnConstruction()
     {
-        // The crash pattern review finding #1 called out: a
-        // populated bare view whose `selectionModel()` returned
-        // null would crash the moment a navigation body tried to
-        // set the current index. `QAbstractItemView::selectionModel()`
-        // is auto-created by `setModel(...)`, so this test also
-        // proves the previous `setModel` call actually ran.
+        // `setModel(...)` creates the selection model required by
+        // navigation methods.
         auto session = std::make_unique<LogSession>();
         auto view = std::make_unique<LogSessionView>(session.get());
         QVERIFY(view->TableView()->selectionModel() != nullptr);
@@ -420,11 +325,8 @@ private slots:
 
     static void TestTableViewSelectionDefaultsAreRowsWithExtendedMode()
     {
-        // Pins the widget property defaults migrated from the
-        // shell (selection behaviour = SelectRows, mode =
-        // ExtendedSelection, alternating-row colours off). These
-        // are UX invariants for the log viewer; regressing them
-        // would silently degrade multi-row copy / find behaviour.
+        // Row selection, extended mode, and solid row coloring are
+        // log-view UX invariants.
         auto session = std::make_unique<LogSession>();
         auto view = std::make_unique<LogSessionView>(session.get());
         QCOMPARE(view->TableView()->selectionBehavior(), QAbstractItemView::SelectRows);
@@ -434,10 +336,7 @@ private slots:
 
     static void TestTableViewSortingEnabledAndHeaderMovableOnConstruction()
     {
-        // Pins the header setup migrated from the shell: sorting
-        // enabled with sections movable. The shell adds the
-        // context-menu policy + `sectionMoved` slot on top, but
-        // the base widget setup is now a view responsibility.
+        // Sorting and movable header sections are view defaults.
         auto session = std::make_unique<LogSession>();
         auto view = std::make_unique<LogSessionView>(session.get());
         QVERIFY(view->TableView()->isSortingEnabled());
@@ -446,14 +345,7 @@ private slots:
         QVERIFY(header->sectionsMovable());
     }
 
-    // -----------------------------------------------------------------
-    // Review finding #3: hiding the overview rail must not orphan
-    // it onto the shell. `MainWindow::SetOverviewRailVisible(false)`
-    // reparents the rail to `mSessionView`, so destroying the
-    // session view still reaps the rail. Pin the parent chain
-    // so a regression reintroducing the shell reparent gets
-    // caught by the ownership sentinel below.
-    // -----------------------------------------------------------------
+    // Hiding the overview rail must preserve session-view ownership.
 
     static void TestOverviewRailParentIsSessionViewByDefault()
     {
@@ -464,8 +356,8 @@ private slots:
 
     static void TestOverviewRailReparentedToViewOnHideStaysWithView()
     {
-        // Simulates the shell's `SetOverviewRailVisible(false)`
-        // reparent path (review finding #3): after
+        // Simulate the shell's `SetOverviewRailVisible(false)`
+        // reparent path: after
         // `AttachOverviewRail(nullptr)` drops the table's
         // parent-reference, the rail is reparented onto the
         // owning session view (not the shell). Destroying the
@@ -487,17 +379,8 @@ private slots:
 
     static void TestOverviewRailParentSurvivesFullToggleCycle()
     {
-        // Post-review-3: the review points out that no existing
-        // pin catches a regression where `SetOverviewRailVisible`
-        // reparents the rail onto the shell (`this`) instead of
-        // the view. Simulate a full attach -> detach -> re-attach
-        // cycle on the view directly and assert the rail's parent
-        // is either the view (detached) or the table (attached),
-        // never anything else. If a future shell reintroduces
-        // `setParent(mainWindow)`, this test would only fail if
-        // it also drove the toggle -- so add a redundant assertion
-        // that after detach the parent is specifically `view`,
-        // and after re-attach it is specifically `TableView()`.
+        // Across an attach-detach-attach cycle, the rail is owned
+        // by the table while attached and by the view while detached.
         auto session = std::make_unique<LogSession>();
         auto view = std::make_unique<LogSessionView>(session.get());
         auto *rail = view->OverviewRail();
@@ -524,14 +407,8 @@ private slots:
         QCOMPARE(rail->parent(), table);
     }
 
-    // -----------------------------------------------------------------
-    // Review finding #2/#4: session-scoped operation generation
-    // counters. The shell's poll timers capture the generation at
-    // `Begin*` time and drop ticks whose captured generation no
-    // longer matches (queued completion silently rearmed for the
-    // next file). Direct pins on the counter's rising-edge
-    // semantics without a shell driver.
-    // -----------------------------------------------------------------
+    // Operation generations identify stale poll callbacks and bump
+    // only on an in-flight rising edge.
 
     static void TestDecompressionGenerationBumpsOnRisingEdge()
     {
@@ -561,10 +438,7 @@ private slots:
 
     static void TestGenerationCountersAreIndependent()
     {
-        // Bumping decompression must not touch export and vice
-        // versa; the two operations can (and per PRD §5 will)
-        // run concurrently once per-session mutation guards
-        // allow it.
+        // Decompression and export generations are independent.
         auto session = std::make_unique<LogSession>();
         const auto decompInitial = session->DecompressionGeneration();
         const auto exportInitial = session->ExportGeneration();

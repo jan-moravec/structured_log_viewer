@@ -40,9 +40,7 @@ constexpr const char *KEY_SESSION_UUID = "sessionUuid";
 constexpr const char *KEY_SOURCE_MODE = "sourceMode";
 constexpr const char *KEY_RESTORE_POLICY = "restorePolicy";
 
-/// Bounded string clamp: values longer than @p maxLen are
-/// truncated. Empty / null strings pass through unchanged so
-/// the sanitize step does not manufacture non-empty content.
+// Preserve empty strings while bounding persisted identifiers.
 QString ClampString(const QString &value, std::size_t maxLen)
 {
     if (std::cmp_less_equal(value.size(), maxLen))
@@ -52,10 +50,7 @@ QString ClampString(const QString &value, std::size_t maxLen)
     return value.left(static_cast<int>(maxLen));
 }
 
-/// Bounded byte-array clamp: values longer than @p maxLen are
-/// dropped (returned empty). Truncating a `QMainWindow::saveState`
-/// blob would produce garbage on restore; drop the whole blob so
-/// restore falls back to the default layout instead.
+// Saved Qt state is indivisible; drop oversized blobs instead of truncating them.
 QByteArray ClampBytes(const QByteArray &value, std::size_t maxLen)
 {
     if (std::cmp_less_equal(value.size(), maxLen))
@@ -129,12 +124,7 @@ WorkspaceTab TabFromJson(const QJsonObject &obj)
     return tab;
 }
 
-// Post-tabs review-round bug #M3: signal "this window is
-// bounds-violating, drop it" without introducing an
-// `std::optional` at every call site. `windowUuid.isNull()`
-// (as opposed to `isEmpty()`) is the sentinel because a
-// legitimate captured window uuid is always assigned (empty
-// or non-empty QString), never default-constructed to null.
+// A null UUID marks a rejected window; valid decoded UUIDs are non-null.
 [[nodiscard]] inline WorkspaceWindow InvalidWindow()
 {
     WorkspaceWindow w;
@@ -150,29 +140,18 @@ WorkspaceTab TabFromJson(const QJsonObject &obj)
 WorkspaceWindow WindowFromJson(const QJsonObject &obj)
 {
     WorkspaceWindow window;
-    // Post-tabs review-round bug #M3: force `windowUuid` to
-    // non-null (empty string, but assigned) so the sentinel
-    // above works. Read + clamp then follows.
+    // Assign an empty non-null value before decoding so it cannot match the rejection sentinel.
     window.windowUuid = QString(QLatin1String(""));
     window.windowUuid =
         ClampString(obj.value(QLatin1String(KEY_WINDOW_UUID)).toString(), WorkspacePersistence::MAX_UUID_LENGTH);
-    // Post-tabs review-round bug #M3: reject oversize base64
-    // BEFORE decoding. A hostile / corrupted string of length
-    // N > 4/3 * MAX would decode into an N * 3/4 byte array
-    // before `ClampBytes` gets a chance to trim it -- an easy
-    // OOM DoS on the read side. Base64 encodes 3 input bytes
-    // as 4 output chars, so clamp the string length to
-    // `(MAX * 4 + 2) / 3` (round up to include padding).
+    // Bound encoded text before decoding so malformed input cannot allocate an oversized buffer.
     const auto maxGeoB64Chars = static_cast<qsizetype>((WorkspacePersistence::MAX_GEOMETRY_BYTES * 4 + 2) / 3 + 4);
     const auto maxDockB64Chars = static_cast<qsizetype>((WorkspacePersistence::MAX_DOCK_STATE_BYTES * 4 + 2) / 3 + 4);
     const QString geoStr = obj.value(QLatin1String(KEY_GEOMETRY)).toString();
     const QString dockStr = obj.value(QLatin1String(KEY_DOCK_STATE)).toString();
     if (geoStr.size() > maxGeoB64Chars || dockStr.size() > maxDockB64Chars)
     {
-        // Fail-closed per the header contract: an over-cap
-        // blob is treated as corrupted input, and the whole
-        // window is dropped rather than silently trimmed to
-        // a broken geometry / dock state.
+        // Reject the window rather than decoding or truncating invalid saved state.
         return InvalidWindow();
     }
     const QByteArray geoB64 = geoStr.toLatin1();
@@ -181,18 +160,12 @@ WorkspaceWindow WindowFromJson(const QJsonObject &obj)
     window.dockState = ClampBytes(QByteArray::fromBase64(dockB64), WorkspacePersistence::MAX_DOCK_STATE_BYTES);
     window.activeTabIndex = obj.value(QLatin1String(KEY_ACTIVE_TAB_INDEX)).toInt(0);
     const QJsonArray tabsArr = obj.value(QLatin1String(KEY_TABS)).toArray();
-    // Post-tabs review-round bug #M3: fail-closed on
-    // over-cap tab counts per the header contract. Silent
-    // truncation combined with `Take()`'s atomic wipe would
-    // permanently lose the dropped tabs; better to reject the
-    // whole window and preserve the file for user inspection.
+    // Read-side count violations reject the workspace instead of silently losing tabs.
     if (std::cmp_greater(tabsArr.size(), WorkspacePersistence::MAX_TABS_PER_WINDOW))
     {
         return InvalidWindow();
     }
-    // Post-tabs review-round bug #M3: reserve from the
-    // POST-clamp bound so a corrupted `tabsArr.size()`
-    // can never OOM-DoS the reader.
+    // Reserve no more than the accepted bound.
     window.tabs.reserve(std::min(static_cast<std::size_t>(tabsArr.size()), WorkspacePersistence::MAX_TABS_PER_WINDOW));
     for (int i = 0; i < tabsArr.size() && window.tabs.size() < WorkspacePersistence::MAX_TABS_PER_WINDOW; ++i)
     {
@@ -204,11 +177,7 @@ WorkspaceWindow WindowFromJson(const QJsonObject &obj)
     }
     if (window.activeTabIndex < 0 || std::cmp_greater_equal(window.activeTabIndex, window.tabs.size()))
     {
-        // Both branches intentionally collapse to 0: an empty
-        // tab strip has no valid active index and a captured
-        // out-of-range index falls back to the first tab. Kept
-        // as a single assignment so the branch-clone check
-        // stays quiet.
+        // Empty strips and invalid indices both use the first-slot default.
         window.activeTabIndex = 0;
     }
     return window;
@@ -225,20 +194,12 @@ Workspace WorkspaceFromDoc(const QJsonDocument &doc)
     const std::uint32_t version = static_cast<std::uint32_t>(root.value(QLatin1String(KEY_SCHEMA_VERSION)).toInt(0));
     if (version != WorkspacePersistence::SCHEMA_VERSION)
     {
-        // Schema mismatch: fail closed. Older / newer files are
-        // treated as absent; the on-disk state is preserved for
-        // manual inspection but restore proceeds with an empty
-        // workspace. Matches the `TakeOpenWindowsAtQuit` fail-
-        // closed contract.
+        // Preserve incompatible files on disk while treating them as absent.
         return workspace;
     }
     workspace.schemaVersion = version;
     const QJsonArray windowsArr = root.value(QLatin1String(KEY_WINDOWS)).toArray();
-    // Post-tabs review-round bug #M3: fail-closed on over-cap
-    // window / MRU counts (contract in
-    // `workspace_persistence.hpp` MAX_WINDOWS docstring). Silent
-    // truncation would combine with `Take()`'s atomic wipe to
-    // permanently lose the surplus.
+    // Read-side count violations reject the workspace instead of silently losing windows.
     if (std::cmp_greater(windowsArr.size(), WorkspacePersistence::MAX_WINDOWS))
     {
         return Workspace{};
@@ -253,11 +214,7 @@ Workspace WorkspaceFromDoc(const QJsonDocument &doc)
         WorkspaceWindow window = WindowFromJson(windowsArr.at(i).toObject());
         if (IsInvalidWindow(window))
         {
-            // Post-tabs review-round bug #M3: one over-cap
-            // window fails the whole read (same fail-closed
-            // rationale as the top-level cap). Any single-
-            // window over-cap almost certainly means the writer
-            // is corrupt, not that this one window is malicious.
+            // One rejected window invalidates the complete snapshot.
             return Workspace{};
         }
         workspace.windows.push_back(std::move(window));
@@ -284,18 +241,7 @@ Workspace WorkspaceFromDoc(const QJsonDocument &doc)
 
 QDir WorkspacePersistence::DefaultWorkspaceDir()
 {
-    // Share the directory with `SessionHistoryManager` so both
-    // files (recents index + workspace snapshot) live under
-    // `AppDataLocation` and are removed together on uninstall.
-    //
-    // Post-tabs review-round bug #6 note: an earlier comment
-    // claimed this co-location implied that `AcquireRecentsLock`
-    // (private to `session_history_manager.cpp`) also covers
-    // this file's writes. It does not -- the workspace writer
-    // does not acquire that lock. Per-file atomicity via
-    // `QSaveFile` in `Write()` is sufficient today because the
-    // two writers publish independent data; there is no
-    // multi-file invariant that would need combined atomicity.
+    // Workspace and session history share an application-data directory, not a transaction.
     return SessionHistoryManager::DefaultSessionsDir();
 }
 
@@ -326,9 +272,7 @@ void WorkspacePersistence::Sanitize(Workspace &workspace)
         }
         if (window.activeTabIndex < 0 || std::cmp_greater_equal(window.activeTabIndex, window.tabs.size()))
         {
-            // Both branches collapse to 0: an empty tab strip
-            // has no valid active index and an out-of-range
-            // saved index falls back to the first tab.
+            // Empty strips and invalid indices both use the first-slot default.
             window.activeTabIndex = 0;
         }
     }
@@ -373,19 +317,9 @@ Workspace WorkspacePersistence::Take()
     Workspace ws = Read();
     if (!ws.windows.empty() || !ws.mruOrder.isEmpty())
     {
-        // Atomic wipe: write an empty workspace after the read
-        // so a mid-restore crash cannot loop. Empty workspaces
-        // parse back as empty (no bound violations) so this is
-        // idempotent.
+        // Replace the consumed snapshot with a valid empty document.
         Workspace empty;
         empty.schemaVersion = SCHEMA_VERSION;
-        // Post-tabs review-round Low fix: previously the wipe
-        // failure was silently `(void)`'d. On a read-only / full
-        // profile that meant every subsequent launch replayed
-        // the same workspace forever. Log at warning level so
-        // the user has some hope of noticing; the read result
-        // is still returned (the primary already committed to
-        // restoring these windows this launch).
         if (!Write(std::move(empty)))
         {
             qWarning() << "WorkspacePersistence: post-Take wipe failed; the workspace file "
@@ -400,9 +334,7 @@ bool WorkspacePersistence::Write(Workspace workspace)
 {
     if (!SessionHistoryManager::IsPublishingEnabled())
     {
-        // A `--new-instance` peer must not clobber the primary's
-        // persisted workspace. Symmetric with
-        // `SessionHistoryManager::SetOpenWindowsAtQuit`.
+        // Non-publishing instances must not replace the primary instance's workspace.
         return false;
     }
     Sanitize(workspace);
@@ -430,14 +362,6 @@ bool WorkspacePersistence::Write(Workspace workspace)
 
 bool WorkspacePersistence::HasPersistedWorkspace()
 {
-    // Post-tabs review-round Low fix: match the wipe condition
-    // in `Take()` (which fires when either `windows` OR
-    // `mruOrder` is non-empty). Previously this returned false
-    // for an mru-only file, but `Take()` still wiped it -- an
-    // asymmetry that could leave the startup restore-vs-splash
-    // gate reading "no workspace" while `Take()` felt obliged
-    // to wipe one, and a bare mru-only file (no windows) would
-    // stay disk-present but be reported as "empty" indefinitely.
     const Workspace ws = Read();
     return !ws.windows.empty() || !ws.mruOrder.isEmpty();
 }

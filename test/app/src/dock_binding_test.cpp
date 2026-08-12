@@ -1,10 +1,4 @@
-// Dock binding / rebinding tests (task 1.9). Phase 1 seeds a
-// minimal binary so `test/app/CMakeLists.txt` and `ctest` register
-// the target; Phase 5 grows this file to cover repeated bind,
-// unbind, hidden refresh, stale timers, duplicate connections,
-// model reset, previous-session destruction, and originating-
-// session edit rules across the Find, Parse Errors, Anchors,
-// Histogram, and Record Details docks.
+// Binding and rebinding tests for session-aware docks.
 
 #include "anchor_manager.hpp"
 #include "anchors_dock.hpp"
@@ -143,18 +137,7 @@ private slots:
         QVERIFY(!context.IsBound());
     }
 
-    // -----------------------------------------------------------------
-    // Bug review (post-review): `IsBound()` was documented as "every
-    // session-owned pointer resolves to a live object" but the check
-    // originally skipped `rowOrderProxy` and `filterProxy`, so a
-    // Phase-5 dock reading `context.filterProxy` after a passing
-    // `IsBound()` gate could deref a null `QPointer`. Fix: pin each
-    // of the seven session-owned pointers by populating a fully-live
-    // context and independently nulling one field at a time. Any
-    // future field addition that omits an `isNull()` clause in
-    // `IsBound()` will fail this pin instead of surfacing as a null
-    // deref inside a dock body.
-    // -----------------------------------------------------------------
+    // `IsBound()` requires every session-owned pointer to be live.
 
     static void TestIsBoundGatesOnEverySessionOwnedField()
     {
@@ -214,9 +197,7 @@ private slots:
         QVERIFY2(!context.IsBound(), "IsBound() should gate on `highlights`");
         populate(context);
 
-        // `selection` and `theme` are intentionally NOT part of the
-        // gate (see the docstring on `IsBound()`); pin that too so
-        // a future change that tightens the gate is caught here.
+        // `selection` and `theme` are intentionally not part of the gate.
         QVERIFY(context.IsBound());
         context.selection = nullptr;
         context.theme = nullptr;
@@ -226,14 +207,8 @@ private slots:
         );
     }
 
-    // -----------------------------------------------------------------
-    // Task 5.1 factory: `SessionBindContext::FromSessionAndView(...)`.
-    // Pins that a live session + view yields a fully-bound context
-    // matching what the per-field populate loop above would produce,
-    // and that a null session / view degrades cleanly to
-    // `MakeUnbound()` semantics so consumers do not have to null-
-    // check inputs.
-    // -----------------------------------------------------------------
+    // `FromSessionAndView` returns either a complete context or an
+    // unbound context.
     static void TestFromSessionAndViewPopulatesEverySessionOwnedField()
     {
         auto session = std::make_unique<LogSession>();
@@ -258,11 +233,8 @@ private slots:
 
     static void TestFromSessionAndViewWithNullInputsIsUnbound()
     {
-        // Origin-review finding M6: the factory enforces an all-
-        // or-nothing contract. A partial pair (session with no
-        // view, or view with no session) collapses to a fully-
-        // unbound context so downstream Bind slots never see a
-        // half-populated context.
+        // A partial session/view pair collapses to a fully unbound
+        // context so consumers never observe mismatched pointers.
 
         // Null session AND null view: fully unbound.
         const SessionBindContext both = SessionBindContext::FromSessionAndView(nullptr, nullptr);
@@ -295,22 +267,7 @@ private slots:
         QCOMPARE(sessionOnly.selection.data(), nullptr);
     }
 
-    // -----------------------------------------------------------------
-    // Task 5.11 (part 1): two-session infrastructure.
-    //
-    // Phase-6 tab-switch scenarios are built on top of two live,
-    // independent `LogSession` / `LogSessionView` pairs in the same
-    // process. Prove that the factory produces two contexts whose
-    // pointer sets are disjoint (no session-A pointer leaks into a
-    // session-B context and vice-versa) and that destroying one pair
-    // does NOT null the other pair's context.
-    //
-    // Per-dock subtasks (5.3 - 5.7) will layer directly on top of
-    // this scaffolding: each dock's `Bind(context)` test calls
-    // `dock->Bind(FromSessionAndView(sessionA, viewA))` and asserts
-    // dock-owned state, then re-`Bind`s against session B and asserts
-    // no state leaked.
-    // -----------------------------------------------------------------
+    // Distinct session/view pairs produce disjoint guarded contexts.
     static void TestTwoSessionContextsAreIndependent()
     {
         auto sessionA = std::make_unique<LogSession>();
@@ -323,9 +280,8 @@ private slots:
         QVERIFY(ctxA.IsBound());
         QVERIFY(ctxB.IsBound());
 
-        // Every session-owned pointer must differ between the two
-        // contexts. Sharing any of these would let a phase-6 dock
-        // rebind read the wrong tab's state.
+        // Sharing any session-owned pointer would expose one tab's
+        // state through another tab's context.
         QVERIFY(ctxA.session.data() != ctxB.session.data());
         QVERIFY(ctxA.view.data() != ctxB.view.data());
         QVERIFY(ctxA.model.data() != ctxB.model.data());
@@ -363,17 +319,14 @@ private slots:
         QVERIFY(!ctxB.model.isNull());
     }
 
-    // -----------------------------------------------------------------
-    // Task 5.4: ParseErrorsDock save-outgoing / restore-incoming.
-    //
-    // Pin the round-trip through the bound session's
+    // ParseErrorsDock save-outgoing and restore-incoming behavior.
+    // The round-trip through the bound session's
     // `SessionParseErrorLog`: append two batches under session A,
     // rebind to session B (A's shadow moves into A's log; B's log
     // replays into the dock -- initially empty), append one batch
     // under B, rebind back to A (B's shadow saves into B's log; A's
     // log replays). At the end the visible list matches A's original
     // two batches exactly and A's log contains the mirror.
-    // -----------------------------------------------------------------
 
     static void TestParseErrorsDockBindRoundTripsPerSessionState()
     {
@@ -466,10 +419,7 @@ private slots:
         QCOMPARE(session->ParseErrorLog().batches.size(), static_cast<size_t>(1));
     }
 
-    // -----------------------------------------------------------------
-    // Task 5.3: FindDock/FindRecordWidget save-outgoing / restore-
-    // incoming for the query state (query text + wildcards/regex).
-    // -----------------------------------------------------------------
+    // FindDock saves outgoing query state and restores incoming state.
 
     static void TestFindDockBindRoundTripsPerSessionQuery()
     {
@@ -541,8 +491,7 @@ private slots:
         QCOMPARE(session->FindQuery().query, QStringLiteral("q"));
     }
 
-    // -----------------------------------------------------------------
-    // Task 5.5: AnchorsDock bind swaps signal subscriptions.
+    // AnchorsDock rebinding swaps signal subscriptions.
     //
     // Rebinding from session A to session B must disconnect A's
     // anchor-manager subscriptions so a subsequent mutation on A's
@@ -550,7 +499,6 @@ private slots:
     // B's anchors). Pinned by asserting that the tree's post-
     // reset item count for session B is unaffected by a subsequent
     // `ClearAll` on session A's anchor manager.
-    // -----------------------------------------------------------------
 
     static void TestAnchorsDockBindSwapsSignalSubscriptions()
     {
@@ -628,10 +576,7 @@ private slots:
         QCOMPARE(dock.boundSessionForTest(), nullptr);
     }
 
-    // -----------------------------------------------------------------
-    // Task 5.6: HistogramDock/HistogramModel bind/unbind.
-    //
-    // Pin:
+    // HistogramDock and HistogramModel binding behavior:
     //   * `Bind` swaps `HistogramModel::mLogModel` / `mAnchors` to
     //     the incoming session's model quintet;
     //   * subsequent `modelReset` on the OUTGOING session's model
@@ -644,7 +589,6 @@ private slots:
     //   * `Bind` on a hidden dock defers the visible rebuild (the
     //     dock exposes the deferral through the same test seam
     //     used for `mBoundSession`).
-    // -----------------------------------------------------------------
 
     static void TestHistogramDockBindSwapsGuardedSources()
     {
@@ -754,10 +698,7 @@ private slots:
         QCOMPARE(spy.count(), 0);
     }
 
-    // -----------------------------------------------------------------
-    // Task 5.7: RecordDetailDock bind/unbind.
-    //
-    // Pin:
+    // RecordDetailDock binding behavior:
     //   * `Bind` clears the `QPersistentModelIndex` BEFORE the
     //     model swap and reinstalls subscriptions against the
     //     new source pair;
@@ -767,24 +708,9 @@ private slots:
     //     when nothing is stored);
     //   * `Unbind` detaches from every session-owned source and
     //     leaves the dock in a safe, unbound state.
-    // -----------------------------------------------------------------
-
-    /// Origin-review finding M3: the pre-fix version of this test
-    /// used two empty models and never pinned a row, so it could
-    /// not prove the persistent-index reset invariant it claimed.
-    /// This version drives the pin state through `LogSession::
-    /// MutableRecordDetailPin` so the persistent-index reset is
-    /// observable across a real cross-session Bind without
-    /// depending on a populated `LogModel` (which requires the JSON
-    /// streaming pump + a mmapped file backing `BuildRecordDetail
-    /// Content`'s raw-line read; the parented dock's
-    /// `resizeRowsToContents` path is fragile in headless
-    /// offscreen). The invariant we pin: session A's
-    /// `everPinned=true, pinnedSourceRow=-1` (an "evicted-row"
-    /// state) round-trips through the SaveStateIntoBoundSession +
-    /// RestoreStateFromSession pair when we cross to session B and
-    /// back, AND session A's stored pin does not leak into session
-    /// B's storage.
+    // An evicted-row pin is observable without a populated model:
+    // session A's state survives a cross-session bind and does not
+    // leak into session B.
     static void TestRecordDetailDockBindResetsPinnedIndexOnCrossSessionSwap()
     {
         auto sessionA = std::make_unique<LogSession>();
@@ -879,14 +805,10 @@ private slots:
         QCOMPARE(dock.CurrentSourceRow(), -1);
     }
 
-    // -----------------------------------------------------------------
-    // Origin-review coverage gap: idempotence pins for Find,
-    // Histogram, and RecordDetail. A re-`Bind` against the same
+    // A re-`Bind` against the same
     // session must NOT re-run save-outgoing / restore-incoming
     // (which for Histogram + RecordDetail would tear down the
-    // subscription bag and repaint the empty placeholder). The
-    // same-session short-circuit was added under findings M2 / M4.
-    // -----------------------------------------------------------------
+    // subscription bag and repaint the empty placeholder).
 
     static void TestFindDockBindSameSessionIsIdempotent()
     {
@@ -977,16 +899,8 @@ private slots:
         QCOMPARE(dock.CurrentSourceRow(), -1);
     }
 
-    // -----------------------------------------------------------------
-    // Origin-review finding M1: Histogram's `SaveStateIntoBoundSession`
-    // used to pin every non-default rung, including auto-picked
-    // ones. Result: a tab round-trip stuck the session on whichever
-    // rung the auto-picker had chosen. Fix reads the model's honest
-    // `IsBucketSizePinned()` latch. This test pins the fix by
-    // populating a session, letting the auto-picker choose a rung,
-    // switching away + back, and verifying the session's stored
-    // state records `bucketSizePinned = false`.
-    // -----------------------------------------------------------------
+    // Auto-picked histogram bucket sizes are not persisted as
+    // user-pinned choices.
 
     static void TestHistogramDockDoesNotPinAutoPickedBucketSize()
     {
@@ -1017,21 +931,8 @@ private slots:
         QVERIFY(!sessionA->HistogramState().bucketSize.has_value());
     }
 
-    // -----------------------------------------------------------------
-    // Origin-review finding H3: `HistogramModel::BindSources` used
-    // to unconditionally call `OnModelReset` -> `Rebuild` -> auto-
-    // pick, then `HistogramDock::Bind` set a deferred latch that
-    // paid a second `Rebuild` on the next `showEvent`. Fix threads
-    // a `deferRebuild` parameter through so the hidden path skips
-    // the first walk entirely, and the model exposes
-    // `PumpDeferredBind` for the eventual reveal.
-    //
-    // This test pins the fix by watching a `HistogramModel` that
-    // starts with rows already loaded: a hidden-dock Bind must
-    // leave `Index().Buckets().empty()` (no Rebuild ran), and the
-    // subsequent `show()` populates the buckets against the
-    // accumulated state.
-    // -----------------------------------------------------------------
+    // Binding a hidden histogram defers rebuilding until
+    // `PumpDeferredBind`, while still updating source metadata.
 
     static void TestHistogramDockHiddenBindDefersRebuild()
     {
@@ -1088,9 +989,7 @@ private slots:
         QCOMPARE(model->Index().Buckets().size(), bucketCount);
     }
 
-    // -----------------------------------------------------------------
-    // Origin-review finding H3 (parse errors routed to originating
-    // session). `AppendErrorsForSession(originating, ...)` must:
+    // `AppendErrorsForSession(originating, ...)` must:
     //   * write to visible list + shadow + counters when
     //     `originating == boundSession` OR `originating == nullptr`;
     //   * write ONLY into `originating`'s log when it is a different
@@ -1098,7 +997,6 @@ private slots:
     //     and first-batch latch stay untouched;
     //   * on a subsequent Bind to `originating`, replay the
     //     background-buffered log into the visible list.
-    // -----------------------------------------------------------------
 
     static void TestParseErrorsAppendForBackgroundSessionMirrorsIntoLogOnly()
     {
@@ -1145,9 +1043,7 @@ private slots:
 
     static void TestParseErrorsAppendWithNullOriginatingWritesToBoundSession()
     {
-        // Null `originating` is the pre-H3 API: always routes to
-        // the currently-bound session. Pins backward compatibility
-        // for the `AppendErrors(title, errors)` overload.
+        // A null origin routes to the currently bound session.
         auto session = std::make_unique<LogSession>();
         auto view = std::make_unique<LogSessionView>(session.get());
 
@@ -1159,16 +1055,13 @@ private slots:
         QCOMPARE(dock.Count(), 2);
     }
 
-    // -----------------------------------------------------------------
-    // Origin-review finding H4 (record-detail stable-key restore).
     // A background tab that lost leading rows to eviction while
     // inactive must restore the pinned record via the persisted
-    // `AnchorManager::Key`, not via the pre-eviction row number.
+    // `AnchorManager::Key`, not via its stale row number.
     // We simulate the scenario without populating a real model by
     // seeding the pin's key fields to values the empty-model
     // resolver cannot find; the fallback row-number branch then
     // takes over and lands on `Clear` (row -1 in a 0-row model).
-    // -----------------------------------------------------------------
 
     static void TestRecordDetailPinPersistsStableKeyAlongsideRow()
     {
@@ -1198,13 +1091,11 @@ private slots:
         QVERIFY(session->RecordDetailPin().everPinned);
     }
 
-    // -----------------------------------------------------------------
-    // Origin-review finding M7: FindDock / ParseErrorsDock same-
-    // session short-circuit must not fire when both sides are null.
+    // FindDock and ParseErrorsDock must not treat two null session
+    // pointers as a same-session bind.
     // A destroyed-session unbind is a legitimate teardown path;
     // the dock must clear its visible state on Bind(MakeUnbound())
     // even if `mBoundSession` has already auto-nulled.
-    // -----------------------------------------------------------------
 
     static void TestFindDockBindMakeUnboundClearsAfterSessionDestruction()
     {
@@ -1240,13 +1131,7 @@ private slots:
         QCOMPARE(dock.Count(), 0);
     }
 
-    // -----------------------------------------------------------------
-    // Origin-review finding M9: AnchorsDock selection persistence.
-    // Verifies the SessionAnchorsSelection field round-trips on a
-    // cross-session Bind. The tree-populate branch of the restore
-    // is exercised in a follow-up integration test; here we pin
-    // the save side.
-    // -----------------------------------------------------------------
+    // `SessionAnchorsSelection` preserves and resets its stable key.
 
     static void TestAnchorsSelectionRoundTripsThroughSession()
     {

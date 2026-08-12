@@ -8,10 +8,6 @@
 
 #include <Qt>
 
-// Prospective includes for Phase 2 — the ctor and the accessors
-// only need forward declarations today, but Phase 2 begins
-// dispatching commands through these services so we pull in the
-// definitions now to keep the churn on later PRs small.
 #include "regex_template_registry.hpp"
 #include "session_history_manager.hpp"
 #include "theme_control.hpp"
@@ -55,34 +51,7 @@ LogSession::LogSession(
       mTheme(theme),
       mHistoryManager(historyManager),
       mRegexTemplateRegistry(regexTemplateRegistry),
-      // Construction order matters at *construction* time:
-      //   * `AnchorManager` and `HighlightRuleSet` are built first
-      //     because `LogModel`'s constructor takes non-owning
-      //     pointers to both (anchor overlay hook +
-      //     `HighlightRuleSet::RebindColumns` paint cascade). They
-      //     must exist before `mModel` is passed them.
-      //   * `LogModel` sinks streaming batches and owns the
-      //     `LogTable`; it must exist before either proxy so the
-      //     `setSourceModel` calls in the body have a target.
-      //   * The two proxies chain source-model relationships
-      //     (`RowOrderProxyModel` -> `LogFilterModel`).
-      //
-      // Destruction order matters too, but Qt6's
-      // ``QObjectPrivate::deleteChildren`` walks children in
-      // *forward* registration order -- so if we relied on the
-      // parent-driven sweep alone, `mAnchors` and `mHighlights`
-      // would die *before* `mModel`, briefly leaving `mModel`'s
-      // non-owning back-pointers dangling until `~LogModel`
-      // finishes. This is safe today because none of the
-      // destructors dereference those pointers, but a future
-      // contributor adding e.g. ``disconnect(mAnchors, ...)`` to
-      // ``~LogModel`` would silently hit UB.
-      //
-      // The explicit reverse-order teardown in ``~LogSession``
-      // below makes the intent explicit and closes that window:
-      // the proxies die first, then the model, then the two
-      // non-owning back-pointer targets. By the time the ``QObject``
-      // base-class sweep runs it has no children left to reap.
+      // Dependencies must exist before the model and proxy chain.
       mAnchors(new AnchorManager(this)),
       mHighlights(new HighlightRuleSet(this)),
       mModel(new LogModel(this, theme, mAnchors, mHighlights)),
@@ -93,11 +62,7 @@ LogSession::LogSession(
     mSortFilterProxyModel->setSourceModel(mRowOrderProxyModel);
     mSortFilterProxyModel->SetLogModel(mModel);
 
-    // Highlight-cache invariants that are purely session-local live
-    // here so a future multi-session window does not resurface the
-    // wires against the wrong model. `columnsInserted` still has
-    // shell-scoped work (editor UI refresh, filter-menu recompile)
-    // and stays in `MainWindow` until task 2.4 splits it.
+    // Keep the highlight cache synchronized with this session's model.
     connect(mModel, &QAbstractItemModel::rowsInserted, this, [this](const QModelIndex &, int first, int last) {
         if (first < 0 || last < first)
         {
@@ -116,13 +81,7 @@ LogSession::LogSession(
         mHighlights->OnRowsEvicted(static_cast<std::size_t>(first), static_cast<std::size_t>(last));
     });
     connect(mModel, &QAbstractItemModel::modelReset, this, [this]() { mHighlights->ClearMatches(); });
-    // Column additions can newly resolve highlight-rule keys, so we
-    // must recompile the ruleset against the current columns.
-    // Pinned by
-    // `TestEnumPromotedOnUnrelatedColumnDoesNotRebuildFilters` on
-    // the shell side (filter menus stay untouched when a key was
-    // already resolved), which relies on `RebindColumns` running on
-    // every column-insert.
+    // New columns can resolve previously unmatched highlight keys.
     connect(mModel, &QAbstractItemModel::columnsInserted, this, [this](const QModelIndex &, int, int) {
         mHighlights->RebindColumns(mModel->Configuration().columns, &mModel->Table());
     });
@@ -130,65 +89,25 @@ LogSession::LogSession(
 
 LogSession::~LogSession()
 {
-    // Defensive drain of the async watchers before either they
-    // or the model quintet go away. In the shell path the
-    // window's ~MainWindow already ran `CancelInFlightExport()`
-    // and `CancelInFlightDecompression()` which drain via
-    // `waitForFinished()`, so both watchers observe an already
-    // idle future here and this is a no-op. The drain still
-    // matters for two edge cases:
-    //
-    //   1. A bare `LogSession` in a unit test that armed a
-    //      watcher via `Ensure*Watcher()` + `setFuture(...)` and
-    //      then let the session go out of scope: without this
-    //      drain, `~QFutureWatcher` would tear down while its
-    //      future is still running (per Qt docs, the future
-    //      set with `setFuture()` must be finished when the
-    //      watcher is destroyed).
-    //
-    //   2. A future refactor that skips the shell's
-    //      `CancelInFlight*` on some teardown path: this drain
-    //      keeps the invariant local so the class does not
-    //      silently rot when the shell layer changes.
-    //
-    // We only *wait* here (no `request_stop()`) because owning
-    // the cancel policy would collide with the shell's cancel
-    // dialogs on the primary teardown path.
+    // Qt requires each watched future to finish before its watcher is destroyed.
     if (mDecompressionWatcher != nullptr)
     {
         mDecompressionWatcher->waitForFinished();
     }
     if (mExportWatcher != nullptr)
     {
-        // `waitForFinished()` on the export watcher can rethrow
-        // whatever the worker let escape (`ExportCancelled` on
-        // the normal cancel path, plus any I/O error). Swallow
-        // both so this destructor stays no-throw. Mirrors the
-        // shell's `CancelInFlightExport()` catch.
+        // Teardown cannot report worker exceptions to the UI.
         try
         {
             mExportWatcher->waitForFinished();
         }
         catch (...) // NOLINT(bugprone-empty-catch)
         {
-            // Intentional: we are tearing down the session and
-            // there is no UI context left to report errors to.
+            // Preserve the destructor's no-throw contract.
         }
     }
 
-    // Explicit reverse-order teardown of the model quintet so
-    // ``~LogModel`` runs while its non-owning back-pointers to
-    // ``mAnchors`` and ``mHighlights`` are still valid. See the
-    // long comment in the ctor initializer list for the Qt6
-    // forward-child-sweep rationale.
-    //
-    // Each ``delete`` here also removes the child from
-    // ``QObject``'s children list (Qt does this in the child's
-    // dtor via ``setParent(nullptr)``-equivalent bookkeeping),
-    // so the base-class ``~QObject`` sweep runs against an
-    // already-emptied children list. The drained watchers above
-    // are still parented on ``this`` and are reaped by that
-    // sweep in whatever order Qt chose for them.
+    // Destroy dependents first so model back-pointers remain valid.
     delete mSortFilterProxyModel;
     mSortFilterProxyModel = nullptr;
     delete mRowOrderProxyModel;
@@ -203,45 +122,26 @@ LogSession::~LogSession()
 
 void LogSession::RequestNewSession()
 {
-    // Phase 2 will forward to the migrated `NewSession` body.
+    // The window shell currently performs this request.
 }
 
 void LogSession::RequestOpenFiles(const QStringList & /*files*/, OpenMode /*mode*/)
 {
-    // Phase 2 will forward to the migrated static-open dispatch.
+    // The window shell currently performs this request.
 }
 
 void LogSession::RequestOpenLogStream(const QString & /*filePath*/)
 {
-    // Phase 2 will forward to the migrated live-tail open path.
+    // The window shell currently performs this request.
 }
 
 void LogSession::RequestAutoSaveSnapshot(bool /*publishOpenWindow*/)
 {
-    // Phase 2 will forward to `AutoSaveSessionSnapshot` after the
-    // history-manager wiring moves into `LogSession`.
+    // The window shell currently performs this request.
 }
 
 std::uint32_t LogSession::PreCheckClose() const
 {
-    // Session-local close probe (task 2.13; review finding #2).
-    // Idempotent and side-effect-free: the shell calls this to
-    // *ask* which follow-ups (worker drain, user prompt) are
-    // required before the tab can close silently.
-    //
-    // A zero return means the tab is safe to tear down without
-    // prompting. Non-zero bits map 1:1 to shell-owned follow-ups
-    // so the caller does not have to inspect three separate
-    // getters (`IsFiltersDirty`, `IsDecompressionInFlight`,
-    // `IsExportInFlight`) after receiving an ambiguous
-    // "Cancelled" value.
-    //
-    // The side-effecting sibling `RequestClose` is stubbed in
-    // Phase 2 because the worker-drain / prompt orchestration
-    // still lives on the shell; when phase 3 moves the
-    // orchestration in, `RequestClose` becomes the sole entry
-    // point and this helper stays useful for the pre-walk that
-    // decides whether to raise a "closing multiple tabs" dialog.
     std::uint32_t mask = 0;
     if (mFiltersDirty)
     {
@@ -260,10 +160,7 @@ std::uint32_t LogSession::PreCheckClose() const
 
 SessionCloseResult LogSession::RequestClose()
 {
-    // Phase 2 stub (see `LogSessionCommands::RequestClose` docstring).
-    // The shell still drives cancel-and-drain / save prompts from
-    // `MainWindow::closeEvent`; consult `PreCheckClose()` instead
-    // to inspect the reasons a close would not be silent.
+    // MainWindow owns close orchestration through PreCheckClose().
     return SessionCloseResult::Closed;
 }
 
@@ -271,15 +168,7 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
 {
     SessionPresentationSnapshot snapshot;
 
-    // ------------------------------------------------------------------
-    // Source mode / operations bitmask -- projected from the migrated
-    // scalar state (task 2.5/2.7/2.8/2.9). The mode enum is
-    // single-valued; see `SessionSourceMode`'s docstring for the
-    // priority order between overlapping classifications (review
-    // finding #4). Later phases can layer additional latches (e.g.
-    // "was originally compressed" survives decompression completion)
-    // without moving the responsibility off `LogSession`.
-    // ------------------------------------------------------------------
+    // Project overlapping source properties into one presentation mode.
     snapshot.mode = [&] {
         // Stream source kinds override everything: neither Bundle nor
         // MultiFile applies to a stdin / network producer.
@@ -342,13 +231,7 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
     }
     if (mMode == Mode::Static && !mFirstStreamingBatchSeen)
     {
-        // `Parsing` == "Static parse in progress (streaming to model)"
-        // per `SessionOperationState`'s enum comment. Review finding
-        // #3: gate on `Mode::Static` so a fresh LiveTail open with
-        // no data yet does not also project `Parsing` alongside
-        // `Ingesting` and confuse the tab-strip badge selector.
-        // Ingesting/Paused/Disconnected land when the producer
-        // lifecycle moves into `LogSession` (task 2.10).
+        // Live-tail startup is represented by Ingesting, not Parsing.
         ops |= static_cast<std::uint32_t>(SessionOperationState::Parsing);
     }
     if (mMode == Mode::LiveTail && !mSourceWaiting)
@@ -366,17 +249,7 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
     snapshot.dirty.filtersDirty = mFiltersDirty;
     if (mCurrentSource.has_value())
     {
-        // The three "restorable" predicates (`restorableInPlace`
-        // here, `RestorableSessionUuid`, `ShouldAutoSaveAfterStreaming`)
-        // must agree on the "File descriptor + empty locators"
-        // corner case (a partially-cancelled open leaves the
-        // descriptor pinned but the locator vector empty). Review
-        // finding #6 already fixed `RestorableSessionUuid` to
-        // treat this as "not restorable"; without the parallel
-        // guard here, the tab strip would advertise
-        // `restorableInPlace=true` while the actual autosave gate
-        // silently refuses to persist. Keep the three predicates
-        // in lockstep.
+        // Restorability requires a concrete file locator and non-tail mode.
         const auto &source = *mCurrentSource;
         const bool isFile = source.kind == loglib::LogConfiguration::Source::Kind::File;
         const bool hasLocators = !source.locators.empty();
@@ -389,22 +262,7 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
         snapshot.dirty.ephemeralUnreproducible = !isFile || (isFile && mMode == Mode::LiveTail);
     }
 
-    // ------------------------------------------------------------------
-    // Labels / status text. Populated from the migrated
-    // `mStreamingFileName` + source descriptor.
-    //
-    // Review finding #5: `mStreamingFileName` can be a full path
-    // (e.g. `C:/logs/app.log`) or a bare basename depending on how
-    // the shell seeded it. The `SessionPresentationSnapshot`
-    // docstring is explicit: `shortLabel` is "For the tab title
-    // (elided-safe, no path)" while `tooltip` is "For the tab
-    // tooltip (full source or set)". Split them here so the tab
-    // strip never leaks a path.
-    //
-    // The full elision policy (multi-locator "app.log +2", bundle
-    // qualifier, compressed suffix badge) lands in `LogSessionView`
-    // (task 3.x) once the descriptor-driven labels move in.
-    // ------------------------------------------------------------------
+    // Keep full source text out of the compact tab label.
     if (!mStreamingFileName.isEmpty())
     {
         snapshot.tooltip = mStreamingFileName;
@@ -433,11 +291,7 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
     snapshot.errorCount = static_cast<qsizetype>(mStreamingErrorCount);
     snapshot.droppedErrors = static_cast<qsizetype>(mStreamingErrorsCut);
 
-    // ------------------------------------------------------------------
-    // Mutation / close-confirm gates. Decompression + export gate
-    // mutations today (window-wide before migration; now session-
-    // local). Any in-flight worker triggers the close-confirm prompt.
-    // ------------------------------------------------------------------
+    // In-flight workers prevent mutation and require close handling.
     snapshot.mutationsAllowed = !mDecompressionInFlight && !mExportInFlight;
     snapshot.confirmBeforeClose = mFiltersDirty || mDecompressionInFlight || mExportInFlight;
 
@@ -533,7 +387,7 @@ void LogSession::SetApplyingEnumRebuild(bool applying) noexcept
 
 void LogSession::RebuildFilterExpressionFromSimpleLeaves()
 {
-    // Preserved invariant from the old MainWindow implementation:
+    // Preserve simple leaves before advanced expression subtrees.
     //   1. Simple-mode leaves become the leading `And` children,
     //      preserving `SimpleLeafOrder()`.
     //   2. Advanced-mode `Or`/`Not` subtrees carried on the
@@ -541,7 +395,7 @@ void LogSession::RebuildFilterExpressionFromSimpleLeaves()
     //      an existing root `And` contributes its non-`Leaf`
     //      children; an existing root `Or`/`Not` is preserved
     //      wholesale as a single child.
-    //   3. A bare-`Leaf` root (legacy config / direct expression
+    //   3. A bare `Leaf` root
     //      set) is preserved unless the same rule is already
     //      reflected in `SimpleLeaves()`.
     loglib::FilterExpression::And newAnd;
@@ -613,13 +467,7 @@ void LogSession::MirrorSortToConfiguration()
 
 void LogSession::MirrorAnchorsToConfiguration()
 {
-    // `mAnchors` and `mModel` are constructed as children of `this`
-    // in the ctor and are guaranteed non-null for the session's
-    // lifetime, so no null-check is needed here. The old MainWindow
-    // site guarded these pointers because they used to be nullable
-    // during teardown; that is no longer possible now that both are
-    // reaped by `~LogSession()`'s explicit sweep. Sibling
-    // `MirrorSortToConfiguration` follows the same contract.
+    // Both objects are owned by the session and remain valid here.
     mModel->ConfigurationManager().SetAnchors(mAnchors->Entries());
 }
 
@@ -629,10 +477,7 @@ void LogSession::SetMode(Mode mode)
     {
         return;
     }
-    // The old `MainWindow` behaviour: only the transition *into*
-    // `Idle` latches the previous mode into `LastTerminalMode()`.
-    // Every other transition leaves the mirror untouched so it
-    // continues to reflect the previous live run.
+    // Preserve the last active mode only when entering Idle.
     if (mode == Mode::Idle && mMode != Mode::Idle)
     {
         mLastTerminalMode = mMode;
@@ -724,25 +569,9 @@ void LogSession::TriggerRotationFlash()
     {
         emit rotationFlashChanged(true);
     }
-    // Bump the generation BEFORE arming the new lambda so an
-    // in-flight earlier lambda (whose captured generation is
-    // now stale) short-circuits when its timer fires. Without
-    // this, the earlier `singleShot` unconditionally cleared
-    // `mRotationFlashActive` after its own 3 s, ending the
-    // flash early instead of extending the window as the
-    // header docstring promises ("repeated calls within an
-    // active flash window extend the clear deadline by another
-    // full 3 s"). Using a monotonic counter (rather than
-    // stopping / restarting a member `QTimer`) keeps this a
-    // pure state-only helper -- no Qt-object churn on hot
-    // rotation paths.
+    // Invalidate an earlier timer when the flash window is refreshed.
     const std::uint64_t generation = ++mRotationFlashGeneration;
-    // `QPointer<LogSession>` origin: if the session is torn down
-    // before the singleShot fires, `origin.isNull()` short-circuits
-    // safely. Binding to `this` is also sufficient (the receiver
-    // check auto-drops the callback on destruction) but the
-    // explicit QPointer is defensive against future refactors that
-    // might route the callback through a different receiver.
+    // Guard the callback against session teardown.
     const QPointer<LogSession> origin(this);
     QTimer::singleShot(ROTATION_FLASH_DURATION_MS, this, [origin, generation]() {
         if (origin.isNull())
@@ -809,22 +638,7 @@ void LogSession::ResetStreamingCountersAndFileName()
 
 void LogSession::ResetStreamingProgress()
 {
-    // Per-file start pattern: caller invokes this before every
-    // `BeginStreaming`. Historically this was signal-free on the
-    // theory that the interim "Parsing" bit is transient and the
-    // next batch would re-fan the signal via
-    // `SetFirstStreamingBatchSeen(true)`. That assumption breaks
-    // for slow-source scenarios (compressed source that has not
-    // yet handed the first batch, network stream in a waiting
-    // state, ...) where the tab strip would keep its "loaded"
-    // affordance instead of the "loading" spinner between reset
-    // and first batch.
-    //
-    // Coalesce every field update into a single fan when any
-    // tracked field actually transitioned; on an already-cleared
-    // session (typical after the first `BeginStreaming`) skip the
-    // emit entirely so a rapid open/close/open sequence does not
-    // fan spurious signals into subscribers.
+    // Coalesce per-file progress resets into one presentation update.
     const bool changed = mStreamingLineCount != 0 || mStreamingErrorCount != 0 || mFirstStreamingBatchSeen;
     mStreamingLineCount = 0;
     mStreamingErrorCount = 0;
@@ -837,14 +651,7 @@ void LogSession::ResetStreamingProgress()
 
 void LogSession::SetCurrentSource(std::optional<loglib::LogConfiguration::Source> source)
 {
-    // `loglib::LogConfiguration::Source` does not (currently)
-    // define `operator==`, so we cannot cheaply compare the
-    // optional payload. Field-by-field compare is doable but
-    // brittle across future additions to `Source`; `SetCurrentSource`
-    // is called from open / restore flows (not hot paths), so
-    // emitting unconditionally is the pragmatic call. Consumers
-    // that need a "real change only" filter should install their
-    // own snapshot-diff on `presentationChanged`.
+    // Source has no equality operator, so value-bearing writes always fan out.
     const bool hadValue = mCurrentSource.has_value();
     mCurrentSource = std::move(source);
     const bool hasValue = mCurrentSource.has_value();
@@ -909,9 +716,7 @@ void LogSession::ClearPendingOpenQueues() noexcept
 
 void LogSession::ResetParseErrorLog() noexcept
 {
-    // Full reset: batches, dropped count, AND the first-batch
-    // latch. Matches the pre-migration
-    // `ParseErrorsDock::ResetSessionState()` semantics.
+    // Reset the first-batch latch together with the stored errors.
     mParseErrorLog.batches.clear();
     mParseErrorLog.droppedCount = 0;
     mParseErrorLog.hasSeenFirstBatch = false;
@@ -932,14 +737,7 @@ void LogSession::ResetHistogramState() noexcept
 
 void LogSession::ResetRecordDetailPin() noexcept
 {
-    // Phase-6 review-4 fix: honour the documented contract
-    // ("clear row, key, and `everPinned`"). Leaving `keyLocator` /
-    // `keyLineId` populated would let
-    // `RecordDetailDock::RestoreStateFromSession` -- which checks
-    // `!pin.keyLocator.empty() && pin.keyLineId != 0` BEFORE
-    // `everPinned` -- resolve a stale key onto whatever row the
-    // NEW session happens to expose under the same anchor key,
-    // pinning an unrelated record on the next bind.
+    // Clear the stable key so a later bind cannot restore a stale record.
     mRecordDetailPin.pinnedSourceRow = -1;
     mRecordDetailPin.everPinned = false;
     mRecordDetailPin.keyLocator.clear();
@@ -1075,13 +873,7 @@ QString LogSession::RestorableSessionUuid() const noexcept
     {
         return {};
     }
-    // Review finding #6: distinguish "no source at all" (valid
-    // columns-only restore) from "descriptor with empty locators"
-    // (invalid intermediate state, e.g. a partially-cancelled open).
-    // The prior `!HasLocators` short-circuit collapsed both into the
-    // columns-only branch and would have tried to fan-restore an
-    // invalid File descriptor, causing the loader to silently no-op
-    // or error out.
+    // No source permits a columns-only restore; an empty file descriptor does not.
     if (!mCurrentSource.has_value())
     {
         // Pinned uuid + no source = columns-only restore.
@@ -1136,9 +928,7 @@ void LogSession::SetDecompressionInFlight(bool inFlight)
     {
         return;
     }
-    // Bump the generation on the rising edge so a poll timer that
-    // captured the previous generation can detect completion +
-    // silent rearm on the next-queued file (review finding #4).
+    // Let pollers reject updates from a completed operation generation.
     // The wraparound branch is defensive: 2^64 begins would need
     // ~584 years at 1 GHz -- but wrapping past zero would collide
     // with a not-yet-armed timer, so skip zero on wrap.
@@ -1159,12 +949,7 @@ void LogSession::SetDecompressionInFlight(bool inFlight)
 
 LogSession::DecompressionWatcher *LogSession::EnsureDecompressionWatcher()
 {
-    // Review finding #13: keep the lazy allocation policy inside
-    // `LogSession` so the public API cannot silently leak a live
-    // watcher. Parent on `this` so tab / session teardown reaps
-    // the watcher automatically; the shell uses
-    // `Qt::UniqueConnection` at the callsite so repeated calls do
-    // not accumulate duplicate `finished` slot invocations.
+    // Session parentage ties watcher lifetime to the operation owner.
     if (mDecompressionWatcher == nullptr)
     {
         mDecompressionWatcher = new DecompressionWatcher(this);
@@ -1303,9 +1088,7 @@ int LogSession::FindFirstRowAtOrAfterTimestamp(int timeCol, std::int64_t targetM
 
     if (userSortColumn < 0 && timestampsMonotonic)
     {
-        // Fast path: binary-search source rows in place. Building
-        // an `iota` index array would cost ~40 MiB on a 10 M-row
-        // file, blowing the ROADMAP `< 100 ms` budget.
+        // Avoid an index array that would cost about 40 MiB for 10 million rows.
         //
         // Missing timestamps require an explicit skip -- there is
         // no `-inf` / `+inf` rule that preserves the monotonicity
@@ -1370,9 +1153,7 @@ int LogSession::FindFirstRowAtOrAfterTimestamp(int timeCol, std::int64_t targetM
 
         // Otherwise walk the outer proxy (not the source) for the
         // smallest visible source row `>= lo` with a valid ts.
-        // O(N_visible), not O(N_source) -- a heavy filter that
-        // hides most of `[lo, sourceRowCount)` used to blow the
-        // ROADMAP budget on huge files.
+        // Scan visible rows so heavy filtering does not scale with all source rows.
         //
         // Correctness: the binary-search invariant guarantees
         // every source row `>= lo` is either missing or has

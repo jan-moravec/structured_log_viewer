@@ -71,15 +71,8 @@ void FindDock::Bind(const SessionBindContext &context)
     LogSession *outgoing = mBoundSession.data();
     LogSession *incoming = context.session.data();
 
-    // Same-session short-circuit: a redundant Bind of the same
-    // session is a no-op (shadow is already in sync with the
-    // session's log). Both sides must be non-null: a null==null
-    // match happens when the previously-bound session was
-    // destroyed (QPointer auto-nulls `mBoundSession`) and then
-    // `Bind(MakeUnbound())` is called from the teardown path.
-    // Origin-review finding M7: without the non-null clause the
-    // guard would return here and leave the bar showing the
-    // destroyed session's query text + toggle state.
+    // A live same-session bind is a no-op. Null equality must still
+    // clear visible state after QPointer auto-null teardown.
     if (outgoing != nullptr && outgoing == incoming)
     {
         return;

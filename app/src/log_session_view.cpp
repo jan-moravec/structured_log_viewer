@@ -47,10 +47,7 @@ namespace
 /// `QProgressBar::setRange` upper bound for percent-mode ticks.
 /// Matches the shell's `PROGRESS_PERCENT_MAX` (100).
 constexpr int PROGRESS_PERCENT_MAX = 100;
-/// Progress strip layout metrics: horizontal margin (px),
-/// vertical margin (px), inter-widget spacing (px). Pulled into
-/// named constants so the review-touched code stays free of
-/// magic-numbers clang-tidy warnings.
+/// Progress strip layout metrics in pixels.
 constexpr int PROGRESS_STRIP_MARGIN_H = 4;
 constexpr int PROGRESS_STRIP_MARGIN_V = 2;
 constexpr int PROGRESS_STRIP_SPACING = 6;
@@ -72,44 +69,14 @@ LogSessionView::~LogSessionView() = default;
 
 void LogSessionView::Initialise(ThemeControl *theme)
 {
-    // Task 3.2/3.3: own the per-session widgets. Parenting is
-    // load-bearing: the table + rail must die with this view
-    // (which dies with the tab / session) so the shell's aliases
-    // can be cleared under `~LogSessionView` before the model
-    // quintet on `LogSession` reverse-teardown runs.
-    //
-    // Order matters at construction time:
-    //
-    //   1. `mTableView` first because the rail widget takes a
-    //      non-owning `QAbstractItemView *` to resolve viewport
-    //      geometry via its vertical scrollbar.
-    //   2. Rail model + widget after: the model buckets the
-    //      session's filter-proxy rows and the widget's viewport
-    //      indicator reads the table's scrollbar. Both stay live
-    //      while hidden so the toggle is instant on both edges
-    //      (matches the pre-migration `MainWindow` behaviour).
-    //
-    // Layout choice: `mTableView` fills the view via a full-
-    // margin `QVBoxLayout`. The rail widget is deliberately NOT
-    // placed in a sibling layout slot because the pre-existing
-    // shell uses `LogTableView::AttachOverviewRail(rail)` to
-    // reparent the rail INTO the table view when the toggle
-    // turns on (it then sits in the table's reserved right
-    // viewport margin). Keeping the rail as a bare-parented
-    // widget on `this` (hidden) preserves that dance, so no
-    // shell-body rewire is needed for phase 3's structural
-    // extraction.
+    // The rail borrows the table, so construct the table first.
+    // Parent both to this view and keep the hidden rail alive.
+    // The rail stays outside the layout because `AttachOverviewRail`
+    // reparents it into the table's reserved viewport margin.
     mTableView = new LogTableView(this);
     mTableView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
 
-    // A null session should be impossible in production (the ctor
-    // asserts), but the model quintet may not be fully wired in
-    // a unit-test fixture that constructs a bare `LogSession`
-    // outside a `MainWindow`. Guard the accessors so
-    // `LogSessionView` can still be instantiated cleanly in that
-    // case; the shell wires the actual models by calling
-    // `TableView()->setModel(...)` / `SetAnchorManager(...)` /
-    // etc. after construction.
+    // Bare test sessions may not have their model objects wired yet.
     QAbstractItemModel *filterProxy = nullptr;
     LogModel *sourceModel = nullptr;
     AnchorManager *anchors = nullptr;
@@ -129,20 +96,8 @@ void LogSessionView::Initialise(ThemeControl *theme)
     mLayout->setSpacing(0);
     mLayout->addWidget(mTableView, 1);
 
-    // Task 3.2 continuation (review finding #1): a standalone
-    // `LogSessionView` must be independently functional. Before
-    // this migration the shell called `setModel` / `SetAnchorManager`
-    // / selection setup after constructing the view, so a bare
-    // view had a null `selectionModel()` and any navigation body
-    // that dereferenced it crashed. Bind the proxy model + anchor
-    // manager + selection/sort/edit defaults + session-invariant
-    // header setup here so `TableView()->selectionModel()` is
-    // non-null the moment the view returns from its ctor.
-    //
-    // Header wiring that reaches into shell slots (context menu,
-    // section-move handler) still lives on the shell; those
-    // connections are added after construction and don't
-    // participate in the view's independent-usability contract.
+    // Wire model-dependent defaults here so a constructed view has
+    // a valid selection model before navigation can run.
     if (filterProxy != nullptr)
     {
         mTableView->setModel(filterProxy);
@@ -184,10 +139,7 @@ void LogSessionView::Initialise(ThemeControl *theme)
 
 void LogSessionView::SelectSourceRow(int sourceRow)
 {
-    // Migrated from `MainWindow::SelectSourceRow` (task 3.4). The
-    // shell keeps the `statusBar()->showMessage(...)` call on its
-    // side via the `rowNotVisible()` signal below; the view has
-    // no business talking to `QMainWindow::statusBar()`.
+    // Status presentation remains outside the session view.
     if (mSession == nullptr || mTableView == nullptr)
     {
         return;
@@ -230,10 +182,7 @@ void LogSessionView::SelectSourceRow(int sourceRow)
 
 void LogSessionView::ScrollToProxyRow(int proxyRow, bool replaceSelection)
 {
-    // Migrated from `MainWindow::ScrollToProxyRow` (task 3.4). The
-    // shell keeps `ui->actionFollowTail` on its side; the view
-    // fires `followTailDisengageRequested()` before scrolling so
-    // the shell can uncheck the action first.
+    // Explicit navigation requests follow-tail disengagement before scrolling.
     if (mSession == nullptr || mTableView == nullptr)
     {
         return;
@@ -274,11 +223,7 @@ void LogSessionView::ScrollToProxyRow(int proxyRow, bool replaceSelection)
 
 void LogSessionView::ApplyColumnVisibility()
 {
-    // Migrated from `MainWindow::ApplyColumnVisibility` (task 3.5).
-    // Shell-scoped follow-ups (`OnFindCacheInvalidated`,
-    // `SyncColumnFilterIndicators`) stay on the shell's wrapper
-    // because they reach into the find dock / filter menus which
-    // belong to shell chrome, not the view.
+    // This method only applies table-header state.
     if (mSession == nullptr || mTableView == nullptr)
     {
         return;
@@ -303,9 +248,7 @@ void LogSessionView::ApplyColumnVisibility()
 
 void LogSessionView::ApplyLevelCellDelegate(QAbstractItemDelegate *delegate)
 {
-    // Migrated from `MainWindow::ApplyLevelCellDelegate` (task 3.5).
-    // Delegate ownership stays on the shell (per-window resource);
-    // this method just manages install/detach against the table.
+    // The caller retains delegate ownership; this view only installs it.
     if (mSession == nullptr || mTableView == nullptr)
     {
         return;
@@ -313,16 +256,7 @@ void LogSessionView::ApplyLevelCellDelegate(QAbstractItemDelegate *delegate)
     auto *model = mSession->Model();
     if (delegate == nullptr || model == nullptr)
     {
-        // Matches pre-migration `MainWindow::ApplyLevelCellDelegate`
-        // (post-review-3 semantic-alignment): the no-theme test
-        // fixture path passes `delegate == nullptr` and the
-        // original returned early WITHOUT touching the table.
-        // The delegate never transitions non-null -> null in
-        // production (theme presence is a ctor invariant), so
-        // there is nothing to detach on this path -- the earlier
-        // migration added a speculative detach that was dead
-        // code with a different semantic. Leave the return
-        // early to keep behaviour byte-for-byte with `main`.
+        // A null delegate leaves the current table delegate unchanged.
         return;
     }
 
@@ -479,9 +413,7 @@ std::optional<LogSessionView::GotoTimestampParse> LogSessionView::ParseGotoTimes
 
 void LogSessionView::PromptGotoLine()
 {
-    // Migrated from `MainWindow::GotoLine` (task 3.6). Modal +
-    // sticky-input storage live on the view; status-bar feedback
-    // fans out via `statusMessageRequested()`.
+    // Sticky input belongs to the session view; status rendering is external.
     if (mSession == nullptr)
     {
         return;
@@ -581,8 +513,7 @@ void LogSessionView::ExecuteGotoLine(const QString &input)
 
 void LogSessionView::PromptGotoTimestamp()
 {
-    // Migrated from `MainWindow::GotoTimestamp` (task 3.6). See
-    // `PromptGotoLine` for the modal-plus-status-signal pattern.
+    // Timestamp navigation uses the same modal and status-signal pattern.
     if (mSession == nullptr)
     {
         return;
@@ -677,9 +608,7 @@ void LogSessionView::ExecuteGotoTimestamp(const QString &input, std::chrono::sys
 
 void LogSessionView::JumpToNewestRow()
 {
-    // Migrated from `MainWindow::JumpToNewestRow` (task 3.4). No
-    // shell-scoped state referenced -- uses only model + proxy
-    // chain + table view.
+    // Navigation uses only the bound model chain and table view.
     if (mSession == nullptr || mTableView == nullptr)
     {
         return;
@@ -757,9 +686,7 @@ void LogSessionView::JumpToNewestRow()
 
 void LogSessionView::JumpToAnchor(bool forward)
 {
-    // Migrated from `MainWindow::JumpToAnchor` (task 3.4). Uses
-    // only session-owned models + view; status feedback fans out
-    // via `statusMessageRequested()`.
+    // Status feedback is emitted instead of rendered directly.
     if (mSession == nullptr || mTableView == nullptr)
     {
         return;

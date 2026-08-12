@@ -10,11 +10,12 @@ class QShowEvent;
 class QWidget;
 struct SessionBindContext;
 
-/// Dockable host for `FindRecordWidget`. Position persists via
-/// `QMainWindow::saveState()` / `restoreState()`.
-///
-/// Allowed areas are top + bottom only; a vertical side dock would
-/// squeeze the search field into an unusable narrow column.
+/**
+ * @brief Dockable host for `FindRecordWidget`.
+ *
+ * The dock can be placed along the top or bottom edge, and its
+ * position participates in `QMainWindow` state persistence.
+ */
 class FindDock : public QDockWidget
 {
     Q_OBJECT
@@ -22,81 +23,76 @@ class FindDock : public QDockWidget
 public:
     explicit FindDock(QWidget *parent = nullptr);
 
-    /// The hosted find widget. Borrow only; the dock owns it.
+    /**
+     * @brief Returns the hosted find widget.
+     * @return A borrowed pointer owned by the dock.
+     */
     [[nodiscard]] FindRecordWidget *Widget() const noexcept
     {
         return mWidget;
     }
 
-    /// Show + raise the dock and focus the search field. Idempotent.
-    /// On every call, stashes the previously-focused widget (when
-    /// outside our subtree) so dismissing the bar can restore it.
+    /**
+     * @brief Reveals the dock and focuses the search field.
+     *
+     * Focus outside the dock is saved for restoration on close.
+     */
     void RevealAndFocus();
 
-    /// Bind to the session in @p context (task 5.3).
-    ///
-    /// Snapshots the outgoing session's query state (query text +
-    /// wildcards/regex toggles) into its
-    /// `SessionFindQueryState`, restores the incoming session's
-    /// state onto `FindRecordWidget`, and cancels any in-flight
-    /// debounce timers so a `MatchCountRequested` cannot fire
-    /// against a stale model between the state restore and the
-    /// next debounce arm. Safe to call with
-    /// `context.IsBound() == false`: that path snapshots + clears
-    /// without loading a new query (equivalent to `Unbind()`).
-    /// Idempotent for the same session -- a re-Bind of the
-    /// currently-bound session round-trips the query state
-    /// through its store without change.
-    ///
-    /// Match-count state is not persisted: the debounce arm
-    /// on restore fires a `MatchCountRequested` with the
-    /// restored query against the (already-active) model, so
-    /// the "*i* of *N*" label refreshes on the next quiet
-    /// window without persisting a stale count that would need
-    /// invalidating on every proxy mutation.
+    /**
+     * @brief Switches the visible query state to a session.
+     * @param context Context containing the incoming session.
+     *
+     * A changed binding saves the outgoing query, cancels both
+     * match-count timers, restores the incoming query, and re-arms
+     * counting for non-empty text. An identical non-null binding is
+     * a no-op. An unbound context saves and then clears the query.
+     * Match counts themselves are not persisted, and no ownership is
+     * transferred.
+     */
     void Bind(const SessionBindContext &context);
 
-    /// Snapshot into the currently-bound session (if any), cancel
-    /// the debounce, and clear the visible query. Equivalent to
-    /// `Bind(SessionBindContext::MakeUnbound())` but reads
-    /// clearer at teardown call sites.
+    /**
+     * @brief Saves the current query, cancels timers, and releases the session alias.
+     */
     void Unbind();
 
-    /// The `LogSession` currently bound (or null if unbound).
-    /// Exposed for tests that pin the save-outgoing / restore-
-    /// incoming pattern; production callers should not use this.
+    /**
+     * @brief Returns the currently bound session for tests.
+     * @return The borrowed session, or `nullptr` when unbound.
+     */
     [[nodiscard]] LogSession *boundSessionForTest() const noexcept
     {
         return mBoundSession.data();
     }
 
 signals:
-    /// Emitted on genuine user dismissal (X button, `close()` from
-    /// `DismissBar`, system close). Distinct from
-    /// `visibilityChanged(false)`, which also fires on tab inactivation.
+    /** @brief Emitted when the user closes the dock. */
     void closed();
 
-    /// Emitted when the bar becomes visible (cold reveal or tab
-    /// activation). Named alias for `visibilityChanged(true)` that
-    /// keeps the wiring self-documenting.
+    /** @brief Emitted when the find dock becomes visible. */
     void revealed();
 
 protected:
-    /// Restore focus to the stashed widget, then emit `closed`.
+    /**
+     * @brief Restores saved focus after an accepted close.
+     * @param event Close event.
+     */
     void closeEvent(QCloseEvent *event) override;
 
-    /// Emit `revealed` so listeners can refresh state that went stale
-    /// while the bar was hidden / tab-buried.
+    /**
+     * @brief Emits `revealed()` after the dock is shown.
+     * @param event Show event.
+     */
     void showEvent(QShowEvent *event) override;
 
 private:
     FindRecordWidget *mWidget = nullptr;
 
-    /// Widget that held focus before the last reveal. `QPointer`
-    /// guards against the widget being destroyed while the bar is open.
+    // Widget that held focus before the last reveal. `QPointer`
+    // guards against destruction while the bar is open.
     QPointer<QWidget> mFocusBeforeReveal;
 
-    /// Currently-bound session (task 5.3). Null before the first
-    /// `Bind()` and after `Unbind()`.
+    // Currently bound session, or null while unbound.
     QPointer<LogSession> mBoundSession;
 };

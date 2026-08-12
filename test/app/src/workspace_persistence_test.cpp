@@ -1,7 +1,5 @@
-// Grouped workspace persistence tests (task 8.13 / 8.15).
-//
-// Covers the value-type schema (task 8.1) and the on-disk facade
-// (task 8.2) in isolation from `MainWindow`. Filesystem tests use
+// Grouped workspace persistence tests for the value-type schema
+// and on-disk facade. Filesystem tests use
 // a per-test `QTemporaryDir` redirected through
 // `QStandardPaths::setTestModeEnabled(true)` so the production
 // user-scope `AppDataLocation` is not touched.
@@ -82,12 +80,8 @@ class WorkspacePersistenceTest : public QObject
 private slots:
     static void TestSessionSourceModeEnumIsStable()
     {
-        // Persistence rides on the numeric values; do not renumber
-        // without a schema migration story (Phase 8 task 8.1).
-        // Review finding #4 appended `Bundle` / `Compressed` /
-        // `MultiFile` at the end so existing tab-strip persistence
-        // stays byte-compatible; new values must keep growing
-        // upwards from 5.
+        // These numeric values are persisted. Keep existing values
+        // stable and append new source modes after the current range.
         QCOMPARE(static_cast<std::uint8_t>(SessionSourceMode::Idle), static_cast<std::uint8_t>(0));
         QCOMPARE(static_cast<std::uint8_t>(SessionSourceMode::StaticFile), static_cast<std::uint8_t>(1));
         QCOMPARE(static_cast<std::uint8_t>(SessionSourceMode::LiveTail), static_cast<std::uint8_t>(2));
@@ -100,8 +94,8 @@ private slots:
 
     static void TestWorkspaceSchemaSourceModeEnumIsStable()
     {
-        // Task 8.1: numeric values persist to disk. Do not
-        // renumber without bumping `kSchemaVersion`.
+        // Numeric values persist to disk; renumbering requires a
+        // `kSchemaVersion` bump.
         QCOMPARE(static_cast<std::uint8_t>(SourceMode::Empty), static_cast<std::uint8_t>(0));
         QCOMPARE(static_cast<std::uint8_t>(SourceMode::File), static_cast<std::uint8_t>(1));
         QCOMPARE(static_cast<std::uint8_t>(SourceMode::MultiFile), static_cast<std::uint8_t>(2));
@@ -301,15 +295,8 @@ private slots:
         QVERIFY(!QFile::exists(WorkspacePersistence::WorkspaceFilePath()));
     }
 
-    // -----------------------------------------------------------------
-    // Post-tabs review-round bug #M3 fix pin: read-side bounds
-    // must fail-closed (the header docstring on `MAX_WINDOWS`
-    // etc. promises "values above these ceilings are treated as
-    // corrupted input; the read returns an empty workspace").
-    // Previously the reader silently truncated at the caps and
-    // `Take()`'s subsequent atomic wipe permanently lost the
-    // surplus.
-    // -----------------------------------------------------------------
+    // Inputs above the documented read-side limits are treated as
+    // corrupt, so reads fail closed instead of truncating data.
 
     static void TestOverCapWindowsCountFailsClosedOnRead()
     {
@@ -368,17 +355,8 @@ private slots:
         );
     }
 
-    // -----------------------------------------------------------------
-    // Post-tabs review-round bug #8 fix pin: the startup restore
-    // in `main()` splits an over-cap workspace into a "restore
-    // prefix" + "surplus written back" pair instead of the
-    // pre-fix `Take()` (atomic read + wipe) followed by silent
-    // truncation. This test simulates that shape end-to-end
-    // through `WorkspacePersistence::{Read,Write}` so a
-    // regression in the split logic (dropping the surplus) is
-    // caught even though the split itself lives outside this
-    // class.
-    // -----------------------------------------------------------------
+    // Startup restores a bounded prefix and writes any surplus
+    // windows back for a later launch.
 
     static void TestOverCapWorkspaceSurplusIsWrittenBackForNextLaunch()
     {
@@ -408,9 +386,7 @@ private slots:
         surplus.mruOrder = peek.mruOrder;
         QVERIFY(WorkspacePersistence::Write(std::move(surplus)));
 
-        // A subsequent `Read()` (or the next launch's `Take()`)
-        // must see the surplus intact -- previously the
-        // atomic wipe from `Take()` would have destroyed it.
+        // A subsequent `Read()` or `Take()` must see the surplus intact.
         const Workspace afterSplit = WorkspacePersistence::Read();
         QCOMPARE(afterSplit.windows.size(), kSurplusCount);
         for (std::size_t i = 0; i < kSurplusCount; ++i)

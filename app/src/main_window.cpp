@@ -131,7 +131,7 @@
 namespace
 {
 
-/// Return whether @p path has the session-bundle extension.
+// Check the extension without opening the bundle.
 [[nodiscard]] bool IsSessionBundlePath(const QString &path)
 {
     // `QFileInfo::suffix()` omits the leading dot.
@@ -143,7 +143,7 @@ namespace
            0;
 }
 
-/// Return whether any filter leaf fails to resolve against @p columns.
+// Detect filters that cannot bind to the current columns.
 // NOLINTNEXTLINE(misc-no-recursion): mutually recursive with std::visit lambdas below.
 [[nodiscard]] bool FilterHasUnresolvedLeaves(
     const loglib::FilterExpression &expression, const std::vector<loglib::LogConfiguration::Column> &columns
@@ -183,10 +183,7 @@ namespace
     );
 }
 
-/// Format a millisecond-epoch timestamp as a "N time ago" string
-/// for the Recent Sessions tooltip. Empty for non-positive
-/// timestamps (legacy entries written before stamping was added).
-/// Past 30 days, switches to an absolute local-time date.
+// Use relative recent-session times, with absolute dates after 30 days.
 QString FormatRelativeTimestamp(qint64 timestampMsEpoch, qint64 nowMs)
 {
     if (timestampMsEpoch <= 0)
@@ -357,9 +354,7 @@ QString HumanDuration(std::chrono::steady_clock::duration d)
 // 4 KB) followed by a Glaze parse of the bounded prefix. Rejects
 // `columns.empty()` so `{}` (a valid default `LogConfiguration`)
 // is not misclassified as a configuration.
-///
-/// Bounded read budget so a multi-gigabyte log starting with
-/// `{"columns":...}` cannot freeze the GUI in the parse step.
+// Bound configuration sniffing so a log prefix cannot freeze the GUI.
 constexpr qint64 CONFIG_PROBE_MAX_BYTES = 1024 * 1024;
 
 bool FileLooksLikeConfiguration(const QString &file)
@@ -426,10 +421,7 @@ bool FileLooksLikeConfiguration(const QString &file)
     }
 }
 
-/// Decode the on-disk `Type::Boolean` filter (a subset of
-/// `{"true", "false"}`) into the two-toggle pair
-/// `BoolRowPredicate` consumes. Case-insensitive so a hand-edited
-/// `"True"` / `"FALSE"` still loads.
+// Decode persisted boolean values case-insensitively for hand-edited files.
 struct BooleanFilterSides
 {
     bool includeTrue = false;
@@ -453,8 +445,7 @@ BooleanFilterSides DecodeBooleanFilterSides(const std::vector<std::string> &filt
     return sides;
 }
 
-/// Why a saved leaf could not be revived. The load-side validator
-/// uses this to summarise drops in one dialog.
+// Categorize dropped filters for one load summary.
 enum class FilterValidationReason
 {
     OutOfRangeRow,
@@ -470,8 +461,7 @@ struct FilterValidationFailure
 {
     FilterValidationReason reason;
     int row;
-    /// The leaf's column header, or empty when the column keys
-    /// don't resolve.
+    // Empty when the leaf's column keys do not resolve.
     std::string columnHeader;
 };
 
@@ -497,10 +487,7 @@ QString FilterValidationReasonString(FilterValidationReason reason)
     return QStringLiteral("unknown");
 }
 
-/// Check whether a saved leaf still fits the current column layout.
-/// Called from configuration load (drops failures into a summary
-/// dialog) and from `MainWindow::AddFilter`'s pre-guard. Returns
-/// `nullopt` on success.
+// Validate saved leaves before load or editing; nullopt means valid.
 std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
     const loglib::LeafRule &filter, const std::vector<loglib::LogConfiguration::Column> &columns
 )
@@ -590,9 +577,7 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
     return std::nullopt;
 }
 
-/// Extract `LeafRule::columnKeys` for the column at @p rowIndex.
-/// Returns empty when out of range, which makes the resulting
-/// leaf inert (guarded by the caller).
+// Extract stable column keys; out-of-range rows produce an inert empty key set.
 [[nodiscard]] std::vector<std::string> ColumnKeysForRow(
     int rowIndex, const std::vector<loglib::LogConfiguration::Column> &columns
 )
@@ -656,79 +641,18 @@ MainWindow::MainWindow(
     ui->setupUi(this);
     ApplyThemedWindowIcon();
 
-    // Task 2.1 / 2.3: one `LogSession` owns the model quintet
-    // (`AnchorManager`, `HighlightRuleSet`, `LogModel`,
-    // `RowOrderProxyModel`, `LogFilterModel`) and its highlight-cache
-    // signal invariants. `MainWindow`'s legacy `mAnchors` /
-    // `mHighlights` / `mModel` / `mRowOrderProxyModel` /
-    // `mSortFilterProxyModel` members are kept as *temporary*
-    // delegated aliases so the incremental extraction stays
-    // buildable; later Phase 2 subtasks collapse the aliases in
-    // favour of `mSession->` accessors.
+    // The active session owns the model objects; the shell keeps non-owning aliases.
     mSession = new LogSession(mTheme, mHistoryManager, mRegexTemplateRegistry, this);
-    // Route through the single-source-of-truth alias helper (task
-    // 4.2 review-5) so the eight-plus quintet + view assignments
-    // live in one place and any future alias addition is done
-    // once, not twice. The view is not yet constructed here; the
-    // helper's second call below (post-`new LogSessionView`)
-    // finishes the refresh.
+    // Seed model aliases before constructing the view that supplies widget aliases.
     SetActiveSessionAliases(mSession, /*view=*/nullptr);
 
-    // `UpdateWindowTitle()` reads `mSession->StreamingFileName()` /
-    // `StreamingLineCount()`, so it must run after `mSession` is
-    // constructed. Previously the pre-`mSession` UpdateWindowTitle
-    // was safe because those fields were plain `MainWindow` members
-    // with default-constructed defaults (task 2.5).
+    // Title projection requires a constructed active session.
     UpdateWindowTitle();
 
-    // Session dirty-state → window title marker (task 2.4). The
-    // session emits only on `false ↔ true` transitions, so
-    // `UpdateWindowTitle` runs at most once per real change. The
-    // aggregator (task 4.6) OR-folds every hosted session's dirty
-    // marker into `setWindowModified`; single-session windows resolve
-    // to the active session's `IsFiltersDirty()` value.
-    // Scoped session/model/view subscriptions moved to
-    // `InstallActiveSessionConnections()` (B1 fix) so the ctor and
-    // tab-switch paths share one source of truth. Helper is called
-    // at the end of the ctor once every referenced widget /
-    // toolbar / action / dock is constructed.
+    // Scoped subscriptions are installed after every referenced widget exists.
 
-    // Task 3.2 / 3.3 / 3.9: `LogSessionView` owns the per-session
-    // widgets (table view + overview rail + rail model). The
-    // shell keeps `mTableView` / `mOverviewRailWidget` /
-    // `mOverviewRailModel` pointers as non-owning aliases so the
-    // ~9k lines of legacy shell body continue to compile; the
-    // owning parent is now the session view, and reaping the tab
-    // (Phase 6) will tear down the whole widget subtree.
-    //
-    // Central-widget layout: the session view fills the .ui-
-    // declared `centralWidget` via a plain `QVBoxLayout`. The
-    // outer layout intentionally keeps the platform-default
-    // content margins + spacing (~9 px on Windows) because that
-    // is what the pre-migration `new QVBoxLayout(centralWidget)
-    // + addWidget(mTableView, 1)` shape inherited (post-review-3
-    // finding #2 -- an earlier revision zeroed both, which
-    // flushed the table against the window frame). The view's
-    // own inner `QVBoxLayout` stays zero-margin because the view
-    // is meant to occupy the full centralWidget minus the outer
-    // margins; nesting two default-margin layouts would double
-    // up the padding.
-    // Task 6.1: central-widget mount is a `QTabWidget` hosting one
-    // `LogSessionView` per tab. The first tab holds `mSession` /
-    // `mSessionView` (the ctor's initial pair) and shows the
-    // localised `Untitled` label until the user opens a source
-    // (task 6.2). Additional tabs land via `AddNewTab()` /
-    // `mActionNewTab`. Tab ordering is user-controllable
-    // (`setMovable(true)` + `QTabBar::tabMoved` rewrites `mTabs`
-    // in-place to keep index-based lookups accurate).
-    //
-    // The view is constructed with a null parent here so the
-    // `QTabWidget::addTab` call below establishes the correct
-    // page-owner relationship in one step. Adding the view to
-    // the tab strip re-parents it onto the strip's internal
-    // stack; the shell keeps `mSessionView` as an alias into
-    // whichever tab is currently active (refreshed by
-    // `SetActiveSessionAliases` on every tab switch).
+    // Preserve platform content margins while each tab page owns its zero-margin view layout.
+    // `addTab` establishes Qt ownership for the initially unparented view.
     mSessionView = new LogSessionView(mSession, mTheme);
     mTabWidget = new QTabWidget(ui->centralWidget);
     mTabWidget->setTabsClosable(true);
@@ -736,8 +660,7 @@ MainWindow::MainWindow(
     mTabWidget->setDocumentMode(true);
     mTabWidget->setUsesScrollButtons(true);
     mTabWidget->setElideMode(Qt::ElideRight);
-    // Accessible name so screen readers can announce the tab strip
-    // as more than a bare `QTabWidget` (task 6.4).
+    // QTabWidget exposes this container name; QTabBar exposes each tab's visible text.
     mTabWidget->setAccessibleName(tr("Session Tabs"));
     mLayout = new QVBoxLayout(ui->centralWidget);
     mLayout->addWidget(mTabWidget, 1);
@@ -756,12 +679,7 @@ MainWindow::MainWindow(
     initialTab->view = mSessionView;
     mTabs.push_back(std::move(initialTab));
 
-    // Second alias-refresh call (task 4.2 review-5): now that
-    // `mSessionView` exists, populate the view-side aliases
-    // (`mTableView`, `mOverviewRailModel`, `mOverviewRailWidget`).
-    // The quintet fields are re-assigned to the same pointers; no
-    // functional change from the first call, but the pattern
-    // stays uniform for phase 6's tab-switch driver.
+    // Complete view aliases after the tab page exists.
     SetActiveSessionAliases(mSession, mSessionView);
 
     // Wire the tab strip signals. `currentChanged` drives the full
@@ -783,26 +701,10 @@ MainWindow::MainWindow(
         mTabs.insert(mTabs.begin() + to, std::move(moved));
     });
 
-    // Per-tab persistent subscriptions for the initial tab (H2/H3
-    // fixes + task 7.6): keep the window's `[*]` marker in sync
-    // with ANY hosted session's dirty state, refresh THIS tab's
-    // chrome whenever its presentation snapshot changes, and
-    // origin-bind streaming completion so a background tab's
-    // parse finish settles its own mode / chrome rather than
-    // being silently dropped. `AddNewTab` installs the same set
-    // for every later tab.
+    // Background tabs still need dirty, chrome, and origin-bound completion updates.
     InstallPerTabPersistentConnections(mSession);
 
-    // Task 3.2 (review finding #1): the view's `Initialise` already
-    // bound `mTableView` to the session's filter proxy, installed
-    // the anchor manager, and set the selection / sort / edit /
-    // header defaults so a bare `LogSessionView` is independently
-    // functional. The shell used to redo this work here; keeping
-    // the calls would clobber the view's setup and mask a
-    // regression where the view's `Initialise` stops calling
-    // `setModel`. The shell only wires the follow-ups that reach
-    // into shell-scoped state (context-menu policy, header
-    // section-moved slot, columns-inserted highlight-editor sync).
+    // LogSessionView owns intrinsic table setup; the shell adds only shared UI wiring.
 
     // Shell-scoped columnsInserted work:
     //   * keep the highlight-editor's column picker in sync so a
@@ -816,10 +718,7 @@ MainWindow::MainWindow(
     //     leaves are all already bound — pinned by
     //     `TestEnumPromotedOnUnrelatedColumnDoesNotRebuildFilters`).
     //
-    // The session-scoped `HighlightRuleSet::RebindColumns` reaction
-    // moves into `LogSession` (task 2.4) so any future multi-session
-    // window keeps highlight compilation aligned with each session's
-    // own model without a shell round-trip.
+    // Session-owned highlight binding keeps background models independent.
     // columnsInserted -> highlight editor + unresolved-leaf filter
     // check: moved into `InstallActiveSessionConnections()`.
 
@@ -835,8 +734,7 @@ MainWindow::MainWindow(
     addAction(mActionToggleAnchors);
     WireDockToggle(mAnchorsDock, mActionToggleAnchors, &AnchorsDock::closed);
 
-    // Histogram dock (ROADMAP item 2). Bottom-docked so it doesn't
-    // compete with the right-hand Anchors / Record Details stack.
+    // Bottom docking avoids competing with the right-side detail stack.
     // Same lifecycle as the anchors dock: hidden by default, toggled
     // from View / toolbar / Ctrl+H.
     mHistogramDock = new HistogramDock(mModel, mTheme, mAnchors, this);
@@ -857,11 +755,7 @@ MainWindow::MainWindow(
     WireDockToggle(mHistogramDock, mActionToggleHistogram, &HistogramDock::closed);
     // modelReset -> ApplyColumnVisibility: moved into
     // `InstallActiveSessionConnections()`.
-    // Selection behaviour, edit triggers, and alternating-row
-    // colour setup migrated into `LogSessionView::Initialise`
-    // (review finding #1). Removing them here so the shell no
-    // longer depends on setup that a standalone view must do
-    // itself.
+    // Selection and rendering policy belong to each session view.
 
     // Single entry point for both Preferences-driven and
     // OS-driven theme refreshes. Skipped in the no-theme test
@@ -874,19 +768,13 @@ MainWindow::MainWindow(
 
     ApplyTableStyleSheet();
 
-    // Proxy chain construction (`RowOrderProxyModel` → `LogFilterModel`)
-    // moved into `LogSession` (task 2.1). Model binding on the
-    // table view moved into `LogSessionView::Initialise` (review
-    // finding #1) so a bare view has a non-null `selectionModel()`
-    // without a shell round-trip. The temporary `mRowOrderProxyModel`
-    // / `mSortFilterProxyModel` aliases above still refer to the
-    // same instances so the shell wiring below is unchanged.
+    // Session and view construction guarantees a complete proxy and selection-model chain.
     //
     // `LogFilterModel::setSortRole` is intentionally never called:
     // it sorts via `loglib::CompareRows` straight against `LogTable`
     // (no `data(role)` round-trip), so the sort role no longer
     // drives behaviour. The deprecated no-op stays on the class for
-    // one release to ease test / benchmark migration.
+    // one release for test and benchmark compatibility.
 
     // Overview rail wiring, view -> shell status/message routing,
     // progress strip cancel, and rail buckets-changed re-push: all
@@ -902,9 +790,7 @@ MainWindow::MainWindow(
     addAction(mActionToggleOverviewRail);
     connect(mActionToggleOverviewRail, &QAction::toggled, this, &MainWindow::SetOverviewRailVisible);
 
-    // Icon-pill delegate is created only when we have a
-    // `ThemeControl`; the no-theme test fixture keeps the standard
-    // text delegate (`IsLevelIconModeActive` is always false there).
+    // Without a theme controller, retain Qt's standard text delegate.
     if (mTheme != nullptr)
     {
         mLevelCellDelegate = new LevelCellDelegate(mTheme, this);
@@ -917,19 +803,7 @@ MainWindow::MainWindow(
 
     mTableView->resizeColumnsToContents();
 
-    // Header widget property setup (resize mode, stretch, sort
-    // indicator, sections-movable) migrated into
-    // `LogSessionView::Initialise` (review finding #1). The
-    // context-menu policy + slot connections stay on the shell
-    // because `OnHeaderSectionMoved` and `ShowHeaderContextMenu`
-    // still live here (the menu builders reach into shell-scoped
-    // QActions -- migrates with phase 4 action routing).
-    // `ApplyTableStyleSheet` layers theme colours onto the header
-    // stylesheet after this point.
-    // Shell-owned table chrome (context-menu policies, grid, scroll
-    // modes) applied via a helper so `AddNewTab` can give every new
-    // tab the same policy set (phase-6 review-1 H4 fix). Header
-    // slot connects live in `InstallActiveSessionConnections()`.
+    // Apply shell-owned policies uniformly to the initial and later tab views.
     ApplyTableChromeToView(mSessionView);
 
     // Rebuild on demand. This is the only escape hatch when every
@@ -943,37 +817,16 @@ MainWindow::MainWindow(
     ui->actionNewWindow->setEnabled(mHistoryManager != nullptr);
     connect(ui->actionOpen, &QAction::triggered, this, &MainWindow::OpenFiles);
 
-    // Tab management actions (task 6.3). Declared programmatically
-    // because the .ui file predates tabs; keeping them out of the
-    // ui avoids a .ui migration path just for phase 6.
+    // Programmatic actions keep tab commands together without changing the UI form.
     //
     // Shortcuts:
     //   New Tab       Ctrl+T           (also QKeySequence::AddTab)
     //   Close Tab     Ctrl+W           (also QKeySequence::Close)
     //   Next Tab      Ctrl+Tab         (also QKeySequence::NextChild)
     //   Previous Tab  Ctrl+Shift+Tab   (also QKeySequence::PreviousChild)
-    //   Open in Tab   (menu-only)      (phase-6 review-2 H1: an earlier
-    //                                    revision bound `Ctrl+Shift+T`,
-    //                                    which `main_window.ui` already
-    //                                    assigns to `actionFollowTail`.
-    //                                    Qt reports "ambiguous shortcut
-    //                                    overload" the moment a live-tail
-    //                                    session enables the second
-    //                                    binding, so both actions stop
-    //                                    firing. The menu entry stays
-    //                                    discoverable via File and the
-    //                                    tab context menu without a
-    //                                    shortcut collision.)
+    //   Open in Tab   (menu-only; Ctrl+Shift+T is already Follow tail)
     //
-    // Phase-6 review-3 finding #7 fix: `Qt::WindowShortcut` (the
-    // default) not `Qt::ApplicationShortcut`. Application-wide
-    // scope makes identical shortcuts across multiple MainWindows
-    // ambiguous ("QAction::eventFilter: Ambiguous shortcut
-    // overload"), which is exactly what happens once the user
-    // opens a second window and presses Ctrl+T / Ctrl+W. Window
-    // scope routes the shortcut to the focused window's action;
-    // dock widgets and modal dialogs are children of the window
-    // so shortcut activation still works from those foci.
+    // Window scope prevents identical shortcuts in peer windows from becoming ambiguous.
     // `addAction` registers the action on the window so
     // `QAction::shortcut()` works whether or not the action lands
     // in a menu bar.
@@ -997,7 +850,7 @@ MainWindow::MainWindow(
     addAction(mActionCloseTab);
 
     mActionNextTab = new QAction(tr("Next Tab"), this);
-    // FR-9: mirror next/previous with `Ctrl+PageDown` / `Ctrl+PageUp`.
+    // Mirror common browser-style tab navigation shortcuts.
     // Qt tolerates duplicate sequences on a single `QAction` (both
     // fire the same slot); the primary `Ctrl+Tab` binding stays
     // first so the shortcut sheet and menu render it, and the
@@ -1020,7 +873,7 @@ MainWindow::MainWindow(
     addAction(mActionNextTab);
 
     mActionPreviousTab = new QAction(tr("Previous Tab"), this);
-    // FR-9 mirror (see next-tab note above).
+    // Mirror common browser-style tab navigation shortcuts.
     mActionPreviousTab->setShortcuts(
         {QKeySequence(QStringLiteral("Ctrl+Shift+Tab")), QKeySequence(QStringLiteral("Ctrl+PgUp"))}
     );
@@ -1036,15 +889,10 @@ MainWindow::MainWindow(
     addAction(mActionPreviousTab);
 
     mActionOpenInNewTab = new QAction(tr("Open in New Tab..."), this);
-    // Deliberately no shortcut (see review-2 H1 rationale above).
+    // No shortcut because Ctrl+Shift+T already controls Follow tail.
     mActionOpenInNewTab->setToolTip(tr("Open one or more log files in a new tab, without touching the current tab."));
     connect(mActionOpenInNewTab, &QAction::triggered, this, [this]() {
-        // Phase-6 review-3 finding #8 fix: prompt for files FIRST,
-        // then create the new tab. Earlier revisions did
-        // `AddNewTab` unconditionally and forwarded to `OpenFiles`;
-        // cancelling the dialog then left an empty "Untitled" tab
-        // behind. Sampling `keyboardModifiers` before the modal
-        // mirrors `OpenFiles`'s Shift-for-Replace convention.
+        // Prompt first so cancellation does not leave an empty tab.
         const bool forceReplace = QGuiApplication::keyboardModifiers().testFlag(Qt::ShiftModifier);
         const QStringList files = QFileDialog::getOpenFileNames(
             this,
@@ -1383,14 +1231,7 @@ MainWindow::MainWindow(
             const auto &config = mModel->Configuration();
             mHighlightRulesEditor = new HighlightRulesEditor(config.highlightRules, config.columns, mTheme, this);
             mHighlightRulesEditor->setWindowFlag(Qt::Window, true);
-            // Task 5.9: capture the originating session so a
-            // phase-6 tab switch to a different session can close
-            // this editor (`RebindSharedDocks` walks these guards
-            // and closes any dialog whose origin != new active).
-            // Guarding the SAVE callback below with the same
-            // origin makes the fan a no-op if the user manages to
-            // trigger a Save mid-swap while the editor is still
-            // being torn down.
+            // Bind the editor and its save callback to the session that opened it.
             mHighlightRulesEditorSession = mSession;
             connect(
                 mHighlightRulesEditor.data(),
@@ -1573,7 +1414,7 @@ MainWindow::MainWindow(
     statusBar()->addPermanentWidget(mClearFiltersStatusButton);
     // Route through the existing action so its enable/disable
     // logic stays the single source of truth and the menu, the
-    // toolbar (when it lands), and this button all stay in lock-
+    // menus and this button stay in lock-
     // step.
     connect(mClearFiltersStatusButton, &QPushButton::clicked, ui->actionClearAllFilters, &QAction::trigger);
 
@@ -1703,25 +1544,10 @@ MainWindow::MainWindow(
     // once now that both ends are wired.
     UpdateSortStatus();
 
-    // Task 6.5 (phase-6 review-1 B1 fix): install every scoped
-    // session / model / view subscription now that all docks,
-    // toolbars, and actions the bag connects reference have been
-    // constructed. Same helper `OnActiveTabChanged` calls after
-    // `mSessionConnections.Clear()` on a tab switch, so ctor and
-    // switch paths share one source of truth. Called BEFORE
-    // `RebindSharedDocks` so the shared-dock rebind lands with
-    // every shell-side subscription live.
+    // Install scoped subscriptions only after all receivers exist.
     InstallActiveSessionConnections();
 
-    // Task 5.2: initial shared-dock rebind. Drives every
-    // refactored dock (Find, Parse Errors, Histogram, Record
-    // Detail, Anchors) into its bound state against the sole
-    // active session AND destroys any session-scoped dialog
-    // whose origin no longer matches. Phase 6's tab-switch
-    // driver reuses the same entry point after an active-tab
-    // change, which is why the ctor threads the initial context
-    // through `activeSessionBindContext()` -- same code path,
-    // same ordering, one contract.
+    // Use the same ordered dock binding for construction and tab switches.
     RebindSharedDocks(activeSessionBindContext());
 
     // Timezone database initialisation lives in
@@ -1733,26 +1559,14 @@ MainWindow::MainWindow(
 
 MainWindow::~MainWindow()
 {
-    // Task 4.2: disconnect every scoped session / model / view
-    // subscription BEFORE we touch shared session state below. Any
-    // signal that queued between the last event-loop turn and this
-    // destructor turn (e.g. `LogModel::streamingFinished` from the
-    // reset below) would otherwise fire into a half-destructed
-    // shell whose downstream state has already been zeroed.
+    // Disconnect scoped callbacks before any session teardown can emit.
     //
     // Direct bag Clear rather than routing through the
     // `UnbindActiveSessionForTest()` public entry: this is the
     // destructor's own teardown, not a test seam, and going
     // through a `ForTest` alias would read as accidental.
     mSessionConnections.Clear();
-    // Post-tabs review-round bug #M5 fix: reap per-tab
-    // persistent connections BEFORE the tab-widget and mTabs
-    // child sweep destroys `LogSession`s. Otherwise a sibling
-    // `~LogSession` that ever emits during teardown would
-    // re-enter `RefreshTabChrome` / `HandleStreamingFinishedFor`
-    // and read freed shell members. Latent today because
-    // `~LogModel` doesn't emit, but "hostile subscriber
-    // implementation detail" is not a stable invariant.
+    // Per-tab callbacks must not outlive shell members they access.
     mPerTabConnections.Clear();
 
     // Defensive backstop in case any destruction path skipped
@@ -1772,7 +1586,7 @@ MainWindow::~MainWindow()
     // members whose `SessionSwitchScope` suppresses the synchronous
     // `streamingFinished(Cancelled)`. Anchor-driven temp-file
     // unlinks then run in mmap-safe order. `mModel` is now owned by
-    // `mSession` (task 2.1; review finding #12). The alias stays
+    // `mSession`. The alias stays
     // valid because `mSession` is a QObject child of *this window*,
     // and the five model-quintet members (`mAnchors`,
     // `mHighlights`, `mModel`, `mRowOrderProxyModel`,
@@ -1787,25 +1601,7 @@ MainWindow::~MainWindow()
         mModel->Reset();
     }
 
-    // Task 6.1: request-stop on sibling tabs' workers so their
-    // background futures are notified to abort as soon as the
-    // worker polls its stop token. Only the currently-active tab
-    // was covered by the `CancelInFlight*` calls above (they read
-    // the shell aliases).
-    //
-    // Note (phase-6 review-2 low-priority correction): this loop
-    // runs AFTER `mModel->Reset()` above and does NOT synchronously
-    // drain the sibling watchers -- an ordering that is safe only
-    // because `~LogSession()` in `app/src/log_session.cpp:157-177`
-    // does an explicit `waitForFinished()` on both the export and
-    // decompression watchers, and the Qt child-destruction sweep
-    // that follows this destructor destroys views (the shell's
-    // grand-children) before it destroys sibling sessions. The
-    // earlier comment claimed this "matches the cancel-before-
-    // reset ordering" of the active tab; that framing was
-    // misleading: the sibling worker drain relies on
-    // `~LogSession()`'s own wait, not on any ordering in this
-    // function body.
+    // Request sibling cancellation; each LogSession destructor performs the blocking drain.
     for (const auto &tab : mTabs)
     {
         if (tab == nullptr)
@@ -1835,42 +1631,14 @@ MainWindow::~MainWindow()
     delete ui;
 }
 
-// -----------------------------------------------------------------------
-// Task 4.2 (review-5): active-session alias plumbing
-//
-// Phase 4 hosts exactly one session for the window's lifetime, so this
-// block only carries alias management + the destructor's bag teardown:
-//
-//   * `SetActiveSessionAliases(session, view)` (private) is the single
-//     source of truth for the shell's model / view alias fields. The
-//     ctor calls it twice -- once with `view == nullptr` before
-//     `mSessionView` is constructed, once with both non-null after --
-//     so the eight-plus assignments live in one method instead of
-//     inline in the ctor twice over.
-//   * `UnbindActiveSessionForTest()` (public) is a thin wrapper around
-//     `mSessionConnections.Clear()` for the Unbind coverage pins;
-//     production `~MainWindow` clears the bag directly.
-//
-// Phase 6 realises the tab-switch entry point via `OnActiveTabChanged`,
-// which clears the prior pair's scoped subscriptions, calls
-// `SetActiveSessionAliases`, and reinstalls the full subscription set
-// against the new pair via `InstallActiveSessionConnections()` -- the
-// same helper the ctor invokes to seed the initial tab (post-tabs
-// review pin B1). Phase 4 deliberately did NOT expose a public bind
-// entry -- an earlier `BindActiveSession` was a foot-gun (it cleared
-// the bag without reinstalling), and removing it entirely was safer
-// than shipping an aspirational API that bricks the window.
-// -----------------------------------------------------------------------
+// Active-session aliases and scoped subscriptions switch as one unit.
 
 std::vector<LogSession *> MainWindow::hostedSessions() const
 {
     // Walk `mTabs` so callers that need every hosted session
     // (window-modified aggregation, global-preference broadcast,
     // closeEvent PreCheckClose) see all tabs, not just the active
-    // one (task 6.1). Falls back to the alias when `mTabs` is
-    // empty (mid-construction / test fixtures that bypass the
-    // ctor's tab plumbing) so single-session pre-phase-6 callers
-    // stay working.
+    // Fall back to the active alias during construction and narrow test setup.
     std::vector<LogSession *> sessions;
     if (!mTabs.empty())
     {
@@ -1900,8 +1668,7 @@ void MainWindow::SetActiveSessionAliases(LogSession *session, LogSessionView *vi
     }
 
     // Session-quintet aliases. Refresh unconditionally so callers
-    // that toggle between different LogSession instances (phase 6's
-    // tab switch) always land on the new session's models.
+    // Refresh all model aliases together on every tab switch.
     mSession = session;
     mAnchors = session->Anchors();
     mHighlights = session->Highlights();
@@ -1928,20 +1695,13 @@ void MainWindow::UnbindActiveSessionForTest() noexcept
 {
     // Idempotent: `ScopedConnections::Clear` handles an already-empty
     // bag and disconnects only valid connections. Also called
-    // directly by `~MainWindow` -- see the header for the phase-4
-    // scope caveat around production use.
+    // Test teardown uses the same idempotent bag clear.
     mSessionConnections.Clear();
 }
 
 LogSession *MainWindow::LogSessionForDecompressionWatcher(const QObject *watcherSender) const
 {
-    // Post-tabs review-round bug #3: origin was previously read
-    // from the shell-wide `mDecompressionPollOriginSession` field,
-    // which is overwritten every time a new decompression begins.
-    // Two concurrent decompressions on different tabs collapsed
-    // their attribution onto the last-started op, so whichever
-    // completed first was misrouted. Walking `hostedSessions()`
-    // is O(N tabs) but N is small; correctness beats micro-cost.
+    // Match watcher ownership directly because decompressions may overlap across tabs.
     if (watcherSender == nullptr)
     {
         return nullptr;
@@ -1965,7 +1725,7 @@ LogSession *MainWindow::LogSessionForExportWatcher(const QObject *watcherSender)
     // Symmetric with `LogSessionForDecompressionWatcher`. Currently
     // unused by `OnExportFinished` (which reads `sender()->parent()`
     // because export watchers are `new ExportWatcher(sessionOwner)`);
-    // provided for tests + future callers that need the same
+    // provided for tests and callers that need the same
     // hosted-sessions walk without relying on the parent link.
     if (watcherSender == nullptr)
     {
@@ -2051,143 +1811,45 @@ MainWindow::CompletionOriginSwapScope::~CompletionOriginSwapScope()
 
 SessionBindContext MainWindow::activeSessionBindContext() const
 {
-    // Convenience wrapper around the factory (task 5.1). The
-    // factory tolerates null `session` / `view`, so a mid-teardown
-    // read that finds either alias already null resolves to
-    // `MakeUnbound()` without extra branching here.
+    // The factory maps missing teardown-time aliases to an unbound context.
     return SessionBindContext::FromSessionAndView(mSession, mSessionView, mTheme);
 }
 
 void MainWindow::RebindSharedDocks(const SessionBindContext &context)
 {
-    // Deterministic Bind/Unbind orchestrator (task 5.2).
-    //
-    // Phase-5 scope: per-dock `Bind(SessionBindContext)` slots land
-    // subtask-by-subtask. Docks that have NOT yet been refactored
-    // continue to bind at construction time and are skipped here.
-    // Each subtask lifts one dock into this orchestrator by:
-    //
-    //   1. Adding an explicit `Bind(SessionBindContext)` /
-    //      `Unbind()` API to the dock class.
-    //   2. Removing the dock-owned state that used to live on the
-    //      dock (saved into the outgoing session on Bind, restored
-    //      from the incoming session on Bind).
-    //   3. Adding the `dock->Bind(context)` call below in the
-    //      documented fixed order.
-    //
-    // Phase 6 will call this from the workspace's tab-switch driver
-    // after unbinding the prior active context and before refreshing
-    // active-tab chrome (`UpdateWindowTitle`, `UpdateStreamingStatus`,
-    // ...).
-    //
-    // A context whose `IsBound()` is false (typically
-    // `SessionBindContext::MakeUnbound()`) drives every dock into
-    // its "no active session" state -- persistent indexes cleared,
-    // debounce timers cancelled, session-specific chrome hidden.
-    //
-    // The orchestrator itself is intentionally trivial: it exists
-    // as the single Bind entry point so phase 6 does not have to
-    // reason about dock construction order or per-dock APIs. When
-    // every dock has landed its Bind slot, the ctor's inline dock
-    // construction stops passing session-owned pointers at
-    // construction time and hands them through this call instead.
+    // Bind state-owning docks before anchors, then reconcile session-scoped dialogs.
 
-    // Order matches the docstring on `RebindSharedDocks`:
-    //   (1) docks whose state is authoritative on the session
-    //       (find / parse-errors / histogram / record-detail);
-    //   (2) anchors dock;
-    //   (3) session-scoped dialogs (below).
-    //
-    // Origin-review fix (finding L1): the anchors dock was
-    // previously wedged between parse-errors and histogram. Not
-    // functional today (the anchors dock does not depend on the
-    // other docks' post-bind state) but phase-6's tab-switch
-    // scaffolding pins this order in the docstring, so mismatched
-    // code and docs are load-bearing drift.
-
-    // Task 5.4: parse-errors dock. Snapshots the outgoing session's
-    // log and replays the incoming session's log so a phase-6 tab
-    // switch back to a previously-bound session restores every
-    // entry, the running counts, and the auto-raise latch exactly.
+    // Preserve each session's parse-error log and presentation state.
     if (mParseErrorsDock != nullptr)
     {
         mParseErrorsDock->Bind(context);
     }
 
-    // Task 5.3: find dock. Snapshots the outgoing session's query
-    // state (query text + wildcards/regex toggles) into its
-    // SessionFindQueryState, restores the incoming session's state,
-    // and cancels the debounce so a stale-model MatchCountRequested
-    // cannot slip in between the model swap and the debounce re-arm.
+    // Cancel find debounce while swapping its session-owned query state.
     if (mFindDock != nullptr)
     {
         mFindDock->Bind(context);
     }
 
-    // Task 5.6: histogram dock. Snapshots the outgoing session's
-    // bucket-size pin into its SessionHistogramState, cancels the
-    // coalesce timer, swaps the HistogramModel's guarded source
-    // pointers, and reapplies the incoming session's pin so the
-    // auto-picker inside the swap's rebuild cannot silently
-    // override the user's choice. Defers the full-model walk when
-    // the dock is currently hidden.
+    // Restore histogram pin state after swapping guarded model pointers.
     if (mHistogramDock != nullptr)
     {
         mHistogramDock->Bind(context);
     }
 
-    // Task 5.7: record-detail dock. Clears the persistent model
-    // index BEFORE the source swap, drops the anchor/model
-    // subscriptions atomically via ScopedConnections, refreshes
-    // the guarded aliases from the new context, re-subscribes,
-    // and restores the incoming session's pinned row (or shows
-    // the "no row picked" placeholder when there is nothing to
-    // restore).
+    // Clear persistent indexes before swapping record-detail models.
     if (mRecordDetailDock != nullptr)
     {
         mRecordDetailDock->Bind(context);
     }
 
-    // Task 5.5: anchors dock. Disconnects the outgoing session's
-    // anchor / model / theme subscriptions atomically, closes any
-    // inline note editor, drops every tree item, refreshes the
-    // guarded aliases from the new context, re-installs the same
-    // subscriptions against the new pointers, and refreshes the
-    // tree from the new session's anchor entries.
+    // Rebuild anchor subscriptions and rows against the incoming session.
     if (mAnchorsDock != nullptr)
     {
         mAnchorsDock->Bind(context);
     }
 
-    // Task 5.8 / 5.9: modeless session-specific dialogs. Each dialog
-    // captures a `QPointer<LogModel>` (columns / diagnostics) or a
-    // `HighlightRuleSet *` (highlight editor) at construction time,
-    // which came from the shell alias `mModel` at open time. Those
-    // captures stay bound to the ORIGINATING session for the
-    // dialog's lifetime. When the active session changes we DESTROY
-    // the dialog (not just close it): our lazy-reopen path is
-    // `if (!m*Dialog) { new *Dialog(mModel, ...) }`, and a hidden-
-    // but-alive dialog would take the "already constructed" branch
-    // on reopen and `Refresh()` its stale captured model. Origin-
-    // review fix: use `deleteLater()` + explicit null so reopen
-    // always constructs against the currently-active session's
-    // `mModel` / config.
-    //
-    // Guards:
-    //   * `origin.isNull()` catches sessions destroyed out-of-
-    //     order (the pointer nulled by `~LogSession`).
-    //   * `origin != context.session` catches the tab-switch case
-    //     (the session still exists but is no longer active).
-    //
-    // A `MakeUnbound()` context (`context.session.isNull()`) is
-    // treated as a full unbind: every session-scoped dialog goes
-    // because the ONLY session it might legitimately have targeted
-    // is the one being unbound.
-    //
-    // The `QPointer` on `m*Dialog` (fields) reflects the deletion
-    // asynchronously; we ALSO `clear()` here so a synchronous
-    // reopen from user code queued behind this call still sees a
-    // null pointer and takes the reconstruction path.
+    // Destroy dialogs whose captured model belongs to another session.
     auto destroyIfOriginMismatched = [&]<class T>(QPointer<T> &dialog, QPointer<LogSession> &origin) {
         if (dialog.isNull())
         {
@@ -2219,9 +1881,7 @@ void MainWindow::RebindSharedDocks(const SessionBindContext &context)
     destroyIfOriginMismatched(mHighlightRulesEditor, mHighlightRulesEditorSession);
 }
 
-// -----------------------------------------------------------------------
-// Task 6.x: tab lifecycle
-// -----------------------------------------------------------------------
+// Tab lifecycle.
 
 int MainWindow::TabCount() const noexcept
 {
@@ -2321,30 +1981,7 @@ void MainWindow::InstallPerTabPersistentConnections(LogSession *session)
     {
         return;
     }
-    // Persistent per-tab subscriptions. Not routed through the
-    // scoped bag because that bag is only reinstalled for the
-    // ACTIVE tab, and these connections need to fire for
-    // background tabs too:
-    //
-    //   1. `presentationChanged` -> tab chrome refresh so a tab's
-    //      label / tooltip / operation-state glyph tracks its own
-    //      session even while backgrounded (phase-6 review-1 H3).
-    //   2. `filtersDirtyChanged` -> window title update so a
-    //      background edit still marks the window modified
-    //      (phase-6 review-1 H2).
-    //   3. `streamingFinished` on the session's model -> origin-
-    //      bound completion dispatch (task 7.6). Active-tab
-    //      completions run the full `OnStreamingFinished` body
-    //      (status bar, chaining, autosave, parse-error surface).
-    //      Background completions settle the origin's mode /
-    //      source-waiting latch and refresh its tab chrome
-    //      silently so the tab strip shows the finished state
-    //      even before the user switches back.
-    // Post-tabs review-round bug #M5 fix: wrap the connects in
-    // `mPerTabConnections` so `~MainWindow` reaps them before
-    // sibling `LogSession`s are destroyed by Qt's child sweep.
-    // See the header docstring on `mPerTabConnections` for
-    // the full latent-UAF rationale.
+    // These callbacks must fire for background tabs and be cleared before shell teardown.
     mPerTabConnections +=
         connect(session, &LogSession::presentationChanged, this, [this, session]() { RefreshTabChrome(session); });
     mPerTabConnections +=
@@ -2370,16 +2007,7 @@ void MainWindow::HandleStreamingFinishedFor(LogSession *origin, StreamingResult 
     {
         return;
     }
-    // Post-tabs review-round bug #2 fix: previously this handler
-    // did only a minimal `SourceWaiting` + mode reset for
-    // background completions, which stalled multi-file loads,
-    // dropped live-tail promotion, skipped autosave, and
-    // silently discarded parse errors. Now it drives the full
-    // `OnStreamingFinished` pipeline against the origin session
-    // via `CompletionOriginSwapScope` (which rebinds shell
-    // aliases to the origin for the duration and restores the
-    // actually-active tab's chrome on scope exit). Shell-only
-    // UI writes are gated via `PostStatusMessage`.
+    // Run the complete pipeline against the origin, including queue chaining and autosave.
     LogSessionView *originView = LogSessionViewForSession(origin);
     CompletionOriginSwapScope swap(*this, origin, originView);
     OnStreamingFinished(result);
@@ -2396,9 +2024,7 @@ void MainWindow::ApplyTableChromeToView(LogSessionView *view)
     {
         return;
     }
-    // Grid + scroll modes: the ctor set these on the initial view
-    // only, so new tabs used to render as horizontally-jumping
-    // per-item scroll views (phase-6 review-1 H4).
+    // Apply identical scrolling behavior to every tab.
     table->setShowGrid(true);
     table->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     table->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
@@ -2425,16 +2051,7 @@ void MainWindow::ApplyTableChromeToView(LogSessionView *view)
 
 void MainWindow::RebuildFilterMenuFromActiveSession()
 {
-    // Task 6.5 / phase-6 review-2 M1 fix. Called during
-    // `OnActiveTabChanged` step 7 to switch the shell's Filters
-    // menu from the OUTGOING tab's leaf list to the INCOMING
-    // tab's leaf list without mutating either session.
-    //
-    // Difference from `ResetSimpleFilterState()`: that helper
-    // wipes the session's `SimpleLeaves()` (destructive) as part
-    // of `ClearAllFilters` / `NewSession`. On a tab switch we
-    // want the incoming session's filters preserved -- only the
-    // shell's UI mirror needs a rebuild.
+    // Rebuild only the menu mirror; tab switching must not mutate filter state.
     if (ui == nullptr || ui->menuFilters == nullptr)
     {
         return;
@@ -2515,45 +2132,18 @@ void MainWindow::CloseTabAtIndex(int index)
         return;
     }
 
-    // Last-tab-closes-window (PRD FR-30 / task 6.4). Route through
-    // `QWidget::close` so `closeEvent` runs -- auto-save flush,
-    // worker drain, and the window's aggregate close semantics all
-    // live there.
+    // Route the final tab through window close so normal save and drain logic runs.
     if (mTabWidget->count() <= 1)
     {
         close();
         return;
     }
 
-    // Task 6.11 (MVP): auto-save the closing session before
-    // tearing it down so a restorable-in-place session can be
-    // reopened from Recent Sessions. Full FR-68/FR-70 prompt
-    // handling (unpreservable ephemeral -> Save / Discard /
-    // Cancel dialog) lands as a followup on top of this MVP.
-    //
-    // Phase-6 review-1 B3 fix: DO NOT activate the closing tab
-    // unconditionally. Two-tab tests masked a bug where closing a
-    // background tab yanked focus onto it via `setCurrentIndex`,
-    // then `removeTab` picked a neighbour that was neither the
-    // previous active nor the closed tab. Instead:
-    //   (a) remember the currently-active tab up front,
-    //   (b) if dirty auto-save is needed, briefly activate the
-    //       closing tab (the shell's `AutoSaveSessionSnapshot`
-    //       reads the active aliases), then restore the previous
-    //       active immediately,
-    //   (c) if the closing tab was itself the active one, pick a
-    //       stable neighbour (prefer the tab that would land under
-    //       Qt's default post-removal fallback so no gratuitous
-    //       swap fires).
+    // Preserve the active tab while briefly binding a dirty background tab for autosave.
     const int previousActiveIndex = mTabWidget->currentIndex();
     const bool closingActiveTab = (index == previousActiveIndex);
     LogSession *closingSessionMutable = SessionAtTab(index);
-    // Task 7.9 / FR-68: prompt before discarding an ephemeral
-    // (stdin / network / live-tail without a restorable file
-    // source) dirty session. Cancel leaves the tab intact. The
-    // prompt runs BEFORE the auto-save + worker cancel so a
-    // cancelled close does not leave the session in a partially-
-    // torn-down state.
+    // Confirm unpreservable dirty state before autosave or worker cancellation.
     if (!ConfirmDiscardEphemeralIfDirty(closingSessionMutable))
     {
         return;
@@ -2589,7 +2179,7 @@ void MainWindow::CloseTabAtIndex(int index)
         DetachAutoSaveUuid();
     }
 
-    // Ownership hand-off (phase-6 review-2 M3 fix):
+    // Preserve index validity while ownership moves out of the tab record:
     //   (1) cancel in-flight workers on the closing session,
     //   (2) transfer view + session out of the record,
     //   (3) rewrite `mTabs`,
@@ -2600,17 +2190,7 @@ void MainWindow::CloseTabAtIndex(int index)
     //       callbacks unwind on the event loop rather than mid-
     //       destructor.
     //
-    // Ordering rationale: earlier revisions did step (3) before
-    // step (1), which broke the `mTabs` <-> `mTabWidget` index
-    // mirror across the cancel step. `CancelInFlightDecompression`
-    // and `CancelInFlightExport` can synchronously emit
-    // `presentationChanged` via `ClearApplyEmbeddedBundleConfig`
-    // (`main_window.cpp` C++ chain: cancel -> presentationChanged
-    // -> `RefreshTabChrome` -> `TabIndexForSession`). Running the
-    // cancel while `mTabs` already had the closing entry erased
-    // returned a shifted index and wrote the outgoing label onto
-    // whichever tab now occupied that slot. Cancel first, THEN
-    // mutate the vector.
+    // Cancel before erasing because cancellation can synchronously refresh tab chrome.
     LogSession *session = mTabs[index] ? mTabs[index]->session.data() : nullptr;
     LogSessionView *view = mTabs[index] ? mTabs[index]->view.data() : nullptr;
     if (session != nullptr)
@@ -2664,11 +2244,7 @@ void MainWindow::OnActiveTabChanged(int newIndex)
         return;
     }
 
-    // Same-session no-op: Qt can fire `currentChanged` with the
-    // already-current index during tab reordering. Bail early so
-    // we do not tear down and reinstall a full subscription bag
-    // for nothing (also matches the same-session short-circuit
-    // pattern the shared docks enforce in phase 5).
+    // Reordering can report the current session again; avoid a redundant rebind.
     if (newSession == mSession)
     {
         return;
@@ -2705,34 +2281,13 @@ void MainWindow::OnActiveTabChanged(int newIndex)
     // (4) Re-point aliases at the new tab's session + view.
     SetActiveSessionAliases(newSession, newView);
 
-    // (5) Reinstall the scoped session subscriptions against the
-    // new pair (task 6.5). NB: the ctor still installs its ~50
-    // connects inline; on tab switch we call a helper that runs
-    // the ones that matter for cross-tab-safe presentation +
-    // chrome behaviour. Connects whose slot bodies read the shell
-    // aliases at trigger time (`UpdateRowsShownStatus`, ...) end
-    // up correct either way because `SetActiveSessionAliases`
-    // already re-pointed the aliases at the new pair; the
-    // reinstall matters for the connects whose slot bodies
-    // ACT on model / session events (parse-error routing,
-    // rotation flash, streaming completion) so they fire only for
-    // the currently-active tab.
+    // (5) Reinstall the full scoped subscription set against the new pair.
     InstallActiveSessionConnections();
 
     // (6) Rebind every shared dock against the new context.
     RebindSharedDocks(activeSessionBindContext());
 
-    // (7) Refresh window / status chrome AND the shell-owned UI
-    // that mirrors the active session's per-tab state (phase-6
-    // review-2 M1 fix): the Filters menu carries one QAction per
-    // filter, `actionClearAllFilters` derives its enabled state
-    // from the filter count, column visibility flags live on the
-    // session's model, and the level-cell delegate targets the
-    // now-active view's table. Without these re-applications a
-    // switch would leave the previous tab's filter list in the
-    // menu, an empty new view rendering with the previous view's
-    // hidden columns, and the icon-mode level cell pointing at the
-    // wrong table.
+    // (7) Refresh shell-owned UI mirrors from the new active session.
     UpdateWindowTitle();
     UpdateStreamingStatus();
     UpdateRowsShownStatus();
@@ -2779,9 +2334,7 @@ void MainWindow::RefreshTabChrome(const LogSession *session)
         return;
     }
 
-    // Task 6.6 / 6.7: label + tooltip derived from the session
-    // presentation snapshot so live state (streaming, dirty,
-    // errors) surfaces in the tab strip.
+    // Derive tab chrome from the owning session, including background state.
     const SessionPresentationSnapshot snapshot = session->PresentationSnapshot();
 
     QString label = snapshot.shortLabel;
@@ -2790,8 +2343,7 @@ void MainWindow::RefreshTabChrome(const LogSession *session)
         label = tr("Untitled");
     }
 
-    // Non-color-only indicators so the label still reads without
-    // colour cues (PRD FR-32). Live and paused live-tail sessions
+    // Non-color-only indicators keep status visible without colour.
     // get a leading marker; dirty sessions get a trailing marker.
     // The Qt-standard `[*]` place-holder is reserved for the
     // window title, not tab titles, so we spell the dirty marker
@@ -2858,28 +2410,12 @@ void MainWindow::RefreshTabChrome(const LogSession *session)
     }
     mTabWidget->setTabToolTip(index, tooltip);
 
-    // Accessibility: `QTabBar` in Qt 6.x does not expose a
-    // `setTabAccessibleName` API; the tab text itself is what a
-    // screen reader announces. That includes the operation-state
-    // prefix glyphs (busy dot, disconnected symbol, ...) and the
-    // dirty / parse-error suffixes we composed above, which is
-    // the intended a11y contract -- users hear the status along
-    // with the source label. Phase-6 review-1 note: an earlier
-    // draft of this comment incorrectly claimed the glyphs were
-    // dropped from the announced label.
+    // QTabBar exposes visible tab text to accessibility; Qt has no per-tab name setter.
 }
 
 void MainWindow::InstallActiveSessionConnections()
 {
-    // Task 6.5 / phase-6 review-1 B1 fix: single source of truth
-    // for the scoped session / model / view subscription bag. The
-    // ctor calls this helper at the end of construction (after
-    // every referenced dock, toolbar, and action exists), and
-    // `OnActiveTabChanged` calls it again after
-    // `mSessionConnections.Clear()` on a tab switch. This means
-    // both the initial install and every subsequent tab-switch
-    // install use exactly the same connect set -- no more
-    // "phase-4 wrapped this, phase-6 forgot to reinstall" bugs.
+    // Construction and tab switching install the same scoped connection set.
     //
     // Contract:
     //   * every connect below is prefixed with
@@ -2916,8 +2452,7 @@ void MainWindow::InstallActiveSessionConnections()
     // `presentationChanged` are wired PERSISTENTLY per-tab (in the
     // ctor for the initial tab and in `AddNewTab` for later tabs)
     // so background tabs still feed the window's aggregate dirty
-    // marker and refresh their own tab chrome (phase-6 review-1 H2
-    // and H3 fixes).
+    // marker and refresh their own tab chrome.
     mSessionConnections += connect(mSession, &LogSession::rotationFlashChanged, this, [this](bool /*active*/) {
         UpdateStreamingStatus();
     });
@@ -3177,14 +2712,7 @@ void MainWindow::InstallActiveSessionConnections()
         mSession->SetStreamingErrorCount(count);
         UpdateStreamingStatus();
     });
-    // Post-tabs review-round bug #2: the bag-scoped
-    // `streamingFinished -> OnStreamingFinished` connection was
-    // deleted here. Streaming completion is now delivered exactly
-    // once via the per-tab persistent connection installed by
-    // `InstallPerTabPersistentConnections` (`HandleStreamingFinishedFor`,
-    // which routes through `OnStreamingFinished` under
-    // `CompletionOriginSwapScope`). Keeping both paths caused
-    // the active session to double-handle its own completion.
+    // Completion uses only the persistent origin-bound connection to avoid duplicate handling.
     mSessionConnections += connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
     mSessionConnections += connect(mModel, &LogModel::sourceStatusChanged, this, &MainWindow::OnSourceStatusChanged);
     mSessionConnections += connect(mModel, &LogModel::columnHealthChanged, this, &MainWindow::UpdateDiagnosticsStatus);
@@ -3198,11 +2726,7 @@ void MainWindow::InstallActiveSessionConnections()
 
 void MainWindow::AggregateWindowModified()
 {
-    // Window is modified iff any hosted session is dirty (task 4.6).
-    // Single-session windows resolve to the active session's
-    // `IsFiltersDirty()` value; multi-tab windows OR every session's
-    // marker so a background dirty tab still lights the window's
-    // `[*]` proxy title.
+    // A dirty background session still marks the containing window modified.
     bool anyDirty = false;
     for (const LogSession *session : hostedSessions())
     {
@@ -3220,8 +2744,8 @@ void MainWindow::AggregateWindowModified()
 // NOLINTNEXTLINE(readability-make-member-function-const)
 void MainWindow::BroadcastRotationHistoryPreference(bool enabled)
 {
-    // Fan a process-global preference change to every hosted session
-    // (task 4.7). Per-session filtering (CLI per-window opt-out,
+    // Fan the process-wide preference to every hosted session. Per-session filtering
+    // (CLI per-window opt-out,
     // source-descriptor `followRotationSiblings`) happens inside
     // `LogSession::ShouldAutoDetectRotationHistory`; this method
     // simply broadcasts the "user just flipped the setting" event so
@@ -3239,14 +2763,7 @@ void MainWindow::BroadcastRotationHistoryPreference(bool enabled)
         {
             continue;
         }
-        // Write the preference bit whenever the source has a value
-        // -- the pre-migration `OnRotationHistoryPrefToggled` did
-        // it unconditionally, so a session whose `Model()` happens
-        // to be null (test fixtures, mid-teardown races) must
-        // still see the flip. Gate ONLY the configuration-manager
-        // mirror on `Model() != nullptr` (review-5 finding #4:
-        // the previous over-tight guard silently dropped the bit
-        // on a null model).
+        // Source state remains writable during teardown even when its model is unavailable.
         currentSource->followRotationSiblings = enabled;
         if (session->Model() != nullptr)
         {
@@ -3293,9 +2810,7 @@ bool MainWindow::InitializeTimezoneDatabase()
 
 namespace
 {
-/// True iff the payload carries at least one local file URL.
-/// Refusing remote URLs flips the cursor to the no-drop indicator,
-/// matching Explorer/Finder UX.
+// Accept only payloads containing local file URLs.
 bool MimeHasLocalFileUrl(const QMimeData *mime)
 {
     if (mime == nullptr || !mime->hasUrls())
@@ -3621,7 +3136,7 @@ void MainWindow::RestoreLastSessionFromPath(const QString &jsonPath)
             // still owns the stem) and (b)
             // `RestorableActiveSessionUuid()` non-empty (the
             // session can actually be reopened on next launch -- a
-            // legacy NetworkStream entry would create a fan-restore
+            // non-restorable NetworkStream entry would create a restore
             // loop otherwise). The latch follows the bool return so
             // a contended / disabled publish doesn't claim a
             // publish that never happened.
@@ -3698,12 +3213,7 @@ void MainWindow::OpenRecentSession(const QString &uuid)
         return;
     }
 
-    // Task 6.8 (phase-6 review-1 H1 fix, refactored in 7.4/7.5):
-    // Recent Sessions opens in a new foreground tab by default so
-    // the currently-active tab is preserved. `EnsureFreshActiveTab`
-    // consolidates the "blank landing tab" heuristic used by every
-    // destructive-open path (stdin / log-stream / network / recent
-    // / open-in-new-tab). When it does NOT add a tab (active tab
+    // Preserve a busy active tab when opening a recent session. When the active tab
     // was already empty), we still route through `NewSession` to
     // detach the previous uuid and refresh the empty slot.
     const bool activeTabWasEmpty = (mSession != nullptr) && !mSession->CurrentSource().has_value() &&
@@ -3732,7 +3242,7 @@ void MainWindow::OpenRecentSession(const QString &uuid)
 
     // Pin the uuid before streaming. Publish gated by `Touch`
     // (index still owns @p uuid) and `RestorableActiveSessionUuid`
-    // (loaded session is round-trippable -- legacy NetworkStream
+    // (loaded session is round-trippable -- non-restorable NetworkStream
     // snapshots would otherwise create a fan-restore loop). The
     // latch follows the bool return; see `RestoreLastSessionFromPath`.
     mSession->SetAutoSaveUuid(uuid);
@@ -3767,7 +3277,7 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
     if (source.kind != loglib::LogConfiguration::Source::Kind::File)
     {
         // Network and stdin locators cannot be reopened. Stdin can
-        // still reach this branch through a manual or legacy bundle.
+        // still reach this branch through a manually created or older bundle.
         if (informIfNonFile)
         {
 #ifdef LOGAPP_BUILD_TESTING
@@ -3810,19 +3320,7 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
 
 void MainWindow::NewSession()
 {
-    // Post-tabs review-round bug #7 fix: NewSession destructively
-    // wipes the active tab's state (rows, filters, source, session
-    // mode, columns, sort). For an EPHEMERAL dirty investigation
-    // that cannot be auto-preserved via Recent Sessions (stdin,
-    // network, live-tail without a restorable file source) this
-    // silently discards user work. FR-68 was written for the
-    // Close Tab / Close Window paths but the reviewer flagged
-    // that File -> New Session shares the same "silent destroy"
-    // hazard. The same helper gates close-tab and window-close
-    // paths (`CloseTabAtIndex` + `closeEvent`); it short-circuits
-    // for sessions that are clean or safely restorable in-place,
-    // and honours `mSuppressDialogsForTest` so headless suites
-    // keep passing.
+    // New Session shares the close paths' dirty ephemeral-session confirmation.
     if (mSession != nullptr && !ConfirmDiscardEphemeralIfDirty(mSession))
     {
         return;
@@ -3897,8 +3395,7 @@ void MainWindow::NewSession()
     // Drop the Goto Timestamp / Goto Line sticky inputs: a value
     // that made sense in the outgoing session (zone, format, row
     // count) can be nonsense in a new one, and pre-populating the
-    // dialog with it just annoys the user. State migrated to the
-    // view in task 3.6; the clear runs against the view now.
+    // dialog with it just annoys the user. The state belongs to the view.
     if (mSessionView != nullptr)
     {
         mSessionView->ClearGotoStickyInputs();
@@ -4012,7 +3509,7 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
 
         // Bulk-replace anchors before RebuildFiltersFromConfiguration
         // mirrors the (now empty) `AnchorManager` back onto disk.
-        // Future-schema colour slots are clamped (not dropped) so
+        // Newer-schema colour slots are clamped (not dropped) so
         // the bookmark + note survive a downgrade; the remap count
         // is surfaced to the user.
         if (mAnchors != nullptr)
@@ -4127,8 +3624,7 @@ void MainWindow::OnRotationHistoryPrefToggled(bool enabled)
         settings.setValue(QStringLiteral("ui/autoDetectRotatedHistory"), enabled);
     }
 
-    // Task 4.7: fan the flip to every hosted session (single-tab
-    // today; multi-tab in phase 6). Each session drops its CLI
+    // Fan the preference change to every hosted session. Each session drops its CLI
     // opt-out latch and mirrors the value into its source
     // descriptor. Previously this only touched `mSession`, which
     // meant a background tab kept its stale preference on multi-tab
@@ -4601,8 +4097,7 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
     // drop the new generation's batches and emit a false cancellation.
     // Queuing preserves the required teardown-before-arm ordering.
     //
-    // Task 4.3 / PRD FR-44: capture the ORIGIN session via
-    // `QPointer` so a phase-6 tab switch between the queue and the
+    // Capture the origin with `QPointer` so a tab switch between the queue and the
     // invocation does not promote a sibling session's pending
     // primary against the newly-active tab. If the origin session
     // has been destroyed by then (tab closed) the callback silently
@@ -4631,7 +4126,7 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
     const SessionMode justFinishedMode = mSession->SessionMode();
     mSession->SetMode(SessionMode::Idle);
 
-    // Post-tabs review-round: the shell-singleton reset block
+    // The shell-global reset block
     // below (live-tail ticker, Pause / Follow-tail toolbar
     // actions, configuration UI enabled state, toolbar
     // visibility, status label, window title) belongs to the
@@ -4898,7 +4393,7 @@ bool MainWindow::ContinueOpenAfterPrepared(
     {
         mSession->SetMode(SessionMode::Static);
         mSession->ResetStreamingProgress();
-        // Post-tabs review-round: gate shell-singleton writes so a
+        // Gate shell-global writes so a
         // background-tab completion (running under
         // `CompletionOriginSwapScope`) does not disable the visible
         // tab's menus / toolbar. `ApplyDisplayOrder` operates on
@@ -4989,11 +4484,10 @@ void MainWindow::BeginAsyncDecompression(
     // also bumps `DecompressionGeneration()`; capture it below so
     // the poll timer's re-entry guard can distinguish "still the
     // same op" from "queued completion silently rearmed for the
-    // next file" (review finding #4).
+    // next file".
     mSession->SetDecompressionInFlight(true);
 
-    // Bind the poll timer to this operation's origin (review
-    // finding #2): the timer lambda captures `this` on the shell
+    // Bind the poll timer to this operation's origin; the timer lambda captures `this` on the shell
     // but reads mutable `mSession`/`mSessionView`, so once tabs
     // exist a tick fired after a tab switch would paint on the
     // wrong session. Snapshot the origin here; the tick body
@@ -5004,17 +4498,7 @@ void MainWindow::BeginAsyncDecompression(
     mDecompressionPollOriginView = mSessionView;
     mDecompressionPollGeneration = mSession->DecompressionGeneration();
 
-    // Post-tabs review-round bug #3 fix (FR-46 session-local
-    // mutation lock): disable the ORIGIN view so a second open
-    // on the SAME tab cannot race the in-flight worker. The
-    // per-session `LogSession::MutableDecompressionStopSource()`
-    // ownership guarantees siblings on other tabs stay
-    // independent (the shell dialog is now non-modal, so users
-    // can switch to and interact with any other tab). Mirrors
-    // the pattern used by `BeginAsyncExport` /
-    // `BeginSessionBundleExport`. Re-enable is symmetric via
-    // the origin-scoped teardown paths (`OnDecompressionFinished`
-    // + `CancelInFlightDecompression`).
+    // Disable only the origin view so sibling tabs remain usable during decompression.
     if (mDecompressionPollOriginView != nullptr)
     {
         mDecompressionPollOriginView->setEnabled(false);
@@ -5069,7 +4553,7 @@ void MainWindow::BeginAsyncDecompression(
     // Own our own watcher: `LogModel::mStreamingWatcher` asserts
     // its own future is idle before a parse job, so reusing it
     // would trip that assertion on the parse hand-off. The watcher
-    // itself is session-scoped (task 2.8; review finding #13) so
+    // itself is session-scoped so
     // tab/session teardown reaps it automatically; the connection
     // stays on `this` because the slot body operates on widgets.
     // `Qt::UniqueConnection` keeps this safe against repeated
@@ -5098,19 +4582,7 @@ void MainWindow::ShowDecompressionProgress()
     {
         return;
     }
-    // Post-tabs review-round bug #3 fix (FR-45 / FR-47): the
-    // dialog is NON-modal so the user can switch to other tabs
-    // in the same window, start a decompression on a sibling
-    // tab, and keep progress + cancel reachable after the
-    // switch. Previously `Qt::WindowModal` blocked the whole
-    // window (tab bar + siblings) once the deferred dialog
-    // materialised, violating FR-47's "one tab's export /
-    // decompress does not block siblings" and preventing FR-44
-    // multi-tab background completion. The per-session
-    // `LogSessionView::setEnabled(false)` from
-    // `BeginAsyncDecompression` still keeps the ORIGIN tab's
-    // mutation surface locked while the worker owns the model,
-    // so a second open on the SAME tab is still prevented.
+    // Non-modal progress keeps sibling tabs usable while the origin view remains locked.
     // Deferred `minimumDuration` show avoids a flash on small
     // files.
     if (!mDecompressionProgressDialog)
@@ -5123,8 +4595,8 @@ void MainWindow::ShowDecompressionProgress()
         mDecompressionProgressDialog->setAutoClose(false);
         mDecompressionProgressDialog->setAutoReset(false);
         connect(mDecompressionProgressDialog.data(), &QProgressDialog::canceled, this, [this]() {
-            // Cancel the ORIGIN session, not the shell's current
-            // `mSession` (review finding #2). Once tabs exist, the
+            // Cancel the origin session, not the shell's current
+            // `mSession`. Once tabs exist, the
             // dialog may still be modal-showing over one window
             // while another tab has already switched active
             // session -- cancelling `mSession->…StopSource()`
@@ -5151,8 +4623,7 @@ void MainWindow::ShowDecompressionProgress()
         mDecompressionPollTimer = new QTimer(this);
         mDecompressionPollTimer->setInterval(DECOMPRESSION_POLL_INTERVAL_MS);
         connect(mDecompressionPollTimer, &QTimer::timeout, this, [this]() {
-            // Origin binding (review finding #2): resolve the
-            // session and view captured at `Begin*` time rather
+            // Resolve the session and view captured at `Begin*` time rather
             // than the shell's current `mSession`/`mSessionView`
             // aliases. A tab switch that happens between two ticks
             // must not paint the ex-active tab's progress onto the
@@ -5164,8 +4635,8 @@ void MainWindow::ShowDecompressionProgress()
                 // safe way to render this tick; drop it.
                 return;
             }
-            // Generation guard (review finding #4):
-            // `QProgressDialog::setValue` on a window-modal dialog
+            // Ignore timer ticks from an earlier operation generation:
+            // `QProgressDialog::setValue` on a visible dialog
             // runs `processEvents()` internally, which can drain a
             // queued `finished` callout, tear the dialog down, and
             // start the next queued decompression. The `InFlight`
@@ -5222,19 +4693,7 @@ void MainWindow::ShowDecompressionProgress()
                 labelText = tr("%1\nPreparing\u2026").arg(header);
             }
             mDecompressionProgressDialog->setLabelText(labelText);
-            // Task 3.7 (post-review-3 finding #3): the shell used
-            // to mirror this label + pct into the origin view's
-            // tab-scoped progress strip on every tick. Dropped:
-            // the strip has no `minimumDuration`-style defer, so
-            // any decompression that outlived a single poll tick
-            // would show the strip immediately (well before the
-            // modal), and the strip's show/hide resized the
-            // viewport -- a visible layout jump the phase-3 notes
-            // claimed to avoid. The `LogSessionView` strip API
-            // stays in place as scaffolding for phase 6 (which
-            // wires it as the primary UX after the modal
-            // `QProgressDialog` retires); phase 3 just does not
-            // drive it.
+            // Do not mirror into the inline strip because its immediate show causes layout jumps.
         });
     }
     mDecompressionPollTimer->start();
@@ -5262,10 +4721,7 @@ void MainWindow::TeardownDecompressionProgress()
     // origin. Generation is left in place so an in-flight
     // completion slot can still resolve it during teardown.
     //
-    // Strip mirroring is no longer driven from the shell (see the
-    // poll-timer comment for the phase-3 rationale), so no
-    // `HideOperationProgress` is required here -- the strip is
-    // never shown during phase 3.
+    // The shell does not drive the inline strip, so no strip teardown is needed.
     mDecompressionPollOriginSession.clear();
     mDecompressionPollOriginView.clear();
 }
@@ -5283,7 +4739,7 @@ void MainWindow::CancelInFlightDecompression()
     {
         // Do not leak the cancelled bundle's configuration intent.
         // `ClearApplyEmbeddedBundleConfig()` is no longer `noexcept`
-        // (review-4 fix: the `presentationChanged()` fan can throw
+        // (`presentationChanged()` subscribers can throw
         // through subscriber slots), and `CancelInFlightDecompression`
         // is called from `~MainWindow` at line 1982. Match the
         // export-sibling's pattern (see `CancelInFlightExport` around
@@ -5329,8 +4785,7 @@ void MainWindow::CancelInFlightDecompression()
     // pending-callout queue).
     watcher->setFuture(QFuture<LogSession::DecompressionByteSourcePtr>{});
 
-    // Post-tabs review-round bug #3 fix (FR-46): re-enable the
-    // origin view BEFORE the teardown clears the pointer.
+    // Re-enable the origin view before teardown clears the pointer.
     // Symmetric with `CancelInFlightExport` (see the matching
     // `mExportPollOriginView->setEnabled(true)`). Safe when
     // the view was destroyed mid-cancel: `QPointer` reads null.
@@ -5346,15 +4801,7 @@ void MainWindow::CancelInFlightDecompression()
 
 void MainWindow::OnDecompressionFinished()
 {
-    // Post-tabs review-round bug #3 fix: derive origin from
-    // `sender()` (the watcher) via `LogSessionForDecompressionWatcher`.
-    // Previously read from shell-wide `mDecompressionPollOriginSession`,
-    // which is overwritten every time a new decompression begins,
-    // so two concurrent decompressions on different tabs mis-
-    // attributed their completions to whichever started last.
-    // Falling back to `mDecompressionPollOriginSession` preserves
-    // the pre-review behaviour for test harnesses that call this
-    // slot directly (no `sender()`).
+    // Resolve origin from watcher ownership; direct test calls fall back to the bound origin.
     LogSession *origin = LogSessionForDecompressionWatcher(sender());
     if (origin == nullptr)
     {
@@ -5370,12 +4817,8 @@ void MainWindow::OnDecompressionFinished()
         return;
     }
 
-    // Post-tabs review-round bug #1 fix: previously the background
-    // branch (origin != mSession) discarded the successful result
-    // and left the origin's queue permanently stuck. Now we swap
-    // aliases to the origin for the duration of the completion
-    // body so the full pipeline (`StreamNextPendingFile`,
-    // `ContinueOpenAfterPrepared`, bundle-metadata handling,
+    // Swap to the origin so background completion runs the full pipeline
+    // (`StreamNextPendingFile`, `ContinueOpenAfterPrepared`, bundle-metadata handling,
     // pending live-tail promotion, parse-error drain) runs
     // against the ORIGIN's model / anchors / highlights, then
     // the RAII scope restores the actually-active tab's aliases
@@ -5398,7 +4841,7 @@ void MainWindow::OnDecompressionFinished()
     }
     mSession->SetDecompressionInFlight(false);
 
-    // Only tear down the shell's modal progress dialog when it
+    // Only tear down the shell's progress dialog when it
     // actually belongs to this origin (the shell holds ONE dialog
     // per window; a concurrent second decompression would have
     // replaced the label). For background completions where the
@@ -5408,8 +4851,7 @@ void MainWindow::OnDecompressionFinished()
     {
         TeardownDecompressionProgress();
     }
-    // Post-tabs review-round bug #3 fix (FR-46): re-enable the
-    // origin view -- always, symmetric with `OnExportFinishedFor`
+    // Always re-enable the origin view, symmetric with `OnExportFinishedFor`
     // and independent of `originIsActive`. Reuses the outer
     // `originView` captured before the `CompletionOriginSwapScope`
     // (under the swap it equals `LogSessionViewForSession(mSession)`,
@@ -5824,23 +5266,13 @@ void MainWindow::BeginAsyncExport(
     mSession->SetExportStartedAt(std::chrono::steady_clock::now());
     mSession->SetExportInFlight(true);
 
-    // Origin binding for the poll timer / cancel button (review
-    // finding #2, #4). Captured after `SetExportInFlight(true)`
+    // Capture origin and generation after arming the export.
     // so `ExportGeneration()` reflects the fresh bump.
     mExportPollOriginSession = mSession;
     mExportPollOriginView = mSessionView;
     mExportPollGeneration = mSession->ExportGeneration();
 
-    // Task 7.7: disable ONLY the origin tab's view widget instead
-    // of the whole window. The progress dialog defers appearance
-    // by `EXPORT_DIALOG_DEFER_MS`; during that window a user
-    // could still try to drag a column, edit a filter, or open a
-    // new file on the ORIGIN tab and race the worker on
-    // `LogTable` / `KeyIndex` mutations. Disabling the view
-    // widget stops those interactions on the origin without
-    // stomping every OTHER tab (sibling live-tail streams, tab
-    // switching, dock docks / menus that operate on the active
-    // tab's SEPARATE session -- all remain interactive).
+    // Lock only the origin view while its table is read without synchronization.
     //
     // The dialog is a separate top-level widget so its Cancel
     // stays interactive; the OS-managed window close still fires
@@ -5884,11 +5316,7 @@ void MainWindow::BeginAsyncExport(
     {
         // Open failed synchronously: tear down and toast.
         mSession->SetExportInFlight(false);
-        // Post-tabs review-round bug #B1 fix: capture the origin
-        // view before `TeardownExportProgress()` clears it (that
-        // helper zeroes `mExportPollOriginView`, which broke the
-        // re-enable check below and left the tab greyed out
-        // after every sync-open failure).
+        // Retain the guarded origin view before progress teardown clears its binding.
         QPointer<LogSessionView> originViewToReEnable = mExportPollOriginView;
         TeardownExportProgress();
         if (originViewToReEnable != nullptr)
@@ -6076,15 +5504,12 @@ void MainWindow::BeginAsyncBundleExport(std::filesystem::path destination, int c
     mSession->SetExportInFlight(true);
     mSession->SetExportIsBundle(true);
 
-    // Origin binding (review finding #2, #4).
+    // Bind progress and cancellation to this session and operation generation.
     mExportPollOriginSession = mSession;
     mExportPollOriginView = mSessionView;
     mExportPollGeneration = mSession->ExportGeneration();
 
-    // Task 7.7: same rationale as `BeginAsyncExport` -- disable
-    // only the origin tab's view widget while the bundle writer
-    // reads `LogTable` without locking, so sibling tabs stay
-    // interactive throughout the export.
+    // Lock only the origin view while the bundle writer reads its table.
     if (mExportPollOriginView != nullptr)
     {
         mExportPollOriginView->setEnabled(false);
@@ -6151,22 +5576,14 @@ void MainWindow::ShowExportProgress()
     {
         mExportProgressDialog = new QProgressDialog(this);
         mExportProgressDialog->setWindowTitle(tr("Exporting"));
-        // Post-tabs review-round bug #3 fix (FR-45 / FR-47):
-        // NON-modal so tab switching and sibling operations
-        // remain reachable during a long export. The origin
-        // view was already disabled by `BeginAsyncExport` /
-        // `BeginSessionBundleExport` (session-local mutation
-        // lock, FR-46), so a second export on the SAME tab
-        // stays prevented; other tabs can start their own
-        // exports concurrently.
+        // Non-modal progress keeps sibling tabs usable while the origin view is locked.
         mExportProgressDialog->setWindowModality(Qt::NonModal);
         mExportProgressDialog->setMinimumDuration(EXPORT_DIALOG_DEFER_MS);
         mExportProgressDialog->setRange(0, PROGRESS_PERCENT_MAX);
         mExportProgressDialog->setAutoClose(false);
         mExportProgressDialog->setAutoReset(false);
         connect(mExportProgressDialog.data(), &QProgressDialog::canceled, this, [this]() {
-            // Origin cancel (review finding #2). See the matching
-            // decompression handler for the rationale.
+            // Cancel the session that owns the displayed progress.
             if (auto *originSession = mExportPollOriginSession.data())
             {
                 originSession->MutableExportStopSource().request_stop();
@@ -6181,9 +5598,7 @@ void MainWindow::ShowExportProgress()
         mExportPollTimer = new QTimer(this);
         mExportPollTimer->setInterval(EXPORT_POLL_INTERVAL_MS);
         connect(mExportPollTimer, &QTimer::timeout, this, [this]() {
-            // Origin + generation binding: mirrors the
-            // decompression poll timer above. See its lambda for
-            // the review-finding-#2 / #4 rationale.
+            // Ignore progress ticks not owned by the bound session generation.
             auto *originSession = mExportPollOriginSession.data();
             if (originSession == nullptr)
             {
@@ -6225,17 +5640,7 @@ void MainWindow::ShowExportProgress()
                                 .arg(QFileInfo(originSession->ExportDestinationPath()).fileName());
                 mExportProgressDialog->setLabelText(labelText);
             }
-            // Task 3.7 (post-review-3 finding #3): strip mirroring
-            // dropped -- see the matching comment in
-            // `ShowDecompressionProgress` for the rationale. In
-            // addition, the export mirror used to pass the full
-            // multi-line `labelText` (which embeds "\n%L3 of %L4
-            // rows written") while the decompression mirror passed
-            // the single-line header, so the two strips rendered
-            // at different heights and jumped on the first tick
-            // that had a row total. Both paths now leave the
-            // strip alone; phase 6 re-enables mirroring with a
-            // consistent single-line label + deferred show.
+            // Do not mirror into the inline strip because changing label height shifts the viewport.
         });
     }
     mExportPollTimer->start();
@@ -6252,11 +5657,7 @@ void MainWindow::TeardownExportProgress()
         mExportProgressDialog->reset();
         mExportProgressDialog->hide();
     }
-    // Origin binding cleared so a stray tick from a rebound timer
-    // cannot reach the previous origin. Strip mirroring is no
-    // longer driven from the shell (see the poll-timer comment
-    // above), so no `HideOperationProgress` call is needed here
-    // -- the strip is never shown during phase 3.
+    // Clear origin binding so a rebound timer cannot reach the prior operation.
     mExportPollOriginSession.clear();
     mExportPollOriginView.clear();
 }
@@ -6271,7 +5672,7 @@ void MainWindow::CancelInFlightExport()
         mSession->ClearExportScratchState();
         // Only re-enable when we actually disabled -- this helper
         // is called on every session switch and from `~MainWindow`.
-        // Task 7.7: scope the enable to the origin view.
+        // Re-enable only the view disabled for this operation.
         if (wasInFlight && mExportPollOriginView != nullptr)
         {
             mExportPollOriginView->setEnabled(true);
@@ -6296,15 +5697,11 @@ void MainWindow::CancelInFlightExport()
         // left to report them into.
     }
     watcher->setFuture(QFuture<void>{});
-    // Post-tabs review-round bug #B1 fix: capture the origin
-    // view BEFORE `TeardownExportProgress()` (which clears
-    // `mExportPollOriginView`). Otherwise the re-enable check
-    // below would silently no-op and the tab's view would stay
-    // greyed out after every user-initiated Cancel.
+    // Retain the origin view before progress teardown clears its binding.
     QPointer<LogSessionView> originViewToReEnable = mExportPollOriginView;
     TeardownExportProgress();
     mSession->ClearExportScratchState();
-    // Task 7.7: scope the enable to the origin view. Cancelling
+    // Scope the enable to the origin view. Cancelling
     // from `~MainWindow` is safe -- `QPointer` reads null once
     // the view is destroyed.
     if (wasInFlight && originViewToReEnable != nullptr)
@@ -6315,16 +5712,7 @@ void MainWindow::CancelInFlightExport()
 
 void MainWindow::OnExportFinished()
 {
-    // Task 7.6: origin-bind the export completion through
-    // `sender()`. The `finished` signal originates on the
-    // session-owned `ExportWatcher` (parent set in
-    // `EnsureExportWatcher`), so `sender()->parent()` recovers
-    // the exact `LogSession` that armed the export -- even if the
-    // user has since switched tabs and `mSession` now points at
-    // an unrelated tab. Without this the completion would mutate
-    // whichever session is currently active: teardown its
-    // (unrelated) progress, and clear its scratch state, while
-    // the true origin stays latched `IsExportInFlight()` forever.
+    // Recover export origin from the session-owned watcher's parent.
     // `LogSession::ExportWatcher` is a `QFutureWatcher<void>` type
     // alias, so it has no `Q_OBJECT` macro of its own and cannot
     // be a `qobject_cast` target. Walk the parent chain via the
@@ -6333,9 +5721,7 @@ void MainWindow::OnExportFinished()
     // parent is exactly the owning `LogSession`.
     const QObject *watcherObj = sender();
     LogSession *origin = (watcherObj != nullptr) ? qobject_cast<LogSession *>(watcherObj->parent()) : nullptr;
-    // Legacy fallback for tests that invoke this slot directly
-    // without going through the watcher; retains the pre-7.6
-    // "active session" behaviour.
+    // Direct test invocation without a sender uses the active session.
     if (origin == nullptr)
     {
         origin = mSession;
@@ -6354,46 +5740,20 @@ void MainWindow::OnExportFinishedFor(LogSession *origin)
     // Whether the completing export belongs to the currently-
     // active tab. Shell-level UI (status bar, modal toasts)
     // only fires for the active tab; background completions
-    // route status via origin tab chrome refresh instead. Task
-    // 7.8 addresses status routing more thoroughly; the split
-    // here at least prevents an inactive-session finish from
+    // route status via origin tab chrome refresh instead. This prevents an inactive-session finish from
     // stomping the active tab's status bar or raising an
     // unexpected modal.
     const bool originIsActive = (origin == mSession);
 
-    // Post-tabs review-round bug #B1 fix: capture the origin
-    // view BEFORE `TeardownExportProgress()` because that helper
-    // clears `mExportPollOriginView` (see line 6240 sibling),
-    // and the previous version's `if (mExportPollOriginView !=
-    // nullptr)` re-enable check downstream saw a null pointer
-    // and silently no-op'd. The concrete symptom was that every
-    // export permanently left the exporting tab's view
-    // `setEnabled(false)` from `BeginAsyncExport` /
-    // `BeginSessionBundleExport` -- table, overview rail and
-    // progress strip greyed out for the rest of the tab's life.
-    // Using a local `QPointer` (not a raw pointer) keeps us
-    // safe against the origin view being destroyed
-    // concurrently on a background-completion race.
+    // Retain a guarded origin view before progress teardown clears its binding.
     QPointer<LogSessionView> originViewToReEnable = mExportPollOriginView;
 
-    // Post-tabs review-round bug #2 fix: the shell holds ONE
-    // export progress dialog + poll timer per window
-    // (`mExportProgressDialog` / `mExportPollTimer`), bound to
-    // whichever origin currently owns them via
-    // `mExportPollOriginSession`. Teardown must fire whenever
-    // the modal actually belongs to the completing origin --
-    // NOT only when that origin is also the active tab. Before
-    // the fix, a user who started an export in tab A and then
-    // switched to tab B would leave A's dialog + poll timer
-    // stuck up when A's export finished in the background.
-    // Deferred `minimumDuration` opens where the dialog never
-    // materialised still route through this path safely; the
-    // teardown resets the pending-show state.
+    // Tear down the window-wide progress UI whenever its bound origin completes.
     if (mExportPollOriginSession.data() == origin)
     {
         TeardownExportProgress();
     }
-    // Task 7.7: always re-enable the origin view (mirrors the
+    // Always re-enable the origin view (mirrors the
     // `mExportPollOriginView->setEnabled(false)` in
     // `BeginAsyncExport` / `BeginSessionBundleExport`).
     // Independent of active state: a background completion still
@@ -6469,7 +5829,7 @@ void MainWindow::OnExportFinishedFor(LogSession *origin)
             // dropped. The user will see the error entry when
             // they switch back to the origin tab and it
             // surfaces through the parse-errors dock on next
-            // interaction (7.8 will wire per-tab error routing).
+            // interaction; the origin tab chrome records completion.
             qWarning().noquote() << QStringLiteral("[export][background]") << errorEntry;
         }
     }
@@ -6585,7 +5945,7 @@ void MainWindow::OpenLogStream()
         return;
     }
     RememberLastOpenDir(file);
-    // Task 7.4: user-initiated log-stream open routes through a
+    // User-initiated log-stream open routes through a
     // new foreground tab when the active tab has content. Only
     // fires on the USER path; internal replace-in-place callers
     // (`UndoRotationExpansion`, `OpenLogStreamForTest`) reach
@@ -6603,7 +5963,7 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
         return;
     }
 
-    // Task 7.4 tab-freshening lives on the USER-facing wrapper
+    // Tab freshening lives on the user-facing wrapper
     // (`OpenLogStream()`), NOT here. `OpenLogStreamFromPath` is
     // also called from `UndoRotationExpansion()` and
     // `OpenLogStreamForTest()`, both of which are internal-
@@ -6751,7 +6111,7 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     mSession->SetStreamingFileName(QFileInfo(tailPath).fileName());
     auto &currentSource = mSession->MutableCurrentSource();
     // Live-tail single-file open: populate both arrays so the
-    // parallel-array invariant holds across a future save.
+    // parallel-array invariant holds across the next save.
     {
         const std::string displayPath = logapp::CanonicalDisplayPath(tailPath).toStdString();
         const std::string dedupKey = logapp::CanonicalLocator(tailPath).toStdString();
@@ -6963,7 +6323,7 @@ void MainWindow::OpenStdinStream()
         return;
     }
 
-    // Task 7.4: stdin gets its own tab so it can't clobber file
+    // Stdin gets its own tab so it cannot clobber file
     // tabs opened alongside it (CLI: `mysvc | slv file.log -`,
     // toolbar: user opens stdin from the popup menu while a file
     // investigation is already open). Only a truly empty active
@@ -6988,7 +6348,7 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
         return;
     }
 
-    // Task 7.4 tab-freshening lives on the USER-facing wrapper
+    // Tab freshening lives on the user-facing wrapper
     // (`OpenStdinStream()`), NOT here. `OpenStdinStreamForTest`
     // is an internal-replacement path that must NOT spawn a new
     // tab; test fixtures that need multi-tab semantics can call
@@ -7129,7 +6489,7 @@ void MainWindow::OpenNetworkStream()
         return;
     }
 
-    // Task 7.5: network sessions get their own tab so they can't
+    // Network sessions get their own tab so they cannot
     // clobber other investigations. Only a truly empty active tab
     // is reused. This runs AFTER the dialog + producer construction
     // so a bind / TLS failure surfaces without gratuitously
@@ -7284,8 +6644,7 @@ void MainWindow::StopStream()
 
 void MainWindow::OnRotationDetected()
 {
-    // Rotation-flash state is per-session (post-review-4 finding
-    // #4): the flash lives on `LogSession` so a multi-tab window
+    // Rotation flash lives on `LogSession` so a multi-tab window
     // never projects one tab's flash onto another. The shell's
     // subscription to `rotationFlashChanged` (in the ctor, into
     // `mSessionConnections`) drives `UpdateStreamingStatus` on
@@ -7342,9 +6701,7 @@ namespace
 constexpr auto SETTINGS_GEOMETRY_KEY = "ui/mainWindow/geometry";
 constexpr auto SETTINGS_STATE_KEY = "ui/mainWindow/state";
 
-/// Display name for the active source, or empty when idle.
-/// File sources become a basename so they fit a typical title bar;
-/// network streams keep their producer-supplied label.
+// Keep file source names compact while preserving stream labels.
 QString CurrentSourceLabel(const std::optional<loglib::LogConfiguration::Source> &source, const QString &streamingName)
 {
     if (!source.has_value() || source->locators.empty())
@@ -7442,7 +6799,7 @@ void MainWindow::UpdateWindowTitle()
     // toggle without rebuilding the whole title.
     title += QStringLiteral("[*]");
     setWindowTitle(title);
-    // Task 4.6: OR-fold every hosted session's dirty marker so a
+    // Fold every hosted session's dirty marker so a
     // multi-tab window's `[*]` reflects any dirty tab, not just the
     // active one. Single-session windows resolve to the active
     // session's `IsFiltersDirty()` value.
@@ -7471,7 +6828,7 @@ void MainWindow::MarkFiltersDirty()
     // Forward to the session; the shell reacts via
     // `filtersDirtyChanged` → `UpdateWindowTitle` connected in the
     // ctor. Keeping the wrapper preserves the call surface every
-    // existing MainWindow method already uses (task 2.4).
+    // existing MainWindow method already uses.
     if (mSession != nullptr)
     {
         mSession->MarkFiltersDirty();
@@ -7577,7 +6934,7 @@ void MainWindow::FinaliseActionMetadata()
 
 namespace
 {
-/// Formats @p ms as `HH:MM:SS`, or `MM:SS` for sub-hour sessions.
+// Omit the hour field for sub-hour elapsed times.
 QString FormatElapsed(qint64 ms)
 {
     constexpr qint64 MS_PER_SEC = 1000;
@@ -7605,7 +6962,7 @@ QString FormatElapsed(qint64 ms)
 
 void MainWindow::PostStatusMessage(const QString &message, int timeoutMs) const
 {
-    // Post-tabs review-round helper for shell-singleton status
+    // Gate shell-global status
     // toasts emitted from completion bodies that may be running
     // against a background origin session under
     // `CompletionOriginSwapScope`. When the swap is in effect the
@@ -7806,7 +7163,7 @@ void MainWindow::BuildMainToolbar()
     }
 
     // Stash the SVG path on each action AND register it in
-    // `mThemedActions` paired with the widget that will drive its
+    // `mThemedActions` paired with the widget that drives its
     // render policy (palette / iconSize / DPR). `RefreshThemedIcons`
     // walks the registry rather than `QToolBar::actions()`, so
     // actions reached through `addWidget` (the split button's
@@ -7816,7 +7173,7 @@ void MainWindow::BuildMainToolbar()
     // refresh and the split button would render blank.
     //
     // Actions without an `svgIconPath` property are skipped by the
-    // refresh loop, so future actions that ship their own QIcon
+    // refresh loop, so actions that ship their own QIcon
     // don't accidentally get clobbered.
     //
     // `svgIconPathChecked` is a second optional property for
@@ -7825,7 +7182,7 @@ void MainWindow::BuildMainToolbar()
     // loop reuses the Off pixmap for the On state, so most actions
     // need only the single tag.
     //
-    // `mThemedActions.clear()` defends against any future caller
+    // `mThemedActions.clear()` defends against any repeated caller
     // that ever runs `BuildMainToolbar` twice: without it the
     // registry would grow duplicate entries and `RefreshThemedIcons`
     // would do redundant work, plus stale-anchor entries (the
@@ -8103,7 +7460,7 @@ void MainWindow::RefreshThemedIcons()
         const QString path = action->property("svgIconPath").toString();
         if (path.isEmpty())
         {
-            // Property cleared, e.g. by a future caller swapping
+            // Property cleared, e.g. by another caller swapping
             // to a non-themed icon. Leave the existing icon alone.
             continue;
         }
@@ -8277,7 +7634,7 @@ void MainWindow::ClearSort()
     // through one well-trodden path. No-op safe when no sort
     // is active. All UI surfaces already gate on
     // `actionClearSort`'s enabled state; the guard is for the
-    // test seam and any future programmatic caller.
+    // test seam and programmatic callers.
     mTableView->sortByColumn(-1, Qt::AscendingOrder);
 }
 
@@ -8542,7 +7899,7 @@ void MainWindow::ScrollToNewestRowIfFollowing()
 
 void MainWindow::JumpToNewestRow()
 {
-    // Task 3.4: body moved into `LogSessionView::JumpToNewestRow`.
+    // Delegate view-local row navigation to `LogSessionView`.
     // Shell forwarder kept so the "Jump to newest" pill click and
     // the auto-follow heuristic (`OnStreamingLineCountChanged`)
     // continue to route through the same entry point.
@@ -8699,10 +8056,10 @@ void MainWindow::ShowParseErrors(
         return;
     }
     // Route through the originating session (defaults to `mSession`
-    // for the phase-5 shell). The dock's `AppendErrorsForSession`
+    // for active-session callers). The dock's `AppendErrorsForSession`
     // decides whether the batch lands in the visible list (active
     // session) or only into the originating session's log
-    // (background session, see finding H3).
+    // (background session).
     LogSession *originating = originatingSession != nullptr ? originatingSession : mSession;
     mParseErrorsDock->AppendErrorsForSession(originating, title, errors);
 }
@@ -8728,13 +8085,13 @@ void MainWindow::MirrorSessionStateToConfiguration()
     // Recompose `LogConfiguration::expression` from the live simple-mode
     // leaves merged with any Advanced-mode structure already carried
     // on the expression. The reconciler is session-local and lives on
-    // `LogSession` (task 2.4); see
+    // `LogSession`; see
     // `LogSession::RebuildFilterExpressionFromSimpleLeaves` for the
     // preserved invariants (order, Advanced-tree preservation,
     // bare-leaf dedupe).
     mSession->RebuildFilterExpressionFromSimpleLeaves();
 
-    // Sort mirror is session-local (task 2.4); see
+    // Sort mirror is session-local; see
     // `LogSession::MirrorSortToConfiguration` for the deferred-sort
     // exception that preserves the configuration's sort while the
     // proxy is still transitioning through `-1`.
@@ -8793,7 +8150,7 @@ void MainWindow::MirrorSessionStateToConfiguration()
         Q_ASSERT(!mirrored.has_value() || loglib::HasLocators(mirrored));
     }
 
-    // Anchor mirror is session-local (task 2.4); see
+    // Anchor mirror is session-local; see
     // `LogSession::MirrorAnchorsToConfiguration`.
     mSession->MirrorAnchorsToConfiguration();
 }
@@ -8881,8 +8238,7 @@ void MainWindow::AutoSaveAllHostedSessions(bool publishOpenWindow)
         AutoSaveSessionSnapshot(publishOpenWindow);
         return;
     }
-    // Post-tabs review-round bug #M1 fix: save + restore the
-    // active tab around the walk. Otherwise the last iteration
+    // Restore the active tab after walking every session. Otherwise the last iteration
     // leaves the last tab active, and the immediately-following
     // `CaptureWorkspaceWindow()` call in `aboutToQuit`
     // (`app/src/main.cpp` around the `AutoSaveAllHostedSessions`
@@ -8924,10 +8280,7 @@ QString MainWindow::WorkspaceWindowUuid() const
 namespace
 {
 
-/// Map an active-session snapshot onto the schema's `SourceMode`
-/// enum. Kept local to the workspace-capture code path so the
-/// schema and the runtime session don't grow implicit coupling
-/// beyond this one mapping site.
+// Keep runtime-to-persistence source-mode coupling at one boundary.
 slv::persistence::SourceMode SourceModeFor(const LogSession *session)
 {
     using slv::persistence::SourceMode;
@@ -8938,8 +8291,7 @@ slv::persistence::SourceMode SourceModeFor(const LogSession *session)
     const auto &src = session->CurrentSource();
     if (!src.has_value())
     {
-        // Post-tabs review-round bug #5 fix: distinguish
-        // "config-only" (loaded configuration snapshot but no
+        // Distinguish "config-only" (loaded configuration snapshot but no
         // bound source, e.g. reopened from a Recent Sessions
         // entry captured via File -> Save Session As before any
         // logs were opened) from "empty" (fresh untitled tab).
@@ -9054,9 +8406,9 @@ void MainWindow::ApplyWorkspaceWindow(const slv::persistence::WorkspaceWindow &w
             // Untitled + empty.
             continue;
         }
-        // Task 8.8 file restore: reopen from recents by uuid.
+        // Reopen file-backed sessions from recents by UUID.
         // Network / stdin / live-tail: leave as placeholder
-        // (tasks 8.9 / 8.10 -- the user must reconnect
+        // (the user must reconnect
         // explicitly). Empty tabs also stay as-is.
         const bool isFilePath = tab.sourceMode == slv::persistence::SourceMode::File ||
                                 tab.sourceMode == slv::persistence::SourceMode::MultiFile ||
@@ -9118,11 +8470,11 @@ bool MainWindow::ConfirmDiscardEphemeralIfDirty(LogSession *closing)
     // caller; sessions with no filter mutations have nothing
     // to warn about even if the underlying source itself is
     // ephemeral (a fresh stdin capture with no user edits is
-    // the same as an empty tab from FR-68's standpoint).
+    // equivalent to an empty tab for dirty-state confirmation).
     // Sessions marked `restorableInPlace` short-circuit even if
     // `ephemeralUnreproducible` is also set (should be
     // mutually exclusive but the presentation snapshot allows
-    // either latch to flip in future revisions -- prefer the
+    // either latch to be inconsistent -- prefer the
     // "safe" branch).
     if (!snapshot.dirty.filtersDirty || !snapshot.dirty.ephemeralUnreproducible || snapshot.dirty.restorableInPlace)
     {
@@ -9169,8 +8521,7 @@ bool MainWindow::ConfirmDiscardEphemeralIfDirty(LogSession *closing)
 
 void MainWindow::EnsureFreshActiveTab()
 {
-    // Same "blank landing tab" heuristic `OpenRecentSession` uses
-    // (task 6.8 / phase-6 review-1 H1): a tab with no bound
+    // Reuse a blank landing tab when it has no bound
     // source AND zero rows is the fresh / just-cleared state
     // where reusing the slot is preferable to leaving an empty
     // tab behind. We intentionally do NOT gate on
@@ -9196,22 +8547,8 @@ void MainWindow::closeEvent(QCloseEvent *event)
         return;
     }
 
-    // Task 7.9 / FR-68: prompt the user before discarding any
-    // ephemeral unpreservable dirty session across ALL hosted
-    // tabs. Cancelling any prompt aborts the entire window close
-    // (`event->ignore()`), matching FR-70. Restorable-in-place
-    // dirty sessions do NOT prompt -- they are auto-saved below
-    // and reappear in Recent Sessions on next launch. The prompt
-    // is skipped when `mSuppressDialogsForTest` is set so
-    // headless tests can close windows without stalling.
-    //
-    // Post-tabs review-round Low fix: activate the tab whose
-    // session we are prompting about, so the modal is not
-    // orphaned above whichever tab happens to be currently
-    // visible. Restore the previously-active tab on cancel so
-    // the user's context is not silently shifted just because
-    // they clicked Cancel. `mTabWidget` may be null in test
-    // fixtures that never built one.
+    // Confirm every dirty ephemeral tab before any irreversible close work.
+    // Activate each prompted tab and restore the prior tab when the user cancels.
     const int previousActiveIndexForPrompt = (mTabWidget != nullptr) ? mTabWidget->currentIndex() : -1;
     bool cancelled = false;
     for (int idx = 0; idx < static_cast<int>(mTabs.size()); ++idx)
@@ -9243,44 +8580,8 @@ void MainWindow::closeEvent(QCloseEvent *event)
         return;
     }
 
-    // Task 4.8: per-session close preconditions. `PreCheckClose()`
-    // returns a bitmask (`FiltersDirty | DecompressionInFlight |
-    // ExportInFlight`) that the shell can inspect before committing
-    // to close.
-    //
-    // **Read-only in phase 4 (review-5 finding #3)**: this loop
-    // deliberately does NOT act on the mask -- `request_stop()`
-    // is irreversible, and phase 6 must be free to add the
-    // FR-68/FR-70 confirmation prompt for
-    // filters-dirty-and-unpreservable / unfinished-worker cases
-    // ABOVE the destructive path. Killing an in-flight worker
-    // pre-prompt would leave the user with nothing to cancel
-    // back to. The subsequent `CancelInFlightDecompression` /
-    // `CancelInFlightExport` calls already `request_stop()`
-    // unconditionally (bounded blocking drain with generation
-    // check) so the phase-4 close flow still completes; the loop
-    // exists today to shape the collect-mask-then-decide flow
-    // that phase 6 will hang the prompt on.
-    //
-    // Filters-dirty is handled downstream by
-    // `AutoSaveSessionSnapshot`: for restorable sessions the
-    // snapshot preserves the dirty state so a reopen restores it;
-    // for non-restorable dirty sessions the auto-save is a no-op
-    // and the user has already had ample chances to `SaveSession`
-    // manually. Phase 6 grows this into a prompt per PRD FR-68.
-    //
-    // Multi-tab safety on sibling worker drain (review-5 finding
-    // #3, load-bearing invariant): the destructor path below
-    // relies on `~LogSession()` calling `waitForFinished()` on
-    // both `mDecompressionWatcher` and `mExportWatcher` before
-    // the session-owned atomics disappear (`app/src/log_session.cpp`
-    // 155-175). The decompression worker captures raw pointers
-    // into session-owned atomics
-    // (`&mSession->MutableDecompressionBytesIn()` at 3835-3836);
-    // without the explicit `waitForFinished` in `~LogSession`, a
-    // stop-request without a drain would be a use-after-free. The
-    // preflight here does not drain siblings -- that safety net
-    // sits inside `LogSession`, not this shell.
+    // Sample every session before cancellation; dirty confirmation has already completed.
+    // Session destructors perform the blocking worker drain before their atomics are destroyed.
     for (const LogSession *session : hostedSessions())
     {
         if (session == nullptr)
@@ -9294,8 +8595,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
         const std::uint32_t preconditions = session->PreCheckClose();
         const bool decompressionInFlight = (preconditions & SessionClosePreconditions::DecompressionInFlight) != 0U;
         const bool exportInFlight = (preconditions & SessionClosePreconditions::ExportInFlight) != 0U;
-        // Suppress unused-variable warnings without an assign: phase
-        // 6 replaces this block with the FR-70 confirmation flow.
+        // The destructive cancellation path below handles both in-flight states.
         (void)decompressionInFlight;
         (void)exportInFlight;
     }
@@ -9336,24 +8636,8 @@ void MainWindow::closeEvent(QCloseEvent *event)
         session->MutableExportStopSource().request_stop();
     }
 
-    // Phase-6 review-3 finding #3 fix: multi-tab persistence.
-    // Prior to this fix, closeEvent flushed only the ACTIVE tab
-    // through `AutoSaveSessionSnapshot` / `DetachAutoSaveUuid`,
-    // silently discarding every background tab's restorable state
-    // and leaving their auto-save uuids published in the recents
-    // index. Multi-tab windows now walk every hosted tab: briefly
-    // activate it so the alias-routed helpers see the tab's
-    // session / model, save, then detach.
-    //
-    // Route through `mTabWidget->setCurrentIndex` (rather than
-    // hand-swapping aliases) so `OnActiveTabChanged` runs the full
-    // alias refresh + subscription reinstall + dock rebind that
-    // `AutoSaveSessionSnapshot`'s helpers depend on. This is
-    // deliberately expensive but only runs on window close.
-    //
-    // `publishOpenWindow=false` on every tab because we
-    // `DetachAutoSaveUuid` right after each save; publishing would
-    // leave stale entries for the just-closed session.
+    // Save and detach every tab through normal activation so alias-routed helpers stay valid.
+    // Do not publish closing tabs into the open-window index.
     const int tabCountAtClose = mTabWidget != nullptr ? mTabWidget->count() : 0;
     if (tabCountAtClose > 0)
     {
@@ -9459,7 +8743,7 @@ void MainWindow::DoSaveConfiguration(const QString &path, loglib::SaveScope scop
 {
     // Mirror unconditionally even though every mutation point already
     // keeps the configuration current -- documents intent and
-    // protects against a future mutator that forgets to mirror.
+    // protects against a mutator that forgets to mirror.
     // `scope` selects which subset lands on disk; `Save` throws on
     // I/O failure (callers catch).
     MirrorSessionStateToConfiguration();
@@ -9495,7 +8779,7 @@ void MainWindow::ShowConfigurationDiagnostics()
             mDiagnosticsDialog, &ConfigurationDiagnosticsDialog::editColumnRequested, this, &MainWindow::EditColumn
         );
     }
-    // Task 5.8: capture originating session so `RebindSharedDocks`
+    // Capture the originating session so `RebindSharedDocks`
     // can close the dialog on tab switch (dialog holds a
     // QPointer<LogModel> captured at construction; letting it
     // survive across a session swap would silently point every
@@ -9537,7 +8821,7 @@ void MainWindow::ShowColumnsManager()
         mColumnsManagerDialog = new ColumnsManagerDialog(mModel, this, this);
         mColumnsManagerDialog->setAttribute(Qt::WA_DeleteOnClose, false);
     }
-    // Task 5.8: capture originating session so `RebindSharedDocks`
+    // Capture the originating session so `RebindSharedDocks`
     // can close the dialog on tab switch. Same rationale as the
     // diagnostics dialog above -- the dialog's captured
     // QPointer<LogModel> must not silently span a session swap.
@@ -9550,8 +8834,7 @@ void MainWindow::ShowColumnsManager()
 
 namespace
 {
-/// Walk the filter + row-order proxy chain down to a source-model
-/// row, or -1 if anything along the chain is invalid.
+// Map through both proxies and reject invalid links.
 [[nodiscard]] int MapProxyIndexToSourceRow(
     const QModelIndex &proxyIndex, const QAbstractProxyModel *filter, const QAbstractProxyModel *rowOrder
 )
@@ -9615,7 +8898,7 @@ void MainWindow::RebindRecordDetailSelectionTracking()
     }
     // Bind to a member slot (not a lambda) so `Qt::UniqueConnection`
     // can dedupe; Qt only deduplicates pointer-to-member targets.
-    // Also scoped into `mSessionConnections` so a phase-6 tab
+    // Scope this into `mSessionConnections` so a tab
     // switch (or destructor teardown) reaps this against the old
     // selection model before the new view's selection model takes
     // over.
@@ -10230,7 +9513,7 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         // session (zone, format, row count) does not pre-populate
         // the dialog in the new one. `NewSession` already does the
         // same via `mSessionView`; the File -> Load Configuration
-        // path also goes through here (post-review-2 finding #2).
+        // path also goes through here.
         // Guard on `mSessionView` for symmetry with `NewSession`
         // -- construction never leaves the view null in
         // production but the guard costs nothing.
@@ -10277,7 +9560,7 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         // window's CLI opt-out; an explicit menu change does.
         SyncRotationHistoryActionCheckedState();
 
-        // Bulk-replace anchors from the loaded vector. Future-schema
+        // Bulk-replace anchors from the loaded vector. Newer-schema
         // colour slots are clamped (not dropped) so bookmark
         // positions + notes survive a downgrade; the count is
         // surfaced to the user.
@@ -10362,7 +9645,7 @@ void MainWindow::RebuildFiltersFromConfiguration()
     }
 
     // Suppress per-filter dirty/title updates; emit one consolidated state
-    // on scope exit. The session owns both flags (task 2.4); the
+    // on scope exit. The session owns both flags; the
     // `filtersDirtyChanged` signal only fires on a real transition,
     // so we always force `UpdateWindowTitle()` after the load so a
     // clean-to-clean load still refreshes the title (source path
@@ -10452,7 +9735,7 @@ void MainWindow::Find()
 
 void MainWindow::SelectSourceRow(int sourceRow)
 {
-    // Task 3.4: body moved into `LogSessionView::SelectSourceRow`.
+    // Delegate view-local selection to `LogSessionView`.
     // Shell forwarder kept so existing signal connections (anchors
     // dock, histogram dock) route into the view without a rewire.
     // Status-bar message stays on the shell via the view's
@@ -10466,7 +9749,7 @@ void MainWindow::SelectSourceRow(int sourceRow)
 
 void MainWindow::GotoLine()
 {
-    // Task 3.6: body moved into `LogSessionView::PromptGotoLine`.
+    // Delegate the view-local dialog to `LogSessionView`.
     // Shell forwarder kept so `actionGoToLine` from `main_window.ui`
     // continues to trigger the migrated dialog. Status messages
     // now flow via `LogSessionView::statusMessageRequested`, wired
@@ -10480,7 +9763,7 @@ void MainWindow::GotoLine()
 
 void MainWindow::ExecuteGotoLine(const QString &input)
 {
-    // Task 3.6: body moved into `LogSessionView::ExecuteGotoLine`.
+    // Delegate view-local line navigation to `LogSessionView`.
     // Shell forwarder kept so `ExecuteGotoLineForTest` continues
     // to drive the range check + filter-visibility hint.
     if (mSessionView == nullptr)
@@ -10494,7 +9777,7 @@ std::optional<MainWindow::GotoTimestampParse> MainWindow::ParseGotoTimestampInpu
     const QString &input, const std::vector<std::string> &columnParseFormats, std::chrono::system_clock::time_point now
 )
 {
-    // Task 3.6: body moved into `LogSessionView::ParseGotoTimestampInput`.
+    // Delegate timestamp parsing to `LogSessionView`.
     // Static forwarder kept so external callers (unit tests, other
     // shell paths) continue to compile against the historical
     // `MainWindow::ParseGotoTimestampInput` symbol. The view's
@@ -10510,7 +9793,7 @@ std::optional<MainWindow::GotoTimestampParse> MainWindow::ParseGotoTimestampInpu
 
 void MainWindow::GotoTimestamp()
 {
-    // Task 3.6: body moved into `LogSessionView::PromptGotoTimestamp`.
+    // Delegate the view-local dialog to `LogSessionView`.
     if (mSessionView == nullptr)
     {
         return;
@@ -10520,7 +9803,7 @@ void MainWindow::GotoTimestamp()
 
 void MainWindow::ExecuteGotoTimestamp(const QString &input, std::chrono::system_clock::time_point now)
 {
-    // Task 3.6: body moved into `LogSessionView::ExecuteGotoTimestamp`.
+    // Delegate view-local timestamp navigation to `LogSessionView`.
     if (mSessionView == nullptr)
     {
         return;
@@ -10557,7 +9840,7 @@ void MainWindow::JumpToFirstRowInBucket(std::size_t bucketIndex)
 
 void MainWindow::ScrollToProxyRow(int proxyRow, bool replaceSelection)
 {
-    // Task 3.4: body moved into `LogSessionView::ScrollToProxyRow`.
+    // Delegate view-local scrolling to `LogSessionView`.
     // The shell's `actionFollowTail` uncheck is now driven by the
     // view's `followTailDisengageRequested()` signal wired in the
     // ctor. Shell forwarder kept so overview-rail-widget's
@@ -10612,13 +9895,12 @@ void MainWindow::SetOverviewRailVisible(bool visible)
     else
     {
         mTableView->AttachOverviewRail(nullptr);
-        // Reparent to the OWNING `LogSessionView` (review finding
-        // #3) so the widget survives detach without being orphaned
+        // Reparent to the owning `LogSessionView` so the widget survives detach without being orphaned
         // onto the shell. `AttachOverviewRail(null)` already
         // dropped the parent -- if we reparent onto `this`
         // (MainWindow) then destroying `mSessionView` leaves a
         // dangling rail widget on the shell's child list. Falling
-        // back to `this` keeps the pre-review behaviour when
+        // back to `this` preserves behavior when
         // `mSessionView` is absent (e.g. torn down mid-teardown).
         if (mSessionView != nullptr)
         {
@@ -10668,7 +9950,7 @@ void MainWindow::AddTimeRangeFilterFromHistogram(qint64 fromEpochMicros, qint64 
 
 void MainWindow::JumpToAnchor(bool forward)
 {
-    // Task 3.4: body moved into `LogSessionView::JumpToAnchor`.
+    // Delegate view-local anchor navigation to `LogSessionView`.
     // Shell forwarder kept so `mActionJumpNextAnchor` /
     // `mActionJumpPrevAnchor` continue to trigger the migrated
     // navigation. Status feedback flows via the view's
@@ -10747,7 +10029,7 @@ void MainWindow::AddFilter(
     // Drop saved filters that no longer fit the current columns
     // (e.g. a string filter against a column that auto-promoted to
     // enum). `ValidateFilterAgainstColumns` is the shared check;
-    // this pre-guard adapts its result to the legacy status-bar UX.
+    // this pre-guard adapts its result to the existing status-bar UX.
     // The post-editor "missing payload" guards remain inline because
     // they need to delete the editor on failure.
     std::optional<loglib::LeafRule> resolvedFilter = filter;
@@ -11819,7 +11101,7 @@ void MainWindow::OnSourceColumnsMoved(
 )
 {
     // Flat table model, so nested-parent moves are nonsense. Qt
-    // carries the parents for future-compat; ignore defensively.
+    // carries parent fields for compatibility; ignore defensively.
     if (parent.isValid() || destParent.isValid())
     {
         return;
@@ -12131,7 +11413,7 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
 
         // Re-attach the shared `actionClearSort` so the header
         // menu inherits its text, enabled state, tooltip, and
-        // any future shortcut / icon - one source of truth
+        // every shortcut and icon - one source of truth
         // across every Sort surface. The host menu is built
         // fresh per right-click and `deleteLater`d on dismiss,
         // so re-attaching is safe.
@@ -12472,7 +11754,7 @@ void MainWindow::ExecuteGotoTimestampForTest(const QString &input, std::chrono::
 
 QString MainWindow::LastGotoTimestampInputForTest() const
 {
-    // Task 3.6: sticky-input state migrated to the view.
+    // Sticky input state belongs to the view.
     if (mSessionView == nullptr)
     {
         return {};
@@ -12571,13 +11853,13 @@ void MainWindow::SetColumnVisible(int logicalIndex, bool visible)
 
 void MainWindow::ApplyColumnVisibility()
 {
-    // Task 3.5: header-visibility apply moved into
+    // Header visibility is applied by
     // `LogSessionView::ApplyColumnVisibility`. Shell-scoped
     // follow-ups (find-cache invalidation + filter-indicator
     // refresh) stay here because they touch the find dock and
     // filter menus which belong to shell chrome. This wrapper
     // preserves the ordering: apply header first, then invalidate
-    // caches -- same as before the migration.
+    // caches.
     if (mSessionView != nullptr)
     {
         mSessionView->ApplyColumnVisibility();
@@ -12593,7 +11875,7 @@ void MainWindow::ApplyColumnVisibility()
 
 void MainWindow::ApplyLevelCellDelegate()
 {
-    // Task 3.5: body moved into `LogSessionView::ApplyLevelCellDelegate`.
+    // Delegate level-cell presentation to `LogSessionView`.
     // The shell keeps ownership of `mLevelCellDelegate` (per-window
     // resource, tied to the theme) and passes it into the view so
     // the view can install/detach it against its table without

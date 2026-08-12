@@ -1,7 +1,4 @@
-// Focused tests for `ScopedConnections` (task 1.4). The helper
-// underpins every dock's Bind/Unbind contract in Phase 5, so its
-// disconnect semantics need first-class coverage independent of
-// any dock instance.
+// Tests for `ScopedConnections` ownership and disconnect semantics.
 
 #include "scoped_connections.hpp"
 

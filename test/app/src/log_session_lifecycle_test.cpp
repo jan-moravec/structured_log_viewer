@@ -1,16 +1,4 @@
-// Focused characterization tests for the destructive-session
-// lifecycle ordering documented in
-// `tasks/architecture-inventory.md` §3 (task 1.3). This binary is
-// created in Phase 1 so subsequent phases can extend it as the
-// concrete session state moves out of `MainWindow`.
-//
-// The initial coverage exercises the shell-agnostic pieces we can
-// pin today: `ScopedConnections` composition and the presentation-
-// snapshot shape. Phase 2 grows this file to cover
-// `NewSession` cancels-export-before-reset,
-// `OpenLogStreamFromPath` autosaves-before-reset,
-// `closeEvent` cancels-workers-before-autosave, and
-// `~MainWindow` resets-model-under-session-switch-scope orderings.
+// Tests for session lifecycle commands and default presentation state.
 
 #include "log_session.hpp"
 #include "log_session_commands.hpp"

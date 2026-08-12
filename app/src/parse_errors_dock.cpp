@@ -123,12 +123,8 @@ void ParseErrorsDock::AppendErrorsForSession(
         effectiveTitle = tr("Errors");
     }
 
-    // Cross-session routing (finding H3): when the originating
-    // session is a real background tab (not null and not the
-    // currently-bound session), mirror the batch into the
-    // originating session's log ONLY. The visible list, shadow,
-    // counters, and first-batch latch belong to the bound session
-    // and MUST NOT be perturbed by a background completion.
+    // A background session receives the batch in its own log only;
+    // visible state always belongs to the currently bound session.
     const LogSession *bound = mBoundSession.data();
     if (originating != nullptr && originating != bound)
     {
@@ -167,9 +163,7 @@ void ParseErrorsDock::AppendErrorsForSession(
         mDroppedCount += static_cast<int>(errorsBegin);
     }
 
-    // Mirror the trimmed batch into the shadow so `Bind`/`Unbind`
-    // can round-trip through the bound session's parse-error log
-    // without walking `mList` (task 5.4).
+    // Mirror the trimmed batch so bind/unbind need not parse list items.
     MirrorAppendIntoShadow(effectiveTitle, errors, errorsBegin);
 
     // Group header (disabled so arrow keys step over it).
@@ -253,9 +247,7 @@ void ParseErrorsDock::ResetSessionState()
     mErrorCount = 0;
     mDroppedCount = 0;
     mHasSeenFirstBatch = false;
-    // Full reset of the bound session's log (task 5.4) so a phase-6
-    // rebind after this destructive boundary does not surface stale
-    // batches from the freshly-torn-down source.
+    // Reset the bound backing log so cleared batches cannot reappear.
     if (LogSession *session = mBoundSession.data(); session != nullptr)
     {
         session->ResetParseErrorLog();
@@ -268,16 +260,8 @@ void ParseErrorsDock::Bind(const SessionBindContext &context)
     LogSession *outgoing = mBoundSession.data();
     LogSession *incoming = context.session.data();
 
-    // Same-session short-circuit: a redundant Bind of the same
-    // session is a no-op (shadow + session log already in sync,
-    // so a save + reload would be pure work). Both sides must be
-    // non-null: a null==null match happens when the previously-
-    // bound session was destroyed (QPointer auto-nulls
-    // `mBoundSession`) and then `Bind(MakeUnbound())` is called
-    // from the teardown path. Origin-review finding M7: without
-    // the non-null clause the guard would return here and leave
-    // the list showing the destroyed session's entries with no
-    // way to clear them short of a manual `ClearErrors()`.
+    // A live same-session bind is a no-op. Null equality must still
+    // clear visible state after QPointer auto-null teardown.
     const bool sameSession = outgoing != nullptr && outgoing == incoming;
     if (sameSession)
     {

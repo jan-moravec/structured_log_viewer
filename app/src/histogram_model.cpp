@@ -77,25 +77,8 @@ void HistogramModel::InstallSourceSubscriptions()
 
 void HistogramModel::BindSources(LogModel *logModel, AnchorManager *anchors, bool deferRebuild)
 {
-    // Task 5.6: swap the guarded source pointers atomically.
-    //
-    // Ordering matters:
-    //   1. Cancel the coalesce timer so a queued `bucketsChanged`
-    //      from the outgoing sources cannot slip in between the
-    //      subscription tear-down and the fresh rebuild below.
-    //   2. Clear the scoped bag *before* swapping the aliases so
-    //      no delivered slot dereferences a stale `mLogModel` /
-    //      `mAnchors`.
-    //   3. Swap `mLogModel` / `mAnchors`; drop the anchor bitset
-    //      because the pre-swap mapping is meaningless against a
-    //      different session's rows.
-    //   4. Install fresh subscriptions and refresh column indices;
-    //      only pay the full-model Rebuild when @p deferRebuild is
-    //      false (the visible-dock path).
-    //
-    // Passing two nulls detaches every session-owned source and
-    // leaves this model in the same shape as a fresh construction
-    // against a null log model.
+    // Cancel notification and disconnect before replacing borrowed
+    // sources. Their bucket and anchor projections cannot be reused.
 
     CancelPendingEmit();
     mSourceConnections.Clear();
@@ -103,22 +86,14 @@ void HistogramModel::BindSources(LogModel *logModel, AnchorManager *anchors, boo
     mLogModel = logModel;
     mAnchors = anchors;
 
-    // The anchor-per-bucket mask is a projection of the outgoing
-    // session's anchors against its bucket index; drop it so the
-    // next `OnModelReset` / `Rebuild` rebuilds it against the new
-    // session's geometry. Without this, `HasAnchorTicks()` could
-    // report true against zero-length bucket vectors while the
-    // next auto rung is still being computed.
+    // Drop masks before exposing the new source geometry.
     mAnchorSlotPerBucket.clear();
     mAnchorBucketBitsSet = 0;
 
     InstallSourceSubscriptions();
 
-    // Reset the pin latch so the incoming session gets a fresh
-    // auto-pick (matches the pre-migration `OnModelReset` behaviour
-    // for a brand-new bind). Callers that want to preserve the
-    // outgoing session's pin must snapshot it before calling
-    // `BindSources` and reapply via `SetBucketSize` after.
+    // Reset the pin latch so the new sources receive a fresh auto-pick.
+    // Callers reapply any saved explicit pin after this swap.
     mBucketSizePinned = false;
 
     // Column-index recompute + availability signal always fires.
@@ -136,13 +111,7 @@ void HistogramModel::BindSources(LogModel *logModel, AnchorManager *anchors, boo
 
     if (deferRebuild)
     {
-        // Hidden-dock path: latch the deferral. The dock will
-        // call `PumpDeferredBind()` from `showEvent` and any
-        // incremental `rowsInserted` between now and then still
-        // accumulates through the freshly-installed subscriptions.
-        // (`InstallSourceSubscriptions` wires `OnRowsInserted`,
-        // which is safe against an empty index: `AppendRange`
-        // grows the index on demand.)
+        // Incremental appends remain subscribed while the full walk is deferred.
         mDeferredBindPending = true;
         return;
     }

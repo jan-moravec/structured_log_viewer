@@ -7,30 +7,18 @@
 
 #include <cstdint>
 
-/// Narrow command surface the window shell uses to drive a session.
-///
-/// The interface is deliberately small in Phase 1 (task 1.6): only
-/// the shell-visible commands with stable meaning are declared. Each
-/// phase adds the commands it moves out of `MainWindow`; Phase 2
-/// grows filter / sort / stream commands, Phase 3 the view-scoped
-/// navigation commands, Phase 5 the dock rebinding commands, and
-/// Phase 6 the multi-source targeted variants.
-///
-/// Ownership contract:
-///
-/// - Every method dispatches immediately on the receiving session.
-/// - Commands that spawn a worker capture the receiving session
-///   identity, not the window's current active session (PRD §8.1).
-/// - Failures surface as signals on the concrete `LogSession`
-///   implementation, not as return values here; return types stay
-///   `void` so a `Qt::QueuedConnection` dispatch is trivial. The
-///   sole exception is `RequestClose`, which is aggregated
-///   synchronously by `MainWindow::closeEvent` and therefore has to
-///   return a `SessionCloseResult` so a per-session veto can bubble
-///   up before window chrome is saved.
+/**
+ * @brief Defines the shell-facing command surface for a log session.
+ *
+ * The source, open, and autosave request methods are currently no-op
+ * delegation points. The window shell performs those operations.
+ */
 class LogSessionCommands
 {
 public:
+    /**
+     * @brief Destroys the command interface.
+     */
     virtual ~LogSessionCommands() = default;
 
     LogSessionCommands(const LogSessionCommands &) = delete;
@@ -38,57 +26,73 @@ public:
     LogSessionCommands(LogSessionCommands &&) = delete;
     LogSessionCommands &operator=(LogSessionCommands &&) = delete;
 
-    // -----------------------------------------------------------------
-    // Source / open / restore commands (Phase 2 fills the bodies).
-    // -----------------------------------------------------------------
-
-    /// Discard the current session and return to an empty view.
+    /**
+     * @brief Requests an empty session.
+     *
+     * The current implementation is a no-op; the shell performs the reset.
+     */
     virtual void RequestNewSession() = 0;
 
-    /// Open the queued files in the caller's mode. Called by
-    /// `File → Open…`, drag/drop, and forwarded single-instance
-    /// launches once they resolve which tab to target.
+    /**
+     * @brief Selects whether a file request appends to or replaces the session.
+     */
     enum class OpenMode
     {
         Append,
         Replace,
     };
+
+    /**
+     * @brief Requests opening a set of files.
+     *
+     * The current implementation is a no-op; the shell opens the files.
+     *
+     * @param files Files to open.
+     * @param mode Whether to append to or replace the current session.
+     */
     virtual void RequestOpenFiles(const QStringList &files, OpenMode mode) = 0;
 
-    /// Open a live-tail session over @p filePath.
+    /**
+     * @brief Requests live tailing a file.
+     *
+     * The current implementation is a no-op; the shell starts the stream.
+     *
+     * @param filePath File to tail.
+     */
     virtual void RequestOpenLogStream(const QString &filePath) = 0;
 
-    // -----------------------------------------------------------------
-    // Persistence commands (Phase 2).
-    // -----------------------------------------------------------------
-
-    /// Autosave the current session to its persistence identity.
-    /// @p publishOpenWindow feeds the crash-restore fan.
+    /**
+     * @brief Requests an autosave snapshot.
+     *
+     * The current implementation is a no-op; the shell owns persistence.
+     *
+     * @param publishOpenWindow Whether to publish the session for process restoration.
+     */
     virtual void RequestAutoSaveSnapshot(bool publishOpenWindow) = 0;
 
-    // -----------------------------------------------------------------
-    // Close (aggregated by the shell over all hosted sessions).
-    // -----------------------------------------------------------------
-
-    /// Side-effect-free probe: return the reasons this session
-    /// cannot be silently torn down (in-flight workers, unsaved
-    /// filter edits, ...). A zero mask means the shell can proceed
-    /// without invoking `RequestClose`. Called during the shell's
-    /// close aggregation walk before any user-visible prompt.
+    /**
+     * @brief Reports conditions that require shell-owned close handling.
+     *
+     * This probe is side-effect free.
+     *
+     * @return A bitwise combination of `SessionClosePreconditions`; zero means
+     * the session needs no prompt or worker drain.
+     */
     [[nodiscard]] virtual std::uint32_t PreCheckClose() const = 0;
 
-    /// Ask the session to prepare for closing. Runs the
-    /// side-effecting sequence (cancel-and-drain in-flight workers,
-    /// prompt for unsaved edits, autosave writes) and returns the
-    /// outcome so `MainWindow::closeEvent` can veto or continue.
-    ///
-    /// Phase 2 leaves the body as a stub because the worker-drain
-    /// and prompt orchestration still live on the shell; the shell
-    /// aggregates `PreCheckClose()` bitmasks and drives its own
-    /// prompts. Phase 3 moves the orchestration in and `RequestClose`
-    /// becomes the sole entry point.
+    /**
+     * @brief Reports a successful close request without performing teardown.
+     *
+     * `MainWindow` owns close orchestration and uses `PreCheckClose()` to
+     * determine required prompts and worker drains.
+     *
+     * @return `SessionCloseResult::Closed`.
+     */
     virtual SessionCloseResult RequestClose() = 0;
 
 protected:
+    /**
+     * @brief Constructs the command interface.
+     */
     LogSessionCommands() = default;
 };

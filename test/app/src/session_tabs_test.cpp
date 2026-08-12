@@ -1,8 +1,4 @@
-// Multi-source tab lifecycle tests (task 1.9 seeded; task 4.10 grows
-// with phase-4 shell-routing pins; Phase 6 grows further to cover
-// create / close / reorder / switch, last-tab-close-closes-window,
-// focus, shortcuts, labels, indicators, accessibility, Open / Recent
-// Sessions routing, drag / drop, and static-session isolation).
+// Multi-source tab lifecycle and shell-routing tests.
 
 #include "log_session.hpp"
 #include "log_session_presentation.hpp"
@@ -29,7 +25,7 @@ class SessionTabsTest : public QObject
 private slots:
     static void TestSessionOperationStateFlagsPack()
     {
-        // Compact indicators combine several state bits per PRD FR-18.
+        // Compact indicators combine independent operation-state bits.
         const std::uint32_t combined = static_cast<std::uint32_t>(SessionOperationState::Ingesting) |
                                        static_cast<std::uint32_t>(SessionOperationState::Paused);
         QVERIFY((combined & static_cast<std::uint32_t>(SessionOperationState::Ingesting)) != 0U);
@@ -37,9 +33,7 @@ private slots:
         QVERIFY((combined & static_cast<std::uint32_t>(SessionOperationState::Exporting)) == 0U);
     }
 
-    // -----------------------------------------------------------------
-    // Task 4.1 -- active-session accessors return the constructed pair.
-    // -----------------------------------------------------------------
+    // Active-session accessors return the constructed pair.
 
     static void TestActiveSessionAccessorReturnsConstructedSession()
     {
@@ -54,13 +48,9 @@ private slots:
         QCOMPARE(window.activeSessionView()->Session(), window.activeSession());
     }
 
-    // -----------------------------------------------------------------
-    // Task 4.1 / 4.6 / 4.8 -- `hostedSessions()` is the iterator every
+    // `hostedSessions()` is the collection every
     // window-wide operation (modified aggregation, close preflight,
-    // preference broadcast) walks. Phase 3 hosts exactly one; the
-    // shape must survive phase 6's multi-tab expansion so callers
-    // do not have to change when the tab list grows.
-    // -----------------------------------------------------------------
+    // and preference broadcast) walks.
 
     static void TestHostedSessionsContainsExactlyTheActiveSession()
     {
@@ -70,19 +60,13 @@ private slots:
         QCOMPARE(sessions.front(), window.activeSession());
     }
 
-    // -----------------------------------------------------------------
-    // Task 4.6 -- modified-window aggregation folds every hosted
+    // Modified-window aggregation folds every hosted
     // session's dirty marker. Single-session windows resolve to the
-    // active session's `IsFiltersDirty()`; the point of the test is
-    // that the aggregator ACTUALLY reads from `hostedSessions()`
-    // rather than a raw `mSession->IsFiltersDirty()` snapshot, so the
-    // pattern scales to multiple tabs without touching callers.
-    // -----------------------------------------------------------------
+    // active session's `IsFiltersDirty()`.
 
     static void TestAggregateWindowModifiedFollowsActiveSessionDirty()
     {
-        // Non-`const` on purpose (post review-5 finding on the
-        // `const MainWindow` idiom): the test observably mutates
+        // Non-`const` because the test observably mutates
         // `window` state via `setWindowModified` through the
         // signal fan, even though the mutation ROUTE goes through
         // `activeSession()->MarkFiltersDirty()`. Marking `window`
@@ -103,21 +87,14 @@ private slots:
         QVERIFY(!window.isWindowModified());
     }
 
-    // -----------------------------------------------------------------
-    // Task 4.2 (post phase-6 review-1 H2 update) -- `UnbindActiveSessionForTest()`
+    // `UnbindActiveSessionForTest()`
     // disconnects the scoped bag so post-unbind emits from the
     // session's SCOPED subscriptions do not reach the shell.
     // Observable through the rotation flash channel: pre-unbind
     // a `rotationFlashChanged` emit routes into
     // `UpdateStreamingStatus`; post-unbind it does not.
-    //
-    // Note (H2 fix): `filtersDirtyChanged -> UpdateWindowTitle`
-    // moved OUT of the bag and into a persistent per-tab connect
-    // (installed in the ctor for tab 0 and in `AddNewTab` for
-    // subsequent tabs) so a background tab still surfaces `[*]`
-    // through the window's aggregate. It is therefore no longer
-    // a valid signal to observe here.
-    // -----------------------------------------------------------------
+    // `filtersDirtyChanged -> UpdateWindowTitle` is persistent per
+    // tab and is therefore not a valid scoped signal to observe here.
 
     static void TestUnbindActiveSessionDropsPresentationSubscriptions()
     {
@@ -134,31 +111,15 @@ private slots:
         QCOMPARE(window.SessionConnectionCountForTest(), static_cast<std::size_t>(0));
     }
 
-    // -----------------------------------------------------------------
-    // Task 4.2 -- structural pin against the class of regressions
-    // where a ctor `connect(...)` accidentally bares (drops the
-    // `mSessionConnections +=` prefix). The pair-observation
-    // approach in the two other Unbind pins can only catch the
-    // specific signals they observe; this one asserts on the raw
-    // bag size so ANY bare regression that removes a wire from
-    // the bag will fail here without needing per-signal coverage.
-    //
-    // The exact count is deliberately NOT hard-coded -- phase 6
-    // will grow / shrink the ctor subscribe block, and pinning
-    // "at least a reasonable floor" is enough to trip on a
-    // regression while leaving room for legitimate refactors.
-    // The lower bound below (35) matches the observed ctor
-    // population at review-5 landing with generous headroom; the
-    // real number is ~50.
-    // -----------------------------------------------------------------
+    // A minimum bag size catches constructor connections that omit
+    // the `mSessionConnections +=` ownership prefix. The exact count
+    // remains flexible for legitimate connection changes.
 
     static void TestScopedConnectionBagSizeMatchesCtorPopulation()
     {
         const MainWindow window;
-        // Fresh window: the ctor's ~50 `mSessionConnections +=
-        // connect(...)` calls just ran. Precise count moves with
-        // legitimate refactors, so pin a floor that would still
-        // flag a bare-regression sweep of the ctor.
+        // The exact connection count can vary, so enforce a floor
+        // that still detects unowned constructor connections.
         constexpr int MINIMUM_EXPECTED_BAG_SIZE = 35;
         QVERIFY2(
             window.SessionConnectionCountForTest() >= MINIMUM_EXPECTED_BAG_SIZE,
@@ -167,9 +128,7 @@ private slots:
         );
     }
 
-    // -----------------------------------------------------------------
-    // Task 4.2 second channel (phase-4 review-4 finding #3 coverage
-    // gap): the aggregator pin only exercises one bag entry. Emit
+    // The aggregate-state test exercises only one bag entry. Emit
     // `rotationFlashChanged` from the active session (which the
     // shell subscribes into `mSessionConnections`) and confirm the
     // subscription is live pre-unbind (session state changes as
@@ -180,7 +139,6 @@ private slots:
     // so it asserts on the state channel that IS observable
     // (`session->IsRotationFlashActive()`) plus a no-crash guarantee
     // for the post-unbind emit.
-    // -----------------------------------------------------------------
 
     static void TestSessionRotationEmitReachesSessionAndSevers()
     {
@@ -206,20 +164,13 @@ private slots:
         // Session-side state still tracks (the session's own
         // `mRotationFlashActive` is unaffected by the shell's
         // subscription being gone); the shell no longer receives
-        // the edge. If a future contributor re-bares any
-        // ctor-side subscription, the shell fan-out changes
-        // shape here but this pin at least guarantees the raw
-        // emit path stays safe.
+        // the edge. The raw emit path remains safe after unbinding.
         session->TriggerRotationFlash();
         QVERIFY(session->IsRotationFlashActive());
     }
 
-    // -----------------------------------------------------------------
-    // Task 4.7 -- `BroadcastRotationHistoryPreference` fans a global
+    // `BroadcastRotationHistoryPreference` fans a global
     // preference change to every hosted session's CLI opt-out latch.
-    // The active-session path is exercised here; multi-tab fanout
-    // gains coverage when phase 6 adds sibling sessions.
-    // -----------------------------------------------------------------
 
     static void TestBroadcastRotationHistoryPreferenceClearsCliOverride()
     {
@@ -237,13 +188,11 @@ private slots:
         QVERIFY(!session->DisableRotationHistoryOverride());
     }
 
-    // -----------------------------------------------------------------
-    // Task 4.7 (source-descriptor mirror) -- when a hosted session
+    // When a hosted session
     // carries a `File` source descriptor, the broadcast mirrors the
     // new preference into `followRotationSiblings` so later drops
     // pick up the flip. Sessions without a descriptor pass through
     // the loop untouched.
-    // -----------------------------------------------------------------
 
     static void TestBroadcastRotationHistoryPreferenceMirrorsIntoSource()
     {
@@ -264,20 +213,17 @@ private slots:
         QVERIFY(effective->followRotationSiblings);
     }
 
-    // -----------------------------------------------------------------
-    // Task 4.5 -- the window title is projected from the active
+    // The window title is projected from the active
     // session's streaming file name / source descriptor. Empty
     // session -> app-name-only title; assigning a file name and
     // firing a presentation refresh (via `filtersDirtyChanged` -->
     // shell `UpdateWindowTitle` connection) lifts it into the title.
     // Not asserting the exact separator glyphs (they are u2014 EM
-    // DASH etc.) -- just the substring contract so future
-    // title-format changes stay flexible.
-    // -----------------------------------------------------------------
+    // DASH etc.) -- only the source-label substring is invariant.
 
     static void TestWindowTitleProjectsFromActiveSessionSourceLabel()
     {
-        // Non-`const` on purpose (post review-5): the test drives
+        // Non-`const` because the test drives
         // `UpdateWindowTitle` via the ctor-installed signal fan
         // triggered by `MarkFiltersDirty`, which observably
         // mutates `windowTitle()` on `window`. See the identical
@@ -306,13 +252,7 @@ private slots:
         session->ClearFiltersDirty();
     }
 
-    // -----------------------------------------------------------------
-    // Phase 6 -- tab lifecycle pins. Each covers one of the 6.1-6.11
-    // subtasks: initial "Untitled" tab, AddNewTab, tab switch alias
-    // refresh, close-tab-preserves-siblings, close-last-closes-window,
-    // reorder-keeps-mTabs-in-sync, tab actions registered, and the
-    // shortcut sequences bound.
-    // -----------------------------------------------------------------
+    // Tab creation, activation, closure, and shortcut behavior.
 
     static void TestNewWindowHasOneUntitledTab()
     {
@@ -470,8 +410,8 @@ private slots:
             {
                 sawPrevTab = true;
             }
-            // Phase-6 review-2 H1: Open in New Tab intentionally
-            // carries no shortcut. Menu / toolbar exposure only.
+            // Open in New Tab intentionally has menu and toolbar
+            // exposure but no shortcut.
             if (action->objectName() == QStringLiteral("actionOpenInNewTab") ||
                 action->text().contains(QStringLiteral("Open in New Tab")))
             {
@@ -487,8 +427,7 @@ private slots:
         QVERIFY(sawNextTab);
         QVERIFY(sawPrevTab);
         QVERIFY(sawOpenInNewTab);
-        // Explicit anti-regression: nothing else in the window may
-        // steal `Ctrl+Shift+T` back from `actionFollowTail`.
+        // Nothing else in the window may own `Ctrl+Shift+T`.
         for (const QAction *action : window.actions())
         {
             if (action == nullptr || action->objectName() == QStringLiteral("actionFollowTail"))
@@ -568,8 +507,7 @@ private slots:
 
     static void TestTabChromeReflectsDirtyMarker()
     {
-        // Non-`const` on purpose (phase-6 review-2 low-priority
-        // finding): the test observably mutates `window` state
+        // Non-`const` because the test observably mutates `window` state
         // through `activeSession()->MarkFiltersDirty()`. Marking
         // `window` const would satisfy `misc-const-correctness`
         // (since `activeSession()` is a const method returning a
@@ -602,25 +540,15 @@ private slots:
         QCOMPARE(window.ActiveTabIndex(), 0);
     }
 
-    // -----------------------------------------------------------------
-    // Phase-6 review-1 B1: `InstallActiveSessionConnections` must
-    // reinstate the FULL ctor subscription bag on tab switch. Prior
-    // to the fix, only ~13 of the ~50 ctor bag connects were
-    // reinstalled, so cross-tab-critical wires (Copy, follow-tail,
-    // context menus, overview rail, progress cancel, ...) stayed dead
-    // after the first switch. The bag-size pin below catches any
-    // future divergence between the ctor and switch-time install
-    // paths (both now share one helper, but the size pin protects
-    // against a partial back-port).
-    // -----------------------------------------------------------------
+    // `InstallActiveSessionConnections` reinstates the full scoped
+    // subscription bag on every tab switch.
 
     static void TestScopedConnectionBagSurvivesTabSwitch()
     {
         MainWindow window;
         const std::size_t initialBagSize = window.SessionConnectionCountForTest();
-        // Non-trivial bag (~40+ connects with the phase-6 review-1
-        // B1 helper). If this ever regresses toward zero, the ctor
-        // install path stopped calling `InstallActiveSessionConnections`.
+        // A non-trivial bag confirms that the constructor installed
+        // the active-session connections.
         QVERIFY2(initialBagSize > 30U, "Ctor install produced an unexpectedly small subscription bag.");
 
         window.AddNewTabForTest(/*makeActive=*/false);
@@ -636,13 +564,10 @@ private slots:
         QCOMPARE(postReturnBagSize, initialBagSize);
     }
 
-    // -----------------------------------------------------------------
-    // Phase-6 review-1 B3: closing a BACKGROUND tab must not swap the
+    // Closing a background tab must not swap the
     // strip's current index onto the closing tab and then leave the
-    // user on a neighbour. Two-tab tests masked this because Qt's
-    // fallback happens to land on the surviving tab either way; the
-    // three-tab case exposes the wrong-active regression.
-    // -----------------------------------------------------------------
+    // user on a neighbour. The three-tab case distinguishes the
+    // active tab from both closing and surviving background tabs.
 
     static void TestClosingBackgroundTabKeepsActiveTabUnchanged()
     {
@@ -675,13 +600,8 @@ private slots:
         QCOMPARE(window.activeSession(), first);
     }
 
-    // -----------------------------------------------------------------
-    // Phase-6 review-1 H2: a background tab going dirty must update
-    // the window's `[*]` modified marker via the aggregate. Pre-fix,
-    // `filtersDirtyChanged` was only bag-wired for the active tab,
-    // so background dirt was invisible to the title until the user
-    // switched to that tab.
-    // -----------------------------------------------------------------
+    // A background tab's dirty state contributes to the window's
+    // aggregate modified marker.
 
     static void TestBackgroundTabDirtyFlipsWindowModified()
     {
@@ -705,13 +625,8 @@ private slots:
         QVERIFY(!window.isWindowModified());
     }
 
-    // -----------------------------------------------------------------
-    // Phase-6 review-1 H3: a background tab's `presentationChanged`
-    // must keep refreshing its own tab chrome even while inactive.
-    // Pre-fix, the connect lived in the scoped bag which was cleared
-    // on tab switch, so a background tab's label / tooltip / dirty
-    // marker froze at whatever state it had when it left focus.
-    // -----------------------------------------------------------------
+    // A background tab's `presentationChanged` signal refreshes its
+    // own chrome while the tab remains inactive.
 
     static void TestBackgroundTabChromeRefreshesOnPresentationChange()
     {
@@ -737,18 +652,8 @@ private slots:
         background->ClearFiltersDirty();
     }
 
-    // -----------------------------------------------------------------
-    // Phase-6 review-2 B1 anti-regression: `OnActiveTabChanged` MUST
-    // reinstall the full ctor scoped-connection set on tab switch.
-    // Pre-fix, the switch cleared ~46 subscriptions and only
-    // reinstalled ~14, so a single `Ctrl+T` permanently killed Copy,
-    // sort-status updates, header context menus, find-cache
-    // invalidation, and follow-tail behaviour window-wide.
-    //
-    // We pin two channels:
-    //   (a) Bag population survives a switch (structural).
-    //   (b) `Ctrl+Shift+T` remains free of a non-followTail binding.
-    // -----------------------------------------------------------------
+    // Tab switches preserve the active session's full scoped
+    // connection bag.
 
     static void TestTabSwitchPreservesScopedConnectionBag()
     {
@@ -782,12 +687,10 @@ private slots:
         QVERIFY(roundTripBagSize >= MINIMUM_EXPECTED);
     }
 
-    // -----------------------------------------------------------------
-    // Phase-6 review-2 H1 anti-regression: `Ctrl+Shift+T` is owned by
+    // `Ctrl+Shift+T` is owned by
     // `actionFollowTail` (`main_window.ui:401`). Any other window
     // action binding the same sequence would trigger Qt's "ambiguous
     // shortcut overload" the moment follow-tail was enabled.
-    // -----------------------------------------------------------------
 
     static void TestCtrlShiftTIsNotStolenFromFollowTail()
     {
@@ -822,20 +725,17 @@ private slots:
         Q_UNUSED(owners);
     }
 
-    // -----------------------------------------------------------------
-    // Phase-6 review-2 M3 anti-regression: `CloseTabAtIndex` must
+    // `CloseTabAtIndex` must
     // cancel workers BEFORE it mutates `mTabs` so any
     // `presentationChanged` fired by cancel-side effects (see
     // `ClearApplyEmbeddedBundleConfig`) resolves through
     // `TabIndexForSession` against a consistent `mTabs` <->
     // `mTabWidget` mirror -- otherwise the outgoing label writes onto
     // a shifted neighbour tab.
-    //
-    // We can't easily trigger a real decompression cancel in a unit
-    // test, but we CAN pin the invariant that after closing a middle
+    // A real decompression cancel is not required to verify that
+    // after closing a middle
     // tab the remaining labels are stable (no neighbour got the
     // closed tab's label spliced in).
-    // -----------------------------------------------------------------
 
     static void TestClosingMiddleTabDoesNotStompNeighbourLabels()
     {
@@ -875,13 +775,10 @@ private slots:
         QCOMPARE(newIndex1Label, tailLabelBefore);
     }
 
-    // -----------------------------------------------------------------
-    // Phase-6 review-3 finding #7 anti-regression: tab-management
-    // shortcuts must use `Qt::WindowShortcut`, not
+    // Tab-management shortcuts use `Qt::WindowShortcut`, not
     // `Qt::ApplicationShortcut`. Application scope makes identical
     // shortcuts across multiple `MainWindow`s ambiguous the moment
     // the user opens a second window and presses Ctrl+T / Ctrl+W.
-    // -----------------------------------------------------------------
 
     static void TestTabShortcutsUseWindowScope()
     {
@@ -919,12 +816,9 @@ private slots:
         }
     }
 
-    // -----------------------------------------------------------------
-    // Phase-6 review-3 finding #3 anti-regression: multi-tab window
-    // close must gather uuids from EVERY hosted session, not just
-    // the active one. `RestorableHostedSessionUuids()` is what
+    // Multi-tab window closure gathers UUIDs from every hosted session.
+    // `RestorableHostedSessionUuids()` is used by
     // `main.cpp`'s `aboutToQuit` publish step iterates.
-    // -----------------------------------------------------------------
 
     static void TestRestorableHostedSessionUuidsIsPluralForMultiTab()
     {
@@ -951,13 +845,11 @@ private slots:
         }
     }
 
-    // -----------------------------------------------------------------
-    // Task 7.4 / 7.5: destructive-open paths (stdin, network, log
+    // Destructive-open paths (stdin, network, log
     // stream, Recent Sessions) must NOT clobber a tab that has
     // content. They route through `EnsureFreshActiveTab`, which
     // adds a new foreground tab when the active tab is non-empty.
     // Only a truly empty active tab (no source, no rows) is reused.
-    // -----------------------------------------------------------------
 
     static void TestEnsureFreshActiveTabReusesEmptyTab()
     {
@@ -1000,12 +892,10 @@ private slots:
         QVERIFY(window.SessionAtTab(0)->CurrentSource().has_value());
     }
 
-    // -----------------------------------------------------------------
-    // Task 7.1: two independent static sessions share nothing --
+    // Two independent static sessions share no mutable state:
     // separate source descriptors, separate simple-mode filter
     // leaves, separate sort state, separate dirty flags. The tab
     // shell must not project one tab's state into another.
-    // -----------------------------------------------------------------
 
     static void TestTwoStaticTabsHaveIndependentSourceState()
     {
@@ -1128,12 +1018,10 @@ private slots:
         QVERIFY2(sessionA->FilterProxy() != sessionB->FilterProxy(), "Each tab must own a distinct LogFilterModel.");
     }
 
-    // -----------------------------------------------------------------
-    // Task 7.2: compressed / bundle tabs. Each tab owns its own
+    // Each compressed or bundle tab owns its own
     // decompression stop-source, generation counter, embedded-
     // bundle intent, in-flight flag, and pending-error vector. A
     // cancel on tab A cannot poison tab B's decompression.
-    // -----------------------------------------------------------------
 
     static void TestTwoCompressedTabsHaveIndependentDecompressionState()
     {
@@ -1199,13 +1087,11 @@ private slots:
         );
     }
 
-    // -----------------------------------------------------------------
-    // Task 7.3: a static tab beside a live-tail tab. Each tab
-    // owns its own mode, source-waiting latch, streaming display
+    // A static tab beside a live-tail tab has independent mode,
+    // source-waiting latch, streaming display
     // label, and rotation-follow preference. `SetMode` /
     // `SetSourceWaiting` on one tab must not project into the
     // sibling.
-    // -----------------------------------------------------------------
 
     static void TestStaticAndLiveTailTabsHaveIndependentModeAndLabel()
     {
@@ -1303,14 +1189,10 @@ private slots:
         QVERIFY(!tailB->CurrentSource()->followRotationSiblings);
     }
 
-    // -----------------------------------------------------------------
-    // Task 7.6: background streaming-finished must settle the
+    // Background streaming completion settles the
     // origin tab (mode -> Idle, SourceWaiting -> false, chrome
     // refresh) even when the user has switched to a different
-    // tab. Before 7.6 the bag-scoped `streamingFinished` handler
-    // was torn down on tab switch, silently dropping the
-    // background tab's completion and leaving it latched.
-    // -----------------------------------------------------------------
+    // tab.
 
     static void TestBackgroundStreamingFinishedSettlesOriginMode()
     {
@@ -1352,17 +1234,9 @@ private slots:
         QVERIFY(!sessionB->IsSourceWaiting());
     }
 
-    // -----------------------------------------------------------------
-    // Post-tabs review-round bug #2 fix pin: background streaming
-    // completion must drive the FULL `OnStreamingFinished` body,
-    // not just settle mode. Pins that pending-open-files queued
-    // on a background tab are drained after its streaming
-    // completes, so multi-file loads do not stall when the user
-    // switches away mid-load. Before the fix,
-    // `HandleStreamingFinishedFor` skipped `StreamNextPendingFile`
-    // for background origins, leaving the queue permanently
-    // stuck.
-    // -----------------------------------------------------------------
+    // Background streaming completion runs the full
+    // `OnStreamingFinished` behavior, including draining files
+    // queued on the originating tab.
 
     static void TestBackgroundStreamingCompletionDrainsPendingFiles()
     {
@@ -1398,11 +1272,9 @@ private slots:
         QVERIFY(modelA != nullptr);
         emit modelA->streamingFinished(StreamingResult::Success);
 
-        // Queue drained: either every file was processed
-        // successfully or their synchronous open failures were
-        // captured into the origin's `MutablePendingOpenErrors()`.
-        // Before the fix the queue would still contain the
-        // seeded path.
+        // The queue drains after files are processed or their
+        // synchronous open failures are captured in the origin's
+        // `MutablePendingOpenErrors()`.
         QVERIFY2(
             sessionA->MutablePendingOpenFiles().isEmpty(),
             "Background streaming completion must drain the origin's pending-file queue "
@@ -1414,15 +1286,9 @@ private slots:
         QVERIFY(sessionB->MutablePendingOpenFiles().isEmpty());
     }
 
-    // -----------------------------------------------------------------
-    // Post-tabs review-round bug #3 fix pin: origin attribution
-    // for decompression completions must derive from the
+    // Decompression completion origin attribution derives from the
     // `sender()` watcher, not the shell-wide
-    // `mDecompressionPollOriginSession` field. Concurrent
-    // decompressions on two tabs previously collapsed onto the
-    // last-started op's origin, mis-attributing whichever
-    // completed first.
-    // -----------------------------------------------------------------
+    // `mDecompressionPollOriginSession` field.
 
     static void TestLogSessionForDecompressionWatcherReturnsOwningSession()
     {
@@ -1452,24 +1318,16 @@ private slots:
         QCOMPARE(window.LogSessionForDecompressionWatcher(watcherA), sessionA);
         QCOMPARE(window.LogSessionForDecompressionWatcher(watcherB), sessionB);
 
-        // Unknown sender resolves to nullptr (defensive: legacy
-        // test callers of the slot without a watcher fall back to
-        // `mDecompressionPollOriginSession` in the slot body).
+        // Unknown senders resolve to nullptr; callers without a
+        // watcher fall back to `mDecompressionPollOriginSession`.
         const QObject unrelated;
         QCOMPARE(window.LogSessionForDecompressionWatcher(&unrelated), nullptr);
         QCOMPARE(window.LogSessionForDecompressionWatcher(nullptr), nullptr);
     }
 
-    // -----------------------------------------------------------------
-    // Post-tabs review-round bug #5 fix pin: `SourceModeFor`
-    // (private to `main_window.cpp`, indirectly exercised via
+    // `SourceModeFor` (private to `main_window.cpp`, indirectly exercised via
     // `CaptureWorkspaceWindow`) must emit `ConfigOnly` when a
     // session has a pinned autosave uuid but no bound source.
-    // The pre-fix version always returned `Empty`, and
-    // `ApplyWorkspaceWindow`'s `isFilePath` filter then skipped
-    // the tab -- a "loaded config, no logs" investigation
-    // restored as blank on the next launch.
-    // -----------------------------------------------------------------
 
     static void TestCaptureWorkspaceEmitsConfigOnlyForPinnedUuidWithNoSource()
     {
@@ -1489,7 +1347,7 @@ private slots:
         // Pin a uuid (mirrors what `OpenRecentSession` /
         // `AutoSaveSessionSnapshot` do after loading a
         // columns-only configuration). RestorableSessionUuid()
-        // now returns the uuid, so `SourceModeFor` must emit
+        // returns the uuid, so `SourceModeFor` must emit
         // ConfigOnly.
         session->SetAutoSaveUuid(QStringLiteral("11111111-2222-3333-4444-555555555555"));
         const auto configOnly = window.CaptureWorkspaceWindow();
@@ -1498,16 +1356,11 @@ private slots:
         QCOMPARE(configOnly.tabs.front().sessionUuid, session->RestorableSessionUuid());
     }
 
-    // -----------------------------------------------------------------
-    // Post-tabs review-round bug #7 fix pin: `NewSession()` must
+    // `NewSession()` must
     // route through `ConfirmDiscardEphemeralIfDirty`, and the
     // test-only forwarder `NewSessionForTest()` must locally
     // suppress dialogs so fixtures that don't opt into
-    // `SetSuppressDialogsForTest(true)` don't hang on the
-    // modal prompt. Prior to the fix, `NewSession` wiped the
-    // active tab without any prompt -- a File -> New Session
-    // shortcut could silently discard dirty ephemeral data.
-    // -----------------------------------------------------------------
+    // `SetSuppressDialogsForTest(true)` do not hang on a modal prompt.
 
     static void TestNewSessionForTestPreservesPriorSuppressState()
     {
@@ -1529,17 +1382,10 @@ private slots:
         );
     }
 
-    // -----------------------------------------------------------------
-    // Post-tabs review-round bug #M1 fix pin: after
-    // `AutoSaveAllHostedSessions` walks every tab (activating
+    // After `AutoSaveAllHostedSessions` walks every tab (activating
     // each so the alias-based `AutoSaveSessionSnapshot` helper
     // sees the right session), the currently-active tab must be
-    // restored to what it was before the walk. Before the fix,
-    // the walk left `mTabWidget->currentIndex() == count() - 1`
-    // and the immediately-following `CaptureWorkspaceWindow()`
-    // call in `aboutToQuit` persisted the wrong active-tab
-    // index, so every multi-tab quit restored the wrong tab.
-    // -----------------------------------------------------------------
+    // restored to its original index.
 
     static void TestAutoSaveAllHostedSessionsPreservesActiveTabIndex()
     {
@@ -1557,24 +1403,8 @@ private slots:
         QCOMPARE(window.TabWidgetForTest()->currentIndex(), 1);
     }
 
-    // -----------------------------------------------------------------
-    // Post-tabs review-round bug #H3 fix pin: the legacy flat
-    // `openWindowsAtQuit` list (consumed as one-window-per-entry
-    // by the pre-8.x restore branch in `main.cpp`) receives ONE
-    // uuid per window, not one per hosted tab. Before the fix,
-    // `main.cpp`'s `aboutToQuit` published every per-tab uuid
-    // via `RestorableHostedSessionUuids`, and any launch that
-    // fell back to the legacy branch (missing workspace file,
-    // downgraded binary) exploded a 3-tab window into 3
-    // separate windows.
-    //
-    // The publisher lives in `main.cpp` (not directly testable
-    // from a fixture), but `MainWindow::RestorableActiveSessionUuid`
-    // is the public one-per-window getter it now uses. Assert
-    // that it returns AT MOST one non-empty uuid regardless of
-    // tab count, and that a multi-tab window with pinned tab
-    // uuids does not multiply into a length-N list.
-    // -----------------------------------------------------------------
+    // `RestorableActiveSessionUuid` returns one UUID per window,
+    // while `RestorableHostedSessionUuids` returns per-tab UUIDs.
 
     static void TestRestorableActiveSessionUuidIsSingleValued()
     {
@@ -1584,13 +1414,8 @@ private slots:
         window.AddNewTabForTest(/*makeActive=*/false);
         QCOMPARE(window.TabCount(), 3);
 
-        // Pin an autoSaveUuid on every tab so
-        // `RestorableSessionUuid()` would return a non-empty
-        // string for each of the three -- the pre-fix
-        // publisher walked all three and appended each. The
-        // post-fix publisher only reads
-        // `RestorableActiveSessionUuid()`, which returns the
-        // ACTIVE tab's uuid only.
+        // Give every tab a UUID so the active-only and all-hosted
+        // accessors have observably different results.
         for (int i = 0; i < window.TabCount(); ++i)
         {
             LogSession *session = window.SessionAtTab(i);
@@ -1604,11 +1429,7 @@ private slots:
         window.ActivateTabForTest(1);
         QCOMPARE(window.RestorableActiveSessionUuid(), QStringLiteral("uuid-tab-1"));
 
-        // Multi-tab getter still returns every tab's uuid --
-        // that's what the grouped WORKSPACE record uses. The
-        // one-per-window contract is expressed via
-        // `RestorableActiveSessionUuid`, which is the flat
-        // list's authorised source.
+        // The grouped workspace record uses every hosted tab's UUID.
         QCOMPARE(window.RestorableHostedSessionUuids().size(), 3);
     }
 };

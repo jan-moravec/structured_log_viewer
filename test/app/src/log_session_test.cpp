@@ -1,8 +1,5 @@
-// Direct `LogSession` unit tests (task 1.9). Phase 1 seeds a
-// minimal binary so `test/app/CMakeLists.txt` and `ctest`
-// register the target; Phase 2 grows this file into the primary
-// coverage venue for source, filter, sort, worker, and
-// autosave behaviours as they migrate out of `MainWindow`.
+// Direct `LogSession` unit tests for source, filter, sort, worker,
+// presentation, and autosave behavior.
 
 #include "anchor_manager.hpp"
 #include "highlight_rule_set.hpp"
@@ -60,8 +57,8 @@ private slots:
 
     static void TestInstanceIdIsUniqueAndMonotonic()
     {
-        // Identity handles are the pin PRD §8.1 requires so that
-        // async callbacks can resolve to the originating session
+        // Identity handles let asynchronous callbacks resolve the
+        // originating session
         // even if the active tab has moved on. The counter is
         // process-scoped, so two sessions built back-to-back must
         // land on strictly increasing ids and never collide with
@@ -78,11 +75,9 @@ private slots:
 
     static void TestOwnsModelQuintetAsChildrenInLifetimeOrder()
     {
-        // Task 2.1 pins the model quintet into `LogSession`. The
-        // accessors must return non-null instances for the entire
+        // Model accessors return non-null instances for the entire
         // session lifetime and each must be a QObject child of the
-        // session so parent-driven teardown handles cleanup without
-        // any manual deletes in later phases.
+        // session so parent-driven teardown handles cleanup.
         const LogSession session;
 
         QVERIFY(session.Anchors() != nullptr);
@@ -103,10 +98,8 @@ private slots:
 
     static void TestProxyChainIsWiredToOwnedModel()
     {
-        // The two proxies must chain onto the owned `LogModel` at
+        // The two proxies chain onto the owned `LogModel` at
         // construction so a session is immediately usable by a view.
-        // Re-wiring in later subtasks would be an invisible
-        // regression without this check.
         const LogSession session;
 
         QCOMPARE(session.RowOrderProxy()->sourceModel(), session.Model());
@@ -115,9 +108,8 @@ private slots:
 
     static void TestHighlightCacheClearsOnModelReset()
     {
-        // `LogSession` owns the `modelReset` → `ClearMatches` wire
-        // that used to live in the `MainWindow` constructor. Reset
-        // through the session's model and verify the highlight set
+        // `LogSession` owns the `modelReset` → `ClearMatches`
+        // connection. Reset through the session's model and verify the highlight set
         // survives (rules persist; only the runtime cache clears).
         const LogSession session;
 
@@ -127,9 +119,9 @@ private slots:
 
     static void TestFiltersDirtySignalFiresOnlyOnTransition()
     {
-        // Task 2.4 pins the dirty-state marker onto `LogSession` and
-        // exposes it through `MarkFiltersDirty()` /
-        // `ClearFiltersDirty()` / `filtersDirtyChanged`. The signal
+        // The dirty-state marker is exposed through
+        // `MarkFiltersDirty()`, `ClearFiltersDirty()`, and
+        // `filtersDirtyChanged`. The signal
         // is what the window title binds to for the `[*]` marker, so
         // a redundant mark must be a no-op — otherwise every keystroke
         // in a filter editor would trigger a title repaint.
@@ -180,9 +172,7 @@ private slots:
 
     static void TestPendingApplySortFromConfigLatchIsRoundTrippable()
     {
-        // Task 2.4 moves the deferred-sort latch that
-        // `TestRestoreLastSessionDefersSortUntilStreamingFinishes`
-        // pins onto `LogSession`. The API is a plain boolean the
+        // The deferred-sort latch is a plain boolean the
         // load / restore path sets and `OnStreamingFinished` reads
         // and clears; no signal is needed because nothing outside
         // the session cares about the transition.
@@ -197,16 +187,12 @@ private slots:
 
     static void TestSimpleFilterLeavesStartEmptyAndAreMutable()
     {
-        // Task 2.4 pins the simple-mode filter leaves onto
-        // `LogSession`. `MainWindow::AddLogFilter` /
-        // `RemoveLogFilter` still drive the mutations for now, but
-        // they reach the storage through
+        // Simple-mode filter mutations reach session storage through
         // `mSession->MutableSimpleLeaves()` /
         // `mSession->MutableSimpleLeafOrder()` — so the accessors
         // must round-trip inserts and preserve insertion order (the
         // display-order invariant `RebuildFilterExpressionFromSimpleLeaves`
-        // relies on) exactly as the previous inline `MainWindow`
-        // members did.
+        // relies on).
         LogSession session;
 
         QVERIFY(session.SimpleLeaves().empty());
@@ -237,9 +223,8 @@ private slots:
 
     static void TestApplyingEnumRebuildLatchIsRoundTrippable()
     {
-        // Task 2.4 relocates the `enumColumnsChanged -> UpdateFilters`
-        // re-entrancy guard off `MainWindow` and onto `LogSession`.
-        // The API is a plain boolean the shell sets around the
+        // The `enumColumnsChanged -> UpdateFilters` re-entrancy guard
+        // is a plain boolean the shell sets around the
         // rewrite; a nested `enumColumnsChanged` reads it and bails
         // to avoid observing half-rewritten state.
         LogSession session;
@@ -253,10 +238,7 @@ private slots:
 
     static void TestRebuildFilterExpressionFromSimpleLeavesPreservesOrderAndAdvancedTree()
     {
-        // Task 2.4 puts the shared filter-expression reconciler on
-        // `LogSession`. The invariants pinned here mirror the ones
-        // the old `MainWindow::MirrorSessionStateToConfiguration`
-        // carried:
+        // Filter-expression reconciliation preserves these invariants:
         //
         //   1. Simple-mode leaves become the leading `And` children
         //      in `SimpleLeafOrder()` order.
@@ -364,8 +346,7 @@ private slots:
 
     static void TestMirrorSortToConfigurationRoundTripsProxyState()
     {
-        // Task 2.4 folds the sort mirror into `LogSession`. The
-        // helper reads `FilterProxy()->SortColumn()` /
+        // The sort mirror reads `FilterProxy()->SortColumn()` /
         // `SortOrder()` and writes them into
         // `Model()->ConfigurationManager()`.
         LogSession session;
@@ -384,8 +365,7 @@ private slots:
         // proxy is still unsorted (`-1`), the mirror must preserve
         // the configuration's existing sort — writing the transient
         // `-1` would clobber the latched value before
-        // `OnStreamingFinished` had a chance to reapply it. Regression:
-        // `TestRestoreLastSessionDefersSortUntilStreamingFinishes`.
+        // `OnStreamingFinished` has a chance to reapply it.
         LogSession session;
 
         loglib::LogConfiguration::Sort persisted;
@@ -423,8 +403,7 @@ private slots:
 
     static void TestMirrorAnchorsToConfigurationCapturesLiveEntries()
     {
-        // Task 2.4 folds the anchor mirror into `LogSession`. The
-        // helper reads `Anchors()->Entries()` (which drops
+        // The anchor mirror reads `Anchors()->Entries()` (which drops
         // runtime-only anchors with empty locators) and writes them
         // to `Model()->ConfigurationManager().SetAnchors(...)`.
         LogSession session;
@@ -444,9 +423,7 @@ private slots:
 
     static void TestSetModeLatchesPreviousModeOnIdleTransition()
     {
-        // Task 2.5 pins the session-mode transitions onto
-        // `LogSession`. The invariant carried over from
-        // `MainWindow::OnStreamingFinished`: an explicit
+        // An explicit
         // `SetMode(Idle)` snapshots the previous non-`Idle` mode
         // into `LastTerminalMode()` so a `closeEvent` firing after
         // a live-tail finished still routes through the live-tail
@@ -504,11 +481,8 @@ private slots:
 
     static void TestStreamingCountersDefaultAndRoundTrip()
     {
-        // Task 2.5 folds the streaming progress counters into
-        // `LogSession`. Callers on `MainWindow` used to write these
-        // through `mStreamingLineCount = X;` etc; they now flow
-        // through setters so the session can grow signals later
-        // without changing every write site.
+        // Streaming progress counters round-trip through session
+        // setters and accessors.
         LogSession session;
 
         QCOMPARE(session.StreamingLineCount(), qsizetype{0});
@@ -535,11 +509,8 @@ private slots:
 
     static void TestTriggerRotationFlashLatchesAndAutoClears()
     {
-        // Rotation-flash state moved off `MainWindow` in the
-        // phase-4 review-4 resolution (finding #4) so multi-tab
-        // windows do not project one tab's flash onto another.
-        // Pin the rising edge, the emitted signal, and the
-        // auto-clear when the session-owned singleShot fires.
+        // Rotation-flash state is session-owned. Verify the rising
+        // edge, emitted signal, and session-owned auto-clear.
         LogSession session;
         QVERIFY(!session.IsRotationFlashActive());
 
@@ -568,17 +539,10 @@ private slots:
 
     static void TestTriggerRotationFlashExtendsDeadlineOnRepeatedCall()
     {
-        // Post-tabs review-round bug fix pin: the header docstring
-        // on `TriggerRotationFlash()` promises that "repeated calls
+        // Repeated `TriggerRotationFlash()` calls
         // within an active flash window extend the clear deadline
-        // by another full 3 s". The pre-fix implementation scheduled
-        // an independent `QTimer::singleShot` on every call without
-        // cancelling the earlier one, so the FIRST timer's tick
-        // unconditionally cleared `mRotationFlashActive` at
-        // `ROTATION_FLASH_DURATION_MS` from the first call --
-        // ending the flash early instead of extending it. A
-        // generation counter compared inside the lambda now
-        // short-circuits the stale earlier lambda.
+        // by another full duration. A generation check prevents an
+        // earlier timer callback from clearing the refreshed flash.
         LogSession session;
         QSignalSpy spy(&session, &LogSession::rotationFlashChanged);
         QVERIFY(spy.isValid());
@@ -597,10 +561,8 @@ private slots:
         QVERIFY(session.IsRotationFlashActive());
         QCOMPARE(spy.count(), 0);
 
-        // Wait until 200 ms PAST the first timer's original
-        // deadline. Pre-fix, the flash would have cleared here.
-        // Post-fix, the stale lambda's generation-check
-        // short-circuits and the flash is still active.
+        // Wait past the first timer's deadline; its stale generation
+        // must not clear the refreshed flash.
         QTest::qWait(LogSession::ROTATION_FLASH_DURATION_MS - 500 + 200);
         QVERIFY2(
             session.IsRotationFlashActive(),
@@ -620,11 +582,7 @@ private slots:
 
     static void TestRotationFlashIsIndependentAcrossSessions()
     {
-        // Multi-tab isolation pin (phase-4 review-4 finding #4):
-        // triggering the flash on session A must NOT flip session
-        // B's flash state. Phase 6 will pair this with a shell
-        // test that switches active tabs mid-flash; today the
-        // session-level pin is what guarantees the shape.
+        // Triggering the flash on session A must not change session B.
         LogSession sessionA;
         const LogSession sessionB;
 
@@ -641,9 +599,8 @@ private slots:
         // session while the timer is pending must not fire the
         // callback into a torn-down object. `LogSession`'s
         // `QObject` parentage handles the wire cleanup; the
-        // `QPointer` guard inside the lambda is belt-and-braces
-        // insurance for any future refactor that changes the
-        // receiver.
+        // `QPointer` guard inside the lambda provides an additional
+        // receiver-lifetime check.
         {
             LogSession scoped;
             scoped.TriggerRotationFlash();
@@ -654,8 +611,8 @@ private slots:
             // the receiver binding regressed.
         }
         // Spin the event loop briefly so Qt's receiver-destroy
-        // path processes any deferred cleanup. A regression that
-        // fires the callback into the destroyed object would
+        // path processes any deferred cleanup. Firing the callback
+        // into the destroyed object would
         // either crash or trip the address sanitizer during this
         // window. The full 3 s wait is not needed -- Qt severs
         // the connection synchronously in `~QObject` well before
@@ -712,8 +669,7 @@ private slots:
 
     static void TestCurrentSourceStartsEmptyAndRoundTrips()
     {
-        // Task 2.5 folds `mCurrentSource` into `LogSession`. Reads
-        // go through `CurrentSource()` (const); mutation sites use
+        // Reads go through `CurrentSource()`; mutation sites use
         // `MutableCurrentSource()` to keep in-place `->` edits and
         // `AppendLocator(...)` calls cheap.
         LogSession session;
@@ -737,9 +693,8 @@ private slots:
 
     static void TestSessionSwitchInProgressLatchIsRoundTrippable()
     {
-        // Task 2.5 moves the session-switch latch off `MainWindow`;
-        // `MainWindow::SessionSwitchScope` still guards the on/off
-        // pairing but now flips this flag on the session. The flag
+        // `MainWindow::SessionSwitchScope` guards this session flag's
+        // on/off pairing. The flag
         // must round-trip so `OnStreamingFinished` can distinguish
         // a real `Cancelled` from the synchronous emit that
         // `mModel->Reset()` fires under the scope.
@@ -754,12 +709,9 @@ private slots:
 
     static void TestResetSimpleFilterStateClearsBothContainers()
     {
-        // `MainWindow::ResetSimpleFilterState()` now forwards to
-        // `LogSession::ResetSimpleFilterState()`; the map and its
+        // The filter map and its
         // display-order companion must clear together so the
-        // reconciler cannot see a stale UUID in one without the
-        // other (which used to manifest as "phantom filter" menu
-        // items after a session switch).
+        // reconciler cannot see a stale UUID in only one container.
         LogSession session;
         loglib::LeafRule rule;
         rule.type = loglib::LeafRule::Type::String;
@@ -778,9 +730,8 @@ private slots:
 
     static void TestPendingLiveTailPromotionRoundTripsAndTakes()
     {
-        // Task 2.7 hosts the static-prefix-to-live-tail promotion
-        // fields on `LogSession`. `SetPendingLiveTailPromotion`
-        // matches the assignment used by `OpenLogStreamFromPath`;
+        // `SetPendingLiveTailPromotion` matches the assignment used
+        // by `OpenLogStreamFromPath`;
         // `TakePendingLiveTailPromotion` is the one-shot consumer
         // called by `ContinueLiveTailAfterPrefix`.
         LogSession session;
@@ -810,14 +761,14 @@ private slots:
 
     static void TestPreCheckCloseReportsFollowUpsAsBitmask()
     {
-        // Review finding #2: the shell needs a side-effect-free probe
-        // that distinguishes worker-drain follow-ups from unsaved-edit
+        // The shell needs a side-effect-free probe that distinguishes
+        // worker-drain requirements from unsaved-edit
         // prompts. `PreCheckClose` returns a bitmask so the shell can
         // aggregate multi-tab decisions ("N tabs have workers, M tabs
         // have unsaved filters, pick one prompt") without inspecting
         // three separate getters.
         //
-        //   * Clean session               -> `None` (no follow-up).
+        //   * Clean session               -> `None`.
         //   * Filters dirty               -> `FiltersDirty`.
         //   * Decompression in flight     -> `DecompressionInFlight`.
         //   * Export in flight            -> `ExportInFlight`.
@@ -859,15 +810,10 @@ private slots:
         QCOMPARE(exportSession.PreCheckClose(), std::uint32_t{0});
     }
 
-    static void TestRequestCloseIsPhase2Stub()
+    static void TestRequestCloseReturnsClosedWithoutShellOrchestration()
     {
-        // Review finding #2: `RequestClose` is documented as the
-        // side-effecting entry point (cancel-and-drain workers,
-        // prompt for unsaved edits) but its body is stubbed in
-        // Phase 2 because the orchestration still lives on the
-        // shell. Pin the stub so a future contributor cannot add
-        // partial side effects without updating this test *and*
-        // migrating the shell orchestration.
+        // `RequestClose` currently reports success without mutating
+        // dirty or in-flight state; close orchestration is shell-owned.
         LogSession session;
         QCOMPARE(session.RequestClose(), SessionCloseResult::Closed);
 
@@ -879,8 +825,7 @@ private slots:
 
     static void TestLiveTailElapsedTimerArmsOnStart()
     {
-        // Task 2.10 groundwork: the live-tail wall-clock lives on
-        // `LogSession`. Before `StartLiveTailElapsedTimer()` runs,
+        // Before `StartLiveTailElapsedTimer()` runs,
         // the timer reports invalid (`isValid()` false); after
         // starting, subsequent calls to `elapsed()` return a
         // non-negative monotonic delta. Deliberately do NOT check
@@ -906,10 +851,8 @@ private slots:
 
     static void TestPresentationSnapshotProjectsMigratedState()
     {
-        // The shell now populates `SessionPresentationSnapshot`
-        // straight from the migrated session state (task 2.5-2.11).
-        // Pin the projection so future migrations don't silently
-        // regress the tab-strip / status-bar contract.
+        // `SessionPresentationSnapshot` projects session state for
+        // the tab strip and status bar.
         LogSession session;
         {
             const auto empty = session.PresentationSnapshot();
@@ -930,8 +873,7 @@ private slots:
         // A dirty static file source should surface as StaticFile mode,
         // restorable-in-place dirty, filtersDirty=true, and
         // confirm-before-close=true (unsaved edits).
-        //
-        // Review finding #5: seed `mStreamingFileName` with a full
+        // Seed `mStreamingFileName` with a full
         // path so we exercise the basename-extraction branch that
         // splits `shortLabel` (tab title, no path) from `tooltip`
         // and `sourceLabel` (full source).
@@ -962,9 +904,9 @@ private slots:
             QVERIFY(dirty.confirmBeforeClose);
         }
 
-        // In-flight decompression: mutations blocked, close needs
-        // confirmation, Decompressing op flag set. Review finding
-        // #4 also promotes the source-mode projection from
+        // In-flight decompression blocks mutations, requires close
+        // confirmation, sets the Decompressing flag, and promotes
+        // the source-mode projection from
         // `StaticFile` to `Compressed` while the worker is armed.
         session.SetDecompressionInFlight(true);
         {
@@ -980,8 +922,7 @@ private slots:
         // set (no source-waiting latch), ephemeralUnreproducible
         // because reopening the locator would silently downgrade to
         // a static open.
-        //
-        // Review finding #3: a fresh live-tail open with no data
+        // A fresh live-tail open with no data
         // yet must NOT project `Parsing` alongside `Ingesting`;
         // `Parsing` is static-only. Assert both bits explicitly.
         session.SetMode(LogSession::Mode::LiveTail);
@@ -1009,9 +950,7 @@ private slots:
             QVERIFY(stdinSnap.dirty.ephemeralUnreproducible);
         }
 
-        // Review finding #8: Kind::NetworkStream branch is otherwise
-        // only exercised via `apptest`; pin it here so the enum
-        // projection cannot silently regress.
+        // Network streams project the Network source mode.
         loglib::LogConfiguration::Source networkSource;
         networkSource.kind = loglib::LogConfiguration::Source::Kind::NetworkStream;
         networkSource.locators = {std::string{"tcp://logs.example.com:5514"}};
@@ -1024,8 +963,7 @@ private slots:
             QVERIFY(!netSnap.dirty.restorableInPlace);
         }
 
-        // Review finding #8: `Parsing` bit (positive) and
-        // `SourceWaiting` bit. Reset to a static file source with
+        // Reset to a static file source with
         // no first-batch latch to isolate the `Parsing` gate; then
         // flip the source-waiting latch and pin that bit
         // independently.
@@ -1048,8 +986,8 @@ private slots:
 
     static void TestPresentationSnapshotProjectsBundleMultiFileCompressed()
     {
-        // Review finding #4: `SessionSourceMode` now carries
-        // `Bundle`, `Compressed`, and `MultiFile` variants so tab
+        // `SessionSourceMode` carries `Bundle`, `Compressed`, and
+        // `MultiFile` variants so tab
         // chrome can pick the right badge without inspecting the
         // descriptor. Pin the priority order: Stdin/Network >
         // Bundle > LiveTail > MultiFile > Compressed > StaticFile.
@@ -1084,14 +1022,9 @@ private slots:
         }
         session.SetDecompressionInFlight(false);
 
-        // Third-pass review finding M1: `Compressed` today is
-        // transient -- the badge holds only while the decompression
-        // worker is armed. Pin the "worker cleared -> mode reverts
-        // to the underlying static classification" behaviour so a
-        // future contributor who promotes `Compressed` into a
-        // "was compressed" latch trips this assertion and updates
-        // the docstring (`SessionSourceMode` header explicitly
-        // flags this as a phase 3 growth point).
+        // `Compressed` is transient: the badge holds only while the
+        // decompression worker is armed, then reverts to the
+        // underlying static classification.
         session.MutableCurrentSource() = fileSource; // single-locator File
         session.SetDecompressionInFlight(true);
         {
@@ -1151,14 +1084,10 @@ private slots:
 
     static void TestPresentationSnapshotShortLabelFallsBackWhenPathIsBare()
     {
-        // Review finding #5 edge case: `QFileInfo::fileName` returns
-        // "" for a bare directory path ending in a separator. In
+        // `QFileInfo::fileName` returns an empty string for a bare
+        // directory path ending in a separator. In
         // that case `shortLabel` must fall back to the seed string
-        // rather than surfacing an empty tab title. Real code cannot
-        // easily hit this path (streaming file names are always
-        // basenames or full file paths), but the guard is cheap and
-        // future callers that seed `mStreamingFileName` from a
-        // descriptor could trip it.
+        // rather than surfacing an empty tab title.
         LogSession session;
         loglib::LogConfiguration::Source fileSource;
         fileSource.kind = loglib::LogConfiguration::Source::Kind::File;
@@ -1173,9 +1102,7 @@ private slots:
 
     static void TestShouldAutoSaveAfterStreamingWithoutHistoryManager()
     {
-        // Task 2.12: `MainWindow::ShouldAutoSaveSession` forwards to
-        // `LogSession::ShouldAutoSaveAfterStreaming`. The
-        // "no history manager bound" branch is the safe null-out;
+        // The "no history manager bound" branch is the safe null-out;
         // verify it short-circuits regardless of the source/mode
         // pair. The other branches (file/stream/live-tail source
         // gates) require a real `SessionHistoryManager` (`QDir` +
@@ -1198,7 +1125,7 @@ private slots:
 
     static void TestEffectiveAutoDetectRotationHistoryFolds()
     {
-        // Task 2.12: `Effective` is `Should` AND (no source OR
+        // `Effective` is `Should` AND (no source OR
         // followRotationSiblings). The CLI override flips
         // `Should` to false unconditionally, so `Effective` follows.
         LogSession session;
@@ -1247,8 +1174,6 @@ private slots:
         //   (3) pinned uuid, file source           -> pinned uuid
         //   (4) pinned uuid, stream source         -> empty
         //   (5) pinned uuid, file + empty locators -> empty
-        //       (review finding #6: partially-torn-down state must
-        //        not be treated as a columns-only restore)
         LogSession session;
         QVERIFY(session.RestorableSessionUuid().isEmpty());
 
@@ -1274,8 +1199,7 @@ private slots:
         QVERIFY(session.RestorableSessionUuid().isEmpty());
 
         // (5) pinned uuid + File source with empty locators -> empty.
-        // The prior `!HasLocators` short-circuit collapsed this into
-        // the columns-only branch. A partially-cancelled open can
+        // A partially cancelled open can
         // leave the descriptor in this state; the shell must fall
         // back to the empty-window path rather than asking the
         // loader to re-open nothing.
@@ -1310,9 +1234,8 @@ private slots:
         session.SetAutoSaveUuid(QStringLiteral("11112222-3333-4444-5555-666677778888"));
         QVERIFY(!session.AutoSaveUuid().isEmpty());
         QVERIFY(!session.IsAutoSaveUuidPublished());
-        // Unpublished detach: skips `RemoveOpenWindowUuid` but still
-        // clears the pinned uuid + latch (the invariant the
-        // pre-migration `MainWindow` also enforced).
+        // Unpublished detach skips `RemoveOpenWindowUuid` but still
+        // clears the pinned uuid and latch.
         session.DetachAutoSaveUuid();
         QVERIFY(session.AutoSaveUuid().isEmpty());
         QVERIFY(!session.IsAutoSaveUuidPublished());
@@ -1320,8 +1243,7 @@ private slots:
 
     static void TestFindMatchCacheRoundTripsAndResets()
     {
-        // Task 2.11 folds the find-bar "i of N" match cache onto
-        // `LogSession`. Verify that a fresh session starts with an
+        // Verify that a fresh session starts with an
         // empty optional, that `MutableFindMatchCacheState` lets us
         // populate a cache entry, and that `ResetFindMatchCache`
         // matches `MainWindow::InvalidateFindMatchCache`.
@@ -1355,8 +1277,8 @@ private slots:
 
     static void TestWorkerProgressAtomicsRoundTrip()
     {
-        // Task 2.8/2.9 fold the decompression + export progress
-        // atomics onto `LogSession`. Verify that the mutable
+        // Verify that the mutable decompression and export progress
+        // atomic
         // accessors let the worker capture a stable pointer, that
         // stores are observed by the const reader, and that a fresh
         // session starts with all four counters at zero.
@@ -1393,8 +1315,7 @@ private slots:
 
     static void TestWorkerStopSourcesResetAndPropagate()
     {
-        // Task 2.8/2.9 fold the decompression + export cooperative
-        // stop sources onto `LogSession`. Each `Begin*Async*` site
+        // Each asynchronous operation
         // reassigns a fresh `StopSource{}` at the top; each cancel
         // path calls `request_stop()`. Verify that the mutable
         // accessor lets us do both and that a token grabbed before
@@ -1431,9 +1352,9 @@ private slots:
 
     static void TestExportScalarStateRoundTrips()
     {
-        // Task 2.9 folds the export scratch scalars (in-flight
-        // latch, bundle-label selector, destination path, format
-        // label, wall-clock start) onto `LogSession`.
+        // Export scratch state includes the in-flight latch,
+        // bundle-label selector, destination path, format label,
+        // and wall-clock start.
         // `ClearExportScratchState` matches the paired reset every
         // teardown / cancel / completion site performs.
         LogSession session;
@@ -1473,9 +1394,9 @@ private slots:
 
     static void TestDecompressionScalarStateRoundTrips()
     {
-        // Task 2.8 folds the decompression scratch scalars (in-flight
-        // latch, original path, codec name, wall-clock start) onto
-        // `LogSession`. `ClearDecompressionScratchPaths` matches the
+        // Decompression scratch state includes the in-flight latch,
+        // original path, codec name, and wall-clock start.
+        // `ClearDecompressionScratchPaths` matches the
         // paired reset every teardown / cancel / success-consumed
         // site performs.
         LogSession session;
@@ -1498,8 +1419,7 @@ private slots:
         QVERIFY(session.DecompressionOriginalPath().isEmpty());
         QVERIFY(session.DecompressionCodecName().isEmpty());
         // The in-flight latch is deliberately NOT touched by the
-        // scratch-paths clear -- the legacy code cleared it
-        // separately at each teardown site so that the finished
+        // scratch-paths clear. It is cleared separately so the finished
         // slot can distinguish a clean "no worker" state from a
         // torn-down-but-still-in-progress worker.
         QVERIFY(session.IsDecompressionInFlight());
@@ -1510,8 +1430,8 @@ private slots:
 
     static void TestApplyEmbeddedBundleConfigGateRoundTrips()
     {
-        // Task 2.8 folds the pending-bundle "may apply embedded
-        // configuration" gate onto `LogSession`.
+        // The pending-bundle gate controls whether embedded
+        // configuration may be applied.
         // `SetApplyEmbeddedBundleConfigForPath` matches the seam in
         // `DispatchMixedOpenInput` where a bundle is armed;
         // `ClearApplyEmbeddedBundleConfig` matches the reset every
@@ -1532,8 +1452,8 @@ private slots:
 
     static void TestAutoSaveUuidRoundTripsAndDetaches()
     {
-        // Task 2.12 puts the recents-entry uuid + publish latch on
-        // `LogSession`. `ClearAutoSaveUuid()` matches the pair-reset
+        // `ClearAutoSaveUuid()` resets the recents-entry UUID and
+        // publish latch
         // used by `MainWindow::DetachAutoSaveUuid` after dropping
         // the cross-process publish.
         LogSession session;
@@ -1554,9 +1474,8 @@ private slots:
 
     static void TestRotationExpansionUndoRoundTripsAndClears()
     {
-        // Task 2.7 also folds the rotation-expansion undo capture
-        // (`mLastRotationExpansion*`) and the per-window CLI opt-out
-        // (`mDisableRotationHistoryOverride`) into `LogSession`.
+        // Rotation-expansion undo state and the per-window CLI
+        // override round-trip independently.
         LogSession session;
         QVERIFY(session.LastRotationExpansionOriginalInputs().isEmpty());
         QVERIFY(!session.LastRotationExpansionWasLiveTail());
@@ -1579,8 +1498,7 @@ private slots:
 
     static void TestPendingOpenQueuesRoundTripAndClear()
     {
-        // Task 2.5 moves the multi-file-open queue and its two error
-        // buckets into `LogSession`. `SetPendingOpenFiles` matches
+        // `SetPendingOpenFiles` matches
         // the assignment used by `StartStreamingOpenQueue` and the
         // rotation-prefix seam; `ClearPendingOpenQueues` matches the
         // triplet reset every destructive session-switch performs.
@@ -1620,11 +1538,8 @@ private slots:
 
     static void TestEnsureWatchersLazilyAllocateAndCacheInstance()
     {
-        // Review finding #13: the prior `Set*Watcher` setters were
-        // public and untyped, so a caller that re-assigned without
-        // draining the previous instance would silently leak.
-        // Replace with `Ensure*Watcher`: the session owns the
-        // lazy allocation, and repeated calls return the cached
+        // The session owns lazy watcher allocation, and repeated
+        // `Ensure*Watcher` calls return the cached
         // instance so shell callers can safely re-wire their
         // `finished` slot with `Qt::UniqueConnection`.
         LogSession session;
@@ -1634,9 +1549,7 @@ private slots:
         auto *decomp1 = session.EnsureDecompressionWatcher();
         QVERIFY(decomp1 != nullptr);
         QCOMPARE(session.DecompressionWatcherPtr(), decomp1);
-        // Watcher is parented on the session so tab teardown reaps
-        // it automatically; assert the parent-child link so a
-        // future refactor cannot silently orphan the QObject.
+        // The session parents the watcher so tab teardown reaps it.
         QCOMPARE(decomp1->parent(), &session);
 
         // Second call must return the cached instance (no
@@ -1655,17 +1568,9 @@ private slots:
 
     static void TestSessionDestructorDrainsWatchersWithoutArmedFuture()
     {
-        // Second-pass review finding: `~LogSession` waits on any
-        // watcher its `Ensure*Watcher()` sites lazily allocated,
-        // even if no future was armed. This is the "no-op" branch
-        // of the drain -- production teardown always runs behind
-        // `MainWindow::CancelInFlight*` which drained via
-        // `waitForFinished()` already, and a bare unit test that
-        // just allocates the watcher without arming a future must
-        // still tear down cleanly. Also covers the "no watcher
-        // ever allocated" path (both watchers null on a fresh
-        // session): `~LogSession` must remain a no-op in that
-        // case.
+        // A session destructor waits on any watcher lazily allocated
+        // by `Ensure*Watcher`, even if no future was armed. With no
+        // allocated watchers, teardown remains a no-op.
         {
             // Fresh session, never allocated a watcher.
             LogSession session;
@@ -1689,11 +1594,8 @@ private slots:
 
     static void TestFindColumnIndexByKeysLocatesConfiguredColumns()
     {
-        // Review finding #7: `FindColumnIndexByKeys` was previously
-        // only exercised via `apptest`. It is a pure lookup over
-        // `Model()->Configuration().columns`; pin every branch here
-        // so a future column-key refactor cannot silently break the
-        // Go To Column path without a direct-`LogSession` failure.
+        // `FindColumnIndexByKeys` is an exact lookup over
+        // `Model()->Configuration().columns`.
         LogSession session;
 
         // No columns installed yet -> every lookup returns -1.
@@ -1744,14 +1646,8 @@ private slots:
 
     static void TestFindFirstRowAtOrAfterTimestampGuardsInvalidInputs()
     {
-        // Review finding #7: `FindFirstRowAtOrAfterTimestamp` has
-        // three fast paths (monotonic-no-sort, non-monotonic,
-        // user-sort-active) that are heavily exercised via
-        // `apptest` because building a populated `LogModel` in a
-        // unit test requires a full `LineSource` mock. Pin the
-        // guard branches here so a future contributor cannot
-        // introduce a regression that returns a stale row for a
-        // clearly-invalid input.
+        // Invalid inputs return before timestamp lookup. Populated
+        // model paths require a full `LineSource` fixture.
         LogSession session;
 
         // No columns / no rows -> -1 regardless of the target.
@@ -1778,13 +1674,10 @@ private slots:
 
     static void TestPresentationChangedFiresOnModeTransitionsOnly()
     {
-        // Review finding #9: `SetMode` / `ResetMode` both emit
+        // `SetMode` and `ResetMode` both emit
         // `presentationChanged()` -- but only on actual transitions.
-        // Pin both the fires-on-transition and the
-        // no-emit-on-idempotent-write invariants so a future
-        // contributor cannot silently swap either method for an
-        // unconditional emit (which would spam every source-status
-        // consumer on every reset).
+        // Idempotent writes stay silent to avoid redundant
+        // source-status updates.
         LogSession session;
         QSignalSpy spy(&session, &LogSession::presentationChanged);
         QVERIFY(spy.isValid());
@@ -1824,11 +1717,8 @@ private slots:
 
     static void TestPresentationChangedFiresOnEverySnapshotAffectingMutator()
     {
-        // Second-pass review finding: the signal docstring promises
-        // to fire whenever the snapshot could have changed, but the
-        // original Phase 2 landing only wired it up on `SetMode` /
-        // `ResetMode`. Pin the full set of mutators here so every
-        // non-mode field that projects into `SessionPresentationSnapshot`
+        // The signal fires whenever the snapshot could have changed.
+        // Every non-mode field that projects into `SessionPresentationSnapshot`
         // (source descriptor, dirty state, decompression latch,
         // export latch, source-waiting, first-batch, streaming
         // errors + cut counters, streaming file name, embedded
@@ -1972,14 +1862,10 @@ private slots:
 
     static void TestMutableCurrentSourceRawAccessorDoesNotFanPresentationChanged()
     {
-        // Third-pass review finding H1/M4: the raw
-        // `MutableCurrentSource()` accessor cannot detect what the
+        // The raw `MutableCurrentSource()` accessor cannot detect what the
         // caller edits, so it intentionally does NOT fan
-        // `presentationChanged`. This test pins that silence so a
-        // future well-meaning contributor who "helpfully" wires an
-        // emit into the accessor breaks this test and re-reads the
-        // header docstring instead of silently double-emitting
-        // (raw accessor + follow-up `SetCurrentSource` setter).
+        // `presentationChanged`, avoiding a double emission from a
+        // raw edit followed by `SetCurrentSource`.
         //
         // The complementary positive tests that follow
         // (`TestMutateCurrentSourceHelperFansPresentationChanged`,
@@ -2013,8 +1899,7 @@ private slots:
 
     static void TestMutateCurrentSourceHelperFansPresentationChanged()
     {
-        // Third-pass review finding H1: `MutateCurrentSource(fn)`
-        // is the opt-in wrapper for callers that need in-place
+        // `MutateCurrentSource(fn)` is the opt-in wrapper for callers that need in-place
         // mutation AND the presentation fan. It fires the signal
         // unconditionally on scope exit -- the caller opted in
         // by choosing the helper, so no diff-guard runs.
@@ -2050,9 +1935,8 @@ private slots:
 
     static void TestNotifyPresentationChangedFiresUnconditionally()
     {
-        // Third-pass review finding H1: `NotifyPresentationChanged()`
-        // is the escape hatch for callers that edited raw and now
-        // need the subscribers to refresh (e.g. a batch of
+        // `NotifyPresentationChanged()` lets raw-edit callers
+        // refresh subscribers after a batch of
         // `MutableCurrentSource()->locators.push_back(...)` calls
         // in a rotation-append loop). Fires every call; no
         // diff-guard.
@@ -2071,16 +1955,8 @@ private slots:
 
     static void TestResetStreamingProgressCoalescesSignalOnRealChange()
     {
-        // Third-pass review finding H2: `ResetStreamingProgress()`
-        // is called at the start of every stream. Historically it
-        // was `noexcept` and signal-free on the assumption that
-        // the interim "Parsing" bit would be transient (next batch
-        // re-emits). That assumption breaks for slow-source cases
-        // (compressed source, network stream in wait) where the
-        // tab strip would keep its "loaded" badge between reset
-        // and first batch.
-        //
-        // Contract:
+        // `ResetStreamingProgress()` is called at the start of every
+        // stream. Its signal contract is:
         //   * At least one of `mStreamingLineCount`,
         //     `mStreamingErrorCount`, `mFirstStreamingBatchSeen`
         //     transitions -> single coalesced emit.
@@ -2130,12 +2006,8 @@ private slots:
 
     static void TestFiltersDirtyChangedAndPresentationChangedFanTogether()
     {
-        // `filtersDirtyChanged` used to be the only signal that
-        // fired on a dirty transition, so `setWindowModified` could
-        // subscribe to it directly. Phase 2's snapshot lists
-        // `dirty.filtersDirty` and `confirmBeforeClose` as
-        // snapshot-observable, so `presentationChanged` must fan
-        // out on the same transitions. Verify both fans stay in
+        // Dirty state affects both `filtersDirtyChanged` and the
+        // presentation snapshot. Both signals must stay in
         // lockstep (and only on actual transitions).
         LogSession session;
         QSignalSpy dirtySpy(&session, &LogSession::filtersDirtyChanged);
@@ -2160,13 +2032,10 @@ private slots:
 
     static void TestPresentationSnapshotEmptyFileLocatorsIsNotRestorable()
     {
-        // Second-pass review finding: `SessionDirtyState::restorableInPlace`
-        // used to trust `Kind::File && !LiveTail` as sufficient for
-        // "restorable", which diverged from `RestorableSessionUuid`'s
-        // stricter locator gate (review finding #6). The three
+        // The three
         // "restorable" predicates (`restorableInPlace`,
         // `RestorableSessionUuid`, `ShouldAutoSaveAfterStreaming`)
-        // must now all agree that a File descriptor with an empty
+        // must all agree that a File descriptor with an empty
         // locator vector is *not* restorable, otherwise the tab
         // strip would advertise a state the autosave gate will
         // silently refuse to persist.
@@ -2189,10 +2058,8 @@ private slots:
 
     static void TestPresentationSnapshotRowCountsMirrorModel()
     {
-        // Review finding #8: `PresentationSnapshot` exposes
-        // `rowCount` / `visibleRows` from the model quintet but no
-        // existing test asserts they mirror `mModel->rowCount()` /
-        // `mSortFilterProxyModel->rowCount()`. Populating rows
+        // `PresentationSnapshot` exposes `rowCount` and `visibleRows`
+        // from the model quintet. Populating rows
         // requires a full LineSource fixture (out of scope for a
         // unit test), so pin the zero-rows path here: the snapshot
         // must project 0 for both counters when the model is empty
@@ -2207,10 +2074,7 @@ private slots:
         QCOMPARE(snap.rowCount, qsizetype{0});
         QCOMPARE(snap.visibleRows, qsizetype{0});
 
-        // The model itself is non-null on a `LogSession` (the ctor
-        // constructs the quintet); pin that alias so a future
-        // "lazy model" refactor cannot silently short-circuit the
-        // snapshot path to project junk row counts.
+        // The model and filter proxy are non-null session-owned aliases.
         QVERIFY(session.Model() != nullptr);
         QCOMPARE(static_cast<qsizetype>(session.Model()->rowCount()), snap.rowCount);
         QVERIFY(session.FilterProxy() != nullptr);
@@ -2219,15 +2083,12 @@ private slots:
 
     static void TestShouldAutoSaveAfterStreamingPositiveBranchesRequireHistoryManager()
     {
-        // Review finding #10: the shell's autosave gate lives on the
-        // history-manager pointer; only the "no manager -> false"
+        // The autosave gate depends on the history-manager pointer;
+        // only the "no manager -> false"
         // short-circuit is unit-testable here without pulling in a
         // real `SessionHistoryManager` (which requires a `QDir` and
-        // an `IRecentsIndexStorage`).  Extend the null-manager pin
-        // with the *positive*-branch inputs so a future gate rewrite
-        // that swaps the null check for e.g. a signal-based bind
-        // still trips this test when the guard silently starts
-        // returning true for an unbound session.
+        // an `IRecentsIndexStorage`). Positive-branch inputs must
+        // still return false without a manager.
         LogSession session;
         QVERIFY(session.HistoryManager() == nullptr);
 
@@ -2254,25 +2115,20 @@ private slots:
         QVERIFY(!session.ShouldAutoSaveAfterStreaming(LogSession::Mode::Static));
 
         // File source with empty locators: no locator to persist, so
-        // even with a manager, false (mirrors the
-        // `RestorableSessionUuid` fix in review finding #6).
+        // even with a manager, false.
         loglib::LogConfiguration::Source emptyFileSource;
         emptyFileSource.kind = loglib::LogConfiguration::Source::Kind::File;
         session.MutableCurrentSource() = emptyFileSource;
         QVERIFY(!session.ShouldAutoSaveAfterStreaming(LogSession::Mode::Static));
     }
 
-    // -----------------------------------------------------------------
-    // Phase-6 review-4: `ResetRecordDetailPin()` docstring promises
-    // to clear "row, key, and `everPinned`", but a prior body only
-    // reset row + `everPinned`. That leaves a stale `keyLocator` /
-    // `keyLineId` behind. Because
+    // `ResetRecordDetailPin()` clears row, key, and `everPinned`.
+    // Leaving stale `keyLocator` or `keyLineId` values is unsafe because
     // `RecordDetailDock::RestoreStateFromSession` checks the key
-    // path (`!pin.keyLocator.empty() && pin.keyLineId != 0`) BEFORE
-    // `everPinned`, a subsequent bind on a session that happens to
+    // path (`!pin.keyLocator.empty() && pin.keyLineId != 0`) before
+    // `everPinned`. A subsequent bind on a session that happens to
     // expose an anchor key with the same locator + lineId would
     // resolve and pin an unrelated row.
-    // -----------------------------------------------------------------
 
     static void TestResetRecordDetailPinClearsAllFields()
     {
