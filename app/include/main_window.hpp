@@ -7,6 +7,7 @@
 #include "histogram_dock.hpp"
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
+#include "log_session.hpp"
 #include "log_table_view.hpp"
 #include "overview_rail_model.hpp"
 #include "overview_rail_widget.hpp"
@@ -94,6 +95,12 @@ class MainWindow : public QMainWindow
     Q_OBJECT
 
 public:
+    /// Alias of the authoritative session-mode enum on `LogSession`
+    /// (task 2.5). Declared here at the top of the class so
+    /// every downstream signature can spell it as `SessionMode`
+    /// instead of `LogSession::Mode`.
+    using SessionMode = LogSession::Mode;
+
     /// Selects how `StartStreamingOpenQueue` interacts with the
     /// current state. `Append` queues new files onto the active
     /// static session without clobbering its filters / sort / rows.
@@ -225,7 +232,7 @@ public:
     /// Test-only reader for this window's CLI opt-out.
     [[nodiscard]] bool RotationHistoryLaunchOverrideForTest() const noexcept
     {
-        return mDisableRotationHistoryOverride;
+        return mSession->DisableRotationHistoryOverride();
     }
 
     /// Test-only entry to the rotation-history Settings handler.
@@ -249,7 +256,7 @@ public:
     /// Used by `main()`'s `aboutToQuit` snapshot.
     [[nodiscard]] QString ActiveSessionUuid() const noexcept
     {
-        return mAutoSaveUuid;
+        return mSession->AutoSaveUuid();
     }
 
     /// Like `ActiveSessionUuid`, but returns empty when the current
@@ -364,11 +371,9 @@ public:
 
     /// Live simple-mode filter leaves keyed by UUID (UI-only
     /// identifier for menu wiring). Persisted state lives on
-    /// `LogConfiguration::expression`.
-    [[nodiscard]] const std::unordered_map<std::string, loglib::LeafRule> &Filters() const
-    {
-        return mSimpleLeaves;
-    }
+    /// `LogConfiguration::expression`. Backed by `mSession` after
+    /// task 2.4; the accessor shape is preserved for tests.
+    [[nodiscard]] const std::unordered_map<std::string, loglib::LeafRule> &Filters() const;
 
     /// Owned `LogModel`; non-null after construction.
     [[nodiscard]] LogModel *Model() const
@@ -590,7 +595,7 @@ public:
     /// `UpdateStreamingStatus`.
     [[nodiscard]] const QString &StreamingFileNameForTest() const noexcept
     {
-        return mStreamingFileName;
+        return mSession->StreamingFileName();
     }
 
     /// Test-only entry to `ShowRowContextMenu` so tests can pin
@@ -618,14 +623,13 @@ public:
     /// Test-only check for a pending historical-prefix promotion.
     [[nodiscard]] bool HasPendingLiveTailForTest() const noexcept
     {
-        return !mPendingLiveTailPrimary.isEmpty() || mPendingLiveTailRetention != 0;
+        return mSession->HasPendingLiveTailPromotion();
     }
 
     /// Test-only setter for pending live-tail promotion state.
-    void SeedPendingLiveTailForTest(const QString &primary, size_t retention) noexcept
+    void SeedPendingLiveTailForTest(const QString &primary, size_t retention)
     {
-        mPendingLiveTailPrimary = primary;
-        mPendingLiveTailRetention = retention;
+        mSession->SetPendingLiveTailPromotion(primary, retention);
     }
 
     /// Test-only entry to the no-prefix live-tail rescue path.
@@ -640,15 +644,14 @@ public:
     /// Original inputs captured for the most recent expansion.
     [[nodiscard]] const QStringList &LastRotationExpansionOriginalInputsForTest() const noexcept
     {
-        return mLastRotationExpansionOriginalInputs;
+        return mSession->LastRotationExpansionOriginalInputs();
     }
 
     /// Seed expansion-undo state. Live-tail state reopens through
     /// `OpenLogStreamFromPath`; other state uses the static queue.
-    void SeedLastRotationExpansionForTest(const QStringList &originalInputs, bool wasLiveTail) noexcept
+    void SeedLastRotationExpansionForTest(const QStringList &originalInputs, bool wasLiveTail)
     {
-        mLastRotationExpansionOriginalInputs = originalInputs;
-        mLastRotationExpansionWasLiveTail = wasLiveTail;
+        mSession->SetLastRotationExpansion(originalInputs, wasLiveTail);
         if (mActionUndoRotationExpansion != nullptr)
         {
             mActionUndoRotationExpansion->setEnabled(!originalInputs.isEmpty());
@@ -690,18 +693,18 @@ public:
     /// racing on wall-clock sleeps.
     [[nodiscard]] bool IsDecompressionInFlightForTest() const noexcept
     {
-        return mDecompressionInFlight;
+        return mSession->IsDecompressionInFlight();
     }
     /// Return whether a pending bundle may apply embedded configuration.
     [[nodiscard]] bool AppliesEmbeddedBundleConfigForNextOpenForTest() const noexcept
     {
-        return !mApplyEmbeddedBundleConfigForPath.isEmpty();
+        return mSession->ShouldApplyEmbeddedBundleConfig();
     }
     /// Simulate superseding a pending bundle decompression.
     void SimulateSupersededBundleDecompressionForTest()
     {
-        mApplyEmbeddedBundleConfigForPath = QStringLiteral("simulated-bundle.slvbundle");
-        mDecompressionInFlight = true;
+        mSession->SetApplyEmbeddedBundleConfigForPath(QStringLiteral("simulated-bundle.slvbundle"));
+        mSession->SetDecompressionInFlight(true);
         CancelInFlightDecompression();
     }
 
@@ -713,9 +716,9 @@ public:
     /// no decompression is in flight.
     void RequestDecompressionCancelForTest()
     {
-        if (mDecompressionInFlight)
+        if (mSession->IsDecompressionInFlight())
         {
-            mDecompressionStopSource.request_stop();
+            mSession->MutableDecompressionStopSource().request_stop();
         }
     }
 
@@ -726,7 +729,7 @@ public:
     /// Return whether an export worker is active.
     [[nodiscard]] bool IsExportInFlightForTest() const noexcept
     {
-        return mExportInFlight;
+        return mSession->IsExportInFlight();
     }
 
     /// Test seam replaying the anchor-note commit path without a
@@ -871,7 +874,7 @@ private slots:
     /// proxy layout changes so a stale cache cannot survive.
     void InvalidateFindMatchCache();
 
-    /// Push the current `mFindMatchCache` match state into the
+    /// Push the current `LogSession::FindMatchCacheState` match into the
     /// overview rail. No-op when the find bar is not visible —
     /// ticks mirror the find indicator, they must not reappear
     /// from a stale cache after find was closed. Prefers cached
@@ -986,29 +989,24 @@ private slots:
     void RebuildViewMenu();
 
 private:
-    /// Forward-declaration so the function signatures below can
-    /// reference `SessionMode` before the full definition appears
-    /// among the data members. The underlying type is pinned to
-    /// match the definition.
-    enum class SessionMode : int;
-
-    /// RAII helper for the `mSessionSwitchInProgress` latch. Every
+    /// RAII helper for the session-switch latch on `mSession`. Every
     /// destructive open path needs to flip the flag on, run a
     /// `mModel->Reset()` that synchronously emits
     /// `streamingFinished(Cancelled)`, then flip it back off once
     /// the new session is wired up. The RAII helper enforces the
     /// contract at the type level so no early-return path can
-    /// forget the reset.
+    /// forget the reset. The flag itself lives on `LogSession`
+    /// (task 2.5).
     struct SessionSwitchScope
     {
         explicit SessionSwitchScope(MainWindow &owner) noexcept
             : mOwner(owner)
         {
-            mOwner.mSessionSwitchInProgress = true;
+            mOwner.mSession->SetSessionSwitchInProgress(true);
         }
         ~SessionSwitchScope()
         {
-            mOwner.mSessionSwitchInProgress = false;
+            mOwner.mSession->SetSessionSwitchInProgress(false);
         }
         SessionSwitchScope(const SessionSwitchScope &) = delete;
         SessionSwitchScope &operator=(const SessionSwitchScope &) = delete;
@@ -1094,9 +1092,11 @@ private:
     /// session). Live-tail / network sessions always force `Replace`.
     void StartStreamingOpenQueue(QStringList files, OpenMode mode);
 
-    /// Pop the next file off `mPendingOpenFiles` and parse it. Open
-    /// errors accumulate in `mPendingOpenErrors`; decompression
-    /// failures land in `mPendingDecompressionErrors` (drained under
+    /// Pop the next file off `mSession->MutablePendingOpenFiles()`
+    /// and parse it. Open errors accumulate in
+    /// `mSession->MutablePendingOpenErrors()`; decompression
+    /// failures land in
+    /// `mSession->MutablePendingDecompressionErrors()` (drained under
     /// its own title).
     ///
     /// For compressed files the function spawns an async
@@ -1135,7 +1135,8 @@ private:
     /// Returns `true` when a parse worker was armed (caller unwinds
     /// and awaits `streamingFinished`) or `false` on a synchronous
     /// open error already recorded in the appropriate error bucket
-    /// (caller continues draining `mPendingOpenFiles`). This return
+    /// (caller continues draining
+    /// `mSession->MutablePendingOpenFiles()`). This return
     /// value keeps the queue drain iterative instead of recursing
     /// on error.
     [[nodiscard]] bool ContinueOpenAfterPrepared(
@@ -1348,9 +1349,10 @@ private:
     /// `enumColumnsChanged` tick triggers a filter-rule rebuild.
     [[nodiscard]] bool EnumFilterFullyResolved(const loglib::LeafRule &filter) const;
 
-    /// Apply the saved sort from `mPendingApplySortFromConfig` to
-    /// the view, then clear the latch. No-op when the latch is
-    /// clear, when the user sorted mid-stream
+    /// Apply the saved sort from
+    /// `LogSession::HasPendingApplySortFromConfig()` to the view,
+    /// then clear the latch. No-op when the latch is clear, when
+    /// the user sorted mid-stream
     /// (`SortColumn() >= 0`), or when the saved column is
     /// out-of-range.
     ///
@@ -1384,9 +1386,11 @@ private:
     /// Rebuilds the window title from the current session state.
     void UpdateWindowTitle();
 
-    /// Marks filters as having unsaved edits and refreshes the title.
-    /// No-op while `mLoadingConfiguration` is true so a config reload
-    /// doesn't transiently flash `[*]`.
+    /// Marks filters as having unsaved edits on the active session.
+    /// Thin forward to `LogSession::MarkFiltersDirty()`, which is a
+    /// no-op while `LogSession::IsLoadingConfiguration()` is true so
+    /// a config reload doesn't transiently flash `[*]`. The window
+    /// title is refreshed via the `filtersDirtyChanged` signal.
     void MarkFiltersDirty();
 
     /// Last-used dialog directory, or the platform `Documents` location
@@ -1606,8 +1610,57 @@ private:
 
     Ui::MainWindow *ui;
     QVBoxLayout *mLayout;
+
+    /// Non-visual owner of the model quintet (task 2.1) and, in
+    /// later Phase 2 subtasks, of the source lifecycle / filters /
+    /// workers / persistence identity. `MainWindow` constructs
+    /// exactly one `LogSession` during its own ctor and keeps the
+    /// existing `mModel` / `mAnchors` / etc. members as
+    /// *temporary* delegated aliases so incremental extraction stays
+    /// buildable. Later phases collapse the aliases and route
+    /// commands through `mSession->` directly.
+    LogSession *mSession = nullptr;
+
+    /// Non-owning aliases into the session-owned model quintet
+    /// (task 2.1; review finding #11). Each of these points at a
+    /// `QObject` that `mSession` constructs and reaps in reverse
+    /// order via `~LogSession()`; the aliases are cached in the
+    /// window ctor so the shell body reads `mModel->` instead of
+    /// `mSession->Model()->` on hot paths.
+    ///
+    /// Lifetime for the window body: the aliases are valid from
+    /// the end of the ctor until the ``~MainWindow()`` body
+    /// finishes. The destructor uses them (``mModel->Reset()``
+    /// under a ``SessionSwitchScope``) before ``mSession`` itself
+    /// is destroyed.
+    ///
+    /// Lifetime past ``~MainWindow()`` body: Qt6's
+    /// ``QObjectPrivate::deleteChildren`` walks direct children in
+    /// forward registration order. ``mSession`` is registered
+    /// *after* the .ui setup runs (widgets, actions, statusbar,
+    /// central widget all parented in ``ui->setupUi(this)`` before
+    /// ``new LogSession(..., this)``), and *before* docks / views
+    /// registered later in the ctor body (``mTableView``,
+    /// ``mAnchorsDock``, ``mHistogramDock``,
+    /// ``mOverviewRailModel``, ``mParseErrorsDock``,
+    /// ``mFindDock``). Those sibling QObjects hold non-owning raw
+    /// pointers into the quintet. Once ``mSession`` is reaped its
+    /// model children are gone -- so any consumer QObject that
+    /// dereferences an alias in its own destructor would UAF. In
+    /// practice no consumer does this today: their destructors
+    /// are either the compiler-generated default (safe) or rely
+    /// on Qt's auto-disconnect from ``QObject::destroyed`` for
+    /// signal-based unwinding. A future contributor adding an
+    /// explicit ``disconnect(mModel, ...)`` to any dock
+    /// destructor must either move that dock ahead of
+    /// ``mSession`` in the registration order or use
+    /// ``QPointer<LogModel>`` so the deref becomes a null-check.
+    /// See ``LogSession::RowOrderProxy`` / ``FilterProxy`` /
+    /// ``Model``.
     RowOrderProxyModel *mRowOrderProxyModel;
     LogFilterModel *mSortFilterProxyModel;
+    /// Owned via `QMainWindow` parentage (task 2.1 kept the view on
+    /// the shell because it is a widget). Non-null after ctor.
     LogTableView *mTableView;
     LogModel *mModel;
     /// Icon-pill delegate for the level column. Owned via Qt
@@ -1650,32 +1703,18 @@ private:
     /// bounded on huge tables with a common needle. When
     /// `overflowed` is set, `totalMatches` is a lower bound and
     /// the position lookup degrades for match `#10 001` or later.
-    static constexpr int MAX_FIND_MATCH_COUNT = 10000;
+    // Note: the `MAX_FIND_MATCH_COUNT` cap now lives on
+    // `LogSession::MAX_FIND_MATCH_COUNT`; the alias below keeps the
+    // legacy unqualified spelling available in the shell body.
+    static constexpr int MAX_FIND_MATCH_COUNT = LogSession::MAX_FIND_MATCH_COUNT;
 
-    /// Cached match state for the "*i* of *N*" indicator. Keyed by
-    /// `(needle, wildcards, regex)` so Next / Previous can resolve
-    /// the new `i` via binary search instead of re-scanning.
-    ///
-    /// - `sortedRows`: deduplicated, capped at `MAX_FIND_MATCH_COUNT`.
-    /// - `totalMatches`: exact when `!overflowed`, otherwise a
-    ///   lower bound. A cursor at match `#10 001` or later resolves
-    ///   to `0` (no position highlight) under overflow.
-    /// - `bucketCounts`: per-bucket totals mirrored to the rail
-    ///   (empty when the rail had zero buckets during the scan).
-    ///   Restored on find-dock reveal so a cache-hit recount can't
-    ///   leave the rail on a top-biased strip. Presence-only —
-    ///   density may be incomplete after an early-exit.
-    struct FindMatchCache
-    {
-        QString needle;
-        bool wildcards = false;
-        bool regularExpressions = false;
-        bool overflowed = false;
-        std::vector<int> sortedRows;
-        uint32_t totalMatches = 0;
-        std::vector<uint32_t> bucketCounts;
-    };
-    std::optional<FindMatchCache> mFindMatchCache;
+    // Note: the `FindMatchCache` struct and `mFindMatchCache` optional
+    // both live on `mSession`; see `LogSession::FindMatchCache` and
+    // `LogSession::FindMatchCacheState`. The alias below keeps the
+    // legacy `FindMatchCache` name available inside `MainWindow`
+    // during the incremental refactor.
+    using FindMatchCache = LogSession::FindMatchCache;
+
     PreferencesEditor *mPreferencesEditor;
 
     /// Modeless editor for the merged regex-template catalog
@@ -1697,14 +1736,22 @@ private:
     /// in this class check before dereferencing.
     ThemeControl *mTheme;
 
-    /// Owned. Brackets the lifetime of `mModel` and `mTableView`,
-    /// both of which read from it. Non-null after construction.
+    /// Non-owning alias into `mSession->Anchors()` (task 2.1;
+    /// review finding #11). The `AnchorManager` itself is owned
+    /// by `mSession` and reaped in reverse order via
+    /// `~LogSession()` so `~LogModel` runs while its non-owning
+    /// back-pointer is still valid. Non-null after construction.
+    /// See the model-quintet aliases block above for the full
+    /// lifetime discussion and the caveat for consumer QObjects
+    /// registered after `mSession`.
     AnchorManager *mAnchors = nullptr;
 
-    /// Owned. Runtime companion to
+    /// Non-owning alias into `mSession->Highlights()` (task 2.1;
+    /// review finding #11). Runtime companion to
     /// `LogConfiguration::highlightRules`. Constructed before
-    /// `mModel` so the model can hold a non-owning pointer for
-    /// the paint cascade. Non-null after construction.
+    /// `mModel` inside `LogSession`'s ctor initializer list so
+    /// the model can hold a non-owning pointer for the paint
+    /// cascade. Same lifetime story as `mAnchors`.
     HighlightRuleSet *mHighlights = nullptr;
 
     /// Owned. Hidden by default; toggled via View -> Anchors.
@@ -1748,13 +1795,13 @@ private:
     QAction *mActionJumpPrevAnchor = nullptr;
     QAction *mActionEditRowAnchorNote = nullptr;
     QAction *mActionClearAllAnchors = nullptr;
-    /// Simple-mode leaves keyed by UUID; each = one top-level
-    /// `Leaf` child of `LogConfiguration::expression`.
-    /// `mSimpleLeafOrder` preserves display order (map iteration
-    /// isn't stable). Advanced-only sub-trees live on the
-    /// configuration expression, not here.
-    std::unordered_map<std::string, loglib::LeafRule> mSimpleLeaves;
-    std::vector<std::string> mSimpleLeafOrder;
+    /// Simple-mode leaves and their display order now live on
+    /// `mSession` (task 2.4); MainWindow methods reach them
+    /// through `mSession->SimpleLeaves()` /
+    /// `mSession->MutableSimpleLeaves()` /
+    /// `mSession->SimpleLeafOrder()` /
+    /// `mSession->MutableSimpleLeafOrder()`. The public `Filters()`
+    /// accessor keeps its shape for tests.
 
     /// Status-bar label shown while a streaming session is active.
     QLabel *mStatusLabel = nullptr;
@@ -1879,29 +1926,33 @@ private:
     /// Lazy-built shortcuts dialog; kept alive so reopening preserves geometry.
     QPointer<class ShortcutsDialog> mShortcutsDialog;
 
-    /// Wall-clock since the active live-tail session started.
-    QElapsedTimer mLiveTailTimer;
+    // Note: the wall-clock ``QElapsedTimer`` since the active
+    // live-tail session started lives on `mSession`; see
+    // `LogSession::LiveTailElapsedTimer`. The 1 Hz UI tick timer
+    // below stays on the shell because rendering is a view concern.
 
     /// 1 Hz timer that refreshes the live-tail elapsed-time display.
     QTimer *mLiveTailTickTimer = nullptr;
 
-    /// True when filters have unsaved user edits; drives the `[*]` title marker.
-    bool mFiltersDirty = false;
+    /// The "filters dirty" marker (`[*]` in the window title) and the
+    /// re-entrancy gate the configuration-load path uses to coalesce
+    /// per-filter mutations now live on `mSession` (task 2.4). The
+    /// window subscribes to `LogSession::filtersDirtyChanged` and
+    /// projects the value into `setWindowModified` from
+    /// `UpdateWindowTitle`.
 
-    /// Re-entrancy guard set while loading a config, so per-filter
-    /// `AddLogFilter` calls don't mark the session dirty.
-    bool mLoadingConfiguration = false;
+    /// The filename of the active stream lives on `mSession`
+    /// (task 2.5). Reach it through `mSession->StreamingFileName()`
+    /// / `mSession->SetStreamingFileName()` /
+    /// `mSession->ClearStreamingFileName()`.
 
-    /// Filename of the active stream; empty when idle.
-    QString mStreamingFileName;
-
-    /// Source descriptor that matches what the model currently holds:
-    /// file path for `File`, producer name for `NetworkStream`. Set
-    /// on open and on session load; survives `Success` / `Cancelled`
-    /// streaming finish (the rows are still there); cleared on
-    /// `Failed` or by the next open's `Reset()`. Mirrored into
-    /// `LogConfiguration::source` before a `SaveScope::Full` save.
-    std::optional<loglib::LogConfiguration::Source> mCurrentSource;
+    /// Source descriptor lives on `mSession` (task 2.5). Reach it
+    /// through `mSession->CurrentSource()` /
+    /// `mSession->MutableCurrentSource()` /
+    /// `mSession->SetCurrentSource()` /
+    /// `mSession->ResetCurrentSource()`. Mirrored into
+    /// `LogConfiguration::source` before a `SaveScope::Full` save by
+    /// `MirrorSessionStateToConfiguration`.
 
     /// Non-owning. Provided by `main()` for the production window;
     /// `nullptr` for ad-hoc / test-only instances, in which case
@@ -1914,79 +1965,54 @@ private:
     /// built-in template catalog only.
     RegexTemplateRegistry *mRegexTemplateRegistry = nullptr;
 
-    /// uuid of the recents entry this window owns. Set after the
-    /// first successful `WriteSnapshot` so subsequent saves rewrite
-    /// the same JSON instead of appending one entry per save.
-    QString mAutoSaveUuid;
+    // Note: `mAutoSaveUuid` (recents-entry uuid pinned to this
+    // session) and `mAutoSaveUuidPublished` (publish latch mirror
+    // for the process-shared `openWindowsAtQuit` set) live on
+    // `mSession`; see `LogSession::AutoSaveUuid` and
+    // `LogSession::IsAutoSaveUuidPublished`.
 
-    /// True iff `mAutoSaveUuid` is currently in `openWindowsAtQuit`.
-    /// Lets `DetachAutoSaveUuid` skip the cross-process
-    /// `RemoveOpenWindowUuid` round-trip when nothing was
-    /// published. Must stay in lockstep with `AddOpenWindowUuid`
-    /// call sites.
-    bool mAutoSaveUuidPublished = false;
-
-    /// Files queued by `StartStreamingOpenQueue`.
-    QStringList mPendingOpenFiles;
-
-    /// Primary to tail after the queued historical prefix drains.
-    /// Destructive session changes must clear it.
-    QString mPendingLiveTailPrimary;
-
-    /// Retention cap saved across a historical-prefix load.
-    size_t mPendingLiveTailRetention = 0;
-
-    /// Per-window CLI opt-out, cleared by an explicit Settings toggle.
-    bool mDisableRotationHistoryOverride = false;
-
-    /// Exact caller inputs restored by `UndoRotationExpansion`.
-    QStringList mLastRotationExpansionOriginalInputs;
-
-    /// Preserve live-tail mode when undoing the latest expansion.
-    bool mLastRotationExpansionWasLiveTail = false;
-
-    /// File-open errors collected while draining `mPendingOpenFiles`.
-    /// Drained under the `tr("Error Opening File")` title.
-    std::vector<std::string> mPendingOpenErrors;
-
-    /// Decompression-specific errors collected while draining
-    /// `mPendingOpenFiles`. Drained under
-    /// `tr("Error Decompressing File")`; kept separate from
-    /// `mPendingOpenErrors` so the batch is labelled correctly.
-    /// User cancels surface as a status-bar toast instead (see
-    /// `OnDecompressionFinished`).
-    std::vector<std::string> mPendingDecompressionErrors;
+    // Note: `mPendingOpenFiles` (the FIFO of queued static files
+    // populated by `StartStreamingOpenQueue`) lives on `mSession`;
+    // see `LogSession::PendingOpenFiles`.
+    //
+    // Note: `mPendingLiveTailPrimary` / `mPendingLiveTailRetention`
+    // (the static-prefix-to-live-tail promotion pair),
+    // `mDisableRotationHistoryOverride` (per-window CLI opt-out),
+    // and `mLastRotationExpansion{OriginalInputs,WasLiveTail}` (undo
+    // capture) all live on `mSession`; see
+    // `LogSession::PendingLiveTailPrimary`,
+    // `LogSession::DisableRotationHistoryOverride`, and
+    // `LogSession::LastRotationExpansionOriginalInputs`.
+    //
+    // Note: `mPendingOpenErrors` (parse/open errors accumulated
+    // during a multi-file drain, drained under
+    // `tr("Error Opening File")`) and `mPendingDecompressionErrors`
+    // (decompression-specific errors drained under
+    // `tr("Error Decompressing File")`) live on `mSession`; see
+    // `LogSession::PendingOpenErrors` /
+    // `LogSession::PendingDecompressionErrors`.
 
     /// QFutureWatcher for the current async decompression. Owns a
     /// `std::shared_ptr<DecompressingByteSource>`; the shared_ptr
     /// is captured into the subsequent parse callable so the temp
     /// file survives for the whole parse. `nullptr` when no
     /// decompression is in flight.
-    QFutureWatcher<std::shared_ptr<loglib::internal::DecompressingByteSource>> *mDecompressionWatcher = nullptr;
+    // Note: the QFutureWatcher itself lives on `mSession` (task 2.8);
+    // see `LogSession::DecompressionWatcherPtr`. The shell still owns
+    // the connection to `OnDecompressionFinished` because the slot
+    // body operates on widgets.
 
-    /// Set in `BeginAsyncDecompression`, cleared in
-    /// `OnDecompressionFinished` / `CancelInFlightDecompression`.
-    /// Guards the finished slot against a queued callout event
-    /// already dispatched onto the current stack before
-    /// `setFuture({})` cleared the watcher's queue (e.g. via a
-    /// nested event loop in a signal handler). Without this the
-    /// slot would read `result()` off the empty future and splice
-    /// a bogus "Failed to open ''" entry into the next session.
-    bool mDecompressionInFlight = false;
+    // Note: `mDecompressionInFlight` (latch guarding the finished
+    // slot against stale queued callouts) and `mDecompressionStopSource`
+    // (cooperative-cancel source refreshed per open) live on
+    // `mSession`; see `LogSession::IsDecompressionInFlight` and
+    // `LogSession::DecompressionStopSource`.
 
-    /// Stop source paired with the current decompression worker.
-    /// `QProgressDialog::canceled` calls `request_stop()`; the
-    /// worker polls `stop_requested()` between chunks. Refreshed
-    /// per-open, so a cancelled operation cannot bleed into the
-    /// next one.
-    loglib::StopSource mDecompressionStopSource;
-
-    /// Progress atomics: worker writes, GUI polls on the
-    /// `mDecompressionPollTimer` cadence. Widened to `qint64` to
-    /// match Qt's atomic contract; the payload never exceeds
-    /// `size_t` in practice.
-    QAtomicInteger<qint64> mDecompressionBytesIn = 0;
-    QAtomicInteger<qint64> mDecompressionTotalBytesIn = 0;
+    // Note: the decompression progress atomics (bytes-in and total
+    // compressed size) live on `mSession`; see
+    // `LogSession::DecompressionBytesIn` and
+    // `LogSession::DecompressionTotalBytesIn`. The `mDecompressionPollTimer`
+    // still lives here because rendering is a shell concern.
 
     /// 200 ms cadence timer that pumps the atomics above into the
     /// progress dialog. Nulled out when no decompression is
@@ -1999,21 +2025,12 @@ private:
     /// destructor.
     QPointer<QProgressDialog> mDecompressionProgressDialog;
 
-    /// User-facing path of the file being decompressed. Populated
-    /// when the worker is dispatched so the progress dialog and
-    /// completion toast can name the file even after the worker's
-    /// local copy is gone.
-    QString mDecompressionOriginalPath;
-
-    /// Human-readable codec name (`gzip` / `bzip2` / `xz` / `zstd`)
-    /// for the file being decompressed. Set up-front from the sniff
-    /// so the poll-timer lambda can render the progress label
-    /// without touching the worker's shared_ptr.
-    QString mDecompressionCodecName;
-
-    /// Wall-clock start of the current decompression, for the
-    /// post-success status-bar toast.
-    std::chrono::steady_clock::time_point mDecompressionStartedAt;
+    // Note: `mDecompressionOriginalPath` (user-facing path being
+    // decompressed), `mDecompressionCodecName` (pre-sniffed codec
+    // label rendered by the poll-timer lambda), and
+    // `mDecompressionStartedAt` (wall-clock start for the completion
+    // toast) all live on `mSession`; see
+    // `LogSession::DecompressionOriginalPath`.
 
     // --------------------------- Filtered-row export -----------------
     // Async orchestration for `File -> Export Filtered Rows...`.
@@ -2022,23 +2039,20 @@ private:
     // `QProgressDialog` with `minimumDuration`-deferred show, atomic
     // progress counter polled by a `QTimer`.
 
-    /// Watcher for the export future; re-armed per run.
-    QFutureWatcher<void> *mExportWatcher = nullptr;
+    // Note: the export QFutureWatcher itself lives on `mSession`
+    // (task 2.9); see `LogSession::ExportWatcherPtr`. The shell still
+    // owns the connection to `OnExportFinished` because the slot
+    // body operates on widgets.
 
-    /// True while a worker is running. Guards the finished slot
-    /// against stale queued call-outs (see `mDecompressionInFlight`).
-    bool mExportInFlight = false;
+    // Note: `mExportInFlight` (finished-slot guard) and
+    // `mExportStopSource` (cooperative-cancel source refreshed per
+    // export) live on `mSession`; see `LogSession::IsExportInFlight`
+    // and `LogSession::ExportStopSource`.
 
-    /// Stop source paired with the current worker.
-    /// `QProgressDialog::canceled` calls `request_stop()`; the
-    /// exporter polls it between row batches (see
-    /// `slv::exports::STOP_POLL_INTERVAL_ROWS`).
-    loglib::StopSource mExportStopSource;
-
-    /// Rows-written counter, written by the worker, read by the
-    /// poll timer. `qint64` for `QAtomicInteger`.
-    QAtomicInteger<qint64> mExportRowsWritten = 0;
-    QAtomicInteger<qint64> mExportRowsTotal = 0;
+    // Note: the export progress atomics (rows written / rows total)
+    // live on `mSession`; see `LogSession::ExportRowsWritten` and
+    // `LogSession::ExportRowsTotal`. The `mExportPollTimer` still
+    // lives here because rendering is a shell concern.
 
     /// 200 ms poll timer that pumps the atomics into the progress
     /// dialog.
@@ -2049,19 +2063,14 @@ private:
     /// destruction.
     QPointer<QProgressDialog> mExportProgressDialog;
 
-    /// Destination path (user-facing) so the finished-slot toast
-    /// can name the file after the plan is gone.
-    QString mExportDestinationPath;
+    // Note: `mExportDestinationPath` (user-facing destination),
+    // `mExportFormatLabel` (human-readable format label), and
+    // `mExportStartedAt` (wall-clock start for the toast) all live
+    // on `mSession`; see `LogSession::ExportDestinationPath`.
 
-    /// Human-readable format name for the label ("JSON Lines").
-    QString mExportFormatLabel;
-
-    /// Wall-clock start of the current export, for the success toast.
-    std::chrono::steady_clock::time_point mExportStartedAt;
-
-    /// Bundle path allowed to apply embedded configuration. Empty
-    /// disables it; replacing the path gives the latest open priority.
-    QString mApplyEmbeddedBundleConfigForPath;
+    // Note: `mApplyEmbeddedBundleConfigForPath` (bundle path allowed
+    // to apply embedded configuration) lives on `mSession`; see
+    // `LogSession::ApplyEmbeddedBundleConfigForPath`.
 
     /// Kick off the async export worker. Models on
     /// `BeginAsyncDecompression`.
@@ -2093,74 +2102,51 @@ private:
 
     // --------------------------- Session mode ------------------------
 
-    /// Streaming session kind; gates UI variants. Set on open,
-    /// cleared in `streamingFinished`. Underlying type pinned to
-    /// match the forward declaration above.
-    enum class SessionMode : int
-    {
-        Idle,
-        Static,
-        LiveTail,
-    };
-    /// True while `mExportWatcher` is running a bundle write, false
-    /// for a filtered-row export. `OnExportFinished` uses it to pick
-    /// the right toast wording and exception vocabulary.
-    bool mExportIsBundle = false;
+    /// `SessionMode` is aliased near the top of the class to
+    /// `LogSession::Mode` (task 2.5). `mSessionMode` /
+    /// `mLastTerminalSessionMode` used to live on this class as
+    /// plain members; both fields now live on `mSession` and are
+    /// reached through `mSession->SessionMode()` /
+    /// `mSession->LastTerminalMode()` / `mSession->SetMode()`.
 
-    SessionMode mSessionMode = SessionMode::Idle;
-
-    /// Mirror of `mSessionMode` retained across `streamingFinished`
-    /// (which resets `mSessionMode` to `Idle` before the auto-save
-    /// hook runs). `closeEvent` -> `AutoSaveSessionSnapshot` reads
-    /// this so a close after a finished live-tail correctly sees
-    /// `LiveTail` (and bails) instead of `Idle`.
-    SessionMode mLastTerminalSessionMode = SessionMode::Idle;
+    // Note: `mExportIsBundle` (bundle vs. plain-export label
+    // selector) lives on `mSession`; see `LogSession::IsExportBundle`.
 
     [[nodiscard]] bool IsSessionActive() const noexcept
     {
-        return mSessionMode != SessionMode::Idle;
+        return mSession->IsSessionActive();
     }
     [[nodiscard]] bool IsLiveTailSession() const noexcept
     {
-        return mSessionMode == SessionMode::LiveTail;
+        return mSession->IsLiveTailSession();
     }
 
-    /// Running line / error counts shown in the status bar.
-    qsizetype mStreamingLineCount = 0;
-    qsizetype mStreamingErrorCount = 0;
-
-    /// High-water mark into `mModel->StreamingErrors()` consumed by
-    /// the per-file batch in `OnStreamingFinished`. Multi-file static
-    /// opens accumulate every file's errors in a single vector on
-    /// the model; this watermark lets us peel off only the errors
-    /// produced by the file that just finished so each file gets
-    /// its own labelled batch in the `ParseErrorsDock`. Reset to 0
-    /// alongside every `mParseErrorsDock->ResetSessionState()` to
-    /// stay in lockstep with the model's `mStreamingErrors.clear()`.
-    size_t mStreamingErrorsCut = 0;
-
-    /// True after the first non-empty batch; gates the one-shot column
-    /// auto-resize.
-    bool mFirstStreamingBatchSeen = false;
+    /// Streaming progress counters (`mStreamingLineCount`,
+    /// `mStreamingErrorCount`, `mStreamingErrorsCut`,
+    /// `mFirstStreamingBatchSeen`) and the `SourceStatus::Waiting`
+    /// latch (`mSourceWaiting`) live on `mSession` (task 2.5). Reach
+    /// them through `mSession->StreamingLineCount()` /
+    /// `SetStreamingLineCount()`, `StreamingErrorCount()` /
+    /// `SetStreamingErrorCount()`, `StreamingErrorsCut()` /
+    /// `SetStreamingErrorsCut()`, `FirstStreamingBatchSeen()` /
+    /// `SetFirstStreamingBatchSeen()`, and `IsSourceWaiting()` /
+    /// `SetSourceWaiting()`. `mSession->ResetStreamingProgress()`
+    /// covers the per-file start pattern (`line = error = 0;
+    /// firstBatchSeen = false`); `ResetStreamingCountersAndFileName()`
+    /// clears every field including the file name.
 
     /// True during the `— rotated` status-bar flash.
     bool mRotationFlashActive = false;
-
-    /// Latched `SourceStatus::Waiting`; drives the `Source unavailable`
-    /// status-bar variant.
-    bool mSourceWaiting = false;
 
     /// Re-entrancy guard for `OnHeaderSectionMoved`: the slot
     /// re-fires `sectionMoved` while resetting visual order, and
     /// we swallow that volley.
     bool mApplyingSectionMove = false;
 
-    /// Re-entrancy guard for `enumColumnsChanged -> UpdateFilters`.
-    /// `UpdateFilters` rebuilds the proxy rules and re-asserts the
-    /// model; an enum demote during the rebuild can re-fire the
-    /// signal against half-updated state. The outer call finishes
-    /// its rebuild and the queued re-entry becomes a no-op.
-    bool mApplyingEnumRebuild = false;
+    /// Re-entrancy guard for `enumColumnsChanged -> UpdateFilters`
+    /// now lives on `mSession` (task 2.4). Reach it through
+    /// `mSession->IsApplyingEnumRebuild()` /
+    /// `mSession->SetApplyingEnumRebuild()`.
 
     /// Last text typed into the Goto Timestamp dialog, pre-
     /// populated on the next open so successive jumps around the
@@ -2174,27 +2160,17 @@ private:
     /// so a carry-over from a larger session no longer applies.
     QString mLastGotoLineInput;
 
-    /// Latch: a loaded session's sort is pending, to be applied
-    /// once streaming finishes. Avoids the O(N^2) per-row insert
-    /// path that `LogFilterModel::OnSourceRowsInserted` falls into
-    /// under an active sort (a 1 GB restore "never finishes"
-    /// otherwise; pinned by
-    /// `TestRestoreLastSessionDefersSortUntilStreamingFinishes`).
-    ///
-    /// Consumed by `OnStreamingFinished` (or by
-    /// `StreamFromCurrentSourceOrSkip`'s early-return paths).
-    /// `MirrorSessionStateToConfiguration` reads it so an
-    /// auto-save mid-stream preserves the loaded sort instead of
-    /// overwriting it with the proxy's transient `-1`.
-    bool mPendingApplySortFromConfig = false;
+    /// The pending-apply-sort-from-config latch (see the deferred
+    /// sort block in `LogSession`) now lives on `mSession` (task
+    /// 2.4). Existing MainWindow call sites use
+    /// `mSession->HasPendingApplySortFromConfig()` /
+    /// `mSession->SetPendingApplySortFromConfig()`.
 
     /// Latch held by the `SessionSwitchScope` RAII helper across a
-    /// destructive `mModel->Reset()`. `OnStreamingFinished` short-
-    /// circuits on the `Cancelled` branch when this is set, so the
-    /// synchronous `streamingFinished(Cancelled)` emitted by `Reset()`
-    /// does not run outgoing-session UI bookkeeping while the
-    /// incoming session is being wired up.
-    bool mSessionSwitchInProgress = false;
+    /// destructive `mModel->Reset()` now lives on `mSession`
+    /// (task 2.5). Reach it through
+    /// `mSession->IsSessionSwitchInProgress()` /
+    /// `mSession->SetSessionSwitchInProgress()`.
 
 #ifdef LOGAPP_BUILD_TESTING
     /// Skip `ShowDroppedFiltersDialog`'s modal so a headless test

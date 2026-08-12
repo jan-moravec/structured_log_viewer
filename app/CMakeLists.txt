@@ -104,6 +104,14 @@ set(PROJECT_SOURCES
     include/shortcut_catalog.hpp
     src/shortcuts_dialog.cpp
     include/shortcuts_dialog.hpp
+    src/log_session.cpp
+    include/log_session.hpp
+    include/log_session_commands.hpp
+    include/log_session_presentation.hpp
+    src/log_session_view.cpp
+    include/log_session_view.hpp
+    include/scoped_connections.hpp
+    include/session_bind_context.hpp
     include/uuid_utils.hpp
     include/qstring_path.hpp
     include/log_warning.hpp

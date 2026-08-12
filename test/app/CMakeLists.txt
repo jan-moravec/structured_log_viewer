@@ -176,3 +176,74 @@ add_test(
     COMMAND apptest_row_exporter
     WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_row_exporter>
 )
+
+# ScopedConnections RAII helper (task 1.4). Pure QObject / signal
+# plumbing so no widgets, tzdata, or resources are required.
+qt_add_executable(apptest_scoped_connections src/test_scoped_connections.cpp)
+
+target_link_libraries(apptest_scoped_connections PRIVATE Qt6::Test logapp)
+
+target_include_directories(apptest_scoped_connections PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+
+add_test(
+    NAME apptest_scoped_connections
+    COMMAND apptest_scoped_connections
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_scoped_connections>
+)
+
+# Focused characterization + direct `LogSession` / `LogSessionView`
+# / `SessionBindContext` / tab / workspace-persistence test targets
+# for the MainWindow-architecture / multi-source-tabs feature (see
+# `tasks/tasks-main-window-session-tabs.md` §1.9). Phase 1 seeds a
+# minimal test per binary; later phases grow each file into the
+# authoritative coverage venue for its concern instead of extending
+# the monolithic `main_window_test.cpp`.
+qt_add_executable(apptest_log_session_lifecycle src/log_session_lifecycle_test.cpp)
+target_link_libraries(apptest_log_session_lifecycle PRIVATE Qt6::Test Qt6::Widgets logapp)
+target_include_directories(apptest_log_session_lifecycle PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+add_test(
+    NAME apptest_log_session_lifecycle
+    COMMAND apptest_log_session_lifecycle
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_log_session_lifecycle>
+)
+
+qt_add_executable(apptest_log_session src/log_session_test.cpp)
+target_link_libraries(apptest_log_session PRIVATE Qt6::Test Qt6::Widgets logapp)
+target_include_directories(apptest_log_session PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+add_test(NAME apptest_log_session COMMAND apptest_log_session WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_log_session>)
+
+qt_add_executable(apptest_log_session_view src/log_session_view_test.cpp)
+target_link_libraries(apptest_log_session_view PRIVATE Qt6::Test Qt6::Widgets logapp)
+target_include_directories(apptest_log_session_view PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+add_test(
+    NAME apptest_log_session_view
+    COMMAND apptest_log_session_view
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_log_session_view>
+)
+
+qt_add_executable(apptest_dock_binding src/dock_binding_test.cpp)
+target_link_libraries(apptest_dock_binding PRIVATE Qt6::Test Qt6::Widgets logapp)
+target_include_directories(apptest_dock_binding PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+add_test(
+    NAME apptest_dock_binding
+    COMMAND apptest_dock_binding
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_dock_binding>
+)
+
+qt_add_executable(apptest_session_tabs src/session_tabs_test.cpp)
+target_link_libraries(apptest_session_tabs PRIVATE Qt6::Test Qt6::Widgets logapp)
+target_include_directories(apptest_session_tabs PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+add_test(
+    NAME apptest_session_tabs
+    COMMAND apptest_session_tabs
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_session_tabs>
+)
+
+qt_add_executable(apptest_workspace_persistence src/workspace_persistence_test.cpp)
+target_link_libraries(apptest_workspace_persistence PRIVATE Qt6::Test Qt6::Widgets logapp)
+target_include_directories(apptest_workspace_persistence PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+add_test(
+    NAME apptest_workspace_persistence
+    COMMAND apptest_workspace_persistence
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_workspace_persistence>
+)
