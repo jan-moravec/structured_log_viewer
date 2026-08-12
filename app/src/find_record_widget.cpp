@@ -314,6 +314,72 @@ void FindRecordWidget::BumpMatchCountDebounce()
     }
 }
 
+QString FindRecordWidget::queryText() const
+{
+    return mEdit != nullptr ? mEdit->text() : QString{};
+}
+
+bool FindRecordWidget::queryWildcards() const
+{
+    return mWildcardsAction != nullptr && mWildcardsAction->isChecked();
+}
+
+bool FindRecordWidget::queryRegex() const
+{
+    return mRegexAction != nullptr && mRegexAction->isChecked();
+}
+
+void FindRecordWidget::RestoreQueryState(const QString &text, bool wildcards, bool regex)
+{
+    // Set the toggles first so `mEdit->setText()` fires
+    // `textChanged` -> `RequestMatchCountSoon` with the correct
+    // matcher flags. The toggles are mutually exclusive at the
+    // action level; setting both would surface a runtime
+    // inconsistency, so pin regex-over-wildcards priority to
+    // match the widget's own user-facing behaviour when a user
+    // clicks regex while wildcards is on.
+    if (mWildcardsAction != nullptr)
+    {
+        // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
+        mWildcardsAction->setChecked(regex ? false : wildcards);
+    }
+    if (mRegexAction != nullptr)
+    {
+        mRegexAction->setChecked(regex);
+    }
+    if (mEdit != nullptr)
+    {
+        // `setText` may or may not emit `textChanged` depending on
+        // whether the text changed (Qt suppresses the emit when
+        // the new text equals the old text). We rely on the emit
+        // for the debounce arm; see the explicit
+        // `BumpMatchCountDebounce` below that covers the "same
+        // text on both sides of the swap" case.
+        mEdit->setText(text);
+    }
+    // Origin-review fix (finding M4): explicit debounce arm so a
+    // cross-session Bind whose incoming and outgoing sessions
+    // share the same query text still refreshes the match count
+    // against the new model. Without this, the previous session's
+    // "*i* of *N*" label would linger until the user types.
+    // `BumpMatchCountDebounce` is a no-op when `text` is empty
+    // (guarded internally), so the equivalent path from Unbind
+    // (which restores empty text) stays quiet.
+    BumpMatchCountDebounce();
+}
+
+void FindRecordWidget::CancelPendingMatchCountRequest()
+{
+    if (mMatchCountTimer != nullptr)
+    {
+        mMatchCountTimer->stop();
+    }
+    if (mMatchCountMaxAgeTimer != nullptr)
+    {
+        mMatchCountMaxAgeTimer->stop();
+    }
+}
+
 void FindRecordWidget::DismissBar()
 {
     // Closing the dock is the only correct dismiss: hiding just the

@@ -1467,11 +1467,30 @@ MainWindow::MainWindow(
             const auto &config = mModel->Configuration();
             mHighlightRulesEditor = new HighlightRulesEditor(config.highlightRules, config.columns, mTheme, this);
             mHighlightRulesEditor->setWindowFlag(Qt::Window, true);
+            // Task 5.9: capture the originating session so a
+            // phase-6 tab switch to a different session can close
+            // this editor (`RebindSharedDocks` walks these guards
+            // and closes any dialog whose origin != new active).
+            // Guarding the SAVE callback below with the same
+            // origin makes the fan a no-op if the user manages to
+            // trigger a Save mid-swap while the editor is still
+            // being torn down.
+            mHighlightRulesEditorSession = mSession;
             connect(
                 mHighlightRulesEditor.data(),
                 &HighlightRulesEditor::rulesSaved,
                 this,
-                [this](std::vector<loglib::LogConfiguration::HighlightRule> rules) {
+                [this,
+                 origin = QPointer<LogSession>(mSession)](std::vector<loglib::LogConfiguration::HighlightRule> rules) {
+                    // Origin guard: if the session that opened the
+                    // editor has been destroyed or is no longer the
+                    // active session, drop the save silently.
+                    // Persisting to a different session's model
+                    // would silently corrupt its highlight rules.
+                    if (origin.isNull() || origin.data() != mSession)
+                    {
+                        return;
+                    }
                     // Persist first so any auto-save handler sees
                     // the committed state; hand a copy to the
                     // runtime rebuild.
@@ -1963,6 +1982,17 @@ MainWindow::MainWindow(
     // once now that both ends are wired.
     UpdateSortStatus();
 
+    // Task 5.2: initial shared-dock rebind. Drives every
+    // refactored dock (Find, Parse Errors, Histogram, Record
+    // Detail, Anchors) into its bound state against the sole
+    // active session AND destroys any session-scoped dialog
+    // whose origin no longer matches. Phase 6's tab-switch
+    // driver reuses the same entry point after an active-tab
+    // change, which is why the ctor threads the initial context
+    // through `activeSessionBindContext()` -- same code path,
+    // same ordering, one contract.
+    RebindSharedDocks(activeSessionBindContext());
+
     // Timezone database initialisation lives in
     // `MainWindow::InitializeTimezoneDatabase`, called synchronously
     // from `main()` (and the QtTest fixture) before any window is
@@ -2114,6 +2144,176 @@ void MainWindow::UnbindActiveSessionForTest() noexcept
     // directly by `~MainWindow` -- see the header for the phase-4
     // scope caveat around production use.
     mSessionConnections.Clear();
+}
+
+SessionBindContext MainWindow::activeSessionBindContext() const
+{
+    // Convenience wrapper around the factory (task 5.1). The
+    // factory tolerates null `session` / `view`, so a mid-teardown
+    // read that finds either alias already null resolves to
+    // `MakeUnbound()` without extra branching here.
+    return SessionBindContext::FromSessionAndView(mSession, mSessionView, mTheme);
+}
+
+void MainWindow::RebindSharedDocks(const SessionBindContext &context)
+{
+    // Deterministic Bind/Unbind orchestrator (task 5.2).
+    //
+    // Phase-5 scope: per-dock `Bind(SessionBindContext)` slots land
+    // subtask-by-subtask. Docks that have NOT yet been refactored
+    // continue to bind at construction time and are skipped here.
+    // Each subtask lifts one dock into this orchestrator by:
+    //
+    //   1. Adding an explicit `Bind(SessionBindContext)` /
+    //      `Unbind()` API to the dock class.
+    //   2. Removing the dock-owned state that used to live on the
+    //      dock (saved into the outgoing session on Bind, restored
+    //      from the incoming session on Bind).
+    //   3. Adding the `dock->Bind(context)` call below in the
+    //      documented fixed order.
+    //
+    // Phase 6 will call this from the workspace's tab-switch driver
+    // after unbinding the prior active context and before refreshing
+    // active-tab chrome (`UpdateWindowTitle`, `UpdateStreamingStatus`,
+    // ...).
+    //
+    // A context whose `IsBound()` is false (typically
+    // `SessionBindContext::MakeUnbound()`) drives every dock into
+    // its "no active session" state -- persistent indexes cleared,
+    // debounce timers cancelled, session-specific chrome hidden.
+    //
+    // The orchestrator itself is intentionally trivial: it exists
+    // as the single Bind entry point so phase 6 does not have to
+    // reason about dock construction order or per-dock APIs. When
+    // every dock has landed its Bind slot, the ctor's inline dock
+    // construction stops passing session-owned pointers at
+    // construction time and hands them through this call instead.
+
+    // Order matches the docstring on `RebindSharedDocks`:
+    //   (1) docks whose state is authoritative on the session
+    //       (find / parse-errors / histogram / record-detail);
+    //   (2) anchors dock;
+    //   (3) session-scoped dialogs (below).
+    //
+    // Origin-review fix (finding L1): the anchors dock was
+    // previously wedged between parse-errors and histogram. Not
+    // functional today (the anchors dock does not depend on the
+    // other docks' post-bind state) but phase-6's tab-switch
+    // scaffolding pins this order in the docstring, so mismatched
+    // code and docs are load-bearing drift.
+
+    // Task 5.4: parse-errors dock. Snapshots the outgoing session's
+    // log and replays the incoming session's log so a phase-6 tab
+    // switch back to a previously-bound session restores every
+    // entry, the running counts, and the auto-raise latch exactly.
+    if (mParseErrorsDock != nullptr)
+    {
+        mParseErrorsDock->Bind(context);
+    }
+
+    // Task 5.3: find dock. Snapshots the outgoing session's query
+    // state (query text + wildcards/regex toggles) into its
+    // SessionFindQueryState, restores the incoming session's state,
+    // and cancels the debounce so a stale-model MatchCountRequested
+    // cannot slip in between the model swap and the debounce re-arm.
+    if (mFindDock != nullptr)
+    {
+        mFindDock->Bind(context);
+    }
+
+    // Task 5.6: histogram dock. Snapshots the outgoing session's
+    // bucket-size pin into its SessionHistogramState, cancels the
+    // coalesce timer, swaps the HistogramModel's guarded source
+    // pointers, and reapplies the incoming session's pin so the
+    // auto-picker inside the swap's rebuild cannot silently
+    // override the user's choice. Defers the full-model walk when
+    // the dock is currently hidden.
+    if (mHistogramDock != nullptr)
+    {
+        mHistogramDock->Bind(context);
+    }
+
+    // Task 5.7: record-detail dock. Clears the persistent model
+    // index BEFORE the source swap, drops the anchor/model
+    // subscriptions atomically via ScopedConnections, refreshes
+    // the guarded aliases from the new context, re-subscribes,
+    // and restores the incoming session's pinned row (or shows
+    // the "no row picked" placeholder when there is nothing to
+    // restore).
+    if (mRecordDetailDock != nullptr)
+    {
+        mRecordDetailDock->Bind(context);
+    }
+
+    // Task 5.5: anchors dock. Disconnects the outgoing session's
+    // anchor / model / theme subscriptions atomically, closes any
+    // inline note editor, drops every tree item, refreshes the
+    // guarded aliases from the new context, re-installs the same
+    // subscriptions against the new pointers, and refreshes the
+    // tree from the new session's anchor entries.
+    if (mAnchorsDock != nullptr)
+    {
+        mAnchorsDock->Bind(context);
+    }
+
+    // Task 5.8 / 5.9: modeless session-specific dialogs. Each dialog
+    // captures a `QPointer<LogModel>` (columns / diagnostics) or a
+    // `HighlightRuleSet *` (highlight editor) at construction time,
+    // which came from the shell alias `mModel` at open time. Those
+    // captures stay bound to the ORIGINATING session for the
+    // dialog's lifetime. When the active session changes we DESTROY
+    // the dialog (not just close it): our lazy-reopen path is
+    // `if (!m*Dialog) { new *Dialog(mModel, ...) }`, and a hidden-
+    // but-alive dialog would take the "already constructed" branch
+    // on reopen and `Refresh()` its stale captured model. Origin-
+    // review fix: use `deleteLater()` + explicit null so reopen
+    // always constructs against the currently-active session's
+    // `mModel` / config.
+    //
+    // Guards:
+    //   * `origin.isNull()` catches sessions destroyed out-of-
+    //     order (the pointer nulled by `~LogSession`).
+    //   * `origin != context.session` catches the tab-switch case
+    //     (the session still exists but is no longer active).
+    //
+    // A `MakeUnbound()` context (`context.session.isNull()`) is
+    // treated as a full unbind: every session-scoped dialog goes
+    // because the ONLY session it might legitimately have targeted
+    // is the one being unbound.
+    //
+    // The `QPointer` on `m*Dialog` (fields) reflects the deletion
+    // asynchronously; we ALSO `clear()` here so a synchronous
+    // reopen from user code queued behind this call still sees a
+    // null pointer and takes the reconstruction path.
+    auto destroyIfOriginMismatched = [&]<class T>(QPointer<T> &dialog, QPointer<LogSession> &origin) {
+        if (dialog.isNull())
+        {
+            return;
+        }
+        if (origin.isNull() || origin.data() != context.session.data())
+        {
+            // `hide()` (not `close()`) because `HighlightRulesEditor`'s
+            // `closeEvent` pops a "discard edits?" modal when the
+            // form is dirty; that prompt during a tab switch would
+            // be a jarring UX and, if the user picks "cancel", the
+            // subsequent `deleteLater` destroys the editor
+            // anyway. Bypass the closeEvent path entirely.
+            //
+            // `deleteLater` reaps the QObject after the event loop
+            // returns; the `QPointer` on the `m*Dialog` field auto-
+            // nulls when the delete lands. `clear()` here nulls the
+            // field synchronously so any code queued behind this
+            // call still sees a null pointer and takes the
+            // reconstruction path on the next open.
+            dialog->hide();
+            dialog->deleteLater();
+            dialog.clear();
+            origin.clear();
+        }
+    };
+    destroyIfOriginMismatched(mDiagnosticsDialog, mDiagnosticsDialogSession);
+    destroyIfOriginMismatched(mColumnsManagerDialog, mColumnsManagerDialogSession);
+    destroyIfOriginMismatched(mHighlightRulesEditor, mHighlightRulesEditorSession);
 }
 
 void MainWindow::AggregateWindowModified()
@@ -7228,7 +7428,9 @@ void MainWindow::ApplyDisplayOrder()
     }
 }
 
-void MainWindow::ShowParseErrors(const QString &title, const std::vector<std::string> &errors)
+void MainWindow::ShowParseErrors(
+    const QString &title, const std::vector<std::string> &errors, LogSession *originatingSession
+)
 {
     if (errors.empty())
     {
@@ -7244,7 +7446,13 @@ void MainWindow::ShowParseErrors(const QString &title, const std::vector<std::st
                    << title;
         return;
     }
-    mParseErrorsDock->AppendErrors(title, errors);
+    // Route through the originating session (defaults to `mSession`
+    // for the phase-5 shell). The dock's `AppendErrorsForSession`
+    // decides whether the batch lands in the visible list (active
+    // session) or only into the originating session's log
+    // (background session, see finding H3).
+    LogSession *originating = originatingSession != nullptr ? originatingSession : mSession;
+    mParseErrorsDock->AppendErrorsForSession(originating, title, errors);
 }
 
 void MainWindow::ShowDroppedFiltersDialog(int droppedCount, const QString &message)
@@ -7615,6 +7823,12 @@ void MainWindow::ShowConfigurationDiagnostics()
             mDiagnosticsDialog, &ConfigurationDiagnosticsDialog::editColumnRequested, this, &MainWindow::EditColumn
         );
     }
+    // Task 5.8: capture originating session so `RebindSharedDocks`
+    // can close the dialog on tab switch (dialog holds a
+    // QPointer<LogModel> captured at construction; letting it
+    // survive across a session swap would silently point every
+    // subsequent Refresh at a stale model).
+    mDiagnosticsDialogSession = mSession;
     mDiagnosticsDialog->Refresh();
     mDiagnosticsDialog->show();
     mDiagnosticsDialog->raise();
@@ -7651,6 +7865,11 @@ void MainWindow::ShowColumnsManager()
         mColumnsManagerDialog = new ColumnsManagerDialog(mModel, this, this);
         mColumnsManagerDialog->setAttribute(Qt::WA_DeleteOnClose, false);
     }
+    // Task 5.8: capture originating session so `RebindSharedDocks`
+    // can close the dialog on tab switch. Same rationale as the
+    // diagnostics dialog above -- the dialog's captured
+    // QPointer<LogModel> must not silently span a session swap.
+    mColumnsManagerDialogSession = mSession;
     mColumnsManagerDialog->Refresh();
     mColumnsManagerDialog->show();
     mColumnsManagerDialog->raise();

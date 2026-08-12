@@ -648,6 +648,138 @@ public:
     void ClearPendingOpenQueues() noexcept;
 
     // -----------------------------------------------------------------
+    // Session-owned parse-error log (task 5.4).
+    //
+    // The visible state on `ParseErrorsDock` (grouped error rows,
+    // dropped count, first-batch latch) is authoritative here so a
+    // phase-6 tab switch to a previously-bound session restores
+    // every entry, the running counts, and the auto-raise latch
+    // exactly. The dock's `Bind(SessionBindContext)` snapshots the
+    // outgoing session's log and replays the incoming session's log;
+    // its `Unbind()` snapshots and clears.
+    //
+    // `MutableParseErrorLog()` is the primary write path: the dock
+    // moves its shadow store here on Unbind and reads from it on
+    // Bind. The const overload guards read-only sites (e.g. tab-
+    // indicator projection in phase 6 that never rebinds the dock).
+    //
+    // `ResetParseErrorLog()` clears every field including the
+    // first-batch latch. Called from every destructive session-
+    // switch seam on the shell where the pre-migration
+    // `ParseErrorsDock::ResetSessionState()` fired.
+    // -----------------------------------------------------------------
+
+    [[nodiscard]] const SessionParseErrorLog &ParseErrorLog() const noexcept
+    {
+        return mParseErrorLog;
+    }
+
+    [[nodiscard]] SessionParseErrorLog &MutableParseErrorLog() noexcept
+    {
+        return mParseErrorLog;
+    }
+
+    void ResetParseErrorLog() noexcept;
+
+    // -----------------------------------------------------------------
+    // Session-owned Find query state (task 5.3). `FindDock` /
+    // `FindRecordWidget` snapshot the visible query into this on
+    // `Unbind()` and restore from this on `Bind()`. Match-count
+    // state is not persisted -- the dock re-arms the debounce
+    // on Bind and lets `MatchCountRequested` refresh it against
+    // the current model.
+    // -----------------------------------------------------------------
+
+    [[nodiscard]] const SessionFindQueryState &FindQuery() const noexcept
+    {
+        return mFindQuery;
+    }
+
+    [[nodiscard]] SessionFindQueryState &MutableFindQuery() noexcept
+    {
+        return mFindQuery;
+    }
+
+    /// Reset the stored query to its default (empty text, both
+    /// toggles off). Intentionally NOT called from the
+    /// destructive session-switch seams on the shell: the user's
+    /// current search string is UX-load-bearing across an Open
+    /// File / New Session reload of the SAME session (matches
+    /// pre-migration behaviour where the bar text survived).
+    /// Wired for phase-6 tab-close and future "reset session
+    /// state" menu actions.
+    void ResetFindQuery() noexcept;
+
+    // -----------------------------------------------------------------
+    // Session-owned histogram-dock state (task 5.6). `HistogramDock`
+    // saves the current pinned bucket-size rung here on `Unbind()`
+    // and reapplies it on `Bind()`; a phase-6 tab switch back to a
+    // previously-bound session therefore restores what the user
+    // last chose without the auto-picker overriding it.
+    // -----------------------------------------------------------------
+
+    [[nodiscard]] const SessionHistogramState &HistogramState() const noexcept
+    {
+        return mHistogramState;
+    }
+
+    [[nodiscard]] SessionHistogramState &MutableHistogramState() noexcept
+    {
+        return mHistogramState;
+    }
+
+    /// Reset stored histogram state (drop the user-pinned bucket
+    /// size). Not called from destructive session-switch seams:
+    /// a pinned rung should survive an Open File / New Session
+    /// on the SAME session. Wired for phase-6 tab-close.
+    void ResetHistogramState() noexcept;
+
+    // -----------------------------------------------------------------
+    // Session-owned record-detail pin state (task 5.7).
+    // `RecordDetailDock` saves the currently-pinned source row here
+    // on `Unbind()` and reapplies it on `Bind()`; a phase-6 tab
+    // switch back to a previously-bound session therefore restores
+    // the record the user was looking at rather than defaulting
+    // back to the "select a row" placeholder.
+    // -----------------------------------------------------------------
+
+    [[nodiscard]] const SessionRecordDetailPin &RecordDetailPin() const noexcept
+    {
+        return mRecordDetailPin;
+    }
+
+    [[nodiscard]] SessionRecordDetailPin &MutableRecordDetailPin() noexcept
+    {
+        return mRecordDetailPin;
+    }
+
+    /// Reset the stored pin (clear row, key, and `everPinned`).
+    /// Not called from destructive session-switch seams: the
+    /// `LogModel::Reset()` those seams already trigger fires
+    /// `modelReset` -> `RecordDetailDock::Clear()`, which drops
+    /// the persistent index; the session's stored pin then
+    /// naturally reflects the cleared state on the next
+    /// `SaveStateIntoBoundSession`. Wired for phase-6 tab-close
+    /// and forced-reset menu actions.
+    void ResetRecordDetailPin() noexcept;
+
+    /// Session-owned anchors-dock selection state (origin-review
+    /// finding M9). Persists the selected anchor's stable key
+    /// (`AnchorManager::Key`) across a phase-6 tab switch so the
+    /// user's cursor into the anchor list does not silently jump
+    /// to whatever entry happened to sit first in the incoming
+    /// session's tree.
+    [[nodiscard]] const SessionAnchorsSelection &AnchorsSelection() const noexcept
+    {
+        return mAnchorsSelection;
+    }
+
+    [[nodiscard]] SessionAnchorsSelection &MutableAnchorsSelection() noexcept
+    {
+        return mAnchorsSelection;
+    }
+
+    // -----------------------------------------------------------------
     // Rotation-expansion / static-prefix-to-live-tail promotion state
     // (task 2.7). Session-local scalars consumed by the rotation
     // sibling expander and by the queue drain that promotes a
@@ -1480,6 +1612,32 @@ private:
     /// Decompression errors collected while draining
     /// `mPendingOpenFiles` (see `PendingDecompressionErrors()`).
     std::vector<std::string> mPendingDecompressionErrors;
+
+    /// Session-owned parse-error log (see `ParseErrorLog()`).
+    /// `ParseErrorsDock` snapshots into this on Unbind and
+    /// replays it on Bind (task 5.4).
+    SessionParseErrorLog mParseErrorLog;
+
+    /// Session-owned Find query state (see `FindQuery()`).
+    /// `FindDock` / `FindRecordWidget` snapshot into this on
+    /// Unbind and restore from this on Bind (task 5.3).
+    SessionFindQueryState mFindQuery;
+
+    /// Session-owned histogram pin state (see `HistogramState()`).
+    /// `HistogramDock` snapshots into this on Unbind and restores
+    /// from this on Bind (task 5.6).
+    SessionHistogramState mHistogramState;
+
+    /// Session-owned record-detail pin state (see
+    /// `RecordDetailPin()`). `RecordDetailDock` snapshots into this
+    /// on Unbind and restores from this on Bind (task 5.7).
+    SessionRecordDetailPin mRecordDetailPin;
+
+    /// Session-owned anchors-dock selection state (see
+    /// `AnchorsSelection()`). `AnchorsDock` snapshots into this on
+    /// Bind out and restores from this on Bind in (task 5.5,
+    /// origin-review finding M9).
+    SessionAnchorsSelection mAnchorsSelection;
 
     /// Primary path to tail after the historical prefix drains
     /// (see `PendingLiveTailPrimary()`).

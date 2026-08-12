@@ -58,6 +58,26 @@ public slots:
     /// the count on model / proxy mutations without scanning per signal.
     void BumpMatchCountDebounce();
 
+    /// Snapshot the query state (task 5.3). Read-only; safe to call
+    /// on a bar whose dock is currently hidden.
+    [[nodiscard]] QString queryText() const;
+    [[nodiscard]] bool queryWildcards() const;
+    [[nodiscard]] bool queryRegex() const;
+
+    /// Restore the query state (task 5.3). Sets the text and the
+    /// two matcher toggles WITHOUT emitting a `FindRecords`
+    /// (the widget is being restored, not driven by the user);
+    /// the match-count debounce is re-armed via
+    /// `BumpMatchCountDebounce()` so a bind restores the "*i* of
+    /// *N*" label on the next quiet window.
+    void RestoreQueryState(const QString &text, bool wildcards, bool regex);
+
+    /// Cancel any in-flight debounce timers (task 5.3). Called by
+    /// `FindDock::Unbind()` so a session-owned model reset in the
+    /// window between Unbind and the next Bind does not fire a
+    /// `MatchCountRequested` against a stale model.
+    void CancelPendingMatchCountRequest();
+
 signals:
     void FindRecords(const QString &text, bool next, bool wildcards, bool regularExpressions);
 

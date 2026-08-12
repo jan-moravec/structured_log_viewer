@@ -21,13 +21,51 @@ class QItemSelectionModel;
 /// A default-constructed context represents an explicit *empty*
 /// binding: docks in that state must clear their persistent model
 /// indexes, cancel debounce timers, and hide session-specific chrome
-/// (task 5.1).
+/// (task 5.1). `SessionBindContext::MakeUnbound()` is a named alias
+/// for the default ctor that reads clearer at call sites; use it
+/// when the intent is "this dock has no active session right now".
 ///
 /// The concrete pointers are populated in Phase 2 (LogSession) and
 /// Phase 3 (LogSessionView). Phase 5 wires each dock's Bind/Unbind
 /// contract to consume this context.
 struct SessionBindContext
 {
+    /// Build a context from a live session + view pair. Reads
+    /// every session-owned pointer via the session's / view's
+    /// public accessors so a future addition to the struct
+    /// requires updating exactly this one factory (plus the
+    /// declaration + the `IsBound()` gate).
+    ///
+    /// `session` and `view` are collapsed to `MakeUnbound()` when
+    /// EITHER is null. All-or-nothing: a partial pair (session
+    /// with no view, or view with no session) is treated as
+    /// "no active session" so downstream Bind slots see one of the
+    /// two shapes -- fully bound or fully unbound -- and never a
+    /// half-populated context (origin-review finding M6). This
+    /// keeps callers that pass `activeSession()` /
+    /// `activeSessionView()` (both of which are safe to be null
+    /// during teardown) simple: they do not need to null-check
+    /// first.
+    ///
+    /// @param session  the origin session; its model quintet
+    ///                 populates the guarded pointers.
+    /// @param view     the paired view; its selection model
+    ///                 populates the guarded pointer.
+    /// @param theme    non-owning, window-scoped. Passed through
+    ///                 verbatim.
+    [[nodiscard]] static SessionBindContext FromSessionAndView(
+        LogSession *session, LogSessionView *view, ThemeControl *theme = nullptr
+    );
+
+    /// Named alias for the default ctor. Signals "no active
+    /// session" at the call site; docks passing through their
+    /// `Bind(SessionBindContext)` slot must treat this as
+    /// equivalent to a full unbind.
+    [[nodiscard]] static SessionBindContext MakeUnbound() noexcept
+    {
+        return SessionBindContext{};
+    }
+
     QPointer<LogSession> session;
     QPointer<LogSessionView> view;
 

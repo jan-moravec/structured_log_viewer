@@ -887,6 +887,35 @@ void LogSession::ClearPendingOpenQueues() noexcept
     mPendingDecompressionErrors.clear();
 }
 
+void LogSession::ResetParseErrorLog() noexcept
+{
+    // Full reset: batches, dropped count, AND the first-batch
+    // latch. Matches the pre-migration
+    // `ParseErrorsDock::ResetSessionState()` semantics.
+    mParseErrorLog.batches.clear();
+    mParseErrorLog.droppedCount = 0;
+    mParseErrorLog.hasSeenFirstBatch = false;
+}
+
+void LogSession::ResetFindQuery() noexcept
+{
+    mFindQuery.query.clear();
+    mFindQuery.wildcards = false;
+    mFindQuery.regex = false;
+}
+
+void LogSession::ResetHistogramState() noexcept
+{
+    mHistogramState.bucketSizePinned = false;
+    mHistogramState.bucketSize.reset();
+}
+
+void LogSession::ResetRecordDetailPin() noexcept
+{
+    mRecordDetailPin.pinnedSourceRow = -1;
+    mRecordDetailPin.everPinned = false;
+}
+
 void LogSession::SetPendingLiveTailPromotion(QString primary, std::size_t retention)
 {
     mPendingLiveTailPrimary = std::move(primary);

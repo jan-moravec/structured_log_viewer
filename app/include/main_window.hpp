@@ -18,6 +18,7 @@
 #include "record_detail_window.hpp"
 #include "row_order_proxy_model.hpp"
 #include "scoped_connections.hpp"
+#include "session_bind_context.hpp"
 
 #include <loglib/internal/decompressing_byte_source.hpp>
 #include <loglib/log_configuration.hpp>
@@ -320,6 +321,20 @@ public:
         return mSessionView;
     }
 
+    /// Build a `SessionBindContext` snapshot of the currently-active
+    /// session + view (task 5.1). Convenience wrapper around
+    /// `SessionBindContext::FromSessionAndView(activeSession(),
+    /// activeSessionView(), mTheme)`; returns
+    /// `SessionBindContext::MakeUnbound()` if either accessor is
+    /// null (typical during a mid-teardown observer read).
+    ///
+    /// Consumers: (a) phase-6 tab-switch orchestrator, which
+    /// re-binds every shared dock against this context; (b)
+    /// tests that need to hand a dock a live bind context
+    /// without reconstructing MainWindow's internals; (c) the
+    /// ctor's initial `RebindSharedDocks()` call.
+    [[nodiscard]] SessionBindContext activeSessionBindContext() const;
+
     /// Every `LogSession` this window is hosting, in tab order
     /// (task 4.1 / 4.6 / 4.8). Phase 3 hosts exactly one; Phase 6
     /// grows the vector to the workspace's tab list. Callers must
@@ -361,6 +376,39 @@ public:
     /// every tab switch; this raw teardown-only entry will move
     /// to `private` at that point.
     void UnbindActiveSessionForTest() noexcept;
+
+    /// Deterministic shared-dock rebind driver (task 5.2).
+    ///
+    /// Routes @p context to every shared dock and dialog through
+    /// its `Bind(SessionBindContext)` slot in a fixed order:
+    ///
+    ///   1. Docks whose state is authoritative on the session (find,
+    ///      parse errors, histogram, record detail) rebind first so
+    ///      their save-outgoing / restore-incoming step observes the
+    ///      full model quintet still bound to the outgoing session's
+    ///      QObjects; then
+    ///   2. Anchors dock rebinds (anchor model swap needs the session
+    ///      already re-aliased); then
+    ///   3. Session-scoped dialogs (columns manager, configuration
+    ///      diagnostics, highlight rules editor) rebind or close per
+    ///      their tab-change policy (tasks 5.8 / 5.9).
+    ///
+    /// A context whose `IsBound()` is false (typically
+    /// `SessionBindContext::MakeUnbound()`) drives every dock into
+    /// its "no active session" state -- persistent indexes cleared,
+    /// debounce timers cancelled, session-specific chrome hidden.
+    ///
+    /// **Phase 5 scope**: the ctor is the only production caller
+    /// today. Per-dock `Bind(SessionBindContext)` slots land
+    /// subtask-by-subtask (5.3 = FindDock, 5.4 = ParseErrorsDock,
+    /// 5.5 = AnchorsDock, 5.6 = HistogramDock, 5.7 = RecordDetailDock,
+    /// 5.8 = ColumnsManagerDialog + ConfigurationDiagnosticsDialog,
+    /// 5.9 = HighlightRulesEditor); docks that have not yet been
+    /// refactored are skipped here without warning until their
+    /// subtask lands. Phase 6 promotes this into the primary tab-
+    /// switch entry, driven from the workspace's active-tab
+    /// selection.
+    void RebindSharedDocks(const SessionBindContext &context);
 
     /// Aggregate the modified-window state from every hosted
     /// session (task 4.6). Called from the `filtersDirtyChanged`
@@ -1334,7 +1382,15 @@ private:
     /// and parse-error surfacing.
     void OnStreamingFinished(StreamingResult result);
 
-    void ShowParseErrors(const QString &title, const std::vector<std::string> &errors);
+    /// Route @p errors under @p title to the parse-errors dock,
+    /// attributing them to @p originatingSession (nullptr => the
+    /// currently-active session, matching the phase-5 shell).
+    /// Phase 6 tab-switch callers that complete a background parse
+    /// MUST pass the originating session so the batch lands in
+    /// that session's log rather than the currently-visible tab.
+    void ShowParseErrors(
+        const QString &title, const std::vector<std::string> &errors, LogSession *originatingSession = nullptr
+    );
 
     /// Pop a warning dialog summarising filters dropped on load.
     /// Records @p droppedCount for tests and skips the modal when
@@ -2112,9 +2168,30 @@ private:
     /// open reuses the same window.
     QPointer<class ConfigurationDiagnosticsDialog> mDiagnosticsDialog;
 
+    /// The session that owned the model this diagnostics dialog is
+    /// bound to (task 5.8). Captured when the dialog is (re)opened
+    /// and consulted by `RebindSharedDocks` -- when the active
+    /// session changes to a different one, we close the dialog
+    /// rather than let it silently retain a stale model pointer.
+    /// `QPointer` so a session torn down out-of-order zeroes the
+    /// alias and the "same session" check degrades to false, which
+    /// still closes the dialog cleanly.
+    QPointer<LogSession> mDiagnosticsDialogSession;
+
     /// Lazy-owned bulk column manager dialog; survives close so a
     /// second open reuses the same window.
     QPointer<class ColumnsManagerDialog> mColumnsManagerDialog;
+
+    /// Originating session for `mColumnsManagerDialog` (task 5.8);
+    /// same semantics as `mDiagnosticsDialogSession` above.
+    QPointer<LogSession> mColumnsManagerDialogSession;
+
+    /// Originating session for `mHighlightRulesEditor` (task 5.9).
+    /// Same semantics as `mDiagnosticsDialogSession` above --
+    /// consulted by `RebindSharedDocks` to close the editor when
+    /// the active session changes to a different one, so the
+    /// `rulesSaved` fan cannot land on the wrong session's model.
+    QPointer<LogSession> mHighlightRulesEditorSession;
 
     /// Dock pane that follows the selected row. Hidden until opened
     /// via the View menu or a double-click. `QDockWidget` provides

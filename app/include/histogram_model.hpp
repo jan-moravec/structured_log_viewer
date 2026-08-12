@@ -1,6 +1,7 @@
 #pragma once
 
 #include "anchor_manager.hpp"
+#include "scoped_connections.hpp"
 
 #include <loglib/histogram_bucket_index.hpp>
 #include <loglib/log_level.hpp>
@@ -63,6 +64,51 @@ public:
     /// Full rescan of the log model into the bucket index. Called on
     /// `modelReset` and after a bucket-size change.
     void Rebuild();
+
+    /// Swap the sources this model observes to @p logModel /
+    /// @p anchors (task 5.6). Cancels any pending coalesced emit,
+    /// disconnects the currently-installed source subscriptions,
+    /// resets bucket state, and re-subscribes against the new
+    /// pointers. Either or both arguments may be null -- passing
+    /// two nulls detaches from every session-owned source (the
+    /// dock's "no active session" state). Callers own the state
+    /// snapshot / restore around the swap: this method is
+    /// deliberately unaware of `SessionHistogramState`.
+    ///
+    /// When @p deferRebuild is true, the internal full-model walk
+    /// (`Rebuild` + `ApplyAutoBucketSize`) is skipped so a hidden
+    /// dock does not pay for it eagerly. The column-index
+    /// recompute + pin-latch reset still run so `HasTimeColumn`
+    /// and enum-availability signals stay honest; incremental
+    /// appends through the freshly-installed subscriptions still
+    /// accumulate. Callers deferring the rebuild must eventually
+    /// call `PumpDeferredBind()` (typically from `showEvent`) to
+    /// pay the walk against the accumulated state.
+    void BindSources(LogModel *logModel, AnchorManager *anchors, bool deferRebuild = false);
+
+    /// Pump the deferred `Rebuild` + auto-pick that a
+    /// `BindSources(..., deferRebuild=true)` skipped. No-op when
+    /// no such deferral is outstanding; safe to call twice.
+    /// Called from `HistogramDock::showEvent`.
+    void PumpDeferredBind();
+
+    /// True iff the user has explicitly pinned a bucket rung via
+    /// `SetBucketSize` (as opposed to the model auto-picking one).
+    /// Used by `HistogramDock::SaveStateIntoBoundSession` to
+    /// distinguish "user chose 10 min" from "auto happened to pick
+    /// 10 min" -- the former survives a tab round-trip, the
+    /// latter should re-auto-pick against the incoming session's
+    /// range.
+    [[nodiscard]] bool IsBucketSizePinned() const noexcept
+    {
+        return mBucketSizePinned;
+    }
+
+    /// Cancel the ~50 ms coalesce timer. Called from
+    /// `HistogramDock::Bind` before the source swap so a queued
+    /// `bucketsChanged` from the outgoing session cannot fire
+    /// after the new session's rebuild is already in flight.
+    void CancelPendingEmit() noexcept;
 
     /// First `Type::Time` column index, or `-1` when the log has none.
     /// Cached; refreshed on model reset, row insert, column move, and
@@ -227,6 +273,13 @@ private:
     /// Suppresses the automatic re-pick on subsequent rebuilds.
     bool mBucketSizePinned = false;
 
+    /// True after `BindSources(..., deferRebuild=true)` skipped
+    /// the internal `Rebuild` + auto-pick. `PumpDeferredBind`
+    /// pays the walk and clears this back to false. Latch, not
+    /// counter -- multiple deferred binds without a pump collapse
+    /// into one deferred rebuild.
+    bool mDeferredBindPending = false;
+
     /// Lazy cache: entry `i` is the first source row in bucket `i`,
     /// or `-1` when empty. `nullopt` means "stale, rebuild on next
     /// read". Mutable so `FirstRowInBucket` can stay const.
@@ -239,4 +292,16 @@ private:
     /// Running popcount of `mAnchorSlotPerBucket` so `HasAnchorTicks`
     /// stays O(1). Kept in sync at every mutation site.
     std::size_t mAnchorBucketBitsSet = 0;
+
+    /// Session-owned source subscriptions installed by
+    /// `BindSources` and reaped on the next `BindSources`
+    /// (or on this model's destruction). Explicitly excludes the
+    /// `mEmitTimer` connection, which lives with the model and
+    /// must survive every rebind.
+    ScopedConnections mSourceConnections;
+
+    /// Install the source subscriptions currently held by
+    /// `mLogModel` / `mAnchors`. Extracted so the ctor and
+    /// `BindSources` land the same wiring.
+    void InstallSourceSubscriptions();
 };

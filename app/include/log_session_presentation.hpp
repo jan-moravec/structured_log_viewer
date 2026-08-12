@@ -5,6 +5,9 @@
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
 
 /// Value types shared between `LogSession`, `LogSessionView`, and
 /// `MainWindow`. Every type here is Qt-value semantics only: no
@@ -194,6 +197,139 @@ constexpr std::uint32_t &operator|=(std::uint32_t &a, SessionClosePreconditions 
     a |= static_cast<std::uint32_t>(b);
     return a;
 }
+
+/// Session-owned Find query state that survives a Bind / Unbind
+/// cycle on `FindDock` / `FindRecordWidget` (task 5.3). Captures
+/// the query text plus the two mutually-exclusive matcher toggles
+/// so a phase-6 tab switch back to a previously-bound session
+/// restores what the user last typed and how they had the matcher
+/// configured. Match-count state is not persisted -- it is a
+/// pure function of the query + the session's model, so the
+/// dock re-arms the debounce on Bind and lets `MatchCountRequested`
+/// refresh it.
+///
+/// A default-constructed value represents the pristine "no query
+/// yet" state -- equivalent to a session immediately after
+/// construction.
+struct SessionFindQueryState
+{
+    QString query;          ///< Last search text (may be empty).
+    bool wildcards = false; ///< Wildcard-matcher toggle.
+    bool regex = false;     ///< Regex-matcher toggle. Mutually exclusive with `wildcards`.
+};
+
+/// Session-owned parse-error state that survives a Bind / Unbind
+/// cycle on `ParseErrorsDock` (task 5.4). The dock replays the
+/// batches on Bind and captures the current state on Unbind; the
+/// authoritative store lives here so a phase-6 tab switch to a
+/// previously-bound session restores every entry, the running
+/// counts, and the "auto-raise once per session" latch exactly.
+///
+/// A default-constructed value represents the pristine "no errors
+/// yet" state -- equivalent to a session immediately after
+/// construction or after `LogSession::ResetParseErrorLog()`.
+struct SessionParseErrorBatch
+{
+    QString title;                   ///< Group header (e.g. `tr("Error Parsing Logs")`).
+    std::vector<std::string> errors; ///< Error rows, in insertion order.
+};
+
+struct SessionParseErrorLog
+{
+    /// Every batch appended since the last `ResetParseErrorLog()`,
+    /// in insertion order. The dock replays them on `Bind`.
+    std::vector<SessionParseErrorBatch> batches;
+
+    /// Errors evicted by the dock's `MAX_DISPLAYED_ERRORS` cap.
+    /// Mirrored here so restoring on `Bind` re-renders the "N
+    /// earlier dropped" overflow footer.
+    int droppedCount = 0;
+
+    /// One-shot `ParseErrorsDock::firstBatchArrived` latch. Cleared
+    /// only by `ResetParseErrorLog`; the dock's in-line Clear
+    /// button does NOT re-arm this so the user cannot be yanked
+    /// back to a dock they explicitly dismissed.
+    bool hasSeenFirstBatch = false;
+};
+
+/// Session-owned histogram presentation state that survives a
+/// Bind / Unbind cycle on `HistogramDock` / `HistogramModel`
+/// (task 5.6). The bucket-size pin is user-driven (context menu
+/// entries "1 s / 10 s / 1 min / ..."), so a phase-6 tab switch
+/// back to a previously-bound session must restore both the
+/// chosen rung and the "manual pin" latch (otherwise the next
+/// auto re-pick would silently override the user's choice).
+///
+/// A default-constructed value represents the pristine "no pin
+/// yet" state -- equivalent to a fresh session that has never
+/// visited the histogram dock.
+///
+/// The bucket-size value is stored as `std::uint8_t` matching the
+/// underlying type of `loglib::HistogramBucketSize` so this
+/// header does not have to pull in loglib. Consumers cast on the
+/// boundary; the dock is the only writer.
+struct SessionHistogramState
+{
+    /// True after the user picked a specific rung via the widget's
+    /// context menu. Suppresses `ApplyAutoBucketSize` re-picks on
+    /// subsequent rebuilds until the user hits "Reset zoom (auto)".
+    bool bucketSizePinned = false;
+
+    /// Pinned rung, encoded as the underlying type of
+    /// `loglib::HistogramBucketSize`. `std::nullopt` when no pin
+    /// has ever been applied. When `bucketSizePinned == false`
+    /// this may still carry the last pinned rung (harmless -- the
+    /// pin latch gates its application).
+    std::optional<std::uint8_t> bucketSize;
+};
+
+/// Session-owned record-detail pin state that survives a Bind /
+/// Unbind cycle on `RecordDetailDock` (task 5.7). Persists the
+/// last-pinned source row so a phase-6 tab switch back to a
+/// previously-bound session restores the record the user was
+/// looking at rather than showing the default "select a row"
+/// placeholder.
+///
+/// `pinnedSourceRow == -1` and `everPinned == false` is the
+/// pristine default. `pinnedSourceRow == -1` with
+/// `everPinned == true` distinguishes "the pinned row was
+/// evicted" from "no row was ever pinned"; the dock uses the
+/// distinction to show the `EvictedRecordPlaceholder()` copy.
+/// Session-owned selection state for `AnchorsDock` (task 5.5, origin
+/// review finding M9). Persisting the selected anchor's stable key
+/// across a phase-6 tab switch matches FR-60 (tab state is
+/// session-authoritative; navigation state does not silently drift
+/// on the switch back). Empty `keyLocator` + `keyLineId == 0` means
+/// "no anchor was selected".
+struct SessionAnchorsSelection
+{
+    std::string keyLocator;
+    std::uint64_t keyLineId = 0;
+};
+
+struct SessionRecordDetailPin
+{
+    /// -1 means "no pin (or evicted)". Row number is a fallback
+    /// used only when the stable `keyLocator`/`keyLineId` fail
+    /// to resolve on restore (e.g. the target line was compacted
+    /// out and the file no longer has any row bearing its id).
+    int pinnedSourceRow = -1;
+    /// Sticky latch; only reset by explicit `Clear`. Distinguishes
+    /// "never pinned anything, show default placeholder" from
+    /// "had a pin, row got evicted, show 'record is gone'
+    /// placeholder".
+    bool everPinned = false;
+
+    /// Stable identity mirroring `AnchorManager::Key`. Populated
+    /// on save when the pinned row has a resolvable anchor key;
+    /// preferred over `pinnedSourceRow` on restore because it
+    /// survives leading-row eviction (finding H4). Empty
+    /// `keyLocator` + `keyLineId == 0` means "no stable key was
+    /// available", in which case restore falls back on
+    /// `pinnedSourceRow`.
+    std::string keyLocator;
+    std::uint64_t keyLineId = 0;
+};
 
 /// Snapshot the shell reads for menus, toolbars, status bar, tab
 /// labels, and window title. Phase 3 fills the remaining fields as

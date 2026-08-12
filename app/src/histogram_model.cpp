@@ -31,17 +31,30 @@ HistogramModel::HistogramModel(LogModel *logModel, AnchorManager *anchors, QObje
     mEmitTimer = new QTimer(this);
     mEmitTimer->setSingleShot(true);
     mEmitTimer->setInterval(EMIT_COALESCE_MS);
+    // Deliberately NOT stored in `mSourceConnections`: the emit
+    // timer lives with this model, not with the current source
+    // pair, so a `BindSources` swap must not tear it down.
     connect(mEmitTimer, &QTimer::timeout, this, &HistogramModel::bucketsChanged);
 
+    InstallSourceSubscriptions();
+
+    // Prime with any rows already in the model (dock created after load).
+    OnModelReset();
+}
+
+void HistogramModel::InstallSourceSubscriptions()
+{
     if (mLogModel != nullptr)
     {
-        connect(mLogModel, &QAbstractItemModel::rowsInserted, this, &HistogramModel::OnRowsInserted);
-        connect(mLogModel, &QAbstractItemModel::rowsRemoved, this, &HistogramModel::OnRowsRemoved);
-        connect(mLogModel, &QAbstractItemModel::modelReset, this, &HistogramModel::OnModelReset);
+        mSourceConnections +=
+            connect(mLogModel, &QAbstractItemModel::rowsInserted, this, &HistogramModel::OnRowsInserted);
+        mSourceConnections +=
+            connect(mLogModel, &QAbstractItemModel::rowsRemoved, this, &HistogramModel::OnRowsRemoved);
+        mSourceConnections += connect(mLogModel, &QAbstractItemModel::modelReset, this, &HistogramModel::OnModelReset);
         // Column reorderings after `AppendBatch` (time bubbled to slot 0,
         // level to canonical slot) don't emit `rowsInserted`, so hook
         // `columnsMoved` explicitly. Lambda strips the unused args.
-        connect(
+        mSourceConnections += connect(
             mLogModel,
             &QAbstractItemModel::columnsMoved,
             this,
@@ -49,19 +62,113 @@ HistogramModel::HistogramModel(LogModel *logModel, AnchorManager *anchors, QObje
         );
         // Enum promotion / grow / demote can shift or introduce the
         // level column. Let `OnEnumColumnsChanged` do the diff itself.
-        connect(mLogModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason, int) {
-            OnEnumColumnsChanged();
-        });
+        mSourceConnections +=
+            connect(mLogModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason, int) {
+                OnEnumColumnsChanged();
+            });
     }
 
     if (mAnchors != nullptr)
     {
-        connect(mAnchors, &AnchorManager::anchorChanged, this, &HistogramModel::OnAnchorChanged);
-        connect(mAnchors, &AnchorManager::anchorsReset, this, &HistogramModel::OnAnchorsReset);
+        mSourceConnections += connect(mAnchors, &AnchorManager::anchorChanged, this, &HistogramModel::OnAnchorChanged);
+        mSourceConnections += connect(mAnchors, &AnchorManager::anchorsReset, this, &HistogramModel::OnAnchorsReset);
+    }
+}
+
+void HistogramModel::BindSources(LogModel *logModel, AnchorManager *anchors, bool deferRebuild)
+{
+    // Task 5.6: swap the guarded source pointers atomically.
+    //
+    // Ordering matters:
+    //   1. Cancel the coalesce timer so a queued `bucketsChanged`
+    //      from the outgoing sources cannot slip in between the
+    //      subscription tear-down and the fresh rebuild below.
+    //   2. Clear the scoped bag *before* swapping the aliases so
+    //      no delivered slot dereferences a stale `mLogModel` /
+    //      `mAnchors`.
+    //   3. Swap `mLogModel` / `mAnchors`; drop the anchor bitset
+    //      because the pre-swap mapping is meaningless against a
+    //      different session's rows.
+    //   4. Install fresh subscriptions and refresh column indices;
+    //      only pay the full-model Rebuild when @p deferRebuild is
+    //      false (the visible-dock path).
+    //
+    // Passing two nulls detaches every session-owned source and
+    // leaves this model in the same shape as a fresh construction
+    // against a null log model.
+
+    CancelPendingEmit();
+    mSourceConnections.Clear();
+
+    mLogModel = logModel;
+    mAnchors = anchors;
+
+    // The anchor-per-bucket mask is a projection of the outgoing
+    // session's anchors against its bucket index; drop it so the
+    // next `OnModelReset` / `Rebuild` rebuilds it against the new
+    // session's geometry. Without this, `HasAnchorTicks()` could
+    // report true against zero-length bucket vectors while the
+    // next auto rung is still being computed.
+    mAnchorSlotPerBucket.clear();
+    mAnchorBucketBitsSet = 0;
+
+    InstallSourceSubscriptions();
+
+    // Reset the pin latch so the incoming session gets a fresh
+    // auto-pick (matches the pre-migration `OnModelReset` behaviour
+    // for a brand-new bind). Callers that want to preserve the
+    // outgoing session's pin must snapshot it before calling
+    // `BindSources` and reapply via `SetBucketSize` after.
+    mBucketSizePinned = false;
+
+    // Column-index recompute + availability signal always fires.
+    // `HasTimeColumn()` and enum-availability consumers must
+    // observe the freshly-bound source's shape even when the
+    // dock defers its paint.
+    const int newTimeColumn = ComputeTimeColumnIndex();
+    const bool availabilityChanged = (newTimeColumn >= 0) != (mTimeColumnIndex >= 0);
+    mTimeColumnIndex = newTimeColumn;
+    mLevelColumnIndex = ComputeLevelColumnIndex();
+    if (availabilityChanged)
+    {
+        emit timeColumnAvailabilityChanged(mTimeColumnIndex >= 0);
     }
 
-    // Prime with any rows already in the model (dock created after load).
-    OnModelReset();
+    if (deferRebuild)
+    {
+        // Hidden-dock path: latch the deferral. The dock will
+        // call `PumpDeferredBind()` from `showEvent` and any
+        // incremental `rowsInserted` between now and then still
+        // accumulates through the freshly-installed subscriptions.
+        // (`InstallSourceSubscriptions` wires `OnRowsInserted`,
+        // which is safe against an empty index: `AppendRange`
+        // grows the index on demand.)
+        mDeferredBindPending = true;
+        return;
+    }
+
+    mDeferredBindPending = false;
+    Rebuild();
+    ApplyAutoBucketSize();
+}
+
+void HistogramModel::PumpDeferredBind()
+{
+    if (!mDeferredBindPending)
+    {
+        return;
+    }
+    mDeferredBindPending = false;
+    Rebuild();
+    ApplyAutoBucketSize();
+}
+
+void HistogramModel::CancelPendingEmit() noexcept
+{
+    if (mEmitTimer != nullptr && mEmitTimer->isActive())
+    {
+        mEmitTimer->stop();
+    }
 }
 
 void HistogramModel::SetBucketSize(loglib::HistogramBucketSize size)

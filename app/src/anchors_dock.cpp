@@ -1,6 +1,8 @@
 #include "anchors_dock.hpp"
 
 #include "log_model.hpp"
+#include "log_session.hpp"
+#include "session_bind_context.hpp"
 #include "theme_control.hpp"
 
 #include <QAction>
@@ -302,25 +304,11 @@ AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *
     // tree and drop an in-flight inline note edit. Bulk resets
     // (`ClearAll`, `Replace`, multi-key ops) take the full-rebuild
     // path -- rare during active editing.
-    if (mAnchors != nullptr)
-    {
-        connect(mAnchors, &AnchorManager::anchorChanged, this, &AnchorsDock::OnAnchorChanged);
-        connect(mAnchors, &AnchorManager::anchorNoteChanged, this, &AnchorsDock::OnAnchorNoteChanged);
-        connect(mAnchors, &AnchorManager::anchorsReset, this, [this]() { Refresh(); });
-    }
-
-    // `modelReset` matters: a streamed batch can promote a previously
-    // empty locator and change the resolved filename column.
-    if (mModel != nullptr)
-    {
-        connect(mModel, &QAbstractItemModel::modelReset, this, [this]() { Refresh(); });
-    }
-
-    // Theme switch repaints all swatches.
-    if (mTheme != nullptr)
-    {
-        connect(mTheme, &ThemeControl::themeChanged, this, [this]() { Refresh(); });
-    }
+    //
+    // Task 5.5: the five session-owned-sender connects live in the
+    // `mSessionConnections` bag so Bind / Unbind can atomically
+    // disconnect them across a phase-6 tab switch.
+    InstallSessionSubscriptions();
 
     // Two paths into the jump handler: `itemDoubleClicked` is the
     // primary mouse gesture (always fires on left double-click);
@@ -350,6 +338,190 @@ AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *
             RefreshAlways();
         }
     });
+}
+
+void AnchorsDock::InstallSessionSubscriptions()
+{
+    if (mAnchors != nullptr)
+    {
+        mSessionConnections += connect(mAnchors, &AnchorManager::anchorChanged, this, &AnchorsDock::OnAnchorChanged);
+        mSessionConnections +=
+            connect(mAnchors, &AnchorManager::anchorNoteChanged, this, &AnchorsDock::OnAnchorNoteChanged);
+        mSessionConnections += connect(mAnchors, &AnchorManager::anchorsReset, this, [this]() { Refresh(); });
+    }
+
+    // `modelReset` matters: a streamed batch can promote a previously
+    // empty locator and change the resolved filename column.
+    if (mModel != nullptr)
+    {
+        mSessionConnections += connect(mModel, &QAbstractItemModel::modelReset, this, [this]() { Refresh(); });
+    }
+
+    // Theme switch repaints all swatches.
+    if (mTheme != nullptr)
+    {
+        mSessionConnections += connect(mTheme, &ThemeControl::themeChanged, this, [this]() { Refresh(); });
+    }
+}
+
+void AnchorsDock::CloseInPlaceEditors()
+{
+    if (mTree == nullptr)
+    {
+        return;
+    }
+    // Drop selection + focus so any active inline editor loses
+    // focus and its delegate closes. A mid-edit rebind must NOT
+    // flow the pending text change into the outgoing session's
+    // `AnchorManager` -- the `mSuppressItemChanged` counter
+    // silently drops the commit's `itemChanged` emit in case the
+    // delegate's focus-out commits before the pointer swap.
+    // `QAbstractItemView::setState`/`NoState` would be more direct
+    // but both are protected; the focus/current dance produces
+    // the same visible behaviour without breaking encapsulation.
+    ++mSuppressItemChanged;
+    mTree->setCurrentItem(nullptr);
+    mTree->clearFocus();
+    --mSuppressItemChanged;
+}
+
+void AnchorsDock::Bind(const SessionBindContext &context)
+{
+    // Same-session re-Bind: tearing down and re-installing is a
+    // no-op for the projection but a real cost for subscribers.
+    // Short-circuit only when EVERY guarded alias matches -- a
+    // same-session re-Bind that carries a different theme (or
+    // some future context field) still needs to run the full
+    // path so the swap is applied.
+    LogSession *outgoing = mBoundSession.data();
+    LogSession *incoming = context.session.data();
+    if (outgoing == incoming && outgoing != nullptr && mAnchors == context.anchors.data() &&
+        mModel == context.model.data() && (context.theme == nullptr || mTheme == context.theme))
+    {
+        return;
+    }
+
+    // Origin-review finding M9: save the outgoing session's
+    // currently-focused anchor by key so a phase-6 tab switch
+    // back to it restores the user's cursor into the anchor
+    // list. Only writes when we still have an outgoing session
+    // and a live tree with a current item; otherwise the
+    // incoming Restore path just leaves the current-item null.
+    if (outgoing != nullptr && mTree != nullptr)
+    {
+        SessionAnchorsSelection &selection = outgoing->MutableAnchorsSelection();
+        if (const QTreeWidgetItem *current = mTree->currentItem(); current != nullptr)
+        {
+            selection.keyLocator = current->data(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE).toString().toStdString();
+            selection.keyLineId = current->data(COLUMN_ANCHOR, ANCHOR_KEY_LINE_ID_ROLE).toULongLong();
+        }
+        else
+        {
+            selection.keyLocator.clear();
+            selection.keyLineId = 0;
+        }
+    }
+
+    // Clear every session-scoped subscription before the pointer
+    // swap so a stale slot cannot fire against the incoming
+    // session's models mid-swap.
+    mSessionConnections.Clear();
+
+    // Close any inline note editor + clear tree focus so a mid-
+    // edit rebind does not double-write into the outgoing
+    // session's anchor manager.
+    CloseInPlaceEditors();
+
+    // Drop every tree item so a re-entrant `Refresh` observer
+    // during the swap sees the empty state. The subsequent
+    // `Refresh` below repopulates from the incoming session's
+    // `AnchorManager::Entries()`. Scope-guarded suppress so an
+    // allocator throw during `clear()` (item destructors do
+    // small allocations) does not leak the counter and
+    // permanently silence every subsequent note edit -- matches
+    // the pattern the six pre-existing sites in this file use.
+    {
+        ++mSuppressItemChanged;
+        const auto suppressGuard = qScopeGuard([this] { --mSuppressItemChanged; });
+        if (mTree != nullptr)
+        {
+            mTree->clear();
+        }
+    }
+
+    // Refresh guarded aliases from the new context. `theme` is
+    // window-scoped in practice but the dock has always held it
+    // as a `QPointer` so a phase-6 context that carries a null
+    // theme (e.g. a test fixture) stays safe.
+    mAnchors = context.anchors.data();
+    mModel = context.model.data();
+    if (context.theme != nullptr)
+    {
+        mTheme = context.theme;
+    }
+
+    mBoundSession = incoming;
+
+    // Re-install the session-owned-sender connects against the new
+    // pointers. Safe with any combination of nulls; the tree
+    // stays empty in that case.
+    InstallSessionSubscriptions();
+
+    // Refresh from the new session's anchor entries. `Refresh`
+    // is visibility-gated, so a buried dock defers the rebuild
+    // until the user opens it -- matching the pre-rebind
+    // behaviour.
+    Refresh();
+
+    // Restore the incoming session's selection AFTER Refresh
+    // populates the tree. Walk the freshly-built items looking
+    // for one whose stored key matches; skip silently if the
+    // saved key no longer resolves (anchor removed / model
+    // evicted). Skips when the tree stayed empty (Refresh
+    // deferred by visibility gate) -- the visibility-driven
+    // `RefreshAlways` on reveal reruns this path.
+    if (incoming != nullptr && mTree != nullptr && mTree->topLevelItemCount() > 0)
+    {
+        const SessionAnchorsSelection &selection = incoming->AnchorsSelection();
+        if (!selection.keyLocator.empty() || selection.keyLineId != 0)
+        {
+            const QString wantLocator = QString::fromStdString(selection.keyLocator);
+            const auto wantLineId = static_cast<qulonglong>(selection.keyLineId);
+            for (int i = 0; i < mTree->topLevelItemCount(); ++i)
+            {
+                QTreeWidgetItem *candidate = mTree->topLevelItem(i);
+                if (candidate == nullptr)
+                {
+                    continue;
+                }
+                const QString itemLocator = candidate->data(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE).toString();
+                const auto itemLineId = candidate->data(COLUMN_ANCHOR, ANCHOR_KEY_LINE_ID_ROLE).toULongLong();
+                if (itemLocator == wantLocator && itemLineId == wantLineId)
+                {
+                    mTree->setCurrentItem(candidate);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+void AnchorsDock::Unbind()
+{
+    mSessionConnections.Clear();
+    CloseInPlaceEditors();
+    ++mSuppressItemChanged;
+    if (mTree != nullptr)
+    {
+        mTree->clear();
+    }
+    --mSuppressItemChanged;
+    mAnchors = nullptr;
+    mModel = nullptr;
+    // Leave `mTheme` intact -- it is window-scoped and does not
+    // die with the session (matches the ctor's semantics of
+    // treating theme as a borrowed non-owning app service).
+    mBoundSession = nullptr;
 }
 
 void AnchorsDock::Refresh()

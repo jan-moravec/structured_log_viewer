@@ -1,13 +1,17 @@
 #pragma once
 
+#include "scoped_connections.hpp"
+
 #include <QDockWidget>
 #include <QPersistentModelIndex>
 #include <QPointer>
 
 class AnchorManager;
 class LogModel;
+class LogSession;
 class RecordDetailWidget;
 class QCloseEvent;
+struct SessionBindContext;
 
 /// Dockable host for a single `RecordDetailWidget`. Owned by
 /// `MainWindow`; lives next to the central table view.
@@ -56,6 +60,43 @@ public:
         return mWidget;
     }
 
+    /// Task 5.7: swap the dock's active session context.
+    ///
+    /// Sequence (must stay this order):
+    ///   1. Save the currently-pinned source row into the
+    ///      outgoing session's `SessionRecordDetailPin`.
+    ///   2. Reset the `QPersistentModelIndex` *before* swapping
+    ///      the model pointer. Qt's persistent indexes are keyed
+    ///      by their `QAbstractItemModel *`; letting one survive
+    ///      into a new model risks a dangling reference the next
+    ///      time the outgoing model emits `layoutChanged`.
+    ///   3. Drop the scoped-connections bag so no in-flight slot
+    ///      dereferences a stale `mModel` / `mAnchors`.
+    ///   4. Swap the guarded aliases (`mModel`, `mAnchors`) from
+    ///      the incoming context.
+    ///   5. Reinstall the same subscriptions against the new
+    ///      pointers via `InstallSourceSubscriptions()`.
+    ///   6. Restore the incoming session's pin state (or show the
+    ///      default "select a row" placeholder if there is nothing
+    ///      to restore).
+    ///
+    /// A `SessionBindContext::MakeUnbound()` context detaches from
+    /// every session-owned source and shows the default
+    /// placeholder.
+    void Bind(const SessionBindContext &context);
+
+    /// Explicit unbind. Equivalent to `Bind(SessionBindContext::
+    /// MakeUnbound())` but reads clearer at teardown call sites.
+    void Unbind();
+
+    /// Test seam: the session this dock currently mirrors state
+    /// into on Bind / Unbind. Null before the first Bind or after
+    /// an Unbind.
+    [[nodiscard]] LogSession *boundSessionForTest() const noexcept
+    {
+        return mBoundSession.data();
+    }
+
     /// Should we pay for a refresh right now? Combines `isHidden()`
     /// with the tracked `visibilityChanged` state so a tabified dock
     /// whose tab is buried also skips work. Defaults to true so tests
@@ -98,6 +139,23 @@ private:
     /// ping-pong the placeholder text.
     void ShowEvictedPlaceholder();
 
+    /// Install the source subscriptions (modelReset / rowsRemoved /
+    /// dataChanged / columnsMoved / columnsInserted on the model,
+    /// anchorChanged / anchorNoteChanged / anchorsReset on the
+    /// anchor manager). Extracted so the ctor and `Bind` land the
+    /// same wiring against a possibly-different source pair.
+    void InstallSourceSubscriptions();
+
+    /// Save the currently-pinned source row into the currently-
+    /// bound session's `SessionRecordDetailPin`. No-op when no
+    /// session is bound.
+    void SaveStateIntoBoundSession();
+
+    /// Reapply @p session's `SessionRecordDetailPin` -- pins the
+    /// stored row (via `ShowSourceRow`) or shows the appropriate
+    /// placeholder when nothing to restore.
+    void RestoreStateFromSession(LogSession *session);
+
     QPointer<LogModel> mModel;
     QPointer<AnchorManager> mAnchors;
     RecordDetailWidget *mWidget = nullptr;
@@ -113,6 +171,18 @@ private:
     /// (signal never fires there); flips false in a real session
     /// when the dock's tab is buried.
     bool mPerceivedVisible = true;
+
+    /// Session-owned source subscriptions installed by
+    /// `InstallSourceSubscriptions` and reaped on the next
+    /// `Bind` (or on this dock's destruction). Explicitly
+    /// excludes the widget subscriptions (openInNewWindow,
+    /// dockLocationChanged, visibilityChanged) which live with
+    /// the dock and must survive every rebind.
+    ScopedConnections mSourceConnections;
+
+    /// Session this dock currently mirrors state into. Null before
+    /// the first `Bind` or after an explicit `Unbind`.
+    QPointer<LogSession> mBoundSession;
 #ifdef LOGAPP_BUILD_TESTING
     int mRefreshCount = 0;
 #endif

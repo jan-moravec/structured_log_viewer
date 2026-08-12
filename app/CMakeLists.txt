@@ -111,6 +111,7 @@ set(PROJECT_SOURCES
     src/log_session_view.cpp
     include/log_session_view.hpp
     include/scoped_connections.hpp
+    src/session_bind_context.cpp
     include/session_bind_context.hpp
     include/uuid_utils.hpp
     include/qstring_path.hpp

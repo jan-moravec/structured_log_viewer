@@ -4,9 +4,11 @@
 #include <QPointer>
 
 class FindRecordWidget;
+class LogSession;
 class QCloseEvent;
 class QShowEvent;
 class QWidget;
+struct SessionBindContext;
 
 /// Dockable host for `FindRecordWidget`. Position persists via
 /// `QMainWindow::saveState()` / `restoreState()`.
@@ -30,6 +32,43 @@ public:
     /// On every call, stashes the previously-focused widget (when
     /// outside our subtree) so dismissing the bar can restore it.
     void RevealAndFocus();
+
+    /// Bind to the session in @p context (task 5.3).
+    ///
+    /// Snapshots the outgoing session's query state (query text +
+    /// wildcards/regex toggles) into its
+    /// `SessionFindQueryState`, restores the incoming session's
+    /// state onto `FindRecordWidget`, and cancels any in-flight
+    /// debounce timers so a `MatchCountRequested` cannot fire
+    /// against a stale model between the state restore and the
+    /// next debounce arm. Safe to call with
+    /// `context.IsBound() == false`: that path snapshots + clears
+    /// without loading a new query (equivalent to `Unbind()`).
+    /// Idempotent for the same session -- a re-Bind of the
+    /// currently-bound session round-trips the query state
+    /// through its store without change.
+    ///
+    /// Match-count state is not persisted: the debounce arm
+    /// on restore fires a `MatchCountRequested` with the
+    /// restored query against the (already-active) model, so
+    /// the "*i* of *N*" label refreshes on the next quiet
+    /// window without persisting a stale count that would need
+    /// invalidating on every proxy mutation.
+    void Bind(const SessionBindContext &context);
+
+    /// Snapshot into the currently-bound session (if any), cancel
+    /// the debounce, and clear the visible query. Equivalent to
+    /// `Bind(SessionBindContext::MakeUnbound())` but reads
+    /// clearer at teardown call sites.
+    void Unbind();
+
+    /// The `LogSession` currently bound (or null if unbound).
+    /// Exposed for tests that pin the save-outgoing / restore-
+    /// incoming pattern; production callers should not use this.
+    [[nodiscard]] LogSession *boundSessionForTest() const noexcept
+    {
+        return mBoundSession.data();
+    }
 
 signals:
     /// Emitted on genuine user dismissal (X button, `close()` from
@@ -56,4 +95,8 @@ private:
     /// Widget that held focus before the last reveal. `QPointer`
     /// guards against the widget being destroyed while the bar is open.
     QPointer<QWidget> mFocusBeforeReveal;
+
+    /// Currently-bound session (task 5.3). Null before the first
+    /// `Bind()` and after `Unbind()`.
+    QPointer<LogSession> mBoundSession;
 };

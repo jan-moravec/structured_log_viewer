@@ -1,16 +1,19 @@
 #pragma once
 
 #include "anchor_manager.hpp"
+#include "scoped_connections.hpp"
 
 #include <QDockWidget>
 #include <QPointer>
 
 class LogModel;
+class LogSession;
 class ThemeControl;
 class QCloseEvent;
 class QTreeWidget;
 class QTreeWidgetItem;
 class QPushButton;
+struct SessionBindContext;
 
 /// Dockable list of every anchored row. Each entry shows a colour
 /// swatch, the row's `lineId`, and the source filename (when known),
@@ -33,6 +36,47 @@ public:
 
     /// Refresh from `AnchorManager::Entries()` if visible; no-op otherwise.
     void Refresh();
+
+    /// Bind to the session in @p context (task 5.5).
+    ///
+    /// Disconnects the outgoing session's anchor / model / theme
+    /// signal subscriptions, closes any inline note editor open
+    /// on the tree, drops every tree item (so a re-entrant slot
+    /// during the swap observes the empty state), refreshes the
+    /// guarded `mAnchors` / `mModel` / `mTheme` aliases from
+    /// @p context, re-installs the same signal subscriptions
+    /// against the new pointers, and refreshes the tree.
+    ///
+    /// Safe to call with `context.IsBound() == false`: that path
+    /// resolves to the empty-tree state, equivalent to
+    /// `Unbind()`. Idempotent for the same session -- a re-Bind
+    /// with the same context tears down and reinstalls the
+    /// subscription bag, so any subscriber added out-of-band is
+    /// preserved only if the caller re-adds it after the rebind.
+    void Bind(const SessionBindContext &context);
+
+    /// Snapshot-free clear: disconnects every session subscription,
+    /// nulls the guarded aliases, closes any inline note editor,
+    /// and drops every tree item. Equivalent to
+    /// `Bind(SessionBindContext::MakeUnbound())` but reads clearer
+    /// at teardown call sites.
+    void Unbind();
+
+    /// The `LogSession` currently bound (or null if unbound).
+    /// Exposed for tests that pin the bind/unbind sequence.
+    [[nodiscard]] LogSession *boundSessionForTest() const noexcept
+    {
+        return mBoundSession.data();
+    }
+
+    /// The `AnchorManager` currently aliased. Exposed so tests
+    /// can pin the alias-swap invariant on Bind: after a Bind
+    /// against session B, `anchorsForTest()` must equal
+    /// `sessionB->Anchors()`, not `sessionA->Anchors()`.
+    [[nodiscard]] AnchorManager *anchorsForTest() const noexcept
+    {
+        return mAnchors.data();
+    }
 
     /// True when the dock should actually rebuild on a signal. Offscreen
     /// QPA fixtures never get a `visibilityChanged` and default to false.
@@ -139,4 +183,26 @@ private:
     /// text. A counter (not a bool) because Qt can nest the
     /// signals if a delegate close-editor fires mid-refresh.
     int mSuppressItemChanged = 0;
+
+    /// Session-scoped subscriptions to `mAnchors` /
+    /// `mModel` / `mTheme` signals (task 5.5). Cleared on
+    /// Unbind / rebind so a phase-6 tab switch does not leave
+    /// stale connections that would fire against the wrong
+    /// session's tree.
+    ScopedConnections mSessionConnections;
+
+    /// Currently-bound session (task 5.5). Null before the first
+    /// `Bind()` and after `Unbind()`.
+    QPointer<LogSession> mBoundSession;
+
+    /// Install every session-scoped connect into
+    /// `mSessionConnections`. Called by the ctor (initial wiring)
+    /// and by `Bind` (post-swap re-wire). Safe to call with any
+    /// combination of null pointers.
+    void InstallSessionSubscriptions();
+
+    /// Close any inline note editor and drop tree focus so a
+    /// mid-edit rebind does not flow an `itemChanged` mutation
+    /// into the outgoing session's `AnchorManager` (task 5.5).
+    void CloseInPlaceEditors();
 };
