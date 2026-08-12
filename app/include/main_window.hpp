@@ -8,6 +8,7 @@
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
 #include "log_session.hpp"
+#include "log_session_view.hpp"
 #include "log_table_view.hpp"
 #include "overview_rail_model.hpp"
 #include "overview_rail_widget.hpp"
@@ -16,6 +17,7 @@
 #include "record_detail_dock.hpp"
 #include "record_detail_window.hpp"
 #include "row_order_proxy_model.hpp"
+#include "scoped_connections.hpp"
 
 #include <loglib/internal/decompressing_byte_source.hpp>
 #include <loglib/log_configuration.hpp>
@@ -241,6 +243,18 @@ public:
         OnRotationHistoryPrefToggled(enabled);
     }
 
+    /// Test-only reader for the scoped-connection bag population.
+    /// Backs the structural pin
+    /// (`TestScopedConnectionBagSizeMatchesCtorPopulation`) that
+    /// catches the class of regressions where a ctor `connect(...)`
+    /// accidentally drops its `mSessionConnections +=` prefix.
+    /// See the header docstring on `mSessionConnections` for the
+    /// bag's phase-4 contract.
+    [[nodiscard]] std::size_t SessionConnectionCountForTest() const noexcept
+    {
+        return mSessionConnections.Size();
+    }
+
     /// Open a live-tail session over the process's standard input.
     /// The CLI parses `-` / `--stdin` in argv and routes here via
     /// `main()`. Session shape mirrors `OpenNetworkStream` (live-
@@ -258,6 +272,113 @@ public:
     {
         return mSession->AutoSaveUuid();
     }
+
+    /// The currently-active `LogSession` for this window (task 4.1).
+    /// Phase 3 hosts exactly one session; Phase 6 grows this into a
+    /// lookup that follows the active tab. Never returns null in
+    /// production because the ctor constructs `mSession` before
+    /// any callable path runs and never zeroes it. Note (post
+    /// review-5): `mSession` is a raw `LogSession *`, not a
+    /// `QPointer`, so it **dangles** rather than becoming null
+    /// after `~LogSession()`. Long-lived callbacks that stash
+    /// the pointer must therefore capture a
+    /// `QPointer<LogSession>` snapshot (not the raw pointer this
+    /// method returns) and compare its `data()` to the current
+    /// `mSession` inside the callback body -- the `QPointer`
+    /// clears on Qt-destroyed and is the only safe way to detect
+    /// destruction here.
+    ///
+    /// **Trigger-time-resolution rule (PRD FR-51)**: every action
+    /// slot / dynamic menu builder / status projection must resolve
+    /// the session AT trigger time, not at wiring time. Reading
+    /// `mSession` inside a slot body satisfies this because the
+    /// ctor keeps `mSession` in lockstep with the active tab (and
+    /// phase 6's `SetActiveSessionAliases` will do the same across
+    /// tab switches). **Do not** store the raw `LogSession *`
+    /// returned here in a lambda capture or long-lived data member
+    /// -- that captures the value at wiring time and phase 6's tab
+    /// switch (or a session teardown) will leave the capture
+    /// pointing at a stale / destroyed session. If a queued or
+    /// async callback legitimately needs its ORIGIN session (PRD
+    /// FR-44), capture a `QPointer<LogSession>` snapshot at post
+    /// time and compare it to `activeSession()` inside the
+    /// callback body -- the callback must silently no-op if the
+    /// origin was destroyed or is no longer active.
+    [[nodiscard]] LogSession *activeSession() const noexcept
+    {
+        return mSession;
+    }
+
+    /// The currently-active `LogSessionView` for this window (task
+    /// 4.1). Same phase-3-single-view / phase-6-follows-active-tab
+    /// story as `activeSession()`. Never returns null in
+    /// production; the ctor constructs the view before the shell
+    /// wires any action into it. Same trigger-time-resolution rule
+    /// applies: read at slot-body scope, do not capture.
+    [[nodiscard]] LogSessionView *activeSessionView() const noexcept
+    {
+        return mSessionView;
+    }
+
+    /// Every `LogSession` this window is hosting, in tab order
+    /// (task 4.1 / 4.6 / 4.8). Phase 3 hosts exactly one; Phase 6
+    /// grows the vector to the workspace's tab list. Callers must
+    /// treat the returned pointers as non-owning views into
+    /// window-scoped storage (do NOT persist across ctor / dtor).
+    ///
+    /// Used by:
+    ///   * `AggregateWindowModified()` (task 4.6) -- window is
+    ///     dirty iff any hosted session is dirty.
+    ///   * `BroadcastGlobalPreference*()` (task 4.7) -- a
+    ///     process-global preference change fans to every hosted
+    ///     session, not just the active one.
+    ///   * `closeEvent` (task 4.8) -- each hosted session runs its
+    ///     own `PreCheckClose()` / auto-save / drain before the
+    ///     window commits to closing.
+    [[nodiscard]] std::vector<LogSession *> hostedSessions() const;
+
+    /// Clear the scoped-connection bag (task 4.2). Every
+    /// subscription installed via `mSessionConnections +=
+    /// connect(...)` in the ctor is disconnected atomically.
+    /// Idempotent: safe to call on an already-empty bag and safe to
+    /// call from `~MainWindow` before the model / session / view
+    /// members go away.
+    ///
+    /// Leaves `mSession` / `mSessionView` / model-quintet aliases
+    /// untouched -- a caller that wants to null the active pointers
+    /// should do so explicitly after this call.
+    ///
+    /// **Phase 4 scope**: production callers are limited to the
+    /// destructor. `MainWindow` does not yet provide a paired
+    /// `BindActiveSession` reinstall path -- the ~50 shell-side
+    /// subscriptions are wired inline in the ctor. Calling this
+    /// method from any other production path would leave the
+    /// window functionally deaf until the ctor runs again (i.e.
+    /// never). The `ForTest` suffix on the exposed entry
+    /// documents that constraint: production code must not reach
+    /// through it. Phase 6 will add a `RebindActiveSession(session,
+    /// view)` driver that both clears and re-populates the bag on
+    /// every tab switch; this raw teardown-only entry will move
+    /// to `private` at that point.
+    void UnbindActiveSessionForTest() noexcept;
+
+    /// Aggregate the modified-window state from every hosted
+    /// session (task 4.6). Called from the `filtersDirtyChanged`
+    /// slot and from `UpdateWindowTitle`; single-session windows
+    /// resolve to the active session's `IsFiltersDirty()` value,
+    /// but the same code path scales to a multi-tab window
+    /// without touching the callers.
+    void AggregateWindowModified();
+
+    /// Broadcast a process-global preference change to every
+    /// hosted session (task 4.7). The bool payload is the new
+    /// value of the `ui/autoDetectRotatedHistory` `QSettings`
+    /// key; per-session filtering happens inside
+    /// `LogSession::ShouldAutoDetectRotationHistory` (the CLI
+    /// per-window opt-out still latches). Called from the
+    /// Settings menu action and from anywhere else that changes
+    /// the preference at runtime.
+    void BroadcastRotationHistoryPreference(bool enabled);
 
     /// Like `ActiveSessionUuid`, but returns empty when the current
     /// session cannot be fan-restored on next launch (no source,
@@ -989,6 +1110,31 @@ private slots:
     void RebuildViewMenu();
 
 private:
+    /// Single source of truth for the shell's model-quintet and
+    /// view aliases (task 4.2 review-5). The ctor calls this twice:
+    /// once right after `mSession = new LogSession(...)` with
+    /// `view == nullptr` (view not yet constructed), and again
+    /// after `mSessionView = new LogSessionView(...)` with both
+    /// pointers set. Consolidating the eight-plus alias
+    /// assignments here eliminates the duplication that the
+    /// previous review flagged as drift bait: any future field
+    /// added to the alias set is added in exactly one place.
+    ///
+    /// **Not** a bind / rebind entry -- this method deliberately
+    /// does not touch `mSessionConnections`. The ctor owns
+    /// subscription installation until phase 6 factors it into a
+    /// public `RebindActiveSession(session, view)` driver that
+    /// pairs a bag rebuild with an alias refresh.
+    ///
+    /// @param session non-null; the new active session (its
+    ///                model-quintet becomes the shell's aliases).
+    /// @param view    optional; when non-null, the new active
+    ///                view (its `TableView` / `OverviewRail` /
+    ///                `OverviewRailModelPtr` become the shell's
+    ///                aliases). Pass `nullptr` during the ctor's
+    ///                pre-view phase.
+    void SetActiveSessionAliases(LogSession *session, LogSessionView *view) noexcept;
+
     /// RAII helper for the session-switch latch on `mSession`. Every
     /// destructive open path needs to flip the flag on, run a
     /// `mModel->Reset()` that synchronously emits
@@ -1621,6 +1767,70 @@ private:
     /// commands through `mSession->` directly.
     LogSession *mSession = nullptr;
 
+    /// Per-tab visual workspace (task 3.1 / 3.9). Owns the
+    /// `LogTableView`, `OverviewRailModel`, and
+    /// `OverviewRailWidget`; the shell's `mTableView` /
+    /// `mOverviewRailModel` / `mOverviewRailWidget` pointers are
+    /// non-owning aliases into this object. Parented on the
+    /// central widget so it dies with the window shell; Phase 6
+    /// promotes it into one entry of a `QTabWidget`-backed
+    /// workspace and this direct member becomes the active-tab
+    /// alias.
+    /// `QPointer` (post-review-3): the ~20 `mSessionView != nullptr`
+    /// guards scattered through the shell body previously could
+    /// not fire because a raw pointer to a destroyed child stays
+    /// non-null. `QPointer` clears the slot on Qt-destroyed
+    /// callback, so the guards now mean "session view still alive"
+    /// -- which matters during shell teardown races (dialog
+    /// callbacks, queued signals) and after phase 6's per-tab
+    /// destroy path lands.
+    QPointer<LogSessionView> mSessionView;
+
+    /// Scoped bag of every shell-side subscription that references
+    /// the currently-active session, model quintet, or view (task
+    /// 4.2). Populated inline by the ctor via
+    /// `mSessionConnections += connect(...)`; cleared by the
+    /// destructor's own `mSessionConnections.Clear()` (before
+    /// `mSession` and `mSessionView` go away) and by
+    /// `UnbindActiveSessionForTest()` for the Unbind coverage pin
+    /// in `session_tabs_test.cpp`.
+    ///
+    /// **Phase 4 does not expose a public bind entry** -- the
+    /// previous review flagged an aspirational `BindActiveSession`
+    /// that cleared the bag without reinstalling as a foot-gun,
+    /// and removing it entirely is safer than shipping a public
+    /// method that bricks the window. Phase 6 will factor the
+    /// ctor's subscribe block into a shared helper called from a
+    /// new `RebindActiveSession(session, view)` driver that pairs
+    /// alias refresh (via `SetActiveSessionAliases`) with a full
+    /// bag rebuild against the newly-active pair.
+    ///
+    /// Membership rule: the bag holds every connection that
+    /// **either**
+    ///
+    ///   1. has a session-owned or view-owned QObject as
+    ///      sender/receiver, **or**
+    ///   2. has both endpoints shell-scoped but whose slot body
+    ///      dereferences a session/view alias (`mModel`,
+    ///      `mTableView`, `mOverviewRailWidget`, ...). The alias
+    ///      value must be re-resolved on a phase-6 tab switch,
+    ///      and reinstalling the connect is how that happens.
+    ///
+    /// `ui->actionFollowTail::toggled` (shell action, `this`
+    /// receiver, lambda body reads `mTableView`) is the canonical
+    /// example of the second category; the phase-4 review-5 pass
+    /// added it to the bag deliberately after the earlier
+    /// review-4 pass flagged it as looking like an accidental
+    /// bag entry.
+    ///
+    /// The bag deliberately does NOT hold connections whose
+    /// endpoints are both shell-scoped AND whose slot bodies
+    /// touch only shell-scoped state (dock toggles, status-bar
+    /// buttons, most `ui->action*` triggers routed to shell
+    /// slots). Those stay live for the window's lifetime and Qt
+    /// reaps them via the standard child-destruction walk.
+    ScopedConnections mSessionConnections;
+
     /// Non-owning aliases into the session-owned model quintet
     /// (task 2.1; review finding #11). Each of these points at a
     /// `QObject` that `mSession` constructs and reaps in reverse
@@ -1636,42 +1846,97 @@ private:
     ///
     /// Lifetime past ``~MainWindow()`` body: Qt6's
     /// ``QObjectPrivate::deleteChildren`` walks direct children in
-    /// forward registration order. ``mSession`` is registered
-    /// *after* the .ui setup runs (widgets, actions, statusbar,
-    /// central widget all parented in ``ui->setupUi(this)`` before
-    /// ``new LogSession(..., this)``), and *before* docks / views
-    /// registered later in the ctor body (``mTableView``,
-    /// ``mAnchorsDock``, ``mHistogramDock``,
-    /// ``mOverviewRailModel``, ``mParseErrorsDock``,
-    /// ``mFindDock``). Those sibling QObjects hold non-owning raw
-    /// pointers into the quintet. Once ``mSession`` is reaped its
-    /// model children are gone -- so any consumer QObject that
-    /// dereferences an alias in its own destructor would UAF. In
-    /// practice no consumer does this today: their destructors
-    /// are either the compiler-generated default (safe) or rely
-    /// on Qt's auto-disconnect from ``QObject::destroyed`` for
-    /// signal-based unwinding. A future contributor adding an
-    /// explicit ``disconnect(mModel, ...)`` to any dock
-    /// destructor must either move that dock ahead of
-    /// ``mSession`` in the registration order or use
-    /// ``QPointer<LogModel>`` so the deref becomes a null-check.
-    /// See ``LogSession::RowOrderProxy`` / ``FilterProxy`` /
-    /// ``Model``.
-    RowOrderProxyModel *mRowOrderProxyModel;
-    LogFilterModel *mSortFilterProxyModel;
-    /// Owned via `QMainWindow` parentage (task 2.1 kept the view on
-    /// the shell because it is a widget). Non-null after ctor.
-    LogTableView *mTableView;
-    LogModel *mModel;
+    /// forward registration order. The ctor body creates them in
+    /// this order:
+    ///
+    ///     1. ``centralWidget`` is created by ``ui->setupUi(this)``
+    ///        (first line of the ctor body), and later reparented
+    ///        to host ``mSessionView`` + the view's children
+    ///        (``mTableView``, ``mOverviewRailWidget``,
+    ///        ``mOverviewRailModel``).
+    ///     2. ``mSession`` is created immediately after
+    ///        ``setupUi`` returns (``new LogSession(..., this)``),
+    ///        so it registers as the *second* direct child of
+    ///        ``MainWindow``.
+    ///     3. Docks (``mAnchorsDock``, ``mHistogramDock``,
+    ///        ``mFindDock``, ``mParseErrorsDock``,
+    ///        ``mRecordDetailDock``, ...) are constructed further
+    ///        down the ctor body, so they register *after*
+    ///        ``mSession``.
+    ///
+    /// Forward-order reap is therefore:
+    ///
+    ///     1. ``~centralWidget`` -> ``~mSessionView`` -> view
+    ///        child sweep destroys ``mTableView``,
+    ///        ``mOverviewRailWidget``, ``mOverviewRailModel`` (and
+    ///        every widget the view owns).
+    ///     2. ``~mSession`` -> the model quintet
+    ///        (``AnchorManager``, ``HighlightRuleSet``,
+    ///        ``LogModel``, ``RowOrderProxyModel``,
+    ///        ``LogFilterModel``) is destroyed here, in the
+    ///        reverse order ``LogSession``'s ctor constructed
+    ///        them.
+    ///     3. Docks / dialogs registered under ``this`` are
+    ///        reaped in their own registration order
+    ///        (``mAnchorsDock``, ``mHistogramDock``,
+    ///        ``mParseErrorsDock``, ``mFindDock``, ...) --
+    ///        **after** ``mSession`` has already destroyed the
+    ///        quintet.
+    ///
+    /// Consumer QObjects that hold non-owning raw pointers into
+    /// the quintet split into two categories:
+    ///
+    ///   * **Reaped before ``mSession`` (safe by construction)**:
+    ///     the view subtree (``mTableView``, ``mOverviewRailModel``,
+    ///     ``mOverviewRailWidget``), because ``centralWidget`` sits
+    ///     ahead of ``mSession`` in the registration order.
+    ///     ``mLevelCellDelegate`` is parented on ``mTableView`` so
+    ///     it also falls in this bucket.
+    ///   * **Reaped after ``mSession`` (safe only via Qt's
+    ///     disconnect machinery)**: every dock plus every dialog
+    ///     parented directly on ``this``. Their compiler-generated
+    ///     destructors must not dereference ``mModel`` /
+    ///     ``mAnchors`` / ``mHighlights`` / ``mRowOrderProxyModel``
+    ///     / ``mSortFilterProxyModel``, because those objects have
+    ///     already been destroyed by ``~mSession``. Today this
+    ///     works because (a) the docks' destructors are
+    ///     compiler-generated no-ops for the raw-pointer members,
+    ///     and (b) ``QObject::destroyed`` auto-disconnects any
+    ///     lingering signal wires when the quintet dies during
+    ///     step 2. A future contributor adding an explicit
+    ///     ``disconnect(mModel, ...)`` or any deref to a dock
+    ///     destructor must either move that dock ahead of
+    ///     ``mSession`` in the registration order or hold the
+    ///     pointer as ``QPointer<LogModel>`` so the deref becomes
+    ///     a null-check post-``~mSession``. See
+    ///     ``LogSession::RowOrderProxy`` / ``FilterProxy`` /
+    ///     ``Model``.
+    ///
+    /// The destructor's explicit teardown ordering (drain workers
+    /// under a ``SessionSwitchScope``, reset via ``mModel->Reset()``,
+    /// clear ``mSessionConnections``) all runs inside the
+    /// ``~MainWindow()`` *body* before ``QObject``'s child sweep
+    /// starts, so the aliases are still valid there. It is the
+    /// dock-destructor phase that has to defer to Qt's disconnect
+    /// machinery.
+    RowOrderProxyModel *mRowOrderProxyModel = nullptr;
+    LogFilterModel *mSortFilterProxyModel = nullptr;
+    /// Non-owning alias into `mSessionView->TableView()` (task
+    /// 3.2). The table widget is a child of `mSessionView`, not
+    /// the shell; teardown flows `~MainWindow` → central widget
+    /// destroy → `~LogSessionView` → child sweep reaches the
+    /// table. Non-null after ctor.
+    LogTableView *mTableView = nullptr;
+    LogModel *mModel = nullptr;
     /// Icon-pill delegate for the level column. Owned via Qt
     /// parentage; `nullptr` in the no-theme test fixture path
     /// (icon mode is skipped there).
     class LevelCellDelegate *mLevelCellDelegate = nullptr;
 
-    /// Column the level delegate is currently installed on, or
-    /// `-1` when detached. Stored so the next reapply can detach
-    /// the old column before attaching the new one.
-    int mInstalledLevelDelegateColumn = -1;
+    // Note: `mInstalledLevelDelegateColumn` moved to
+    // `LogSessionView` (task 3.5). The view enforces the
+    // detach-before-reinstall-on-a-new-column invariant now; the
+    // shell just forwards through `ApplyLevelCellDelegate`.
     /// Dockable find bar (owned via `QMainWindow` parentage).
     /// `mFindRecord` is the hosted widget. `QPointer` on both so
     /// model / proxy signals that fire during shutdown find them
@@ -1769,14 +2034,28 @@ private:
     /// `RebuildViewMenu`. Programmatic because the .ui has no entry.
     QAction *mActionToggleHistogram = nullptr;
 
-    /// Bucketed index of the outermost proxy row space that feeds
-    /// `mOverviewRailWidget`. Kept alive even when the rail is
-    /// hidden so the toggle is instant.
+    /// Non-owning alias into `mSessionView->OverviewRailModelPtr()`
+    /// (task 3.3). The bucket model is a child of `mSessionView`,
+    /// not the shell. Kept alive even when the rail is hidden so
+    /// the toggle is instant.
     OverviewRailModel *mOverviewRailModel = nullptr;
 
-    /// Parented on `mTableView` while visible (via
-    /// `LogTableView::AttachOverviewRail`), on `this` while detached.
-    /// `QPointer` so a teardown-time delete zeroes the slot.
+    /// Non-owning alias into `mSessionView->OverviewRail()` (task
+    /// 3.3). Constructed as a child of `mSessionView` so it dies
+    /// with the tab.
+    ///
+    /// Visibility toggle preserves the pre-migration attach dance:
+    /// when visible, `LogTableView::AttachOverviewRail` reparents
+    /// the widget INTO the table view (it lives inside the table's
+    /// reserved right viewport margin); when hidden,
+    /// `SetOverviewRailVisible(false)` reparents it back onto
+    /// `mSessionView` (post-review finding #3 -- previously
+    /// reparented onto the shell, which orphaned the widget on
+    /// tab close). The widget is intentionally NOT placed in
+    /// `LogSessionView`'s `QVBoxLayout`; the layout stays a
+    /// single-child stack of the table view. `QPointer` so a
+    /// teardown-time delete zeroes the slot; the slot is null
+    /// after `~LogSessionView` runs.
     QPointer<OverviewRailWidget> mOverviewRailWidget;
 
     /// Checkable toggle for the overview rail, mirrored onto the
@@ -2025,6 +2304,23 @@ private:
     /// destructor.
     QPointer<QProgressDialog> mDecompressionProgressDialog;
 
+    /// Origin binding for the decompression poll timer (review
+    /// finding #2). Captured at `BeginAsyncDecompression` time so a
+    /// timer tick that fires after a session/tab swap does not
+    /// paint on a sibling session's view. `QPointer` clears
+    /// automatically on session/view teardown; a null pointer is
+    /// the "operation no longer belongs to a live session" branch.
+    QPointer<LogSession> mDecompressionPollOriginSession;
+    QPointer<LogSessionView> mDecompressionPollOriginView;
+
+    /// Operation generation captured at `BeginAsyncDecompression`
+    /// time (review finding #4). Compared against
+    /// `mDecompressionPollOriginSession->DecompressionGeneration()`
+    /// on each tick; a mismatch means a queued completion already
+    /// drained into the next-queued file and this tick must not
+    /// scribble stale text into the successor's dialog.
+    std::uint64_t mDecompressionPollGeneration = 0;
+
     // Note: `mDecompressionOriginalPath` (user-facing path being
     // decompressed), `mDecompressionCodecName` (pre-sniffed codec
     // label rendered by the poll-timer lambda), and
@@ -2062,6 +2358,12 @@ private:
     /// `deleteLater` may run between the finished slot and
     /// destruction.
     QPointer<QProgressDialog> mExportProgressDialog;
+
+    /// Origin binding for the export poll timer. Same semantics as
+    /// the decompression counterpart above (review finding #2, #4).
+    QPointer<LogSession> mExportPollOriginSession;
+    QPointer<LogSessionView> mExportPollOriginView;
+    std::uint64_t mExportPollGeneration = 0;
 
     // Note: `mExportDestinationPath` (user-facing destination),
     // `mExportFormatLabel` (human-readable format label), and
@@ -2135,8 +2437,14 @@ private:
     /// firstBatchSeen = false`); `ResetStreamingCountersAndFileName()`
     /// clears every field including the file name.
 
-    /// True during the `— rotated` status-bar flash.
-    bool mRotationFlashActive = false;
+    // Note: `mRotationFlashActive` moved to `LogSession` in the
+    // phase-4 review-4 resolution (finding #4). The flash state
+    // is per-session so multi-tab windows never project one
+    // tab's flash onto another; the timer that clears it is now
+    // owned by `LogSession` as well, receiver-bound to the
+    // session so teardown safely cancels the pending clear. See
+    // `LogSession::TriggerRotationFlash()` /
+    // `IsRotationFlashActive()`.
 
     /// Re-entrancy guard for `OnHeaderSectionMoved`: the slot
     /// re-fires `sectionMoved` while resetting visual order, and
@@ -2148,17 +2456,12 @@ private:
     /// `mSession->IsApplyingEnumRebuild()` /
     /// `mSession->SetApplyingEnumRebuild()`.
 
-    /// Last text typed into the Goto Timestamp dialog, pre-
-    /// populated on the next open so successive jumps around the
-    /// same instant do not need retyping. Cleared on session
-    /// switch to avoid leaking a stale reference into a new file.
-    QString mLastGotoTimestampInput;
-
-    /// Last text typed into the Goto Line dialog. Same UX
-    /// rationale as `mLastGotoTimestampInput`. Cleared on session
-    /// switch; re-validated against the current row count on open
-    /// so a carry-over from a larger session no longer applies.
-    QString mLastGotoLineInput;
+    // Note: `mLastGotoTimestampInput` and `mLastGotoLineInput`
+    // migrated to `LogSessionView` (task 3.6). Sticky-input state
+    // is a view concern; the shell's session-switch path clears
+    // both through `mSessionView->ClearGotoStickyInputs()` and
+    // the test seam `LastGotoTimestampInputForTest` forwards to
+    // the view.
 
     /// The pending-apply-sort-from-config latch (see the deferred
     /// sort block in `LogSession`) now lives on `mSession` (task

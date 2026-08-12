@@ -20,6 +20,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -460,6 +461,44 @@ public:
     /// `SourceWaiting` op bit and, for a live-tail session, the
     /// derived `Ingesting` bit as well).
     void SetSourceWaiting(bool waiting);
+
+    /// True while the "\u2014 rotated" status-bar flash is armed
+    /// for this session. Per-session (not per-window) so a
+    /// multi-tab window never projects one tab's flash onto
+    /// another (post-review-4 finding #4): switching to a sibling
+    /// tab that isn't flashing hides the label immediately;
+    /// switching back to a still-flashing tab restores it.
+    ///
+    /// Set true by `TriggerRotationFlash()`; cleared automatically
+    /// ~3 s later via a session-owned `QTimer::singleShot(this,
+    /// ...)` whose callback dies with the session and therefore
+    /// cannot fire into a torn-down shell.
+    [[nodiscard]] bool IsRotationFlashActive() const noexcept
+    {
+        return mRotationFlashActive;
+    }
+
+    /// Start (or refresh) the rotation-flash window for this
+    /// session. Sets `mRotationFlashActive = true` and emits
+    /// `rotationFlashChanged(true)` on the rising edge; schedules
+    /// (or re-schedules) a `QTimer::singleShot` receiver-bound to
+    /// `this` (session) so a session teardown safely cancels the
+    /// pending clear.
+    ///
+    /// Repeated calls within an active flash window extend the
+    /// clear deadline by another full 3 s -- matching the
+    /// pre-migration shell behaviour where every `rotationDetected`
+    /// emit reset the countdown. The Nth call after the last real
+    /// change still fires `rotationFlashChanged(true)` only once
+    /// (the boolean itself does not diff -> re-emit); consumers
+    /// that need the edge count should subscribe to the underlying
+    /// `LogModel::rotationDetected` instead.
+    void TriggerRotationFlash();
+
+    /// Duration of the rotation-flash window. Exposed as a public
+    /// constant so tests can drive a shorter waiter without
+    /// relying on the wall-clock timer.
+    static constexpr int ROTATION_FLASH_DURATION_MS = 3000;
 
     [[nodiscard]] const QString &StreamingFileName() const noexcept
     {
@@ -920,7 +959,12 @@ public:
     /// the exact path).
     void SetApplyEmbeddedBundleConfigForPath(QString bundlePath);
     /// Emits `presentationChanged()` on a real change.
-    void ClearApplyEmbeddedBundleConfig() noexcept;
+    ///
+    /// Not `noexcept` because the signal fan can throw through
+    /// subscriber slots; matches every other snapshot-affecting
+    /// mutator on this class (see `ResetStreamingProgress`
+    /// docstring for the design rule).
+    void ClearApplyEmbeddedBundleConfig();
 
     // -----------------------------------------------------------------
     // Decompression scalar state (task 2.8). The `QFutureWatcher` +
@@ -958,7 +1002,27 @@ public:
     /// `Decompressing` op bit, the `Compressed` source-mode
     /// projection (under Static without a bundle armed),
     /// `mutationsAllowed`, and `confirmBeforeClose`.
+    ///
+    /// Bumps `DecompressionGeneration()` on the false -> true
+    /// rising edge so a poll timer that captured the previous
+    /// generation can detect that a queued completion silently
+    /// rearmed the state for the next queued file (review finding
+    /// #4). Callers must call `SetDecompressionInFlight(true)`
+    /// exactly once per operation begin -- do NOT bracket a single
+    /// operation with matched true/false pairs.
     void SetDecompressionInFlight(bool inFlight);
+
+    /// Monotonic counter that bumps on every decompression
+    /// begin (false -> true transition of the in-flight flag).
+    /// The shell's poll-timer / progress-strip callbacks capture
+    /// the value returned at `Begin*` time and compare on each
+    /// tick; a mismatch means a completion drained into a queued
+    /// next open while this tick was scheduled, and the tick must
+    /// return without writing stale progress into the successor.
+    [[nodiscard]] std::uint64_t DecompressionGeneration() const noexcept
+    {
+        return mDecompressionGeneration;
+    }
 
     [[nodiscard]] const QString &DecompressionOriginalPath() const noexcept
     {
@@ -1165,6 +1229,14 @@ public:
         return mExportInFlight;
     }
 
+    /// Monotonic counter that bumps on every export begin (false ->
+    /// true transition of the in-flight flag). See
+    /// `DecompressionGeneration()` for the re-entry rationale.
+    [[nodiscard]] std::uint64_t ExportGeneration() const noexcept
+    {
+        return mExportGeneration;
+    }
+
     /// Emits `presentationChanged()` on a real change. Flips the
     /// `Exporting` op bit, `mutationsAllowed`, and
     /// `confirmBeforeClose`.
@@ -1302,6 +1374,15 @@ signals:
     /// slot which needs the new boolean directly.
     void filtersDirtyChanged(bool dirty);
 
+    /// Emitted on a `false -> true` or `true -> false` transition
+    /// of `IsRotationFlashActive()`. The shell subscribes into
+    /// `mSessionConnections` and refreshes the streaming status
+    /// label; the label reads `session->IsRotationFlashActive()`
+    /// inside the same slot, which resolves to the currently-
+    /// bound session -- so a multi-tab window projects the flash
+    /// only when the flashing session is the active tab.
+    void rotationFlashChanged(bool active);
+
 private:
     // Raw pointers rather than `QPointer` because these services are
     // owned by the application coordinator and outlive every
@@ -1375,6 +1456,13 @@ private:
     /// `SourceStatus::Waiting` latch (see `IsSourceWaiting()`).
     bool mSourceWaiting = false;
 
+    /// Per-session rotation-flash latch (see
+    /// `IsRotationFlashActive()` / `TriggerRotationFlash()`).
+    /// Moved off `MainWindow` in the phase-4 review-4 resolution
+    /// so multi-tab windows do not cross-contaminate flashes
+    /// across sibling sessions.
+    bool mRotationFlashActive = false;
+
     /// Display label for the file currently being streamed
     /// (see `StreamingFileName()`).
     QString mStreamingFileName;
@@ -1429,6 +1517,13 @@ private:
     /// Decompression-in-flight latch (see `IsDecompressionInFlight()`).
     bool mDecompressionInFlight = false;
 
+    /// Monotonic generation for decompression operations. Bumped
+    /// on each false -> true transition of `mDecompressionInFlight`
+    /// (i.e. every `Begin*` call). Poll timers capture this at arm
+    /// time; a mismatch means a completion already fired for the
+    /// generation we care about (review finding #4).
+    std::uint64_t mDecompressionGeneration = 0;
+
     /// User-facing path of the file being decompressed (see
     /// `DecompressionOriginalPath()`).
     QString mDecompressionOriginalPath;
@@ -1442,6 +1537,10 @@ private:
 
     /// Export-in-flight latch (see `IsExportInFlight()`).
     bool mExportInFlight = false;
+
+    /// Monotonic generation for export operations. See
+    /// `mDecompressionGeneration` for the rationale.
+    std::uint64_t mExportGeneration = 0;
 
     /// Bundle vs. plain-export label selector (see `IsExportBundle()`).
     bool mExportIsBundle = false;

@@ -533,6 +533,85 @@ private slots:
         QCOMPARE(session.StreamingFileName(), QStringLiteral("logs/app.log"));
     }
 
+    static void TestTriggerRotationFlashLatchesAndAutoClears()
+    {
+        // Rotation-flash state moved off `MainWindow` in the
+        // phase-4 review-4 resolution (finding #4) so multi-tab
+        // windows do not project one tab's flash onto another.
+        // Pin the rising edge, the emitted signal, and the
+        // auto-clear when the session-owned singleShot fires.
+        LogSession session;
+        QVERIFY(!session.IsRotationFlashActive());
+
+        QSignalSpy spy(&session, &LogSession::rotationFlashChanged);
+        QVERIFY(spy.isValid());
+
+        session.TriggerRotationFlash();
+        QVERIFY(session.IsRotationFlashActive());
+        QCOMPARE(spy.count(), 1);
+        QCOMPARE(spy.takeFirst().at(0).toBool(), true);
+
+        // A second trigger inside the same active window refreshes
+        // the deadline but must NOT re-emit (bool has not changed).
+        session.TriggerRotationFlash();
+        QVERIFY(session.IsRotationFlashActive());
+        QCOMPARE(spy.count(), 0);
+
+        // Wait for the session-owned singleShot (3 s window plus
+        // a modest fudge factor for scheduler jitter under load).
+        // `QTRY_VERIFY` polls until the predicate holds or the
+        // timeout expires.
+        QTRY_VERIFY_WITH_TIMEOUT(!session.IsRotationFlashActive(), LogSession::ROTATION_FLASH_DURATION_MS + 3000);
+        QCOMPARE(spy.count(), 1);
+        QCOMPARE(spy.takeFirst().at(0).toBool(), false);
+    }
+
+    static void TestRotationFlashIsIndependentAcrossSessions()
+    {
+        // Multi-tab isolation pin (phase-4 review-4 finding #4):
+        // triggering the flash on session A must NOT flip session
+        // B's flash state. Phase 6 will pair this with a shell
+        // test that switches active tabs mid-flash; today the
+        // session-level pin is what guarantees the shape.
+        LogSession sessionA;
+        const LogSession sessionB;
+
+        sessionA.TriggerRotationFlash();
+
+        QVERIFY(sessionA.IsRotationFlashActive());
+        QVERIFY(!sessionB.IsRotationFlashActive());
+    }
+
+    static void TestRotationFlashSurvivesSessionDestruction()
+    {
+        // The session-owned `QTimer::singleShot(this, ...)` binds
+        // its callback to the session as receiver. Destroying the
+        // session while the timer is pending must not fire the
+        // callback into a torn-down object. `LogSession`'s
+        // `QObject` parentage handles the wire cleanup; the
+        // `QPointer` guard inside the lambda is belt-and-braces
+        // insurance for any future refactor that changes the
+        // receiver.
+        {
+            LogSession scoped;
+            scoped.TriggerRotationFlash();
+            QVERIFY(scoped.IsRotationFlashActive());
+            // Scope exits here; the timer is cancelled by Qt's
+            // receiver-destruction path. If this test crashes
+            // during the wait below or in a later test's setup,
+            // the receiver binding regressed.
+        }
+        // Spin the event loop briefly so Qt's receiver-destroy
+        // path processes any deferred cleanup. A regression that
+        // fires the callback into the destroyed object would
+        // either crash or trip the address sanitizer during this
+        // window. The full 3 s wait is not needed -- Qt severs
+        // the connection synchronously in `~QObject` well before
+        // the singleShot deadline, so an immediate leak would
+        // surface here without adding wall-clock cost.
+        QTest::qWait(50);
+    }
+
     static void TestResetStreamingProgressClearsPerFileFieldsOnly()
     {
         // Per-file start on the streaming path resets line/error

@@ -22,8 +22,10 @@
 #include <QAbstractItemModel>
 #include <QFileInfo>
 #include <QModelIndex>
+#include <QPointer>
 #include <QSettings>
 #include <QString>
+#include <QTimer>
 
 #include <algorithm>
 #include <atomic>
@@ -709,6 +711,41 @@ void LogSession::SetSourceWaiting(bool waiting)
     emit presentationChanged();
 }
 
+void LogSession::TriggerRotationFlash()
+{
+    // Rising-edge fan: emit the boolean signal exactly once per
+    // false -> true transition. Successive calls inside the same
+    // active window refresh the deadline without re-emitting (the
+    // shell's UpdateStreamingStatus is idempotent, but the extra
+    // work / cache pressure are avoidable).
+    const bool wasActive = mRotationFlashActive;
+    mRotationFlashActive = true;
+    if (!wasActive)
+    {
+        emit rotationFlashChanged(true);
+    }
+    // `QPointer<LogSession>` origin: if the session is torn down
+    // before the singleShot fires, `origin.isNull()` short-circuits
+    // safely. Binding to `this` is also sufficient (the receiver
+    // check auto-drops the callback on destruction) but the
+    // explicit QPointer is defensive against future refactors that
+    // might route the callback through a different receiver.
+    const QPointer<LogSession> origin(this);
+    QTimer::singleShot(ROTATION_FLASH_DURATION_MS, this, [origin]() {
+        if (origin.isNull())
+        {
+            return;
+        }
+        auto *self = origin.data();
+        if (!self->mRotationFlashActive)
+        {
+            return;
+        }
+        self->mRotationFlashActive = false;
+        emit self->rotationFlashChanged(false);
+    });
+}
+
 void LogSession::SetStreamingFileName(QString fileName)
 {
     if (mStreamingFileName == fileName)
@@ -1024,7 +1061,7 @@ void LogSession::SetApplyEmbeddedBundleConfigForPath(QString bundlePath)
     }
 }
 
-void LogSession::ClearApplyEmbeddedBundleConfig() noexcept
+void LogSession::ClearApplyEmbeddedBundleConfig()
 {
     if (mApplyEmbeddedBundleConfigForPath.isEmpty())
     {
@@ -1039,6 +1076,20 @@ void LogSession::SetDecompressionInFlight(bool inFlight)
     if (mDecompressionInFlight == inFlight)
     {
         return;
+    }
+    // Bump the generation on the rising edge so a poll timer that
+    // captured the previous generation can detect completion +
+    // silent rearm on the next-queued file (review finding #4).
+    // The wraparound branch is defensive: 2^64 begins would need
+    // ~584 years at 1 GHz -- but wrapping past zero would collide
+    // with a not-yet-armed timer, so skip zero on wrap.
+    if (inFlight)
+    {
+        ++mDecompressionGeneration;
+        if (mDecompressionGeneration == 0)
+        {
+            mDecompressionGeneration = 1;
+        }
     }
     mDecompressionInFlight = inFlight;
     // Flips the `Compressed` source-mode projection (under Static),
@@ -1097,6 +1148,14 @@ void LogSession::SetExportInFlight(bool inFlight)
     if (mExportInFlight == inFlight)
     {
         return;
+    }
+    if (inFlight)
+    {
+        ++mExportGeneration;
+        if (mExportGeneration == 0)
+        {
+            mExportGeneration = 1;
+        }
     }
     mExportInFlight = inFlight;
     // Flips the `Exporting` op bit, `mutationsAllowed`, and

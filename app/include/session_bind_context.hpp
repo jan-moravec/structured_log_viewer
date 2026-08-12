@@ -47,8 +47,35 @@ struct SessionBindContext
 
     /// True iff every session-owned pointer resolves to a live
     /// object. Docks use this as the single unbind gate.
+    ///
+    /// Concretely, the checked fields are:
+    ///
+    ///   * `session`         — the `LogSession` itself,
+    ///   * `view`            — the paired `LogSessionView`,
+    ///   * `model`           — the session-owned `LogModel`,
+    ///   * `rowOrderProxy`   — the session-owned display-order proxy,
+    ///   * `filterProxy`     — the session-owned filter/sort proxy,
+    ///   * `anchors`         — the session-owned `AnchorManager`,
+    ///   * `highlights`      — the session-owned `HighlightRuleSet`.
+    ///
+    /// Deliberately NOT part of the gate:
+    ///
+    ///   * `selection`       — view-owned (`QTableView::selectionModel()`);
+    ///                         a bound context with no selection yet
+    ///                         is a legitimate transient state during
+    ///                         setup.
+    ///   * `theme`           — window-scoped; may legitimately be
+    ///                         null in test fixtures that skip the
+    ///                         themed constructor.
+    ///
+    /// If a new session-owned pointer is added to this struct, add
+    /// the corresponding `!field.isNull()` clause here AND extend
+    /// `TestIsBoundGatesOnEverySessionOwnedField` in
+    /// `dock_binding_test.cpp` so a future omission fails at CI
+    /// time rather than in a dock body against a null pointer.
     [[nodiscard]] bool IsBound() const noexcept
     {
-        return !session.isNull() && !view.isNull() && !model.isNull() && !anchors.isNull() && !highlights.isNull();
+        return !session.isNull() && !view.isNull() && !model.isNull() && !rowOrderProxy.isNull() &&
+               !filterProxy.isNull() && !anchors.isNull() && !highlights.isNull();
     }
 };
