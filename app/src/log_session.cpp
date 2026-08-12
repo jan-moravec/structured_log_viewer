@@ -724,6 +724,19 @@ void LogSession::TriggerRotationFlash()
     {
         emit rotationFlashChanged(true);
     }
+    // Bump the generation BEFORE arming the new lambda so an
+    // in-flight earlier lambda (whose captured generation is
+    // now stale) short-circuits when its timer fires. Without
+    // this, the earlier `singleShot` unconditionally cleared
+    // `mRotationFlashActive` after its own 3 s, ending the
+    // flash early instead of extending the window as the
+    // header docstring promises ("repeated calls within an
+    // active flash window extend the clear deadline by another
+    // full 3 s"). Using a monotonic counter (rather than
+    // stopping / restarting a member `QTimer`) keeps this a
+    // pure state-only helper -- no Qt-object churn on hot
+    // rotation paths.
+    const std::uint64_t generation = ++mRotationFlashGeneration;
     // `QPointer<LogSession>` origin: if the session is torn down
     // before the singleShot fires, `origin.isNull()` short-circuits
     // safely. Binding to `this` is also sufficient (the receiver
@@ -731,13 +744,20 @@ void LogSession::TriggerRotationFlash()
     // explicit QPointer is defensive against future refactors that
     // might route the callback through a different receiver.
     const QPointer<LogSession> origin(this);
-    QTimer::singleShot(ROTATION_FLASH_DURATION_MS, this, [origin]() {
+    QTimer::singleShot(ROTATION_FLASH_DURATION_MS, this, [origin, generation]() {
         if (origin.isNull())
         {
             return;
         }
         auto *self = origin.data();
         if (!self->mRotationFlashActive)
+        {
+            return;
+        }
+        // A later `TriggerRotationFlash()` extended the window;
+        // let ITS lambda be the one that eventually clears the
+        // flash so the deadline actually reflects the last call.
+        if (self->mRotationFlashGeneration != generation)
         {
             return;
         }
@@ -912,8 +932,18 @@ void LogSession::ResetHistogramState() noexcept
 
 void LogSession::ResetRecordDetailPin() noexcept
 {
+    // Phase-6 review-4 fix: honour the documented contract
+    // ("clear row, key, and `everPinned`"). Leaving `keyLocator` /
+    // `keyLineId` populated would let
+    // `RecordDetailDock::RestoreStateFromSession` -- which checks
+    // `!pin.keyLocator.empty() && pin.keyLineId != 0` BEFORE
+    // `everPinned` -- resolve a stale key onto whatever row the
+    // NEW session happens to expose under the same anchor key,
+    // pinning an unrelated record on the next bind.
     mRecordDetailPin.pinnedSourceRow = -1;
     mRecordDetailPin.everPinned = false;
+    mRecordDetailPin.keyLocator.clear();
+    mRecordDetailPin.keyLineId = 0;
 }
 
 void LogSession::SetPendingLiveTailPromotion(QString primary, std::size_t retention)

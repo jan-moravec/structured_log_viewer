@@ -100,6 +100,8 @@
 #include <QStatusBar>
 #include <QStringList>
 #include <QStyle>
+#include <QTabBar>
+#include <QTabWidget>
 #include <QTableView>
 #include <QTextEdit>
 #include <QTimer>
@@ -685,14 +687,11 @@ MainWindow::MainWindow(
     // aggregator (task 4.6) OR-folds every hosted session's dirty
     // marker into `setWindowModified`; single-session windows resolve
     // to the active session's `IsFiltersDirty()` value.
-    mSessionConnections += connect(mSession, &LogSession::filtersDirtyChanged, this, [this](bool) {
-        // `UpdateWindowTitle()` re-enters `AggregateWindowModified()`
-        // itself (see the `AggregateWindowModified()` call inside
-        // `UpdateWindowTitle`), so calling both here would double-
-        // aggregate for zero user-visible benefit. Post review-5:
-        // drive the marker through the title update alone.
-        UpdateWindowTitle();
-    });
+    // Scoped session/model/view subscriptions moved to
+    // `InstallActiveSessionConnections()` (B1 fix) so the ctor and
+    // tab-switch paths share one source of truth. Helper is called
+    // at the end of the ctor once every referenced widget /
+    // toolbar / action / dock is constructed.
 
     // Task 3.2 / 3.3 / 3.9: `LogSessionView` owns the per-session
     // widgets (table view + overview rail + rail model). The
@@ -714,9 +713,49 @@ MainWindow::MainWindow(
     // is meant to occupy the full centralWidget minus the outer
     // margins; nesting two default-margin layouts would double
     // up the padding.
-    mSessionView = new LogSessionView(mSession, mTheme, ui->centralWidget);
+    // Task 6.1: central-widget mount is a `QTabWidget` hosting one
+    // `LogSessionView` per tab. The first tab holds `mSession` /
+    // `mSessionView` (the ctor's initial pair) and shows the
+    // localised `Untitled` label until the user opens a source
+    // (task 6.2). Additional tabs land via `AddNewTab()` /
+    // `mActionNewTab`. Tab ordering is user-controllable
+    // (`setMovable(true)` + `QTabBar::tabMoved` rewrites `mTabs`
+    // in-place to keep index-based lookups accurate).
+    //
+    // The view is constructed with a null parent here so the
+    // `QTabWidget::addTab` call below establishes the correct
+    // page-owner relationship in one step. Adding the view to
+    // the tab strip re-parents it onto the strip's internal
+    // stack; the shell keeps `mSessionView` as an alias into
+    // whichever tab is currently active (refreshed by
+    // `SetActiveSessionAliases` on every tab switch).
+    mSessionView = new LogSessionView(mSession, mTheme);
+    mTabWidget = new QTabWidget(ui->centralWidget);
+    mTabWidget->setTabsClosable(true);
+    mTabWidget->setMovable(true);
+    mTabWidget->setDocumentMode(true);
+    mTabWidget->setUsesScrollButtons(true);
+    mTabWidget->setElideMode(Qt::ElideRight);
+    // Accessible name so screen readers can announce the tab strip
+    // as more than a bare `QTabWidget` (task 6.4).
+    mTabWidget->setAccessibleName(tr("Session Tabs"));
     mLayout = new QVBoxLayout(ui->centralWidget);
-    mLayout->addWidget(mSessionView, 1);
+    mLayout->addWidget(mTabWidget, 1);
+
+    {
+        // Adding the first page fires `currentChanged(0)` before
+        // `mTabs` has an entry -- guard so `OnActiveTabChanged`
+        // does not run against an inconsistent vector.
+        const SuppressActiveTabChangeScope suppress(*this);
+        mTabWidget->addTab(mSessionView, tr("Untitled"));
+    }
+
+    auto initialTab = std::make_unique<WindowTab>();
+    initialTab->id = mSession->InstanceId();
+    initialTab->session = mSession;
+    initialTab->view = mSessionView;
+    mTabs.push_back(std::move(initialTab));
+
     // Second alias-refresh call (task 4.2 review-5): now that
     // `mSessionView` exists, populate the view-side aliases
     // (`mTableView`, `mOverviewRailModel`, `mOverviewRailWidget`).
@@ -724,6 +763,37 @@ MainWindow::MainWindow(
     // functional change from the first call, but the pattern
     // stays uniform for phase 6's tab-switch driver.
     SetActiveSessionAliases(mSession, mSessionView);
+
+    // Wire the tab strip signals. `currentChanged` drives the full
+    // rebind sequence (`OnActiveTabChanged`); `tabCloseRequested`
+    // routes the built-in close button through `CloseTabAtIndex`
+    // so the last-tab-closes-window semantics stay centralised.
+    // `tabMoved` on the underlying `QTabBar` keeps `mTabs` in
+    // lockstep with the strip's index order.
+    connect(mTabWidget, &QTabWidget::currentChanged, this, &MainWindow::OnActiveTabChanged);
+    connect(mTabWidget, &QTabWidget::tabCloseRequested, this, &MainWindow::CloseTabAtIndex);
+    connect(mTabWidget->tabBar(), &QTabBar::tabMoved, this, [this](int from, int to) {
+        if (from < 0 || to < 0 || std::cmp_greater_equal(from, mTabs.size()) ||
+            std::cmp_greater_equal(to, mTabs.size()))
+        {
+            return;
+        }
+        auto moved = std::move(mTabs[from]);
+        mTabs.erase(mTabs.begin() + from);
+        mTabs.insert(mTabs.begin() + to, std::move(moved));
+    });
+
+    // Per-tab persistent subscriptions for the initial tab (H2/H3
+    // fixes): keep the window's `[*]` marker in sync with ANY
+    // hosted session's dirty state, and refresh THIS tab's chrome
+    // whenever its presentation snapshot changes -- both continue
+    // to fire while the tab is in the background. `AddNewTab`
+    // installs the same pair for every later tab.
+    connect(mSession, &LogSession::filtersDirtyChanged, this, [this](bool /*dirty*/) { UpdateWindowTitle(); });
+    LogSession *initialSessionForCapture = mSession;
+    connect(mSession, &LogSession::presentationChanged, this, [this, initialSessionForCapture]() {
+        RefreshTabChrome(initialSessionForCapture);
+    });
 
     // Task 3.2 (review finding #1): the view's `Initialise` already
     // bound `mTableView` to the session's filter proxy, installed
@@ -752,21 +822,8 @@ MainWindow::MainWindow(
     // moves into `LogSession` (task 2.4) so any future multi-session
     // window keeps highlight compilation aligned with each session's
     // own model without a shell round-trip.
-    mSessionConnections +=
-        connect(mModel, &QAbstractItemModel::columnsInserted, this, [this](const QModelIndex &, int, int) {
-            if (mHighlights == nullptr || mModel == nullptr)
-            {
-                return;
-            }
-            if (mHighlightRulesEditor != nullptr)
-            {
-                mHighlightRulesEditor->SetColumns(mModel->Configuration().columns);
-            }
-            if (FilterHasUnresolvedLeaves(mModel->Configuration().expression, mModel->Configuration().columns))
-            {
-                UpdateFilters();
-            }
-        });
+    // columnsInserted -> highlight editor + unresolved-leaf filter
+    // check: moved into `InstallActiveSessionConnections()`.
 
     mAnchorsDock = new AnchorsDock(mAnchors, mModel, mTheme, this);
     addDockWidget(Qt::RightDockWidgetArea, mAnchorsDock);
@@ -800,10 +857,8 @@ MainWindow::MainWindow(
     mActionToggleHistogram->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_H));
     addAction(mActionToggleHistogram);
     WireDockToggle(mHistogramDock, mActionToggleHistogram, &HistogramDock::closed);
-    // `modelReset` clears the header's hidden flags, but
-    // `Column::visible` survives. Re-apply on every reset so load /
-    // re-stream / teardown all stay consistent with the saved config.
-    mSessionConnections += connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::ApplyColumnVisibility);
+    // modelReset -> ApplyColumnVisibility: moved into
+    // `InstallActiveSessionConnections()`.
     // Selection behaviour, edit triggers, and alternating-row
     // colour setup migrated into `LogSessionView::Initialise`
     // (review finding #1). Removing them here so the shell no
@@ -835,86 +890,9 @@ MainWindow::MainWindow(
     // drives behaviour. The deprecated no-op stays on the class for
     // one release to ease test / benchmark migration.
 
-    // Overview rail wiring. The rail model + widget themselves
-    // are now constructed by `LogSessionView::Initialise` (task
-    // 3.3); the shell only wires the signals that still route
-    // through window-scoped concerns (find-bar interaction,
-    // scroll-to-proxy-row). Hidden by default; visibility toggle
-    // stays a shell action for now (moves in phase 4).
-    mSessionConnections +=
-        connect(mOverviewRailWidget, &OverviewRailWidget::proxyRowClicked, this, &MainWindow::ScrollToProxyRow);
-
-    // Task 3.4: navigation bodies live on the view; shell chrome
-    // (status bar, `actionFollowTail`) stays on `MainWindow` and
-    // reacts to view signals. `rowNotVisible` surfaces the
-    // "Row is not currently visible." status message; the
-    // `followTailDisengageRequested` signal drives the pre-scroll
-    // uncheck of the follow-tail action so a live-tail batch does
-    // not yank the viewport back after a rail click.
-    mSessionConnections += connect(mSessionView, &LogSessionView::rowNotVisible, this, [this]() {
-        statusBar()->showMessage(tr("Row is not currently visible."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
-    });
-    mSessionConnections += connect(mSessionView, &LogSessionView::followTailDisengageRequested, this, [this]() {
-        if (ui != nullptr && ui->actionFollowTail != nullptr && ui->actionFollowTail->isChecked())
-        {
-            ui->actionFollowTail->setChecked(false);
-        }
-    });
-    // Task 3.6: Goto Line / Timestamp dialogs live on the view and
-    // fan out feedback through `statusMessageRequested`. The shell
-    // renders it via `statusBar()->showMessage` with the shared
-    // timeout so behaviour matches the pre-migration paths.
-    mSessionConnections +=
-        connect(mSessionView, &LogSessionView::statusMessageRequested, this, [this](const QString &message) {
-            statusBar()->showMessage(message, STATUS_BAR_MESSAGE_TIMEOUT_MS);
-        });
-
-    // Task 3.7: the per-tab progress strip's Cancel button routes
-    // into whichever background operation is currently in flight.
-    // Route through the ORIGIN session tracked by the poll-timer
-    // bindings (review finding #2): once tabs exist, the shell's
-    // `mSession` may have swapped to a sibling while the strip on
-    // the previous tab was still visible; hitting Cancel then
-    // would abort the wrong operation. A null origin (op already
-    // completed, or none armed) is a defensive no-op.
-    mSessionConnections += connect(mSessionView, &LogSessionView::progressCancelRequested, this, [this]() {
-        if (auto *decompressionOrigin = mDecompressionPollOriginSession.data())
-        {
-            if (decompressionOrigin->IsDecompressionInFlight())
-            {
-                decompressionOrigin->MutableDecompressionStopSource().request_stop();
-            }
-        }
-        if (auto *exportOrigin = mExportPollOriginSession.data())
-        {
-            if (exportOrigin->IsExportInFlight())
-            {
-                exportOrigin->MutableExportStopSource().request_stop();
-            }
-        }
-    });
-    // A height change reallocates buckets and drops size-mismatched
-    // durable match counts. When find is open, re-push / rescan so
-    // ticks don't vanish until the next keystroke.
-    mSessionConnections += connect(mOverviewRailModel, &OverviewRailModel::bucketsChanged, this, [this]() {
-        const auto &findCacheOpt = mSession->FindMatchCacheState();
-        if (!IsFindBarVisible() || !findCacheOpt.has_value() || mOverviewRailModel == nullptr)
-        {
-            return;
-        }
-        const std::size_t n = mOverviewRailModel->BucketCount();
-        if (n == 0)
-        {
-            return;
-        }
-        // Same H and ticks already present: RebuildInternal
-        // re-applied durable counts; nothing to do.
-        if (findCacheOpt->bucketCounts.size() == n && mOverviewRailModel->HasMatchTicks())
-        {
-            return;
-        }
-        PushFindMatchesToOverviewRail();
-    });
+    // Overview rail wiring, view -> shell status/message routing,
+    // progress strip cancel, and rail buckets-changed re-push: all
+    // moved into `InstallActiveSessionConnections()`.
 
     mActionToggleOverviewRail = new QAction(tr("Overview rail"), this);
     mActionToggleOverviewRail->setObjectName(QStringLiteral("actionToggleOverviewRail"));
@@ -932,30 +910,10 @@ MainWindow::MainWindow(
     if (mTheme != nullptr)
     {
         mLevelCellDelegate = new LevelCellDelegate(mTheme, this);
-
-        // Reapply on every signal that can change the first-level
-        // column index. `columnsMoved` is handled inside
-        // `OnSourceColumnsMoved` instead, so the filter-map remap
-        // runs before the delegate reapply.
-        mSessionConnections +=
-            connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::ApplyLevelCellDelegate);
-        mSessionConnections +=
-            connect(mModel, &QAbstractItemModel::columnsInserted, this, &MainWindow::ApplyLevelCellDelegate);
-        mSessionConnections +=
-            connect(mModel, &QAbstractItemModel::columnsRemoved, this, &MainWindow::ApplyLevelCellDelegate);
-        // Promote/Demote between Level and other enum types flips
-        // which column is "the level column". `Grew` is a no-op
-        // for our purposes (dict expansion doesn't move columns).
-        mSessionConnections += connect(
-            mModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason reason, int /*columnIndex*/) {
-                if (reason == EnumColumnsChangeReason::Grew)
-                {
-                    return;
-                }
-                ApplyLevelCellDelegate();
-            }
-        );
-
+        // Level-delegate reapply subscriptions moved into
+        // `InstallActiveSessionConnections()`. The one-shot seed
+        // stays inline so the delegate is attached now against the
+        // freshly-constructed model.
         ApplyLevelCellDelegate();
     }
 
@@ -970,47 +928,15 @@ MainWindow::MainWindow(
     // QActions -- migrates with phase 4 action routing).
     // `ApplyTableStyleSheet` layers theme colours onto the header
     // stylesheet after this point.
-    mTableView->horizontalHeader()->setContextMenuPolicy(Qt::CustomContextMenu);
-    mSessionConnections +=
-        connect(mTableView->horizontalHeader(), &QHeaderView::sectionMoved, this, &MainWindow::OnHeaderSectionMoved);
-    mSessionConnections += connect(
-        mTableView->horizontalHeader(),
-        &QHeaderView::customContextMenuRequested,
-        this,
-        &MainWindow::ShowHeaderContextMenu
-    );
-
-    // Row-level context menu: inclusive time-range filter pinned to the
-    // clicked row's timestamp. Installed on the table view itself, so
-    // `pos` arrives in viewport coords (see `ShowRowContextMenu`).
-    mTableView->setContextMenuPolicy(Qt::CustomContextMenu);
-    mSessionConnections +=
-        connect(mTableView, &QWidget::customContextMenuRequested, this, &MainWindow::ShowRowContextMenu);
-    // Catch every column move (header drag and implicit moves like
-    // mid-stream timestamp bubbling) so the runtime filter map and
-    // proxy rules stay aligned with the source layout.
-    mSessionConnections += connect(mModel, &QAbstractItemModel::columnsMoved, this, &MainWindow::OnSourceColumnsMoved);
-
-    // Enum / Level type flips and dictionary growth can
-    // activate / deactivate highlight rules; rebind on every
-    // reason to keep the compiled predicates in step.
-    mSessionConnections += connect(
-        mModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason /*reason*/, int /*columnIndex*/) {
-            if (mHighlights == nullptr || mModel == nullptr)
-            {
-                return;
-            }
-            mHighlights->RebindColumns(mModel->Configuration().columns, &mModel->Table());
-        }
-    );
+    // Shell-owned table chrome (context-menu policies, grid, scroll
+    // modes) applied via a helper so `AddNewTab` can give every new
+    // tab the same policy set (phase-6 review-1 H4 fix). Header
+    // slot connects live in `InstallActiveSessionConnections()`.
+    ApplyTableChromeToView(mSessionView);
 
     // Rebuild on demand. This is the only escape hatch when every
     // header section is hidden (right-click needs a visible section).
     connect(ui->menuView, &QMenu::aboutToShow, this, &MainWindow::RebuildViewMenu);
-
-    mTableView->setShowGrid(true);
-    mTableView->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
-    mTableView->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
 
     connect(ui->actionNewSession, &QAction::triggered, this, &MainWindow::NewSession);
     connect(ui->actionNewWindow, &QAction::triggered, this, &MainWindow::NewWindow);
@@ -1018,6 +944,148 @@ MainWindow::MainWindow(
     // but the menu state makes the affordance visible.
     ui->actionNewWindow->setEnabled(mHistoryManager != nullptr);
     connect(ui->actionOpen, &QAction::triggered, this, &MainWindow::OpenFiles);
+
+    // Tab management actions (task 6.3). Declared programmatically
+    // because the .ui file predates tabs; keeping them out of the
+    // ui avoids a .ui migration path just for phase 6.
+    //
+    // Shortcuts:
+    //   New Tab       Ctrl+T           (also QKeySequence::AddTab)
+    //   Close Tab     Ctrl+W           (also QKeySequence::Close)
+    //   Next Tab      Ctrl+Tab         (also QKeySequence::NextChild)
+    //   Previous Tab  Ctrl+Shift+Tab   (also QKeySequence::PreviousChild)
+    //   Open in Tab   (menu-only)      (phase-6 review-2 H1: an earlier
+    //                                    revision bound `Ctrl+Shift+T`,
+    //                                    which `main_window.ui` already
+    //                                    assigns to `actionFollowTail`.
+    //                                    Qt reports "ambiguous shortcut
+    //                                    overload" the moment a live-tail
+    //                                    session enables the second
+    //                                    binding, so both actions stop
+    //                                    firing. The menu entry stays
+    //                                    discoverable via File and the
+    //                                    tab context menu without a
+    //                                    shortcut collision.)
+    //
+    // Phase-6 review-3 finding #7 fix: `Qt::WindowShortcut` (the
+    // default) not `Qt::ApplicationShortcut`. Application-wide
+    // scope makes identical shortcuts across multiple MainWindows
+    // ambiguous ("QAction::eventFilter: Ambiguous shortcut
+    // overload"), which is exactly what happens once the user
+    // opens a second window and presses Ctrl+T / Ctrl+W. Window
+    // scope routes the shortcut to the focused window's action;
+    // dock widgets and modal dialogs are children of the window
+    // so shortcut activation still works from those foci.
+    // `addAction` registers the action on the window so
+    // `QAction::shortcut()` works whether or not the action lands
+    // in a menu bar.
+    mActionNewTab = new QAction(tr("New &Tab"), this);
+    mActionNewTab->setShortcut(QKeySequence(QStringLiteral("Ctrl+T")));
+    mActionNewTab->setShortcutContext(Qt::WindowShortcut);
+    mActionNewTab->setToolTip(tr("Open a new empty tab in this window."));
+    connect(mActionNewTab, &QAction::triggered, this, [this]() { AddNewTab(/*makeActive=*/true); });
+    addAction(mActionNewTab);
+
+    mActionCloseTab = new QAction(tr("&Close Tab"), this);
+    mActionCloseTab->setShortcut(QKeySequence(QStringLiteral("Ctrl+W")));
+    mActionCloseTab->setShortcutContext(Qt::WindowShortcut);
+    mActionCloseTab->setToolTip(tr("Close the current tab. Closing the last tab closes the window."));
+    connect(mActionCloseTab, &QAction::triggered, this, [this]() {
+        if (mTabWidget != nullptr)
+        {
+            CloseTabAtIndex(mTabWidget->currentIndex());
+        }
+    });
+    addAction(mActionCloseTab);
+
+    mActionNextTab = new QAction(tr("Next Tab"), this);
+    // FR-9: mirror next/previous with `Ctrl+PageDown` / `Ctrl+PageUp`.
+    // Qt tolerates duplicate sequences on a single `QAction` (both
+    // fire the same slot); the primary `Ctrl+Tab` binding stays
+    // first so the shortcut sheet and menu render it, and the
+    // page-navigation alias is offered as a secondary. No
+    // platform-native collision on Windows / Linux / macOS -- the
+    // sequences are unused by the surrounding widget hierarchy
+    // once a `MainWindow` is focused.
+    mActionNextTab->setShortcuts(
+        {QKeySequence(QStringLiteral("Ctrl+Tab")), QKeySequence(QStringLiteral("Ctrl+PgDown"))}
+    );
+    mActionNextTab->setShortcutContext(Qt::WindowShortcut);
+    connect(mActionNextTab, &QAction::triggered, this, [this]() {
+        if (mTabWidget == nullptr || mTabWidget->count() < 2)
+        {
+            return;
+        }
+        const int next = (mTabWidget->currentIndex() + 1) % mTabWidget->count();
+        mTabWidget->setCurrentIndex(next);
+    });
+    addAction(mActionNextTab);
+
+    mActionPreviousTab = new QAction(tr("Previous Tab"), this);
+    // FR-9 mirror (see next-tab note above).
+    mActionPreviousTab->setShortcuts(
+        {QKeySequence(QStringLiteral("Ctrl+Shift+Tab")), QKeySequence(QStringLiteral("Ctrl+PgUp"))}
+    );
+    mActionPreviousTab->setShortcutContext(Qt::WindowShortcut);
+    connect(mActionPreviousTab, &QAction::triggered, this, [this]() {
+        if (mTabWidget == nullptr || mTabWidget->count() < 2)
+        {
+            return;
+        }
+        const int prev = (mTabWidget->currentIndex() + mTabWidget->count() - 1) % mTabWidget->count();
+        mTabWidget->setCurrentIndex(prev);
+    });
+    addAction(mActionPreviousTab);
+
+    mActionOpenInNewTab = new QAction(tr("Open in New Tab..."), this);
+    // Deliberately no shortcut (see review-2 H1 rationale above).
+    mActionOpenInNewTab->setToolTip(tr("Open one or more log files in a new tab, without touching the current tab."));
+    connect(mActionOpenInNewTab, &QAction::triggered, this, [this]() {
+        // Phase-6 review-3 finding #8 fix: prompt for files FIRST,
+        // then create the new tab. Earlier revisions did
+        // `AddNewTab` unconditionally and forwarded to `OpenFiles`;
+        // cancelling the dialog then left an empty "Untitled" tab
+        // behind. Sampling `keyboardModifiers` before the modal
+        // mirrors `OpenFiles`'s Shift-for-Replace convention.
+        const bool forceReplace = QGuiApplication::keyboardModifiers().testFlag(Qt::ShiftModifier);
+        const QStringList files = QFileDialog::getOpenFileNames(
+            this,
+            tr("Select Log Files"),
+            DefaultOpenDir(),
+            tr("Structured Logs (*.json *.jsonl *.ndjson *.logfmt *.csv *.log *.txt "
+               "*.json.gz *.jsonl.gz *.ndjson.gz *.logfmt.gz *.csv.gz *.log.gz *.txt.gz "
+               "*.json.bz2 *.jsonl.bz2 *.ndjson.bz2 *.logfmt.bz2 *.csv.bz2 *.log.bz2 *.txt.bz2 "
+               "*.json.xz *.jsonl.xz *.ndjson.xz *.logfmt.xz *.csv.xz *.log.xz *.txt.xz "
+               "*.json.zst *.jsonl.zst *.ndjson.zst *.logfmt.zst *.csv.zst *.log.zst *.txt.zst "
+               "*.gz *.bz2 *.xz *.zst);;All Files (*.*)")
+        );
+        if (files.isEmpty())
+        {
+            return;
+        }
+        RememberLastOpenDir(files.first());
+        AddNewTab(/*makeActive=*/true);
+        DispatchMixedOpenInput(files, forceReplace ? OpenMode::Replace : OpenMode::Append);
+    });
+    addAction(mActionOpenInNewTab);
+
+    // Insert the tab actions on the File menu after `New Session`
+    // so the menu order stays New Window / New Session / New Tab /
+    // Open. Fallback to `insertAction` on the menu's first action
+    // if `actionNewSession` was not found.
+    if (ui->menuFile != nullptr && ui->actionOpen != nullptr)
+    {
+        ui->menuFile->insertAction(ui->actionOpen, mActionNewTab);
+        ui->menuFile->insertAction(ui->actionOpen, mActionOpenInNewTab);
+        ui->menuFile->insertSeparator(ui->actionOpen);
+        // Close Tab lives before Exit so the destructive actions
+        // stay grouped near the bottom of the File menu.
+        if (ui->actionExit != nullptr)
+        {
+            ui->menuFile->insertAction(ui->actionExit, mActionCloseTab);
+            ui->menuFile->insertSeparator(ui->actionExit);
+        }
+    }
 
     // Rebuild the Recent Sessions submenu on `aboutToShow` so
     // sibling-window mutations show up without us reacting to every
@@ -1043,14 +1111,9 @@ MainWindow::MainWindow(
     // close (`event->ignore()`) keeps the app alive.
     connect(ui->actionExit, &QAction::triggered, this, [] { QApplication::closeAllWindows(); });
 
-    // Shell-owned action -> view-owned table. Wrapped in the scoped
-    // bag so a phase-6 tab switch (which destroys the old view + its
-    // table and constructs a fresh pair for the new tab) reinstalls
-    // this connection against the newly-bound view. Without the bag
-    // wrap Qt would auto-disconnect on the old table's destruction
-    // and the shortcut would silently no-op on the new tab.
-    mSessionConnections +=
-        connect(ui->actionCopy, &QAction::triggered, mTableView, &LogTableView::CopySelectedRowsToClipboard);
+    // actionCopy -> mTableView bag connect moved into
+    // `InstallActiveSessionConnections()` so a tab switch reinstalls
+    // it against the newly-bound view's table.
     // Tooltip reflects `Find`'s smart toggle behaviour.
     ui->actionFind->setToolTip(tr("Find in logs. Press again to close."));
     connect(ui->actionFind, &QAction::triggered, this, &MainWindow::Find);
@@ -1100,39 +1163,10 @@ MainWindow::MainWindow(
     connect(ui->actionPauseStream, &QAction::toggled, this, &MainWindow::TogglePauseStream);
     connect(ui->actionStopStream, &QAction::triggered, this, &MainWindow::StopStream);
 
-    // `actionFollowTail` is auto-disengaged when the user scrolls away
-    // and auto-re-engaged on tail-edge scroll. Re-engage is gated on
-    // live-tail sessions only; static sessions don't follow.
-    mSessionConnections += connect(mTableView, &LogTableView::userScrolledAwayFromTail, this, [this]() {
-        if (ui->actionFollowTail->isChecked())
-        {
-            ui->actionFollowTail->setChecked(false);
-        }
-    });
-    mSessionConnections += connect(mTableView, &LogTableView::userScrolledToTail, this, [this]() {
-        if (!ui->actionFollowTail->isChecked() && IsLiveTailSession())
-        {
-            ui->actionFollowTail->setChecked(true);
-        }
-    });
-
-    // Mirror Follow-newest into the view's pill-suppression flag.
-    // Without this, Qt's signal ordering during a row insert can
-    // briefly drop `mAtTailEdge` between the geometry pass and the
-    // follow-up scroll-back, flashing the pill in the most common
-    // live-tail steady state. `toggled` (not `triggered`) so a
-    // programmatic `setChecked` from the pill-click handler below
-    // takes the same path as a user toolbar click.
-    // Note: shell action -> view alias; the shell action lives across
-    // session swaps but its target `mTableView` follows the active
-    // view. Registered in the scoped bag so a phase-6 rebind
-    // reinstalls it against the newly-bound view's table.
-    mSessionConnections += connect(ui->actionFollowTail, &QAction::toggled, this, [this](bool checked) {
-        if (mTableView != nullptr)
-        {
-            mTableView->SetPendingNewRowsSuppressed(checked);
-        }
-    });
+    // Follow-tail scroll signals, actionFollowTail::toggled, and
+    // jumpToTailRequested bag connects moved into
+    // `InstallActiveSessionConnections()`.
+    //
     // Seed from the action's initial checked state: the `.ui`
     // declares Follow on by default but `toggled` only fires on
     // changes, so without this one-shot the view would start
@@ -1141,29 +1175,6 @@ MainWindow::MainWindow(
     {
         mTableView->SetPendingNewRowsSuppressed(ui->actionFollowTail->isChecked());
     }
-
-    // Pill click: acknowledge, scroll, and re-engage Follow newest
-    // in live-tail. Keeping the policy here means the view stays
-    // ignorant of proxies and the Follow action.
-    mSessionConnections += connect(mTableView, &LogTableView::jumpToTailRequested, this, [this]() {
-        // Acknowledge up-front so the count clears even when the
-        // scroll below lands short of the visual tail (custom
-        // sort placing source-newest in the middle of the proxy,
-        // or the bounded-walk fallback snapping to the proxy tail
-        // without crossing `maximum`).
-        if (mTableView != nullptr)
-        {
-            mTableView->AcknowledgePendingNewRows();
-        }
-        JumpToNewestRow();
-        // The pill click is an explicit "catch me up" command, so
-        // unconditionally re-engage Follow in live tail (a manual
-        // scroll-away would otherwise have disengaged it).
-        if (IsLiveTailSession() && !ui->actionFollowTail->isChecked())
-        {
-            ui->actionFollowTail->setChecked(true);
-        }
-    });
 
     // Find bar lives in a dockable host so the user can float / dock
     // it and the layout round-trips through `saveState`. The hosted
@@ -1176,98 +1187,8 @@ MainWindow::MainWindow(
     connect(mFindRecord, &FindRecordWidget::FindRecords, this, &MainWindow::FindRecords);
     connect(mFindRecord, &FindRecordWidget::MatchCountRequested, this, &MainWindow::UpdateFindMatchCount);
 
-    // Every signal that can change the match set invalidates the
-    // find bar's match cache. Hooked on the proxy only -- the
-    // source-side signals chain through and would otherwise
-    // double-fire. Column changes invalidate too because
-    // `MatchRow` honours `Column::visible`.
-    mSessionConnections +=
-        connect(mSortFilterProxyModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::OnFindCacheInvalidated);
-    mSessionConnections +=
-        connect(mSortFilterProxyModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::OnFindCacheInvalidated);
-    mSessionConnections +=
-        connect(mSortFilterProxyModel, &QAbstractItemModel::layoutChanged, this, &MainWindow::OnFindCacheInvalidated);
-    mSessionConnections +=
-        connect(mSortFilterProxyModel, &QAbstractItemModel::modelReset, this, &MainWindow::OnFindCacheInvalidated);
-    mSessionConnections +=
-        connect(mSortFilterProxyModel, &QAbstractItemModel::columnsInserted, this, &MainWindow::OnFindCacheInvalidated);
-    mSessionConnections +=
-        connect(mSortFilterProxyModel, &QAbstractItemModel::columnsRemoved, this, &MainWindow::OnFindCacheInvalidated);
-    mSessionConnections +=
-        connect(mSortFilterProxyModel, &QAbstractItemModel::columnsMoved, this, &MainWindow::OnFindCacheInvalidated);
-    // `dataChanged` covers in-place cell updates. Filter out style-only
-    // emits via `IsStyleOnlyRoleChange` so theme repaints don't wake
-    // the debounce timer for nothing.
-    mSessionConnections += connect(
-        mSortFilterProxyModel,
-        &QAbstractItemModel::dataChanged,
-        this,
-        [this](const QModelIndex & /*topLeft*/, const QModelIndex & /*bottomRight*/, const QList<int> &roles) {
-            if (LogModel::IsStyleOnlyRoleChange(roles))
-            {
-                return;
-            }
-            OnFindCacheInvalidated();
-        }
-    );
-
-    // Status-bar rows-shown indicator. Subscribes to both source
-    // and proxy because either can shift independently:
-    //   - source `rowsInserted/Removed/modelReset`: streaming
-    //     batches, session boundaries.
-    //   - proxy `rowsInserted/Removed/modelReset/layoutChanged`:
-    //     filter rule changes (which can move rows without
-    //     changing the source row count). `layoutChanged` is
-    //     proxy-only because it's how `LogFilterModel` reports
-    //     "the predicate changed but the row pool didn't".
-    // The slot itself is idempotent and cheap (two `rowCount()`
-    // calls + a label assign), so duplicate fires from
-    // adjacent signals are harmless.
-    mSessionConnections += connect(mModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::UpdateRowsShownStatus);
-    mSessionConnections += connect(mModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::UpdateRowsShownStatus);
-    mSessionConnections += connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateRowsShownStatus);
-    mSessionConnections +=
-        connect(mSortFilterProxyModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::UpdateRowsShownStatus);
-    mSessionConnections +=
-        connect(mSortFilterProxyModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::UpdateRowsShownStatus);
-    mSessionConnections +=
-        connect(mSortFilterProxyModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateRowsShownStatus);
-    mSessionConnections +=
-        connect(mSortFilterProxyModel, &QAbstractItemModel::layoutChanged, this, &MainWindow::UpdateRowsShownStatus);
-
-    // Sort indicator: keep `actionClearSort` and the status-bar
-    // button in sync with the proxy's sort. `layoutChanged`
-    // covers every sort permutation (header click, menu,
-    // dropdown, programmatic clear, and the deferred-restore
-    // path). Source row signals hide the indicator when the
-    // model goes empty.
-    mSessionConnections +=
-        connect(mSortFilterProxyModel, &QAbstractItemModel::layoutChanged, this, &MainWindow::UpdateSortStatus);
-    mSessionConnections +=
-        connect(mSortFilterProxyModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateSortStatus);
-    mSessionConnections += connect(mModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::UpdateSortStatus);
-    mSessionConnections += connect(mModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::UpdateSortStatus);
-    mSessionConnections += connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateSortStatus);
-    // Column rename emits `headerDataChanged` but no
-    // `layoutChanged`, so without this hook the status-bar
-    // tooltip would freeze on the old label. Only refresh when
-    // the rename touches the sorted column - `UpdateSortStatus`
-    // rebuilds all column labels and that's wasted work
-    // otherwise.
-    mSessionConnections += connect(
-        mModel, &QAbstractItemModel::headerDataChanged, this, [this](Qt::Orientation orientation, int first, int last) {
-            if (orientation != Qt::Horizontal || mSortFilterProxyModel == nullptr)
-            {
-                return;
-            }
-            const int sortColumn = mSortFilterProxyModel->SortColumn();
-            if (sortColumn < 0 || sortColumn < first || sortColumn > last)
-            {
-                return;
-            }
-            UpdateSortStatus();
-        }
-    );
+    // Find-cache invalidation, rows-shown status, and sort status
+    // bag connects moved into `InstallActiveSessionConnections()`.
 
     mActionToggleFind = new QAction(tr("Find Bar"), this);
     mActionToggleFind->setObjectName(QStringLiteral("actionToggleFind"));
@@ -1382,13 +1303,10 @@ MainWindow::MainWindow(
     );
     connect(mRecordDetailDock, &RecordDetailDock::openInNewWindowRequested, this, &MainWindow::OpenRecordDetailWindow);
 
-    mSessionConnections +=
-        connect(mTableView, &QAbstractItemView::doubleClicked, this, &MainWindow::ShowRecordDetailsForProxyIndex);
-
-    // Track selection changes through the live selection model;
-    // centralised so a future `setModel` call only has to re-invoke
-    // this helper.
-    RebindRecordDetailSelectionTracking();
+    // doubleClicked -> ShowRecordDetailsForProxyIndex and
+    // RebindRecordDetailSelectionTracking() moved into
+    // `InstallActiveSessionConnections()` (B2 fix — the tracking
+    // rebind was previously only installed once at ctor time).
 
     // The dock owns its own `modelReset -> Clear` wiring, so reuse
     // outside `MainWindow` stays correct.
@@ -1583,23 +1501,15 @@ MainWindow::MainWindow(
         action->setText(tr("Anchor selection in colour %1").arg(i + 1));
         action->setShortcut(QKeySequence(Qt::CTRL | static_cast<Qt::Key>(Qt::Key_1 + static_cast<int>(i))));
         addAction(action);
-        const int colourIndex = static_cast<int>(i);
-        // Same shell-owned action -> view-owned table pattern as the
-        // `actionCopy` connect above; wrapped so a phase-6 tab
-        // switch reinstalls against the newly-bound view's table.
-        // The lambda captures `mTableView` by value at connect time,
-        // but Qt auto-disconnects on the receiver's destruction so
-        // the stale capture cannot outlive the connection.
-        mSessionConnections += connect(action, &QAction::triggered, mTableView, [view = mTableView, colourIndex]() {
-            view->AnchorSelection(colourIndex);
-        });
         mAnchorColorActions[i] = action;
     }
     mActionClearRowAnchor = new QAction(tr("Remove anchor from selection"), this);
     mActionClearRowAnchor->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
     addAction(mActionClearRowAnchor);
-    mSessionConnections +=
-        connect(mActionClearRowAnchor, &QAction::triggered, mTableView, &LogTableView::ClearAnchorOnSelection);
+    // Anchor-color -> mTableView->AnchorSelection and
+    // mActionClearRowAnchor -> mTableView->ClearAnchorOnSelection
+    // bag connects moved into `InstallActiveSessionConnections()`
+    // so a tab switch reinstalls them against the newly-bound view.
 
     mActionJumpNextAnchor = new QAction(tr("Jump to next anchor"), this);
     mActionJumpNextAnchor->setShortcut(QKeySequence(Qt::Key_F2));
@@ -1705,7 +1615,8 @@ MainWindow::MainWindow(
     mDiagnosticsButton->hide();
     statusBar()->addPermanentWidget(mDiagnosticsButton);
     connect(mDiagnosticsButton, &QPushButton::clicked, this, &MainWindow::ShowConfigurationDiagnostics);
-    mSessionConnections += connect(mModel, &LogModel::columnHealthChanged, this, &MainWindow::UpdateDiagnosticsStatus);
+    // columnHealthChanged -> UpdateDiagnosticsStatus bag connect
+    // moved into `InstallActiveSessionConnections()`.
 
     // Status-bar indicator for the parse-errors dock. Same UX as
     // `mDiagnosticsButton`: hides when empty, opens the dock on click.
@@ -1730,202 +1641,14 @@ MainWindow::MainWindow(
         mParseErrorsDock->raise();
     });
 
-    mSessionConnections += connect(mModel, &LogModel::lineCountChanged, this, [this](qsizetype count) {
-        mSession->SetStreamingLineCount(count);
-        UpdateStreamingStatus();
-        // One-shot column auto-resize on the first non-empty batch.
-        if (IsLiveTailSession() && !mSession->FirstStreamingBatchSeen() && count > 0)
-        {
-            mSession->SetFirstStreamingBatchSeen(true);
-            UpdateUi();
-            // Reflect the just-pinned source name once; subsequent batches
-            // are picked up by the 1 Hz live-tail tick.
-            UpdateWindowTitle();
-        }
-        // Auto-follow is live-tail only.
-        if (IsLiveTailSession())
-        {
-            ScrollToNewestRowIfFollowing();
-        }
-    });
-    mSessionConnections += connect(mModel, &LogModel::errorCountChanged, this, [this](qsizetype count) {
-        mSession->SetStreamingErrorCount(count);
-        UpdateStreamingStatus();
-    });
-    mSessionConnections += connect(mModel, &LogModel::streamingFinished, this, &MainWindow::OnStreamingFinished);
-    mSessionConnections += connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
-    // Drive the "\u2014 rotated" status-bar chrome from the
-    // session's own flash state (post-review-4 finding #4). Both
-    // edges call `UpdateStreamingStatus` -- the label reads
-    // `mSession->IsRotationFlashActive()` inside the same slot, so
-    // the projection follows whichever session is currently bound
-    // and phase-6 tab switches do not carry a sibling's flash.
-    mSessionConnections += connect(mSession, &LogSession::rotationFlashChanged, this, [this](bool /*active*/) {
-        UpdateStreamingStatus();
-    });
-    mSessionConnections += connect(mModel, &LogModel::sourceStatusChanged, this, &MainWindow::OnSourceStatusChanged);
-    // Keep enum filter bitsets and sort ranks in sync with the live
-    // dictionary; scope the work to the reason that fired:
-    //   - `Demoted`: the cached `EnumDictionary*` is now dangling.
-    //     Flush the rank cache and rebuild predicates onto the
-    //     string-set fallback.
-    //   - `Promoted`: a column just gained a dictionary. Any
-    //     `EnumRowPredicate` built earlier for that column was
-    //     constructed with `dictionary = nullptr` and otherwise sits
-    //     on the slow string-set fallback forever; rebuild so it
-    //     picks up the bitset hot path. The signal doesn't say which
-    //     column promoted, so any active enum filter triggers a
-    //     rebuild. `EnumRankFor` self-heals on the next sort, so no
-    //     cache flush is needed.
-    //   - `Grew`: existing predicates still work (bitset for resolved
-    //     ids, string-set fallback for unresolved). Rebuild only when
-    //     a filter has unresolved values that may have just been
-    //     interned -- the only case where rebuilding upgrades anything.
-    mSessionConnections +=
-        connect(mModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason reason, int columnIndex) {
-            if (reason == EnumColumnsChangeReason::Demoted)
-            {
-                // Broad flush: rank cache keys alias across columns via
-                // `EnumRankFor`, so invalidate everything to be safe.
-                mSortFilterProxyModel->InvalidateEnumRanks();
-
-                // A `Type::Level -> Type::String` demote orphans any saved
-                // canonical-name filter (`"Info"`, ...) because those
-                // strings never appear in the column's raw data. Translate
-                // them to the raw entries `LogModel::AppendBatch` captured
-                // pre-demote so the filter keeps matching the same rows.
-                // Plain enum demotes need no translation;
-                // `LastBatchLevelDemoteMappingFor` returns nullptr there.
-                if (columnIndex >= 0)
-                {
-                    if (const auto *levelMapping = mModel->LastBatchLevelDemoteMappingFor(columnIndex);
-                        levelMapping != nullptr)
-                    {
-                        // Re-entrancy guard: the rewrite + downstream
-                        // sync calls walk `mSimpleLeaves`, so a
-                        // transitive re-emit of `enumColumnsChanged`
-                        // for the same column would see half-rewritten
-                        // state.
-                        if (mSession->IsApplyingEnumRebuild())
-                        {
-                            return;
-                        }
-                        mSession->SetApplyingEnumRebuild(true);
-                        const auto demoteGuard = qScopeGuard([this]() { mSession->SetApplyingEnumRebuild(false); });
-                        const auto &columnsCfg = mModel->Configuration().columns;
-                        const loglib::LogConfiguration::Column *demotedColumn =
-                            std::cmp_less(columnIndex, columnsCfg.size())
-                                ? &columnsCfg[static_cast<size_t>(columnIndex)]
-                                : nullptr;
-                        for (auto &kv : mSession->MutableSimpleLeaves())
-                        {
-                            loglib::LeafRule &filter = kv.second;
-                            const int resolvedRow = ResolveLeafColumnByKeys(filter.columnKeys, columnsCfg);
-                            if (resolvedRow != columnIndex)
-                            {
-                                continue;
-                            }
-                            if (filter.type != loglib::LeafRule::Type::Enumeration)
-                            {
-                                continue;
-                            }
-                            // `ResolveLevel` still sees the column's saved
-                            // `levelMapping` (the demote only flips
-                            // `Column::type`), so user aliases like
-                            // `"NOTICE" -> Info` survive.
-                            std::vector<std::string> expanded;
-                            for (const std::string &name : filter.filterValues)
-                            {
-                                std::optional<loglib::LogLevel> level;
-                                if (demotedColumn != nullptr)
-                                {
-                                    level = loglib::ResolveLevel(name, demotedColumn->levelMapping);
-                                }
-                                else
-                                {
-                                    level = loglib::ParseLevelName(name);
-                                }
-                                if (!level.has_value())
-                                {
-                                    continue;
-                                }
-                                const auto it = levelMapping->find(*level);
-                                if (it == levelMapping->end())
-                                {
-                                    continue;
-                                }
-                                for (const std::string &raw : it->second)
-                                {
-                                    expanded.push_back(raw);
-                                }
-                            }
-                            // Drop duplicates with a stable order.
-                            std::ranges::sort(expanded);
-                            const auto dupTail = std::ranges::unique(expanded);
-                            expanded.erase(dupTail.begin(), dupTail.end());
-                            // An empty `expanded` is a legitimate
-                            // "matches nothing" outcome -- keep it so the
-                            // rebuilt predicate rejects every row, matching
-                            // the plain enum branch's empty-selection
-                            // semantics.
-                            filter.filterValues = std::move(expanded);
-                        }
-                        // Mirror once after the loop; the wire tree is
-                        // snapshotted whole, so per-leaf mirroring would
-                        // redo the same work.
-                        MirrorSessionStateToConfiguration();
-                        // Resync the tooltip cache: it was built from
-                        // the canonical names (`"Info"`, ...) and now
-                        // needs the rewritten raw bytes.
-                        SyncColumnFilterIndicators();
-                    }
-                }
-            }
-            // `columnIndex == -1` means "scope unknown" -- treat as
-            // matches-anything to keep the safe broad behaviour.
-            const auto &columnsForResolve = mModel->Configuration().columns;
-            const auto matchesAffectedColumn = [columnIndex, &columnsForResolve](const auto &kv) {
-                if (columnIndex < 0)
-                {
-                    return true;
-                }
-                return ResolveLeafColumnByKeys(kv.second.columnKeys, columnsForResolve) == columnIndex;
-            };
-            bool rebuild = false;
-            switch (reason)
-            {
-            case EnumColumnsChangeReason::Demoted:
-                rebuild = std::ranges::any_of(Filters(), [&matchesAffectedColumn](const auto &kv) {
-                    return kv.second.type == loglib::LeafRule::Type::Enumeration && matchesAffectedColumn(kv);
-                });
-                break;
-            case EnumColumnsChangeReason::Promoted:
-                rebuild = std::ranges::any_of(Filters(), [&matchesAffectedColumn](const auto &kv) {
-                    return kv.second.type == loglib::LeafRule::Type::Enumeration && matchesAffectedColumn(kv);
-                });
-                break;
-            case EnumColumnsChangeReason::Grew:
-                rebuild = std::ranges::any_of(Filters(), [this, &matchesAffectedColumn](const auto &kv) {
-                    return kv.second.type == loglib::LeafRule::Type::Enumeration && matchesAffectedColumn(kv) &&
-                           !EnumFilterFullyResolved(kv.second);
-                });
-                break;
-            }
-            if (rebuild)
-            {
-                // Re-entrancy guard: an inner `UpdateFilters` that
-                // re-emits `enumColumnsChanged` must not rebuild on a
-                // half-updated state. Queued signals that arrive after
-                // the outer call returns rebuild normally.
-                if (mSession->IsApplyingEnumRebuild())
-                {
-                    return;
-                }
-                mSession->SetApplyingEnumRebuild(true);
-                const auto guard = qScopeGuard([this]() { mSession->SetApplyingEnumRebuild(false); });
-                UpdateFilters();
-            }
-        });
+    // Streaming lifecycle bag connects (lineCountChanged,
+    // errorCountChanged, streamingFinished, rotationDetected,
+    // rotationFlashChanged, sourceStatusChanged) and the enum-
+    // column change -> filter rebuild pipeline moved into
+    // `InstallActiveSessionConnections()`. The filter rebuild body
+    // itself lives in `OnEnumColumnsChangedApplyFilterRebuild()`
+    // so both the ctor install and the tab-switch reinstall share
+    // one source of truth.
 
     // Pull persisted streaming preferences on startup.
     StreamingControl::LoadConfiguration();
@@ -1981,6 +1704,16 @@ MainWindow::MainWindow(
     // hooks fired before the status-bar button existed, so sync
     // once now that both ends are wired.
     UpdateSortStatus();
+
+    // Task 6.5 (phase-6 review-1 B1 fix): install every scoped
+    // session / model / view subscription now that all docks,
+    // toolbars, and actions the bag connects reference have been
+    // constructed. Same helper `OnActiveTabChanged` calls after
+    // `mSessionConnections.Clear()` on a tab switch, so ctor and
+    // switch paths share one source of truth. Called BEFORE
+    // `RebindSharedDocks` so the shared-dock rebind lands with
+    // every shell-side subscription live.
+    InstallActiveSessionConnections();
 
     // Task 5.2: initial shared-dock rebind. Drives every
     // refactored dock (Find, Parse Errors, Histogram, Record
@@ -2047,6 +1780,40 @@ MainWindow::~MainWindow()
         mModel->Reset();
     }
 
+    // Task 6.1: request-stop on sibling tabs' workers so their
+    // background futures are notified to abort as soon as the
+    // worker polls its stop token. Only the currently-active tab
+    // was covered by the `CancelInFlight*` calls above (they read
+    // the shell aliases).
+    //
+    // Note (phase-6 review-2 low-priority correction): this loop
+    // runs AFTER `mModel->Reset()` above and does NOT synchronously
+    // drain the sibling watchers -- an ordering that is safe only
+    // because `~LogSession()` in `app/src/log_session.cpp:157-177`
+    // does an explicit `waitForFinished()` on both the export and
+    // decompression watchers, and the Qt child-destruction sweep
+    // that follows this destructor destroys views (the shell's
+    // grand-children) before it destroys sibling sessions. The
+    // earlier comment claimed this "matches the cancel-before-
+    // reset ordering" of the active tab; that framing was
+    // misleading: the sibling worker drain relies on
+    // `~LogSession()`'s own wait, not on any ordering in this
+    // function body.
+    for (const auto &tab : mTabs)
+    {
+        if (tab == nullptr)
+        {
+            continue;
+        }
+        LogSession *sibling = tab->session.data();
+        if (sibling == nullptr || sibling == mSession)
+        {
+            continue;
+        }
+        sibling->MutableDecompressionStopSource().request_stop();
+        sibling->MutableExportStopSource().request_stop();
+    }
+
     // Sever the snapshot windows' `destroyed -> remove` hooks before
     // our members go away. Without this, the inherited `~QWidget`
     // child-destruction would fire each `destroyed` against an
@@ -2091,12 +1858,26 @@ MainWindow::~MainWindow()
 
 std::vector<LogSession *> MainWindow::hostedSessions() const
 {
-    // Phase 3 exposes one session; Phase 6 grows this into a walk over
-    // the workspace's tab list. Callers that need to iterate every
-    // hosted session (window-modified aggregation, global-preference
-    // broadcast, closeEvent PreCheckClose) go through here so their
-    // shape survives the tab landing.
+    // Walk `mTabs` so callers that need every hosted session
+    // (window-modified aggregation, global-preference broadcast,
+    // closeEvent PreCheckClose) see all tabs, not just the active
+    // one (task 6.1). Falls back to the alias when `mTabs` is
+    // empty (mid-construction / test fixtures that bypass the
+    // ctor's tab plumbing) so single-session pre-phase-6 callers
+    // stay working.
     std::vector<LogSession *> sessions;
+    if (!mTabs.empty())
+    {
+        sessions.reserve(mTabs.size());
+        for (const auto &tab : mTabs)
+        {
+            if (tab != nullptr && tab->session != nullptr)
+            {
+                sessions.push_back(tab->session.data());
+            }
+        }
+        return sessions;
+    }
     if (mSession != nullptr)
     {
         sessions.push_back(mSession);
@@ -2314,6 +2095,904 @@ void MainWindow::RebindSharedDocks(const SessionBindContext &context)
     destroyIfOriginMismatched(mDiagnosticsDialog, mDiagnosticsDialogSession);
     destroyIfOriginMismatched(mColumnsManagerDialog, mColumnsManagerDialogSession);
     destroyIfOriginMismatched(mHighlightRulesEditor, mHighlightRulesEditorSession);
+}
+
+// -----------------------------------------------------------------------
+// Task 6.x: tab lifecycle
+// -----------------------------------------------------------------------
+
+int MainWindow::TabCount() const noexcept
+{
+    return mTabWidget != nullptr ? mTabWidget->count() : 0;
+}
+
+int MainWindow::ActiveTabIndex() const noexcept
+{
+    return mTabWidget != nullptr ? mTabWidget->currentIndex() : -1;
+}
+
+int MainWindow::TabIndexForSession(SessionInstanceId id) const noexcept
+{
+    if (!id.isValid())
+    {
+        return -1;
+    }
+    for (int index = 0; std::cmp_less(index, mTabs.size()); ++index)
+    {
+        if (mTabs[index] != nullptr && mTabs[index]->id == id)
+        {
+            return index;
+        }
+    }
+    return -1;
+}
+
+LogSession *MainWindow::SessionAtTab(int index) const noexcept
+{
+    if (index < 0 || std::cmp_greater_equal(index, mTabs.size()) || mTabs[index] == nullptr)
+    {
+        return nullptr;
+    }
+    return mTabs[index]->session.data();
+}
+
+LogSessionView *MainWindow::ViewAtTab(int index) const noexcept
+{
+    if (index < 0 || std::cmp_greater_equal(index, mTabs.size()) || mTabs[index] == nullptr)
+    {
+        return nullptr;
+    }
+    return mTabs[index]->view.data();
+}
+
+SessionInstanceId MainWindow::AddNewTab(bool makeActive)
+{
+    if (mTabWidget == nullptr)
+    {
+        return {};
+    }
+
+    // Fresh session parented on `this` (MainWindow) so its lifetime
+    // tracks the window's, not any specific tab's view widget. Same
+    // shape as the ctor's initial `mSession` construction. The view
+    // is parented to nullptr because `QTabWidget::addTab` reparents
+    // it onto the strip's internal stacked widget in one step.
+    auto *session = new LogSession(mTheme, mHistoryManager, mRegexTemplateRegistry, this);
+    auto *view = new LogSessionView(session, mTheme);
+
+    // Shell-owned table chrome parity with the initial tab (H4 fix).
+    // Also runs the theme stylesheet + level-icon delegate seed so
+    // the freshly-constructed view matches the ctor-time appearance.
+    ApplyTableChromeToView(view);
+
+    auto record = std::make_unique<WindowTab>();
+    record->id = session->InstanceId();
+    record->session = session;
+    record->view = view;
+    mTabs.push_back(std::move(record));
+
+    int newIndex = -1;
+    {
+        // The `addTab` call fires `currentChanged` iff this becomes
+        // the new current index (typically only for the first tab
+        // in an empty strip). Guard it so `OnActiveTabChanged` does
+        // not attempt a mid-construction rebind: we handle the
+        // activation explicitly via `setCurrentIndex` below when
+        // `makeActive` is true.
+        const SuppressActiveTabChangeScope suppress(*this);
+        newIndex = mTabWidget->addTab(view, tr("Untitled"));
+    }
+
+    // Persistent per-tab subscriptions: chrome refresh so this tab's
+    // label/tooltip/indicator tracks its own session's presentation
+    // even while backgrounded, and dirty-state fan into the shell's
+    // aggregate `[*]` marker so a background edit still marks the
+    // window modified (phase-6 review-1 H2 / H3 fixes). Not routed
+    // through the scoped bag because that bag is only reinstalled
+    // for the ACTIVE tab.
+    connect(session, &LogSession::presentationChanged, this, [this, session]() { RefreshTabChrome(session); });
+    connect(session, &LogSession::filtersDirtyChanged, this, [this](bool /*dirty*/) { UpdateWindowTitle(); });
+    RefreshTabChrome(session);
+
+    if (makeActive && newIndex >= 0)
+    {
+        mTabWidget->setCurrentIndex(newIndex);
+    }
+    return session->InstanceId();
+}
+
+void MainWindow::ApplyTableChromeToView(LogSessionView *view)
+{
+    if (view == nullptr)
+    {
+        return;
+    }
+    LogTableView *table = view->TableView();
+    if (table == nullptr)
+    {
+        return;
+    }
+    // Grid + scroll modes: the ctor set these on the initial view
+    // only, so new tabs used to render as horizontally-jumping
+    // per-item scroll views (phase-6 review-1 H4).
+    table->setShowGrid(true);
+    table->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    table->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    // Context-menu policy: required for the shell's header +
+    // row context menus to open at all (`ShowHeaderContextMenu`
+    // / `ShowRowContextMenu` are wired via the scoped bag against
+    // the ACTIVE tab; without the policy they never fire).
+    table->setContextMenuPolicy(Qt::CustomContextMenu);
+    if (QHeaderView *header = table->horizontalHeader(); header != nullptr)
+    {
+        header->setContextMenuPolicy(Qt::CustomContextMenu);
+    }
+    // Level cell delegate: attach now so new tabs render the
+    // level-icon column correctly from the first paint. The
+    // scoped bag reapplies on `modelReset` / `columnsInserted` /
+    // `columnsRemoved` / `enumColumnsChanged` while this view is
+    // active. Skipped in the no-theme test fixture where
+    // `mLevelCellDelegate` is null.
+    if (mLevelCellDelegate != nullptr)
+    {
+        view->ApplyLevelCellDelegate(mLevelCellDelegate);
+    }
+}
+
+void MainWindow::RebuildFilterMenuFromActiveSession()
+{
+    // Task 6.5 / phase-6 review-2 M1 fix. Called during
+    // `OnActiveTabChanged` step 7 to switch the shell's Filters
+    // menu from the OUTGOING tab's leaf list to the INCOMING
+    // tab's leaf list without mutating either session.
+    //
+    // Difference from `ResetSimpleFilterState()`: that helper
+    // wipes the session's `SimpleLeaves()` (destructive) as part
+    // of `ClearAllFilters` / `NewSession`. On a tab switch we
+    // want the incoming session's filters preserved -- only the
+    // shell's UI mirror needs a rebuild.
+    if (ui == nullptr || ui->menuFilters == nullptr)
+    {
+        return;
+    }
+    // Drop menu entries tagged with a filter UUID (they belong to
+    // whichever session was last active).
+    const auto priorActions = ui->menuFilters->actions();
+    for (QAction *action : priorActions)
+    {
+        if (action == nullptr)
+        {
+            continue;
+        }
+        if (!action->data().toString().isNull())
+        {
+            ui->menuFilters->removeAction(action);
+            delete action;
+        }
+    }
+    if (mSession == nullptr)
+    {
+        return;
+    }
+    // Rebuild in display order so mirror parity is preserved. The
+    // wiring below mirrors the tail of `AddLogFilter` (menu +
+    // Edit / Remove sub-actions) but does NOT call the session-
+    // mutating first half.
+    for (const std::string &idKey : mSession->SimpleLeafOrder())
+    {
+        const auto it = mSession->SimpleLeaves().find(idKey);
+        if (it == mSession->SimpleLeaves().end())
+        {
+            continue;
+        }
+        const QString id = QString::fromStdString(idKey);
+        const loglib::LeafRule &filter = it->second;
+        const QString title = BuildFilterTitle(filter);
+        QMenu *menuItem = ui->menuFilters->addMenu(title);
+        menuItem->setObjectName(id);
+        menuItem->menuAction()->setData(QVariant(id));
+        const QAction *editAction = menuItem->addAction(tr("Edit"));
+        connect(editAction, &QAction::triggered, this, [this, id]() {
+            const auto found = Filters().find(id.toStdString());
+            if (found == Filters().end())
+            {
+                AddFilter(id);
+                return;
+            }
+            AddFilter(id, found->second);
+        });
+        const QAction *removeAction = menuItem->addAction(tr("Remove"));
+        connect(removeAction, &QAction::triggered, this, [this, id]() { ClearFilter(id); });
+    }
+}
+
+SessionInstanceId MainWindow::AddNewTabForTest(bool makeActive)
+{
+    return AddNewTab(makeActive);
+}
+
+void MainWindow::ActivateTabForTest(int index)
+{
+    if (mTabWidget != nullptr && index >= 0 && index < mTabWidget->count())
+    {
+        mTabWidget->setCurrentIndex(index);
+    }
+}
+
+void MainWindow::CloseTabForTest(int index)
+{
+    CloseTabAtIndex(index);
+}
+
+void MainWindow::CloseTabAtIndex(int index)
+{
+    if (mTabWidget == nullptr || index < 0 || std::cmp_greater_equal(index, mTabs.size()))
+    {
+        return;
+    }
+
+    // Last-tab-closes-window (PRD FR-30 / task 6.4). Route through
+    // `QWidget::close` so `closeEvent` runs -- auto-save flush,
+    // worker drain, and the window's aggregate close semantics all
+    // live there.
+    if (mTabWidget->count() <= 1)
+    {
+        close();
+        return;
+    }
+
+    // Task 6.11 (MVP): auto-save the closing session before
+    // tearing it down so a restorable-in-place session can be
+    // reopened from Recent Sessions. Full FR-68/FR-70 prompt
+    // handling (unpreservable ephemeral -> Save / Discard /
+    // Cancel dialog) lands as a followup on top of this MVP.
+    //
+    // Phase-6 review-1 B3 fix: DO NOT activate the closing tab
+    // unconditionally. Two-tab tests masked a bug where closing a
+    // background tab yanked focus onto it via `setCurrentIndex`,
+    // then `removeTab` picked a neighbour that was neither the
+    // previous active nor the closed tab. Instead:
+    //   (a) remember the currently-active tab up front,
+    //   (b) if dirty auto-save is needed, briefly activate the
+    //       closing tab (the shell's `AutoSaveSessionSnapshot`
+    //       reads the active aliases), then restore the previous
+    //       active immediately,
+    //   (c) if the closing tab was itself the active one, pick a
+    //       stable neighbour (prefer the tab that would land under
+    //       Qt's default post-removal fallback so no gratuitous
+    //       swap fires).
+    const int previousActiveIndex = mTabWidget->currentIndex();
+    const bool closingActiveTab = (index == previousActiveIndex);
+    LogSession *closingSessionMutable = SessionAtTab(index);
+    const bool closingIsDirty = (closingSessionMutable != nullptr) && closingSessionMutable->IsFiltersDirty();
+    if (closingIsDirty && !closingActiveTab)
+    {
+        // Route through the tab widget so `OnActiveTabChanged`
+        // does the alias refresh + subscription reinstall + dock
+        // rebind for the outgoing session BEFORE we auto-save.
+        mTabWidget->setCurrentIndex(index);
+    }
+    if (closingIsDirty)
+    {
+        // `publishOpenWindow=false`: this session's uuid is being
+        // detached below; publishing it would leave a stale window
+        // entry that the next `aboutToQuit` restore pass would try
+        // to reopen.
+        AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
+    }
+    if (closingIsDirty && !closingActiveTab)
+    {
+        // Restore the previous active before removing the closing
+        // tab. `previousActiveIndex` is still valid because we
+        // have not yet erased anything from `mTabs`.
+        mTabWidget->setCurrentIndex(previousActiveIndex);
+    }
+    if (closingSessionMutable != nullptr && closingSessionMutable == mSession)
+    {
+        // Detach the autosave uuid on the outgoing session so the
+        // window's own `closeEvent` (should it fire later) does
+        // not re-save the just-closed tab under the same uuid.
+        DetachAutoSaveUuid();
+    }
+
+    // Ownership hand-off (phase-6 review-2 M3 fix):
+    //   (1) cancel in-flight workers on the closing session,
+    //   (2) transfer view + session out of the record,
+    //   (3) rewrite `mTabs`,
+    //   (4) `removeTab` (fires `currentChanged(newIndex)` if the
+    //       removed tab was current; `OnActiveTabChanged` runs
+    //       the full rebind sequence against the next tab),
+    //   (5) `deleteLater` both owned QObjects so any queued
+    //       callbacks unwind on the event loop rather than mid-
+    //       destructor.
+    //
+    // Ordering rationale: earlier revisions did step (3) before
+    // step (1), which broke the `mTabs` <-> `mTabWidget` index
+    // mirror across the cancel step. `CancelInFlightDecompression`
+    // and `CancelInFlightExport` can synchronously emit
+    // `presentationChanged` via `ClearApplyEmbeddedBundleConfig`
+    // (`main_window.cpp` C++ chain: cancel -> presentationChanged
+    // -> `RefreshTabChrome` -> `TabIndexForSession`). Running the
+    // cancel while `mTabs` already had the closing entry erased
+    // returned a shifted index and wrote the outgoing label onto
+    // whichever tab now occupied that slot. Cancel first, THEN
+    // mutate the vector.
+    LogSession *session = mTabs[index] ? mTabs[index]->session.data() : nullptr;
+    LogSessionView *view = mTabs[index] ? mTabs[index]->view.data() : nullptr;
+    if (session != nullptr)
+    {
+        if (session == mSession)
+        {
+            CancelInFlightDecompression();
+            CancelInFlightExport();
+        }
+        else
+        {
+            session->MutableDecompressionStopSource().request_stop();
+            session->MutableExportStopSource().request_stop();
+        }
+    }
+
+    auto record = std::move(mTabs[index]);
+    mTabs.erase(mTabs.begin() + index);
+    mTabWidget->removeTab(index);
+
+    if (view != nullptr)
+    {
+        view->setParent(nullptr);
+        view->deleteLater();
+    }
+    if (session != nullptr)
+    {
+        session->deleteLater();
+    }
+}
+
+void MainWindow::OnActiveTabChanged(int newIndex)
+{
+    if (mSuppressActiveTabChange)
+    {
+        return;
+    }
+    if (mTabWidget == nullptr || newIndex < 0 || std::cmp_greater_equal(newIndex, mTabs.size()))
+    {
+        return;
+    }
+    auto &record = mTabs[newIndex];
+    if (record == nullptr)
+    {
+        return;
+    }
+    LogSession *newSession = record->session.data();
+    LogSessionView *newView = record->view.data();
+    if (newSession == nullptr || newView == nullptr)
+    {
+        return;
+    }
+
+    // Same-session no-op: Qt can fire `currentChanged` with the
+    // already-current index during tab reordering. Bail early so
+    // we do not tear down and reinstall a full subscription bag
+    // for nothing (also matches the same-session short-circuit
+    // pattern the shared docks enforce in phase 5).
+    if (newSession == mSession)
+    {
+        return;
+    }
+
+    // (1) Save outgoing tab's focus widget so a later re-activate
+    // restores what the user was on. Best-effort: focus may live
+    // in a dock or dialog (application focus), which we do not
+    // attempt to restore per-tab.
+    const LogSession *outgoingSession = mSession;
+    for (auto &tab : mTabs)
+    {
+        if (tab != nullptr && tab->session.data() == outgoingSession)
+        {
+            QWidget *focused = QApplication::focusWidget();
+            if (focused != nullptr && tab->view != nullptr && tab->view->isAncestorOf(focused))
+            {
+                tab->lastFocus = focused;
+            }
+            break;
+        }
+    }
+
+    // (2) Unbind shared docks from the outgoing context so their
+    // save-outgoing / clear-visible-state steps run against the
+    // still-live aliases.
+    RebindSharedDocks(SessionBindContext::MakeUnbound());
+
+    // (3) Drop the scoped-connection bag. Every subscription that
+    // referenced the outgoing session / model / view goes away
+    // atomically here.
+    mSessionConnections.Clear();
+
+    // (4) Re-point aliases at the new tab's session + view.
+    SetActiveSessionAliases(newSession, newView);
+
+    // (5) Reinstall the scoped session subscriptions against the
+    // new pair (task 6.5). NB: the ctor still installs its ~50
+    // connects inline; on tab switch we call a helper that runs
+    // the ones that matter for cross-tab-safe presentation +
+    // chrome behaviour. Connects whose slot bodies read the shell
+    // aliases at trigger time (`UpdateRowsShownStatus`, ...) end
+    // up correct either way because `SetActiveSessionAliases`
+    // already re-pointed the aliases at the new pair; the
+    // reinstall matters for the connects whose slot bodies
+    // ACT on model / session events (parse-error routing,
+    // rotation flash, streaming completion) so they fire only for
+    // the currently-active tab.
+    InstallActiveSessionConnections();
+
+    // (6) Rebind every shared dock against the new context.
+    RebindSharedDocks(activeSessionBindContext());
+
+    // (7) Refresh window / status chrome AND the shell-owned UI
+    // that mirrors the active session's per-tab state (phase-6
+    // review-2 M1 fix): the Filters menu carries one QAction per
+    // filter, `actionClearAllFilters` derives its enabled state
+    // from the filter count, column visibility flags live on the
+    // session's model, and the level-cell delegate targets the
+    // now-active view's table. Without these re-applications a
+    // switch would leave the previous tab's filter list in the
+    // menu, an empty new view rendering with the previous view's
+    // hidden columns, and the icon-mode level cell pointing at the
+    // wrong table.
+    UpdateWindowTitle();
+    UpdateStreamingStatus();
+    UpdateRowsShownStatus();
+    UpdateSortStatus();
+    UpdateDiagnosticsStatus();
+    UpdateStreamToolbarVisibility();
+    RebuildFilterMenuFromActiveSession();
+    SyncClearAllFiltersEnabled();
+    ApplyColumnVisibility();
+    if (mLevelCellDelegate != nullptr && newView != nullptr)
+    {
+        newView->ApplyLevelCellDelegate(mLevelCellDelegate);
+    }
+    // Reseed the follow-tail suppression flag from the toolbar
+    // action's current checked state so the new view's pill
+    // suppression matches the shell action's cache.
+    if (ui != nullptr && ui->actionFollowTail != nullptr && mTableView != nullptr)
+    {
+        mTableView->SetPendingNewRowsSuppressed(ui->actionFollowTail->isChecked());
+    }
+
+    // (8) Restore focus. Prefer the tab's last-known focus widget;
+    // fall back to the table view so keyboard nav is immediate.
+    QWidget *focusTarget = record->lastFocus.data();
+    if (focusTarget == nullptr && record->view != nullptr)
+    {
+        focusTarget = record->view->TableView();
+    }
+    if (focusTarget != nullptr)
+    {
+        focusTarget->setFocus(Qt::OtherFocusReason);
+    }
+}
+
+void MainWindow::RefreshTabChrome(const LogSession *session)
+{
+    if (mTabWidget == nullptr || session == nullptr)
+    {
+        return;
+    }
+    const int index = TabIndexForSession(session->InstanceId());
+    if (index < 0)
+    {
+        return;
+    }
+
+    // Task 6.6 / 6.7: label + tooltip derived from the session
+    // presentation snapshot so live state (streaming, dirty,
+    // errors) surfaces in the tab strip.
+    const SessionPresentationSnapshot snapshot = session->PresentationSnapshot();
+
+    QString label = snapshot.shortLabel;
+    if (label.isEmpty())
+    {
+        label = tr("Untitled");
+    }
+
+    // Non-color-only indicators so the label still reads without
+    // colour cues (PRD FR-32). Live and paused live-tail sessions
+    // get a leading marker; dirty sessions get a trailing marker.
+    // The Qt-standard `[*]` place-holder is reserved for the
+    // window title, not tab titles, so we spell the dirty marker
+    // out (`\u25CF`, a filled bullet) with an accessible tooltip.
+    const std::uint32_t ops = snapshot.operations;
+    QString prefix;
+    if ((ops & static_cast<std::uint32_t>(SessionOperationState::Disconnected)) != 0)
+    {
+        prefix = QStringLiteral("\u2205 "); // Empty set: disconnected placeholder.
+    }
+    else if ((ops & static_cast<std::uint32_t>(SessionOperationState::Paused)) != 0)
+    {
+        prefix = QStringLiteral("\u23F8 "); // Pause: user paused live-tail.
+    }
+    else if ((ops & static_cast<std::uint32_t>(SessionOperationState::Ingesting)) != 0)
+    {
+        prefix = QStringLiteral("\u25B6 "); // Play triangle: live-tail / network producer active.
+    }
+    else if ((ops & static_cast<std::uint32_t>(SessionOperationState::Decompressing)) != 0)
+    {
+        prefix = QStringLiteral("\u21BB "); // Circular arrow: decompressing.
+    }
+    else if ((ops & static_cast<std::uint32_t>(SessionOperationState::Exporting)) != 0)
+    {
+        prefix = QStringLiteral("\u21E7 "); // Upwards arrow: exporting.
+    }
+    else if ((ops & static_cast<std::uint32_t>(SessionOperationState::Parsing)) != 0)
+    {
+        prefix = QStringLiteral("\u2026 "); // Ellipsis: parsing static open.
+    }
+    else if ((ops & static_cast<std::uint32_t>(SessionOperationState::SourceWaiting)) != 0)
+    {
+        prefix = QStringLiteral("\u29D6 "); // Hourglass-ish: source waiting.
+    }
+
+    QString suffix;
+    if (snapshot.dirty.filtersDirty)
+    {
+        suffix = QStringLiteral(" \u25CF"); // Bullet: unsaved filter/sort/column changes.
+    }
+    if (snapshot.errorCount > 0)
+    {
+        // Trailing exclamation for parse errors so screen readers
+        // announce it even without the tooltip.
+        suffix += QStringLiteral(" !");
+    }
+
+    mTabWidget->setTabText(index, prefix + label + suffix);
+
+    QString tooltip = snapshot.tooltip;
+    if (tooltip.isEmpty())
+    {
+        tooltip = label;
+    }
+    if (snapshot.dirty.filtersDirty)
+    {
+        tooltip += QLatin1Char('\n');
+        tooltip += tr("Unsaved changes");
+    }
+    if (snapshot.errorCount > 0)
+    {
+        tooltip += QLatin1Char('\n');
+        tooltip += tr("%n parse error(s)", nullptr, static_cast<int>(snapshot.errorCount));
+    }
+    mTabWidget->setTabToolTip(index, tooltip);
+
+    // Accessibility: `QTabBar` in Qt 6.x does not expose a
+    // `setTabAccessibleName` API; the tab text itself is what a
+    // screen reader announces. That includes the operation-state
+    // prefix glyphs (busy dot, disconnected symbol, ...) and the
+    // dirty / parse-error suffixes we composed above, which is
+    // the intended a11y contract -- users hear the status along
+    // with the source label. Phase-6 review-1 note: an earlier
+    // draft of this comment incorrectly claimed the glyphs were
+    // dropped from the announced label.
+}
+
+void MainWindow::InstallActiveSessionConnections()
+{
+    // Task 6.5 / phase-6 review-1 B1 fix: single source of truth
+    // for the scoped session / model / view subscription bag. The
+    // ctor calls this helper at the end of construction (after
+    // every referenced dock, toolbar, and action exists), and
+    // `OnActiveTabChanged` calls it again after
+    // `mSessionConnections.Clear()` on a tab switch. This means
+    // both the initial install and every subsequent tab-switch
+    // install use exactly the same connect set -- no more
+    // "phase-4 wrapped this, phase-6 forgot to reinstall" bugs.
+    //
+    // Contract:
+    //   * every connect below is prefixed with
+    //     `mSessionConnections +=` so `Clear()` reaps the whole
+    //     set atomically on tab switch;
+    //   * slots that read shell aliases (`mModel`, `mTableView`,
+    //     ...) are safe because `SetActiveSessionAliases` has
+    //     already re-pointed them before we reinstall;
+    //   * connects whose LAMBDA captures a session pointer
+    //     directly (rare -- see the enum-column pipeline) use
+    //     the member function `OnEnumColumnsChangedApplyFilterRebuild`
+    //     so there is only one place the body lives.
+    //
+    // NOT installed here (kept as persistent per-tab connects in
+    // the ctor and `AddNewTab`):
+    //   * `LogSession::presentationChanged -> RefreshTabChrome`
+    //     (H3): a background tab must keep refreshing its own
+    //     tab-strip chrome even while it is not active.
+    //   * `LogSession::filtersDirtyChanged -> UpdateWindowTitle`
+    //     (H2): a background edit must still light the window's
+    //     `[*]` marker via the aggregate.
+    //   * shared-dock `Bind` / `Unbind`: those live on the docks
+    //     and are re-driven by `RebindSharedDocks` after this
+    //     helper runs.
+    if (mSession == nullptr || mModel == nullptr || mSessionView == nullptr || mTableView == nullptr ||
+        mSortFilterProxyModel == nullptr || mOverviewRailModel == nullptr || mOverviewRailWidget == nullptr)
+    {
+        return;
+    }
+
+    // --- Session-owned signals ------------------------------------------
+    // rotationFlashChanged only meaningfully drives the ACTIVE tab's
+    // status bar, so it stays bag-scoped. `filtersDirtyChanged` and
+    // `presentationChanged` are wired PERSISTENTLY per-tab (in the
+    // ctor for the initial tab and in `AddNewTab` for later tabs)
+    // so background tabs still feed the window's aggregate dirty
+    // marker and refresh their own tab chrome (phase-6 review-1 H2
+    // and H3 fixes).
+    mSessionConnections += connect(mSession, &LogSession::rotationFlashChanged, this, [this](bool /*active*/) {
+        UpdateStreamingStatus();
+    });
+
+    // --- Model-owned signals: columns/level delegate/highlight sync ----
+    mSessionConnections +=
+        connect(mModel, &QAbstractItemModel::columnsInserted, this, [this](const QModelIndex &, int, int) {
+            if (mHighlights == nullptr || mModel == nullptr)
+            {
+                return;
+            }
+            if (mHighlightRulesEditor != nullptr)
+            {
+                mHighlightRulesEditor->SetColumns(mModel->Configuration().columns);
+            }
+            if (FilterHasUnresolvedLeaves(mModel->Configuration().expression, mModel->Configuration().columns))
+            {
+                UpdateFilters();
+            }
+        });
+    mSessionConnections += connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::ApplyColumnVisibility);
+    if (mTheme != nullptr)
+    {
+        mSessionConnections +=
+            connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::ApplyLevelCellDelegate);
+        mSessionConnections +=
+            connect(mModel, &QAbstractItemModel::columnsInserted, this, &MainWindow::ApplyLevelCellDelegate);
+        mSessionConnections +=
+            connect(mModel, &QAbstractItemModel::columnsRemoved, this, &MainWindow::ApplyLevelCellDelegate);
+        mSessionConnections += connect(
+            mModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason reason, int /*columnIndex*/) {
+                if (reason == EnumColumnsChangeReason::Grew)
+                {
+                    return;
+                }
+                ApplyLevelCellDelegate();
+            }
+        );
+    }
+
+    // --- View / rail / progress ----------------------------------------
+    mSessionConnections +=
+        connect(mOverviewRailWidget, &OverviewRailWidget::proxyRowClicked, this, &MainWindow::ScrollToProxyRow);
+    mSessionConnections += connect(mSessionView, &LogSessionView::rowNotVisible, this, [this]() {
+        statusBar()->showMessage(tr("Row is not currently visible."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+    });
+    mSessionConnections += connect(mSessionView, &LogSessionView::followTailDisengageRequested, this, [this]() {
+        if (ui != nullptr && ui->actionFollowTail != nullptr && ui->actionFollowTail->isChecked())
+        {
+            ui->actionFollowTail->setChecked(false);
+        }
+    });
+    mSessionConnections +=
+        connect(mSessionView, &LogSessionView::statusMessageRequested, this, [this](const QString &message) {
+            statusBar()->showMessage(message, STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        });
+    mSessionConnections += connect(mSessionView, &LogSessionView::progressCancelRequested, this, [this]() {
+        if (auto *decompressionOrigin = mDecompressionPollOriginSession.data())
+        {
+            if (decompressionOrigin->IsDecompressionInFlight())
+            {
+                decompressionOrigin->MutableDecompressionStopSource().request_stop();
+            }
+        }
+        if (auto *exportOrigin = mExportPollOriginSession.data())
+        {
+            if (exportOrigin->IsExportInFlight())
+            {
+                exportOrigin->MutableExportStopSource().request_stop();
+            }
+        }
+    });
+    mSessionConnections += connect(mOverviewRailModel, &OverviewRailModel::bucketsChanged, this, [this]() {
+        const auto &findCacheOpt = mSession->FindMatchCacheState();
+        if (!IsFindBarVisible() || !findCacheOpt.has_value() || mOverviewRailModel == nullptr)
+        {
+            return;
+        }
+        const std::size_t n = mOverviewRailModel->BucketCount();
+        if (n == 0)
+        {
+            return;
+        }
+        if (findCacheOpt->bucketCounts.size() == n && mOverviewRailModel->HasMatchTicks())
+        {
+            return;
+        }
+        PushFindMatchesToOverviewRail();
+    });
+
+    // --- Header / row context menus + column moves ---------------------
+    mSessionConnections +=
+        connect(mTableView->horizontalHeader(), &QHeaderView::sectionMoved, this, &MainWindow::OnHeaderSectionMoved);
+    mSessionConnections += connect(
+        mTableView->horizontalHeader(),
+        &QHeaderView::customContextMenuRequested,
+        this,
+        &MainWindow::ShowHeaderContextMenu
+    );
+    mSessionConnections +=
+        connect(mTableView, &QWidget::customContextMenuRequested, this, &MainWindow::ShowRowContextMenu);
+    mSessionConnections += connect(mModel, &QAbstractItemModel::columnsMoved, this, &MainWindow::OnSourceColumnsMoved);
+    mSessionConnections += connect(
+        mModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason /*reason*/, int /*columnIndex*/) {
+            if (mHighlights == nullptr || mModel == nullptr)
+            {
+                return;
+            }
+            mHighlights->RebindColumns(mModel->Configuration().columns, &mModel->Table());
+        }
+    );
+    // Enum-column change -> filter rebuild pipeline (Demoted /
+    // Promoted / Grew branches). Extracted to a member function so
+    // the 140-line body has one source of truth for both the ctor
+    // install and the tab-switch reinstall (B1 fix).
+    mSessionConnections +=
+        connect(mModel, &LogModel::enumColumnsChanged, this, &MainWindow::OnEnumColumnsChangedApplyFilterRebuild);
+
+    // --- Shell action -> view-owned table (Copy, follow-tail toggle,
+    // anchor color hotkeys, clear-anchor, jump-to-tail pill,
+    // double-click details) --------------------------------------------
+    mSessionConnections +=
+        connect(ui->actionCopy, &QAction::triggered, mTableView, &LogTableView::CopySelectedRowsToClipboard);
+    mSessionConnections += connect(mTableView, &LogTableView::userScrolledAwayFromTail, this, [this]() {
+        if (ui->actionFollowTail->isChecked())
+        {
+            ui->actionFollowTail->setChecked(false);
+        }
+    });
+    mSessionConnections += connect(mTableView, &LogTableView::userScrolledToTail, this, [this]() {
+        if (!ui->actionFollowTail->isChecked() && IsLiveTailSession())
+        {
+            ui->actionFollowTail->setChecked(true);
+        }
+    });
+    mSessionConnections += connect(ui->actionFollowTail, &QAction::toggled, this, [this](bool checked) {
+        if (mTableView != nullptr)
+        {
+            mTableView->SetPendingNewRowsSuppressed(checked);
+        }
+    });
+    mSessionConnections += connect(mTableView, &LogTableView::jumpToTailRequested, this, [this]() {
+        if (mTableView != nullptr)
+        {
+            mTableView->AcknowledgePendingNewRows();
+        }
+        JumpToNewestRow();
+        if (IsLiveTailSession() && !ui->actionFollowTail->isChecked())
+        {
+            ui->actionFollowTail->setChecked(true);
+        }
+    });
+
+    // --- Find-cache invalidation via the sort/filter proxy -------------
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::OnFindCacheInvalidated);
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::OnFindCacheInvalidated);
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::layoutChanged, this, &MainWindow::OnFindCacheInvalidated);
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::modelReset, this, &MainWindow::OnFindCacheInvalidated);
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::columnsInserted, this, &MainWindow::OnFindCacheInvalidated);
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::columnsRemoved, this, &MainWindow::OnFindCacheInvalidated);
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::columnsMoved, this, &MainWindow::OnFindCacheInvalidated);
+    mSessionConnections += connect(
+        mSortFilterProxyModel,
+        &QAbstractItemModel::dataChanged,
+        this,
+        [this](const QModelIndex & /*topLeft*/, const QModelIndex & /*bottomRight*/, const QList<int> &roles) {
+            if (LogModel::IsStyleOnlyRoleChange(roles))
+            {
+                return;
+            }
+            OnFindCacheInvalidated();
+        }
+    );
+
+    // --- Rows-shown status ---------------------------------------------
+    mSessionConnections += connect(mModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::UpdateRowsShownStatus);
+    mSessionConnections += connect(mModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::UpdateRowsShownStatus);
+    mSessionConnections += connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateRowsShownStatus);
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::UpdateRowsShownStatus);
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::UpdateRowsShownStatus);
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateRowsShownStatus);
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::layoutChanged, this, &MainWindow::UpdateRowsShownStatus);
+
+    // --- Sort status ---------------------------------------------------
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::layoutChanged, this, &MainWindow::UpdateSortStatus);
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateSortStatus);
+    mSessionConnections += connect(mModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::UpdateSortStatus);
+    mSessionConnections += connect(mModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::UpdateSortStatus);
+    mSessionConnections += connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateSortStatus);
+    mSessionConnections += connect(
+        mModel, &QAbstractItemModel::headerDataChanged, this, [this](Qt::Orientation orientation, int first, int last) {
+            if (orientation != Qt::Horizontal || mSortFilterProxyModel == nullptr)
+            {
+                return;
+            }
+            const int sortColumn = mSortFilterProxyModel->SortColumn();
+            if (sortColumn < 0 || sortColumn < first || sortColumn > last)
+            {
+                return;
+            }
+            UpdateSortStatus();
+        }
+    );
+
+    // --- Double-click -> details ---------------------------------------
+    mSessionConnections +=
+        connect(mTableView, &QAbstractItemView::doubleClicked, this, &MainWindow::ShowRecordDetailsForProxyIndex);
+
+    // --- Anchor color hotkeys (Ctrl+1..Ctrl+9) target the active view --
+    for (std::size_t i = 0; i < mAnchorColorActions.size(); ++i)
+    {
+        QAction *action = mAnchorColorActions[i];
+        if (action == nullptr)
+        {
+            continue;
+        }
+        const int colourIndex = static_cast<int>(i);
+        mSessionConnections += connect(action, &QAction::triggered, mTableView, [view = mTableView, colourIndex]() {
+            view->AnchorSelection(colourIndex);
+        });
+    }
+    if (mActionClearRowAnchor != nullptr)
+    {
+        mSessionConnections +=
+            connect(mActionClearRowAnchor, &QAction::triggered, mTableView, &LogTableView::ClearAnchorOnSelection);
+    }
+
+    // --- Streaming lifecycle + line/error counts + rotation flash ------
+    mSessionConnections += connect(mModel, &LogModel::lineCountChanged, this, [this](qsizetype count) {
+        mSession->SetStreamingLineCount(count);
+        UpdateStreamingStatus();
+        if (IsLiveTailSession() && !mSession->FirstStreamingBatchSeen() && count > 0)
+        {
+            mSession->SetFirstStreamingBatchSeen(true);
+            UpdateUi();
+            UpdateWindowTitle();
+        }
+        if (IsLiveTailSession())
+        {
+            ScrollToNewestRowIfFollowing();
+        }
+    });
+    mSessionConnections += connect(mModel, &LogModel::errorCountChanged, this, [this](qsizetype count) {
+        mSession->SetStreamingErrorCount(count);
+        UpdateStreamingStatus();
+    });
+    mSessionConnections += connect(mModel, &LogModel::streamingFinished, this, &MainWindow::OnStreamingFinished);
+    mSessionConnections += connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
+    mSessionConnections += connect(mModel, &LogModel::sourceStatusChanged, this, &MainWindow::OnSourceStatusChanged);
+    mSessionConnections += connect(mModel, &LogModel::columnHealthChanged, this, &MainWindow::UpdateDiagnosticsStatus);
+
+    // --- Selection tracking for the Record Details dock (B2 fix) -------
+    // Reinstall after the alias swap so the connection targets the
+    // newly-bound table's selection model instead of the destroyed
+    // outgoing one.
+    RebindRecordDetailSelectionTracking();
 }
 
 void MainWindow::AggregateWindowModified()
@@ -2818,14 +3497,35 @@ void MainWindow::OpenRecentSession(const QString &uuid)
         return;
     }
 
-    // Recent Sessions is "open this exact view", so discard the
-    // current session before applying. `NewSession` also detaches
-    // our previous uuid; we re-pin below.
-    NewSession();
+    // Task 6.8 (phase-6 review-1 H1 fix): Recent Sessions opens in
+    // a new foreground tab by default so the currently-active tab
+    // is preserved. Only fall back to replace-in-place when the
+    // active tab has no bound source and no rows -- that is the
+    // "blank landing tab" state (a fresh ctor tab or one that was
+    // just cleared by `NewSession()`), where reusing the empty
+    // slot is preferable to leaving an unused tab behind. We do
+    // NOT gate on `IsFiltersDirty()` here because `NewSession()`
+    // itself marks the session dirty via `ClearAllFilters()` --
+    // treating that as "not empty" would fork Recent-Sessions
+    // behaviour every time a user cleared the workspace before
+    // opening a recent.
+    const bool activeTabIsEmpty = (mSession != nullptr) && !mSession->CurrentSource().has_value() &&
+                                  (mModel == nullptr || mModel->rowCount(QModelIndex{}) == 0);
+    if (!activeTabIsEmpty)
+    {
+        AddNewTab(/*makeActive=*/true);
+    }
+    else
+    {
+        // Replace-in-place tears down current session/model state.
+        // `NewSession` also detaches our previous uuid; we re-pin
+        // below via `Touch` inside the streaming setup.
+        NewSession();
+    }
 
     // Defer the loaded sort until streaming finishes (see
-    // `ApplyDeferredSortFromConfig`). Set *after* `NewSession`,
-    // which clears the latch.
+    // `ApplyDeferredSortFromConfig`). Set *after* `NewSession`/
+    // `AddNewTab`, which clear the latch on the target session.
     mSession->SetPendingApplySortFromConfig(true);
 
     // Apply failure surfaces a `QMessageBox`; bail without queueing
@@ -4361,6 +5061,59 @@ void MainWindow::CancelInFlightDecompression()
 
 void MainWindow::OnDecompressionFinished()
 {
+    // Phase-6 review-2 M4 fix: route to the ORIGIN session, not
+    // whichever session happens to be active at completion time.
+    // Once tabs exist, the user can Ctrl+T out of a background
+    // decompression (the progress dialog is deferred, and the
+    // test suppresses dialogs entirely). Reading `mSession->…`
+    // in that window would (a) trip the "not in flight" guard on
+    // the WRONG session and drop the result, and (b) leave the
+    // ORIGIN latched in-flight forever so its tab could never
+    // open another compressed file.
+    LogSession *origin = mDecompressionPollOriginSession.data();
+    if (origin == nullptr)
+    {
+        // Origin was torn down (tab closed while decompressing).
+        // The watcher lifetime is tied to the origin session
+        // (`~LogSession` waits on the watcher, see
+        // `log_session.cpp:157-177`), so there is nothing to
+        // clean up on our side.
+        return;
+    }
+    if (origin != mSession)
+    {
+        // Origin is still alive but the user switched tabs mid-
+        // decompression. Do the state cleanup on the ORIGIN so it
+        // is not latched in-flight, then drop the result. The
+        // user can re-open the file from the origin tab; a
+        // scratch-path recompression avoidance would be a phase-7
+        // enhancement (task 7.6 origin binding).
+        origin->SetDecompressionInFlight(false);
+        origin->ClearApplyEmbeddedBundleConfig();
+        origin->ClearDecompressionScratchPaths();
+        origin->MutablePendingDecompressionErrors().clear();
+        if (auto *w = origin->DecompressionWatcherPtr(); w != nullptr)
+        {
+            // Detach the future to release the shared_ptr and
+            // allow the next decompression on this session to
+            // re-arm cleanly.
+            w->setFuture(QFuture<LogSession::DecompressionByteSourcePtr>{});
+        }
+        mDecompressionPollOriginSession.clear();
+        mDecompressionPollOriginView.clear();
+        if (mDecompressionPollTimer != nullptr)
+        {
+            mDecompressionPollTimer->stop();
+        }
+        // Nudge the origin's chrome so its tab-strip glyphs drop
+        // the Decompressing indicator immediately. Presentation
+        // signal fanout handles the rest. Emitting from outside
+        // the class is unusual but Qt allows it: signals are
+        // moc-generated public methods.
+        emit origin->presentationChanged();
+        return;
+    }
+
     // Bail if the cancel path already ran (see the
     // `mSession->IsDecompressionInFlight()` doc for why this can happen even
     // after `setFuture({})`). Reading `result()` off the reset
@@ -7604,6 +8357,42 @@ QString MainWindow::RestorableActiveSessionUuid() const noexcept
     return mSession->RestorableSessionUuid();
 }
 
+QStringList MainWindow::RestorableHostedSessionUuids() const
+{
+    QStringList result;
+    for (const LogSession *session : hostedSessions())
+    {
+        if (session == nullptr)
+        {
+            continue;
+        }
+        const QString uuid = session->RestorableSessionUuid();
+        if (!uuid.isEmpty())
+        {
+            result.append(uuid);
+        }
+    }
+    return result;
+}
+
+void MainWindow::AutoSaveAllHostedSessions(bool publishOpenWindow)
+{
+    if (mTabWidget == nullptr)
+    {
+        AutoSaveSessionSnapshot(publishOpenWindow);
+        return;
+    }
+    const int total = mTabWidget->count();
+    for (int idx = 0; idx < total; ++idx)
+    {
+        if (mTabWidget->currentIndex() != idx)
+        {
+            mTabWidget->setCurrentIndex(idx);
+        }
+        AutoSaveSessionSnapshot(publishOpenWindow);
+    }
+}
+
 void MainWindow::closeEvent(QCloseEvent *event)
 {
     // Run the base first so an `ignore()` from a subclass / event
@@ -7692,22 +8481,65 @@ void MainWindow::closeEvent(QCloseEvent *event)
     // Cancel the export worker here (closeEvent runs before
     // ~MainWindow); the destructor's Cancel is a defensive backstop.
     CancelInFlightExport();
-    // Final flush so the restore-on-launch loop captures user
-    // edits made after the last `streamingFinished`. Best-effort:
-    // I/O failures inside the manager are silenced.
+    // Sibling tabs' workers also need a stop-request so their
+    // futures don't deliver into a half-destructed shell. The
+    // synchronous drain still lives in `~LogSession()`
+    // (`log_session.cpp:157-177`); this loop only issues the
+    // stop-request. Mirrors the pattern in `~MainWindow`.
+    for (LogSession *session : hostedSessions())
+    {
+        if (session == nullptr || session == mSession)
+        {
+            continue;
+        }
+        session->MutableDecompressionStopSource().request_stop();
+        session->MutableExportStopSource().request_stop();
+    }
+
+    // Phase-6 review-3 finding #3 fix: multi-tab persistence.
+    // Prior to this fix, closeEvent flushed only the ACTIVE tab
+    // through `AutoSaveSessionSnapshot` / `DetachAutoSaveUuid`,
+    // silently discarding every background tab's restorable state
+    // and leaving their auto-save uuids published in the recents
+    // index. Multi-tab windows now walk every hosted tab: briefly
+    // activate it so the alias-routed helpers see the tab's
+    // session / model, save, then detach.
     //
-    // `publishOpenWindow=false` because we Remove the uuid on the
-    // next line anyway.
-    AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
-    // Detach + clear the uuid so the `aboutToQuit` fan doesn't
-    // re-publish a window the user just closed (the primary stays
-    // in `topLevelWidgets()` past closeEvent).
-    DetachAutoSaveUuid();
-    // Drop the rest of the session state so a subsequent
-    // `aboutToQuit` flush short-circuits in `ShouldAutoSaveSession`
-    // rather than minting a fresh uuid for the just-closed view.
-    mSession->MutableCurrentSource().reset();
-    mSession->ResetMode();
+    // Route through `mTabWidget->setCurrentIndex` (rather than
+    // hand-swapping aliases) so `OnActiveTabChanged` runs the full
+    // alias refresh + subscription reinstall + dock rebind that
+    // `AutoSaveSessionSnapshot`'s helpers depend on. This is
+    // deliberately expensive but only runs on window close.
+    //
+    // `publishOpenWindow=false` on every tab because we
+    // `DetachAutoSaveUuid` right after each save; publishing would
+    // leave stale entries for the just-closed session.
+    const int tabCountAtClose = mTabWidget != nullptr ? mTabWidget->count() : 0;
+    if (tabCountAtClose > 0)
+    {
+        for (int idx = 0; idx < tabCountAtClose; ++idx)
+        {
+            if (mTabWidget->currentIndex() != idx)
+            {
+                mTabWidget->setCurrentIndex(idx);
+            }
+            AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
+            DetachAutoSaveUuid();
+            if (mSession != nullptr)
+            {
+                mSession->MutableCurrentSource().reset();
+                mSession->ResetMode();
+            }
+        }
+    }
+    else
+    {
+        // Defensive: no `mTabWidget` (headless / early-teardown).
+        AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
+        DetachAutoSaveUuid();
+        mSession->MutableCurrentSource().reset();
+        mSession->ResetMode();
+    }
 }
 
 void MainWindow::SaveConfiguration()
@@ -8333,6 +9165,154 @@ void MainWindow::OnFindCacheInvalidated()
     if (mFindRecord != nullptr && IsFindBarVisible())
     {
         mFindRecord->BumpMatchCountDebounce();
+    }
+}
+
+void MainWindow::OnEnumColumnsChangedApplyFilterRebuild(EnumColumnsChangeReason reason, int columnIndex)
+{
+    // Keep enum filter bitsets and sort ranks in sync with the live
+    // dictionary; scope the work to the reason that fired:
+    //   - `Demoted`: the cached `EnumDictionary*` is now dangling.
+    //     Flush the rank cache and rebuild predicates onto the
+    //     string-set fallback.
+    //   - `Promoted`: a column just gained a dictionary. Any
+    //     `EnumRowPredicate` built earlier for that column was
+    //     constructed with `dictionary = nullptr` and otherwise sits
+    //     on the slow string-set fallback forever; rebuild so it
+    //     picks up the bitset hot path. The signal doesn't say which
+    //     column promoted, so any active enum filter triggers a
+    //     rebuild. `EnumRankFor` self-heals on the next sort, so no
+    //     cache flush is needed.
+    //   - `Grew`: existing predicates still work (bitset for resolved
+    //     ids, string-set fallback for unresolved). Rebuild only when
+    //     a filter has unresolved values that may have just been
+    //     interned -- the only case where rebuilding upgrades anything.
+    if (mModel == nullptr || mSortFilterProxyModel == nullptr || mSession == nullptr)
+    {
+        return;
+    }
+    if (reason == EnumColumnsChangeReason::Demoted)
+    {
+        // Broad flush: rank cache keys alias across columns via
+        // `EnumRankFor`, so invalidate everything to be safe.
+        mSortFilterProxyModel->InvalidateEnumRanks();
+
+        // A `Type::Level -> Type::String` demote orphans any saved
+        // canonical-name filter (`"Info"`, ...) because those
+        // strings never appear in the column's raw data. Translate
+        // them to the raw entries `LogModel::AppendBatch` captured
+        // pre-demote so the filter keeps matching the same rows.
+        // Plain enum demotes need no translation;
+        // `LastBatchLevelDemoteMappingFor` returns nullptr there.
+        if (columnIndex >= 0)
+        {
+            if (const auto *levelMapping = mModel->LastBatchLevelDemoteMappingFor(columnIndex); levelMapping != nullptr)
+            {
+                // Re-entrancy guard: the rewrite + downstream sync
+                // calls walk `mSimpleLeaves`, so a transitive re-emit
+                // of `enumColumnsChanged` for the same column would
+                // see half-rewritten state.
+                if (mSession->IsApplyingEnumRebuild())
+                {
+                    return;
+                }
+                mSession->SetApplyingEnumRebuild(true);
+                const auto demoteGuard = qScopeGuard([this]() { mSession->SetApplyingEnumRebuild(false); });
+                const auto &columnsCfg = mModel->Configuration().columns;
+                const loglib::LogConfiguration::Column *demotedColumn =
+                    std::cmp_less(columnIndex, columnsCfg.size()) ? &columnsCfg[static_cast<size_t>(columnIndex)]
+                                                                  : nullptr;
+                for (auto &kv : mSession->MutableSimpleLeaves())
+                {
+                    loglib::LeafRule &filter = kv.second;
+                    const int resolvedRow = ResolveLeafColumnByKeys(filter.columnKeys, columnsCfg);
+                    if (resolvedRow != columnIndex)
+                    {
+                        continue;
+                    }
+                    if (filter.type != loglib::LeafRule::Type::Enumeration)
+                    {
+                        continue;
+                    }
+                    std::vector<std::string> expanded;
+                    for (const std::string &name : filter.filterValues)
+                    {
+                        std::optional<loglib::LogLevel> level;
+                        if (demotedColumn != nullptr)
+                        {
+                            level = loglib::ResolveLevel(name, demotedColumn->levelMapping);
+                        }
+                        else
+                        {
+                            level = loglib::ParseLevelName(name);
+                        }
+                        if (!level.has_value())
+                        {
+                            continue;
+                        }
+                        const auto it = levelMapping->find(*level);
+                        if (it == levelMapping->end())
+                        {
+                            continue;
+                        }
+                        for (const std::string &raw : it->second)
+                        {
+                            expanded.push_back(raw);
+                        }
+                    }
+                    std::ranges::sort(expanded);
+                    const auto dupTail = std::ranges::unique(expanded);
+                    expanded.erase(dupTail.begin(), dupTail.end());
+                    filter.filterValues = std::move(expanded);
+                }
+                MirrorSessionStateToConfiguration();
+                SyncColumnFilterIndicators();
+            }
+        }
+    }
+    // `columnIndex == -1` means "scope unknown" -- treat as
+    // matches-anything to keep the safe broad behaviour.
+    const auto &columnsForResolve = mModel->Configuration().columns;
+    const auto matchesAffectedColumn = [columnIndex, &columnsForResolve](const auto &kv) {
+        if (columnIndex < 0)
+        {
+            return true;
+        }
+        return ResolveLeafColumnByKeys(kv.second.columnKeys, columnsForResolve) == columnIndex;
+    };
+    bool rebuild = false;
+    switch (reason)
+    {
+    case EnumColumnsChangeReason::Demoted:
+        rebuild = std::ranges::any_of(Filters(), [&matchesAffectedColumn](const auto &kv) {
+            return kv.second.type == loglib::LeafRule::Type::Enumeration && matchesAffectedColumn(kv);
+        });
+        break;
+    case EnumColumnsChangeReason::Promoted:
+        rebuild = std::ranges::any_of(Filters(), [&matchesAffectedColumn](const auto &kv) {
+            return kv.second.type == loglib::LeafRule::Type::Enumeration && matchesAffectedColumn(kv);
+        });
+        break;
+    case EnumColumnsChangeReason::Grew:
+        rebuild = std::ranges::any_of(Filters(), [this, &matchesAffectedColumn](const auto &kv) {
+            return kv.second.type == loglib::LeafRule::Type::Enumeration && matchesAffectedColumn(kv) &&
+                   !EnumFilterFullyResolved(kv.second);
+        });
+        break;
+    }
+    if (rebuild)
+    {
+        // Re-entrancy guard: an inner `UpdateFilters` that re-emits
+        // `enumColumnsChanged` must not rebuild on a half-updated
+        // state. Queued signals that arrive after the outer call
+        // returns rebuild normally.
+        if (mSession->IsApplyingEnumRebuild())
+        {
+            return;
+        }
+        mSession->SetApplyingEnumRebuild(true);
+        const auto guard = qScopeGuard([this]() { mSession->SetApplyingEnumRebuild(false); });
+        UpdateFilters();
     }
 }
 

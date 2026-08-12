@@ -78,6 +78,7 @@ class MainWindow;
 }
 class QMenu;
 class QProgressDialog;
+class QTabWidget;
 template <typename T> class QFutureWatcher;
 QT_END_NAMESPACE
 
@@ -352,6 +353,58 @@ public:
     ///     window commits to closing.
     [[nodiscard]] std::vector<LogSession *> hostedSessions() const;
 
+    // ----- Tab public API (task 6.x) ------------------------------
+
+    /// Number of currently-open tabs (>= 1 for a live window).
+    [[nodiscard]] int TabCount() const noexcept;
+
+    /// Currently-active tab index, matching `mTabWidget->currentIndex()`.
+    /// -1 iff `mTabWidget` is null (mid-construction / post-destruction).
+    [[nodiscard]] int ActiveTabIndex() const noexcept;
+
+    /// The tab strip widget hosted as `MainWindow`'s central widget.
+    /// Test seam; production callers should read tab state through
+    /// the accessors above rather than the raw widget.
+    [[nodiscard]] QTabWidget *TabWidgetForTest() const noexcept
+    {
+        return mTabWidget;
+    }
+
+    /// The `LogSession` hosted by the tab at @p index. Returns
+    /// nullptr for out-of-range indices or if the record has been
+    /// zeroed by a mid-teardown observer read.
+    [[nodiscard]] LogSession *SessionAtTab(int index) const noexcept;
+
+    /// Return the tab index for @p id, or -1 if no tab hosts a
+    /// session with that instance id. Stable across tab
+    /// reorderings (index recomputed on every call).
+    [[nodiscard]] int TabIndexForSession(SessionInstanceId id) const noexcept;
+
+    /// The `LogSessionView` hosted by the tab at @p index. Same
+    /// nullability contract as `SessionAtTab`.
+    [[nodiscard]] LogSessionView *ViewAtTab(int index) const noexcept;
+
+    /// Programmatically add a new empty tab, exercising the same
+    /// path as the `New Tab` menu action. Returns the new tab's
+    /// `SessionInstanceId`. Test seam; production callers should
+    /// route through `actionNewTab->trigger()`.
+    SessionInstanceId AddNewTabForTest(bool makeActive = true);
+
+    /// Programmatically activate the tab at @p index. Test seam;
+    /// production callers rely on user gestures (tab click, action
+    /// trigger) which reach the same slot via `currentChanged`.
+    void ActivateTabForTest(int index);
+
+    /// Programmatically close the tab at @p index. Test seam that
+    /// forwards to `CloseTabAtIndex` without going through the tab
+    /// widget's close button. Closing the LAST tab still routes
+    /// through `QWidget::close()` (task 6.4 close-last-closes-
+    /// window semantics); `TestClosingLastTabInvokesWindowClose`
+    /// depends on that behaviour. Only the strip-close button
+    /// path is bypassed; the underlying auto-save + worker cancel
+    /// + tear-down sequence is identical.
+    void CloseTabForTest(int index);
+
     /// Clear the scoped-connection bag (task 4.2). Every
     /// subscription installed via `mSessionConnections +=
     /// connect(...)` in the ctor is disconnected atomically.
@@ -435,6 +488,23 @@ public:
     /// `openWindowsAtQuit` (which would otherwise loop the user on
     /// the "Network Stream Session" info popup every launch).
     [[nodiscard]] QString RestorableActiveSessionUuid() const noexcept;
+
+    /// Multi-tab variant of `RestorableActiveSessionUuid` (phase-6
+    /// review-3 finding #3 fix): returns the restorable uuid for
+    /// EVERY hosted session, skipping tabs whose sessions cannot
+    /// fan-restore. `main()`'s `aboutToQuit` publish step calls
+    /// this so multi-tab windows repopulate all their tabs on the
+    /// next launch, not just the last-active one.
+    [[nodiscard]] QStringList RestorableHostedSessionUuids() const;
+
+    /// Multi-tab AutoSave fan (phase-6 review-3 finding #3 fix):
+    /// walks every hosted tab, briefly activates it (routing
+    /// through `OnActiveTabChanged` so the alias-based
+    /// `AutoSaveSessionSnapshot` helpers see the tab's session /
+    /// model), and issues a snapshot save. `publishOpenWindow` is
+    /// forwarded to each per-tab save. Idempotent -- safe to call
+    /// again after `closeEvent` has already run.
+    void AutoSaveAllHostedSessions(bool publishOpenWindow);
 
     /// Mirror runtime session state into the configuration manager,
     /// then `WriteSnapshot` through the injected history manager.
@@ -1058,6 +1128,31 @@ private slots:
     /// re-scan per signal would melt under streaming.
     void OnFindCacheInvalidated();
 
+    /// Enum-column change handler for the filter rebuild pipeline.
+    /// Handles the Demoted / Promoted / Grew branches (rank cache
+    /// flush, level-mapping filter rewrite, targeted UpdateFilters
+    /// rebuild). Extracted to a member function so the ctor bag
+    /// install and the tab-switch reinstall (`InstallActiveSessionConnections`)
+    /// share one source of truth (phase-6 review-1 B1 fix).
+    void OnEnumColumnsChangedApplyFilterRebuild(EnumColumnsChangeReason reason, int columnIndex);
+
+    /// Apply shell-owned table chrome (context-menu policies, grid,
+    /// scroll modes, level cell delegate) to a session view's table.
+    /// Called from the ctor for the initial tab and from `AddNewTab`
+    /// so every hosted tab shares the same policy set (phase-6
+    /// review-1 H4 fix). Safe to call with a null view or before
+    /// `mLevelCellDelegate` exists (the delegate reapply is skipped).
+    void ApplyTableChromeToView(LogSessionView *view);
+
+    /// Rebuild the shell's Filters menu entries from the currently-
+    /// active session's simple-leaf state WITHOUT mutating that
+    /// state (phase-6 review-2 M1 fix). `ResetSimpleFilterState()`
+    /// is destructive to the session and must not be called on a
+    /// tab switch; this helper only touches the menu / status-bar
+    /// affordances so the previously-active tab's filter entries
+    /// disappear and the incoming tab's entries replace them.
+    void RebuildFilterMenuFromActiveSession();
+
     void Find();
     void FindRecords(const QString &text, bool next, bool wildcards, bool regularExpressions);
 
@@ -1182,6 +1277,80 @@ private:
     ///                aliases). Pass `nullptr` during the ctor's
     ///                pre-view phase.
     void SetActiveSessionAliases(LogSession *session, LogSessionView *view) noexcept;
+
+    /// Install every session/model/view-scoped subscription against
+    /// the currently-active `mSession` / `mSessionView` pair (task
+    /// 4.2 / 6.5). Called from the ctor after `mSession` +
+    /// `mSessionView` are ready, and from `OnActiveTabChanged`
+    /// after `SetActiveSessionAliases` has re-pointed the aliases
+    /// at the new tab's session/view. Every `connect(...)` here
+    /// routes through `mSessionConnections += connect(...)` so
+    /// `mSessionConnections.Clear()` disconnects the whole set
+    /// atomically before reinstall.
+    ///
+    /// The helper deliberately does NOT include shell-scoped
+    /// subscriptions whose sender AND slot body reference only
+    /// window-scoped state (dock toggles, primary toolbar buttons,
+    /// most `ui->action*` triggers routed to shell slots). Those
+    /// live for the window's lifetime and Qt reaps them via the
+    /// standard child-destruction walk.
+    void InstallActiveSessionConnections();
+
+    // ----- Tabs (task 6.x) ----------------------------------------
+
+    /// Create a fresh empty tab (new `LogSession` + `LogSessionView`)
+    /// and append it to `mTabWidget`. If @p makeActive is true,
+    /// switch to the new tab; otherwise leave the current active
+    /// tab in place and return the new tab's index for the caller
+    /// to activate later. Returns the tab's `SessionInstanceId`.
+    SessionInstanceId AddNewTab(bool makeActive = true);
+
+    /// Close the tab at @p index, tearing down its session
+    /// (`deleteLater()`) and view page (removed from
+    /// `mTabWidget` then destroyed with the record). If the last
+    /// tab is closed the window itself closes (PRD FR-30).
+    /// Idempotent for out-of-range indices.
+    void CloseTabAtIndex(int index);
+
+    /// `QTabWidget::currentChanged` slot (task 6.5). Runs the
+    /// activation sequence: save outgoing focus -> unbind shared
+    /// docks -> clear scoped subscription bag -> refresh aliases
+    /// -> reinstall subscription bag against new pair -> rebind
+    /// shared docks against new context -> refresh chrome ->
+    /// restore focus. Guarded by `mSuppressActiveTabChange` so
+    /// `insertTab` / `removeTab` during setup do not fire a
+    /// mid-construction switch.
+    void OnActiveTabChanged(int newIndex);
+
+    /// Rebuild the tab strip label / tooltip / icon-slot indicator
+    /// for the tab hosting @p session, driven from
+    /// `LogSession::PresentationSnapshot()` (tasks 6.6 / 6.7).
+    /// No-op if the session no longer has a tab.
+    void RefreshTabChrome(const LogSession *session);
+
+    /// RAII no-op flip of `mSuppressActiveTabChange`. Wrap any
+    /// tab-widget manipulation that would otherwise fire a spurious
+    /// `currentChanged` before `mTabs` is consistent.
+    struct SuppressActiveTabChangeScope
+    {
+        explicit SuppressActiveTabChangeScope(MainWindow &owner) noexcept
+            : mOwner(owner), mPrevious(owner.mSuppressActiveTabChange)
+        {
+            mOwner.mSuppressActiveTabChange = true;
+        }
+        ~SuppressActiveTabChangeScope()
+        {
+            mOwner.mSuppressActiveTabChange = mPrevious;
+        }
+        SuppressActiveTabChangeScope(const SuppressActiveTabChangeScope &) = delete;
+        SuppressActiveTabChangeScope &operator=(const SuppressActiveTabChangeScope &) = delete;
+        SuppressActiveTabChangeScope(SuppressActiveTabChangeScope &&) = delete;
+        SuppressActiveTabChangeScope &operator=(SuppressActiveTabChangeScope &&) = delete;
+
+    private:
+        MainWindow &mOwner;
+        bool mPrevious;
+    };
 
     /// RAII helper for the session-switch latch on `mSession`. Every
     /// destructive open path needs to flip the flag on, run a
@@ -1813,6 +1982,51 @@ private:
     Ui::MainWindow *ui;
     QVBoxLayout *mLayout;
 
+    /// One entry per tab in this window (task 6.1). Owned by the
+    /// `MainWindow` via `std::unique_ptr` so tab removal is a
+    /// well-defined destroy point (session goes through
+    /// `deleteLater`; view page is removed from `mTabWidget` and
+    /// destroyed with the record). Order matches the current
+    /// `mTabWidget` index order; reordering fires
+    /// `QTabBar::tabMoved` which rewrites `mTabs` in-place so
+    /// index-based lookups stay accurate.
+    ///
+    /// Every field is a `QPointer` so a mid-teardown observer sees
+    /// null instead of a dangling pointer. `session` is normally a
+    /// QObject child of `MainWindow` (the ctor parents it that
+    /// way); tab close calls `deleteLater()` on it before removing
+    /// the tab-widget page so the two lifetimes stay in lockstep.
+    struct WindowTab
+    {
+        SessionInstanceId id;
+        QPointer<LogSession> session;
+        QPointer<LogSessionView> view;
+        /// Last-focused widget when this tab was the active tab.
+        /// Restored on tab reactivation (task 6.5). Nullable --
+        /// a fresh tab that never held focus falls back to the
+        /// table view's default focus behaviour.
+        QPointer<QWidget> lastFocus;
+    };
+
+    /// Central-widget tab strip (task 6.1). Owns every tab page
+    /// (`LogSessionView`) as a Qt child; the paired
+    /// `mTabs` vector owns the `LogSession` records that back each
+    /// page. `nullptr` before the ctor finishes central-widget
+    /// setup.
+    QTabWidget *mTabWidget = nullptr;
+
+    /// One record per tab in `mTabWidget`, in tab-index order.
+    /// Kept in sync with `mTabWidget->currentIndex()` via
+    /// `OnActiveTabChanged`. Reordering rewrites the vector via
+    /// `QTabBar::tabMoved` so a `SessionInstanceId`->index lookup
+    /// stays correct.
+    std::vector<std::unique_ptr<WindowTab>> mTabs;
+
+    /// Guard for `OnActiveTabChanged` re-entrancy during tab
+    /// construction / destruction (Qt fires `currentChanged` when
+    /// we add or remove pages before the vectors are consistent).
+    bool mSuppressActiveTabChange = false;
+
     /// Non-visual owner of the model quintet (task 2.1) and, in
     /// later Phase 2 subtasks, of the source lifecycle / filters /
     /// workers / persistence identity. `MainWindow` constructs
@@ -1821,6 +2035,12 @@ private:
     /// *temporary* delegated aliases so incremental extraction stays
     /// buildable. Later phases collapse the aliases and route
     /// commands through `mSession->` directly.
+    ///
+    /// Post-phase-6: this is the ACTIVE-TAB alias, refreshed by
+    /// `SetActiveSessionAliases` on every tab switch. The owning
+    /// storage lives in `mTabs[i]->session` (parented on this
+    /// window; the alias tracks whichever tab is currently at
+    /// `mTabWidget->currentIndex()`).
     LogSession *mSession = nullptr;
 
     /// Per-tab visual workspace (task 3.1 / 3.9). Owns the
@@ -2008,6 +2228,17 @@ private:
     QAction *mActionToggleFind = nullptr;
     /// Toggle action for `mParseErrorsDock`.
     QAction *mActionToggleParseErrors = nullptr;
+
+    /// Tab management actions (task 6.3). Declared programmatically
+    /// so the .ui file does not have to carry them: they belong on
+    /// the File menu (New Tab, Close Tab) and window (Next / Prev
+    /// Tab, with `Ctrl+Tab` shortcuts that Qt would swallow if
+    /// bound to a .ui action).
+    QAction *mActionNewTab = nullptr;
+    QAction *mActionCloseTab = nullptr;
+    QAction *mActionNextTab = nullptr;
+    QAction *mActionPreviousTab = nullptr;
+    QAction *mActionOpenInNewTab = nullptr;
 
     /// Checkable rotation-history Settings action.
     QAction *mActionAutoDetectRotationHistory = nullptr;

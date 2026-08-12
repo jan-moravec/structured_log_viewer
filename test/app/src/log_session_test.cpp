@@ -566,6 +566,58 @@ private slots:
         QCOMPARE(spy.takeFirst().at(0).toBool(), false);
     }
 
+    static void TestTriggerRotationFlashExtendsDeadlineOnRepeatedCall()
+    {
+        // Post-tabs review-round bug fix pin: the header docstring
+        // on `TriggerRotationFlash()` promises that "repeated calls
+        // within an active flash window extend the clear deadline
+        // by another full 3 s". The pre-fix implementation scheduled
+        // an independent `QTimer::singleShot` on every call without
+        // cancelling the earlier one, so the FIRST timer's tick
+        // unconditionally cleared `mRotationFlashActive` at
+        // `ROTATION_FLASH_DURATION_MS` from the first call --
+        // ending the flash early instead of extending it. A
+        // generation counter compared inside the lambda now
+        // short-circuits the stale earlier lambda.
+        LogSession session;
+        QSignalSpy spy(&session, &LogSession::rotationFlashChanged);
+        QVERIFY(spy.isValid());
+
+        session.TriggerRotationFlash();
+        QVERIFY(session.IsRotationFlashActive());
+        QCOMPARE(spy.count(), 1);
+        QCOMPARE(spy.takeFirst().at(0).toBool(), true);
+
+        // Wait ~500 ms so the first timer has ~2500 ms left,
+        // then re-trigger. The second lambda's generation
+        // supersedes the first; the earliest legal auto-clear
+        // is now roughly `500 + ROTATION_FLASH_DURATION_MS`.
+        QTest::qWait(500);
+        session.TriggerRotationFlash();
+        QVERIFY(session.IsRotationFlashActive());
+        QCOMPARE(spy.count(), 0);
+
+        // Wait until 200 ms PAST the first timer's original
+        // deadline. Pre-fix, the flash would have cleared here.
+        // Post-fix, the stale lambda's generation-check
+        // short-circuits and the flash is still active.
+        QTest::qWait(LogSession::ROTATION_FLASH_DURATION_MS - 500 + 200);
+        QVERIFY2(
+            session.IsRotationFlashActive(),
+            "Repeated TriggerRotationFlash within the active window must EXTEND "
+            "the clear deadline. The first singleShot's tick must not clear the "
+            "flash once a later call has bumped the generation counter."
+        );
+        QCOMPARE(spy.count(), 0);
+
+        // Now wait past the second timer's deadline. The
+        // still-armed later lambda whose generation matches
+        // must fire the auto-clear.
+        QTRY_VERIFY_WITH_TIMEOUT(!session.IsRotationFlashActive(), LogSession::ROTATION_FLASH_DURATION_MS + 3000);
+        QCOMPARE(spy.count(), 1);
+        QCOMPARE(spy.takeFirst().at(0).toBool(), false);
+    }
+
     static void TestRotationFlashIsIndependentAcrossSessions()
     {
         // Multi-tab isolation pin (phase-4 review-4 finding #4):
@@ -2208,6 +2260,41 @@ private slots:
         emptyFileSource.kind = loglib::LogConfiguration::Source::Kind::File;
         session.MutableCurrentSource() = emptyFileSource;
         QVERIFY(!session.ShouldAutoSaveAfterStreaming(LogSession::Mode::Static));
+    }
+
+    // -----------------------------------------------------------------
+    // Phase-6 review-4: `ResetRecordDetailPin()` docstring promises
+    // to clear "row, key, and `everPinned`", but a prior body only
+    // reset row + `everPinned`. That leaves a stale `keyLocator` /
+    // `keyLineId` behind. Because
+    // `RecordDetailDock::RestoreStateFromSession` checks the key
+    // path (`!pin.keyLocator.empty() && pin.keyLineId != 0`) BEFORE
+    // `everPinned`, a subsequent bind on a session that happens to
+    // expose an anchor key with the same locator + lineId would
+    // resolve and pin an unrelated row.
+    // -----------------------------------------------------------------
+
+    static void TestResetRecordDetailPinClearsAllFields()
+    {
+        LogSession session;
+        auto &pin = session.MutableRecordDetailPin();
+        pin.pinnedSourceRow = 42;
+        pin.everPinned = true;
+        pin.keyLocator = std::string{"session-A.log"};
+        pin.keyLineId = 12345;
+
+        session.ResetRecordDetailPin();
+
+        const auto &after = session.RecordDetailPin();
+        QCOMPARE(after.pinnedSourceRow, -1);
+        QVERIFY(!after.everPinned);
+        QVERIFY2(
+            after.keyLocator.empty(),
+            "ResetRecordDetailPin must clear keyLocator; otherwise "
+            "RecordDetailDock::RestoreStateFromSession resolves a stale "
+            "key onto an unrelated row on the next bind."
+        );
+        QCOMPARE(after.keyLineId, static_cast<std::uint64_t>(0));
     }
 };
 

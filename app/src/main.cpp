@@ -329,6 +329,15 @@ int main(int argc, char *argv[])
         const QList<QWidget *> topLevels = QApplication::topLevelWidgets();
 
         // Phase 1: flush + gather; publish runs in phase 3.
+        //
+        // Multi-tab (phase-6 review-3 finding #3): walk EVERY
+        // hosted tab of every window. `AutoSaveAllHostedSessions`
+        // routes each per-tab save through the shell's alias-
+        // based helpers so background tabs' state is preserved,
+        // not just the last-active tab of each window.
+        // `RestorableHostedSessionUuids` gathers every restorable
+        // uuid in the window (single-tab windows collapse to
+        // the previous behaviour).
         for (QWidget *widget : topLevels)
         {
             auto *mw = qobject_cast<MainWindow *>(widget);
@@ -336,11 +345,14 @@ int main(int argc, char *argv[])
             {
                 continue;
             }
-            mw->AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
-            const QString uuid = mw->RestorableActiveSessionUuid();
-            if (!uuid.isEmpty())
+            mw->AutoSaveAllHostedSessions(/*publishOpenWindow=*/false);
+            const QStringList uuids = mw->RestorableHostedSessionUuids();
+            for (const QString &uuid : uuids)
             {
-                restorable.append(uuid);
+                if (!uuid.isEmpty())
+                {
+                    restorable.append(uuid);
+                }
             }
         }
 

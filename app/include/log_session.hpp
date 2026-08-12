@@ -1595,6 +1595,23 @@ private:
     /// across sibling sessions.
     bool mRotationFlashActive = false;
 
+    /// Monotonic generation counter incremented on every
+    /// `TriggerRotationFlash()` call. The pending `singleShot`
+    /// lambda captures its own generation and only clears the
+    /// flash if it matches on tick -- so a second Trigger inside
+    /// the active window bumps the counter, invalidates the
+    /// earlier lambda's exit condition, and the new lambda's
+    /// full 3 s deadline is what actually runs. Without this,
+    /// the first Trigger's timer fires 3 s later and
+    /// unconditionally clears the flash, ending it early
+    /// instead of extending the window as the header contract
+    /// promises. A member `QTimer` would work too, but a
+    /// generation counter avoids stopping / restarting a Qt
+    /// object from a public method and stays trivially
+    /// thread-safe for the read side (`IsRotationFlashActive`
+    /// is only read from the GUI thread).
+    std::uint64_t mRotationFlashGeneration = 0;
+
     /// Display label for the file currently being streamed
     /// (see `StreamingFileName()`).
     QString mStreamingFileName;
