@@ -136,9 +136,11 @@ public:
     /**
      * @brief Classifies how the shell should close or replace this session.
      *
-     * Clean sessions are `Silent`. Dirty sessions whose source can be
-     * autosaved through `ShouldAutoSaveAfterStreaming()` are `Autosave`.
-     * Every other dirty session is `Prompt`.
+     * Clean sessions are `Silent`. A dirty highlight-editor draft is
+     * `Prompt` because the draft is not part of session autosave.
+     * Other dirty sessions whose source can be autosaved through
+     * `ShouldAutoSaveAfterStreaming()` are `Autosave`. Every remaining
+     * dirty session is `Prompt`.
      *
      * @return The close decision for the current dirty state and source.
      */
@@ -204,11 +206,60 @@ public:
     /**
      * @brief Tests whether filter state has unsaved changes.
      *
-     * @return The dirty marker.
+     * Highlight-editor drafts are not included; see `HasUnsavedChanges()`.
+     *
+     * @return The filter dirty marker.
      */
     [[nodiscard]] bool IsFiltersDirty() const noexcept
     {
         return mFiltersDirty;
+    }
+
+    /**
+     * @brief Tests whether a captured highlight-editor draft differs from its baseline.
+     *
+     * @return `true` when a draft is stored and `HighlightRulesEditorDraft::isDirty()`.
+     */
+    [[nodiscard]] bool HasDirtyHighlightEditorDraft() const noexcept
+    {
+        return mHighlightEditorDraft.has_value() && mHighlightEditorDraft->isDirty();
+    }
+
+    /**
+     * @brief Tests whether closing must preserve unsaved filter or highlight-editor state.
+     *
+     * @return `true` when filters are dirty or the highlight-editor draft is dirty.
+     */
+    [[nodiscard]] bool HasUnsavedChanges() const noexcept
+    {
+        return mFiltersDirty || HasDirtyHighlightEditorDraft();
+    }
+
+    /**
+     * @brief Replaces the stored Highlight Rules editor draft.
+     *
+     * Emits `filtersDirtyChanged` and `presentationChanged()` when
+     * `HasUnsavedChanges()` transitions.
+     *
+     * @param draft Captured editor state, or `std::nullopt` to clear it.
+     */
+    void SetHighlightEditorDraft(std::optional<HighlightRulesEditorDraft> draft);
+
+    /**
+     * @brief Clears the stored Highlight Rules editor draft.
+     *
+     * Equivalent to `SetHighlightEditorDraft(std::nullopt)`.
+     */
+    void ClearHighlightEditorDraft();
+
+    /**
+     * @brief Returns the stored Highlight Rules editor draft.
+     *
+     * @return The draft, or `std::nullopt` when the editor has not captured one.
+     */
+    [[nodiscard]] const std::optional<HighlightRulesEditorDraft> &HighlightEditorDraft() const noexcept
+    {
+        return mHighlightEditorDraft;
     }
 
     /**
@@ -759,6 +810,7 @@ public:
     {
         mPendingPresentation.failureTitle = std::move(title);
         mPendingPresentation.failureMessage = std::move(message);
+        emit presentationChanged();
     }
 
     /**
@@ -777,6 +829,10 @@ public:
     {
         SessionPendingPresentation taken = std::move(mPendingPresentation);
         mPendingPresentation = {};
+        if (!taken.failureTitle.isEmpty() || !taken.failureMessage.isEmpty())
+        {
+            emit presentationChanged();
+        }
         return taken;
     }
 
@@ -1036,12 +1092,25 @@ public:
      * @brief Tests whether a completed stream should be autosaved.
      *
      * Autosave requires a history service and a reproducible file source.
-     * Live-tail completions are excluded.
+     * Live-tail completions are excluded so close stays a prompt even
+     * though quit can persist a static reopen snapshot.
      *
      * @param justFinishedMode Mode of the completed stream.
      * @return `true` when a snapshot should be persisted.
      */
     [[nodiscard]] bool ShouldAutoSaveAfterStreaming(Mode justFinishedMode) const noexcept;
+
+    /**
+     * @brief Tests whether a session snapshot can be written for later restore.
+     *
+     * File-backed sessions, including live-tail, persist when a history
+     * service and locators are present. Configuration-only sessions persist
+     * when an autosave UUID is already pinned. Network and stdin sources
+     * do not.
+     *
+     * @return `true` when a restorable snapshot can be written.
+     */
+    [[nodiscard]] bool CanPersistRestorableSnapshot() const noexcept;
 
     /**
      * @brief Tests the effective rotation-history setting before source policy.
@@ -1664,6 +1733,7 @@ private:
     SessionParseErrorLog mParseErrorLog;
     SessionPendingPresentation mPendingPresentation;
     SessionFindQueryState mFindQuery;
+    std::optional<HighlightRulesEditorDraft> mHighlightEditorDraft;
     SessionHistogramState mHistogramState;
     SessionRecordDetailPin mRecordDetailPin;
     SessionAnchorsSelection mAnchorsSelection;

@@ -926,3 +926,20 @@ bool LogSessionView::IsOperationProgressVisible() const noexcept
     // strip to the user (given an on-screen tab)?".
     return mProgressStrip != nullptr && !mProgressStrip->isHidden();
 }
+
+void LogSessionView::SetContentEnabled(bool enabled)
+{
+    if (mTableView != nullptr)
+    {
+        mTableView->setEnabled(enabled);
+    }
+    if (mOverviewRailWidget != nullptr)
+    {
+        mOverviewRailWidget->setEnabled(enabled);
+    }
+}
+
+bool LogSessionView::IsContentEnabled() const noexcept
+{
+    return mTableView == nullptr || mTableView->isEnabled();
+}

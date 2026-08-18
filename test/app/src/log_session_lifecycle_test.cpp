@@ -30,6 +30,7 @@ private slots:
         QCOMPARE(snapshot.droppedErrors, static_cast<qsizetype>(0));
         QVERIFY(snapshot.shortLabel.isEmpty());
         QVERIFY(snapshot.tooltip.isEmpty());
+        QCOMPARE(snapshot.statusSummary, QStringLiteral("Idle"));
     }
 
     static void TestSkeletonRequestCloseReportsClean()

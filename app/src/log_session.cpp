@@ -4,6 +4,7 @@
 #include "highlight_rule_set.hpp"
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
+#include "qt_streaming_log_sink.hpp"
 #include "row_order_proxy_model.hpp"
 
 #include <Qt>
@@ -141,7 +142,7 @@ void LogSession::RequestAutoSaveSnapshot(bool /*publishOpenWindow*/)
 std::uint32_t LogSession::PreCheckClose() const
 {
     std::uint32_t mask = 0;
-    if (mFiltersDirty)
+    if (HasUnsavedChanges())
     {
         mask |= SessionClosePreconditions::FiltersDirty;
     }
@@ -164,9 +165,13 @@ SessionCloseResult LogSession::RequestClose()
 
 SessionCloseDecision LogSession::CloseDecision() const noexcept
 {
-    if (!mFiltersDirty)
+    if (!HasUnsavedChanges())
     {
         return SessionCloseDecision::Silent;
+    }
+    if (HasDirtyHighlightEditorDraft())
+    {
+        return SessionCloseDecision::Prompt;
     }
     const Mode mode = (mMode != Mode::Idle) ? mMode : mLastTerminalMode;
     if (ShouldAutoSaveAfterStreaming(mode))
@@ -237,9 +242,19 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
     {
         ops |= static_cast<std::uint32_t>(SessionOperationState::Exporting);
     }
+    const bool isNetworkOrStdin = mCurrentSource.has_value() &&
+                                  (mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::NetworkStream ||
+                                   mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::Stdin);
     if (mSourceWaiting)
     {
-        ops |= static_cast<std::uint32_t>(SessionOperationState::SourceWaiting);
+        if (isNetworkOrStdin)
+        {
+            ops |= static_cast<std::uint32_t>(SessionOperationState::Disconnected);
+        }
+        else
+        {
+            ops |= static_cast<std::uint32_t>(SessionOperationState::SourceWaiting);
+        }
     }
     if (mMode == Mode::Static && !mFirstStreamingBatchSeen)
     {
@@ -250,7 +265,59 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
     {
         ops |= static_cast<std::uint32_t>(SessionOperationState::Ingesting);
     }
+    if (mModel != nullptr)
+    {
+        QtStreamingLogSink *sink = mModel->Sink();
+        if (sink != nullptr && sink->IsPaused())
+        {
+            ops |= static_cast<std::uint32_t>(SessionOperationState::Paused);
+        }
+    }
+    if (!mPendingPresentation.failureTitle.isEmpty() || !mPendingDecompressionErrors.empty())
+    {
+        ops |= static_cast<std::uint32_t>(SessionOperationState::Failed);
+    }
     snapshot.operations = ops;
+
+    const auto hasOp = [ops](SessionOperationState bit) {
+        return (ops & static_cast<std::uint32_t>(bit)) != 0;
+    };
+    if (hasOp(SessionOperationState::Failed))
+    {
+        snapshot.statusSummary = tr("Failed");
+    }
+    else if (hasOp(SessionOperationState::Disconnected))
+    {
+        snapshot.statusSummary = tr("Disconnected");
+    }
+    else if (hasOp(SessionOperationState::Paused))
+    {
+        snapshot.statusSummary = tr("Paused");
+    }
+    else if (hasOp(SessionOperationState::Ingesting))
+    {
+        snapshot.statusSummary = tr("Ingesting");
+    }
+    else if (hasOp(SessionOperationState::Decompressing))
+    {
+        snapshot.statusSummary = tr("Decompressing");
+    }
+    else if (hasOp(SessionOperationState::Exporting))
+    {
+        snapshot.statusSummary = tr("Exporting");
+    }
+    else if (hasOp(SessionOperationState::Parsing))
+    {
+        snapshot.statusSummary = tr("Parsing");
+    }
+    else if (hasOp(SessionOperationState::SourceWaiting))
+    {
+        snapshot.statusSummary = tr("Waiting");
+    }
+    else
+    {
+        snapshot.statusSummary = tr("Idle");
+    }
 
     // ------------------------------------------------------------------
     // Dirty state. The `filtersDirty` and `restorableInPlace` /
@@ -258,7 +325,7 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
     // shell already uses in ``ShouldAutoSaveAfterStreaming`` and
     // ``RestorableSessionUuid``.
     // ------------------------------------------------------------------
-    snapshot.dirty.filtersDirty = mFiltersDirty;
+    snapshot.dirty.filtersDirty = HasUnsavedChanges();
     if (mCurrentSource.has_value())
     {
         // Restorability requires a concrete file locator and non-tail mode.
@@ -305,7 +372,7 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
 
     // In-flight workers prevent mutation and require close handling.
     snapshot.mutationsAllowed = !mDecompressionInFlight && !mExportInFlight;
-    snapshot.confirmBeforeClose = mFiltersDirty || mDecompressionInFlight || mExportInFlight;
+    snapshot.confirmBeforeClose = HasUnsavedChanges() || mDecompressionInFlight || mExportInFlight;
 
     return snapshot;
 }
@@ -350,6 +417,23 @@ LogFilterModel *LogSession::FilterProxy() const noexcept
     return mSortFilterProxyModel;
 }
 
+void LogSession::SetHighlightEditorDraft(std::optional<HighlightRulesEditorDraft> draft)
+{
+    const bool wasUnsaved = HasUnsavedChanges();
+    mHighlightEditorDraft = std::move(draft);
+    if (wasUnsaved == HasUnsavedChanges())
+    {
+        return;
+    }
+    emit filtersDirtyChanged(HasUnsavedChanges());
+    emit presentationChanged();
+}
+
+void LogSession::ClearHighlightEditorDraft()
+{
+    SetHighlightEditorDraft(std::nullopt);
+}
+
 void LogSession::MarkFiltersDirty()
 {
     if (mLoadingConfiguration || mFiltersDirty)
@@ -371,9 +455,13 @@ void LogSession::ClearFiltersDirty()
     {
         return;
     }
+    const bool wasUnsaved = HasUnsavedChanges();
     mFiltersDirty = false;
-    emit filtersDirtyChanged(false);
-    emit presentationChanged();
+    if (wasUnsaved != HasUnsavedChanges())
+    {
+        emit filtersDirtyChanged(false);
+        emit presentationChanged();
+    }
 }
 
 void LogSession::SetLoadingConfiguration(bool loading) noexcept
@@ -847,12 +935,30 @@ bool LogSession::ShouldAutoSaveAfterStreaming(Mode justFinishedMode) const noexc
     }
     if (justFinishedMode == Mode::LiveTail)
     {
-        // Live-tail looks like a static File source on disk but
-        // binds a tailing producer. Reopening would silently
-        // downgrade the user to a one-shot static load.
+        // Live-tail completions stay out of the close autosave path so
+        // a dirty tail still prompts. Quit persistence uses
+        // `CanPersistRestorableSnapshot()` and restores the file statically.
         return false;
     }
     return true;
+}
+
+bool LogSession::CanPersistRestorableSnapshot() const noexcept
+{
+    if (mHistoryManager == nullptr)
+    {
+        return false;
+    }
+    if (!mCurrentSource.has_value())
+    {
+        return !mAutoSaveUuid.isEmpty();
+    }
+    const auto &source = *mCurrentSource;
+    if (source.kind != loglib::LogConfiguration::Source::Kind::File)
+    {
+        return false;
+    }
+    return !source.locators.empty();
 }
 
 bool LogSession::ShouldAutoDetectRotationHistory() const

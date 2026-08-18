@@ -253,7 +253,7 @@ int main(int argc, char *argv[])
                     appendPeer(peer);
                     target = peer;
                 }
-                target->ApplyWorkspaceWindow(workspace.windows[i]);
+                target->ApplyWorkspaceWindow(workspace.windows[i], workspace.generation);
             }
         }
         else
@@ -362,7 +362,7 @@ int main(int argc, char *argv[])
         SessionHistoryManager::AddOpenWindowUuids(restorable);
         slv::persistence::Workspace deferred = slv::persistence::WorkspacePersistence::TakeDeferredWindows();
         workspace = slv::persistence::WorkspacePersistence::MergeCapturedWithDeferred(std::move(workspace), deferred);
-        (void)slv::persistence::WorkspacePersistence::Write(std::move(workspace));
+        (void)slv::persistence::WorkspacePersistence::Publish(std::move(workspace));
     });
 
     // Route forwarded files to the active window; an empty request creates a peer.

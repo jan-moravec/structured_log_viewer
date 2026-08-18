@@ -1,5 +1,9 @@
 // Multi-source tab lifecycle and shell-routing tests.
 
+#include "columns_manager_dialog.hpp"
+#include "configuration_diagnostics_dialog.hpp"
+#include "highlight_rule_set.hpp"
+#include "highlight_rules_editor.hpp"
 #include "log_model.hpp"
 #include "log_session.hpp"
 #include "log_session_presentation.hpp"
@@ -7,6 +11,7 @@
 #include "main_window.hpp"
 #include "qstring_path.hpp"
 #include "session_history_manager.hpp"
+#include "workspace_persistence.hpp"
 
 #include <loglib/filter_expression.hpp>
 #include <loglib/log_configuration.hpp>
@@ -15,20 +20,31 @@
 #include <loglib/session_bundle.hpp>
 
 #include <QAction>
+#include <QApplication>
 #include <QByteArray>
 #include <QDir>
 #include <QDockWidget>
+#include <QDropEvent>
 #include <QFile>
 #include <QKeySequence>
 #include <QMenu>
+#include <QMimeData>
 #include <QObject>
+#include <QPointF>
+#include <QPointer>
+#include <QPushButton>
 #include <QSignalSpy>
+#include <QStandardPaths>
 #include <QStatusBar>
+#include <QTabBar>
+#include <QTableWidget>
+#include <QTableWidgetItem>
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTextStream>
 #include <QToolBar>
+#include <QUrl>
 #include <QUuid>
 
 #include <zlib.h>
@@ -36,6 +52,8 @@
 #include <exception>
 #include <memory>
 #include <optional>
+#include <string>
+#include <vector>
 
 namespace
 {
@@ -184,6 +202,28 @@ private:
     std::optional<QString> mLastUuid;
 };
 
+class ScopedWorkspaceTestPaths
+{
+public:
+    ScopedWorkspaceTestPaths()
+    {
+        QStandardPaths::setTestModeEnabled(true);
+        QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).mkpath(QStringLiteral("sessions"));
+        slv::persistence::WorkspacePersistence::Clear();
+        (void)slv::persistence::WorkspacePersistence::TakeDeferredWindows();
+    }
+    ScopedWorkspaceTestPaths(const ScopedWorkspaceTestPaths &) = delete;
+    ScopedWorkspaceTestPaths &operator=(const ScopedWorkspaceTestPaths &) = delete;
+    ScopedWorkspaceTestPaths(ScopedWorkspaceTestPaths &&) = delete;
+    ScopedWorkspaceTestPaths &operator=(ScopedWorkspaceTestPaths &&) = delete;
+    ~ScopedWorkspaceTestPaths()
+    {
+        slv::persistence::WorkspacePersistence::Clear();
+        (void)slv::persistence::WorkspacePersistence::TakeDeferredWindows();
+        QStandardPaths::setTestModeEnabled(false);
+    }
+};
+
 QStringList FilterMenuTitles(const MainWindow &window)
 {
     const auto *menu = window.findChild<QMenu *>(QStringLiteral("menuFilters"));
@@ -261,6 +301,44 @@ void AddContainsFilter(MainWindow &window, const QString &token)
         return false;
     };
     return visit(expression, visit);
+}
+
+[[nodiscard]] loglib::LogConfiguration::HighlightRule MakeDraftHighlightRule()
+{
+    loglib::LogConfiguration::HighlightRule rule;
+    rule.name = "draft-rule";
+    rule.columnKeys = {"n"};
+    rule.type = loglib::LogConfiguration::HighlightRule::Type::String;
+    rule.matchType = loglib::LogConfiguration::HighlightRule::Match::Contains;
+    rule.filterString = std::string{"draft-needle"};
+    return rule;
+}
+
+[[nodiscard]] HighlightRulesEditorDraft MakeDirtyHighlightDraft(
+    const std::vector<loglib::LogConfiguration::HighlightRule> &committed
+)
+{
+    HighlightRulesEditorDraft draft;
+    draft.baseline = committed;
+    draft.localRules = committed;
+    draft.localRules.push_back(MakeDraftHighlightRule());
+    draft.currentRow = static_cast<int>(draft.localRules.size()) - 1;
+    return draft;
+}
+
+[[nodiscard]] std::vector<bool> ColumnVisibility(const LogSession &session)
+{
+    std::vector<bool> visible;
+    const LogModel *model = session.Model();
+    if (model == nullptr)
+    {
+        return visible;
+    }
+    for (const auto &column : model->Configuration().columns)
+    {
+        visible.push_back(column.visible);
+    }
+    return visible;
 }
 
 } // namespace
@@ -955,6 +1033,15 @@ private slots:
                 sawNextTab = true;
             }
             else if (ks == QStringLiteral("Ctrl+Shift+Tab"))
+            {
+                sawPrevTab = true;
+            }
+            const QList<QKeySequence> sequences = action->shortcuts();
+            if (sequences.contains(QKeySequence(QStringLiteral("Ctrl+PgDown"))))
+            {
+                sawNextTab = true;
+            }
+            if (sequences.contains(QKeySequence(QStringLiteral("Ctrl+PgUp"))))
             {
                 sawPrevTab = true;
             }
@@ -1875,7 +1962,7 @@ private slots:
         QCOMPARE(window.activeSession(), sessionB);
         LogSessionView *viewB = qobject_cast<LogSessionView *>(window.TabWidgetForTest()->widget(1));
         QVERIFY(viewB != nullptr);
-        const bool viewBEnabled = viewB->isEnabled();
+        const bool viewBEnabled = viewB->IsContentEnabled();
         const auto modeB = sessionB->SessionMode();
         const bool waitingB = sessionB->IsSourceWaiting();
         LogModel *modelB = sessionB->Model();
@@ -1922,7 +2009,7 @@ private slots:
         QVERIFY(sessionB->MutablePendingOpenFiles().isEmpty());
         QCOMPARE(modelB->rowCount(), rowsB);
         QVERIFY(!modelB->IsStreamingActive());
-        QCOMPARE(viewB->isEnabled(), viewBEnabled);
+        QCOMPARE(viewB->IsContentEnabled(), viewBEnabled);
     }
 
     // Decompression completion origin comes from the watcher that
@@ -2094,18 +2181,18 @@ private slots:
         window.ActivateTabForTest(0);
         window.ExportSessionBundleToPathForTest(temp.filePath(QStringLiteral("a.slvbundle")));
         QVERIFY(sessionA->IsExportInFlight());
-        QVERIFY(!viewA->isEnabled());
+        QVERIFY(!viewA->IsContentEnabled());
 
         window.ActivateTabForTest(1);
         QCOMPARE(window.activeSession(), sessionB);
-        QVERIFY(viewB->isEnabled());
+        QVERIFY(viewB->IsContentEnabled());
         QVERIFY(sessionA->IsExportInFlight());
-        QVERIFY(!viewA->isEnabled());
+        QVERIFY(!viewA->IsContentEnabled());
         QVERIFY(viewA->IsOperationProgressVisible());
 
         QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsExportInFlight(), 15000);
-        QVERIFY(viewA->isEnabled());
-        QVERIFY(viewB->isEnabled());
+        QVERIFY(viewA->IsContentEnabled());
+        QVERIFY(viewB->IsContentEnabled());
         QVERIFY(!viewA->IsOperationProgressVisible());
     }
 
@@ -2139,21 +2226,21 @@ private slots:
         QVERIFY(sessionA->IsExportInFlight() || sessionB->IsExportInFlight());
         if (sessionA->IsExportInFlight())
         {
-            QVERIFY(!viewA->isEnabled());
+            QVERIFY(!viewA->IsContentEnabled());
         }
         if (sessionB->IsExportInFlight())
         {
-            QVERIFY(!viewB->isEnabled());
+            QVERIFY(!viewB->IsContentEnabled());
         }
         if (sessionA->IsExportInFlight() && sessionB->IsExportInFlight())
         {
-            QVERIFY(!viewA->isEnabled());
-            QVERIFY(!viewB->isEnabled());
+            QVERIFY(!viewA->IsContentEnabled());
+            QVERIFY(!viewB->IsContentEnabled());
         }
 
         QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsExportInFlight() && !sessionB->IsExportInFlight(), 20000);
-        QVERIFY(viewA->isEnabled());
-        QVERIFY(viewB->isEnabled());
+        QVERIFY(viewA->IsContentEnabled());
+        QVERIFY(viewB->IsContentEnabled());
         QVERIFY(!viewA->IsOperationProgressVisible());
         QVERIFY(!viewB->IsOperationProgressVisible());
     }
@@ -2186,13 +2273,13 @@ private slots:
         window.ExportSessionBundleToPathForTest(temp.filePath(QStringLiteral("b.slvbundle")));
 
         QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsExportInFlight(), 15000);
-        QVERIFY(viewA->isEnabled());
+        QVERIFY(viewA->IsContentEnabled());
         if (sessionB->IsExportInFlight())
         {
-            QVERIFY(!viewB->isEnabled());
+            QVERIFY(!viewB->IsContentEnabled());
         }
         QTRY_VERIFY_WITH_TIMEOUT(!sessionB->IsExportInFlight(), 20000);
-        QVERIFY(viewB->isEnabled());
+        QVERIFY(viewB->IsContentEnabled());
     }
 
     static void TestConcurrentExportCompletionOrderBThenA()
@@ -2223,13 +2310,13 @@ private slots:
         window.ExportSessionBundleToPathForTest(temp.filePath(QStringLiteral("b.slvbundle")));
 
         QTRY_VERIFY_WITH_TIMEOUT(!sessionB->IsExportInFlight(), 15000);
-        QVERIFY(viewB->isEnabled());
+        QVERIFY(viewB->IsContentEnabled());
         if (sessionA->IsExportInFlight())
         {
-            QVERIFY(!viewA->isEnabled());
+            QVERIFY(!viewA->IsContentEnabled());
         }
         QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsExportInFlight(), 20000);
-        QVERIFY(viewA->isEnabled());
+        QVERIFY(viewA->IsContentEnabled());
     }
 
     static void TestDecompressingTabKeepsOwnershipAfterSwitch()
@@ -2249,7 +2336,7 @@ private slots:
         QVERIFY(sessionA->IsDecompressionInFlight());
         LogSessionView *viewA = qobject_cast<LogSessionView *>(window.TabWidgetForTest()->widget(0));
         QVERIFY(viewA != nullptr);
-        QVERIFY(!viewA->isEnabled());
+        QVERIFY(!viewA->IsContentEnabled());
 
         window.AddNewTabForTest(/*makeActive=*/true);
         LoadFileIntoActiveTab(window, pathB);
@@ -2257,16 +2344,38 @@ private slots:
         LogSessionView *viewB = qobject_cast<LogSessionView *>(window.TabWidgetForTest()->widget(1));
         QVERIFY(sessionB != nullptr && viewB != nullptr);
         QCOMPARE(window.activeSession(), sessionB);
-        QVERIFY(viewB->isEnabled());
+        QVERIFY(viewB->IsContentEnabled());
         if (sessionA->IsDecompressionInFlight())
         {
-            QVERIFY(!viewA->isEnabled());
+            QVERIFY(!viewA->IsContentEnabled());
             QVERIFY(viewA->IsOperationProgressVisible());
         }
 
         QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsDecompressionInFlight(), 15000);
-        QVERIFY(viewA->isEnabled());
-        QVERIFY(viewB->isEnabled());
+        QVERIFY(viewA->IsContentEnabled());
+        QVERIFY(viewB->IsContentEnabled());
+    }
+
+    static void TestNewSessionCancelsDecompressionBeforeModelReset()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString path = WriteGzipJsonl(temp.filePath(QStringLiteral("in-flight.jsonl.gz")), 12000);
+        QVERIFY(!path.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        window.OpenFilesForTest({path}, MainWindow::OpenMode::Replace);
+        LogSession *session = window.activeSession();
+        QVERIFY(session != nullptr);
+        QVERIFY(session->IsDecompressionInFlight());
+
+        window.NewSessionForTest();
+        QVERIFY(!session->IsDecompressionInFlight());
+        QVERIFY(session->Model() != nullptr);
+        QCOMPARE(session->Model()->rowCount(), 0);
+        QTRY_VERIFY_WITH_TIMEOUT(!session->IsDecompressionInFlight(), 5000);
+        QCOMPARE(session->Model()->rowCount(), 0);
     }
 
     static void TestConcurrentDecompressionLocksOnlyOwnViews()
@@ -2294,16 +2403,16 @@ private slots:
         QVERIFY(sessionA->IsDecompressionInFlight() || sessionB->IsDecompressionInFlight());
         if (sessionA->IsDecompressionInFlight())
         {
-            QVERIFY(!viewA->isEnabled());
+            QVERIFY(!viewA->IsContentEnabled());
         }
         if (sessionB->IsDecompressionInFlight())
         {
-            QVERIFY(!viewB->isEnabled());
+            QVERIFY(!viewB->IsContentEnabled());
         }
 
         QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsDecompressionInFlight() && !sessionB->IsDecompressionInFlight(), 20000);
-        QVERIFY(viewA->isEnabled());
-        QVERIFY(viewB->isEnabled());
+        QVERIFY(viewA->IsContentEnabled());
+        QVERIFY(viewB->IsContentEnabled());
     }
 
     static void TestConcurrentStreamCompletionAcrossTabs()
@@ -2508,6 +2617,493 @@ private slots:
         );
         QVERIFY(sessionB->ParseErrorLog().batches.empty());
         QVERIFY(sessionB->PendingPresentation().isEmpty());
+    }
+
+    static void TestHighlightEditorDraftSurvivesTabSwitchWithoutCommitting()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString pathA = WriteJsonlFixture(temp.filePath(QStringLiteral("a.jsonl")), 8);
+        const QString pathB = WriteJsonlFixture(temp.filePath(QStringLiteral("b.jsonl")), 8);
+        QVERIFY(!pathA.isEmpty());
+        QVERIFY(!pathB.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        LoadFileIntoActiveTab(window, pathA);
+        LogSession *sessionA = window.SessionAtTab(0);
+        QVERIFY(sessionA != nullptr);
+        window.AddNewTabForTest(/*makeActive=*/true);
+        LoadFileIntoActiveTab(window, pathB);
+        LogSession *sessionB = window.SessionAtTab(1);
+        QVERIFY(sessionB != nullptr);
+        window.ActivateTabForTest(0);
+        QCOMPARE(window.activeSession(), sessionA);
+        sessionA->ClearFiltersDirty();
+        sessionB->ClearFiltersDirty();
+
+        window.OpenHighlightRulesEditorForTest();
+        HighlightRulesEditor *editor = window.HighlightRulesEditorForTest();
+        QVERIFY(editor != nullptr);
+
+        const auto committedA = sessionA->Highlights()->Rules();
+        const auto committedB = sessionB->Highlights()->Rules();
+        const HighlightRulesEditorDraft dirty = MakeDirtyHighlightDraft(committedA);
+        editor->RestoreDraft(dirty);
+        QVERIFY(editor->IsDirty());
+        QVERIFY(!sessionA->IsFiltersDirty());
+        QVERIFY(!sessionA->HasDirtyHighlightEditorDraft());
+
+        window.ActivateTabForTest(1);
+        QCOMPARE(window.activeSession(), sessionB);
+        QCOMPARE(window.TabCount(), 2);
+        QCOMPARE(window.HighlightRulesEditorForTest(), editor);
+        QVERIFY(sessionA->HasDirtyHighlightEditorDraft());
+        QVERIFY(!sessionA->IsFiltersDirty());
+        QCOMPARE(sessionA->CloseDecision(), SessionCloseDecision::Prompt);
+        QCOMPARE(sessionA->Highlights()->Rules(), committedA);
+        QCOMPARE(sessionA->Model()->Configuration().highlightRules, committedA);
+        QCOMPARE(sessionB->Highlights()->Rules(), committedB);
+        QCOMPARE(sessionB->Model()->Configuration().highlightRules, committedB);
+        QVERIFY(!editor->IsDirty());
+        QCOMPARE(editor->CaptureDraft().localRules, committedB);
+
+        window.ActivateTabForTest(0);
+        QCOMPARE(window.activeSession(), sessionA);
+        QCOMPARE(window.HighlightRulesEditorForTest(), editor);
+        QVERIFY(editor->IsDirty());
+        const HighlightRulesEditorDraft restored = editor->CaptureDraft();
+        QCOMPARE(restored.localRules, dirty.localRules);
+        QCOMPARE(restored.baseline, dirty.baseline);
+        QCOMPARE(sessionA->Highlights()->Rules(), committedA);
+        QCOMPARE(sessionB->Highlights()->Rules(), committedB);
+    }
+
+    static void TestDirtyHighlightEditorPromptsOnCloseWithoutTabSwitch()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString pathA = WriteJsonlFixture(temp.filePath(QStringLiteral("a.jsonl")), 8);
+        QVERIFY(!pathA.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        LoadFileIntoActiveTab(window, pathA);
+        window.AddNewTabForTest(/*makeActive=*/false);
+        LogSession *sessionA = window.SessionAtTab(0);
+        QVERIFY(sessionA != nullptr);
+        window.ActivateTabForTest(0);
+        sessionA->ClearFiltersDirty();
+
+        window.OpenHighlightRulesEditorForTest();
+        HighlightRulesEditor *editor = window.HighlightRulesEditorForTest();
+        QVERIFY(editor != nullptr);
+        editor->RestoreDraft(MakeDirtyHighlightDraft(sessionA->Highlights()->Rules()));
+        QVERIFY(editor->IsDirty());
+        QVERIFY(!sessionA->HasDirtyHighlightEditorDraft());
+
+        window.QueueClosePromptChoiceForTest(MainWindow::ClosePromptChoiceForTest::Cancel);
+        window.CloseTabForTest(0);
+        QCOMPARE(window.TabCount(), 2);
+        QCOMPARE(window.SessionAtTab(0), sessionA);
+        QVERIFY(sessionA->HasDirtyHighlightEditorDraft());
+        QCOMPARE(sessionA->CloseDecision(), SessionCloseDecision::Prompt);
+    }
+
+    static void TestColumnsManagerAndDiagnosticsCloseOnTabSwitch()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString pathA = WriteJsonlFixture(temp.filePath(QStringLiteral("a.jsonl")), 8);
+        const QString pathB = WriteJsonlFixture(temp.filePath(QStringLiteral("b.jsonl")), 8);
+        QVERIFY(!pathA.isEmpty());
+        QVERIFY(!pathB.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        LoadFileIntoActiveTab(window, pathA);
+        LogSession *sessionA = window.SessionAtTab(0);
+        QVERIFY(sessionA != nullptr);
+        window.AddNewTabForTest(/*makeActive=*/true);
+        LoadFileIntoActiveTab(window, pathB);
+        LogSession *sessionB = window.SessionAtTab(1);
+        QVERIFY(sessionB != nullptr);
+        window.ActivateTabForTest(0);
+
+        const std::vector<bool> visibilityB = ColumnVisibility(*sessionB);
+        window.ShowColumnsManager();
+        QPointer<ColumnsManagerDialog> columnsDialog = window.ColumnsManagerDialogForTest();
+        QVERIFY(!columnsDialog.isNull());
+        QVERIFY(columnsDialog->isVisible());
+
+        window.ShowConfigurationDiagnosticsForTest();
+        QPointer<ConfigurationDiagnosticsDialog> diagnosticsDialog = window.ConfigurationDiagnosticsDialogForTest();
+        QVERIFY(!diagnosticsDialog.isNull());
+        QVERIFY(diagnosticsDialog->isVisible());
+
+        window.ActivateTabForTest(1);
+        QCOMPARE(window.activeSession(), sessionB);
+        QVERIFY(window.ColumnsManagerDialogForTest() == nullptr);
+        QVERIFY(window.ConfigurationDiagnosticsDialogForTest() == nullptr);
+        QCOMPARE(ColumnVisibility(*sessionB), visibilityB);
+        QTRY_VERIFY(columnsDialog.isNull());
+        QTRY_VERIFY(diagnosticsDialog.isNull());
+    }
+
+    static void TestColumnsManagerQueuedChangeDoesNotApplyToNewlySelectedTab()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString pathA = WriteJsonlFixture(temp.filePath(QStringLiteral("a.jsonl")), 8);
+        const QString pathB = WriteJsonlFixture(temp.filePath(QStringLiteral("b.jsonl")), 8);
+        QVERIFY(!pathA.isEmpty());
+        QVERIFY(!pathB.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        LoadFileIntoActiveTab(window, pathA);
+        LogSession *sessionA = window.SessionAtTab(0);
+        QVERIFY(sessionA != nullptr);
+        window.AddNewTabForTest(/*makeActive=*/true);
+        LoadFileIntoActiveTab(window, pathB);
+        LogSession *sessionB = window.SessionAtTab(1);
+        QVERIFY(sessionB != nullptr);
+        window.ActivateTabForTest(0);
+
+        window.ShowColumnsManager();
+        QPointer<ColumnsManagerDialog> dialog = window.ColumnsManagerDialogForTest();
+        QVERIFY(!dialog.isNull());
+        const std::vector<bool> visibilityA = ColumnVisibility(*sessionA);
+        const std::vector<bool> visibilityB = ColumnVisibility(*sessionB);
+        QVERIFY(!visibilityA.empty());
+        QVERIFY(!visibilityB.empty());
+
+        window.ActivateTabForTest(1);
+        QCOMPARE(window.activeSession(), sessionB);
+        QVERIFY(!dialog.isNull());
+        auto *table = dialog->findChild<QTableWidget *>();
+        QVERIFY(table != nullptr);
+        constexpr int visibleColumn = 4;
+        QTableWidgetItem *item = table->item(0, visibleColumn);
+        QVERIFY(item != nullptr);
+        item->setCheckState(item->checkState() == Qt::Checked ? Qt::Unchecked : Qt::Checked);
+
+        QCOMPARE(ColumnVisibility(*sessionB), visibilityB);
+        QCOMPARE(ColumnVisibility(*sessionA), visibilityA);
+        QTRY_VERIFY(dialog.isNull());
+    }
+
+    static void TestDialogCallbacksAreNoOpsAfterOriginTabCloses()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString pathA = WriteJsonlFixture(temp.filePath(QStringLiteral("a.jsonl")), 8);
+        const QString pathB = WriteJsonlFixture(temp.filePath(QStringLiteral("b.jsonl")), 8);
+        QVERIFY(!pathA.isEmpty());
+        QVERIFY(!pathB.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        LoadFileIntoActiveTab(window, pathA);
+        window.AddNewTabForTest(/*makeActive=*/true);
+        LoadFileIntoActiveTab(window, pathB);
+        LogSession *sessionB = window.SessionAtTab(1);
+        QVERIFY(sessionB != nullptr);
+        window.ActivateTabForTest(0);
+
+        window.ShowColumnsManager();
+        QPointer<ColumnsManagerDialog> columnsDialog = window.ColumnsManagerDialogForTest();
+        QVERIFY(!columnsDialog.isNull());
+        window.ShowConfigurationDiagnosticsForTest();
+        QPointer<ConfigurationDiagnosticsDialog> diagnosticsDialog = window.ConfigurationDiagnosticsDialogForTest();
+        QVERIFY(!diagnosticsDialog.isNull());
+
+        const std::vector<bool> visibilityB = ColumnVisibility(*sessionB);
+        window.CloseTabForTest(0);
+        QCOMPARE(window.TabCount(), 1);
+        QCOMPARE(window.activeSession(), sessionB);
+
+        if (!columnsDialog.isNull())
+        {
+            auto *table = columnsDialog->findChild<QTableWidget *>();
+            if (table != nullptr && table->item(0, 4) != nullptr)
+            {
+                QTableWidgetItem *item = table->item(0, 4);
+                item->setCheckState(item->checkState() == Qt::Checked ? Qt::Unchecked : Qt::Checked);
+            }
+        }
+        if (!diagnosticsDialog.isNull())
+        {
+            diagnosticsDialog->RequestEditColumnForTest(0);
+        }
+
+        QCOMPARE(ColumnVisibility(*sessionB), visibilityB);
+        QCOMPARE(window.activeSession(), sessionB);
+    }
+
+    static void TestTabChromeExposesOperationTextDirtyAndErrors()
+    {
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        LogSession *session = window.activeSession();
+        QVERIFY(session != nullptr);
+        session->SetStreamingFileName(QStringLiteral("C:/very/long/path/to/application.log"));
+        session->SetMode(LogSession::Mode::LiveTail);
+        session->SetSourceWaiting(false);
+        session->MarkFiltersDirty();
+        session->SetStreamingErrorCount(3);
+
+        const QString tabText = window.TabWidgetForTest()->tabText(0);
+        QVERIFY(tabText.contains(QStringLiteral("application.log")));
+        QVERIFY(tabText.contains(QStringLiteral("Ingesting")));
+        QVERIFY(tabText.contains(QStringLiteral("\u25CF")));
+        QVERIFY(tabText.contains(QLatin1Char('!')));
+
+        const QString tooltip = window.TabWidgetForTest()->tabToolTip(0);
+        QVERIFY(tooltip.contains(QStringLiteral("C:/very/long/path/to/application.log")));
+        QVERIFY(tooltip.contains(QStringLiteral("Ingesting")));
+        QVERIFY(tooltip.contains(QStringLiteral("Unsaved changes")));
+        QVERIFY(tooltip.contains(QStringLiteral("3")));
+    }
+
+    static void TestTabDragReorderMovesHostedSessions()
+    {
+        MainWindow window;
+        window.AddNewTabForTest(/*makeActive=*/false);
+        LogSession *first = window.SessionAtTab(0);
+        LogSession *second = window.SessionAtTab(1);
+        QVERIFY(first != nullptr && second != nullptr);
+        window.TabWidgetForTest()->tabBar()->moveTab(0, 1);
+        QCOMPARE(window.SessionAtTab(0), second);
+        QCOMPARE(window.SessionAtTab(1), first);
+        QCOMPARE(window.TabCount(), 2);
+    }
+
+    static void TestFileDropAppendAndReplace()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString pathA = WriteJsonlFixture(temp.filePath(QStringLiteral("drop-a.jsonl")), 4);
+        const QString pathB = WriteJsonlFixture(temp.filePath(QStringLiteral("drop-b.jsonl")), 6);
+        QVERIFY(!pathA.isEmpty() && !pathB.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        QVERIFY(window.acceptDrops());
+
+        auto dropFiles = [&window](const QString &path, Qt::KeyboardModifiers modifiers) {
+            window.DropFilesForTest({path}, modifiers);
+        };
+
+        LogModel *model = window.activeSession()->Model();
+        QVERIFY(model != nullptr);
+        QSignalSpy firstSpy(model, &LogModel::streamingFinished);
+        dropFiles(pathA, Qt::NoModifier);
+        QTRY_VERIFY_WITH_TIMEOUT(firstSpy.count() >= 1, 5000);
+        const int rowsAfterA = model->rowCount();
+        QVERIFY(rowsAfterA > 0);
+
+        QSignalSpy appendSpy(model, &LogModel::streamingFinished);
+        dropFiles(pathB, Qt::NoModifier);
+        QTRY_VERIFY_WITH_TIMEOUT(appendSpy.count() >= 1, 5000);
+        QVERIFY(model->rowCount() > rowsAfterA);
+
+        QSignalSpy replaceSpy(model, &LogModel::streamingFinished);
+        dropFiles(pathB, Qt::ShiftModifier);
+        QTRY_VERIFY_WITH_TIMEOUT(replaceSpy.count() >= 1, 5000);
+        QCOMPARE(model->rowCount(), 6);
+    }
+
+    static void TestOsFileOpenUsesEnsureFreshActiveTab()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString pathA = WriteJsonlFixture(temp.filePath(QStringLiteral("cli-a.jsonl")), 4);
+        const QString pathB = WriteJsonlFixture(temp.filePath(QStringLiteral("cli-b.jsonl")), 7);
+        QVERIFY(!pathA.isEmpty() && !pathB.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        LoadFileIntoActiveTab(window, pathA);
+        LogSession *busy = window.activeSession();
+        QVERIFY(busy != nullptr);
+
+        window.EnsureFreshActiveTab();
+        QCOMPARE(window.TabCount(), 2);
+        QVERIFY(window.activeSession() != busy);
+
+        LogModel *model = window.activeSession()->Model();
+        QVERIFY(model != nullptr);
+        QSignalSpy spy(model, &LogModel::streamingFinished);
+        window.OpenFilesForCli({pathB});
+        QTRY_VERIFY_WITH_TIMEOUT(spy.count() >= 1, 5000);
+        QCOMPARE(window.TabCount(), 2);
+        QCOMPARE(window.SessionAtTab(0), busy);
+        QCOMPARE(model->rowCount(), 7);
+    }
+
+    static void TestUnselectedTabProgressCancelStaysAuthoritative()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString pathA = WriteJsonlFixture(temp.filePath(QStringLiteral("export-a.jsonl")), 4000);
+        const QString pathB = WriteJsonlFixture(temp.filePath(QStringLiteral("export-b.jsonl")), 8);
+        QVERIFY(!pathA.isEmpty() && !pathB.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        LoadFileIntoActiveTab(window, pathA);
+        window.AddNewTabForTest(/*makeActive=*/true);
+        LoadFileIntoActiveTab(window, pathB);
+
+        LogSession *sessionA = window.SessionAtTab(0);
+        LogSessionView *viewA = qobject_cast<LogSessionView *>(window.TabWidgetForTest()->widget(0));
+        QVERIFY(sessionA != nullptr && viewA != nullptr);
+
+        window.ActivateTabForTest(0);
+        window.ExportSessionBundleToPathForTest(temp.filePath(QStringLiteral("cancel-a.slvbundle")));
+        QVERIFY(sessionA->IsExportInFlight());
+        QVERIFY(viewA->IsOperationProgressVisible());
+        QVERIFY(viewA->ProgressCancelButton() != nullptr);
+        QVERIFY(viewA->ProgressCancelButton()->isEnabled());
+
+        window.ActivateTabForTest(1);
+        QVERIFY(sessionA->IsExportInFlight());
+        QVERIFY(viewA->IsOperationProgressVisible());
+        QVERIFY(viewA->ProgressCancelButton()->isEnabled());
+        viewA->ProgressCancelButton()->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsExportInFlight(), 15000);
+        QVERIFY(!viewA->IsOperationProgressVisible());
+        QVERIFY(viewA->IsContentEnabled());
+    }
+
+    static void TestWorkspaceRestoreRoundTrip()
+    {
+        const ScopedWorkspaceTestPaths paths;
+        SessionHistoryManager manager(
+            slv::persistence::WorkspacePersistence::DefaultWorkspaceDir(),
+            std::make_unique<InMemoryRecentsIndexStorage>()
+        );
+        QTemporaryDir logs;
+        QVERIFY(logs.isValid());
+        const QString filePath = WriteJsonlFixture(logs.filePath(QStringLiteral("static.jsonl")), 5);
+        const QString tailPath = WriteJsonlFixture(logs.filePath(QStringLiteral("tail.jsonl")), 4);
+        const QString peerPath = WriteJsonlFixture(logs.filePath(QStringLiteral("peer.jsonl")), 3);
+        QVERIFY(!filePath.isEmpty() && !tailPath.isEmpty() && !peerPath.isEmpty());
+
+        MainWindow source(nullptr, &manager, nullptr);
+        source.SetSuppressDialogsForTest(true);
+        LoadFileIntoActiveTab(source, filePath);
+
+        source.AddNewTabForTest(/*makeActive=*/true);
+        LogSession *configOnly = source.activeSession();
+        QVERIFY(configOnly != nullptr);
+        configOnly->SetAutoSaveUuid(QUuid::createUuid().toString(QUuid::WithoutBraces));
+
+        source.AddNewTabForTest(/*makeActive=*/true);
+        LoadFileIntoActiveTab(source, tailPath);
+        source.SetSessionModeForTest(MainWindow::TestSessionMode::LiveTail);
+        source.activeSession()->DetachAutoSaveUuid();
+
+        source.AddNewTabForTest(/*makeActive=*/true);
+        loglib::LogConfiguration::Source network;
+        network.kind = loglib::LogConfiguration::Source::Kind::NetworkStream;
+        network.locators = {std::string{"tcp://127.0.0.1:5514"}};
+        source.activeSession()->MutableCurrentSource() = network;
+
+        source.AddNewTabForTest(/*makeActive=*/true);
+        loglib::LogConfiguration::Source stdinSource;
+        stdinSource.kind = loglib::LogConfiguration::Source::Kind::Stdin;
+        stdinSource.locators = {std::string{"<stdin>"}};
+        source.activeSession()->MutableCurrentSource() = stdinSource;
+
+        source.ActivateTabForTest(0);
+        source.AutoSaveAllHostedSessions(/*publishOpenWindow=*/false);
+        slv::persistence::WorkspaceWindow captured = source.CaptureWorkspaceWindow();
+        QCOMPARE(captured.tabs.size(), std::size_t{5});
+        QCOMPARE(captured.tabs[0].sourceMode, slv::persistence::SourceMode::File);
+        QCOMPARE(captured.tabs[1].sourceMode, slv::persistence::SourceMode::ConfigOnly);
+        QCOMPARE(captured.tabs[2].sourceMode, slv::persistence::SourceMode::LiveTailFile);
+        QCOMPARE(captured.tabs[3].sourceMode, slv::persistence::SourceMode::Network);
+        QCOMPARE(captured.tabs[4].sourceMode, slv::persistence::SourceMode::Stdin);
+
+        MainWindow peer(nullptr, &manager, nullptr);
+        peer.SetSuppressDialogsForTest(true);
+        LoadFileIntoActiveTab(peer, peerPath);
+        peer.AutoSaveAllHostedSessions(/*publishOpenWindow=*/false);
+        slv::persistence::WorkspaceWindow capturedPeer = peer.CaptureWorkspaceWindow();
+        QCOMPARE(capturedPeer.tabs.size(), std::size_t{1});
+        QCOMPARE(capturedPeer.tabs[0].sourceMode, slv::persistence::SourceMode::File);
+
+        slv::persistence::WorkspaceTab corrupt;
+        corrupt.sessionUuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        corrupt.sourceMode = slv::persistence::SourceMode::File;
+        captured.tabs.push_back(corrupt);
+        captured.activeTabIndex = 0;
+
+        slv::persistence::Workspace workspace;
+        workspace.schemaVersion = slv::persistence::WorkspacePersistence::SCHEMA_VERSION;
+        workspace.windows.push_back(captured);
+        workspace.windows.push_back(capturedPeer);
+        QVERIFY(slv::persistence::WorkspacePersistence::Publish(workspace));
+
+        const slv::persistence::Workspace published = slv::persistence::WorkspacePersistence::Read();
+        QCOMPARE(published.windows.size(), std::size_t{2});
+        const QString corruptUuid = published.windows[0].tabs.back().sessionUuid;
+        if (!corruptUuid.isEmpty())
+        {
+            const QString corruptPath =
+                slv::persistence::WorkspacePersistence::SessionSnapshotPath(published.generation, corruptUuid);
+            QFile corruptFile(corruptPath);
+            QVERIFY(corruptFile.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            corruptFile.write("not-json");
+            corruptFile.close();
+        }
+
+        MainWindow restored(nullptr, &manager, nullptr);
+        restored.SetSuppressDialogsForTest(true);
+        restored.ApplyWorkspaceWindow(published.windows[0], published.generation);
+        QCOMPARE(restored.TabCount(), 6);
+        QCOMPARE(restored.TabWidgetForTest()->currentIndex(), 0);
+
+        LogSession *restoredFile = restored.SessionAtTab(0);
+        QVERIFY(restoredFile != nullptr);
+        QTRY_VERIFY_WITH_TIMEOUT(restoredFile->Model() != nullptr && restoredFile->Model()->rowCount() > 0, 5000);
+        QVERIFY(!restoredFile->IsLiveTailSession());
+
+        LogSession *restoredConfig = restored.SessionAtTab(1);
+        QVERIFY(restoredConfig != nullptr);
+        QVERIFY(!restoredConfig->CurrentSource().has_value());
+        QVERIFY(!restoredConfig->AutoSaveUuid().isEmpty());
+
+        LogSession *restoredTail = restored.SessionAtTab(2);
+        QVERIFY(restoredTail != nullptr);
+        QTRY_VERIFY_WITH_TIMEOUT(restoredTail->Model() != nullptr && restoredTail->Model()->rowCount() > 0, 5000);
+        QVERIFY(!restoredTail->IsLiveTailSession());
+        QVERIFY(restoredTail->CurrentSource().has_value());
+        QCOMPARE(restoredTail->CurrentSource()->kind, loglib::LogConfiguration::Source::Kind::File);
+
+        LogSession *restoredNetwork = restored.SessionAtTab(3);
+        QVERIFY(restoredNetwork != nullptr);
+        QVERIFY(!restoredNetwork->CurrentSource().has_value() || restoredNetwork->Model()->rowCount() == 0);
+
+        LogSession *restoredStdin = restored.SessionAtTab(4);
+        QVERIFY(restoredStdin != nullptr);
+        QVERIFY(!restoredStdin->CurrentSource().has_value() || restoredStdin->Model()->rowCount() == 0);
+
+        LogSession *restoredCorrupt = restored.SessionAtTab(5);
+        QVERIFY(restoredCorrupt != nullptr);
+        QVERIFY(!restoredCorrupt->CurrentSource().has_value());
+        QVERIFY(restoredFile->Model()->rowCount() > 0);
+
+        MainWindow restoredPeer(nullptr, &manager, nullptr);
+        restoredPeer.SetSuppressDialogsForTest(true);
+        restoredPeer.ApplyWorkspaceWindow(published.windows[1], published.generation);
+        QCOMPARE(restoredPeer.TabCount(), 1);
+        LogSession *peerSession = restoredPeer.SessionAtTab(0);
+        QVERIFY(peerSession != nullptr);
+        QTRY_VERIFY_WITH_TIMEOUT(peerSession->Model() != nullptr && peerSession->Model()->rowCount() > 0, 5000);
+        QVERIFY(!peerSession->IsLiveTailSession());
     }
 };
 

@@ -68,6 +68,7 @@
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDropEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
@@ -86,9 +87,11 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QPainter>
 #include <QPixmap>
 #include <QPlainTextEdit>
+#include <QPointF>
 #include <QProgressDialog>
 #include <QRegularExpression>
 #include <QScopeGuard>
@@ -107,6 +110,7 @@
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
+#include <QUrl>
 #include <QUuid>
 #include <QVBoxLayout>
 #include <QVariant>
@@ -640,6 +644,7 @@ MainWindow::MainWindow(
 {
     ui->setupUi(this);
     ApplyThemedWindowIcon();
+    setAcceptDrops(true);
 
     // The active session owns the model objects; the shell keeps non-owning aliases.
     mSession = new LogSession(mTheme, mHistoryManager, mRegexTemplateRegistry, this);
@@ -1225,60 +1230,7 @@ MainWindow::MainWindow(
     // (lazy-construct, survive-close, like the regex editor). Save
     // updates the runtime cache and the persistent mirror in one
     // atomic slot.
-    connect(ui->actionHighlightRules, &QAction::triggered, this, [this]() {
-        if (mHighlightRulesEditor.isNull())
-        {
-            const auto &config = mModel->Configuration();
-            mHighlightRulesEditor = new HighlightRulesEditor(config.highlightRules, config.columns, mTheme, this);
-            mHighlightRulesEditor->setWindowFlag(Qt::Window, true);
-            // Bind the editor and its save callback to the session that opened it.
-            mHighlightRulesEditorSession = mSession;
-            connect(
-                mHighlightRulesEditor.data(),
-                &HighlightRulesEditor::rulesSaved,
-                this,
-                [this,
-                 origin = QPointer<LogSession>(mSession)](std::vector<loglib::LogConfiguration::HighlightRule> rules) {
-                    // Origin guard: if the session that opened the
-                    // editor has been destroyed or is no longer the
-                    // active session, drop the save silently.
-                    // Persisting to a different session's model
-                    // would silently corrupt its highlight rules.
-                    if (origin.isNull() || origin.data() != mSession)
-                    {
-                        return;
-                    }
-                    // Persist first so any auto-save handler sees
-                    // the committed state; hand a copy to the
-                    // runtime rebuild.
-                    auto forRuntime = rules;
-                    mModel->ConfigurationManager().SetHighlightRules(std::move(rules));
-                    if (mHighlights != nullptr)
-                    {
-                        mHighlights->SetRules(std::move(forRuntime), mModel->Configuration().columns, &mModel->Table());
-                        const std::size_t inactive = mHighlights->InactiveCount();
-                        if (inactive > 0)
-                        {
-                            statusBar()->showMessage(
-                                tr("%1 highlight rule(s) inactive against current columns.")
-                                    .arg(static_cast<qulonglong>(inactive)),
-                                STATUS_BAR_MESSAGE_TIMEOUT_MS
-                            );
-                        }
-                    }
-                }
-            );
-        }
-        else
-        {
-            // Refresh columns on reopen: streaming may have
-            // discovered new keys since last show.
-            mHighlightRulesEditor->SetColumns(mModel->Configuration().columns);
-        }
-        mHighlightRulesEditor->show();
-        mHighlightRulesEditor->raise();
-        mHighlightRulesEditor->activateWindow();
-    });
+    connect(ui->actionHighlightRules, &QAction::triggered, this, &MainWindow::OpenHighlightRulesEditor);
     connect(mPreferencesEditor, &PreferencesEditor::streamingRetentionChanged, this, [this](qulonglong) {
         ApplyStreamingRetention();
     });
@@ -1800,6 +1752,102 @@ SessionBindContext MainWindow::activeSessionBindContext() const
     return SessionBindContext::FromSessionAndView(mSession, mSessionView, mTheme);
 }
 
+void MainWindow::CaptureHighlightRulesEditorDraft()
+{
+    if (mHighlightRulesEditor.isNull() || mHighlightRulesEditorSession.isNull())
+    {
+        return;
+    }
+    LogSession *origin = mHighlightRulesEditorSession.data();
+    if (origin == nullptr)
+    {
+        return;
+    }
+    origin->SetHighlightEditorDraft(mHighlightRulesEditor->CaptureDraft());
+}
+
+void MainWindow::RestoreHighlightRulesEditorDraft(LogSession *session)
+{
+    if (mHighlightRulesEditor.isNull() || session == nullptr || session->Model() == nullptr)
+    {
+        mHighlightRulesEditorSession = session;
+        return;
+    }
+    const auto &config = session->Model()->Configuration();
+    mHighlightRulesEditor->SetColumns(config.columns);
+    if (const std::optional<HighlightRulesEditorDraft> &draft = session->HighlightEditorDraft(); draft.has_value())
+    {
+        mHighlightRulesEditor->RestoreDraft(*draft);
+    }
+    else
+    {
+        HighlightRulesEditorDraft committed;
+        committed.localRules = config.highlightRules;
+        committed.baseline = config.highlightRules;
+        committed.currentRow = config.highlightRules.empty() ? -1 : 0;
+        mHighlightRulesEditor->RestoreDraft(committed);
+    }
+    mHighlightRulesEditorSession = session;
+}
+
+void MainWindow::OpenHighlightRulesEditor()
+{
+    if (mSession == nullptr || mModel == nullptr)
+    {
+        return;
+    }
+    if (mHighlightRulesEditor.isNull())
+    {
+        const auto &config = mModel->Configuration();
+        mHighlightRulesEditor = new HighlightRulesEditor(config.highlightRules, config.columns, mTheme, this);
+        mHighlightRulesEditor->setWindowFlag(Qt::Window, true);
+        connect(
+            mHighlightRulesEditor.data(),
+            &HighlightRulesEditor::rulesSaved,
+            this,
+            [this](std::vector<loglib::LogConfiguration::HighlightRule> rules) {
+                LogSession *origin = mHighlightRulesEditorSession.data();
+                if (origin == nullptr || HostedSession(origin->InstanceId()) != origin || origin->Model() == nullptr)
+                {
+                    return;
+                }
+                auto forRuntime = rules;
+                origin->Model()->ConfigurationManager().SetHighlightRules(std::move(rules));
+                if (HighlightRuleSet *highlights = origin->Highlights(); highlights != nullptr)
+                {
+                    highlights->SetRules(
+                        std::move(forRuntime), origin->Model()->Configuration().columns, &origin->Model()->Table()
+                    );
+                    const std::size_t inactive = highlights->InactiveCount();
+                    if (inactive > 0)
+                    {
+                        statusBar()->showMessage(
+                            tr("%1 highlight rule(s) inactive against current columns.")
+                                .arg(static_cast<qulonglong>(inactive)),
+                            STATUS_BAR_MESSAGE_TIMEOUT_MS
+                        );
+                    }
+                }
+                origin->MarkFiltersDirty();
+                if (!mHighlightRulesEditor.isNull())
+                {
+                    origin->SetHighlightEditorDraft(mHighlightRulesEditor->CaptureDraft());
+                }
+            }
+        );
+        connect(mHighlightRulesEditor.data(), &HighlightRulesEditor::editsDiscarded, this, [this]() {
+            if (LogSession *origin = mHighlightRulesEditorSession.data(); origin != nullptr)
+            {
+                origin->ClearHighlightEditorDraft();
+            }
+        });
+    }
+    RestoreHighlightRulesEditorDraft(mSession);
+    mHighlightRulesEditor->show();
+    mHighlightRulesEditor->raise();
+    mHighlightRulesEditor->activateWindow();
+}
+
 void MainWindow::RebindSharedDocks(const SessionBindContext &context)
 {
     // Bind state-owning docks before anchors, then reconcile session-scoped dialogs.
@@ -1842,12 +1890,12 @@ void MainWindow::RebindSharedDocks(const SessionBindContext &context)
         }
         if (origin.isNull() || origin.data() != context.session.data())
         {
-            // `hide()` (not `close()`) because `HighlightRulesEditor`'s
-            // `closeEvent` pops a "discard edits?" modal when the
-            // form is dirty; that prompt during a tab switch would
-            // be a jarring UX and, if the user picks "cancel", the
-            // subsequent `deleteLater` destroys the editor
-            // anyway. Bypass the closeEvent path entirely.
+            // `hide()` (not `close()`) so a dirty Highlight Rules
+            // editor cannot pop a discard prompt if it is later
+            // added to this path. Columns Manager and Diagnostics
+            // have no discard modal, but the same hide + deleteLater
+            // sequence lets queued callbacks observe a cleared
+            // `QPointer` after this function returns.
             //
             // `deleteLater` reaps the QObject after the event loop
             // returns; the `QPointer` on the `m*Dialog` field auto-
@@ -1863,7 +1911,20 @@ void MainWindow::RebindSharedDocks(const SessionBindContext &context)
     };
     destroyIfOriginMismatched(mDiagnosticsDialog, mDiagnosticsDialogSession);
     destroyIfOriginMismatched(mColumnsManagerDialog, mColumnsManagerDialogSession);
-    destroyIfOriginMismatched(mHighlightRulesEditor, mHighlightRulesEditorSession);
+
+    if (!mHighlightRulesEditor.isNull())
+    {
+        LogSession *incoming = context.session.data();
+        if (mHighlightRulesEditorSession.data() != incoming)
+        {
+            CaptureHighlightRulesEditorDraft();
+            RestoreHighlightRulesEditorDraft(incoming);
+        }
+        else if (incoming != nullptr)
+        {
+            mHighlightRulesEditor->SetColumns(incoming->Model()->Configuration().columns);
+        }
+    }
 }
 
 // Tab lifecycle.
@@ -2146,6 +2207,7 @@ void MainWindow::ApplyPendingPresentation(LogSession *session)
         return;
     }
     SessionPendingPresentation pending = session->TakePendingPresentation();
+    RefreshTabChrome(session);
     if (!pending.statusMessage.isEmpty())
     {
         statusBar()->showMessage(pending.statusMessage, pending.statusTimeoutMs);
@@ -2187,6 +2249,31 @@ void MainWindow::ActivateTabForTest(int index)
 void MainWindow::CloseTabForTest(int index)
 {
     CloseTabAtIndex(index);
+}
+
+void MainWindow::OpenHighlightRulesEditorForTest()
+{
+    OpenHighlightRulesEditor();
+}
+
+HighlightRulesEditor *MainWindow::HighlightRulesEditorForTest() const noexcept
+{
+    return mHighlightRulesEditor.data();
+}
+
+ColumnsManagerDialog *MainWindow::ColumnsManagerDialogForTest() const noexcept
+{
+    return mColumnsManagerDialog.data();
+}
+
+void MainWindow::ShowConfigurationDiagnosticsForTest()
+{
+    ShowConfigurationDiagnostics();
+}
+
+ConfigurationDiagnosticsDialog *MainWindow::ConfigurationDiagnosticsDialogForTest() const noexcept
+{
+    return mDiagnosticsDialog.data();
 }
 
 void MainWindow::CloseTabAtIndex(int index)
@@ -2405,39 +2492,50 @@ void MainWindow::RefreshTabChrome(const LogSession *session)
     }
 
     // Non-color-only indicators keep status visible without colour.
-    // get a leading marker; dirty sessions get a trailing marker.
-    // The Qt-standard `[*]` place-holder is reserved for the
-    // window title, not tab titles, so we spell the dirty marker
-    // out (`\u25CF`, a filled bullet) with an accessible tooltip.
+    // Operation words are part of the tab text so assistive
+    // technology can announce them; glyphs may prefix the label.
     const std::uint32_t ops = snapshot.operations;
     QString prefix;
-    if ((ops & static_cast<std::uint32_t>(SessionOperationState::Disconnected)) != 0)
+    QString operationWord;
+    if ((ops & static_cast<std::uint32_t>(SessionOperationState::Failed)) != 0)
+    {
+        prefix = QStringLiteral("\u26A0 "); // Warning: queued failure.
+        operationWord = tr("Failed");
+    }
+    else if ((ops & static_cast<std::uint32_t>(SessionOperationState::Disconnected)) != 0)
     {
         prefix = QStringLiteral("\u2205 "); // Empty set: disconnected placeholder.
+        operationWord = tr("Disconnected");
     }
     else if ((ops & static_cast<std::uint32_t>(SessionOperationState::Paused)) != 0)
     {
         prefix = QStringLiteral("\u23F8 "); // Pause: user paused live-tail.
+        operationWord = tr("Paused");
     }
     else if ((ops & static_cast<std::uint32_t>(SessionOperationState::Ingesting)) != 0)
     {
         prefix = QStringLiteral("\u25B6 "); // Play triangle: live-tail / network producer active.
+        operationWord = tr("Ingesting");
     }
     else if ((ops & static_cast<std::uint32_t>(SessionOperationState::Decompressing)) != 0)
     {
         prefix = QStringLiteral("\u21BB "); // Circular arrow: decompressing.
+        operationWord = tr("Decompressing");
     }
     else if ((ops & static_cast<std::uint32_t>(SessionOperationState::Exporting)) != 0)
     {
         prefix = QStringLiteral("\u21E7 "); // Upwards arrow: exporting.
+        operationWord = tr("Exporting");
     }
     else if ((ops & static_cast<std::uint32_t>(SessionOperationState::Parsing)) != 0)
     {
         prefix = QStringLiteral("\u2026 "); // Ellipsis: parsing static open.
+        operationWord = tr("Parsing");
     }
     else if ((ops & static_cast<std::uint32_t>(SessionOperationState::SourceWaiting)) != 0)
     {
         prefix = QStringLiteral("\u29D6 "); // Hourglass-ish: source waiting.
+        operationWord = tr("Waiting");
     }
 
     QString suffix;
@@ -2452,13 +2550,22 @@ void MainWindow::RefreshTabChrome(const LogSession *session)
         suffix += QStringLiteral(" !");
     }
 
-    mTabWidget->setTabText(index, prefix + label + suffix);
+    QString tabText = prefix + label;
+    if (!operationWord.isEmpty())
+    {
+        tabText += QStringLiteral(" \u2014 ");
+        tabText += operationWord;
+    }
+    tabText += suffix;
+    mTabWidget->setTabText(index, tabText);
 
     QString tooltip = snapshot.tooltip;
     if (tooltip.isEmpty())
     {
         tooltip = label;
     }
+    tooltip += QLatin1Char('\n');
+    tooltip += snapshot.statusSummary.isEmpty() ? tr("Idle") : snapshot.statusSummary;
     if (snapshot.dirty.filtersDirty)
     {
         tooltip += QLatin1Char('\n');
@@ -2527,7 +2634,7 @@ void MainWindow::InstallActiveSessionConnections()
             {
                 return;
             }
-            if (mHighlightRulesEditor != nullptr)
+            if (mHighlightRulesEditor != nullptr && mHighlightRulesEditorSession.data() == mSession)
             {
                 mHighlightRulesEditor->SetColumns(mModel->Configuration().columns);
             }
@@ -2777,7 +2884,7 @@ void MainWindow::AggregateWindowModified()
     bool anyDirty = false;
     for (const LogSession *session : hostedSessions())
     {
-        if (session != nullptr && session->IsFiltersDirty())
+        if (session != nullptr && session->HasUnsavedChanges())
         {
             anyDirty = true;
             break;
@@ -2919,6 +3026,22 @@ void MainWindow::dropEvent(QDropEvent *event)
 
     event->acceptProposedAction();
 }
+
+#ifdef LOGAPP_BUILD_TESTING
+void MainWindow::DropFilesForTest(const QStringList &files, Qt::KeyboardModifiers modifiers)
+{
+    QMimeData mime;
+    QList<QUrl> urls;
+    urls.reserve(files.size());
+    for (const QString &path : files)
+    {
+        urls.append(QUrl::fromLocalFile(path));
+    }
+    mime.setUrls(urls);
+    QDropEvent event(QPointF(8, 8), Qt::CopyAction, &mime, Qt::LeftButton, modifiers);
+    dropEvent(&event);
+}
+#endif
 
 void MainWindow::UpdateUi()
 {
@@ -3226,11 +3349,6 @@ void MainWindow::OpenRecentSession(const QString &uuid)
         return;
     }
 
-    // Pre-flight parse so a corrupt recents file doesn't destroy
-    // the user's current view for nothing. The parsed value is
-    // handed to `ApplyLoadedConfiguration` so the commit path
-    // doesn't re-read the file (closing a TOCTOU window against a
-    // sibling `Remove(uuid)`).
     loglib::LogConfiguration parsed;
     try
     {
@@ -3251,8 +3369,6 @@ void MainWindow::OpenRecentSession(const QString &uuid)
                     .arg(jsonPath, QString::fromStdString(e.what()))
             );
         }
-        // Drop the corrupt entry from the index; the on-disk JSON
-        // will be reaped by `CleanupOrphanFiles` next launch.
         if (logapp::LooksLikeUuid(uuid))
         {
             mHistoryManager->Remove(uuid);
@@ -3260,8 +3376,35 @@ void MainWindow::OpenRecentSession(const QString &uuid)
         return;
     }
 
+    OpenParsedSession(uuid, std::move(parsed), /*informIfNonFile=*/true);
+}
+
+void MainWindow::OpenSessionFromJson(const QString &uuid, const QString &jsonPath, bool informIfNonFile)
+{
+    if (jsonPath.isEmpty() || !QFileInfo::exists(jsonPath))
+    {
+        return;
+    }
+
+    loglib::LogConfiguration parsed;
+    try
+    {
+        loglib::LogConfigurationManager probe;
+        probe.Load(jsonPath.toStdString());
+        parsed = probe.Configuration();
+    }
+    catch (const std::exception &)
+    {
+        return;
+    }
+
+    OpenParsedSession(uuid, std::move(parsed), informIfNonFile);
+}
+
+void MainWindow::OpenParsedSession(const QString &uuid, loglib::LogConfiguration parsed, bool informIfNonFile)
+{
     // Preserve a busy active tab when opening a recent session. When the active tab
-    // was already empty), we still route through `NewSession` to
+    // was already empty, we still route through `NewSession` to
     // detach the previous uuid and refresh the empty slot.
     const bool activeTabWasEmpty = (mSession != nullptr) && !mSession->CurrentSource().has_value() &&
                                    (mModel == nullptr || mModel->rowCount(QModelIndex{}) == 0);
@@ -3293,7 +3436,7 @@ void MainWindow::OpenRecentSession(const QString &uuid)
     // snapshots would otherwise create a fan-restore loop). The
     // latch follows the bool return; see `RestoreLastSessionFromPath`.
     mSession->SetAutoSaveUuid(uuid);
-    if (mHistoryManager->Touch(uuid) && !RestorableActiveSessionUuid().isEmpty())
+    if (mHistoryManager != nullptr && mHistoryManager->Touch(uuid) && !RestorableActiveSessionUuid().isEmpty())
     {
         if (SessionHistoryManager::AddOpenWindowUuid(uuid))
         {
@@ -3301,9 +3444,7 @@ void MainWindow::OpenRecentSession(const QString &uuid)
         }
     }
 
-    // User-initiated click, so surface the non-File branch as a
-    // `QMessageBox` rather than silently skipping.
-    StreamFromCurrentSourceOrSkip(/*informIfNonFile=*/true);
+    StreamFromCurrentSourceOrSkip(informIfNonFile);
 }
 
 void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
@@ -3378,16 +3519,17 @@ void MainWindow::NewSession()
     // semantics. `LogModel::Reset` handles producer stop + sink
     // drain for live-tail sessions, no extra branch needed.
 
+    // Cancel export and decompression before `mModel->Reset()` so a
+    // finishing worker cannot continue the open pipeline against a
+    // cleared model. Safe to call when nothing is in flight.
+    CancelInFlightExport();
+    CancelInFlightDecompression();
+
     // Drop proxy state before the configuration wipe so no signal
     // handler can briefly evaluate against indices that become
     // dangling once `columns` is empty.
     mTableView->sortByColumn(-1, Qt::AscendingOrder);
     mSortFilterProxyModel->SetFilterExpression(loglib::CompiledFilterExpression{});
-
-    // Cancel the export worker BEFORE the reset: the worker
-    // reads `LogTable` from a background thread and the reset
-    // below tears down its storage. Any other order is a race.
-    CancelInFlightExport();
 
     // RAII latch so the synchronous `streamingFinished(Cancelled)`
     // emitted by `mModel->Reset()` doesn't run
@@ -3422,10 +3564,6 @@ void MainWindow::NewSession()
     mSession->MutableCurrentSource().reset();
     mSession->ResetMode();
     mSession->ResetStreamingCountersAndFileName();
-    // Cancel any in-flight decompression from the outgoing session
-    // so its `finished` slot cannot splice the old file into the
-    // fresh session. Export was already cancelled above (pre-reset).
-    CancelInFlightDecompression();
     // Drop the outgoing session's multi-file queue too -- otherwise
     // queued-but-not-yet-drained files stay invisibly attached to a
     // session that no longer exists until the next destructive open
@@ -3991,18 +4129,20 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode, const
         return;
     }
 
-    // Cancel the export worker up-front for every `mode`. The
-    // destructive branch needs it before `mModel->Reset()`; the
-    // non-destructive Append branch needs it because
-    // `AppendStreaming` will mutate `LogTable` / `KeyIndex` while
-    // the export is still reading them. `setEnabled(false)` blocks
-    // that path from the GUI but cross-instance CLI forwarding
-    // (`OpenFilesForCli`) bypasses it. Safe to call when nothing
-    // is in flight.
+    // Cancel export for every `mode`. The destructive branch also
+    // cancels decompression before `mModel->Reset()` so a finishing
+    // worker cannot continue against a cleared model. The
+    // non-destructive Append branch still needs the export cancel
+    // because `AppendStreaming` mutates `LogTable` / `KeyIndex`
+    // while the export is still reading them. `setEnabled(false)`
+    // blocks that path from the GUI but cross-instance CLI
+    // forwarding (`OpenFilesForCli`) bypasses it. Safe to call when
+    // nothing is in flight.
     CancelInFlightExport();
 
     if (destructive)
     {
+        CancelInFlightDecompression();
         // `mModel->Reset()` synchronously stops any in-flight worker.
         mModel->Reset();
         ClearAllFilters();
@@ -4023,10 +4163,6 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode, const
         // Destructive open: drop the previous session's deferred-sort intent.
         mSession->SetPendingApplySortFromConfig(false);
         DetachAutoSaveUuid();
-        // Cancel any in-flight decompression so its `finished` slot
-        // cannot splice the outgoing file into the new session.
-        // Export was already cancelled above (pre-reset).
-        CancelInFlightDecompression();
         // Pending promotion and Undo state belong to the old session.
         ClearPendingLiveTailPromotion();
         ClearRotationExpansionUndoState();
@@ -4556,7 +4692,7 @@ void MainWindow::BeginAsyncDecompression(
     LogSessionView *originView = LogSessionViewForSession(mSession);
     if (originView != nullptr)
     {
-        originView->setEnabled(false);
+        originView->SetContentEnabled(false);
     }
 
     ShowDecompressionProgress();
@@ -4799,7 +4935,7 @@ void MainWindow::CancelInFlightDecompressionFor(LogSession *origin)
             originView->HideOperationProgress();
             if (wasInFlight)
             {
-                originView->setEnabled(true);
+                originView->SetContentEnabled(true);
             }
         }
         UpdateDecompressionProgressUi();
@@ -4815,7 +4951,7 @@ void MainWindow::CancelInFlightDecompressionFor(LogSession *origin)
         originView->HideOperationProgress();
         if (wasInFlight)
         {
-            originView->setEnabled(true);
+            originView->SetContentEnabled(true);
         }
     }
     UpdateDecompressionProgressUi();
@@ -4867,7 +5003,7 @@ void MainWindow::OnDecompressionFinished()
     if (originView != nullptr)
     {
         originView->HideOperationProgress();
-        originView->setEnabled(true);
+        originView->SetContentEnabled(true);
     }
     UpdateDecompressionProgressUi();
 
@@ -5030,6 +5166,10 @@ void MainWindow::OnDecompressionFinished()
             {
                 mHighlightRulesEditor->SetColumns(appliedConfig.columns);
                 mHighlightRulesEditor->SetRules(appliedConfig.highlightRules);
+            }
+            if (mSession != nullptr)
+            {
+                mSession->ClearHighlightEditorDraft();
             }
         }
     }
@@ -5276,7 +5416,7 @@ void MainWindow::BeginAsyncExport(
     LogSessionView *originView = LogSessionViewForSession(mSession);
     if (originView != nullptr)
     {
-        originView->setEnabled(false);
+        originView->SetContentEnabled(false);
     }
 
     ShowExportProgress();
@@ -5306,7 +5446,7 @@ void MainWindow::BeginAsyncExport(
         if (originViewToReEnable != nullptr)
         {
             originViewToReEnable->HideOperationProgress();
-            originViewToReEnable->setEnabled(true);
+            originViewToReEnable->SetContentEnabled(true);
         }
         UpdateExportProgressUi();
         QMessageBox::warning(
@@ -5493,7 +5633,7 @@ void MainWindow::BeginAsyncBundleExport(std::filesystem::path destination, int c
     LogSessionView *originView = LogSessionViewForSession(mSession);
     if (originView != nullptr)
     {
-        originView->setEnabled(false);
+        originView->SetContentEnabled(false);
     }
 
     ShowExportProgress();
@@ -5700,7 +5840,7 @@ void MainWindow::CancelInFlightExportFor(LogSession *origin)
             originView->HideOperationProgress();
             if (wasInFlight)
             {
-                originView->setEnabled(true);
+                originView->SetContentEnabled(true);
             }
         }
         UpdateExportProgressUi();
@@ -5724,7 +5864,7 @@ void MainWindow::CancelInFlightExportFor(LogSession *origin)
         originView->HideOperationProgress();
         if (wasInFlight)
         {
-            originView->setEnabled(true);
+            originView->SetContentEnabled(true);
         }
     }
     UpdateExportProgressUi();
@@ -5768,7 +5908,7 @@ void MainWindow::OnExportFinishedFor(LogSession *origin)
         if (originViewToReEnable != nullptr)
         {
             originViewToReEnable->HideOperationProgress();
-            originViewToReEnable->setEnabled(true);
+            originViewToReEnable->SetContentEnabled(true);
         }
         UpdateExportProgressUi();
     }
@@ -6028,9 +6168,9 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     // immediately afterwards.
     AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
 
-    // Cancel the export worker before the reset; see `NewSession`
-    // for the race.
+    // Cancel export and decompression before the reset; see `NewSession`.
     CancelInFlightExport();
+    CancelInFlightDecompression();
 
     // RAII latch: see `NewSession` for why we need to suppress the
     // synchronous `Cancelled` cleanup.
@@ -6050,10 +6190,6 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
         mParseErrorsDock->ResetSessionState();
     }
     mSession->SetStreamingErrorsCut(0);
-    // Session boundary: cancel any in-flight decompression so its
-    // `finished` slot can't splice the outgoing static file into
-    // the new live-tail session. Export was already cancelled above.
-    CancelInFlightDecompression();
     // Live-tail is transient and not auto-saved; leaving the prior
     // static session's uuid pinned would let closeEvent's
     // `RemoveOpenWindowUuid` drop that session from the multi-
@@ -6394,6 +6530,7 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
 
     AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
     CancelInFlightExport();
+    CancelInFlightDecompression();
 
     const SessionSwitchScope switchGuard(*this);
 
@@ -6408,7 +6545,6 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
         mParseErrorsDock->ResetSessionState();
     }
     mSession->SetStreamingErrorsCut(0);
-    CancelInFlightDecompression();
     DetachAutoSaveUuid();
     // Pending file-tail and Undo state cannot cross into stdin.
     ClearPendingLiveTailPromotion();
@@ -6536,9 +6672,9 @@ void MainWindow::OpenNetworkStream()
 
     AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
 
-    // Cancel the export worker before the reset; see `NewSession`
-    // for the race.
+    // Cancel export and decompression before the reset; see `NewSession`.
     CancelInFlightExport();
+    CancelInFlightDecompression();
 
     const SessionSwitchScope switchGuard(*this);
 
@@ -6556,10 +6692,6 @@ void MainWindow::OpenNetworkStream()
         mParseErrorsDock->ResetSessionState();
     }
     mSession->SetStreamingErrorsCut(0);
-    // Session boundary: cancel any in-flight decompression so its
-    // `finished` slot can't splice the outgoing static file into
-    // the new network-stream session. Export was already cancelled above.
-    CancelInFlightDecompression();
     DetachAutoSaveUuid();
     // Pending file-tail and Undo state cannot cross into a network stream.
     ClearPendingLiveTailPromotion();
@@ -8201,13 +8333,7 @@ bool MainWindow::ShouldAutoSaveSession(SessionMode justFinishedMode) const
 
 bool MainWindow::AutoSaveSessionSnapshot(bool publishOpenWindow)
 {
-    // Prefer live `SessionMode()`; fall back to the just-terminated
-    // mode so a closeEvent firing after a live-tail finished still
-    // hits the live-tail gate in `ShouldAutoSaveSession` (the live
-    // field has already been reset to `Idle` by then).
-    const SessionMode effectiveMode =
-        (mSession->SessionMode() != SessionMode::Idle) ? mSession->SessionMode() : mSession->LastTerminalMode();
-    if (!ShouldAutoSaveSession(effectiveMode))
+    if (mSession == nullptr || !mSession->CanPersistRestorableSnapshot())
     {
         return true;
     }
@@ -8413,7 +8539,7 @@ slv::persistence::WorkspaceWindow MainWindow::CaptureWorkspaceWindow() const
     return snapshot;
 }
 
-void MainWindow::ApplyWorkspaceWindow(const slv::persistence::WorkspaceWindow &window)
+void MainWindow::ApplyWorkspaceWindow(const slv::persistence::WorkspaceWindow &window, std::uint64_t generation)
 {
     // Adopt the persisted uuid so future publishes overwrite
     // rather than duplicate. Empty stays empty; a first-time
@@ -8457,10 +8583,10 @@ void MainWindow::ApplyWorkspaceWindow(const slv::persistence::WorkspaceWindow &w
             // Untitled + empty.
             continue;
         }
-        // Reopen file-backed sessions from recents by UUID.
-        // Network / stdin / live-tail: leave as placeholder
-        // (the user must reconnect
-        // explicitly). Empty tabs also stay as-is.
+        // Reopen file-backed and live-tail sessions from the
+        // generation snapshot, falling back to recents. Network
+        // and stdin tabs stay empty. Missing or corrupt snapshots
+        // leave this tab empty and do not abort later tabs.
         const bool isFilePath = tab.sourceMode == slv::persistence::SourceMode::File ||
                                 tab.sourceMode == slv::persistence::SourceMode::MultiFile ||
                                 tab.sourceMode == slv::persistence::SourceMode::Compressed ||
@@ -8471,21 +8597,20 @@ void MainWindow::ApplyWorkspaceWindow(const slv::persistence::WorkspaceWindow &w
         {
             continue;
         }
-        // Reopening a recent by uuid routes through the same
-        // path as the Recent Sessions menu, but scoped to the
-        // NEWLY-added tab (we set it active first so
-        // `OpenRecentSession` reuses this tab rather than
-        // spawning yet another). The activate is safe: the
-        // caller's saved active-tab index is applied after
-        // this loop so the visual current tab still matches
-        // `window.activeTabIndex`.
+        QString jsonPath = slv::persistence::WorkspacePersistence::SessionSnapshotPath(generation, tab.sessionUuid);
+        if (jsonPath.isEmpty() || !QFileInfo::exists(jsonPath))
+        {
+            jsonPath = (mHistoryManager != nullptr) ? mHistoryManager->PathForUuid(tab.sessionUuid) : QString{};
+        }
+        if (jsonPath.isEmpty() || !QFileInfo::exists(jsonPath))
+        {
+            continue;
+        }
+        // The activate is safe: the caller's saved active-tab index is
+        // applied after this loop so the visual current tab still
+        // matches `window.activeTabIndex`.
         mTabWidget->setCurrentIndex(static_cast<int>(i));
-        // The uuid-driven open is best-effort; failures
-        // (missing session file, IO error) are surfaced by
-        // `OpenRecentSession` via the parse-errors dock and
-        // status bar. The restore continues on the next tab
-        // regardless.
-        OpenRecentSession(tab.sessionUuid);
+        OpenSessionFromJson(tab.sessionUuid, jsonPath, /*informIfNonFile=*/false);
     }
 
     // Select the saved active tab AFTER every restore has
@@ -8533,10 +8658,19 @@ bool MainWindow::PrepareSessionClose(LogSession *closing)
     {
         return true;
     }
+    // Editor edits live in the shared widget until a tab switch
+    // captures them. Close, New Session, and destructive open must
+    // see that buffer before `CloseDecision()` runs.
+    if (!mHighlightRulesEditor.isNull() && mHighlightRulesEditorSession.data() == closing)
+    {
+        CaptureHighlightRulesEditorDraft();
+    }
+    bool proceed = false;
     switch (closing->CloseDecision())
     {
     case SessionCloseDecision::Silent:
-        return true;
+        proceed = true;
+        break;
     case SessionCloseDecision::Autosave:
     {
         LogSessionView *originView = LogSessionViewForSession(closing);
@@ -8554,9 +8688,11 @@ bool MainWindow::PrepareSessionClose(LogSession *closing)
                        "Check that the sessions folder is writable and try again.")
                 );
             }
-            return false;
+            proceed = false;
+            break;
         }
-        return true;
+        proceed = true;
+        break;
     }
     case SessionCloseDecision::Prompt:
 #ifdef LOGAPP_BUILD_TESTING
@@ -8564,16 +8700,24 @@ bool MainWindow::PrepareSessionClose(LogSession *closing)
         {
             const ClosePromptChoiceForTest choice = mClosePromptChoicesForTest.front();
             mClosePromptChoicesForTest.erase(mClosePromptChoicesForTest.begin());
-            return choice == ClosePromptChoiceForTest::Discard;
+            proceed = choice == ClosePromptChoiceForTest::Discard;
+            break;
         }
         if (mSuppressDialogsForTest)
         {
-            return true;
+            proceed = true;
+            break;
         }
 #endif
-        return PromptSaveDiscardCancel(closing);
+        proceed = PromptSaveDiscardCancel(closing);
+        break;
     }
-    return true;
+    if (proceed)
+    {
+        // Discarded or saved editor work must not remain on a reused session.
+        closing->ClearHighlightEditorDraft();
+    }
+    return proceed;
 }
 
 bool MainWindow::PromptSaveDiscardCancel(LogSession *closing)
@@ -8886,7 +9030,17 @@ void MainWindow::ShowConfigurationDiagnostics()
         mDiagnosticsDialog->setAttribute(Qt::WA_DeleteOnClose, false);
         // Wire the row drill-down once; the dialog survives close.
         connect(
-            mDiagnosticsDialog, &ConfigurationDiagnosticsDialog::editColumnRequested, this, &MainWindow::EditColumn
+            mDiagnosticsDialog, &ConfigurationDiagnosticsDialog::editColumnRequested, this, [this](int columnIndex) {
+                if (mDiagnosticsDialogSession.isNull() || mDiagnosticsDialogSession.data() != mSession)
+                {
+                    return;
+                }
+                if (HostedSession(mDiagnosticsDialogSession->InstanceId()) != mDiagnosticsDialogSession.data())
+                {
+                    return;
+                }
+                EditColumn(columnIndex);
+            }
         );
     }
     // Capture the originating session so `RebindSharedDocks`
@@ -8936,6 +9090,7 @@ void MainWindow::ShowColumnsManager()
     // diagnostics dialog above -- the dialog's captured
     // QPointer<LogModel> must not silently span a session swap.
     mColumnsManagerDialogSession = mSession;
+    mColumnsManagerDialog->SetOriginSession(mSession);
     mColumnsManagerDialog->Refresh();
     mColumnsManagerDialog->show();
     mColumnsManagerDialog->raise();
@@ -9582,10 +9737,10 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         mSortFilterProxyModel->SetFilterExpression(loglib::CompiledFilterExpression{});
         mTableView->sortByColumn(-1, Qt::AscendingOrder);
 
-        // Cancel the export worker before the reset: the worker
-        // reads `LogTable` from a background thread and the reset
-        // below tears down its storage.
+        // Cancel export and decompression before the reset: workers
+        // must not continue against a cleared model.
         CancelInFlightExport();
+        CancelInFlightDecompression();
 
         // See `NewSession` for the session-switch latch rationale.
         const SessionSwitchScope switchGuard(*this);
@@ -9597,11 +9752,6 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         {
             mParseErrorsDock->ResetSessionState();
         }
-        // Session boundary: cancel any in-flight decompression so
-        // its `finished` slot can't splice the old file back into
-        // the freshly-loaded configuration. Export was already
-        // cancelled above.
-        CancelInFlightDecompression();
         // Fully quiesce the outgoing session before applying the
         // new configuration -- mirrors `NewSession`. Without this,
         // queued-but-not-yet-drained files leak into the new
@@ -9709,10 +9859,14 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
             }
             // Refresh any open editor so it shows the loaded rules,
             // not the pre-load buffer.
-            if (mHighlightRulesEditor != nullptr)
+            if (mHighlightRulesEditor != nullptr && mHighlightRulesEditorSession.data() == mSession)
             {
                 mHighlightRulesEditor->SetColumns(config.columns);
                 mHighlightRulesEditor->SetRules(config.highlightRules);
+            }
+            if (mSession != nullptr)
+            {
+                mSession->ClearHighlightEditorDraft();
             }
         }
         return true;

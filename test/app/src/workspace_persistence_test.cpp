@@ -15,6 +15,7 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QUuid>
 
 using slv::persistence::RestorePolicy;
 using slv::persistence::SourceMode;
@@ -70,6 +71,18 @@ WorkspaceWindow MakeWindow(const QString &uuid, std::size_t tabCount, int active
         window.tabs.push_back(std::move(tab));
     }
     return window;
+}
+
+QString WriteRecentsSnapshot(const QString &uuid)
+{
+    const QString path = WorkspacePersistence::DefaultWorkspaceDir().filePath(uuid + QStringLiteral(".json"));
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    {
+        return {};
+    }
+    file.write(R"({"columns":[],"filters":[]})");
+    return path;
 }
 
 } // namespace
@@ -396,7 +409,7 @@ private slots:
         }
     }
 
-    static void TestLoadForLaunchConsumesFileWhenNothingIsDeferred()
+    static void TestLoadForLaunchLeavesFileWhenNothingIsDeferred()
     {
         const ScopedTestPaths paths;
         Workspace src;
@@ -408,7 +421,7 @@ private slots:
         const auto plan = WorkspacePersistence::LoadForLaunch(5);
         QCOMPARE(plan.toRestore.windows.size(), std::size_t{2});
         QVERIFY(plan.deferred.windows.empty());
-        QVERIFY(WorkspacePersistence::Read().windows.empty());
+        QCOMPARE(WorkspacePersistence::Read().windows.size(), std::size_t{2});
     }
 
     static void TestMergeCapturedWithDeferredSkipsDuplicateWindowUuids()
@@ -488,6 +501,147 @@ private slots:
         QCOMPARE(secondLaunch.deferred.windows.size(), kSurplusCount - 1);
         QCOMPARE(secondLaunch.deferred.windows.front().windowUuid, QStringLiteral("win-6"));
         QCOMPARE(WorkspacePersistence::Read().windows.size(), afterQuit.windows.size());
+    }
+
+    static void TestSchemaVersionMismatchReturnsEmptyWithoutDeletingFile()
+    {
+        const ScopedTestPaths paths;
+        QFile file(WorkspacePersistence::WorkspaceFilePath());
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        file.write(R"({"schemaVersion":1,"windows":[{"windowUuid":"win-1","tabs":[],"activeTabIndex":0}],"mruOrder":[]})");
+        file.close();
+
+        const Workspace loaded = WorkspacePersistence::Read();
+        QVERIFY(loaded.windows.empty());
+        QVERIFY(QFile::exists(WorkspacePersistence::WorkspaceFilePath()));
+    }
+
+    static void TestReadRejectsOversizedWorkspaceFile()
+    {
+        const ScopedTestPaths paths;
+        QFile file(WorkspacePersistence::WorkspaceFilePath());
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QVERIFY(file.resize(static_cast<qint64>(WorkspacePersistence::MAX_WORKSPACE_FILE_BYTES) + 1));
+        file.close();
+
+        const Workspace loaded = WorkspacePersistence::Read();
+        QVERIFY(loaded.windows.empty());
+        QVERIFY(loaded.mruOrder.isEmpty());
+        QVERIFY(QFile::exists(WorkspacePersistence::WorkspaceFilePath()));
+    }
+
+    static void TestPublishCopiesSnapshotsAndAssignsGeneration()
+    {
+        const ScopedTestPaths paths;
+        const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        QVERIFY(!WriteRecentsSnapshot(uuid).isEmpty());
+
+        Workspace src;
+        src.schemaVersion = WorkspacePersistence::SCHEMA_VERSION;
+        WorkspaceWindow window;
+        window.windowUuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        WorkspaceTab tab;
+        tab.sessionUuid = uuid;
+        tab.sourceMode = SourceMode::File;
+        window.tabs.push_back(tab);
+        src.windows.push_back(window);
+
+        QVERIFY(WorkspacePersistence::Publish(src));
+        const Workspace loaded = WorkspacePersistence::Read();
+        QCOMPARE(loaded.generation, std::uint64_t{1});
+        QCOMPARE(loaded.windows.size(), std::size_t{1});
+        QCOMPARE(loaded.windows[0].tabs[0].sessionUuid, uuid);
+        QVERIFY(QFile::exists(WorkspacePersistence::SessionSnapshotPath(1, uuid)));
+    }
+
+    static void TestPublishClearsUuidWhenSnapshotCopyFails()
+    {
+        const ScopedTestPaths paths;
+        const QString missing = QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+        Workspace src;
+        src.schemaVersion = WorkspacePersistence::SCHEMA_VERSION;
+        WorkspaceWindow window;
+        window.windowUuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        WorkspaceTab tab;
+        tab.sessionUuid = missing;
+        tab.sourceMode = SourceMode::File;
+        window.tabs.push_back(tab);
+        src.windows.push_back(window);
+
+        QVERIFY(WorkspacePersistence::Publish(src));
+        const Workspace loaded = WorkspacePersistence::Read();
+        QCOMPARE(loaded.generation, std::uint64_t{1});
+        QVERIFY(loaded.windows[0].tabs[0].sessionUuid.isEmpty());
+    }
+
+    static void TestCrashBeforeManifestKeepsPreviousGeneration()
+    {
+        const ScopedTestPaths paths;
+        const QString uuid1 = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QString uuid2 = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        QVERIFY(!WriteRecentsSnapshot(uuid1).isEmpty());
+        QVERIFY(!WriteRecentsSnapshot(uuid2).isEmpty());
+
+        Workspace first;
+        first.schemaVersion = WorkspacePersistence::SCHEMA_VERSION;
+        WorkspaceWindow window;
+        window.windowUuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        WorkspaceTab tab;
+        tab.sessionUuid = uuid1;
+        tab.sourceMode = SourceMode::File;
+        window.tabs.push_back(tab);
+        first.windows.push_back(window);
+        QVERIFY(WorkspacePersistence::Publish(first));
+        QCOMPARE(WorkspacePersistence::Read().generation, std::uint64_t{1});
+
+        Workspace second = first;
+        second.windows[0].tabs[0].sessionUuid = uuid2;
+        QVERIFY(WorkspacePersistence::WriteGenerationSnapshots(2, second));
+        QVERIFY(QFile::exists(WorkspacePersistence::SessionSnapshotPath(2, uuid2)));
+
+        const Workspace onDisk = WorkspacePersistence::Read();
+        QCOMPARE(onDisk.generation, std::uint64_t{1});
+        QCOMPARE(onDisk.windows[0].tabs[0].sessionUuid, uuid1);
+        QVERIFY(QDir(WorkspacePersistence::GenerationDirPath(1)).exists());
+        QVERIFY(QDir(WorkspacePersistence::GenerationDirPath(2)).exists());
+    }
+
+    static void TestCrashAfterManifestBeforeCollectionKeepsNewGeneration()
+    {
+        const ScopedTestPaths paths;
+        const QString uuid1 = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QString uuid2 = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        QVERIFY(!WriteRecentsSnapshot(uuid1).isEmpty());
+        QVERIFY(!WriteRecentsSnapshot(uuid2).isEmpty());
+
+        Workspace first;
+        first.schemaVersion = WorkspacePersistence::SCHEMA_VERSION;
+        WorkspaceWindow window;
+        window.windowUuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        WorkspaceTab tab;
+        tab.sessionUuid = uuid1;
+        tab.sourceMode = SourceMode::File;
+        window.tabs.push_back(tab);
+        first.windows.push_back(window);
+        QVERIFY(WorkspacePersistence::Publish(first));
+
+        Workspace second = first;
+        second.windows[0].tabs[0].sessionUuid = uuid2;
+        QVERIFY(WorkspacePersistence::WriteGenerationSnapshots(2, second));
+        second.generation = 2;
+        second.schemaVersion = WorkspacePersistence::SCHEMA_VERSION;
+        QVERIFY(WorkspacePersistence::Write(second));
+
+        const Workspace onDisk = WorkspacePersistence::Read();
+        QCOMPARE(onDisk.generation, std::uint64_t{2});
+        QCOMPARE(onDisk.windows[0].tabs[0].sessionUuid, uuid2);
+        QVERIFY(QDir(WorkspacePersistence::GenerationDirPath(1)).exists());
+        QVERIFY(QDir(WorkspacePersistence::GenerationDirPath(2)).exists());
+
+        WorkspacePersistence::CollectSupersededGenerations(2);
+        QVERIFY(!QDir(WorkspacePersistence::GenerationDirPath(1)).exists());
+        QVERIFY(QDir(WorkspacePersistence::GenerationDirPath(2)).exists());
     }
 };
 

@@ -868,6 +868,7 @@ private slots:
             QVERIFY(empty.tooltip.isEmpty());
             QVERIFY(empty.sourceLabel.isEmpty());
             QVERIFY(empty.shortLabel.isEmpty());
+            QCOMPARE(empty.statusSummary, QStringLiteral("Idle"));
             QCOMPARE(empty.errorCount, qsizetype{0});
             QCOMPARE(empty.droppedErrors, qsizetype{0});
             QVERIFY(empty.mutationsAllowed);
@@ -937,6 +938,7 @@ private slots:
             QCOMPARE(live.mode, SessionSourceMode::LiveTail);
             QVERIFY((live.operations & static_cast<std::uint32_t>(SessionOperationState::Ingesting)) != 0U);
             QVERIFY((live.operations & static_cast<std::uint32_t>(SessionOperationState::Parsing)) == 0U);
+            QCOMPARE(live.statusSummary, QStringLiteral("Ingesting"));
             QVERIFY(live.dirty.ephemeralUnreproducible);
             QVERIFY(!live.dirty.restorableInPlace);
         }
@@ -966,6 +968,26 @@ private slots:
             QVERIFY(netSnap.dirty.ephemeralUnreproducible);
             QVERIFY(!netSnap.dirty.restorableInPlace);
         }
+        session.SetSourceWaiting(true);
+        {
+            const auto disconnected = session.PresentationSnapshot();
+            QVERIFY(
+                (disconnected.operations & static_cast<std::uint32_t>(SessionOperationState::Disconnected)) != 0U
+            );
+            QVERIFY(
+                (disconnected.operations & static_cast<std::uint32_t>(SessionOperationState::SourceWaiting)) == 0U
+            );
+            QCOMPARE(disconnected.statusSummary, QStringLiteral("Disconnected"));
+        }
+        session.SetSourceWaiting(false);
+
+        session.QueueFailureNotice(QStringLiteral("Export Failed"), QStringLiteral("disk full"));
+        {
+            const auto failed = session.PresentationSnapshot();
+            QVERIFY((failed.operations & static_cast<std::uint32_t>(SessionOperationState::Failed)) != 0U);
+            QCOMPARE(failed.statusSummary, QStringLiteral("Failed"));
+        }
+        (void)session.TakePendingPresentation();
 
         // Reset to a static file source with
         // no first-batch latch to isolate the `Parsing` gate; then
@@ -1125,6 +1147,7 @@ private slots:
         session.MutableCurrentSource() = fileSource;
         QVERIFY(!session.ShouldAutoSaveAfterStreaming(LogSession::Mode::Static));
         QVERIFY(!session.ShouldAutoSaveAfterStreaming(LogSession::Mode::LiveTail));
+        QVERIFY(!session.CanPersistRestorableSnapshot());
     }
 
     static void TestCloseDecisionSilentWhenClean()
@@ -1188,9 +1211,54 @@ private slots:
         session.MutableCurrentSource() = fileSource;
         session.SetMode(LogSession::Mode::Static);
         QCOMPARE(session.CloseDecision(), SessionCloseDecision::Autosave);
+        QVERIFY(session.CanPersistRestorableSnapshot());
 
         session.SetMode(LogSession::Mode::LiveTail);
         QCOMPARE(session.CloseDecision(), SessionCloseDecision::Prompt);
+        QVERIFY(session.CanPersistRestorableSnapshot());
+        QVERIFY(!session.ShouldAutoSaveAfterStreaming(LogSession::Mode::LiveTail));
+    }
+
+    static void TestCloseDecisionPromptsWhenOnlyHighlightEditorDraftIsDirty()
+    {
+        LogSession session;
+        QVERIFY(!session.HasUnsavedChanges());
+        QCOMPARE(session.CloseDecision(), SessionCloseDecision::Silent);
+
+        HighlightRulesEditorDraft clean;
+        session.SetHighlightEditorDraft(clean);
+        QVERIFY(!session.HasDirtyHighlightEditorDraft());
+        QVERIFY(!session.HasUnsavedChanges());
+        QCOMPARE(session.CloseDecision(), SessionCloseDecision::Silent);
+
+        HighlightRulesEditorDraft dirty;
+        loglib::LogConfiguration::HighlightRule rule;
+        rule.name = "draft";
+        dirty.localRules.push_back(rule);
+        session.SetHighlightEditorDraft(dirty);
+        QVERIFY(!session.IsFiltersDirty());
+        QVERIFY(session.HasDirtyHighlightEditorDraft());
+        QVERIFY(session.HasUnsavedChanges());
+        QCOMPARE(session.CloseDecision(), SessionCloseDecision::Prompt);
+        QCOMPARE(
+            session.PreCheckClose(), static_cast<std::uint32_t>(SessionClosePreconditions::FiltersDirty)
+        );
+
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<QSettingsRecentsIndexStorage>());
+        LogSession autosaveable(nullptr, &manager, nullptr);
+        loglib::LogConfiguration::Source fileSource;
+        fileSource.kind = loglib::LogConfiguration::Source::Kind::File;
+        fileSource.locators = {std::string{"C:/logs/app.log"}};
+        autosaveable.MutableCurrentSource() = fileSource;
+        autosaveable.SetMode(LogSession::Mode::Static);
+        autosaveable.SetHighlightEditorDraft(dirty);
+        QCOMPARE(autosaveable.CloseDecision(), SessionCloseDecision::Prompt);
+
+        autosaveable.ClearHighlightEditorDraft();
+        autosaveable.MarkFiltersDirty();
+        QCOMPARE(autosaveable.CloseDecision(), SessionCloseDecision::Autosave);
     }
 
     static void TestEffectiveAutoDetectRotationHistoryFolds()
@@ -2171,10 +2239,11 @@ private slots:
         session.MutableCurrentSource() = fileSource;
         QVERIFY(!session.ShouldAutoSaveAfterStreaming(LogSession::Mode::Static));
 
-        // LiveTail on a file source: even with a manager, always
-        // false (would silently downgrade the reopen path to a
-        // one-shot static open). Without a manager, still false.
+        // LiveTail on a file source: close-after-stream autosave stays
+        // false even with a manager. Quit persistence uses
+        // `CanPersistRestorableSnapshot()` instead.
         QVERIFY(!session.ShouldAutoSaveAfterStreaming(LogSession::Mode::LiveTail));
+        QVERIFY(!session.CanPersistRestorableSnapshot());
 
         // Stdin source: even with a manager, always false (network /
         // stream sources cannot be re-bound from a saved locator).

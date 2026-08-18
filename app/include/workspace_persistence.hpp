@@ -94,6 +94,8 @@ struct Workspace
 {
     /** @brief Serialized schema version. */
     std::uint32_t schemaVersion = 0;
+    /** @brief Generation identifier shared by this manifest and its snapshots. */
+    std::uint64_t generation = 0;
     /** @brief Windows in persisted order. */
     std::vector<WorkspaceWindow> windows;
     /** @brief Window UUIDs ordered from most to least recently focused. */
@@ -103,15 +105,16 @@ struct Workspace
 /**
  * @brief Reads and writes the bounded JSON workspace snapshot.
  *
- * `Write()` uses `QSaveFile`, providing atomic replacement of the workspace
- * file itself. Workspace and session-history files are not published as one
- * transaction. Only `Write()` observes the session-history publishing gate.
+ * Session snapshots are written under `generations/<id>/` before the
+ * workspace manifest is published. `Write()` uses `QSaveFile` so a failed
+ * manifest commit leaves the previous complete generation in place.
+ * Only `Write()` and `Publish()` observe the session-history publishing gate.
  */
 class WorkspacePersistence
 {
 public:
     /** @brief Schema version accepted by `Read()` and emitted by `Write()`. */
-    static constexpr std::uint32_t SCHEMA_VERSION = 1;
+    static constexpr std::uint32_t SCHEMA_VERSION = 2;
 
     /** @brief Maximum number of persisted windows and MRU entries. */
     static constexpr std::size_t MAX_WINDOWS = 64;
@@ -125,6 +128,8 @@ public:
     static constexpr std::size_t MAX_DOCK_STATE_BYTES = 128 * 1024;
     /** @brief Maximum number of windows restored on one launch. */
     static constexpr std::size_t DEFAULT_RESTORE_CAP = 25;
+    /** @brief Maximum workspace manifest size accepted by `Read()`. */
+    static constexpr std::size_t MAX_WORKSPACE_FILE_BYTES = 32U * 1024U * 1024U;
 
     /**
      * @brief Launch restore prefix and the windows held back by the restore cap.
@@ -140,13 +145,14 @@ public:
     /**
      * @brief Reads the current workspace without modifying the file.
      *
-     * Invalid JSON, a schema mismatch, excess window, tab, or MRU counts, and
-     * encoded state strings beyond their predecode caps produce an empty
-     * workspace. UUID strings are truncated; decoded state blobs beyond their
-     * byte bounds are dropped.
+     * Files larger than `MAX_WORKSPACE_FILE_BYTES` are rejected before the
+     * contents are loaded. Invalid JSON, a schema mismatch, excess window,
+     * tab, or MRU counts, and encoded state strings beyond their predecode
+     * caps produce an empty workspace. UUID strings are truncated; decoded
+     * state blobs beyond their byte bounds are dropped.
      *
      * @return The decoded workspace, or an empty workspace when the file is
-     * missing, unreadable, or invalid.
+     * missing, unreadable, oversized, or invalid.
      */
     [[nodiscard]] static Workspace Read();
 
@@ -180,7 +186,9 @@ public:
     [[nodiscard]] static bool HasPersistedWorkspace();
 
     /**
-     * @brief Removes the workspace file without consulting the publishing gate.
+     * @brief Removes the workspace file and generation directories.
+     *
+     * Does not consult the publishing gate.
      */
     static void Clear();
 
@@ -248,14 +256,63 @@ public:
     /**
      * @brief Reads the workspace and prepares the current launch's restore plan.
      *
-     * When nothing is deferred, the file is consumed with `Take()` so a restore
-     * crash does not loop. When windows remain deferred, the file is left intact
-     * and `SetDeferredWindows` stores the remainder for a later quit merge.
+     * The published generation remains on disk. When windows remain deferred,
+     * `SetDeferredWindows` stores the remainder for a later quit merge.
      *
      * @param restoreCap Maximum number of windows to restore on this launch.
      * @return The restore prefix and any deferred remainder.
      */
     [[nodiscard]] static RestorePlan LoadForLaunch(std::size_t restoreCap);
+
+    /**
+     * @brief Returns the directory that stores session snapshots for one generation.
+     *
+     * @param generation Generation identifier; zero yields an empty path.
+     * @return Absolute path to `generations/<generation>/`, or empty when @p generation is zero.
+     */
+    [[nodiscard]] static QString GenerationDirPath(std::uint64_t generation);
+
+    /**
+     * @brief Returns the session JSON path inside a generation directory.
+     *
+     * @param generation Generation identifier.
+     * @param sessionUuid Session UUID stem.
+     * @return Snapshot path, or empty when the UUID is not well-formed.
+     */
+    [[nodiscard]] static QString SessionSnapshotPath(std::uint64_t generation, const QString &sessionUuid);
+
+    /**
+     * @brief Copies referenced session snapshots into a generation directory.
+     *
+     * Each tab's snapshot is copied from the recents sessions directory, then
+     * from the currently published generation. Tabs whose snapshot cannot be
+     * copied have `sessionUuid` cleared so the published manifest does not
+     * claim they are restorable.
+     *
+     * @param generation Destination generation identifier; must be nonzero.
+     * @param workspace Workspace whose tab UUIDs are copied; updated in place.
+     * @return `true` when the generation directory exists or was created.
+     */
+    static bool WriteGenerationSnapshots(std::uint64_t generation, Workspace &workspace);
+
+    /**
+     * @brief Deletes generation directories other than @p keepGeneration.
+     *
+     * @param keepGeneration Generation to retain; zero removes every generation directory.
+     */
+    static void CollectSupersededGenerations(std::uint64_t keepGeneration);
+
+    /**
+     * @brief Writes snapshots for a new generation, publishes the manifest, then collects old generations.
+     *
+     * The previous complete generation remains until the manifest commit
+     * succeeds. A failed snapshot copy clears that tab's UUID rather than
+     * publishing a false restore claim.
+     *
+     * @param workspace Workspace to publish; generation is assigned on success.
+     * @return `true` when the manifest commit succeeds.
+     */
+    static bool Publish(Workspace workspace);
 };
 
 } // namespace slv::persistence

@@ -3,6 +3,7 @@
 #include "workspace_persistence.hpp"
 
 #include "session_history_manager.hpp"
+#include "uuid_utils.hpp"
 
 #include <QByteArray>
 #include <QDir>
@@ -28,8 +29,10 @@ namespace
 {
 
 constexpr const char *WORKSPACE_FILE_NAME = "workspace.json";
+constexpr const char *GENERATIONS_DIR_NAME = "generations";
 
 constexpr const char *KEY_SCHEMA_VERSION = "schemaVersion";
+constexpr const char *KEY_GENERATION = "generation";
 constexpr const char *KEY_WINDOWS = "windows";
 constexpr const char *KEY_MRU_ORDER = "mruOrder";
 constexpr const char *KEY_WINDOW_UUID = "windowUuid";
@@ -90,6 +93,7 @@ QJsonDocument BuildDoc(const Workspace &workspace)
 {
     QJsonObject root;
     root.insert(QLatin1String(KEY_SCHEMA_VERSION), static_cast<int>(workspace.schemaVersion));
+    root.insert(QLatin1String(KEY_GENERATION), static_cast<qint64>(workspace.generation));
     QJsonArray windowsArr;
     for (const auto &window : workspace.windows)
     {
@@ -199,6 +203,8 @@ Workspace WorkspaceFromDoc(const QJsonDocument &doc)
         return workspace;
     }
     workspace.schemaVersion = version;
+    const QJsonValue generationValue = root.value(QLatin1String(KEY_GENERATION));
+    workspace.generation = generationValue.isDouble() ? static_cast<std::uint64_t>(generationValue.toInteger()) : 0;
     const QJsonArray windowsArr = root.value(QLatin1String(KEY_WINDOWS)).toArray();
     // Read-side count violations reject the workspace instead of silently losing windows.
     if (std::cmp_greater(windowsArr.size(), WorkspacePersistence::MAX_WINDOWS))
@@ -293,11 +299,16 @@ void WorkspacePersistence::Sanitize(Workspace &workspace)
 Workspace WorkspacePersistence::Read()
 {
     const QString path = WorkspaceFilePath();
-    QFile file(path);
-    if (!file.exists())
+    const QFileInfo info(path);
+    if (!info.exists() || !info.isFile())
     {
         return Workspace{};
     }
+    if (std::cmp_greater(info.size(), MAX_WORKSPACE_FILE_BYTES))
+    {
+        return Workspace{};
+    }
+    QFile file(path);
     if (!file.open(QIODevice::ReadOnly))
     {
         return Workspace{};
@@ -370,6 +381,11 @@ bool WorkspacePersistence::HasPersistedWorkspace()
 void WorkspacePersistence::Clear()
 {
     QFile::remove(WorkspaceFilePath());
+    QDir generations(DefaultWorkspaceDir().filePath(QLatin1String(GENERATIONS_DIR_NAME)));
+    if (generations.exists())
+    {
+        (void)generations.removeRecursively();
+    }
 }
 
 namespace
@@ -387,6 +403,7 @@ WorkspacePersistence::RestorePlan WorkspacePersistence::PlanRestore(Workspace wo
 {
     RestorePlan plan;
     plan.deferred.schemaVersion = workspace.schemaVersion;
+    plan.deferred.generation = workspace.generation;
     plan.deferred.mruOrder = workspace.mruOrder;
     if (restoreCap == 0 || workspace.windows.size() <= restoreCap)
     {
@@ -441,6 +458,10 @@ Workspace WorkspacePersistence::MergeCapturedWithDeferred(Workspace captured, co
     {
         captured.schemaVersion = deferred.schemaVersion;
     }
+    if (captured.generation == 0 && deferred.generation != 0)
+    {
+        captured.generation = deferred.generation;
+    }
     return captured;
 }
 
@@ -461,7 +482,6 @@ WorkspacePersistence::RestorePlan WorkspacePersistence::LoadForLaunch(std::size_
     RestorePlan plan = PlanRestore(Read(), restoreCap);
     if (plan.deferred.windows.empty())
     {
-        (void)Take();
         SetDeferredWindows({});
     }
     else
@@ -469,6 +489,121 @@ WorkspacePersistence::RestorePlan WorkspacePersistence::LoadForLaunch(std::size_
         SetDeferredWindows(plan.deferred);
     }
     return plan;
+}
+
+QString WorkspacePersistence::GenerationDirPath(std::uint64_t generation)
+{
+    if (generation == 0)
+    {
+        return {};
+    }
+    return QDir(DefaultWorkspaceDir().filePath(QLatin1String(GENERATIONS_DIR_NAME))).filePath(QString::number(generation));
+}
+
+QString WorkspacePersistence::SessionSnapshotPath(std::uint64_t generation, const QString &sessionUuid)
+{
+    if (generation == 0 || !logapp::LooksLikeUuid(sessionUuid))
+    {
+        return {};
+    }
+    return QDir(GenerationDirPath(generation)).filePath(sessionUuid + QStringLiteral(".json"));
+}
+
+namespace
+{
+
+bool CopySnapshotFile(const QString &from, const QString &to)
+{
+    if (from.isEmpty() || to.isEmpty() || !QFile::exists(from))
+    {
+        return false;
+    }
+    QFile::remove(to);
+    return QFile::copy(from, to);
+}
+
+} // namespace
+
+bool WorkspacePersistence::WriteGenerationSnapshots(std::uint64_t generation, Workspace &workspace)
+{
+    if (generation == 0)
+    {
+        return false;
+    }
+    const QString dirPath = GenerationDirPath(generation);
+    QDir dir(dirPath);
+    if (!dir.exists() && !QDir().mkpath(dirPath))
+    {
+        return false;
+    }
+    const std::uint64_t previousGeneration = Read().generation;
+    const QDir recentsDir = DefaultWorkspaceDir();
+    for (WorkspaceWindow &window : workspace.windows)
+    {
+        for (WorkspaceTab &tab : window.tabs)
+        {
+            if (tab.sessionUuid.isEmpty() || !logapp::LooksLikeUuid(tab.sessionUuid))
+            {
+                tab.sessionUuid.clear();
+                continue;
+            }
+            const QString dest = SessionSnapshotPath(generation, tab.sessionUuid);
+            const QString fromRecents = recentsDir.filePath(tab.sessionUuid + QStringLiteral(".json"));
+            if (CopySnapshotFile(fromRecents, dest))
+            {
+                continue;
+            }
+            if (previousGeneration != 0 && previousGeneration != generation &&
+                CopySnapshotFile(SessionSnapshotPath(previousGeneration, tab.sessionUuid), dest))
+            {
+                continue;
+            }
+            tab.sessionUuid.clear();
+        }
+    }
+    return true;
+}
+
+void WorkspacePersistence::CollectSupersededGenerations(std::uint64_t keepGeneration)
+{
+    const QDir root(DefaultWorkspaceDir().filePath(QLatin1String(GENERATIONS_DIR_NAME)));
+    if (!root.exists())
+    {
+        return;
+    }
+    const QFileInfoList entries = root.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QFileInfo &entry : entries)
+    {
+        bool ok = false;
+        const std::uint64_t generation = entry.fileName().toULongLong(&ok);
+        if (!ok || generation == keepGeneration)
+        {
+            continue;
+        }
+        QDir(entry.absoluteFilePath()).removeRecursively();
+    }
+}
+
+bool WorkspacePersistence::Publish(Workspace workspace)
+{
+    if (!SessionHistoryManager::IsPublishingEnabled())
+    {
+        return false;
+    }
+    const std::uint64_t previousGeneration = Read().generation;
+    const std::uint64_t generation = previousGeneration + 1;
+    if (!WriteGenerationSnapshots(generation, workspace))
+    {
+        return false;
+    }
+    workspace.generation = generation;
+    workspace.schemaVersion = SCHEMA_VERSION;
+    if (!Write(workspace))
+    {
+        return false;
+    }
+    CollectSupersededGenerations(generation);
+    return true;
 }
 
 } // namespace slv::persistence

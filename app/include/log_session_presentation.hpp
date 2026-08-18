@@ -1,5 +1,7 @@
 #pragma once
 
+#include <loglib/log_configuration.hpp>
+
 #include <QString>
 
 #include <compare>
@@ -134,6 +136,8 @@ enum class SessionOperationState : std::uint32_t
     SourceWaiting = 1U << 5,
     /** @brief A stream source is awaiting reconnection. */
     Disconnected = 1U << 6,
+    /** @brief A queued operation failure is waiting to be presented. */
+    Failed = 1U << 7,
 };
 
 /**
@@ -141,7 +145,7 @@ enum class SessionOperationState : std::uint32_t
  */
 struct SessionDirtyState
 {
-    /** @brief Whether unsaved filter edits are present. */
+    /** @brief Whether unsaved filter or highlight-editor-draft changes are present. */
     bool filtersDirty = false;
     /** @brief Whether the source can be restored in place. */
     bool restorableInPlace = false;
@@ -179,6 +183,34 @@ enum class SessionCloseDecision : std::uint8_t
 };
 
 /**
+ * @brief Stores uncommitted Highlight Rules editor state for one session.
+ *
+ * `localRules` is the in-progress buffer. `baseline` is the last committed
+ * snapshot used for dirty detection. `currentRow` is the selected list index,
+ * or `-1` when the list is empty. Tab switches capture and restore this
+ * value without committing rules.
+ */
+struct HighlightRulesEditorDraft
+{
+    /** @brief In-progress rule list, including unsaved form edits. */
+    std::vector<loglib::LogConfiguration::HighlightRule> localRules;
+    /** @brief Last committed rule list. */
+    std::vector<loglib::LogConfiguration::HighlightRule> baseline;
+    /** @brief Selected rule row, or `-1` when none. */
+    int currentRow = -1;
+
+    /**
+     * @brief Tests whether the in-progress list differs from the baseline.
+     *
+     * @return `true` when `localRules` and `baseline` are not equal.
+     */
+    [[nodiscard]] bool isDirty() const
+    {
+        return localRules != baseline;
+    }
+};
+
+/**
  * @brief Defines reasons a session cannot be closed silently.
  *
  * `LogSession::PreCheckClose()` returns a bitwise combination of these
@@ -188,7 +220,7 @@ enum class SessionClosePreconditions : std::uint32_t
 {
     /** @brief No shell-owned close handling is required. */
     None = 0,
-    /** @brief Unsaved filter changes require close handling. */
+    /** @brief Unsaved filter or highlight-editor-draft changes require close handling. */
     FiltersDirty = 1U << 0,
     /** @brief Active decompression must be stopped and drained. */
     DecompressionInFlight = 1U << 1,

@@ -445,6 +445,37 @@ public:
     void CloseTabForTest(int index);
 
     /**
+     * @brief Opens the Highlight Rules editor through the production path.
+     */
+    void OpenHighlightRulesEditorForTest();
+
+    /**
+     * @brief Returns the shared Highlight Rules editor, if it exists.
+     *
+     * @return The editor, or `nullptr` when it has not been opened.
+     */
+    [[nodiscard]] HighlightRulesEditor *HighlightRulesEditorForTest() const noexcept;
+
+    /**
+     * @brief Returns the Columns Manager dialog, if it exists.
+     *
+     * @return The dialog, or `nullptr` when it has not been opened.
+     */
+    [[nodiscard]] class ColumnsManagerDialog *ColumnsManagerDialogForTest() const noexcept;
+
+    /**
+     * @brief Opens the configuration diagnostics dialog through the production path.
+     */
+    void ShowConfigurationDiagnosticsForTest();
+
+    /**
+     * @brief Returns the diagnostics dialog, if it exists.
+     *
+     * @return The dialog, or `nullptr` when it has not been opened.
+     */
+    [[nodiscard]] class ConfigurationDiagnosticsDialog *ConfigurationDiagnosticsDialogForTest() const noexcept;
+
+    /**
      * @brief Informative text shown for a Save / Discard / Cancel close prompt.
      * @param session Session whose source and dirty flags shape the copy.
      * @return Localized explanatory text that does not mention session-bundle export.
@@ -464,8 +495,10 @@ public:
      * @brief Rebinds shared docks and session-scoped dialogs in dependency order.
      * @param context The incoming session context, or an unbound context to clear state.
      *
-     * Session-specific dialogs whose origin differs from the context are closed
-     * and scheduled for deletion.
+     * Columns Manager and Diagnostics whose origin differs from the context
+     * are closed and scheduled for deletion. The Highlight Rules editor is
+     * kept; its draft is captured from the outgoing session and restored
+     * for the incoming session without committing rules.
      */
     void RebindSharedDocks(const SessionBindContext &context);
 
@@ -519,13 +552,16 @@ public:
     /**
      * @brief Restores this window from persisted workspace state.
      * @param window The window record to apply.
+     * @param generation Workspace generation whose session snapshots should be loaded.
      *
-     * Restorable file-backed sessions reopen by UUID. Stream sessions become
-     * disconnected placeholders, skipped entries remain empty, and individual
-     * tab failures do not abort the remaining restore. Geometry and dock state
-     * are applied after tab binding.
+     * Restorable file-backed and live-tail sessions reopen from the
+     * generation snapshot when present, otherwise from recents. Live-tail
+     * paths reopen statically. Stream sessions become empty placeholders,
+     * skipped entries remain empty, and individual tab failures do not
+     * abort the remaining restore. Geometry and dock state are applied
+     * after tab binding.
      */
-    void ApplyWorkspaceWindow(const slv::persistence::WorkspaceWindow &window);
+    void ApplyWorkspaceWindow(const slv::persistence::WorkspaceWindow &window, std::uint64_t generation = 0);
 
     /**
      * @brief Ensures a destructive open targets an empty active tab.
@@ -538,12 +574,14 @@ public:
     /**
      * @brief Applies the session close-decision model to @p closing.
      *
-     * Clean sessions proceed. Restorable file-backed sessions autosave
-     * silently. Other dirty sessions offer Save, Discard, and Cancel.
-     * A failed autosave or explicit save keeps the session, including
-     * its autosave identity, and reports an error. Tests that suppress
-     * dialogs treat a prompt as Discard unless a queued prompt choice
-     * is pending.
+     * When the shared Highlight Rules editor is bound to @p closing, its
+     * in-progress buffer is written into that session's draft first so
+     * unsaved editor edits participate in the decision. Clean sessions
+     * proceed. Restorable file-backed sessions autosave silently. Other
+     * dirty sessions offer Save, Discard, and Cancel. A failed autosave
+     * or explicit save keeps the session, including its autosave
+     * identity, and reports an error. Tests that suppress dialogs treat
+     * a prompt as Discard unless a queued prompt choice is pending.
      *
      * @param closing The session being closed or replaced; `nullptr` proceeds.
      * @return `true` to continue, or `false` when the user cancels or save fails.
@@ -1150,6 +1188,13 @@ public:
     void OpenFilesForTest(const QStringList &files, OpenMode mode);
 
     /**
+     * @brief Delivers a local-file drop into `dropEvent`.
+     * @param files Local file paths placed on the mime payload.
+     * @param modifiers Keyboard modifiers; `Shift` selects replace.
+     */
+    void DropFilesForTest(const QStringList &files, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
+
+    /**
      * @brief Test-only entry to the mixed-input dispatcher. Returns the
      * branch the dispatcher took so tests can assert on the shape
      * without scraping the status bar.
@@ -1452,6 +1497,22 @@ private slots:
      * @param uuid The `uuid` value.
      */
     void OpenRecentSession(const QString &uuid);
+
+    /**
+     * @brief Loads a session JSON into the active tab without mutating Recent Sessions on failure.
+     * @param uuid Session UUID to pin after a successful load.
+     * @param jsonPath Path of the JSON snapshot to load.
+     * @param informIfNonFile Whether non-file sources show a dialog.
+     */
+    void OpenSessionFromJson(const QString &uuid, const QString &jsonPath, bool informIfNonFile);
+
+    /**
+     * @brief Applies a parsed session configuration to the active tab.
+     * @param uuid Session UUID to pin after a successful load.
+     * @param parsed Configuration to apply; consumed.
+     * @param informIfNonFile Whether non-file sources show a dialog.
+     */
+    void OpenParsedSession(const QString &uuid, loglib::LogConfiguration parsed, bool informIfNonFile);
 
     /**
      * @brief Shared tail of `RestoreLastSessionFromPath` and
@@ -1772,6 +1833,28 @@ private:
      * tab switches and teardown. Window-scoped subscriptions are excluded.
      */
     void InstallActiveSessionConnections();
+
+    /**
+     * @brief Opens or raises the Highlight Rules editor for the active session.
+     *
+     * Restores that session's stored draft, or seeds the editor from committed
+     * highlight rules when no draft exists.
+     */
+    void OpenHighlightRulesEditor();
+
+    /**
+     * @brief Writes the editor buffer into the originating session's draft.
+     *
+     * No-op when the editor is absent or its origin session is gone.
+     */
+    void CaptureHighlightRulesEditorDraft();
+
+    /**
+     * @brief Loads `session`'s draft or committed rules into the shared editor.
+     *
+     * @param session Session to bind, or `nullptr` to leave the editor idle.
+     */
+    void RestoreHighlightRulesEditorDraft(LogSession *session);
 
     // Tab lifecycle.
 
@@ -2174,13 +2257,11 @@ private:
     void UpdateFilters();
 
     /**
-     * @brief True iff the window is worth auto-saving: history manager
-     * attached, `File`-kind source with at least one locator, and
-     * a static (re-openable) session. Live-tail / stream sessions
-     * can't be restored from a JSON snapshot (the producer is
-     * stateful), so we skip them. Takes the just-finished mode
-     * explicitly because `streamingFinished` resets `mSessionMode`
-     * to `Idle` before the auto-save hook runs.
+     * @brief True iff the window is worth auto-saving after a stream
+     * completes: history manager attached, `File`-kind source with at
+     * least one locator, and a static (re-openable) session. Live-tail
+     * completions are excluded so close still prompts. Quit persistence
+     * uses `LogSession::CanPersistRestorableSnapshot()` instead.
      * @param justFinishedMode The `justFinishedMode` value.
      * @return The result described above.
      */
@@ -3177,10 +3258,9 @@ private:
 
     /**
      * @brief Originating session for `mHighlightRulesEditor`.
-     * Same semantics as `mDiagnosticsDialogSession` above --
-     * consulted by `RebindSharedDocks` to close the editor when
-     * the active session changes to a different one, so the
-     * `rulesSaved` fan cannot land on the wrong session's model.
+     * Rebind restores that session's draft into the shared editor
+     * instead of destroying it. `QPointer` so a session torn down
+     * out-of-order zeroes the alias.
      */
     QPointer<LogSession> mHighlightRulesEditorSession;
 

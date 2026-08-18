@@ -233,10 +233,34 @@ public:
     void HideOperationProgress();
 
     /**
+     * @brief Enables or disables the table and overview rail without affecting the progress strip.
+     * @param enabled Whether table and rail interaction is allowed.
+     *
+     * The progress strip and its Cancel control stay enabled so a
+     * background tab can cancel its own operation.
+     */
+    void SetContentEnabled(bool enabled);
+
+    /**
+     * @brief Reports whether the table content is enabled.
+     * @return `true` when the table accepts interaction.
+     */
+    [[nodiscard]] bool IsContentEnabled() const noexcept;
+
+    /**
      * @brief Reports whether the progress strip has been shown.
      * @return True when the strip is not explicitly hidden.
      */
     [[nodiscard]] bool IsOperationProgressVisible() const noexcept;
+
+    /**
+     * @brief Returns the progress strip's Cancel button.
+     * @return The button after the strip is created, or `nullptr`.
+     */
+    [[nodiscard]] QPushButton *ProgressCancelButton() const noexcept
+    {
+        return mProgressCancelButton;
+    }
 
 signals:
     /** @brief Emitted when a requested source row is not visible. */
