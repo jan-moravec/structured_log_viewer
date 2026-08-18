@@ -24,13 +24,14 @@
 #include <QStringList>
 
 #include <algorithm>
+#include <cstddef>
 #include <memory>
 
 namespace
 {
 
 // Bound startup work for unusually large persisted workspaces.
-constexpr int MAX_RESTORE_PEERS = 25;
+constexpr std::size_t MAX_RESTORE_PEERS = slv::persistence::WorkspacePersistence::DEFAULT_RESTORE_CAP;
 
 // Queue macOS file-open events until a live window can receive them.
 class FileOpenEventFilter : public QObject
@@ -217,27 +218,21 @@ int main(int argc, char *argv[])
     const bool restoreEnabled = SessionHistoryManager::RestoreLastSessionOnLaunch();
     if (cliFiles.isEmpty() && restoreEnabled && !allowNewInstance && !readStdin)
     {
-        // Prefer grouped workspace state; retain surplus windows for another launch.
+        // Prefer grouped workspace state. Surplus windows stay deferred in
+        // process memory and on the original file until a normal quit merges
+        // them with newly captured windows.
         slv::persistence::Workspace workspace;
         {
-            slv::persistence::Workspace peek = slv::persistence::WorkspacePersistence::Read();
-            if (peek.windows.size() > static_cast<std::size_t>(MAX_RESTORE_PEERS))
+            slv::persistence::WorkspacePersistence::RestorePlan plan =
+                slv::persistence::WorkspacePersistence::LoadForLaunch(MAX_RESTORE_PEERS);
+            if (!plan.deferred.windows.empty())
             {
-                logapp::LogWarning() << "Workspace has" << peek.windows.size() << "windows; restoring first"
-                                     << MAX_RESTORE_PEERS << "and writing the surplus back for a future launch.";
-                slv::persistence::Workspace surplus;
-                surplus.schemaVersion = peek.schemaVersion;
-                surplus.windows.assign(peek.windows.begin() + MAX_RESTORE_PEERS, peek.windows.end());
-                surplus.mruOrder = peek.mruOrder;
-                (void)slv::persistence::WorkspacePersistence::Write(std::move(surplus));
-                peek.windows.resize(MAX_RESTORE_PEERS);
-                workspace = std::move(peek);
+                logapp::LogWarning() << "Workspace has"
+                                     << (plan.toRestore.windows.size() + plan.deferred.windows.size())
+                                     << "windows; restoring first" << plan.toRestore.windows.size()
+                                     << "and deferring the remainder until a later launch.";
             }
-            else
-            {
-                // Atomic consumption prevents repeated restore crashes.
-                workspace = slv::persistence::WorkspacePersistence::Take();
-            }
+            workspace = std::move(plan.toRestore);
         }
         if (!workspace.windows.empty())
         {
@@ -265,12 +260,13 @@ int main(int argc, char *argv[])
         {
             // Consume the compatibility index atomically to avoid restore loops.
             QStringList previouslyOpen = SessionHistoryManager::TakeOpenWindowsAtQuit();
-            if (previouslyOpen.size() > MAX_RESTORE_PEERS)
+            if (previouslyOpen.size() > static_cast<qsizetype>(MAX_RESTORE_PEERS))
             {
                 logapp::LogWarning()
                     << "Truncating restore from" << previouslyOpen.size() << "to" << MAX_RESTORE_PEERS
-                    << "peer windows; the surplus stays in the recents index and can be reopened manually.";
-                previouslyOpen = previouslyOpen.mid(0, MAX_RESTORE_PEERS);
+                    << "peer windows; remaining entries stay in Recent Sessions and are not "
+                       "rewritten into the open-window list.";
+                previouslyOpen = previouslyOpen.mid(0, static_cast<qsizetype>(MAX_RESTORE_PEERS));
             }
             if (!previouslyOpen.isEmpty())
             {
@@ -364,7 +360,8 @@ int main(int argc, char *argv[])
 
         // Publish only after every close handler has finished.
         SessionHistoryManager::AddOpenWindowUuids(restorable);
-        // Keep the flat index for backward-compatible restore readers.
+        slv::persistence::Workspace deferred = slv::persistence::WorkspacePersistence::TakeDeferredWindows();
+        workspace = slv::persistence::WorkspacePersistence::MergeCapturedWithDeferred(std::move(workspace), deferred);
         (void)slv::persistence::WorkspacePersistence::Write(std::move(workspace));
     });
 

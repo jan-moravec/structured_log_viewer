@@ -14,6 +14,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QSaveFile>
+#include <QSet>
 #include <QStandardPaths>
 #include <QStringConverter>
 #include <QUuid>
@@ -369,6 +370,105 @@ bool WorkspacePersistence::HasPersistedWorkspace()
 void WorkspacePersistence::Clear()
 {
     QFile::remove(WorkspaceFilePath());
+}
+
+namespace
+{
+
+Workspace &DeferredWindowsSlot()
+{
+    static Workspace deferred;
+    return deferred;
+}
+
+} // namespace
+
+WorkspacePersistence::RestorePlan WorkspacePersistence::PlanRestore(Workspace workspace, std::size_t restoreCap)
+{
+    RestorePlan plan;
+    plan.deferred.schemaVersion = workspace.schemaVersion;
+    plan.deferred.mruOrder = workspace.mruOrder;
+    if (restoreCap == 0 || workspace.windows.size() <= restoreCap)
+    {
+        plan.toRestore = std::move(workspace);
+        return plan;
+    }
+    const auto split = static_cast<std::vector<WorkspaceWindow>::difference_type>(restoreCap);
+    plan.deferred.windows.assign(workspace.windows.begin() + split, workspace.windows.end());
+    workspace.windows.resize(restoreCap);
+    plan.toRestore = std::move(workspace);
+    return plan;
+}
+
+Workspace WorkspacePersistence::MergeCapturedWithDeferred(Workspace captured, const Workspace &deferred)
+{
+    QSet<QString> seenWindows;
+    seenWindows.reserve(static_cast<qsizetype>(captured.windows.size() + deferred.windows.size()));
+    for (const WorkspaceWindow &window : captured.windows)
+    {
+        if (!window.windowUuid.isEmpty())
+        {
+            seenWindows.insert(window.windowUuid);
+        }
+    }
+    for (const WorkspaceWindow &window : deferred.windows)
+    {
+        if (window.windowUuid.isEmpty() || seenWindows.contains(window.windowUuid))
+        {
+            continue;
+        }
+        seenWindows.insert(window.windowUuid);
+        captured.windows.push_back(window);
+    }
+
+    QSet<QString> seenMru;
+    QStringList mergedMru;
+    const auto appendMru = [&](const QStringList &order) {
+        for (const QString &uuid : order)
+        {
+            if (uuid.isEmpty() || seenMru.contains(uuid))
+            {
+                continue;
+            }
+            seenMru.insert(uuid);
+            mergedMru.append(uuid);
+        }
+    };
+    appendMru(captured.mruOrder);
+    appendMru(deferred.mruOrder);
+    captured.mruOrder = std::move(mergedMru);
+    if (captured.schemaVersion == 0 && deferred.schemaVersion != 0)
+    {
+        captured.schemaVersion = deferred.schemaVersion;
+    }
+    return captured;
+}
+
+void WorkspacePersistence::SetDeferredWindows(Workspace deferred)
+{
+    DeferredWindowsSlot() = std::move(deferred);
+}
+
+Workspace WorkspacePersistence::TakeDeferredWindows()
+{
+    Workspace out;
+    std::swap(out, DeferredWindowsSlot());
+    return out;
+}
+
+WorkspacePersistence::RestorePlan WorkspacePersistence::LoadForLaunch(std::size_t restoreCap)
+{
+    RestorePlan plan = PlanRestore(Read(), restoreCap);
+    if (plan.deferred.windows.empty())
+    {
+        (void)Take();
+        SetDeferredWindows({});
+    }
+    else
+    {
+        SetDeferredWindows(plan.deferred);
+    }
+    return plan;
 }
 
 } // namespace slv::persistence

@@ -779,6 +779,8 @@ pre-commit run --all-files
 
 The pinned tool versions live in [`.pre-commit-config.yaml`](.pre-commit-config.yaml).
 
+Public C++ APIs use Doxygen in the style documented in [`AGENTS.md`](AGENTS.md) (Comments and Doxygen). See [`app/include/histogram_model.hpp`](app/include/histogram_model.hpp) for examples. Comments describe current behavior only.
+
 ## Repository security (maintainers)
 
 These settings live in GitHub, not in git. They improve [OpenSSF Scorecard](https://securityscorecards.dev/) governance checks when enabled.

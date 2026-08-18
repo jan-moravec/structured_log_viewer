@@ -40,6 +40,7 @@ public:
         // directory beneath it.
         QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).mkpath(QStringLiteral("sessions"));
         WorkspacePersistence::Clear();
+        (void)WorkspacePersistence::TakeDeferredWindows();
     }
     ScopedTestPaths(const ScopedTestPaths &) = delete;
     ScopedTestPaths &operator=(const ScopedTestPaths &) = delete;
@@ -48,6 +49,7 @@ public:
     ~ScopedTestPaths()
     {
         WorkspacePersistence::Clear();
+        (void)WorkspacePersistence::TakeDeferredWindows();
         QStandardPaths::setTestModeEnabled(false);
     }
 };
@@ -355,15 +357,15 @@ private slots:
         );
     }
 
-    // Startup restores a bounded prefix and writes any surplus
-    // windows back for a later launch.
+    // A restore cap smaller than the persisted window count leaves the
+    // original file intact and remembers the remainder for a later quit merge.
 
-    static void TestOverCapWorkspaceSurplusIsWrittenBackForNextLaunch()
+    static void TestLoadForLaunchDefersSurplusWithoutRewritingFile()
     {
         const ScopedTestPaths paths;
+        constexpr std::size_t kRestoreCap = 5;
         constexpr std::size_t kSurplusCount = 3;
-        constexpr std::size_t kRestorePrefix = 5;
-        constexpr std::size_t kTotal = kRestorePrefix + kSurplusCount;
+        constexpr std::size_t kTotal = kRestoreCap + kSurplusCount;
 
         Workspace src;
         src.schemaVersion = WorkspacePersistence::SCHEMA_VERSION;
@@ -374,25 +376,118 @@ private slots:
         }
         QVERIFY(WorkspacePersistence::Write(src));
 
-        // Simulate the startup split-write: `Read()` (no wipe),
-        // truncate the in-memory restore list, `Write()` the
-        // surplus back so a later launch picks it up.
-        Workspace peek = WorkspacePersistence::Read();
-        QCOMPARE(peek.windows.size(), kTotal);
-
-        Workspace surplus;
-        surplus.schemaVersion = peek.schemaVersion;
-        surplus.windows.assign(peek.windows.begin() + kRestorePrefix, peek.windows.end());
-        surplus.mruOrder = peek.mruOrder;
-        QVERIFY(WorkspacePersistence::Write(std::move(surplus)));
-
-        // A subsequent `Read()` or `Take()` must see the surplus intact.
-        const Workspace afterSplit = WorkspacePersistence::Read();
-        QCOMPARE(afterSplit.windows.size(), kSurplusCount);
+        const auto plan = WorkspacePersistence::LoadForLaunch(kRestoreCap);
+        QCOMPARE(plan.toRestore.windows.size(), kRestoreCap);
+        QCOMPARE(plan.deferred.windows.size(), kSurplusCount);
+        for (std::size_t i = 0; i < kRestoreCap; ++i)
+        {
+            QCOMPARE(plan.toRestore.windows[i].windowUuid, QStringLiteral("win-%1").arg(i));
+        }
         for (std::size_t i = 0; i < kSurplusCount; ++i)
         {
-            QCOMPARE(afterSplit.windows[i].windowUuid, QStringLiteral("win-%1").arg(kRestorePrefix + i));
+            QCOMPARE(plan.deferred.windows[i].windowUuid, QStringLiteral("win-%1").arg(kRestoreCap + i));
         }
+
+        const Workspace onDisk = WorkspacePersistence::Read();
+        QCOMPARE(onDisk.windows.size(), kTotal);
+        for (std::size_t i = 0; i < kTotal; ++i)
+        {
+            QCOMPARE(onDisk.windows[i].windowUuid, QStringLiteral("win-%1").arg(i));
+        }
+    }
+
+    static void TestLoadForLaunchConsumesFileWhenNothingIsDeferred()
+    {
+        const ScopedTestPaths paths;
+        Workspace src;
+        src.schemaVersion = WorkspacePersistence::SCHEMA_VERSION;
+        src.windows.push_back(MakeWindow(QStringLiteral("win-0"), 1, 0));
+        src.windows.push_back(MakeWindow(QStringLiteral("win-1"), 1, 0));
+        QVERIFY(WorkspacePersistence::Write(src));
+
+        const auto plan = WorkspacePersistence::LoadForLaunch(5);
+        QCOMPARE(plan.toRestore.windows.size(), std::size_t{2});
+        QVERIFY(plan.deferred.windows.empty());
+        QVERIFY(WorkspacePersistence::Read().windows.empty());
+    }
+
+    static void TestMergeCapturedWithDeferredSkipsDuplicateWindowUuids()
+    {
+        Workspace captured;
+        captured.schemaVersion = WorkspacePersistence::SCHEMA_VERSION;
+        captured.windows.push_back(MakeWindow(QStringLiteral("win-0"), 1, 0));
+        captured.mruOrder.append(QStringLiteral("win-0"));
+
+        Workspace deferred;
+        deferred.schemaVersion = WorkspacePersistence::SCHEMA_VERSION;
+        deferred.windows.push_back(MakeWindow(QStringLiteral("win-0"), 2, 0));
+        deferred.windows.push_back(MakeWindow(QStringLiteral("win-5"), 1, 0));
+        deferred.mruOrder.append(QStringLiteral("win-0"));
+        deferred.mruOrder.append(QStringLiteral("win-5"));
+
+        const Workspace merged = WorkspacePersistence::MergeCapturedWithDeferred(std::move(captured), deferred);
+        QCOMPARE(merged.windows.size(), std::size_t{2});
+        QCOMPARE(merged.windows[0].windowUuid, QStringLiteral("win-0"));
+        QCOMPARE(merged.windows[0].tabs.size(), std::size_t{1});
+        QCOMPARE(merged.windows[1].windowUuid, QStringLiteral("win-5"));
+        QCOMPARE(merged.mruOrder.size(), 2);
+        QCOMPARE(merged.mruOrder.at(0), QStringLiteral("win-0"));
+        QCOMPARE(merged.mruOrder.at(1), QStringLiteral("win-5"));
+    }
+
+    // Startup restores a bounded prefix, a normal quit publishes the live
+    // windows plus still-deferred remainder, and a second launch still sees
+    // those deferred windows.
+
+    static void TestRestoreCapSurvivesQuitAndSecondLaunch()
+    {
+        const ScopedTestPaths paths;
+        constexpr std::size_t kRestoreCap = 5;
+        constexpr std::size_t kSurplusCount = 3;
+        constexpr std::size_t kTotal = kRestoreCap + kSurplusCount;
+
+        Workspace src;
+        src.schemaVersion = WorkspacePersistence::SCHEMA_VERSION;
+        for (std::size_t i = 0; i < kTotal; ++i)
+        {
+            src.windows.push_back(MakeWindow(QStringLiteral("win-%1").arg(i), 1, 0));
+            src.mruOrder.append(QStringLiteral("win-%1").arg(i));
+        }
+        QVERIFY(WorkspacePersistence::Write(src));
+
+        const auto firstLaunch = WorkspacePersistence::LoadForLaunch(kRestoreCap);
+        QCOMPARE(firstLaunch.toRestore.windows.size(), kRestoreCap);
+        QCOMPARE(firstLaunch.deferred.windows.size(), kSurplusCount);
+
+        Workspace captured;
+        captured.schemaVersion = WorkspacePersistence::SCHEMA_VERSION;
+        captured.windows = firstLaunch.toRestore.windows;
+        captured.windows.pop_back();
+        captured.windows.front().geometry = QByteArray("geom-after-quit");
+        captured.mruOrder.append(QStringLiteral("win-0"));
+        captured.mruOrder.append(QStringLiteral("win-1"));
+
+        const Workspace deferred = WorkspacePersistence::TakeDeferredWindows();
+        QCOMPARE(deferred.windows.size(), kSurplusCount);
+        Workspace merged = WorkspacePersistence::MergeCapturedWithDeferred(std::move(captured), deferred);
+        QVERIFY(WorkspacePersistence::Write(std::move(merged)));
+
+        const Workspace afterQuit = WorkspacePersistence::Read();
+        QCOMPARE(afterQuit.windows.size(), (kRestoreCap - 1) + kSurplusCount);
+        QCOMPARE(afterQuit.windows.front().windowUuid, QStringLiteral("win-0"));
+        QCOMPARE(afterQuit.windows.front().geometry, QByteArray("geom-after-quit"));
+        QCOMPARE(afterQuit.windows[kRestoreCap - 1].windowUuid, QStringLiteral("win-5"));
+        for (const WorkspaceWindow &window : afterQuit.windows)
+        {
+            QVERIFY(window.windowUuid != QStringLiteral("win-4"));
+        }
+
+        const auto secondLaunch = WorkspacePersistence::LoadForLaunch(kRestoreCap);
+        QCOMPARE(secondLaunch.toRestore.windows.size(), kRestoreCap);
+        QCOMPARE(secondLaunch.toRestore.windows.front().geometry, QByteArray("geom-after-quit"));
+        QCOMPARE(secondLaunch.deferred.windows.size(), kSurplusCount - 1);
+        QCOMPARE(secondLaunch.deferred.windows.front().windowUuid, QStringLiteral("win-6"));
+        QCOMPARE(WorkspacePersistence::Read().windows.size(), afterQuit.windows.size());
     }
 };
 

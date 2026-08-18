@@ -231,7 +231,7 @@ add_test(
 )
 
 qt_add_executable(apptest_session_tabs src/session_tabs_test.cpp)
-target_link_libraries(apptest_session_tabs PRIVATE Qt6::Test Qt6::Widgets logapp)
+target_link_libraries(apptest_session_tabs PRIVATE Qt6::Test Qt6::Widgets logapp ZLIB::ZLIB)
 target_include_directories(apptest_session_tabs PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
 add_test(
     NAME apptest_session_tabs

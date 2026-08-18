@@ -8,19 +8,23 @@
 #include "log_session.hpp"
 #include "log_session_presentation.hpp"
 #include "row_order_proxy_model.hpp"
+#include "session_history_manager.hpp"
 
 #include <Qt>
 
 #include <loglib/filter_expression.hpp>
 #include <loglib/log_configuration.hpp>
 
+#include <QDir>
 #include <QObject>
 #include <QSettings>
 #include <QSignalSpy>
+#include <QTemporaryDir>
 #include <QTest>
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <variant>
@@ -1121,6 +1125,72 @@ private slots:
         session.MutableCurrentSource() = fileSource;
         QVERIFY(!session.ShouldAutoSaveAfterStreaming(LogSession::Mode::Static));
         QVERIFY(!session.ShouldAutoSaveAfterStreaming(LogSession::Mode::LiveTail));
+    }
+
+    static void TestCloseDecisionSilentWhenClean()
+    {
+        LogSession session;
+        QCOMPARE(session.CloseDecision(), SessionCloseDecision::Silent);
+
+        loglib::LogConfiguration::Source fileSource;
+        fileSource.kind = loglib::LogConfiguration::Source::Kind::File;
+        fileSource.locators = {std::string{"C:/logs/app.log"}};
+        session.MutableCurrentSource() = fileSource;
+        session.SetMode(LogSession::Mode::Static);
+        QCOMPARE(session.CloseDecision(), SessionCloseDecision::Silent);
+    }
+
+    static void TestCloseDecisionPromptsWhenDirtyAndNotAutosaveable()
+    {
+        LogSession session;
+        session.MarkFiltersDirty();
+        QCOMPARE(session.CloseDecision(), SessionCloseDecision::Prompt);
+
+        session.SetAutoSaveUuid(QStringLiteral("11111111-2222-3333-4444-555555555555"));
+        QCOMPARE(session.CloseDecision(), SessionCloseDecision::Prompt);
+
+        loglib::LogConfiguration::Source fileSource;
+        fileSource.kind = loglib::LogConfiguration::Source::Kind::File;
+        fileSource.locators = {std::string{"C:/logs/app.log"}};
+        session.MutableCurrentSource() = fileSource;
+        session.SetMode(LogSession::Mode::Static);
+        QCOMPARE(session.CloseDecision(), SessionCloseDecision::Prompt);
+
+        session.SetMode(LogSession::Mode::LiveTail);
+        QCOMPARE(session.CloseDecision(), SessionCloseDecision::Prompt);
+
+        loglib::LogConfiguration::Source stdinSource;
+        stdinSource.kind = loglib::LogConfiguration::Source::Kind::Stdin;
+        stdinSource.locators = {std::string{"<stdin>"}};
+        session.MutableCurrentSource() = stdinSource;
+        session.SetMode(LogSession::Mode::Static);
+        QCOMPARE(session.CloseDecision(), SessionCloseDecision::Prompt);
+
+        loglib::LogConfiguration::Source networkSource;
+        networkSource.kind = loglib::LogConfiguration::Source::Kind::NetworkStream;
+        networkSource.locators = {std::string{"tcp://127.0.0.1:1234"}};
+        session.MutableCurrentSource() = networkSource;
+        session.SetMode(LogSession::Mode::LiveTail);
+        QCOMPARE(session.CloseDecision(), SessionCloseDecision::Prompt);
+    }
+
+    static void TestCloseDecisionAutosavesWhenDirtyFileBackedWithHistoryManager()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<QSettingsRecentsIndexStorage>());
+        LogSession session(nullptr, &manager, nullptr);
+        session.MarkFiltersDirty();
+
+        loglib::LogConfiguration::Source fileSource;
+        fileSource.kind = loglib::LogConfiguration::Source::Kind::File;
+        fileSource.locators = {std::string{"C:/logs/app.log"}};
+        session.MutableCurrentSource() = fileSource;
+        session.SetMode(LogSession::Mode::Static);
+        QCOMPARE(session.CloseDecision(), SessionCloseDecision::Autosave);
+
+        session.SetMode(LogSession::Mode::LiveTail);
+        QCOMPARE(session.CloseDecision(), SessionCloseDecision::Prompt);
     }
 
     static void TestEffectiveAutoDetectRotationHistoryFolds()

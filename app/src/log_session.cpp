@@ -17,6 +17,7 @@
 
 #include <QAbstractItemModel>
 #include <QFileInfo>
+#include <QFuture>
 #include <QModelIndex>
 #include <QPointer>
 #include <QSettings>
@@ -90,10 +91,7 @@ LogSession::LogSession(
 LogSession::~LogSession()
 {
     // Qt requires each watched future to finish before its watcher is destroyed.
-    if (mDecompressionWatcher != nullptr)
-    {
-        mDecompressionWatcher->waitForFinished();
-    }
+    DrainDecompressionWatcher();
     if (mExportWatcher != nullptr)
     {
         // Teardown cannot report worker exceptions to the UI.
@@ -162,6 +160,20 @@ SessionCloseResult LogSession::RequestClose()
 {
     // MainWindow owns close orchestration through PreCheckClose().
     return SessionCloseResult::Closed;
+}
+
+SessionCloseDecision LogSession::CloseDecision() const noexcept
+{
+    if (!mFiltersDirty)
+    {
+        return SessionCloseDecision::Silent;
+    }
+    const Mode mode = (mMode != Mode::Idle) ? mMode : mLastTerminalMode;
+    if (ShouldAutoSaveAfterStreaming(mode))
+    {
+        return SessionCloseDecision::Autosave;
+    }
+    return SessionCloseDecision::Prompt;
 }
 
 SessionPresentationSnapshot LogSession::PresentationSnapshot() const
@@ -955,6 +967,27 @@ LogSession::DecompressionWatcher *LogSession::EnsureDecompressionWatcher()
         mDecompressionWatcher = new DecompressionWatcher(this);
     }
     return mDecompressionWatcher;
+}
+
+void LogSession::DrainDecompressionWatcher() noexcept
+{
+    if (mDecompressionWatcher == nullptr)
+    {
+        return;
+    }
+    try
+    {
+        mDecompressionWatcher->waitForFinished();
+        if (mDecompressionWatcher->future().isValid())
+        {
+            (void)mDecompressionWatcher->result();
+        }
+    }
+    catch (...) // NOLINT(bugprone-empty-catch)
+    {
+        // Cancellation and decode errors are consumed by the closer.
+    }
+    mDecompressionWatcher->setFuture(QFuture<DecompressionByteSourcePtr>{});
 }
 
 LogSession::ExportWatcher *LogSession::EnsureExportWatcher()

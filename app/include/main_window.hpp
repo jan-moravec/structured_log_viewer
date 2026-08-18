@@ -300,6 +300,13 @@ public:
     }
 
     /**
+     * @brief Returns the number of persistent connections stored on a tab.
+     * @param index The tab index to inspect.
+     * @return The connection count, or zero when the index is not hosted.
+     */
+    [[nodiscard]] std::size_t PerTabConnectionCountForTest(int index) const noexcept;
+
+    /**
      * @brief Open a live-tail session over the process's standard input.
      * The CLI parses `-` / `--stdin` in argv and routes here via
      * `main()`. Session shape mirrors `OpenNetworkStream` (live-
@@ -402,6 +409,13 @@ public:
     [[nodiscard]] int TabIndexForSession(SessionInstanceId id) const noexcept;
 
     /**
+     * @brief Returns the hosted session for a stable instance identifier.
+     * @param id The session instance identifier to resolve.
+     * @return The hosted session, or `nullptr` when no tab currently owns that id.
+     */
+    [[nodiscard]] LogSession *HostedSession(SessionInstanceId id) const noexcept;
+
+    /**
      * @brief Returns the view hosted at a tab index.
      * @param index The tab index to inspect.
      * @return A non-owning view pointer, or `nullptr` when unavailable.
@@ -425,10 +439,17 @@ public:
      * @brief Closes a tab through the production close path.
      * @param index The tab index; invalid indices are ignored.
      *
-     * Closing the final tab closes the window. Cancellation in the dirty
-     * ephemeral-session prompt leaves the tab unchanged.
+     * Closing the final tab closes the window. Cancellation in the close-decision
+     * prompt leaves the tab unchanged.
      */
     void CloseTabForTest(int index);
+
+    /**
+     * @brief Informative text shown for a Save / Discard / Cancel close prompt.
+     * @param session Session whose source and dirty flags shape the copy.
+     * @return Localized explanatory text that does not mention session-bundle export.
+     */
+    [[nodiscard]] static QString ClosePromptInformativeTextForTest(const LogSession &session);
 
     /**
      * @brief Disconnects all active-session-scoped subscriptions for tests.
@@ -515,22 +536,42 @@ public:
     void EnsureFreshActiveTab();
 
     /**
-     * @brief Confirms discarding dirty state that cannot be restored or auto-saved.
-     * @param closing The session being closed; `nullptr` requires no confirmation.
-     * @return `true` to continue, or `false` when the user cancels.
+     * @brief Applies the session close-decision model to @p closing.
      *
-     * Clean and restorable sessions proceed without prompting. Tests that
-     * suppress dialogs also proceed unconditionally.
+     * Clean sessions proceed. Restorable file-backed sessions autosave
+     * silently. Other dirty sessions offer Save, Discard, and Cancel.
+     * A failed autosave or explicit save keeps the session, including
+     * its autosave identity, and reports an error. Tests that suppress
+     * dialogs treat a prompt as Discard unless a queued prompt choice
+     * is pending.
+     *
+     * @param closing The session being closed or replaced; `nullptr` proceeds.
+     * @return `true` to continue, or `false` when the user cancels or save fails.
      */
-    [[nodiscard]] bool ConfirmDiscardEphemeralIfDirty(LogSession *closing);
+    [[nodiscard]] bool PrepareSessionClose(LogSession *closing);
+
+    /**
+     * @brief Offers Save, Discard, and Cancel for a dirty session that cannot
+     * be autosaved.
+     * @param closing Session identified in the prompt; must not be null.
+     * @return `true` when Save succeeds or the user chooses Discard.
+     */
+    [[nodiscard]] bool PromptSaveDiscardCancel(LogSession *closing);
+
+    /**
+     * @brief Builds the close-prompt informative text for @p session.
+     * @param session Session whose source and dirty flags shape the copy.
+     * @return Localized explanatory text.
+     */
+    [[nodiscard]] static QString ClosePromptInformativeText(const LogSession &session);
 
 private:
     /**
      * @brief Installs subscriptions that remain active while a tab is backgrounded.
      * @param session The hosted session; `nullptr` is ignored.
      *
-     * Connections are retained in `mPerTabConnections` and route completion
-     * handling to the originating session.
+     * Connections are stored on that session's `WindowTab` and are disconnected
+     * before the tab is removed from the hosted registry.
      */
     void InstallPerTabPersistentConnections(LogSession *session);
 
@@ -539,8 +580,9 @@ private:
      * @param origin The originating session; `nullptr` is ignored.
      * @param result The terminal streaming result.
      *
-     * Background completion temporarily rebinds aliases to the origin, runs the
-     * full completion pipeline, and restores the active tab and its chrome.
+     * No-ops when `origin` is not currently hosted. Hosted background completion
+     * rebinds aliases to the origin, runs the completion pipeline, and restores
+     * the active tab.
      */
     void HandleStreamingFinishedFor(LogSession *origin, StreamingResult result);
 
@@ -572,8 +614,9 @@ public:
      * @brief Mirror runtime session state into the configuration manager,
      * then `WriteSnapshot` through the injected history manager.
      * Reuses `mAutoSaveUuid` so a single window updates one recents
-     * entry across its lifetime. No-op when the manager is null or
-     * there is no source descriptor.
+     * entry across its lifetime. Returns success when the manager is
+     * null or there is no restorable source, because nothing needed
+     * writing.
      *
      * When @p publishOpenWindow is true (the default), adds
      * `mAutoSaveUuid` to `openWindowsAtQuit` so a crash between
@@ -584,8 +627,9 @@ public:
      * Public so `main()`'s `aboutToQuit` handler can flush every
      * live window before exit.
      * @param publishOpenWindow The `publishOpenWindow` value.
+     * @return `true` when a snapshot was written or none was required.
      */
-    void AutoSaveSessionSnapshot(bool publishOpenWindow = true);
+    bool AutoSaveSessionSnapshot(bool publishOpenWindow = true);
 
     void UpdateUi();
 
@@ -1000,6 +1044,42 @@ public:
     void SetSuppressDialogsForTest(bool suppress);
 
     /**
+     * @brief Answer consumed by the next close-decision prompt in tests.
+     */
+    enum class ClosePromptChoiceForTest : std::uint8_t
+    {
+        Discard,
+        Cancel,
+    };
+
+    /**
+     * @brief Queues the next close-prompt answer for tests.
+     *
+     * Each prompt in `PrepareSessionClose` consumes one queued choice.
+     * When the queue is empty, suppressed dialogs still treat a prompt
+     * as Discard.
+     *
+     * @param choice The answer to consume for the next prompt.
+     */
+    void QueueClosePromptChoiceForTest(ClosePromptChoiceForTest choice)
+    {
+        mClosePromptChoicesForTest.push_back(choice);
+    }
+
+    /**
+     * @brief Forces the next close-decision autosave attempt to fail.
+     *
+     * Consumed once by `AutoSaveSessionSnapshot` after the helper
+     * decides a snapshot should be written.
+     *
+     * @param fail Whether the next write should fail.
+     */
+    void SetFailNextAutoSaveForTest(bool fail = true)
+    {
+        mFailNextAutoSaveForTest = fail;
+    }
+
+    /**
      * @brief Returns whether modal dialogs are suppressed for tests.
      * @return The current suppression state.
      */
@@ -1014,6 +1094,16 @@ public:
      * @return The result described above.
      */
     [[nodiscard]] int LastDroppedFilterCountForTest() const;
+
+    /**
+     * @brief Installs a simple-mode filter on the active session, including the Filters menu.
+     * @param filterId Filter identity stored on the menu action.
+     * @param filter Filter rule to install.
+     */
+    void AddLogFilterForTest(const QString &filterId, const loglib::LeafRule &filter)
+    {
+        AddLogFilter(filterId, filter);
+    }
 
     /**
      * @brief Test-only setter for `mCurrentSource`. Lets fixture-driven
@@ -1163,6 +1253,17 @@ public:
         SetSuppressDialogsForTest(true);
         NewSession();
         SetSuppressDialogsForTest(previous);
+    }
+
+    /**
+     * @brief Forwards `NewSession` without changing dialog suppression.
+     *
+     * Use this when a queued close-prompt choice or a forced autosave
+     * failure should drive the close decision.
+     */
+    void InvokeNewSessionForTest()
+    {
+        NewSession();
     }
 
     /**
@@ -1376,8 +1477,9 @@ private slots:
     void SaveConfiguration();
     /**
      * @brief "Save Session\u2026" -- writes columns + filters + sort + source.
+     * @return `true` when a session file was written.
      */
-    void SaveSession();
+    bool SaveSession();
     /**
      * @brief Loads either shape; missing session fields default to inert
      * values.
@@ -1482,6 +1584,12 @@ private slots:
      * @brief Rebuilds the Filters menu from the active session without changing filters.
      */
     void RebuildFilterMenuFromActiveSession();
+
+    /**
+     * @brief Applies and clears UI work queued while this session was backgrounded.
+     * @param session The session that just became selected; `nullptr` is ignored.
+     */
+    void ApplyPendingPresentation(LogSession *session);
 
     void Find();
     void FindRecords(const QString &text, bool next, bool wildcards, bool regularExpressions);
@@ -1678,8 +1786,11 @@ private:
      * @brief Closes a tab and schedules its session and view for deletion.
      * @param index The tab index; invalid indices are ignored.
      *
-     * The final tab closes the window. A cancelled dirty-session prompt leaves
-     * the tab and its workers unchanged.
+     * Persistent connections are disconnected and the tab is unhosted before
+     * workers are drained so queued completions cannot start the next file or
+     * mix another session's model aliases with a surviving view. Sibling tabs
+     * are left running. The final tab closes the window. A cancelled
+     * dirty-session prompt leaves the tab and its workers unchanged.
      */
     void CloseTabAtIndex(int index);
 
@@ -1866,6 +1977,8 @@ private:
      * via `FileLooksLikeConfiguration`:
      *
      * - Zero configs -> `StartStreamingOpenQueue(files, logMode)`.
+     *   A sole `.slvbundle` also arms embedded-configuration apply
+     *   on that session before the queue starts.
      * - One config, no logs -> `TryLoadAsConfiguration` (no reset).
      * - One config + N logs -> `DoLoadConfiguration` (full reset)
      *   then `StartStreamingOpenQueue(logs, Append)`.
@@ -1896,10 +2009,20 @@ private:
      * behaves like `Replace` minus the destructive reset (so
      * previously-loaded columns / filters survive into the new
      * session). Live-tail / network sessions always force `Replace`.
+     *
+     * When @p applyEmbeddedBundlePath is non-empty, the session is
+     * authorized to apply that bundle's embedded configuration. The
+     * path is armed after any destructive reset and before the first
+     * queued file starts, so `OnDecompressionFinished` still sees it
+     * if the worker finishes during watcher `setFuture`.
+     *
      * @param files The file paths to process.
      * @param mode The operation mode.
+     * @param applyEmbeddedBundlePath Bundle path to arm, or empty.
      */
-    void StartStreamingOpenQueue(QStringList files, OpenMode mode);
+    void StartStreamingOpenQueue(
+        QStringList files, OpenMode mode, const QString &applyEmbeddedBundlePath = QString()
+    );
 
     /**
      * @brief Starts the next queued file or asynchronous decompression.
@@ -1947,32 +2070,37 @@ private:
     );
 
     /**
-     * @brief Show the non-modal progress dialog and start the poll timer for
-     * the current decompression. Called from `StreamNextPendingFile`
-     * after the sniff decides the file is compressed and before
-     * the worker is dispatched.
+     * @brief Shows per-tab decompression progress and starts the poll timer.
      */
     void ShowDecompressionProgress();
 
     /**
-     * @brief Tear down the progress dialog + poll timer created by
-     * `ShowDecompressionProgress`. Idempotent; safe to call from
-     * the finished slot and from destructive teardown paths.
+     * @brief Refreshes per-tab decompression progress and the optional window summary.
+     *
+     * Each in-flight decompression updates its own view. The window dialog
+     * mirrors the selected tab when that tab is decompressing.
+     */
+    void UpdateDecompressionProgressUi();
+
+    /**
+     * @brief Stops the decompression poll timer and hides the window summary.
      */
     void TeardownDecompressionProgress();
 
     /**
-     * @brief Cancel + drain any in-flight decompression worker and detach
-     * its future so a queued `finished` signal cannot fire against
-     * a re-armed session. Called at every destructive session
-     * boundary; without this an orphaned worker would splice the
-     * old file into the new session. Also clears
-     * `mDecompressionOriginalPath` and the decompression error
-     * bucket. Idempotent. Anchor cleanup is separate: each anchor
-     * is attached to its `LogFile` and released when the model
-     * drops that FileLineSource.
+     * @brief Cancels the selected tab's decompression, if any.
+     *
+     * Safe when no decompression is running.
      */
     void CancelInFlightDecompression();
+
+    /**
+     * @brief Cancels and drains a decompression on one session.
+     * @param origin Session whose decompression should stop; ignored when null.
+     *
+     * Re-enables only that session's view and leaves sibling decompressions running.
+     */
+    void CancelInFlightDecompressionFor(LogSession *origin);
 
     /**
      * @brief Runs the `OnStreamingFinished` teardown when the queue drains
@@ -2273,11 +2401,14 @@ private:
     void UpdateStreamingStatus();
 
     /**
-     * @brief Posts a status message unless handling a background-tab completion.
+     * @brief Posts a status message for the session currently aliased as active.
      * @param message The message text.
      * @param timeoutMs The display timeout in milliseconds.
+     *
+     * Background-tab completions queue the message on that session and show it
+     * when the tab becomes selected.
      */
-    void PostStatusMessage(const QString &message, int timeoutMs) const;
+    void PostStatusMessage(const QString &message, int timeoutMs);
 
     /**
      * @brief Starts the elapsed-time timer and 1 Hz refresh tick for live tail.
@@ -2612,6 +2743,13 @@ private:
          * @brief Last-focused child, or null until the tab has held focus.
          */
         QPointer<QWidget> lastFocus;
+        /**
+         * @brief Subscriptions that remain live while this tab is backgrounded.
+         *
+         * Cleared before the tab leaves `mTabs` so queued completions cannot
+         * mutate an unhosted session or a surviving sibling.
+         */
+        ScopedConnections persistentConnections;
     };
 
     /**
@@ -2667,12 +2805,6 @@ private:
      * aliases. Cleared and rebuilt atomically on each tab switch.
      */
     ScopedConnections mSessionConnections;
-
-    /**
-     * @brief Connections that must remain live for background tabs. Cleared before
-     * tab and session destruction to prevent callbacks into a torn-down shell.
-     */
-    ScopedConnections mPerTabConnections;
 
     /**
      * @brief Non-owning aliases into the active session's model objects. Each points at a
@@ -3264,40 +3396,19 @@ private:
     // still lives here because rendering is a shell concern.
 
     /**
-     * @brief 200 ms cadence timer that pumps the atomics above into the
-     * progress dialog. Nulled out when no decompression is
-     * active.
+     * @brief 200 ms timer that pumps decompression atomics into per-tab
+     * progress strips and the optional window summary.
      */
     QTimer *mDecompressionPollTimer = nullptr;
 
     /**
-     * @brief Non-modal per-window progress dialog surfaced while a
-     * decompression is running. `QPointer` because `deleteLater`
-     * may run between the finished slot and the parent's
-     * destructor.
+     * @brief Optional window-level summary of the selected tab's decompression.
+     *
+     * Per-tab progress strips own cancellation and completion. `QPointer`
+     * because `deleteLater` may run between the finished slot and
+     * destruction.
      */
     QPointer<QProgressDialog> mDecompressionProgressDialog;
-
-    /**
-     * @brief Origin binding for the decompression poll timer. Captured at
-     * `BeginAsyncDecompression` time so a
-     * timer tick that fires after a session/tab swap does not
-     * paint on a sibling session's view. `QPointer` clears
-     * automatically on session/view teardown; a null pointer is
-     * the "operation no longer belongs to a live session" branch.
-     */
-    QPointer<LogSession> mDecompressionPollOriginSession;
-    QPointer<LogSessionView> mDecompressionPollOriginView;
-
-    /**
-     * @brief Operation generation captured at `BeginAsyncDecompression`
-     * time. Compared against
-     * `mDecompressionPollOriginSession->DecompressionGeneration()`
-     * on each tick; a mismatch means a queued completion already
-     * drained into the next-queued file and this tick must not
-     * scribble stale text into the successor's dialog.
-     */
-    std::uint64_t mDecompressionPollGeneration = 0;
 
     // Note: `mDecompressionOriginalPath` (user-facing path being
     // decompressed), `mDecompressionCodecName` (pre-sniffed codec
@@ -3308,10 +3419,9 @@ private:
 
     // --------------------------- Filtered-row export -----------------
     // Async orchestration for `File -> Export Filtered Rows...`.
-    // Mirrors the decompression block above: fresh `StopSource` per
-    // run, own `QFutureWatcher<void>`, modal-per-window
-    // `QProgressDialog` with `minimumDuration`-deferred show, atomic
-    // progress counter polled by a `QTimer`.
+    // Fresh `StopSource` per run, session-owned `QFutureWatcher<void>`,
+    // per-tab progress strip, optional window summary dialog, and a
+    // `QTimer` that polls export atomics on every hosted session.
 
     // The export QFutureWatcher lives on `mSession`; see
     // `LogSession::ExportWatcherPtr`. The shell still
@@ -3329,25 +3439,19 @@ private:
     // lives here because rendering is a shell concern.
 
     /**
-     * @brief 200 ms poll timer that pumps the atomics into the progress
-     * dialog.
+     * @brief 200 ms poll timer that pumps export atomics into per-tab
+     * progress strips and the optional window summary.
      */
     QTimer *mExportPollTimer = nullptr;
 
     /**
-     * @brief Non-modal per-window progress dialog. `QPointer` because
-     * `deleteLater` may run between the finished slot and
+     * @brief Optional window-level summary of the selected tab's export.
+     *
+     * Per-tab progress strips own cancellation and completion. `QPointer`
+     * because `deleteLater` may run between the finished slot and
      * destruction.
      */
     QPointer<QProgressDialog> mExportProgressDialog;
-
-    /**
-     * @brief Origin binding for the export poll timer, with the same
-     * lifetime and generation checks as decompression.
-     */
-    QPointer<LogSession> mExportPollOriginSession;
-    QPointer<LogSessionView> mExportPollOriginView;
-    std::uint64_t mExportPollGeneration = 0;
 
     // Note: `mExportDestinationPath` (user-facing destination),
     // `mExportFormatLabel` (human-readable format label), and
@@ -3381,14 +3485,20 @@ private:
     void BeginAsyncBundleExport(std::filesystem::path destination, int compressionLevel, int totalWorkers);
 
     /**
-     * @brief Show the export progress dialog (deferred via
-     * `minimumDuration`).
+     * @brief Shows per-tab export progress and starts the poll timer.
      */
     void ShowExportProgress();
 
     /**
-     * @brief Reset dialog + poll timer without deleting them (reused
-     * across runs).
+     * @brief Refreshes per-tab export progress and the optional window summary.
+     *
+     * Each in-flight export updates its own view. The window dialog
+     * mirrors the selected tab when that tab is exporting.
+     */
+    void UpdateExportProgressUi();
+
+    /**
+     * @brief Stops the export poll timer and hides the window summary.
      */
     void TeardownExportProgress();
 
@@ -3401,18 +3511,27 @@ private:
 
     /**
      * @brief Finalizes an export for the session that started it.
-     * @param origin The originating session; `nullptr` falls back to the active session.
+     * @param origin Session that started the export.
      *
-     * Background completion refreshes origin tab state without changing the
-     * active tab's progress dialog, enabled state, status text, or modal UI.
+     * Re-enables only the origin view. Background completion does not
+     * change the selected tab's menus, docks, or status text.
      */
     void OnExportFinishedFor(LogSession *origin);
 
     /**
-     * @brief Cancel any in-flight export and reset scratch state. Safe
-     * to call when nothing is running.
+     * @brief Cancels the selected tab's export, if any.
+     *
+     * Safe when no export is running.
      */
     void CancelInFlightExport();
+
+    /**
+     * @brief Cancels and drains an export on one session.
+     * @param origin Session whose export should stop; ignored when null.
+     *
+     * Re-enables only that session's view and leaves sibling exports running.
+     */
+    void CancelInFlightExportFor(LogSession *origin);
 
     // --------------------------- Session mode ------------------------
 
@@ -3500,6 +3619,8 @@ private:
      */
     bool mSuppressDialogsForTest = false;
     int mLastDroppedFilterCountForTest = 0;
+    std::vector<ClosePromptChoiceForTest> mClosePromptChoicesForTest;
+    bool mFailNextAutoSaveForTest = false;
 #endif
 };
 

@@ -68,14 +68,16 @@ public:
 
     /**
      * @brief Replaces the borrowed log and anchor sources.
-     * @param logModel Log model to observe, or `nullptr`.
-     * @param anchors Anchor manager to observe, or `nullptr`.
-     * @param deferRebuild Whether to postpone the full rebuild and auto-size pass.
      *
      * Pending notification is canceled, old subscriptions are removed,
      * bucket state is reset, and new subscriptions are installed. A
      * deferred bind still refreshes column availability and accepts
      * incremental appends; `PumpDeferredBind()` completes the full pass.
+     *
+     * @param logModel Log model to observe, or `nullptr`.
+     * @param anchors Anchor manager to observe, or `nullptr`.
+     * @param deferRebuild Whether to postpone the full rebuild and auto-size pass.
+     *
      */
     void BindSources(LogModel *logModel, AnchorManager *anchors, bool deferRebuild = false);
 

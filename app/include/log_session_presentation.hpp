@@ -166,6 +166,19 @@ enum class SessionCloseResult : std::uint8_t
 };
 
 /**
+ * @brief Selects how the shell closes or replaces a dirty session.
+ */
+enum class SessionCloseDecision : std::uint8_t
+{
+    /** @brief The session has no unsaved changes and closes without a prompt. */
+    Silent,
+    /** @brief A restorable file-backed session is autosaved without a prompt. */
+    Autosave,
+    /** @brief Unsaved changes that cannot be autosaved require Save, Discard, or Cancel. */
+    Prompt,
+};
+
+/**
  * @brief Defines reasons a session cannot be closed silently.
  *
  * `LogSession::PreCheckClose()` returns a bitwise combination of these
@@ -355,4 +368,34 @@ struct SessionPresentationSnapshot
 
     /** @brief Whether closing requires confirmation or worker handling. */
     bool confirmBeforeClose = false;
+};
+
+/**
+ * @brief Stores UI work produced by a background-tab completion.
+ *
+ * The shell applies and clears this payload when the originating tab
+ * becomes selected. Session state and tab chrome update immediately;
+ * shared window widgets do not.
+ */
+struct SessionPendingPresentation
+{
+    /** @brief Status-bar text to show on activation; empty when none. */
+    QString statusMessage;
+    /** @brief Display timeout for `statusMessage`, in milliseconds. */
+    int statusTimeoutMs = 0;
+    /** @brief Modal failure title; empty when no dialog is queued. */
+    QString failureTitle;
+    /** @brief Modal failure body; empty when no dialog is queued. */
+    QString failureMessage;
+    /** @brief Whether to raise the parse-errors dock on activation. */
+    bool raiseParseErrors = false;
+
+    /**
+     * @brief Tests whether any UI work is queued.
+     * @return `true` when every field is at its default.
+     */
+    [[nodiscard]] bool isEmpty() const noexcept
+    {
+        return statusMessage.isEmpty() && failureTitle.isEmpty() && failureMessage.isEmpty() && !raiseParseErrors;
+    }
 };

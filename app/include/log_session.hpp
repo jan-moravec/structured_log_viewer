@@ -134,6 +134,17 @@ public:
     [[nodiscard]] SessionCloseResult RequestClose() override;
 
     /**
+     * @brief Classifies how the shell should close or replace this session.
+     *
+     * Clean sessions are `Silent`. Dirty sessions whose source can be
+     * autosaved through `ShouldAutoSaveAfterStreaming()` are `Autosave`.
+     * Every other dirty session is `Prompt`.
+     *
+     * @return The close decision for the current dirty state and source.
+     */
+    [[nodiscard]] SessionCloseDecision CloseDecision() const noexcept;
+
+    /**
      * @brief Builds the current shell presentation state.
      *
      * @return A value snapshot of source, operation, label, count, and close state.
@@ -720,6 +731,56 @@ public:
     void ResetParseErrorLog() noexcept;
 
     /**
+     * @brief Returns UI work queued for the next time this tab is selected.
+     * @return The pending presentation payload.
+     */
+    [[nodiscard]] const SessionPendingPresentation &PendingPresentation() const noexcept
+    {
+        return mPendingPresentation;
+    }
+
+    /**
+     * @brief Queues a status-bar message for the next time this tab is selected.
+     * @param message Status text to show.
+     * @param timeoutMs Display timeout in milliseconds.
+     */
+    void QueueStatusMessage(QString message, int timeoutMs) noexcept
+    {
+        mPendingPresentation.statusMessage = std::move(message);
+        mPendingPresentation.statusTimeoutMs = timeoutMs;
+    }
+
+    /**
+     * @brief Queues a failure dialog for the next time this tab is selected.
+     * @param title Dialog title.
+     * @param message Dialog body.
+     */
+    void QueueFailureNotice(QString title, QString message) noexcept
+    {
+        mPendingPresentation.failureTitle = std::move(title);
+        mPendingPresentation.failureMessage = std::move(message);
+    }
+
+    /**
+     * @brief Requests that the parse-errors dock raise when this tab is selected.
+     */
+    void QueueParseErrorsRaise() noexcept
+    {
+        mPendingPresentation.raiseParseErrors = true;
+    }
+
+    /**
+     * @brief Takes and clears queued UI work for this session.
+     * @return The pending payload, which may be empty.
+     */
+    [[nodiscard]] SessionPendingPresentation TakePendingPresentation() noexcept
+    {
+        SessionPendingPresentation taken = std::move(mPendingPresentation);
+        mPendingPresentation = {};
+        return taken;
+    }
+
+    /**
      * @brief Returns the stored find query.
      *
      * @return The read-only query state.
@@ -1034,6 +1095,15 @@ public:
      * @return A non-null watcher parented to this session.
      */
     [[nodiscard]] DecompressionWatcher *EnsureDecompressionWatcher();
+
+    /**
+     * @brief Waits for the decompression worker and consumes its stored result.
+     *
+     * Cancellation stores `DecompressionCancelled` in the future. Retrieving
+     * that result prevents `std::terminate` when the watcher is reset or
+     * destroyed.
+     */
+    void DrainDecompressionWatcher() noexcept;
 
     /**
      * @brief Returns the export watcher if allocated.
@@ -1592,6 +1662,7 @@ private:
 
     // Session-specific dock state.
     SessionParseErrorLog mParseErrorLog;
+    SessionPendingPresentation mPendingPresentation;
     SessionFindQueryState mFindQuery;
     SessionHistogramState mHistogramState;
     SessionRecordDetailPin mRecordDetailPin;

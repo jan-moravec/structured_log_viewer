@@ -1,21 +1,269 @@
 // Multi-source tab lifecycle and shell-routing tests.
 
+#include "log_model.hpp"
 #include "log_session.hpp"
 #include "log_session_presentation.hpp"
 #include "log_session_view.hpp"
 #include "main_window.hpp"
+#include "qstring_path.hpp"
+#include "session_history_manager.hpp"
 
+#include <loglib/filter_expression.hpp>
 #include <loglib/log_configuration.hpp>
+#include <loglib/log_table.hpp>
+#include <loglib/parse_file.hpp>
+#include <loglib/session_bundle.hpp>
 
 #include <QAction>
+#include <QByteArray>
+#include <QDir>
+#include <QDockWidget>
+#include <QFile>
 #include <QKeySequence>
+#include <QMenu>
 #include <QObject>
 #include <QSignalSpy>
+#include <QStatusBar>
 #include <QTabWidget>
+#include <QTemporaryDir>
 #include <QTest>
+#include <QTextStream>
+#include <QToolBar>
+#include <QUuid>
 
-#include <cstdint>
-#include <vector>
+#include <zlib.h>
+
+#include <exception>
+#include <memory>
+#include <optional>
+
+namespace
+{
+
+QString WriteJsonlFixture(const QString &path, int rowCount)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+    {
+        return {};
+    }
+    QTextStream out(&file);
+    for (int i = 0; i < rowCount; ++i)
+    {
+        out << "{\"n\":" << i << "}\n";
+    }
+    return path;
+}
+
+void LoadFileIntoActiveTab(MainWindow &window, const QString &path)
+{
+    LogModel *model = window.activeSession() != nullptr ? window.activeSession()->Model() : nullptr;
+    QVERIFY(model != nullptr);
+    if (model == nullptr)
+    {
+        return;
+    }
+    const QSignalSpy spy(model, &LogModel::streamingFinished);
+    window.OpenFilesForTest({path}, MainWindow::OpenMode::Replace);
+    QTRY_VERIFY_WITH_TIMEOUT(spy.count() >= 1, 5000);
+    QVERIFY(model->rowCount() > 0);
+}
+
+QByteArray GzipCompress(const QByteArray &bytes)
+{
+    z_stream strm{};
+    const int initRc = ::deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY);
+    if (initRc != Z_OK)
+    {
+        qFatal("zlib deflateInit2 must succeed (rc=%d)", initRc);
+    }
+    QByteArray out;
+    out.resize(static_cast<qsizetype>(::deflateBound(&strm, static_cast<uLong>(bytes.size()))));
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+    strm.next_in = const_cast<Bytef *>(reinterpret_cast<const Bytef *>(bytes.constData()));
+    strm.avail_in = static_cast<uInt>(bytes.size());
+    strm.next_out = reinterpret_cast<Bytef *>(out.data());
+    strm.avail_out = static_cast<uInt>(out.size());
+    const int rc = ::deflate(&strm, Z_FINISH);
+    if (rc != Z_STREAM_END)
+    {
+        ::deflateEnd(&strm);
+        qFatal("zlib deflate(Z_FINISH) must consume the fixture (rc=%d)", rc);
+    }
+    out.resize(static_cast<qsizetype>(strm.total_out));
+    ::deflateEnd(&strm);
+    return out;
+}
+
+QString WriteGzipJsonl(const QString &path, int rowCount)
+{
+    QByteArray uncompressed;
+    for (int i = 0; i < rowCount; ++i)
+    {
+        uncompressed += QByteArray("{\"n\":") + QByteArray::number(i) + "}\n";
+    }
+    const QByteArray gzipped = GzipCompress(uncompressed);
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    {
+        return {};
+    }
+    if (file.write(gzipped) != gzipped.size())
+    {
+        return {};
+    }
+    return path;
+}
+
+QString WriteBundleFixture(const QString &path, int rowCount, const QString &filterToken)
+{
+    const QString jsonlPath = path + QStringLiteral(".jsonl");
+    QFile jsonl(jsonlPath);
+    if (!jsonl.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+    {
+        return {};
+    }
+    QTextStream out(&jsonl);
+    for (int i = 0; i < rowCount; ++i)
+    {
+        out << "{\"msg\":\"row-" << i << "\"}\n";
+    }
+    jsonl.close();
+    try
+    {
+        loglib::ParseResult parsed = loglib::ParseFile(logapp::QStringToFsPath(jsonlPath));
+        loglib::LogConfigurationManager manager;
+        manager.Update(parsed.data);
+        loglib::LogTable table(std::move(parsed.data), std::move(manager));
+        loglib::LogConfiguration configuration = table.Configuration().Configuration();
+        if (configuration.columns.empty())
+        {
+            return {};
+        }
+        loglib::LeafRule rule;
+        rule.type = loglib::LeafRule::Type::String;
+        rule.columnKeys = configuration.columns.front().keys;
+        rule.filterString = filterToken.toStdString();
+        rule.matchType = loglib::LeafRule::Match::Contains;
+        configuration.expression = loglib::MakeAnd({loglib::MakeLeaf(std::move(rule))});
+        loglib::WriteSessionBundle(table, configuration, logapp::QStringToFsPath(path));
+        return path;
+    }
+    catch (const std::exception &e)
+    {
+        qWarning().noquote() << "WriteBundleFixture failed:" << e.what();
+        return {};
+    }
+}
+
+class InMemoryRecentsIndexStorage final : public IRecentsIndexStorage
+{
+public:
+    QList<RecentSessionEntry> Read() const override
+    {
+        return mEntries;
+    }
+
+    void Write(const QList<RecentSessionEntry> &entries) override
+    {
+        mEntries = entries;
+    }
+
+    std::optional<QString> ReadLastUuid() const override
+    {
+        return mLastUuid;
+    }
+
+    void WriteLastUuid(const std::optional<QString> &uuid) override
+    {
+        mLastUuid = uuid;
+    }
+
+private:
+    QList<RecentSessionEntry> mEntries;
+    std::optional<QString> mLastUuid;
+};
+
+QStringList FilterMenuTitles(const MainWindow &window)
+{
+    const auto *menu = window.findChild<QMenu *>(QStringLiteral("menuFilters"));
+    QStringList titles;
+    if (menu == nullptr)
+    {
+        return titles;
+    }
+    const auto actions = menu->actions();
+    for (const QAction *action : actions)
+    {
+        if (action != nullptr && !action->data().toString().isNull())
+        {
+            titles.append(action->text());
+        }
+    }
+    return titles;
+}
+
+void AddContainsFilter(MainWindow &window, const QString &token)
+{
+    loglib::LeafRule rule;
+    rule.type = loglib::LeafRule::Type::String;
+    rule.columnKeys = {"n"};
+    rule.filterString = token.toStdString();
+    rule.matchType = loglib::LeafRule::Match::Contains;
+    window.AddLogFilterForTest(QUuid::createUuid().toString(), rule);
+}
+
+[[nodiscard]] QStringList SimpleLeafFilterStrings(const LogSession &session)
+{
+    QStringList values;
+    for (const auto &entry : session.SimpleLeaves())
+    {
+        if (entry.second.filterString.has_value())
+        {
+            values.append(QString::fromStdString(*entry.second.filterString));
+        }
+    }
+    return values;
+}
+
+[[nodiscard]] bool ExpressionContainsFilterString(const loglib::FilterExpression &expression, const std::string &needle)
+{
+    const auto visit = [&](const loglib::FilterExpression &node, const auto &self) -> bool {
+        if (const auto *leaf = std::get_if<loglib::FilterExpression::Leaf>(&node.node); leaf != nullptr)
+        {
+            return leaf->rule.filterString.has_value() && *leaf->rule.filterString == needle;
+        }
+        if (const auto *asAnd = std::get_if<loglib::FilterExpression::And>(&node.node); asAnd != nullptr)
+        {
+            for (const auto &child : asAnd->children)
+            {
+                if (self(child, self))
+                {
+                    return true;
+                }
+            }
+        }
+        else if (const auto *asOr = std::get_if<loglib::FilterExpression::Or>(&node.node); asOr != nullptr)
+        {
+            for (const auto &child : asOr->children)
+            {
+                if (self(child, self))
+                {
+                    return true;
+                }
+            }
+        }
+        else if (const auto *asNot = std::get_if<loglib::FilterExpression::Not>(&node.node);
+                 asNot != nullptr && asNot->child != nullptr)
+        {
+            return self(*asNot->child, self);
+        }
+        return false;
+    };
+    return visit(expression, visit);
+}
+
+} // namespace
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): `Q_OBJECT` QtTest fixture.
 class SessionTabsTest : public QObject
@@ -374,6 +622,306 @@ private slots:
         // default; the window is no longer visible.
         QVERIFY(!window.isVisible());
         QCOMPARE(window.TabCount(), 1);
+    }
+
+    static void TestClosePromptDoesNotMentionSessionBundleExport()
+    {
+        LogSession session;
+        session.MarkFiltersDirty();
+        const QString text = MainWindow::ClosePromptInformativeTextForTest(session);
+        QVERIFY(!text.isEmpty());
+        QVERIFY2(
+            !text.contains(QStringLiteral("Session Bundle"), Qt::CaseInsensitive) &&
+                !text.contains(QStringLiteral("slvbundle"), Qt::CaseInsensitive),
+            qPrintable(text)
+        );
+    }
+
+    static void TestFileBackedDirtyTabAutosavesOnClose()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        MainWindow window(nullptr, &manager, nullptr);
+        window.SetSuppressDialogsForTest(true);
+
+        const QTemporaryDir logs;
+        QVERIFY(logs.isValid());
+        const QString path = WriteJsonlFixture(logs.filePath(QStringLiteral("app.jsonl")), 8);
+        QVERIFY(!path.isEmpty());
+        LoadFileIntoActiveTab(window, path);
+
+        LogSession *session = window.activeSession();
+        QVERIFY(session != nullptr);
+        if (session == nullptr)
+        {
+            return;
+        }
+        session->MarkFiltersDirty();
+        QCOMPARE(session->CloseDecision(), SessionCloseDecision::Autosave);
+
+        window.AddNewTabForTest(/*makeActive=*/false);
+        QCOMPARE(window.TabCount(), 2);
+        window.CloseTabForTest(0);
+        QCOMPARE(window.TabCount(), 1);
+        QVERIFY(!manager.List().isEmpty());
+    }
+
+    static void TestFailedAutoSaveVetoesTabCloseAndKeepsUuid()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        MainWindow window(nullptr, &manager, nullptr);
+        window.SetSuppressDialogsForTest(true);
+
+        const QTemporaryDir logs;
+        QVERIFY(logs.isValid());
+        const QString path = WriteJsonlFixture(logs.filePath(QStringLiteral("app.jsonl")), 8);
+        QVERIFY(!path.isEmpty());
+        LoadFileIntoActiveTab(window, path);
+
+        LogSession *session = window.activeSession();
+        QVERIFY(session != nullptr);
+        if (session == nullptr)
+        {
+            return;
+        }
+        const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        session->SetAutoSaveUuid(uuid);
+        session->MarkFiltersDirty();
+        QCOMPARE(session->CloseDecision(), SessionCloseDecision::Autosave);
+
+        window.AddNewTabForTest(/*makeActive=*/false);
+        window.SetFailNextAutoSaveForTest(true);
+        window.CloseTabForTest(0);
+        QCOMPARE(window.TabCount(), 2);
+        QCOMPARE(window.SessionAtTab(0), session);
+        QCOMPARE(session->AutoSaveUuid(), uuid);
+        QVERIFY(session->IsFiltersDirty());
+    }
+
+    static void TestFailedAutoSaveVetoesNewSession()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        MainWindow window(nullptr, &manager, nullptr);
+        window.SetSuppressDialogsForTest(true);
+
+        const QTemporaryDir logs;
+        QVERIFY(logs.isValid());
+        const QString path = WriteJsonlFixture(logs.filePath(QStringLiteral("app.jsonl")), 8);
+        QVERIFY(!path.isEmpty());
+        LoadFileIntoActiveTab(window, path);
+
+        LogSession *session = window.activeSession();
+        QVERIFY(session != nullptr);
+        if (session == nullptr)
+        {
+            return;
+        }
+        session->MarkFiltersDirty();
+        window.SetFailNextAutoSaveForTest(true);
+        window.InvokeNewSessionForTest();
+        QCOMPARE(window.activeSession(), session);
+        QVERIFY(session->IsFiltersDirty());
+        QCOMPARE(window.TabCount(), 1);
+    }
+
+    static void TestFailedAutoSaveVetoesLastTabWindowClose()
+    {
+        const QTemporaryDir sessionsDir;
+        QVERIFY(sessionsDir.isValid());
+        SessionHistoryManager manager(QDir(sessionsDir.path()), std::make_unique<InMemoryRecentsIndexStorage>());
+        MainWindow window(nullptr, &manager, nullptr);
+        window.SetSuppressDialogsForTest(true);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+
+        const QTemporaryDir logs;
+        QVERIFY(logs.isValid());
+        const QString path = WriteJsonlFixture(logs.filePath(QStringLiteral("app.jsonl")), 8);
+        QVERIFY(!path.isEmpty());
+        LoadFileIntoActiveTab(window, path);
+
+        LogSession *session = window.activeSession();
+        QVERIFY(session != nullptr);
+        if (session == nullptr)
+        {
+            return;
+        }
+        const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        session->SetAutoSaveUuid(uuid);
+        session->MarkFiltersDirty();
+        window.SetFailNextAutoSaveForTest(true);
+        window.CloseTabForTest(0);
+        QVERIFY(window.isVisible());
+        QCOMPARE(window.TabCount(), 1);
+        QCOMPARE(window.activeSession(), session);
+        QCOMPARE(session->AutoSaveUuid(), uuid);
+    }
+
+    static void TestCancelCloseTabPreservesSessionIdentity()
+    {
+        MainWindow window;
+        LogSession *first = window.activeSession();
+        QVERIFY(first != nullptr);
+        if (first == nullptr)
+        {
+            return;
+        }
+        const SessionInstanceId id = first->InstanceId();
+        first->MarkFiltersDirty();
+        QCOMPARE(first->CloseDecision(), SessionCloseDecision::Prompt);
+
+        window.AddNewTabForTest(/*makeActive=*/false);
+        window.QueueClosePromptChoiceForTest(MainWindow::ClosePromptChoiceForTest::Cancel);
+        window.CloseTabForTest(0);
+        QCOMPARE(window.TabCount(), 2);
+        QCOMPARE(window.SessionAtTab(0), first);
+        QCOMPARE(first->InstanceId(), id);
+        QVERIFY(first->IsFiltersDirty());
+    }
+
+    static void TestCancelNewSessionLeavesCurrentSessionSelected()
+    {
+        MainWindow window;
+        LogSession *session = window.activeSession();
+        QVERIFY(session != nullptr);
+        if (session == nullptr)
+        {
+            return;
+        }
+        session->MarkFiltersDirty();
+        window.QueueClosePromptChoiceForTest(MainWindow::ClosePromptChoiceForTest::Cancel);
+        window.InvokeNewSessionForTest();
+        QCOMPARE(window.activeSession(), session);
+        QVERIFY(session->IsFiltersDirty());
+        QCOMPARE(window.TabCount(), 1);
+    }
+
+    static void TestCancelLastTabCloseLeavesWindowOpen()
+    {
+        MainWindow window;
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        LogSession *session = window.activeSession();
+        QVERIFY(session != nullptr);
+        if (session == nullptr)
+        {
+            return;
+        }
+        session->MarkFiltersDirty();
+        window.QueueClosePromptChoiceForTest(MainWindow::ClosePromptChoiceForTest::Cancel);
+        window.CloseTabForTest(0);
+        QVERIFY(window.isVisible());
+        QCOMPARE(window.TabCount(), 1);
+        QCOMPARE(window.activeSession(), session);
+        QVERIFY(session->IsFiltersDirty());
+    }
+
+    static void TestCancelSecondPromptAbortsWholeQuit()
+    {
+        MainWindow window;
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        LogSession *first = window.activeSession();
+        QVERIFY(first != nullptr);
+        if (first == nullptr)
+        {
+            return;
+        }
+        first->MarkFiltersDirty();
+        window.AddNewTabForTest(/*makeActive=*/true);
+        LogSession *second = window.activeSession();
+        QVERIFY(second != nullptr && second != first);
+        if (second == nullptr)
+        {
+            return;
+        }
+        second->MarkFiltersDirty();
+
+        window.QueueClosePromptChoiceForTest(MainWindow::ClosePromptChoiceForTest::Discard);
+        window.QueueClosePromptChoiceForTest(MainWindow::ClosePromptChoiceForTest::Cancel);
+        QVERIFY(!window.close());
+        QVERIFY(window.isVisible());
+        QCOMPARE(window.TabCount(), 2);
+        QCOMPARE(window.SessionAtTab(0), first);
+        QCOMPARE(window.SessionAtTab(1), second);
+        QVERIFY(first->IsFiltersDirty());
+        QVERIFY(second->IsFiltersDirty());
+    }
+
+    static void TestDirtyBusyTabCancelLeavesWorkersRunning()
+    {
+        const QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString gzipPath = WriteGzipJsonl(temp.filePath(QStringLiteral("busy.jsonl.gz")), 12000);
+        QVERIFY(!gzipPath.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        window.AddNewTabForTest(/*makeActive=*/false);
+        window.OpenFilesForTest({gzipPath}, MainWindow::OpenMode::Replace);
+        LogSession *sessionA = window.SessionAtTab(0);
+        QVERIFY(sessionA != nullptr);
+        if (sessionA == nullptr)
+        {
+            return;
+        }
+        QVERIFY(sessionA->IsDecompressionInFlight());
+        sessionA->MarkFiltersDirty();
+
+        window.QueueClosePromptChoiceForTest(MainWindow::ClosePromptChoiceForTest::Cancel);
+        window.CloseTabForTest(0);
+        QCOMPARE(window.TabCount(), 2);
+        QCOMPARE(window.SessionAtTab(0), sessionA);
+        QVERIFY(sessionA->IsDecompressionInFlight());
+        QVERIFY(sessionA->IsFiltersDirty());
+
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsDecompressionInFlight(), 20000);
+    }
+
+    static void TestDirtyBusyTabDiscardDrainsWorkers()
+    {
+        const QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString gzipPath = WriteGzipJsonl(temp.filePath(QStringLiteral("busy.jsonl.gz")), 12000);
+        QVERIFY(!gzipPath.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        window.AddNewTabForTest(/*makeActive=*/false);
+        window.OpenFilesForTest({gzipPath}, MainWindow::OpenMode::Replace);
+        LogSession *sessionA = window.SessionAtTab(0);
+        QVERIFY(sessionA != nullptr);
+        if (sessionA == nullptr)
+        {
+            return;
+        }
+        QVERIFY(sessionA->IsDecompressionInFlight());
+        sessionA->MarkFiltersDirty();
+        const SessionInstanceId closedId = sessionA->InstanceId();
+
+        window.QueueClosePromptChoiceForTest(MainWindow::ClosePromptChoiceForTest::Discard);
+        QVERIFY(window.PrepareSessionClose(sessionA));
+        QVERIFY2(
+            sessionA->IsDecompressionInFlight(),
+            "The close prompt must complete before workers are cancelled."
+        );
+
+        window.CloseTabForTest(0);
+        QCOMPARE(window.TabCount(), 1);
+        QCOMPARE(window.TabIndexForSession(closedId), -1);
+        LogSession *remaining = window.activeSession();
+        QVERIFY(remaining != nullptr);
+        if (remaining == nullptr)
+        {
+            return;
+        }
+        QVERIFY(!remaining->IsDecompressionInFlight());
+        QVERIFY(!remaining->IsExportInFlight());
     }
 
     static void TestTabActionsAreRegisteredWithExpectedShortcuts()
@@ -1286,9 +1834,99 @@ private slots:
         QVERIFY(sessionB->MutablePendingOpenFiles().isEmpty());
     }
 
-    // Decompression completion origin attribution derives from the
-    // `sender()` watcher, not the shell-wide
-    // `mDecompressionPollOriginSession` field.
+    // Persistent connections live on each WindowTab, not the active-session bag.
+    // Unbinding the active bag and closing a sibling must not drop them.
+
+    static void TestPerTabConnectionsSurviveActiveUnbindAndSiblingClose()
+    {
+        MainWindow window;
+        QVERIFY(window.PerTabConnectionCountForTest(0) >= 3U);
+        window.UnbindActiveSessionForTest();
+        QCOMPARE(window.SessionConnectionCountForTest(), static_cast<std::size_t>(0));
+        QVERIFY(window.PerTabConnectionCountForTest(0) >= 3U);
+
+        window.AddNewTabForTest(/*makeActive=*/true);
+        QCOMPARE(window.TabCount(), 2);
+        const std::size_t tab0Count = window.PerTabConnectionCountForTest(0);
+        const std::size_t tab1Count = window.PerTabConnectionCountForTest(1);
+        QVERIFY(tab0Count >= 3U);
+        QVERIFY(tab1Count >= 3U);
+
+        window.CloseTabForTest(1);
+        QCOMPARE(window.TabCount(), 1);
+        QCOMPARE(window.PerTabConnectionCountForTest(0), tab0Count);
+        QCOMPARE(window.PerTabConnectionCountForTest(1), static_cast<std::size_t>(0));
+    }
+
+    // Closing a tab with a queued follow-up file must not start that file
+    // and must not mutate the surviving session or view.
+
+    static void TestClosingTabDoesNotStartQueuedFileOrMutateSurvivor()
+    {
+        MainWindow window;
+        window.AddNewTabForTest(/*makeActive=*/true);
+        LogSession *sessionA = window.SessionAtTab(0);
+        LogSession *sessionB = window.SessionAtTab(1);
+        QVERIFY(sessionA != nullptr && sessionB != nullptr);
+        if (sessionA == nullptr || sessionB == nullptr)
+        {
+            return;
+        }
+        QCOMPARE(window.activeSession(), sessionB);
+        LogSessionView *viewB = qobject_cast<LogSessionView *>(window.TabWidgetForTest()->widget(1));
+        QVERIFY(viewB != nullptr);
+        const bool viewBEnabled = viewB->isEnabled();
+        const auto modeB = sessionB->SessionMode();
+        const bool waitingB = sessionB->IsSourceWaiting();
+        LogModel *modelB = sessionB->Model();
+        QVERIFY(modelB != nullptr);
+        const int rowsB = modelB->rowCount();
+
+        sessionA->SetMode(LogSession::Mode::Static);
+        sessionA->SetSourceWaiting(true);
+        sessionA->MutablePendingOpenFiles().append(
+            QStringLiteral("/nonexistent/definitely-not-a-real-path/queued-after-close.log")
+        );
+        LogModel *modelA = sessionA->Model();
+        QVERIFY(modelA != nullptr);
+        const SessionInstanceId idA = sessionA->InstanceId();
+        const SessionInstanceId idB = sessionB->InstanceId();
+
+        window.CloseTabForTest(0);
+        QCOMPARE(window.TabCount(), 1);
+        QCOMPARE(window.HostedSession(idA), nullptr);
+        QCOMPARE(window.HostedSession(idB), sessionB);
+        QCOMPARE(window.activeSession(), sessionB);
+
+        // Simulate a queued completion arriving after close. The hosted-registry
+        // check and disconnected per-tab subscriptions must both ignore it.
+        sessionA->MutablePendingOpenFiles().append(
+            QStringLiteral("/nonexistent/definitely-not-a-real-path/queued-after-close.log")
+        );
+        sessionA->SetMode(LogSession::Mode::Static);
+        sessionA->SetSourceWaiting(true);
+        emit modelA->streamingFinished(StreamingResult::Success);
+
+        QVERIFY2(
+            !sessionA->MutablePendingOpenFiles().isEmpty(),
+            "A queued completion after close must not run StreamNextPendingFile on the "
+            "unhosted session."
+        );
+        QVERIFY(!modelA->IsStreamingActive());
+        QCOMPARE(sessionA->SessionMode(), LogSession::Mode::Static);
+        QVERIFY(sessionA->IsSourceWaiting());
+
+        QCOMPARE(window.activeSession(), sessionB);
+        QCOMPARE(sessionB->SessionMode(), modeB);
+        QCOMPARE(sessionB->IsSourceWaiting(), waitingB);
+        QVERIFY(sessionB->MutablePendingOpenFiles().isEmpty());
+        QCOMPARE(modelB->rowCount(), rowsB);
+        QVERIFY(!modelB->IsStreamingActive());
+        QCOMPARE(viewB->isEnabled(), viewBEnabled);
+    }
+
+    // Decompression completion origin comes from the watcher that
+    // finished, looked up in the hosted-tab registry.
 
     static void TestLogSessionForDecompressionWatcherReturnsOwningSession()
     {
@@ -1318,8 +1956,6 @@ private slots:
         QCOMPARE(window.LogSessionForDecompressionWatcher(watcherA), sessionA);
         QCOMPARE(window.LogSessionForDecompressionWatcher(watcherB), sessionB);
 
-        // Unknown senders resolve to nullptr; callers without a
-        // watcher fall back to `mDecompressionPollOriginSession`.
         const QObject unrelated;
         QCOMPARE(window.LogSessionForDecompressionWatcher(&unrelated), nullptr);
         QCOMPARE(window.LogSessionForDecompressionWatcher(nullptr), nullptr);
@@ -1357,7 +1993,7 @@ private slots:
     }
 
     // `NewSession()` must
-    // route through `ConfirmDiscardEphemeralIfDirty`, and the
+    // route through `PrepareSessionClose`, and the
     // test-only forwarder `NewSessionForTest()` must locally
     // suppress dialogs so fixtures that don't opt into
     // `SetSuppressDialogsForTest(true)` do not hang on a modal prompt.
@@ -1431,6 +2067,447 @@ private slots:
 
         // The grouped workspace record uses every hosted tab's UUID.
         QCOMPARE(window.RestorableHostedSessionUuids().size(), 3);
+    }
+
+    static void TestExportingTabKeepsOwnershipAfterSwitch()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString pathA = WriteJsonlFixture(temp.filePath(QStringLiteral("a.jsonl")), 4000);
+        const QString pathB = WriteJsonlFixture(temp.filePath(QStringLiteral("b.jsonl")), 8);
+        QVERIFY(!pathA.isEmpty());
+        QVERIFY(!pathB.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        LoadFileIntoActiveTab(window, pathA);
+        window.AddNewTabForTest(/*makeActive=*/true);
+        LoadFileIntoActiveTab(window, pathB);
+
+        LogSession *sessionA = window.SessionAtTab(0);
+        LogSession *sessionB = window.SessionAtTab(1);
+        QVERIFY(sessionA != nullptr && sessionB != nullptr);
+        LogSessionView *viewA = qobject_cast<LogSessionView *>(window.TabWidgetForTest()->widget(0));
+        LogSessionView *viewB = qobject_cast<LogSessionView *>(window.TabWidgetForTest()->widget(1));
+        QVERIFY(viewA != nullptr && viewB != nullptr);
+
+        window.ActivateTabForTest(0);
+        window.ExportSessionBundleToPathForTest(temp.filePath(QStringLiteral("a.slvbundle")));
+        QVERIFY(sessionA->IsExportInFlight());
+        QVERIFY(!viewA->isEnabled());
+
+        window.ActivateTabForTest(1);
+        QCOMPARE(window.activeSession(), sessionB);
+        QVERIFY(viewB->isEnabled());
+        QVERIFY(sessionA->IsExportInFlight());
+        QVERIFY(!viewA->isEnabled());
+        QVERIFY(viewA->IsOperationProgressVisible());
+
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsExportInFlight(), 15000);
+        QVERIFY(viewA->isEnabled());
+        QVERIFY(viewB->isEnabled());
+        QVERIFY(!viewA->IsOperationProgressVisible());
+    }
+
+    static void TestConcurrentExportsLockOnlyTheirOwnViews()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString pathA = WriteJsonlFixture(temp.filePath(QStringLiteral("a.jsonl")), 6000);
+        const QString pathB = WriteJsonlFixture(temp.filePath(QStringLiteral("b.jsonl")), 6000);
+        QVERIFY(!pathA.isEmpty());
+        QVERIFY(!pathB.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        LoadFileIntoActiveTab(window, pathA);
+        window.AddNewTabForTest(/*makeActive=*/true);
+        LoadFileIntoActiveTab(window, pathB);
+
+        LogSession *sessionA = window.SessionAtTab(0);
+        LogSession *sessionB = window.SessionAtTab(1);
+        QVERIFY(sessionA != nullptr && sessionB != nullptr);
+        LogSessionView *viewA = qobject_cast<LogSessionView *>(window.TabWidgetForTest()->widget(0));
+        LogSessionView *viewB = qobject_cast<LogSessionView *>(window.TabWidgetForTest()->widget(1));
+        QVERIFY(viewA != nullptr && viewB != nullptr);
+
+        window.ActivateTabForTest(0);
+        window.ExportSessionBundleToPathForTest(temp.filePath(QStringLiteral("a.slvbundle")));
+        window.ActivateTabForTest(1);
+        window.ExportSessionBundleToPathForTest(temp.filePath(QStringLiteral("b.slvbundle")));
+
+        QVERIFY(sessionA->IsExportInFlight() || sessionB->IsExportInFlight());
+        if (sessionA->IsExportInFlight())
+        {
+            QVERIFY(!viewA->isEnabled());
+        }
+        if (sessionB->IsExportInFlight())
+        {
+            QVERIFY(!viewB->isEnabled());
+        }
+        if (sessionA->IsExportInFlight() && sessionB->IsExportInFlight())
+        {
+            QVERIFY(!viewA->isEnabled());
+            QVERIFY(!viewB->isEnabled());
+        }
+
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsExportInFlight() && !sessionB->IsExportInFlight(), 20000);
+        QVERIFY(viewA->isEnabled());
+        QVERIFY(viewB->isEnabled());
+        QVERIFY(!viewA->IsOperationProgressVisible());
+        QVERIFY(!viewB->IsOperationProgressVisible());
+    }
+
+    static void TestConcurrentExportCompletionOrderAThenB()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString pathA = WriteJsonlFixture(temp.filePath(QStringLiteral("a.jsonl")), 200);
+        const QString pathB = WriteJsonlFixture(temp.filePath(QStringLiteral("b.jsonl")), 8000);
+        QVERIFY(!pathA.isEmpty());
+        QVERIFY(!pathB.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        LoadFileIntoActiveTab(window, pathA);
+        window.AddNewTabForTest(/*makeActive=*/true);
+        LoadFileIntoActiveTab(window, pathB);
+
+        LogSession *sessionA = window.SessionAtTab(0);
+        LogSession *sessionB = window.SessionAtTab(1);
+        QVERIFY(sessionA != nullptr && sessionB != nullptr);
+        LogSessionView *viewA = qobject_cast<LogSessionView *>(window.TabWidgetForTest()->widget(0));
+        LogSessionView *viewB = qobject_cast<LogSessionView *>(window.TabWidgetForTest()->widget(1));
+        QVERIFY(viewA != nullptr && viewB != nullptr);
+
+        window.ActivateTabForTest(0);
+        window.ExportSessionBundleToPathForTest(temp.filePath(QStringLiteral("a.slvbundle")));
+        window.ActivateTabForTest(1);
+        window.ExportSessionBundleToPathForTest(temp.filePath(QStringLiteral("b.slvbundle")));
+
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsExportInFlight(), 15000);
+        QVERIFY(viewA->isEnabled());
+        if (sessionB->IsExportInFlight())
+        {
+            QVERIFY(!viewB->isEnabled());
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionB->IsExportInFlight(), 20000);
+        QVERIFY(viewB->isEnabled());
+    }
+
+    static void TestConcurrentExportCompletionOrderBThenA()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString pathA = WriteJsonlFixture(temp.filePath(QStringLiteral("a.jsonl")), 8000);
+        const QString pathB = WriteJsonlFixture(temp.filePath(QStringLiteral("b.jsonl")), 200);
+        QVERIFY(!pathA.isEmpty());
+        QVERIFY(!pathB.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        LoadFileIntoActiveTab(window, pathA);
+        window.AddNewTabForTest(/*makeActive=*/true);
+        LoadFileIntoActiveTab(window, pathB);
+
+        LogSession *sessionA = window.SessionAtTab(0);
+        LogSession *sessionB = window.SessionAtTab(1);
+        QVERIFY(sessionA != nullptr && sessionB != nullptr);
+        LogSessionView *viewA = qobject_cast<LogSessionView *>(window.TabWidgetForTest()->widget(0));
+        LogSessionView *viewB = qobject_cast<LogSessionView *>(window.TabWidgetForTest()->widget(1));
+        QVERIFY(viewA != nullptr && viewB != nullptr);
+
+        window.ActivateTabForTest(0);
+        window.ExportSessionBundleToPathForTest(temp.filePath(QStringLiteral("a.slvbundle")));
+        window.ActivateTabForTest(1);
+        window.ExportSessionBundleToPathForTest(temp.filePath(QStringLiteral("b.slvbundle")));
+
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionB->IsExportInFlight(), 15000);
+        QVERIFY(viewB->isEnabled());
+        if (sessionA->IsExportInFlight())
+        {
+            QVERIFY(!viewA->isEnabled());
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsExportInFlight(), 20000);
+        QVERIFY(viewA->isEnabled());
+    }
+
+    static void TestDecompressingTabKeepsOwnershipAfterSwitch()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString pathA = WriteGzipJsonl(temp.filePath(QStringLiteral("a.jsonl.gz")), 8000);
+        const QString pathB = WriteJsonlFixture(temp.filePath(QStringLiteral("b.jsonl")), 8);
+        QVERIFY(!pathA.isEmpty());
+        QVERIFY(!pathB.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        window.OpenFilesForTest({pathA}, MainWindow::OpenMode::Replace);
+        LogSession *sessionA = window.SessionAtTab(0);
+        QVERIFY(sessionA != nullptr);
+        QVERIFY(sessionA->IsDecompressionInFlight());
+        LogSessionView *viewA = qobject_cast<LogSessionView *>(window.TabWidgetForTest()->widget(0));
+        QVERIFY(viewA != nullptr);
+        QVERIFY(!viewA->isEnabled());
+
+        window.AddNewTabForTest(/*makeActive=*/true);
+        LoadFileIntoActiveTab(window, pathB);
+        LogSession *sessionB = window.SessionAtTab(1);
+        LogSessionView *viewB = qobject_cast<LogSessionView *>(window.TabWidgetForTest()->widget(1));
+        QVERIFY(sessionB != nullptr && viewB != nullptr);
+        QCOMPARE(window.activeSession(), sessionB);
+        QVERIFY(viewB->isEnabled());
+        if (sessionA->IsDecompressionInFlight())
+        {
+            QVERIFY(!viewA->isEnabled());
+            QVERIFY(viewA->IsOperationProgressVisible());
+        }
+
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsDecompressionInFlight(), 15000);
+        QVERIFY(viewA->isEnabled());
+        QVERIFY(viewB->isEnabled());
+    }
+
+    static void TestConcurrentDecompressionLocksOnlyOwnViews()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString pathA = WriteGzipJsonl(temp.filePath(QStringLiteral("a.jsonl.gz")), 12000);
+        const QString pathB = WriteGzipJsonl(temp.filePath(QStringLiteral("b.jsonl.gz")), 12000);
+        QVERIFY(!pathA.isEmpty());
+        QVERIFY(!pathB.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        window.OpenFilesForTest({pathA}, MainWindow::OpenMode::Replace);
+        window.AddNewTabForTest(/*makeActive=*/true);
+        window.OpenFilesForTest({pathB}, MainWindow::OpenMode::Replace);
+
+        LogSession *sessionA = window.SessionAtTab(0);
+        LogSession *sessionB = window.SessionAtTab(1);
+        QVERIFY(sessionA != nullptr && sessionB != nullptr);
+        LogSessionView *viewA = qobject_cast<LogSessionView *>(window.TabWidgetForTest()->widget(0));
+        LogSessionView *viewB = qobject_cast<LogSessionView *>(window.TabWidgetForTest()->widget(1));
+        QVERIFY(viewA != nullptr && viewB != nullptr);
+
+        QVERIFY(sessionA->IsDecompressionInFlight() || sessionB->IsDecompressionInFlight());
+        if (sessionA->IsDecompressionInFlight())
+        {
+            QVERIFY(!viewA->isEnabled());
+        }
+        if (sessionB->IsDecompressionInFlight())
+        {
+            QVERIFY(!viewB->isEnabled());
+        }
+
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsDecompressionInFlight() && !sessionB->IsDecompressionInFlight(), 20000);
+        QVERIFY(viewA->isEnabled());
+        QVERIFY(viewB->isEnabled());
+    }
+
+    static void TestConcurrentStreamCompletionAcrossTabs()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString pathA = WriteJsonlFixture(temp.filePath(QStringLiteral("a.jsonl")), 20000);
+        const QString pathB = WriteJsonlFixture(temp.filePath(QStringLiteral("b.jsonl")), 20000);
+        QVERIFY(!pathA.isEmpty());
+        QVERIFY(!pathB.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        window.OpenFilesForTest({pathA}, MainWindow::OpenMode::Replace);
+        window.AddNewTabForTest(/*makeActive=*/true);
+        window.OpenFilesForTest({pathB}, MainWindow::OpenMode::Replace);
+
+        LogSession *sessionA = window.SessionAtTab(0);
+        LogSession *sessionB = window.SessionAtTab(1);
+        QVERIFY(sessionA != nullptr && sessionB != nullptr);
+        LogModel *modelA = sessionA->Model();
+        LogModel *modelB = sessionB->Model();
+        QVERIFY(modelA != nullptr && modelB != nullptr);
+
+        QTRY_VERIFY_WITH_TIMEOUT(!modelA->IsStreamingActive() && !modelB->IsStreamingActive(), 20000);
+        QVERIFY(modelA->rowCount() > 0);
+        QVERIFY(modelB->rowCount() > 0);
+        QCOMPARE(window.activeSession(), sessionB);
+    }
+
+    static void TestBackgroundBundleCompletionDoesNotMutateActiveShellUi()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString bundlePath = WriteBundleFixture(
+            temp.filePath(QStringLiteral("origin.slvbundle")), 200, QStringLiteral("bundle-only-token")
+        );
+        const QString activePath = WriteJsonlFixture(temp.filePath(QStringLiteral("active.jsonl")), 12);
+        QVERIFY(!bundlePath.isEmpty());
+        QVERIFY(!activePath.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        window.AddNewTabForTest(/*makeActive=*/true);
+        LoadFileIntoActiveTab(window, activePath);
+        AddContainsFilter(window, QStringLiteral("active-tab-only"));
+
+        LogSession *sessionA = window.SessionAtTab(0);
+        LogSession *sessionB = window.SessionAtTab(1);
+        QVERIFY(sessionA != nullptr && sessionB != nullptr);
+        QCOMPARE(window.activeSession(), sessionB);
+
+        const QStringList activeFilterTitles = FilterMenuTitles(window);
+        QVERIFY2(
+            activeFilterTitles.join(QLatin1Char('|')).contains(QStringLiteral("active-tab-only")),
+            "The selected tab must own a distinctive Filters menu entry before background completion."
+        );
+        auto *clearFilters = window.findChild<QAction *>(QStringLiteral("actionClearAllFilters"));
+        auto *rotationHistory = window.findChild<QAction *>(QStringLiteral("actionAutoDetectRotationHistory"));
+        auto *pauseStream = window.findChild<QAction *>(QStringLiteral("actionPauseStream"));
+        auto *streamToolbar = window.findChild<QToolBar *>(QStringLiteral("streamToolbar"));
+        auto *parseErrorsDock = window.findChild<QDockWidget *>(QStringLiteral("parseErrorsDock"));
+        auto *histogramDock = window.findChild<QDockWidget *>(QStringLiteral("histogramDock"));
+        auto *findDock = window.findChild<QDockWidget *>(QStringLiteral("findDock"));
+        QVERIFY(clearFilters != nullptr && rotationHistory != nullptr && pauseStream != nullptr);
+        QVERIFY(streamToolbar != nullptr && parseErrorsDock != nullptr);
+        const bool clearEnabled = clearFilters->isEnabled();
+        const bool rotationChecked = rotationHistory->isChecked();
+        const bool pauseEnabled = pauseStream->isEnabled();
+        const bool streamVisible = streamToolbar->isVisible();
+        const bool parseVisible = parseErrorsDock->isVisible();
+        const bool histogramVisible = histogramDock != nullptr && histogramDock->isVisible();
+        const bool findVisible = findDock != nullptr && findDock->isVisible();
+        const QString statusText = window.statusBar()->currentMessage();
+        const QString title = window.windowTitle();
+
+        window.ActivateTabForTest(0);
+        LogModel *originModel = sessionA->Model();
+        QVERIFY(originModel != nullptr);
+        const QSignalSpy originFinished(originModel, &LogModel::streamingFinished);
+        QCOMPARE(
+            window.OpenMixedFilesForTest({bundlePath}, MainWindow::OpenMode::Replace),
+            MainWindow::MixedInputDispatch::QueuedLogsOnly
+        );
+        window.ActivateTabForTest(1);
+        QCOMPARE(window.activeSession(), sessionB);
+
+        QTRY_VERIFY_WITH_TIMEOUT(originFinished.count() >= 1, 20000);
+        QVERIFY(originModel->rowCount() > 0);
+
+        QCOMPARE(FilterMenuTitles(window), activeFilterTitles);
+        QCOMPARE(clearFilters->isEnabled(), clearEnabled);
+        QCOMPARE(rotationHistory->isChecked(), rotationChecked);
+        QCOMPARE(pauseStream->isEnabled(), pauseEnabled);
+        QCOMPARE(streamToolbar->isVisible(), streamVisible);
+        QCOMPARE(parseErrorsDock->isVisible(), parseVisible);
+        if (histogramDock != nullptr)
+        {
+            QCOMPARE(histogramDock->isVisible(), histogramVisible);
+        }
+        if (findDock != nullptr)
+        {
+            QCOMPARE(findDock->isVisible(), findVisible);
+        }
+        QCOMPARE(window.statusBar()->currentMessage(), statusText);
+        QCOMPARE(window.windowTitle(), title);
+        QCOMPARE(window.activeSession(), sessionB);
+        QVERIFY2(
+            !FilterMenuTitles(window).join(QLatin1Char('|')).contains(QStringLiteral("bundle-only-token")),
+            "Background bundle filters must not appear in the selected tab's Filters menu."
+        );
+
+        const QStringList originLeafStrings = SimpleLeafFilterStrings(*sessionA);
+        const bool originHasBundleFilter = originLeafStrings.contains(QStringLiteral("bundle-only-token")) ||
+                                           ExpressionContainsFilterString(
+                                               originModel->Configuration().expression, "bundle-only-token"
+                                           );
+        QVERIFY2(
+            originHasBundleFilter,
+            qPrintable(QStringLiteral(
+                           "The originating session must still receive the bundle's embedded filters. "
+                           "simpleLeaves=[%1] matchAll=%2 dropped=%3 rows=%4"
+                       )
+                           .arg(originLeafStrings.join(QLatin1Char(',')))
+                           .arg(loglib::IsMatchAll(originModel->Configuration().expression))
+                           .arg(window.LastDroppedFilterCountForTest())
+                           .arg(originModel->rowCount()))
+        );
+    }
+
+    static void TestBackgroundExportCompletionQueuesStatusOnOrigin()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString pathA = WriteJsonlFixture(temp.filePath(QStringLiteral("a.jsonl")), 4000);
+        const QString pathB = WriteJsonlFixture(temp.filePath(QStringLiteral("b.jsonl")), 8);
+        QVERIFY(!pathA.isEmpty() && !pathB.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        LoadFileIntoActiveTab(window, pathA);
+        window.AddNewTabForTest(/*makeActive=*/true);
+        LoadFileIntoActiveTab(window, pathB);
+        AddContainsFilter(window, QStringLiteral("active-tab-only"));
+
+        LogSession *sessionA = window.SessionAtTab(0);
+        LogSession *sessionB = window.SessionAtTab(1);
+        QVERIFY(sessionA != nullptr && sessionB != nullptr);
+        QCOMPARE(window.activeSession(), sessionB);
+
+        const QStringList activeFilterTitles = FilterMenuTitles(window);
+        const QString statusText = window.statusBar()->currentMessage();
+
+        window.ActivateTabForTest(0);
+        window.ExportSessionBundleToPathForTest(temp.filePath(QStringLiteral("a.slvbundle")));
+        QVERIFY(sessionA->IsExportInFlight());
+        window.ActivateTabForTest(1);
+        QCOMPARE(window.activeSession(), sessionB);
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsExportInFlight(), 15000);
+
+        QCOMPARE(window.activeSession(), sessionB);
+        QCOMPARE(FilterMenuTitles(window), activeFilterTitles);
+        QCOMPARE(window.statusBar()->currentMessage(), statusText);
+        QVERIFY2(
+            !sessionA->PendingPresentation().isEmpty(),
+            "A background export completion must queue presentation work on the originating session."
+        );
+        QVERIFY(!sessionA->PendingPresentation().statusMessage.isEmpty());
+        QVERIFY(sessionB->PendingPresentation().isEmpty());
+    }
+
+    static void TestBackgroundFailureIsRecordedOnOriginatingTab()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString gzipPath = WriteGzipJsonl(temp.filePath(QStringLiteral("corrupt.jsonl.gz")), 8000);
+        QVERIFY(!gzipPath.isEmpty());
+        QFile gzipFile(gzipPath);
+        QVERIFY(gzipFile.open(QIODevice::ReadWrite));
+        QVERIFY(gzipFile.resize(24));
+        gzipFile.close();
+
+        const QString pathB = WriteJsonlFixture(temp.filePath(QStringLiteral("b.jsonl")), 8);
+        QVERIFY(!pathB.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        window.OpenFilesForTest({gzipPath}, MainWindow::OpenMode::Replace);
+        LogSession *sessionA = window.SessionAtTab(0);
+        QVERIFY(sessionA != nullptr);
+        window.AddNewTabForTest(/*makeActive=*/true);
+        LoadFileIntoActiveTab(window, pathB);
+        LogSession *sessionB = window.SessionAtTab(1);
+        QVERIFY(sessionB != nullptr);
+        QCOMPARE(window.activeSession(), sessionB);
+
+        QTRY_VERIFY_WITH_TIMEOUT(!sessionA->IsDecompressionInFlight(), 15000);
+        QVERIFY2(
+            !sessionA->ParseErrorLog().batches.empty() || !sessionA->PendingPresentation().isEmpty() ||
+                !sessionA->PendingDecompressionErrors().empty() || !sessionA->PendingOpenErrors().empty(),
+            "A background decompression failure must be recorded on the originating session."
+        );
+        QVERIFY(sessionB->ParseErrorLog().batches.empty());
+        QVERIFY(sessionB->PendingPresentation().isEmpty());
     }
 };
 

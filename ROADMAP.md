@@ -26,7 +26,7 @@ For the architecture each item plugs into, see [CONTRIBUTING.md → Architecture
   - [13. ~~Match overview rail / minimap~~ (shipped)](#13-match-overview-rail--minimap)
   - [14. Per-cell quick filter](#14-per-cell-quick-filter)
   - [15. Inline pretty-print for embedded JSON / XML](#15-inline-pretty-print-for-embedded-json--xml)
-  - [16. ~~Tabs for multiple sources in one window~~ (shipped)](#16-tabs-for-multiple-sources-in-one-window)
+  - [16. Tabs for multiple sources in one window](#16-tabs-for-multiple-sources-in-one-window)
   - [17. Time-gap detection](#17-time-gap-detection)
   - [18. Pattern clustering / similar-line grouping](#18-pattern-clustering--similar-line-grouping)
   - [19. Encoding auto-detection](#19-encoding-auto-detection)
@@ -234,9 +234,19 @@ Right-click on a cell → **Filter on this value** / **Hide rows with this value
 
 `RecordDetailDock` already pretty-prints JSON. Surface the same renderer per-cell: hovering a long JSON / XML payload shows a popup with the pretty-printed view; an **Expand** affordance pins the popup so multiple cells can be inspected at once. Lnav's `Shift+P` and LogViewPlus's pretty-print are the references. Works particularly well on logfmt / regex rows whose `message` column carries an embedded JSON object.
 
-### 16. ~~Tabs for multiple sources in one window~~
+### 16. Tabs for multiple sources in one window
 
-> **Shipped.** Each window supports independent tabs for static files, multi-file opens, compressed files, bundles, live tails, stdin, and TCP / UDP streams. **New Tab** (`Ctrl+T`), **Close Tab** (`Ctrl+W`), keyboard cycling, and drag reordering are available; Recent Sessions and forwarded OS opens use a foreground tab, reusing the active tab when it is empty. Files dropped on the window target the active tab, appending by default or replacing when `Shift` is held. Window order, tab order, and the active tab restore on launch. File-backed sessions reopen; network and stdin entries return as empty `Untitled` tabs and must be opened manually. See [`doc/README.md § Tabs`](doc/README.md#tabs).
+Each window can host independent tabs for static files, multi-file opens,
+compressed files, bundles, live tails, stdin, and TCP / UDP streams.
+**New Tab** (`Ctrl+T`), **Close Tab** (`Ctrl+W`), keyboard cycling, and
+drag reordering are available. Recent Sessions and forwarded OS opens use
+a foreground tab, reusing the active tab when it is empty. Dropped files
+target the active tab.
+
+The tabbed shell is not production-ready yet. Concurrent export and
+decompression, callbacks after tab close, dirty Save / Discard / Cancel,
+and workspace restore of deferred windows still need to be hardened.
+See [`doc/README.md § Tabs`](doc/README.md#tabs).
 
 ### 17. Time-gap detection
 

@@ -123,6 +123,19 @@ public:
     static constexpr std::size_t MAX_GEOMETRY_BYTES = 64 * 1024;
     /** @brief Maximum decoded size of one saved dock-state blob. */
     static constexpr std::size_t MAX_DOCK_STATE_BYTES = 128 * 1024;
+    /** @brief Maximum number of windows restored on one launch. */
+    static constexpr std::size_t DEFAULT_RESTORE_CAP = 25;
+
+    /**
+     * @brief Launch restore prefix and the windows held back by the restore cap.
+     */
+    struct RestorePlan
+    {
+        /** @brief Windows restored on this launch, in persisted order. */
+        Workspace toRestore;
+        /** @brief Windows not restored on this launch, in persisted order. */
+        Workspace deferred;
+    };
 
     /**
      * @brief Reads the current workspace without modifying the file.
@@ -188,6 +201,61 @@ public:
      * @param workspace Workspace to modify in place.
      */
     static void Sanitize(Workspace &workspace);
+
+    /**
+     * @brief Splits @p workspace into a restore prefix and a deferred remainder.
+     *
+     * When the window count is within @p restoreCap, `toRestore` receives the
+     * complete workspace and `deferred` is empty. Otherwise `toRestore` keeps
+     * the first @p restoreCap windows and `deferred` keeps the rest. MRU order
+     * is copied onto both sides.
+     *
+     * @param workspace Workspace to split; consumed.
+     * @param restoreCap Maximum number of windows to restore on this launch.
+     * @return The restore prefix and any deferred remainder.
+     */
+    [[nodiscard]] static RestorePlan PlanRestore(Workspace workspace, std::size_t restoreCap);
+
+    /**
+     * @brief Appends deferred windows that are not already present in @p captured.
+     *
+     * Captured windows keep their order. Deferred windows whose `windowUuid`
+     * already appears in @p captured are skipped. MRU entries from @p captured
+     * stay first; remaining deferred MRU entries are appended.
+     *
+     * @param captured Windows captured from currently live windows.
+     * @param deferred Windows held back by a prior restore cap.
+     * @return The merged workspace.
+     */
+    [[nodiscard]] static Workspace MergeCapturedWithDeferred(Workspace captured, const Workspace &deferred);
+
+    /**
+     * @brief Stores deferred windows for later merge on a normal quit.
+     * @param deferred Windows held back by this launch's restore cap.
+     */
+    static void SetDeferredWindows(Workspace deferred);
+
+    /**
+     * @brief Takes the deferred windows stored by `SetDeferredWindows`.
+     *
+     * The stored slot is cleared. Used by a normal quit before
+     * `MergeCapturedWithDeferred`.
+     *
+     * @return The deferred workspace, or an empty workspace when none is stored.
+     */
+    [[nodiscard]] static Workspace TakeDeferredWindows();
+
+    /**
+     * @brief Reads the workspace and prepares the current launch's restore plan.
+     *
+     * When nothing is deferred, the file is consumed with `Take()` so a restore
+     * crash does not loop. When windows remain deferred, the file is left intact
+     * and `SetDeferredWindows` stores the remainder for a later quit merge.
+     *
+     * @param restoreCap Maximum number of windows to restore on this launch.
+     * @return The restore prefix and any deferred remainder.
+     */
+    [[nodiscard]] static RestorePlan LoadForLaunch(std::size_t restoreCap);
 };
 
 } // namespace slv::persistence
