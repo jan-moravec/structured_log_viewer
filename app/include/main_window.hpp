@@ -19,6 +19,7 @@
 #include "row_order_proxy_model.hpp"
 #include "scoped_connections.hpp"
 #include "session_bind_context.hpp"
+#include "session_operation_controller.hpp"
 #include "workspace_persistence.hpp"
 
 #include <QUuid>
@@ -532,8 +533,8 @@ public:
      * @brief Auto-saves every hosted session.
      * @param publishOpenWindow Whether each saved UUID is published for launch restoration.
      *
-     * The operation temporarily activates tabs as required by alias-based save
-     * helpers and restores the original active tab. Repeated calls are safe.
+     * Writes each hosted session in place without activating tabs or
+     * rebinding shared docks.
      */
     void AutoSaveAllHostedSessions(bool publishOpenWindow);
 
@@ -663,11 +664,13 @@ public:
      * removes the uuid again.
      *
      * Public so `main()`'s `aboutToQuit` handler can flush every
-     * live window before exit.
+     * live window before exit. The session overload writes that
+     * session without activating it or rebinding shared docks.
      * @param publishOpenWindow The `publishOpenWindow` value.
      * @return `true` when a snapshot was written or none was required.
      */
     bool AutoSaveSessionSnapshot(bool publishOpenWindow = true);
+    bool AutoSaveSessionSnapshot(LogSession *session, bool publishOpenWindow);
 
     void UpdateUi();
 
@@ -678,6 +681,7 @@ public:
      * Idempotent.
      */
     void ApplyDisplayOrder();
+    void ApplyDisplayOrder(LogSession *session, LogSessionView *view);
 
     /**
      * @brief Test-only direct accessor for the live filter proxy. Tests
@@ -1817,6 +1821,8 @@ private slots:
     void RebuildViewMenu();
 
 private:
+    friend class SessionOperationController;
+
     /**
      * @brief Updates shell aliases for the active session and optional view.
      * @param session The non-null session whose models become active aliases.
@@ -1948,44 +1954,6 @@ private:
     };
 
     /**
-     * @brief Temporarily routes completion handling to its originating session.
-     *
-     * Aliases and active-tab chrome are restored on destruction. While swapped,
-     * shell-global UI writes are suppressed and parse errors remain origin-bound.
-     */
-    struct CompletionOriginSwapScope
-    {
-        /**
-         * @brief Starts an origin-bound completion scope.
-         * @param owner The window whose aliases may be rebound.
-         * @param origin The session that started the operation.
-         * @param originView The origin's view, or `nullptr` if it is unavailable.
-         */
-        CompletionOriginSwapScope(MainWindow &owner, LogSession *origin, LogSessionView *originView) noexcept;
-        ~CompletionOriginSwapScope();
-        CompletionOriginSwapScope(const CompletionOriginSwapScope &) = delete;
-        CompletionOriginSwapScope &operator=(const CompletionOriginSwapScope &) = delete;
-        CompletionOriginSwapScope(CompletionOriginSwapScope &&) = delete;
-        CompletionOriginSwapScope &operator=(CompletionOriginSwapScope &&) = delete;
-
-        /**
-         * @brief Reports whether aliases were rebound.
-         * @return `true` when the origin differed from the active session.
-         */
-        [[nodiscard]] bool didSwap() const noexcept
-        {
-            return mDidSwap;
-        }
-
-    private:
-        MainWindow &mOwner;
-        LogSession *mSavedSession;
-        LogSessionView *mSavedView;
-        bool mSavedBackgroundInFlight;
-        bool mDidSwap;
-    };
-
-    /**
      * @brief Append the "Anchor" sub-menu (eight colour swatches +
      * "Remove anchor") to @p menu. Check state reflects the right-
      * clicked row's existing colour, but triggered actions operate
@@ -2113,7 +2081,7 @@ private:
      * Open and decompression failures accumulate in separate session-owned
      * buckets. Compressed inputs resume through `OnDecompressionFinished()`.
      */
-    void StreamNextPendingFile();
+    void StreamNextPendingFile(LogSession *origin);
 
     /**
      * @brief Dispatch an async `DecompressingByteSource` worker for
@@ -2123,10 +2091,15 @@ private:
      * from `StreamNextPendingFile`; the finished slot
      * (`OnDecompressionFinished`) picks the flow back up on the
      * GUI thread.
+     * @param origin Session that owns the queued file.
      * @param originalPath The `originalPath` value.
      * @param codec The `codec` value.
      */
-    void BeginAsyncDecompression(const QString &originalPath, loglib::internal::DecompressingByteSource::Codec codec);
+    void BeginAsyncDecompression(
+        LogSession *origin,
+        const QString &originalPath,
+        loglib::internal::DecompressingByteSource::Codec codec
+    );
 
     /**
      * @brief Continuation of `StreamNextPendingFile` for compressed
@@ -2137,7 +2110,14 @@ private:
     void OnDecompressionFinished();
 
     /**
+     * @brief Completes decompression for a hosted origin session.
+     * @param origin Session whose decompression watcher finished.
+     */
+    void OnDecompressionFinishedFor(LogSession *origin);
+
+    /**
      * @brief Continues a prepared file open on the GUI thread.
+     * @param origin Session that owns the open queue.
      * @param originalPath The user-facing source path used for labels and persistence.
      * @param effectivePath The path probed and mapped by the parser.
      * @param decompressionAnchor Shared ownership that keeps a temporary decompressed file alive.
@@ -2147,6 +2127,7 @@ private:
      * appends streaming. A null anchor denotes an uncompressed input.
      */
     [[nodiscard]] bool ContinueOpenAfterPrepared(
+        LogSession *origin,
         const QString &originalPath,
         const std::filesystem::path &effectivePath,
         std::shared_ptr<loglib::internal::DecompressingByteSource> decompressionAnchor
@@ -2199,17 +2180,18 @@ private:
      * `mCurrentSource` are preserved; auto-save runs if the
      * surviving session shape is restorable.
      */
-    void FinalizeAfterDecompressionIfChainTerminal();
+    void FinalizeAfterDecompressionIfChainTerminal(LogSession *origin);
 
     /**
-     * @brief Slot for `LogModel::streamingFinished`. Hoisted out of an
-     * inline lambda so crash-dump frames identify it by name and
-     * tests can exercise the post-streaming reset logic directly.
+     * @brief Completes streaming for a hosted origin session.
+     *
      * Owns queue draining, session-mode reset, auto-save publish,
-     * and parse-error surfacing.
+     * and parse-error surfacing. Shell chrome updates run only when
+     * @p origin is the selected tab.
+     * @param origin Session whose parse worker finished.
      * @param result The operation result.
      */
-    void OnStreamingFinished(StreamingResult result);
+    void OnStreamingFinished(LogSession *origin, StreamingResult result);
 
     /**
      * @brief Appends a titled error batch to the appropriate session.
@@ -2228,7 +2210,7 @@ private:
      * @param droppedCount The `droppedCount` value.
      * @param message The message text.
      */
-    void ShowDroppedFiltersDialog(int droppedCount, const QString &message);
+    void ShowDroppedFiltersDialog(int droppedCount, const QString &message, LogSession *origin = nullptr);
 
     /**
      * @brief Add @p filter to `mSimpleLeaves` and build its menu entry.
@@ -2239,6 +2221,7 @@ private:
      * @param deferSync The `deferSync` value.
      */
     void AddLogFilter(const QString &id, const loglib::LeafRule &filter, bool deferSync = false);
+    void AddLogFilter(LogSession *session, const QString &id, const loglib::LeafRule &filter, bool deferSync);
 
     /**
      * @brief Display title for @p filter (e.g. `info, warn` for enum,
@@ -2255,6 +2238,7 @@ private:
      * after every mutation and on column/enum-column changes.
      */
     void UpdateFilters();
+    void UpdateFilters(LogSession *session);
 
     /**
      * @brief True iff the window is worth auto-saving after a stream
@@ -2266,6 +2250,7 @@ private:
      * @return The result described above.
      */
     [[nodiscard]] bool ShouldAutoSaveSession(SessionMode justFinishedMode) const;
+    [[nodiscard]] bool ShouldAutoSaveSession(const LogSession *session, SessionMode justFinishedMode) const;
 
     /**
      * @brief Drop `mAutoSaveUuid` from the persisted open-windows set and
@@ -2284,6 +2269,7 @@ private:
      * once at the end.
      */
     void MirrorSessionStateToConfiguration();
+    void MirrorSessionStateToConfiguration(LogSession *session);
 
     /**
      * @brief Shared tail of `OpenLogStream` and `OpenLogStreamForTest`:
@@ -2299,6 +2285,7 @@ private:
      * @brief Attach the pending live tail after its static prefix drains.
      */
     void ContinueLiveTailAfterPrefix();
+    void ContinueLiveTailAfterPrefix(LogSession *origin);
 
     /**
      * @brief Global rotation-history preference after applying the CLI
@@ -2419,6 +2406,7 @@ private:
      * `DoLoadConfiguration` and `TryLoadAsConfiguration`.
      */
     void RebuildFiltersFromConfiguration();
+    void RebuildFiltersFromConfiguration(LogSession *session);
 
     /**
      * @brief Drop simple-mode leaves, per-filter menu entries, and the
@@ -2430,6 +2418,7 @@ private:
      * expression tree while the load path preserves it.
      */
     void ResetSimpleFilterState();
+    void ResetSimpleFilterState(LogSession *session);
 
     /**
      * @brief Gate "Clear All Filters" on
@@ -2477,6 +2466,7 @@ private:
      * avoids sorted per-row insertion while streaming the restored source.
      */
     void ApplyDeferredSortFromConfig();
+    void ApplyDeferredSortFromConfig(LogSession *session, LogSessionView *view);
 
     void SetConfigurationUiEnabled(bool enabled);
     void UpdateStreamingStatus();
@@ -2490,6 +2480,7 @@ private:
      * when the tab becomes selected.
      */
     void PostStatusMessage(const QString &message, int timeoutMs);
+    void PostStatusMessage(LogSession *origin, const QString &message, int timeoutMs);
 
     /**
      * @brief Starts the elapsed-time timer and 1 Hz refresh tick for live tail.
@@ -2864,10 +2855,9 @@ private:
     bool mSuppressActiveTabChange = false;
 
     /**
-     * @brief True while completion handling is temporarily origin-bound to a
-     * background tab. Prevents shell-global UI from changing for that tab.
+     * @brief Routes ingest, decompression, export, and snapshot work to hosted sessions.
      */
-    bool mBackgroundCompletionInFlight = false;
+    std::unique_ptr<SessionOperationController> mOperations;
 
     /**
      * @brief Non-owning active-tab alias. Each session is parented to this

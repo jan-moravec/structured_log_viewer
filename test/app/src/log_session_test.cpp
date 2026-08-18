@@ -814,19 +814,6 @@ private slots:
         QCOMPARE(exportSession.PreCheckClose(), std::uint32_t{0});
     }
 
-    static void TestRequestCloseReturnsClosedWithoutShellOrchestration()
-    {
-        // `RequestClose` currently reports success without mutating
-        // dirty or in-flight state; close orchestration is shell-owned.
-        LogSession session;
-        QCOMPARE(session.RequestClose(), SessionCloseResult::Closed);
-
-        session.MarkFiltersDirty();
-        session.SetDecompressionInFlight(true);
-        session.SetExportInFlight(true);
-        QCOMPARE(session.RequestClose(), SessionCloseResult::Closed);
-    }
-
     static void TestLiveTailElapsedTimerArmsOnStart()
     {
         // Before `StartLiveTailElapsedTimer()` runs,

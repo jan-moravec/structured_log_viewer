@@ -8,6 +8,7 @@ Thanks for your interest in contributing! This document is the developer referen
   - [Project Structure](#project-structure)
   - [Library](#library)
   - [GUI Application](#gui-application)
+  - [Session tabs](#session-tabs)
   - [Static vs Streaming pipelines](#static-vs-streaming-pipelines)
   - [Network producers (TCP / UDP)](#network-producers-tcp--udp)
   - [Data Flow](#data-flow)
@@ -76,7 +77,7 @@ structured_log_viewer/
 │   └── log_generator/        # Standalone multi-format fixture generator (`log_generator`)
 ├── cmake/                    # Shared CMake modules (warnings, FetchContent)
 ├── resources/                # Icons, .desktop entry, Qt resource file
-├── doc/                      # End-user documentation
+├── doc/                      # End-user guide (`README.md`) and contributor notes
 ├── .github/workflows/        # CI: build + test on Linux / Windows / macOS
 ├── CMakeLists.txt
 └── README.md
@@ -187,9 +188,13 @@ The Qt-side classes that wrap `loglib` are:
 
 - `RegexTemplatesEditor` (`app/include/regex_templates_editor.hpp`) — modeless editor for the merged built-in and user catalog. Its form covers `name`, `pattern`, samples, auto-detect, priority, `continuationMode`, `headerAnchor`, and description. Built-ins are read-only; duplicate one to customize it. Validate and Save compile both regex fields, and Validate checks samples. `RegexTemplateRegistry` owns merging, user shadowing, disk reload, and `SetExtraRegexTemplates`; `NetworkStreamDialog` only consumes the merged picker.
 
-- `MainWindow` (`app/include/main_window.hpp`) — orchestrates everything: open dialogs, drag & drop, the find bar, the filter editor, the preferences editor, the sequential file-queue open flow (`StartStreamingOpenQueue` / `StreamNextPendingFile`) that drives `LogModel::BeginStreaming` for the first file and `LogModel::AppendStreaming` for the rest, and the Stream Mode entry point (`OpenLogStream` → `LogModel::BeginStreaming(StreamLineSource, ...)`) plus the toolbar wiring (`TogglePauseStream` / `StopStream`) and the status-bar state machine (`UpdateStreamingStatus` covers the `Streaming` / `Paused` / `Source unavailable` / `— rotated` / `dropped while paused` variants).
+- `MainWindow` (`app/include/main_window.hpp`) — window host for chrome, dialogs, and menus. File-open and stream-mode entry points still live here; ingest, decompression, and export completions resolve a hosted `SessionInstanceId` through `SessionOperationController` (`app/include/session_operation_controller.hpp`) and update only that session. See [Session tabs](doc/session-tabs.md) for tab ownership, switch ordering, dock binding, callback origin, and close ordering.
 
 - Session-bundle UI flow — `SessionBundleDialog` collects the destination and encoder settings. `MainWindow::ExportSessionBundle` stops active producers before dispatching `WriteSessionBundle` through the shared progress/cancel machinery. A lone bundle opened into a fresh session may apply configuration retained from its metadata line.
+
+### Session tabs
+
+Multi-tab windows are documented in [`doc/session-tabs.md`](doc/session-tabs.md). That note is the source of truth for tab ownership, tab-switch ordering, shared-dock binding, completion origin, and close ordering.
 
 ### Static vs Streaming pipelines
 
@@ -681,7 +686,7 @@ The `--roll-*` and `--append` flags are rejected on network and stdout targets (
 
 This section is the canonical home for the regression gate; the parser benchmarks in [`test/lib/src/benchmark_json.cpp`](test/lib/src/benchmark_json.cpp), [`test/lib/src/benchmark_logfmt.cpp`](test/lib/src/benchmark_logfmt.cpp), [`test/lib/src/benchmark_csv.cpp`](test/lib/src/benchmark_csv.cpp), and [`test/lib/src/benchmark_regex.cpp`](test/lib/src/benchmark_regex.cpp) (all built on the shared [`test/lib/include/benchmark_common.hpp`](test/lib/include/benchmark_common.hpp) harness), the Stream-Mode latency benchmark in [`test/lib/src/benchmark_stream.cpp`](test/lib/src/benchmark_stream.cpp), the filter / sort benchmarks in [`test/lib/src/benchmark_log_filter.cpp`](test/lib/src/benchmark_log_filter.cpp), and the bundle benchmark in [`test/lib/src/benchmark_session_bundle.cpp`](test/lib/src/benchmark_session_bundle.cpp) link back to it via their top-of-file comment. Quote the bullets in the [Acceptance bar](#acceptance-bar) below in commit messages and PR descriptions.
 
-The benchmarks live in the same `tests` binary as the unit tests but are tagged `[.][benchmark]` so they're hidden by default; `catch_discover_tests` registers them under the `benchmark` CTest label.
+The parser benchmarks live in the same `tests` binary as the unit tests but are tagged `[.][benchmark]` so they're hidden by default; `catch_discover_tests` registers them under the `benchmark` CTest label. GUI benches (`apptest_bench`, `apptest_session_tabs_bench`) are separate QtTest binaries with the same CTest label.
 
 **Debug builds skip benchmarks automatically.** Use the `release` preset for the canonical regression-gate number, or `relwithdebinfo` if you want to attach a profiler — both have IPO/LTO on and `NDEBUG` defined. Running benchmarks against `--preset debug` reports each case as `SKIPPED` with a message rather than producing misleading numbers (see `BENCHMARK_REQUIRES_RELEASE_BUILD` in `benchmark_json.cpp`).
 
@@ -709,6 +714,7 @@ The table below groups the main `[.][benchmark]` fixtures by tag. A row may cove
 | `[enum]`                                  | End-to-end enum auto-detection over a 20'000-line parse with a `level`-style key. Asserts the `level` column promotes to `Type::Enumeration` and every slot ends up as a `DictRef`; reports dictionary heap cost.                                                                                                                    |
 | `[cancellation]`                          | Cancellation-latency over 20 runs of a 1M-line parse. The test hard-fails only above 5 s; the ±3 % p95 bar is the PR-description convention.                                                                                                                                                                                         |
 | `[stream_latency]`                        | Stream-Mode write-to-row latency over a `TailingFileSource` + `JsonParser::ParseStreaming` chain. Asserts median ≤ 250 ms / p95 ≤ 500 ms.                                                                                                                                                                                            |
+| `[session_tabs]`                          | Two 100,000-row JSONL tabs with 1,000 anchors each and visible shared docks. 10 warm-up + 50 measured activations. Hard-fails when p95 > 100 ms. Prints hardware class, row counts, dock visibility, and p50/p95. Stay within 20 % of the controlled-CI baseline once that number is recorded in the PR.                             |
 | `[session_bundle]`                        | Encode, decode, and round-trip a 1'000'000-row JSON bundle at zstd level 3. Reports throughput and compressed size.                                                                                                                                                                                                                  |
 | `[log_filter][large]` (enum)              | `EnumRowPredicate` fast-path scan over 1'000'000 enum-column rows. Hard-fails above 100 ms; guards against a regression to the per-row allocation path.                                                                                                                                                                              |
 | `[log_filter][large]` (string)            | `CallbackStringRowPredicate` substring scan over 1'000'000 string rows. Hard-fails above 200 ms; guards the `std::variant` access + table-lookup cost.                                                                                                                                                                               |
@@ -758,6 +764,7 @@ The convention is to capture both **before** (clean-tree baseline) and **after**
 - `[allocations]` — `string_view` fast-path fraction ≥ 99 %.
 - `[cancellation]` — p95 latency within ±3 % of the prior commit's number.
 - `[stream_latency]` — median ≤ 250 ms and p95 ≤ 500 ms (the test fails on a regression rather than relying on a manual review compare). Stream-Mode PRs must also re-run `[large]` / `[wide]` / `[allocations]` / `[cancellation]` and record the numbers, since the static-path machinery and the Stream-Mode seam share the same parser and `LogTable` plumbing.
+- `[session_tabs]` — tab-switch p95 ≤ 100 ms on two 100,000-row tabs with 1,000 anchors each and visible shared docks (10 warm-up switches, 50 measured). Also stay within 20 % of the controlled-CI baseline once that number is recorded in the PR. The test prints hardware class on every run; do not disable it if a machine misses 100 ms.
 - `[session_bundle]` — compare write, read, and round-trip WARN lines before/after changes to bundle serialization, reading, or UI export/open paths. No hard ceiling is enforced yet.
 - `[log_filter][large]` and `[log_filter][log_compare][large]` — each test hard-fails on a regression past its built-in ceiling (100 ms / 200 ms / linear-ish sort time). PRs touching `loglib::RowPredicate`, `EnumDictRank`, or `LogFilterModel::lessThan` should still paste the WARN lines so a within-bar regression is visible.
 - `[log_filter][log_compare][large][level]` — Level-typed siblings with their own ceilings (500 ms for the parallel `SortPermutationByColumn`, 2000 ms for the per-compare `CompareRows`/`CompareLevel`). PRs touching `GetLevelForRow`, `LevelRankCache` invalidation, or the `Type::Level` arm of `SortPermutationByColumn` should paste these WARN lines too.

@@ -154,22 +154,6 @@ struct SessionDirtyState
 };
 
 /**
- * @brief Defines the result of a session close request.
- *
- * `LogSession::RequestClose()` currently returns `Closed` without side
- * effects. `MainWindow` owns close orchestration.
- */
-enum class SessionCloseResult : std::uint8_t
-{
-    /** @brief Close handling completed successfully. */
-    Closed,
-    /** @brief The user cancelled close handling. */
-    Cancelled,
-    /** @brief Close handling failed. */
-    Failed,
-};
-
-/**
  * @brief Selects how the shell closes or replaces a dirty session.
  */
 enum class SessionCloseDecision : std::uint8_t

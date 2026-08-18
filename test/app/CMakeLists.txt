@@ -70,6 +70,23 @@ target_include_directories(apptest_bench PRIVATE ${CMAKE_SOURCE_DIR}/library/inc
 add_test(NAME apptest_bench COMMAND apptest_bench WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_bench>)
 set_tests_properties(apptest_bench PROPERTIES LABELS "benchmark")
 
+# Tab-switch activation benchmark. Labelled `benchmark` so the ordinary
+# `release` test preset skips it; `release-benchmark` runs it.
+qt_add_executable(apptest_session_tabs_bench src/benchmark_session_tabs.cpp)
+
+target_link_libraries(apptest_session_tabs_bench PRIVATE Qt6::Test logapp test_common)
+
+target_include_directories(apptest_session_tabs_bench PRIVATE ${CMAKE_SOURCE_DIR}/library/include)
+
+add_test(
+    NAME apptest_session_tabs_bench
+    COMMAND apptest_session_tabs_bench
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:apptest_session_tabs_bench>
+)
+set_tests_properties(apptest_session_tabs_bench PROPERTIES LABELS "benchmark")
+# Console subsystem so CTest captures QtTest and WARN-line output on Windows.
+set_target_properties(apptest_session_tabs_bench PROPERTIES WIN32_EXECUTABLE FALSE)
+
 # Unit tests for the BoundedBatchQueue primitive (pure C++; no Qt event
 # loop needed). Kept in its own executable so the back-pressure tests do
 # not pull in the GUI fixture loader.

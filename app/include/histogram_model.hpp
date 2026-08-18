@@ -85,6 +85,16 @@ public:
     void PumpDeferredBind();
 
     /**
+     * @brief Reports whether `BindSources` postponed the full rebuild.
+     *
+     * @return `true` until `PumpDeferredBind()` runs.
+     */
+    [[nodiscard]] bool IsDeferredBindPending() const noexcept
+    {
+        return mDeferredBindPending;
+    }
+
+    /**
      * @brief Reports whether the bucket size was explicitly pinned.
      * @return True after `SetBucketSize()` and before an automatic reset.
      */

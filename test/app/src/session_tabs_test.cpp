@@ -2,8 +2,12 @@
 
 #include "columns_manager_dialog.hpp"
 #include "configuration_diagnostics_dialog.hpp"
+#include "find_dock.hpp"
 #include "highlight_rule_set.hpp"
 #include "highlight_rules_editor.hpp"
+#include "histogram_dock.hpp"
+#include "histogram_model.hpp"
+#include "log_filter_model.hpp"
 #include "log_model.hpp"
 #include "log_session.hpp"
 #include "log_session_presentation.hpp"
@@ -19,6 +23,7 @@
 #include <loglib/parse_file.hpp>
 #include <loglib/session_bundle.hpp>
 
+#include <QAbstractItemModel>
 #include <QAction>
 #include <QApplication>
 #include <QByteArray>
@@ -37,9 +42,9 @@
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QTabBar>
+#include <QTabWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
-#include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTextStream>
@@ -293,8 +298,10 @@ void AddContainsFilter(MainWindow &window, const QString &token)
                 }
             }
         }
-        else if (const auto *asNot = std::get_if<loglib::FilterExpression::Not>(&node.node);
-                 asNot != nullptr && asNot->child != nullptr)
+        else if (
+            const auto *asNot = std::get_if<loglib::FilterExpression::Not>(&node.node);
+            asNot != nullptr && asNot->child != nullptr
+        )
         {
             return self(*asNot->child, self);
         }
@@ -984,10 +991,7 @@ private slots:
 
         window.QueueClosePromptChoiceForTest(MainWindow::ClosePromptChoiceForTest::Discard);
         QVERIFY(window.PrepareSessionClose(sessionA));
-        QVERIFY2(
-            sessionA->IsDecompressionInFlight(),
-            "The close prompt must complete before workers are cancelled."
-        );
+        QVERIFY2(sessionA->IsDecompressionInFlight(), "The close prompt must complete before workers are cancelled.");
 
         window.CloseTabForTest(0);
         QCOMPARE(window.TabCount(), 1);
@@ -2105,10 +2109,8 @@ private slots:
         );
     }
 
-    // After `AutoSaveAllHostedSessions` walks every tab (activating
-    // each so the alias-based `AutoSaveSessionSnapshot` helper
-    // sees the right session), the currently-active tab must be
-    // restored to its original index.
+    // Autosave walks hosted sessions in place. It must not activate
+    // tabs or rebind shared docks.
 
     static void TestAutoSaveAllHostedSessionsPreservesActiveTabIndex()
     {
@@ -2121,9 +2123,111 @@ private slots:
         window.ActivateTabForTest(1);
         QCOMPARE(window.TabWidgetForTest()->currentIndex(), 1);
 
+        auto *histogram = window.findChild<HistogramDock *>();
+        auto *findDock = window.findChild<FindDock *>();
+        QVERIFY(histogram != nullptr && findDock != nullptr);
+        LogSession *const boundHistogram = histogram->boundSessionForTest();
+        LogSession *const boundFind = findDock->boundSessionForTest();
+        LogSession *const active = window.activeSession();
+
+        QSignalSpy tabChanged(window.TabWidgetForTest(), &QTabWidget::currentChanged);
         window.AutoSaveAllHostedSessions(/*publishOpenWindow=*/false);
 
         QCOMPARE(window.TabWidgetForTest()->currentIndex(), 1);
+        QCOMPARE(tabChanged.count(), 0);
+        QCOMPARE(window.activeSession(), active);
+        QCOMPARE(histogram->boundSessionForTest(), boundHistogram);
+        QCOMPARE(findDock->boundSessionForTest(), boundFind);
+    }
+
+    static void TestTabSwitchPreservesSessionRowsFiltersAndSources()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString pathA = WriteJsonlFixture(temp.filePath(QStringLiteral("a.jsonl")), 200);
+        const QString pathB = WriteJsonlFixture(temp.filePath(QStringLiteral("b.jsonl")), 300);
+        QVERIFY(!pathA.isEmpty() && !pathB.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        LoadFileIntoActiveTab(window, pathA);
+        AddContainsFilter(window, QStringLiteral("1"));
+
+        LogSession *sessionA = window.SessionAtTab(0);
+        QVERIFY(sessionA != nullptr && sessionA->Model() != nullptr && sessionA->FilterProxy() != nullptr);
+        const int rowsA = sessionA->Model()->rowCount();
+        const int filteredA = sessionA->FilterProxy()->rowCount();
+        QVERIFY(sessionA->CurrentSource().has_value());
+        const auto locatorsA = sessionA->CurrentSource()->locators;
+        QVERIFY(!sessionA->SimpleLeaves().empty());
+        QVERIFY(filteredA < rowsA);
+
+        window.AddNewTabForTest(/*makeActive=*/true);
+        LoadFileIntoActiveTab(window, pathB);
+        AddContainsFilter(window, QStringLiteral("2"));
+
+        LogSession *sessionB = window.SessionAtTab(1);
+        QVERIFY(sessionB != nullptr && sessionB->Model() != nullptr && sessionB->FilterProxy() != nullptr);
+        const int rowsB = sessionB->Model()->rowCount();
+        const int filteredB = sessionB->FilterProxy()->rowCount();
+        QVERIFY(sessionB->CurrentSource().has_value());
+        const auto locatorsB = sessionB->CurrentSource()->locators;
+        QVERIFY(!sessionB->SimpleLeaves().empty());
+        QVERIFY(filteredB < rowsB);
+
+        QSignalSpy resetA(sessionA->Model(), &QAbstractItemModel::modelReset);
+        QSignalSpy resetB(sessionB->Model(), &QAbstractItemModel::modelReset);
+        QSignalSpy streamA(sessionA->Model(), &LogModel::streamingFinished);
+        QSignalSpy streamB(sessionB->Model(), &LogModel::streamingFinished);
+        QSignalSpy layoutA(sessionA->FilterProxy(), &QAbstractItemModel::layoutAboutToBeChanged);
+        QSignalSpy layoutB(sessionB->FilterProxy(), &QAbstractItemModel::layoutAboutToBeChanged);
+
+        window.ActivateTabForTest(0);
+        window.ActivateTabForTest(1);
+        window.ActivateTabForTest(0);
+
+        QCOMPARE(resetA.count(), 0);
+        QCOMPARE(resetB.count(), 0);
+        QCOMPARE(streamA.count(), 0);
+        QCOMPARE(streamB.count(), 0);
+        QCOMPARE(layoutA.count(), 0);
+        QCOMPARE(layoutB.count(), 0);
+        QCOMPARE(sessionA->Model()->rowCount(), rowsA);
+        QCOMPARE(sessionB->Model()->rowCount(), rowsB);
+        QCOMPARE(sessionA->FilterProxy()->rowCount(), filteredA);
+        QCOMPARE(sessionB->FilterProxy()->rowCount(), filteredB);
+        QCOMPARE(sessionA->CurrentSource()->locators, locatorsA);
+        QCOMPARE(sessionB->CurrentSource()->locators, locatorsB);
+    }
+
+    static void TestTabSwitchDefersHiddenHistogramRebuild()
+    {
+        QTemporaryDir temp;
+        QVERIFY(temp.isValid());
+        const QString pathA = WriteJsonlFixture(temp.filePath(QStringLiteral("hist-a.jsonl")), 80);
+        const QString pathB = WriteJsonlFixture(temp.filePath(QStringLiteral("hist-b.jsonl")), 90);
+        QVERIFY(!pathA.isEmpty() && !pathB.isEmpty());
+
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        LoadFileIntoActiveTab(window, pathA);
+        window.AddNewTabForTest(/*makeActive=*/true);
+        LoadFileIntoActiveTab(window, pathB);
+
+        auto *histogram = window.findChild<HistogramDock *>();
+        QVERIFY(histogram != nullptr && histogram->ModelForTest() != nullptr);
+        histogram->hide();
+        QVERIFY(!histogram->isVisible());
+
+        QSignalSpy bucketsChanged(histogram->ModelForTest(), &HistogramModel::bucketsChanged);
+        window.ActivateTabForTest(0);
+        QVERIFY(histogram->ModelForTest()->IsDeferredBindPending());
+        QCOMPARE(bucketsChanged.count(), 0);
+
+        window.ActivateTabForTest(1);
+        QVERIFY(histogram->ModelForTest()->IsDeferredBindPending());
+        QCOMPARE(bucketsChanged.count(), 0);
+        QCOMPARE(histogram->boundSessionForTest(), window.SessionAtTab(1));
     }
 
     // `RestorableActiveSessionUuid` returns one UUID per window,
@@ -2526,16 +2630,15 @@ private slots:
         );
 
         const QStringList originLeafStrings = SimpleLeafFilterStrings(*sessionA);
-        const bool originHasBundleFilter = originLeafStrings.contains(QStringLiteral("bundle-only-token")) ||
-                                           ExpressionContainsFilterString(
-                                               originModel->Configuration().expression, "bundle-only-token"
-                                           );
+        const bool originHasBundleFilter =
+            originLeafStrings.contains(QStringLiteral("bundle-only-token")) ||
+            ExpressionContainsFilterString(originModel->Configuration().expression, "bundle-only-token");
         QVERIFY2(
             originHasBundleFilter,
             qPrintable(QStringLiteral(
                            "The originating session must still receive the bundle's embedded filters. "
                            "simpleLeaves=[%1] matchAll=%2 dropped=%3 rows=%4"
-                       )
+            )
                            .arg(originLeafStrings.join(QLatin1Char(',')))
                            .arg(loglib::IsMatchAll(originModel->Configuration().expression))
                            .arg(window.LastDroppedFilterCountForTest())

@@ -1,7 +1,6 @@
-// Tests for session lifecycle commands and default presentation state.
+// Tests for session lifecycle defaults and close preconditions.
 
 #include "log_session.hpp"
-#include "log_session_commands.hpp"
 #include "log_session_presentation.hpp"
 
 #include <QObject>
@@ -33,20 +32,11 @@ private slots:
         QCOMPARE(snapshot.statusSummary, QStringLiteral("Idle"));
     }
 
-    static void TestSkeletonRequestCloseReportsClean()
+    static void TestPreCheckCloseIsClearOnAFreshSession()
     {
-        LogSession session;
-        QCOMPARE(session.RequestClose(), SessionCloseResult::Closed);
-    }
-
-    static void TestSkeletonCommandsAreCallableWithoutServices()
-    {
-        LogSession session;
-        session.RequestNewSession();
-        session.RequestOpenFiles(QStringList{}, LogSessionCommands::OpenMode::Append);
-        session.RequestOpenLogStream(QString{});
-        session.RequestAutoSaveSnapshot(false);
-        QCOMPARE(session.RequestClose(), SessionCloseResult::Closed);
+        const LogSession session;
+        QCOMPARE(session.PreCheckClose(), std::uint32_t{0});
+        QCOMPARE(session.CloseDecision(), SessionCloseDecision::Silent);
     }
 };
 

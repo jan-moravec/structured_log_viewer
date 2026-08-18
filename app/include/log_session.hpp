@@ -1,6 +1,5 @@
 #pragma once
 
-#include "log_session_commands.hpp"
 #include "log_session_presentation.hpp"
 
 #include <loglib/filter_expression.hpp>
@@ -43,7 +42,7 @@ class ThemeControl;
  * persistence identity, and presentation state. Service pointers passed to
  * the constructor are non-owning.
  */
-class LogSession : public QObject, public LogSessionCommands
+class LogSession : public QObject
 {
     Q_OBJECT
 
@@ -83,55 +82,11 @@ public:
     LogSession &operator=(LogSession &&) = delete;
 
     /**
-     * @brief Handles a new-session request.
-     *
-     * This method is currently a no-op; the window shell performs the reset.
-     */
-    void RequestNewSession() override;
-
-    /**
-     * @brief Handles a file-open request.
-     *
-     * This method is currently a no-op; the window shell opens the files.
-     *
-     * @param files Files to open.
-     * @param mode Whether to append to or replace the current session.
-     */
-    void RequestOpenFiles(const QStringList &files, OpenMode mode) override;
-
-    /**
-     * @brief Handles a live-tail request.
-     *
-     * This method is currently a no-op; the window shell starts the stream.
-     *
-     * @param filePath File to tail.
-     */
-    void RequestOpenLogStream(const QString &filePath) override;
-
-    /**
-     * @brief Handles an autosave request.
-     *
-     * This method is currently a no-op; the window shell owns persistence.
-     *
-     * @param publishOpenWindow Whether to publish the session for restoration.
-     */
-    void RequestAutoSaveSnapshot(bool publishOpenWindow) override;
-
-    /**
      * @brief Reports conditions requiring shell-owned close handling.
      *
      * @return A bitwise combination of `SessionClosePreconditions`.
      */
-    [[nodiscard]] std::uint32_t PreCheckClose() const override;
-
-    /**
-     * @brief Returns a successful close result without performing teardown.
-     *
-     * The window shell owns close orchestration through `PreCheckClose()`.
-     *
-     * @return `SessionCloseResult::Closed`.
-     */
-    [[nodiscard]] SessionCloseResult RequestClose() override;
+    [[nodiscard]] std::uint32_t PreCheckClose() const;
 
     /**
      * @brief Classifies how the shell should close or replace this session.

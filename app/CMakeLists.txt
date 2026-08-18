@@ -108,8 +108,9 @@ set(PROJECT_SOURCES
     include/shortcuts_dialog.hpp
     src/log_session.cpp
     include/log_session.hpp
-    include/log_session_commands.hpp
     include/log_session_presentation.hpp
+    src/session_operation_controller.cpp
+    include/session_operation_controller.hpp
     src/log_session_view.cpp
     include/log_session_view.hpp
     include/scoped_connections.hpp

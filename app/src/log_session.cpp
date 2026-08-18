@@ -119,26 +119,6 @@ LogSession::~LogSession()
     mAnchors = nullptr;
 }
 
-void LogSession::RequestNewSession()
-{
-    // The window shell currently performs this request.
-}
-
-void LogSession::RequestOpenFiles(const QStringList & /*files*/, OpenMode /*mode*/)
-{
-    // The window shell currently performs this request.
-}
-
-void LogSession::RequestOpenLogStream(const QString & /*filePath*/)
-{
-    // The window shell currently performs this request.
-}
-
-void LogSession::RequestAutoSaveSnapshot(bool /*publishOpenWindow*/)
-{
-    // The window shell currently performs this request.
-}
-
 std::uint32_t LogSession::PreCheckClose() const
 {
     std::uint32_t mask = 0;
@@ -155,12 +135,6 @@ std::uint32_t LogSession::PreCheckClose() const
         mask |= SessionClosePreconditions::ExportInFlight;
     }
     return mask;
-}
-
-SessionCloseResult LogSession::RequestClose()
-{
-    // MainWindow owns close orchestration through PreCheckClose().
-    return SessionCloseResult::Closed;
 }
 
 SessionCloseDecision LogSession::CloseDecision() const noexcept
