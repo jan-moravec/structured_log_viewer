@@ -958,12 +958,8 @@ private slots:
         session.SetSourceWaiting(true);
         {
             const auto disconnected = session.PresentationSnapshot();
-            QVERIFY(
-                (disconnected.operations & static_cast<std::uint32_t>(SessionOperationState::Disconnected)) != 0U
-            );
-            QVERIFY(
-                (disconnected.operations & static_cast<std::uint32_t>(SessionOperationState::SourceWaiting)) == 0U
-            );
+            QVERIFY((disconnected.operations & static_cast<std::uint32_t>(SessionOperationState::Disconnected)) != 0U);
+            QVERIFY((disconnected.operations & static_cast<std::uint32_t>(SessionOperationState::SourceWaiting)) == 0U);
             QCOMPARE(disconnected.statusSummary, QStringLiteral("Disconnected"));
         }
         session.SetSourceWaiting(false);
@@ -1115,13 +1111,8 @@ private slots:
 
     static void TestShouldAutoSaveAfterStreamingWithoutHistoryManager()
     {
-        // The "no history manager bound" branch is the safe null-out;
-        // verify it short-circuits regardless of the source/mode
-        // pair. The other branches (file/stream/live-tail source
-        // gates) require a real `SessionHistoryManager` (`QDir` +
-        // `IRecentsIndexStorage`) and stay covered by the
-        // integration `apptest` suite; duplicating that machinery
-        // here would just re-test the shell's construction path.
+        // Close-decision uses this gate even when persist cannot write.
+        // A missing history service must not force a Save prompt.
         LogSession session;
         QVERIFY(session.HistoryManager() == nullptr);
         QVERIFY(!session.ShouldAutoSaveAfterStreaming(LogSession::Mode::Static));
@@ -1132,7 +1123,7 @@ private slots:
         fileSource.kind = loglib::LogConfiguration::Source::Kind::File;
         fileSource.locators = {std::string{"C:/logs/app.log"}};
         session.MutableCurrentSource() = fileSource;
-        QVERIFY(!session.ShouldAutoSaveAfterStreaming(LogSession::Mode::Static));
+        QVERIFY(session.ShouldAutoSaveAfterStreaming(LogSession::Mode::Static));
         QVERIFY(!session.ShouldAutoSaveAfterStreaming(LogSession::Mode::LiveTail));
         QVERIFY(!session.CanPersistRestorableSnapshot());
     }
@@ -1164,7 +1155,7 @@ private slots:
         fileSource.locators = {std::string{"C:/logs/app.log"}};
         session.MutableCurrentSource() = fileSource;
         session.SetMode(LogSession::Mode::Static);
-        QCOMPARE(session.CloseDecision(), SessionCloseDecision::Prompt);
+        QCOMPARE(session.CloseDecision(), SessionCloseDecision::Autosave);
 
         session.SetMode(LogSession::Mode::LiveTail);
         QCOMPARE(session.CloseDecision(), SessionCloseDecision::Prompt);
@@ -1227,9 +1218,7 @@ private slots:
         QVERIFY(session.HasDirtyHighlightEditorDraft());
         QVERIFY(session.HasUnsavedChanges());
         QCOMPARE(session.CloseDecision(), SessionCloseDecision::Prompt);
-        QCOMPARE(
-            session.PreCheckClose(), static_cast<std::uint32_t>(SessionClosePreconditions::FiltersDirty)
-        );
+        QCOMPARE(session.PreCheckClose(), static_cast<std::uint32_t>(SessionClosePreconditions::FiltersDirty));
 
         const QTemporaryDir sessionsDir;
         QVERIFY(sessionsDir.isValid());
@@ -2206,42 +2195,29 @@ private slots:
         QCOMPARE(static_cast<qsizetype>(session.FilterProxy()->rowCount()), snap.visibleRows);
     }
 
-    static void TestShouldAutoSaveAfterStreamingPositiveBranchesRequireHistoryManager()
+    static void TestShouldAutoSaveAfterStreamingGatesOnSourceNotHistoryManager()
     {
-        // The autosave gate depends on the history-manager pointer;
-        // only the "no manager -> false"
-        // short-circuit is unit-testable here without pulling in a
-        // real `SessionHistoryManager` (which requires a `QDir` and
-        // an `IRecentsIndexStorage`). Positive-branch inputs must
-        // still return false without a manager.
+        // Persist still needs a history manager. Close-decision autosave
+        // for a file locator does not, so Replace in tests without a
+        // recents store can no-op instead of prompting.
         LogSession session;
         QVERIFY(session.HistoryManager() == nullptr);
 
-        // File source with a locator + Static mode: with a manager,
-        // this is the canonical yes-autosave case (`apptest` covers
-        // it). Without a manager, still false.
         loglib::LogConfiguration::Source fileSource;
         fileSource.kind = loglib::LogConfiguration::Source::Kind::File;
         fileSource.locators = {std::string{"C:/logs/app.log"}};
         session.MutableCurrentSource() = fileSource;
-        QVERIFY(!session.ShouldAutoSaveAfterStreaming(LogSession::Mode::Static));
+        QVERIFY(session.ShouldAutoSaveAfterStreaming(LogSession::Mode::Static));
 
-        // LiveTail on a file source: close-after-stream autosave stays
-        // false even with a manager. Quit persistence uses
-        // `CanPersistRestorableSnapshot()` instead.
         QVERIFY(!session.ShouldAutoSaveAfterStreaming(LogSession::Mode::LiveTail));
         QVERIFY(!session.CanPersistRestorableSnapshot());
 
-        // Stdin source: even with a manager, always false (network /
-        // stream sources cannot be re-bound from a saved locator).
         loglib::LogConfiguration::Source stdinSource;
         stdinSource.kind = loglib::LogConfiguration::Source::Kind::Stdin;
         stdinSource.locators = {std::string{"<stdin>"}};
         session.MutableCurrentSource() = stdinSource;
         QVERIFY(!session.ShouldAutoSaveAfterStreaming(LogSession::Mode::Static));
 
-        // File source with empty locators: no locator to persist, so
-        // even with a manager, false.
         loglib::LogConfiguration::Source emptyFileSource;
         emptyFileSource.kind = loglib::LogConfiguration::Source::Kind::File;
         session.MutableCurrentSource() = emptyFileSource;

@@ -357,6 +357,19 @@ public:
     }
 
     /**
+     * @brief Returns the live mode, or the last terminal mode when idle.
+     *
+     * Close and recents-flush gates use this so a finished live-tail
+     * still classifies as live-tail after `SessionMode()` returns `Idle`.
+     *
+     * @return `SessionMode()` when not idle, otherwise `LastTerminalMode()`.
+     */
+    [[nodiscard]] Mode EffectiveTerminalMode() const noexcept
+    {
+        return (mMode != Mode::Idle) ? mMode : mLastTerminalMode;
+    }
+
+    /**
      * @brief Tests whether the session mode is not `Idle`.
      *
      * @return `true` for static or live-tail mode.
@@ -1046,9 +1059,10 @@ public:
     /**
      * @brief Tests whether a completed stream should be autosaved.
      *
-     * Autosave requires a history service and a reproducible file source.
-     * Live-tail completions are excluded so close stays a prompt even
-     * though quit can persist a static reopen snapshot.
+     * A reproducible file source classifies as autosave. Live-tail
+     * completions are excluded so close stays a prompt even though
+     * quit can persist a static reopen snapshot. Writing the snapshot
+     * still requires `CanPersistRestorableSnapshot()`.
      *
      * @param justFinishedMode Mode of the completed stream.
      * @return `true` when a snapshot should be persisted.

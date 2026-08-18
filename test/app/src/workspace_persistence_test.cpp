@@ -508,7 +508,9 @@ private slots:
         const ScopedTestPaths paths;
         QFile file(WorkspacePersistence::WorkspaceFilePath());
         QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
-        file.write(R"({"schemaVersion":1,"windows":[{"windowUuid":"win-1","tabs":[],"activeTabIndex":0}],"mruOrder":[]})");
+        file.write(
+            R"({"schemaVersion":1,"windows":[{"windowUuid":"win-1","tabs":[],"activeTabIndex":0}],"mruOrder":[]})"
+        );
         file.close();
 
         const Workspace loaded = WorkspacePersistence::Read();

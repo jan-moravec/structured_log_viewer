@@ -147,8 +147,7 @@ SessionCloseDecision LogSession::CloseDecision() const noexcept
     {
         return SessionCloseDecision::Prompt;
     }
-    const Mode mode = (mMode != Mode::Idle) ? mMode : mLastTerminalMode;
-    if (ShouldAutoSaveAfterStreaming(mode))
+    if (ShouldAutoSaveAfterStreaming(EffectiveTerminalMode()))
     {
         return SessionCloseDecision::Autosave;
     }
@@ -216,9 +215,9 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
     {
         ops |= static_cast<std::uint32_t>(SessionOperationState::Exporting);
     }
-    const bool isNetworkOrStdin = mCurrentSource.has_value() &&
-                                  (mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::NetworkStream ||
-                                   mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::Stdin);
+    const bool isNetworkOrStdin =
+        mCurrentSource.has_value() && (mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::NetworkStream ||
+                                       mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::Stdin);
     if (mSourceWaiting)
     {
         if (isNetworkOrStdin)
@@ -253,9 +252,7 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
     }
     snapshot.operations = ops;
 
-    const auto hasOp = [ops](SessionOperationState bit) {
-        return (ops & static_cast<std::uint32_t>(bit)) != 0;
-    };
+    const auto hasOp = [ops](SessionOperationState bit) { return (ops & static_cast<std::uint32_t>(bit)) != 0; };
     if (hasOp(SessionOperationState::Failed))
     {
         snapshot.statusSummary = tr("Failed");
@@ -889,10 +886,6 @@ void LogSession::DetachAutoSaveUuid()
 
 bool LogSession::ShouldAutoSaveAfterStreaming(Mode justFinishedMode) const noexcept
 {
-    if (mHistoryManager == nullptr)
-    {
-        return false;
-    }
     if (!loglib::HasLocators(mCurrentSource))
     {
         // No source -> can't be reopened from Recent Sessions.

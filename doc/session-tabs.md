@@ -51,8 +51,7 @@ borrow the selected session. `Bind` on a live same-session context is a no-op.
 A changed binding saves outgoing per-session widget state, swaps borrowed
 pointers, and restores incoming state.
 
-Histogram rebuild is deferred while the dock is hidden (`HistogramModel::BindSources(...,
-deferRebuild=true)`). `PumpDeferredBind()` completes the walk on the next show.
+Histogram rebuild is deferred while the dock is hidden (`HistogramModel::BindSources(..., deferRebuild=true)`). `PumpDeferredBind()` completes the walk on the next show.
 The anchors dock skips tree population while buried.
 
 Immediate-apply dialogs (Columns Manager, Diagnostics) close on tab switch.

@@ -717,7 +717,7 @@ Only static-file sessions are auto-saved to Recent Sessions. Stream, stdin, and 
 ### New Window vs New Session
 
 - **File → New Window** (`Ctrl+Shift+N`) opens a second top-level window with an empty session. The two windows share the same Recent Sessions list and global preferences but each holds its own logs, filters, anchors, and panels. Useful for side-by-side comparison of two sources.
-- **File → New Session** (`Ctrl+N`) discards the current window's session (rows, filters, sort, source) and returns it to an empty view. Holding `Shift` while dragging or opening a file is the in-place equivalent for static sessions.
+- **File → New Session** (`Ctrl+N`) resets the current tab to an empty view. It uses the same Save / Discard / Cancel decision as **Close Tab**; **Cancel** leaves the current tab selected. Other tabs in the window are unchanged. Holding `Shift` while dragging or opening a file is the in-place replace equivalent for static sessions.
 
 ## Tabs
 
@@ -726,7 +726,7 @@ Every window hosts a tab strip for independent investigations. Each tab keeps it
 ### Opening and closing tabs
 
 - **File → New Tab** (`Ctrl+T`) opens an empty tab.
-- **File → Close Tab** (`Ctrl+W`) closes the current tab. Closing the last tab closes the window.
+- **File → Close Tab** (`Ctrl+W`) closes the current tab. Closing the last tab uses the same close decision as any other tab and then closes the window.
 - **File → Open in New Tab…** loads selected files into a new foreground tab.
 - A **Recent Sessions** entry opens in a foreground tab, reusing the active tab when it is empty. Files forwarded from the OS or another app instance follow the same empty-tab behavior in the most-recently-focused window.
 - Drag tabs to reorder them. Files dropped anywhere on the window target the active tab: the default appends, while holding `Shift` replaces.
@@ -735,24 +735,33 @@ Every window hosts a tab strip for independent investigations. Each tab keeps it
 
 - `Ctrl+Tab` and `Ctrl+Shift+Tab` cycle forward / backward through tabs. `Ctrl+PgDown` / `Ctrl+PgUp` mirror the same actions on keyboards where the Ctrl+Tab combo is easier to reach.
 - Every source type is available in every tab: static files, multi-file merges, compressed archives, session bundles, live-tail files, standard input, and TCP / UDP network streams can all run concurrently. Live-tail and network tabs keep ingesting in the background; you can leave a tail streaming while you triage a static file next to it.
-- The window title, status bar, docks, and menus follow the selected tab.
+- The window title, status bar, docks, and menus follow the selected tab. Unselected tabs keep their own progress and cancellation controls.
+- Unsaved Highlight Rules edits stay with their tab as a draft. Switching tabs does not prompt and does not apply the draft. Columns Manager and Diagnostics close on a tab switch instead of following the new tab.
 
 ### Tab labels and indicators
 
-- While a source operation is active, the tab uses its current display label (a file basename or the stdin / network producer label). When no display label is set, including an idle empty tab, it reads `Untitled`.
-- Tab chrome marks active work with `▶` while ingesting, `↻` while decompressing, `⇧` while exporting, `…` while parsing, and `⧖` while waiting for a source.
-- The label ends with `●` for unsaved session changes and `!` when parse errors are present.
-- Hovering shows the same unelided source label available to the tab. The tooltip also reports unsaved changes and the parse-error count.
+- While a source operation is active, the tab uses its current display label (a file basename or the stdin / network producer label). When no display label is set, including an idle empty tab, it reads `Untitled`. Long labels may elide visually; the tooltip keeps the full source, operation, unsaved-change, and parse-error text.
+- Each tab includes a localized operation word so status is not colour-only: Idle, Ingesting, Decompressing, Exporting, Parsing, Waiting, Paused, Disconnected, or Failed. A glyph may prefix the label (`▶`, `↻`, `⇧`, `…`, `⧖`, `⏸`, `∅`, `⚠`) but is never the only representation.
+- The label ends with `●` for unsaved session changes, including an unsaved Highlight Rules draft, and `!` when parse errors are present.
 
 ### Closing tabs safely
 
-Closing a tab stops its active work before removing it. Dirty file-backed tabs are saved to Recent Sessions. Dirty network and stdin tabs ask for **Discard / Cancel** because their live source cannot be recreated. Quitting applies the same rules to every tab.
+Close Tab, Close Window, quit, **New Session**, and a destructive file replace share one decision model:
+
+- A clean tab closes or resets silently.
+- A dirty restorable file-backed tab autosaves silently. The snapshot is used for Recent Sessions and the next launch. If that write fails, the tab stays open and an error explains that the session could not be saved.
+- Any other dirty tab — untitled, live-tail, network, stdin, or a tab with an unsaved Highlight Rules draft — asks **Save** / **Discard** / **Cancel**. The prompt names the tab. **Save** writes a session JSON (columns, filters, highlights, and a reusable file source). It does not include retained rows or reconnect a live producer. Session Bundle export stays on **File → Export Session Bundle…**; it is not a close-prompt option.
+- **Cancel** leaves workers running. On Close Window or quit, **Cancel** aborts the whole operation, including later tabs that were not prompted yet.
+- After **Save** or **Discard**, that tab's workers are cancelled and drained. Sibling tabs keep their work.
+- A failed **Save** keeps the tab open with an actionable error.
 
 ### Multi-window and restoration
 
 - **File → New Window** (`Ctrl+Shift+N`) opens another window with its own ordered tab strip.
-- On the next launch, the primary application restores each saved window, tab order, and active tab. File-backed sessions reopen when their saved session is available.
-- Network and stdin entries restore as empty `Untitled` tabs. They have no disconnected state or `∅` marker. Open the network stream again from **File → Open Network Stream…**; relaunch the application with `-` or `--stdin` to attach standard input again.
+- On the next launch, the application restores saved windows, tab order, and the selected tab. Up to 25 windows restore immediately; any extras stay deferred and are kept across a later normal quit so they can restore on a following launch.
+- File-backed sessions reopen from their saved session when the files are still available.
+- A saved live-tail tab restores as a static file session from that path. It does not start tailing. Use **File → Open Log Stream…** if you need to follow the file again.
+- Network and stdin entries restore as empty `Untitled` tabs. Open the network stream again from **File → Open Network Stream…**; relaunch with `-` or `--stdin` to attach standard input again.
 - A tab that fails to reopen does not stop restoration of the remaining tabs or windows.
 
 ## Themes

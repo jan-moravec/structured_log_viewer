@@ -497,7 +497,8 @@ QString WorkspacePersistence::GenerationDirPath(std::uint64_t generation)
     {
         return {};
     }
-    return QDir(DefaultWorkspaceDir().filePath(QLatin1String(GENERATIONS_DIR_NAME))).filePath(QString::number(generation));
+    return QDir(DefaultWorkspaceDir().filePath(QLatin1String(GENERATIONS_DIR_NAME)))
+        .filePath(QString::number(generation));
 }
 
 QString WorkspacePersistence::SessionSnapshotPath(std::uint64_t generation, const QString &sessionUuid)

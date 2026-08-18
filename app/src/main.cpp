@@ -262,10 +262,9 @@ int main(int argc, char *argv[])
             QStringList previouslyOpen = SessionHistoryManager::TakeOpenWindowsAtQuit();
             if (previouslyOpen.size() > static_cast<qsizetype>(MAX_RESTORE_PEERS))
             {
-                logapp::LogWarning()
-                    << "Truncating restore from" << previouslyOpen.size() << "to" << MAX_RESTORE_PEERS
-                    << "peer windows; remaining entries stay in Recent Sessions and are not "
-                       "rewritten into the open-window list.";
+                logapp::LogWarning() << "Truncating restore from" << previouslyOpen.size() << "to" << MAX_RESTORE_PEERS
+                                     << "peer windows; remaining entries stay in Recent Sessions and are not "
+                                        "rewritten into the open-window list.";
                 previouslyOpen = previouslyOpen.mid(0, static_cast<qsizetype>(MAX_RESTORE_PEERS));
             }
             if (!previouslyOpen.isEmpty())

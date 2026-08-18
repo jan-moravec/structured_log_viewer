@@ -643,6 +643,13 @@ MainWindow::MainWindow(
       mRegexTemplateRegistry(regexTemplateRegistry),
       mOperations(std::make_unique<SessionOperationController>(*this))
 {
+#ifdef LOGAPP_BUILD_TESTING
+    // Offscreen Qt cannot complete modal close or save dialogs.
+    if (qEnvironmentVariable("QT_QPA_PLATFORM") == QLatin1String("offscreen"))
+    {
+        mSuppressDialogsForTest = true;
+    }
+#endif
     ui->setupUi(this);
     ApplyThemedWindowIcon();
     setAcceptDrops(true);
@@ -8864,7 +8871,9 @@ void MainWindow::closeEvent(QCloseEvent *event)
         session->MutableExportStopSource().request_stop();
     }
 
-    // Save and detach every tab through normal activation so alias-routed helpers stay valid.
+    // Flush restorable static sessions into Recent Sessions, then
+    // detach. Live-tail and non-file sources stay out of recents;
+    // quit persistence uses `CanPersistRestorableSnapshot()` instead.
     // Do not publish closing tabs into the open-window index.
     const int tabCountAtClose = mTabWidget != nullptr ? mTabWidget->count() : 0;
     if (tabCountAtClose > 0)
@@ -8875,7 +8884,10 @@ void MainWindow::closeEvent(QCloseEvent *event)
             {
                 mTabWidget->setCurrentIndex(idx);
             }
-            AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
+            if (mSession != nullptr && ShouldAutoSaveSession(mSession, mSession->EffectiveTerminalMode()))
+            {
+                AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
+            }
             DetachAutoSaveUuid();
             if (mSession != nullptr)
             {
@@ -8887,7 +8899,10 @@ void MainWindow::closeEvent(QCloseEvent *event)
     else
     {
         // Defensive: no `mTabWidget` (headless / early-teardown).
-        AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
+        if (mSession != nullptr && ShouldAutoSaveSession(mSession, mSession->EffectiveTerminalMode()))
+        {
+            AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
+        }
         DetachAutoSaveUuid();
         mSession->MutableCurrentSource().reset();
         mSession->ResetMode();

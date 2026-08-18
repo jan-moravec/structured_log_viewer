@@ -1078,9 +1078,10 @@ public:
     void LoadConfigurationFromPathForTest(const QString &path);
 
     /**
-     * @brief When true, `ShowDroppedFiltersDialog` skips the modal and
-     * only updates the test counter (modals block any headless
-     * QtTest thread). Default false.
+     * @brief When true, skip modal dialogs and only record test counters.
+     *
+     * Offscreen Qt (`QT_QPA_PLATFORM=offscreen`) enables this in the
+     * constructor. Close-prompt tests still consume queued choices first.
      * @param suppress The `suppress` value.
      */
     void SetSuppressDialogsForTest(bool suppress);
@@ -2071,9 +2072,7 @@ private:
      * @param mode The operation mode.
      * @param applyEmbeddedBundlePath Bundle path to arm, or empty.
      */
-    void StartStreamingOpenQueue(
-        QStringList files, OpenMode mode, const QString &applyEmbeddedBundlePath = QString()
-    );
+    void StartStreamingOpenQueue(QStringList files, OpenMode mode, const QString &applyEmbeddedBundlePath = QString());
 
     /**
      * @brief Starts the next queued file or asynchronous decompression.
@@ -2096,9 +2095,7 @@ private:
      * @param codec The `codec` value.
      */
     void BeginAsyncDecompression(
-        LogSession *origin,
-        const QString &originalPath,
-        loglib::internal::DecompressingByteSource::Codec codec
+        LogSession *origin, const QString &originalPath, loglib::internal::DecompressingByteSource::Codec codec
     );
 
     /**
@@ -3684,8 +3681,7 @@ private:
 
 #ifdef LOGAPP_BUILD_TESTING
     /**
-     * @brief Skip `ShowDroppedFiltersDialog`'s modal so a headless test
-     * thread is not blocked.
+     * @brief Skip modal dialogs so a headless QtTest thread is not blocked.
      */
     bool mSuppressDialogsForTest = false;
     int mLastDroppedFilterCountForTest = 0;

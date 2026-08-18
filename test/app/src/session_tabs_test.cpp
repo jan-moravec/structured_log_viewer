@@ -2092,6 +2092,9 @@ private slots:
     static void TestNewSessionForTestPreservesPriorSuppressState()
     {
         MainWindow window;
+        // Offscreen construction may start suppressed. Pin `false`
+        // so this covers restoring a production-like caller.
+        window.SetSuppressDialogsForTest(false);
         QVERIFY(!window.SuppressDialogsForTest());
         window.NewSessionForTest();
         QVERIFY2(
