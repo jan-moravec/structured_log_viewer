@@ -2,7 +2,7 @@
 
 #include "loglib/enum_dictionary.hpp"
 #include "loglib/filter_expression.hpp"
-#include "loglib/internal/transparent_string_hash.hpp"
+#include "loglib/transparent_string_hash.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -67,7 +67,7 @@ private:
     /// Selected values that didn't resolve at construction (or all
     /// of them if no dictionary was given). Covers unpromoted slots
     /// and past-bitset hits from stale predicates.
-    std::unordered_set<std::string, internal::TransparentStringHash, internal::TransparentStringEqual> mSelectedStrings;
+    std::unordered_set<std::string, loglib::TransparentStringHash, loglib::TransparentStringEqual> mSelectedStrings;
     bool mFastPathArmed = false;
     /// Every selected value resolved to an id at construction time.
     bool mAllResolved = false;

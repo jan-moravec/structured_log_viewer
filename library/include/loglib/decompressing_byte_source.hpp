@@ -9,10 +9,10 @@
 #include <string>
 #include <string_view>
 
-namespace loglib::internal
+namespace loglib
 {
 
-/// Thrown when decompression is cancelled.
+/** @brief Thrown when decompression is cancelled. */
 class DecompressionCancelled : public std::exception
 {
 public:
@@ -31,7 +31,7 @@ private:
     std::string mWhat;
 };
 
-/// Thrown when decompressed output exceeds the configured cap.
+/** @brief Thrown when decompressed output exceeds the configured cap. */
 class DecompressionSizeCapExceeded : public std::exception
 {
 public:
@@ -49,10 +49,12 @@ private:
     std::string mWhat;
 };
 
-/// RAII decoder for gzip, bzip2, xz, and zstd files.
-///
-/// Compressed input is streamed to an owned temp file exposed through
-/// `EffectivePath()`. Plain input is returned unchanged. Not thread-safe.
+/**
+ * @brief RAII decoder for gzip, bzip2, xz, and zstd files.
+ *
+ * Compressed input is streamed to an owned temp file exposed through
+ * `EffectivePath()`. Plain input is returned unchanged. Not thread-safe.
+ */
 class DecompressingByteSource
 {
 public:
@@ -67,46 +69,72 @@ public:
 
     struct Progress
     {
-        /// Compressed bytes consumed so far.
+        /** @brief Compressed bytes consumed so far. */
         std::size_t bytesIn = 0;
-        /// Total compressed size (from `file_size`).
+        /** @brief Total compressed size from `file_size`. */
         std::size_t totalBytesIn = 0;
     };
 
     using ProgressCallback = std::function<void(const Progress &)>;
 
-    /// Default 32 GiB decompressed-output cap.
+    /** @brief Default 32 GiB decompressed-output cap. */
     static constexpr std::size_t DEFAULT_MAX_DECOMPRESSED_BYTES = std::size_t{32} << 30;
 
-    /// Default 64 MiB cap on the discarded first line.
+    /** @brief Default 64 MiB cap on the discarded first line. */
     static constexpr std::size_t DEFAULT_MAX_DISCARDED_FIRST_LINE_BYTES = std::size_t{64} << 20;
 
     struct Options
     {
-        /// Hard cap; throws `DecompressionSizeCapExceeded` if
-        /// exceeded. Zero disables the cap.
+        /**
+         * @brief Hard cap on decompressed output.
+         *
+         * Throws `DecompressionSizeCapExceeded` if exceeded. Zero
+         * disables the cap.
+         */
         std::size_t maxDecompressedBytes = DEFAULT_MAX_DECOMPRESSED_BYTES;
-        /// Remove the first line and expose it via `DiscardedFirstLine()`.
+        /** @brief When true, strips the first line and exposes it via `DiscardedFirstLine()`. */
         bool discardFirstLine = false;
-        /// Maximum buffered first-line size.
+        /** @brief Maximum buffered first-line size. */
         std::size_t maxDiscardedFirstLineBytes = DEFAULT_MAX_DISCARDED_FIRST_LINE_BYTES;
     };
 
-    /// Sniff @p input and decode compressed content to a temp file.
-    /// Progress and cancellation are checked between input chunks.
+    /**
+     * @brief Sniffs @p input and decodes compressed content to a temp file.
+     *
+     * Progress and cancellation are checked between input chunks.
+     *
+     * @param input Path to sniff and decode.
+     * @param progress Optional progress callback.
+     * @param stopToken Cancellation token observed between chunks.
+     */
     DecompressingByteSource(
         std::filesystem::path input, const ProgressCallback &progress = {}, const StopToken &stopToken = {}
     );
 
-    /// Explicit-@p options overload. Kept separate from the default
-    /// above because some clang versions diagnose an aggregate
-    /// default parameter for a member of an incomplete class.
+    /**
+     * @brief Constructs a decoder with explicit @p options.
+     *
+     * Kept separate from the default constructor because some clang
+     * versions diagnose an aggregate default parameter for a member of
+     * an incomplete class.
+     *
+     * @param input Path to sniff and decode.
+     * @param progress Optional progress callback.
+     * @param stopToken Cancellation token observed between chunks.
+     * @param options Decoder options including size caps.
+     */
     DecompressingByteSource(
         std::filesystem::path input, const ProgressCallback &progress, const StopToken &stopToken, Options options
     );
 
-    /// Detect a codec from up to six magic bytes. Plain, empty, and
-    /// unreadable files return `Codec::None`.
+    /**
+     * @brief Detects a codec from up to six magic bytes.
+     *
+     * Plain, empty, and unreadable files return `Codec::None`.
+     *
+     * @param input Path to sniff.
+     * @return Detected codec, or `Codec::None`.
+     */
     [[nodiscard]] static Codec SniffCodec(const std::filesystem::path &input) noexcept;
 
     ~DecompressingByteSource();
@@ -117,25 +145,34 @@ public:
     DecompressingByteSource(DecompressingByteSource &&other) noexcept;
     DecompressingByteSource &operator=(DecompressingByteSource &&other) noexcept;
 
-    /// User-facing path (e.g. `app.log.gz`) — always the input path.
+    /** @brief Returns the user-facing path; always the input path. */
     [[nodiscard]] const std::filesystem::path &DisplayPath() const noexcept;
 
-    /// Path downstream code should mmap / probe. Equal to
-    /// `DisplayPath()` when the input was not compressed.
+    /**
+     * @brief Returns the path downstream code should mmap or probe.
+     *
+     * Equal to `DisplayPath()` when the input was not compressed.
+     */
     [[nodiscard]] const std::filesystem::path &EffectivePath() const noexcept;
 
     [[nodiscard]] bool WasDecompressed() const noexcept;
     [[nodiscard]] Codec DetectedCodec() const noexcept;
 
-    /// Size of the compressed input, in bytes.
+    /** @brief Returns the compressed input size in bytes. */
     [[nodiscard]] std::size_t CompressedSize() const noexcept;
 
-    /// Size of the decompressed temp file, in bytes. Zero when
-    /// `WasDecompressed()` is false.
+    /**
+     * @brief Returns the decompressed temp-file size in bytes.
+     * @return Zero when `WasDecompressed()` is false.
+     */
     [[nodiscard]] std::size_t DecompressedSize() const noexcept;
 
-    /// Bytes stripped by `Options::discardFirstLine`, without the
-    /// terminating newline. Empty when the option was off.
+    /**
+     * @brief Returns bytes stripped by `Options::discardFirstLine`.
+     *
+     * The view excludes the terminating newline. Empty when the option
+     * was off.
+     */
     [[nodiscard]] const std::string &DiscardedFirstLine() const noexcept;
 
 private:
@@ -151,8 +188,15 @@ private:
     std::string mDiscardedFirstLine;
 };
 
-/// Human-readable codec name (`"gzip"`, `"bzip2"`, `"xz"`, `"zstd"`,
-/// `"none"`). The returned view has static storage duration.
+/**
+ * @brief Returns a human-readable codec name.
+ *
+ * Names are `"gzip"`, `"bzip2"`, `"xz"`, `"zstd"`, and `"none"`. The
+ * returned view has static storage duration.
+ *
+ * @param codec Codec to name.
+ * @return Static name view.
+ */
 [[nodiscard]] std::string_view CodecName(DecompressingByteSource::Codec codec) noexcept;
 
-} // namespace loglib::internal
+} // namespace loglib

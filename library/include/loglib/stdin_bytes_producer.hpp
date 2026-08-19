@@ -38,11 +38,10 @@ struct StdinBytesProducerTestAccess;
 ///   - `Stop()` closes the dup, joins the worker, marks the
 ///     producer terminally closed. Idempotent and safe from any
 ///     thread (GUI teardown, session switch, `NewSession`).
-///   - Format detection is handled *outside* this class via the
-///     synchronous `internal::StdinPeek` on the GUI thread; the
-///     peeked bytes are fed to the parser via
-///     `ParserOptions::initialCarry` and the producer only yields
-///     the bytes remaining after the peek.
+///   - Format detection is handled *outside* this class via
+///     `StdinPeek` on the GUI thread; the peeked bytes are fed to
+///     the parser via `ParserOptions::initialCarry` and the producer
+///     only yields the bytes remaining after the peek.
 class StdinBytesProducer final : public BytesProducer
 {
 public:

@@ -1,6 +1,6 @@
 #include "loglib/internal/normalized_json_row.hpp"
 
-#include "loglib/internal/compact_log_value.hpp"
+#include "loglib/compact_log_value.hpp"
 #include "loglib/key_index.hpp"
 #include "loglib/log_line.hpp"
 #include "loglib/log_value.hpp"

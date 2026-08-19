@@ -24,7 +24,7 @@
 
 #include <QUuid>
 
-#include <loglib/internal/decompressing_byte_source.hpp>
+#include <loglib/decompressing_byte_source.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/stop_token.hpp>
 #include <loglib/theme.hpp>
@@ -2209,7 +2209,7 @@ private:
      * @param codec The `codec` value.
      */
     void BeginAsyncDecompression(
-        LogSession *origin, const QString &originalPath, loglib::internal::DecompressingByteSource::Codec codec
+        LogSession *origin, const QString &originalPath, loglib::DecompressingByteSource::Codec codec
     );
 
     /**
@@ -2241,7 +2241,7 @@ private:
         LogSession *origin,
         const QString &originalPath,
         const std::filesystem::path &effectivePath,
-        std::shared_ptr<loglib::internal::DecompressingByteSource> decompressionAnchor
+        std::shared_ptr<loglib::DecompressingByteSource> decompressionAnchor
     );
 
     /**

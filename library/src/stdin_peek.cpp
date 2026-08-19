@@ -1,4 +1,4 @@
-#include "loglib/internal/stdin_peek.hpp"
+#include "loglib/stdin_peek.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -18,7 +18,7 @@
 #include <unistd.h>
 #endif
 
-namespace loglib::internal
+namespace loglib
 {
 
 bool IsStdinInteractive() noexcept
@@ -187,4 +187,4 @@ std::string StdinPeek(std::size_t budget, std::chrono::milliseconds timeout)
     return out;
 }
 
-} // namespace loglib::internal
+} // namespace loglib

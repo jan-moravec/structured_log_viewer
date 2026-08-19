@@ -1,7 +1,7 @@
 #pragma once
 
-#include "loglib/internal/transparent_string_hash.hpp"
 #include "loglib/key_index.hpp"
+#include "loglib/transparent_string_hash.hpp"
 
 #include <tsl/robin_map.h>
 
@@ -97,7 +97,7 @@ private:
     /// `std::deque` keeps each string's address stable so the index can
     /// key on `string_view`s into them.
     std::deque<std::string> mValues;
-    tsl::robin_map<std::string_view, EnumValueId, internal::TransparentStringHash, internal::TransparentStringEqual>
+    tsl::robin_map<std::string_view, EnumValueId, loglib::TransparentStringHash, loglib::TransparentStringEqual>
         mIndex;
     uint16_t mCap = DEFAULT_ENUM_VALUE_CAP;
 };

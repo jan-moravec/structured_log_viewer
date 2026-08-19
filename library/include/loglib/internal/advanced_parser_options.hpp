@@ -1,5 +1,7 @@
 #pragma once
 
+#include "loglib/parser_options.hpp"
+
 #include <cstddef>
 
 namespace loglib::internal
@@ -21,5 +23,17 @@ struct AdvancedParserOptions
     /// Auto-expanded so a line never spans batches.
     size_t batchSizeBytes = DEFAULT_BATCH_SIZE_BYTES;
 };
+
+/// Maps public `ParserOptions` pipeline knobs onto this internal struct.
+[[nodiscard]] inline AdvancedParserOptions FromParserOptions(const ParserOptions &options) noexcept
+{
+    AdvancedParserOptions advanced;
+    advanced.threads = options.threads;
+    if (options.batchSizeBytes != 0)
+    {
+        advanced.batchSizeBytes = options.batchSizeBytes;
+    }
+    return advanced;
+}
 
 } // namespace loglib::internal

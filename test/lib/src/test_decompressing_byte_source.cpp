@@ -1,6 +1,6 @@
 #include "common.hpp"
 
-#include <loglib/internal/decompressing_byte_source.hpp>
+#include <loglib/decompressing_byte_source.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/parse_file.hpp>
 #include <loglib/parsers/json_parser.hpp>
@@ -34,8 +34,8 @@
 #include <vector>
 
 using loglib::StopSource;
-using loglib::internal::DecompressingByteSource;
-using loglib::internal::DecompressionCancelled;
+using loglib::DecompressingByteSource;
+using loglib::DecompressionCancelled;
 
 namespace
 {
@@ -650,7 +650,7 @@ TEST_CASE("DecompressingByteSource: max decompressed size cap trips", "[Decompre
     options.maxDecompressedBytes = 16 * 1024;
 
     CHECK_THROWS_AS(
-        DecompressingByteSource(fixture.Path(), {}, {}, options), loglib::internal::DecompressionSizeCapExceeded
+        DecompressingByteSource(fixture.Path(), {}, {}, options), loglib::DecompressionSizeCapExceeded
     );
 
     // Partial temp cleaned up on unwind, same as the cancel path.
@@ -798,11 +798,11 @@ TEST_CASE(
 TEST_CASE("DecompressingByteSource: CodecName maps every enum value", "[DecompressingByteSource]")
 {
     using Codec = DecompressingByteSource::Codec;
-    CHECK(loglib::internal::CodecName(Codec::None) == "none");
-    CHECK(loglib::internal::CodecName(Codec::Gzip) == "gzip");
-    CHECK(loglib::internal::CodecName(Codec::Bzip2) == "bzip2");
-    CHECK(loglib::internal::CodecName(Codec::Xz) == "xz");
-    CHECK(loglib::internal::CodecName(Codec::Zstd) == "zstd");
+    CHECK(loglib::CodecName(Codec::None) == "none");
+    CHECK(loglib::CodecName(Codec::Gzip) == "gzip");
+    CHECK(loglib::CodecName(Codec::Bzip2) == "bzip2");
+    CHECK(loglib::CodecName(Codec::Xz) == "xz");
+    CHECK(loglib::CodecName(Codec::Zstd) == "zstd");
 }
 
 // Integration: compressed input -> DecompressingByteSource ->

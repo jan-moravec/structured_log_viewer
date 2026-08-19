@@ -1,4 +1,4 @@
-#include "loglib/internal/decompressing_byte_source.hpp"
+#include "loglib/decompressing_byte_source.hpp"
 
 #include <fmt/format.h>
 
@@ -31,7 +31,7 @@
 #include <zlib.h>
 #include <zstd.h>
 
-namespace loglib::internal
+namespace loglib
 {
 
 namespace
@@ -1148,4 +1148,4 @@ std::string_view CodecName(DecompressingByteSource::Codec codec) noexcept
     return "unknown";
 }
 
-} // namespace loglib::internal
+} // namespace loglib

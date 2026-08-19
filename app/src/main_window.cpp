@@ -36,9 +36,9 @@
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
 #include <loglib/format_detection.hpp>
-#include <loglib/internal/ascii_case.hpp>
-#include <loglib/internal/decompressing_byte_source.hpp>
-#include <loglib/internal/stdin_peek.hpp>
+#include <loglib/ascii_case.hpp>
+#include <loglib/decompressing_byte_source.hpp>
+#include <loglib/stdin_peek.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_factory.hpp>
 #include <loglib/log_file.hpp>
@@ -438,11 +438,11 @@ BooleanFilterSides DecodeBooleanFilterSides(const std::vector<std::string> &filt
     BooleanFilterSides sides;
     for (const std::string &v : filterValues)
     {
-        if (loglib::internal::EqualsIgnoreCaseAscii(v, "true"))
+        if (loglib::EqualsIgnoreCaseAscii(v, "true"))
         {
             sides.includeTrue = true;
         }
-        else if (loglib::internal::EqualsIgnoreCaseAscii(v, "false"))
+        else if (loglib::EqualsIgnoreCaseAscii(v, "false"))
         {
             sides.includeFalse = true;
         }
@@ -4663,8 +4663,8 @@ void MainWindow::StreamNextPendingFile(LogSession *origin)
         // supported use-case, fold both into the async worker.
         // Preserve non-ASCII Windows paths during codec detection and open.
         const std::filesystem::path filePath = logapp::QStringToFsPath(file);
-        const auto codec = loglib::internal::DecompressingByteSource::SniffCodec(filePath);
-        if (codec != loglib::internal::DecompressingByteSource::Codec::None)
+        const auto codec = loglib::DecompressingByteSource::SniffCodec(filePath);
+        if (codec != loglib::DecompressingByteSource::Codec::None)
         {
             // Compressed: dispatch async so the GUI stays responsive.
             // The finished slot re-enters this function after the
@@ -4709,7 +4709,7 @@ bool MainWindow::ContinueOpenAfterPrepared(
     LogSession *origin,
     const QString &originalPath,
     const std::filesystem::path &effectivePath,
-    std::shared_ptr<loglib::internal::DecompressingByteSource> decompressionAnchor
+    std::shared_ptr<loglib::DecompressingByteSource> decompressionAnchor
 )
 {
     if (origin == nullptr)
@@ -4867,7 +4867,7 @@ bool MainWindow::ContinueOpenAfterPrepared(
 }
 
 void MainWindow::BeginAsyncDecompression(
-    LogSession *origin, const QString &originalPath, loglib::internal::DecompressingByteSource::Codec codec
+    LogSession *origin, const QString &originalPath, loglib::DecompressingByteSource::Codec codec
 )
 {
     if (origin == nullptr)
@@ -4892,7 +4892,7 @@ void MainWindow::BeginAsyncDecompression(
     // Pass the string_view size explicitly: `CodecName` currently
     // returns views over string literals, but NUL-termination is
     // not part of the string_view contract.
-    const std::string_view codecName = loglib::internal::CodecName(codec);
+    const std::string_view codecName = loglib::CodecName(codec);
     origin->SetDecompressionCodecName(QString::fromLatin1(codecName.data(), static_cast<qsizetype>(codecName.size())));
     origin->SetDecompressionStartedAt(std::chrono::steady_clock::now());
     // See `LogSession::IsDecompressionInFlight`: guards the
@@ -4931,7 +4931,7 @@ void MainWindow::BeginAsyncDecompression(
 
     // Bundle metadata stripping requires both the extension and zstd.
     const bool isSessionBundle =
-        IsSessionBundlePath(originalPath) && codec == loglib::internal::DecompressingByteSource::Codec::Zstd;
+        IsSessionBundlePath(originalPath) && codec == loglib::DecompressingByteSource::Codec::Zstd;
     // Convert on the GUI thread via `QStringToFsPath` so non-ASCII
     // bundle names survive the hop into the worker (see the
     // `file_size` note above).
@@ -4944,14 +4944,14 @@ void MainWindow::BeginAsyncDecompression(
     // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker,bugprone-exception-escape)
     auto future = QtConcurrent::run([input, sharedBytesIn, sharedTotal, stopToken, isSessionBundle]() {
         // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
-        auto progressCb = [sharedBytesIn, sharedTotal](const loglib::internal::DecompressingByteSource::Progress &p) {
+        auto progressCb = [sharedBytesIn, sharedTotal](const loglib::DecompressingByteSource::Progress &p) {
             // Relaxed: the GUI only needs a recent-enough snapshot.
             sharedBytesIn->storeRelaxed(static_cast<qint64>(p.bytesIn));
             sharedTotal->storeRelaxed(static_cast<qint64>(p.totalBytesIn));
         };
-        loglib::internal::DecompressingByteSource::Options options;
+        loglib::DecompressingByteSource::Options options;
         options.discardFirstLine = isSessionBundle;
-        return std::make_shared<loglib::internal::DecompressingByteSource>(
+        return std::make_shared<loglib::DecompressingByteSource>(
             input, std::move(progressCb), stopToken, options
         );
     });
@@ -5230,7 +5230,7 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
         return;
     }
 
-    std::shared_ptr<loglib::internal::DecompressingByteSource> dbs;
+    std::shared_ptr<loglib::DecompressingByteSource> dbs;
     std::optional<loglib::SessionBundleMetadata> bundleMetadata;
     QString errorEntry;
     bool cancelled = false;
@@ -5238,7 +5238,7 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
     {
         dbs = watcher->result();
     }
-    catch (const loglib::internal::DecompressionCancelled &)
+    catch (const loglib::DecompressionCancelled &)
     {
         cancelled = true;
     }
@@ -5394,7 +5394,7 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
     {
         const auto elapsed = std::chrono::steady_clock::now() - origin->DecompressionStartedAt();
         // Explicit size (see the matching site in `BeginAsyncDecompression`).
-        const std::string_view codecName = loglib::internal::CodecName(dbs->DetectedCodec());
+        const std::string_view codecName = loglib::CodecName(dbs->DetectedCodec());
         const QString msg = tr("Decompressed %1 (%2 \u2192 %3, %4) in %5")
                                 .arg(
                                     QFileInfo(origin->DecompressionOriginalPath()).fileName(),
@@ -6687,7 +6687,7 @@ void MainWindow::OpenStdinStream()
 {
     // Refuse interactive stdin before the synchronous peek can
     // block the GUI thread.
-    if (loglib::internal::IsStdinInteractive())
+    if (loglib::IsStdinInteractive())
     {
         ShowParseErrors(
             tr("Error Opening Standard Input"),
@@ -6707,7 +6707,7 @@ void MainWindow::OpenStdinStream()
     // Cap the wait so slow producers cannot stall startup. Empty
     // or unmatched input defaults to JSON before streaming starts.
     constexpr auto STDIN_PEEK_TIMEOUT = std::chrono::milliseconds(500);
-    std::string peek = loglib::internal::StdinPeek(loglib::PROBE_BYTES_BUDGET, STDIN_PEEK_TIMEOUT);
+    std::string peek = loglib::StdinPeek(loglib::PROBE_BYTES_BUDGET, STDIN_PEEK_TIMEOUT);
 
     std::unique_ptr<loglib::StdinBytesProducer> producer;
     try

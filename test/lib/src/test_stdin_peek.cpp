@@ -1,5 +1,5 @@
 #include <loglib/format_detection.hpp>
-#include <loglib/internal/stdin_peek.hpp>
+#include <loglib/stdin_peek.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_parser.hpp>
 
@@ -28,8 +28,8 @@
 #include <unistd.h>
 #endif
 
-using loglib::internal::IsStdinInteractive;
-using loglib::internal::StdinPeek;
+using loglib::IsStdinInteractive;
+using loglib::StdinPeek;
 using loglib_test::ScaledMs;
 using test_common::Pipe;
 using namespace std::chrono_literals;

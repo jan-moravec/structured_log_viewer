@@ -1,4 +1,4 @@
-#include <loglib/internal/decompressing_byte_source.hpp>
+#include <loglib/decompressing_byte_source.hpp>
 #include <loglib/internal/path_encoding.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_processing.hpp>
@@ -148,9 +148,9 @@ void Write(const std::filesystem::path &path, std::string_view bytes)
     return {std::move(parsed.data), std::move(manager)};
 }
 
-[[nodiscard]] loglib::internal::DecompressingByteSource DecodeBundle(const std::filesystem::path &path)
+[[nodiscard]] loglib::DecompressingByteSource DecodeBundle(const std::filesystem::path &path)
 {
-    loglib::internal::DecompressingByteSource::Options options;
+    loglib::DecompressingByteSource::Options options;
     options.discardFirstLine = true;
     return {path, {}, {}, options};
 }
@@ -591,9 +591,9 @@ TEST_CASE("session bundle round-trips non-ASCII destination paths", "[SessionBun
         REQUIRE(std::filesystem::exists(bundlePath));
         CHECK(loglib::LooksLikeSessionBundle(bundlePath));
 
-        loglib::internal::DecompressingByteSource::Options options;
+        loglib::DecompressingByteSource::Options options;
         options.discardFirstLine = true;
-        const loglib::internal::DecompressingByteSource decoded(bundlePath, {}, {}, options);
+        const loglib::DecompressingByteSource decoded(bundlePath, {}, {}, options);
         const auto metadata = loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine());
         CHECK(metadata.rowCount == 1);
     }
@@ -826,12 +826,12 @@ TEST_CASE("bundle metadata extraction enforces first-line cap and newline", "[Se
         unterminated.Path(), CompressZstd(R"({"__slv_bundle__":{"formatVersion":1,"rowCount":0,"configuration":{}}})")
     );
 
-    loglib::internal::DecompressingByteSource::Options capped;
+    loglib::DecompressingByteSource::Options capped;
     capped.discardFirstLine = true;
     capped.maxDiscardedFirstLineBytes = 8;
-    CHECK_THROWS_AS(loglib::internal::DecompressingByteSource(oversized.Path(), {}, {}, capped), std::runtime_error);
+    CHECK_THROWS_AS(loglib::DecompressingByteSource(oversized.Path(), {}, {}, capped), std::runtime_error);
 
-    loglib::internal::DecompressingByteSource::Options normal;
+    loglib::DecompressingByteSource::Options normal;
     normal.discardFirstLine = true;
-    CHECK_THROWS_AS(loglib::internal::DecompressingByteSource(unterminated.Path(), {}, {}, normal), std::runtime_error);
+    CHECK_THROWS_AS(loglib::DecompressingByteSource(unterminated.Path(), {}, {}, normal), std::runtime_error);
 }

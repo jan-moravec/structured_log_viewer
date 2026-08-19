@@ -3,13 +3,20 @@
 #include <cstddef>
 #include <string_view>
 
-namespace loglib::internal
+namespace loglib
 {
 
-/// Case-insensitive equality on 7-bit ASCII. The keys we fold
-/// ("level", "true", "false", ...) are all ASCII, so we avoid the
-/// allocation a locale-aware comparison would do. Safe on hot paths.
-constexpr bool EqualsIgnoreCaseAscii(std::string_view a, std::string_view b) noexcept
+/**
+ * @brief Returns whether two views are equal ignoring 7-bit ASCII case.
+ *
+ * The keys this folds (`"level"`, `"true"`, `"false"`, ...) are ASCII, so
+ * the comparison avoids a locale-aware allocation. Safe on hot paths.
+ *
+ * @param a First view.
+ * @param b Second view.
+ * @return `true` when the views match after folding `A`–`Z` to `a`–`z`.
+ */
+[[nodiscard]] constexpr bool EqualsIgnoreCaseAscii(std::string_view a, std::string_view b) noexcept
 {
     if (a.size() != b.size())
     {
@@ -29,4 +36,4 @@ constexpr bool EqualsIgnoreCaseAscii(std::string_view a, std::string_view b) noe
     return true;
 }
 
-} // namespace loglib::internal
+} // namespace loglib

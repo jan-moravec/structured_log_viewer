@@ -2,7 +2,7 @@
 
 #include <loglib/file_line_source.hpp>
 #include <loglib/internal/advanced_parser_options.hpp>
-#include <loglib/internal/compact_log_value.hpp>
+#include <loglib/compact_log_value.hpp>
 #include <loglib/internal/static_parser_pipeline.hpp>
 #include <loglib/internal/streaming_parse_loop.hpp>
 #include <loglib/internal/timestamp_promotion.hpp>
@@ -147,7 +147,7 @@ public:
                     continue;
                 }
 
-                std::vector<std::pair<loglib::KeyId, loglib::internal::CompactLogValue>> values;
+                std::vector<std::pair<loglib::KeyId, loglib::CompactLogValue>> values;
                 values.reserve(8);
                 size_t pos = 0;
                 while (pos < line.size())
@@ -184,7 +184,7 @@ public:
                     // below sees the per-batch view.
                     const uint64_t offset = parsed.ownedStringsArena.size();
                     parsed.ownedStringsArena.append(valueView.data(), valueView.size());
-                    auto val = loglib::internal::CompactLogValue::MakeOwnedString(
+                    auto val = loglib::CompactLogValue::MakeOwnedString(
                         offset, static_cast<uint32_t>(valueView.size())
                     );
                     auto it = values.begin();
@@ -337,7 +337,7 @@ public:
                         continuation.append(line.data(), line.size());
 
                         auto compactSpan = parsed.lines.back().CompactValues();
-                        std::vector<std::pair<loglib::KeyId, loglib::internal::CompactLogValue>> mutableValues(
+                        std::vector<std::pair<loglib::KeyId, loglib::CompactLogValue>> mutableValues(
                             compactSpan.begin(), compactSpan.end()
                         );
                         const std::string_view mmapView(
@@ -384,7 +384,7 @@ public:
                     continue;
                 }
 
-                std::vector<std::pair<loglib::KeyId, loglib::internal::CompactLogValue>> values;
+                std::vector<std::pair<loglib::KeyId, loglib::CompactLogValue>> values;
                 values.reserve(8);
                 loglib::KeyId lastSourceOrderKey = loglib::INVALID_KEY_ID;
                 size_t pos = 0;
@@ -416,7 +416,7 @@ public:
 
                     const uint64_t offset = parsed.ownedStringsArena.size();
                     parsed.ownedStringsArena.append(valueView.data(), valueView.size());
-                    auto val = loglib::internal::CompactLogValue::MakeOwnedString(
+                    auto val = loglib::CompactLogValue::MakeOwnedString(
                         offset, static_cast<uint32_t>(valueView.size())
                     );
                     auto it = values.begin();

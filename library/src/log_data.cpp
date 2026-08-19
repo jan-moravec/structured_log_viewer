@@ -1,7 +1,7 @@
 #include "loglib/log_data.hpp"
 
 #include "loglib/file_line_source.hpp"
-#include "loglib/internal/compact_log_value.hpp"
+#include "loglib/compact_log_value.hpp"
 #include "loglib/log_file.hpp"
 
 #include <algorithm>
@@ -218,7 +218,7 @@ void LogData::Merge(LogData other)
         // materialisation), then re-sort. `OwnedString` offsets stay
         // valid: the source's arena moved with its bytes.
         const auto values = line.CompactValues();
-        std::vector<std::pair<KeyId, internal::CompactLogValue>> remapped;
+        std::vector<std::pair<KeyId, loglib::CompactLogValue>> remapped;
         remapped.reserve(values.size());
         for (const auto &entry : values)
         {

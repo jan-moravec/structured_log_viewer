@@ -3,7 +3,7 @@
 #include "log_session_presentation.hpp"
 
 #include <loglib/filter_expression.hpp>
-#include <loglib/internal/decompressing_byte_source.hpp>
+#include <loglib/decompressing_byte_source.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/stop_token.hpp>
 
@@ -1163,7 +1163,7 @@ public:
         mLiveTailElapsedTimer.start();
     }
 
-    using DecompressionByteSourcePtr = std::shared_ptr<loglib::internal::DecompressingByteSource>;
+    using DecompressionByteSourcePtr = std::shared_ptr<loglib::DecompressingByteSource>;
     using DecompressionWatcher = QFutureWatcher<DecompressionByteSourcePtr>;
     using ExportWatcher = QFutureWatcher<void>;
 

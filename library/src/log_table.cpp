@@ -1,7 +1,7 @@
 #include "loglib/log_table.hpp"
 
 #include "loglib/file_line_source.hpp"
-#include "loglib/internal/compact_log_value.hpp"
+#include "loglib/compact_log_value.hpp"
 #include "loglib/log_processing.hpp"
 
 #include <date/date.h>
@@ -915,10 +915,10 @@ namespace
 /// `true` iff @p tag is a valid representation of @p declaredType.
 /// Mirrors the variants accepted by the sort / filter comparators in
 /// `log_compare.cpp` / `log_filter.cpp`; keep the two in sync.
-bool TagMatchesType(internal::CompactTag tag, LogConfiguration::Type declaredType) noexcept
+bool TagMatchesType(loglib::CompactTag tag, LogConfiguration::Type declaredType) noexcept
 {
     using Type = LogConfiguration::Type;
-    using Tag = internal::CompactTag;
+    using Tag = loglib::CompactTag;
     if (tag == Tag::Monostate)
     {
         return false;
@@ -989,7 +989,7 @@ LogTable::ColumnTypeHealth LogTable::ComputeColumnTypeHealth(size_t columnIndex)
 
     for (const LogLine &line : lines)
     {
-        const internal::CompactLogValue *slot = nullptr;
+        const loglib::CompactLogValue *slot = nullptr;
         for (const KeyId id : aliasKeys)
         {
             slot = line.FindCompact(id);
@@ -998,7 +998,7 @@ LogTable::ColumnTypeHealth LogTable::ComputeColumnTypeHealth(size_t columnIndex)
                 break;
             }
         }
-        if (slot == nullptr || slot->tag == internal::CompactTag::Monostate)
+        if (slot == nullptr || slot->tag == loglib::CompactTag::Monostate)
         {
             continue;
         }
@@ -1163,7 +1163,7 @@ void LogTable::RunEnumPassForAppendBatch(
         for (size_t row = oldLineCount; row < totalRows; ++row)
         {
             const LogLine &line = mData.Lines()[row];
-            const internal::CompactLogValue *slot = nullptr;
+            const loglib::CompactLogValue *slot = nullptr;
             for (const KeyId id : resolvedKeys)
             {
                 slot = line.FindCompact(id);
@@ -1181,19 +1181,19 @@ void LogTable::RunEnumPassForAppendBatch(
                 {
                     tracker.Observe(*bytes);
                 }
-                else if (slot->tag == internal::CompactTag::Int64)
+                else if (slot->tag == loglib::CompactTag::Int64)
                 {
                     ++tracker.intObservations;
                 }
-                else if (slot->tag == internal::CompactTag::Uint64)
+                else if (slot->tag == loglib::CompactTag::Uint64)
                 {
                     ++tracker.uintObservations;
                 }
-                else if (slot->tag == internal::CompactTag::Double)
+                else if (slot->tag == loglib::CompactTag::Double)
                 {
                     ++tracker.doubleObservations;
                 }
-                else if (slot->tag == internal::CompactTag::Bool)
+                else if (slot->tag == loglib::CompactTag::Bool)
                 {
                     ++tracker.boolObservations;
                 }
@@ -1320,7 +1320,7 @@ LogConfiguration::Type LogTable::RescanColumnForAutoDetection(size_t columnIndex
     for (size_t row = 0; row < totalRows; ++row)
     {
         const LogLine &line = mData.Lines()[row];
-        const internal::CompactLogValue *slot = nullptr;
+        const loglib::CompactLogValue *slot = nullptr;
         for (const KeyId id : resolvedKeys)
         {
             slot = line.FindCompact(id);
@@ -1338,19 +1338,19 @@ LogConfiguration::Type LogTable::RescanColumnForAutoDetection(size_t columnIndex
             {
                 tracker.Observe(*bytes);
             }
-            else if (slot->tag == internal::CompactTag::Int64)
+            else if (slot->tag == loglib::CompactTag::Int64)
             {
                 ++tracker.intObservations;
             }
-            else if (slot->tag == internal::CompactTag::Uint64)
+            else if (slot->tag == loglib::CompactTag::Uint64)
             {
                 ++tracker.uintObservations;
             }
-            else if (slot->tag == internal::CompactTag::Double)
+            else if (slot->tag == loglib::CompactTag::Double)
             {
                 ++tracker.doubleObservations;
             }
-            else if (slot->tag == internal::CompactTag::Bool)
+            else if (slot->tag == loglib::CompactTag::Bool)
             {
                 ++tracker.boolObservations;
             }
@@ -1658,12 +1658,12 @@ bool LogTable::EncodeColumnRange(
         bool alreadyEncoded = false;
         for (const KeyId id : aliasKeys)
         {
-            internal::CompactLogValue *slot = line.FindCompactMutable(id);
+            loglib::CompactLogValue *slot = line.FindCompactMutable(id);
             if (slot == nullptr)
             {
                 continue;
             }
-            if (slot->tag == internal::CompactTag::DictRef)
+            if (slot->tag == loglib::CompactTag::DictRef)
             {
                 alreadyEncoded = true;
                 break;
@@ -1687,7 +1687,7 @@ bool LogTable::EncodeColumnRange(
                 // Hard dictionary cap; caller demotes immediately.
                 return false;
             }
-            *slot = internal::CompactLogValue::MakeDictRef(vid);
+            *slot = loglib::CompactLogValue::MakeDictRef(vid);
             encoded = true;
             break;
         }
@@ -1864,8 +1864,8 @@ void LogTable::DemoteColumnFromEnum(size_t columnIndex, bool recordForBatch)
             const size_t lineId = line.LineId();
             for (const KeyId id : keyIds)
             {
-                internal::CompactLogValue *slot = line.FindCompactMutable(id);
-                if (slot == nullptr || slot->tag != internal::CompactTag::DictRef)
+                loglib::CompactLogValue *slot = line.FindCompactMutable(id);
+                if (slot == nullptr || slot->tag != loglib::CompactTag::DictRef)
                 {
                     continue;
                 }
@@ -1877,11 +1877,11 @@ void LogTable::DemoteColumnFromEnum(size_t columnIndex, bool recordForBatch)
                 if (source != nullptr)
                 {
                     const uint64_t offset = source->AppendOwnedBytes(lineId, bytes);
-                    *slot = internal::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(bytes.size()));
+                    *slot = loglib::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(bytes.size()));
                 }
                 else
                 {
-                    *slot = internal::CompactLogValue::MakeMonostate();
+                    *slot = loglib::CompactLogValue::MakeMonostate();
                 }
                 ++convertedSlots;
             }

@@ -811,7 +811,7 @@ namespace
 {
 
 // Local replicas of the transparent-hash adapters from
-// `loglib/internal/transparent_string_hash.hpp` so the move-survival test can stand up the
+// `loglib/transparent_string_hash.hpp` so the move-survival test can stand up the
 // exact `tsl::robin_map<std::string, KeyId, ..., ...>` instantiation that backs
 // `loglib::internal::PerWorkerKeyCache` (defined in `loglib/internal/parse_runtime.hpp`).
 // The wrapper struct adds nothing beyond the map field, so its compiler-generated move

@@ -7,7 +7,7 @@
 #include "benchmark_common.hpp"
 #include "common.hpp"
 
-#include <loglib/internal/decompressing_byte_source.hpp>
+#include <loglib/decompressing_byte_source.hpp>
 #include <loglib/parse_file.hpp>
 #include <loglib/parsers/json_parser.hpp>
 
@@ -35,7 +35,7 @@
 using bench::ReportThroughput;
 using loglib::JsonParser;
 using loglib::ParseFile;
-using loglib::internal::DecompressingByteSource;
+using loglib::DecompressingByteSource;
 
 namespace
 {

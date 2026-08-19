@@ -1,6 +1,6 @@
 #include "loglib/internal/timestamp_promotion.hpp"
 
-#include "loglib/internal/compact_log_value.hpp"
+#include "loglib/compact_log_value.hpp"
 #include "loglib/line_source.hpp"
 #include "loglib/log_line.hpp"
 

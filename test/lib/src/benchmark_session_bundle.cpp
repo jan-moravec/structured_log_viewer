@@ -6,7 +6,7 @@
 #include "benchmark_common.hpp"
 #include "common.hpp"
 
-#include <loglib/internal/decompressing_byte_source.hpp>
+#include <loglib/decompressing_byte_source.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_data.hpp>
 #include <loglib/log_line.hpp>
@@ -198,9 +198,9 @@ TEST_CASE("Read session bundle (JSON, 1'000'000 lines)", "[.][benchmark][session
         3,
         {.bytes = bytes, .lines = recordCount},
         [&]() {
-            internal::DecompressingByteSource::Options options;
+            DecompressingByteSource::Options options;
             options.discardFirstLine = true;
-            const internal::DecompressingByteSource decoded(bundlePath.Path(), {}, {}, options);
+            const DecompressingByteSource decoded(bundlePath.Path(), {}, {}, options);
             const SessionBundleMetadata metadata = ParseSessionBundleMetadata(decoded.DiscardedFirstLine());
             REQUIRE(metadata.rowCount == recordCount);
             const ParseResult parsed = ParseFile(decoded.EffectivePath());
@@ -231,9 +231,9 @@ TEST_CASE("Round-trip session bundle (JSON, 1'000'000 lines)", "[.][benchmark][s
             writeOpts.totalWorkers = 0;
             WriteSessionBundle(table, cfg, dest.Path(), writeOpts);
 
-            internal::DecompressingByteSource::Options options;
+            DecompressingByteSource::Options options;
             options.discardFirstLine = true;
-            const internal::DecompressingByteSource decoded(dest.Path(), {}, {}, options);
+            const DecompressingByteSource decoded(dest.Path(), {}, {}, options);
             const SessionBundleMetadata metadata = ParseSessionBundleMetadata(decoded.DiscardedFirstLine());
             REQUIRE(metadata.rowCount == recordCount);
             const ParseResult parsed = ParseFile(decoded.EffectivePath());

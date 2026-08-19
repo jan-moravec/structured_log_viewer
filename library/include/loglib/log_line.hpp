@@ -1,7 +1,7 @@
 #pragma once
 
+#include "loglib/compact_log_value.hpp"
 #include "loglib/enum_dictionary.hpp"
-#include "loglib/internal/compact_log_value.hpp"
 #include "loglib/key_index.hpp"
 #include "loglib/log_value.hpp"
 
@@ -32,7 +32,7 @@ public:
     /// Hot path: pre-built compact values, ascending on `pair::first`.
     /// `OwnedString` payloads must be arena-relative already.
     LogLine(
-        std::vector<std::pair<KeyId, internal::CompactLogValue>> sortedValues,
+        std::vector<std::pair<KeyId, loglib::CompactLogValue>> sortedValues,
         const KeyIndex &keys,
         LineSource &source,
         size_t lineId
@@ -71,7 +71,7 @@ public:
     std::vector<std::pair<KeyId, LogValue>> IndexedValues() const;
 
     /// Span over the compact storage; for hot-path walkers.
-    std::span<const std::pair<KeyId, internal::CompactLogValue>> CompactValues() const noexcept;
+    std::span<const std::pair<KeyId, loglib::CompactLogValue>> CompactValues() const noexcept;
 
     LogMap Values() const;
 
@@ -109,23 +109,23 @@ public:
     [[nodiscard]] std::optional<EnumValueId> GetEnumValueId(KeyId id) const noexcept;
 
     /// Linear scan over the sorted compact storage; nullptr if absent.
-    [[nodiscard]] const internal::CompactLogValue *FindCompact(KeyId id) const noexcept;
+    [[nodiscard]] const loglib::CompactLogValue *FindCompact(KeyId id) const noexcept;
 
     /// Mutable counterpart; callers may overwrite `*slot` in place.
-    [[nodiscard]] internal::CompactLogValue *FindCompactMutable(KeyId id) noexcept;
+    [[nodiscard]] loglib::CompactLogValue *FindCompactMutable(KeyId id) noexcept;
 
     /// Bytes for a `MmapSlice` / `OwnedString` slot; nullopt otherwise.
     /// Safe with a null source.
     [[nodiscard]] std::optional<std::string_view> PeekStringView(KeyId id) const noexcept;
 
     /// Slot-pointer overload (skips the linear scan).
-    [[nodiscard]] std::optional<std::string_view> PeekStringView(const internal::CompactLogValue &slot) const noexcept;
+    [[nodiscard]] std::optional<std::string_view> PeekStringView(const loglib::CompactLogValue &slot) const noexcept;
 
 private:
     /// Replace/insert the slot for @p id with @p compact; may allocate.
-    void SetCompact(KeyId id, internal::CompactLogValue compact);
+    void SetCompact(KeyId id, loglib::CompactLogValue compact);
 
-    internal::CompactLineFields mValues;
+    loglib::CompactLineFields mValues;
     const KeyIndex *mKeys = nullptr;
     LineSource *mSource = nullptr;
     size_t mLineId = 0;

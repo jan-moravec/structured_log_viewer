@@ -1,6 +1,6 @@
 #include "loglib/key_index.hpp"
 
-#include "loglib/internal/transparent_string_hash.hpp"
+#include "loglib/transparent_string_hash.hpp"
 
 #include <tsl/robin_map.h>
 
@@ -19,8 +19,8 @@
 
 namespace loglib
 {
-using internal::TransparentStringEqual;
-using internal::TransparentStringHash;
+using loglib::TransparentStringEqual;
+using loglib::TransparentStringHash;
 
 struct KeyIndex::Impl
 {

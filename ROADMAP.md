@@ -82,7 +82,7 @@ Each of the ten items below either closes a competitor-gap reviewers and first-t
 
 ### 1. ~~Transparent decompression of `.gz` / `.bz2` / `.xz` / `.zst`~~
 
-> **Shipped.** Static `File → Open…`, drag & drop, CLI arguments, and session restore all transparently decompress `.gz`, `.bz2`, `.xz`, and `.zst` (magic-byte detection, extension-agnostic). Backing bits: `loglib::internal::DecompressingByteSource` (streams to a RAII temp file under `std::filesystem::temp_directory_path()`), a `QtConcurrent::run` worker orchestrated from `MainWindow::StreamNextPendingFile`, and a modal-per-window `QProgressDialog` with **Cancel** wired to a `loglib::StopSource`. Session locators always store the *original* compressed path — the temp path is a per-open implementation detail. See [`doc/README.md § Compressed inputs`](doc/README.md#compressed-inputs) for the user-facing surface.
+> **Shipped.** Static `File → Open…`, drag & drop, CLI arguments, and session restore all transparently decompress `.gz`, `.bz2`, `.xz`, and `.zst` (magic-byte detection, extension-agnostic). Backing bits: `loglib::DecompressingByteSource` (streams to a RAII temp file under `std::filesystem::temp_directory_path()`), a `QtConcurrent::run` worker orchestrated from `MainWindow::StreamNextPendingFile`, and a modal-per-window `QProgressDialog` with **Cancel** wired to a `loglib::StopSource`. Session locators always store the *original* compressed path — the temp path is a per-open implementation detail. See [`doc/README.md § Compressed inputs`](doc/README.md#compressed-inputs) for the user-facing surface.
 
 **Why.** Logrotate-style deployments compress every retained segment (`app.log.1.gz`, `app.log.1.zst`, ...). Today the app cannot open them at all. lnav, Klogg, LogViewPlus, OtrosLogViewer all do this transparently. This is the single biggest "first impression" gap.
 
@@ -94,7 +94,7 @@ Each of the ten items below either closes a competitor-gap reviewers and first-t
 
 **Acceptance bar.** Open one ~500 MiB JSONL file compressed with each of the four codecs in `< 2 ×` the time of the uncompressed equivalent. Existing parser benchmarks unchanged (the decompression path is upstream of them). Unit tests for each codec with truncated / corrupt input must surface a parse error rather than crash.
 
-**Touches.** `loglib`: `internal/decompressing_byte_source.hpp` + `.cpp`. `app`: `MainWindow::StreamNextPendingFile` and async decompression helpers. Docs: [`doc/README.md`](doc/README.md) supported-extensions section.
+**Touches.** `loglib`: `decompressing_byte_source.hpp` + `.cpp`. `app`: `MainWindow::StreamNextPendingFile` and async decompression helpers. Docs: [`doc/README.md`](doc/README.md) supported-extensions section.
 
 ### 2. ~~Histogram / activity-rate strip~~
 

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "enum_dictionary.hpp"
-#include "internal/transparent_string_hash.hpp"
 #include "key_index.hpp"
 #include "line_source.hpp"
 #include "log_configuration.hpp"
@@ -9,6 +8,7 @@
 #include "log_file.hpp"
 #include "log_level.hpp"
 #include "log_parse_sink.hpp"
+#include "transparent_string_hash.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -303,7 +303,7 @@ private:
         /// avoids the per-row `std::string` materialisation a
         /// non-transparent `unordered_set<string>` would force on
         /// every `string_view` lookup.
-        std::unordered_set<std::string, internal::TransparentStringHash, internal::TransparentStringEqual> seen;
+        std::unordered_set<std::string, loglib::TransparentStringHash, loglib::TransparentStringEqual> seen;
         uint32_t valueMaxLen = 0;
         uint16_t size = 0;
         uint16_t cap = DEFAULT_ENUM_VALUE_CAP;

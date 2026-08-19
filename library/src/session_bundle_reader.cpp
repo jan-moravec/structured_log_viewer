@@ -1,6 +1,6 @@
 #include "loglib/session_bundle.hpp"
 
-#include "loglib/internal/decompressing_byte_source.hpp"
+#include "loglib/decompressing_byte_source.hpp"
 #include "loglib/internal/log_configuration_glaze_meta.hpp"
 #include "loglib/internal/log_configuration_glaze_opts.hpp"
 
@@ -84,7 +84,7 @@ SessionBundleMetadata ParseSessionBundleMetadata(std::string_view json)
 bool LooksLikeSessionBundle(const std::filesystem::path &file) noexcept
 {
     // Keep sniffing behavior identical to the decoder.
-    return internal::DecompressingByteSource::SniffCodec(file) == internal::DecompressingByteSource::Codec::Zstd;
+    return DecompressingByteSource::SniffCodec(file) == DecompressingByteSource::Codec::Zstd;
 }
 
 } // namespace loglib

@@ -2,7 +2,7 @@
 
 #include "loglib/bytes_producer.hpp"
 #include "loglib/internal/batch_coalescer.hpp"
-#include "loglib/internal/compact_log_value.hpp"
+#include "loglib/compact_log_value.hpp"
 #include "loglib/internal/line_decoder.hpp"
 #include "loglib/internal/parse_runtime.hpp"
 #include "loglib/internal/timestamp_promotion.hpp"
