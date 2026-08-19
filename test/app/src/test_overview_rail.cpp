@@ -2418,34 +2418,44 @@ private slots:
         WaitForBucketsChanged(rail);
         QCOMPARE(rail.ProxyRowCount(), ROWS);
 
-        // Install a filter that drops every other row. The
-        // proxy's row count halves (~20 rows) but the rail's
-        // cached `mProxyRowCount` stays at 40 until the coalesce
-        // timer fires ~50 ms later.
+        // Keep even-numbered `body` values (`msg 0`, `msg 2`, …).
+        // A call-count predicate is not row-stable: extra
+        // `MatchesRow` evaluations change which rows survive.
+        int bodyCol = -1;
+        for (int c = 0; c < model.columnCount(); ++c)
+        {
+            if (model.headerData(c, Qt::Horizontal).toString() == QLatin1String("body"))
+            {
+                bodyCol = c;
+                break;
+            }
+        }
+        QVERIFY2(bodyCol >= 0, "fixture must expose a body column");
+
         std::vector<loglib::RowPredicate> rules;
         rules.emplace_back(
             std::in_place_type<loglib::CallbackStringRowPredicate>,
-            static_cast<std::size_t>(0),
-            [callCount = std::make_shared<std::size_t>(0)](std::string_view) mutable {
-                return ((*callCount)++ % 2) == 0;
+            static_cast<std::size_t>(bodyCol),
+            [](std::string_view value) {
+                if (value.empty())
+                {
+                    return false;
+                }
+                const char last = value.back();
+                return last >= '0' && last <= '9' && ((last - '0') % 2) == 0;
             }
         );
         chain.filter->SetFilterRules(std::move(rules));
         const int liveRowCount = chain.filter->rowCount();
         QVERIFY2(liveRowCount > 0 && liveRowCount < ROWS, "filter must reduce the proxy row count");
 
-        // Under the pre-fix code path, `mProxyRowCount` stays 40
-        // and folding row `liveRowCount - 1` (in range under the
-        // filter, but potentially misbucketed against the old
-        // denominator) misplaces the tick. Under the fix,
-        // `mProxyRowCount` refreshes and the tick lands correctly.
+        // `SetMatchProxyRows` refreshes `mProxyRowCount` so the
+        // last surviving row folds against the filtered count,
+        // not the pre-filter cache of 40.
         rail.SetMatchProxyRows({liveRowCount - 1});
         QCOMPARE(rail.ProxyRowCount(), liveRowCount);
         QVERIFY(rail.HasMatchTicks());
 
-        // Sanity: the tick sits in one of the tail buckets --
-        // `(liveRowCount - 1) * 20 / liveRowCount` rounds to
-        // ~19 for any positive `liveRowCount`.
         uint32_t totalTicks = 0;
         std::size_t highestBucketWithTick = 0;
         for (std::size_t i = 0; i < rail.BucketCount(); ++i)
@@ -2458,7 +2468,10 @@ private slots:
             }
         }
         QCOMPARE(totalTicks, static_cast<uint32_t>(1));
-        QCOMPARE(highestBucketWithTick, rail.BucketCount() - 1);
+        const std::size_t expectedBucket =
+            (static_cast<std::size_t>(liveRowCount - 1) * rail.BucketCount()) /
+            static_cast<std::size_t>(liveRowCount);
+        QCOMPARE(highestBucketWithTick, expectedBucket);
     }
 
     /// Companion regression for the bucketed API: same stale-
