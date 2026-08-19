@@ -3007,8 +3007,8 @@ private slots:
         QVERIFY(!dialog.isNull());
         auto *table = dialog->findChild<QTableWidget *>();
         QVERIFY(table != nullptr);
-        constexpr int visibleColumn = 4;
-        QTableWidgetItem *item = table->item(0, visibleColumn);
+        constexpr int VISIBLE_COLUMN = 4;
+        QTableWidgetItem *item = table->item(0, VISIBLE_COLUMN);
         QVERIFY(item != nullptr);
         item->setCheckState(item->checkState() == Qt::Checked ? Qt::Unchecked : Qt::Checked);
 

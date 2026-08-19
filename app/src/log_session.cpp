@@ -240,7 +240,7 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
     }
     if (mModel != nullptr)
     {
-        QtStreamingLogSink *sink = mModel->Sink();
+        const QtStreamingLogSink *sink = mModel->Sink();
         if (sink != nullptr && sink->IsPaused())
         {
             ops |= static_cast<std::uint32_t>(SessionOperationState::Paused);

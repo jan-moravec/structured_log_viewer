@@ -407,7 +407,7 @@ int main(int argc, char *argv[])
 
         // Publish only after every close handler has finished.
         SessionHistoryManager::AddOpenWindowUuids(restorable);
-        slv::persistence::Workspace deferred = slv::persistence::WorkspacePersistence::TakeDeferredWindows();
+        const slv::persistence::Workspace deferred = slv::persistence::WorkspacePersistence::TakeDeferredWindows();
         workspace = slv::persistence::WorkspacePersistence::MergeCapturedWithDeferred(std::move(workspace), deferred);
         (void)slv::persistence::WorkspacePersistence::Publish(std::move(workspace));
     });

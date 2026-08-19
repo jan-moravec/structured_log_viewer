@@ -157,8 +157,10 @@ WorkspaceWindow WindowFromJson(const QJsonObject &obj)
     window.windowUuid =
         ClampString(obj.value(QLatin1String(KEY_WINDOW_UUID)).toString(), WorkspacePersistence::MAX_UUID_LENGTH);
     // Bound encoded text before decoding so malformed input cannot allocate an oversized buffer.
-    const auto maxGeoB64Chars = static_cast<qsizetype>((WorkspacePersistence::MAX_GEOMETRY_BYTES * 4 + 2) / 3 + 4);
-    const auto maxDockB64Chars = static_cast<qsizetype>((WorkspacePersistence::MAX_DOCK_STATE_BYTES * 4 + 2) / 3 + 4);
+    const auto maxGeoB64Chars =
+        ((((static_cast<qsizetype>(WorkspacePersistence::MAX_GEOMETRY_BYTES) * 4) + 2) / 3) + 4);
+    const auto maxDockB64Chars =
+        ((((static_cast<qsizetype>(WorkspacePersistence::MAX_DOCK_STATE_BYTES) * 4) + 2) / 3) + 4);
     const QString geoStr = obj.value(QLatin1String(KEY_GEOMETRY)).toString();
     const QString dockStr = obj.value(QLatin1String(KEY_DOCK_STATE)).toString();
     if (geoStr.size() > maxGeoB64Chars || dockStr.size() > maxDockB64Chars)
@@ -429,7 +431,9 @@ WorkspacePersistence::RestorePlan WorkspacePersistence::PlanRestore(Workspace wo
 Workspace WorkspacePersistence::MergeCapturedWithDeferred(Workspace captured, const Workspace &deferred)
 {
     QSet<QString> seenWindows;
-    seenWindows.reserve(static_cast<qsizetype>(captured.windows.size() + deferred.windows.size()));
+    seenWindows.reserve(
+        static_cast<qsizetype>(captured.windows.size()) + static_cast<qsizetype>(deferred.windows.size())
+    );
     for (const WorkspaceWindow &window : captured.windows)
     {
         if (!window.windowUuid.isEmpty())
@@ -541,7 +545,7 @@ bool WorkspacePersistence::WriteGenerationSnapshots(std::uint64_t generation, Wo
         return false;
     }
     const QString dirPath = GenerationDirPath(generation);
-    QDir dir(dirPath);
+    const QDir dir(dirPath);
     if (!dir.exists() && !QDir().mkpath(dirPath))
     {
         return false;

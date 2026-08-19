@@ -2072,7 +2072,7 @@ private slots:
         QCOMPARE(spy.count(), 0);
 
         // Locator append through the raw accessor: no fan.
-        session.MutableCurrentSource()->locators.emplace_back(std::string{"C:/logs/app.log.1"});
+        session.MutableCurrentSource()->locators.emplace_back("C:/logs/app.log.1");
         QCOMPARE(spy.count(), 0);
 
         // `.reset()` through the raw accessor: no fan (contrast

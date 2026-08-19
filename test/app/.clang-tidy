@@ -9,6 +9,10 @@
 # `app/.clang-tidy` only relaxes the public side because the GUI's
 # Qt-forced camelBack names are signals / public slots / overrides.
 #
+# `initTestCase` is `static` in several fixtures, which recategorises
+# it as a `ClassMethod`. `PrivateMethodCase` does not cover that, so
+# `ClassMethodCase` is relaxed too.
+#
 # Public is also relaxed for parity with `app/.clang-tidy` (the test
 # binary calls into Qt's public surface as well).
 #
@@ -20,14 +24,48 @@
 #        lifecycle slots through the metaobject as instance methods;
 #        marking them `static` also recategorises them under
 #        `ClassMethodCase`, rejecting the Qt-mandated camelBack names.
+#
+# QtTest-specific noise that is not worth sprinkling NOLINT across
+# every new case:
+#   -misc-const-correctness: `QSignalSpy`, `QTemporaryDir`, and
+#        `MainWindow` locals are observed through slots / destruction,
+#        so `const` is often misleading.
+#   -clang-analyzer-core.CallAndMessage: path-sensitive false positives
+#        after `QVERIFY` null checks (QVERIFY returns, but the analyzer
+#        still treats the pointer as possibly null).
+#   -clang-analyzer-cplusplus.NewDeleteLeaks: same QVERIFY false-positive
+#        class for Qt parent/child ownership (`new` with a QObject
+#        parent, then `QVERIFY(guard.isNull())` after the parent dies).
+#   -modernize-use-auto: `qobject_cast<T *>()` keeps the type in the
+#        declaration so the test reads as the widget it asserts on.
+#   -misc-no-recursion: filter-tree visitor lambdas walk
+#        `FilterExpression` by design.
+#   -modernize-raw-string-literal: JSONL fixture lines mix quotes with
+#        streamed interpolation.
+#   -bugprone-narrowing-conversions: `QSignalSpy::count()` is
+#        `qsizetype`; tests compare it to `int` expected counters.
+#   -cppcoreguidelines-pro-type-vararg / -cert-err33-c /
+#        -modernize-use-std-print: diagnostic `fprintf`/`fflush` to
+#        stderr so CTest still shows a line if the process dies.
 
 InheritParentConfig: true
 
 Checks: >
   -readability-redundant-access-specifiers,
   -cppcoreguidelines-redundant-access-specifiers,
-  -readability-convert-member-functions-to-static
+  -readability-convert-member-functions-to-static,
+  -misc-const-correctness,
+  -clang-analyzer-core.CallAndMessage,
+  -clang-analyzer-cplusplus.NewDeleteLeaks,
+  -modernize-use-auto,
+  -misc-no-recursion,
+  -modernize-raw-string-literal,
+  -bugprone-narrowing-conversions,
+  -cppcoreguidelines-pro-type-vararg,
+  -cert-err33-c,
+  -modernize-use-std-print
 
 CheckOptions:
   - { key: readability-identifier-naming.PrivateMethodCase, value: aNy_CasE }
   - { key: readability-identifier-naming.PublicMethodCase,  value: aNy_CasE }
+  - { key: readability-identifier-naming.ClassMethodCase,   value: aNy_CasE }

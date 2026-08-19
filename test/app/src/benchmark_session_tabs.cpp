@@ -46,20 +46,20 @@
 namespace
 {
 
-constexpr int kRowCount = 100'000;
-constexpr int kAnchorCount = 1'000;
-constexpr int kWarmupSwitches = 10;
-constexpr int kMeasuredSwitches = 50;
-constexpr double kP95CeilingMs = 100.0;
-constexpr std::uint32_t kFixtureSeed = 0xC0FFEEu;
+constexpr int ROW_COUNT = 100'000;
+constexpr int ANCHOR_COUNT = 1'000;
+constexpr int WARMUP_SWITCHES = 10;
+constexpr int MEASURED_SWITCHES = 50;
+constexpr double P95_CEILING_MS = 100.0;
+constexpr std::uint32_t FIXTURE_SEED = 0xC0FFEEu;
 // 2026-01-01T00:00:00Z. Matches the lib benchmark timestamp pin so the
 // generated JSONL has a stable time column for histogram rebuilds.
-constexpr std::chrono::seconds kBenchmarkBaseEpoch{1'767'225'600};
+constexpr std::chrono::seconds BENCHMARK_BASE_EPOCH{1'767'225'600};
 
 [[nodiscard]] test_common::TimestampPolicy DeterministicTimestamps()
 {
     return {
-        .baseTime = std::chrono::system_clock::time_point{kBenchmarkBaseEpoch},
+        .baseTime = std::chrono::system_clock::time_point{BENCHMARK_BASE_EPOCH},
         .interval = std::chrono::milliseconds{1},
     };
 }
@@ -67,7 +67,7 @@ constexpr std::chrono::seconds kBenchmarkBaseEpoch{1'767'225'600};
 void WriteJsonlFixture(const QString &path, int rowCount)
 {
     const auto records = test_common::GenerateRandomLogRecords(
-        static_cast<std::size_t>(rowCount), kFixtureSeed, DeterministicTimestamps()
+        static_cast<std::size_t>(rowCount), FIXTURE_SEED, DeterministicTimestamps()
     );
     const test_common::LogFormat format = test_common::JsonLines();
     std::ofstream stream(logapp::QStringToFsPath(path), std::ios::binary);
@@ -87,7 +87,7 @@ void LoadFileIntoActiveTab(MainWindow &window, const QString &path)
     const QSignalSpy spy(model, &LogModel::streamingFinished);
     window.OpenFilesForTest({path}, MainWindow::OpenMode::Replace);
     QTRY_VERIFY_WITH_TIMEOUT(spy.count() >= 1, 180'000);
-    QCOMPARE(model->rowCount(), kRowCount);
+    QCOMPARE(model->rowCount(), ROW_COUNT);
 }
 
 void SeedAnchors(LogSession *session, int count)
@@ -160,7 +160,7 @@ private slots:
         QTemporaryDir temp;
         QVERIFY(temp.isValid());
         const QString path = temp.filePath(QStringLiteral("tabs.jsonl"));
-        WriteJsonlFixture(path, kRowCount);
+        WriteJsonlFixture(path, ROW_COUNT);
 
         MainWindow window;
         window.SetSuppressDialogsForTest(true);
@@ -171,8 +171,8 @@ private slots:
         LogSession *sessionA = window.SessionAtTab(0);
         LogSession *sessionB = window.SessionAtTab(1);
         QVERIFY(sessionA != nullptr && sessionB != nullptr);
-        SeedAnchors(sessionA, kAnchorCount);
-        SeedAnchors(sessionB, kAnchorCount);
+        SeedAnchors(sessionA, ANCHOR_COUNT);
+        SeedAnchors(sessionB, ANCHOR_COUNT);
 
         window.show();
         window.resize(1600, 900);
@@ -202,7 +202,7 @@ private slots:
         WarnLine(QStringLiteral("[session_tabs] rows: tab0=%1 tab1=%2 anchors=%3")
                      .arg(sessionA->Model()->rowCount())
                      .arg(sessionB->Model()->rowCount())
-                     .arg(kAnchorCount));
+                     .arg(ANCHOR_COUNT));
         const auto yesNo = [](bool visible) { return visible ? QStringLiteral("yes") : QStringLiteral("no"); };
         WarnLine(QStringLiteral(
                      "[session_tabs] docks visible: histogram=%1 find=%2 anchors=%3 parseErrors=%4 recordDetail=%5"
@@ -216,15 +216,15 @@ private slots:
                      ));
 
         int next = 0;
-        for (int i = 0; i < kWarmupSwitches; ++i)
+        for (int i = 0; i < WARMUP_SWITCHES; ++i)
         {
             window.ActivateTabForTest(next);
             next = 1 - next;
         }
 
         std::vector<double> samples;
-        samples.reserve(static_cast<std::size_t>(kMeasuredSwitches));
-        for (int i = 0; i < kMeasuredSwitches; ++i)
+        samples.reserve(static_cast<std::size_t>(MEASURED_SWITCHES));
+        for (int i = 0; i < MEASURED_SWITCHES; ++i)
         {
             const auto t0 = std::chrono::steady_clock::now();
             window.ActivateTabForTest(next);
@@ -238,13 +238,13 @@ private slots:
         WarnLine(QStringLiteral("[session_tabs] activation p50=%1 ms p95=%2 ms (n=%3)")
                      .arg(p50, 0, 'f', 3)
                      .arg(p95, 0, 'f', 3)
-                     .arg(kMeasuredSwitches));
+                     .arg(MEASURED_SWITCHES));
 
         QVERIFY2(
-            p95 <= kP95CeilingMs,
+            p95 <= P95_CEILING_MS,
             qPrintable(QStringLiteral("tab-switch p95 %1 ms exceeds %2 ms on %3")
                            .arg(p95, 0, 'f', 3)
-                           .arg(kP95CeilingMs, 0, 'f', 0)
+                           .arg(P95_CEILING_MS, 0, 'f', 0)
                            .arg(hardware))
         );
     }

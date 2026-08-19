@@ -725,7 +725,11 @@ MainWindow::MainWindow(
         {
             return;
         }
-        QTabBar *bar = mTabWidget->tabBar();
+        const QTabBar *bar = mTabWidget->tabBar();
+        if (bar == nullptr)
+        {
+            return;
+        }
         const int index = bar->tabAt(pos);
         if (index < 0)
         {
@@ -1562,6 +1566,9 @@ MainWindow::MainWindow(
     // process-global side effects.
 }
 
+// `hostedSessions()` / `std::vector::reserve` can theoretically throw
+// `bad_array_new_length`; clang-tidy models that as an escaping exception.
+// NOLINTNEXTLINE(bugprone-exception-escape)
 MainWindow::~MainWindow()
 {
     // Disconnect scoped callbacks before any session teardown can emit.
@@ -2064,7 +2071,7 @@ void MainWindow::InstallPerTabPersistentConnections(LogSession *session)
     // These callbacks must fire for background tabs and disconnect before the
     // tab leaves the hosted registry.
     tab->persistentConnections += connect(session, &LogSession::presentationChanged, this, [this, id]() {
-        if (LogSession *hosted = HostedSession(id); hosted != nullptr)
+        if (const LogSession *hosted = HostedSession(id); hosted != nullptr)
         {
             RefreshTabChrome(hosted);
         }
@@ -2078,7 +2085,7 @@ void MainWindow::InstallPerTabPersistentConnections(LogSession *session)
                 HandleStreamingFinishedFor(HostedSession(id), result);
             });
     }
-    if (LogSessionView *view = tab->view.data(); view != nullptr)
+    if (const LogSessionView *view = tab->view.data(); view != nullptr)
     {
         tab->persistentConnections += connect(view, &LogSessionView::progressCancelRequested, this, [this, id]() {
             LogSession *hosted = HostedSession(id);
@@ -2227,7 +2234,7 @@ void MainWindow::ApplyPendingPresentation(LogSession *session)
     {
         return;
     }
-    SessionPendingPresentation pending = session->TakePendingPresentation();
+    const SessionPendingPresentation pending = session->TakePendingPresentation();
     RefreshTabChrome(session);
     if (!pending.statusMessage.isEmpty())
     {
@@ -2610,7 +2617,7 @@ void MainWindow::StartTabRename(int index)
     {
         return;
     }
-    LogSession *session = SessionAtTab(index);
+    const LogSession *session = SessionAtTab(index);
     QTabBar *bar = mTabWidget->tabBar();
     if (session == nullptr || bar == nullptr)
     {
@@ -2673,6 +2680,8 @@ void MainWindow::FinishTabRename(bool commit)
     }
 }
 
+// Mutates the hosted session; `const` would hide that from the window API.
+// NOLINTNEXTLINE(readability-make-member-function-const)
 void MainWindow::ApplyCustomTabLabel(int index, QString label)
 {
     LogSession *session = SessionAtTab(index);
@@ -3145,7 +3154,10 @@ void MainWindow::DropFilesForTest(const QStringList &files, Qt::KeyboardModifier
         urls.append(QUrl::fromLocalFile(path));
     }
     mime.setUrls(urls);
-    QDropEvent event(QPointF(8, 8), Qt::CopyAction, &mime, Qt::LeftButton, modifiers);
+    constexpr qreal SYNTHETIC_DROP_POSITION = 8.0;
+    QDropEvent event(
+        QPointF(SYNTHETIC_DROP_POSITION, SYNTHETIC_DROP_POSITION), Qt::CopyAction, &mime, Qt::LeftButton, modifiers
+    );
     dropEvent(&event);
 }
 #endif
@@ -5000,7 +5012,7 @@ void MainWindow::ShowDecompressionProgress()
 void MainWindow::UpdateDecompressionProgressUi()
 {
     bool anyInFlight = false;
-    for (LogSession *session : hostedSessions())
+    for (const LogSession *session : hostedSessions())
     {
         if (session == nullptr || !session->IsDecompressionInFlight())
         {
@@ -5114,7 +5126,7 @@ void MainWindow::CancelInFlightDecompressionFor(LogSession *origin)
         return;
     }
     const bool wasInFlight = origin->IsDecompressionInFlight();
-    QPointer<LogSessionView> originView = LogSessionViewForSession(origin);
+    const QPointer<LogSessionView> originView = LogSessionViewForSession(origin);
     origin->SetDecompressionInFlight(false);
     if (wasInFlight)
     {
@@ -5638,7 +5650,7 @@ void MainWindow::BeginAsyncExport(
     {
         // Open failed synchronously: tear down and toast.
         mSession->SetExportInFlight(false);
-        QPointer<LogSessionView> originViewToReEnable = LogSessionViewForSession(mSession);
+        const QPointer<LogSessionView> originViewToReEnable = LogSessionViewForSession(mSession);
         if (originViewToReEnable != nullptr)
         {
             originViewToReEnable->HideOperationProgress();
@@ -5918,7 +5930,7 @@ void MainWindow::ShowExportProgress()
 void MainWindow::UpdateExportProgressUi()
 {
     bool anyInFlight = false;
-    for (LogSession *session : hostedSessions())
+    for (const LogSession *session : hostedSessions())
     {
         if (session == nullptr || !session->IsExportInFlight())
         {
@@ -6025,7 +6037,7 @@ void MainWindow::CancelInFlightExportFor(LogSession *origin)
         return;
     }
     const bool wasInFlight = origin->IsExportInFlight();
-    QPointer<LogSessionView> originView = LogSessionViewForSession(origin);
+    const QPointer<LogSessionView> originView = LogSessionViewForSession(origin);
     origin->SetExportInFlight(false);
     auto *watcher = origin->ExportWatcherPtr();
     if (watcher == nullptr)
@@ -6104,7 +6116,7 @@ void MainWindow::OnExportFinishedFor(LogSession *origin)
 
     if (hosted)
     {
-        QPointer<LogSessionView> originViewToReEnable = LogSessionViewForSession(origin);
+        const QPointer<LogSessionView> originViewToReEnable = LogSessionViewForSession(origin);
         if (originViewToReEnable != nullptr)
         {
             originViewToReEnable->HideOperationProgress();
@@ -8449,7 +8461,7 @@ void MainWindow::ApplyDisplayOrder(LogSession *session, LogSessionView *view)
         return;
     }
     RowOrderProxyModel *rowOrder = session->RowOrderProxy();
-    LogModel *model = session->Model();
+    const LogModel *model = session->Model();
     LogTableView *table = view != nullptr ? view->TableView() : nullptr;
     if (rowOrder == nullptr || table == nullptr || model == nullptr)
     {
@@ -8996,7 +9008,7 @@ QString MainWindow::ClosePromptInformativeText(const LogSession &session)
     const SessionPresentationSnapshot snapshot = session.PresentationSnapshot();
     if (snapshot.dirty.restorableInPlace && !snapshot.dirty.ephemeralUnreproducible)
     {
-        return QString();
+        return {};
     }
     return QObject::tr(
         "Save writes session settings such as columns, filters, and highlights. "
@@ -9157,7 +9169,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
     // to be active. Restore the prior tab when the user cancels.
     const int previousActiveIndexForPrompt = (mTabWidget != nullptr) ? mTabWidget->currentIndex() : -1;
     bool cancelled = false;
-    for (int idx = 0; idx < static_cast<int>(mTabs.size()); ++idx)
+    for (int idx = 0; std::cmp_less(idx, mTabs.size()); ++idx)
     {
         LogSession *session = SessionAtTab(idx);
         if (session == nullptr)
@@ -10245,7 +10257,7 @@ void MainWindow::RebuildFiltersFromConfiguration(LogSession *session)
     {
         return;
     }
-    LogModel *const model = session->Model();
+    const LogModel *const model = session->Model();
     if (model == nullptr)
     {
         return;
@@ -11584,8 +11596,8 @@ void MainWindow::ApplyDeferredSortFromConfig(LogSession *session, LogSessionView
     {
         return;
     }
-    LogFilterModel *const filter = session->FilterProxy();
-    LogModel *const model = session->Model();
+    const LogFilterModel *const filter = session->FilterProxy();
+    const LogModel *const model = session->Model();
     LogTableView *const table = view != nullptr ? view->TableView() : nullptr;
     if (filter == nullptr || model == nullptr || table == nullptr)
     {

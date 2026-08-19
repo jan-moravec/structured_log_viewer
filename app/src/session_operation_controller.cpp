@@ -10,19 +10,19 @@
 #include "row_order_proxy_model.hpp"
 
 SessionOperationController::SessionOperationController(MainWindow &window) noexcept
-    : mWindow(window)
+    : mWindow(&window)
 {
 }
 
 SessionOperationTarget SessionOperationController::TargetFor(LogSession *origin) const noexcept
 {
     SessionOperationTarget target;
-    if (origin == nullptr || mWindow.HostedSession(origin->InstanceId()) != origin)
+    if (origin == nullptr || mWindow->HostedSession(origin->InstanceId()) != origin)
     {
         return target;
     }
     target.session = origin;
-    target.view = mWindow.ViewAtTab(mWindow.TabIndexForSession(origin->InstanceId()));
+    target.view = mWindow->ViewAtTab(mWindow->TabIndexForSession(origin->InstanceId()));
     target.model = origin->Model();
     target.rowOrder = origin->RowOrderProxy();
     target.filter = origin->FilterProxy();
@@ -32,7 +32,7 @@ SessionOperationTarget SessionOperationController::TargetFor(LogSession *origin)
     {
         target.table = target.view->TableView();
     }
-    target.isActive = origin == mWindow.activeSession();
+    target.isActive = origin == mWindow->activeSession();
     return target;
 }
 
@@ -42,7 +42,7 @@ void SessionOperationController::CompleteStreaming(LogSession *origin, Streaming
     {
         return;
     }
-    mWindow.OnStreamingFinished(origin, result);
+    mWindow->OnStreamingFinished(origin, result);
 }
 
 void SessionOperationController::CompleteDecompression(LogSession *origin)
@@ -51,22 +51,22 @@ void SessionOperationController::CompleteDecompression(LogSession *origin)
     {
         return;
     }
-    mWindow.OnDecompressionFinishedFor(origin);
+    mWindow->OnDecompressionFinishedFor(origin);
 }
 
 void SessionOperationController::CompleteExport(LogSession *origin)
 {
-    mWindow.OnExportFinishedFor(origin);
+    mWindow->OnExportFinishedFor(origin);
 }
 
 bool SessionOperationController::SaveSnapshot(LogSession *origin, bool publishOpenWindow)
 {
-    return mWindow.AutoSaveSessionSnapshot(origin, publishOpenWindow);
+    return mWindow->AutoSaveSessionSnapshot(origin, publishOpenWindow);
 }
 
 void SessionOperationController::SaveAllHostedSnapshots(bool publishOpenWindow)
 {
-    for (LogSession *session : mWindow.hostedSessions())
+    for (LogSession *session : mWindow->hostedSessions())
     {
         (void)SaveSnapshot(session, publishOpenWindow);
     }

@@ -109,5 +109,6 @@ public:
     void SaveAllHostedSnapshots(bool publishOpenWindow);
 
 private:
-    MainWindow &mWindow;
+    /** @brief Non-owning host window; set by the constructor and never null. */
+    MainWindow *mWindow = nullptr;
 };
