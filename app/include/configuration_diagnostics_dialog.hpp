@@ -30,6 +30,18 @@ public:
     /// data. Shared between the status-bar summary and the dialog.
     [[nodiscard]] static int MismatchedColumnCount(const LogModel &model);
 
+#ifdef LOGAPP_BUILD_TESTING
+    /**
+     * @brief Emits `editColumnRequested` for tests.
+     *
+     * @param columnIndex Logical column index to request.
+     */
+    void RequestEditColumnForTest(int columnIndex)
+    {
+        emit editColumnRequested(columnIndex);
+    }
+#endif
+
 protected:
     /// Re-render so the warning-row tint follows Light <-> Dark
     /// switches while the dialog is open.

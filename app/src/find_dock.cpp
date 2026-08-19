@@ -1,6 +1,8 @@
 #include "find_dock.hpp"
 
 #include "find_record_widget.hpp"
+#include "log_session.hpp"
+#include "session_bind_context.hpp"
 
 #include <QApplication>
 #include <QCloseEvent>
@@ -62,4 +64,77 @@ void FindDock::showEvent(QShowEvent *event)
 {
     QDockWidget::showEvent(event);
     emit revealed();
+}
+
+void FindDock::Bind(const SessionBindContext &context)
+{
+    LogSession *outgoing = mBoundSession.data();
+    LogSession *incoming = context.session.data();
+
+    // A live same-session bind is a no-op. Null equality must still
+    // clear visible state after QPointer auto-null teardown.
+    if (outgoing != nullptr && outgoing == incoming)
+    {
+        return;
+    }
+
+    // Save-outgoing: capture the visible query state into the
+    // outgoing session's store.
+    if (outgoing != nullptr && mWidget != nullptr)
+    {
+        SessionFindQueryState &state = outgoing->MutableFindQuery();
+        state.query = mWidget->queryText();
+        state.wildcards = mWidget->queryWildcards();
+        state.regex = mWidget->queryRegex();
+    }
+
+    // Cancel any in-flight debounce so the timer cannot fire a
+    // `MatchCountRequested` against a stale model between the
+    // clear below and the debounce re-arm on restore.
+    if (mWidget != nullptr)
+    {
+        mWidget->CancelPendingMatchCountRequest();
+    }
+
+    mBoundSession = incoming;
+
+    // Load-incoming: restore the incoming session's query state
+    // (or clear when the incoming context is unbound).
+    if (mWidget != nullptr)
+    {
+        if (incoming != nullptr)
+        {
+            const SessionFindQueryState &state = incoming->FindQuery();
+            mWidget->RestoreQueryState(state.query, state.wildcards, state.regex);
+        }
+        else
+        {
+            mWidget->RestoreQueryState({}, /*wildcards=*/false, /*regex=*/false);
+        }
+    }
+}
+
+void FindDock::Unbind()
+{
+    // Equivalent to `Bind(SessionBindContext::MakeUnbound())` with
+    // fewer branches for teardown call sites that already know they
+    // want the empty state.
+    if (LogSession *session = mBoundSession.data(); session != nullptr && mWidget != nullptr)
+    {
+        SessionFindQueryState &state = session->MutableFindQuery();
+        state.query = mWidget->queryText();
+        state.wildcards = mWidget->queryWildcards();
+        state.regex = mWidget->queryRegex();
+    }
+    if (mWidget != nullptr)
+    {
+        mWidget->CancelPendingMatchCountRequest();
+        mWidget->RestoreQueryState({}, /*wildcards=*/false, /*regex=*/false);
+    }
+    mBoundSession = nullptr;
+}
+
+LogSession *FindDock::boundSessionForTest() const noexcept
+{
+    return mBoundSession.data();
 }

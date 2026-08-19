@@ -26,7 +26,7 @@ For the architecture each item plugs into, see [CONTRIBUTING.md → Architecture
   - [13. ~~Match overview rail / minimap~~ (shipped)](#13-match-overview-rail--minimap)
   - [14. Per-cell quick filter](#14-per-cell-quick-filter)
   - [15. Inline pretty-print for embedded JSON / XML](#15-inline-pretty-print-for-embedded-json--xml)
-  - [16. Tabs for multiple sources in one window](#16-tabs-for-multiple-sources-in-one-window)
+  - [16. ~~Tabs for multiple sources in one window~~ (shipped)](#16-tabs-for-multiple-sources-in-one-window)
   - [17. Time-gap detection](#17-time-gap-detection)
   - [18. Pattern clustering / similar-line grouping](#18-pattern-clustering--similar-line-grouping)
   - [19. Encoding auto-detection](#19-encoding-auto-detection)
@@ -234,9 +234,9 @@ Right-click on a cell → **Filter on this value** / **Hide rows with this value
 
 `RecordDetailDock` already pretty-prints JSON. Surface the same renderer per-cell: hovering a long JSON / XML payload shows a popup with the pretty-printed view; an **Expand** affordance pins the popup so multiple cells can be inspected at once. Lnav's `Shift+P` and LogViewPlus's pretty-print are the references. Works particularly well on logfmt / regex rows whose `message` column carries an embedded JSON object.
 
-### 16. Tabs for multiple sources in one window
+### 16. ~~Tabs for multiple sources in one window~~
 
-Today multiple sources require multiple windows (`File → New Window`). Tabs are more conventional and reduce window clutter, especially on tight monitor setups. The Recent Sessions submenu is the natural feed for "reopen as tab". Each tab keeps its own `LogModel` + filter set + sort, so the existing model layer needs no change; the tab bar is a `QTabWidget` wrapping the current single-`MainWindow` body.
+> **Shipped.** Each window hosts independent tabs for static files, multi-file opens, compressed files, bundles, live tails, stdin, and TCP / UDP streams. **New Tab** (`Ctrl+T`), **Close Tab** (`Ctrl+W`), keyboard cycling, and drag reordering are available. Completions and autosave target the originating tab. Close Tab, New Session, last-tab close, and quit share one Save / Discard / Cancel model; restorable file-backed tabs autosave. Workspace restore keeps tab order and the selected tab, restores live-tail as a static file, restores network/stdin as empty named tabs, and defers windows past the 25-window cap. Custom titles persist with the workspace. See [`doc/README.md § Tabs`](doc/README.md#tabs).
 
 ### 17. Time-gap detection
 
@@ -367,7 +367,7 @@ Reference snapshot from the survey that informed the roadmap (June 2026). `✓` 
 | JSON / NDJSON parsing                       |        ✓         |     ✓     |       |     ~     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
 | logfmt / CSV / regex templates              |        ✓         |     ✓     |       |     ~     |      ~      |    ~    |      ~       |     ~     |   ~   |
 | Multi-file merge into one table             |        ✓         |     ✓     |       |     ~     |      ✓      |    ✓    |              |     ✓     |       |
-| Tabs for separate files                     |                  |           |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |           |   ✓   |
+| Tabs for separate files                     |        ✓         |           |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |           |   ✓   |
 | Live tail                                   |        ✓         |     ✓     |   ✓   |     ✓     |      ✓      |    ✓    |      ✓       |     ✓     |   ✓   |
 | Log rotation handling                       |        ✓         |     ✓     |   ~   |     ✓     |      ✓      |    ~    |      ✓       |     ~     |   ~   |
 | Network ingestion (TCP / UDP)               |        ✓         |     ~     |       |           |             |    ✓    |              |           |       |

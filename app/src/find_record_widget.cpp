@@ -314,6 +314,56 @@ void FindRecordWidget::BumpMatchCountDebounce()
     }
 }
 
+QString FindRecordWidget::queryText() const
+{
+    return mEdit != nullptr ? mEdit->text() : QString{};
+}
+
+bool FindRecordWidget::queryWildcards() const
+{
+    return mWildcardsAction != nullptr && mWildcardsAction->isChecked();
+}
+
+bool FindRecordWidget::queryRegex() const
+{
+    return mRegexAction != nullptr && mRegexAction->isChecked();
+}
+
+void FindRecordWidget::RestoreQueryState(const QString &text, bool wildcards, bool regex)
+{
+    // Set modes before text so any text signal observes them.
+    // Regex wins if persisted state requests both exclusive modes.
+    if (mWildcardsAction != nullptr)
+    {
+        // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
+        mWildcardsAction->setChecked(regex ? false : wildcards);
+    }
+    if (mRegexAction != nullptr)
+    {
+        mRegexAction->setChecked(regex);
+    }
+    if (mEdit != nullptr)
+    {
+        mEdit->setText(text);
+    }
+    // Arm explicitly because assigning identical text emits no
+    // `textChanged`, but a restored query still needs a recount.
+    // Empty text remains quiet because the bump is internally gated.
+    BumpMatchCountDebounce();
+}
+
+void FindRecordWidget::CancelPendingMatchCountRequest()
+{
+    if (mMatchCountTimer != nullptr)
+    {
+        mMatchCountTimer->stop();
+    }
+    if (mMatchCountMaxAgeTimer != nullptr)
+    {
+        mMatchCountMaxAgeTimer->stop();
+    }
+}
+
 void FindRecordWidget::DismissBar()
 {
     // Closing the dock is the only correct dismiss: hiding just the

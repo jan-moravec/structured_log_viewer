@@ -1,5 +1,7 @@
 #pragma once
 
+#include "log_session_presentation.hpp"
+
 #include <loglib/log_configuration.hpp>
 
 #include <QIcon>
@@ -33,8 +35,10 @@ class ThemeControl;
 /// Owned lazily by `MainWindow`. Edits happen on a local copy;
 /// Save emits `rulesSaved(...)` and `MainWindow` mirrors the
 /// vector into both the runtime `HighlightRuleSet` and
-/// `LogConfigurationManager`. Delete-on-close is off so half-typed
-/// edits survive close/reopen.
+/// `LogConfigurationManager`. Delete-on-close is off. Tab switches
+/// capture the buffer into the originating session's
+/// `HighlightRulesEditorDraft` and restore it on rebind without
+/// committing. Closing the editor window still prompts when dirty.
 ///
 /// v1 scope: the form edits String / Number / Boolean match specs.
 /// Time and Enumeration rules parse and render at runtime but are
@@ -60,15 +64,56 @@ public:
     /// rule selection.
     void SetColumns(std::vector<loglib::LogConfiguration::Column> columns);
 
-    /// Replace the rule buffer after an external mutation (e.g.
-    /// config load). Preserves the current selection when possible.
+    /**
+     * @brief Replaces the rule buffer after an external mutation (e.g.
+     * config load). Preserves the current selection when possible.
+     *
+     * A dirty local buffer is discarded. Tab-switch restore uses
+     * `RestoreDraft()` so uncommitted edits are not treated as a
+     * configuration load.
+     *
+     * @param rules Committed rules that become both the local buffer and the baseline.
+     */
     void SetRules(std::vector<loglib::LogConfiguration::HighlightRule> rules);
+
+    /**
+     * @brief Captures the in-progress buffer, including unsaved form fields.
+     *
+     * Gathers the current form into the selected rule before copying.
+     *
+     * @return Local rules, baseline, and selected row.
+     */
+    [[nodiscard]] HighlightRulesEditorDraft CaptureDraft();
+
+    /**
+     * @brief Restores a previously captured draft without committing rules.
+     *
+     * Does not emit `rulesSaved`. The baseline stays the draft baseline,
+     * so a dirty draft remains dirty.
+     *
+     * @param draft Editor state to restore.
+     */
+    void RestoreDraft(const HighlightRulesEditorDraft &draft);
+
+    /**
+     * @brief Tests whether the local buffer differs from the baseline.
+     *
+     * @return `true` when `mLocalRules != mBaseline`.
+     */
+    [[nodiscard]] bool IsDirty() const;
 
 signals:
     /// Fired on Save. Vector order matters (last-match-wins).
     /// `MainWindow` mirrors the result into both the runtime
     /// `HighlightRuleSet` and the persistent config.
     void rulesSaved(std::vector<loglib::LogConfiguration::HighlightRule> rules);
+
+    /**
+     * @brief Emitted when the user discards unsaved edits by closing the editor.
+     *
+     * The local buffer has already been reverted to the baseline.
+     */
+    void editsDiscarded();
 
 protected:
     /// Prompt before discarding unsaved edits on Esc / X / Alt+F4.
@@ -122,9 +167,6 @@ private:
 
     void UpdateFormEnabled();
     void UpdateListButtons();
-
-    /// True iff `mLocalRules != mBaseline`.
-    [[nodiscard]] bool IsDirty() const;
 
     void MarkDirty();
 

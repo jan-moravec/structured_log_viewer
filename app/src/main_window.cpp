@@ -14,6 +14,8 @@
 #include "icon_loader.hpp"
 #include "leaf_rule_compile.hpp"
 #include "level_cell_delegate.hpp"
+#include "log_session.hpp"
+#include "log_session_view.hpp"
 #include "log_string_matcher.hpp"
 #include "log_warning.hpp"
 #include "network_stream_dialog.hpp"
@@ -66,6 +68,8 @@
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDropEvent>
+#include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
@@ -84,9 +88,11 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QPainter>
 #include <QPixmap>
 #include <QPlainTextEdit>
+#include <QPointF>
 #include <QProgressDialog>
 #include <QRegularExpression>
 #include <QScopeGuard>
@@ -98,11 +104,14 @@
 #include <QStatusBar>
 #include <QStringList>
 #include <QStyle>
+#include <QTabBar>
+#include <QTabWidget>
 #include <QTableView>
 #include <QTextEdit>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
+#include <QUrl>
 #include <QUuid>
 #include <QVBoxLayout>
 #include <QVariant>
@@ -127,7 +136,7 @@
 namespace
 {
 
-/// Return whether @p path has the session-bundle extension.
+// Check the extension without opening the bundle.
 [[nodiscard]] bool IsSessionBundlePath(const QString &path)
 {
     // `QFileInfo::suffix()` omits the leading dot.
@@ -139,7 +148,7 @@ namespace
            0;
 }
 
-/// Return whether any filter leaf fails to resolve against @p columns.
+// Detect filters that cannot bind to the current columns.
 // NOLINTNEXTLINE(misc-no-recursion): mutually recursive with std::visit lambdas below.
 [[nodiscard]] bool FilterHasUnresolvedLeaves(
     const loglib::FilterExpression &expression, const std::vector<loglib::LogConfiguration::Column> &columns
@@ -179,10 +188,7 @@ namespace
     );
 }
 
-/// Format a millisecond-epoch timestamp as a "N time ago" string
-/// for the Recent Sessions tooltip. Empty for non-positive
-/// timestamps (legacy entries written before stamping was added).
-/// Past 30 days, switches to an absolute local-time date.
+// Use relative recent-session times, with absolute dates after 30 days.
 QString FormatRelativeTimestamp(qint64 timestampMsEpoch, qint64 nowMs)
 {
     if (timestampMsEpoch <= 0)
@@ -353,9 +359,7 @@ QString HumanDuration(std::chrono::steady_clock::duration d)
 // 4 KB) followed by a Glaze parse of the bounded prefix. Rejects
 // `columns.empty()` so `{}` (a valid default `LogConfiguration`)
 // is not misclassified as a configuration.
-///
-/// Bounded read budget so a multi-gigabyte log starting with
-/// `{"columns":...}` cannot freeze the GUI in the parse step.
+// Bound configuration sniffing so a log prefix cannot freeze the GUI.
 constexpr qint64 CONFIG_PROBE_MAX_BYTES = 1024 * 1024;
 
 bool FileLooksLikeConfiguration(const QString &file)
@@ -422,10 +426,7 @@ bool FileLooksLikeConfiguration(const QString &file)
     }
 }
 
-/// Decode the on-disk `Type::Boolean` filter (a subset of
-/// `{"true", "false"}`) into the two-toggle pair
-/// `BoolRowPredicate` consumes. Case-insensitive so a hand-edited
-/// `"True"` / `"FALSE"` still loads.
+// Decode persisted boolean values case-insensitively for hand-edited files.
 struct BooleanFilterSides
 {
     bool includeTrue = false;
@@ -449,8 +450,7 @@ BooleanFilterSides DecodeBooleanFilterSides(const std::vector<std::string> &filt
     return sides;
 }
 
-/// Why a saved leaf could not be revived. The load-side validator
-/// uses this to summarise drops in one dialog.
+// Categorize dropped filters for one load summary.
 enum class FilterValidationReason
 {
     OutOfRangeRow,
@@ -466,8 +466,7 @@ struct FilterValidationFailure
 {
     FilterValidationReason reason;
     int row;
-    /// The leaf's column header, or empty when the column keys
-    /// don't resolve.
+    // Empty when the leaf's column keys do not resolve.
     std::string columnHeader;
 };
 
@@ -493,10 +492,7 @@ QString FilterValidationReasonString(FilterValidationReason reason)
     return QStringLiteral("unknown");
 }
 
-/// Check whether a saved leaf still fits the current column layout.
-/// Called from configuration load (drops failures into a summary
-/// dialog) and from `MainWindow::AddFilter`'s pre-guard. Returns
-/// `nullopt` on success.
+// Validate saved leaves before load or editing; nullopt means valid.
 std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
     const loglib::LeafRule &filter, const std::vector<loglib::LogConfiguration::Column> &columns
 )
@@ -586,9 +582,7 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
     return std::nullopt;
 }
 
-/// Extract `LeafRule::columnKeys` for the column at @p rowIndex.
-/// Returns empty when out of range, which makes the resulting
-/// leaf inert (guarded by the caller).
+// Extract stable column keys; out-of-range rows produce an inert empty key set.
 [[nodiscard]] std::vector<std::string> ColumnKeysForRow(
     int rowIndex, const std::vector<loglib::LogConfiguration::Column> &columns
 )
@@ -641,87 +635,136 @@ MainWindow::MainWindow(
     ThemeControl *theme,
     SessionHistoryManager *historyManager,
     RegexTemplateRegistry *regexTemplateRegistry,
-    QWidget *parent
+    QWidget *parent,
+    ChromeRestore chromeRestore
 )
     : QMainWindow(parent),
       ui(new Ui::MainWindow),
       mTheme(theme),
       mHistoryManager(historyManager),
-      mRegexTemplateRegistry(regexTemplateRegistry)
+      mRegexTemplateRegistry(regexTemplateRegistry),
+      mOperations(std::make_unique<SessionOperationController>(*this))
 {
+#ifdef LOGAPP_BUILD_TESTING
+    // Offscreen Qt cannot complete modal close or save dialogs.
+    if (qEnvironmentVariable("QT_QPA_PLATFORM") == QLatin1String("offscreen"))
+    {
+        mSuppressDialogsForTest = true;
+    }
+#endif
     ui->setupUi(this);
-    UpdateWindowTitle();
     ApplyThemedWindowIcon();
+    setAcceptDrops(true);
 
-    mTableView = new LogTableView(this);
+    // The active session owns the model objects; the shell keeps non-owning aliases.
+    mSession = new LogSession(mTheme, mHistoryManager, mRegexTemplateRegistry, this);
+    // Seed model aliases before constructing the view that supplies widget aliases.
+    SetActiveSessionAliases(mSession, /*view=*/nullptr);
+
+    // Title projection requires a constructed active session.
+    UpdateWindowTitle();
+
+    // Scoped subscriptions are installed after every referenced widget exists.
+
+    // Preserve platform content margins while each tab page owns its zero-margin view layout.
+    // `addTab` establishes Qt ownership for the initially unparented view.
+    mSessionView = new LogSessionView(mSession, mTheme);
+    mTabWidget = new QTabWidget(ui->centralWidget);
+    mTabWidget->setTabsClosable(true);
+    mTabWidget->setMovable(true);
+    mTabWidget->setDocumentMode(true);
+    mTabWidget->setUsesScrollButtons(true);
+    mTabWidget->setElideMode(Qt::ElideRight);
+    // QTabWidget exposes this container name; QTabBar exposes each tab's visible text.
+    mTabWidget->setAccessibleName(tr("Session Tabs"));
     mLayout = new QVBoxLayout(ui->centralWidget);
-    mLayout->addWidget(mTableView, 1);
-    mTableView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    mLayout->addWidget(mTabWidget, 1);
 
-    // Build before the model so it can wire anchor listeners.
-    mAnchors = new AnchorManager(this);
-    mHighlights = new HighlightRuleSet(this);
-    mModel = new LogModel(mTableView, mTheme, mAnchors, mHighlights);
-    mTableView->setModel(mModel);
-    mTableView->SetAnchorManager(mAnchors);
+    {
+        // Adding the first page fires `currentChanged(0)` before
+        // `mTabs` has an entry -- guard so `OnActiveTabChanged`
+        // does not run against an inconsistent vector.
+        const SuppressActiveTabChangeScope suppress(*this);
+        mTabWidget->addTab(mSessionView, tr("Untitled"));
+    }
 
-    // Highlight-rule wiring: keep the runtime cache in sync with
-    // the model. Column inserts also rebind so rules whose keys
-    // newly resolve activate immediately; model reset drops the
-    // match cache (compiled rules persist for the next stream).
-    connect(mModel, &QAbstractItemModel::rowsInserted, this, [this](const QModelIndex &, int first, int last) {
-        if (mHighlights == nullptr || mModel == nullptr)
+    auto initialTab = std::make_unique<WindowTab>();
+    initialTab->id = mSession->InstanceId();
+    initialTab->session = mSession;
+    initialTab->view = mSessionView;
+    mTabs.push_back(std::move(initialTab));
+
+    // Complete view aliases after the tab page exists.
+    SetActiveSessionAliases(mSession, mSessionView);
+
+    // Wire the tab strip signals. `currentChanged` drives the full
+    // rebind sequence (`OnActiveTabChanged`); `tabCloseRequested`
+    // routes the built-in close button through `CloseTabAtIndex`
+    // so the last-tab-closes-window semantics stay centralised.
+    // `tabMoved` on the underlying `QTabBar` keeps `mTabs` in
+    // lockstep with the strip's index order.
+    connect(mTabWidget, &QTabWidget::currentChanged, this, &MainWindow::OnActiveTabChanged);
+    connect(mTabWidget, &QTabWidget::tabCloseRequested, this, &MainWindow::CloseTabAtIndex);
+    connect(mTabWidget->tabBar(), &QTabBar::tabMoved, this, [this](int from, int to) {
+        FinishTabRename(false);
+        if (from < 0 || to < 0 || std::cmp_greater_equal(from, mTabs.size()) ||
+            std::cmp_greater_equal(to, mTabs.size()))
         {
             return;
         }
-        // Guard against negatives before the size_t cast.
-        if (first < 0 || last < first)
+        auto moved = std::move(mTabs[from]);
+        mTabs.erase(mTabs.begin() + from);
+        mTabs.insert(mTabs.begin() + to, std::move(moved));
+    });
+    QTabBar *tabBar = mTabWidget->tabBar();
+    tabBar->setFocusPolicy(Qt::ClickFocus);
+    tabBar->setContextMenuPolicy(Qt::CustomContextMenu);
+    tabBar->installEventFilter(this);
+    connect(tabBar, &QTabBar::customContextMenuRequested, this, [this](const QPoint &pos) {
+        if (mTabWidget == nullptr)
         {
             return;
         }
-        mHighlights->OnRowsAppended(mModel->Table(), static_cast<std::size_t>(first), static_cast<std::size_t>(last));
-    });
-    // FIFO retention fires `rowsRemoved` before appending the new
-    // tail; without this the cache would keep stale prefix entries
-    // and misalign every subsequent `LastMatchFor`.
-    connect(mModel, &QAbstractItemModel::rowsRemoved, this, [this](const QModelIndex &, int first, int last) {
-        if (mHighlights == nullptr || first < 0 || last < first)
+        const QTabBar *bar = mTabWidget->tabBar();
+        if (bar == nullptr)
         {
             return;
         }
-        mHighlights->OnRowsEvicted(static_cast<std::size_t>(first), static_cast<std::size_t>(last));
-    });
-    connect(mModel, &QAbstractItemModel::columnsInserted, this, [this](const QModelIndex &, int, int) {
-        if (mHighlights == nullptr || mModel == nullptr)
+        const int index = bar->tabAt(pos);
+        if (index < 0)
         {
             return;
         }
-        mHighlights->RebindColumns(mModel->Configuration().columns, &mModel->Table());
-        // Keep an open editor's column picker in sync so a rule
-        // authored right after streaming discovers a new key sees it.
-        if (mHighlightRulesEditor != nullptr)
+        QMenu menu(this);
+        QAction *const rename = menu.addAction(tr("Rename Tab"));
+        rename->setShortcut(QKeySequence(Qt::Key_F2));
+        const QAction *chosen = menu.exec(bar->mapToGlobal(pos));
+        if (chosen == rename)
         {
-            mHighlightRulesEditor->SetColumns(mModel->Configuration().columns);
-        }
-        // Only recompile the filter tree when a leaf's resolution
-        // could actually change. Column additions are append-only
-        // in the streaming path, and `ResolveLeafColumnByKeys`
-        // returns the first match, so previously-resolved leaves
-        // stay resolved to the same column index. The gate skips
-        // an otherwise-guaranteed `layoutChanged` rebuild on filter
-        // models whose leaves are all already bound; pinned by
-        // `TestEnumPromotedOnUnrelatedColumnDoesNotRebuildFilters`.
-        if (FilterHasUnresolvedLeaves(mModel->Configuration().expression, mModel->Configuration().columns))
-        {
-            UpdateFilters();
+            StartTabRename(index);
         }
     });
-    connect(mModel, &QAbstractItemModel::modelReset, this, [this]() {
-        if (mHighlights != nullptr)
-        {
-            mHighlights->ClearMatches();
-        }
-    });
+
+    // Background tabs still need dirty, chrome, and origin-bound completion updates.
+    InstallPerTabPersistentConnections(mSession);
+
+    // LogSessionView owns intrinsic table setup; the shell adds only shared UI wiring.
+
+    // Shell-scoped columnsInserted work:
+    //   * keep the highlight-editor's column picker in sync so a
+    //     rule authored right after streaming discovers a new key
+    //     sees it; and
+    //   * recompile the filter tree when a leaf's resolution could
+    //     actually change (column additions are append-only in the
+    //     streaming path, so previously-resolved leaves stay
+    //     resolved to the same column; the gate skips an otherwise-
+    //     guaranteed `layoutChanged` rebuild on filter models whose
+    //     leaves are all already bound — pinned by
+    //     `TestEnumPromotedOnUnrelatedColumnDoesNotRebuildFilters`).
+    //
+    // Session-owned highlight binding keeps background models independent.
+    // columnsInserted -> highlight editor + unresolved-leaf filter
+    // check: moved into `InstallActiveSessionConnections()`.
 
     mAnchorsDock = new AnchorsDock(mAnchors, mModel, mTheme, this);
     addDockWidget(Qt::RightDockWidgetArea, mAnchorsDock);
@@ -735,8 +778,7 @@ MainWindow::MainWindow(
     addAction(mActionToggleAnchors);
     WireDockToggle(mAnchorsDock, mActionToggleAnchors, &AnchorsDock::closed);
 
-    // Histogram dock (ROADMAP item 2). Bottom-docked so it doesn't
-    // compete with the right-hand Anchors / Record Details stack.
+    // Bottom docking avoids competing with the right-side detail stack.
     // Same lifecycle as the anchors dock: hidden by default, toggled
     // from View / toolbar / Ctrl+H.
     mHistogramDock = new HistogramDock(mModel, mTheme, mAnchors, this);
@@ -755,21 +797,9 @@ MainWindow::MainWindow(
     mActionToggleHistogram->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_H));
     addAction(mActionToggleHistogram);
     WireDockToggle(mHistogramDock, mActionToggleHistogram, &HistogramDock::closed);
-    // `modelReset` clears the header's hidden flags, but
-    // `Column::visible` survives. Re-apply on every reset so load /
-    // re-stream / teardown all stay consistent with the saved config.
-    connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::ApplyColumnVisibility);
-    mTableView->setSelectionBehavior(QAbstractItemView::SelectRows);
-    // ExtendedSelection: plain click replaces, Ctrl toggles, Shift
-    // extends a range, drag is contiguous (Explorer/Excel idiom).
-    mTableView->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    mTableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    // Per-level theme colours already partition rows; an extra
-    // alternation stripe would make two rows of the same level
-    // read as different. Secondary tables (Record Details,
-    // Columns Manager) keep alternation since they're plain
-    // property lists.
-    mTableView->setAlternatingRowColors(false);
+    // modelReset -> ApplyColumnVisibility: moved into
+    // `InstallActiveSessionConnections()`.
+    // Selection and rendering policy belong to each session view.
 
     // Single entry point for both Preferences-driven and
     // OS-driven theme refreshes. Skipped in the no-theme test
@@ -782,54 +812,17 @@ MainWindow::MainWindow(
 
     ApplyTableStyleSheet();
 
-    // Proxy chain: `RowOrderProxyModel` mirrors row indices for
-    // newest-first; `LogFilterModel` handles filtering and column
-    // sorts. They never share sort state.
-    mRowOrderProxyModel = new RowOrderProxyModel(this);
-    mRowOrderProxyModel->setSourceModel(mModel);
-
-    mSortFilterProxyModel = new LogFilterModel(this);
-    mSortFilterProxyModel->setSourceModel(mRowOrderProxyModel);
-    mSortFilterProxyModel->SetLogModel(mModel);
-    // `setSortRole` is intentionally not called: `LogFilterModel`
-    // sorts via `loglib::CompareRows` straight against `LogTable`
+    // Session and view construction guarantees a complete proxy and selection-model chain.
+    //
+    // `LogFilterModel::setSortRole` is intentionally never called:
+    // it sorts via `loglib::CompareRows` straight against `LogTable`
     // (no `data(role)` round-trip), so the sort role no longer
     // drives behaviour. The deprecated no-op stays on the class for
-    // one release to ease test / benchmark migration.
-    mTableView->setModel(mSortFilterProxyModel);
-    mTableView->setSortingEnabled(true);
-    mTableView->sortByColumn(-1, Qt::SortOrder::AscendingOrder);
+    // one release for test and benchmark compatibility.
 
-    // Overview rail (ROADMAP item 13). Constructed after the proxy
-    // chain: the model buckets `mSortFilterProxyModel` rows and
-    // the widget's viewport indicator reads `mTableView`'s
-    // scrollbar. The model stays live even while the rail is
-    // hidden so the toggle is instant on both edges.
-    mOverviewRailModel = new OverviewRailModel(mSortFilterProxyModel, mModel, mAnchors, this);
-    mOverviewRailWidget = new OverviewRailWidget(mOverviewRailModel, mTheme, mTableView, this);
-    mOverviewRailWidget->hide();
-    connect(mOverviewRailWidget, &OverviewRailWidget::proxyRowClicked, this, &MainWindow::ScrollToProxyRow);
-    // A height change reallocates buckets and drops size-mismatched
-    // durable match counts. When find is open, re-push / rescan so
-    // ticks don't vanish until the next keystroke.
-    connect(mOverviewRailModel, &OverviewRailModel::bucketsChanged, this, [this]() {
-        if (!IsFindBarVisible() || !mFindMatchCache.has_value() || mOverviewRailModel == nullptr)
-        {
-            return;
-        }
-        const std::size_t n = mOverviewRailModel->BucketCount();
-        if (n == 0)
-        {
-            return;
-        }
-        // Same H and ticks already present: RebuildInternal
-        // re-applied durable counts; nothing to do.
-        if (mFindMatchCache->bucketCounts.size() == n && mOverviewRailModel->HasMatchTicks())
-        {
-            return;
-        }
-        PushFindMatchesToOverviewRail();
-    });
+    // Overview rail wiring, view -> shell status/message routing,
+    // progress strip cancel, and rail buckets-changed re-push: all
+    // moved into `InstallActiveSessionConnections()`.
 
     mActionToggleOverviewRail = new QAction(tr("Overview rail"), this);
     mActionToggleOverviewRail->setObjectName(QStringLiteral("actionToggleOverviewRail"));
@@ -841,88 +834,25 @@ MainWindow::MainWindow(
     addAction(mActionToggleOverviewRail);
     connect(mActionToggleOverviewRail, &QAction::toggled, this, &MainWindow::SetOverviewRailVisible);
 
-    // Icon-pill delegate is created only when we have a
-    // `ThemeControl`; the no-theme test fixture keeps the standard
-    // text delegate (`IsLevelIconModeActive` is always false there).
+    // Without a theme controller, retain Qt's standard text delegate.
     if (mTheme != nullptr)
     {
         mLevelCellDelegate = new LevelCellDelegate(mTheme, this);
-
-        // Reapply on every signal that can change the first-level
-        // column index. `columnsMoved` is handled inside
-        // `OnSourceColumnsMoved` instead, so the filter-map remap
-        // runs before the delegate reapply.
-        connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::ApplyLevelCellDelegate);
-        connect(mModel, &QAbstractItemModel::columnsInserted, this, &MainWindow::ApplyLevelCellDelegate);
-        connect(mModel, &QAbstractItemModel::columnsRemoved, this, &MainWindow::ApplyLevelCellDelegate);
-        // Promote/Demote between Level and other enum types flips
-        // which column is "the level column". `Grew` is a no-op
-        // for our purposes (dict expansion doesn't move columns).
-        connect(
-            mModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason reason, int /*columnIndex*/) {
-                if (reason == EnumColumnsChangeReason::Grew)
-                {
-                    return;
-                }
-                ApplyLevelCellDelegate();
-            }
-        );
-
+        // Level-delegate reapply subscriptions moved into
+        // `InstallActiveSessionConnections()`. The one-shot seed
+        // stays inline so the delegate is attached now against the
+        // freshly-constructed model.
         ApplyLevelCellDelegate();
     }
 
     mTableView->resizeColumnsToContents();
 
-    // Header stylesheet lives in `ApplyTableStyleSheet` so theme
-    // colours can layer onto the bold + padding rule.
-    mTableView->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
-    mTableView->horizontalHeader()->resizeSections(QHeaderView::Stretch);
-    mTableView->horizontalHeader()->setStretchLastSection(true);
-    mTableView->horizontalHeader()->setHighlightSections(false);
-    mTableView->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    mTableView->horizontalHeader()->setSectionsMovable(true);
-    mTableView->horizontalHeader()->setContextMenuPolicy(Qt::CustomContextMenu);
-    // Cycle Asc -> Desc -> none. The "no sort" state restores arrival order.
-    // Requires Qt 6.1+, gated by the find_package above.
-    mTableView->horizontalHeader()->setSortIndicatorClearable(true);
-    connect(mTableView->horizontalHeader(), &QHeaderView::sectionMoved, this, &MainWindow::OnHeaderSectionMoved);
-    connect(
-        mTableView->horizontalHeader(),
-        &QHeaderView::customContextMenuRequested,
-        this,
-        &MainWindow::ShowHeaderContextMenu
-    );
-
-    // Row-level context menu: inclusive time-range filter pinned to the
-    // clicked row's timestamp. Installed on the table view itself, so
-    // `pos` arrives in viewport coords (see `ShowRowContextMenu`).
-    mTableView->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(mTableView, &QWidget::customContextMenuRequested, this, &MainWindow::ShowRowContextMenu);
-    // Catch every column move (header drag and implicit moves like
-    // mid-stream timestamp bubbling) so the runtime filter map and
-    // proxy rules stay aligned with the source layout.
-    connect(mModel, &QAbstractItemModel::columnsMoved, this, &MainWindow::OnSourceColumnsMoved);
-
-    // Enum / Level type flips and dictionary growth can
-    // activate / deactivate highlight rules; rebind on every
-    // reason to keep the compiled predicates in step.
-    connect(
-        mModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason /*reason*/, int /*columnIndex*/) {
-            if (mHighlights == nullptr || mModel == nullptr)
-            {
-                return;
-            }
-            mHighlights->RebindColumns(mModel->Configuration().columns, &mModel->Table());
-        }
-    );
+    // Apply shell-owned policies uniformly to the initial and later tab views.
+    ApplyTableChromeToView(mSessionView);
 
     // Rebuild on demand. This is the only escape hatch when every
     // header section is hidden (right-click needs a visible section).
     connect(ui->menuView, &QMenu::aboutToShow, this, &MainWindow::RebuildViewMenu);
-
-    mTableView->setShowGrid(true);
-    mTableView->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
-    mTableView->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
 
     connect(ui->actionNewSession, &QAction::triggered, this, &MainWindow::NewSession);
     connect(ui->actionNewWindow, &QAction::triggered, this, &MainWindow::NewWindow);
@@ -930,6 +860,136 @@ MainWindow::MainWindow(
     // but the menu state makes the affordance visible.
     ui->actionNewWindow->setEnabled(mHistoryManager != nullptr);
     connect(ui->actionOpen, &QAction::triggered, this, &MainWindow::OpenFiles);
+
+    // Programmatic actions keep tab commands together without changing the UI form.
+    //
+    // Shortcuts:
+    //   New Tab       Ctrl+T           (also QKeySequence::AddTab)
+    //   Close Tab     Ctrl+W           (also QKeySequence::Close)
+    //   Next Tab      Ctrl+Tab         (also QKeySequence::NextChild)
+    //   Previous Tab  Ctrl+Shift+Tab   (also QKeySequence::PreviousChild)
+    //   Open in Tab   (menu-only; Ctrl+Shift+T is already Follow tail)
+    //
+    // Window scope prevents identical shortcuts in peer windows from becoming ambiguous.
+    // `addAction` registers the action on the window so
+    // `QAction::shortcut()` works whether or not the action lands
+    // in a menu bar.
+    mActionNewTab = new QAction(tr("New &Tab"), this);
+    mActionNewTab->setShortcut(QKeySequence(QStringLiteral("Ctrl+T")));
+    mActionNewTab->setShortcutContext(Qt::WindowShortcut);
+    mActionNewTab->setToolTip(tr("Open a new empty tab in this window."));
+    connect(mActionNewTab, &QAction::triggered, this, [this]() { AddNewTab(/*makeActive=*/true); });
+    addAction(mActionNewTab);
+
+    mActionCloseTab = new QAction(tr("&Close Tab"), this);
+    mActionCloseTab->setShortcut(QKeySequence(QStringLiteral("Ctrl+W")));
+    mActionCloseTab->setShortcutContext(Qt::WindowShortcut);
+    mActionCloseTab->setToolTip(tr("Close the current tab. Closing the last tab closes the window."));
+    connect(mActionCloseTab, &QAction::triggered, this, [this]() {
+        if (mTabWidget != nullptr)
+        {
+            CloseTabAtIndex(mTabWidget->currentIndex());
+        }
+    });
+    addAction(mActionCloseTab);
+
+    mActionRenameTab = new QAction(tr("&Rename Tab"), this);
+    mActionRenameTab->setObjectName(QStringLiteral("actionRenameTab"));
+    // F2 is the window-scope jump-to-next-anchor shortcut. Rename
+    // uses F2 only while the tab strip has focus; see `eventFilter`.
+    mActionRenameTab->setToolTip(tr("Rename the current tab. Press F2 while the tab strip is focused."));
+    connect(mActionRenameTab, &QAction::triggered, this, [this]() {
+        if (mTabWidget != nullptr)
+        {
+            StartTabRename(mTabWidget->currentIndex());
+        }
+    });
+    addAction(mActionRenameTab);
+
+    mActionNextTab = new QAction(tr("Next Tab"), this);
+    // Mirror common browser-style tab navigation shortcuts.
+    // Qt tolerates duplicate sequences on a single `QAction` (both
+    // fire the same slot); the primary `Ctrl+Tab` binding stays
+    // first so the shortcut sheet and menu render it, and the
+    // page-navigation alias is offered as a secondary. No
+    // platform-native collision on Windows / Linux / macOS -- the
+    // sequences are unused by the surrounding widget hierarchy
+    // once a `MainWindow` is focused.
+    mActionNextTab->setShortcuts(
+        {QKeySequence(QStringLiteral("Ctrl+Tab")), QKeySequence(QStringLiteral("Ctrl+PgDown"))}
+    );
+    mActionNextTab->setShortcutContext(Qt::WindowShortcut);
+    connect(mActionNextTab, &QAction::triggered, this, [this]() {
+        if (mTabWidget == nullptr || mTabWidget->count() < 2)
+        {
+            return;
+        }
+        const int next = (mTabWidget->currentIndex() + 1) % mTabWidget->count();
+        mTabWidget->setCurrentIndex(next);
+    });
+    addAction(mActionNextTab);
+
+    mActionPreviousTab = new QAction(tr("Previous Tab"), this);
+    // Mirror common browser-style tab navigation shortcuts.
+    mActionPreviousTab->setShortcuts(
+        {QKeySequence(QStringLiteral("Ctrl+Shift+Tab")), QKeySequence(QStringLiteral("Ctrl+PgUp"))}
+    );
+    mActionPreviousTab->setShortcutContext(Qt::WindowShortcut);
+    connect(mActionPreviousTab, &QAction::triggered, this, [this]() {
+        if (mTabWidget == nullptr || mTabWidget->count() < 2)
+        {
+            return;
+        }
+        const int prev = (mTabWidget->currentIndex() + mTabWidget->count() - 1) % mTabWidget->count();
+        mTabWidget->setCurrentIndex(prev);
+    });
+    addAction(mActionPreviousTab);
+
+    mActionOpenInNewTab = new QAction(tr("Open in New Tab..."), this);
+    // No shortcut because Ctrl+Shift+T already controls Follow tail.
+    mActionOpenInNewTab->setToolTip(tr("Open one or more log files in a new tab, without touching the current tab."));
+    connect(mActionOpenInNewTab, &QAction::triggered, this, [this]() {
+        // Prompt first so cancellation does not leave an empty tab.
+        const bool forceReplace = QGuiApplication::keyboardModifiers().testFlag(Qt::ShiftModifier);
+        const QStringList files = QFileDialog::getOpenFileNames(
+            this,
+            tr("Select Log Files"),
+            DefaultOpenDir(),
+            tr("Structured Logs (*.json *.jsonl *.ndjson *.logfmt *.csv *.log *.txt "
+               "*.json.gz *.jsonl.gz *.ndjson.gz *.logfmt.gz *.csv.gz *.log.gz *.txt.gz "
+               "*.json.bz2 *.jsonl.bz2 *.ndjson.bz2 *.logfmt.bz2 *.csv.bz2 *.log.bz2 *.txt.bz2 "
+               "*.json.xz *.jsonl.xz *.ndjson.xz *.logfmt.xz *.csv.xz *.log.xz *.txt.xz "
+               "*.json.zst *.jsonl.zst *.ndjson.zst *.logfmt.zst *.csv.zst *.log.zst *.txt.zst "
+               "*.gz *.bz2 *.xz *.zst);;All Files (*.*)")
+        );
+        if (files.isEmpty())
+        {
+            return;
+        }
+        RememberLastOpenDir(files.first());
+        AddNewTab(/*makeActive=*/true);
+        DispatchMixedOpenInput(files, forceReplace ? OpenMode::Replace : OpenMode::Append);
+    });
+    addAction(mActionOpenInNewTab);
+
+    // Insert the tab actions on the File menu after `New Session`
+    // so the menu order stays New Window / New Session / New Tab /
+    // Open. Fallback to `insertAction` on the menu's first action
+    // if `actionNewSession` was not found.
+    if (ui->menuFile != nullptr && ui->actionOpen != nullptr)
+    {
+        ui->menuFile->insertAction(ui->actionOpen, mActionNewTab);
+        ui->menuFile->insertAction(ui->actionOpen, mActionOpenInNewTab);
+        ui->menuFile->insertSeparator(ui->actionOpen);
+        // Close Tab lives before Exit so the destructive actions
+        // stay grouped near the bottom of the File menu.
+        if (ui->actionExit != nullptr)
+        {
+            ui->menuFile->insertAction(ui->actionExit, mActionRenameTab);
+            ui->menuFile->insertAction(ui->actionExit, mActionCloseTab);
+            ui->menuFile->insertSeparator(ui->actionExit);
+        }
+    }
 
     // Rebuild the Recent Sessions submenu on `aboutToShow` so
     // sibling-window mutations show up without us reacting to every
@@ -955,7 +1015,9 @@ MainWindow::MainWindow(
     // close (`event->ignore()`) keeps the app alive.
     connect(ui->actionExit, &QAction::triggered, this, [] { QApplication::closeAllWindows(); });
 
-    connect(ui->actionCopy, &QAction::triggered, mTableView, &LogTableView::CopySelectedRowsToClipboard);
+    // actionCopy -> mTableView bag connect moved into
+    // `InstallActiveSessionConnections()` so a tab switch reinstalls
+    // it against the newly-bound view's table.
     // Tooltip reflects `Find`'s smart toggle behaviour.
     ui->actionFind->setToolTip(tr("Find in logs. Press again to close."));
     connect(ui->actionFind, &QAction::triggered, this, &MainWindow::Find);
@@ -1005,35 +1067,10 @@ MainWindow::MainWindow(
     connect(ui->actionPauseStream, &QAction::toggled, this, &MainWindow::TogglePauseStream);
     connect(ui->actionStopStream, &QAction::triggered, this, &MainWindow::StopStream);
 
-    // `actionFollowTail` is auto-disengaged when the user scrolls away
-    // and auto-re-engaged on tail-edge scroll. Re-engage is gated on
-    // live-tail sessions only; static sessions don't follow.
-    connect(mTableView, &LogTableView::userScrolledAwayFromTail, this, [this]() {
-        if (ui->actionFollowTail->isChecked())
-        {
-            ui->actionFollowTail->setChecked(false);
-        }
-    });
-    connect(mTableView, &LogTableView::userScrolledToTail, this, [this]() {
-        if (!ui->actionFollowTail->isChecked() && IsLiveTailSession())
-        {
-            ui->actionFollowTail->setChecked(true);
-        }
-    });
-
-    // Mirror Follow-newest into the view's pill-suppression flag.
-    // Without this, Qt's signal ordering during a row insert can
-    // briefly drop `mAtTailEdge` between the geometry pass and the
-    // follow-up scroll-back, flashing the pill in the most common
-    // live-tail steady state. `toggled` (not `triggered`) so a
-    // programmatic `setChecked` from the pill-click handler below
-    // takes the same path as a user toolbar click.
-    connect(ui->actionFollowTail, &QAction::toggled, this, [this](bool checked) {
-        if (mTableView != nullptr)
-        {
-            mTableView->SetPendingNewRowsSuppressed(checked);
-        }
-    });
+    // Follow-tail scroll signals, actionFollowTail::toggled, and
+    // jumpToTailRequested bag connects moved into
+    // `InstallActiveSessionConnections()`.
+    //
     // Seed from the action's initial checked state: the `.ui`
     // declares Follow on by default but `toggled` only fires on
     // changes, so without this one-shot the view would start
@@ -1042,29 +1079,6 @@ MainWindow::MainWindow(
     {
         mTableView->SetPendingNewRowsSuppressed(ui->actionFollowTail->isChecked());
     }
-
-    // Pill click: acknowledge, scroll, and re-engage Follow newest
-    // in live-tail. Keeping the policy here means the view stays
-    // ignorant of proxies and the Follow action.
-    connect(mTableView, &LogTableView::jumpToTailRequested, this, [this]() {
-        // Acknowledge up-front so the count clears even when the
-        // scroll below lands short of the visual tail (custom
-        // sort placing source-newest in the middle of the proxy,
-        // or the bounded-walk fallback snapping to the proxy tail
-        // without crossing `maximum`).
-        if (mTableView != nullptr)
-        {
-            mTableView->AcknowledgePendingNewRows();
-        }
-        JumpToNewestRow();
-        // The pill click is an explicit "catch me up" command, so
-        // unconditionally re-engage Follow in live tail (a manual
-        // scroll-away would otherwise have disengaged it).
-        if (IsLiveTailSession() && !ui->actionFollowTail->isChecked())
-        {
-            ui->actionFollowTail->setChecked(true);
-        }
-    });
 
     // Find bar lives in a dockable host so the user can float / dock
     // it and the layout round-trips through `saveState`. The hosted
@@ -1077,85 +1091,8 @@ MainWindow::MainWindow(
     connect(mFindRecord, &FindRecordWidget::FindRecords, this, &MainWindow::FindRecords);
     connect(mFindRecord, &FindRecordWidget::MatchCountRequested, this, &MainWindow::UpdateFindMatchCount);
 
-    // Every signal that can change the match set invalidates the
-    // find bar's match cache. Hooked on the proxy only -- the
-    // source-side signals chain through and would otherwise
-    // double-fire. Column changes invalidate too because
-    // `MatchRow` honours `Column::visible`.
-    connect(mSortFilterProxyModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::OnFindCacheInvalidated);
-    connect(mSortFilterProxyModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::OnFindCacheInvalidated);
-    connect(mSortFilterProxyModel, &QAbstractItemModel::layoutChanged, this, &MainWindow::OnFindCacheInvalidated);
-    connect(mSortFilterProxyModel, &QAbstractItemModel::modelReset, this, &MainWindow::OnFindCacheInvalidated);
-    connect(mSortFilterProxyModel, &QAbstractItemModel::columnsInserted, this, &MainWindow::OnFindCacheInvalidated);
-    connect(mSortFilterProxyModel, &QAbstractItemModel::columnsRemoved, this, &MainWindow::OnFindCacheInvalidated);
-    connect(mSortFilterProxyModel, &QAbstractItemModel::columnsMoved, this, &MainWindow::OnFindCacheInvalidated);
-    // `dataChanged` covers in-place cell updates. Filter out style-only
-    // emits via `IsStyleOnlyRoleChange` so theme repaints don't wake
-    // the debounce timer for nothing.
-    connect(
-        mSortFilterProxyModel,
-        &QAbstractItemModel::dataChanged,
-        this,
-        [this](const QModelIndex & /*topLeft*/, const QModelIndex & /*bottomRight*/, const QList<int> &roles) {
-            if (LogModel::IsStyleOnlyRoleChange(roles))
-            {
-                return;
-            }
-            OnFindCacheInvalidated();
-        }
-    );
-
-    // Status-bar rows-shown indicator. Subscribes to both source
-    // and proxy because either can shift independently:
-    //   - source `rowsInserted/Removed/modelReset`: streaming
-    //     batches, session boundaries.
-    //   - proxy `rowsInserted/Removed/modelReset/layoutChanged`:
-    //     filter rule changes (which can move rows without
-    //     changing the source row count). `layoutChanged` is
-    //     proxy-only because it's how `LogFilterModel` reports
-    //     "the predicate changed but the row pool didn't".
-    // The slot itself is idempotent and cheap (two `rowCount()`
-    // calls + a label assign), so duplicate fires from
-    // adjacent signals are harmless.
-    connect(mModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::UpdateRowsShownStatus);
-    connect(mModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::UpdateRowsShownStatus);
-    connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateRowsShownStatus);
-    connect(mSortFilterProxyModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::UpdateRowsShownStatus);
-    connect(mSortFilterProxyModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::UpdateRowsShownStatus);
-    connect(mSortFilterProxyModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateRowsShownStatus);
-    connect(mSortFilterProxyModel, &QAbstractItemModel::layoutChanged, this, &MainWindow::UpdateRowsShownStatus);
-
-    // Sort indicator: keep `actionClearSort` and the status-bar
-    // button in sync with the proxy's sort. `layoutChanged`
-    // covers every sort permutation (header click, menu,
-    // dropdown, programmatic clear, and the deferred-restore
-    // path). Source row signals hide the indicator when the
-    // model goes empty.
-    connect(mSortFilterProxyModel, &QAbstractItemModel::layoutChanged, this, &MainWindow::UpdateSortStatus);
-    connect(mSortFilterProxyModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateSortStatus);
-    connect(mModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::UpdateSortStatus);
-    connect(mModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::UpdateSortStatus);
-    connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateSortStatus);
-    // Column rename emits `headerDataChanged` but no
-    // `layoutChanged`, so without this hook the status-bar
-    // tooltip would freeze on the old label. Only refresh when
-    // the rename touches the sorted column - `UpdateSortStatus`
-    // rebuilds all column labels and that's wasted work
-    // otherwise.
-    connect(
-        mModel, &QAbstractItemModel::headerDataChanged, this, [this](Qt::Orientation orientation, int first, int last) {
-            if (orientation != Qt::Horizontal || mSortFilterProxyModel == nullptr)
-            {
-                return;
-            }
-            const int sortColumn = mSortFilterProxyModel->SortColumn();
-            if (sortColumn < 0 || sortColumn < first || sortColumn > last)
-            {
-                return;
-            }
-            UpdateSortStatus();
-        }
-    );
+    // Find-cache invalidation, rows-shown status, and sort status
+    // bag connects moved into `InstallActiveSessionConnections()`.
 
     mActionToggleFind = new QAction(tr("Find Bar"), this);
     mActionToggleFind->setObjectName(QStringLiteral("actionToggleFind"));
@@ -1213,10 +1150,6 @@ MainWindow::MainWindow(
     addDockWidget(Qt::BottomDockWidgetArea, mParseErrorsDock);
     mParseErrorsDock->hide();
 
-    // Tabify the two bottom docks by default so they share the same
-    // horizontal strip; `restoreState` overrides on later launches.
-    tabifyDockWidget(mFindDock, mParseErrorsDock);
-
     mActionToggleParseErrors = new QAction(tr("Parse Errors"), this);
     mActionToggleParseErrors->setObjectName(QStringLiteral("actionToggleParseErrors"));
     mActionToggleParseErrors->setCheckable(true);
@@ -1249,9 +1182,6 @@ MainWindow::MainWindow(
     addDockWidget(Qt::RightDockWidgetArea, mRecordDetailDock);
     mRecordDetailDock->hide();
 
-    // Tabify the two right-side docks by default; `restoreState`
-    // (later in the constructor) overrides if the user moved them.
-    tabifyDockWidget(mAnchorsDock, mRecordDetailDock);
     // `actionToggleRecordDetails` is declared in `main_window.ui` but
     // not placed in any `<addaction>`, so uic doesn't add it to any
     // widget's `actions()`. A QAction's shortcut only fires once it
@@ -1270,12 +1200,10 @@ MainWindow::MainWindow(
     );
     connect(mRecordDetailDock, &RecordDetailDock::openInNewWindowRequested, this, &MainWindow::OpenRecordDetailWindow);
 
-    connect(mTableView, &QAbstractItemView::doubleClicked, this, &MainWindow::ShowRecordDetailsForProxyIndex);
-
-    // Track selection changes through the live selection model;
-    // centralised so a future `setModel` call only has to re-invoke
-    // this helper.
-    RebindRecordDetailSelectionTracking();
+    // doubleClicked -> ShowRecordDetailsForProxyIndex and
+    // RebindRecordDetailSelectionTracking() moved into
+    // `InstallActiveSessionConnections()` (B2 fix — the tracking
+    // rebind was previously only installed once at ctor time).
 
     // The dock owns its own `modelReset -> Clear` wiring, so reuse
     // outside `MainWindow` stays correct.
@@ -1348,48 +1276,7 @@ MainWindow::MainWindow(
     // (lazy-construct, survive-close, like the regex editor). Save
     // updates the runtime cache and the persistent mirror in one
     // atomic slot.
-    connect(ui->actionHighlightRules, &QAction::triggered, this, [this]() {
-        if (mHighlightRulesEditor.isNull())
-        {
-            const auto &config = mModel->Configuration();
-            mHighlightRulesEditor = new HighlightRulesEditor(config.highlightRules, config.columns, mTheme, this);
-            mHighlightRulesEditor->setWindowFlag(Qt::Window, true);
-            connect(
-                mHighlightRulesEditor.data(),
-                &HighlightRulesEditor::rulesSaved,
-                this,
-                [this](std::vector<loglib::LogConfiguration::HighlightRule> rules) {
-                    // Persist first so any auto-save handler sees
-                    // the committed state; hand a copy to the
-                    // runtime rebuild.
-                    auto forRuntime = rules;
-                    mModel->ConfigurationManager().SetHighlightRules(std::move(rules));
-                    if (mHighlights != nullptr)
-                    {
-                        mHighlights->SetRules(std::move(forRuntime), mModel->Configuration().columns, &mModel->Table());
-                        const std::size_t inactive = mHighlights->InactiveCount();
-                        if (inactive > 0)
-                        {
-                            statusBar()->showMessage(
-                                tr("%1 highlight rule(s) inactive against current columns.")
-                                    .arg(static_cast<qulonglong>(inactive)),
-                                STATUS_BAR_MESSAGE_TIMEOUT_MS
-                            );
-                        }
-                    }
-                }
-            );
-        }
-        else
-        {
-            // Refresh columns on reopen: streaming may have
-            // discovered new keys since last show.
-            mHighlightRulesEditor->SetColumns(mModel->Configuration().columns);
-        }
-        mHighlightRulesEditor->show();
-        mHighlightRulesEditor->raise();
-        mHighlightRulesEditor->activateWindow();
-    });
+    connect(ui->actionHighlightRules, &QAction::triggered, this, &MainWindow::OpenHighlightRulesEditor);
     connect(mPreferencesEditor, &PreferencesEditor::streamingRetentionChanged, this, [this](qulonglong) {
         ApplyStreamingRetention();
     });
@@ -1428,14 +1315,21 @@ MainWindow::MainWindow(
     // Refresh the table's reserved margin after applying so the
     // viewport tracks the new sizeHint.
     connect(mPreferencesEditor, &PreferencesEditor::overviewRailWidthChanged, this, [this](OverviewRailWidthMode mode) {
-        if (mOverviewRailWidget == nullptr)
+        for (const auto &tab : mTabs)
         {
-            return;
-        }
-        mOverviewRailWidget->SetWidthMode(mode);
-        if (mTableView != nullptr)
-        {
-            mTableView->RefreshOverviewRailMargin();
+            if (tab == nullptr || tab->view == nullptr)
+            {
+                continue;
+            }
+            OverviewRailWidget *rail = tab->view->OverviewRail();
+            if (rail != nullptr)
+            {
+                rail->SetWidthMode(mode);
+            }
+            if (LogTableView *table = tab->view->TableView(); table != nullptr)
+            {
+                table->RefreshOverviewRailMargin();
+            }
         }
     });
 
@@ -1451,16 +1345,15 @@ MainWindow::MainWindow(
         action->setText(tr("Anchor selection in colour %1").arg(i + 1));
         action->setShortcut(QKeySequence(Qt::CTRL | static_cast<Qt::Key>(Qt::Key_1 + static_cast<int>(i))));
         addAction(action);
-        const int colourIndex = static_cast<int>(i);
-        connect(action, &QAction::triggered, mTableView, [view = mTableView, colourIndex]() {
-            view->AnchorSelection(colourIndex);
-        });
         mAnchorColorActions[i] = action;
     }
     mActionClearRowAnchor = new QAction(tr("Remove anchor from selection"), this);
     mActionClearRowAnchor->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
     addAction(mActionClearRowAnchor);
-    connect(mActionClearRowAnchor, &QAction::triggered, mTableView, &LogTableView::ClearAnchorOnSelection);
+    // Anchor-color -> mTableView->AnchorSelection and
+    // mActionClearRowAnchor -> mTableView->ClearAnchorOnSelection
+    // bag connects moved into `InstallActiveSessionConnections()`
+    // so a tab switch reinstalls them against the newly-bound view.
 
     mActionJumpNextAnchor = new QAction(tr("Jump to next anchor"), this);
     mActionJumpNextAnchor->setShortcut(QKeySequence(Qt::Key_F2));
@@ -1526,7 +1419,7 @@ MainWindow::MainWindow(
     statusBar()->addPermanentWidget(mClearFiltersStatusButton);
     // Route through the existing action so its enable/disable
     // logic stays the single source of truth and the menu, the
-    // toolbar (when it lands), and this button all stay in lock-
+    // menus and this button stay in lock-
     // step.
     connect(mClearFiltersStatusButton, &QPushButton::clicked, ui->actionClearAllFilters, &QAction::trigger);
 
@@ -1566,7 +1459,8 @@ MainWindow::MainWindow(
     mDiagnosticsButton->hide();
     statusBar()->addPermanentWidget(mDiagnosticsButton);
     connect(mDiagnosticsButton, &QPushButton::clicked, this, &MainWindow::ShowConfigurationDiagnostics);
-    connect(mModel, &LogModel::columnHealthChanged, this, &MainWindow::UpdateDiagnosticsStatus);
+    // columnHealthChanged -> UpdateDiagnosticsStatus bag connect
+    // moved into `InstallActiveSessionConnections()`.
 
     // Status-bar indicator for the parse-errors dock. Same UX as
     // `mDiagnosticsButton`: hides when empty, opens the dock on click.
@@ -1591,191 +1485,14 @@ MainWindow::MainWindow(
         mParseErrorsDock->raise();
     });
 
-    connect(mModel, &LogModel::lineCountChanged, this, [this](qsizetype count) {
-        mStreamingLineCount = count;
-        UpdateStreamingStatus();
-        // One-shot column auto-resize on the first non-empty batch.
-        if (IsLiveTailSession() && !mFirstStreamingBatchSeen && count > 0)
-        {
-            mFirstStreamingBatchSeen = true;
-            UpdateUi();
-            // Reflect the just-pinned source name once; subsequent batches
-            // are picked up by the 1 Hz live-tail tick.
-            UpdateWindowTitle();
-        }
-        // Auto-follow is live-tail only.
-        if (IsLiveTailSession())
-        {
-            ScrollToNewestRowIfFollowing();
-        }
-    });
-    connect(mModel, &LogModel::errorCountChanged, this, [this](qsizetype count) {
-        mStreamingErrorCount = count;
-        UpdateStreamingStatus();
-    });
-    connect(mModel, &LogModel::streamingFinished, this, &MainWindow::OnStreamingFinished);
-    connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
-    connect(mModel, &LogModel::sourceStatusChanged, this, &MainWindow::OnSourceStatusChanged);
-    // Keep enum filter bitsets and sort ranks in sync with the live
-    // dictionary; scope the work to the reason that fired:
-    //   - `Demoted`: the cached `EnumDictionary*` is now dangling.
-    //     Flush the rank cache and rebuild predicates onto the
-    //     string-set fallback.
-    //   - `Promoted`: a column just gained a dictionary. Any
-    //     `EnumRowPredicate` built earlier for that column was
-    //     constructed with `dictionary = nullptr` and otherwise sits
-    //     on the slow string-set fallback forever; rebuild so it
-    //     picks up the bitset hot path. The signal doesn't say which
-    //     column promoted, so any active enum filter triggers a
-    //     rebuild. `EnumRankFor` self-heals on the next sort, so no
-    //     cache flush is needed.
-    //   - `Grew`: existing predicates still work (bitset for resolved
-    //     ids, string-set fallback for unresolved). Rebuild only when
-    //     a filter has unresolved values that may have just been
-    //     interned -- the only case where rebuilding upgrades anything.
-    connect(mModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason reason, int columnIndex) {
-        if (reason == EnumColumnsChangeReason::Demoted)
-        {
-            // Broad flush: rank cache keys alias across columns via
-            // `EnumRankFor`, so invalidate everything to be safe.
-            mSortFilterProxyModel->InvalidateEnumRanks();
-
-            // A `Type::Level -> Type::String` demote orphans any saved
-            // canonical-name filter (`"Info"`, ...) because those
-            // strings never appear in the column's raw data. Translate
-            // them to the raw entries `LogModel::AppendBatch` captured
-            // pre-demote so the filter keeps matching the same rows.
-            // Plain enum demotes need no translation;
-            // `LastBatchLevelDemoteMappingFor` returns nullptr there.
-            if (columnIndex >= 0)
-            {
-                if (const auto *levelMapping = mModel->LastBatchLevelDemoteMappingFor(columnIndex);
-                    levelMapping != nullptr)
-                {
-                    // Re-entrancy guard: the rewrite + downstream
-                    // sync calls walk `mSimpleLeaves`, so a
-                    // transitive re-emit of `enumColumnsChanged`
-                    // for the same column would see half-rewritten
-                    // state.
-                    if (mApplyingEnumRebuild)
-                    {
-                        return;
-                    }
-                    mApplyingEnumRebuild = true;
-                    const auto demoteGuard = qScopeGuard([this]() { mApplyingEnumRebuild = false; });
-                    const auto &columnsCfg = mModel->Configuration().columns;
-                    const loglib::LogConfiguration::Column *demotedColumn =
-                        std::cmp_less(columnIndex, columnsCfg.size()) ? &columnsCfg[static_cast<size_t>(columnIndex)]
-                                                                      : nullptr;
-                    for (auto &kv : mSimpleLeaves)
-                    {
-                        loglib::LeafRule &filter = kv.second;
-                        const int resolvedRow = ResolveLeafColumnByKeys(filter.columnKeys, columnsCfg);
-                        if (resolvedRow != columnIndex)
-                        {
-                            continue;
-                        }
-                        if (filter.type != loglib::LeafRule::Type::Enumeration)
-                        {
-                            continue;
-                        }
-                        // `ResolveLevel` still sees the column's saved
-                        // `levelMapping` (the demote only flips
-                        // `Column::type`), so user aliases like
-                        // `"NOTICE" -> Info` survive.
-                        std::vector<std::string> expanded;
-                        for (const std::string &name : filter.filterValues)
-                        {
-                            std::optional<loglib::LogLevel> level;
-                            if (demotedColumn != nullptr)
-                            {
-                                level = loglib::ResolveLevel(name, demotedColumn->levelMapping);
-                            }
-                            else
-                            {
-                                level = loglib::ParseLevelName(name);
-                            }
-                            if (!level.has_value())
-                            {
-                                continue;
-                            }
-                            const auto it = levelMapping->find(*level);
-                            if (it == levelMapping->end())
-                            {
-                                continue;
-                            }
-                            for (const std::string &raw : it->second)
-                            {
-                                expanded.push_back(raw);
-                            }
-                        }
-                        // Drop duplicates with a stable order.
-                        std::ranges::sort(expanded);
-                        const auto dupTail = std::ranges::unique(expanded);
-                        expanded.erase(dupTail.begin(), dupTail.end());
-                        // An empty `expanded` is a legitimate
-                        // "matches nothing" outcome -- keep it so the
-                        // rebuilt predicate rejects every row, matching
-                        // the plain enum branch's empty-selection
-                        // semantics.
-                        filter.filterValues = std::move(expanded);
-                    }
-                    // Mirror once after the loop; the wire tree is
-                    // snapshotted whole, so per-leaf mirroring would
-                    // redo the same work.
-                    MirrorSessionStateToConfiguration();
-                    // Resync the tooltip cache: it was built from
-                    // the canonical names (`"Info"`, ...) and now
-                    // needs the rewritten raw bytes.
-                    SyncColumnFilterIndicators();
-                }
-            }
-        }
-        // `columnIndex == -1` means "scope unknown" -- treat as
-        // matches-anything to keep the safe broad behaviour.
-        const auto &columnsForResolve = mModel->Configuration().columns;
-        const auto matchesAffectedColumn = [columnIndex, &columnsForResolve](const auto &kv) {
-            if (columnIndex < 0)
-            {
-                return true;
-            }
-            return ResolveLeafColumnByKeys(kv.second.columnKeys, columnsForResolve) == columnIndex;
-        };
-        bool rebuild = false;
-        switch (reason)
-        {
-        case EnumColumnsChangeReason::Demoted:
-            rebuild = std::ranges::any_of(mSimpleLeaves, [&matchesAffectedColumn](const auto &kv) {
-                return kv.second.type == loglib::LeafRule::Type::Enumeration && matchesAffectedColumn(kv);
-            });
-            break;
-        case EnumColumnsChangeReason::Promoted:
-            rebuild = std::ranges::any_of(mSimpleLeaves, [&matchesAffectedColumn](const auto &kv) {
-                return kv.second.type == loglib::LeafRule::Type::Enumeration && matchesAffectedColumn(kv);
-            });
-            break;
-        case EnumColumnsChangeReason::Grew:
-            rebuild = std::ranges::any_of(mSimpleLeaves, [this, &matchesAffectedColumn](const auto &kv) {
-                return kv.second.type == loglib::LeafRule::Type::Enumeration && matchesAffectedColumn(kv) &&
-                       !EnumFilterFullyResolved(kv.second);
-            });
-            break;
-        }
-        if (rebuild)
-        {
-            // Re-entrancy guard: an inner `UpdateFilters` that
-            // re-emits `enumColumnsChanged` must not rebuild on a
-            // half-updated state. Queued signals that arrive after
-            // the outer call returns rebuild normally.
-            if (mApplyingEnumRebuild)
-            {
-                return;
-            }
-            mApplyingEnumRebuild = true;
-            const auto guard = qScopeGuard([this]() { mApplyingEnumRebuild = false; });
-            UpdateFilters();
-        }
-    });
+    // Streaming lifecycle bag connects (lineCountChanged,
+    // errorCountChanged, streamingFinished, rotationDetected,
+    // rotationFlashChanged, sourceStatusChanged) and the enum-
+    // column change -> filter rebuild pipeline moved into
+    // `InstallActiveSessionConnections()`. The filter rebuild body
+    // itself lives in `OnEnumColumnsChangedApplyFilterRebuild()`
+    // so both the ctor install and the tab-switch reinstall share
+    // one source of truth.
 
     // Pull persisted streaming preferences on startup.
     StreamingControl::LoadConfiguration();
@@ -1818,19 +1535,29 @@ MainWindow::MainWindow(
     // action exists -- both .ui actions (`ui->action*`) and the
     // programmatic dock toggles (`mActionToggleFind`,
     // `mActionToggleAnchors`) and `mStreamToolbar` (the new bar
-    // is inserted ahead of it) -- and before `RestoreWindowChrome`
-    // so the persisted state can place the toolbar in its saved
-    // dock area.
+    // is inserted ahead of it) -- and before persisted chrome
+    // so `restoreState` can place the toolbar in its saved dock area.
     BuildMainToolbar();
 
     // Run after every dock/toolbar has its `objectName` so `restoreState`
-    // can resolve them. No-op on first launch.
-    RestoreWindowChrome();
+    // can resolve them. `Deferred` skips this so workspace restore can
+    // apply chrome once, while the window is still hidden. No-op on
+    // first launch except for the default tabified dock pairs.
+    if (chromeRestore == ChromeRestore::FromSettings)
+    {
+        RestoreWindowChrome();
+    }
 
     // Settle the sort indicator's initial state. Earlier signal
     // hooks fired before the status-bar button existed, so sync
     // once now that both ends are wired.
     UpdateSortStatus();
+
+    // Install scoped subscriptions only after all receivers exist.
+    InstallActiveSessionConnections();
+
+    // Use the same ordered dock binding for construction and tab switches.
+    RebindSharedDocks(activeSessionBindContext());
 
     // Timezone database initialisation lives in
     // `MainWindow::InitializeTimezoneDatabase`, called synchronously
@@ -1839,8 +1566,27 @@ MainWindow::MainWindow(
     // process-global side effects.
 }
 
+// `hostedSessions()` / `std::vector::reserve` can theoretically throw
+// `bad_array_new_length`; clang-tidy models that as an escaping exception.
+// NOLINTNEXTLINE(bugprone-exception-escape)
 MainWindow::~MainWindow()
 {
+    // Disconnect scoped callbacks before any session teardown can emit.
+    //
+    // Direct bag Clear rather than routing through the
+    // `UnbindActiveSessionForTest()` public entry: this is the
+    // destructor's own teardown, not a test seam, and going
+    // through a `ForTest` alias would read as accidental.
+    mSessionConnections.Clear();
+    // Per-tab callbacks must not outlive shell members they access.
+    for (auto &tab : mTabs)
+    {
+        if (tab != nullptr)
+        {
+            tab->persistentConnections.Clear();
+        }
+    }
+
     // Defensive backstop in case any destruction path skipped
     // `closeEvent` (it normally runs first). Idempotent and cheap.
     DetachAutoSaveUuid();
@@ -1851,13 +1597,17 @@ MainWindow::~MainWindow()
     // future so the queued `finished` signal can't fire against a
     // half-destructed MainWindow.
     CancelInFlightDecompression();
-    // Same for the export worker.
     CancelInFlightExport();
-    // Explicitly reset the model here (rather than relying on
-    // `~LogModel`) so its mmap unmaps before the destructor destroys
-    // members whose `SessionSwitchScope` suppresses the synchronous
-    // `streamingFinished(Cancelled)`. Anchor-driven temp-file
-    // unlinks then run in mmap-safe order.
+    for (LogSession *session : hostedSessions())
+    {
+        if (session == nullptr || session == mSession)
+        {
+            continue;
+        }
+        CancelInFlightDecompressionFor(session);
+        CancelInFlightExportFor(session);
+    }
+
     if (mModel != nullptr)
     {
         const SessionSwitchScope destructorGuard(*this);
@@ -1876,6 +1626,1420 @@ MainWindow::~MainWindow()
     }
     mRecordDetailWindows.clear();
     delete ui;
+}
+
+// Active-session aliases and scoped subscriptions switch as one unit.
+
+std::vector<LogSession *> MainWindow::hostedSessions() const
+{
+    // Walk `mTabs` so callers that need every hosted session
+    // (window-modified aggregation, global-preference broadcast,
+    // closeEvent PreCheckClose) see all tabs, not just the active
+    // Fall back to the active alias during construction and narrow test setup.
+    std::vector<LogSession *> sessions;
+    if (!mTabs.empty())
+    {
+        sessions.reserve(mTabs.size());
+        for (const auto &tab : mTabs)
+        {
+            if (tab != nullptr && tab->session != nullptr)
+            {
+                sessions.push_back(tab->session.data());
+            }
+        }
+        return sessions;
+    }
+    if (mSession != nullptr)
+    {
+        sessions.push_back(mSession);
+    }
+    return sessions;
+}
+
+void MainWindow::SetActiveSessionAliases(LogSession *session, LogSessionView *view) noexcept
+{
+    Q_ASSERT_X(session != nullptr, "MainWindow::SetActiveSessionAliases", "session must not be null");
+    if (session == nullptr)
+    {
+        return;
+    }
+
+    // Session-quintet aliases. Refresh unconditionally so callers
+    // Refresh all model aliases together on every tab switch.
+    mSession = session;
+    mAnchors = session->Anchors();
+    mHighlights = session->Highlights();
+    mModel = session->Model();
+    mRowOrderProxyModel = session->RowOrderProxy();
+    mSortFilterProxyModel = session->FilterProxy();
+
+    // View aliases. The ctor calls this once with view=nullptr
+    // before `mSessionView` exists (so `mSession`-only reads work
+    // between the two constructions), and once with view non-null
+    // after `mSessionView` is constructed. Guard the view-side
+    // aliases so the first call does not overwrite the view slots
+    // with garbage.
+    if (view != nullptr)
+    {
+        mSessionView = view;
+        mTableView = view->TableView();
+        mOverviewRailModel = view->OverviewRailModelPtr();
+        mOverviewRailWidget = view->OverviewRail();
+    }
+}
+
+void MainWindow::UnbindActiveSessionForTest() noexcept
+{
+    // Idempotent: `ScopedConnections::Clear` handles an already-empty
+    // bag and disconnects only valid connections. Also called
+    // Test teardown uses the same idempotent bag clear.
+    mSessionConnections.Clear();
+}
+
+LogSession *MainWindow::LogSessionForDecompressionWatcher(const QObject *watcherSender) const
+{
+    // Match watcher ownership directly because decompressions may overlap across tabs.
+    if (watcherSender == nullptr)
+    {
+        return nullptr;
+    }
+    for (LogSession *session : hostedSessions())
+    {
+        if (session == nullptr)
+        {
+            continue;
+        }
+        if (session->DecompressionWatcherPtr() == watcherSender)
+        {
+            return session;
+        }
+    }
+    return nullptr;
+}
+
+LogSession *MainWindow::LogSessionForExportWatcher(const QObject *watcherSender) const
+{
+    // Symmetric with `LogSessionForDecompressionWatcher`. Currently
+    // unused by `OnExportFinished` (which reads `sender()->parent()`
+    // because export watchers are `new ExportWatcher(sessionOwner)`);
+    // provided for tests and callers that need the same
+    // hosted-sessions walk without relying on the parent link.
+    if (watcherSender == nullptr)
+    {
+        return nullptr;
+    }
+    for (LogSession *session : hostedSessions())
+    {
+        if (session == nullptr)
+        {
+            continue;
+        }
+        if (session->ExportWatcherPtr() == watcherSender)
+        {
+            return session;
+        }
+    }
+    return nullptr;
+}
+
+LogSessionView *MainWindow::LogSessionViewForSession(const LogSession *session) const
+{
+    if (session == nullptr)
+    {
+        return nullptr;
+    }
+    for (const auto &tab : mTabs)
+    {
+        if (tab != nullptr && tab->session.data() == session)
+        {
+            return tab->view.data();
+        }
+    }
+    return nullptr;
+}
+
+SessionBindContext MainWindow::activeSessionBindContext() const
+{
+    // The factory maps missing teardown-time aliases to an unbound context.
+    return SessionBindContext::FromSessionAndView(mSession, mSessionView, mTheme);
+}
+
+void MainWindow::CaptureHighlightRulesEditorDraft()
+{
+    if (mHighlightRulesEditor.isNull() || mHighlightRulesEditorSession.isNull())
+    {
+        return;
+    }
+    LogSession *origin = mHighlightRulesEditorSession.data();
+    if (origin == nullptr)
+    {
+        return;
+    }
+    origin->SetHighlightEditorDraft(mHighlightRulesEditor->CaptureDraft());
+}
+
+void MainWindow::RestoreHighlightRulesEditorDraft(LogSession *session)
+{
+    if (mHighlightRulesEditor.isNull() || session == nullptr || session->Model() == nullptr)
+    {
+        mHighlightRulesEditorSession = session;
+        return;
+    }
+    const auto &config = session->Model()->Configuration();
+    mHighlightRulesEditor->SetColumns(config.columns);
+    if (const std::optional<HighlightRulesEditorDraft> &draft = session->HighlightEditorDraft(); draft.has_value())
+    {
+        mHighlightRulesEditor->RestoreDraft(*draft);
+    }
+    else
+    {
+        HighlightRulesEditorDraft committed;
+        committed.localRules = config.highlightRules;
+        committed.baseline = config.highlightRules;
+        committed.currentRow = config.highlightRules.empty() ? -1 : 0;
+        mHighlightRulesEditor->RestoreDraft(committed);
+    }
+    mHighlightRulesEditorSession = session;
+}
+
+void MainWindow::OpenHighlightRulesEditor()
+{
+    if (mSession == nullptr || mModel == nullptr)
+    {
+        return;
+    }
+    if (mHighlightRulesEditor.isNull())
+    {
+        const auto &config = mModel->Configuration();
+        mHighlightRulesEditor = new HighlightRulesEditor(config.highlightRules, config.columns, mTheme, this);
+        mHighlightRulesEditor->setWindowFlag(Qt::Window, true);
+        connect(
+            mHighlightRulesEditor.data(),
+            &HighlightRulesEditor::rulesSaved,
+            this,
+            [this](std::vector<loglib::LogConfiguration::HighlightRule> rules) {
+                LogSession *origin = mHighlightRulesEditorSession.data();
+                if (origin == nullptr || HostedSession(origin->InstanceId()) != origin || origin->Model() == nullptr)
+                {
+                    return;
+                }
+                auto forRuntime = rules;
+                origin->Model()->ConfigurationManager().SetHighlightRules(std::move(rules));
+                if (HighlightRuleSet *highlights = origin->Highlights(); highlights != nullptr)
+                {
+                    highlights->SetRules(
+                        std::move(forRuntime), origin->Model()->Configuration().columns, &origin->Model()->Table()
+                    );
+                    const std::size_t inactive = highlights->InactiveCount();
+                    if (inactive > 0)
+                    {
+                        statusBar()->showMessage(
+                            tr("%1 highlight rule(s) inactive against current columns.")
+                                .arg(static_cast<qulonglong>(inactive)),
+                            STATUS_BAR_MESSAGE_TIMEOUT_MS
+                        );
+                    }
+                }
+                origin->MarkFiltersDirty();
+                if (!mHighlightRulesEditor.isNull())
+                {
+                    origin->SetHighlightEditorDraft(mHighlightRulesEditor->CaptureDraft());
+                }
+            }
+        );
+        connect(mHighlightRulesEditor.data(), &HighlightRulesEditor::editsDiscarded, this, [this]() {
+            if (LogSession *origin = mHighlightRulesEditorSession.data(); origin != nullptr)
+            {
+                origin->ClearHighlightEditorDraft();
+            }
+        });
+    }
+    RestoreHighlightRulesEditorDraft(mSession);
+    mHighlightRulesEditor->show();
+    mHighlightRulesEditor->raise();
+    mHighlightRulesEditor->activateWindow();
+}
+
+void MainWindow::RebindSharedDocks(const SessionBindContext &context)
+{
+    // Bind state-owning docks before anchors, then reconcile session-scoped dialogs.
+
+    // Preserve each session's parse-error log and presentation state.
+    if (mParseErrorsDock != nullptr)
+    {
+        mParseErrorsDock->Bind(context);
+    }
+
+    // Cancel find debounce while swapping its session-owned query state.
+    if (mFindDock != nullptr)
+    {
+        mFindDock->Bind(context);
+    }
+
+    // Restore histogram pin state after swapping guarded model pointers.
+    if (mHistogramDock != nullptr)
+    {
+        mHistogramDock->Bind(context);
+    }
+
+    // Clear persistent indexes before swapping record-detail models.
+    if (mRecordDetailDock != nullptr)
+    {
+        mRecordDetailDock->Bind(context);
+    }
+
+    // Rebuild anchor subscriptions and rows against the incoming session.
+    if (mAnchorsDock != nullptr)
+    {
+        mAnchorsDock->Bind(context);
+    }
+
+    // Destroy dialogs whose captured model belongs to another session.
+    auto destroyIfOriginMismatched = [&]<class T>(QPointer<T> &dialog, QPointer<LogSession> &origin) {
+        if (dialog.isNull())
+        {
+            return;
+        }
+        if (origin.isNull() || origin.data() != context.session.data())
+        {
+            // `hide()` (not `close()`) so a dirty Highlight Rules
+            // editor cannot pop a discard prompt if it is later
+            // added to this path. Columns Manager and Diagnostics
+            // have no discard modal, but the same hide + deleteLater
+            // sequence lets queued callbacks observe a cleared
+            // `QPointer` after this function returns.
+            //
+            // `deleteLater` reaps the QObject after the event loop
+            // returns; the `QPointer` on the `m*Dialog` field auto-
+            // nulls when the delete lands. `clear()` here nulls the
+            // field synchronously so any code queued behind this
+            // call still sees a null pointer and takes the
+            // reconstruction path on the next open.
+            dialog->hide();
+            dialog->deleteLater();
+            dialog.clear();
+            origin.clear();
+        }
+    };
+    destroyIfOriginMismatched(mDiagnosticsDialog, mDiagnosticsDialogSession);
+    destroyIfOriginMismatched(mColumnsManagerDialog, mColumnsManagerDialogSession);
+
+    if (!mHighlightRulesEditor.isNull())
+    {
+        LogSession *incoming = context.session.data();
+        if (mHighlightRulesEditorSession.data() != incoming)
+        {
+            CaptureHighlightRulesEditorDraft();
+            RestoreHighlightRulesEditorDraft(incoming);
+        }
+        else if (incoming != nullptr)
+        {
+            mHighlightRulesEditor->SetColumns(incoming->Model()->Configuration().columns);
+        }
+    }
+}
+
+// Tab lifecycle.
+
+int MainWindow::TabCount() const noexcept
+{
+    return mTabWidget != nullptr ? mTabWidget->count() : 0;
+}
+
+int MainWindow::ActiveTabIndex() const noexcept
+{
+    return mTabWidget != nullptr ? mTabWidget->currentIndex() : -1;
+}
+
+int MainWindow::TabIndexForSession(SessionInstanceId id) const noexcept
+{
+    if (!id.isValid())
+    {
+        return -1;
+    }
+    for (int index = 0; std::cmp_less(index, mTabs.size()); ++index)
+    {
+        if (mTabs[index] != nullptr && mTabs[index]->id == id)
+        {
+            return index;
+        }
+    }
+    return -1;
+}
+
+LogSession *MainWindow::HostedSession(SessionInstanceId id) const noexcept
+{
+    return SessionAtTab(TabIndexForSession(id));
+}
+
+std::size_t MainWindow::PerTabConnectionCountForTest(int index) const noexcept
+{
+    if (index < 0 || std::cmp_greater_equal(index, mTabs.size()) || mTabs[index] == nullptr)
+    {
+        return 0;
+    }
+    return mTabs[index]->persistentConnections.Size();
+}
+
+LogSession *MainWindow::SessionAtTab(int index) const noexcept
+{
+    if (index < 0 || std::cmp_greater_equal(index, mTabs.size()) || mTabs[index] == nullptr)
+    {
+        return nullptr;
+    }
+    return mTabs[index]->session.data();
+}
+
+LogSessionView *MainWindow::ViewAtTab(int index) const noexcept
+{
+    if (index < 0 || std::cmp_greater_equal(index, mTabs.size()) || mTabs[index] == nullptr)
+    {
+        return nullptr;
+    }
+    return mTabs[index]->view.data();
+}
+
+SessionInstanceId MainWindow::AddNewTab(bool makeActive)
+{
+    if (mTabWidget == nullptr)
+    {
+        return {};
+    }
+
+    // Fresh session parented on `this` (MainWindow) so its lifetime
+    // tracks the window's, not any specific tab's view widget. Same
+    // shape as the ctor's initial `mSession` construction. The view
+    // is parented to nullptr because `QTabWidget::addTab` reparents
+    // it onto the strip's internal stacked widget in one step.
+    auto *session = new LogSession(mTheme, mHistoryManager, mRegexTemplateRegistry, this);
+    auto *view = new LogSessionView(session, mTheme);
+
+    // Shell-owned table chrome parity with the initial tab (H4 fix).
+    // Also runs the theme stylesheet + level-icon delegate seed so
+    // the freshly-constructed view matches the ctor-time appearance.
+    ApplyTableChromeToView(view);
+
+    auto record = std::make_unique<WindowTab>();
+    record->id = session->InstanceId();
+    record->session = session;
+    record->view = view;
+    mTabs.push_back(std::move(record));
+
+    int newIndex = -1;
+    {
+        // The `addTab` call fires `currentChanged` iff this becomes
+        // the new current index (typically only for the first tab
+        // in an empty strip). Guard it so `OnActiveTabChanged` does
+        // not attempt a mid-construction rebind: we handle the
+        // activation explicitly via `setCurrentIndex` below when
+        // `makeActive` is true.
+        const SuppressActiveTabChangeScope suppress(*this);
+        newIndex = mTabWidget->addTab(view, tr("Untitled"));
+    }
+
+    InstallPerTabPersistentConnections(session);
+    RefreshTabChrome(session);
+
+    if (makeActive && newIndex >= 0)
+    {
+        mTabWidget->setCurrentIndex(newIndex);
+    }
+    return session->InstanceId();
+}
+
+void MainWindow::InstallPerTabPersistentConnections(LogSession *session)
+{
+    if (session == nullptr)
+    {
+        return;
+    }
+    WindowTab *tab = nullptr;
+    for (auto &record : mTabs)
+    {
+        if (record != nullptr && record->session.data() == session)
+        {
+            tab = record.get();
+            break;
+        }
+    }
+    if (tab == nullptr)
+    {
+        return;
+    }
+
+    const SessionInstanceId id = session->InstanceId();
+    // These callbacks must fire for background tabs and disconnect before the
+    // tab leaves the hosted registry.
+    tab->persistentConnections += connect(session, &LogSession::presentationChanged, this, [this, id]() {
+        if (const LogSession *hosted = HostedSession(id); hosted != nullptr)
+        {
+            RefreshTabChrome(hosted);
+        }
+    });
+    tab->persistentConnections +=
+        connect(session, &LogSession::filtersDirtyChanged, this, [this](bool /*dirty*/) { UpdateWindowTitle(); });
+    if (const LogModel *model = session->Model(); model != nullptr)
+    {
+        tab->persistentConnections +=
+            connect(model, &LogModel::streamingFinished, this, [this, id](StreamingResult result) {
+                HandleStreamingFinishedFor(HostedSession(id), result);
+            });
+    }
+    if (const LogSessionView *view = tab->view.data(); view != nullptr)
+    {
+        tab->persistentConnections += connect(view, &LogSessionView::progressCancelRequested, this, [this, id]() {
+            LogSession *hosted = HostedSession(id);
+            if (hosted == nullptr)
+            {
+                return;
+            }
+            if (hosted->IsDecompressionInFlight())
+            {
+                hosted->MutableDecompressionStopSource().request_stop();
+            }
+            if (hosted->IsExportInFlight())
+            {
+                hosted->MutableExportStopSource().request_stop();
+            }
+        });
+    }
+}
+
+void MainWindow::HandleStreamingFinishedFor(LogSession *origin, StreamingResult result)
+{
+    if (mOperations == nullptr)
+    {
+        return;
+    }
+    mOperations->CompleteStreaming(origin, result);
+}
+
+void MainWindow::ApplyTableChromeToView(LogSessionView *view)
+{
+    if (view == nullptr)
+    {
+        return;
+    }
+    LogTableView *table = view->TableView();
+    if (table == nullptr)
+    {
+        return;
+    }
+    // Apply identical scrolling behavior to every tab.
+    table->setShowGrid(true);
+    table->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    table->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    // Context-menu policy: required for the shell's header +
+    // row context menus to open at all (`ShowHeaderContextMenu`
+    // / `ShowRowContextMenu` are wired via the scoped bag against
+    // the ACTIVE tab; without the policy they never fire).
+    table->setContextMenuPolicy(Qt::CustomContextMenu);
+    if (QHeaderView *header = table->horizontalHeader(); header != nullptr)
+    {
+        header->setContextMenuPolicy(Qt::CustomContextMenu);
+    }
+    // Level cell delegate: attach now so new tabs render the
+    // level-icon column correctly from the first paint. The
+    // scoped bag reapplies on `modelReset` / `columnsInserted` /
+    // `columnsRemoved` / `enumColumnsChanged` while this view is
+    // active. Skipped in the no-theme test fixture where
+    // `mLevelCellDelegate` is null.
+    if (mLevelCellDelegate != nullptr)
+    {
+        view->ApplyLevelCellDelegate(mLevelCellDelegate);
+    }
+    const bool railVisible = (mActionToggleOverviewRail != nullptr)
+                                 ? mActionToggleOverviewRail->isChecked()
+                                 : QSettings().value(QStringLiteral("ui/showOverviewRail"), true).toBool();
+    ApplyOverviewRailToView(view, railVisible);
+}
+
+void MainWindow::ApplyOverviewRailToView(LogSessionView *view, bool visible)
+{
+    if (view == nullptr)
+    {
+        return;
+    }
+    if (OverviewRailWidget *rail = view->OverviewRail(); rail != nullptr)
+    {
+        const QSettings settings;
+        rail->SetWidthMode(ParseOverviewRailWidthMode(
+            settings.value(QStringLiteral("ui/overviewRailWidth"), QStringLiteral("medium")).toString()
+        ));
+    }
+    view->SetOverviewRailVisible(visible);
+}
+
+void MainWindow::RebuildFilterMenuFromActiveSession()
+{
+    // Rebuild only the menu mirror; tab switching must not mutate filter state.
+    if (ui == nullptr || ui->menuFilters == nullptr)
+    {
+        return;
+    }
+    // Drop menu entries tagged with a filter UUID (they belong to
+    // whichever session was last active).
+    const auto priorActions = ui->menuFilters->actions();
+    for (QAction *action : priorActions)
+    {
+        if (action == nullptr)
+        {
+            continue;
+        }
+        if (!action->data().toString().isNull())
+        {
+            ui->menuFilters->removeAction(action);
+            delete action;
+        }
+    }
+    if (mSession == nullptr)
+    {
+        return;
+    }
+    // Rebuild in display order so mirror parity is preserved. The
+    // wiring below mirrors the tail of `AddLogFilter` (menu +
+    // Edit / Remove sub-actions) but does NOT call the session-
+    // mutating first half.
+    for (const std::string &idKey : mSession->SimpleLeafOrder())
+    {
+        const auto it = mSession->SimpleLeaves().find(idKey);
+        if (it == mSession->SimpleLeaves().end())
+        {
+            continue;
+        }
+        const QString id = QString::fromStdString(idKey);
+        const loglib::LeafRule &filter = it->second;
+        const QString title = BuildFilterTitle(filter);
+        QMenu *menuItem = ui->menuFilters->addMenu(title);
+        menuItem->setObjectName(id);
+        menuItem->menuAction()->setData(QVariant(id));
+        const QAction *editAction = menuItem->addAction(tr("Edit"));
+        connect(editAction, &QAction::triggered, this, [this, id]() {
+            const auto found = Filters().find(id.toStdString());
+            if (found == Filters().end())
+            {
+                AddFilter(id);
+                return;
+            }
+            AddFilter(id, found->second);
+        });
+        const QAction *removeAction = menuItem->addAction(tr("Remove"));
+        connect(removeAction, &QAction::triggered, this, [this, id]() { ClearFilter(id); });
+    }
+}
+
+void MainWindow::ApplyPendingPresentation(LogSession *session)
+{
+    if (session == nullptr)
+    {
+        return;
+    }
+    const SessionPendingPresentation pending = session->TakePendingPresentation();
+    RefreshTabChrome(session);
+    if (!pending.statusMessage.isEmpty())
+    {
+        statusBar()->showMessage(pending.statusMessage, pending.statusTimeoutMs);
+    }
+    if (pending.raiseParseErrors && mParseErrorsDock != nullptr)
+    {
+        if (!mParseErrorsDock->isVisible())
+        {
+            mParseErrorsDock->show();
+        }
+        mParseErrorsDock->raise();
+    }
+    if (pending.failureMessage.isEmpty())
+    {
+        return;
+    }
+#ifdef LOGAPP_BUILD_TESTING
+    if (mSuppressDialogsForTest)
+    {
+        return;
+    }
+#endif
+    QMessageBox::warning(this, pending.failureTitle, pending.failureMessage);
+}
+
+SessionInstanceId MainWindow::AddNewTabForTest(bool makeActive)
+{
+    return AddNewTab(makeActive);
+}
+
+void MainWindow::RenameTabForTest(int index, const QString &label)
+{
+    ApplyCustomTabLabel(index, label);
+}
+
+void MainWindow::StartTabRenameForTest(int index)
+{
+    StartTabRename(index);
+}
+
+void MainWindow::ActivateTabForTest(int index)
+{
+    if (mTabWidget != nullptr && index >= 0 && index < mTabWidget->count())
+    {
+        mTabWidget->setCurrentIndex(index);
+    }
+}
+
+void MainWindow::CloseTabForTest(int index)
+{
+    CloseTabAtIndex(index);
+}
+
+void MainWindow::OpenHighlightRulesEditorForTest()
+{
+    OpenHighlightRulesEditor();
+}
+
+HighlightRulesEditor *MainWindow::HighlightRulesEditorForTest() const noexcept
+{
+    return mHighlightRulesEditor.data();
+}
+
+ColumnsManagerDialog *MainWindow::ColumnsManagerDialogForTest() const noexcept
+{
+    return mColumnsManagerDialog.data();
+}
+
+void MainWindow::ShowConfigurationDiagnosticsForTest()
+{
+    ShowConfigurationDiagnostics();
+}
+
+ConfigurationDiagnosticsDialog *MainWindow::ConfigurationDiagnosticsDialogForTest() const noexcept
+{
+    return mDiagnosticsDialog.data();
+}
+
+void MainWindow::CloseTabAtIndex(int index)
+{
+    if (mTabWidget == nullptr || index < 0 || std::cmp_greater_equal(index, mTabs.size()))
+    {
+        return;
+    }
+
+    if (mTabRenameIndex == index)
+    {
+        FinishTabRename(false);
+    }
+
+    // Route the final tab through window close so normal save and drain logic runs.
+    if (mTabWidget->count() <= 1)
+    {
+        close();
+        return;
+    }
+
+    // Preserve the active tab. Close-decision autosave uses origin
+    // aliases and does not require activating a background tab.
+    LogSession *closingSessionMutable = SessionAtTab(index);
+    if (!PrepareSessionClose(closingSessionMutable))
+    {
+        return;
+    }
+    if (closingSessionMutable != nullptr)
+    {
+        // Preserve until close-decision save or Discard has completed.
+        closingSessionMutable->DetachAutoSaveUuid();
+    }
+
+    // Preserve index validity while ownership moves out of the tab record:
+    //   (1) disconnect that tab's persistent connections,
+    //   (2) drop it from the hosted registry,
+    //   (3) `removeTab` (fires `currentChanged(newIndex)` if the
+    //       removed tab was current; `OnActiveTabChanged` rebinds
+    //       the surviving session and view together),
+    //   (4) cancel and drain workers on the unhosted session so
+    //       queued `finished` slots resolve as unhosted and cannot
+    //       start the next file or write into a sibling,
+    //   (5) `deleteLater` both owned QObjects so any remaining
+    //       callbacks unwind on the event loop rather than mid-
+    //       destructor.
+    LogSession *session = mTabs[index] ? mTabs[index]->session.data() : nullptr;
+    LogSessionView *view = mTabs[index] ? mTabs[index]->view.data() : nullptr;
+    if (mTabs[index] != nullptr)
+    {
+        mTabs[index]->persistentConnections.Clear();
+    }
+    if (session != nullptr)
+    {
+        session->MutablePendingOpenFiles().clear();
+        if (auto *watcher = session->DecompressionWatcherPtr(); watcher != nullptr)
+        {
+            disconnect(
+                watcher, &LogSession::DecompressionWatcher::finished, this, &MainWindow::OnDecompressionFinished
+            );
+        }
+        if (auto *watcher = session->ExportWatcherPtr(); watcher != nullptr)
+        {
+            disconnect(watcher, &LogSession::ExportWatcher::finished, this, &MainWindow::OnExportFinished);
+        }
+    }
+
+    mTabs.erase(mTabs.begin() + index);
+    mTabWidget->removeTab(index);
+
+    if (session != nullptr)
+    {
+        CancelInFlightDecompressionFor(session);
+        CancelInFlightExportFor(session);
+        if (LogModel *model = session->Model(); model != nullptr)
+        {
+            model->Reset();
+        }
+    }
+
+    if (view != nullptr)
+    {
+        view->setParent(nullptr);
+        view->deleteLater();
+    }
+    if (session != nullptr)
+    {
+        session->deleteLater();
+    }
+}
+
+void MainWindow::OnActiveTabChanged(int newIndex)
+{
+    if (mSuppressActiveTabChange)
+    {
+        return;
+    }
+    if (mTabWidget == nullptr || newIndex < 0 || std::cmp_greater_equal(newIndex, mTabs.size()))
+    {
+        return;
+    }
+    auto &record = mTabs[newIndex];
+    if (record == nullptr)
+    {
+        return;
+    }
+    LogSession *newSession = record->session.data();
+    LogSessionView *newView = record->view.data();
+    if (newSession == nullptr || newView == nullptr)
+    {
+        return;
+    }
+
+    // Reordering can report the current session again; avoid a redundant rebind.
+    if (newSession == mSession)
+    {
+        return;
+    }
+
+    // (1) Save outgoing tab's focus widget so a later re-activate
+    // restores what the user was on. Best-effort: focus may live
+    // in a dock or dialog (application focus), which we do not
+    // attempt to restore per-tab.
+    const LogSession *outgoingSession = mSession;
+    for (auto &tab : mTabs)
+    {
+        if (tab != nullptr && tab->session.data() == outgoingSession)
+        {
+            QWidget *focused = QApplication::focusWidget();
+            if (focused != nullptr && tab->view != nullptr && tab->view->isAncestorOf(focused))
+            {
+                tab->lastFocus = focused;
+            }
+            break;
+        }
+    }
+
+    // (2) Re-point aliases at the new tab's session + view.
+    // Shared docks bind directly to the incoming context; each Bind
+    // saves outgoing state. Skipping an unbound intermediate keeps
+    // hidden docks from walking the outgoing model.
+    mSessionConnections.Clear();
+    SetActiveSessionAliases(newSession, newView);
+    InstallActiveSessionConnections();
+    RebindSharedDocks(activeSessionBindContext());
+
+    // (3) Refresh shell-owned UI mirrors from the new active session.
+    UpdateWindowTitle();
+    UpdateStreamingStatus();
+    UpdateRowsShownStatus();
+    UpdateSortStatus();
+    UpdateDiagnosticsStatus();
+    UpdateStreamToolbarVisibility();
+    RebuildFilterMenuFromActiveSession();
+    SyncClearAllFiltersEnabled();
+    SyncRotationHistoryActionCheckedState();
+    if (mActionUndoRotationExpansion != nullptr && mSession != nullptr)
+    {
+        mActionUndoRotationExpansion->setEnabled(!mSession->LastRotationExpansionOriginalInputs().isEmpty());
+    }
+    ApplyColumnVisibility();
+    if (mLevelCellDelegate != nullptr && newView != nullptr)
+    {
+        newView->ApplyLevelCellDelegate(mLevelCellDelegate);
+    }
+    // Reseed the follow-tail suppression flag from the toolbar
+    // action's current checked state so the new view's pill
+    // suppression matches the shell action's cache.
+    if (ui != nullptr && ui->actionFollowTail != nullptr && mTableView != nullptr)
+    {
+        mTableView->SetPendingNewRowsSuppressed(ui->actionFollowTail->isChecked());
+    }
+
+    // (4) Restore focus. Prefer the tab's last-known focus widget;
+    // fall back to the table view so keyboard nav is immediate.
+    QWidget *focusTarget = record->lastFocus.data();
+    if (focusTarget == nullptr && record->view != nullptr)
+    {
+        focusTarget = record->view->TableView();
+    }
+    if (focusTarget != nullptr)
+    {
+        focusTarget->setFocus(Qt::OtherFocusReason);
+    }
+
+    ApplyPendingPresentation(newSession);
+}
+
+void MainWindow::RefreshTabChrome(const LogSession *session)
+{
+    if (mTabWidget == nullptr || session == nullptr)
+    {
+        return;
+    }
+    const int index = TabIndexForSession(session->InstanceId());
+    if (index < 0)
+    {
+        return;
+    }
+
+    // Derive tab chrome from the owning session, including background state.
+    const SessionPresentationSnapshot snapshot = session->PresentationSnapshot();
+
+    QString label = snapshot.shortLabel;
+    if (label.isEmpty())
+    {
+        label = tr("Untitled");
+    }
+
+    // Non-color-only indicators keep status visible without colour.
+    // Operation words are part of the tab text so assistive
+    // technology can announce them; glyphs may prefix the label.
+    const std::uint32_t ops = snapshot.operations;
+    QString prefix;
+    QString operationWord;
+    if ((ops & static_cast<std::uint32_t>(SessionOperationState::Failed)) != 0)
+    {
+        prefix = QStringLiteral("\u26A0 "); // Warning: queued failure.
+        operationWord = tr("Failed");
+    }
+    else if ((ops & static_cast<std::uint32_t>(SessionOperationState::Disconnected)) != 0)
+    {
+        prefix = QStringLiteral("\u2205 "); // Empty set: disconnected placeholder.
+        operationWord = tr("Disconnected");
+    }
+    else if ((ops & static_cast<std::uint32_t>(SessionOperationState::Paused)) != 0)
+    {
+        prefix = QStringLiteral("\u23F8 "); // Pause: user paused live-tail.
+        operationWord = tr("Paused");
+    }
+    else if ((ops & static_cast<std::uint32_t>(SessionOperationState::Ingesting)) != 0)
+    {
+        prefix = QStringLiteral("\u25B6 "); // Play triangle: live-tail / network producer active.
+        operationWord = tr("Ingesting");
+    }
+    else if ((ops & static_cast<std::uint32_t>(SessionOperationState::Decompressing)) != 0)
+    {
+        prefix = QStringLiteral("\u21BB "); // Circular arrow: decompressing.
+        operationWord = tr("Decompressing");
+    }
+    else if ((ops & static_cast<std::uint32_t>(SessionOperationState::Exporting)) != 0)
+    {
+        prefix = QStringLiteral("\u21E7 "); // Upwards arrow: exporting.
+        operationWord = tr("Exporting");
+    }
+    else if ((ops & static_cast<std::uint32_t>(SessionOperationState::Parsing)) != 0)
+    {
+        prefix = QStringLiteral("\u2026 "); // Ellipsis: parsing static open.
+        operationWord = tr("Parsing");
+    }
+    else if ((ops & static_cast<std::uint32_t>(SessionOperationState::SourceWaiting)) != 0)
+    {
+        prefix = QStringLiteral("\u29D6 "); // Hourglass-ish: source waiting.
+        operationWord = tr("Waiting");
+    }
+
+    QString suffix;
+    if (snapshot.dirty.filtersDirty)
+    {
+        suffix = QStringLiteral(" \u25CF"); // Bullet: unsaved filter/sort/column changes.
+    }
+    if (snapshot.errorCount > 0)
+    {
+        // Trailing exclamation for parse errors so screen readers
+        // announce it even without the tooltip.
+        suffix += QStringLiteral(" !");
+    }
+
+    QString tabText = prefix + label;
+    if (!operationWord.isEmpty())
+    {
+        tabText += QStringLiteral(" \u2014 ");
+        tabText += operationWord;
+    }
+    tabText += suffix;
+    mTabWidget->setTabText(index, tabText);
+
+    QString tooltip = snapshot.tooltip;
+    if (tooltip.isEmpty())
+    {
+        tooltip = label;
+    }
+    tooltip += QLatin1Char('\n');
+    tooltip += snapshot.statusSummary.isEmpty() ? tr("Idle") : snapshot.statusSummary;
+    if (snapshot.dirty.filtersDirty)
+    {
+        tooltip += QLatin1Char('\n');
+        tooltip += tr("Unsaved changes");
+    }
+    if (snapshot.errorCount > 0)
+    {
+        tooltip += QLatin1Char('\n');
+        tooltip += tr("%n parse error(s)", nullptr, static_cast<int>(snapshot.errorCount));
+    }
+    mTabWidget->setTabToolTip(index, tooltip);
+
+    // QTabBar exposes visible tab text to accessibility; Qt has no per-tab name setter.
+}
+
+void MainWindow::StartTabRename(int index)
+{
+    if (mTabWidget == nullptr || index < 0 || index >= mTabWidget->count())
+    {
+        return;
+    }
+    const LogSession *session = SessionAtTab(index);
+    QTabBar *bar = mTabWidget->tabBar();
+    if (session == nullptr || bar == nullptr)
+    {
+        return;
+    }
+    if (mTabRenameEditor != nullptr)
+    {
+        if (mTabRenameIndex == index)
+        {
+            mTabRenameEditor->setFocus(Qt::OtherFocusReason);
+            mTabRenameEditor->selectAll();
+            return;
+        }
+        FinishTabRename(false);
+    }
+
+    QString seed = session->CustomTabLabel();
+    if (seed.isEmpty())
+    {
+        seed = session->PresentationSnapshot().shortLabel;
+    }
+    if (seed.isEmpty())
+    {
+        seed = tr("Untitled");
+    }
+
+    auto *editor = new QLineEdit(bar);
+    editor->setObjectName(QStringLiteral("tabRenameEditor"));
+    editor->setMaxLength(LogSession::MAX_TAB_LABEL_LENGTH);
+    editor->setFont(bar->font());
+    editor->setText(seed);
+    editor->setGeometry(bar->tabRect(index));
+    editor->setClearButtonEnabled(true);
+    editor->installEventFilter(this);
+    mTabRenameEditor = editor;
+    mTabRenameIndex = index;
+    connect(editor, &QLineEdit::editingFinished, this, [this]() { FinishTabRename(true); });
+    editor->show();
+    editor->setFocus(Qt::OtherFocusReason);
+    editor->selectAll();
+}
+
+void MainWindow::FinishTabRename(bool commit)
+{
+    QLineEdit *editor = mTabRenameEditor.data();
+    const int index = mTabRenameIndex;
+    mTabRenameEditor.clear();
+    mTabRenameIndex = -1;
+    if (editor == nullptr)
+    {
+        return;
+    }
+    editor->disconnect();
+    const QString text = editor->text();
+    editor->hide();
+    editor->deleteLater();
+    if (commit)
+    {
+        ApplyCustomTabLabel(index, text);
+    }
+}
+
+// Mutates the hosted session; `const` would hide that from the window API.
+// NOLINTNEXTLINE(readability-make-member-function-const)
+void MainWindow::ApplyCustomTabLabel(int index, QString label)
+{
+    LogSession *session = SessionAtTab(index);
+    if (session == nullptr)
+    {
+        return;
+    }
+    label = std::move(label).trimmed();
+    if (label.size() > LogSession::MAX_TAB_LABEL_LENGTH)
+    {
+        label.truncate(LogSession::MAX_TAB_LABEL_LENGTH);
+    }
+    session->SetCustomTabLabel(std::move(label));
+}
+
+void MainWindow::InstallActiveSessionConnections()
+{
+    // Construction and tab switching install the same scoped connection set.
+    //
+    // Contract:
+    //   * every connect below is prefixed with
+    //     `mSessionConnections +=` so `Clear()` reaps the whole
+    //     set atomically on tab switch;
+    //   * slots that read shell aliases (`mModel`, `mTableView`,
+    //     ...) are safe because `SetActiveSessionAliases` has
+    //     already re-pointed them before we reinstall;
+    //   * connects whose LAMBDA captures a session pointer
+    //     directly (rare -- see the enum-column pipeline) use
+    //     the member function `OnEnumColumnsChangedApplyFilterRebuild`
+    //     so there is only one place the body lives.
+    //
+    // NOT installed here (kept as persistent per-tab connects in
+    // the ctor and `AddNewTab`):
+    //   * `LogSession::presentationChanged -> RefreshTabChrome`
+    //     (H3): a background tab must keep refreshing its own
+    //     tab-strip chrome even while it is not active.
+    //   * `LogSession::filtersDirtyChanged -> UpdateWindowTitle`
+    //     (H2): a background edit must still light the window's
+    //     `[*]` marker via the aggregate.
+    //   * shared-dock `Bind` / `Unbind`: those live on the docks
+    //     and are re-driven by `RebindSharedDocks` after this
+    //     helper runs.
+    //   * `LogSessionView::progressCancelRequested`: stored on the tab so a
+    //     background tab's progress strip can cancel that session's workers.
+    if (mSession == nullptr || mModel == nullptr || mSessionView == nullptr || mTableView == nullptr ||
+        mSortFilterProxyModel == nullptr || mOverviewRailModel == nullptr || mOverviewRailWidget == nullptr)
+    {
+        return;
+    }
+
+    // --- Session-owned signals ------------------------------------------
+    // rotationFlashChanged only meaningfully drives the ACTIVE tab's
+    // status bar, so it stays bag-scoped. `filtersDirtyChanged` and
+    // `presentationChanged` are wired PERSISTENTLY per-tab (in the
+    // ctor for the initial tab and in `AddNewTab` for later tabs)
+    // so background tabs still feed the window's aggregate dirty
+    // marker and refresh their own tab chrome.
+    mSessionConnections += connect(mSession, &LogSession::rotationFlashChanged, this, [this](bool /*active*/) {
+        UpdateStreamingStatus();
+    });
+
+    // --- Model-owned signals: columns/level delegate/highlight sync ----
+    mSessionConnections +=
+        connect(mModel, &QAbstractItemModel::columnsInserted, this, [this](const QModelIndex &, int, int) {
+            if (mHighlights == nullptr || mModel == nullptr)
+            {
+                return;
+            }
+            if (mHighlightRulesEditor != nullptr && mHighlightRulesEditorSession.data() == mSession)
+            {
+                mHighlightRulesEditor->SetColumns(mModel->Configuration().columns);
+            }
+            if (FilterHasUnresolvedLeaves(mModel->Configuration().expression, mModel->Configuration().columns))
+            {
+                UpdateFilters();
+            }
+        });
+    mSessionConnections += connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::ApplyColumnVisibility);
+    if (mTheme != nullptr)
+    {
+        mSessionConnections +=
+            connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::ApplyLevelCellDelegate);
+        mSessionConnections +=
+            connect(mModel, &QAbstractItemModel::columnsInserted, this, &MainWindow::ApplyLevelCellDelegate);
+        mSessionConnections +=
+            connect(mModel, &QAbstractItemModel::columnsRemoved, this, &MainWindow::ApplyLevelCellDelegate);
+        mSessionConnections += connect(
+            mModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason reason, int /*columnIndex*/) {
+                if (reason == EnumColumnsChangeReason::Grew)
+                {
+                    return;
+                }
+                ApplyLevelCellDelegate();
+            }
+        );
+    }
+
+    // --- View / rail / progress ----------------------------------------
+    mSessionConnections +=
+        connect(mOverviewRailWidget, &OverviewRailWidget::proxyRowClicked, this, &MainWindow::ScrollToProxyRow);
+    mSessionConnections += connect(mSessionView, &LogSessionView::rowNotVisible, this, [this]() {
+        statusBar()->showMessage(tr("Row is not currently visible."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+    });
+    mSessionConnections += connect(mSessionView, &LogSessionView::followTailDisengageRequested, this, [this]() {
+        if (ui != nullptr && ui->actionFollowTail != nullptr && ui->actionFollowTail->isChecked())
+        {
+            ui->actionFollowTail->setChecked(false);
+        }
+    });
+    mSessionConnections +=
+        connect(mSessionView, &LogSessionView::statusMessageRequested, this, [this](const QString &message) {
+            statusBar()->showMessage(message, STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        });
+    mSessionConnections += connect(mOverviewRailModel, &OverviewRailModel::bucketsChanged, this, [this]() {
+        const auto &findCacheOpt = mSession->FindMatchCacheState();
+        if (!IsFindBarVisible() || !findCacheOpt.has_value() || mOverviewRailModel == nullptr)
+        {
+            return;
+        }
+        const std::size_t n = mOverviewRailModel->BucketCount();
+        if (n == 0)
+        {
+            return;
+        }
+        if (findCacheOpt->bucketCounts.size() == n && mOverviewRailModel->HasMatchTicks())
+        {
+            return;
+        }
+        PushFindMatchesToOverviewRail();
+    });
+
+    // --- Header / row context menus + column moves ---------------------
+    mSessionConnections +=
+        connect(mTableView->horizontalHeader(), &QHeaderView::sectionMoved, this, &MainWindow::OnHeaderSectionMoved);
+    mSessionConnections += connect(
+        mTableView->horizontalHeader(),
+        &QHeaderView::customContextMenuRequested,
+        this,
+        &MainWindow::ShowHeaderContextMenu
+    );
+    mSessionConnections +=
+        connect(mTableView, &QWidget::customContextMenuRequested, this, &MainWindow::ShowRowContextMenu);
+    mSessionConnections += connect(mModel, &QAbstractItemModel::columnsMoved, this, &MainWindow::OnSourceColumnsMoved);
+    mSessionConnections += connect(
+        mModel, &LogModel::enumColumnsChanged, this, [this](EnumColumnsChangeReason /*reason*/, int /*columnIndex*/) {
+            if (mHighlights == nullptr || mModel == nullptr)
+            {
+                return;
+            }
+            mHighlights->RebindColumns(mModel->Configuration().columns, &mModel->Table());
+        }
+    );
+    // Enum-column change -> filter rebuild pipeline (Demoted /
+    // Promoted / Grew branches). Extracted to a member function so
+    // the 140-line body has one source of truth for both the ctor
+    // install and the tab-switch reinstall (B1 fix).
+    mSessionConnections +=
+        connect(mModel, &LogModel::enumColumnsChanged, this, &MainWindow::OnEnumColumnsChangedApplyFilterRebuild);
+
+    // --- Shell action -> view-owned table (Copy, follow-tail toggle,
+    // anchor color hotkeys, clear-anchor, jump-to-tail pill,
+    // double-click details) --------------------------------------------
+    mSessionConnections +=
+        connect(ui->actionCopy, &QAction::triggered, mTableView, &LogTableView::CopySelectedRowsToClipboard);
+    mSessionConnections += connect(mTableView, &LogTableView::userScrolledAwayFromTail, this, [this]() {
+        if (ui->actionFollowTail->isChecked())
+        {
+            ui->actionFollowTail->setChecked(false);
+        }
+    });
+    mSessionConnections += connect(mTableView, &LogTableView::userScrolledToTail, this, [this]() {
+        if (!ui->actionFollowTail->isChecked() && IsLiveTailSession())
+        {
+            ui->actionFollowTail->setChecked(true);
+        }
+    });
+    mSessionConnections += connect(ui->actionFollowTail, &QAction::toggled, this, [this](bool checked) {
+        if (mTableView != nullptr)
+        {
+            mTableView->SetPendingNewRowsSuppressed(checked);
+        }
+    });
+    mSessionConnections += connect(mTableView, &LogTableView::jumpToTailRequested, this, [this]() {
+        if (mTableView != nullptr)
+        {
+            mTableView->AcknowledgePendingNewRows();
+        }
+        JumpToNewestRow();
+        if (IsLiveTailSession() && !ui->actionFollowTail->isChecked())
+        {
+            ui->actionFollowTail->setChecked(true);
+        }
+    });
+
+    // --- Find-cache invalidation via the sort/filter proxy -------------
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::OnFindCacheInvalidated);
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::OnFindCacheInvalidated);
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::layoutChanged, this, &MainWindow::OnFindCacheInvalidated);
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::modelReset, this, &MainWindow::OnFindCacheInvalidated);
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::columnsInserted, this, &MainWindow::OnFindCacheInvalidated);
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::columnsRemoved, this, &MainWindow::OnFindCacheInvalidated);
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::columnsMoved, this, &MainWindow::OnFindCacheInvalidated);
+    mSessionConnections += connect(
+        mSortFilterProxyModel,
+        &QAbstractItemModel::dataChanged,
+        this,
+        [this](const QModelIndex & /*topLeft*/, const QModelIndex & /*bottomRight*/, const QList<int> &roles) {
+            if (LogModel::IsStyleOnlyRoleChange(roles))
+            {
+                return;
+            }
+            OnFindCacheInvalidated();
+        }
+    );
+
+    // --- Rows-shown status ---------------------------------------------
+    mSessionConnections += connect(mModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::UpdateRowsShownStatus);
+    mSessionConnections += connect(mModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::UpdateRowsShownStatus);
+    mSessionConnections += connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateRowsShownStatus);
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::UpdateRowsShownStatus);
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::UpdateRowsShownStatus);
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateRowsShownStatus);
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::layoutChanged, this, &MainWindow::UpdateRowsShownStatus);
+
+    // --- Sort status ---------------------------------------------------
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::layoutChanged, this, &MainWindow::UpdateSortStatus);
+    mSessionConnections +=
+        connect(mSortFilterProxyModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateSortStatus);
+    mSessionConnections += connect(mModel, &QAbstractItemModel::rowsInserted, this, &MainWindow::UpdateSortStatus);
+    mSessionConnections += connect(mModel, &QAbstractItemModel::rowsRemoved, this, &MainWindow::UpdateSortStatus);
+    mSessionConnections += connect(mModel, &QAbstractItemModel::modelReset, this, &MainWindow::UpdateSortStatus);
+    mSessionConnections += connect(
+        mModel, &QAbstractItemModel::headerDataChanged, this, [this](Qt::Orientation orientation, int first, int last) {
+            if (orientation != Qt::Horizontal || mSortFilterProxyModel == nullptr)
+            {
+                return;
+            }
+            const int sortColumn = mSortFilterProxyModel->SortColumn();
+            if (sortColumn < 0 || sortColumn < first || sortColumn > last)
+            {
+                return;
+            }
+            UpdateSortStatus();
+        }
+    );
+
+    // --- Double-click -> details ---------------------------------------
+    mSessionConnections +=
+        connect(mTableView, &QAbstractItemView::doubleClicked, this, &MainWindow::ShowRecordDetailsForProxyIndex);
+
+    // --- Anchor color hotkeys (Ctrl+1..Ctrl+9) target the active view --
+    for (std::size_t i = 0; i < mAnchorColorActions.size(); ++i)
+    {
+        const QAction *action = mAnchorColorActions[i];
+        if (action == nullptr)
+        {
+            continue;
+        }
+        const int colourIndex = static_cast<int>(i);
+        mSessionConnections += connect(action, &QAction::triggered, mTableView, [view = mTableView, colourIndex]() {
+            view->AnchorSelection(colourIndex);
+        });
+    }
+    if (mActionClearRowAnchor != nullptr)
+    {
+        mSessionConnections +=
+            connect(mActionClearRowAnchor, &QAction::triggered, mTableView, &LogTableView::ClearAnchorOnSelection);
+    }
+
+    // --- Streaming lifecycle + line/error counts + rotation flash ------
+    mSessionConnections += connect(mModel, &LogModel::lineCountChanged, this, [this](qsizetype count) {
+        mSession->SetStreamingLineCount(count);
+        UpdateStreamingStatus();
+        if (IsLiveTailSession() && !mSession->FirstStreamingBatchSeen() && count > 0)
+        {
+            mSession->SetFirstStreamingBatchSeen(true);
+            UpdateUi();
+            UpdateWindowTitle();
+        }
+        if (IsLiveTailSession())
+        {
+            ScrollToNewestRowIfFollowing();
+        }
+    });
+    mSessionConnections += connect(mModel, &LogModel::errorCountChanged, this, [this](qsizetype count) {
+        mSession->SetStreamingErrorCount(count);
+        UpdateStreamingStatus();
+    });
+    // Completion uses only the persistent origin-bound connection to avoid duplicate handling.
+    mSessionConnections += connect(mModel, &LogModel::rotationDetected, this, &MainWindow::OnRotationDetected);
+    mSessionConnections += connect(mModel, &LogModel::sourceStatusChanged, this, &MainWindow::OnSourceStatusChanged);
+    mSessionConnections += connect(mModel, &LogModel::columnHealthChanged, this, &MainWindow::UpdateDiagnosticsStatus);
+
+    // --- Selection tracking for the Record Details dock (B2 fix) -------
+    // Reinstall after the alias swap so the connection targets the
+    // newly-bound table's selection model instead of the destroyed
+    // outgoing one.
+    RebindRecordDetailSelectionTracking();
+}
+
+void MainWindow::AggregateWindowModified()
+{
+    // A dirty background session still marks the containing window modified.
+    bool anyDirty = false;
+    for (const LogSession *session : hostedSessions())
+    {
+        if (session != nullptr && session->HasUnsavedChanges())
+        {
+            anyDirty = true;
+            break;
+        }
+    }
+    setWindowModified(anyDirty);
+}
+
+// Fan-out mutation of hosted-session state reads as a window mutation semantically even though every mutation flows
+// through a non-owning pointer; keep non-const so the intent stays honest.
+// NOLINTNEXTLINE(readability-make-member-function-const)
+void MainWindow::BroadcastRotationHistoryPreference(bool enabled)
+{
+    // Fan the process-wide preference to every hosted session. Per-session filtering
+    // (CLI per-window opt-out,
+    // source-descriptor `followRotationSiblings`) happens inside
+    // `LogSession::ShouldAutoDetectRotationHistory`; this method
+    // simply broadcasts the "user just flipped the setting" event so
+    // every session (a) drops its CLI opt-out latch and (b) mirrors
+    // the value into its source descriptor.
+    for (LogSession *session : hostedSessions())
+    {
+        if (session == nullptr)
+        {
+            continue;
+        }
+        session->SetDisableRotationHistoryOverride(false);
+        auto &currentSource = session->MutableCurrentSource();
+        if (!currentSource.has_value())
+        {
+            continue;
+        }
+        // Source state remains writable during teardown even when its model is unavailable.
+        currentSource->followRotationSiblings = enabled;
+        if (session->Model() != nullptr)
+        {
+            session->Model()->ConfigurationManager().SetSource(currentSource);
+        }
+    }
 }
 
 bool MainWindow::InitializeTimezoneDatabase()
@@ -1916,9 +3080,7 @@ bool MainWindow::InitializeTimezoneDatabase()
 
 namespace
 {
-/// True iff the payload carries at least one local file URL.
-/// Refusing remote URLs flips the cursor to the no-drop indicator,
-/// matching Explorer/Finder UX.
+// Accept only payloads containing local file URLs.
 bool MimeHasLocalFileUrl(const QMimeData *mime)
 {
     if (mime == nullptr || !mime->hasUrls())
@@ -1980,6 +3142,25 @@ void MainWindow::dropEvent(QDropEvent *event)
 
     event->acceptProposedAction();
 }
+
+#ifdef LOGAPP_BUILD_TESTING
+void MainWindow::DropFilesForTest(const QStringList &files, Qt::KeyboardModifiers modifiers)
+{
+    QMimeData mime;
+    QList<QUrl> urls;
+    urls.reserve(files.size());
+    for (const QString &path : files)
+    {
+        urls.append(QUrl::fromLocalFile(path));
+    }
+    mime.setUrls(urls);
+    constexpr qreal SYNTHETIC_DROP_POSITION = 8.0;
+    QDropEvent event(
+        QPointF(SYNTHETIC_DROP_POSITION, SYNTHETIC_DROP_POSITION), Qt::CopyAction, &mime, Qt::LeftButton, modifiers
+    );
+    dropEvent(&event);
+}
+#endif
 
 void MainWindow::UpdateUi()
 {
@@ -2077,6 +3258,48 @@ bool MainWindow::event(QEvent *event)
         break;
     }
     return QMainWindow::event(event);
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    if (event == nullptr)
+    {
+        return QMainWindow::eventFilter(watched, event);
+    }
+
+    if (mTabWidget != nullptr && watched == mTabWidget->tabBar() &&
+        (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress))
+    {
+        auto *keyEvent = static_cast<QKeyEvent *>(event); // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
+        if (keyEvent->key() == Qt::Key_F2 && keyEvent->modifiers() == Qt::NoModifier)
+        {
+            // Keep window-scope jump-to-anchor when the table has
+            // focus; F2 here only when the tab strip is the target.
+            event->accept();
+            if (event->type() == QEvent::KeyPress)
+            {
+                StartTabRename(mTabWidget->currentIndex());
+            }
+            return true;
+        }
+    }
+
+    if (watched == mTabRenameEditor.data() && event->type() == QEvent::KeyPress)
+    {
+        auto *keyEvent = static_cast<QKeyEvent *>(event); // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
+        if (keyEvent->key() == Qt::Key_Escape)
+        {
+            FinishTabRename(false);
+            return true;
+        }
+        if (keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter)
+        {
+            FinishTabRename(true);
+            return true;
+        }
+    }
+
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::NewWindow()
@@ -2214,13 +3437,13 @@ void MainWindow::RestoreLastSessionFromPath(const QString &jsonPath)
     // carry a stale `LiveTail` into the restored session and trip
     // the live-tail guard in `ShouldAutoSaveSession` on the next
     // closeEvent.
-    mLastTerminalSessionMode = SessionMode::Idle;
+    mSession->ResetMode();
     // Defer the loaded sort until streaming finishes (see
     // `ApplyDeferredSortFromConfig` for the O(N^2) avoidance).
-    mPendingApplySortFromConfig = true;
+    mSession->SetPendingApplySortFromConfig(true);
     if (!DoLoadConfiguration(jsonPath))
     {
-        mPendingApplySortFromConfig = false;
+        mSession->SetPendingApplySortFromConfig(false);
         return;
     }
 
@@ -2239,12 +3462,12 @@ void MainWindow::RestoreLastSessionFromPath(const QString &jsonPath)
         const bool insideManagedDir = info.absoluteDir() == managedDir;
         if (!parsed.isNull() && insideManagedDir)
         {
-            mAutoSaveUuid = stem;
+            mSession->SetAutoSaveUuid(stem);
             // Gate the publish on (a) `Touch` succeeding (index
             // still owns the stem) and (b)
             // `RestorableActiveSessionUuid()` non-empty (the
             // session can actually be reopened on next launch -- a
-            // legacy NetworkStream entry would create a fan-restore
+            // non-restorable NetworkStream entry would create a restore
             // loop otherwise). The latch follows the bool return so
             // a contended / disabled publish doesn't claim a
             // publish that never happened.
@@ -2252,7 +3475,7 @@ void MainWindow::RestoreLastSessionFromPath(const QString &jsonPath)
             {
                 if (SessionHistoryManager::AddOpenWindowUuid(stem))
                 {
-                    mAutoSaveUuidPublished = true;
+                    mSession->SetAutoSaveUuidPublished(true);
                 }
             }
         }
@@ -2287,11 +3510,6 @@ void MainWindow::OpenRecentSession(const QString &uuid)
         return;
     }
 
-    // Pre-flight parse so a corrupt recents file doesn't destroy
-    // the user's current view for nothing. The parsed value is
-    // handed to `ApplyLoadedConfiguration` so the commit path
-    // doesn't re-read the file (closing a TOCTOU window against a
-    // sibling `Remove(uuid)`).
     loglib::LogConfiguration parsed;
     try
     {
@@ -2312,8 +3530,6 @@ void MainWindow::OpenRecentSession(const QString &uuid)
                     .arg(jsonPath, QString::fromStdString(e.what()))
             );
         }
-        // Drop the corrupt entry from the index; the on-disk JSON
-        // will be reaped by `CleanupOrphanFiles` next launch.
         if (logapp::LooksLikeUuid(uuid))
         {
             mHistoryManager->Remove(uuid);
@@ -2321,46 +3537,123 @@ void MainWindow::OpenRecentSession(const QString &uuid)
         return;
     }
 
-    // Recent Sessions is "open this exact view", so discard the
-    // current session before applying. `NewSession` also detaches
-    // our previous uuid; we re-pin below.
-    NewSession();
+    OpenParsedSession(uuid, std::move(parsed), /*informIfNonFile=*/true);
+}
+
+void MainWindow::OpenSessionFromJson(const QString &uuid, const QString &jsonPath, bool informIfNonFile)
+{
+    if (jsonPath.isEmpty() || !QFileInfo::exists(jsonPath))
+    {
+        return;
+    }
+
+    loglib::LogConfiguration parsed;
+    try
+    {
+        loglib::LogConfigurationManager probe;
+        probe.Load(jsonPath.toStdString());
+        parsed = probe.Configuration();
+    }
+    catch (const std::exception &)
+    {
+        return;
+    }
+
+    OpenParsedSession(uuid, std::move(parsed), informIfNonFile);
+}
+
+QString MainWindow::RestoreHostedTabFromJson(const QString &uuid, const QString &jsonPath)
+{
+    if (mSession == nullptr)
+    {
+        return tr("No session is selected.");
+    }
+    if (jsonPath.isEmpty() || !QFileInfo::exists(jsonPath))
+    {
+        return tr("The saved session file is missing.");
+    }
+
+    loglib::LogConfiguration parsed;
+    try
+    {
+        loglib::LogConfigurationManager probe;
+        probe.Load(jsonPath.toStdString());
+        parsed = probe.Configuration();
+    }
+    catch (const std::exception &e)
+    {
+        return QString::fromUtf8(e.what());
+    }
+
+    mSession->SetPendingApplySortFromConfig(true);
+    if (!ApplyLoadedConfiguration(std::move(parsed)))
+    {
+        mSession->SetPendingApplySortFromConfig(false);
+        return {};
+    }
+
+    mSession->SetAutoSaveUuid(uuid);
+    if (mHistoryManager != nullptr && mHistoryManager->Touch(uuid) && !RestorableActiveSessionUuid().isEmpty())
+    {
+        if (SessionHistoryManager::AddOpenWindowUuid(uuid))
+        {
+            mSession->SetAutoSaveUuidPublished(true);
+        }
+    }
+
+    StreamFromCurrentSourceOrSkip(/*informIfNonFile=*/false);
+    return {};
+}
+
+void MainWindow::OpenParsedSession(const QString &uuid, loglib::LogConfiguration parsed, bool informIfNonFile)
+{
+    // Preserve a busy active tab when opening a recent session. When the active tab
+    // was already empty, we still route through `NewSession` to
+    // detach the previous uuid and refresh the empty slot.
+    const bool activeTabWasEmpty = (mSession != nullptr) && !mSession->CurrentSource().has_value() &&
+                                   (mModel == nullptr || mModel->rowCount(QModelIndex{}) == 0);
+    EnsureFreshActiveTab();
+    if (activeTabWasEmpty)
+    {
+        // Replace-in-place tears down current session/model state.
+        // `NewSession` also detaches our previous uuid; we re-pin
+        // below via `Touch` inside the streaming setup.
+        NewSession();
+    }
 
     // Defer the loaded sort until streaming finishes (see
-    // `ApplyDeferredSortFromConfig`). Set *after* `NewSession`,
-    // which clears the latch.
-    mPendingApplySortFromConfig = true;
+    // `ApplyDeferredSortFromConfig`). Set *after* `NewSession`/
+    // `AddNewTab`, which clear the latch on the target session.
+    mSession->SetPendingApplySortFromConfig(true);
 
     // Apply failure surfaces a `QMessageBox`; bail without queueing
     // files so the view is at least empty rather than mixed.
     if (!ApplyLoadedConfiguration(std::move(parsed)))
     {
-        mPendingApplySortFromConfig = false;
+        mSession->SetPendingApplySortFromConfig(false);
         return;
     }
 
     // Pin the uuid before streaming. Publish gated by `Touch`
     // (index still owns @p uuid) and `RestorableActiveSessionUuid`
-    // (loaded session is round-trippable -- legacy NetworkStream
+    // (loaded session is round-trippable -- non-restorable NetworkStream
     // snapshots would otherwise create a fan-restore loop). The
     // latch follows the bool return; see `RestoreLastSessionFromPath`.
-    mAutoSaveUuid = uuid;
-    if (mHistoryManager->Touch(uuid) && !RestorableActiveSessionUuid().isEmpty())
+    mSession->SetAutoSaveUuid(uuid);
+    if (mHistoryManager != nullptr && mHistoryManager->Touch(uuid) && !RestorableActiveSessionUuid().isEmpty())
     {
         if (SessionHistoryManager::AddOpenWindowUuid(uuid))
         {
-            mAutoSaveUuidPublished = true;
+            mSession->SetAutoSaveUuidPublished(true);
         }
     }
 
-    // User-initiated click, so surface the non-File branch as a
-    // `QMessageBox` rather than silently skipping.
-    StreamFromCurrentSourceOrSkip(/*informIfNonFile=*/true);
+    StreamFromCurrentSourceOrSkip(informIfNonFile);
 }
 
 void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
 {
-    if (!loglib::HasLocators(mCurrentSource))
+    if (!loglib::HasLocators(mSession->MutableCurrentSource()))
     {
         // No source -- columns / filters are installed but there's
         // nothing to stream. Consume the deferred-sort latch so it
@@ -2372,11 +3665,11 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
     // `HasLocators` already gated `has_value`; clang-tidy's optional
     // analyser cannot trace through the helper.
     // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
-    const auto &source = *mCurrentSource;
+    const auto &source = *mSession->MutableCurrentSource();
     if (source.kind != loglib::LogConfiguration::Source::Kind::File)
     {
         // Network and stdin locators cannot be reopened. Stdin can
-        // still reach this branch through a manual or legacy bundle.
+        // still reach this branch through a manually created or older bundle.
         if (informIfNonFile)
         {
 #ifdef LOGAPP_BUILD_TESTING
@@ -2419,21 +3712,28 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
 
 void MainWindow::NewSession()
 {
+    // New Session uses the same close-decision model as Close Tab.
+    if (mSession != nullptr && !PrepareSessionClose(mSession))
+    {
+        return;
+    }
+
     // Tear down all loaded state -- rows, filters, source, session
     // mode, columns, sort -- so the window matches "blank window"
     // semantics. `LogModel::Reset` handles producer stop + sink
     // drain for live-tail sessions, no extra branch needed.
+
+    // Cancel export and decompression before `mModel->Reset()` so a
+    // finishing worker cannot continue the open pipeline against a
+    // cleared model. Safe to call when nothing is in flight.
+    CancelInFlightExport();
+    CancelInFlightDecompression();
 
     // Drop proxy state before the configuration wipe so no signal
     // handler can briefly evaluate against indices that become
     // dangling once `columns` is empty.
     mTableView->sortByColumn(-1, Qt::AscendingOrder);
     mSortFilterProxyModel->SetFilterExpression(loglib::CompiledFilterExpression{});
-
-    // Cancel the export worker BEFORE the reset: the worker
-    // reads `LogTable` from a background thread and the reset
-    // below tears down its storage. Any other order is a race.
-    CancelInFlightExport();
 
     // RAII latch so the synchronous `streamingFinished(Cancelled)`
     // emitted by `mModel->Reset()` doesn't run
@@ -2464,41 +3764,33 @@ void MainWindow::NewSession()
     {
         mParseErrorsDock->ResetSessionState();
     }
-    mStreamingErrorsCut = 0;
 
-    mCurrentSource.reset();
-    mSessionMode = SessionMode::Idle;
-    mLastTerminalSessionMode = SessionMode::Idle;
-    mStreamingFileName.clear();
-    mStreamingLineCount = 0;
-    mStreamingErrorCount = 0;
-    mFirstStreamingBatchSeen = false;
-    mSourceWaiting = false;
-    // Cancel any in-flight decompression from the outgoing session
-    // so its `finished` slot cannot splice the old file into the
-    // fresh session. Export was already cancelled above (pre-reset).
-    CancelInFlightDecompression();
+    mSession->MutableCurrentSource().reset();
+    mSession->SetFallbackTabLabel({});
+    mSession->SetCustomTabLabel({});
+    mSession->ResetMode();
+    mSession->ResetStreamingCountersAndFileName();
     // Drop the outgoing session's multi-file queue too -- otherwise
     // queued-but-not-yet-drained files stay invisibly attached to a
     // session that no longer exists until the next destructive open
     // overwrites them. `OpenLogStreamFromPath` / `OpenNetworkStream`
     // clear the queue at their seams for the same reason.
-    mPendingOpenFiles.clear();
-    mPendingOpenErrors.clear();
-    mPendingDecompressionErrors.clear();
+    mSession->ClearPendingOpenQueues();
     // Prevent pending tail and Undo state from crossing sessions.
     ClearPendingLiveTailPromotion();
     ClearRotationExpansionUndoState();
     // The effective preference no longer has a session-level gate.
     SyncRotationHistoryActionCheckedState();
     // The configuration that requested the deferred sort is gone.
-    mPendingApplySortFromConfig = false;
+    mSession->SetPendingApplySortFromConfig(false);
     // Drop the Goto Timestamp / Goto Line sticky inputs: a value
     // that made sense in the outgoing session (zone, format, row
     // count) can be nonsense in a new one, and pre-populating the
-    // dialog with it just annoys the user.
-    mLastGotoTimestampInput.clear();
-    mLastGotoLineInput.clear();
+    // dialog with it just annoys the user. The state belongs to the view.
+    if (mSessionView != nullptr)
+    {
+        mSessionView->ClearGotoStickyInputs();
+    }
     // Drop the pinned uuid + open-windows membership so the next
     // AutoSave creates a fresh entry and a crash before then
     // doesn't re-restore the discarded session.
@@ -2600,15 +3892,16 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         // Mirror the loaded source so the next save round-trips it.
         // No auto-bind. Backfill `locatorDedupKeys` for JSON that
         // pre-dates the parallel-array schema split.
-        mCurrentSource = mModel->Configuration().source;
-        logapp::BackfillLocatorDedupKeys(mCurrentSource);
+        mSession->MutableCurrentSource() = mModel->Configuration().source;
+        logapp::BackfillLocatorDedupKeys(mSession->MutableCurrentSource());
+        mSession->NotifyPresentationChanged();
         // Loaded source preferences replace the prior session's Undo state.
         ClearRotationExpansionUndoState();
         SyncRotationHistoryActionCheckedState();
 
         // Bulk-replace anchors before RebuildFiltersFromConfiguration
         // mirrors the (now empty) `AnchorManager` back onto disk.
-        // Future-schema colour slots are clamped (not dropped) so
+        // Newer-schema colour slots are clamped (not dropped) so
         // the bookmark + note survive a downgrade; the remap count
         // is surfaced to the user.
         if (mAnchors != nullptr)
@@ -2656,18 +3949,20 @@ void MainWindow::ShowRotationHistoryToast(int addedCount, const QString &primary
 
 void MainWindow::UndoRotationExpansion()
 {
-    if (mLastRotationExpansionOriginalInputs.isEmpty())
+    if (mSession->LastRotationExpansionOriginalInputs().isEmpty())
     {
         return;
     }
     // Clear Undo state before reopening to avoid carrying it across reset.
-    const QStringList originalInputs = std::move(mLastRotationExpansionOriginalInputs);
-    const bool wasLiveTail = mLastRotationExpansionWasLiveTail;
+    // Copy first; `ClearRotationExpansionUndoState` invalidates the
+    // reference returned by `LastRotationExpansionOriginalInputs()`.
+    const QStringList originalInputs = mSession->LastRotationExpansionOriginalInputs();
+    const bool wasLiveTail = mSession->LastRotationExpansionWasLiveTail();
     ClearRotationExpansionUndoState();
     Q_ASSERT(!originalInputs.isEmpty());
     // Temporarily suppress expansion while reopening the original inputs.
-    const bool priorOverride = mDisableRotationHistoryOverride;
-    mDisableRotationHistoryOverride = true;
+    const bool priorOverride = mSession->DisableRotationHistoryOverride();
+    mSession->SetDisableRotationHistoryOverride(true);
     if (wasLiveTail)
     {
         // Preserve live-tail mode; this path captures exactly one input.
@@ -2678,7 +3973,7 @@ void MainWindow::UndoRotationExpansion()
         // Restore the complete multi-file selection.
         DispatchMixedOpenInput(originalInputs, OpenMode::Replace);
     }
-    mDisableRotationHistoryOverride = priorOverride;
+    mSession->SetDisableRotationHistoryOverride(priorOverride);
 }
 
 void MainWindow::SyncRotationHistoryActionCheckedState()
@@ -2693,8 +3988,7 @@ void MainWindow::SyncRotationHistoryActionCheckedState()
 
 void MainWindow::ClearRotationExpansionUndoState() noexcept
 {
-    mLastRotationExpansionOriginalInputs.clear();
-    mLastRotationExpansionWasLiveTail = false;
+    mSession->ClearRotationExpansionUndoState();
     if (mActionUndoRotationExpansion != nullptr)
     {
         mActionUndoRotationExpansion->setEnabled(false);
@@ -2703,13 +3997,12 @@ void MainWindow::ClearRotationExpansionUndoState() noexcept
 
 void MainWindow::ClearPendingLiveTailPromotion() noexcept
 {
-    mPendingLiveTailPrimary.clear();
-    mPendingLiveTailRetention = 0;
+    mSession->ClearPendingLiveTailPromotion();
 }
 
 void MainWindow::SetRotationHistoryLaunchOverride(bool disable)
 {
-    mDisableRotationHistoryOverride = disable;
+    mSession->SetDisableRotationHistoryOverride(disable);
     SyncRotationHistoryActionCheckedState();
 }
 
@@ -2723,39 +4016,23 @@ void MainWindow::OnRotationHistoryPrefToggled(bool enabled)
         settings.setValue(QStringLiteral("ui/autoDetectRotatedHistory"), enabled);
     }
 
-    // An explicit user choice supersedes the CLI launch override.
-    mDisableRotationHistoryOverride = false;
-
-    // Mirror the preference so later drops respect the session setting.
-    if (mCurrentSource.has_value())
-    {
-        mCurrentSource->followRotationSiblings = enabled;
-        mModel->ConfigurationManager().SetSource(mCurrentSource);
-    }
+    // Fan the preference change to every hosted session. Each session drops its CLI
+    // opt-out latch and mirrors the value into its source
+    // descriptor. Previously this only touched `mSession`, which
+    // meant a background tab kept its stale preference on multi-tab
+    // windows.
+    BroadcastRotationHistoryPreference(enabled);
     SyncRotationHistoryActionCheckedState();
 }
 
 bool MainWindow::ShouldAutoDetectRotationHistory() const
 {
-    if (mDisableRotationHistoryOverride)
-    {
-        return false;
-    }
-    const QSettings settings;
-    return settings.value(QStringLiteral("ui/autoDetectRotatedHistory"), true).toBool();
+    return mSession->ShouldAutoDetectRotationHistory();
 }
 
 bool MainWindow::EffectiveAutoDetectRotationHistory() const
 {
-    if (!ShouldAutoDetectRotationHistory())
-    {
-        return false;
-    }
-    if (mCurrentSource.has_value() && !mCurrentSource->followRotationSiblings)
-    {
-        return false;
-    }
-    return true;
+    return mSession->EffectiveAutoDetectRotationHistory();
 }
 
 QStringList MainWindow::ExpandLogPathsWithRotationSiblings(
@@ -2778,18 +4055,19 @@ QStringList MainWindow::ExpandLogPathsWithRotationSiblings(
     const bool consultOptOut = (gating != RotationSourceGating::Ignore);
     const bool consultDedup = (gating == RotationSourceGating::HonourAll);
 
+    const auto &currentSource = mSession->CurrentSource();
     // Honour a loaded session's opt-out when requested.
-    if (consultOptOut && mCurrentSource.has_value() && !mCurrentSource->followRotationSiblings)
+    if (consultOptOut && currentSource.has_value() && !currentSource->followRotationSiblings)
     {
         return logPaths;
     }
 
     // Deduplicate only against locators still visible in this session.
     std::unordered_set<std::string> alreadyLoaded;
-    if (consultDedup && mCurrentSource.has_value())
+    if (consultDedup && currentSource.has_value())
     {
-        alreadyLoaded.reserve(mCurrentSource->locatorDedupKeys.size());
-        for (const std::string &k : mCurrentSource->locatorDedupKeys)
+        alreadyLoaded.reserve(currentSource->locatorDedupKeys.size());
+        for (const std::string &k : currentSource->locatorDedupKeys)
         {
             alreadyLoaded.insert(k);
         }
@@ -2960,11 +4238,12 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
 
     if (configPaths.isEmpty())
     {
-        // Arm after queue setup, which may cancel and clear an older
-        // decompression. Non-arming opens preserve any pending intent.
+        // Sole bundle: arm embedded-configuration apply for that path.
+        // Non-arming opens leave any pending intent untouched.
         const bool armEmbeddedBundleIntent =
             bundleCount == 1 && logPaths.size() == 1 &&
-            (logMode == OpenMode::Replace || (mModel->rowCount() == 0 && !mCurrentSource.has_value()));
+            (logMode == OpenMode::Replace ||
+             (mModel->rowCount() == 0 && !mSession->MutableCurrentSource().has_value()));
         // The gate guarantees the sole log path is the bundle.
         const QString bundlePath = armEmbeddedBundleIntent ? logPaths.front() : QString();
 
@@ -2981,17 +4260,17 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
             (armEmbeddedBundleIntent || !wantRotationHistoryForReplace)
                 ? logPaths
                 : ExpandLogPathsWithRotationSiblings(logPaths, addedSiblings, logOnlyGating, &expandedPrimary);
-        StartStreamingOpenQueue(expandedLogPaths, logMode);
-        if (armEmbeddedBundleIntent)
-        {
-            mApplyEmbeddedBundleConfigForPath = bundlePath;
-        }
+        // Destructive queue setup cancels a superseded decompression
+        // and clears its bundle intent. Arm the new path after that
+        // reset and before the first file starts: a small bundle can
+        // finish inside watcher `setFuture`, and
+        // `OnDecompressionFinished` reads the intent then.
+        StartStreamingOpenQueue(expandedLogPaths, logMode, bundlePath);
         if (addedSiblings > 0)
         {
             // Set after queue setup, whose replacement path clears Undo
             // state. Preserve every caller input for multi-file Undo.
-            mLastRotationExpansionOriginalInputs = logPaths;
-            mLastRotationExpansionWasLiveTail = false;
+            mSession->SetLastRotationExpansion(logPaths, /*wasLiveTail=*/false);
             const QString anchor = expandedPrimary.isEmpty() ? logPaths.back() : expandedPrimary;
             ShowRotationHistoryToast(addedSiblings, anchor);
         }
@@ -3017,14 +4296,14 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
     // so the loaded columns / filters / sort apply to the rows.
     // Defer the sort until streaming finishes (see
     // `ApplyDeferredSortFromConfig`).
-    mPendingApplySortFromConfig = true;
+    mSession->SetPendingApplySortFromConfig(true);
     if (!DoLoadConfiguration(configPath))
     {
         // TOCTOU: the file was rewritten between probe and commit.
         // The model was reset before the throw, so streaming logs
         // against the unintended default columns would mislead --
         // bail without queueing anything.
-        mPendingApplySortFromConfig = false;
+        mSession->SetPendingApplySortFromConfig(false);
         return MixedInputResult{.outcome = MixedInputDispatch::QueuedLogsOnly, .appliedConfigPath = QString()};
     }
     int addedSiblings = 0;
@@ -3038,34 +4317,39 @@ MainWindow::MixedInputResult MainWindow::DispatchMixedOpenInput(const QStringLis
     if (addedSiblings > 0)
     {
         // Queue setup may tear down a live tail, so set Undo afterward.
-        mLastRotationExpansionOriginalInputs = logPaths;
-        mLastRotationExpansionWasLiveTail = false;
+        mSession->SetLastRotationExpansion(logPaths, /*wasLiveTail=*/false);
         const QString anchor = expandedPrimary.isEmpty() ? logPaths.back() : expandedPrimary;
         ShowRotationHistoryToast(addedSiblings, anchor);
     }
     return MixedInputResult{.outcome = MixedInputDispatch::AppliedConfigThenLogs, .appliedConfigPath = configPath};
 }
 
-void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
+void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode, const QString &applyEmbeddedBundlePath)
 {
-    // Cancel the export worker up-front for every `mode`. The
-    // destructive branch needs it before `mModel->Reset()`; the
-    // non-destructive Append branch needs it because
-    // `AppendStreaming` will mutate `LogTable` / `KeyIndex` while
-    // the export is still reading them. `setEnabled(false)` blocks
-    // that path from the GUI but cross-instance CLI forwarding
-    // (`OpenFilesForCli`) bypasses it. Safe to call when nothing
-    // is in flight.
-    CancelInFlightExport();
-
     // Live-tail / network sessions are single-source: a new
     // static-files open implicitly tears them down regardless of
     // `mode`. Static files (plain, compressed, or bundle) all follow
     // the normal append/replace queue semantics.
-    const bool destructive = (mode == OpenMode::Replace) || (mSessionMode == SessionMode::LiveTail);
+    const bool destructive = (mode == OpenMode::Replace) || (mSession->SessionMode() == SessionMode::LiveTail);
+    if (destructive && !PrepareSessionClose(mSession))
+    {
+        return;
+    }
+
+    // Cancel export for every `mode`. The destructive branch also
+    // cancels decompression before `mModel->Reset()` so a finishing
+    // worker cannot continue against a cleared model. The
+    // non-destructive Append branch still needs the export cancel
+    // because `AppendStreaming` mutates `LogTable` / `KeyIndex`
+    // while the export is still reading them. `setEnabled(false)`
+    // blocks that path from the GUI but cross-instance CLI
+    // forwarding (`OpenFilesForCli`) bypasses it. Safe to call when
+    // nothing is in flight.
+    CancelInFlightExport();
 
     if (destructive)
     {
+        CancelInFlightDecompression();
         // `mModel->Reset()` synchronously stops any in-flight worker.
         mModel->Reset();
         ClearAllFilters();
@@ -3080,74 +4364,87 @@ void MainWindow::StartStreamingOpenQueue(QStringList files, OpenMode mode)
         {
             mParseErrorsDock->ResetSessionState();
         }
-        mStreamingErrorsCut = 0;
-        mCurrentSource.reset();
-        mSessionMode = SessionMode::Idle;
-        mLastTerminalSessionMode = SessionMode::Idle;
+        mSession->SetStreamingErrorsCut(0);
+        mSession->MutableCurrentSource().reset();
+        mSession->ResetMode();
         // Destructive open: drop the previous session's deferred-sort intent.
-        mPendingApplySortFromConfig = false;
+        mSession->SetPendingApplySortFromConfig(false);
         DetachAutoSaveUuid();
-        // Cancel any in-flight decompression so its `finished` slot
-        // cannot splice the outgoing file into the new session.
-        // Export was already cancelled above (pre-reset).
-        CancelInFlightDecompression();
         // Pending promotion and Undo state belong to the old session.
         ClearPendingLiveTailPromotion();
         ClearRotationExpansionUndoState();
         SyncRotationHistoryActionCheckedState();
     }
-    else if (mModel->IsStreamingActive() || mDecompressionInFlight)
+    else if (mModel->IsStreamingActive() || mSession->IsDecompressionInFlight())
     {
         // Append onto an in-flight static session: queue and let
         // the existing `streamingFinished` -> `StreamNextPendingFile`
         // chain drain it. Starting another worker here would trip
         // `LogModel::AppendStreaming`'s watcher assert.
         //
-        // The `mDecompressionInFlight` half covers the window
+        // The `mSession->IsDecompressionInFlight()` half covers the window
         // between `BeginAsyncDecompression` and the first
         // `BeginStreaming` inside `ContinueOpenAfterPrepared` (before
         // `IsStreamingActive` flips). Without it, an Append landing
         // mid-decompression on an empty model would race to
         // `BeginStreaming` (row loss when the decompression later
         // resets the model) or trip the `AppendStreaming` assert.
-        mPendingOpenFiles.append(std::move(files));
+        mSession->MutablePendingOpenFiles().append(std::move(files));
+        if (!applyEmbeddedBundlePath.isEmpty())
+        {
+            mSession->SetApplyEmbeddedBundleConfigForPath(applyEmbeddedBundlePath);
+        }
         return;
     }
-    else if (mSessionMode == SessionMode::Idle && mModel->rowCount() > 0)
+    else if (mSession->SessionMode() == SessionMode::Idle && mModel->rowCount() > 0)
     {
         // Append into a previously-finished static session: re-arm
         // `Static` so `StreamNextPendingFile` routes through
         // `AppendStreaming` instead of the row-clearing
         // `BeginStreaming` path.
-        mSessionMode = SessionMode::Static;
+        mSession->SetMode(SessionMode::Static);
     }
     // Otherwise (Idle + empty model): leave mode at Idle so the
     // first `StreamNextPendingFile` takes the `BeginStreaming` path,
     // which preserves runtime filters from a prior
     // "Load Configuration or Session...".
 
-    mPendingOpenFiles = std::move(files);
-    mPendingOpenErrors.clear();
-    // Reset in parallel with `mPendingOpenErrors`; both drain at the
-    // same seams under different titles.
-    mPendingDecompressionErrors.clear();
+    mSession->SetPendingOpenFiles(std::move(files));
+    // Reset in parallel with `SetPendingOpenFiles` above; the error
+    // buckets drain at the same seams under different titles.
+    mSession->ClearPendingOpenErrors();
+    mSession->ClearPendingDecompressionErrors();
+    if (!applyEmbeddedBundlePath.isEmpty())
+    {
+        mSession->SetApplyEmbeddedBundleConfigForPath(applyEmbeddedBundlePath);
+    }
 
-    StreamNextPendingFile();
+    StreamNextPendingFile(mSession);
 }
 
-void MainWindow::OnStreamingFinished(StreamingResult result)
+void MainWindow::OnStreamingFinished(LogSession *origin, StreamingResult result)
 {
+    if (origin == nullptr)
+    {
+        return;
+    }
+    LogModel *const model = origin->Model();
+    if (model == nullptr)
+    {
+        return;
+    }
+
     // Skip outgoing-session UI cleanup when we're mid session-
-    // switch (the synchronous `Cancelled` emitted by `mModel->Reset`
+    // switch (the synchronous `Cancelled` emitted by `LogModel::Reset`
     // would otherwise flicker the wrong toolbar / status state at
     // the user). The outer caller finishes UI wiring itself.
-    if (result == StreamingResult::Cancelled && mSessionSwitchInProgress)
+    if (result == StreamingResult::Cancelled && origin->IsSessionSwitchInProgress())
     {
         return;
     }
 
     // Clear the `Source unavailable` latch.
-    mSourceWaiting = false;
+    origin->SetSourceWaiting(false);
 
     // Per-file batch under a header that names the file (or stream)
     // that just finished. Fires *before* the chaining check so the
@@ -3156,52 +4453,52 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
     // is still set to the just-finished source here -- the chaining
     // path below will overwrite it for the next file.
     //
-    // Open-failure entries in `mPendingOpenErrors` are intentionally
+    // Open-failure entries in `origin->MutablePendingOpenErrors()` are intentionally
     // *not* folded in here: they aren't tied to any one streamed file
     // and would be misleading under a file-named header. They're
     // surfaced under their own batch at the bottom of this function.
     if (result == StreamingResult::Success)
     {
-        const auto &allErrors = mModel->StreamingErrors();
+        const auto &allErrors = model->StreamingErrors();
         // `std::min` guards against a model reset that landed between
         // our last slice and now (would leave the watermark past end).
-        const size_t cut = std::min(mStreamingErrorsCut, allErrors.size());
+        const size_t cut = std::min(origin->StreamingErrorsCut(), allErrors.size());
         if (cut < allErrors.size())
         {
             const std::vector<std::string> thisFileErrors(
                 allErrors.begin() + static_cast<std::ptrdiff_t>(cut), allErrors.end()
             );
-            const QString title = mStreamingFileName.isEmpty()
+            const QString title = origin->StreamingFileName().isEmpty()
                                       ? tr("Error Parsing Logs")
-                                      : tr("Error Parsing Logs \u2014 %1").arg(mStreamingFileName);
-            ShowParseErrors(title, thisFileErrors);
+                                      : tr("Error Parsing Logs \u2014 %1").arg(origin->StreamingFileName());
+            ShowParseErrors(title, thisFileErrors, origin);
         }
-        mStreamingErrorsCut = allErrors.size();
+        origin->SetStreamingErrorsCut(allErrors.size());
     }
 
     // Multi-file static open: Success advances the queue. Keep
-    // `mSessionMode == Static` across `StreamNextPendingFile` so
+    // `SessionMode::Static` across `StreamNextPendingFile` so
     // it routes follow-up files through `AppendStreaming`.
-    if (result == StreamingResult::Success && !mPendingOpenFiles.isEmpty())
+    if (result == StreamingResult::Success && !origin->MutablePendingOpenFiles().isEmpty())
     {
-        StreamNextPendingFile();
+        StreamNextPendingFile(origin);
         // `IsStreamingActive()` covers the uncompressed fast path;
-        // `mDecompressionInFlight` covers the case where the next
+        // `origin->IsDecompressionInFlight()` covers the case where the next
         // file is compressed and `StreamNextPendingFile` only
         // dispatched the async decompression worker. Without the
         // second half we'd fall through to session teardown, and
         // `OnDecompressionFinished` would later see
-        // `!IsSessionActive()` and take the row-clearing
+        // `!origin->IsSessionActive()` and take the row-clearing
         // `BeginStreaming` path -- discarding every earlier file's
         // rows.
-        if (mModel->IsStreamingActive() || mDecompressionInFlight)
+        if (model->IsStreamingActive() || origin->IsDecompressionInFlight())
         {
             return;
         }
     }
-    else if (!mPendingOpenFiles.isEmpty())
+    else if (!origin->MutablePendingOpenFiles().isEmpty())
     {
-        mPendingOpenFiles.clear();
+        origin->MutablePendingOpenFiles().clear();
     }
 
     // Promote a requested tail after any terminal prefix result;
@@ -3212,46 +4509,68 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
     // this slot. Re-arming synchronously there lets the outer teardown
     // drop the new generation's batches and emit a false cancellation.
     // Queuing preserves the required teardown-before-arm ordering.
-    if (!mPendingLiveTailPrimary.isEmpty())
+    //
+    // Capture the origin with `QPointer` so a tab switch between the queue and the
+    // invocation does not promote a sibling session's pending
+    // primary against the newly-active tab. If the origin session
+    // has been destroyed by then (tab closed) the callback silently
+    // no-ops.
+    if (!origin->PendingLiveTailPrimary().isEmpty())
     {
-        QMetaObject::invokeMethod(this, [this]() { ContinueLiveTailAfterPrefix(); }, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(
+            this,
+            [this, originSession = QPointer<LogSession>(origin)]() {
+                if (originSession.isNull() || HostedSession(originSession->InstanceId()) != originSession.data())
+                {
+                    return;
+                }
+                ContinueLiveTailAfterPrefix(originSession.data());
+            },
+            Qt::QueuedConnection
+        );
         return;
     }
 
     // Snapshot the mode before resetting so the auto-save gate
     // distinguishes static (worth saving) from live-tail / network
-    // (transient). `mLastTerminalSessionMode` carries the same
-    // value into a later closeEvent flush.
-    const SessionMode justFinishedMode = mSessionMode;
-    mLastTerminalSessionMode = mSessionMode;
-    mSessionMode = SessionMode::Idle;
+    // (transient). `LogSession::SetMode(Idle)` latches the previous
+    // mode into `LastTerminalMode()` automatically so a later
+    // closeEvent flush still sees the terminated kind.
+    const SessionMode justFinishedMode = origin->SessionMode();
+    origin->SetMode(SessionMode::Idle);
 
-    // Stop the 1 Hz refresh; the elapsed value is kept so the final
-    // status line still names the session length.
-    StopLiveTailTicker();
+    // Shell-global chrome belongs to the selected tab. Origin state
+    // (mode, source, parse errors) is updated above regardless.
+    const bool originIsActive = origin == mSession;
+    if (originIsActive)
+    {
+        // Stop the 1 Hz refresh; the elapsed value is kept so the final
+        // status line still names the session length.
+        StopLiveTailTicker();
 
-    // Reset Pause / Follow-tail to defaults for the next session.
-    if (ui->actionPauseStream->isChecked())
-    {
-        const QSignalBlocker blocker(ui->actionPauseStream);
-        ui->actionPauseStream->setChecked(false);
+        // Reset Pause / Follow-tail to defaults for the next session.
+        if (ui->actionPauseStream->isChecked())
+        {
+            const QSignalBlocker blocker(ui->actionPauseStream);
+            ui->actionPauseStream->setChecked(false);
+        }
+        if (!ui->actionFollowTail->isChecked())
+        {
+            const QSignalBlocker blocker(ui->actionFollowTail);
+            ui->actionFollowTail->setChecked(true);
+        }
+        SetConfigurationUiEnabled(true);
+        UpdateStreamToolbarVisibility();
+        UpdateUi();
+        UpdateStreamingStatus();
+        // Rebuild the title's "(<n> lines)" suffix now that streaming is over
+        // and the tick timer that was driving it has stopped.
+        UpdateWindowTitle();
     }
-    if (!ui->actionFollowTail->isChecked())
-    {
-        const QSignalBlocker blocker(ui->actionFollowTail);
-        ui->actionFollowTail->setChecked(true);
-    }
-    SetConfigurationUiEnabled(true);
-    UpdateStreamToolbarVisibility();
-    UpdateUi();
-    UpdateStreamingStatus();
-    // Rebuild the title's "(<n> lines)" suffix now that streaming is over
-    // and the tick timer that was driving it has stopped.
-    UpdateWindowTitle();
     // Refresh the column-health snapshot now that parsing has
     // settled. Drives the header warning glyph and the status-bar
     // mismatch summary via `columnHealthChanged`.
-    mModel->RefreshColumnHealth();
+    model->RefreshColumnHealth();
     // Per-file parse-error batches were already surfaced at the top
     // of this function (one per file in the chain). What remains is
     // any open-failure residue from the multi-file queue -- those
@@ -3265,26 +4584,26 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
     // entry. Destructive session-switch cancels already returned at
     // the top of this function, so this only runs for user-facing
     // completions.
-    if (!mPendingOpenErrors.empty())
+    if (!origin->MutablePendingOpenErrors().empty())
     {
-        ShowParseErrors(tr("Error Opening File"), mPendingOpenErrors);
+        ShowParseErrors(tr("Error Opening File"), origin->MutablePendingOpenErrors(), origin);
     }
-    mPendingOpenErrors.clear();
+    origin->MutablePendingOpenErrors().clear();
     // Decompression errors under their own title (see the
-    // `mPendingDecompressionErrors` doc). User cancels never land
+    // `LogSession::MutablePendingDecompressionErrors` doc). User cancels never land
     // here -- they surface as a toast in `OnDecompressionFinished`.
-    if (!mPendingDecompressionErrors.empty())
+    if (!origin->MutablePendingDecompressionErrors().empty())
     {
-        ShowParseErrors(tr("Error Decompressing File"), mPendingDecompressionErrors);
+        ShowParseErrors(tr("Error Decompressing File"), origin->MutablePendingDecompressionErrors(), origin);
     }
-    mPendingDecompressionErrors.clear();
-    mStreamingFileName.clear();
-    // Keep `mCurrentSource` on Success / Cancelled (rows are
+    origin->MutablePendingDecompressionErrors().clear();
+    origin->ClearStreamingFileName();
+    // Keep `origin->MutableCurrentSource()` on Success / Cancelled (rows are
     // still present, descriptor still describes them); drop it
     // on Failed where there is nothing left to describe.
     if (result == StreamingResult::Failed)
     {
-        mCurrentSource.reset();
+        origin->MutableCurrentSource().reset();
         // Failure here is on the parse worker, not the decompression
         // worker, but defensively cancel any decompression that
         // might be queued behind the failed parse so it doesn't
@@ -3292,38 +4611,45 @@ void MainWindow::OnStreamingFinished(StreamingResult result)
         // lifetimes stay attached to their LogFiles; a session-wide
         // clear here would risk unlinking temp files still backing
         // mmap'd rows from previously-successful appends.
-        CancelInFlightDecompression();
+        CancelInFlightDecompressionFor(origin);
     }
 
     // Terminal transitions may change the effective session preference.
-    SyncRotationHistoryActionCheckedState();
+    if (originIsActive)
+    {
+        SyncRotationHistoryActionCheckedState();
+    }
 
     // Apply the deferred sort before the auto-save below so the
     // mirror reads the applied sort from the proxy. Runs on every
     // terminal result; no-op when the latch is clear or the user
     // sorted mid-stream.
-    ApplyDeferredSortFromConfig();
+    ApplyDeferredSortFromConfig(origin, LogSessionViewForSession(origin));
 
     // Auto-save on success so Recent Sessions + restore-on-launch
     // can reopen this view. `ShouldAutoSaveSession` filters out
     // non-restorable shapes (no manager, no source, streams,
     // live-tail).
-    if (result == StreamingResult::Success && ShouldAutoSaveSession(justFinishedMode))
+    if (result == StreamingResult::Success && ShouldAutoSaveSession(origin, justFinishedMode))
     {
-        AutoSaveSessionSnapshot();
+        AutoSaveSessionSnapshot(origin, /*publishOpenWindow=*/true);
     }
 }
 
-void MainWindow::StreamNextPendingFile()
+void MainWindow::StreamNextPendingFile(LogSession *origin)
 {
+    if (origin == nullptr)
+    {
+        return;
+    }
     // Iterative queue drain: each iteration hands off async work
     // (returning to await the corresponding finished slot) or
     // records a synchronous open failure and continues. The loop
     // replaces a prior recursion pattern that was stack-unbounded
     // on drops with many failing files.
-    while (!mPendingOpenFiles.isEmpty())
+    while (!origin->MutablePendingOpenFiles().isEmpty())
     {
-        const QString file = mPendingOpenFiles.takeFirst();
+        const QString file = origin->MutablePendingOpenFiles().takeFirst();
 
         // Content-based codec sniff (single source of truth for the
         // codec table). Uncompressed / empty / unreadable paths
@@ -3344,13 +4670,13 @@ void MainWindow::StreamNextPendingFile()
             // The finished slot re-enters this function after the
             // parse hand-off (success) or after pushing the error
             // and continuing (failure).
-            BeginAsyncDecompression(file, codec);
+            BeginAsyncDecompression(origin, file, codec);
             return;
         }
 
         // Uncompressed fast path. On sync error (`false` return),
         // continue draining the queue.
-        if (ContinueOpenAfterPrepared(file, filePath, nullptr))
+        if (ContinueOpenAfterPrepared(origin, file, filePath, nullptr))
         {
             return;
         }
@@ -3358,33 +4684,45 @@ void MainWindow::StreamNextPendingFile()
 
     // Queue drained without a session ever arming: surface errors
     // now. When a session did arm, `OnStreamingFinished` drains them.
-    if (!IsSessionActive())
+    if (!origin->IsSessionActive())
     {
         // If every prefix file fails synchronously, no completion
         // signal can promote the requested tail. Do it before errors.
-        if (!mPendingLiveTailPrimary.isEmpty())
+        if (!origin->PendingLiveTailPrimary().isEmpty())
         {
-            ContinueLiveTailAfterPrefix();
+            ContinueLiveTailAfterPrefix(origin);
         }
-        if (!mPendingOpenErrors.empty())
+        if (!origin->MutablePendingOpenErrors().empty())
         {
-            ShowParseErrors(tr("Error Opening File"), mPendingOpenErrors);
-            mPendingOpenErrors.clear();
+            ShowParseErrors(tr("Error Opening File"), origin->MutablePendingOpenErrors(), origin);
+            origin->MutablePendingOpenErrors().clear();
         }
-        if (!mPendingDecompressionErrors.empty())
+        if (!origin->MutablePendingDecompressionErrors().empty())
         {
-            ShowParseErrors(tr("Error Decompressing File"), mPendingDecompressionErrors);
-            mPendingDecompressionErrors.clear();
+            ShowParseErrors(tr("Error Decompressing File"), origin->MutablePendingDecompressionErrors(), origin);
+            origin->MutablePendingDecompressionErrors().clear();
         }
     }
 }
 
 bool MainWindow::ContinueOpenAfterPrepared(
+    LogSession *origin,
     const QString &originalPath,
     const std::filesystem::path &effectivePath,
     std::shared_ptr<loglib::internal::DecompressingByteSource> decompressionAnchor
 )
 {
+    if (origin == nullptr)
+    {
+        return false;
+    }
+    LogModel *const model = origin->Model();
+    if (model == nullptr)
+    {
+        return false;
+    }
+    const bool originIsActive = origin == mSession;
+
     // Open on the GUI thread so any I/O failure surfaces alongside
     // the queue drain rather than through the async future.
     std::unique_ptr<loglib::LogFile> logFile;
@@ -3403,11 +4741,11 @@ bool MainWindow::ContinueOpenAfterPrepared(
         const std::string msg = std::string("Failed to open '") + originalPath.toStdString() + "': " + e.what();
         if (decompressionAnchor)
         {
-            mPendingDecompressionErrors.push_back(msg);
+            origin->MutablePendingDecompressionErrors().push_back(msg);
         }
         else
         {
-            mPendingOpenErrors.push_back(msg);
+            origin->MutablePendingOpenErrors().push_back(msg);
         }
         // `decompressionAnchor` goes out of scope on return, dropping
         // the last reference to the `DecompressingByteSource` which
@@ -3428,11 +4766,11 @@ bool MainWindow::ContinueOpenAfterPrepared(
         logFile->AttachLifetimeAnchor(std::move(decompressionAnchor));
     }
 
-    auto cfg = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
+    auto cfg = std::make_shared<const loglib::LogConfiguration>(model->Configuration());
 
-    const bool isFirstFileInSession = !IsSessionActive();
+    const bool isFirstFileInSession = !origin->IsSessionActive();
 
-    mStreamingFileName = QFileInfo(originalPath).fileName();
+    origin->SetStreamingFileName(QFileInfo(originalPath).fileName());
     // Record every appended file in load order so SaveSession +
     // Recent Sessions can reopen the full set. Two forms per locator:
     //   - `displayPath`: original case, slash-normalised (user-visible).
@@ -3442,10 +4780,11 @@ bool MainWindow::ContinueOpenAfterPrepared(
     // temp paths never enter the locator vectors.
     const std::string displayPath = logapp::CanonicalDisplayPath(originalPath).toStdString();
     const std::string dedupKey = logapp::CanonicalLocator(originalPath).toStdString();
+    auto &currentSource = origin->MutableCurrentSource();
     if (isFirstFileInSession)
     {
         DetectedFormat detected = DetectFormatForPath(effectivePath);
-        mCurrentSource = loglib::LogConfiguration::Source{
+        currentSource = loglib::LogConfiguration::Source{
             .kind = loglib::LogConfiguration::Source::Kind::File,
             .format = detected.format,
             .locators = {displayPath},
@@ -3453,44 +4792,54 @@ bool MainWindow::ContinueOpenAfterPrepared(
             .regexPattern = std::move(detected.regexPattern),
         };
         // Seed the source from the global preference and CLI override.
-        mCurrentSource->followRotationSiblings = ShouldAutoDetectRotationHistory();
-        SyncRotationHistoryActionCheckedState();
+        currentSource->followRotationSiblings = ShouldAutoDetectRotationHistory();
+        if (originIsActive)
+        {
+            SyncRotationHistoryActionCheckedState();
+        }
     }
-    else if (mCurrentSource.has_value() && mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::File)
+    else if (currentSource.has_value() && currentSource->kind == loglib::LogConfiguration::Source::Kind::File)
     {
         const bool alreadyPresent = std::any_of(
-            mCurrentSource->locatorDedupKeys.begin(),
-            mCurrentSource->locatorDedupKeys.end(),
+            currentSource->locatorDedupKeys.begin(),
+            currentSource->locatorDedupKeys.end(),
             [&dedupKey](const std::string &existing) { return existing == dedupKey; }
         );
         if (!alreadyPresent)
         {
-            loglib::AppendLocator(*mCurrentSource, displayPath, dedupKey);
+            loglib::AppendLocator(*currentSource, displayPath, dedupKey);
         }
     }
     if (isFirstFileInSession)
     {
-        mSessionMode = SessionMode::Static;
-        mStreamingLineCount = 0;
-        mStreamingErrorCount = 0;
-        mFirstStreamingBatchSeen = false;
-        SetConfigurationUiEnabled(false);
-        UpdateStreamToolbarVisibility();
-        ApplyDisplayOrder();
+        origin->SetMode(SessionMode::Static);
+        origin->ResetStreamingProgress();
+        // Gate shell-global writes so a background-tab completion
+        // does not disable the visible tab's menus / toolbar.
+        // `ApplyDisplayOrder` targets the origin's proxy and view.
+        if (originIsActive)
+        {
+            SetConfigurationUiEnabled(false);
+            UpdateStreamToolbarVisibility();
+        }
+        ApplyDisplayOrder(origin, LogSessionViewForSession(origin));
     }
-    UpdateStreamingStatus();
-    UpdateWindowTitle();
+    if (originIsActive)
+    {
+        UpdateStreamingStatus();
+        UpdateWindowTitle();
+    }
 
     auto fileSource = std::make_unique<loglib::FileLineSource>(std::move(logFile));
     loglib::FileLineSource *fileSourcePtr = fileSource.get();
-    QtStreamingLogSink *sink = mModel->Sink();
+    QtStreamingLogSink *sink = model->Sink();
 
     loglib::ParserOptions options;
     options.configuration = std::move(cfg);
 
     // Per-file parser detection runs against the effective (possibly
     // decompressed) path so the sniff sees the actual bytes.
-    // `mCurrentSource` still stores the first file's session-level format.
+    // `origin->MutableCurrentSource()` still stores the first file's session-level format.
     const DetectedFormat detectedPerFile = DetectFormatForPath(effectivePath);
     std::shared_ptr<loglib::LogParser> parser =
         MakeParserForFormat(detectedPerFile.format, detectedPerFile.regexPattern);
@@ -3507,24 +4856,28 @@ bool MainWindow::ContinueOpenAfterPrepared(
 
     if (isFirstFileInSession)
     {
-        mModel->BeginStreaming(std::move(fileSource), std::move(parseCallable));
+        model->BeginStreaming(std::move(fileSource), std::move(parseCallable));
     }
     else
     {
-        mModel->AppendStreaming(std::move(fileSource), std::move(parseCallable));
+        model->AppendStreaming(std::move(fileSource), std::move(parseCallable));
     }
     // Parse worker armed; caller unwinds and awaits `streamingFinished`.
     return true;
 }
 
 void MainWindow::BeginAsyncDecompression(
-    const QString &originalPath, loglib::internal::DecompressingByteSource::Codec codec
+    LogSession *origin, const QString &originalPath, loglib::internal::DecompressingByteSource::Codec codec
 )
 {
+    if (origin == nullptr)
+    {
+        return;
+    }
     // Fresh stop-source per open so a leftover cancel from a prior
     // run can't leak into this one.
-    mDecompressionStopSource = loglib::StopSource{};
-    mDecompressionBytesIn.storeRelaxed(0);
+    origin->MutableDecompressionStopSource() = loglib::StopSource{};
+    origin->MutableDecompressionBytesIn().storeRelaxed(0);
     // Up-front compressed size lets the poll timer compute a
     // percentage without waiting for the worker's first tick.
     std::error_code sizeEc;
@@ -3533,19 +4886,29 @@ void MainWindow::BeginAsyncDecompression(
     // MSVC's <filesystem> flag-cast trips clang-analyzer's enum-cast check.
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     const auto compressedSize = std::filesystem::file_size(logapp::QStringToFsPath(originalPath), sizeEc);
-    mDecompressionTotalBytesIn.storeRelaxed(sizeEc ? 0 : static_cast<qint64>(compressedSize));
+    origin->MutableDecompressionTotalBytesIn().storeRelaxed(sizeEc ? 0 : static_cast<qint64>(compressedSize));
 
-    mDecompressionOriginalPath = originalPath;
+    origin->SetDecompressionOriginalPath(originalPath);
     // Pass the string_view size explicitly: `CodecName` currently
     // returns views over string literals, but NUL-termination is
     // not part of the string_view contract.
     const std::string_view codecName = loglib::internal::CodecName(codec);
-    mDecompressionCodecName = QString::fromLatin1(codecName.data(), static_cast<qsizetype>(codecName.size()));
-    mDecompressionStartedAt = std::chrono::steady_clock::now();
-    // See the `mDecompressionInFlight` doc: guards the finished slot
-    // against stale callout events dispatched between a future
-    // completing and a subsequent cancel.
-    mDecompressionInFlight = true;
+    origin->SetDecompressionCodecName(QString::fromLatin1(codecName.data(), static_cast<qsizetype>(codecName.size())));
+    origin->SetDecompressionStartedAt(std::chrono::steady_clock::now());
+    // See `LogSession::IsDecompressionInFlight`: guards the
+    // finished slot against stale callout events dispatched between
+    // a future completing and a subsequent cancel. The rising edge
+    // also bumps `DecompressionGeneration()`; capture it below so
+    // the poll timer's re-entry guard can distinguish "still the
+    // same op" from "queued completion silently rearmed for the
+    // next file".
+    origin->SetDecompressionInFlight(true);
+
+    LogSessionView *originView = LogSessionViewForSession(origin);
+    if (originView != nullptr)
+    {
+        originView->SetContentEnabled(false);
+    }
 
     ShowDecompressionProgress();
     // Show the "Preparing…" frame up-front so the dialog isn't
@@ -3553,7 +4916,8 @@ void MainWindow::BeginAsyncDecompression(
     if (mDecompressionProgressDialog)
     {
         mDecompressionProgressDialog->setLabelText(
-            tr("Decompressing %1 (%2)\nPreparing…").arg(QFileInfo(originalPath).fileName(), mDecompressionCodecName)
+            tr("Decompressing %1 (%2)\nPreparing…")
+                .arg(QFileInfo(originalPath).fileName(), origin->DecompressionCodecName())
         );
     }
 
@@ -3561,9 +4925,9 @@ void MainWindow::BeginAsyncDecompression(
     // so both the future and any downstream `parseCallable` that pins
     // the temp file can share ownership. All captures are owned by
     // value: no MainWindow reference escapes.
-    const auto stopToken = mDecompressionStopSource.get_token();
-    auto *sharedBytesIn = &mDecompressionBytesIn;
-    auto *sharedTotal = &mDecompressionTotalBytesIn;
+    const auto stopToken = origin->DecompressionStopSource().get_token();
+    auto *sharedBytesIn = &origin->MutableDecompressionBytesIn();
+    auto *sharedTotal = &origin->MutableDecompressionTotalBytesIn();
 
     // Bundle metadata stripping requires both the extension and zstd.
     const bool isSessionBundle =
@@ -3574,7 +4938,7 @@ void MainWindow::BeginAsyncDecompression(
     const std::filesystem::path input = logapp::QStringToFsPath(originalPath);
     // `clang-analyzer-webkit.UncountedLambdaCapturesChecker` is WebKit-specific
     // and misclassifies `QAtomicInteger *` captures -- they are `this` members
-    // guarded by `mDecompressionInFlight`. `bugprone-exception-escape` is a
+    // guarded by `mSession->IsDecompressionInFlight()`. `bugprone-exception-escape` is a
     // false positive on `QtConcurrent::run`, which stores any escaped
     // exception into the returned `QFuture`.
     // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker,bugprone-exception-escape)
@@ -3594,112 +4958,147 @@ void MainWindow::BeginAsyncDecompression(
 
     // Own our own watcher: `LogModel::mStreamingWatcher` asserts
     // its own future is idle before a parse job, so reusing it
-    // would trip that assertion on the parse hand-off.
-    if (mDecompressionWatcher == nullptr)
-    {
-        mDecompressionWatcher = new QFutureWatcher<std::shared_ptr<loglib::internal::DecompressingByteSource>>(this);
-        connect(
-            mDecompressionWatcher,
-            &QFutureWatcher<std::shared_ptr<loglib::internal::DecompressingByteSource>>::finished,
-            this,
-            &MainWindow::OnDecompressionFinished
-        );
-    }
-    mDecompressionWatcher->setFuture(future);
+    // would trip that assertion on the parse hand-off. The watcher
+    // itself is session-scoped so
+    // tab/session teardown reaps it automatically; the connection
+    // stays on `this` because the slot body operates on widgets.
+    // `Qt::UniqueConnection` keeps this safe against repeated
+    // `Begin*` calls -- `EnsureDecompressionWatcher` returns the
+    // cached instance on the second call but the `finished` slot
+    // is only invoked once per completion.
+    auto *watcher = origin->EnsureDecompressionWatcher();
+    connect(
+        watcher,
+        &LogSession::DecompressionWatcher::finished,
+        this,
+        &MainWindow::OnDecompressionFinished,
+        Qt::UniqueConnection
+    );
+    watcher->setFuture(future);
 }
 
 void MainWindow::ShowDecompressionProgress()
 {
-    // Suppressed under the test flag: even with `minimumDuration`
-    // hiding the dialog for small fixtures, a genuinely large
-    // compressed file would still hijack the event loop under a
-    // headless test. Progress is still tracked in the atomics and
-    // the completion toast still fires.
-    if (mSuppressDialogsForTest)
+    if (!mSuppressDialogsForTest)
     {
-        return;
+        if (!mDecompressionProgressDialog)
+        {
+            mDecompressionProgressDialog = new QProgressDialog(this);
+            mDecompressionProgressDialog->setWindowTitle(tr("Decompressing"));
+            mDecompressionProgressDialog->setWindowModality(Qt::NonModal);
+            mDecompressionProgressDialog->setMinimumDuration(DECOMPRESSION_DIALOG_DEFER_MS);
+            mDecompressionProgressDialog->setRange(0, PROGRESS_PERCENT_MAX);
+            mDecompressionProgressDialog->setAutoClose(false);
+            mDecompressionProgressDialog->setAutoReset(false);
+            connect(mDecompressionProgressDialog.data(), &QProgressDialog::canceled, this, [this]() {
+                if (mSession != nullptr && mSession->IsDecompressionInFlight())
+                {
+                    mSession->MutableDecompressionStopSource().request_stop();
+                }
+            });
+        }
     }
-    // Window-modal (not app-modal) so the user can still switch to
-    // other windows during a multi-minute decompression. Deferred
-    // show avoids a flash on small files.
-    if (!mDecompressionProgressDialog)
-    {
-        mDecompressionProgressDialog = new QProgressDialog(this);
-        mDecompressionProgressDialog->setWindowTitle(tr("Decompressing"));
-        mDecompressionProgressDialog->setWindowModality(Qt::WindowModal);
-        mDecompressionProgressDialog->setMinimumDuration(DECOMPRESSION_DIALOG_DEFER_MS);
-        mDecompressionProgressDialog->setRange(0, PROGRESS_PERCENT_MAX);
-        mDecompressionProgressDialog->setAutoClose(false);
-        mDecompressionProgressDialog->setAutoReset(false);
-        connect(mDecompressionProgressDialog.data(), &QProgressDialog::canceled, this, [this]() {
-            // Request stop; worker unwinds via `DecompressionCancelled`
-            // which the finished slot recognises as a user cancel.
-            mDecompressionStopSource.request_stop();
-        });
-    }
-    // `reset()` then `setValue(0)` re-arms `minimumDuration` for
-    // this open (each `setValue` after `reset` starts a fresh
-    // deferred-show timer inside `QProgressDialog`).
-    mDecompressionProgressDialog->reset();
-    mDecompressionProgressDialog->setValue(0);
 
     if (mDecompressionPollTimer == nullptr)
     {
         mDecompressionPollTimer = new QTimer(this);
         mDecompressionPollTimer->setInterval(DECOMPRESSION_POLL_INTERVAL_MS);
-        connect(mDecompressionPollTimer, &QTimer::timeout, this, [this]() {
-            // Re-entry guard: `QProgressDialog::setValue` on a
-            // window-modal dialog runs `processEvents()` internally,
-            // which can drain a queued `finished` callout, tear the
-            // dialog down, and possibly start the next queued
-            // decompression. When that happens `mDecompressionInFlight`
-            // has been cleared and any label we write here would
-            // scribble onto a hidden or re-armed dialog.
-            if (!mDecompressionInFlight || !mDecompressionProgressDialog)
-            {
-                return;
-            }
-            const qint64 bytesIn = mDecompressionBytesIn.loadRelaxed();
-            const qint64 total = mDecompressionTotalBytesIn.loadRelaxed();
-            const QString displayName = QFileInfo(mDecompressionOriginalPath).fileName();
-            const QString header = mDecompressionCodecName.isEmpty()
-                                       ? tr("Decompressing %1").arg(displayName)
-                                       : tr("Decompressing %1 (%2)").arg(displayName, mDecompressionCodecName);
-            QString labelText;
-            if (total > 0)
-            {
-                const int pct = static_cast<int>((PROGRESS_PERCENT_MAX * bytesIn) / total);
-                mDecompressionProgressDialog->setValue(std::min(pct, PROGRESS_PERCENT_MAX));
-                // Recheck: `setValue` may have pumped a nested loop
-                // that fired the finished slot and re-armed the
-                // dialog for the next file.
-                if (!mDecompressionInFlight || !mDecompressionProgressDialog)
-                {
-                    return;
-                }
-                // "compressed bytes read" is explicit because the
-                // worker reports *input* consumed, not decompressed
-                // output. Without the qualifier a user staring at
-                // "12 MiB / 500 MiB" on a 100x-expanding .gz would
-                // reasonably assume it's the decompressed figure.
-                labelText = tr("%1\n%2 / %3 compressed bytes read")
-                                .arg(
-                                    header,
-                                    HumanBytes(static_cast<std::size_t>(bytesIn)),
-                                    HumanBytes(static_cast<std::size_t>(total))
-                                );
-            }
-            else
-            {
-                labelText = tr("%1\nPreparing\u2026").arg(header);
-            }
-            mDecompressionProgressDialog->setLabelText(labelText);
-        });
+        connect(mDecompressionPollTimer, &QTimer::timeout, this, &MainWindow::UpdateDecompressionProgressUi);
     }
     mDecompressionPollTimer->start();
-    // No `show()` call: `QProgressDialog` self-shows after
-    // `minimumDuration` elapses without a `reset()`, keeping small
-    // files from flashing the dialog.
+    UpdateDecompressionProgressUi();
+}
+
+void MainWindow::UpdateDecompressionProgressUi()
+{
+    bool anyInFlight = false;
+    for (const LogSession *session : hostedSessions())
+    {
+        if (session == nullptr || !session->IsDecompressionInFlight())
+        {
+            continue;
+        }
+        anyInFlight = true;
+        LogSessionView *view = LogSessionViewForSession(session);
+        if (view == nullptr)
+        {
+            continue;
+        }
+        const qint64 bytesIn = session->DecompressionBytesIn().loadRelaxed();
+        const qint64 total = session->DecompressionTotalBytesIn().loadRelaxed();
+        const QString displayName = QFileInfo(session->DecompressionOriginalPath()).fileName();
+        const QString header = session->DecompressionCodecName().isEmpty()
+                                   ? tr("Decompressing %1").arg(displayName)
+                                   : tr("Decompressing %1 (%2)").arg(displayName, session->DecompressionCodecName());
+        int pct = -1;
+        QString label;
+        if (total > 0)
+        {
+            pct = static_cast<int>((PROGRESS_PERCENT_MAX * bytesIn) / total);
+            pct = std::min(pct, PROGRESS_PERCENT_MAX);
+            label = tr("%1\n%2 / %3 compressed bytes read")
+                        .arg(
+                            header,
+                            HumanBytes(static_cast<std::size_t>(bytesIn)),
+                            HumanBytes(static_cast<std::size_t>(total))
+                        );
+        }
+        else
+        {
+            label = tr("%1\nPreparing\u2026").arg(header);
+        }
+        if (view->IsOperationProgressVisible())
+        {
+            view->UpdateOperationProgress(label, pct);
+        }
+        else
+        {
+            view->ShowOperationProgress(label, pct);
+        }
+    }
+
+    if (!anyInFlight)
+    {
+        TeardownDecompressionProgress();
+        return;
+    }
+
+    if (mSuppressDialogsForTest || !mDecompressionProgressDialog)
+    {
+        return;
+    }
+
+    if (mSession == nullptr || !mSession->IsDecompressionInFlight())
+    {
+        mDecompressionProgressDialog->hide();
+        return;
+    }
+
+    const qint64 bytesIn = mSession->DecompressionBytesIn().loadRelaxed();
+    const qint64 total = mSession->DecompressionTotalBytesIn().loadRelaxed();
+    const std::uint64_t generation = mSession->DecompressionGeneration();
+    const QString displayName = QFileInfo(mSession->DecompressionOriginalPath()).fileName();
+    const QString header = mSession->DecompressionCodecName().isEmpty()
+                               ? tr("Decompressing %1").arg(displayName)
+                               : tr("Decompressing %1 (%2)").arg(displayName, mSession->DecompressionCodecName());
+    if (total > 0)
+    {
+        const int pct = static_cast<int>((PROGRESS_PERCENT_MAX * bytesIn) / total);
+        mDecompressionProgressDialog->setValue(std::min(pct, PROGRESS_PERCENT_MAX));
+        if (mSession == nullptr || !mSession->IsDecompressionInFlight() ||
+            mSession->DecompressionGeneration() != generation || !mDecompressionProgressDialog)
+        {
+            return;
+        }
+        mDecompressionProgressDialog->setLabelText(
+            tr("%1\n%2 / %3 compressed bytes read")
+                .arg(header, HumanBytes(static_cast<std::size_t>(bytesIn)), HumanBytes(static_cast<std::size_t>(total)))
+        );
+    }
+    else
+    {
+        mDecompressionProgressDialog->setLabelText(tr("%1\nPreparing\u2026").arg(header));
+    }
 }
 
 void MainWindow::TeardownDecompressionProgress()
@@ -3710,9 +5109,6 @@ void MainWindow::TeardownDecompressionProgress()
     }
     if (mDecompressionProgressDialog)
     {
-        // `reset()` restores the "no operation running" state
-        // without deleting; the instance is reused across opens so
-        // position + size stay sticky.
         mDecompressionProgressDialog->reset();
         mDecompressionProgressDialog->hide();
     }
@@ -3720,66 +5116,114 @@ void MainWindow::TeardownDecompressionProgress()
 
 void MainWindow::CancelInFlightDecompression()
 {
-    const bool wasInFlight = mDecompressionInFlight;
-    // Disarm up-front so any `finished()` callout already dispatched
-    // onto the current stack (through a nested event loop) short-
-    // circuits at its entry check rather than reading `result()` off
-    // the about-to-be-detached future. `setFuture({})` only clears
-    // *pending* callouts, not one Qt is already delivering.
-    mDecompressionInFlight = false;
+    CancelInFlightDecompressionFor(mSession);
+}
+
+void MainWindow::CancelInFlightDecompressionFor(LogSession *origin)
+{
+    if (origin == nullptr)
+    {
+        return;
+    }
+    const bool wasInFlight = origin->IsDecompressionInFlight();
+    const QPointer<LogSessionView> originView = LogSessionViewForSession(origin);
+    origin->SetDecompressionInFlight(false);
     if (wasInFlight)
     {
-        // Do not leak the cancelled bundle's configuration intent.
-        mApplyEmbeddedBundleConfigForPath.clear();
+        try
+        {
+            origin->ClearApplyEmbeddedBundleConfig();
+        }
+        catch (const std::exception &) // NOLINT(bugprone-empty-catch)
+        {
+            // The session is closing or the window is being destroyed.
+        }
     }
 
-    if (mDecompressionWatcher == nullptr)
+    auto *watcher = origin->DecompressionWatcherPtr();
+    if (watcher == nullptr)
     {
-        // Still clear the scratch fields so callers get a single
-        // reset point without an extra guard.
-        mDecompressionOriginalPath.clear();
-        mDecompressionCodecName.clear();
-        mPendingDecompressionErrors.clear();
+        origin->ClearDecompressionScratchPaths();
+        origin->MutablePendingDecompressionErrors().clear();
+        if (originView != nullptr)
+        {
+            originView->HideOperationProgress();
+            if (wasInFlight)
+            {
+                originView->SetContentEnabled(true);
+            }
+        }
+        UpdateDecompressionProgressUi();
         return;
     }
 
-    // Unconditional stop + wait: `waitForFinished()` on a completed
-    // future returns immediately and `request_stop()` on a done
-    // worker is harmless. A conditional `isRunning()` check would
-    // be racy -- if the worker completes between the check and the
-    // wait, `setFuture({})` wouldn't clear an in-flight callout
-    // (the disarm above still catches that, but keeping the logic
-    // race-free keeps the reasoning local).
-    mDecompressionStopSource.request_stop();
-    mDecompressionWatcher->waitForFinished();
-
-    // Detach the future so the queued `finished` slot can't fire
-    // against the newly-armed session (clears the watcher's
-    // pending-callout queue).
-    mDecompressionWatcher->setFuture(QFuture<std::shared_ptr<loglib::internal::DecompressingByteSource>>{});
-
-    TeardownDecompressionProgress();
-    mDecompressionOriginalPath.clear();
-    mDecompressionCodecName.clear();
-    mPendingDecompressionErrors.clear();
+    origin->MutableDecompressionStopSource().request_stop();
+    origin->DrainDecompressionWatcher();
+    origin->ClearDecompressionScratchPaths();
+    origin->MutablePendingDecompressionErrors().clear();
+    if (originView != nullptr)
+    {
+        originView->HideOperationProgress();
+        if (wasInFlight)
+        {
+            originView->SetContentEnabled(true);
+        }
+    }
+    UpdateDecompressionProgressUi();
 }
 
 void MainWindow::OnDecompressionFinished()
 {
-    // Bail if the cancel path already ran (see the
-    // `mDecompressionInFlight` doc for why this can happen even
-    // after `setFuture({})`). Reading `result()` off the reset
-    // future here would splice a bogus "Failed to open ''" into
-    // the freshly-armed session.
-    if (!mDecompressionInFlight)
+    // Resolve origin from watcher ownership. A non-null sender that is not in
+    // the hosted registry is an unhosted completion: drain nothing here (close
+    // already cancelled the worker) and do not fall back to the active tab.
+    LogSession *origin = LogSessionForDecompressionWatcher(sender());
+    if (origin == nullptr)
+    {
+        if (sender() != nullptr)
+        {
+            return;
+        }
+        origin = mSession;
+    }
+    if (mOperations == nullptr)
     {
         return;
     }
-    mDecompressionInFlight = false;
+    mOperations->CompleteDecompression(origin);
+}
 
-    TeardownDecompressionProgress();
+void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
+{
+    if (origin == nullptr)
+    {
+        return;
+    }
+    LogModel *const model = origin->Model();
+    AnchorManager *const anchors = origin->Anchors();
+    HighlightRuleSet *const highlights = origin->Highlights();
+    LogSessionView *originView = LogSessionViewForSession(origin);
 
-    if (mDecompressionWatcher == nullptr)
+    // Bail if the cancel path already ran (see
+    // `LogSession::IsDecompressionInFlight` for why this can happen even
+    // after `setFuture({})`). Reading `result()` off the reset
+    // future here would splice a bogus "Failed to open ''" into
+    // the freshly-armed session.
+    if (!origin->IsDecompressionInFlight())
+    {
+        return;
+    }
+    origin->SetDecompressionInFlight(false);
+
+    if (originView != nullptr)
+    {
+        originView->HideOperationProgress();
+        originView->SetContentEnabled(true);
+    }
+    UpdateDecompressionProgressUi();
+
+    auto *watcher = origin->DecompressionWatcherPtr();
+    if (watcher == nullptr)
     {
         // Defensive: `finished` should never fire without a
         // watcher, but bail cleanly if teardown raced us.
@@ -3792,7 +5236,7 @@ void MainWindow::OnDecompressionFinished()
     bool cancelled = false;
     try
     {
-        dbs = mDecompressionWatcher->result();
+        dbs = watcher->result();
     }
     catch (const loglib::internal::DecompressionCancelled &)
     {
@@ -3800,15 +5244,15 @@ void MainWindow::OnDecompressionFinished()
     }
     catch (const std::exception &e)
     {
-        errorEntry =
-            tr("Failed to decompress '%1': %2").arg(mDecompressionOriginalPath, QString::fromLocal8Bit(e.what()));
+        errorEntry = tr("Failed to decompress '%1': %2")
+                         .arg(origin->DecompressionOriginalPath(), QString::fromLocal8Bit(e.what()));
     }
     catch (...)
     {
-        errorEntry = tr("Failed to decompress '%1': unknown error").arg(mDecompressionOriginalPath);
+        errorEntry = tr("Failed to decompress '%1': unknown error").arg(origin->DecompressionOriginalPath());
     }
     // Report malformed metadata as a bundle error, not a codec error.
-    if (errorEntry.isEmpty() && !cancelled && dbs && IsSessionBundlePath(mDecompressionOriginalPath))
+    if (errorEntry.isEmpty() && !cancelled && dbs && IsSessionBundlePath(origin->DecompressionOriginalPath()))
     {
         try
         {
@@ -3817,70 +5261,69 @@ void MainWindow::OnDecompressionFinished()
         catch (const loglib::SessionBundleVersionError &e)
         {
             errorEntry = tr("Cannot open session bundle '%1': %2")
-                             .arg(mDecompressionOriginalPath, QString::fromLocal8Bit(e.what()));
+                             .arg(origin->DecompressionOriginalPath(), QString::fromLocal8Bit(e.what()));
         }
         catch (const loglib::SessionBundleReadError &e)
         {
             errorEntry = tr("'%1' is not a valid session bundle: %2")
-                             .arg(mDecompressionOriginalPath, QString::fromLocal8Bit(e.what()));
+                             .arg(origin->DecompressionOriginalPath(), QString::fromLocal8Bit(e.what()));
         }
     }
 
     // Detach the future so a follow-up decompression re-arms
     // cleanly; ownership of the shared_ptr has already moved to `dbs`.
-    mDecompressionWatcher->setFuture(QFuture<std::shared_ptr<loglib::internal::DecompressingByteSource>>{});
+    watcher->setFuture(QFuture<LogSession::DecompressionByteSourcePtr>{});
 
     if (cancelled)
     {
-        mApplyEmbeddedBundleConfigForPath.clear();
+        origin->ClearApplyEmbeddedBundleConfig();
         // User cancels surface as a status-bar toast, not a modal.
         // The queue drain continues so the rest of the batch still
-        // opens.
-        statusBar()->showMessage(
-            tr("Decompression cancelled: %1").arg(QFileInfo(mDecompressionOriginalPath).fileName()),
+        // opens. Background origins queue the toast until selected.
+        PostStatusMessage(
+            origin,
+            tr("Decompression cancelled: %1").arg(QFileInfo(origin->DecompressionOriginalPath()).fileName()),
             STATUS_BAR_MESSAGE_TIMEOUT_MS
         );
-        mDecompressionOriginalPath.clear();
-        mDecompressionCodecName.clear();
-        StreamNextPendingFile();
+        origin->ClearDecompressionScratchPaths();
+        StreamNextPendingFile(origin);
         // Chain-terminal cancel: drain accumulated errors and
         // return the session UI to Idle. No-op if a successor
         // worker was armed.
-        FinalizeAfterDecompressionIfChainTerminal();
+        FinalizeAfterDecompressionIfChainTerminal(origin);
         return;
     }
 
     if (!errorEntry.isEmpty())
     {
-        mApplyEmbeddedBundleConfigForPath.clear();
-        mPendingDecompressionErrors.push_back(errorEntry.toStdString());
+        origin->ClearApplyEmbeddedBundleConfig();
+        origin->MutablePendingDecompressionErrors().push_back(errorEntry.toStdString());
         // Clear scratch fields BEFORE draining -- a compressed
         // follow-up would re-enter `BeginAsyncDecompression` and
         // repopulate them; clearing after that would wipe the new
         // file's metadata. The success branch below doesn't need
         // the pre-clear because a parse worker is armed and the
         // follow-up waits for `OnStreamingFinished`.
-        mDecompressionOriginalPath.clear();
-        mDecompressionCodecName.clear();
-        StreamNextPendingFile();
+        origin->ClearDecompressionScratchPaths();
+        StreamNextPendingFile(origin);
         // Chain-terminal decompression failure: drains
-        // `mPendingDecompressionErrors` under the `Error
+        // `origin->MutablePendingDecompressionErrors()` under the `Error
         // Decompressing File` title. Without this call the batch
         // (including THIS entry) would sit until the next
         // destructive session boundary silently cleared it.
-        FinalizeAfterDecompressionIfChainTerminal();
+        FinalizeAfterDecompressionIfChainTerminal(origin);
         return;
     }
 
     // Apply only the latest armed bundle to a still-empty session.
-    const bool armedForThisFile =
-        !mApplyEmbeddedBundleConfigForPath.isEmpty() && mApplyEmbeddedBundleConfigForPath == mDecompressionOriginalPath;
-    const bool sessionStillFresh = !mCurrentSource.has_value();
-    if (bundleMetadata.has_value() && armedForThisFile && sessionStillFresh)
+    const bool armedForThisFile = origin->ShouldApplyEmbeddedBundleConfig() &&
+                                  origin->ApplyEmbeddedBundleConfigForPath() == origin->DecompressionOriginalPath();
+    const bool sessionStillFresh = !origin->MutableCurrentSource().has_value();
+    if (bundleMetadata.has_value() && armedForThisFile && sessionStillFresh && model != nullptr)
     {
         loglib::LogConfiguration embedded = std::move(bundleMetadata->configuration);
-        const std::string displayPath = logapp::CanonicalDisplayPath(mDecompressionOriginalPath).toStdString();
-        const std::string dedupKey = logapp::CanonicalLocator(mDecompressionOriginalPath).toStdString();
+        const std::string displayPath = logapp::CanonicalDisplayPath(origin->DecompressionOriginalPath()).toStdString();
+        const std::string dedupKey = logapp::CanonicalLocator(origin->DecompressionOriginalPath()).toStdString();
         if (!embedded.source.has_value())
         {
             embedded.source.emplace();
@@ -3894,16 +5337,17 @@ void MainWindow::OnDecompressionFinished()
             anchor.locator = dedupKey;
         }
 
-        mModel->ConfigurationManager().SetConfiguration(std::move(embedded));
-        mModel->NotifyConfigurationReplaced();
-        mPendingApplySortFromConfig = true;
-        if (mAnchors != nullptr)
+        model->ConfigurationManager().SetConfiguration(std::move(embedded));
+        model->NotifyConfigurationReplaced();
+        origin->SetPendingApplySortFromConfig(true);
+        if (anchors != nullptr)
         {
             // Preserve newer anchors by clamping unsupported colour slots.
-            const std::size_t clampedAnchorCount = mAnchors->Replace(mModel->Configuration().anchors);
+            const std::size_t clampedAnchorCount = anchors->Replace(model->Configuration().anchors);
             if (clampedAnchorCount > 0)
             {
-                statusBar()->showMessage(
+                PostStatusMessage(
+                    origin,
                     tr("%1 anchor(s) from a newer schema had their colour clamped to slot %2.")
                         .arg(static_cast<qulonglong>(clampedAnchorCount))
                         .arg(static_cast<qulonglong>(loglib::ANCHOR_PALETTE_SIZE)),
@@ -3911,33 +5355,36 @@ void MainWindow::OnDecompressionFinished()
                 );
             }
         }
-        RebuildFiltersFromConfiguration();
+        RebuildFiltersFromConfiguration(origin);
 
         // Rebuild the runtime highlight cache from embedded rules.
-        if (mHighlights != nullptr)
+        if (highlights != nullptr)
         {
-            const auto &appliedConfig = mModel->Configuration();
-            mHighlights->SetRules(appliedConfig.highlightRules, appliedConfig.columns, &mModel->Table());
-            const std::size_t inactive = mHighlights->InactiveCount();
+            const auto &appliedConfig = model->Configuration();
+            highlights->SetRules(appliedConfig.highlightRules, appliedConfig.columns, &model->Table());
+            const std::size_t inactive = highlights->InactiveCount();
             if (inactive > 0)
             {
-                statusBar()->showMessage(
+                PostStatusMessage(
+                    origin,
                     tr("%1 highlight rule(s) inactive against the loaded columns.")
                         .arg(static_cast<qulonglong>(inactive)),
                     STATUS_BAR_MESSAGE_TIMEOUT_MS
                 );
             }
-            if (mHighlightRulesEditor != nullptr)
+            // Only sync the editor when it is bound to the origin session.
+            if (mHighlightRulesEditor != nullptr && mHighlightRulesEditorSession.data() == origin)
             {
                 mHighlightRulesEditor->SetColumns(appliedConfig.columns);
                 mHighlightRulesEditor->SetRules(appliedConfig.highlightRules);
             }
+            origin->ClearHighlightEditorDraft();
         }
     }
     // This bundle has consumed its intent even if the session was busy.
     if (bundleMetadata.has_value() && armedForThisFile)
     {
-        mApplyEmbeddedBundleConfigForPath.clear();
+        origin->ClearApplyEmbeddedBundleConfig();
     }
 
     // Success. Emit the "Decompressed X -> Y in Zs" toast before
@@ -3945,34 +5392,34 @@ void MainWindow::OnDecompressionFinished()
     // 5 s window that survives a fast parse start.
     if (dbs)
     {
-        const auto elapsed = std::chrono::steady_clock::now() - mDecompressionStartedAt;
+        const auto elapsed = std::chrono::steady_clock::now() - origin->DecompressionStartedAt();
         // Explicit size (see the matching site in `BeginAsyncDecompression`).
         const std::string_view codecName = loglib::internal::CodecName(dbs->DetectedCodec());
         const QString msg = tr("Decompressed %1 (%2 \u2192 %3, %4) in %5")
                                 .arg(
-                                    QFileInfo(mDecompressionOriginalPath).fileName(),
+                                    QFileInfo(origin->DecompressionOriginalPath()).fileName(),
                                     HumanBytes(dbs->CompressedSize()),
                                     HumanBytes(dbs->DecompressedSize()),
                                     QString::fromLatin1(codecName.data(), static_cast<qsizetype>(codecName.size())),
                                     HumanDuration(elapsed)
                                 );
-        statusBar()->showMessage(msg, STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        PostStatusMessage(origin, msg, STATUS_BAR_MESSAGE_TIMEOUT_MS);
     }
 
     // Resolve before moving `dbs`; argument evaluation order is not fixed.
     const std::filesystem::path effectivePath =
-        dbs ? dbs->EffectivePath() : logapp::QStringToFsPath(mDecompressionOriginalPath);
+        dbs ? dbs->EffectivePath() : logapp::QStringToFsPath(origin->DecompressionOriginalPath());
 
     // Transfer temp-file ownership to the mapped `LogFile`.
-    const bool armedParseWorker = ContinueOpenAfterPrepared(mDecompressionOriginalPath, effectivePath, std::move(dbs));
+    const bool armedParseWorker =
+        ContinueOpenAfterPrepared(origin, origin->DecompressionOriginalPath(), effectivePath, std::move(dbs));
     // Clear scratch fields BEFORE the follow-up drain (see the
     // error branch above for the ordering rationale).
-    mDecompressionOriginalPath.clear();
-    mDecompressionCodecName.clear();
+    origin->ClearDecompressionScratchPaths();
     if (!armedParseWorker)
     {
-        StreamNextPendingFile();
-        FinalizeAfterDecompressionIfChainTerminal();
+        StreamNextPendingFile(origin);
+        FinalizeAfterDecompressionIfChainTerminal(origin);
     }
 }
 
@@ -4059,7 +5506,7 @@ void MainWindow::ExportFilteredRows()
 
     // No overlapping exports: the shortcut can fire during the
     // < 500 ms window before the progress dialog appears.
-    if (mExportInFlight)
+    if (mSession->IsExportInFlight())
     {
         return;
     }
@@ -4070,7 +5517,7 @@ void MainWindow::ExportFilteredRows()
     // (retry after `streamingFinished`); live-tail needs Stop
     // (not Pause -- Pause leaves the producer streaming into a
     // buffer that would flush on resume and race the export).
-    if (mModel->IsStreamingActive() || mDecompressionInFlight)
+    if (mModel->IsStreamingActive() || mSession->IsDecompressionInFlight())
     {
         const QString detail = IsLiveTailSession() ? tr("Stop the live-tail session (Ctrl+Shift+X) before exporting.")
                                                    : tr("Wait for the current file load to finish, then retry.");
@@ -4092,9 +5539,10 @@ void MainWindow::ExportFilteredRows()
 
     // Default filename stem: source basename if we have one, else "export".
     QString defaultStem = QStringLiteral("export");
-    if (mCurrentSource.has_value() && !mCurrentSource->locators.empty())
+    if (const auto &currentSource = mSession->CurrentSource();
+        currentSource.has_value() && !currentSource->locators.empty())
     {
-        const QFileInfo info(QString::fromStdString(mCurrentSource->locators.front()));
+        const QFileInfo info(QString::fromStdString(currentSource->locators.front()));
         const QString base = info.completeBaseName();
         if (!base.isEmpty())
         {
@@ -4164,24 +5612,20 @@ void MainWindow::BeginAsyncExport(
 {
     // Fresh per-run stop source so a leftover cancel from a prior
     // export cannot bleed into this one.
-    mExportStopSource = loglib::StopSource{};
-    mExportRowsWritten.storeRelaxed(0);
-    mExportRowsTotal.storeRelaxed(static_cast<qint64>(plan->sourceRows.size()));
+    mSession->MutableExportStopSource() = loglib::StopSource{};
+    mSession->MutableExportRowsWritten().storeRelaxed(0);
+    mSession->MutableExportRowsTotal().storeRelaxed(static_cast<qint64>(plan->sourceRows.size()));
 
-    mExportDestinationPath = destination;
-    mExportFormatLabel = formatLabel;
-    mExportStartedAt = std::chrono::steady_clock::now();
-    mExportInFlight = true;
+    mSession->SetExportDestinationPath(destination);
+    mSession->SetExportFormatLabel(formatLabel);
+    mSession->SetExportStartedAt(std::chrono::steady_clock::now());
+    mSession->SetExportInFlight(true);
 
-    // Disable the main window for the whole export. The progress
-    // dialog defers appearance by `EXPORT_DIALOG_DEFER_MS`; during
-    // that window the user could otherwise drag a column, edit a
-    // filter, or trigger a session switch and race the worker on
-    // `LogTable` / `KeyIndex` mutations. The dialog is a separate
-    // top-level widget so its Cancel stays interactive; the
-    // OS-managed window close still fires `closeEvent`, which
-    // pre-cancels the worker.
-    setEnabled(false);
+    LogSessionView *originView = LogSessionViewForSession(mSession);
+    if (originView != nullptr)
+    {
+        originView->SetContentEnabled(false);
+    }
 
     ShowExportProgress();
     if (mExportProgressDialog)
@@ -4205,9 +5649,14 @@ void MainWindow::BeginAsyncExport(
     catch (const std::exception &e)
     {
         // Open failed synchronously: tear down and toast.
-        mExportInFlight = false;
-        TeardownExportProgress();
-        setEnabled(true);
+        mSession->SetExportInFlight(false);
+        const QPointer<LogSessionView> originViewToReEnable = LogSessionViewForSession(mSession);
+        if (originViewToReEnable != nullptr)
+        {
+            originViewToReEnable->HideOperationProgress();
+            originViewToReEnable->SetContentEnabled(true);
+        }
+        UpdateExportProgressUi();
         QMessageBox::warning(
             this,
             tr("Export Failed"),
@@ -4216,8 +5665,8 @@ void MainWindow::BeginAsyncExport(
         return;
     }
 
-    const auto stopToken = mExportStopSource.get_token();
-    auto *rowsWrittenAtomic = &mExportRowsWritten;
+    const auto stopToken = mSession->ExportStopSource().get_token();
+    auto *rowsWrittenAtomic = &mSession->MutableExportRowsWritten();
 
     // Worker: drive the exporter into the sink synchronously.
     // Throws propagate out of `QtConcurrent::run` and land on
@@ -4246,13 +5695,10 @@ void MainWindow::BeginAsyncExport(
         rowsWrittenAtomic->storeRelaxed(static_cast<qint64>(sharedPlan->sourceRows.size()));
     });
 
-    if (mExportWatcher == nullptr)
-    {
-        mExportWatcher = new QFutureWatcher<void>(this);
-        connect(mExportWatcher, &QFutureWatcher<void>::finished, this, &MainWindow::OnExportFinished);
-    }
-    mExportIsBundle = false;
-    mExportWatcher->setFuture(future);
+    auto *watcher = mSession->EnsureExportWatcher();
+    connect(watcher, &LogSession::ExportWatcher::finished, this, &MainWindow::OnExportFinished, Qt::UniqueConnection);
+    mSession->SetExportIsBundle(false);
+    watcher->setFuture(future);
 }
 
 void MainWindow::ExportSessionBundle()
@@ -4262,11 +5708,11 @@ void MainWindow::ExportSessionBundle()
         QMessageBox::information(this, tr("Export Session Bundle"), tr("No rows are currently loaded."));
         return;
     }
-    if (mExportInFlight)
+    if (mSession->IsExportInFlight())
     {
         return;
     }
-    if (mDecompressionInFlight)
+    if (mSession->IsDecompressionInFlight())
     {
         // A load pass is still in-flight; there is nothing coherent
         // to snapshot yet. Ask the user to wait rather than force a
@@ -4310,9 +5756,10 @@ void MainWindow::ExportSessionBundle()
     const std::size_t rowCount = mModel->Table().Data().Lines().size();
 
     QString defaultStem;
-    if (mCurrentSource.has_value() && !mCurrentSource->locators.empty())
+    if (const auto &currentSource = mSession->CurrentSource();
+        currentSource.has_value() && !currentSource->locators.empty())
     {
-        const QString primary = QString::fromStdString(mCurrentSource->locators.front());
+        const QString primary = QString::fromStdString(currentSource->locators.front());
         const QFileInfo info(primary);
         defaultStem = info.completeBaseName();
         // Avoid repeating the extension for names such as
@@ -4358,7 +5805,7 @@ void MainWindow::ExportSessionBundleToPathForTest(const QString &destination)
     {
         return;
     }
-    if (mExportInFlight || mDecompressionInFlight)
+    if (mSession->IsExportInFlight() || mSession->IsDecompressionInFlight())
     {
         return;
     }
@@ -4380,27 +5827,29 @@ void MainWindow::ExportSessionBundleToPathForTest(const QString &destination)
 
 void MainWindow::BeginAsyncBundleExport(std::filesystem::path destination, int compressionLevel, int totalWorkers)
 {
-    mExportStopSource = loglib::StopSource{};
-    mExportRowsWritten.storeRelaxed(0);
-    mExportRowsTotal.storeRelaxed(static_cast<qint64>(mModel->Table().Data().Lines().size()));
+    mSession->MutableExportStopSource() = loglib::StopSource{};
+    mSession->MutableExportRowsWritten().storeRelaxed(0);
+    mSession->MutableExportRowsTotal().storeRelaxed(static_cast<qint64>(mModel->Table().Data().Lines().size()));
 
     // Preserve non-ASCII destination names on Windows.
-    mExportDestinationPath = logapp::FsPathToQString(destination);
-    mExportFormatLabel = tr("Session bundle");
-    mExportStartedAt = std::chrono::steady_clock::now();
-    mExportInFlight = true;
-    mExportIsBundle = true;
+    mSession->SetExportDestinationPath(logapp::FsPathToQString(destination));
+    mSession->SetExportFormatLabel(tr("Session bundle"));
+    mSession->SetExportStartedAt(std::chrono::steady_clock::now());
+    mSession->SetExportInFlight(true);
+    mSession->SetExportIsBundle(true);
 
-    // Same rationale as `BeginAsyncExport`: disable the UI while the
-    // worker reads `LogTable` without locking.
-    setEnabled(false);
+    LogSessionView *originView = LogSessionViewForSession(mSession);
+    if (originView != nullptr)
+    {
+        originView->SetContentEnabled(false);
+    }
 
     ShowExportProgress();
     if (mExportProgressDialog)
     {
         mExportProgressDialog->setLabelText(tr("Exporting %L1 rows into %2\nPreparing\u2026")
                                                 .arg(static_cast<qulonglong>(mModel->Table().Data().Lines().size()))
-                                                .arg(QFileInfo(mExportDestinationPath).fileName()));
+                                                .arg(QFileInfo(mSession->ExportDestinationPath()).fileName()));
     }
 
     // Snapshot on the GUI thread, including runtime-only anchors that
@@ -4412,8 +5861,8 @@ void MainWindow::BeginAsyncBundleExport(std::filesystem::path destination, int c
     }
     const loglib::LogTable *const tablePtr = &mModel->Table();
 
-    const auto stopToken = mExportStopSource.get_token();
-    auto *rowsWrittenAtomic = &mExportRowsWritten;
+    const auto stopToken = mSession->ExportStopSource().get_token();
+    auto *rowsWrittenAtomic = &mSession->MutableExportRowsWritten();
 
     // Let worker exceptions propagate through the future.
     // The WebKit lambda-captures checker misclassifies `QAtomicInteger *`
@@ -4441,75 +5890,126 @@ void MainWindow::BeginAsyncBundleExport(std::filesystem::path destination, int c
     });
     // NOLINTEND(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
 
-    if (mExportWatcher == nullptr)
-    {
-        mExportWatcher = new QFutureWatcher<void>(this);
-        connect(mExportWatcher, &QFutureWatcher<void>::finished, this, &MainWindow::OnExportFinished);
-    }
-    mExportWatcher->setFuture(future);
+    auto *watcher = mSession->EnsureExportWatcher();
+    connect(watcher, &LogSession::ExportWatcher::finished, this, &MainWindow::OnExportFinished, Qt::UniqueConnection);
+    watcher->setFuture(future);
 }
 
 void MainWindow::ShowExportProgress()
 {
-    if (mSuppressDialogsForTest)
+    if (!mSuppressDialogsForTest)
     {
-        return;
+        if (!mExportProgressDialog)
+        {
+            mExportProgressDialog = new QProgressDialog(this);
+            mExportProgressDialog->setWindowTitle(tr("Exporting"));
+            mExportProgressDialog->setWindowModality(Qt::NonModal);
+            mExportProgressDialog->setMinimumDuration(EXPORT_DIALOG_DEFER_MS);
+            mExportProgressDialog->setRange(0, PROGRESS_PERCENT_MAX);
+            mExportProgressDialog->setAutoClose(false);
+            mExportProgressDialog->setAutoReset(false);
+            connect(mExportProgressDialog.data(), &QProgressDialog::canceled, this, [this]() {
+                if (mSession != nullptr && mSession->IsExportInFlight())
+                {
+                    mSession->MutableExportStopSource().request_stop();
+                }
+            });
+        }
     }
-    if (!mExportProgressDialog)
-    {
-        mExportProgressDialog = new QProgressDialog(this);
-        mExportProgressDialog->setWindowTitle(tr("Exporting"));
-        mExportProgressDialog->setWindowModality(Qt::WindowModal);
-        mExportProgressDialog->setMinimumDuration(EXPORT_DIALOG_DEFER_MS);
-        mExportProgressDialog->setRange(0, PROGRESS_PERCENT_MAX);
-        mExportProgressDialog->setAutoClose(false);
-        mExportProgressDialog->setAutoReset(false);
-        connect(mExportProgressDialog.data(), &QProgressDialog::canceled, this, [this]() {
-            mExportStopSource.request_stop();
-        });
-    }
-    mExportProgressDialog->reset();
-    mExportProgressDialog->setValue(0);
 
     if (mExportPollTimer == nullptr)
     {
         mExportPollTimer = new QTimer(this);
         mExportPollTimer->setInterval(EXPORT_POLL_INTERVAL_MS);
-        connect(mExportPollTimer, &QTimer::timeout, this, [this]() {
-            if (!mExportInFlight || !mExportProgressDialog)
-            {
-                return;
-            }
-            const qint64 written = mExportRowsWritten.loadRelaxed();
-            const qint64 total = mExportRowsTotal.loadRelaxed();
-            if (total > 0)
-            {
-                const int pct = static_cast<int>((static_cast<qint64>(PROGRESS_PERCENT_MAX) * written) / total);
-                mExportProgressDialog->setValue(std::min(pct, PROGRESS_PERCENT_MAX));
-                // `setValue` pumps events on a visible dialog, so
-                // a queued `finished` slot can tear us down between
-                // `setValue` and `setLabelText`. Re-check to avoid
-                // repainting a stale label and flashing the dialog
-                // back on screen.
-                if (!mExportInFlight || !mExportProgressDialog)
-                {
-                    return;
-                }
-                mExportProgressDialog->setLabelText(tr("Exporting %1 rows to %2\n%L3 of %L4 rows written")
-                                                        .arg(total)
-                                                        .arg(QFileInfo(mExportDestinationPath).fileName())
-                                                        .arg(written)
-                                                        .arg(total));
-            }
-            else
-            {
-                mExportProgressDialog->setLabelText(
-                    tr("Exporting to %1\nPreparing\u2026").arg(QFileInfo(mExportDestinationPath).fileName())
-                );
-            }
-        });
+        connect(mExportPollTimer, &QTimer::timeout, this, &MainWindow::UpdateExportProgressUi);
     }
     mExportPollTimer->start();
+    UpdateExportProgressUi();
+}
+
+void MainWindow::UpdateExportProgressUi()
+{
+    bool anyInFlight = false;
+    for (const LogSession *session : hostedSessions())
+    {
+        if (session == nullptr || !session->IsExportInFlight())
+        {
+            continue;
+        }
+        anyInFlight = true;
+        LogSessionView *view = LogSessionViewForSession(session);
+        if (view == nullptr)
+        {
+            continue;
+        }
+        const qint64 written = session->ExportRowsWritten().loadRelaxed();
+        const qint64 total = session->ExportRowsTotal().loadRelaxed();
+        int pct = -1;
+        QString label;
+        if (total > 0)
+        {
+            pct = static_cast<int>((static_cast<qint64>(PROGRESS_PERCENT_MAX) * written) / total);
+            pct = std::min(pct, PROGRESS_PERCENT_MAX);
+            label = tr("Exporting %1\n%L2 of %L3 rows")
+                        .arg(QFileInfo(session->ExportDestinationPath()).fileName())
+                        .arg(written)
+                        .arg(total);
+        }
+        else
+        {
+            label = tr("Exporting %1\nPreparing\u2026").arg(QFileInfo(session->ExportDestinationPath()).fileName());
+        }
+        if (view->IsOperationProgressVisible())
+        {
+            view->UpdateOperationProgress(label, pct);
+        }
+        else
+        {
+            view->ShowOperationProgress(label, pct);
+        }
+    }
+
+    if (!anyInFlight)
+    {
+        TeardownExportProgress();
+        return;
+    }
+
+    if (mSuppressDialogsForTest || !mExportProgressDialog)
+    {
+        return;
+    }
+
+    if (mSession == nullptr || !mSession->IsExportInFlight())
+    {
+        mExportProgressDialog->hide();
+        return;
+    }
+
+    const qint64 written = mSession->ExportRowsWritten().loadRelaxed();
+    const qint64 total = mSession->ExportRowsTotal().loadRelaxed();
+    const std::uint64_t generation = mSession->ExportGeneration();
+    if (total > 0)
+    {
+        const int pct = static_cast<int>((static_cast<qint64>(PROGRESS_PERCENT_MAX) * written) / total);
+        mExportProgressDialog->setValue(std::min(pct, PROGRESS_PERCENT_MAX));
+        if (mSession == nullptr || !mSession->IsExportInFlight() || mSession->ExportGeneration() != generation ||
+            !mExportProgressDialog)
+        {
+            return;
+        }
+        mExportProgressDialog->setLabelText(tr("Exporting %1 rows to %2\n%L3 of %L4 rows written")
+                                                .arg(total)
+                                                .arg(QFileInfo(mSession->ExportDestinationPath()).fileName())
+                                                .arg(written)
+                                                .arg(total));
+    }
+    else
+    {
+        mExportProgressDialog->setLabelText(
+            tr("Exporting to %1\nPreparing\u2026").arg(QFileInfo(mSession->ExportDestinationPath()).fileName())
+        );
+    }
 }
 
 void MainWindow::TeardownExportProgress()
@@ -4527,61 +6027,111 @@ void MainWindow::TeardownExportProgress()
 
 void MainWindow::CancelInFlightExport()
 {
-    const bool wasInFlight = mExportInFlight;
-    mExportInFlight = false;
-    if (mExportWatcher == nullptr)
+    CancelInFlightExportFor(mSession);
+}
+
+void MainWindow::CancelInFlightExportFor(LogSession *origin)
+{
+    if (origin == nullptr)
     {
-        mExportDestinationPath.clear();
-        mExportFormatLabel.clear();
-        // Only re-enable when we actually disabled -- this helper
-        // is called on every session switch and from `~MainWindow`.
-        if (wasInFlight)
-        {
-            setEnabled(true);
-        }
         return;
     }
-    mExportStopSource.request_stop();
-    // `waitForFinished` re-throws whatever the worker let escape
-    // (`ExportCancelled` on the normal cancel path, plus any I/O
-    // error). Swallow both so this helper stays safe to call from
-    // destructors and other no-throw contexts.
+    const bool wasInFlight = origin->IsExportInFlight();
+    const QPointer<LogSessionView> originView = LogSessionViewForSession(origin);
+    origin->SetExportInFlight(false);
+    auto *watcher = origin->ExportWatcherPtr();
+    if (watcher == nullptr)
+    {
+        origin->ClearExportScratchState();
+        if (originView != nullptr)
+        {
+            originView->HideOperationProgress();
+            if (wasInFlight)
+            {
+                originView->SetContentEnabled(true);
+            }
+        }
+        UpdateExportProgressUi();
+        return;
+    }
+    origin->MutableExportStopSource().request_stop();
     try
     {
-        mExportWatcher->waitForFinished();
+        watcher->waitForFinished();
     }
     catch (const std::exception &) // NOLINT(bugprone-empty-catch)
     {
-        // Intentional: we're tearing down the export because the
-        // session is about to disappear (or MainWindow is being
-        // destroyed). ExportCancelled and I/O errors from the
-        // worker are both expected and there is no UI context
-        // left to report them into.
+        // The worker is stopping because the session is closing or the
+        // window is being destroyed. Cancellation and I/O errors are
+        // expected and have no remaining UI to report into.
     }
-    mExportWatcher->setFuture(QFuture<void>{});
-    TeardownExportProgress();
-    mExportDestinationPath.clear();
-    mExportFormatLabel.clear();
-    if (wasInFlight)
+    watcher->setFuture(QFuture<void>{});
+    origin->ClearExportScratchState();
+    if (originView != nullptr)
     {
-        setEnabled(true);
+        originView->HideOperationProgress();
+        if (wasInFlight)
+        {
+            originView->SetContentEnabled(true);
+        }
     }
+    UpdateExportProgressUi();
 }
 
 void MainWindow::OnExportFinished()
 {
-    if (!mExportInFlight)
+    // Recover export origin from the session-owned watcher's parent.
+    // `LogSession::ExportWatcher` is a `QFutureWatcher<void>` type
+    // alias, so it has no `Q_OBJECT` macro of its own and cannot
+    // be a `qobject_cast` target. Walk the parent chain via the
+    // base `QObject*` instead: the watcher was `new
+    // ExportWatcher(this)` in `EnsureExportWatcher`, so its
+    // parent is exactly the owning `LogSession`.
+    const QObject *watcherObj = sender();
+    LogSession *origin = (watcherObj != nullptr) ? qobject_cast<LogSession *>(watcherObj->parent()) : nullptr;
+    // Direct test invocation without a sender uses the active session.
+    if (origin == nullptr)
+    {
+        if (watcherObj != nullptr)
+        {
+            return;
+        }
+        origin = mSession;
+    }
+    if (mOperations == nullptr)
     {
         return;
     }
-    mExportInFlight = false;
-    TeardownExportProgress();
-    // Re-enable before any modal toast so error dialogs land on a
-    // live parent (a greyed-out backdrop reads as "app frozen").
-    setEnabled(true);
+    mOperations->CompleteExport(origin);
+}
 
-    if (mExportWatcher == nullptr)
+void MainWindow::OnExportFinishedFor(LogSession *origin)
+{
+    if (origin == nullptr || !origin->IsExportInFlight())
     {
+        return;
+    }
+    const bool hosted = HostedSession(origin->InstanceId()) == origin;
+    origin->SetExportInFlight(false);
+
+    if (hosted)
+    {
+        const QPointer<LogSessionView> originViewToReEnable = LogSessionViewForSession(origin);
+        if (originViewToReEnable != nullptr)
+        {
+            originViewToReEnable->HideOperationProgress();
+            originViewToReEnable->SetContentEnabled(true);
+        }
+        UpdateExportProgressUi();
+    }
+
+    auto *watcher = origin->ExportWatcherPtr();
+    if (watcher == nullptr)
+    {
+        if (!hosted)
+        {
+            origin->ClearExportScratchState();
+        }
         return;
     }
 
@@ -4592,7 +6142,7 @@ void MainWindow::OnExportFinished()
         // `waitForFinished` re-throws whatever the worker let
         // escape. `QFuture<void>` has no `result()`; wait+observe
         // is the documented idiom.
-        mExportWatcher->waitForFinished();
+        watcher->waitForFinished();
     }
     catch (const slv::exports::ExportCancelled &)
     {
@@ -4605,59 +6155,106 @@ void MainWindow::OnExportFinished()
     catch (const std::exception &e)
     {
         const QString label =
-            mExportIsBundle ? tr("Failed to export session bundle '%1': %2") : tr("Failed to export '%1': %2");
-        errorEntry = label.arg(mExportDestinationPath, QString::fromLocal8Bit(e.what()));
+            origin->IsExportBundle() ? tr("Failed to export session bundle '%1': %2") : tr("Failed to export '%1': %2");
+        errorEntry = label.arg(origin->ExportDestinationPath(), QString::fromLocal8Bit(e.what()));
     }
     catch (...)
     {
-        const QString label = mExportIsBundle ? tr("Failed to export session bundle '%1': unknown error")
-                                              : tr("Failed to export '%1': unknown error");
-        errorEntry = label.arg(mExportDestinationPath);
+        const QString label = origin->IsExportBundle() ? tr("Failed to export session bundle '%1': unknown error")
+                                                       : tr("Failed to export '%1': unknown error");
+        errorEntry = label.arg(origin->ExportDestinationPath());
     }
-    mExportWatcher->setFuture(QFuture<void>{});
+    watcher->setFuture(QFuture<void>{});
 
-    const bool wasBundle = mExportIsBundle;
-    mExportIsBundle = false;
+    const bool wasBundle = origin->IsExportBundle();
+    origin->SetExportIsBundle(false);
+    if (!hosted)
+    {
+        origin->ClearExportScratchState();
+        return;
+    }
+
+    // Shell-level UI (status bar, modal toasts) only fires for the active tab.
+    const bool originIsActive = (origin == mSession);
 
     if (cancelled)
     {
         const QString msg = wasBundle ? tr("Session bundle export cancelled: %1") : tr("Export cancelled: %1");
-        statusBar()->showMessage(msg.arg(QFileInfo(mExportDestinationPath).fileName()), STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        const QString text = msg.arg(QFileInfo(origin->ExportDestinationPath()).fileName());
+        if (originIsActive)
+        {
+            statusBar()->showMessage(text, STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        }
+        else
+        {
+            origin->QueueStatusMessage(text, STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        }
     }
     else if (!errorEntry.isEmpty())
     {
-        QMessageBox::warning(this, wasBundle ? tr("Session Bundle Export Failed") : tr("Export Failed"), errorEntry);
+        const QString failureTitle = wasBundle ? tr("Session Bundle Export Failed") : tr("Export Failed");
+        ShowParseErrors(failureTitle, {errorEntry.toStdString()}, origin);
+        if (originIsActive)
+        {
+            QMessageBox::warning(this, failureTitle, errorEntry);
+        }
+        else
+        {
+            origin->QueueFailureNotice(failureTitle, errorEntry);
+            origin->QueueStatusMessage(errorEntry, STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        }
     }
     else
     {
-        const auto elapsed = std::chrono::steady_clock::now() - mExportStartedAt;
-        const qint64 rows = mExportRowsWritten.loadRelaxed();
+        const auto elapsed = std::chrono::steady_clock::now() - origin->ExportStartedAt();
+        const qint64 rows = origin->ExportRowsWritten().loadRelaxed();
         const QString msg = wasBundle ? tr("Exported session bundle with %L1 rows to %2 in %3")
                                             .arg(rows)
-                                            .arg(QFileInfo(mExportDestinationPath).fileName())
+                                            .arg(QFileInfo(origin->ExportDestinationPath()).fileName())
                                             .arg(HumanDuration(elapsed))
                                       : tr("Exported %L1 rows to %2 (%3) in %4")
                                             .arg(rows)
-                                            .arg(QFileInfo(mExportDestinationPath).fileName())
-                                            .arg(mExportFormatLabel)
+                                            .arg(QFileInfo(origin->ExportDestinationPath()).fileName())
+                                            .arg(origin->ExportFormatLabel())
                                             .arg(HumanDuration(elapsed));
-        statusBar()->showMessage(msg, STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        if (originIsActive)
+        {
+            statusBar()->showMessage(msg, STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        }
+        else
+        {
+            origin->QueueStatusMessage(msg, STATUS_BAR_MESSAGE_TIMEOUT_MS);
+        }
         // Only remember on success -- see the deferral note in
-        // `ExportFilteredRows`.
-        RememberLastExportDir(mExportDestinationPath);
+        // `ExportFilteredRows`. Safe to call even from background
+        // completion (it just updates the "Save to" MRU dir).
+        RememberLastExportDir(origin->ExportDestinationPath());
     }
 
-    mExportDestinationPath.clear();
-    mExportFormatLabel.clear();
+    origin->ClearExportScratchState();
+
+    // Refresh the origin's tab chrome so the export-in-progress
+    // glyph clears even for background completions. Safe for the
+    // active tab too -- `RefreshTabChrome` is idempotent.
+    RefreshTabChrome(origin);
 }
 
-void MainWindow::FinalizeAfterDecompressionIfChainTerminal()
+void MainWindow::FinalizeAfterDecompressionIfChainTerminal(LogSession *origin)
 {
+    if (origin == nullptr)
+    {
+        return;
+    }
+    LogModel *const model = origin->Model();
+    if (model == nullptr)
+    {
+        return;
+    }
     // Another async worker is armed -- let the natural drain point
     // (`OnStreamingFinished` or the next `OnDecompressionFinished`)
-    // run instead. Preempting would flip `mSessionMode` to `Idle`
+    // run instead. Preempting would flip session mode to Idle
     // before `OnStreamingFinished` snapshots it for auto-save.
-    if (mModel->IsStreamingActive() || mDecompressionInFlight)
+    if (model->IsStreamingActive() || origin->IsDecompressionInFlight())
     {
         return;
     }
@@ -4667,54 +6264,44 @@ void MainWindow::FinalizeAfterDecompressionIfChainTerminal()
     // `OnStreamingFinished`, so without this the errors would sit
     // in memory until the next destructive session boundary
     // silently cleared them.
-    if (!mPendingOpenErrors.empty())
+    if (!origin->MutablePendingOpenErrors().empty())
     {
-        ShowParseErrors(tr("Error Opening File"), mPendingOpenErrors);
-        mPendingOpenErrors.clear();
+        ShowParseErrors(tr("Error Opening File"), origin->MutablePendingOpenErrors(), origin);
+        origin->MutablePendingOpenErrors().clear();
     }
-    if (!mPendingDecompressionErrors.empty())
+    if (!origin->MutablePendingDecompressionErrors().empty())
     {
-        ShowParseErrors(tr("Error Decompressing File"), mPendingDecompressionErrors);
-        mPendingDecompressionErrors.clear();
+        ShowParseErrors(tr("Error Decompressing File"), origin->MutablePendingDecompressionErrors(), origin);
+        origin->MutablePendingDecompressionErrors().clear();
     }
 
     // No session ever armed (all files failed before any parse
     // worker started): `StreamNextPendingFile`'s tail already
     // drained the buckets, so nothing else to do.
-    if (!IsSessionActive())
+    if (!origin->IsSessionActive())
     {
         return;
     }
 
-    // Settle the UI as if `OnStreamingFinished` had fired for the
-    // final file. Rows + `mCurrentSource` stay in place (the failed
-    // tail is not in `mCurrentSource->locators`). Snapshot the mode
+    // Settle origin state as if `OnStreamingFinished` had fired for the
+    // final file. Rows + source stay in place. Snapshot the mode
     // for `AutoSaveSessionSnapshot` before flipping to Idle.
-    const SessionMode justFinishedMode = mSessionMode;
-    mLastTerminalSessionMode = mSessionMode;
-    mSessionMode = SessionMode::Idle;
-    SetConfigurationUiEnabled(true);
-    UpdateStreamToolbarVisibility();
-    UpdateUi();
-    UpdateStreamingStatus();
-    UpdateWindowTitle();
-    mStreamingFileName.clear();
-    // Mirror `OnStreamingFinished`'s column-health refresh: the
-    // intermediate `OnStreamingFinished` calls in a multi-file
-    // chain return early without refreshing, so a chain-terminal
-    // decompression failure would leave the health glyphs pinned
-    // to stale state.
-    mModel->RefreshColumnHealth();
-
-    // Apply the deferred sort before auto-save (same reasoning as
-    // in `OnStreamingFinished`).
-    ApplyDeferredSortFromConfig();
-
-    // Auto-save the surviving session so restore-on-launch reopens
-    // the files that parsed successfully.
-    if (ShouldAutoSaveSession(justFinishedMode))
+    const SessionMode justFinishedMode = origin->SessionMode();
+    origin->SetMode(SessionMode::Idle);
+    if (origin == mSession)
     {
-        AutoSaveSessionSnapshot();
+        SetConfigurationUiEnabled(true);
+        UpdateStreamToolbarVisibility();
+        UpdateUi();
+        UpdateStreamingStatus();
+        UpdateWindowTitle();
+    }
+    origin->ClearStreamingFileName();
+    model->RefreshColumnHealth();
+    ApplyDeferredSortFromConfig(origin, LogSessionViewForSession(origin));
+    if (ShouldAutoSaveSession(origin, justFinishedMode))
+    {
+        AutoSaveSessionSnapshot(origin, /*publishOpenWindow=*/true);
     }
 }
 
@@ -4731,6 +6318,14 @@ void MainWindow::OpenLogStream()
         return;
     }
     RememberLastOpenDir(file);
+    // User-initiated log-stream open routes through a
+    // new foreground tab when the active tab has content. Only
+    // fires on the USER path; internal replace-in-place callers
+    // (`UndoRotationExpansion`, `OpenLogStreamForTest`) reach
+    // `OpenLogStreamFromPath` directly and bypass this so
+    // opt-out preferences and rotation-expansion state carry
+    // through the transition on the SAME session.
+    EnsureFreshActiveTab();
     OpenLogStreamFromPath(file);
 }
 
@@ -4741,6 +6336,15 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
         return;
     }
 
+    // Tab freshening lives on the user-facing wrapper
+    // (`OpenLogStream()`), NOT here. `OpenLogStreamFromPath` is
+    // also called from `UndoRotationExpansion()` and
+    // `OpenLogStreamForTest()`, both of which are internal-
+    // replacement paths that must NOT spawn a new tab (they
+    // expect the current session's opt-out preferences /
+    // rotation-expansion history to carry through the stream-
+    // mode transition on the SAME session).
+
     const size_t retention =
         (mModel->RetentionCap() != 0) ? mModel->RetentionCap() : StreamingControl::RetentionLines();
 
@@ -4750,18 +6354,18 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     // Surface and drop any queued multi-file-open continuation
     // before the AutoSave + destructive reset, so the user sees
     // their discarded selection explicitly rather than having the
-    // shared cancel-handler silently clear `mPendingOpenFiles`.
+    // shared cancel-handler silently clear `mSession->MutablePendingOpenFiles()`.
     // Must run before AutoSave below: `MirrorSessionStateToConfiguration`
     // would otherwise union the never-opened paths into the prior
     // session's persisted locators.
-    const int discardedQueuedFiles = static_cast<int>(mPendingOpenFiles.size());
+    const int discardedQueuedFiles = static_cast<int>(mSession->MutablePendingOpenFiles().size());
     if (discardedQueuedFiles > 0)
     {
         statusBar()->showMessage(
             tr("Discarded %n queued file(s) before opening log stream.", nullptr, discardedQueuedFiles),
             STATUS_BAR_MESSAGE_TIMEOUT_MS
         );
-        mPendingOpenFiles.clear();
+        mSession->MutablePendingOpenFiles().clear();
     }
 
     // Flush the outgoing session so user edits made since its last
@@ -4771,9 +6375,9 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     // immediately afterwards.
     AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
 
-    // Cancel the export worker before the reset; see `NewSession`
-    // for the race.
+    // Cancel export and decompression before the reset; see `NewSession`.
     CancelInFlightExport();
+    CancelInFlightDecompression();
 
     // RAII latch: see `NewSession` for why we need to suppress the
     // synchronous `Cancelled` cleanup.
@@ -4792,11 +6396,7 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     {
         mParseErrorsDock->ResetSessionState();
     }
-    mStreamingErrorsCut = 0;
-    // Session boundary: cancel any in-flight decompression so its
-    // `finished` slot can't splice the outgoing static file into
-    // the new live-tail session. Export was already cancelled above.
-    CancelInFlightDecompression();
+    mSession->SetStreamingErrorsCut(0);
     // Live-tail is transient and not auto-saved; leaving the prior
     // static session's uuid pinned would let closeEvent's
     // `RemoveOpenWindowUuid` drop that session from the multi-
@@ -4827,20 +6427,18 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     // Load history statically before constructing and attaching the tail.
     if (!siblingPrefix.isEmpty())
     {
-        mPendingOpenFiles = std::move(siblingPrefix);
-        mPendingOpenErrors.clear();
-        mPendingDecompressionErrors.clear();
-        mPendingLiveTailPrimary = tailPath;
-        mPendingLiveTailRetention = retention;
+        mSession->SetPendingOpenFiles(std::move(siblingPrefix));
+        mSession->ClearPendingOpenErrors();
+        mSession->ClearPendingDecompressionErrors();
+        mSession->SetPendingLiveTailPromotion(tailPath, retention);
         // Undo restores the selected path through the live-tail entry point.
-        mLastRotationExpansionOriginalInputs = QStringList{file};
-        mLastRotationExpansionWasLiveTail = true;
+        mSession->SetLastRotationExpansion(QStringList{file}, /*wasLiveTail=*/true);
         // Prefix loading must start as a fresh session so the first
         // sibling seeds its source and the all-failed rescue can run.
-        mSessionMode = SessionMode::Idle;
-        mCurrentSource.reset();
+        mSession->SetMode(SessionMode::Idle);
+        mSession->MutableCurrentSource().reset();
         SyncRotationHistoryActionCheckedState();
-        StreamNextPendingFile();
+        StreamNextPendingFile(mSession);
         if (addedSiblings > 0)
         {
             ShowRotationHistoryToast(addedSiblings, file);
@@ -4879,14 +6477,15 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
         return;
     }
 
-    mStreamingFileName = QFileInfo(tailPath).fileName();
+    mSession->SetStreamingFileName(QFileInfo(tailPath).fileName());
+    auto &currentSource = mSession->MutableCurrentSource();
     // Live-tail single-file open: populate both arrays so the
-    // parallel-array invariant holds across a future save.
+    // parallel-array invariant holds across the next save.
     {
         const std::string displayPath = logapp::CanonicalDisplayPath(tailPath).toStdString();
         const std::string dedupKey = logapp::CanonicalLocator(tailPath).toStdString();
         DetectedFormat detected = DetectFormatForPath(filePath);
-        mCurrentSource = loglib::LogConfiguration::Source{
+        currentSource = loglib::LogConfiguration::Source{
             .kind = loglib::LogConfiguration::Source::Kind::File,
             .format = detected.format,
             .locators = {displayPath},
@@ -4895,13 +6494,11 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
         };
         // `ShouldAutoDetectRotationHistory` already folds the CLI
         // override; no double-AND with `mDisableRotationHistoryOverride`.
-        mCurrentSource->followRotationSiblings = ShouldAutoDetectRotationHistory();
+        currentSource->followRotationSiblings = ShouldAutoDetectRotationHistory();
     }
     SyncRotationHistoryActionCheckedState();
-    mSessionMode = SessionMode::LiveTail;
-    mStreamingLineCount = 0;
-    mStreamingErrorCount = 0;
-    mFirstStreamingBatchSeen = false;
+    mSession->SetMode(SessionMode::LiveTail);
+    mSession->ResetStreamingProgress();
     SetConfigurationUiEnabled(false);
     StartLiveTailTicker();
     UpdateStreamingStatus();
@@ -4918,8 +6515,8 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     // resolve its bytes via `LineSource::RawLine` later.
     auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(source));
     const loglib::LogConfiguration::Source::Format format =
-        mCurrentSource ? mCurrentSource->format : loglib::LogConfiguration::Source::Format::Json;
-    std::string regexPattern = mCurrentSource ? mCurrentSource->regexPattern : std::string{};
+        currentSource ? currentSource->format : loglib::LogConfiguration::Source::Format::Json;
+    std::string regexPattern = currentSource ? currentSource->regexPattern : std::string{};
     auto parserFactory = [format, regexPattern = std::move(regexPattern)]() {
         return MakeParserForFormat(format, regexPattern);
     };
@@ -4928,19 +6525,36 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
 
 void MainWindow::ContinueLiveTailAfterPrefix()
 {
-    if (mPendingLiveTailPrimary.isEmpty())
+    ContinueLiveTailAfterPrefix(mSession);
+}
+
+void MainWindow::ContinueLiveTailAfterPrefix(LogSession *origin)
+{
+    if (origin == nullptr || origin->PendingLiveTailPrimary().isEmpty())
     {
-        // Nothing to promote; clear any residual state defensively.
-        ClearPendingLiveTailPromotion();
+        if (origin != nullptr)
+        {
+            origin->ClearPendingLiveTailPromotion();
+        }
+        else
+        {
+            ClearPendingLiveTailPromotion();
+        }
         return;
     }
+    LogModel *const model = origin->Model();
+    if (model == nullptr)
+    {
+        return;
+    }
+    const bool originIsActive = origin == mSession;
 
     // The all-prefix-files-failed rescue has not disabled this UI yet.
-    SetConfigurationUiEnabled(false);
-    const QString primary = mPendingLiveTailPrimary;
-    mPendingLiveTailPrimary.clear();
-    const size_t retention = mPendingLiveTailRetention;
-    mPendingLiveTailRetention = 0;
+    if (originIsActive)
+    {
+        SetConfigurationUiEnabled(false);
+    }
+    const auto [primary, retention] = origin->TakePendingLiveTailPromotion();
 
     // Construct only after the prefix drains, before callbacks can be missed.
     // Avoid code-page narrowing of non-ASCII Windows paths.
@@ -4954,42 +6568,47 @@ void MainWindow::ContinueLiveTailAfterPrefix()
     {
         ShowParseErrors(
             tr("Error Opening Log Stream"),
-            {std::string("Failed to open '") + primary.toStdString() + "' for streaming: " + e.what()}
+            {std::string("Failed to open '") + primary.toStdString() + "' for streaming: " + e.what()},
+            origin
         );
         // Keep the loaded prefix, but stop advertising a failed live tail.
-        StopLiveTailTicker();
-        mSessionMode = (mModel->rowCount() > 0) ? SessionMode::Static : SessionMode::Idle;
-        mStreamingFileName.clear();
-        mFirstStreamingBatchSeen = false;
-        SetConfigurationUiEnabled(true);
-        UpdateStreamToolbarVisibility();
-        UpdateStreamingStatus();
-        UpdateWindowTitle();
+        origin->SetMode((model->rowCount() > 0) ? SessionMode::Static : SessionMode::Idle);
+        origin->ClearStreamingFileName();
+        origin->SetFirstStreamingBatchSeen(false);
+        if (originIsActive)
+        {
+            StopLiveTailTicker();
+            SetConfigurationUiEnabled(true);
+            UpdateStreamToolbarVisibility();
+            UpdateStreamingStatus();
+            UpdateWindowTitle();
+        }
         return;
     }
 
     const std::string displayPath = logapp::CanonicalDisplayPath(primary).toStdString();
     const std::string dedupKey = logapp::CanonicalLocator(primary).toStdString();
 
+    auto &currentSource = origin->MutableCurrentSource();
     // Append the primary onto the session's locator list so the
     // full [siblings..., primary] set persists.
-    if (mCurrentSource.has_value() && mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::File)
+    if (currentSource.has_value() && currentSource->kind == loglib::LogConfiguration::Source::Kind::File)
     {
         const bool alreadyPresent = std::any_of(
-            mCurrentSource->locatorDedupKeys.begin(),
-            mCurrentSource->locatorDedupKeys.end(),
+            currentSource->locatorDedupKeys.begin(),
+            currentSource->locatorDedupKeys.end(),
             [&dedupKey](const std::string &existing) { return existing == dedupKey; }
         );
         if (!alreadyPresent)
         {
-            loglib::AppendLocator(*mCurrentSource, displayPath, dedupKey);
+            loglib::AppendLocator(*currentSource, displayPath, dedupKey);
         }
     }
     else
     {
         // No sibling seeded a source; detect and seed from the primary.
         DetectedFormat detected = DetectFormatForPath(filePath);
-        mCurrentSource = loglib::LogConfiguration::Source{
+        currentSource = loglib::LogConfiguration::Source{
             .kind = loglib::LogConfiguration::Source::Kind::File,
             .format = detected.format,
             .locators = {displayPath},
@@ -4998,17 +6617,21 @@ void MainWindow::ContinueLiveTailAfterPrefix()
         };
         // `ShouldAutoDetectRotationHistory` already folds the CLI
         // override; no double-AND with `mDisableRotationHistoryOverride`.
-        mCurrentSource->followRotationSiblings = ShouldAutoDetectRotationHistory();
+        currentSource->followRotationSiblings = ShouldAutoDetectRotationHistory();
     }
-    SyncRotationHistoryActionCheckedState();
+    if (originIsActive)
+    {
+        SyncRotationHistoryActionCheckedState();
+    }
 
     // `BeginStreaming` resets retention, so apply the captured cap after
     // arming. Warn before that cap trims an oversized static prefix.
-    const size_t prefixRows = static_cast<size_t>(std::max(0, mModel->rowCount()));
+    const size_t prefixRows = static_cast<size_t>(std::max(0, model->rowCount()));
     if (retention > 0 && prefixRows > retention)
     {
         const int prefixRowsForPlural = static_cast<int>(std::min<size_t>(prefixRows, std::numeric_limits<int>::max()));
-        statusBar()->showMessage(
+        PostStatusMessage(
+            origin,
             tr("Historical prefix (%n line(s)) exceeds the stream retention cap (%L1); older prefix "
                "rows may be trimmed as the tail advances.",
                nullptr,
@@ -5017,38 +6640,41 @@ void MainWindow::ContinueLiveTailAfterPrefix()
             STATUS_BAR_MESSAGE_TIMEOUT_MS
         );
     }
-    mSessionMode = SessionMode::LiveTail;
-    mStreamingFileName = QFileInfo(primary).fileName();
-    StartLiveTailTicker();
-    UpdateStreamingStatus();
-    UpdateStreamToolbarVisibility();
-    UpdateWindowTitle();
-    ApplyDisplayOrder();
+    origin->SetMode(SessionMode::LiveTail);
+    origin->SetStreamingFileName(QFileInfo(primary).fileName());
+    if (originIsActive)
+    {
+        StartLiveTailTicker();
+        UpdateStreamingStatus();
+        UpdateStreamToolbarVisibility();
+        UpdateWindowTitle();
+    }
+    ApplyDisplayOrder(origin, LogSessionViewForSession(origin));
 
-    auto cfg = std::make_shared<const loglib::LogConfiguration>(mModel->Configuration());
+    auto cfg = std::make_shared<const loglib::LogConfiguration>(model->Configuration());
     loglib::ParserOptions options;
     options.configuration = std::move(cfg);
 
     auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(producer));
     const loglib::LogConfiguration::Source::Format format =
-        mCurrentSource ? mCurrentSource->format : loglib::LogConfiguration::Source::Format::Json;
-    std::string regexPattern = mCurrentSource ? mCurrentSource->regexPattern : std::string{};
+        currentSource ? currentSource->format : loglib::LogConfiguration::Source::Format::Json;
+    std::string regexPattern = currentSource ? currentSource->regexPattern : std::string{};
     auto parserFactory = [format, regexPattern = std::move(regexPattern)]() {
         return MakeParserForFormat(format, regexPattern);
     };
     // The rescue path may have no initialized stream to append to.
-    if (mModel->IsStreamingActive() || mModel->rowCount() > 0)
+    if (model->IsStreamingActive() || model->rowCount() > 0)
     {
-        mModel->AppendStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
+        model->AppendStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
     }
     else
     {
-        mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
+        model->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
     }
     // Apply the captured cap after either streaming path is armed.
     if (retention > 0)
     {
-        mModel->SetRetentionCap(retention);
+        model->SetRetentionCap(retention);
     }
 }
 
@@ -5097,6 +6723,14 @@ void MainWindow::OpenStdinStream()
         return;
     }
 
+    // Stdin gets its own tab so it cannot clobber file
+    // tabs opened alongside it (CLI: `mysvc | slv file.log -`,
+    // toolbar: user opens stdin from the popup menu while a file
+    // investigation is already open). Only a truly empty active
+    // tab is reused. Runs AFTER the peek + producer construction
+    // so a producer-create failure does not leave a stray tab.
+    EnsureFreshActiveTab();
+
     OpenStdinStreamFromProducer(std::move(producer), std::move(peek));
 }
 
@@ -5114,20 +6748,27 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
         return;
     }
 
+    // Tab freshening lives on the user-facing wrapper
+    // (`OpenStdinStream()`), NOT here. `OpenStdinStreamForTest`
+    // is an internal-replacement path that must NOT spawn a new
+    // tab; test fixtures that need multi-tab semantics can call
+    // `AddNewTabForTest` themselves.
+
     // Same rationale as `OpenLogStreamFromPath`: surface and drop
     // the pending queue before AutoSave + reset.
-    const int discardedQueuedFiles = static_cast<int>(mPendingOpenFiles.size());
+    const int discardedQueuedFiles = static_cast<int>(mSession->MutablePendingOpenFiles().size());
     if (discardedQueuedFiles > 0)
     {
         statusBar()->showMessage(
             tr("Discarded %n queued file(s) before opening standard input.", nullptr, discardedQueuedFiles),
             STATUS_BAR_MESSAGE_TIMEOUT_MS
         );
-        mPendingOpenFiles.clear();
+        mSession->MutablePendingOpenFiles().clear();
     }
 
     AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
     CancelInFlightExport();
+    CancelInFlightDecompression();
 
     const SessionSwitchScope switchGuard(*this);
 
@@ -5141,8 +6782,7 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
     {
         mParseErrorsDock->ResetSessionState();
     }
-    mStreamingErrorsCut = 0;
-    CancelInFlightDecompression();
+    mSession->SetStreamingErrorsCut(0);
     DetachAutoSaveUuid();
     // Pending file-tail and Undo state cannot cross into stdin.
     ClearPendingLiveTailPromotion();
@@ -5151,7 +6791,7 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
     SyncRotationHistoryActionCheckedState();
 
     const std::string displayName = producer->DisplayName();
-    mStreamingFileName = QString::fromStdString(displayName);
+    mSession->SetStreamingFileName(QString::fromStdString(displayName));
 
     // Detect the format from the peek so the resolved parser is
     // pinned before the first parse batch. Empty peek falls back
@@ -5161,17 +6801,15 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
     const loglib::DetectedFormat detected = loglib::DetectFormatFromBytes(peek);
     const auto format = detected.format;
     std::string regexPattern = detected.regexPattern;
-    mCurrentSource = loglib::LogConfiguration::Source{
+    mSession->MutableCurrentSource() = loglib::LogConfiguration::Source{
         .kind = loglib::LogConfiguration::Source::Kind::Stdin,
         .format = format,
         .locators = {displayName},
         .locatorDedupKeys = {displayName},
         .regexPattern = regexPattern,
     };
-    mSessionMode = SessionMode::LiveTail;
-    mStreamingLineCount = 0;
-    mStreamingErrorCount = 0;
-    mFirstStreamingBatchSeen = false;
+    mSession->SetMode(SessionMode::LiveTail);
+    mSession->ResetStreamingProgress();
     SetConfigurationUiEnabled(false);
     StartLiveTailTicker();
     UpdateStreamingStatus();
@@ -5251,23 +6889,30 @@ void MainWindow::OpenNetworkStream()
         return;
     }
 
+    // Network sessions get their own tab so they cannot
+    // clobber other investigations. Only a truly empty active tab
+    // is reused. This runs AFTER the dialog + producer construction
+    // so a bind / TLS failure surfaces without gratuitously
+    // spawning a fresh tab.
+    EnsureFreshActiveTab();
+
     // Same rationale as `OpenLogStreamFromPath`: surface and drop
     // the pending queue before AutoSave + reset.
-    const int discardedQueuedFiles = static_cast<int>(mPendingOpenFiles.size());
+    const int discardedQueuedFiles = static_cast<int>(mSession->MutablePendingOpenFiles().size());
     if (discardedQueuedFiles > 0)
     {
         statusBar()->showMessage(
             tr("Discarded %n queued file(s) before opening network stream.", nullptr, discardedQueuedFiles),
             STATUS_BAR_MESSAGE_TIMEOUT_MS
         );
-        mPendingOpenFiles.clear();
+        mSession->MutablePendingOpenFiles().clear();
     }
 
     AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
 
-    // Cancel the export worker before the reset; see `NewSession`
-    // for the race.
+    // Cancel export and decompression before the reset; see `NewSession`.
     CancelInFlightExport();
+    CancelInFlightDecompression();
 
     const SessionSwitchScope switchGuard(*this);
 
@@ -5284,11 +6929,7 @@ void MainWindow::OpenNetworkStream()
     {
         mParseErrorsDock->ResetSessionState();
     }
-    mStreamingErrorsCut = 0;
-    // Session boundary: cancel any in-flight decompression so its
-    // `finished` slot can't splice the outgoing static file into
-    // the new network-stream session. Export was already cancelled above.
-    CancelInFlightDecompression();
+    mSession->SetStreamingErrorsCut(0);
     DetachAutoSaveUuid();
     // Pending file-tail and Undo state cannot cross into a network stream.
     ClearPendingLiveTailPromotion();
@@ -5296,7 +6937,7 @@ void MainWindow::OpenNetworkStream()
     // The outgoing session no longer gates the menu state.
     SyncRotationHistoryActionCheckedState();
 
-    mStreamingFileName = QString::fromStdString(displayName);
+    mSession->SetStreamingFileName(QString::fromStdString(displayName));
     // Network-stream locator is a producer URI, not a filesystem
     // path -- no canonicalisation applies, so dedup key == display.
     // Both arrays populated so the parallel-array invariant holds.
@@ -5319,17 +6960,15 @@ void MainWindow::OpenNetworkStream()
         }
         return loglib::LogConfiguration::Source::Format::Json;
     }();
-    mCurrentSource = loglib::LogConfiguration::Source{
+    mSession->MutableCurrentSource() = loglib::LogConfiguration::Source{
         .kind = loglib::LogConfiguration::Source::Kind::NetworkStream,
         .format = dialogFormat,
         .locators = {displayName},
         .locatorDedupKeys = {displayName},
         .regexPattern = cfg.regexPattern.toStdString(),
     };
-    mSessionMode = SessionMode::LiveTail;
-    mStreamingLineCount = 0;
-    mStreamingErrorCount = 0;
-    mFirstStreamingBatchSeen = false;
+    mSession->SetMode(SessionMode::LiveTail);
+    mSession->ResetStreamingProgress();
     SetConfigurationUiEnabled(false);
     StartLiveTailTicker();
     UpdateStreamingStatus();
@@ -5355,9 +6994,10 @@ void MainWindow::OpenNetworkStream()
         mModel->BeginStreaming(std::move(streamSource), std::move(options), std::move(parserFactory));
         return;
     }
+    const auto &currentSource = mSession->CurrentSource();
     const loglib::LogConfiguration::Source::Format format =
-        mCurrentSource ? mCurrentSource->format : loglib::LogConfiguration::Source::Format::Json;
-    std::string regexPattern = mCurrentSource ? mCurrentSource->regexPattern : std::string{};
+        currentSource ? currentSource->format : loglib::LogConfiguration::Source::Format::Json;
+    std::string regexPattern = currentSource ? currentSource->regexPattern : std::string{};
     auto parserFactory = [format, regexPattern = std::move(regexPattern)]() {
         return MakeParserForFormat(format, regexPattern);
     };
@@ -5388,31 +7028,34 @@ void MainWindow::StopStream()
         return;
     }
     // Tear down but keep visible rows so the user can keep working
-    // on them. `mCurrentSource` survives -- those rows still came
+    // on them. `mSession->MutableCurrentSource()` survives -- those rows still came
     // from that source.
     mModel->StopAndKeepRows();
     // A synchronous completion may have promoted the pending live tail.
     if (!IsLiveTailSession())
     {
-        mStreamingFileName.clear();
+        mSession->ClearStreamingFileName();
     }
 }
 
 void MainWindow::OnRotationDetected()
 {
-    constexpr int ROTATION_STATUS_FLASH_MS = 3000;
-    mRotationFlashActive = true;
-    UpdateStreamingStatus();
-    QTimer::singleShot(ROTATION_STATUS_FLASH_MS, this, [this]() {
-        mRotationFlashActive = false;
-        UpdateStreamingStatus();
-    });
+    // Rotation flash lives on `LogSession` so a multi-tab window
+    // never projects one tab's flash onto another. The shell's
+    // subscription to `rotationFlashChanged` (in the ctor, into
+    // `mSessionConnections`) drives `UpdateStreamingStatus` on
+    // each edge; the label reads the currently-bound session's
+    // `IsRotationFlashActive()` value inside the same slot.
+    if (mSession != nullptr)
+    {
+        mSession->TriggerRotationFlash();
+    }
 }
 
 void MainWindow::OnSourceStatusChanged(loglib::SourceStatus status)
 {
     // Latch `Waiting` so the label keeps showing "Source unavailable".
-    mSourceWaiting = (status == loglib::SourceStatus::Waiting);
+    mSession->SetSourceWaiting(status == loglib::SourceStatus::Waiting);
     UpdateStreamingStatus();
 }
 
@@ -5454,9 +7097,7 @@ namespace
 constexpr auto SETTINGS_GEOMETRY_KEY = "ui/mainWindow/geometry";
 constexpr auto SETTINGS_STATE_KEY = "ui/mainWindow/state";
 
-/// Display name for the active source, or empty when idle.
-/// File sources become a basename so they fit a typical title bar;
-/// network streams keep their producer-supplied label.
+// Keep file source names compact while preserving stream labels.
 QString CurrentSourceLabel(const std::optional<loglib::LogConfiguration::Source> &source, const QString &streamingName)
 {
     if (!source.has_value() || source->locators.empty())
@@ -5492,24 +7133,65 @@ void MainWindow::SaveWindowChrome() const
 void MainWindow::RestoreWindowChrome()
 {
     const QSettings settings;
-    const QByteArray geometry = settings.value(QString::fromLatin1(SETTINGS_GEOMETRY_KEY)).toByteArray();
-    const QByteArray state = settings.value(QString::fromLatin1(SETTINGS_STATE_KEY)).toByteArray();
-    // Both calls are no-ops on empty input, so first launch falls through
-    // to Qt's default geometry.
+    ApplyWindowChrome(
+        settings.value(QString::fromLatin1(SETTINGS_GEOMETRY_KEY)).toByteArray(),
+        settings.value(QString::fromLatin1(SETTINGS_STATE_KEY)).toByteArray()
+    );
+}
+
+void MainWindow::ApplyDefaultDockArrangement()
+{
+    if (mDefaultDockArrangementApplied)
+    {
+        return;
+    }
+    if (mFindDock != nullptr && mParseErrorsDock != nullptr)
+    {
+        tabifyDockWidget(mFindDock, mParseErrorsDock);
+    }
+    if (mAnchorsDock != nullptr && mRecordDetailDock != nullptr)
+    {
+        tabifyDockWidget(mAnchorsDock, mRecordDetailDock);
+    }
+    mDefaultDockArrangementApplied = true;
+}
+
+void MainWindow::ApplyWindowChrome(const QByteArray &geometry, const QByteArray &dockState)
+{
+    const bool wasVisible = isVisible();
+    const bool updatesWereEnabled = updatesEnabled();
+    setUpdatesEnabled(false);
+    if (wasVisible)
+    {
+        hide();
+    }
+
     if (!geometry.isEmpty())
     {
-        restoreGeometry(geometry);
+        (void)restoreGeometry(geometry);
     }
-    if (!state.isEmpty())
+
+    bool restoredDocks = false;
+    if (!dockState.isEmpty())
     {
-        restoreState(state);
+        restoredDocks = restoreState(dockState);
     }
+    if (!restoredDocks)
+    {
+        ApplyDefaultDockArrangement();
+    }
+
+    if (wasVisible)
+    {
+        show();
+    }
+    setUpdatesEnabled(updatesWereEnabled);
 }
 
 void MainWindow::UpdateWindowTitle()
 {
     const QString appName = tr("Structured Log Viewer");
-    const QString sourceLabel = CurrentSourceLabel(mCurrentSource, mStreamingFileName);
+    const QString sourceLabel = CurrentSourceLabel(mSession->MutableCurrentSource(), mSession->StreamingFileName());
 
     QString title;
     if (sourceLabel.isEmpty())
@@ -5521,7 +7203,7 @@ void MainWindow::UpdateWindowTitle()
         // Build the "<count> lines" suffix, falling back to the model's row
         // count once streaming has reset `mStreamingLineCount` (which only
         // happens on `NewSession` / discard paths, never mid-stream).
-        qsizetype lines = mStreamingLineCount;
+        qsizetype lines = mSession->StreamingLineCount();
         if (lines == 0 && mModel != nullptr)
         {
             lines = mModel->rowCount();
@@ -5554,7 +7236,11 @@ void MainWindow::UpdateWindowTitle()
     // toggle without rebuilding the whole title.
     title += QStringLiteral("[*]");
     setWindowTitle(title);
-    setWindowModified(mFiltersDirty);
+    // Fold every hosted session's dirty marker so a
+    // multi-tab window's `[*]` reflects any dirty tab, not just the
+    // active one. Single-session windows resolve to the active
+    // session's `IsFiltersDirty()` value.
+    AggregateWindowModified();
 
     // Proxy-icon hint for OS title bars (macOS shows the file glyph;
     // recent Windows uses it for jumplist grouping). Only meaningful
@@ -5562,10 +7248,11 @@ void MainWindow::UpdateWindowTitle()
     // are producer URIs, not paths). Bundles reach here as
     // `Kind::File` with the locator rebased to the local `.slvbundle`,
     // so the glyph resolves for them too.
-    if (mCurrentSource.has_value() && mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::File &&
-        !mCurrentSource->locators.empty())
+    if (const auto &currentSource = mSession->CurrentSource();
+        currentSource.has_value() && currentSource->kind == loglib::LogConfiguration::Source::Kind::File &&
+        !currentSource->locators.empty())
     {
-        setWindowFilePath(QString::fromStdString(mCurrentSource->locators.front()));
+        setWindowFilePath(QString::fromStdString(currentSource->locators.front()));
     }
     else
     {
@@ -5575,16 +7262,14 @@ void MainWindow::UpdateWindowTitle()
 
 void MainWindow::MarkFiltersDirty()
 {
-    if (mLoadingConfiguration)
+    // Forward to the session; the shell reacts via
+    // `filtersDirtyChanged` → `UpdateWindowTitle` connected in the
+    // ctor. Keeping the wrapper preserves the call surface every
+    // existing MainWindow method already uses.
+    if (mSession != nullptr)
     {
-        return;
+        mSession->MarkFiltersDirty();
     }
-    if (mFiltersDirty)
-    {
-        return;
-    }
-    mFiltersDirty = true;
-    UpdateWindowTitle();
 }
 
 QString MainWindow::DefaultOpenDir() const
@@ -5686,7 +7371,7 @@ void MainWindow::FinaliseActionMetadata()
 
 namespace
 {
-/// Formats @p ms as `HH:MM:SS`, or `MM:SS` for sub-hour sessions.
+// Omit the hour field for sub-hour elapsed times.
 QString FormatElapsed(qint64 ms)
 {
     constexpr qint64 MS_PER_SEC = 1000;
@@ -5712,6 +7397,22 @@ QString FormatElapsed(qint64 ms)
 }
 } // namespace
 
+void MainWindow::PostStatusMessage(const QString &message, int timeoutMs)
+{
+    PostStatusMessage(mSession, message, timeoutMs);
+}
+
+void MainWindow::PostStatusMessage(LogSession *origin, const QString &message, int timeoutMs)
+{
+    // Background origins queue the toast until that tab is selected.
+    if (origin != nullptr && origin != mSession)
+    {
+        origin->QueueStatusMessage(message, timeoutMs);
+        return;
+    }
+    statusBar()->showMessage(message, timeoutMs);
+}
+
 void MainWindow::UpdateStreamingStatus()
 {
     if (!IsSessionActive())
@@ -5723,19 +7424,19 @@ void MainWindow::UpdateStreamingStatus()
 
     // Locale-grouped digits so big counts read as "12,345 lines".
     const QLocale loc = QLocale::system();
-    const QString lineCount = loc.toString(static_cast<qlonglong>(mStreamingLineCount));
-    const QString errorCount = loc.toString(static_cast<qlonglong>(mStreamingErrorCount));
+    const QString lineCount = loc.toString(static_cast<qlonglong>(mSession->StreamingLineCount()));
+    const QString errorCount = loc.toString(static_cast<qlonglong>(mSession->StreamingErrorCount()));
 
     QString text;
     if (!IsLiveTailSession())
     {
-        text = tr("Parsing %1 - %2 lines, %3 errors").arg(mStreamingFileName, lineCount, errorCount);
+        text = tr("Parsing %1 - %2 lines, %3 errors").arg(mSession->StreamingFileName(), lineCount, errorCount);
     }
-    else if (mSourceWaiting)
+    else if (mSession->IsSourceWaiting())
     {
         // Source unavailable takes precedence over Paused.
         text = tr("Source unavailable - last seen %1 - %2 lines, %3 errors")
-                   .arg(mStreamingFileName, lineCount, errorCount);
+                   .arg(mSession->StreamingFileName(), lineCount, errorCount);
     }
     else if (mModel->Sink() && mModel->Sink()->IsPaused())
     {
@@ -5744,7 +7445,7 @@ void MainWindow::UpdateStreamingStatus()
     }
     else
     {
-        text = tr("Streaming %1 - %2 lines, %3 errors").arg(mStreamingFileName, lineCount, errorCount);
+        text = tr("Streaming %1 - %2 lines, %3 errors").arg(mSession->StreamingFileName(), lineCount, errorCount);
     }
 
     // Paused-drop telemetry stays non-zero across Resume so the user
@@ -5758,12 +7459,12 @@ void MainWindow::UpdateStreamingStatus()
         }
     }
 
-    if (IsLiveTailSession() && mLiveTailTimer.isValid())
+    if (IsLiveTailSession() && mSession->LiveTailElapsedTimer().isValid())
     {
-        text += tr(" - %1 since start").arg(FormatElapsed(mLiveTailTimer.elapsed()));
+        text += tr(" - %1 since start").arg(FormatElapsed(mSession->LiveTailElapsedTimer().elapsed()));
     }
 
-    if (IsLiveTailSession() && mRotationFlashActive)
+    if (IsLiveTailSession() && mSession != nullptr && mSession->IsRotationFlashActive())
     {
         text += tr(" - rotated");
     }
@@ -5838,7 +7539,7 @@ void MainWindow::UpdateRowsShownStatus()
 
 void MainWindow::StartLiveTailTicker()
 {
-    mLiveTailTimer.start();
+    mSession->StartLiveTailElapsedTimer();
     if (mLiveTailTickTimer != nullptr)
     {
         mLiveTailTickTimer->start();
@@ -5851,8 +7552,9 @@ void MainWindow::StopLiveTailTicker()
     {
         mLiveTailTickTimer->stop();
     }
-    // Leave `mLiveTailTimer` armed so the final status line can still report
-    // the session length. It's restarted on the next live-tail open.
+    // Leave the session's live-tail elapsed timer armed so the final
+    // status line can still report the session length. It's restarted
+    // on the next live-tail open via `StartLiveTailElapsedTimer()`.
 }
 
 void MainWindow::BuildMainToolbar()
@@ -5893,7 +7595,7 @@ void MainWindow::BuildMainToolbar()
     }
 
     // Stash the SVG path on each action AND register it in
-    // `mThemedActions` paired with the widget that will drive its
+    // `mThemedActions` paired with the widget that drives its
     // render policy (palette / iconSize / DPR). `RefreshThemedIcons`
     // walks the registry rather than `QToolBar::actions()`, so
     // actions reached through `addWidget` (the split button's
@@ -5903,7 +7605,7 @@ void MainWindow::BuildMainToolbar()
     // refresh and the split button would render blank.
     //
     // Actions without an `svgIconPath` property are skipped by the
-    // refresh loop, so future actions that ship their own QIcon
+    // refresh loop, so actions that ship their own QIcon
     // don't accidentally get clobbered.
     //
     // `svgIconPathChecked` is a second optional property for
@@ -5912,7 +7614,7 @@ void MainWindow::BuildMainToolbar()
     // loop reuses the Off pixmap for the On state, so most actions
     // need only the single tag.
     //
-    // `mThemedActions.clear()` defends against any future caller
+    // `mThemedActions.clear()` defends against any repeated caller
     // that ever runs `BuildMainToolbar` twice: without it the
     // registry would grow duplicate entries and `RefreshThemedIcons`
     // would do redundant work, plus stale-anchor entries (the
@@ -6190,7 +7892,7 @@ void MainWindow::RefreshThemedIcons()
         const QString path = action->property("svgIconPath").toString();
         if (path.isEmpty())
         {
-            // Property cleared, e.g. by a future caller swapping
+            // Property cleared, e.g. by another caller swapping
             // to a non-themed icon. Leave the existing icon alone.
             continue;
         }
@@ -6284,7 +7986,7 @@ void MainWindow::RebuildClearFiltersMenu(QMenu *menu)
     }
     menu->clear();
 
-    if (mSimpleLeaves.empty())
+    if (Filters().empty())
     {
         QAction *placeholder = menu->addAction(tr("(no filters)"));
         placeholder->setEnabled(false);
@@ -6308,8 +8010,8 @@ void MainWindow::RebuildClearFiltersMenu(QMenu *menu)
         int columnRow = -1;
     };
     std::vector<Entry> entries;
-    entries.reserve(mSimpleLeaves.size());
-    for (const auto &[id, filter] : mSimpleLeaves)
+    entries.reserve(Filters().size());
+    for (const auto &[id, filter] : Filters())
     {
         const int row = ResolveLeafColumnByKeys(filter.columnKeys, mModel->Configuration().columns);
         QString columnLabel = (row >= 0 && static_cast<size_t>(row) < labels.size())
@@ -6364,7 +8066,7 @@ void MainWindow::ClearSort()
     // through one well-trodden path. No-op safe when no sort
     // is active. All UI surfaces already gate on
     // `actionClearSort`'s enabled state; the guard is for the
-    // test seam and any future programmatic caller.
+    // test seam and programmatic callers.
     mTableView->sortByColumn(-1, Qt::AscendingOrder);
 }
 
@@ -6629,76 +8331,15 @@ void MainWindow::ScrollToNewestRowIfFollowing()
 
 void MainWindow::JumpToNewestRow()
 {
-    if (mModel == nullptr || mRowOrderProxyModel == nullptr || mSortFilterProxyModel == nullptr ||
-        mTableView == nullptr)
+    // Delegate view-local row navigation to `LogSessionView`.
+    // Shell forwarder kept so the "Jump to newest" pill click and
+    // the auto-follow heuristic (`OnStreamingLineCountChanged`)
+    // continue to route through the same entry point.
+    if (mSessionView == nullptr)
     {
         return;
     }
-    const int sourceRowCount = mModel->rowCount();
-    if (sourceRowCount <= 0)
-    {
-        return;
-    }
-
-    // Use the view's tail edge as the single source of truth.
-    // `RowOrderProxyModel::IsReversed()` is kept in lockstep with
-    // it, but the view is what the user actually sees.
-    const bool tailIsTop = (mTableView->GetTailEdge() == LogTableView::TailEdge::Top);
-
-    // Stage 1: map source-newest through the proxy chain. Lands
-    // on the absolute newest line under sort + filter when it
-    // survives the filter.
-    const QModelIndex sourceIndex = mModel->index(sourceRowCount - 1, 0);
-    const QModelIndex midIndex = mRowOrderProxyModel->mapFromSource(sourceIndex);
-    QModelIndex proxyIndex = mSortFilterProxyModel->mapFromSource(midIndex);
-
-    // Stage 2: source-newest is filtered out (common under live
-    // tail with a level/error filter). Walk backwards from newest
-    // and take the first source row that survives the proxy. The
-    // walk is bounded so a filter excluding the entire tail can't
-    // turn an O(1) jump into an O(N) GUI-thread scan.
-    if (!proxyIndex.isValid())
-    {
-        constexpr int JUMP_FALLBACK_WALK_LIMIT = 256;
-        const int maxOffset = std::min(sourceRowCount - 1, JUMP_FALLBACK_WALK_LIMIT);
-        for (int offset = 1; offset <= maxOffset; ++offset)
-        {
-            const QModelIndex candidateSource = mModel->index(sourceRowCount - 1 - offset, 0);
-            const QModelIndex candidateMid = mRowOrderProxyModel->mapFromSource(candidateSource);
-            const QModelIndex candidateProxy = mSortFilterProxyModel->mapFromSource(candidateMid);
-            if (candidateProxy.isValid())
-            {
-                proxyIndex = candidateProxy;
-                break;
-            }
-        }
-    }
-
-    // Stage 3: snap to the proxy's visual tail so the pill click
-    // always moves the viewport instead of silently doing nothing.
-    if (!proxyIndex.isValid())
-    {
-        const int proxyRowCount = mSortFilterProxyModel->rowCount();
-        if (proxyRowCount <= 0)
-        {
-            // Nothing visible to scroll to. Clear the pending
-            // announcement -- it can't refer to any row.
-            if (mTableView != nullptr)
-            {
-                mTableView->AcknowledgePendingNewRows();
-            }
-            return;
-        }
-        const int targetRow = tailIsTop ? 0 : (proxyRowCount - 1);
-        proxyIndex = mSortFilterProxyModel->index(targetRow, 0);
-        if (!proxyIndex.isValid())
-        {
-            return;
-        }
-    }
-
-    const auto position = tailIsTop ? QAbstractItemView::PositionAtTop : QAbstractItemView::PositionAtBottom;
-    mTableView->scrollTo(proxyIndex, position);
+    mSessionView->JumpToNewestRow();
 }
 
 void MainWindow::ApplyStreamingRetention()
@@ -6712,20 +8353,20 @@ void MainWindow::SetSessionModeForTest(TestSessionMode mode)
     switch (mode)
     {
     case TestSessionMode::Idle:
-        mSessionMode = SessionMode::Idle;
+        mSession->SetMode(SessionMode::Idle);
         break;
     case TestSessionMode::Static:
-        mSessionMode = SessionMode::Static;
+        mSession->SetMode(SessionMode::Static);
         break;
     case TestSessionMode::LiveTail:
-        mSessionMode = SessionMode::LiveTail;
+        mSession->SetMode(SessionMode::LiveTail);
         break;
     }
 }
 
 MainWindow::TestSessionMode MainWindow::SessionModeForTest() const noexcept
 {
-    switch (mSessionMode)
+    switch (mSession->SessionMode())
     {
     case SessionMode::Idle:
         return TestSessionMode::Idle;
@@ -6750,10 +8391,9 @@ void MainWindow::SetConfigurationUiEnabledForTest(bool enabled)
 void MainWindow::TriggerRescueLiveTailForTest(const QString &primary, size_t retention)
 {
     // Recreate the all-prefix-files-failed state before promotion.
-    mPendingLiveTailPrimary = primary;
-    mPendingLiveTailRetention = retention;
-    mSessionMode = SessionMode::Idle;
-    mCurrentSource.reset();
+    mSession->SetPendingLiveTailPromotion(primary, retention);
+    mSession->SetMode(SessionMode::Idle);
+    mSession->MutableCurrentSource().reset();
     SetConfigurationUiEnabled(true);
     ContinueLiveTailAfterPrefix();
 }
@@ -6780,15 +8420,15 @@ int MainWindow::LastDroppedFilterCountForTest() const
 
 void MainWindow::SetCurrentSourceForTest(std::optional<loglib::LogConfiguration::Source> source)
 {
-    mCurrentSource = std::move(source);
+    mSession->MutableCurrentSource() = std::move(source);
     // Test fixtures often skip the parallel `locatorDedupKeys`
     // array; backfill so downstream dedup loops behave correctly.
-    logapp::BackfillLocatorDedupKeys(mCurrentSource);
+    logapp::BackfillLocatorDedupKeys(mSession->MutableCurrentSource());
 }
 
 const std::optional<loglib::LogConfiguration::Source> &MainWindow::CurrentSourceForTest() const noexcept
 {
-    return mCurrentSource;
+    return mSession->CurrentSource();
 }
 
 void MainWindow::OpenFilesForTest(const QStringList &files, OpenMode mode)
@@ -6811,25 +8451,44 @@ MainWindow::MixedInputDispatch MainWindow::OpenMixedFilesForTest(const QStringLi
 
 void MainWindow::ApplyDisplayOrder()
 {
+    ApplyDisplayOrder(mSession, mSessionView.data());
+}
+
+void MainWindow::ApplyDisplayOrder(LogSession *session, LogSessionView *view)
+{
+    if (session == nullptr)
+    {
+        return;
+    }
+    RowOrderProxyModel *rowOrder = session->RowOrderProxy();
+    const LogModel *model = session->Model();
+    LogTableView *table = view != nullptr ? view->TableView() : nullptr;
+    if (rowOrder == nullptr || table == nullptr || model == nullptr)
+    {
+        return;
+    }
+
     // Static -> static-mode preference; everything else -> stream-mode.
-    const bool newestFirst = (mSessionMode == SessionMode::Static) ? StreamingControl::IsStaticNewestFirst()
-                                                                   : StreamingControl::IsNewestFirst();
+    const bool newestFirst = (session->SessionMode() == SessionMode::Static) ? StreamingControl::IsStaticNewestFirst()
+                                                                             : StreamingControl::IsNewestFirst();
 
-    mRowOrderProxyModel->SetReversed(newestFirst);
+    rowOrder->SetReversed(newestFirst);
 
-    mTableView->SetTailEdge(newestFirst ? LogTableView::TailEdge::Top : LogTableView::TailEdge::Bottom);
+    table->SetTailEdge(newestFirst ? LogTableView::TailEdge::Top : LogTableView::TailEdge::Bottom);
 
     // Alternation is permanently off here -- per-level theme
     // colours already partition rows, and toggling it per
     // direction used to flicker on newest-first batches.
 
-    if (mModel->IsStreamingActive())
+    if (model->IsStreamingActive() && session == mSession)
     {
         ScrollToNewestRowIfFollowing();
     }
 }
 
-void MainWindow::ShowParseErrors(const QString &title, const std::vector<std::string> &errors)
+void MainWindow::ShowParseErrors(
+    const QString &title, const std::vector<std::string> &errors, LogSession *originatingSession
+)
 {
     if (errors.empty())
     {
@@ -6845,10 +8504,20 @@ void MainWindow::ShowParseErrors(const QString &title, const std::vector<std::st
                    << title;
         return;
     }
-    mParseErrorsDock->AppendErrors(title, errors);
+    // Route through the originating session (defaults to `mSession`
+    // for active-session callers). The dock's `AppendErrorsForSession`
+    // decides whether the batch lands in the visible list (active
+    // session) or only into the originating session's log
+    // (background session).
+    LogSession *originating = originatingSession != nullptr ? originatingSession : mSession;
+    mParseErrorsDock->AppendErrorsForSession(originating, title, errors);
+    if (originating != nullptr && originating != mParseErrorsDock->BoundSession())
+    {
+        originating->QueueParseErrorsRaise();
+    }
 }
 
-void MainWindow::ShowDroppedFiltersDialog(int droppedCount, const QString &message)
+void MainWindow::ShowDroppedFiltersDialog(int droppedCount, const QString &message, LogSession *origin)
 {
 #ifdef LOGAPP_BUILD_TESTING
     mLastDroppedFilterCountForTest = droppedCount;
@@ -6861,109 +8530,69 @@ void MainWindow::ShowDroppedFiltersDialog(int droppedCount, const QString &messa
 #else
     (void)droppedCount;
 #endif
+    if (origin != nullptr && origin != mSession)
+    {
+        origin->QueueFailureNotice(QStringLiteral("Filters Dropped on Load"), message);
+        return;
+    }
     QMessageBox::warning(this, QStringLiteral("Filters Dropped on Load"), message);
 }
 
 void MainWindow::MirrorSessionStateToConfiguration()
 {
-    // Rebuild `LogConfiguration::expression` from the live state:
-    // top-level `And` of the simple-mode leaves (order from
-    // `mSimpleLeafOrder`) plus any Advanced-mode structure carried
-    // over from the existing expression:
-    //   - Existing `And`: keep the non-Leaf children only; Leaves
-    //     are already covered by `mSimpleLeaves` (the load and
-    //     accept paths extract top-level leaves into it).
-    //   - Existing `Or`/`Not` at the root: keep the whole subtree
-    //     as one non-Leaf child so the Advanced tree survives a
-    //     later simple-mode edit.
-    //   - Existing bare `Leaf` at the root: only reachable via a
-    //     legacy config or direct expression set. Preserve unless
-    //     the same rule is already in `mSimpleLeaves`.
-    loglib::FilterExpression::And newAnd;
-    newAnd.children.reserve(mSimpleLeafOrder.size() + 1);
-    for (const auto &id : mSimpleLeafOrder)
-    {
-        const auto it = mSimpleLeaves.find(id);
-        if (it == mSimpleLeaves.end())
-        {
-            continue;
-        }
-        loglib::FilterExpression leaf;
-        leaf.node = loglib::FilterExpression::Leaf{it->second};
-        newAnd.children.push_back(std::move(leaf));
-    }
-    // Copy by value: `SetExpression` below invalidates references
-    // into `mModel->Configuration().expression`.
-    const loglib::FilterExpression existing = mModel->Configuration().expression;
-    if (const auto *existingAnd = std::get_if<loglib::FilterExpression::And>(&existing.node); existingAnd != nullptr)
-    {
-        for (const auto &child : existingAnd->children)
-        {
-            if (!std::holds_alternative<loglib::FilterExpression::Leaf>(child.node))
-            {
-                newAnd.children.push_back(child);
-            }
-        }
-    }
-    else if (
-        std::holds_alternative<loglib::FilterExpression::Or>(existing.node) ||
-        std::holds_alternative<loglib::FilterExpression::Not>(existing.node)
-    )
-    {
-        newAnd.children.push_back(existing);
-    }
-    else if (
-        const auto *existingLeaf = std::get_if<loglib::FilterExpression::Leaf>(&existing.node); existingLeaf != nullptr
-    )
-    {
-        const bool alreadyInSimple = std::ranges::any_of(mSimpleLeaves, [&existingLeaf](const auto &entry) {
-            return entry.second == existingLeaf->rule;
-        });
-        if (!alreadyInSimple)
-        {
-            newAnd.children.push_back(existing);
-        }
-    }
-    loglib::FilterExpression rootExpression;
-    rootExpression.node = std::move(newAnd);
-    mModel->ConfigurationManager().SetExpression(std::move(rootExpression));
+    MirrorSessionStateToConfiguration(mSession);
+}
 
-    // Sort: read live from the proxy so the persisted value matches
-    // what the user sees. *Exception:* while a deferred sort is
-    // pending and the proxy is still unsorted (`-1`), preserve the
-    // configuration's existing sort -- the live `-1` is transient.
-    const int proxySortColumn = mSortFilterProxyModel->SortColumn();
-    if (proxySortColumn >= 0 || !mPendingApplySortFromConfig)
+void MainWindow::MirrorSessionStateToConfiguration(LogSession *session)
+{
+    if (session == nullptr)
     {
-        loglib::LogConfiguration::Sort sort;
-        sort.columnIndex = proxySortColumn;
-        sort.descending = (mSortFilterProxyModel->SortOrder() == Qt::DescendingOrder);
-        mModel->ConfigurationManager().SetSort(sort);
+        return;
     }
+    LogModel *const model = session->Model();
+    if (model == nullptr)
+    {
+        return;
+    }
+    // Recompose `LogConfiguration::expression` from the live simple-mode
+    // leaves merged with any Advanced-mode structure already carried
+    // on the expression. The reconciler is session-local and lives on
+    // `LogSession`; see
+    // `LogSession::RebuildFilterExpressionFromSimpleLeaves` for the
+    // preserved invariants (order, Advanced-tree preservation,
+    // bare-leaf dedupe).
+    session->RebuildFilterExpressionFromSimpleLeaves();
+
+    // Sort mirror is session-local; see
+    // `LogSession::MirrorSortToConfiguration` for the deferred-sort
+    // exception that preserves the configuration's sort while the
+    // proxy is still transitioning through `-1`.
+    session->MirrorSortToConfiguration();
 
     // Drop empty-locator Sources before mirroring: on-disk schema
     // omits `source` when nothing is bound, so a `Source{...,
     // locators: {}}` would round-trip as a label-less recents entry.
     //
-    // Multi-file truncation fix: when `mPendingOpenFiles` is
+    // Multi-file truncation fix: when `session->MutablePendingOpenFiles()` is
     // non-empty, include both already-streamed and still-queued
     // locators so a quit mid-stream persists the full fan-out
     // (the next launch resumes the complete set rather than a
     // strict subset). Dedup via canonical keys.
-    if (mCurrentSource.has_value() && mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::File &&
-        !mPendingOpenFiles.isEmpty())
+    const auto &currentSource = session->CurrentSource();
+    if (currentSource.has_value() && currentSource->kind == loglib::LogConfiguration::Source::Kind::File &&
+        !session->MutablePendingOpenFiles().isEmpty())
     {
-        loglib::LogConfiguration::Source mirrored = *mCurrentSource;
+        loglib::LogConfiguration::Source mirrored = *currentSource;
         // Seed `seen` with existing dedup keys (case-insensitive on
         // Windows) so pending duplicates of already-streamed paths
         // are skipped.
         std::unordered_set<std::string> seen;
-        seen.reserve(mirrored.locatorDedupKeys.size() + static_cast<size_t>(mPendingOpenFiles.size()));
+        seen.reserve(mirrored.locatorDedupKeys.size() + static_cast<size_t>(session->MutablePendingOpenFiles().size()));
         for (const std::string &key : mirrored.locatorDedupKeys)
         {
             seen.insert(key);
         }
-        for (const QString &pending : mPendingOpenFiles)
+        for (const QString &pending : session->MutablePendingOpenFiles())
         {
             const std::string displayPath = logapp::CanonicalDisplayPath(pending).toStdString();
             const std::string dedupKey = logapp::CanonicalLocator(pending).toStdString();
@@ -6972,80 +8601,74 @@ void MainWindow::MirrorSessionStateToConfiguration()
                 loglib::AppendLocator(mirrored, displayPath, dedupKey);
             }
         }
-        mModel->ConfigurationManager().SetSource(std::move(mirrored));
+        model->ConfigurationManager().SetSource(std::move(mirrored));
     }
-    else if (loglib::HasLocators(mCurrentSource))
+    else if (loglib::HasLocators(currentSource))
     {
-        mModel->ConfigurationManager().SetSource(mCurrentSource);
+        model->ConfigurationManager().SetSource(currentSource);
     }
     else
     {
-        mModel->ConfigurationManager().SetSource(std::nullopt);
+        model->ConfigurationManager().SetSource(std::nullopt);
     }
 
     // Invariant: either no source, or a source with at least one
     // locator. A `Source{kind: ..., locators: {}}` would round-trip
     // as a label-less recents entry.
     {
-        const auto &mirrored = mModel->ConfigurationManager().Configuration().source;
+        const auto &mirrored = model->ConfigurationManager().Configuration().source;
         Q_ASSERT(!mirrored.has_value() || loglib::HasLocators(mirrored));
     }
 
-    // Mirror anchors into `configuration.anchors` for both autosave
-    // and manual SaveSession.
-    if (mAnchors != nullptr)
-    {
-        mModel->ConfigurationManager().SetAnchors(mAnchors->Entries());
-    }
+    // Anchor mirror is session-local; see
+    // `LogSession::MirrorAnchorsToConfiguration`.
+    session->MirrorAnchorsToConfiguration();
 }
 
 bool MainWindow::ShouldAutoSaveSession(SessionMode justFinishedMode) const
 {
+    return ShouldAutoSaveSession(mSession, justFinishedMode);
+}
+
+bool MainWindow::ShouldAutoSaveSession(const LogSession *session, SessionMode justFinishedMode) const
+{
+    return session != nullptr && session->ShouldAutoSaveAfterStreaming(justFinishedMode);
+}
+
+bool MainWindow::AutoSaveSessionSnapshot(bool publishOpenWindow)
+{
+    return AutoSaveSessionSnapshot(mSession, publishOpenWindow);
+}
+
+bool MainWindow::AutoSaveSessionSnapshot(LogSession *session, bool publishOpenWindow)
+{
+    if (session == nullptr || !session->CanPersistRestorableSnapshot())
+    {
+        return true;
+    }
     if (mHistoryManager == nullptr)
     {
         return false;
     }
-    if (!loglib::HasLocators(mCurrentSource))
+#ifdef LOGAPP_BUILD_TESTING
+    if (mFailNextAutoSaveForTest)
     {
-        // No source -> can't be reopened from Recent Sessions.
+        mFailNextAutoSaveForTest = false;
         return false;
     }
-    // `HasLocators` already gated `has_value`; clang-tidy's optional
-    // analyser cannot trace through the helper.
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
-    const auto &source = *mCurrentSource;
-    if (source.kind != loglib::LogConfiguration::Source::Kind::File)
-    {
-        // Network streams: locator is a producer URI, not a path.
-        return false;
-    }
-    if (justFinishedMode == SessionMode::LiveTail)
-    {
-        // Live-tail looks like a static File source on disk but
-        // binds a tailing producer. Reopening would silently
-        // downgrade the user to a one-shot static load.
-        return false;
-    }
-    return true;
-}
+#endif
 
-void MainWindow::AutoSaveSessionSnapshot(bool publishOpenWindow)
-{
-    // Prefer live `mSessionMode`; fall back to the just-terminated
-    // mode so a closeEvent firing after a live-tail finished still
-    // hits the live-tail gate in `ShouldAutoSaveSession` (the live
-    // field has already been reset to `Idle` by then).
-    const SessionMode effectiveMode = (mSessionMode != SessionMode::Idle) ? mSessionMode : mLastTerminalSessionMode;
-    if (!ShouldAutoSaveSession(effectiveMode))
+    LogModel *const model = session->Model();
+    if (model == nullptr)
     {
-        return;
+        return false;
     }
 
     // Mirror live filters / sort / source so auto-save and the
     // user-driven `SaveSession` path produce the same JSON.
-    MirrorSessionStateToConfiguration();
+    MirrorSessionStateToConfiguration(session);
 
-    const loglib::LogConfiguration &configuration = mModel->ConfigurationManager().Configuration();
+    const loglib::LogConfiguration &configuration = model->ConfigurationManager().Configuration();
     // `WriteSnapshotAndPublish` folds the snapshot + open-windows
     // publish under a single cross-process lock. `publishLanded`
     // tells us whether the publish half actually reached disk (it
@@ -7053,66 +8676,482 @@ void MainWindow::AutoSaveSessionSnapshot(bool publishOpenWindow)
     // off); use it to drive the latch so retries stay coherent.
     bool publishLanded = false;
     const QString uuid = mHistoryManager->WriteSnapshotAndPublish(
-        configuration, mAutoSaveUuid, /*publishOpenWindow=*/publishOpenWindow, &publishLanded
+        configuration, session->AutoSaveUuid(), /*publishOpenWindow=*/publishOpenWindow, &publishLanded
     );
     if (uuid.isEmpty())
     {
         // Save failed. The atomic temp+rename in
         // `LogConfigurationManager::Save` preserves any prior valid
         // `<uuid>.json`; the existing pins still point there.
-        return;
+        return false;
     }
     // Pin so subsequent auto-saves rewrite the same JSON instead
     // of cluttering recents.
-    mAutoSaveUuid = uuid;
+    session->SetAutoSaveUuid(uuid);
     if (publishLanded)
     {
-        mAutoSaveUuidPublished = true;
+        session->SetAutoSaveUuidPublished(true);
     }
+    return true;
 }
 
 void MainWindow::DetachAutoSaveUuid()
 {
-    if (mAutoSaveUuid.isEmpty())
-    {
-        return;
-    }
-    // Skip the cross-process Remove when we never published; saves
-    // a lock acquisition on the common closeEvent path.
-    if (mAutoSaveUuidPublished)
-    {
-        SessionHistoryManager::RemoveOpenWindowUuid(mAutoSaveUuid);
-        mAutoSaveUuidPublished = false;
-    }
-    mAutoSaveUuid.clear();
+    mSession->DetachAutoSaveUuid();
 }
 
 QString MainWindow::RestorableActiveSessionUuid() const noexcept
 {
-    // Worth fan-restoring iff (a) a uuid is pinned, and (b) the
-    // session is round-trippable. Mirrors `ShouldAutoSaveSession`
-    // gates, with one difference: a pinned-uuid window with no
-    // source (configuration-only restore) is still restorable
-    // because the user explicitly clicked that recents entry.
-    if (mAutoSaveUuid.isEmpty())
+    return mSession->RestorableSessionUuid();
+}
+
+QStringList MainWindow::RestorableHostedSessionUuids() const
+{
+    QStringList result;
+    for (const LogSession *session : hostedSessions())
+    {
+        if (session == nullptr)
+        {
+            continue;
+        }
+        const QString uuid = session->RestorableSessionUuid();
+        if (!uuid.isEmpty())
+        {
+            result.append(uuid);
+        }
+    }
+    return result;
+}
+
+void MainWindow::AutoSaveAllHostedSessions(bool publishOpenWindow)
+{
+    if (mOperations == nullptr)
+    {
+        AutoSaveSessionSnapshot(publishOpenWindow);
+        return;
+    }
+    mOperations->SaveAllHostedSnapshots(publishOpenWindow);
+}
+
+QString MainWindow::WorkspaceWindowUuid() const
+{
+    // Lazily allocate the identity on first read. `mutable`
+    // avoids threading the pointer through a non-const getter.
+    if (mWorkspaceWindowUuid.isEmpty())
+    {
+        mWorkspaceWindowUuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    }
+    return mWorkspaceWindowUuid;
+}
+
+namespace
+{
+
+// Keep runtime-to-persistence source-mode coupling at one boundary.
+slv::persistence::SourceMode SourceModeFor(const LogSession *session)
+{
+    using slv::persistence::SourceMode;
+    if (session == nullptr)
+    {
+        return SourceMode::Empty;
+    }
+    const auto &src = session->CurrentSource();
+    if (!src.has_value())
+    {
+        // Distinguish "config-only" (loaded configuration snapshot but no
+        // bound source, e.g. reopened from a Recent Sessions
+        // entry captured via File -> Save Session As before any
+        // logs were opened) from "empty" (fresh untitled tab).
+        // Config-only sessions publish a stable uuid via
+        // `RestorableSessionUuid()` (pinned `mAutoSaveUuid` +
+        // no source); empty sessions do not. Before the fix,
+        // this branch always returned `Empty`, so
+        // `ApplyWorkspaceWindow`'s `isFilePath` gate skipped
+        // the tab and the config-only investigation restored
+        // as blank on the next launch.
+        return session->RestorableSessionUuid().isEmpty() ? SourceMode::Empty : SourceMode::ConfigOnly;
+    }
+    const auto kind = src->kind;
+    if (kind == loglib::LogConfiguration::Source::Kind::Stdin)
+    {
+        return SourceMode::Stdin;
+    }
+    if (kind == loglib::LogConfiguration::Source::Kind::NetworkStream)
+    {
+        return SourceMode::Network;
+    }
+    // File-kind sub-modes rely on runtime state (live-tail
+    // latch, bundle intent, decompression original path).
+    if (session->IsLiveTailSession())
+    {
+        return SourceMode::LiveTailFile;
+    }
+    if (!session->DecompressionOriginalPath().isEmpty())
+    {
+        // Session was opened from an archive. Bundle sessions
+        // additionally arm `ShouldApplyEmbeddedBundleConfig`.
+        return session->ShouldApplyEmbeddedBundleConfig() ? slv::persistence::SourceMode::Bundle
+                                                          : SourceMode::Compressed;
+    }
+    if (src->locators.size() > 1)
+    {
+        return SourceMode::MultiFile;
+    }
+    return SourceMode::File;
+}
+
+} // namespace
+
+slv::persistence::WorkspaceWindow MainWindow::CaptureWorkspaceWindow() const
+{
+    slv::persistence::WorkspaceWindow snapshot;
+    snapshot.windowUuid = WorkspaceWindowUuid();
+    snapshot.geometry = saveGeometry();
+    snapshot.dockState = saveState();
+    snapshot.activeTabIndex = (mTabWidget != nullptr) ? mTabWidget->currentIndex() : 0;
+    for (const LogSession *session : hostedSessions())
+    {
+        slv::persistence::WorkspaceTab tab;
+        if (session != nullptr)
+        {
+            tab.sessionUuid = session->RestorableSessionUuid();
+            tab.label = session->PresentationSnapshot().shortLabel;
+            tab.customLabel = session->CustomTabLabel();
+            tab.sourceMode = SourceModeFor(session);
+        }
+        snapshot.tabs.push_back(std::move(tab));
+    }
+    if (snapshot.activeTabIndex < 0 || std::cmp_greater_equal(snapshot.activeTabIndex, snapshot.tabs.size()))
+    {
+        // Empty tab strip and out-of-range indices both fall
+        // back to the first tab; kept as a single assignment
+        // so `bugprone-branch-clone` stays quiet.
+        snapshot.activeTabIndex = 0;
+    }
+    return snapshot;
+}
+
+slv::persistence::WorkspaceWindow MainWindow::WorkspaceSnapshotForQuit() const
+{
+    if (mQuitWorkspaceSnapshot.has_value())
+    {
+        return *mQuitWorkspaceSnapshot;
+    }
+    return CaptureWorkspaceWindow();
+}
+
+void MainWindow::ApplyWorkspaceWindow(const slv::persistence::WorkspaceWindow &window, std::uint64_t generation)
+{
+    // Adopt the persisted uuid so future publishes overwrite
+    // rather than duplicate. Empty stays empty; a first-time
+    // capture allocates on demand via `WorkspaceWindowUuid()`.
+    if (!window.windowUuid.isEmpty())
+    {
+        mWorkspaceWindowUuid = window.windowUuid;
+    }
+
+    if (mTabWidget == nullptr)
+    {
+        return;
+    }
+
+    QStringList restoreProblems;
+
+    // The freshly-constructed window already has one Untitled
+    // tab. Reuse it for the first restored tab if any exists
+    // so the restore does not leave a leading blank.
+    bool firstTabReused = false;
+    for (std::size_t i = 0; i < window.tabs.size(); ++i)
+    {
+        const auto &tab = window.tabs[i];
+        LogSession *targetSession = nullptr;
+        if (!firstTabReused)
+        {
+            targetSession = SessionAtTab(0);
+            firstTabReused = true;
+        }
+        else
+        {
+            const SessionInstanceId newId = AddNewTab(/*makeActive=*/false);
+            (void)newId;
+            targetSession = SessionAtTab(static_cast<int>(mTabs.size()) - 1);
+        }
+        if (targetSession == nullptr)
+        {
+            continue;
+        }
+        const auto applyPersistedNames = [&]() {
+            if (targetSession == nullptr)
+            {
+                return;
+            }
+            if (!tab.customLabel.isEmpty())
+            {
+                targetSession->SetCustomTabLabel(tab.customLabel);
+            }
+            else if (!tab.label.isEmpty())
+            {
+                targetSession->SetFallbackTabLabel(tab.label);
+            }
+        };
+        applyPersistedNames();
+        if (tab.restorePolicy == slv::persistence::RestorePolicy::Skip)
+        {
+            // Slot reserved; no restore work. The tab stays empty
+            // and keeps its captured label when one was saved.
+            continue;
+        }
+        // Reopen file-backed and live-tail sessions from the
+        // generation snapshot, falling back to recents. Network
+        // and stdin tabs stay empty. Missing or corrupt snapshots
+        // leave this tab empty and do not abort later tabs.
+        const bool isFilePath = tab.sourceMode == slv::persistence::SourceMode::File ||
+                                tab.sourceMode == slv::persistence::SourceMode::MultiFile ||
+                                tab.sourceMode == slv::persistence::SourceMode::Compressed ||
+                                tab.sourceMode == slv::persistence::SourceMode::Bundle ||
+                                tab.sourceMode == slv::persistence::SourceMode::LiveTailFile ||
+                                tab.sourceMode == slv::persistence::SourceMode::ConfigOnly;
+        if (!isFilePath || tab.sessionUuid.isEmpty())
+        {
+            continue;
+        }
+        QString jsonPath = slv::persistence::WorkspacePersistence::SessionSnapshotPath(generation, tab.sessionUuid);
+        if (jsonPath.isEmpty() || !QFileInfo::exists(jsonPath))
+        {
+            jsonPath = (mHistoryManager != nullptr) ? mHistoryManager->PathForUuid(tab.sessionUuid) : QString{};
+        }
+        if (jsonPath.isEmpty() || !QFileInfo::exists(jsonPath))
+        {
+            restoreProblems.append(
+                tr("Tab %1: saved session %2 was not found.").arg(static_cast<int>(i) + 1).arg(tab.sessionUuid)
+            );
+            continue;
+        }
+        // The activate is safe: the caller's saved active-tab index is
+        // applied after this loop so the visual current tab still
+        // matches `window.activeTabIndex`.
+        mTabWidget->setCurrentIndex(static_cast<int>(i));
+        try
+        {
+            const QString problem = RestoreHostedTabFromJson(tab.sessionUuid, jsonPath);
+            if (!problem.isEmpty())
+            {
+                restoreProblems.append(tr("Tab %1: %2").arg(static_cast<int>(i) + 1).arg(problem));
+            }
+        }
+        catch (const std::exception &e)
+        {
+            restoreProblems.append(tr("Tab %1: %2").arg(static_cast<int>(i) + 1).arg(QString::fromUtf8(e.what())));
+        }
+        catch (...)
+        {
+            restoreProblems.append(tr("Tab %1: the saved session could not be reopened.").arg(static_cast<int>(i) + 1));
+        }
+        applyPersistedNames();
+    }
+
+    // Select the saved active tab AFTER every restore has
+    // bound so the alias / dock swap only runs once per
+    // launch on the tab the user actually wanted focused.
+    const int tabCount = mTabWidget->count();
+    if (tabCount > 0)
+    {
+        const int activeIdx = std::clamp(window.activeTabIndex, 0, tabCount - 1);
+        mTabWidget->setCurrentIndex(activeIdx);
+    }
+
+    // Apply saved chrome LAST so it lands after every dock
+    // has rebound. Restore while hidden: `restoreState` on a
+    // visible QMainWindow can leave dangling dock-layout items
+    // that crash on the next `setGeometry`. Empty blobs leave
+    // chrome to `RestoreWindowChrome` so QSettings is not applied
+    // after a competing default `tabifyDockWidget`.
+    if (!window.geometry.isEmpty() || !window.dockState.isEmpty())
+    {
+        try
+        {
+            ApplyWindowChrome(window.geometry, window.dockState);
+        }
+        catch (const std::exception &e)
+        {
+            restoreProblems.append(tr("Window layout: %1").arg(QString::fromUtf8(e.what())));
+        }
+        catch (...)
+        {
+            restoreProblems.append(tr("Window layout could not be restored."));
+        }
+    }
+
+    if (!restoreProblems.isEmpty())
+    {
+#ifdef LOGAPP_BUILD_TESTING
+        if (!mSuppressDialogsForTest)
+#endif
+        {
+            QMessageBox::warning(
+                this,
+                tr("Could Not Restore All Tabs"),
+                tr("Some tabs from the previous session could not be reopened:\n\n%1")
+                    .arg(restoreProblems.join(QLatin1Char('\n')))
+            );
+        }
+    }
+}
+
+QString MainWindow::ClosePromptInformativeTextForTest(const LogSession &session)
+{
+    return ClosePromptInformativeText(session);
+}
+
+QString MainWindow::ClosePromptInformativeText(const LogSession &session)
+{
+    const SessionPresentationSnapshot snapshot = session.PresentationSnapshot();
+    if (snapshot.dirty.restorableInPlace && !snapshot.dirty.ephemeralUnreproducible)
     {
         return {};
     }
-    if (!loglib::HasLocators(mCurrentSource))
+    return QObject::tr(
+        "Save writes session settings such as columns, filters, and highlights. "
+        "The source connection and retained rows are not included."
+    );
+}
+
+bool MainWindow::PrepareSessionClose(LogSession *closing)
+{
+    if (closing == nullptr)
     {
-        // Pinned uuid + no source = columns-only restore.
-        return mAutoSaveUuid;
+        return true;
     }
-    // `HasLocators` already gated `has_value`; clang-tidy's optional
-    // analyser cannot trace through the helper.
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
-    const auto &source = *mCurrentSource;
-    if (source.kind != loglib::LogConfiguration::Source::Kind::File)
+    // Editor edits live in the shared widget until a tab switch
+    // captures them. Close, New Session, and destructive open must
+    // see that buffer before `CloseDecision()` runs.
+    if (!mHighlightRulesEditor.isNull() && mHighlightRulesEditorSession.data() == closing)
     {
-        // Stream sources cannot be re-bound from a saved locator.
-        return {};
+        CaptureHighlightRulesEditorDraft();
     }
-    return mAutoSaveUuid;
+    bool proceed = false;
+    switch (closing->CloseDecision())
+    {
+    case SessionCloseDecision::Silent:
+        proceed = true;
+        break;
+    case SessionCloseDecision::Autosave:
+    {
+        if (!AutoSaveSessionSnapshot(closing, /*publishOpenWindow=*/false))
+        {
+#ifdef LOGAPP_BUILD_TESTING
+            if (!mSuppressDialogsForTest)
+#endif
+            {
+                QMessageBox::warning(
+                    this,
+                    tr("Could Not Save Session"),
+                    tr("The session could not be saved, so it was not closed. "
+                       "Check that the sessions folder is writable and try again.")
+                );
+            }
+            proceed = false;
+            break;
+        }
+        proceed = true;
+        break;
+    }
+    case SessionCloseDecision::Prompt:
+#ifdef LOGAPP_BUILD_TESTING
+        if (!mClosePromptChoicesForTest.empty())
+        {
+            const ClosePromptChoiceForTest choice = mClosePromptChoicesForTest.front();
+            mClosePromptChoicesForTest.erase(mClosePromptChoicesForTest.begin());
+            proceed = choice == ClosePromptChoiceForTest::Discard;
+            break;
+        }
+        if (mSuppressDialogsForTest)
+        {
+            proceed = true;
+            break;
+        }
+#endif
+        proceed = PromptSaveDiscardCancel(closing);
+        break;
+    }
+    if (proceed)
+    {
+        // Discarded or saved editor work must not remain on a reused session.
+        closing->ClearHighlightEditorDraft();
+    }
+    return proceed;
+}
+
+bool MainWindow::PromptSaveDiscardCancel(LogSession *closing)
+{
+    const SessionPresentationSnapshot snapshot = closing->PresentationSnapshot();
+    QString label = snapshot.sourceLabel;
+    if (label.isEmpty())
+    {
+        label = snapshot.shortLabel;
+    }
+    if (label.isEmpty())
+    {
+        label = tr("this session");
+    }
+
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle(tr("Close Session"));
+    box.setText(tr("%1 has unsaved changes.").arg(label));
+    const QString informative = ClosePromptInformativeText(*closing);
+    if (!informative.isEmpty())
+    {
+        box.setInformativeText(informative);
+    }
+    const QPushButton *const saveBtn = box.addButton(tr("Save"), QMessageBox::AcceptRole);
+    const QPushButton *const discardBtn = box.addButton(tr("Discard"), QMessageBox::DestructiveRole);
+    QPushButton *const cancelBtn = box.addButton(QMessageBox::Cancel);
+    box.setDefaultButton(cancelBtn);
+    box.exec();
+    if (box.clickedButton() == cancelBtn)
+    {
+        return false;
+    }
+    if (box.clickedButton() == discardBtn)
+    {
+        return true;
+    }
+    if (box.clickedButton() != saveBtn)
+    {
+        return false;
+    }
+
+    const int previousIndex = (mTabWidget != nullptr) ? mTabWidget->currentIndex() : -1;
+    const int closingIndex = TabIndexForSession(closing->InstanceId());
+    if (mTabWidget != nullptr && closingIndex >= 0 && mTabWidget->currentIndex() != closingIndex)
+    {
+        mTabWidget->setCurrentIndex(closingIndex);
+    }
+    const bool saved = SaveSession();
+    if (!saved && mTabWidget != nullptr && previousIndex >= 0 && mTabWidget->currentIndex() != previousIndex)
+    {
+        mTabWidget->setCurrentIndex(previousIndex);
+    }
+    return saved;
+}
+
+void MainWindow::EnsureFreshActiveTab()
+{
+    // Reuse a blank landing tab when it has no bound
+    // source AND zero rows is the fresh / just-cleared state
+    // where reusing the slot is preferable to leaving an empty
+    // tab behind. We intentionally do NOT gate on
+    // `IsFiltersDirty()` because `NewSession()` marks the fresh
+    // session dirty via `ClearAllFilters()`, and gating on it
+    // would fork behaviour every time a user cleared the
+    // workspace before an open.
+    const bool activeTabIsEmpty = (mSession != nullptr) && !mSession->CurrentSource().has_value() &&
+                                  (mModel == nullptr || mModel->rowCount(QModelIndex{}) == 0);
+    if (!activeTabIsEmpty)
+    {
+        AddNewTab(/*makeActive=*/true);
+    }
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
@@ -7125,6 +9164,56 @@ void MainWindow::closeEvent(QCloseEvent *event)
         return;
     }
 
+    // Confirm every hosted session before any irreversible close work.
+    // Autosave and prompts identify the session without requiring it
+    // to be active. Restore the prior tab when the user cancels.
+    const int previousActiveIndexForPrompt = (mTabWidget != nullptr) ? mTabWidget->currentIndex() : -1;
+    bool cancelled = false;
+    for (int idx = 0; std::cmp_less(idx, mTabs.size()); ++idx)
+    {
+        LogSession *session = SessionAtTab(idx);
+        if (session == nullptr)
+        {
+            continue;
+        }
+        if (!PrepareSessionClose(session))
+        {
+            cancelled = true;
+            break;
+        }
+    }
+    if (cancelled)
+    {
+        if (mTabWidget != nullptr && previousActiveIndexForPrompt >= 0 &&
+            previousActiveIndexForPrompt < mTabWidget->count() &&
+            mTabWidget->currentIndex() != previousActiveIndexForPrompt)
+        {
+            mTabWidget->setCurrentIndex(previousActiveIndexForPrompt);
+        }
+        event->ignore();
+        return;
+    }
+
+    // Sample every session before cancellation; dirty confirmation has already completed.
+    // Session destructors perform the blocking worker drain before their atomics are destroyed.
+    for (const LogSession *session : hostedSessions())
+    {
+        if (session == nullptr)
+        {
+            continue;
+        }
+        // Read only; hand-rolled `static_cast<std::uint32_t>` is
+        // avoided by the overloaded `operator&(std::uint32_t,
+        // SessionClosePreconditions)` declared alongside the enum
+        // in `log_session_presentation.hpp:187`.
+        const std::uint32_t preconditions = session->PreCheckClose();
+        const bool decompressionInFlight = (preconditions & SessionClosePreconditions::DecompressionInFlight) != 0U;
+        const bool exportInFlight = (preconditions & SessionClosePreconditions::ExportInFlight) != 0U;
+        // The destructive cancellation path below handles both in-flight states.
+        (void)decompressionInFlight;
+        (void)exportInFlight;
+    }
+
     // Persist geometry/dock layout before tear-down. Best-effort: a
     // QSettings write failure is silently swallowed alongside the
     // auto-save failures below.
@@ -7132,13 +9221,13 @@ void MainWindow::closeEvent(QCloseEvent *event)
 
     // Cancel + drain any in-flight decompression before touching
     // session state, so its `finished` callout can't fire against
-    // a MainWindow whose `mCurrentSource` / `mSessionMode` we're
+    // a MainWindow whose `mSession->MutableCurrentSource()` / `mSessionMode` we're
     // about to reset. The helper is a bounded blocking wait and
     // also tears down the progress dialog + poll timer.
     //
     // Runs BEFORE `AutoSaveSessionSnapshot`: the in-flight file was
     // never successfully parsed so its locator isn't in
-    // `mCurrentSource`; the auto-save loses nothing. Running the
+    // `mSession->MutableCurrentSource()`; the auto-save loses nothing. Running the
     // cancel *after* would risk the finished callout re-entering
     // user code (nested event loops from `QMessageBox` inside
     // `ShowParseErrors`) between the snapshot and the state reset.
@@ -7146,23 +9235,50 @@ void MainWindow::closeEvent(QCloseEvent *event)
     // Cancel the export worker here (closeEvent runs before
     // ~MainWindow); the destructor's Cancel is a defensive backstop.
     CancelInFlightExport();
-    // Final flush so the restore-on-launch loop captures user
-    // edits made after the last `streamingFinished`. Best-effort:
-    // I/O failures inside the manager are silenced.
+    // Sibling tabs' workers also need a stop-request so their
+    // futures don't deliver into a half-destructed shell. The
+    // synchronous drain still lives in `~LogSession()`
+    // (`log_session.cpp:157-177`); this loop only issues the
+    // stop-request. Mirrors the pattern in `~MainWindow`.
+    for (LogSession *session : hostedSessions())
+    {
+        if (session == nullptr || session == mSession)
+        {
+            continue;
+        }
+        session->MutableDecompressionStopSource().request_stop();
+        session->MutableExportStopSource().request_stop();
+    }
+
+    // Flush restorable static sessions into Recent Sessions, then
+    // detach. Live-tail and non-file sources stay out of recents;
+    // quit persistence uses `CanPersistRestorableSnapshot()` instead.
+    // Capture the workspace *before* detaching identity: this window
+    // stays in `topLevelWidgets()` after hide, and aboutToQuit must
+    // still see tab UUIDs and source modes.
     //
-    // `publishOpenWindow=false` because we Remove the uuid on the
-    // next line anyway.
-    AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
-    // Detach + clear the uuid so the `aboutToQuit` fan doesn't
-    // re-publish a window the user just closed (the primary stays
-    // in `topLevelWidgets()` past closeEvent).
-    DetachAutoSaveUuid();
-    // Drop the rest of the session state so a subsequent
-    // `aboutToQuit` flush short-circuits in `ShouldAutoSaveSession`
-    // rather than minting a fresh uuid for the just-closed view.
-    mCurrentSource.reset();
-    mSessionMode = SessionMode::Idle;
-    mLastTerminalSessionMode = SessionMode::Idle;
+    // Do not publish closing tabs into the open-window index.
+    for (LogSession *session : hostedSessions())
+    {
+        if (session != nullptr && ShouldAutoSaveSession(session, session->EffectiveTerminalMode()))
+        {
+            AutoSaveSessionSnapshot(session, /*publishOpenWindow=*/false);
+        }
+    }
+    if (!mQuitWorkspaceSnapshot.has_value())
+    {
+        mQuitWorkspaceSnapshot = CaptureWorkspaceWindow();
+    }
+    for (LogSession *session : hostedSessions())
+    {
+        if (session == nullptr)
+        {
+            continue;
+        }
+        session->DetachAutoSaveUuid();
+        session->MutableCurrentSource().reset();
+        session->ResetMode();
+    }
 }
 
 void MainWindow::SaveConfiguration()
@@ -7185,7 +9301,7 @@ void MainWindow::SaveConfiguration()
     }
 }
 
-void MainWindow::SaveSession()
+bool MainWindow::SaveSession()
 {
     // A stdin session's `<stdin>` locator cannot be reopened; a `Full` save would
     // serialise a stanza the load path can only reject with an info
@@ -7193,7 +9309,8 @@ void MainWindow::SaveSession()
     // highlights round-trip cleanly and the on-disk config omits the
     // useless source field entirely.
     loglib::SaveScope effectiveScope = loglib::SaveScope::Full;
-    if (mCurrentSource.has_value() && mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::Stdin)
+    if (const auto &currentSource = mSession->CurrentSource();
+        currentSource.has_value() && currentSource->kind == loglib::LogConfiguration::Source::Kind::Stdin)
     {
 #ifdef LOGAPP_BUILD_TESTING
         if (mSuppressDialogsForTest)
@@ -7214,7 +9331,7 @@ void MainWindow::SaveSession()
             );
             if (choice != QMessageBox::Save)
             {
-                return;
+                return false;
             }
             effectiveScope = loglib::SaveScope::ColumnsOnly;
         }
@@ -7224,16 +9341,18 @@ void MainWindow::SaveSession()
         QFileDialog::getSaveFileName(this, tr("Save Session"), DefaultOpenDir(), tr("JSON (*.json);;All Files (*)"));
     if (file.isEmpty())
     {
-        return;
+        return false;
     }
     RememberLastOpenDir(file);
     try
     {
         DoSaveConfiguration(file, effectiveScope);
+        return true;
     }
     catch (std::exception &e)
     {
         QMessageBox::warning(this, "Error Saving Session", e.what());
+        return false;
     }
 }
 
@@ -7241,15 +9360,16 @@ void MainWindow::DoSaveConfiguration(const QString &path, loglib::SaveScope scop
 {
     // Mirror unconditionally even though every mutation point already
     // keeps the configuration current -- documents intent and
-    // protects against a future mutator that forgets to mirror.
+    // protects against a mutator that forgets to mirror.
     // `scope` selects which subset lands on disk; `Save` throws on
     // I/O failure (callers catch).
     MirrorSessionStateToConfiguration();
     mModel->ConfigurationManager().Save(path.toStdString(), scope);
     // Save succeeded — runtime now matches disk, so drop `[*]`.
     // A throw above (correctly) skips this and leaves the marker set.
-    mFiltersDirty = false;
-    UpdateWindowTitle();
+    // The session emits `filtersDirtyChanged(false)` which drives
+    // the title refresh through the ctor-installed connection.
+    mSession->ClearFiltersDirty();
 }
 
 void MainWindow::LoadConfiguration()
@@ -7273,9 +9393,25 @@ void MainWindow::ShowConfigurationDiagnostics()
         mDiagnosticsDialog->setAttribute(Qt::WA_DeleteOnClose, false);
         // Wire the row drill-down once; the dialog survives close.
         connect(
-            mDiagnosticsDialog, &ConfigurationDiagnosticsDialog::editColumnRequested, this, &MainWindow::EditColumn
+            mDiagnosticsDialog, &ConfigurationDiagnosticsDialog::editColumnRequested, this, [this](int columnIndex) {
+                if (mDiagnosticsDialogSession.isNull() || mDiagnosticsDialogSession.data() != mSession)
+                {
+                    return;
+                }
+                if (HostedSession(mDiagnosticsDialogSession->InstanceId()) != mDiagnosticsDialogSession.data())
+                {
+                    return;
+                }
+                EditColumn(columnIndex);
+            }
         );
     }
+    // Capture the originating session so `RebindSharedDocks`
+    // can close the dialog on tab switch (dialog holds a
+    // QPointer<LogModel> captured at construction; letting it
+    // survive across a session swap would silently point every
+    // subsequent Refresh at a stale model).
+    mDiagnosticsDialogSession = mSession;
     mDiagnosticsDialog->Refresh();
     mDiagnosticsDialog->show();
     mDiagnosticsDialog->raise();
@@ -7312,6 +9448,12 @@ void MainWindow::ShowColumnsManager()
         mColumnsManagerDialog = new ColumnsManagerDialog(mModel, this, this);
         mColumnsManagerDialog->setAttribute(Qt::WA_DeleteOnClose, false);
     }
+    // Capture the originating session so `RebindSharedDocks`
+    // can close the dialog on tab switch. Same rationale as the
+    // diagnostics dialog above -- the dialog's captured
+    // QPointer<LogModel> must not silently span a session swap.
+    mColumnsManagerDialogSession = mSession;
+    mColumnsManagerDialog->SetOriginSession(mSession);
     mColumnsManagerDialog->Refresh();
     mColumnsManagerDialog->show();
     mColumnsManagerDialog->raise();
@@ -7320,8 +9462,7 @@ void MainWindow::ShowColumnsManager()
 
 namespace
 {
-/// Walk the filter + row-order proxy chain down to a source-model
-/// row, or -1 if anything along the chain is invalid.
+// Map through both proxies and reject invalid links.
 [[nodiscard]] int MapProxyIndexToSourceRow(
     const QModelIndex &proxyIndex, const QAbstractProxyModel *filter, const QAbstractProxyModel *rowOrder
 )
@@ -7385,7 +9526,11 @@ void MainWindow::RebindRecordDetailSelectionTracking()
     }
     // Bind to a member slot (not a lambda) so `Qt::UniqueConnection`
     // can dedupe; Qt only deduplicates pointer-to-member targets.
-    connect(
+    // Scope this into `mSessionConnections` so a tab
+    // switch (or destructor teardown) reaps this against the old
+    // selection model before the new view's selection model takes
+    // over.
+    mSessionConnections += connect(
         selectionModel,
         &QItemSelectionModel::currentRowChanged,
         this,
@@ -7549,9 +9694,10 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
     // Rebuild only when the needle / flags actually changed. A
     // Next / Previous click reports the same needle, so the second
     // call just resolves the new `i` via binary search below.
-    const bool cacheHit = mFindMatchCache.has_value() && mFindMatchCache->needle == text &&
-                          mFindMatchCache->wildcards == wildcards &&
-                          mFindMatchCache->regularExpressions == regularExpressions;
+    auto &findCacheOpt = mSession->MutableFindMatchCacheState();
+    const bool cacheHit = findCacheOpt.has_value() && findCacheOpt->needle == text &&
+                          findCacheOpt->wildcards == wildcards &&
+                          findCacheOpt->regularExpressions == regularExpressions;
     if (!cacheHit)
     {
         const Qt::MatchFlags flags = LogFilterModel::ComposeFindFlags(wildcards, regularExpressions);
@@ -7650,7 +9796,7 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
                           "deduplicating defensively. This is a contract violation worth investigating.";
             sortedRows.erase(std::ranges::unique(sortedRows).begin(), sortedRows.end());
         }
-        mFindMatchCache = FindMatchCache{
+        findCacheOpt = FindMatchCache{
             .needle = text,
             .wildcards = wildcards,
             .regularExpressions = regularExpressions,
@@ -7675,7 +9821,7 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
             }
             else
             {
-                mOverviewRailModel->SetMatchProxyRows(mFindMatchCache->sortedRows);
+                mOverviewRailModel->SetMatchProxyRows(findCacheOpt->sortedRows);
             }
         }
     }
@@ -7683,15 +9829,15 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
     // Under `overflowed` `totalMatches` is a lower bound and the
     // position lookup below can return `0` for a cursor past the
     // cap; the "+" suffix on the label signals both.
-    const int total = static_cast<int>(mFindMatchCache->totalMatches);
+    const int total = static_cast<int>(findCacheOpt->totalMatches);
     int currentOneBased = 0;
-    if (total > 0 && mTableView != nullptr && !mFindMatchCache->sortedRows.empty())
+    if (total > 0 && mTableView != nullptr && !findCacheOpt->sortedRows.empty())
     {
         const QModelIndex currentIdx = mTableView->currentIndex();
         if (currentIdx.isValid())
         {
-            const auto begin = mFindMatchCache->sortedRows.begin();
-            const auto end = mFindMatchCache->sortedRows.end();
+            const auto begin = findCacheOpt->sortedRows.begin();
+            const auto end = findCacheOpt->sortedRows.end();
             const auto it = std::lower_bound(begin, end, currentIdx.row());
             if (it != end && *it == currentIdx.row())
             {
@@ -7699,12 +9845,12 @@ void MainWindow::UpdateFindMatchCount(const QString &text, bool wildcards, bool 
             }
         }
     }
-    mFindRecord->SetMatchInfo(currentOneBased, total, mFindMatchCache->overflowed);
+    mFindRecord->SetMatchInfo(currentOneBased, total, findCacheOpt->overflowed);
 }
 
 void MainWindow::InvalidateFindMatchCache()
 {
-    mFindMatchCache.reset();
+    mSession->ResetFindMatchCache();
     // Drop rail ticks alongside the cache so a stale find selection
     // can't strand ticks on rows the current filter rejects.
     if (mOverviewRailModel != nullptr)
@@ -7715,7 +9861,8 @@ void MainWindow::InvalidateFindMatchCache()
 
 void MainWindow::PushFindMatchesToOverviewRail()
 {
-    if (mOverviewRailModel == nullptr || !mFindMatchCache.has_value())
+    auto &findCacheOpt = mSession->MutableFindMatchCacheState();
+    if (mOverviewRailModel == nullptr || !findCacheOpt.has_value())
     {
         return;
     }
@@ -7736,7 +9883,7 @@ void MainWindow::PushFindMatchesToOverviewRail()
         return;
     }
 
-    const FindMatchCache &cache = *mFindMatchCache;
+    const FindMatchCache &cache = *findCacheOpt;
     if (cache.bucketCounts.size() == nBuckets)
     {
         mOverviewRailModel->SetMatchBucketCounts(cache.bucketCounts, cache.totalMatches);
@@ -7754,7 +9901,7 @@ void MainWindow::PushFindMatchesToOverviewRail()
         // Soft-invalidate: drop the cache so `UpdateFindMatchCount`
         // rescans, but leave the rail alone — the recount replaces
         // ticks in one shot.
-        mFindMatchCache.reset();
+        findCacheOpt.reset();
         UpdateFindMatchCount(text, wildcards, regularExpressions);
         return;
     }
@@ -7769,6 +9916,154 @@ void MainWindow::OnFindCacheInvalidated()
     if (mFindRecord != nullptr && IsFindBarVisible())
     {
         mFindRecord->BumpMatchCountDebounce();
+    }
+}
+
+void MainWindow::OnEnumColumnsChangedApplyFilterRebuild(EnumColumnsChangeReason reason, int columnIndex)
+{
+    // Keep enum filter bitsets and sort ranks in sync with the live
+    // dictionary; scope the work to the reason that fired:
+    //   - `Demoted`: the cached `EnumDictionary*` is now dangling.
+    //     Flush the rank cache and rebuild predicates onto the
+    //     string-set fallback.
+    //   - `Promoted`: a column just gained a dictionary. Any
+    //     `EnumRowPredicate` built earlier for that column was
+    //     constructed with `dictionary = nullptr` and otherwise sits
+    //     on the slow string-set fallback forever; rebuild so it
+    //     picks up the bitset hot path. The signal doesn't say which
+    //     column promoted, so any active enum filter triggers a
+    //     rebuild. `EnumRankFor` self-heals on the next sort, so no
+    //     cache flush is needed.
+    //   - `Grew`: existing predicates still work (bitset for resolved
+    //     ids, string-set fallback for unresolved). Rebuild only when
+    //     a filter has unresolved values that may have just been
+    //     interned -- the only case where rebuilding upgrades anything.
+    if (mModel == nullptr || mSortFilterProxyModel == nullptr || mSession == nullptr)
+    {
+        return;
+    }
+    if (reason == EnumColumnsChangeReason::Demoted)
+    {
+        // Broad flush: rank cache keys alias across columns via
+        // `EnumRankFor`, so invalidate everything to be safe.
+        mSortFilterProxyModel->InvalidateEnumRanks();
+
+        // A `Type::Level -> Type::String` demote orphans any saved
+        // canonical-name filter (`"Info"`, ...) because those
+        // strings never appear in the column's raw data. Translate
+        // them to the raw entries `LogModel::AppendBatch` captured
+        // pre-demote so the filter keeps matching the same rows.
+        // Plain enum demotes need no translation;
+        // `LastBatchLevelDemoteMappingFor` returns nullptr there.
+        if (columnIndex >= 0)
+        {
+            if (const auto *levelMapping = mModel->LastBatchLevelDemoteMappingFor(columnIndex); levelMapping != nullptr)
+            {
+                // Re-entrancy guard: the rewrite + downstream sync
+                // calls walk `mSimpleLeaves`, so a transitive re-emit
+                // of `enumColumnsChanged` for the same column would
+                // see half-rewritten state.
+                if (mSession->IsApplyingEnumRebuild())
+                {
+                    return;
+                }
+                mSession->SetApplyingEnumRebuild(true);
+                const auto demoteGuard = qScopeGuard([this]() { mSession->SetApplyingEnumRebuild(false); });
+                const auto &columnsCfg = mModel->Configuration().columns;
+                const loglib::LogConfiguration::Column *demotedColumn =
+                    std::cmp_less(columnIndex, columnsCfg.size()) ? &columnsCfg[static_cast<size_t>(columnIndex)]
+                                                                  : nullptr;
+                for (auto &kv : mSession->MutableSimpleLeaves())
+                {
+                    loglib::LeafRule &filter = kv.second;
+                    const int resolvedRow = ResolveLeafColumnByKeys(filter.columnKeys, columnsCfg);
+                    if (resolvedRow != columnIndex)
+                    {
+                        continue;
+                    }
+                    if (filter.type != loglib::LeafRule::Type::Enumeration)
+                    {
+                        continue;
+                    }
+                    std::vector<std::string> expanded;
+                    for (const std::string &name : filter.filterValues)
+                    {
+                        std::optional<loglib::LogLevel> level;
+                        if (demotedColumn != nullptr)
+                        {
+                            level = loglib::ResolveLevel(name, demotedColumn->levelMapping);
+                        }
+                        else
+                        {
+                            level = loglib::ParseLevelName(name);
+                        }
+                        if (!level.has_value())
+                        {
+                            continue;
+                        }
+                        const auto it = levelMapping->find(*level);
+                        if (it == levelMapping->end())
+                        {
+                            continue;
+                        }
+                        for (const std::string &raw : it->second)
+                        {
+                            expanded.push_back(raw);
+                        }
+                    }
+                    std::ranges::sort(expanded);
+                    const auto dupTail = std::ranges::unique(expanded);
+                    expanded.erase(dupTail.begin(), dupTail.end());
+                    filter.filterValues = std::move(expanded);
+                }
+                MirrorSessionStateToConfiguration();
+                SyncColumnFilterIndicators();
+            }
+        }
+    }
+    // `columnIndex == -1` means "scope unknown" -- treat as
+    // matches-anything to keep the safe broad behaviour.
+    const auto &columnsForResolve = mModel->Configuration().columns;
+    const auto matchesAffectedColumn = [columnIndex, &columnsForResolve](const auto &kv) {
+        if (columnIndex < 0)
+        {
+            return true;
+        }
+        return ResolveLeafColumnByKeys(kv.second.columnKeys, columnsForResolve) == columnIndex;
+    };
+    bool rebuild = false;
+    switch (reason)
+    {
+    case EnumColumnsChangeReason::Demoted:
+        rebuild = std::ranges::any_of(Filters(), [&matchesAffectedColumn](const auto &kv) {
+            return kv.second.type == loglib::LeafRule::Type::Enumeration && matchesAffectedColumn(kv);
+        });
+        break;
+    case EnumColumnsChangeReason::Promoted:
+        rebuild = std::ranges::any_of(Filters(), [&matchesAffectedColumn](const auto &kv) {
+            return kv.second.type == loglib::LeafRule::Type::Enumeration && matchesAffectedColumn(kv);
+        });
+        break;
+    case EnumColumnsChangeReason::Grew:
+        rebuild = std::ranges::any_of(Filters(), [this, &matchesAffectedColumn](const auto &kv) {
+            return kv.second.type == loglib::LeafRule::Type::Enumeration && matchesAffectedColumn(kv) &&
+                   !EnumFilterFullyResolved(kv.second);
+        });
+        break;
+    }
+    if (rebuild)
+    {
+        // Re-entrancy guard: an inner `UpdateFilters` that re-emits
+        // `enumColumnsChanged` must not rebuild on a half-updated
+        // state. Queued signals that arrive after the outer call
+        // returns rebuild normally.
+        if (mSession->IsApplyingEnumRebuild())
+        {
+            return;
+        }
+        mSession->SetApplyingEnumRebuild(true);
+        const auto guard = qScopeGuard([this]() { mSession->SetApplyingEnumRebuild(false); });
+        UpdateFilters();
     }
 }
 
@@ -7805,10 +10100,10 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         mSortFilterProxyModel->SetFilterExpression(loglib::CompiledFilterExpression{});
         mTableView->sortByColumn(-1, Qt::AscendingOrder);
 
-        // Cancel the export worker before the reset: the worker
-        // reads `LogTable` from a background thread and the reset
-        // below tears down its storage.
+        // Cancel export and decompression before the reset: workers
+        // must not continue against a cleared model.
         CancelInFlightExport();
+        CancelInFlightDecompression();
 
         // See `NewSession` for the session-switch latch rationale.
         const SessionSwitchScope switchGuard(*this);
@@ -7820,12 +10115,6 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         {
             mParseErrorsDock->ResetSessionState();
         }
-        mStreamingErrorsCut = 0;
-        // Session boundary: cancel any in-flight decompression so
-        // its `finished` slot can't splice the old file back into
-        // the freshly-loaded configuration. Export was already
-        // cancelled above.
-        CancelInFlightDecompression();
         // Fully quiesce the outgoing session before applying the
         // new configuration -- mirrors `NewSession`. Without this,
         // queued-but-not-yet-drained files leak into the new
@@ -7836,19 +10125,25 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         // session might have greyed out. If the caller is about
         // to start streaming from the loaded config, its dispatch
         // path re-flips these.
-        mPendingOpenFiles.clear();
-        mPendingOpenErrors.clear();
-        mPendingDecompressionErrors.clear();
+        mSession->ClearPendingOpenQueues();
         // Pending promotion and Undo state belong to the replaced session.
         ClearPendingLiveTailPromotion();
         ClearRotationExpansionUndoState();
-        mSessionMode = SessionMode::Idle;
-        mLastTerminalSessionMode = SessionMode::Idle;
-        mStreamingFileName.clear();
-        mStreamingLineCount = 0;
-        mStreamingErrorCount = 0;
-        mFirstStreamingBatchSeen = false;
-        mSourceWaiting = false;
+        mSession->ResetMode();
+        mSession->ResetStreamingCountersAndFileName();
+        // Session boundary: drop the Goto Timestamp / Goto Line
+        // sticky inputs so a value that made sense in the outgoing
+        // session (zone, format, row count) does not pre-populate
+        // the dialog in the new one. `NewSession` already does the
+        // same via `mSessionView`; the File -> Load Configuration
+        // path also goes through here.
+        // Guard on `mSessionView` for symmetry with `NewSession`
+        // -- construction never leaves the view null in
+        // production but the guard costs nothing.
+        if (mSessionView != nullptr)
+        {
+            mSessionView->ClearGotoStickyInputs();
+        }
         SetConfigurationUiEnabled(true);
         UpdateStreamToolbarVisibility();
         UpdateStreamingStatus();
@@ -7865,10 +10160,10 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         // sort with the cleared proxy sort. Columns-only files
         // default to the `-1` "no sort" sentinel.
         //
-        // *Exception*: when `mPendingApplySortFromConfig` is set
-        // (streaming will follow), skip the eager apply -- see
+        // *Exception*: when the session's deferred-sort latch is
+        // set (streaming will follow), skip the eager apply -- see
         // `ApplyDeferredSortFromConfig` for the O(N^2) avoidance.
-        if (!mPendingApplySortFromConfig)
+        if (!mSession->HasPendingApplySortFromConfig())
         {
             const auto loadedSort = mModel->Configuration().sort;
             if (loadedSort.columnIndex >= 0 && loadedSort.columnIndex < mModel->columnCount())
@@ -7882,13 +10177,14 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         // Mirror the loaded source so the next save round-trips
         // it; no auto-bind (foreign sessions would be hostile).
         // Backfill the parallel dedup-keys array for older JSON.
-        mCurrentSource = mModel->Configuration().source;
-        logapp::BackfillLocatorDedupKeys(mCurrentSource);
+        mSession->MutableCurrentSource() = mModel->Configuration().source;
+        logapp::BackfillLocatorDedupKeys(mSession->MutableCurrentSource());
+        mSession->NotifyPresentationChanged();
         // Session loading updates the menu but does not clear this
         // window's CLI opt-out; an explicit menu change does.
         SyncRotationHistoryActionCheckedState();
 
-        // Bulk-replace anchors from the loaded vector. Future-schema
+        // Bulk-replace anchors from the loaded vector. Newer-schema
         // colour slots are clamped (not dropped) so bookmark
         // positions + notes survive a downgrade; the count is
         // surfaced to the user.
@@ -7927,10 +10223,14 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
             }
             // Refresh any open editor so it shows the loaded rules,
             // not the pre-load buffer.
-            if (mHighlightRulesEditor != nullptr)
+            if (mHighlightRulesEditor != nullptr && mHighlightRulesEditorSession.data() == mSession)
             {
                 mHighlightRulesEditor->SetColumns(config.columns);
                 mHighlightRulesEditor->SetRules(config.highlightRules);
+            }
+            if (mSession != nullptr)
+            {
+                mSession->ClearHighlightEditorDraft();
             }
         }
         return true;
@@ -7948,6 +10248,22 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
 
 void MainWindow::RebuildFiltersFromConfiguration()
 {
+    RebuildFiltersFromConfiguration(mSession);
+}
+
+void MainWindow::RebuildFiltersFromConfiguration(LogSession *session)
+{
+    if (session == nullptr)
+    {
+        return;
+    }
+    const LogModel *const model = session->Model();
+    if (model == nullptr)
+    {
+        return;
+    }
+    const bool sessionIsActive = session == mSession;
+
     // Extract the simple-mode subset (top-level `Leaf` children of
     // the root `And`, or a bare-`Leaf` root) from the loaded
     // expression and re-add each via `AddLogFilter`. Non-Leaf
@@ -7955,7 +10271,7 @@ void MainWindow::RebuildFiltersFromConfiguration()
     // preserved by `MirrorSessionStateToConfiguration`. UUIDs are
     // GUI-only and regenerated here.
     std::vector<loglib::LeafRule> loadedFilters;
-    const auto &loadedExpression = mModel->Configuration().expression;
+    const auto &loadedExpression = model->Configuration().expression;
     if (const auto *rootAnd = std::get_if<loglib::FilterExpression::And>(&loadedExpression.node); rootAnd != nullptr)
     {
         loadedFilters.reserve(rootAnd->children.size());
@@ -7973,25 +10289,32 @@ void MainWindow::RebuildFiltersFromConfiguration()
     }
 
     // Suppress per-filter dirty/title updates; emit one consolidated state
-    // on scope exit.
-    mLoadingConfiguration = true;
-    const auto guard = qScopeGuard([this]() {
-        mLoadingConfiguration = false;
+    // on scope exit. The session owns both flags; the
+    // `filtersDirtyChanged` signal only fires on a real transition,
+    // so we always force `UpdateWindowTitle()` after the load so a
+    // clean-to-clean load still refreshes the title (source path
+    // changed, tab label needs redraw, etc.).
+    session->SetLoadingConfiguration(true);
+    const auto guard = qScopeGuard([this, session, sessionIsActive]() {
+        session->SetLoadingConfiguration(false);
         // Loaded set matches disk, so start clean.
-        mFiltersDirty = false;
-        UpdateWindowTitle();
+        session->ClearFiltersDirty();
+        if (sessionIsActive)
+        {
+            UpdateWindowTitle();
+        }
     });
 
     // Reset simple-mode surface only; keep the loaded expression on
     // the manager so Mirror preserves any Advanced subtree.
     // (`ClearAllFilters` would drop the whole expression -- see
     // `TestClearAllFiltersDropsAdvancedTree`.)
-    ResetSimpleFilterState();
+    ResetSimpleFilterState(session);
 #ifdef LOGAPP_BUILD_TESTING
     mLastDroppedFilterCountForTest = 0;
 #endif
 
-    const auto &columns = mModel->Configuration().columns;
+    const auto &columns = model->Configuration().columns;
     std::vector<FilterValidationFailure> dropped;
     for (const auto &saved : loadedFilters)
     {
@@ -8001,14 +10324,17 @@ void MainWindow::RebuildFiltersFromConfiguration()
             continue;
         }
         // Defer mirror + rule rebuild; one trailing sync below.
-        AddLogFilter(QUuid::createUuid().toString(), saved, /*deferSync=*/true);
+        AddLogFilter(session, QUuid::createUuid().toString(), saved, /*deferSync=*/true);
     }
-    MirrorSessionStateToConfiguration();
-    UpdateFilters();
+    MirrorSessionStateToConfiguration(session);
+    UpdateFilters(session);
     // Re-enable Clear-All for the Advanced-only / all-leaves-dropped
     // cases where no `AddLogFilter` fired but rows are still filtered.
-    SyncClearAllFiltersEnabled();
-    SyncColumnFilterIndicators();
+    if (sessionIsActive)
+    {
+        SyncClearAllFiltersEnabled();
+        SyncColumnFilterIndicators();
+    }
 
     if (!dropped.empty())
     {
@@ -8034,7 +10360,7 @@ void MainWindow::RebuildFiltersFromConfiguration()
         {
             message += QString("... and %1 more.").arg(dropped.size() - MAX_SHOWN);
         }
-        ShowDroppedFiltersDialog(static_cast<int>(dropped.size()), message);
+        ShowDroppedFiltersDialog(static_cast<int>(dropped.size()), message, session);
     }
 }
 
@@ -8059,529 +10385,85 @@ void MainWindow::Find()
 
 void MainWindow::SelectSourceRow(int sourceRow)
 {
-    if (mTableView == nullptr || mModel == nullptr || mRowOrderProxyModel == nullptr ||
-        mSortFilterProxyModel == nullptr)
+    // Delegate view-local selection to `LogSessionView`.
+    // Shell forwarder kept so existing signal connections (anchors
+    // dock, histogram dock) route into the view without a rewire.
+    // Status-bar message stays on the shell via the view's
+    // `rowNotVisible()` signal wired in the ctor.
+    if (mSessionView == nullptr)
     {
         return;
     }
-    if (sourceRow < 0 || sourceRow >= mModel->rowCount())
-    {
-        // Caller's row is stale (evicted or session swap). Surface
-        // it instead of silently no-oping.
-        statusBar()->showMessage(tr("Row is not currently visible."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
-        return;
-    }
-    const QModelIndex sourceIdx = mModel->index(sourceRow, 0);
-    const QModelIndex midIdx = mRowOrderProxyModel->mapFromSource(sourceIdx);
-    if (!midIdx.isValid())
-    {
-        statusBar()->showMessage(tr("Row is not currently visible."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
-        return;
-    }
-    const QModelIndex proxyIdx = mSortFilterProxyModel->mapFromSource(midIdx);
-    if (!proxyIdx.isValid())
-    {
-        statusBar()->showMessage(tr("Row is not currently visible."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
-        return;
-    }
-
-    mTableView->clearSelection();
-    // Centre so the user sees context around the anchor.
-    mTableView->scrollTo(proxyIdx, QAbstractItemView::PositionAtCenter);
-    mTableView->selectionModel()->select(proxyIdx, QItemSelectionModel::Select | QItemSelectionModel::Rows);
-    mTableView->selectionModel()->setCurrentIndex(proxyIdx, QItemSelectionModel::NoUpdate);
+    mSessionView->SelectSourceRow(sourceRow);
 }
 
 void MainWindow::GotoLine()
 {
-    if (mModel == nullptr || mModel->rowCount() == 0)
-    {
-        statusBar()->showMessage(tr("No log loaded."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
-        return;
-    }
-
-    const int rowCount = mModel->rowCount();
-
-    // A `QInputDialog` (rather than the static `getInt` helper) so
-    // we can attach a `QIntValidator` and lean on Qt's accept-
-    // blocking instead of re-validating after `exec`. The label
-    // uses `QString::number` (not `QLocale`) to match the
-    // validator, which has no group separator -- otherwise `en_US`
-    // shows commas in a range the user cannot actually type.
-    QInputDialog dialog(this);
-    dialog.setWindowTitle(tr("Go to Line"));
-    // Reminder: with newest-first display active, "line 1" is
-    // still the earliest row (bottom of the list), not the top.
-    dialog.setLabelText(tr("Line number (1 = earliest row; 1 - %1):").arg(QString::number(rowCount)));
-    dialog.setInputMode(QInputDialog::TextInput);
-    dialog.setTextEchoMode(QLineEdit::Normal);
-    if (!mLastGotoLineInput.isEmpty())
-    {
-        dialog.setTextValue(mLastGotoLineInput);
-    }
-    if (auto *editor = dialog.findChild<QLineEdit *>())
-    {
-        editor->setValidator(new QIntValidator(1, rowCount, &dialog));
-        editor->setPlaceholderText(tr("e.g. 12345"));
-        editor->selectAll();
-    }
-    if (dialog.exec() != QDialog::Accepted)
+    // Delegate the view-local dialog to `LogSessionView`.
+    // Shell forwarder kept so `actionGoToLine` from `main_window.ui`
+    // continues to trigger the migrated dialog. Status messages
+    // now flow via `LogSessionView::statusMessageRequested`, wired
+    // in the ctor.
+    if (mSessionView == nullptr)
     {
         return;
     }
-
-    const QString rawInput = dialog.textValue();
-    mLastGotoLineInput = rawInput;
-    ExecuteGotoLine(rawInput);
+    mSessionView->PromptGotoLine();
 }
 
 void MainWindow::ExecuteGotoLine(const QString &input)
 {
-    // Read `rowCount` live (not captured before the modal) so a
-    // shrink while the dialog was open -- FIFO eviction or session
-    // swap -- is reflected in both the range check and the hint.
-    if (mModel == nullptr || mSortFilterProxyModel == nullptr || mRowOrderProxyModel == nullptr)
+    // Delegate view-local line navigation to `LogSessionView`.
+    // Shell forwarder kept so `ExecuteGotoLineForTest` continues
+    // to drive the range check + filter-visibility hint.
+    if (mSessionView == nullptr)
     {
-        statusBar()->showMessage(tr("No log loaded."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
         return;
     }
-    const int currentRowCount = mModel->rowCount();
-    if (currentRowCount == 0)
-    {
-        statusBar()->showMessage(tr("No log loaded."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
-        return;
-    }
-
-    bool ok = false;
-    const int oneBased = input.toInt(&ok);
-    if (!ok || oneBased < 1 || oneBased > currentRowCount)
-    {
-        statusBar()->showMessage(
-            tr("Line %1 is out of range (1 - %2).").arg(input, QString::number(currentRowCount)),
-            STATUS_BAR_MESSAGE_TIMEOUT_MS
-        );
-        return;
-    }
-
-    // Print the caller-specific "filtered out" hint before
-    // deferring to `SelectSourceRow`, which would otherwise show
-    // the generic "Row is not currently visible" fallback.
-    const int sourceRow = oneBased - 1;
-    const QModelIndex sourceIdx = mModel->index(sourceRow, 0);
-    const QModelIndex midIdx = mRowOrderProxyModel->mapFromSource(sourceIdx);
-    const bool visible = midIdx.isValid() && mSortFilterProxyModel->mapFromSource(midIdx).isValid();
-    if (!visible)
-    {
-        statusBar()->showMessage(
-            tr("Line %1 is currently filtered out.").arg(QString::number(oneBased)), STATUS_BAR_MESSAGE_TIMEOUT_MS
-        );
-        return;
-    }
-
-    SelectSourceRow(sourceRow);
+    mSessionView->ExecuteGotoLine(input);
 }
-
-namespace
-{
-
-/// True if @p fmt contains a `date::parse` zone specifier (`%z`,
-/// `%Z`, `%Ez`, `%Oz`); such a parse yields UTC and must NOT be
-/// TZ-shifted again. `%%` is a literal percent and does not
-/// register. On a non-match the scan only advances one byte so a
-/// malformed prefix like `"%E%z"` still detects the inner `%z`
-/// (false negatives here would double-shift downstream, worse
-/// than false-positive-recognising a bad format).
-[[nodiscard]] bool FormatHasZoneSpecifier(std::string_view fmt) noexcept
-{
-    for (std::size_t i = 0; i < fmt.size(); ++i)
-    {
-        if (fmt[i] != '%')
-        {
-            continue;
-        }
-        const std::size_t next = i + 1;
-        if (next >= fmt.size())
-        {
-            break;
-        }
-        if (fmt[next] == '%')
-        {
-            // `%%` is a literal percent; skip both bytes.
-            ++i;
-            continue;
-        }
-        std::size_t specifier = next;
-        if ((fmt[specifier] == 'E' || fmt[specifier] == 'O') && specifier + 1 < fmt.size())
-        {
-            ++specifier;
-        }
-        if (fmt[specifier] == 'z' || fmt[specifier] == 'Z')
-        {
-            return true;
-        }
-        // Only the outer `++i` advances; jumping past `specifier`
-        // would miss a `%z` following a malformed `%E`.
-    }
-    return false;
-}
-
-} // namespace
 
 std::optional<MainWindow::GotoTimestampParse> MainWindow::ParseGotoTimestampInput(
     const QString &input, const std::vector<std::string> &columnParseFormats, std::chrono::system_clock::time_point now
 )
 {
-    const QString trimmed = input.trimmed();
-    if (trimmed.isEmpty())
+    // Delegate timestamp parsing to `LogSessionView`.
+    // Static forwarder kept so external callers (unit tests, other
+    // shell paths) continue to compile against the historical
+    // `MainWindow::ParseGotoTimestampInput` symbol. The view's
+    // `GotoTimestampParse` value type is layout-compatible with
+    // the shell's (identical fields).
+    const auto viewParsed = LogSessionView::ParseGotoTimestampInput(input, columnParseFormats, now);
+    if (!viewParsed.has_value())
     {
         return std::nullopt;
     }
-
-    // Relative shortcut `[+-]?N[hm]` (case-insensitive,
-    // whitespace-tolerant). All sign variants mean "N units before
-    // @p now" -- "the future" is meaningless in a log viewer, and
-    // lnav / less resolve the same way.
-    static const QRegularExpression RELATIVE_SHORTCUT_RE(
-        QStringLiteral(R"(^[+-]?\s*(\d+)\s*([hm])\s*$)"), QRegularExpression::CaseInsensitiveOption
-    );
-    const auto relMatch = RELATIVE_SHORTCUT_RE.match(trimmed);
-    if (relMatch.hasMatch())
-    {
-        bool ok = false;
-        const qulonglong n = relMatch.captured(1).toULongLong(&ok);
-        if (!ok)
-        {
-            return std::nullopt;
-        }
-        const QChar unit = relMatch.captured(2).at(0).toLower();
-        // Reject values that would overflow `int64_t` micros --
-        // wrapping silently would jump the user forward, not back.
-        constexpr int64_t MICROS_PER_HOUR = 3'600LL * 1'000'000LL;
-        constexpr int64_t MICROS_PER_MINUTE = 60LL * 1'000'000LL;
-        const int64_t microsPerUnit = (unit == QLatin1Char('h')) ? MICROS_PER_HOUR : MICROS_PER_MINUTE;
-        const auto maxN = static_cast<qulonglong>(std::numeric_limits<int64_t>::max() / microsPerUnit);
-        if (n > maxN)
-        {
-            return std::nullopt;
-        }
-        const int64_t offsetMicros = static_cast<int64_t>(n) * microsPerUnit;
-        const auto nowMicros = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-        return GotoTimestampParse{.micros = nowMicros - offsetMicros, .isNaive = false};
-    }
-
-    // Absolute path: try the column's own `parseFormats` first,
-    // then two ISO fallbacks so columns with an empty format list
-    // (auto-detected `Type::Time`) still accept typical inputs.
-    const std::string stdInput = trimmed.toStdString();
-    std::vector<std::string> candidates;
-    candidates.reserve(columnParseFormats.size() + 2);
-    for (const auto &fmt : columnParseFormats)
-    {
-        candidates.push_back(fmt);
-    }
-    for (const auto *fallback : {"%FT%T", "%F %T"})
-    {
-        if (std::find(candidates.begin(), candidates.end(), std::string{fallback}) == candidates.end())
-        {
-            candidates.emplace_back(fallback);
-        }
-    }
-
-    loglib::TimestampParseScratch scratch;
-    for (const auto &fmt : candidates)
-    {
-        loglib::TimeStamp parsed{};
-        if (loglib::TryParseTimestamp(stdInput, fmt, loglib::ClassifyTimestampFormat(fmt), scratch, parsed))
-        {
-            return GotoTimestampParse{
-                .micros = parsed.time_since_epoch().count(), .isNaive = !FormatHasZoneSpecifier(fmt)
-            };
-        }
-    }
-    return std::nullopt;
+    return GotoTimestampParse{.micros = viewParsed->micros, .isNaive = viewParsed->isNaive};
 }
 
 void MainWindow::GotoTimestamp()
 {
-    if (mModel == nullptr || mModel->rowCount() == 0)
-    {
-        statusBar()->showMessage(tr("No log loaded."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
-        return;
-    }
-
-    const int timeCol = loglib::FirstTimeColumnIndex(mModel->Configuration());
-    if (timeCol < 0)
-    {
-        statusBar()->showMessage(tr("This log has no timestamp column."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
-        return;
-    }
-
-    QInputDialog dialog(this);
-    dialog.setWindowTitle(tr("Go to Timestamp"));
-    // "local time" makes clear that a bare `YYYY-MM-DD HH:MM:SS`
-    // is interpreted in the display TZ, matching the table.
-    // Raw `Z`-suffixed values from the file hit the zoned parser
-    // and are not shifted.
-    dialog.setLabelText(tr("Timestamp (local time; ISO 8601 or -Nh / -Nm):"));
-    dialog.setInputMode(QInputDialog::TextInput);
-    dialog.setTextEchoMode(QLineEdit::Normal);
-    dialog.setTextValue(mLastGotoTimestampInput);
-    if (auto *editor = dialog.findChild<QLineEdit *>())
-    {
-        editor->setPlaceholderText(tr("e.g. 2024-04-28 12:34:56 (local) or -1h / -30m"));
-        editor->selectAll();
-    }
-    if (dialog.exec() != QDialog::Accepted)
+    // Delegate the view-local dialog to `LogSessionView`.
+    if (mSessionView == nullptr)
     {
         return;
     }
-
-    ExecuteGotoTimestamp(dialog.textValue(), std::chrono::system_clock::now());
+    mSessionView->PromptGotoTimestamp();
 }
 
 void MainWindow::ExecuteGotoTimestamp(const QString &input, std::chrono::system_clock::time_point now)
 {
-    // Read model + config live -- mirrors `ExecuteGotoLine`.
-    if (mModel == nullptr || mModel->rowCount() == 0)
+    // Delegate view-local timestamp navigation to `LogSessionView`.
+    if (mSessionView == nullptr)
     {
-        statusBar()->showMessage(tr("No log loaded."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
         return;
     }
-    const auto &config = mModel->Configuration();
-    const int timeCol = loglib::FirstTimeColumnIndex(config);
-    if (timeCol < 0)
-    {
-        statusBar()->showMessage(tr("This log has no timestamp column."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
-        return;
-    }
-
-    // Update the sticky input before the parse so a garbage value
-    // the user wants to correct is retained on the next open.
-    mLastGotoTimestampInput = input;
-
-    const std::optional<GotoTimestampParse> parsed =
-        ParseGotoTimestampInput(input, config.columns[static_cast<std::size_t>(timeCol)].parseFormats, now);
-    if (!parsed.has_value())
-    {
-        statusBar()->showMessage(tr("Could not parse timestamp."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
-        return;
-    }
-    // Stored cell timestamps line up with the TZ-shifted display:
-    // zoned columns hold true UTC micros, naive columns hold the
-    // wall-clock digits which are then TZ-shifted for rendering.
-    // Naive user input represents a display-zone wall-clock
-    // instant, so it needs the same local -> UTC shift to match.
-    // `LocalMicrosecondsSinceEpochToUtc` handles DST edge cases.
-    const int64_t targetMicros =
-        parsed->isNaive ? loglib::LocalMicrosecondsSinceEpochToUtc(parsed->micros) : parsed->micros;
-
-    const int sourceRow = FindFirstRowAtOrAfter(timeCol, targetMicros);
-    if (sourceRow < 0)
-    {
-        statusBar()->showMessage(tr("No visible row at or after that time."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
-        return;
-    }
-    SelectSourceRow(sourceRow);
+    mSessionView->ExecuteGotoTimestamp(input, now);
 }
 
 int MainWindow::FindFirstRowAtOrAfter(int timeCol, int64_t targetMicros) const
 {
-    if (mModel == nullptr || mSortFilterProxyModel == nullptr || mRowOrderProxyModel == nullptr)
-    {
-        return -1;
-    }
-    const int sourceRowCount = mModel->rowCount();
-    if (timeCol < 0 || sourceRowCount == 0)
-    {
-        return -1;
-    }
-
-    // Cell -> epoch micros. `nullopt` for rows whose timestamp
-    // slot is missing / unpromoted; both searches below skip such
-    // rows explicitly (treating them as `-inf` would break the
-    // fast-path binary search's monotonicity invariant).
-    const auto tsFor = [this, timeCol](int sourceRow) -> std::optional<int64_t> {
-        return loglib::AsEpochMicroseconds(
-            mModel->Table().GetValue(static_cast<std::size_t>(sourceRow), static_cast<std::size_t>(timeCol))
-        );
-    };
-
-    // Source row -> visible through the outer proxy? Respects the
-    // mid-proxy's newest-first reversal and the active row filter.
-    const auto isVisible = [this](int sourceRow) -> bool {
-        const QModelIndex sourceIdx = mModel->index(sourceRow, 0);
-        const QModelIndex midIdx = mRowOrderProxyModel->mapFromSource(sourceIdx);
-        if (!midIdx.isValid())
-        {
-            return false;
-        }
-        return mSortFilterProxyModel->mapFromSource(midIdx).isValid();
-    };
-
-    // Outer proxy row -> source row, or `-1` when the mapping is
-    // transiently broken (proxy layout change in flight).
-    const auto proxyRowToSource = [this](int proxyRow) -> int {
-        const QModelIndex proxyIdx = mSortFilterProxyModel->index(proxyRow, 0);
-        const QModelIndex midIdx = mSortFilterProxyModel->mapToSource(proxyIdx);
-        if (!midIdx.isValid())
-        {
-            return -1;
-        }
-        const QModelIndex sourceIdx = mRowOrderProxyModel->mapToSource(midIdx);
-        return sourceIdx.isValid() ? sourceIdx.row() : -1;
-    };
-
-    const int userSortColumn = mSortFilterProxyModel->SortColumn();
-    const bool timestampsMonotonic = mModel->TimestampsAreMonotonic();
-
-    if (userSortColumn < 0 && timestampsMonotonic)
-    {
-        // Fast path: binary-search source rows in place. Building
-        // an `iota` index array would cost ~40 MiB on a 10 M-row
-        // file, blowing the ROADMAP `< 100 ms` budget.
-        //
-        // Missing timestamps require an explicit skip -- there is
-        // no `-inf` / `+inf` rule that preserves the monotonicity
-        // `lower_bound` needs when gaps interleave valid rows. Each
-        // probe walks forward from `mid` to the first valid ts.
-        // Worst case (all rows missing) is O(N); typical case
-        // (rare gaps) stays O(log N).
-        //
-        // Invariants:
-        //   * `[0, lo)`  -- every row has "missing OR ts < target".
-        //   * `[hi, sourceRowCount)` -- either empty or all-missing
-        //     as observed by the `hi = mid` branch.
-        // At `lo == hi`, the answer (if any) is the first valid
-        // ts >= target in `[lo, sourceRowCount)`.
-        int lo = 0;
-        int hi = sourceRowCount;
-        while (lo < hi)
-        {
-            const int mid = lo + ((hi - lo) / 2);
-            int probe = mid;
-            int64_t probeTsValue = 0;
-            bool probeHasTs = false;
-            for (; probe < hi; ++probe)
-            {
-                if (const auto probeTs = tsFor(probe); probeTs.has_value())
-                {
-                    probeTsValue = *probeTs;
-                    probeHasTs = true;
-                    break;
-                }
-            }
-            if (!probeHasTs)
-            {
-                // `[mid, hi)` is all missing -- shrink to the left.
-                hi = mid;
-            }
-            else if (probeTsValue < targetMicros)
-            {
-                lo = probe + 1;
-            }
-            else
-            {
-                hi = probe;
-            }
-        }
-
-        if (lo >= sourceRowCount)
-        {
-            return -1;
-        }
-
-        // Happy path: `lo` itself is a valid, visible answer.
-        // Skips the proxy walk below in the common no-filter case,
-        // keeping the fast path O(log N) end-to-end.
-        {
-            const auto ts = tsFor(lo);
-            if (ts.has_value() && *ts >= targetMicros && isVisible(lo))
-            {
-                return lo;
-            }
-        }
-
-        // Otherwise walk the outer proxy (not the source) for the
-        // smallest visible source row `>= lo` with a valid ts.
-        // O(N_visible), not O(N_source) -- a heavy filter that
-        // hides most of `[lo, sourceRowCount)` used to blow the
-        // ROADMAP budget on huge files.
-        //
-        // Correctness: the binary-search invariant guarantees
-        // every source row `>= lo` is either missing or has
-        // ts >= target, so any visible one with a valid ts
-        // qualifies; the smallest such row is earliest
-        // chronologically (by monotonicity).
-        int best = -1;
-        const int proxyRowCount = mSortFilterProxyModel->rowCount();
-        for (int proxyRow = 0; proxyRow < proxyRowCount; ++proxyRow)
-        {
-            const int sourceRow = proxyRowToSource(proxyRow);
-            if (sourceRow < lo)
-            {
-                continue;
-            }
-            const auto ts = tsFor(sourceRow);
-            if (!ts.has_value() || *ts < targetMicros)
-            {
-                continue;
-            }
-            if (best < 0 || sourceRow < best)
-            {
-                best = sourceRow;
-            }
-        }
-        return best;
-    }
-
-    if (userSortColumn < 0)
-    {
-        // Non-monotonic source: the binary search above would
-        // silently return a wrong row. Walk the outer proxy and
-        // pick the visible row with the smallest ts satisfying
-        // `>= target` -- the chronologically earliest match.
-        int best = -1;
-        int64_t bestTs = std::numeric_limits<int64_t>::max();
-        const int proxyRowCount = mSortFilterProxyModel->rowCount();
-        for (int proxyRow = 0; proxyRow < proxyRowCount; ++proxyRow)
-        {
-            const int sourceRow = proxyRowToSource(proxyRow);
-            if (sourceRow < 0)
-            {
-                continue;
-            }
-            const auto ts = tsFor(sourceRow);
-            if (!ts.has_value() || *ts < targetMicros)
-            {
-                continue;
-            }
-            if (*ts < bestTs)
-            {
-                bestTs = *ts;
-                best = sourceRow;
-            }
-        }
-        return best;
-    }
-
-    // User sort active: linear scan in display order so "first"
-    // matches the user's chosen sort (may not be earliest in
-    // wall-clock time).
-    const int proxyRowCount = mSortFilterProxyModel->rowCount();
-    for (int proxyRow = 0; proxyRow < proxyRowCount; ++proxyRow)
-    {
-        const int sourceRow = proxyRowToSource(proxyRow);
-        if (sourceRow < 0)
-        {
-            continue;
-        }
-        const auto ts = tsFor(sourceRow);
-        if (ts.has_value() && *ts >= targetMicros)
-        {
-            return sourceRow;
-        }
-    }
-    return -1;
+    return mSession->FindFirstRowAtOrAfterTimestamp(timeCol, targetMicros);
 }
 
 void MainWindow::JumpToFirstRowInBucket(std::size_t bucketIndex)
@@ -8608,48 +10490,20 @@ void MainWindow::JumpToFirstRowInBucket(std::size_t bucketIndex)
 
 void MainWindow::ScrollToProxyRow(int proxyRow, bool replaceSelection)
 {
-    if (mTableView == nullptr || mSortFilterProxyModel == nullptr)
+    // Delegate view-local scrolling to `LogSessionView`.
+    // The shell's `actionFollowTail` uncheck is now driven by the
+    // view's `followTailDisengageRequested()` signal wired in the
+    // ctor. Shell forwarder kept so overview-rail-widget's
+    // `proxyRowClicked` connection continues to work unchanged.
+    if (mSessionView == nullptr)
     {
         return;
     }
-    if (proxyRow < 0 || proxyRow >= mSortFilterProxyModel->rowCount())
-    {
-        // Silently no-op on a transient out-of-range so a drag
-        // scrub stays smooth during insert / filter races.
-        return;
-    }
-    const QModelIndex proxyIdx = mSortFilterProxyModel->index(proxyRow, 0);
-    if (!proxyIdx.isValid())
-    {
-        return;
-    }
-    // Rail navigation is intentional browsing; disengage Follow
-    // newest so a live-tail batch can't yank the viewport back to
-    // the tail. `scrollTo` is programmatic and wouldn't fire
-    // `userScrolledAwayFromTail` on its own.
-    if (ui != nullptr && ui->actionFollowTail != nullptr && ui->actionFollowTail->isChecked())
-    {
-        ui->actionFollowTail->setChecked(false);
-    }
-    mTableView->scrollTo(proxyIdx, QAbstractItemView::PositionAtCenter);
-    if (replaceSelection)
-    {
-        // Fresh click: same "commit to row" semantics as
-        // `SelectSourceRow`.
-        mTableView->clearSelection();
-        mTableView->selectionModel()->select(proxyIdx, QItemSelectionModel::Select | QItemSelectionModel::Rows);
-        mTableView->selectionModel()->setCurrentIndex(proxyIdx, QItemSelectionModel::NoUpdate);
-    }
-    // Drag scrub: scroll only, leave selection + current index
-    // untouched so exploration doesn't clobber the last-clicked row.
+    mSessionView->ScrollToProxyRow(proxyRow, replaceSelection);
 }
 
 void MainWindow::SetOverviewRailVisible(bool visible)
 {
-    if (mTableView == nullptr || mOverviewRailWidget == nullptr)
-    {
-        return;
-    }
     // Persist immediately so the next launch honours the current
     // preference. Guarded to skip the redundant write on the
     // load-time seed (replaying the persisted value verbatim) —
@@ -8668,36 +10522,22 @@ void MainWindow::SetOverviewRailVisible(bool visible)
         mActionToggleOverviewRail->setChecked(visible);
     }
 
-    if (visible)
+    for (const auto &tab : mTabs)
     {
-        // Attach reparents + shows the widget; its `resizeEvent`
-        // then calls `SetBucketCount(H)` on the model (synchronous
-        // rebuild), so we don't need `Rebuild()` here.
-        mTableView->AttachOverviewRail(mOverviewRailWidget);
+        if (tab != nullptr)
+        {
+            ApplyOverviewRailToView(tab->view.data(), visible);
+        }
+    }
+
+    if (visible && IsFindBarVisible())
+    {
         // Re-push match ticks only while find is visible — same
         // contract as the find-dock hide handlers. Same-H hide→show
         // restores via durable model state; a height change (or a
         // scan that ran while the rail was hidden) needs the
         // re-bucket / rescan path in `PushFindMatchesToOverviewRail`.
-        if (IsFindBarVisible())
-        {
-            PushFindMatchesToOverviewRail();
-        }
-    }
-    else
-    {
-        mTableView->AttachOverviewRail(nullptr);
-        // Reparent to `this` so the widget survives the detach.
-        // `AttachOverviewRail(null)` already dropped the parent.
-        mOverviewRailWidget->setParent(this);
-        mOverviewRailWidget->hide();
-        // Drop the bucket vector so `RebuildInternal` short-circuits
-        // on incoming proxy signals while the rail is hidden.
-        // `SetBucketCount(H)` on the next `showEvent` re-arms it.
-        if (mOverviewRailModel != nullptr)
-        {
-            mOverviewRailModel->SetBucketCount(0);
-        }
+        PushFindMatchesToOverviewRail();
     }
 }
 
@@ -8730,109 +10570,16 @@ void MainWindow::AddTimeRangeFilterFromHistogram(qint64 fromEpochMicros, qint64 
 
 void MainWindow::JumpToAnchor(bool forward)
 {
-    if (mAnchors == nullptr || mTableView == nullptr || mModel == nullptr || mRowOrderProxyModel == nullptr ||
-        mSortFilterProxyModel == nullptr)
+    // Delegate view-local anchor navigation to `LogSessionView`.
+    // Shell forwarder kept so `mActionJumpNextAnchor` /
+    // `mActionJumpPrevAnchor` continue to trigger the migrated
+    // navigation. Status feedback flows via the view's
+    // `statusMessageRequested` signal.
+    if (mSessionView == nullptr)
     {
         return;
     }
-    if (mAnchors->Empty())
-    {
-        statusBar()->showMessage(tr("No anchors set."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
-        return;
-    }
-
-    const QAbstractItemModel *proxyModel = mTableView->model();
-    if (proxyModel == nullptr)
-    {
-        return;
-    }
-    const int proxyRowCount = proxyModel->rowCount();
-    if (proxyRowCount <= 0)
-    {
-        statusBar()->showMessage(tr("No anchored rows are currently visible."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
-        return;
-    }
-
-    // Enumerate anchors rather than walking every proxy row: the
-    // anchor count is bounded by user clicks while the proxy can
-    // be tens of thousands of rows deep on a streaming session.
-    const auto anchorEntries = mAnchors->Entries();
-    std::vector<int> anchoredProxyRows;
-    anchoredProxyRows.reserve(anchorEntries.size());
-    for (const auto &entry : anchorEntries)
-    {
-        const AnchorManager::Key key{.locator = entry.locator, .lineId = entry.lineId};
-        const int sourceRow = mModel->SourceRowForAnchorKey(key);
-        if (sourceRow < 0)
-        {
-            // Anchor outlived its row.
-            continue;
-        }
-        const QModelIndex sourceIdx = mModel->index(sourceRow, 0);
-        const QModelIndex midIdx = mRowOrderProxyModel->mapFromSource(sourceIdx);
-        if (!midIdx.isValid())
-        {
-            continue;
-        }
-        const QModelIndex proxyIdx = mSortFilterProxyModel->mapFromSource(midIdx);
-        if (!proxyIdx.isValid())
-        {
-            // Anchor is filtered out.
-            continue;
-        }
-        anchoredProxyRows.push_back(proxyIdx.row());
-    }
-
-    if (anchoredProxyRows.empty())
-    {
-        // Anchors exist but every one is filtered out.
-        statusBar()->showMessage(tr("No anchored rows are currently visible."), STATUS_BAR_MESSAGE_TIMEOUT_MS);
-        return;
-    }
-
-    // Sort into proxy-row order so next/previous match what the
-    // user sees, not insertion / lineId order.
-    std::ranges::sort(anchoredProxyRows);
-    // Dedup so cross-file lineId collisions count as one stop.
-    anchoredProxyRows.erase(std::ranges::unique(anchoredProxyRows).begin(), anchoredProxyRows.end());
-
-    // Use the current index (survives Ctrl-click selection moves);
-    // with no current index, start before / past the visible range
-    // so the first step lands on the first / last anchored row.
-    int currentProxyRow = -1;
-    if (const QModelIndex curProxy = mTableView->currentIndex(); curProxy.isValid())
-    {
-        currentProxyRow = curProxy.row();
-    }
-    if (currentProxyRow < 0)
-    {
-        currentProxyRow = forward ? -1 : proxyRowCount;
-    }
-
-    int targetProxyRow = -1;
-    if (forward)
-    {
-        // First anchor strictly past the cursor.
-        const auto it = std::ranges::upper_bound(anchoredProxyRows, currentProxyRow);
-        targetProxyRow = (it != anchoredProxyRows.end()) ? *it : anchoredProxyRows.front();
-    }
-    else
-    {
-        // Last anchor strictly before the cursor.
-        const auto it = std::ranges::lower_bound(anchoredProxyRows, currentProxyRow);
-        targetProxyRow = (it != anchoredProxyRows.begin()) ? *(it - 1) : anchoredProxyRows.back();
-    }
-
-    const QModelIndex proxyIdx = proxyModel->index(targetProxyRow, 0);
-    if (!proxyIdx.isValid())
-    {
-        return;
-    }
-
-    mTableView->clearSelection();
-    mTableView->scrollTo(proxyIdx, QAbstractItemView::PositionAtCenter);
-    mTableView->selectionModel()->select(proxyIdx, QItemSelectionModel::Select | QItemSelectionModel::Rows);
-    mTableView->selectionModel()->setCurrentIndex(proxyIdx, QItemSelectionModel::NoUpdate);
+    mSessionView->JumpToAnchor(forward);
 }
 
 void MainWindow::FindRecords(const QString &text, bool next, bool wildcards, bool regularExpressions)
@@ -8902,7 +10649,7 @@ void MainWindow::AddFilter(
     // Drop saved filters that no longer fit the current columns
     // (e.g. a string filter against a column that auto-promoted to
     // enum). `ValidateFilterAgainstColumns` is the shared check;
-    // this pre-guard adapts its result to the legacy status-bar UX.
+    // this pre-guard adapts its result to the existing status-bar UX.
     // The post-editor "missing payload" guards remain inline because
     // they need to delete the editor on failure.
     std::optional<loglib::LeafRule> resolvedFilter = filter;
@@ -9086,10 +10833,27 @@ void MainWindow::AddFilter(
     filterEditor->show();
 }
 
+const std::unordered_map<std::string, loglib::LeafRule> &MainWindow::Filters() const
+{
+    return mSession->SimpleLeaves();
+}
+
 void MainWindow::ResetSimpleFilterState()
 {
-    mSimpleLeaves.clear();
-    mSimpleLeafOrder.clear();
+    ResetSimpleFilterState(mSession);
+}
+
+void MainWindow::ResetSimpleFilterState(LogSession *session)
+{
+    if (session == nullptr)
+    {
+        return;
+    }
+    session->ResetSimpleFilterState();
+    if (session != mSession || ui == nullptr || ui->menuFilters == nullptr)
+    {
+        return;
+    }
     for (QAction *action : ui->menuFilters->actions())
     {
         if (!action->data().toString().isNull())
@@ -9103,6 +10867,10 @@ void MainWindow::ResetSimpleFilterState()
 
 void MainWindow::SyncClearAllFiltersEnabled()
 {
+    if (ui == nullptr || ui->actionClearAllFilters == nullptr)
+    {
+        return;
+    }
     ui->actionClearAllFilters->setDisabled(loglib::IsMatchAll(mModel->Configuration().expression));
     // Status-bar button gates on the same condition via
     // `UpdateRowsShownStatus`; route through it so the two stay in
@@ -9258,10 +11026,11 @@ void MainWindow::ApplyAdvancedFilterResult(loglib::FilterExpression result)
 void MainWindow::ClearFilter(const QString &filterID, bool deferSync)
 {
     const std::string idKey = filterID.toStdString();
-    mSimpleLeaves.erase(idKey);
-    if (const auto it = std::ranges::find(mSimpleLeafOrder, idKey); it != mSimpleLeafOrder.end())
+    mSession->MutableSimpleLeaves().erase(idKey);
+    auto &order = mSession->MutableSimpleLeafOrder();
+    if (const auto it = std::ranges::find(order, idKey); it != order.end())
     {
-        mSimpleLeafOrder.erase(it);
+        order.erase(it);
     }
     if (!deferSync)
     {
@@ -9270,12 +11039,15 @@ void MainWindow::ClearFilter(const QString &filterID, bool deferSync)
     }
     MarkFiltersDirty();
 
-    for (QAction *action : ui->menuFilters->actions())
+    if (ui != nullptr && ui->menuFilters != nullptr)
     {
-        if (!action->data().toString().isNull() && action->data().toString() == filterID)
+        for (QAction *action : ui->menuFilters->actions())
         {
-            ui->menuFilters->removeAction(action);
-            delete action;
+            if (!action->data().toString().isNull() && action->data().toString() == filterID)
+            {
+                ui->menuFilters->removeAction(action);
+                delete action;
+            }
         }
     }
 
@@ -9557,26 +11329,40 @@ QString MainWindow::BuildFilterTitle(const loglib::LeafRule &filter) const
 
 void MainWindow::AddLogFilter(const QString &id, const loglib::LeafRule &filter, bool deferSync)
 {
+    AddLogFilter(mSession, id, filter, deferSync);
+}
+
+void MainWindow::AddLogFilter(LogSession *session, const QString &id, const loglib::LeafRule &filter, bool deferSync)
+{
+    if (session == nullptr)
+    {
+        return;
+    }
     const std::string idKey = id.toStdString();
     // Preserve insertion order in `mSimpleLeafOrder` so the mirror
     // step can rebuild the top-level `And` deterministically.
     // Update-in-place edits (Edit -> OK re-adds under the same
     // UUID) shouldn't append a second entry; the linear scan is
     // cheap for realistic filter counts.
-    if (std::ranges::find(mSimpleLeafOrder, idKey) == mSimpleLeafOrder.end())
+    auto &order = session->MutableSimpleLeafOrder();
+    if (std::ranges::find(order, idKey) == order.end())
     {
-        mSimpleLeafOrder.push_back(idKey);
+        order.push_back(idKey);
     }
-    mSimpleLeaves[idKey] = filter;
+    session->MutableSimpleLeaves()[idKey] = filter;
     if (!deferSync)
     {
-        MirrorSessionStateToConfiguration();
-        UpdateFilters();
+        MirrorSessionStateToConfiguration(session);
+        UpdateFilters(session);
     }
     // Every user-driven filter mutation funnels through here, so one
     // mark-dirty covers them all. Config reloads are silenced by the guard.
-    MarkFiltersDirty();
+    session->MarkFiltersDirty();
 
+    if (session != mSession || ui == nullptr || ui->menuFilters == nullptr)
+    {
+        return;
+    }
     const QString title = BuildFilterTitle(filter);
 
     QMenu *menuItem = ui->menuFilters->addMenu(title);
@@ -9595,8 +11381,8 @@ void MainWindow::AddLogFilter(const QString &id, const loglib::LeafRule &filter,
     // `BuildHeaderContextMenu`.
     // NOLINTNEXTLINE(bugprone-exception-escape)
     connect(editAction, &QAction::triggered, this, [this, id]() {
-        const auto it = mSimpleLeaves.find(id.toStdString());
-        if (it == mSimpleLeaves.end())
+        const auto it = Filters().find(id.toStdString());
+        if (it == Filters().end())
         {
             AddFilter(id);
             return;
@@ -9629,7 +11415,7 @@ void MainWindow::SyncColumnFilterIndicators()
     {
         perColumnTitles.resize(static_cast<size_t>(cols));
         const auto &columns = mModel->Configuration().columns;
-        for (const auto &[id, filter] : mSimpleLeaves)
+        for (const auto &[id, filter] : Filters())
         {
             const int row = ResolveLeafColumnByKeys(filter.columnKeys, columns);
             if (row < 0 || row >= cols)
@@ -9801,24 +11587,41 @@ const loglib::EnumDictionary *MainWindow::ResolveEnumDictionary(int columnIndex)
 
 void MainWindow::ApplyDeferredSortFromConfig()
 {
+    ApplyDeferredSortFromConfig(mSession, mSessionView.data());
+}
+
+void MainWindow::ApplyDeferredSortFromConfig(LogSession *session, LogSessionView *view)
+{
+    if (session == nullptr)
+    {
+        return;
+    }
+    const LogFilterModel *const filter = session->FilterProxy();
+    const LogModel *const model = session->Model();
+    LogTableView *const table = view != nullptr ? view->TableView() : nullptr;
+    if (filter == nullptr || model == nullptr || table == nullptr)
+    {
+        session->SetPendingApplySortFromConfig(false);
+        return;
+    }
     // Always clear the latch so subsequent saves read the proxy's
     // live sort instead of preserving the loaded one.
-    const auto guard = qScopeGuard([this]() { mPendingApplySortFromConfig = false; });
-    if (!mPendingApplySortFromConfig)
+    const auto guard = qScopeGuard([session]() { session->SetPendingApplySortFromConfig(false); });
+    if (!session->HasPendingApplySortFromConfig())
     {
         return;
     }
     // User sorted mid-stream -- their choice wins.
-    if (mSortFilterProxyModel->SortColumn() >= 0)
+    if (filter->SortColumn() >= 0)
     {
         return;
     }
-    const auto &cfgSort = mModel->Configuration().sort;
-    if (cfgSort.columnIndex < 0 || cfgSort.columnIndex >= mModel->columnCount())
+    const auto &cfgSort = model->Configuration().sort;
+    if (cfgSort.columnIndex < 0 || cfgSort.columnIndex >= model->columnCount())
     {
         return;
     }
-    mTableView->sortByColumn(cfgSort.columnIndex, cfgSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder);
+    table->sortByColumn(cfgSort.columnIndex, cfgSort.descending ? Qt::DescendingOrder : Qt::AscendingOrder);
 }
 
 bool MainWindow::EnumFilterFullyResolved(const loglib::LeafRule &filter) const
@@ -9856,13 +11659,28 @@ bool MainWindow::EnumFilterFullyResolved(const loglib::LeafRule &filter) const
 
 void MainWindow::UpdateFilters()
 {
+    UpdateFilters(mSession);
+}
+
+void MainWindow::UpdateFilters(LogSession *session)
+{
+    if (session == nullptr)
+    {
+        return;
+    }
+    LogModel *const model = session->Model();
+    LogFilterModel *const filter = session->FilterProxy();
+    if (model == nullptr || filter == nullptr)
+    {
+        return;
+    }
     // Compile the mirrored `FilterExpression` into a
     // `CompiledFilterExpression` via the shared factory (handles
     // predicate construction, level-column expansion, and
     // cost-based ordering).
     loglib::CompiledFilterExpression compiled =
-        CompileExpression(mModel->Configuration().expression, mModel->Configuration().columns, &mModel->Table());
-    mSortFilterProxyModel->SetFilterExpression(std::move(compiled));
+        CompileExpression(model->Configuration().expression, model->Configuration().columns, &model->Table());
+    filter->SetFilterExpression(std::move(compiled));
 }
 
 void MainWindow::OnHeaderSectionMoved(int logicalIndex, int oldVisualIndex, int newVisualIndex)
@@ -9968,7 +11786,7 @@ void MainWindow::OnSourceColumnsMoved(
 )
 {
     // Flat table model, so nested-parent moves are nonsense. Qt
-    // carries the parents for future-compat; ignore defensively.
+    // carries parent fields for compatibility; ignore defensively.
     if (parent.isValid() || destParent.isValid())
     {
         return;
@@ -10168,9 +11986,9 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
         loglib::LeafRule::Type type;
     };
     std::vector<FilterEntry> filtersForColumn;
-    filtersForColumn.reserve(mSimpleLeaves.size());
+    filtersForColumn.reserve(Filters().size());
     const auto &columnsForResolve = mModel->Configuration().columns;
-    for (const auto &entry : mSimpleLeaves)
+    for (const auto &entry : Filters())
     {
         if (ResolveLeafColumnByKeys(entry.second.columnKeys, columnsForResolve) == logicalColumn)
         {
@@ -10204,8 +12022,8 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
         // Edit action; see `AddLogFilter` for the lint suppression.
         // NOLINTNEXTLINE(bugprone-exception-escape)
         connect(editAction, &QAction::triggered, this, [this, filterId]() {
-            const auto it = mSimpleLeaves.find(filterId.toStdString());
-            if (it == mSimpleLeaves.end())
+            const auto it = Filters().find(filterId.toStdString());
+            if (it == Filters().end())
             {
                 AddFilter(filterId);
                 return;
@@ -10280,7 +12098,7 @@ MainWindow::HeaderContextMenu MainWindow::BuildHeaderContextMenu(int logicalColu
 
         // Re-attach the shared `actionClearSort` so the header
         // menu inherits its text, enabled state, tooltip, and
-        // any future shortcut / icon - one source of truth
+        // every shortcut and icon - one source of truth
         // across every Sort surface. The host menu is built
         // fresh per right-click and `deleteLater`d on dismiss,
         // so re-attaching is safe.
@@ -10621,7 +12439,12 @@ void MainWindow::ExecuteGotoTimestampForTest(const QString &input, std::chrono::
 
 QString MainWindow::LastGotoTimestampInputForTest() const
 {
-    return mLastGotoTimestampInput;
+    // Sticky input state belongs to the view.
+    if (mSessionView == nullptr)
+    {
+        return {};
+    }
+    return mSessionView->LastGotoTimestampInput();
 }
 
 void MainWindow::ForceTimestampsNonMonotonicForTest()
@@ -10715,16 +12538,16 @@ void MainWindow::SetColumnVisible(int logicalIndex, bool visible)
 
 void MainWindow::ApplyColumnVisibility()
 {
-    QHeaderView *header = mTableView->horizontalHeader();
-    if (header == nullptr)
+    // Header visibility is applied by
+    // `LogSessionView::ApplyColumnVisibility`. Shell-scoped
+    // follow-ups (find-cache invalidation + filter-indicator
+    // refresh) stay here because they touch the find dock and
+    // filter menus which belong to shell chrome. This wrapper
+    // preserves the ordering: apply header first, then invalidate
+    // caches.
+    if (mSessionView != nullptr)
     {
-        return;
-    }
-    const auto &columns = mModel->Configuration().columns;
-    const size_t end = std::min(columns.size(), static_cast<size_t>(std::max(0, header->count())));
-    for (size_t i = 0; i < end; ++i)
-    {
-        header->setSectionHidden(static_cast<int>(i), !columns[i].visible);
+        mSessionView->ApplyColumnVisibility();
     }
     // Visibility may have changed without a signal -- this is also
     // called from header-recovery and configuration-load paths. Drop
@@ -10737,41 +12560,17 @@ void MainWindow::ApplyColumnVisibility()
 
 void MainWindow::ApplyLevelCellDelegate()
 {
-    // No-theme test fixture: no delegate, no icon mode.
-    if (mLevelCellDelegate == nullptr || mTableView == nullptr || mModel == nullptr)
+    // Delegate level-cell presentation to `LogSessionView`.
+    // The shell keeps ownership of `mLevelCellDelegate` (per-window
+    // resource, tied to the theme) and passes it into the view so
+    // the view can install/detach it against its table without
+    // reaching back into the shell. `mInstalledLevelDelegateColumn`
+    // migrated to the view alongside.
+    if (mSessionView == nullptr)
     {
         return;
     }
-
-    // Detach in text mode (don't just rely on the delegate's
-    // self-gate) so text-mode paints skip the proxy-chain walk
-    // inside the delegate.
-    const bool iconMode = mModel->IsLevelIconModeActive();
-    const int newColumn = iconMode ? mModel->FirstLevelColumnIndex() : -1;
-
-    // Detach from the previous column when the level column has
-    // moved -- otherwise the delegate would suppress text on the
-    // old column after a reload.
-    if (mInstalledLevelDelegateColumn >= 0 && mInstalledLevelDelegateColumn != newColumn)
-    {
-        // `nullptr` reverts to the default delegate; Qt keeps
-        // ownership of `mLevelCellDelegate` via this `MainWindow`.
-        mTableView->setItemDelegateForColumn(mInstalledLevelDelegateColumn, nullptr);
-        mInstalledLevelDelegateColumn = -1;
-    }
-
-    if (newColumn < 0)
-    {
-        return;
-    }
-
-    if (mInstalledLevelDelegateColumn == newColumn)
-    {
-        return;
-    }
-
-    mTableView->setItemDelegateForColumn(newColumn, mLevelCellDelegate);
-    mInstalledLevelDelegateColumn = newColumn;
+    mSessionView->ApplyLevelCellDelegate(mLevelCellDelegate);
 }
 
 void MainWindow::RebuildViewMenu()
@@ -10946,17 +12745,5 @@ std::vector<QString> MainWindow::BuildAllColumnMenuLabels() const
 
 int MainWindow::FindColumnIndexByKeys(const std::vector<std::string> &keys) const
 {
-    if (keys.empty())
-    {
-        return -1;
-    }
-    const auto &columns = mModel->Configuration().columns;
-    for (size_t i = 0; i < columns.size(); ++i)
-    {
-        if (columns[i].keys == keys)
-        {
-            return static_cast<int>(i);
-        }
-    }
-    return -1;
+    return mSession->FindColumnIndexByKeys(keys);
 }

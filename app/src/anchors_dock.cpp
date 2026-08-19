@@ -1,6 +1,8 @@
 #include "anchors_dock.hpp"
 
 #include "log_model.hpp"
+#include "log_session.hpp"
+#include "session_bind_context.hpp"
 #include "theme_control.hpp"
 
 #include <QAction>
@@ -302,25 +304,9 @@ AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *
     // tree and drop an in-flight inline note edit. Bulk resets
     // (`ClearAll`, `Replace`, multi-key ops) take the full-rebuild
     // path -- rare during active editing.
-    if (mAnchors != nullptr)
-    {
-        connect(mAnchors, &AnchorManager::anchorChanged, this, &AnchorsDock::OnAnchorChanged);
-        connect(mAnchors, &AnchorManager::anchorNoteChanged, this, &AnchorsDock::OnAnchorNoteChanged);
-        connect(mAnchors, &AnchorManager::anchorsReset, this, [this]() { Refresh(); });
-    }
-
-    // `modelReset` matters: a streamed batch can promote a previously
-    // empty locator and change the resolved filename column.
-    if (mModel != nullptr)
-    {
-        connect(mModel, &QAbstractItemModel::modelReset, this, [this]() { Refresh(); });
-    }
-
-    // Theme switch repaints all swatches.
-    if (mTheme != nullptr)
-    {
-        connect(mTheme, &ThemeControl::themeChanged, this, [this]() { Refresh(); });
-    }
+    //
+    // Session-owned sender connections are cleared together on rebind.
+    InstallSessionSubscriptions();
 
     // Two paths into the jump handler: `itemDoubleClicked` is the
     // primary mouse gesture (always fires on left double-click);
@@ -350,6 +336,157 @@ AnchorsDock::AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *
             RefreshAlways();
         }
     });
+}
+
+void AnchorsDock::InstallSessionSubscriptions()
+{
+    if (mAnchors != nullptr)
+    {
+        mSessionConnections += connect(mAnchors, &AnchorManager::anchorChanged, this, &AnchorsDock::OnAnchorChanged);
+        mSessionConnections +=
+            connect(mAnchors, &AnchorManager::anchorNoteChanged, this, &AnchorsDock::OnAnchorNoteChanged);
+        mSessionConnections += connect(mAnchors, &AnchorManager::anchorsReset, this, [this]() { Refresh(); });
+    }
+
+    // `modelReset` matters: a streamed batch can promote a previously
+    // empty locator and change the resolved filename column.
+    if (mModel != nullptr)
+    {
+        mSessionConnections += connect(mModel, &QAbstractItemModel::modelReset, this, [this]() { Refresh(); });
+    }
+
+    // Theme switch repaints all swatches.
+    if (mTheme != nullptr)
+    {
+        mSessionConnections += connect(mTheme, &ThemeControl::themeChanged, this, [this]() { Refresh(); });
+    }
+}
+
+void AnchorsDock::CloseInPlaceEditors()
+{
+    if (mTree == nullptr)
+    {
+        return;
+    }
+    // Drop selection + focus so any active inline editor loses
+    // focus and its delegate closes. A mid-edit rebind must NOT
+    // flow the pending text change into the outgoing session's
+    // `AnchorManager` -- the `mSuppressItemChanged` counter
+    // silently drops the commit's `itemChanged` emit in case the
+    // delegate's focus-out commits before the pointer swap.
+    // `QAbstractItemView::setState`/`NoState` would be more direct
+    // but both are protected; the focus/current dance produces
+    // the same visible behaviour without breaking encapsulation.
+    ++mSuppressItemChanged;
+    mTree->setCurrentItem(nullptr);
+    mTree->clearFocus();
+    --mSuppressItemChanged;
+}
+
+void AnchorsDock::Bind(const SessionBindContext &context)
+{
+    // Skip only when every live alias already matches the context.
+    LogSession *outgoing = mBoundSession.data();
+    LogSession *incoming = context.session.data();
+    if (outgoing == incoming && outgoing != nullptr && mAnchors == context.anchors.data() &&
+        mModel == context.model.data() && (context.theme == nullptr || mTheme == context.theme))
+    {
+        return;
+    }
+
+    // Save the outgoing current anchor by stable key for later restore.
+    if (outgoing != nullptr && mTree != nullptr)
+    {
+        SessionAnchorsSelection &selection = outgoing->MutableAnchorsSelection();
+        if (const QTreeWidgetItem *current = mTree->currentItem(); current != nullptr)
+        {
+            selection.keyLocator = current->data(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE).toString().toStdString();
+            selection.keyLineId = current->data(COLUMN_ANCHOR, ANCHOR_KEY_LINE_ID_ROLE).toULongLong();
+        }
+        else
+        {
+            selection.keyLocator.clear();
+            selection.keyLineId = 0;
+        }
+    }
+
+    // Disconnect before swapping aliases.
+    mSessionConnections.Clear();
+
+    // Prevent an editor commit into the outgoing anchor manager.
+    CloseInPlaceEditors();
+
+    // Clear under suppression so item destruction cannot write notes.
+    {
+        ++mSuppressItemChanged;
+        const auto suppressGuard = qScopeGuard([this] { --mSuppressItemChanged; });
+        if (mTree != nullptr)
+        {
+            mTree->clear();
+        }
+    }
+
+    // A null incoming theme retains the window-scoped theme alias.
+    mAnchors = context.anchors.data();
+    mModel = context.model.data();
+    if (context.theme != nullptr)
+    {
+        mTheme = context.theme;
+    }
+
+    mBoundSession = incoming;
+
+    InstallSessionSubscriptions();
+
+    // Hidden docks defer population until they become visible.
+    Refresh();
+
+    // Restore by stable key after the tree is populated.
+    if (incoming != nullptr && mTree != nullptr && mTree->topLevelItemCount() > 0)
+    {
+        const SessionAnchorsSelection &selection = incoming->AnchorsSelection();
+        if (!selection.keyLocator.empty() || selection.keyLineId != 0)
+        {
+            const QString wantLocator = QString::fromStdString(selection.keyLocator);
+            const auto wantLineId = static_cast<qulonglong>(selection.keyLineId);
+            for (int i = 0; i < mTree->topLevelItemCount(); ++i)
+            {
+                QTreeWidgetItem *candidate = mTree->topLevelItem(i);
+                if (candidate == nullptr)
+                {
+                    continue;
+                }
+                const QString itemLocator = candidate->data(COLUMN_ANCHOR, ANCHOR_KEY_LOCATOR_ROLE).toString();
+                const auto itemLineId = candidate->data(COLUMN_ANCHOR, ANCHOR_KEY_LINE_ID_ROLE).toULongLong();
+                if (itemLocator == wantLocator && itemLineId == wantLineId)
+                {
+                    mTree->setCurrentItem(candidate);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+void AnchorsDock::Unbind()
+{
+    mSessionConnections.Clear();
+    CloseInPlaceEditors();
+    ++mSuppressItemChanged;
+    if (mTree != nullptr)
+    {
+        mTree->clear();
+    }
+    --mSuppressItemChanged;
+    mAnchors = nullptr;
+    mModel = nullptr;
+    // The window-scoped theme survives session unbinds.
+    mBoundSession = nullptr;
+}
+
+LogSession *AnchorsDock::boundSessionForTest() const noexcept
+{
+    return mBoundSession.data();
 }
 
 void AnchorsDock::Refresh()

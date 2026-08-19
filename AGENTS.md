@@ -2,6 +2,33 @@
 
 This file is the binding, agent-facing summary. Read it before running a build or test. Humans should use [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full development guide.
 
+## Comments and Doxygen
+
+Public and non-obvious C++ APIs use Doxygen. Match the style in
+[`app/include/histogram_model.hpp`](app/include/histogram_model.hpp).
+
+- Use `/** … */`. Start with a one-sentence `@brief` in present tense.
+- Trivial members may be a single line: `/** @brief Clears the bucket-size pin and applies automatic sizing. */`
+- When the brief is not enough, add a blank line, then short paragraphs that describe **current** behavior only. Name other APIs in backticks.
+- Document parameters and results after another blank line with `@param name …` and `@return …`.
+- Keep comments easy to read. Do not mention tasks, PRDs, phases, review rounds, or previous/legacy behavior.
+
+```cpp
+/**
+ * @brief Replaces the borrowed log and anchor sources.
+ *
+ * Pending notification is canceled, old subscriptions are removed,
+ * bucket state is reset, and new subscriptions are installed. A
+ * deferred bind still refreshes column availability and accepts
+ * incremental appends; `PumpDeferredBind()` completes the full pass.
+ *
+ * @param logModel Log model to observe, or `nullptr`.
+ * @param anchors Anchor manager to observe, or `nullptr`.
+ * @param deferRebuild Whether to postpone the full rebuild and auto-size pass.
+ */
+void BindSources(LogModel *logModel, AnchorManager *anchors, bool deferRebuild = false);
+```
+
 ## Non-negotiable rules
 
 - Run commands from the repository root.
