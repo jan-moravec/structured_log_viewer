@@ -137,6 +137,26 @@ void LogSessionView::Initialise(ThemeControl *theme)
     }
 }
 
+void LogSessionView::SetOverviewRailVisible(bool visible)
+{
+    if (mTableView == nullptr || mOverviewRailWidget == nullptr)
+    {
+        return;
+    }
+    if (visible)
+    {
+        mTableView->AttachOverviewRail(mOverviewRailWidget);
+        return;
+    }
+    mTableView->AttachOverviewRail(nullptr);
+    mOverviewRailWidget->setParent(this);
+    mOverviewRailWidget->hide();
+    if (mOverviewRailModel != nullptr)
+    {
+        mOverviewRailModel->SetBucketCount(0);
+    }
+}
+
 void LogSessionView::SelectSourceRow(int sourceRow)
 {
     // Status presentation remains outside the session view.

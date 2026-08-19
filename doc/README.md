@@ -460,7 +460,7 @@ Anchors let you mark notable rows with one of eight colours, attach a short free
 
 ### Navigating between anchors
 
-- `F2` jumps to the next anchored row in the current visible order (sort + filter + [newest-first](#newest-lines-first) orientation are honoured).
+- `F2` jumps to the next anchored row in the current visible order (sort + filter + [newest-first](#newest-lines-first) orientation are honoured). When the tab strip has focus, `F2` renames the current tab instead.
 - `Shift+F2` jumps to the previous one. Both wrap at the visible bounds.
 - Anchors filtered out of the visible table are skipped; the status bar shows an explanation if every anchor is currently filtered.
 
@@ -568,7 +568,7 @@ In [Stream Mode](#stream-mode-live-tail) and [Network Stream Mode](#network-stre
 
 The **Overview Rail** is a thin vertical strip along the right edge of the log table. It condenses the whole proxy-filtered stream into ~one row of pixels per bucket, so you can see where matches, anchors, and clusters of high-severity rows sit without scrolling.
 
-The rail is on by default; toggle it from **View → Overview Rail** (`Ctrl+Shift+R`) or the toolbar's rail icon. Visibility is persisted in `QSettings` so a re-opened window restores your preference.
+The rail is on by default; toggle it from **View → Overview Rail** (`Ctrl+Shift+R`) or the toolbar's rail icon. The preference is window-wide: every tab in that window shows or hides the rail together, including tabs opened after the toggle. Visibility is persisted in `QSettings` so a re-opened window restores your preference.
 
 Width is DPI-fluent (anchored to the system scrollbar extent) and selectable in **Settings → Preferences** as **Narrow**, **Medium** (default), or **Wide**. Medium is about 1.5× the compact Narrow strip; Wide is 2× — useful when stacked severity bands need more room on Hi-DPI displays.
 
@@ -726,6 +726,7 @@ Every window hosts a tab strip for independent investigations. Each tab keeps it
 ### Opening and closing tabs
 
 - **File → New Tab** (`Ctrl+T`) opens an empty tab.
+- **File → Rename Tab** (or right-click the tab; `F2` while the tab strip is focused) assigns a custom title. Clear the name to restore automatic naming. Custom titles persist with the workspace.
 - **File → Close Tab** (`Ctrl+W`) closes the current tab. Closing the last tab uses the same close decision as any other tab and then closes the window.
 - **File → Open in New Tab…** loads selected files into a new foreground tab.
 - A **Recent Sessions** entry opens in a foreground tab, reusing the active tab when it is empty. Files forwarded from the OS or another app instance follow the same empty-tab behavior in the most-recently-focused window.
@@ -740,7 +741,7 @@ Every window hosts a tab strip for independent investigations. Each tab keeps it
 
 ### Tab labels and indicators
 
-- While a source operation is active, the tab uses its current display label (a file basename or the stdin / network producer label). When no display label is set, including an idle empty tab, it reads `Untitled`. Long labels may elide visually; the tooltip keeps the full source, operation, unsaved-change, and parse-error text.
+- While a source is bound, the tab uses the same automatic name as **File → Recent Sessions**: a file basename, `name + N more` for multi-file opens, or the stdin / network locator. Empty tabs with no saved name read `Untitled`. After a launch restore, network and stdin placeholders keep the name they had when the workspace was saved. Right-click a tab and choose **Rename Tab**, use **File → Rename Tab**, or press `F2` while the tab strip is focused to assign a custom title. Clear the name to restore automatic naming. Custom titles persist with the workspace. Long labels may elide visually; the tooltip keeps the full source, operation, unsaved-change, and parse-error text.
 - Each tab includes a localized operation word so status is not colour-only: Idle, Ingesting, Decompressing, Exporting, Parsing, Waiting, Paused, Disconnected, or Failed. A glyph may prefix the label (`▶`, `↻`, `⇧`, `…`, `⧖`, `⏸`, `∅`, `⚠`) but is never the only representation.
 - The label ends with `●` for unsaved session changes, including an unsaved Highlight Rules draft, and `!` when parse errors are present.
 
@@ -761,7 +762,7 @@ Close Tab, Close Window, quit, **New Session**, and a destructive file replace s
 - On the next launch, the application restores saved windows, tab order, and the selected tab. Up to 25 windows restore immediately; any extras stay deferred and are kept across a later normal quit so they can restore on a following launch.
 - File-backed sessions reopen from their saved session when the files are still available.
 - A saved live-tail tab restores as a static file session from that path. It does not start tailing. Use **File → Open Log Stream…** if you need to follow the file again.
-- Network and stdin entries restore as empty `Untitled` tabs. Open the network stream again from **File → Open Network Stream…**; relaunch with `-` or `--stdin` to attach standard input again.
+- Network and stdin entries restore as empty tabs that keep their last automatic name. Open the network stream again from **File → Open Network Stream…**; relaunch with `-` or `--stdin` to attach standard input again.
 - A tab that fails to reopen does not stop restoration of the remaining tabs or windows.
 
 ## Themes
@@ -819,6 +820,7 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 | Action                         | Shortcut                       |
 | ------------------------------ | ------------------------------ |
 | New tab                        | `Ctrl+T`                       |
+| Rename tab                     | `F2` (tab strip focused)       |
 | Close tab                      | `Ctrl+W`                       |
 | Next tab                       | `Ctrl+Tab` / `Ctrl+PgDown`     |
 | Previous tab                   | `Ctrl+Shift+Tab` / `Ctrl+PgUp` |
@@ -842,7 +844,7 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 | Anchor selection (colour 1..8) | `Ctrl+1` … `Ctrl+8`            |
 | Remove anchor from selection   | `Ctrl+0`                       |
 | Clear every anchor             | `Ctrl+Shift+A`                 |
-| Jump to next anchor            | `F2`                           |
+| Jump to next anchor            | `F2` (table focused)           |
 | Jump to previous anchor        | `Shift+F2`                     |
 | Edit anchor note               | `F4`                           |
 | Pause / Resume stream          | `Ctrl+Shift+P`                 |

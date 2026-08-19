@@ -27,11 +27,15 @@
 #include <QAction>
 #include <QApplication>
 #include <QByteArray>
+#include <QCoreApplication>
 #include <QDir>
 #include <QDockWidget>
 #include <QDropEvent>
+#include <QEvent>
 #include <QFile>
+#include <QKeyEvent>
 #include <QKeySequence>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMimeData>
 #include <QObject>
@@ -1016,6 +1020,7 @@ private slots:
         bool sawNextTab = false;
         bool sawPrevTab = false;
         bool sawOpenInNewTab = false;
+        bool sawRenameTab = false;
         bool sawShortcutCollision = false;
         for (const QAction *action : window.actions())
         {
@@ -1049,8 +1054,15 @@ private slots:
             {
                 sawPrevTab = true;
             }
-            // Open in New Tab intentionally has menu and toolbar
-            // exposure but no shortcut.
+            if (action->objectName() == QStringLiteral("actionRenameTab") ||
+                action->text().contains(QStringLiteral("Rename Tab")))
+            {
+                sawRenameTab = true;
+                QVERIFY2(
+                    action->shortcut().isEmpty(),
+                    "Rename Tab must not take window-scope F2; that shortcut jumps to the next anchor."
+                );
+            }
             if (action->objectName() == QStringLiteral("actionOpenInNewTab") ||
                 action->text().contains(QStringLiteral("Open in New Tab")))
             {
@@ -1066,6 +1078,7 @@ private slots:
         QVERIFY(sawNextTab);
         QVERIFY(sawPrevTab);
         QVERIFY(sawOpenInNewTab);
+        QVERIFY(sawRenameTab);
         // Nothing else in the window may own `Ctrl+Shift+T`.
         for (const QAction *action : window.actions())
         {
@@ -2070,6 +2083,7 @@ private slots:
         const auto empty = window.CaptureWorkspaceWindow();
         QVERIFY(!empty.tabs.empty());
         QCOMPARE(empty.tabs.front().sourceMode, SourceMode::Empty);
+        QVERIFY(empty.tabs.front().label.isEmpty());
 
         // Pin a uuid (mirrors what `OpenRecentSession` /
         // `AutoSaveSessionSnapshot` do after loading a
@@ -2081,6 +2095,110 @@ private slots:
         QVERIFY(!configOnly.tabs.empty());
         QCOMPARE(configOnly.tabs.front().sourceMode, SourceMode::ConfigOnly);
         QCOMPARE(configOnly.tabs.front().sessionUuid, session->RestorableSessionUuid());
+    }
+
+    static void TestCaptureWorkspaceRecordsAutomaticTabLabels()
+    {
+        MainWindow window;
+        LogSession *session = window.activeSession();
+        QVERIFY(session != nullptr);
+        if (session == nullptr)
+        {
+            return;
+        }
+
+        loglib::LogConfiguration::Source fileSource;
+        fileSource.kind = loglib::LogConfiguration::Source::Kind::File;
+        fileSource.locators = {std::string{"C:/logs/app.log"}, std::string{"C:/logs/app.log.1"}};
+        session->MutableCurrentSource() = fileSource;
+        session->NotifyPresentationChanged();
+        const auto captured = window.CaptureWorkspaceWindow();
+        QVERIFY(!captured.tabs.empty());
+        QCOMPARE(captured.tabs.front().label, QStringLiteral("app.log + 1 more"));
+        QVERIFY(captured.tabs.front().customLabel.isEmpty());
+    }
+
+    static void TestCustomTabRenamePersistsInWorkspaceSnapshot()
+    {
+        MainWindow window;
+        LogSession *session = window.activeSession();
+        QVERIFY(session != nullptr);
+        if (session == nullptr)
+        {
+            return;
+        }
+
+        loglib::LogConfiguration::Source fileSource;
+        fileSource.kind = loglib::LogConfiguration::Source::Kind::File;
+        fileSource.locators = {std::string{"C:/logs/app.log"}};
+        session->MutableCurrentSource() = fileSource;
+        session->NotifyPresentationChanged();
+        window.RenameTabForTest(0, QStringLiteral("Incident 42"));
+        QCOMPARE(window.TabWidgetForTest()->tabText(0), QStringLiteral("Incident 42"));
+        QCOMPARE(session->CustomTabLabel(), QStringLiteral("Incident 42"));
+
+        const auto captured = window.CaptureWorkspaceWindow();
+        QVERIFY(!captured.tabs.empty());
+        QCOMPARE(captured.tabs.front().customLabel, QStringLiteral("Incident 42"));
+        QCOMPARE(captured.tabs.front().label, QStringLiteral("Incident 42"));
+
+        window.RenameTabForTest(0, QString{});
+        QCOMPARE(session->CustomTabLabel(), QString{});
+        QCOMPARE(window.TabWidgetForTest()->tabText(0), QStringLiteral("app.log"));
+    }
+
+    static void TestWorkspaceRestoreAppliesCustomTabLabel()
+    {
+        slv::persistence::WorkspaceWindow snapshot;
+        snapshot.windowUuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        snapshot.tabs.resize(1);
+        snapshot.tabs[0].label = QStringLiteral("app.log");
+        snapshot.tabs[0].customLabel = QStringLiteral("Incident 42");
+        snapshot.tabs[0].sourceMode = slv::persistence::SourceMode::File;
+
+        MainWindow restored;
+        restored.SetSuppressDialogsForTest(true);
+        restored.ApplyWorkspaceWindow(snapshot, /*generation=*/0);
+        QCOMPARE(restored.TabCount(), 1);
+        QCOMPARE(restored.TabWidgetForTest()->tabText(0), QStringLiteral("Incident 42"));
+        QVERIFY(restored.activeSession() != nullptr);
+        QCOMPARE(restored.activeSession()->CustomTabLabel(), QStringLiteral("Incident 42"));
+    }
+
+    static void TestNewSessionClearsCustomTabLabel()
+    {
+        MainWindow window;
+        window.SetSuppressDialogsForTest(true);
+        window.RenameTabForTest(0, QStringLiteral("Keep this"));
+        QCOMPARE(window.TabWidgetForTest()->tabText(0), QStringLiteral("Keep this"));
+        window.NewSessionForTest();
+        QVERIFY(window.activeSession() != nullptr);
+        QVERIFY(window.activeSession()->CustomTabLabel().isEmpty());
+        QVERIFY(window.TabWidgetForTest()->tabText(0).startsWith(QStringLiteral("Untitled")));
+    }
+
+    static void TestTabBarF2StartsInlineRename()
+    {
+        MainWindow window;
+        QVERIFY(window.TabWidgetForTest() != nullptr);
+        QTabBar *bar = window.TabWidgetForTest()->tabBar();
+        QVERIFY(bar != nullptr);
+        bar->setFocus(Qt::OtherFocusReason);
+
+        QKeyEvent overrideEvent(QEvent::ShortcutOverride, Qt::Key_F2, Qt::NoModifier);
+        QApplication::sendEvent(bar, &overrideEvent);
+        QVERIFY2(overrideEvent.isAccepted(), "F2 on the tab strip must shadow jump-to-next-anchor");
+
+        window.StartTabRenameForTest(0);
+        auto *editor = bar->findChild<QLineEdit *>(QStringLiteral("tabRenameEditor"));
+        QVERIFY(editor != nullptr);
+        QCOMPARE(editor->text(), QStringLiteral("Untitled"));
+        editor->setText(QStringLiteral("Renamed"));
+        QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+        QApplication::sendEvent(editor, &enter);
+        QTRY_COMPARE(window.TabWidgetForTest()->tabText(0), QStringLiteral("Renamed"));
+        QVERIFY(window.activeSession() != nullptr);
+        QCOMPARE(window.activeSession()->CustomTabLabel(), QStringLiteral("Renamed"));
     }
 
     // `NewSession()` must
@@ -3210,6 +3328,168 @@ private slots:
         QVERIFY(peerSession != nullptr);
         QTRY_VERIFY_WITH_TIMEOUT(peerSession->Model() != nullptr && peerSession->Model()->rowCount() > 0, 5000);
         QVERIFY(!peerSession->IsLiveTailSession());
+    }
+
+    static void TestCloseEventCachesWorkspaceSnapshotForQuit()
+    {
+        const ScopedWorkspaceTestPaths paths;
+        SessionHistoryManager manager(
+            slv::persistence::WorkspacePersistence::DefaultWorkspaceDir(),
+            std::make_unique<InMemoryRecentsIndexStorage>()
+        );
+        QTemporaryDir logs;
+        QVERIFY(logs.isValid());
+        const QString firstPath = WriteJsonlFixture(logs.filePath(QStringLiteral("first.jsonl")), 4);
+        const QString secondPath = WriteJsonlFixture(logs.filePath(QStringLiteral("second.jsonl")), 5);
+        QVERIFY(!firstPath.isEmpty() && !secondPath.isEmpty());
+
+        MainWindow window(nullptr, &manager, nullptr);
+        window.SetSuppressDialogsForTest(true);
+        LoadFileIntoActiveTab(window, firstPath);
+        window.AddNewTabForTest(/*makeActive=*/true);
+        LoadFileIntoActiveTab(window, secondPath);
+        window.AutoSaveAllHostedSessions(/*publishOpenWindow=*/false);
+
+        const slv::persistence::WorkspaceWindow beforeClose = window.CaptureWorkspaceWindow();
+        QCOMPARE(beforeClose.tabs.size(), std::size_t{2});
+        QVERIFY(!beforeClose.tabs[0].sessionUuid.isEmpty());
+        QVERIFY(!beforeClose.tabs[1].sessionUuid.isEmpty());
+        QCOMPARE(beforeClose.tabs[0].sourceMode, slv::persistence::SourceMode::File);
+        QCOMPARE(beforeClose.tabs[1].sourceMode, slv::persistence::SourceMode::File);
+
+        QVERIFY(window.close());
+        QCoreApplication::processEvents();
+
+        const slv::persistence::WorkspaceWindow forQuit = window.WorkspaceSnapshotForQuit();
+        QCOMPARE(forQuit.tabs.size(), std::size_t{2});
+        QCOMPARE(forQuit.tabs[0].sessionUuid, beforeClose.tabs[0].sessionUuid);
+        QCOMPARE(forQuit.tabs[1].sessionUuid, beforeClose.tabs[1].sessionUuid);
+        QCOMPARE(forQuit.tabs[0].sourceMode, slv::persistence::SourceMode::File);
+        QCOMPARE(forQuit.tabs[1].sourceMode, slv::persistence::SourceMode::File);
+
+        const slv::persistence::WorkspaceWindow afterWipe = window.CaptureWorkspaceWindow();
+        QVERIFY2(
+            afterWipe.tabs[0].sessionUuid.isEmpty() && afterWipe.tabs[1].sessionUuid.isEmpty(),
+            "closeEvent still detaches restorable identity so aboutToQuit does not "
+            "republish the closed window into openWindowsAtQuit"
+        );
+        QVERIFY(window.RestorableActiveSessionUuid().isEmpty());
+    }
+
+    static void TestWorkspaceRestoreRotationFamilyAndSiblingTab()
+    {
+        const ScopedWorkspaceTestPaths paths;
+        SessionHistoryManager manager(
+            slv::persistence::WorkspacePersistence::DefaultWorkspaceDir(),
+            std::make_unique<InMemoryRecentsIndexStorage>()
+        );
+        QTemporaryDir logs;
+        QVERIFY(logs.isValid());
+        const QString primary = WriteJsonlFixture(logs.filePath(QStringLiteral("app.jsonl")), 3);
+        QVERIFY(!WriteJsonlFixture(logs.filePath(QStringLiteral("app.jsonl.1")), 2).isEmpty());
+        QVERIFY(!WriteJsonlFixture(logs.filePath(QStringLiteral("app.jsonl.2")), 2).isEmpty());
+        const QString sibling = WriteJsonlFixture(logs.filePath(QStringLiteral("other.jsonl")), 4);
+        QVERIFY(!primary.isEmpty() && !sibling.isEmpty());
+
+        MainWindow source(nullptr, &manager, nullptr);
+        source.SetSuppressDialogsForTest(true);
+        LogModel *primaryModel = source.activeSession() != nullptr ? source.activeSession()->Model() : nullptr;
+        QVERIFY(primaryModel != nullptr);
+        const QSignalSpy primarySpy(primaryModel, &LogModel::streamingFinished);
+        QCOMPARE(
+            source.OpenMixedFilesForTest({primary}, MainWindow::OpenMode::Replace),
+            MainWindow::MixedInputDispatch::QueuedLogsOnly
+        );
+        QTRY_VERIFY_WITH_TIMEOUT(primarySpy.count() >= 1, 8000);
+        LogSession *rotated = source.activeSession();
+        QVERIFY(rotated != nullptr);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            rotated->CurrentSource().has_value() && rotated->CurrentSource()->locators.size() >= 2, 8000
+        );
+        QCOMPARE(rotated->CurrentSource()->kind, loglib::LogConfiguration::Source::Kind::File);
+
+        source.AddNewTabForTest(/*makeActive=*/true);
+        LoadFileIntoActiveTab(source, sibling);
+
+        source.AutoSaveAllHostedSessions(/*publishOpenWindow=*/false);
+        slv::persistence::WorkspaceWindow captured = source.CaptureWorkspaceWindow();
+        QCOMPARE(captured.tabs.size(), std::size_t{2});
+        QCOMPARE(captured.tabs[0].sourceMode, slv::persistence::SourceMode::MultiFile);
+        QCOMPARE(captured.tabs[1].sourceMode, slv::persistence::SourceMode::File);
+        QVERIFY(!captured.tabs[0].sessionUuid.isEmpty());
+        QVERIFY(!captured.tabs[1].sessionUuid.isEmpty());
+
+        slv::persistence::Workspace workspace;
+        workspace.schemaVersion = slv::persistence::WorkspacePersistence::SCHEMA_VERSION;
+        workspace.windows.push_back(captured);
+        QVERIFY(slv::persistence::WorkspacePersistence::Publish(workspace));
+        const slv::persistence::Workspace published = slv::persistence::WorkspacePersistence::Read();
+
+        MainWindow restored(nullptr, &manager, nullptr);
+        restored.SetSuppressDialogsForTest(true);
+        restored.ApplyWorkspaceWindow(published.windows[0], published.generation);
+        QCOMPARE(restored.TabCount(), 2);
+
+        LogSession *restoredRotated = restored.SessionAtTab(0);
+        QVERIFY(restoredRotated != nullptr);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            restoredRotated->Model() != nullptr && restoredRotated->Model()->rowCount() >= 5, 8000
+        );
+        QVERIFY(restoredRotated->CurrentSource().has_value());
+        QVERIFY2(
+            restoredRotated->CurrentSource()->locators.size() >= 2,
+            "restored rotation tab must reopen every companion locator"
+        );
+
+        LogSession *restoredSibling = restored.SessionAtTab(1);
+        QVERIFY(restoredSibling != nullptr);
+        QTRY_VERIFY_WITH_TIMEOUT(restoredSibling->Model() != nullptr && restoredSibling->Model()->rowCount() > 0, 8000);
+    }
+
+    static void TestWorkspaceRestoreEmptyTabsWithSavedChromeDoesNotCrash()
+    {
+        const ScopedWorkspaceTestPaths paths;
+        slv::persistence::WorkspaceWindow window;
+        window.windowUuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        window.activeTabIndex = 2;
+        window.tabs.resize(3);
+        window.tabs[0].label = QStringLiteral("app.log");
+        window.tabs[1].label = QStringLiteral("tcp://127.0.0.1:9000");
+        window.tabs[2].label = QStringLiteral("<stdin>");
+        window.tabs[1].sourceMode = slv::persistence::SourceMode::Network;
+        window.tabs[2].sourceMode = slv::persistence::SourceMode::Stdin;
+
+        MainWindow chromeSource;
+        chromeSource.SetSuppressDialogsForTest(true);
+        auto *histogram = chromeSource.findChild<QDockWidget *>(QStringLiteral("histogramDock"));
+        QVERIFY2(histogram != nullptr, "MainWindow must own histogramDock");
+        histogram->show();
+        window.geometry = chromeSource.saveGeometry();
+        window.dockState = chromeSource.saveState();
+        QVERIFY(!window.dockState.isEmpty());
+
+        MainWindow restored(nullptr, nullptr, nullptr, nullptr, MainWindow::ChromeRestore::Deferred);
+        restored.SetSuppressDialogsForTest(true);
+        restored.ApplyWorkspaceWindow(window, /*generation=*/0);
+        restored.show();
+        QCoreApplication::processEvents();
+        QCOMPARE(restored.TabCount(), 3);
+        QCOMPARE(restored.TabWidgetForTest()->currentIndex(), 2);
+        QCOMPARE(restored.TabWidgetForTest()->tabText(0), QStringLiteral("app.log"));
+        QCOMPARE(restored.TabWidgetForTest()->tabText(1), QStringLiteral("tcp://127.0.0.1:9000"));
+        QCOMPARE(restored.TabWidgetForTest()->tabText(2), QStringLiteral("<stdin>"));
+
+        MainWindow restoredVisible;
+        restoredVisible.SetSuppressDialogsForTest(true);
+        restoredVisible.show();
+        QCoreApplication::processEvents();
+        restoredVisible.ApplyWorkspaceWindow(window, /*generation=*/0);
+        QCoreApplication::processEvents();
+        QCOMPARE(restoredVisible.TabCount(), 3);
+        QCOMPARE(restoredVisible.TabWidgetForTest()->currentIndex(), 2);
+        QCOMPARE(restoredVisible.TabWidgetForTest()->tabText(0), QStringLiteral("app.log"));
+        QCOMPARE(restoredVisible.TabWidgetForTest()->tabText(1), QStringLiteral("tcp://127.0.0.1:9000"));
+        QCOMPARE(restoredVisible.TabWidgetForTest()->tabText(2), QStringLiteral("<stdin>"));
     }
 };
 

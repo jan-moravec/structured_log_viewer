@@ -312,8 +312,26 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
         snapshot.dirty.ephemeralUnreproducible = !isFile || (isFile && mMode == Mode::LiveTail);
     }
 
-    // Keep full source text out of the compact tab label.
-    if (!mStreamingFileName.isEmpty())
+    // Keep full source text out of the compact tab label. File sources
+    // use the same automatic name as Recent Sessions (`basename` or
+    // `basename + N more`). Streaming display names cover network /
+    // stdin producers. A workspace-restored placeholder can keep a
+    // captured fallback name.
+    if (mCurrentSource.has_value() && !mCurrentSource->locators.empty() &&
+        mCurrentSource->kind == loglib::LogConfiguration::Source::Kind::File)
+    {
+        loglib::LogConfiguration named;
+        named.source = mCurrentSource;
+        snapshot.shortLabel = SessionHistoryManager::BuildLabel(named);
+        snapshot.tooltip = QString::fromStdString(mCurrentSource->locators.front());
+        snapshot.sourceLabel = snapshot.tooltip;
+        if (snapshot.tooltip.isEmpty() && !mStreamingFileName.isEmpty())
+        {
+            snapshot.tooltip = mStreamingFileName;
+            snapshot.sourceLabel = mStreamingFileName;
+        }
+    }
+    else if (!mStreamingFileName.isEmpty())
     {
         snapshot.tooltip = mStreamingFileName;
         snapshot.sourceLabel = mStreamingFileName;
@@ -323,6 +341,33 @@ SessionPresentationSnapshot LogSession::PresentationSnapshot() const
         // back to the seed so the tab title still shows *something*
         // rather than a mysterious empty label.
         snapshot.shortLabel = basename.isEmpty() ? mStreamingFileName : basename;
+    }
+    else if (mCurrentSource.has_value() && !mCurrentSource->locators.empty())
+    {
+        loglib::LogConfiguration named;
+        named.source = mCurrentSource;
+        snapshot.shortLabel = SessionHistoryManager::BuildLabel(named);
+        snapshot.tooltip = snapshot.shortLabel;
+        snapshot.sourceLabel = snapshot.shortLabel;
+    }
+    else if (!mFallbackTabLabel.isEmpty())
+    {
+        snapshot.shortLabel = mFallbackTabLabel;
+        snapshot.tooltip = mFallbackTabLabel;
+        snapshot.sourceLabel = mFallbackTabLabel;
+    }
+
+    if (!mCustomTabLabel.isEmpty())
+    {
+        snapshot.shortLabel = mCustomTabLabel;
+        if (snapshot.tooltip.isEmpty())
+        {
+            snapshot.tooltip = mCustomTabLabel;
+        }
+        if (snapshot.sourceLabel.isEmpty())
+        {
+            snapshot.sourceLabel = mCustomTabLabel;
+        }
     }
 
     // ------------------------------------------------------------------
@@ -688,6 +733,30 @@ void LogSession::ClearStreamingFileName()
     emit presentationChanged();
 }
 
+void LogSession::SetFallbackTabLabel(QString label)
+{
+    if (mFallbackTabLabel == label)
+    {
+        return;
+    }
+    mFallbackTabLabel = std::move(label);
+    emit presentationChanged();
+}
+
+void LogSession::SetCustomTabLabel(QString label)
+{
+    if (label.size() > MAX_TAB_LABEL_LENGTH)
+    {
+        label.truncate(MAX_TAB_LABEL_LENGTH);
+    }
+    if (mCustomTabLabel == label)
+    {
+        return;
+    }
+    mCustomTabLabel = std::move(label);
+    emit presentationChanged();
+}
+
 void LogSession::ResetStreamingCountersAndFileName()
 {
     // Coalesce every field-level change into a single
@@ -742,6 +811,7 @@ void LogSession::ResetCurrentSource()
         return;
     }
     mCurrentSource.reset();
+    mFallbackTabLabel.clear();
     emit presentationChanged();
 }
 

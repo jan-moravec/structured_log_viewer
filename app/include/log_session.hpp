@@ -104,6 +104,11 @@ public:
     /**
      * @brief Builds the current shell presentation state.
      *
+     * Tab `shortLabel` prefers a user-assigned custom name, then
+     * `SessionHistoryManager::BuildLabel` for a file source, then the
+     * streaming display name, then any other locator, then a
+     * workspace-restored fallback name.
+     *
      * @return A value snapshot of source, operation, label, count, and close state.
      */
     [[nodiscard]] SessionPresentationSnapshot PresentationSnapshot() const;
@@ -581,6 +586,50 @@ public:
     void ClearStreamingFileName();
 
     /**
+     * @brief Sets a fallback tab label used when no source display name is available.
+     *
+     * Workspace restore stores the last automatic session name here so
+     * empty placeholder tabs keep that title. A bound source or streaming
+     * display name takes precedence. Emits `presentationChanged()` on a
+     * real change.
+     *
+     * @param label Display label, or empty to clear.
+     */
+    void SetFallbackTabLabel(QString label);
+
+    /**
+     * @brief Returns the fallback tab label.
+     * @return The label, which may be empty.
+     */
+    [[nodiscard]] const QString &FallbackTabLabel() const noexcept
+    {
+        return mFallbackTabLabel;
+    }
+
+    /**
+     * @brief Sets a user-assigned tab title that overrides automatic naming.
+     *
+     * An empty label restores automatic naming. The value is truncated
+     * to `MAX_TAB_LABEL_LENGTH`. Emits `presentationChanged()` on a real
+     * change.
+     *
+     * @param label Display title, or empty to clear.
+     */
+    void SetCustomTabLabel(QString label);
+
+    /**
+     * @brief Returns the user-assigned tab title.
+     * @return The custom title, which may be empty.
+     */
+    [[nodiscard]] const QString &CustomTabLabel() const noexcept
+    {
+        return mCustomTabLabel;
+    }
+
+    /** @brief Maximum UTF-16 code-unit count for a custom tab title. */
+    static constexpr int MAX_TAB_LABEL_LENGTH = 256;
+
+    /**
      * @brief Returns the current source descriptor.
      *
      * @return The optional source descriptor.
@@ -615,7 +664,8 @@ public:
     /**
      * @brief Clears the current source descriptor.
      *
-     * Emits `presentationChanged()` when a source was present.
+     * Also clears the fallback tab label. Emits `presentationChanged()`
+     * when a source was present.
      */
     void ResetCurrentSource();
 
@@ -1689,6 +1739,12 @@ private:
 
     // User-facing source label.
     QString mStreamingFileName;
+
+    // Last automatic session name when no live source label exists.
+    QString mFallbackTabLabel;
+
+    // User-assigned tab title; empty means automatic naming.
+    QString mCustomTabLabel;
 
     // Source represented by the current model contents.
     std::optional<loglib::LogConfiguration::Source> mCurrentSource;

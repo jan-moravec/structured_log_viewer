@@ -41,6 +41,8 @@ constexpr const char *KEY_DOCK_STATE = "dockState";
 constexpr const char *KEY_TABS = "tabs";
 constexpr const char *KEY_ACTIVE_TAB_INDEX = "activeTabIndex";
 constexpr const char *KEY_SESSION_UUID = "sessionUuid";
+constexpr const char *KEY_LABEL = "label";
+constexpr const char *KEY_CUSTOM_LABEL = "customLabel";
 constexpr const char *KEY_SOURCE_MODE = "sourceMode";
 constexpr const char *KEY_RESTORE_POLICY = "restorePolicy";
 
@@ -68,6 +70,8 @@ QJsonValue ToJson(const WorkspaceTab &tab)
 {
     QJsonObject obj;
     obj.insert(QLatin1String(KEY_SESSION_UUID), tab.sessionUuid);
+    obj.insert(QLatin1String(KEY_LABEL), tab.label);
+    obj.insert(QLatin1String(KEY_CUSTOM_LABEL), tab.customLabel);
     obj.insert(QLatin1String(KEY_SOURCE_MODE), static_cast<int>(tab.sourceMode));
     obj.insert(QLatin1String(KEY_RESTORE_POLICY), static_cast<int>(tab.restorePolicy));
     return obj;
@@ -114,6 +118,9 @@ WorkspaceTab TabFromJson(const QJsonObject &obj)
     WorkspaceTab tab;
     tab.sessionUuid =
         ClampString(obj.value(QLatin1String(KEY_SESSION_UUID)).toString(), WorkspacePersistence::MAX_UUID_LENGTH);
+    tab.label = ClampString(obj.value(QLatin1String(KEY_LABEL)).toString(), WorkspacePersistence::MAX_TAB_LABEL_LENGTH);
+    tab.customLabel =
+        ClampString(obj.value(QLatin1String(KEY_CUSTOM_LABEL)).toString(), WorkspacePersistence::MAX_TAB_LABEL_LENGTH);
     const int modeInt = obj.value(QLatin1String(KEY_SOURCE_MODE)).toInt(static_cast<int>(SourceMode::Empty));
     if (modeInt < 0 || modeInt > static_cast<int>(SourceMode::ConfigOnly))
     {
@@ -276,6 +283,8 @@ void WorkspacePersistence::Sanitize(Workspace &workspace)
         for (auto &tab : window.tabs)
         {
             tab.sessionUuid = ClampString(tab.sessionUuid, MAX_UUID_LENGTH);
+            tab.label = ClampString(tab.label, MAX_TAB_LABEL_LENGTH);
+            tab.customLabel = ClampString(tab.customLabel, MAX_TAB_LABEL_LENGTH);
         }
         if (window.activeTabIndex < 0 || std::cmp_greater_equal(window.activeTabIndex, window.tabs.size()))
         {

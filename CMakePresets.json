@@ -13,24 +13,46 @@
             }
         },
         {
+            "name": "_ninja_msvc",
+            "hidden": true,
+            "inherits": "_base",
+            "description": "Windows MSVC hints for Ninja IDEs. architecture/toolset strategy=external is ignored by CMake (so Linux/macOS cmake --preset is unchanged) but tells Qt Creator and Visual Studio to run vcvars and use cl.exe instead of whatever else is on PATH (often LLVM clang). CMAKE_C_COMPILER is not pinned to cl.exe here because release/debug/relwithdebinfo are shared with Unix CI.",
+            "architecture": {
+                "value": "x64",
+                "strategy": "external"
+            },
+            "toolset": {
+                "value": "host=x64",
+                "strategy": "external"
+            },
+            "vendor": {
+                "qt.io/QtCreator/1.0": {
+                    "compiler": {
+                        "c": "cl.exe",
+                        "cxx": "cl.exe"
+                    }
+                }
+            }
+        },
+        {
             "name": "release",
             "displayName": "Release (Ninja)",
             "description": "Optimized build, no debug info, assertions stripped.",
-            "inherits": "_base",
+            "inherits": "_ninja_msvc",
             "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
         },
         {
             "name": "debug",
             "displayName": "Debug (Ninja)",
             "description": "Debug build with full symbols and assertions.",
-            "inherits": "_base",
+            "inherits": "_ninja_msvc",
             "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
         },
         {
             "name": "relwithdebinfo",
             "displayName": "RelWithDebInfo (Ninja)",
             "description": "Release optimizations + debug info, suitable for profiling.",
-            "inherits": "_base",
+            "inherits": "_ninja_msvc",
             "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
         },
         {

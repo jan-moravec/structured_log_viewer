@@ -69,6 +69,7 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDropEvent>
+#include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
@@ -634,7 +635,8 @@ MainWindow::MainWindow(
     ThemeControl *theme,
     SessionHistoryManager *historyManager,
     RegexTemplateRegistry *regexTemplateRegistry,
-    QWidget *parent
+    QWidget *parent,
+    ChromeRestore chromeRestore
 )
     : QMainWindow(parent),
       ui(new Ui::MainWindow),
@@ -704,6 +706,7 @@ MainWindow::MainWindow(
     connect(mTabWidget, &QTabWidget::currentChanged, this, &MainWindow::OnActiveTabChanged);
     connect(mTabWidget, &QTabWidget::tabCloseRequested, this, &MainWindow::CloseTabAtIndex);
     connect(mTabWidget->tabBar(), &QTabBar::tabMoved, this, [this](int from, int to) {
+        FinishTabRename(false);
         if (from < 0 || to < 0 || std::cmp_greater_equal(from, mTabs.size()) ||
             std::cmp_greater_equal(to, mTabs.size()))
         {
@@ -712,6 +715,30 @@ MainWindow::MainWindow(
         auto moved = std::move(mTabs[from]);
         mTabs.erase(mTabs.begin() + from);
         mTabs.insert(mTabs.begin() + to, std::move(moved));
+    });
+    QTabBar *tabBar = mTabWidget->tabBar();
+    tabBar->setFocusPolicy(Qt::ClickFocus);
+    tabBar->setContextMenuPolicy(Qt::CustomContextMenu);
+    tabBar->installEventFilter(this);
+    connect(tabBar, &QTabBar::customContextMenuRequested, this, [this](const QPoint &pos) {
+        if (mTabWidget == nullptr)
+        {
+            return;
+        }
+        QTabBar *bar = mTabWidget->tabBar();
+        const int index = bar->tabAt(pos);
+        if (index < 0)
+        {
+            return;
+        }
+        QMenu menu(this);
+        QAction *const rename = menu.addAction(tr("Rename Tab"));
+        rename->setShortcut(QKeySequence(Qt::Key_F2));
+        const QAction *chosen = menu.exec(bar->mapToGlobal(pos));
+        if (chosen == rename)
+        {
+            StartTabRename(index);
+        }
     });
 
     // Background tabs still need dirty, chrome, and origin-bound completion updates.
@@ -862,6 +889,19 @@ MainWindow::MainWindow(
     });
     addAction(mActionCloseTab);
 
+    mActionRenameTab = new QAction(tr("&Rename Tab"), this);
+    mActionRenameTab->setObjectName(QStringLiteral("actionRenameTab"));
+    // F2 is the window-scope jump-to-next-anchor shortcut. Rename
+    // uses F2 only while the tab strip has focus; see `eventFilter`.
+    mActionRenameTab->setToolTip(tr("Rename the current tab. Press F2 while the tab strip is focused."));
+    connect(mActionRenameTab, &QAction::triggered, this, [this]() {
+        if (mTabWidget != nullptr)
+        {
+            StartTabRename(mTabWidget->currentIndex());
+        }
+    });
+    addAction(mActionRenameTab);
+
     mActionNextTab = new QAction(tr("Next Tab"), this);
     // Mirror common browser-style tab navigation shortcuts.
     // Qt tolerates duplicate sequences on a single `QAction` (both
@@ -941,6 +981,7 @@ MainWindow::MainWindow(
         // stay grouped near the bottom of the File menu.
         if (ui->actionExit != nullptr)
         {
+            ui->menuFile->insertAction(ui->actionExit, mActionRenameTab);
             ui->menuFile->insertAction(ui->actionExit, mActionCloseTab);
             ui->menuFile->insertSeparator(ui->actionExit);
         }
@@ -1105,10 +1146,6 @@ MainWindow::MainWindow(
     addDockWidget(Qt::BottomDockWidgetArea, mParseErrorsDock);
     mParseErrorsDock->hide();
 
-    // Tabify the two bottom docks by default so they share the same
-    // horizontal strip; `restoreState` overrides on later launches.
-    tabifyDockWidget(mFindDock, mParseErrorsDock);
-
     mActionToggleParseErrors = new QAction(tr("Parse Errors"), this);
     mActionToggleParseErrors->setObjectName(QStringLiteral("actionToggleParseErrors"));
     mActionToggleParseErrors->setCheckable(true);
@@ -1141,9 +1178,6 @@ MainWindow::MainWindow(
     addDockWidget(Qt::RightDockWidgetArea, mRecordDetailDock);
     mRecordDetailDock->hide();
 
-    // Tabify the two right-side docks by default; `restoreState`
-    // (later in the constructor) overrides if the user moved them.
-    tabifyDockWidget(mAnchorsDock, mRecordDetailDock);
     // `actionToggleRecordDetails` is declared in `main_window.ui` but
     // not placed in any `<addaction>`, so uic doesn't add it to any
     // widget's `actions()`. A QAction's shortcut only fires once it
@@ -1277,14 +1311,21 @@ MainWindow::MainWindow(
     // Refresh the table's reserved margin after applying so the
     // viewport tracks the new sizeHint.
     connect(mPreferencesEditor, &PreferencesEditor::overviewRailWidthChanged, this, [this](OverviewRailWidthMode mode) {
-        if (mOverviewRailWidget == nullptr)
+        for (const auto &tab : mTabs)
         {
-            return;
-        }
-        mOverviewRailWidget->SetWidthMode(mode);
-        if (mTableView != nullptr)
-        {
-            mTableView->RefreshOverviewRailMargin();
+            if (tab == nullptr || tab->view == nullptr)
+            {
+                continue;
+            }
+            OverviewRailWidget *rail = tab->view->OverviewRail();
+            if (rail != nullptr)
+            {
+                rail->SetWidthMode(mode);
+            }
+            if (LogTableView *table = tab->view->TableView(); table != nullptr)
+            {
+                table->RefreshOverviewRailMargin();
+            }
         }
     });
 
@@ -1490,14 +1531,18 @@ MainWindow::MainWindow(
     // action exists -- both .ui actions (`ui->action*`) and the
     // programmatic dock toggles (`mActionToggleFind`,
     // `mActionToggleAnchors`) and `mStreamToolbar` (the new bar
-    // is inserted ahead of it) -- and before `RestoreWindowChrome`
-    // so the persisted state can place the toolbar in its saved
-    // dock area.
+    // is inserted ahead of it) -- and before persisted chrome
+    // so `restoreState` can place the toolbar in its saved dock area.
     BuildMainToolbar();
 
     // Run after every dock/toolbar has its `objectName` so `restoreState`
-    // can resolve them. No-op on first launch.
-    RestoreWindowChrome();
+    // can resolve them. `Deferred` skips this so workspace restore can
+    // apply chrome once, while the window is still hidden. No-op on
+    // first launch except for the default tabified dock pairs.
+    if (chromeRestore == ChromeRestore::FromSettings)
+    {
+        RestoreWindowChrome();
+    }
 
     // Settle the sort indicator's initial state. Earlier signal
     // hooks fired before the status-bar button existed, so sync
@@ -2096,6 +2141,26 @@ void MainWindow::ApplyTableChromeToView(LogSessionView *view)
     {
         view->ApplyLevelCellDelegate(mLevelCellDelegate);
     }
+    const bool railVisible = (mActionToggleOverviewRail != nullptr)
+                                 ? mActionToggleOverviewRail->isChecked()
+                                 : QSettings().value(QStringLiteral("ui/showOverviewRail"), true).toBool();
+    ApplyOverviewRailToView(view, railVisible);
+}
+
+void MainWindow::ApplyOverviewRailToView(LogSessionView *view, bool visible)
+{
+    if (view == nullptr)
+    {
+        return;
+    }
+    if (OverviewRailWidget *rail = view->OverviewRail(); rail != nullptr)
+    {
+        const QSettings settings;
+        rail->SetWidthMode(ParseOverviewRailWidthMode(
+            settings.value(QStringLiteral("ui/overviewRailWidth"), QStringLiteral("medium")).toString()
+        ));
+    }
+    view->SetOverviewRailVisible(visible);
 }
 
 void MainWindow::RebuildFilterMenuFromActiveSession()
@@ -2194,6 +2259,16 @@ SessionInstanceId MainWindow::AddNewTabForTest(bool makeActive)
     return AddNewTab(makeActive);
 }
 
+void MainWindow::RenameTabForTest(int index, const QString &label)
+{
+    ApplyCustomTabLabel(index, label);
+}
+
+void MainWindow::StartTabRenameForTest(int index)
+{
+    StartTabRename(index);
+}
+
 void MainWindow::ActivateTabForTest(int index)
 {
     if (mTabWidget != nullptr && index >= 0 && index < mTabWidget->count())
@@ -2237,6 +2312,11 @@ void MainWindow::CloseTabAtIndex(int index)
     if (mTabWidget == nullptr || index < 0 || std::cmp_greater_equal(index, mTabs.size()))
     {
         return;
+    }
+
+    if (mTabRenameIndex == index)
+    {
+        FinishTabRename(false);
     }
 
     // Route the final tab through window close so normal save and drain logic runs.
@@ -2522,6 +2602,90 @@ void MainWindow::RefreshTabChrome(const LogSession *session)
     mTabWidget->setTabToolTip(index, tooltip);
 
     // QTabBar exposes visible tab text to accessibility; Qt has no per-tab name setter.
+}
+
+void MainWindow::StartTabRename(int index)
+{
+    if (mTabWidget == nullptr || index < 0 || index >= mTabWidget->count())
+    {
+        return;
+    }
+    LogSession *session = SessionAtTab(index);
+    QTabBar *bar = mTabWidget->tabBar();
+    if (session == nullptr || bar == nullptr)
+    {
+        return;
+    }
+    if (mTabRenameEditor != nullptr)
+    {
+        if (mTabRenameIndex == index)
+        {
+            mTabRenameEditor->setFocus(Qt::OtherFocusReason);
+            mTabRenameEditor->selectAll();
+            return;
+        }
+        FinishTabRename(false);
+    }
+
+    QString seed = session->CustomTabLabel();
+    if (seed.isEmpty())
+    {
+        seed = session->PresentationSnapshot().shortLabel;
+    }
+    if (seed.isEmpty())
+    {
+        seed = tr("Untitled");
+    }
+
+    auto *editor = new QLineEdit(bar);
+    editor->setObjectName(QStringLiteral("tabRenameEditor"));
+    editor->setMaxLength(LogSession::MAX_TAB_LABEL_LENGTH);
+    editor->setFont(bar->font());
+    editor->setText(seed);
+    editor->setGeometry(bar->tabRect(index));
+    editor->setClearButtonEnabled(true);
+    editor->installEventFilter(this);
+    mTabRenameEditor = editor;
+    mTabRenameIndex = index;
+    connect(editor, &QLineEdit::editingFinished, this, [this]() { FinishTabRename(true); });
+    editor->show();
+    editor->setFocus(Qt::OtherFocusReason);
+    editor->selectAll();
+}
+
+void MainWindow::FinishTabRename(bool commit)
+{
+    QLineEdit *editor = mTabRenameEditor.data();
+    const int index = mTabRenameIndex;
+    mTabRenameEditor.clear();
+    mTabRenameIndex = -1;
+    if (editor == nullptr)
+    {
+        return;
+    }
+    editor->disconnect();
+    const QString text = editor->text();
+    editor->hide();
+    editor->deleteLater();
+    if (commit)
+    {
+        ApplyCustomTabLabel(index, text);
+    }
+}
+
+void MainWindow::ApplyCustomTabLabel(int index, QString label)
+{
+    LogSession *session = SessionAtTab(index);
+    if (session == nullptr)
+    {
+        return;
+    }
+    label = std::move(label).trimmed();
+    if (label.size() > LogSession::MAX_TAB_LABEL_LENGTH)
+    {
+        label.truncate(LogSession::MAX_TAB_LABEL_LENGTH);
+    }
+    session->SetCustomTabLabel(std::move(label));
 }
 
 void MainWindow::InstallActiveSessionConnections()
@@ -3084,6 +3248,48 @@ bool MainWindow::event(QEvent *event)
     return QMainWindow::event(event);
 }
 
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    if (event == nullptr)
+    {
+        return QMainWindow::eventFilter(watched, event);
+    }
+
+    if (mTabWidget != nullptr && watched == mTabWidget->tabBar() &&
+        (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress))
+    {
+        auto *keyEvent = static_cast<QKeyEvent *>(event); // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
+        if (keyEvent->key() == Qt::Key_F2 && keyEvent->modifiers() == Qt::NoModifier)
+        {
+            // Keep window-scope jump-to-anchor when the table has
+            // focus; F2 here only when the tab strip is the target.
+            event->accept();
+            if (event->type() == QEvent::KeyPress)
+            {
+                StartTabRename(mTabWidget->currentIndex());
+            }
+            return true;
+        }
+    }
+
+    if (watched == mTabRenameEditor.data() && event->type() == QEvent::KeyPress)
+    {
+        auto *keyEvent = static_cast<QKeyEvent *>(event); // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
+        if (keyEvent->key() == Qt::Key_Escape)
+        {
+            FinishTabRename(false);
+            return true;
+        }
+        if (keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter)
+        {
+            FinishTabRename(true);
+            return true;
+        }
+    }
+
+    return QMainWindow::eventFilter(watched, event);
+}
+
 void MainWindow::NewWindow()
 {
     if (mHistoryManager == nullptr)
@@ -3344,6 +3550,49 @@ void MainWindow::OpenSessionFromJson(const QString &uuid, const QString &jsonPat
     OpenParsedSession(uuid, std::move(parsed), informIfNonFile);
 }
 
+QString MainWindow::RestoreHostedTabFromJson(const QString &uuid, const QString &jsonPath)
+{
+    if (mSession == nullptr)
+    {
+        return tr("No session is selected.");
+    }
+    if (jsonPath.isEmpty() || !QFileInfo::exists(jsonPath))
+    {
+        return tr("The saved session file is missing.");
+    }
+
+    loglib::LogConfiguration parsed;
+    try
+    {
+        loglib::LogConfigurationManager probe;
+        probe.Load(jsonPath.toStdString());
+        parsed = probe.Configuration();
+    }
+    catch (const std::exception &e)
+    {
+        return QString::fromUtf8(e.what());
+    }
+
+    mSession->SetPendingApplySortFromConfig(true);
+    if (!ApplyLoadedConfiguration(std::move(parsed)))
+    {
+        mSession->SetPendingApplySortFromConfig(false);
+        return {};
+    }
+
+    mSession->SetAutoSaveUuid(uuid);
+    if (mHistoryManager != nullptr && mHistoryManager->Touch(uuid) && !RestorableActiveSessionUuid().isEmpty())
+    {
+        if (SessionHistoryManager::AddOpenWindowUuid(uuid))
+        {
+            mSession->SetAutoSaveUuidPublished(true);
+        }
+    }
+
+    StreamFromCurrentSourceOrSkip(/*informIfNonFile=*/false);
+    return {};
+}
+
 void MainWindow::OpenParsedSession(const QString &uuid, loglib::LogConfiguration parsed, bool informIfNonFile)
 {
     // Preserve a busy active tab when opening a recent session. When the active tab
@@ -3505,6 +3754,8 @@ void MainWindow::NewSession()
     }
 
     mSession->MutableCurrentSource().reset();
+    mSession->SetFallbackTabLabel({});
+    mSession->SetCustomTabLabel({});
     mSession->ResetMode();
     mSession->ResetStreamingCountersAndFileName();
     // Drop the outgoing session's multi-file queue too -- otherwise
@@ -3631,6 +3882,7 @@ bool MainWindow::TryLoadAsConfiguration(const QString &file)
         // pre-dates the parallel-array schema split.
         mSession->MutableCurrentSource() = mModel->Configuration().source;
         logapp::BackfillLocatorDedupKeys(mSession->MutableCurrentSource());
+        mSession->NotifyPresentationChanged();
         // Loaded source preferences replace the prior session's Undo state.
         ClearRotationExpansionUndoState();
         SyncRotationHistoryActionCheckedState();
@@ -6869,18 +7121,59 @@ void MainWindow::SaveWindowChrome() const
 void MainWindow::RestoreWindowChrome()
 {
     const QSettings settings;
-    const QByteArray geometry = settings.value(QString::fromLatin1(SETTINGS_GEOMETRY_KEY)).toByteArray();
-    const QByteArray state = settings.value(QString::fromLatin1(SETTINGS_STATE_KEY)).toByteArray();
-    // Both calls are no-ops on empty input, so first launch falls through
-    // to Qt's default geometry.
+    ApplyWindowChrome(
+        settings.value(QString::fromLatin1(SETTINGS_GEOMETRY_KEY)).toByteArray(),
+        settings.value(QString::fromLatin1(SETTINGS_STATE_KEY)).toByteArray()
+    );
+}
+
+void MainWindow::ApplyDefaultDockArrangement()
+{
+    if (mDefaultDockArrangementApplied)
+    {
+        return;
+    }
+    if (mFindDock != nullptr && mParseErrorsDock != nullptr)
+    {
+        tabifyDockWidget(mFindDock, mParseErrorsDock);
+    }
+    if (mAnchorsDock != nullptr && mRecordDetailDock != nullptr)
+    {
+        tabifyDockWidget(mAnchorsDock, mRecordDetailDock);
+    }
+    mDefaultDockArrangementApplied = true;
+}
+
+void MainWindow::ApplyWindowChrome(const QByteArray &geometry, const QByteArray &dockState)
+{
+    const bool wasVisible = isVisible();
+    const bool updatesWereEnabled = updatesEnabled();
+    setUpdatesEnabled(false);
+    if (wasVisible)
+    {
+        hide();
+    }
+
     if (!geometry.isEmpty())
     {
-        restoreGeometry(geometry);
+        (void)restoreGeometry(geometry);
     }
-    if (!state.isEmpty())
+
+    bool restoredDocks = false;
+    if (!dockState.isEmpty())
     {
-        restoreState(state);
+        restoredDocks = restoreState(dockState);
     }
+    if (!restoredDocks)
+    {
+        ApplyDefaultDockArrangement();
+    }
+
+    if (wasVisible)
+    {
+        show();
+    }
+    setUpdatesEnabled(updatesWereEnabled);
 }
 
 void MainWindow::UpdateWindowTitle()
@@ -8510,6 +8803,8 @@ slv::persistence::WorkspaceWindow MainWindow::CaptureWorkspaceWindow() const
         if (session != nullptr)
         {
             tab.sessionUuid = session->RestorableSessionUuid();
+            tab.label = session->PresentationSnapshot().shortLabel;
+            tab.customLabel = session->CustomTabLabel();
             tab.sourceMode = SourceModeFor(session);
         }
         snapshot.tabs.push_back(std::move(tab));
@@ -8522,6 +8817,15 @@ slv::persistence::WorkspaceWindow MainWindow::CaptureWorkspaceWindow() const
         snapshot.activeTabIndex = 0;
     }
     return snapshot;
+}
+
+slv::persistence::WorkspaceWindow MainWindow::WorkspaceSnapshotForQuit() const
+{
+    if (mQuitWorkspaceSnapshot.has_value())
+    {
+        return *mQuitWorkspaceSnapshot;
+    }
+    return CaptureWorkspaceWindow();
 }
 
 void MainWindow::ApplyWorkspaceWindow(const slv::persistence::WorkspaceWindow &window, std::uint64_t generation)
@@ -8539,6 +8843,8 @@ void MainWindow::ApplyWorkspaceWindow(const slv::persistence::WorkspaceWindow &w
         return;
     }
 
+    QStringList restoreProblems;
+
     // The freshly-constructed window already has one Untitled
     // tab. Reuse it for the first restored tab if any exists
     // so the restore does not leave a leading blank.
@@ -8546,7 +8852,7 @@ void MainWindow::ApplyWorkspaceWindow(const slv::persistence::WorkspaceWindow &w
     for (std::size_t i = 0; i < window.tabs.size(); ++i)
     {
         const auto &tab = window.tabs[i];
-        const LogSession *targetSession = nullptr;
+        LogSession *targetSession = nullptr;
         if (!firstTabReused)
         {
             targetSession = SessionAtTab(0);
@@ -8562,10 +8868,25 @@ void MainWindow::ApplyWorkspaceWindow(const slv::persistence::WorkspaceWindow &w
         {
             continue;
         }
+        const auto applyPersistedNames = [&]() {
+            if (targetSession == nullptr)
+            {
+                return;
+            }
+            if (!tab.customLabel.isEmpty())
+            {
+                targetSession->SetCustomTabLabel(tab.customLabel);
+            }
+            else if (!tab.label.isEmpty())
+            {
+                targetSession->SetFallbackTabLabel(tab.label);
+            }
+        };
+        applyPersistedNames();
         if (tab.restorePolicy == slv::persistence::RestorePolicy::Skip)
         {
-            // Slot reserved; no restore work. The tab stays
-            // Untitled + empty.
+            // Slot reserved; no restore work. The tab stays empty
+            // and keeps its captured label when one was saved.
             continue;
         }
         // Reopen file-backed and live-tail sessions from the
@@ -8589,33 +8910,79 @@ void MainWindow::ApplyWorkspaceWindow(const slv::persistence::WorkspaceWindow &w
         }
         if (jsonPath.isEmpty() || !QFileInfo::exists(jsonPath))
         {
+            restoreProblems.append(
+                tr("Tab %1: saved session %2 was not found.").arg(static_cast<int>(i) + 1).arg(tab.sessionUuid)
+            );
             continue;
         }
         // The activate is safe: the caller's saved active-tab index is
         // applied after this loop so the visual current tab still
         // matches `window.activeTabIndex`.
         mTabWidget->setCurrentIndex(static_cast<int>(i));
-        OpenSessionFromJson(tab.sessionUuid, jsonPath, /*informIfNonFile=*/false);
+        try
+        {
+            const QString problem = RestoreHostedTabFromJson(tab.sessionUuid, jsonPath);
+            if (!problem.isEmpty())
+            {
+                restoreProblems.append(tr("Tab %1: %2").arg(static_cast<int>(i) + 1).arg(problem));
+            }
+        }
+        catch (const std::exception &e)
+        {
+            restoreProblems.append(tr("Tab %1: %2").arg(static_cast<int>(i) + 1).arg(QString::fromUtf8(e.what())));
+        }
+        catch (...)
+        {
+            restoreProblems.append(tr("Tab %1: the saved session could not be reopened.").arg(static_cast<int>(i) + 1));
+        }
+        applyPersistedNames();
     }
 
     // Select the saved active tab AFTER every restore has
     // bound so the alias / dock swap only runs once per
     // launch on the tab the user actually wanted focused.
-    const int activeIdx = std::clamp(window.activeTabIndex, 0, mTabWidget->count() - 1);
-    if (activeIdx >= 0)
+    const int tabCount = mTabWidget->count();
+    if (tabCount > 0)
     {
+        const int activeIdx = std::clamp(window.activeTabIndex, 0, tabCount - 1);
         mTabWidget->setCurrentIndex(activeIdx);
     }
 
     // Apply saved chrome LAST so it lands after every dock
-    // has rebound. Empty blobs are silently ignored by Qt.
-    if (!window.dockState.isEmpty())
+    // has rebound. Restore while hidden: `restoreState` on a
+    // visible QMainWindow can leave dangling dock-layout items
+    // that crash on the next `setGeometry`. Empty blobs leave
+    // chrome to `RestoreWindowChrome` so QSettings is not applied
+    // after a competing default `tabifyDockWidget`.
+    if (!window.geometry.isEmpty() || !window.dockState.isEmpty())
     {
-        (void)restoreState(window.dockState);
+        try
+        {
+            ApplyWindowChrome(window.geometry, window.dockState);
+        }
+        catch (const std::exception &e)
+        {
+            restoreProblems.append(tr("Window layout: %1").arg(QString::fromUtf8(e.what())));
+        }
+        catch (...)
+        {
+            restoreProblems.append(tr("Window layout could not be restored."));
+        }
     }
-    if (!window.geometry.isEmpty())
+
+    if (!restoreProblems.isEmpty())
     {
-        (void)restoreGeometry(window.geometry);
+#ifdef LOGAPP_BUILD_TESTING
+        if (!mSuppressDialogsForTest)
+#endif
+        {
+            QMessageBox::warning(
+                this,
+                tr("Could Not Restore All Tabs"),
+                tr("Some tabs from the previous session could not be reopened:\n\n%1")
+                    .arg(restoreProblems.join(QLatin1Char('\n')))
+            );
+        }
     }
 }
 
@@ -8874,38 +9241,31 @@ void MainWindow::closeEvent(QCloseEvent *event)
     // Flush restorable static sessions into Recent Sessions, then
     // detach. Live-tail and non-file sources stay out of recents;
     // quit persistence uses `CanPersistRestorableSnapshot()` instead.
+    // Capture the workspace *before* detaching identity: this window
+    // stays in `topLevelWidgets()` after hide, and aboutToQuit must
+    // still see tab UUIDs and source modes.
+    //
     // Do not publish closing tabs into the open-window index.
-    const int tabCountAtClose = mTabWidget != nullptr ? mTabWidget->count() : 0;
-    if (tabCountAtClose > 0)
+    for (LogSession *session : hostedSessions())
     {
-        for (int idx = 0; idx < tabCountAtClose; ++idx)
+        if (session != nullptr && ShouldAutoSaveSession(session, session->EffectiveTerminalMode()))
         {
-            if (mTabWidget->currentIndex() != idx)
-            {
-                mTabWidget->setCurrentIndex(idx);
-            }
-            if (mSession != nullptr && ShouldAutoSaveSession(mSession, mSession->EffectiveTerminalMode()))
-            {
-                AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
-            }
-            DetachAutoSaveUuid();
-            if (mSession != nullptr)
-            {
-                mSession->MutableCurrentSource().reset();
-                mSession->ResetMode();
-            }
+            AutoSaveSessionSnapshot(session, /*publishOpenWindow=*/false);
         }
     }
-    else
+    if (!mQuitWorkspaceSnapshot.has_value())
     {
-        // Defensive: no `mTabWidget` (headless / early-teardown).
-        if (mSession != nullptr && ShouldAutoSaveSession(mSession, mSession->EffectiveTerminalMode()))
+        mQuitWorkspaceSnapshot = CaptureWorkspaceWindow();
+    }
+    for (LogSession *session : hostedSessions())
+    {
+        if (session == nullptr)
         {
-            AutoSaveSessionSnapshot(/*publishOpenWindow=*/false);
+            continue;
         }
-        DetachAutoSaveUuid();
-        mSession->MutableCurrentSource().reset();
-        mSession->ResetMode();
+        session->DetachAutoSaveUuid();
+        session->MutableCurrentSource().reset();
+        session->ResetMode();
     }
 }
 
@@ -9807,6 +10167,7 @@ bool MainWindow::ApplyLoadedConfiguration(loglib::LogConfiguration parsed)
         // Backfill the parallel dedup-keys array for older JSON.
         mSession->MutableCurrentSource() = mModel->Configuration().source;
         logapp::BackfillLocatorDedupKeys(mSession->MutableCurrentSource());
+        mSession->NotifyPresentationChanged();
         // Session loading updates the menu but does not clear this
         // window's CLI opt-out; an explicit menu change does.
         SyncRotationHistoryActionCheckedState();
@@ -10131,10 +10492,6 @@ void MainWindow::ScrollToProxyRow(int proxyRow, bool replaceSelection)
 
 void MainWindow::SetOverviewRailVisible(bool visible)
 {
-    if (mTableView == nullptr || mOverviewRailWidget == nullptr)
-    {
-        return;
-    }
     // Persist immediately so the next launch honours the current
     // preference. Guarded to skip the redundant write on the
     // load-time seed (replaying the persisted value verbatim) —
@@ -10153,48 +10510,22 @@ void MainWindow::SetOverviewRailVisible(bool visible)
         mActionToggleOverviewRail->setChecked(visible);
     }
 
-    if (visible)
+    for (const auto &tab : mTabs)
     {
-        // Attach reparents + shows the widget; its `resizeEvent`
-        // then calls `SetBucketCount(H)` on the model (synchronous
-        // rebuild), so we don't need `Rebuild()` here.
-        mTableView->AttachOverviewRail(mOverviewRailWidget);
+        if (tab != nullptr)
+        {
+            ApplyOverviewRailToView(tab->view.data(), visible);
+        }
+    }
+
+    if (visible && IsFindBarVisible())
+    {
         // Re-push match ticks only while find is visible — same
         // contract as the find-dock hide handlers. Same-H hide→show
         // restores via durable model state; a height change (or a
         // scan that ran while the rail was hidden) needs the
         // re-bucket / rescan path in `PushFindMatchesToOverviewRail`.
-        if (IsFindBarVisible())
-        {
-            PushFindMatchesToOverviewRail();
-        }
-    }
-    else
-    {
-        mTableView->AttachOverviewRail(nullptr);
-        // Reparent to the owning `LogSessionView` so the widget survives detach without being orphaned
-        // onto the shell. `AttachOverviewRail(null)` already
-        // dropped the parent -- if we reparent onto `this`
-        // (MainWindow) then destroying `mSessionView` leaves a
-        // dangling rail widget on the shell's child list. Falling
-        // back to `this` preserves behavior when
-        // `mSessionView` is absent (e.g. torn down mid-teardown).
-        if (mSessionView != nullptr)
-        {
-            mOverviewRailWidget->setParent(mSessionView);
-        }
-        else
-        {
-            mOverviewRailWidget->setParent(this);
-        }
-        mOverviewRailWidget->hide();
-        // Drop the bucket vector so `RebuildInternal` short-circuits
-        // on incoming proxy signals while the rail is hidden.
-        // `SetBucketCount(H)` on the next `showEvent` re-arms it.
-        if (mOverviewRailModel != nullptr)
-        {
-            mOverviewRailModel->SetBucketCount(0);
-        }
+        PushFindMatchesToOverviewRail();
     }
 }
 

@@ -15,6 +15,7 @@
 #include <QEvent>
 #include <QFileInfo>
 #include <QFileOpenEvent>
+#include <QMessageBox>
 #include <QObject>
 #include <QPointer>
 #include <QProcessEnvironment>
@@ -25,6 +26,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <exception>
 #include <memory>
 
 namespace
@@ -168,17 +170,7 @@ int main(int argc, char *argv[])
     // Reconcile snapshots that were written without an index update.
     const SessionHistoryManager::CleanupReport cleanupReport = historyManager.CleanupOrphanFiles();
 
-    MainWindow w(&themeControl, &historyManager, &regexTemplateRegistry, nullptr);
-    w.show();
-    if (cleanupReport.capped)
-    {
-        constexpr int CAPPED_MESSAGE_TIMEOUT_MS = 8000;
-        w.statusBar()->showMessage(
-            QObject::tr("Cleaned up %1 orphan session files; more will be removed on the next launch.")
-                .arg(cleanupReport.deletedCount),
-            CAPPED_MESSAGE_TIMEOUT_MS
-        );
-    }
+    MainWindow w(&themeControl, &historyManager, &regexTemplateRegistry, nullptr, MainWindow::ChromeRestore::Deferred);
     fileOpenFilter.setLiveWindow(&w);
 
     // Capture OS-open events delivered during startup.
@@ -216,6 +208,7 @@ int main(int argc, char *argv[])
 
     // Explicit launch inputs take precedence over workspace restoration.
     const bool restoreEnabled = SessionHistoryManager::RestoreLastSessionOnLaunch();
+    bool primaryChromeApplied = false;
     if (cliFiles.isEmpty() && restoreEnabled && !allowNewInstance && !readStdin)
     {
         // Prefer grouped workspace state. Surplus windows stay deferred in
@@ -247,17 +240,56 @@ int main(int argc, char *argv[])
                 }
                 else
                 {
-                    auto *peer = new MainWindow(&themeControl, &historyManager, &regexTemplateRegistry, nullptr);
+                    auto *peer = new MainWindow(
+                        &themeControl,
+                        &historyManager,
+                        &regexTemplateRegistry,
+                        nullptr,
+                        MainWindow::ChromeRestore::Deferred
+                    );
                     peer->setAttribute(Qt::WA_DeleteOnClose);
-                    peer->show();
                     appendPeer(peer);
                     target = peer;
                 }
-                target->ApplyWorkspaceWindow(workspace.windows[i], workspace.generation);
+                try
+                {
+                    target->ApplyWorkspaceWindow(workspace.windows[i], workspace.generation);
+                }
+                catch (const std::exception &e)
+                {
+                    QMessageBox::warning(
+                        target,
+                        QObject::tr("Could Not Restore Session"),
+                        QObject::tr("The previous window could not be restored:\n%1").arg(QString::fromUtf8(e.what()))
+                    );
+                }
+                catch (...)
+                {
+                    QMessageBox::warning(
+                        target,
+                        QObject::tr("Could Not Restore Session"),
+                        QObject::tr("The previous window could not be restored.")
+                    );
+                }
+                const auto &restoredWindow = workspace.windows[i];
+                if (restoredWindow.geometry.isEmpty() && restoredWindow.dockState.isEmpty())
+                {
+                    target->RestoreWindowChrome();
+                }
+                if (i == 0)
+                {
+                    primaryChromeApplied = true;
+                }
+                if (i != 0)
+                {
+                    target->show();
+                }
             }
         }
         else
         {
+            w.RestoreWindowChrome();
+            primaryChromeApplied = true;
             // Consume the compatibility index atomically to avoid restore loops.
             QStringList previouslyOpen = SessionHistoryManager::TakeOpenWindowsAtQuit();
             if (previouslyOpen.size() > static_cast<qsizetype>(MAX_RESTORE_PEERS))
@@ -293,8 +325,8 @@ int main(int argc, char *argv[])
                     }
                     auto *peer = new MainWindow(&themeControl, &historyManager, &regexTemplateRegistry, nullptr);
                     peer->setAttribute(Qt::WA_DeleteOnClose);
-                    peer->show();
                     peer->RestoreLastSessionFromPath(peerPath);
+                    peer->show();
                     appendPeer(peer);
                 }
             }
@@ -308,6 +340,22 @@ int main(int argc, char *argv[])
                 }
             }
         }
+    }
+
+    if (!primaryChromeApplied)
+    {
+        w.RestoreWindowChrome();
+    }
+
+    w.show();
+    if (cleanupReport.capped)
+    {
+        constexpr int CAPPED_MESSAGE_TIMEOUT_MS = 8000;
+        w.statusBar()->showMessage(
+            QObject::tr("Cleaned up %1 orphan session files; more will be removed on the next launch.")
+                .arg(cleanupReport.deletedCount),
+            CAPPED_MESSAGE_TIMEOUT_MS
+        );
     }
 
     // OS-driven quit must flush all tabs before shared services are destroyed.
@@ -338,7 +386,7 @@ int main(int argc, char *argv[])
             {
                 restorable.append(windowUuid);
             }
-            slv::persistence::WorkspaceWindow snapshot = mw->CaptureWorkspaceWindow();
+            slv::persistence::WorkspaceWindow snapshot = mw->WorkspaceSnapshotForQuit();
             // Persist Qt's stable top-level order when explicit MRU data is unavailable.
             if (!snapshot.windowUuid.isEmpty())
             {

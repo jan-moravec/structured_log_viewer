@@ -55,12 +55,28 @@ enum class SourceMode : std::uint8_t
  * @brief Describes one tab in a persisted workspace.
  *
  * `sessionUuid` identifies a saved session when one exists. Empty, network, and
- * standard-input entries allocate an empty tab when restored.
+ * standard-input entries allocate an empty tab when restored. `label` stores
+ * the automatic session name so those placeholders keep a useful title.
+ * `customLabel` stores a user-assigned title and overrides `label` when set.
  */
 struct WorkspaceTab
 {
     /** @brief Saved-session UUID, or an empty string when no session can be reopened. */
     QString sessionUuid;
+    /**
+     * @brief Automatic display label captured at save time.
+     *
+     * Matches `SessionHistoryManager::BuildLabel` for a bound source
+     * (file basename, `name + N more`, or a stdin / network locator).
+     * Restored placeholder tabs use this when no source is rebound.
+     */
+    QString label;
+    /**
+     * @brief User-assigned tab title captured at save time.
+     *
+     * When non-empty, this overrides automatic naming after restore.
+     */
+    QString customLabel;
     /** @brief Source mode captured for this tab. */
     SourceMode sourceMode = SourceMode::Empty;
     /** @brief Restore policy captured for this tab. */
@@ -113,8 +129,12 @@ struct Workspace
 class WorkspacePersistence
 {
 public:
-    /** @brief Schema version accepted by `Read()` and emitted by `Write()`. */
-    static constexpr std::uint32_t SCHEMA_VERSION = 2;
+    /**
+     * @brief Schema version accepted by `Read()` and emitted by `Write()`.
+     *
+     * Any other version is treated as absent and left untouched on disk.
+     */
+    static constexpr std::uint32_t SCHEMA_VERSION = 1;
 
     /** @brief Maximum number of persisted windows and MRU entries. */
     static constexpr std::size_t MAX_WINDOWS = 64;
@@ -122,6 +142,8 @@ public:
     static constexpr std::size_t MAX_TABS_PER_WINDOW = 512;
     /** @brief Maximum UTF-16 code-unit count for persisted UUID strings. */
     static constexpr std::size_t MAX_UUID_LENGTH = 64;
+    /** @brief Maximum UTF-16 code-unit count for persisted tab labels. */
+    static constexpr std::size_t MAX_TAB_LABEL_LENGTH = 256;
     /** @brief Maximum decoded size of one saved geometry blob. */
     static constexpr std::size_t MAX_GEOMETRY_BYTES = 64 * 1024;
     /** @brief Maximum decoded size of one saved dock-state blob. */

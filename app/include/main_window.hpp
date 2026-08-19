@@ -47,6 +47,7 @@ class BytesProducer;
 #include <QAction>
 #include <QApplication>
 #include <QAtomicInteger>
+#include <QByteArray>
 #include <QDockWidget>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -80,6 +81,7 @@ namespace Ui
 {
 class MainWindow;
 }
+class QLineEdit;
 class QMenu;
 class QProgressDialog;
 class QTabWidget;
@@ -118,6 +120,20 @@ public:
     {
         Append,
         Replace,
+    };
+
+    /**
+     * @brief Chooses whether the constructor applies persisted window chrome.
+     *
+     * `FromSettings` restores `QSettings` geometry and dock state after
+     * docks and toolbars exist. `Deferred` leaves that to
+     * `RestoreWindowChrome` or `ApplyWorkspaceWindow` so a later restore
+     * does not run `QMainWindow::restoreState` twice.
+     */
+    enum class ChromeRestore
+    {
+        FromSettings,
+        Deferred,
     };
 
     /**
@@ -204,12 +220,16 @@ public:
      * @param historyManager The `historyManager` value.
      * @param regexTemplateRegistry The `regexTemplateRegistry` value.
      * @param parent The optional Qt parent.
+     * @param chromeRestore Whether to restore `QSettings` chrome in the
+     * constructor. Workspace launch uses `Deferred` and applies chrome
+     * after tabs exist, before the first `show()`.
      */
     MainWindow(
         ThemeControl *theme,
         SessionHistoryManager *historyManager,
         RegexTemplateRegistry *regexTemplateRegistry,
-        QWidget *parent = nullptr
+        QWidget *parent = nullptr,
+        ChromeRestore chromeRestore = ChromeRestore::FromSettings
     );
 
     ~MainWindow();
@@ -431,6 +451,22 @@ public:
     SessionInstanceId AddNewTabForTest(bool makeActive = true);
 
     /**
+     * @brief Applies a custom tab title through the production rename path.
+     *
+     * An empty or whitespace-only label restores automatic naming.
+     *
+     * @param index The tab index; invalid indices are ignored.
+     * @param label New title, or empty to clear the override.
+     */
+    void RenameTabForTest(int index, const QString &label);
+
+    /**
+     * @brief Starts inline tab-title editing through the production path.
+     * @param index The tab index; invalid indices are ignored.
+     */
+    void StartTabRenameForTest(int index);
+
+    /**
      * @brief Activates a tab for tests.
      * @param index The tab index; invalid indices are ignored.
      */
@@ -545,6 +581,16 @@ public:
     [[nodiscard]] slv::persistence::WorkspaceWindow CaptureWorkspaceWindow() const;
 
     /**
+     * @brief Returns the workspace record that quit persistence should publish.
+     *
+     * After `closeEvent` this is the snapshot taken before restorable
+     * identity was detached. Before close, it is `CaptureWorkspaceWindow()`.
+     *
+     * @return A workspace record for this window.
+     */
+    [[nodiscard]] slv::persistence::WorkspaceWindow WorkspaceSnapshotForQuit() const;
+
+    /**
      * @brief Returns the stable identity used for workspace persistence and routing.
      * @return The existing UUID, or a newly generated UUID on first access.
      */
@@ -559,10 +605,20 @@ public:
      * generation snapshot when present, otherwise from recents. Live-tail
      * paths reopen statically. Stream sessions become empty placeholders,
      * skipped entries remain empty, and individual tab failures do not
-     * abort the remaining restore. Geometry and dock state are applied
-     * after tab binding.
+     * abort the remaining restore. A warning lists tabs that could not
+     * be reopened. Geometry and dock state are applied after tab binding,
+     * while the window is hidden when possible.
      */
     void ApplyWorkspaceWindow(const slv::persistence::WorkspaceWindow &window, std::uint64_t generation = 0);
+
+    /**
+     * @brief Restores window geometry and dock layout from `QSettings`.
+     *
+     * Must run after every dock and toolbar has its `objectName`. Empty
+     * blobs leave the default tabified dock arrangement. Call before the
+     * first `show()` when workspace chrome is not applied.
+     */
+    void RestoreWindowChrome();
 
     /**
      * @brief Ensures a destructive open targets an empty active tab.
@@ -1011,7 +1067,7 @@ public:
     void ScrollToProxyRow(int proxyRow, bool replaceSelection = true);
 
     /**
-     * @brief Attach / detach `mOverviewRailWidget` on the table view,
+     * @brief Attach or detach every hosted tab's overview rail,
      * persist visibility to `QSettings("ui/showOverviewRail")`,
      * and mirror the state onto `mActionToggleOverviewRail`.
      * Idempotent so the load-time seed and the user toggle share
@@ -1457,6 +1513,7 @@ public:
 
 protected:
     bool event(QEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
 
     /**
@@ -1510,6 +1567,19 @@ private slots:
      * @param informIfNonFile Whether non-file sources show a dialog.
      */
     void OpenSessionFromJson(const QString &uuid, const QString &jsonPath, bool informIfNonFile);
+
+    /**
+     * @brief Reloads a saved session onto the already-selected hosted tab.
+     *
+     * Unlike `OpenParsedSession`, this does not allocate a replacement
+     * tab or run `NewSession()`. JSON and apply failures return a
+     * user-visible message and leave the tab empty.
+     *
+     * @param uuid Session UUID to pin after a successful load.
+     * @param jsonPath Snapshot path to read.
+     * @return An empty string on success, otherwise a diagnostic.
+     */
+    [[nodiscard]] QString RestoreHostedTabFromJson(const QString &uuid, const QString &jsonPath);
 
     /**
      * @brief Applies a parsed session configuration to the active tab.
@@ -1641,10 +1711,18 @@ private slots:
     void OnEnumColumnsChangedApplyFilterRebuild(EnumColumnsChangeReason reason, int columnIndex);
 
     /**
-     * @brief Applies shared table policies and delegates to a session view.
+     * @brief Applies shared table policies, delegates, and overview-rail
+     * visibility to a session view.
      * @param view The view to configure; `nullptr` is ignored.
      */
     void ApplyTableChromeToView(LogSessionView *view);
+
+    /**
+     * @brief Applies the window overview-rail width and visibility to one view.
+     * @param view The view to configure; `nullptr` is ignored.
+     * @param visible Whether that view's rail should be attached.
+     */
+    void ApplyOverviewRailToView(LogSessionView *view, bool visible);
 
     /**
      * @brief Rebuilds the Filters menu from the active session without changing filters.
@@ -1897,6 +1975,31 @@ private:
      * @param session The hosted session; missing sessions are ignored.
      */
     void RefreshTabChrome(const LogSession *session);
+
+    /**
+     * @brief Starts inline editing of a tab title.
+     *
+     * The editor seeds from the custom title when one is set, otherwise
+     * the current automatic label. `F2` on a focused tab strip and the
+     * tab context menu both call this. An empty committed value restores
+     * automatic naming.
+     *
+     * @param index Tab index to rename; invalid indices are ignored.
+     */
+    void StartTabRename(int index);
+
+    /**
+     * @brief Closes the inline tab-title editor.
+     * @param commit Whether to apply the editor text as a custom title.
+     */
+    void FinishTabRename(bool commit);
+
+    /**
+     * @brief Stores a trimmed custom tab title, or clears the override.
+     * @param index Tab index to update; invalid indices are ignored.
+     * @param label New title, or empty / whitespace to restore automatic naming.
+     */
+    void ApplyCustomTabLabel(int index, QString label);
 
     /** @brief Suppresses tab-change handling while tab records are inconsistent. */
     struct SuppressActiveTabChangeScope
@@ -2500,11 +2603,24 @@ private:
     void SaveWindowChrome() const;
 
     /**
-     * @brief Restores window geometry and dock layout from `QSettings`.
-     * Must run after every dock/toolbar widget has its `objectName`
-     * so `restoreState` can resolve them.
+     * @brief Applies the default find/parse-error and anchors/detail tabification.
+     *
+     * Used when no persisted dock state exists. A second call is a no-op so
+     * `restoreState` is not followed by a competing `tabifyDockWidget`.
      */
-    void RestoreWindowChrome();
+    void ApplyDefaultDockArrangement();
+
+    /**
+     * @brief Restores geometry then dock state, or the default arrangement.
+     *
+     * Hides a visible window for the duration so `QMainWindow::restoreState`
+     * does not rebuild dock items while the layout is active. Geometry is
+     * applied before dock state.
+     *
+     * @param geometry Blob from `saveGeometry()`, or empty.
+     * @param dockState Blob from `saveState()`, or empty.
+     */
+    void ApplyWindowChrome(const QByteArray &geometry, const QByteArray &dockState);
 
     /**
      * @brief Rebuilds the window title from the current session state.
@@ -2564,8 +2680,8 @@ private:
      * a per-action switch. Called once at the end of the
      * constructor, after `mStreamToolbar`, `mActionToggleFind`
      * and `mActionToggleAnchors` are wired (every action the
-     * builder references must already exist) but before
-     * `RestoreWindowChrome` reads the persisted dock state.
+     * builder references must already exist) but before persisted
+     * dock state is restored.
      */
     void BuildMainToolbar();
 
@@ -2828,6 +2944,15 @@ private:
     QTabWidget *mTabWidget = nullptr;
 
     /**
+     * @brief Inline editor overlaid on a tab while it is being renamed.
+     */
+    QPointer<QLineEdit> mTabRenameEditor;
+    /**
+     * @brief Tab index owned by `mTabRenameEditor`, or `-1` when idle.
+     */
+    int mTabRenameIndex = -1;
+
+    /**
      * @brief One record per tab in `mTabWidget`, in tab-index order.
      * Kept in sync with `mTabWidget->currentIndex()` via
      * `OnActiveTabChanged`. Reordering rewrites the vector via
@@ -2845,11 +2970,24 @@ private:
     mutable QString mWorkspaceWindowUuid;
 
     /**
+     * @brief Workspace capture taken in `closeEvent` before restorable
+     * identity is detached, so quit persistence can still publish tabs.
+     */
+    std::optional<slv::persistence::WorkspaceWindow> mQuitWorkspaceSnapshot;
+
+    /**
      * @brief Guard for `OnActiveTabChanged` re-entrancy during tab
      * construction / destruction (Qt fires `currentChanged` when
      * we add or remove pages before the vectors are consistent).
      */
     bool mSuppressActiveTabChange = false;
+
+    /**
+     * @brief True after `ApplyDefaultDockArrangement` tabifies the
+     * default dock pairs. Prevents a second `tabifyDockWidget` after
+     * an empty chrome restore.
+     */
+    bool mDefaultDockArrangementApplied = false;
 
     /**
      * @brief Routes ingest, decompression, export, and snapshot work to hosted sessions.
@@ -3017,6 +3155,7 @@ private:
      */
     QAction *mActionNewTab = nullptr;
     QAction *mActionCloseTab = nullptr;
+    QAction *mActionRenameTab = nullptr;
     QAction *mActionNextTab = nullptr;
     QAction *mActionPreviousTab = nullptr;
     QAction *mActionOpenInNewTab = nullptr;

@@ -519,7 +519,9 @@ ctest --preset release-benchmark   # opt-in: parser benchmarks only, verbose
 
 ### Windows
 
-Run the same commands from the **Developer PowerShell for VS 2022** (or Developer Command Prompt) so that `cl.exe` and Ninja are on `PATH`.
+Run the same commands from the **Developer PowerShell for VS 2022** (or Developer Command Prompt) so that `cl.exe` and Ninja are on `PATH`. `scripts/Enter-DevShell.ps1` does that for the current PowerShell session.
+
+The `release` / `debug` / `relwithdebinfo` presets also declare Ninja `architecture` / `toolset` with `strategy` `external`, plus a Qt Creator vendor compiler pin to `cl.exe`. CMake itself ignores those fields (so Linux and macOS `cmake --preset` is unchanged); Qt Creator and Visual Studio use them to inject the MSVC environment and to prefer `cl.exe` over other compilers on `PATH` (commonly LLVM `clang++`). Do not put `CMAKE_C_COMPILER=cl.exe` on those shared presets — Unix CI uses the same names. The Clang sanitizer / coverage presets inherit `_base` directly and keep pinning `clang-22`.
 
 ### Machine-specific overrides (`CMakeUserPresets.json`)
 
@@ -617,7 +619,9 @@ Coverage uploads land on [Codecov](https://codecov.io); the CI leg fails the PR 
 
 ### IDE integration
 
-Qt Creator, CLion, Visual Studio, and VS Code (with the CMake Tools extension) all detect `CMakePresets.json` / `CMakeUserPresets.json` automatically — just open the repository folder and pick a preset.
+Qt Creator, CLion, Visual Studio, and VS Code (with the CMake Tools extension) all detect `CMakePresets.json` / `CMakeUserPresets.json` automatically — just open the repository folder and pick a preset (`debug`, `release`, or `relwithdebinfo`). On Windows, those presets select MSVC as described under [Windows](#windows). After pulling preset changes, use **Build → Reload CMake Presets** in Qt Creator so it recreates the temporary kits.
+
+Do not use Qt Creator's auto-created **Desktop Qt …** kit for this repo: it injects `QT_ENABLE_QML_DEBUG`, which puts a generator expression into directory `COMPILE_DEFINITIONS` and breaks PCRE2's Ninja `try_compile`. If a preset kit still enables QML debugging, set `QT_ENABLE_QML_DEBUG=OFF` in that kit's CMake Initial Configuration (this app is Widgets, not QML). Point `CMAKE_PREFIX_PATH` at your Qt MSVC tree (for example `C:/Qt/6.11.0/msvc2022_64`) via Initial Configuration or `CMakeUserPresets.json` if the kit leaves it empty.
 
 ## Running tests
 

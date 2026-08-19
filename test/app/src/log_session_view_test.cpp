@@ -356,18 +356,15 @@ private slots:
 
     static void TestOverviewRailReparentedToViewOnHideStaysWithView()
     {
-        // Simulate the shell's `SetOverviewRailVisible(false)`
-        // reparent path: after
-        // `AttachOverviewRail(nullptr)` drops the table's
-        // parent-reference, the rail is reparented onto the
-        // owning session view (not the shell). Destroying the
-        // view must then reap the rail even though the rail is
-        // no longer visually inside the table.
+        // `SetOverviewRailVisible(false)` detaches the rail from
+        // the table and reparents it onto the owning session view
+        // (not the shell). Destroying the view must then reap the
+        // rail even though the rail is no longer visually inside
+        // the table.
         auto session = std::make_unique<LogSession>();
         auto view = std::make_unique<LogSessionView>(session.get());
-        view->TableView()->AttachOverviewRail(nullptr);
-        view->OverviewRail()->setParent(view.get());
-        view->OverviewRail()->hide();
+        view->SetOverviewRailVisible(true);
+        view->SetOverviewRailVisible(false);
 
         QPointer<OverviewRailWidget> railGuard = view->OverviewRail();
         QCOMPARE(railGuard->parent(), view.get());
@@ -390,20 +387,15 @@ private slots:
         QCOMPARE(rail->parent(), view.get());
         QVERIFY(rail->isHidden());
 
-        // Attach onto the table: parent flips to the table view.
-        table->AttachOverviewRail(rail);
+        view->SetOverviewRailVisible(true);
         QCOMPARE(rail->parent(), table);
+        QVERIFY(table->OverviewRail() != nullptr);
 
-        // Detach: shell's `SetOverviewRailVisible(false)` path
-        // is what performs the reparent; simulate the essential
-        // steps here.
-        table->AttachOverviewRail(nullptr);
-        rail->setParent(view.get());
-        rail->hide();
+        view->SetOverviewRailVisible(false);
         QCOMPARE(rail->parent(), view.get());
+        QCOMPARE(table->OverviewRail(), static_cast<QWidget *>(nullptr));
 
-        // Re-attach: parent flips back to the table view.
-        table->AttachOverviewRail(rail);
+        view->SetOverviewRailVisible(true);
         QCOMPARE(rail->parent(), table);
     }
 

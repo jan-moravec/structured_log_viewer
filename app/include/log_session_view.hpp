@@ -92,6 +92,17 @@ public:
     }
 
     /**
+     * @brief Attaches or detaches this view's overview rail on its table.
+     *
+     * A visible rail is reparented into the table's reserved viewport
+     * margin. A hidden rail is reparented onto this view, hidden, and
+     * its bucket vector is cleared so proxy signals skip rebuilds.
+     *
+     * @param visible Whether the rail should be attached and shown.
+     */
+    void SetOverviewRailVisible(bool visible);
+
+    /**
      * @brief Selects and centers a source-model row in the table.
      * @param sourceRow Source-model row index.
      *

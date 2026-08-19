@@ -1109,6 +1109,58 @@ private slots:
         QCOMPARE(snap.tooltip, QStringLiteral("C:/logs/"));
     }
 
+    static void TestPresentationSnapshotUsesHistoryLabelForFileSource()
+    {
+        // Tab titles match Recent Sessions even when the ingest
+        // display name has not been set yet (restore and config
+        // load assign `CurrentSource` without `StreamingFileName`).
+        LogSession session;
+        loglib::LogConfiguration::Source fileSource;
+        fileSource.kind = loglib::LogConfiguration::Source::Kind::File;
+        fileSource.locators = {std::string{"C:/logs/app.log"}, std::string{"C:/logs/app.log.1"}};
+        session.MutableCurrentSource() = fileSource;
+        session.SetMode(LogSession::Mode::Static);
+        const auto snap = session.PresentationSnapshot();
+        QCOMPARE(snap.shortLabel, QStringLiteral("app.log + 1 more"));
+        QCOMPARE(snap.tooltip, QStringLiteral("C:/logs/app.log"));
+        QCOMPARE(snap.sourceLabel, QStringLiteral("C:/logs/app.log"));
+    }
+
+    static void TestPresentationSnapshotFallbackLabelUsedWhenNoSource()
+    {
+        LogSession session;
+        session.SetFallbackTabLabel(QStringLiteral("tcp://127.0.0.1:9000"));
+        const auto snap = session.PresentationSnapshot();
+        QCOMPARE(snap.shortLabel, QStringLiteral("tcp://127.0.0.1:9000"));
+        QCOMPARE(snap.tooltip, QStringLiteral("tcp://127.0.0.1:9000"));
+        QCOMPARE(snap.sourceLabel, QStringLiteral("tcp://127.0.0.1:9000"));
+
+        loglib::LogConfiguration::Source fileSource;
+        fileSource.kind = loglib::LogConfiguration::Source::Kind::File;
+        fileSource.locators = {std::string{"C:/logs/app.log"}};
+        session.MutableCurrentSource() = fileSource;
+        const auto bound = session.PresentationSnapshot();
+        QCOMPARE(bound.shortLabel, QStringLiteral("app.log"));
+        QCOMPARE(bound.tooltip, QStringLiteral("C:/logs/app.log"));
+    }
+
+    static void TestPresentationSnapshotCustomLabelOverridesAutomaticName()
+    {
+        LogSession session;
+        loglib::LogConfiguration::Source fileSource;
+        fileSource.kind = loglib::LogConfiguration::Source::Kind::File;
+        fileSource.locators = {std::string{"C:/logs/app.log"}};
+        session.MutableCurrentSource() = fileSource;
+        session.SetCustomTabLabel(QStringLiteral("Incident 42"));
+        const auto custom = session.PresentationSnapshot();
+        QCOMPARE(custom.shortLabel, QStringLiteral("Incident 42"));
+        QCOMPARE(custom.tooltip, QStringLiteral("C:/logs/app.log"));
+
+        session.SetCustomTabLabel({});
+        const auto restored = session.PresentationSnapshot();
+        QCOMPARE(restored.shortLabel, QStringLiteral("app.log"));
+    }
+
     static void TestShouldAutoSaveAfterStreamingWithoutHistoryManager()
     {
         // Close-decision uses this gate even when persist cannot write.
@@ -1919,6 +1971,24 @@ private slots:
         session.ClearStreamingFileName();
         QCOMPARE(spy.count(), ++expected);
         session.ClearStreamingFileName();
+        QCOMPARE(spy.count(), expected);
+
+        session.SetFallbackTabLabel(QStringLiteral("app.log"));
+        QCOMPARE(spy.count(), ++expected);
+        session.SetFallbackTabLabel(QStringLiteral("app.log"));
+        QCOMPARE(spy.count(), expected);
+        session.SetFallbackTabLabel({});
+        QCOMPARE(spy.count(), ++expected);
+        session.SetFallbackTabLabel({});
+        QCOMPARE(spy.count(), expected);
+
+        session.SetCustomTabLabel(QStringLiteral("Incident"));
+        QCOMPARE(spy.count(), ++expected);
+        session.SetCustomTabLabel(QStringLiteral("Incident"));
+        QCOMPARE(spy.count(), expected);
+        session.SetCustomTabLabel({});
+        QCOMPARE(spy.count(), ++expected);
+        session.SetCustomTabLabel({});
         QCOMPARE(spy.count(), expected);
 
         // SetApplyEmbeddedBundleConfigForPath / Clear: emits on the

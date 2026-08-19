@@ -65,6 +65,7 @@ CMakeUserPresets.json
 
 # Visual Studio Code files
 .vscode/
+.qtcreator/
 
 # MinGW generated files
 *.Debug

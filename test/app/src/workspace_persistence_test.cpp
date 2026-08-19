@@ -66,6 +66,7 @@ WorkspaceWindow MakeWindow(const QString &uuid, std::size_t tabCount, int active
     {
         WorkspaceTab tab;
         tab.sessionUuid = uuid + QStringLiteral("-tab-%1").arg(i);
+        tab.label = QStringLiteral("tab-%1.log").arg(i);
         tab.sourceMode = (i % 2 == 0) ? SourceMode::File : SourceMode::LiveTailFile;
         tab.restorePolicy = RestorePolicy::Restore;
         window.tabs.push_back(std::move(tab));
@@ -148,6 +149,8 @@ private slots:
         QCOMPARE(loaded.windows[0].dockState, QByteArray("dock-blob"));
         QCOMPARE(loaded.windows[0].tabs.size(), std::size_t{3});
         QCOMPARE(loaded.windows[0].tabs[0].sessionUuid, QStringLiteral("win-1-tab-0"));
+        QCOMPARE(loaded.windows[0].tabs[0].label, QStringLiteral("tab-0.log"));
+        QVERIFY(loaded.windows[0].tabs[0].customLabel.isEmpty());
         QCOMPARE(loaded.windows[0].tabs[0].sourceMode, SourceMode::File);
         QCOMPARE(loaded.windows[0].tabs[1].sourceMode, SourceMode::LiveTailFile);
         QCOMPARE(loaded.windows[0].activeTabIndex, 1);
@@ -298,6 +301,40 @@ private slots:
         QCOMPARE(loaded.windows[0].tabs[1].restorePolicy, RestorePolicy::Skip);
     }
 
+    static void TestCustomLabelRoundTrips()
+    {
+        const ScopedTestPaths paths;
+        Workspace src;
+        src.schemaVersion = WorkspacePersistence::SCHEMA_VERSION;
+        WorkspaceWindow window = MakeWindow(QStringLiteral("win"), 1, 0);
+        window.tabs[0].customLabel = QStringLiteral("Incident 42");
+        src.windows.push_back(std::move(window));
+        QVERIFY(WorkspacePersistence::Write(src));
+
+        const Workspace loaded = WorkspacePersistence::Read();
+        QCOMPARE(loaded.windows[0].tabs[0].customLabel, QStringLiteral("Incident 42"));
+        QCOMPARE(loaded.windows[0].tabs[0].label, QStringLiteral("tab-0.log"));
+    }
+
+    static void TestSanitizeClampsOversizeTabLabel()
+    {
+        Workspace ws;
+        ws.schemaVersion = WorkspacePersistence::SCHEMA_VERSION;
+        WorkspaceWindow window = MakeWindow(QStringLiteral("win"), 1, 0);
+        window.tabs[0].label =
+            QString(static_cast<int>(WorkspacePersistence::MAX_TAB_LABEL_LENGTH) + 8, QLatin1Char('x'));
+        window.tabs[0].customLabel =
+            QString(static_cast<int>(WorkspacePersistence::MAX_TAB_LABEL_LENGTH) + 4, QLatin1Char('y'));
+        ws.windows.push_back(std::move(window));
+        WorkspacePersistence::Sanitize(ws);
+        QCOMPARE(
+            ws.windows[0].tabs[0].label.size(), static_cast<qsizetype>(WorkspacePersistence::MAX_TAB_LABEL_LENGTH)
+        );
+        QCOMPARE(
+            ws.windows[0].tabs[0].customLabel.size(), static_cast<qsizetype>(WorkspacePersistence::MAX_TAB_LABEL_LENGTH)
+        );
+    }
+
     static void TestClearRemovesFile()
     {
         const ScopedTestPaths paths;
@@ -317,7 +354,7 @@ private slots:
     {
         const ScopedTestPaths paths;
         const QString path = WorkspacePersistence::WorkspaceFilePath();
-        QString json = QStringLiteral("{\"schemaVersion\":1,\"windows\":[");
+        QString json = QStringLiteral("{\"schemaVersion\":%1,\"windows\":[").arg(WorkspacePersistence::SCHEMA_VERSION);
         for (std::size_t i = 0; i <= WorkspacePersistence::MAX_WINDOWS; ++i)
         {
             if (i > 0)
@@ -354,7 +391,8 @@ private slots:
             }
             tabs += QStringLiteral("{\"sessionUuid\":\"t-%1\",\"sourceMode\":0,\"restorePolicy\":0}").arg(i);
         }
-        const QString json = QStringLiteral("{\"schemaVersion\":1,\"windows\":[{\"windowUuid\":\"w\",\"tabs\":[") +
+        const QString json = QStringLiteral("{\"schemaVersion\":%1,\"windows\":[{\"windowUuid\":\"w\",\"tabs\":[")
+                                 .arg(WorkspacePersistence::SCHEMA_VERSION) +
                              tabs + QStringLiteral("]}]}");
         QFile file(path);
         QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
@@ -508,8 +546,9 @@ private slots:
         const ScopedTestPaths paths;
         QFile file(WorkspacePersistence::WorkspaceFilePath());
         QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        // Unpublished schema 2 is ignored; the file stays in place.
         file.write(
-            R"({"schemaVersion":1,"windows":[{"windowUuid":"win-1","tabs":[],"activeTabIndex":0}],"mruOrder":[]})"
+            R"({"schemaVersion":2,"windows":[{"windowUuid":"win-1","tabs":[],"activeTabIndex":0}],"mruOrder":[]})"
         );
         file.close();
 
