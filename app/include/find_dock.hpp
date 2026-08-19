@@ -61,10 +61,7 @@ public:
      * @brief Returns the currently bound session for tests.
      * @return The borrowed session, or `nullptr` when unbound.
      */
-    [[nodiscard]] LogSession *boundSessionForTest() const noexcept
-    {
-        return mBoundSession.data();
-    }
+    [[nodiscard]] LogSession *boundSessionForTest() const noexcept;
 
 signals:
     /** @brief Emitted when the user closes the dock. */

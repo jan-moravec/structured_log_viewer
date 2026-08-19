@@ -67,6 +67,11 @@ LogSessionView::LogSessionView(LogSession *session, QWidget *parent)
 
 LogSessionView::~LogSessionView() = default;
 
+LogSession *LogSessionView::Session() const noexcept
+{
+    return mSession.data();
+}
+
 void LogSessionView::Initialise(ThemeControl *theme)
 {
     // The rail borrows the table, so construct the table first.

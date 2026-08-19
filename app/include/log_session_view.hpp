@@ -59,10 +59,7 @@ public:
      * @brief Returns the session bound to this view.
      * @return The borrowed session, or `nullptr` after it is destroyed.
      */
-    [[nodiscard]] LogSession *Session() const noexcept
-    {
-        return mSession.data();
-    }
+    [[nodiscard]] LogSession *Session() const noexcept;
 
     /**
      * @brief Returns the owned log table view.

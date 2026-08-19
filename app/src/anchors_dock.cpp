@@ -484,6 +484,11 @@ void AnchorsDock::Unbind()
     mBoundSession = nullptr;
 }
 
+LogSession *AnchorsDock::boundSessionForTest() const noexcept
+{
+    return mBoundSession.data();
+}
+
 void AnchorsDock::Refresh()
 {
     // Buried docks skip the rebuild; `visibilityChanged(true)` will

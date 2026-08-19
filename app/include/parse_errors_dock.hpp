@@ -84,10 +84,7 @@ public:
      * @brief Returns the currently bound session.
      * @return The borrowed session, or `nullptr` when unbound.
      */
-    [[nodiscard]] LogSession *BoundSession() const noexcept
-    {
-        return mBoundSession.data();
-    }
+    [[nodiscard]] LogSession *BoundSession() const noexcept;
 
     /**
      * @brief Returns the currently bound session for tests.

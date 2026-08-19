@@ -227,6 +227,11 @@ void RecordDetailDock::Unbind()
     Bind(SessionBindContext::MakeUnbound());
 }
 
+LogSession *RecordDetailDock::boundSessionForTest() const noexcept
+{
+    return mBoundSession.data();
+}
+
 void RecordDetailDock::SaveStateIntoBoundSession()
 {
     if (mBoundSession.isNull())

@@ -68,6 +68,11 @@ void HistogramDock::Unbind()
     Bind(SessionBindContext::MakeUnbound());
 }
 
+LogSession *HistogramDock::boundSessionForTest() const noexcept
+{
+    return mBoundSession.data();
+}
+
 void HistogramDock::SaveStateIntoBoundSession()
 {
     if (mBoundSession.isNull() || mModel == nullptr)

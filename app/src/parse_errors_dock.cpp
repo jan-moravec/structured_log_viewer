@@ -323,6 +323,11 @@ void ParseErrorsDock::Unbind()
     RefreshSummary();
 }
 
+LogSession *ParseErrorsDock::BoundSession() const noexcept
+{
+    return mBoundSession.data();
+}
+
 void ParseErrorsDock::MirrorAppendIntoShadow(
     const QString &title, const std::vector<std::string> &errors, size_t errorsBegin
 )

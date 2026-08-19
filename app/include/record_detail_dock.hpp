@@ -77,10 +77,7 @@ public:
      * @brief Returns the currently bound session for tests.
      * @return The borrowed session, or `nullptr` when unbound.
      */
-    [[nodiscard]] LogSession *boundSessionForTest() const noexcept
-    {
-        return mBoundSession.data();
-    }
+    [[nodiscard]] LogSession *boundSessionForTest() const noexcept;
 
     /**
      * @brief Reports whether model-driven refresh work should run.

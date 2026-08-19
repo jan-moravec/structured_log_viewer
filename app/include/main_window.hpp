@@ -1511,9 +1511,20 @@ public:
     }
 #endif
 
+public:
+    /**
+     * @brief Routes tab-strip F2 into rename and Enter/Escape on the inline editor.
+     *
+     * Window-scope F2 remains jump-to-anchor when the table has focus.
+     *
+     * @param watched Object receiving the event.
+     * @param event Event being filtered.
+     * @return True when the shortcut or key is consumed.
+     */
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 protected:
     bool event(QEvent *event) override;
-    bool eventFilter(QObject *watched, QEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
 
     /**

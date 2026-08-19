@@ -133,3 +133,8 @@ void FindDock::Unbind()
     }
     mBoundSession = nullptr;
 }
+
+LogSession *FindDock::boundSessionForTest() const noexcept
+{
+    return mBoundSession.data();
+}
