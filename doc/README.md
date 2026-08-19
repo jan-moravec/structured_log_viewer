@@ -460,7 +460,7 @@ Anchors let you mark notable rows with one of eight colours, attach a short free
 
 ### Navigating between anchors
 
-- `F2` jumps to the next anchored row in the current visible order (sort + filter + [newest-first](#newest-lines-first) orientation are honoured).
+- `F2` jumps to the next anchored row in the current visible order (sort + filter + [newest-first](#newest-lines-first) orientation are honoured). When the tab strip has focus, `F2` renames the current tab instead.
 - `Shift+F2` jumps to the previous one. Both wrap at the visible bounds.
 - Anchors filtered out of the visible table are skipped; the status bar shows an explanation if every anchor is currently filtered.
 
@@ -568,7 +568,7 @@ In [Stream Mode](#stream-mode-live-tail) and [Network Stream Mode](#network-stre
 
 The **Overview Rail** is a thin vertical strip along the right edge of the log table. It condenses the whole proxy-filtered stream into ~one row of pixels per bucket, so you can see where matches, anchors, and clusters of high-severity rows sit without scrolling.
 
-The rail is on by default; toggle it from **View → Overview Rail** (`Ctrl+Shift+R`) or the toolbar's rail icon. Visibility is persisted in `QSettings` so a re-opened window restores your preference.
+The rail is on by default; toggle it from **View → Overview Rail** (`Ctrl+Shift+R`) or the toolbar's rail icon. The preference is window-wide: every tab in that window shows or hides the rail together, including tabs opened after the toggle. Visibility is persisted in `QSettings` so a re-opened window restores your preference.
 
 Width is DPI-fluent (anchored to the system scrollbar extent) and selectable in **Settings → Preferences** as **Narrow**, **Medium** (default), or **Wide**. Medium is about 1.5× the compact Narrow strip; Wide is 2× — useful when stacked severity bands need more room on Hi-DPI displays.
 
@@ -717,7 +717,53 @@ Only static-file sessions are auto-saved to Recent Sessions. Stream, stdin, and 
 ### New Window vs New Session
 
 - **File → New Window** (`Ctrl+Shift+N`) opens a second top-level window with an empty session. The two windows share the same Recent Sessions list and global preferences but each holds its own logs, filters, anchors, and panels. Useful for side-by-side comparison of two sources.
-- **File → New Session** (`Ctrl+N`) discards the current window's session (rows, filters, sort, source) and returns it to an empty view. Holding `Shift` while dragging or opening a file is the in-place equivalent for static sessions.
+- **File → New Session** (`Ctrl+N`) resets the current tab to an empty view. It uses the same Save / Discard / Cancel decision as **Close Tab**; **Cancel** leaves the current tab selected. Other tabs in the window are unchanged. Holding `Shift` while dragging or opening a file is the in-place replace equivalent for static sessions.
+
+## Tabs
+
+Every window hosts a tab strip for independent investigations. Each tab keeps its own rows, filters, sort, anchors, highlight rules, scroll position, and active work.
+
+### Opening and closing tabs
+
+- **File → New Tab** (`Ctrl+T`) opens an empty tab.
+- **File → Rename Tab** (or right-click the tab; `F2` while the tab strip is focused) assigns a custom title. Clear the name to restore automatic naming. Custom titles persist with the workspace.
+- **File → Close Tab** (`Ctrl+W`) closes the current tab. Closing the last tab uses the same close decision as any other tab and then closes the window.
+- **File → Open in New Tab…** loads selected files into a new foreground tab.
+- A **Recent Sessions** entry opens in a foreground tab, reusing the active tab when it is empty. Files forwarded from the OS or another app instance follow the same empty-tab behavior in the most-recently-focused window.
+- Drag tabs to reorder them. Files dropped anywhere on the window target the active tab: the default appends, while holding `Shift` replaces.
+
+### Switching tabs
+
+- `Ctrl+Tab` and `Ctrl+Shift+Tab` cycle forward / backward through tabs. `Ctrl+PgDown` / `Ctrl+PgUp` mirror the same actions on keyboards where the Ctrl+Tab combo is easier to reach.
+- Every source type is available in every tab: static files, multi-file merges, compressed archives, session bundles, live-tail files, standard input, and TCP / UDP network streams can all run concurrently. Live-tail and network tabs keep ingesting in the background; you can leave a tail streaming while you triage a static file next to it.
+- The window title, status bar, docks, and menus follow the selected tab. Unselected tabs keep their own progress and cancellation controls.
+- Unsaved Highlight Rules edits stay with their tab as a draft. Switching tabs does not prompt and does not apply the draft. Columns Manager and Diagnostics close on a tab switch instead of following the new tab.
+
+### Tab labels and indicators
+
+- While a source is bound, the tab uses the same automatic name as **File → Recent Sessions**: a file basename, `name + N more` for multi-file opens, or the stdin / network locator. Empty tabs with no saved name read `Untitled`. After a launch restore, network and stdin placeholders keep the name they had when the workspace was saved. Right-click a tab and choose **Rename Tab**, use **File → Rename Tab**, or press `F2` while the tab strip is focused to assign a custom title. Clear the name to restore automatic naming. Custom titles persist with the workspace. Long labels may elide visually; the tooltip keeps the full source, operation, unsaved-change, and parse-error text.
+- Each tab includes a localized operation word so status is not colour-only: Idle, Ingesting, Decompressing, Exporting, Parsing, Waiting, Paused, Disconnected, or Failed. A glyph may prefix the label (`▶`, `↻`, `⇧`, `…`, `⧖`, `⏸`, `∅`, `⚠`) but is never the only representation.
+- The label ends with `●` for unsaved session changes, including an unsaved Highlight Rules draft, and `!` when parse errors are present.
+
+### Closing tabs safely
+
+Close Tab, Close Window, quit, **New Session**, and a destructive file replace share one decision model:
+
+- A clean tab closes or resets silently.
+- A dirty restorable file-backed tab autosaves silently. The snapshot is used for Recent Sessions and the next launch. If that write fails, the tab stays open and an error explains that the session could not be saved.
+- Any other dirty tab — untitled, live-tail, network, stdin, or a tab with an unsaved Highlight Rules draft — asks **Save** / **Discard** / **Cancel**. The prompt names the tab. **Save** writes a session JSON (columns, filters, highlights, and a reusable file source). It does not include retained rows or reconnect a live producer. Session Bundle export stays on **File → Export Session Bundle…**; it is not a close-prompt option.
+- **Cancel** leaves workers running. On Close Window or quit, **Cancel** aborts the whole operation, including later tabs that were not prompted yet.
+- After **Save** or **Discard**, that tab's workers are cancelled and drained. Sibling tabs keep their work.
+- A failed **Save** keeps the tab open with an actionable error.
+
+### Multi-window and restoration
+
+- **File → New Window** (`Ctrl+Shift+N`) opens another window with its own ordered tab strip.
+- On the next launch, the application restores saved windows, tab order, and the selected tab. Up to 25 windows restore immediately; any extras stay deferred and are kept across a later normal quit so they can restore on a following launch.
+- File-backed sessions reopen from their saved session when the files are still available.
+- A saved live-tail tab restores as a static file session from that path. It does not start tailing. Use **File → Open Log Stream…** if you need to follow the file again.
+- Network and stdin entries restore as empty tabs that keep their last automatic name. Open the network stream again from **File → Open Network Stream…**; relaunch with `-` or `--stdin` to attach standard input again.
+- A tab that fails to reopen does not stop restoration of the remaining tabs or windows.
 
 ## Themes
 
@@ -771,35 +817,40 @@ Click **Ok** to persist (stored via `QSettings` under the organization `jan-mora
 
 ## Keyboard Shortcuts
 
-| Action                         | Shortcut            |
-| ------------------------------ | ------------------- |
-| New session                    | `Ctrl+N`            |
-| New window                     | `Ctrl+Shift+N`      |
-| Open file(s)                   | `Ctrl+O`            |
-| Open log stream                | `Ctrl+Shift+O`      |
-| Open network stream            | `Ctrl+Shift+L`      |
-| Save configuration             | `Ctrl+S`            |
-| Save session                   | `Ctrl+Shift+S`      |
-| Export filtered rows           | `Ctrl+E`            |
-| Export session bundle          | `Ctrl+Shift+E`      |
-| Find                           | `Ctrl+F`            |
-| Go to Line                     | `Ctrl+G`            |
-| Go to Timestamp                | `Ctrl+Shift+G`      |
-| Copy selected rows             | `Ctrl+C`            |
-| Toggle Record Details pane     | `Ctrl+I`            |
-| Toggle Anchors panel           | `Ctrl+K`            |
-| Toggle Histogram panel         | `Ctrl+H`            |
-| Toggle Overview Rail           | `Ctrl+Shift+R`      |
-| Anchor selection (colour 1..8) | `Ctrl+1` … `Ctrl+8` |
-| Remove anchor from selection   | `Ctrl+0`            |
-| Clear every anchor             | `Ctrl+Shift+A`      |
-| Jump to next anchor            | `F2`                |
-| Jump to previous anchor        | `Shift+F2`          |
-| Edit anchor note               | `F4`                |
-| Pause / Resume stream          | `Ctrl+Shift+P`      |
-| Toggle Follow newest           | `Ctrl+Shift+T`      |
-| Stop stream                    | `Ctrl+Shift+X`      |
-| Show keyboard shortcuts        | `Ctrl+/`            |
+| Action                         | Shortcut                       |
+| ------------------------------ | ------------------------------ |
+| New tab                        | `Ctrl+T`                       |
+| Rename tab                     | `F2` (tab strip focused)       |
+| Close tab                      | `Ctrl+W`                       |
+| Next tab                       | `Ctrl+Tab` / `Ctrl+PgDown`     |
+| Previous tab                   | `Ctrl+Shift+Tab` / `Ctrl+PgUp` |
+| New session                    | `Ctrl+N`                       |
+| New window                     | `Ctrl+Shift+N`                 |
+| Open file(s)                   | `Ctrl+O`                       |
+| Open log stream                | `Ctrl+Shift+O`                 |
+| Open network stream            | `Ctrl+Shift+L`                 |
+| Save configuration             | `Ctrl+S`                       |
+| Save session                   | `Ctrl+Shift+S`                 |
+| Export filtered rows           | `Ctrl+E`                       |
+| Export session bundle          | `Ctrl+Shift+E`                 |
+| Find                           | `Ctrl+F`                       |
+| Go to Line                     | `Ctrl+G`                       |
+| Go to Timestamp                | `Ctrl+Shift+G`                 |
+| Copy selected rows             | `Ctrl+C`                       |
+| Toggle Record Details pane     | `Ctrl+I`                       |
+| Toggle Anchors panel           | `Ctrl+K`                       |
+| Toggle Histogram panel         | `Ctrl+H`                       |
+| Toggle Overview Rail           | `Ctrl+Shift+R`                 |
+| Anchor selection (colour 1..8) | `Ctrl+1` … `Ctrl+8`            |
+| Remove anchor from selection   | `Ctrl+0`                       |
+| Clear every anchor             | `Ctrl+Shift+A`                 |
+| Jump to next anchor            | `F2` (table focused)           |
+| Jump to previous anchor        | `Shift+F2`                     |
+| Edit anchor note               | `F4`                           |
+| Pause / Resume stream          | `Ctrl+Shift+P`                 |
+| Toggle Follow newest           | `Ctrl+Shift+T`                 |
+| Stop stream                    | `Ctrl+Shift+X`                 |
+| Show keyboard shortcuts        | `Ctrl+/`                       |
 
 ## Troubleshooting
 

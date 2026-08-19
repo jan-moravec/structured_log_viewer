@@ -4,6 +4,7 @@
 #include <QPointer>
 
 class LogModel;
+class LogSession;
 class MainWindow;
 class QLabel;
 class QPushButton;
@@ -28,6 +29,17 @@ public:
     /// header and status bar). `nullptr` is allowed for tests; the
     /// dialog then drives `ColumnEditor` directly.
     ColumnsManagerDialog(LogModel *model, MainWindow *mainWindow, QWidget *parent = nullptr);
+
+    /**
+     * @brief Records the session this dialog may mutate.
+     *
+     * Callbacks no-op when this session is gone, unhosted, or not the
+     * active tab. Tests that omit this call still apply when the
+     * dialog's model matches the active session.
+     *
+     * @param session Originating session, or `nullptr` to clear.
+     */
+    void SetOriginSession(LogSession *session);
 
     /// Repopulate every row from the model.
     void Refresh();
@@ -62,8 +74,17 @@ private:
     void RebuildRow(int row);
     [[nodiscard]] int CurrentRow() const;
 
+    /**
+     * @brief Tests whether a mutation may apply to the originating session.
+     *
+     * @return `true` when the origin is still hosted and is the active session,
+     *         or when no origin was set and the model matches the active session.
+     */
+    [[nodiscard]] bool OriginWorkAllowed() const;
+
     QPointer<LogModel> mModel;
     QPointer<MainWindow> mMainWindow;
+    QPointer<LogSession> mOriginSession;
     QTableWidget *mTable = nullptr;
     QPushButton *mMoveUpButton = nullptr;
     QPushButton *mMoveDownButton = nullptr;

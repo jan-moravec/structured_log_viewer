@@ -1,6 +1,9 @@
 #pragma once
 
+#include "log_session_presentation.hpp"
+
 #include <QDockWidget>
+#include <QPointer>
 #include <QString>
 
 #include <string>
@@ -10,100 +13,178 @@ class QCloseEvent;
 class QListWidget;
 class QPushButton;
 class QLabel;
+class LogSession;
+struct SessionBindContext;
 
-/// Dockable panel that collects parse / open errors.
-///
-/// Replaces the modal `QMessageBox::warning` that used to surface
-/// errors from `MainWindow::ShowParseErrors`; a persistent panel
-/// fits streaming sessions where errors arrive continuously.
-///
-/// Position persists via `QMainWindow::saveState()` / `restoreState()`.
-/// Entries are session-scoped: every destructive open path in
-/// `MainWindow` calls `ResetSessionState()`. The live store is
-/// capped at `MAX_DISPLAYED_ERRORS`; older entries are evicted and
-/// a sticky overflow footer reports the dropped count.
+/**
+ * @brief Dockable, session-scoped list of parse and open errors.
+ *
+ * The visible list is capped at `MAX_DISPLAYED_ERRORS`; older
+ * entries are evicted and summarized by a dropped-count footer.
+ * Dock placement participates in `QMainWindow` state persistence.
+ */
 class ParseErrorsDock : public QDockWidget
 {
     Q_OBJECT
 
 public:
-    /// Hard cap on stored entries. Older ones are evicted and the
-    /// count is surfaced in the summary.
+    /** @brief Maximum number of errors retained in the visible list. */
     static constexpr int MAX_DISPLAYED_ERRORS = 1000;
 
     explicit ParseErrorsDock(QWidget *parent = nullptr);
 
-    /// Append one batch of errors under @p title. No-op for empty
-    /// @p errors. Fires `firstBatchArrived` once per session
-    /// (cleared only by `ResetSessionState`) so a user who already
-    /// dismissed the dock isn't yanked back to it mid-session.
+    /**
+     * @brief Appends an error batch to the currently bound session.
+     * @param title Batch heading.
+     * @param errors Error messages; an empty batch is ignored.
+     *
+     * The first non-empty batch after a session reset emits
+     * `firstBatchArrived()`.
+     */
     void AppendErrors(const QString &title, const std::vector<std::string> &errors);
 
-    /// Drop every displayed entry. Does NOT re-arm
-    /// `firstBatchArrived`; use `ResetSessionState` for that.
+    /**
+     * @brief Appends an error batch to its originating session.
+     * @param originating Origin session, or `nullptr` for the bound session.
+     * @param title Batch heading.
+     * @param errors Error messages; an empty batch is ignored.
+     *
+     * A batch for the bound session updates the visible list, shadow,
+     * counters, and first-batch latch. A batch for another session
+     * updates only that session's capped error log.
+     */
+    void AppendErrorsForSession(LogSession *originating, const QString &title, const std::vector<std::string> &errors);
+
+    /** @brief Clears displayed errors without rearming first-batch notification. */
     void ClearErrors();
 
-    /// Drop every entry AND re-arm `firstBatchArrived`. Called
-    /// from every destructive session boundary in `MainWindow`.
+    /**
+     * @brief Clears all error state and rearms first-batch notification.
+     *
+     * The bound session's stored error log is reset as well.
+     */
     void ResetSessionState();
 
-    /// Total entries currently displayed (excludes evicted). O(1).
+    /**
+     * @brief Switches the visible error log to a session.
+     * @param context Context containing the incoming session.
+     *
+     * A changed binding saves the outgoing visible state, clears the
+     * dock, and replays the incoming session's stored batches, counts,
+     * and first-batch latch. An identical non-null binding is a no-op.
+     * An unbound context saves and then clears the dock. No ownership
+     * is transferred.
+     */
+    void Bind(const SessionBindContext &context);
+
+    /** @brief Saves current error state, releases the session alias, and clears the dock. */
+    void Unbind();
+
+    /**
+     * @brief Returns the currently bound session.
+     * @return The borrowed session, or `nullptr` when unbound.
+     */
+    [[nodiscard]] LogSession *BoundSession() const noexcept;
+
+    /**
+     * @brief Returns the currently bound session for tests.
+     * @return The borrowed session, or `nullptr` when unbound.
+     */
+    [[nodiscard]] LogSession *boundSessionForTest() const noexcept
+    {
+        return BoundSession();
+    }
+
+    /**
+     * @brief Returns the number of displayed error rows.
+     * @return Displayed error count, excluding evicted entries.
+     */
     [[nodiscard]] int Count() const noexcept
     {
         return mErrorCount;
     }
 
-    /// Entries evicted by `MAX_DISPLAYED_ERRORS` since the last
-    /// `ClearErrors()`. Reflected in the summary header.
+    /**
+     * @brief Returns the cumulative number of evicted errors.
+     * @return Dropped count since the last clear or reset.
+     */
     [[nodiscard]] int DroppedCount() const noexcept
     {
         return mDroppedCount;
     }
 
 signals:
-    /// Emitted on every count change. The status-bar indicator listens
-    /// here to hide itself when empty and to update its tooltip.
+    /**
+     * @brief Emitted whenever displayed or dropped counts change.
+     * @param count Displayed error count.
+     * @param droppedCount Cumulative evicted error count.
+     */
     void countChanged(int count, int droppedCount);
 
-    /// First batch after construction or `ResetSessionState`.
-    /// `MainWindow` decides whether to raise the dock (it shouldn't
-    /// interrupt e.g. an in-progress find).
+    /** @brief Emitted for the first batch after construction or reset. */
     void firstBatchArrived();
 
-    /// Emitted on genuine user dismissal. See `FindDock::closed`
-    /// for the rationale.
+    /** @brief Emitted when the user closes the dock. */
     void closed();
 
 protected:
+    /**
+     * @brief Emits `closed()` after an accepted close.
+     * @param event Close event.
+     */
     void closeEvent(QCloseEvent *event) override;
 
 private:
-    /// Refresh the header summary and emit `countChanged`.
+    /** @brief Refreshes the summary and emits current counts. */
     void RefreshSummary();
 
-    /// Copy selected error rows (with synthesised headers and
-    /// overflow footer) to the clipboard.
+    /** @brief Copies selected errors with group context to the clipboard. */
     void CopySelection() const;
 
-    /// Evict oldest entries until the count is back under the cap.
-    /// Re-mints the most recently evicted group header when its
-    /// surviving rows would otherwise be stranded.
+    /** @brief Evicts oldest visible errors until the display cap is met. */
     void TrimToCap();
 
-    /// Append the "...N more dropped" footer iff `mDroppedCount > 0`.
-    /// Caller is responsible for stripping any prior footer first.
+    /** @brief Appends the dropped-count footer when needed. */
     void RebuildOverflowFooter();
+
+    /**
+     * @brief Appends the retained portion of a batch to the shadow log.
+     * @param title Batch heading.
+     * @param errors Original error messages.
+     * @param errorsBegin Index of the first retained error.
+     */
+    void MirrorAppendIntoShadow(const QString &title, const std::vector<std::string> &errors, size_t errorsBegin);
+    void TrimShadowToCap();
+    void ReplayLogIntoVisibleList(const SessionParseErrorLog &log);
+
+    /**
+     * @brief Appends a capped batch directly to a session's stored log.
+     * @param session Session whose log should receive the batch.
+     * @param title Batch heading.
+     * @param errors Error messages.
+     *
+     * Visible dock state is not changed.
+     */
+    void AppendErrorsIntoSessionLog(LogSession *session, const QString &title, const std::vector<std::string> &errors);
 
     QListWidget *mList = nullptr;
     QLabel *mSummary = nullptr;
     QPushButton *mClearButton = nullptr;
 
-    /// Running tally of error rows in `mList` so `Count()` stays O(1).
+    // Running tally of error rows in `mList` so `Count()` stays O(1).
     int mErrorCount = 0;
-    /// Cumulative evictions since the last `ClearErrors()`.
+    // Cumulative evictions since the last `ClearErrors()`.
     int mDroppedCount = 0;
-    /// First-batch latch; cleared only by `ResetSessionState`. Decoupled
-    /// from the counts so the in-dock Clear button doesn't re-arm the
-    /// auto-raise -- the user already signalled they're not interested.
+    // First-batch latch; cleared only by `ResetSessionState`. Decoupled
+    // from the counts so the in-dock Clear button does not re-arm the
+    // automatic reveal.
     bool mHasSeenFirstBatch = false;
+
+    // Currently bound session, or null while unbound.
+    QPointer<LogSession> mBoundSession;
+
+    // Batches received since the last clear or reset, in insertion
+    // order. Bind and Unbind transfer this state without rebuilding it
+    // from the rendered list.
+    std::vector<SessionParseErrorBatch> mBatchShadow;
 };

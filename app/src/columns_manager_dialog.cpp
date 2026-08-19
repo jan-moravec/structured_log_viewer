@@ -2,6 +2,7 @@
 
 #include "column_editor.hpp"
 #include "log_model.hpp"
+#include "log_session.hpp"
 #include "main_window.hpp"
 
 #include <loglib/log_configuration.hpp>
@@ -329,6 +330,10 @@ void ColumnsManagerDialog::OnItemChanged(QTableWidgetItem *item)
     {
         return;
     }
+    if (!OriginWorkAllowed())
+    {
+        return;
+    }
     const int row = item->row();
     const auto &columns = mModel->Configuration().columns;
     if (row < 0 || std::cmp_greater_equal(row, columns.size()))
@@ -370,6 +375,10 @@ int ColumnsManagerDialog::CurrentRow() const
 
 void ColumnsManagerDialog::MoveSelectedUp()
 {
+    if (!OriginWorkAllowed())
+    {
+        return;
+    }
     if (!mModel)
     {
         return;
@@ -388,6 +397,10 @@ void ColumnsManagerDialog::MoveSelectedUp()
 
 void ColumnsManagerDialog::MoveSelectedDown()
 {
+    if (!OriginWorkAllowed())
+    {
+        return;
+    }
     if (!mModel)
     {
         return;
@@ -421,6 +434,10 @@ void ColumnsManagerDialog::RefreshPalette()
 
 void ColumnsManagerDialog::EditSelected()
 {
+    if (!OriginWorkAllowed())
+    {
+        return;
+    }
     if (!mModel)
     {
         return;
@@ -444,4 +461,39 @@ void ColumnsManagerDialog::EditSelected()
         editor.exec();
         Refresh();
     }
+}
+
+void ColumnsManagerDialog::SetOriginSession(LogSession *session)
+{
+    mOriginSession = session;
+}
+
+bool ColumnsManagerDialog::OriginWorkAllowed() const
+{
+    if (mModel.isNull())
+    {
+        return false;
+    }
+    if (!mOriginSession.isNull())
+    {
+        if (mOriginSession->Model() != mModel.data())
+        {
+            return false;
+        }
+        if (mMainWindow.isNull())
+        {
+            return true;
+        }
+        if (mMainWindow->activeSession() != mOriginSession.data())
+        {
+            return false;
+        }
+        return mMainWindow->HostedSession(mOriginSession->InstanceId()) == mOriginSession.data();
+    }
+    if (mMainWindow.isNull())
+    {
+        return true;
+    }
+    const LogSession *active = mMainWindow->activeSession();
+    return active != nullptr && active->Model() == mModel.data();
 }

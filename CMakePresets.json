@@ -13,24 +13,46 @@
             }
         },
         {
+            "name": "_ninja_msvc",
+            "hidden": true,
+            "inherits": "_base",
+            "description": "Windows MSVC hints for Ninja IDEs. architecture/toolset strategy=external is ignored by CMake (so Linux/macOS cmake --preset is unchanged) but tells Qt Creator and Visual Studio to run vcvars and use cl.exe instead of whatever else is on PATH (often LLVM clang). CMAKE_C_COMPILER is not pinned to cl.exe here because release/debug/relwithdebinfo are shared with Unix CI.",
+            "architecture": {
+                "value": "x64",
+                "strategy": "external"
+            },
+            "toolset": {
+                "value": "host=x64",
+                "strategy": "external"
+            },
+            "vendor": {
+                "qt.io/QtCreator/1.0": {
+                    "compiler": {
+                        "c": "cl.exe",
+                        "cxx": "cl.exe"
+                    }
+                }
+            }
+        },
+        {
             "name": "release",
             "displayName": "Release (Ninja)",
             "description": "Optimized build, no debug info, assertions stripped.",
-            "inherits": "_base",
+            "inherits": "_ninja_msvc",
             "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
         },
         {
             "name": "debug",
             "displayName": "Debug (Ninja)",
             "description": "Debug build with full symbols and assertions.",
-            "inherits": "_base",
+            "inherits": "_ninja_msvc",
             "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
         },
         {
             "name": "relwithdebinfo",
             "displayName": "RelWithDebInfo (Ninja)",
             "description": "Release optimizations + debug info, suitable for profiling.",
-            "inherits": "_base",
+            "inherits": "_ninja_msvc",
             "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
         },
         {
@@ -124,7 +146,7 @@
         {
             "name": "release-benchmark",
             "displayName": "Release benchmarks only (verbose)",
-            "description": "Runs only the parser benchmarks (CTest label `benchmark`) verbosely so the WARN-line throughput / latency numbers are visible. See CONTRIBUTING.md `## Benchmarking` for the regression-gate convention.",
+            "description": "Runs CTest label `benchmark` verbosely so the WARN-line throughput / latency numbers are visible (parser fixtures plus GUI benches such as `apptest_session_tabs_bench`). See CONTRIBUTING.md `## Benchmarking` for the regression-gate convention.",
             "configurePreset": "release",
             "inherits": "_test_base",
             "output":      { "outputOnFailure": true, "verbosity": "verbose" },
@@ -152,14 +174,14 @@
         },
         {
             "name": "clang-tsan",
-            "displayName": "TSan tests (excludes benchmarks, apptest, apptest_overview_rail, apptest_histogram, apptest_highlight_rules)",
-            "description": "Runs the loglib unit tests + apptest_queue under ThreadSanitizer. Excludes the Qt-coupled apptest, apptest_overview_rail, apptest_histogram, and apptest_highlight_rules suites by name regex because Qt's raster thread pool and private mutexes generate false positives that drown the signal (e.g. concurrent QArrayData allocations on the pooled paint workers spawned by QWidget::show(), or the QMetaObject::invokeMethod queued-slot allocation race between the parser worker's QtStreamingLogSink::OnFinished callable-post and the main-thread QObject::event dispatch, or the QWaitCondition destroy-vs-broadcast teardown race between the TBB parallel_pipeline global thread pool and process exit that fires from any Qt-hosted binary that drives JsonParser::ParseStreaming). The threading code worth testing (TBB pipeline, StreamLineSource, TailingBytesProducer, LogModel::Reset teardown, BoundedBatchQueue) lives in the tests that still run.",
+            "displayName": "TSan tests (excludes benchmarks, apptest, apptest_overview_rail, apptest_histogram, apptest_highlight_rules, apptest_session_tabs)",
+            "description": "Runs the loglib unit tests + apptest_queue under ThreadSanitizer. Excludes the Qt-coupled apptest, apptest_overview_rail, apptest_histogram, apptest_highlight_rules, and apptest_session_tabs suites by name regex because Qt's raster thread pool and private mutexes generate false positives that drown the signal (e.g. concurrent QArrayData allocations on the pooled paint workers spawned by QWidget::show(), or the QMetaObject::invokeMethod queued-slot allocation race between the parser worker's QtStreamingLogSink::OnFinished callable-post and the main-thread QObject::event dispatch, or the QWaitCondition destroy-vs-broadcast teardown race between the TBB parallel_pipeline global thread pool and process exit that fires from any Qt-hosted binary that drives JsonParser::ParseStreaming). The threading code worth testing (TBB pipeline, StreamLineSource, TailingBytesProducer, LogModel::Reset teardown, BoundedBatchQueue) lives in the tests that still run.",
             "configurePreset": "clang-tsan",
             "inherits": "_test_base",
             "filter": {
                 "exclude": {
                     "label": "benchmark",
-                    "name": "^apptest(_overview_rail|_histogram|_highlight_rules)?$"
+                    "name": "^apptest(_overview_rail|_histogram|_highlight_rules|_session_tabs)?$"
                 }
             },
             "environment": {

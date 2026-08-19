@@ -54,6 +54,9 @@ void HintSequential(const mio::mmap_source &mmap)
 
 } // namespace
 
+// MSVC's <filesystem> casts a combined bitmask back to __std_fs_stats_flags;
+// clang's analyzer flags the value as out-of-range. False positive in stdlib.
+// NOLINTBEGIN(clang-analyzer-optin.core.EnumCastOutOfRange)
 LogFile::LogFile(const std::filesystem::path &filePath)
     : LogFile(filePath, filePath)
 {
@@ -62,9 +65,6 @@ LogFile::LogFile(const std::filesystem::path &filePath)
 LogFile::LogFile(std::filesystem::path storagePath, std::filesystem::path logicalPath)
     : mPath(std::move(logicalPath)), mStoragePath(std::move(storagePath))
 {
-    // MSVC's <filesystem> casts a combined bitmask back to __std_fs_stats_flags;
-    // clang's analyzer flags the value as out-of-range. False positive in stdlib.
-    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     if (!std::filesystem::exists(mStoragePath))
     {
         throw std::runtime_error(fmt::format("File '{}' does not exist.", internal::PathToUtf8(mStoragePath)));
@@ -72,9 +72,6 @@ LogFile::LogFile(std::filesystem::path storagePath, std::filesystem::path logica
 
     // Empty files: skip mmap (some platforms reject zero-byte mappings); the
     // leading offset sentinel below still keeps `GetLineCount() == 0` truthful.
-    // MSVC's <filesystem> casts a combined bitmask back to __std_fs_stats_flags;
-    // clang's analyzer flags the value as out-of-range. False positive in stdlib.
-    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     const auto size = std::filesystem::file_size(mStoragePath);
     if (size > 0)
     {
@@ -96,6 +93,7 @@ LogFile::LogFile(std::filesystem::path storagePath, std::filesystem::path logica
 
     mLineOffsets.push_back(0);
 }
+// NOLINTEND(clang-analyzer-optin.core.EnumCastOutOfRange)
 
 const std::filesystem::path &LogFile::GetPath() const
 {

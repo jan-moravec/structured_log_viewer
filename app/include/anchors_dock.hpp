@@ -1,29 +1,26 @@
 #pragma once
 
 #include "anchor_manager.hpp"
+#include "scoped_connections.hpp"
 
 #include <QDockWidget>
 #include <QPointer>
 
 class LogModel;
+class LogSession;
 class ThemeControl;
 class QCloseEvent;
 class QTreeWidget;
 class QTreeWidgetItem;
 class QPushButton;
+struct SessionBindContext;
 
-/// Dockable list of every anchored row. Each entry shows a colour
-/// swatch, the row's `lineId`, and the source filename (when known),
-/// plus an inline-editable one-line note. Double-click on the anchor
-/// column jumps to the row via `jumpToAnchorRequested`; double-click
-/// or `F2` on the note column starts inline editing. Right-click
-/// offers Jump / Edit note / Remove. A header button clears everything.
-///
-/// Stays in sync with `AnchorManager` and `ThemeControl` via signals.
-/// Refresh work is gated on visibility so a buried dock pays nothing.
-///
-/// All three collaborators are borrowed (non-owning) and must outlive
-/// the dock.
+/**
+ * @brief Dockable list of anchored rows and editable anchor notes.
+ *
+ * The dock borrows its session collaborators, tracks their signals,
+ * and defers refresh work while hidden.
+ */
 class AnchorsDock : public QDockWidget
 {
     Q_OBJECT
@@ -31,41 +28,76 @@ class AnchorsDock : public QDockWidget
 public:
     AnchorsDock(AnchorManager *anchors, LogModel *model, ThemeControl *theme, QWidget *parent = nullptr);
 
-    /// Refresh from `AnchorManager::Entries()` if visible; no-op otherwise.
+    /** @brief Refreshes the anchor list when the dock is visible. */
     void Refresh();
 
-    /// True when the dock should actually rebuild on a signal. Offscreen
-    /// QPA fixtures never get a `visibilityChanged` and default to false.
+    /**
+     * @brief Binds the dock to a session context.
+     * @param context Borrowed session, model, anchor manager, and theme aliases.
+     *
+     * A changed binding saves the outgoing current anchor, closes
+     * editors, disconnects subscriptions, clears the tree, installs
+     * the new aliases, and restores the incoming current anchor when
+     * the tree is populated. An identical non-null binding is a no-op.
+     * An unbound context produces the same visible state as `Unbind()`.
+     * No ownership is transferred.
+     */
+    void Bind(const SessionBindContext &context);
+
+    /**
+     * @brief Releases borrowed session sources and clears the tree.
+     *
+     * The window-scoped theme alias is retained.
+     */
+    void Unbind();
+
+    /**
+     * @brief Returns the currently bound session for tests.
+     * @return The borrowed session, or `nullptr` when unbound.
+     */
+    [[nodiscard]] LogSession *boundSessionForTest() const noexcept;
+
+    /**
+     * @brief Returns the current anchor manager for tests.
+     * @return The borrowed anchor manager, or `nullptr` when unbound.
+     */
+    [[nodiscard]] AnchorManager *anchorsForTest() const noexcept
+    {
+        return mAnchors.data();
+    }
+
+    /**
+     * @brief Reports whether signal-driven refresh work should run.
+     * @return True when the dock is explicitly and perceptually visible.
+     */
     [[nodiscard]] bool IsVisibleForRefresh() const noexcept;
 
-    /// Open the inline note editor on the current tree item's note
-    /// column. No-op when the tree has no current item. Called by
-    /// `MainWindow::EditAnchorNoteOnCurrentRow` to redirect F4 to
-    /// the inline editor when focus is in the dock, matching the
-    /// dock's own F2 / double-click gesture.
+    /** @brief Opens the current anchor's inline note editor, if any. */
     void BeginEditingCurrentNote();
 
-    /// Vetoes the window-scope `F2` shortcut when the tree's note
-    /// column has focus, so the inline editor opens instead of
-    /// "Jump to next anchor" firing. Everything else propagates
-    /// normally. Public to match `QObject::eventFilter`'s visibility.
+    /**
+     * @brief Gives plain F2 to the focused note cell.
+     * @param watched Object receiving the event.
+     * @param event Event being filtered.
+     * @return True when the shortcut override is consumed.
+     */
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 signals:
-    /// User asked to navigate to source-model row @p sourceRow.
-    /// Argument is -1 when the anchor key has no live row.
+    /**
+     * @brief Requests navigation to an anchored source row.
+     * @param sourceRow Source-model row, or -1 when the anchor has no live row.
+     */
     void jumpToAnchorRequested(int sourceRow);
 
-    /// Emitted on genuine user dismissal (X button, system close).
-    /// Distinct from `visibilityChanged(false)`, which also fires on
-    /// tab inactivation in a tabified group.
+    /** @brief Emitted when the user closes the dock. */
     void closed();
 
-    // No runtime-only-note signal here: `AnchorManager::Entries()`
-    // filters those out, so they never appear in the tree. The
-    // "session-only" warning lives on the F4 / row-menu path.
-
 protected:
+    /**
+     * @brief Handles dock closure and emits `closed()` when accepted.
+     * @param event Close event.
+     */
     void closeEvent(QCloseEvent *event) override;
 
 #ifdef LOGAPP_BUILD_TESTING
@@ -80,15 +112,13 @@ public:
         return mClearAllButton;
     }
 
-    /// Unconditional refresh for offscreen-QPA tests that can't drive
-    /// real `visibilityChanged` events.
+    /** @brief Refreshes unconditionally for tests. */
     void RefreshForTest()
     {
         RefreshAlways();
     }
 
-    /// Thin forwarder to `BeginEditingCurrentNote` for tests that
-    /// can't drive the F2 shortcut through a real event loop.
+    /** @brief Opens the current note editor for tests. */
     void BeginEditNoteForTest()
     {
         BeginEditingCurrentNote();
@@ -96,11 +126,14 @@ public:
 #endif
 
 private:
-    /// Resolve @p item's key back to a `LogModel` source-row index, or
-    /// -1 if the anchor outlived its row.
+    /**
+     * @brief Resolves an item's anchor key to a source row.
+     * @param item Tree item to resolve.
+     * @return Source-model row, or -1 when unavailable.
+     */
     [[nodiscard]] int SourceRowForItem(const QTreeWidgetItem *item) const;
 
-    /// Rebuild from `AnchorManager::Entries()` unconditionally.
+    /** @brief Rebuilds the tree without applying the visibility gate. */
     void RefreshAlways();
 
     void OnItemActivated(QTreeWidgetItem *item, int column);
@@ -108,18 +141,16 @@ private:
     void OnContextMenuRequested(const QPoint &pos);
     void OnClearAllClicked();
 
-    /// Surgical single-key refresh for `anchorChanged`. Handles add
-    /// (insert at the sorted position), remove (delete the item),
-    /// and update (refresh swatch + label + tooltip + key data) in
-    /// place. The note cell is intentionally left alone -- notes
-    /// flow through `OnAnchorNoteChanged` so a colour flip elsewhere
-    /// doesn't clobber an in-flight inline note edit.
+    /**
+     * @brief Updates one anchor entry without replacing its note editor.
+     * @param key Anchor key that changed.
+     */
     void OnAnchorChanged(const AnchorManager::Key &key);
 
-    /// Surgical note-only refresh: rewrite the matching item's note
-    /// cell and tooltip in place. Falls back to `RefreshAlways`
-    /// when the key isn't currently displayed (dock was hidden, or
-    /// a race with a bulk reset dropped the item).
+    /**
+     * @brief Updates one anchor note and its tooltip.
+     * @param key Anchor key whose note changed.
+     */
     void OnAnchorNoteChanged(const AnchorManager::Key &key);
 
     QPointer<AnchorManager> mAnchors;
@@ -129,14 +160,21 @@ private:
     QTreeWidget *mTree = nullptr;
     QPushButton *mClearAllButton = nullptr;
 
-    /// Tracks `visibilityChanged` so a buried tabified dock also skips
-    /// signal-driven refreshes. Starts false because the dock is added
-    /// hidden; flipped by the first `visibilityChanged(true)`.
+    // Tracks visibility so hidden tabified docks skip refreshes.
     bool mPerceivedVisible = false;
 
-    /// Suppresses the `itemChanged -> SetAnchorNote` round trip
-    /// while `RefreshAlways` / `OnAnchor*Changed` are mutating item
-    /// text. A counter (not a bool) because Qt can nest the
-    /// signals if a delegate close-editor fires mid-refresh.
+    // Suppresses item-change feedback while refreshing tree text.
     int mSuppressItemChanged = 0;
+
+    // Subscriptions owned by the current session binding.
+    ScopedConnections mSessionConnections;
+
+    // Currently bound session, or null while unbound.
+    QPointer<LogSession> mBoundSession;
+
+    /** @brief Installs subscriptions for the current source aliases. */
+    void InstallSessionSubscriptions();
+
+    /** @brief Closes inline editors without committing into an outgoing session. */
+    void CloseInPlaceEditors();
 };

@@ -98,12 +98,24 @@ set(PROJECT_SOURCES
     include/record_detail_window.hpp
     src/session_history_manager.cpp
     include/session_history_manager.hpp
+    src/workspace_persistence.cpp
+    include/workspace_persistence.hpp
     src/single_instance_guard.cpp
     include/single_instance_guard.hpp
     src/shortcut_catalog.cpp
     include/shortcut_catalog.hpp
     src/shortcuts_dialog.cpp
     include/shortcuts_dialog.hpp
+    src/log_session.cpp
+    include/log_session.hpp
+    include/log_session_presentation.hpp
+    src/session_operation_controller.cpp
+    include/session_operation_controller.hpp
+    src/log_session_view.cpp
+    include/log_session_view.hpp
+    include/scoped_connections.hpp
+    src/session_bind_context.cpp
+    include/session_bind_context.hpp
     include/uuid_utils.hpp
     include/qstring_path.hpp
     include/log_warning.hpp

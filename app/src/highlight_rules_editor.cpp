@@ -565,6 +565,27 @@ void HighlightRulesEditor::SetRules(std::vector<loglib::LogConfiguration::Highli
     }
 }
 
+HighlightRulesEditorDraft HighlightRulesEditor::CaptureDraft()
+{
+    GatherForm();
+    HighlightRulesEditorDraft draft;
+    draft.localRules = mLocalRules;
+    draft.baseline = mBaseline;
+    draft.currentRow = mCurrentRow;
+    return draft;
+}
+
+void HighlightRulesEditor::RestoreDraft(const HighlightRulesEditorDraft &draft)
+{
+    mSuppressDirtySignals = true;
+    mLocalRules = draft.localRules;
+    mBaseline = draft.baseline;
+    RebuildList(draft.currentRow);
+    UpdateListButtons();
+    UpdateFormEnabled();
+    mSuppressDirtySignals = false;
+}
+
 void HighlightRulesEditor::RebuildList(int selectRow)
 {
     if (mListWidget == nullptr)
@@ -1184,10 +1205,19 @@ bool HighlightRulesEditor::ConfirmDiscardEdits()
 
 void HighlightRulesEditor::closeEvent(QCloseEvent *event)
 {
+    GatherForm();
+    const bool dirty = IsDirty();
     if (!ConfirmDiscardEdits())
     {
         event->ignore();
         return;
+    }
+    if (dirty)
+    {
+        mLocalRules = mBaseline;
+        RebuildList(mLocalRules.empty() ? -1 : std::min(mCurrentRow, static_cast<int>(mLocalRules.size()) - 1));
+        UpdateListButtons();
+        emit editsDiscarded();
     }
     QWidget::closeEvent(event);
 }

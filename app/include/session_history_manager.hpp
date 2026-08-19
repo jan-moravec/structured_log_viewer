@@ -163,6 +163,19 @@ public:
     /// location regardless of which process touches the key.
     [[nodiscard]] static QDir DefaultSessionsDir();
 
+    /**
+     * @brief Builds the automatic session name for Recent Sessions and tab titles.
+     *
+     * File sources use the primary locator's basename, or
+     * `basename + N more` when additional locators are present.
+     * Stdin and network sources use the raw locator. Sessions with
+     * no locators produce `(no source)`.
+     *
+     * @param configuration Session configuration whose `source` supplies the locators.
+     * @return The compact display label.
+     */
+    [[nodiscard]] static QString BuildLabel(const loglib::LogConfiguration &configuration);
+
     /// Read / write the `restoreLastSessionOnLaunch` preference.
     /// Defaults to `true`.
     static bool RestoreLastSessionOnLaunch();
@@ -254,8 +267,6 @@ signals:
     void changed();
 
 private:
-    [[nodiscard]] static QString BuildLabel(const loglib::LogConfiguration &configuration);
-
     /// Build the entry metadata for @p configuration (excluding uuid
     /// and timestamp, which the caller fills in).
     [[nodiscard]] static RecentSessionEntry MakeEntryMetadata(const loglib::LogConfiguration &configuration);

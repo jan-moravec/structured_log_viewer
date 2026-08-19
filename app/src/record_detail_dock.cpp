@@ -2,7 +2,10 @@
 
 #include "anchor_manager.hpp"
 #include "log_model.hpp"
+#include "log_session.hpp"
+#include "log_session_presentation.hpp"
 #include "record_detail_widget.hpp"
+#include "session_bind_context.hpp"
 
 #include <QAbstractItemModel>
 #include <QCloseEvent>
@@ -52,37 +55,45 @@ RecordDetailDock::RecordDetailDock(LogModel *model, AnchorManager *anchors, QWid
         }
     });
 
+    InstallSourceSubscriptions();
+
+    Clear();
+}
+
+void RecordDetailDock::InstallSourceSubscriptions()
+{
     if (mModel != nullptr)
     {
         // `modelReset` (file open, `LogModel::Reset`) drops every row
         // without firing `rowsRemoved`. Listening here keeps the dock
         // self-contained -- callers don't have to wire it.
-        connect(mModel, &QAbstractItemModel::modelReset, this, &RecordDetailDock::Clear);
-        connect(mModel, &QAbstractItemModel::rowsRemoved, this, [this](const QModelIndex &, int, int) {
-            if (mCurrentSourceIndex.isValid())
-            {
-                // Pinned row survives, only its index shifted; refresh
-                // so the summary's row number is current.
-                if (!IsVisibleForRefresh())
+        mSourceConnections += connect(mModel, &QAbstractItemModel::modelReset, this, &RecordDetailDock::Clear);
+        mSourceConnections +=
+            connect(mModel, &QAbstractItemModel::rowsRemoved, this, [this](const QModelIndex &, int, int) {
+                if (mCurrentSourceIndex.isValid())
                 {
-                    return;
+                    // Pinned row survives, only its index shifted; refresh
+                    // so the summary's row number is current.
+                    if (!IsVisibleForRefresh())
+                    {
+                        return;
+                    }
+                    RefreshFromModel();
                 }
-                RefreshFromModel();
-            }
-            else if (mEverPinned)
-            {
-                // Pinned row was just evicted. Always swap to the
-                // dedicated placeholder (cheap; no field rebuild) so
-                // the next show surfaces "record is gone" instead of
-                // the default "select a row" prompt.
-                ShowEvictedPlaceholder();
-            }
-            // else: never pinned -- nothing to invalidate.
-        });
+                else if (mEverPinned)
+                {
+                    // Pinned row was just evicted. Always swap to the
+                    // dedicated placeholder (cheap; no field rebuild) so
+                    // the next show surfaces "record is gone" instead of
+                    // the default "select a row" prompt.
+                    ShowEvictedPlaceholder();
+                }
+                // else: never pinned -- nothing to invalidate.
+            });
         // Pinned-row edits (back-fill, header rename, enum promotion)
         // emit `dataChanged` covering the row. Without this the pane
         // would show stale values until the user re-selects the row.
-        connect(
+        mSourceConnections += connect(
             mModel,
             &QAbstractItemModel::dataChanged,
             this,
@@ -120,8 +131,8 @@ RecordDetailDock::RecordDetailDock(LogModel *model, AnchorManager *anchors, QWid
             }
             RefreshFromModel();
         };
-        connect(mModel, &QAbstractItemModel::columnsMoved, this, columnsLayoutChanged);
-        connect(mModel, &QAbstractItemModel::columnsInserted, this, columnsLayoutChanged);
+        mSourceConnections += connect(mModel, &QAbstractItemModel::columnsMoved, this, columnsLayoutChanged);
+        mSourceConnections += connect(mModel, &QAbstractItemModel::columnsInserted, this, columnsLayoutChanged);
     }
 
     // Subscribe directly to anchor signals so the pinned row's note
@@ -134,41 +145,43 @@ RecordDetailDock::RecordDetailDock(LogModel *model, AnchorManager *anchors, QWid
         // `anchorChanged`: add / remove flips subline visibility;
         // a pure recolour on an already-anchored row changes
         // nothing the widget renders, so skip the rebuild.
-        connect(mAnchors, &AnchorManager::anchorChanged, this, [this](const AnchorManager::Key &changedKey) {
-            if (!IsVisibleForRefresh() || !mCurrentSourceIndex.isValid() || mModel.isNull())
-            {
-                return;
-            }
-            const int pinnedRow = mCurrentSourceIndex.row();
-            const auto pinnedKey = mModel->AnchorKeyForRow(pinnedRow);
-            if (!pinnedKey.has_value() || *pinnedKey != changedKey)
-            {
-                return;
-            }
-            const bool wasAnchored = mWidget->Content().anchorColorIndex.has_value();
-            const bool nowAnchored = mModel->AnchorSlotForRow(pinnedRow).has_value();
-            if (wasAnchored == nowAnchored)
-            {
-                return;
-            }
-            RefreshFromModel();
-        });
-        // `anchorNoteChanged`: always changes visible text.
-        connect(mAnchors, &AnchorManager::anchorNoteChanged, this, [this](const AnchorManager::Key &changedKey) {
-            if (!IsVisibleForRefresh() || !mCurrentSourceIndex.isValid() || mModel.isNull())
-            {
-                return;
-            }
-            const int pinnedRow = mCurrentSourceIndex.row();
-            const auto pinnedKey = mModel->AnchorKeyForRow(pinnedRow);
-            if (pinnedKey.has_value() && *pinnedKey == changedKey)
-            {
+        mSourceConnections +=
+            connect(mAnchors, &AnchorManager::anchorChanged, this, [this](const AnchorManager::Key &changedKey) {
+                if (!IsVisibleForRefresh() || !mCurrentSourceIndex.isValid() || mModel.isNull())
+                {
+                    return;
+                }
+                const int pinnedRow = mCurrentSourceIndex.row();
+                const auto pinnedKey = mModel->AnchorKeyForRow(pinnedRow);
+                if (!pinnedKey.has_value() || *pinnedKey != changedKey)
+                {
+                    return;
+                }
+                const bool wasAnchored = mWidget->Content().anchorColorIndex.has_value();
+                const bool nowAnchored = mModel->AnchorSlotForRow(pinnedRow).has_value();
+                if (wasAnchored == nowAnchored)
+                {
+                    return;
+                }
                 RefreshFromModel();
-            }
-        });
+            });
+        // `anchorNoteChanged`: always changes visible text.
+        mSourceConnections +=
+            connect(mAnchors, &AnchorManager::anchorNoteChanged, this, [this](const AnchorManager::Key &changedKey) {
+                if (!IsVisibleForRefresh() || !mCurrentSourceIndex.isValid() || mModel.isNull())
+                {
+                    return;
+                }
+                const int pinnedRow = mCurrentSourceIndex.row();
+                const auto pinnedKey = mModel->AnchorKeyForRow(pinnedRow);
+                if (pinnedKey.has_value() && *pinnedKey == changedKey)
+                {
+                    RefreshFromModel();
+                }
+            });
         // Bulk mutation: refresh unconditionally, the pinned row's
         // anchor state may have changed even if the key didn't.
-        connect(mAnchors, &AnchorManager::anchorsReset, this, [this]() {
+        mSourceConnections += connect(mAnchors, &AnchorManager::anchorsReset, this, [this]() {
             if (!IsVisibleForRefresh() || !mCurrentSourceIndex.isValid())
             {
                 return;
@@ -176,7 +189,122 @@ RecordDetailDock::RecordDetailDock(LogModel *model, AnchorManager *anchors, QWid
             RefreshFromModel();
         });
     }
+}
 
+void RecordDetailDock::Bind(const SessionBindContext &context)
+{
+    // Save first, then invalidate the persistent index and disconnect
+    // before replacing its model. Restore only after new subscriptions
+    // and the incoming session alias are installed.
+
+    // Session source objects are stable for a session's lifetime,
+    // so a live same-session bind preserves the persistent index.
+    LogSession *incoming = context.session.data();
+    if (!mBoundSession.isNull() && mBoundSession.data() == incoming)
+    {
+        return;
+    }
+
+    SaveStateIntoBoundSession();
+
+    mCurrentSourceIndex = QPersistentModelIndex();
+    mEverPinned = false;
+
+    mSourceConnections.Clear();
+
+    mModel = context.model.data();
+    mAnchors = context.anchors.data();
+
+    InstallSourceSubscriptions();
+
+    mBoundSession = incoming;
+
+    RestoreStateFromSession(mBoundSession.data());
+}
+
+void RecordDetailDock::Unbind()
+{
+    Bind(SessionBindContext::MakeUnbound());
+}
+
+LogSession *RecordDetailDock::boundSessionForTest() const noexcept
+{
+    return mBoundSession.data();
+}
+
+void RecordDetailDock::SaveStateIntoBoundSession()
+{
+    if (mBoundSession.isNull())
+    {
+        return;
+    }
+    auto &pin = mBoundSession->MutableRecordDetailPin();
+    const int currentRow = CurrentSourceRow();
+    pin.pinnedSourceRow = currentRow;
+    pin.everPinned = mEverPinned;
+    // Persist a stable identity so leading-row eviction cannot retarget
+    // the saved numeric row to a different record.
+    pin.keyLocator.clear();
+    pin.keyLineId = 0;
+    if (currentRow >= 0 && mModel != nullptr)
+    {
+        if (const auto key = mModel->AnchorKeyForRow(currentRow); key.has_value())
+        {
+            pin.keyLocator = key->locator;
+            pin.keyLineId = key->lineId;
+        }
+    }
+}
+
+void RecordDetailDock::RestoreStateFromSession(LogSession *session)
+{
+    if (session == nullptr)
+    {
+        // Fully unbound: show the default placeholder (no session
+        // context means no possible row to restore, and the
+        // "select a row" prompt reads better than the evicted
+        // variant).
+        Clear();
+        return;
+    }
+    const auto &pin = session->RecordDetailPin();
+
+    // Prefer stable identity over the numeric row, which can shift
+    // after leading-row eviction. Fall back to the saved row.
+    if (mModel != nullptr && !pin.keyLocator.empty() && pin.keyLineId != 0)
+    {
+        AnchorManager::Key key;
+        key.locator = pin.keyLocator;
+        key.lineId = pin.keyLineId;
+        const int resolvedRow = mModel->SourceRowForAnchorKey(key);
+        if (resolvedRow >= 0)
+        {
+            ShowSourceRow(resolvedRow);
+            return;
+        }
+        // Key did not resolve. If the fallback row number is also
+        // gone, fall through to the eviction placeholder below;
+        // otherwise the row-number branch will show the row at
+        // the persisted index (best-effort continuity).
+    }
+
+    if (pin.pinnedSourceRow >= 0)
+    {
+        // ShowSourceRow revalidates against the current model.
+        ShowSourceRow(pin.pinnedSourceRow);
+        return;
+    }
+    if (pin.everPinned)
+    {
+        // The session had a row pinned that was later evicted;
+        // surface the dedicated placeholder rather than the
+        // default so the user sees continuity across the
+        // rebind.
+        Clear();
+        mEverPinned = true;
+        ShowEvictedPlaceholder();
+        return;
+    }
     Clear();
 }
 

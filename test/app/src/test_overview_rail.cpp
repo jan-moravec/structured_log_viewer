@@ -12,6 +12,7 @@
 #include "find_dock.hpp"
 #include "log_filter_model.hpp"
 #include "log_model.hpp"
+#include "log_session_view.hpp"
 #include "log_table_view.hpp"
 #include "main_window.hpp"
 #include "overview_rail_model.hpp"
@@ -1765,6 +1766,68 @@ private slots:
         );
     }
 
+    /// The View → Overview Rail toggle is a window preference, not
+    /// a per-tab property. A new tab inherits the current state,
+    /// and toggling updates every hosted tab (including inactive
+    /// ones) so switching tabs does not require a second toggle.
+    static void TestMainWindowOverviewRailAppliesToEveryTab()
+    {
+        {
+            QSettings settings;
+            settings.remove(QStringLiteral("ui/showOverviewRail"));
+        }
+        MainWindow window;
+        window.show();
+        QCoreApplication::processEvents();
+
+        auto *action = window.findChild<QAction *>(QStringLiteral("actionToggleOverviewRail"));
+        QVERIFY(action != nullptr);
+        QVERIFY(action->isChecked());
+
+        const auto railAttached = [](LogSessionView *view) {
+            if (view == nullptr)
+            {
+                return false;
+            }
+            LogTableView *table = view->TableView();
+            return table != nullptr && table->OverviewRail() != nullptr && table->ReservedRightMargin() > 0;
+        };
+        const auto railDetached = [](LogSessionView *view) {
+            if (view == nullptr)
+            {
+                return false;
+            }
+            LogTableView *table = view->TableView();
+            return table != nullptr && table->OverviewRail() == nullptr && table->ReservedRightMargin() == 0;
+        };
+
+        QVERIFY2(railAttached(window.ViewAtTab(0)), "initial tab inherits default-on rail");
+
+        window.AddNewTabForTest(/*makeActive=*/true);
+        QCoreApplication::processEvents();
+        QVERIFY2(railAttached(window.ViewAtTab(0)), "first tab keeps the rail after New Tab");
+        QVERIFY2(railAttached(window.ViewAtTab(1)), "new tab must attach the rail while the window toggle is on");
+
+        window.SetOverviewRailVisible(false);
+        QCoreApplication::processEvents();
+        QVERIFY2(railDetached(window.ViewAtTab(0)), "hiding the rail must detach the inactive tab");
+        QVERIFY2(railDetached(window.ViewAtTab(1)), "hiding the rail must detach the active tab");
+
+        window.AddNewTabForTest(/*makeActive=*/false);
+        QCoreApplication::processEvents();
+        QVERIFY2(railDetached(window.ViewAtTab(2)), "a new tab must stay rail-less while the window toggle is off");
+
+        window.SetOverviewRailVisible(true);
+        QCoreApplication::processEvents();
+        QVERIFY2(railAttached(window.ViewAtTab(0)), "showing the rail must re-attach the first tab");
+        QVERIFY2(railAttached(window.ViewAtTab(1)), "showing the rail must re-attach the second tab");
+        QVERIFY2(railAttached(window.ViewAtTab(2)), "showing the rail must attach a tab that was opened while hidden");
+
+        window.AddNewTabForTest(/*makeActive=*/false);
+        QCoreApplication::processEvents();
+        QVERIFY2(railAttached(window.ViewAtTab(3)), "a background New Tab must attach the rail while the toggle is on");
+    }
+
     /// Closing and reopening the find dock must restore unbiased
     /// rail ticks from cached per-bucket counts — not the capped
     /// `sortedRows` list. Pins the regression where a cache-hit
@@ -2418,34 +2481,44 @@ private slots:
         WaitForBucketsChanged(rail);
         QCOMPARE(rail.ProxyRowCount(), ROWS);
 
-        // Install a filter that drops every other row. The
-        // proxy's row count halves (~20 rows) but the rail's
-        // cached `mProxyRowCount` stays at 40 until the coalesce
-        // timer fires ~50 ms later.
+        // Keep even-numbered `body` values (`msg 0`, `msg 2`, …).
+        // A call-count predicate is not row-stable: extra
+        // `MatchesRow` evaluations change which rows survive.
+        int bodyCol = -1;
+        for (int c = 0; c < model.columnCount(); ++c)
+        {
+            if (model.headerData(c, Qt::Horizontal).toString() == QLatin1String("body"))
+            {
+                bodyCol = c;
+                break;
+            }
+        }
+        QVERIFY2(bodyCol >= 0, "fixture must expose a body column");
+
         std::vector<loglib::RowPredicate> rules;
         rules.emplace_back(
             std::in_place_type<loglib::CallbackStringRowPredicate>,
-            static_cast<std::size_t>(0),
-            [callCount = std::make_shared<std::size_t>(0)](std::string_view) mutable {
-                return ((*callCount)++ % 2) == 0;
+            static_cast<std::size_t>(bodyCol),
+            [](std::string_view value) {
+                if (value.empty())
+                {
+                    return false;
+                }
+                const char last = value.back();
+                return last >= '0' && last <= '9' && ((last - '0') % 2) == 0;
             }
         );
         chain.filter->SetFilterRules(std::move(rules));
         const int liveRowCount = chain.filter->rowCount();
         QVERIFY2(liveRowCount > 0 && liveRowCount < ROWS, "filter must reduce the proxy row count");
 
-        // Under the pre-fix code path, `mProxyRowCount` stays 40
-        // and folding row `liveRowCount - 1` (in range under the
-        // filter, but potentially misbucketed against the old
-        // denominator) misplaces the tick. Under the fix,
-        // `mProxyRowCount` refreshes and the tick lands correctly.
+        // `SetMatchProxyRows` refreshes `mProxyRowCount` so the
+        // last surviving row folds against the filtered count,
+        // not the pre-filter cache of 40.
         rail.SetMatchProxyRows({liveRowCount - 1});
         QCOMPARE(rail.ProxyRowCount(), liveRowCount);
         QVERIFY(rail.HasMatchTicks());
 
-        // Sanity: the tick sits in one of the tail buckets --
-        // `(liveRowCount - 1) * 20 / liveRowCount` rounds to
-        // ~19 for any positive `liveRowCount`.
         uint32_t totalTicks = 0;
         std::size_t highestBucketWithTick = 0;
         for (std::size_t i = 0; i < rail.BucketCount(); ++i)
@@ -2458,7 +2531,9 @@ private slots:
             }
         }
         QCOMPARE(totalTicks, static_cast<uint32_t>(1));
-        QCOMPARE(highestBucketWithTick, rail.BucketCount() - 1);
+        const std::size_t expectedBucket =
+            (static_cast<std::size_t>(liveRowCount - 1) * rail.BucketCount()) / static_cast<std::size_t>(liveRowCount);
+        QCOMPARE(highestBucketWithTick, expectedBucket);
     }
 
     /// Companion regression for the bucketed API: same stale-

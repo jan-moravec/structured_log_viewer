@@ -1,5 +1,8 @@
 #include "parse_errors_dock.hpp"
 
+#include "log_session.hpp"
+#include "session_bind_context.hpp"
+
 #include <QApplication>
 #include <QBrush>
 #include <QClipboard>
@@ -19,6 +22,8 @@
 #include <QStyle>
 #include <QVBoxLayout>
 #include <QWidget>
+
+#include <utility>
 
 namespace
 {
@@ -96,6 +101,13 @@ ParseErrorsDock::ParseErrorsDock(QWidget *parent)
 
 void ParseErrorsDock::AppendErrors(const QString &title, const std::vector<std::string> &errors)
 {
+    AppendErrorsForSession(nullptr, title, errors);
+}
+
+void ParseErrorsDock::AppendErrorsForSession(
+    LogSession *originating, const QString &title, const std::vector<std::string> &errors
+)
+{
     if (errors.empty())
     {
         return;
@@ -109,6 +121,15 @@ void ParseErrorsDock::AppendErrors(const QString &title, const std::vector<std::
     {
         qWarning() << "ParseErrorsDock::AppendErrors: empty title; using fallback label";
         effectiveTitle = tr("Errors");
+    }
+
+    // A background session receives the batch in its own log only;
+    // visible state always belongs to the currently bound session.
+    const LogSession *bound = mBoundSession.data();
+    if (originating != nullptr && originating != bound)
+    {
+        AppendErrorsIntoSessionLog(originating, effectiveTitle, errors);
+        return;
     }
 
     const QIcon warningIcon = QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning);
@@ -142,6 +163,9 @@ void ParseErrorsDock::AppendErrors(const QString &title, const std::vector<std::
         mDroppedCount += static_cast<int>(errorsBegin);
     }
 
+    // Mirror the trimmed batch so bind/unbind need not parse list items.
+    MirrorAppendIntoShadow(effectiveTitle, errors, errorsBegin);
+
     // Group header (disabled so arrow keys step over it).
     auto *headerItem = new QListWidgetItem(effectiveTitle);
     QFont headerFont = headerItem->font();
@@ -160,6 +184,7 @@ void ParseErrorsDock::AppendErrors(const QString &title, const std::vector<std::
     }
 
     TrimToCap();
+    TrimShadowToCap();
     // Rebuild the footer here (not inside `TrimToCap`) because a batch
     // sized exactly at the cap pre-trims (bumping `mDroppedCount`)
     // without ever pushing `TrimToCap` past its no-op guard.
@@ -186,11 +211,21 @@ void ParseErrorsDock::ClearErrors()
         return;
     }
     mList->clear();
+    mBatchShadow.clear();
     mErrorCount = 0;
     mDroppedCount = 0;
     // `mHasSeenFirstBatch` deliberately NOT reset: re-arming the
     // auto-raise after a user-initiated Clear is the bug we're
     // guarding against. Use `ResetSessionState` for that.
+    // Mirror the clear into the bound session so a subsequent
+    // rebind does not restore the just-cleared entries.
+    if (LogSession *session = mBoundSession.data(); session != nullptr)
+    {
+        SessionParseErrorLog &log = session->MutableParseErrorLog();
+        log.batches.clear();
+        log.droppedCount = 0;
+        // `hasSeenFirstBatch` stays; same rationale as the local field.
+    }
     RefreshSummary();
 }
 
@@ -199,15 +234,258 @@ void ParseErrorsDock::ResetSessionState()
     // Skip the work in the pristine post-construction state to avoid
     // a spurious `countChanged` emit on every session boundary in
     // idle apps.
-    if (mList->count() == 0 && mErrorCount == 0 && mDroppedCount == 0 && !mHasSeenFirstBatch)
+    const bool boundSessionHasLog =
+        mBoundSession.data() != nullptr &&
+        (!mBoundSession->ParseErrorLog().batches.empty() || mBoundSession->ParseErrorLog().droppedCount > 0 ||
+         mBoundSession->ParseErrorLog().hasSeenFirstBatch);
+    if (mList->count() == 0 && mErrorCount == 0 && mDroppedCount == 0 && !mHasSeenFirstBatch && !boundSessionHasLog)
     {
         return;
     }
+    mList->clear();
+    mBatchShadow.clear();
+    mErrorCount = 0;
+    mDroppedCount = 0;
+    mHasSeenFirstBatch = false;
+    // Reset the bound backing log so cleared batches cannot reappear.
+    if (LogSession *session = mBoundSession.data(); session != nullptr)
+    {
+        session->ResetParseErrorLog();
+    }
+    RefreshSummary();
+}
+
+void ParseErrorsDock::Bind(const SessionBindContext &context)
+{
+    LogSession *outgoing = mBoundSession.data();
+    LogSession *incoming = context.session.data();
+
+    // A live same-session bind is a no-op. Null equality must still
+    // clear visible state after QPointer auto-null teardown.
+    const bool sameSession = outgoing != nullptr && outgoing == incoming;
+    if (sameSession)
+    {
+        return;
+    }
+
+    // Save-outgoing: capture the current visible state into the
+    // outgoing session's log (only when outgoing is still alive;
+    // a destroyed session's storage is gone).
+    if (outgoing != nullptr)
+    {
+        SessionParseErrorLog &log = outgoing->MutableParseErrorLog();
+        log.batches = mBatchShadow;
+        log.droppedCount = mDroppedCount;
+        log.hasSeenFirstBatch = mHasSeenFirstBatch;
+    }
+
+    // Clear the visible state before installing the new session's
+    // pointer so any re-entrant slot triggered by `countChanged`
+    // observes the unbound state.
+    mList->clear();
+    mBatchShadow.clear();
+    mErrorCount = 0;
+    mDroppedCount = 0;
+    mHasSeenFirstBatch = false;
+
+    mBoundSession = incoming;
+
+    // Load-incoming: replay the incoming session's log so the
+    // visible list matches what the user last saw for this tab.
+    // For an unbound context (incoming == null) the clear above
+    // is the terminal state.
+    if (incoming != nullptr)
+    {
+        ReplayLogIntoVisibleList(incoming->ParseErrorLog());
+    }
+
+    RefreshSummary();
+}
+
+void ParseErrorsDock::Unbind()
+{
+    // Equivalent to Bind(MakeUnbound()) with fewer branches for
+    // teardown call sites that already know they want the empty
+    // state.
+    if (LogSession *session = mBoundSession.data(); session != nullptr)
+    {
+        SessionParseErrorLog &log = session->MutableParseErrorLog();
+        log.batches = std::move(mBatchShadow);
+        log.droppedCount = mDroppedCount;
+        log.hasSeenFirstBatch = mHasSeenFirstBatch;
+    }
+    mBoundSession = nullptr;
+    mBatchShadow.clear();
     mList->clear();
     mErrorCount = 0;
     mDroppedCount = 0;
     mHasSeenFirstBatch = false;
     RefreshSummary();
+}
+
+LogSession *ParseErrorsDock::BoundSession() const noexcept
+{
+    return mBoundSession.data();
+}
+
+void ParseErrorsDock::MirrorAppendIntoShadow(
+    const QString &title, const std::vector<std::string> &errors, size_t errorsBegin
+)
+{
+    SessionParseErrorBatch batch;
+    batch.title = title;
+    batch.errors.reserve(errors.size() - errorsBegin);
+    for (size_t i = errorsBegin; i < errors.size(); ++i)
+    {
+        batch.errors.push_back(errors[i]);
+    }
+    mBatchShadow.push_back(std::move(batch));
+}
+
+void ParseErrorsDock::AppendErrorsIntoSessionLog(
+    LogSession *session, const QString &title, const std::vector<std::string> &errors
+)
+{
+    if (session == nullptr || errors.empty())
+    {
+        return;
+    }
+    SessionParseErrorLog &log = session->MutableParseErrorLog();
+
+    // Pre-trim a pathologically large batch so the resulting log
+    // doesn't blow through `MAX_DISPLAYED_ERRORS` in a single
+    // append. Matches the pre-trim in the visible path so a
+    // subsequent Bind sees a log with the same shape.
+    size_t errorsBegin = 0;
+    if (errors.size() > static_cast<size_t>(MAX_DISPLAYED_ERRORS))
+    {
+        errorsBegin = errors.size() - static_cast<size_t>(MAX_DISPLAYED_ERRORS);
+        log.droppedCount += static_cast<int>(errorsBegin);
+    }
+
+    SessionParseErrorBatch batch;
+    batch.title = title;
+    batch.errors.reserve(errors.size() - errorsBegin);
+    for (size_t i = errorsBegin; i < errors.size(); ++i)
+    {
+        batch.errors.push_back(errors[i]);
+    }
+    log.batches.push_back(std::move(batch));
+
+    // FIFO evict from the head until the total is back under the
+    // cap. Mirrors `TrimShadowToCap` / `TrimToCap` semantics; the
+    // visible-path Bump on `mDroppedCount` is instead written to
+    // `log.droppedCount` directly.
+    int totalErrors = 0;
+    for (const auto &b : log.batches)
+    {
+        totalErrors += static_cast<int>(b.errors.size());
+    }
+    while (totalErrors > MAX_DISPLAYED_ERRORS && !log.batches.empty())
+    {
+        auto &head = log.batches.front();
+        const int available = static_cast<int>(head.errors.size());
+        const int excess = totalErrors - MAX_DISPLAYED_ERRORS;
+        if (excess >= available)
+        {
+            totalErrors -= available;
+            log.droppedCount += available;
+            log.batches.erase(log.batches.begin());
+        }
+        else
+        {
+            head.errors.erase(head.errors.begin(), head.errors.begin() + excess);
+            log.droppedCount += excess;
+            totalErrors -= excess;
+        }
+    }
+    // Drop any leading empty batches to match the visible path's
+    // orphan-header compaction.
+    while (!log.batches.empty() && log.batches.front().errors.empty())
+    {
+        log.batches.erase(log.batches.begin());
+    }
+
+    // First-batch latch: mirror the visible path so the eventual
+    // Bind's replay does not re-raise the dock for a background
+    // session that has already had its first batch appended.
+    log.hasSeenFirstBatch = true;
+}
+
+void ParseErrorsDock::TrimShadowToCap()
+{
+    // Mirror `TrimToCap`'s FIFO eviction: drop entries from the
+    // head of the shadow until the total shadowed error count is
+    // back under `MAX_DISPLAYED_ERRORS`. Empty batches are dropped
+    // outright so a fully-evicted batch does not leave an orphaned
+    // header behind on rebind. `mDroppedCount` is already updated
+    // by the sibling call in `TrimToCap` -- do not touch it here.
+    int totalErrors = 0;
+    for (const auto &batch : mBatchShadow)
+    {
+        totalErrors += static_cast<int>(batch.errors.size());
+    }
+    while (totalErrors > MAX_DISPLAYED_ERRORS && !mBatchShadow.empty())
+    {
+        auto &head = mBatchShadow.front();
+        const int available = static_cast<int>(head.errors.size());
+        const int excess = totalErrors - MAX_DISPLAYED_ERRORS;
+        if (excess >= available)
+        {
+            totalErrors -= available;
+            mBatchShadow.erase(mBatchShadow.begin());
+        }
+        else
+        {
+            head.errors.erase(head.errors.begin(), head.errors.begin() + excess);
+            totalErrors -= excess;
+        }
+    }
+    // Drop any leading batches whose errors are now empty; the
+    // visible list's `TrimToCap` compact-orphan-headers pass does
+    // the equivalent for `mList`.
+    while (!mBatchShadow.empty() && mBatchShadow.front().errors.empty())
+    {
+        mBatchShadow.erase(mBatchShadow.begin());
+    }
+}
+
+void ParseErrorsDock::ReplayLogIntoVisibleList(const SessionParseErrorLog &log)
+{
+    // Seed the running counters + first-batch latch from the log
+    // BEFORE the item mint below so `RefreshSummary` (called by
+    // the caller after this returns) sees the correct totals in
+    // one shot. The trimmed-log semantics mean the replay does
+    // not need to re-run TrimToCap here: `AppendErrorsIntoSession
+    // Log` / `AppendErrors` already trimmed on the way in.
+    mDroppedCount = log.droppedCount;
+    mHasSeenFirstBatch = log.hasSeenFirstBatch;
+    for (const auto &batch : log.batches)
+    {
+        // Do NOT re-mirror through `AppendErrors` because that
+        // path would re-trigger `firstBatchArrived`, incorrectly
+        // re-arm the counters, and mutate `mDroppedCount` a
+        // second time. Inline the item-mint + shadow-append.
+        const QIcon warningIcon = QApplication::style()->standardIcon(QStyle::SP_MessageBoxWarning);
+        auto *headerItem = new QListWidgetItem(batch.title);
+        QFont headerFont = headerItem->font();
+        headerFont.setBold(true);
+        headerItem->setFont(headerFont);
+        headerItem->setFlags(Qt::ItemIsEnabled);
+        mList->addItem(headerItem);
+        for (const auto &error : batch.errors)
+        {
+            auto *item = new QListWidgetItem(warningIcon, QString::fromStdString(error));
+            item->setToolTip(QString::fromStdString(error));
+            item->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
+            mList->addItem(item);
+            ++mErrorCount;
+        }
+        mBatchShadow.push_back(batch);
+    }
+    // Restore the overflow footer if the incoming log carried a
+    // dropped count.
+    RebuildOverflowFooter();
 }
 
 void ParseErrorsDock::closeEvent(QCloseEvent *event)

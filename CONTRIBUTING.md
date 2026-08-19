@@ -8,6 +8,7 @@ Thanks for your interest in contributing! This document is the developer referen
   - [Project Structure](#project-structure)
   - [Library](#library)
   - [GUI Application](#gui-application)
+  - [Session tabs](#session-tabs)
   - [Static vs Streaming pipelines](#static-vs-streaming-pipelines)
   - [Network producers (TCP / UDP)](#network-producers-tcp--udp)
   - [Data Flow](#data-flow)
@@ -76,7 +77,7 @@ structured_log_viewer/
 │   └── log_generator/        # Standalone multi-format fixture generator (`log_generator`)
 ├── cmake/                    # Shared CMake modules (warnings, FetchContent)
 ├── resources/                # Icons, .desktop entry, Qt resource file
-├── doc/                      # End-user documentation
+├── doc/                      # End-user guide (`README.md`) and contributor notes
 ├── .github/workflows/        # CI: build + test on Linux / Windows / macOS
 ├── CMakeLists.txt
 └── README.md
@@ -187,9 +188,13 @@ The Qt-side classes that wrap `loglib` are:
 
 - `RegexTemplatesEditor` (`app/include/regex_templates_editor.hpp`) — modeless editor for the merged built-in and user catalog. Its form covers `name`, `pattern`, samples, auto-detect, priority, `continuationMode`, `headerAnchor`, and description. Built-ins are read-only; duplicate one to customize it. Validate and Save compile both regex fields, and Validate checks samples. `RegexTemplateRegistry` owns merging, user shadowing, disk reload, and `SetExtraRegexTemplates`; `NetworkStreamDialog` only consumes the merged picker.
 
-- `MainWindow` (`app/include/main_window.hpp`) — orchestrates everything: open dialogs, drag & drop, the find bar, the filter editor, the preferences editor, the sequential file-queue open flow (`StartStreamingOpenQueue` / `StreamNextPendingFile`) that drives `LogModel::BeginStreaming` for the first file and `LogModel::AppendStreaming` for the rest, and the Stream Mode entry point (`OpenLogStream` → `LogModel::BeginStreaming(StreamLineSource, ...)`) plus the toolbar wiring (`TogglePauseStream` / `StopStream`) and the status-bar state machine (`UpdateStreamingStatus` covers the `Streaming` / `Paused` / `Source unavailable` / `— rotated` / `dropped while paused` variants).
+- `MainWindow` (`app/include/main_window.hpp`) — window host for chrome, dialogs, and menus. File-open and stream-mode entry points still live here; ingest, decompression, and export completions resolve a hosted `SessionInstanceId` through `SessionOperationController` (`app/include/session_operation_controller.hpp`) and update only that session. See [Session tabs](doc/session-tabs.md) for tab ownership, switch ordering, dock binding, callback origin, and close ordering.
 
 - Session-bundle UI flow — `SessionBundleDialog` collects the destination and encoder settings. `MainWindow::ExportSessionBundle` stops active producers before dispatching `WriteSessionBundle` through the shared progress/cancel machinery. A lone bundle opened into a fresh session may apply configuration retained from its metadata line.
+
+### Session tabs
+
+Multi-tab windows are documented in [`doc/session-tabs.md`](doc/session-tabs.md). That note is the source of truth for tab ownership, tab-switch ordering, shared-dock binding, completion origin, and close ordering.
 
 ### Static vs Streaming pipelines
 
@@ -484,14 +489,14 @@ When adding a new third-party dependency to `cmake/FetchDependencies.cmake`, app
 
 All build configurations are defined in [`CMakePresets.json`](CMakePresets.json) (CMake 3.28+). The shared presets are:
 
-| Preset             | Build type       | Purpose                                                                                                                                                   |
-| ------------------ | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `release`          | `Release`        | Optimized build, used by CI and releases.                                                                                                                 |
-| `debug`            | `Debug`          | Full debug info and assertions.                                                                                                                           |
-| `relwithdebinfo`   | `RelWithDebInfo` | Release optimizations + debug info (perf).                                                                                                                |
-| `clang-asan-ubsan` | `RelWithDebInfo` | Clang 22 + AddressSanitizer + UndefinedBehaviorSanitizer. CI gating; see [Sanitizers and coverage](#sanitizers-and-coverage).                             |
-| `clang-tsan`       | `RelWithDebInfo` | Clang 22 + ThreadSanitizer (excludes `apptest` / `apptest_overview_rail` / `apptest_histogram` for Qt-internal false positives). CI gating; same section. |
-| `clang-coverage`   | `RelWithDebInfo` | Clang 22 + source-based coverage. CI leg also runs `cpp-linter-action` against this build's `compile_commands.json`; no separate tidy preset.             |
+| Preset             | Build type       | Purpose                                                                                                                                                                                                        |
+| ------------------ | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `release`          | `Release`        | Optimized build, used by CI and releases.                                                                                                                                                                      |
+| `debug`            | `Debug`          | Full debug info and assertions.                                                                                                                                                                                |
+| `relwithdebinfo`   | `RelWithDebInfo` | Release optimizations + debug info (perf).                                                                                                                                                                     |
+| `clang-asan-ubsan` | `RelWithDebInfo` | Clang 22 + AddressSanitizer + UndefinedBehaviorSanitizer. CI gating; see [Sanitizers and coverage](#sanitizers-and-coverage).                                                                                  |
+| `clang-tsan`       | `RelWithDebInfo` | Clang 22 + ThreadSanitizer (excludes `apptest` / `apptest_overview_rail` / `apptest_histogram` / `apptest_highlight_rules` / `apptest_session_tabs` for Qt-internal false positives). CI gating; same section. |
+| `clang-coverage`   | `RelWithDebInfo` | Clang 22 + source-based coverage. CI leg also runs `cpp-linter-action` against this build's `compile_commands.json`; no separate tidy preset.                                                                  |
 
 Each preset uses the **Ninja** generator and writes to `build/<presetName>/`. They also enable `CMAKE_EXPORT_COMPILE_COMMANDS` so `clangd`, `clang-tidy`, and other tools work out of the box. Matching `buildPresets`, `testPresets`, and `workflowPresets` are defined with the same names. Two extra benchmark-only test presets — `release-benchmark` and `relwithdebinfo-benchmark` — opt into the long-running parser benchmarks (see [Benchmarking](#benchmarking)).
 
@@ -514,7 +519,9 @@ ctest --preset release-benchmark   # opt-in: parser benchmarks only, verbose
 
 ### Windows
 
-Run the same commands from the **Developer PowerShell for VS 2022** (or Developer Command Prompt) so that `cl.exe` and Ninja are on `PATH`.
+Run the same commands from the **Developer PowerShell for VS 2022** (or Developer Command Prompt) so that `cl.exe` and Ninja are on `PATH`. `scripts/Enter-DevShell.ps1` does that for the current PowerShell session.
+
+The `release` / `debug` / `relwithdebinfo` presets also declare Ninja `architecture` / `toolset` with `strategy` `external`, plus a Qt Creator vendor compiler pin to `cl.exe`. CMake itself ignores those fields (so Linux and macOS `cmake --preset` is unchanged); Qt Creator and Visual Studio use them to inject the MSVC environment and to prefer `cl.exe` over other compilers on `PATH` (commonly LLVM `clang++`). Do not put `CMAKE_C_COMPILER=cl.exe` on those shared presets — Unix CI uses the same names. The Clang sanitizer / coverage presets inherit `_base` directly and keep pinning `clang-22`.
 
 ### Machine-specific overrides (`CMakeUserPresets.json`)
 
@@ -572,7 +579,7 @@ Local repro is one command per preset — same shape as `release`:
 
 ```sh
 cmake --workflow --preset clang-asan-ubsan   # configure + build + test under ASan + UBSan
-cmake --workflow --preset clang-tsan         # ditto under TSan (excludes apptest / apptest_overview_rail / apptest_histogram by name regex)
+cmake --workflow --preset clang-tsan         # ditto under TSan (excludes apptest / apptest_overview_rail / apptest_histogram / apptest_highlight_rules / apptest_session_tabs by name regex)
 cmake --workflow --preset clang-coverage     # coverage-instrumented build + test
 ```
 
@@ -582,7 +589,7 @@ The runtime knobs CI uses come from the test presets' `environment` blocks, so a
   - `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1:strict_string_checks=1:detect_stack_use_after_return=1` — the first hit aborts so CTest reports the failure.
   - `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1:abort_on_error=1`.
   - `LSAN_OPTIONS=suppressions=${sourceDir}/.ci/lsan.supp:print_suppressions=0` — Qt / fontconfig / oneTBB process-global one-shot allocations are suppressed via [`.ci/lsan.supp`](.ci/lsan.supp). Add an entry there only when the leak is in a system library you don't control; each entry should carry a one-line comment explaining where it came from.
-- **TSan:** `TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1:history_size=7:suppressions=${sourceDir}/.ci/tsan.supp`. The matching `clang-tsan` test preset excludes `apptest`, `apptest_overview_rail`, and `apptest_histogram` (the Qt-widget smoke tests) because Qt's raster thread pool and private mutexes generate false positives that drown the signal — e.g. concurrent `QArrayData` allocations on the pooled paint workers spawned by `QWidget::show()`, or the `QMetaObject::invokeMethod` queued-slot allocation that TSan flags between a parser worker posting a `QtStreamingLogSink::OnFinished` callable and the main-thread `QObject::event` dispatch. `apptest_queue` (pure C++ `BoundedBatchQueue` tests) and the `loglib` unit tests cover the threading worth checking — TBB pipeline, `StreamLineSource`, `TailingBytesProducer`, and the `LogModel::Reset()` teardown sequence (`BytesProducer::Stop()` → sink `RequestStop()` → worker join). [`.ci/tsan.supp`](.ci/tsan.supp) starts empty; add entries with a rationale comment as upstream-library false positives surface.
+- **TSan:** `TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1:history_size=7:suppressions=${sourceDir}/.ci/tsan.supp`. The matching `clang-tsan` test preset excludes `apptest`, `apptest_overview_rail`, `apptest_histogram`, `apptest_highlight_rules`, and `apptest_session_tabs` (the Qt-widget smoke tests) because Qt's raster thread pool and private mutexes generate false positives that drown the signal — e.g. concurrent `QArrayData` allocations on the pooled paint workers spawned by `QWidget::show()`, or the `QMetaObject::invokeMethod` queued-slot allocation that TSan flags between a parser worker posting a `QtStreamingLogSink::OnFinished` callable and the main-thread `QObject::event` dispatch. `apptest_queue` (pure C++ `BoundedBatchQueue` tests) and the `loglib` unit tests cover the threading worth checking — TBB pipeline, `StreamLineSource`, `TailingBytesProducer`, and the `LogModel::Reset()` teardown sequence (`BytesProducer::Stop()` → sink `RequestStop()` → worker join). [`.ci/tsan.supp`](.ci/tsan.supp) starts empty; add entries with a rationale comment as upstream-library false positives surface.
 - **Coverage:** `LLVM_PROFILE_FILE=${sourceDir}/build/clang-coverage/profiles/%p-%m.profraw` — one `.profraw` per (PID, binary) so the eventual `llvm-profdata-22 merge` is unambiguous. After running the tests:
 
 ```sh
@@ -612,7 +619,9 @@ Coverage uploads land on [Codecov](https://codecov.io); the CI leg fails the PR 
 
 ### IDE integration
 
-Qt Creator, CLion, Visual Studio, and VS Code (with the CMake Tools extension) all detect `CMakePresets.json` / `CMakeUserPresets.json` automatically — just open the repository folder and pick a preset.
+Qt Creator, CLion, Visual Studio, and VS Code (with the CMake Tools extension) all detect `CMakePresets.json` / `CMakeUserPresets.json` automatically — just open the repository folder and pick a preset (`debug`, `release`, or `relwithdebinfo`). On Windows, those presets select MSVC as described under [Windows](#windows). After pulling preset changes, use **Build → Reload CMake Presets** in Qt Creator so it recreates the temporary kits.
+
+Do not use Qt Creator's auto-created **Desktop Qt …** kit for this repo: it injects `QT_ENABLE_QML_DEBUG`, which puts a generator expression into directory `COMPILE_DEFINITIONS` and breaks PCRE2's Ninja `try_compile`. If a preset kit still enables QML debugging, set `QT_ENABLE_QML_DEBUG=OFF` in that kit's CMake Initial Configuration (this app is Widgets, not QML). Point `CMAKE_PREFIX_PATH` at your Qt MSVC tree (for example `C:/Qt/6.11.0/msvc2022_64`) via Initial Configuration or `CMakeUserPresets.json` if the kit leaves it empty.
 
 ## Running tests
 
@@ -681,7 +690,7 @@ The `--roll-*` and `--append` flags are rejected on network and stdout targets (
 
 This section is the canonical home for the regression gate; the parser benchmarks in [`test/lib/src/benchmark_json.cpp`](test/lib/src/benchmark_json.cpp), [`test/lib/src/benchmark_logfmt.cpp`](test/lib/src/benchmark_logfmt.cpp), [`test/lib/src/benchmark_csv.cpp`](test/lib/src/benchmark_csv.cpp), and [`test/lib/src/benchmark_regex.cpp`](test/lib/src/benchmark_regex.cpp) (all built on the shared [`test/lib/include/benchmark_common.hpp`](test/lib/include/benchmark_common.hpp) harness), the Stream-Mode latency benchmark in [`test/lib/src/benchmark_stream.cpp`](test/lib/src/benchmark_stream.cpp), the filter / sort benchmarks in [`test/lib/src/benchmark_log_filter.cpp`](test/lib/src/benchmark_log_filter.cpp), and the bundle benchmark in [`test/lib/src/benchmark_session_bundle.cpp`](test/lib/src/benchmark_session_bundle.cpp) link back to it via their top-of-file comment. Quote the bullets in the [Acceptance bar](#acceptance-bar) below in commit messages and PR descriptions.
 
-The benchmarks live in the same `tests` binary as the unit tests but are tagged `[.][benchmark]` so they're hidden by default; `catch_discover_tests` registers them under the `benchmark` CTest label.
+The parser benchmarks live in the same `tests` binary as the unit tests but are tagged `[.][benchmark]` so they're hidden by default; `catch_discover_tests` registers them under the `benchmark` CTest label. GUI benches (`apptest_bench`, `apptest_session_tabs_bench`) are separate QtTest binaries with the same CTest label.
 
 **Debug builds skip benchmarks automatically.** Use the `release` preset for the canonical regression-gate number, or `relwithdebinfo` if you want to attach a profiler — both have IPO/LTO on and `NDEBUG` defined. Running benchmarks against `--preset debug` reports each case as `SKIPPED` with a message rather than producing misleading numbers (see `BENCHMARK_REQUIRES_RELEASE_BUILD` in `benchmark_json.cpp`).
 
@@ -709,6 +718,7 @@ The table below groups the main `[.][benchmark]` fixtures by tag. A row may cove
 | `[enum]`                                  | End-to-end enum auto-detection over a 20'000-line parse with a `level`-style key. Asserts the `level` column promotes to `Type::Enumeration` and every slot ends up as a `DictRef`; reports dictionary heap cost.                                                                                                                    |
 | `[cancellation]`                          | Cancellation-latency over 20 runs of a 1M-line parse. The test hard-fails only above 5 s; the ±3 % p95 bar is the PR-description convention.                                                                                                                                                                                         |
 | `[stream_latency]`                        | Stream-Mode write-to-row latency over a `TailingFileSource` + `JsonParser::ParseStreaming` chain. Asserts median ≤ 250 ms / p95 ≤ 500 ms.                                                                                                                                                                                            |
+| `[session_tabs]`                          | Two 100,000-row JSONL tabs with 1,000 anchors each and visible shared docks. 10 warm-up + 50 measured activations. Hard-fails when p95 > 100 ms. Prints hardware class, row counts, dock visibility, and p50/p95. Stay within 20 % of the controlled-CI baseline once that number is recorded in the PR.                             |
 | `[session_bundle]`                        | Encode, decode, and round-trip a 1'000'000-row JSON bundle at zstd level 3. Reports throughput and compressed size.                                                                                                                                                                                                                  |
 | `[log_filter][large]` (enum)              | `EnumRowPredicate` fast-path scan over 1'000'000 enum-column rows. Hard-fails above 100 ms; guards against a regression to the per-row allocation path.                                                                                                                                                                              |
 | `[log_filter][large]` (string)            | `CallbackStringRowPredicate` substring scan over 1'000'000 string rows. Hard-fails above 200 ms; guards the `std::variant` access + table-lookup cost.                                                                                                                                                                               |
@@ -758,6 +768,7 @@ The convention is to capture both **before** (clean-tree baseline) and **after**
 - `[allocations]` — `string_view` fast-path fraction ≥ 99 %.
 - `[cancellation]` — p95 latency within ±3 % of the prior commit's number.
 - `[stream_latency]` — median ≤ 250 ms and p95 ≤ 500 ms (the test fails on a regression rather than relying on a manual review compare). Stream-Mode PRs must also re-run `[large]` / `[wide]` / `[allocations]` / `[cancellation]` and record the numbers, since the static-path machinery and the Stream-Mode seam share the same parser and `LogTable` plumbing.
+- `[session_tabs]` — tab-switch p95 ≤ 100 ms on two 100,000-row tabs with 1,000 anchors each and visible shared docks (10 warm-up switches, 50 measured). Also stay within 20 % of the controlled-CI baseline once that number is recorded in the PR. The test prints hardware class on every run; do not disable it if a machine misses 100 ms.
 - `[session_bundle]` — compare write, read, and round-trip WARN lines before/after changes to bundle serialization, reading, or UI export/open paths. No hard ceiling is enforced yet.
 - `[log_filter][large]` and `[log_filter][log_compare][large]` — each test hard-fails on a regression past its built-in ceiling (100 ms / 200 ms / linear-ish sort time). PRs touching `loglib::RowPredicate`, `EnumDictRank`, or `LogFilterModel::lessThan` should still paste the WARN lines so a within-bar regression is visible.
 - `[log_filter][log_compare][large][level]` — Level-typed siblings with their own ceilings (500 ms for the parallel `SortPermutationByColumn`, 2000 ms for the per-compare `CompareRows`/`CompareLevel`). PRs touching `GetLevelForRow`, `LevelRankCache` invalidation, or the `Type::Level` arm of `SortPermutationByColumn` should paste these WARN lines too.
@@ -778,6 +789,8 @@ pre-commit run --all-files
 ```
 
 The pinned tool versions live in [`.pre-commit-config.yaml`](.pre-commit-config.yaml).
+
+Public C++ APIs use Doxygen in the style documented in [`AGENTS.md`](AGENTS.md) (Comments and Doxygen). See [`app/include/histogram_model.hpp`](app/include/histogram_model.hpp) for examples. Comments describe current behavior only.
 
 ## Repository security (maintainers)
 
