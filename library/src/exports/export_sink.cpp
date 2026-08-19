@@ -1,4 +1,4 @@
-#include "export_sink.hpp"
+#include "loglib/exports/export_sink.hpp"
 
 #include <cerrno>
 #include <cstdio>
@@ -9,7 +9,7 @@
 #include <type_traits>
 #include <utility>
 
-namespace slv::exports
+namespace loglib::exports
 {
 
 namespace
@@ -187,4 +187,4 @@ void FileSink::Finish()
     mFinished = true;
 }
 
-} // namespace slv::exports
+} // namespace loglib::exports

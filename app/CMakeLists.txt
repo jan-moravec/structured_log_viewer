@@ -82,10 +82,6 @@ set(PROJECT_SOURCES
     include/column_editor.hpp
     src/columns_manager_dialog.cpp
     include/columns_manager_dialog.hpp
-    src/export_sink.cpp
-    include/export_sink.hpp
-    src/row_exporter.cpp
-    include/row_exporter.hpp
     src/export_dialog.cpp
     include/export_dialog.hpp
     src/session_bundle_dialog.cpp

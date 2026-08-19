@@ -1,6 +1,6 @@
 #pragma once
 
-#include "row_exporter.hpp"
+#include <loglib/exports/row_exporter.hpp>
 
 #include <QDialog>
 #include <QString>
@@ -29,7 +29,7 @@ class ExportDialog : public QDialog
 public:
     struct Config
     {
-        slv::exports::ExportFormat format = slv::exports::ExportFormat::JsonLines;
+        loglib::exports::ExportFormat format = loglib::exports::ExportFormat::JsonLines;
         QString destination;
         /// Export selection only. Ignored (and toggle disabled)
         /// when no rows are selected.
@@ -60,6 +60,11 @@ public:
 
     /// Only meaningful after `exec()` returned `Accepted`.
     [[nodiscard]] Config Configuration() const;
+
+    /**
+     * @brief Returns the translated dropdown / toast label for @p format.
+     */
+    [[nodiscard]] static QString FormatLabel(loglib::exports::ExportFormat format);
 
 private slots:
     void OnFormatChanged();

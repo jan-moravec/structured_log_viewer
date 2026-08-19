@@ -25,11 +25,11 @@ namespace
 /// past this many rows.
 constexpr std::size_t MARKDOWN_SOFT_WARNING_ROWS = 10000;
 
-using ExportFormat = slv::exports::ExportFormat;
+using ExportFormat = loglib::exports::ExportFormat;
 
-/// Per-format catalogue entry. `label` and `extension` come from
-/// `slv::exports` so the dialog, the completion toast, and the
-/// docs cannot drift apart.
+/// Per-format catalogue entry. Labels are translated here so the
+/// dialog, completion toast, and file-dialog filter share `tr()`.
+/// Extensions come from `loglib::exports::ExtensionFor`.
 struct FormatEntry
 {
     ExportFormat format = ExportFormat::JsonLines;
@@ -50,8 +50,8 @@ std::array<FormatEntry, 4> BuildFormatEntries()
     for (std::size_t i = 0; i < ORDER.size(); ++i)
     {
         const auto fmt = ORDER[i];
-        const QString label = QString::fromLatin1(slv::exports::LabelFor(fmt));
-        const QString ext = QString::fromLatin1(slv::exports::ExtensionFor(fmt));
+        const QString label = ExportDialog::FormatLabel(fmt);
+        const QString ext = QString::fromLatin1(loglib::exports::ExtensionFor(fmt));
         entries[i] = FormatEntry{
             .format = fmt,
             .label = label,
@@ -95,6 +95,22 @@ bool StripKnownExtension(QString &path)
 }
 
 } // namespace
+
+QString ExportDialog::FormatLabel(loglib::exports::ExportFormat format)
+{
+    switch (format)
+    {
+    case loglib::exports::ExportFormat::JsonLines:
+        return tr("JSON Lines");
+    case loglib::exports::ExportFormat::Csv:
+        return tr("CSV");
+    case loglib::exports::ExportFormat::Snapshot:
+        return tr("Source snapshot");
+    case loglib::exports::ExportFormat::Markdown:
+        return tr("Markdown table");
+    }
+    return tr("JSON Lines");
+}
 
 ExportDialog::ExportDialog(
     std::size_t rowCountFiltered,

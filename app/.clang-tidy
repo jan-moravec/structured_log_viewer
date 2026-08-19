@@ -38,8 +38,8 @@
 #   -misc-non-private-member-variables-in-classes
 #   (and its `cppcoreguidelines-non-private-member-variables-in-classes`
 #    alias):
-#        POD-like plan / snapshot structs (e.g. `slv::exports::ExportPlan`,
-#        `slv::exports::RowSource`) intentionally expose their data
+#        POD-like plan / snapshot structs (e.g. `loglib::exports::ExportPlan`,
+#        `loglib::exports::RowSource`) intentionally expose their data
 #        members to callers and still carry a convenience helper
 #        (`View()`, ...). The check's actual target is "leaky class
 #        with mixed visibility", which does not apply when *all*

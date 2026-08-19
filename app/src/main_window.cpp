@@ -6,7 +6,6 @@
 #include "columns_manager_dialog.hpp"
 #include "configuration_diagnostics_dialog.hpp"
 #include "export_dialog.hpp"
-#include "export_sink.hpp"
 #include "filter_editor.hpp"
 #include "highlight_rule_set.hpp"
 #include "highlight_rules_editor.hpp"
@@ -23,7 +22,6 @@
 #include "qt_streaming_log_sink.hpp"
 #include "regex_template_registry.hpp"
 #include "regex_templates_editor.hpp"
-#include "row_exporter.hpp"
 #include "session_bundle_dialog.hpp"
 #include "session_history_manager.hpp"
 #include "shortcuts_dialog.hpp"
@@ -34,6 +32,8 @@
 #include <loglib/auto_detect_parser.hpp>
 #include <loglib/bytes_producer.hpp>
 #include <loglib/enum_dictionary.hpp>
+#include <loglib/exports/export_sink.hpp>
+#include <loglib/exports/row_exporter.hpp>
 #include <loglib/file_line_source.hpp>
 #include <loglib/format_detection.hpp>
 #include <loglib/ascii_case.hpp>
@@ -5571,9 +5571,9 @@ void MainWindow::ExportFilteredRows()
     // `OnExportFinished` so a failed export (bad path, perms, disk
     // full) does not stick as the remembered directory.
 
-    std::vector<int> sourceRows = CollectExportSourceRows(config.selectionOnly);
+    std::vector<int> qtSourceRows = CollectExportSourceRows(config.selectionOnly);
 
-    if (sourceRows.empty())
+    if (qtSourceRows.empty())
     {
         QMessageBox::information(this, tr("Export Filtered Rows"), tr("No rows match the current selection."));
         return;
@@ -5592,9 +5592,16 @@ void MainWindow::ExportFilteredRows()
         }
     }
 
-    auto plan = std::make_unique<slv::exports::ExportPlan>();
+    auto plan = std::make_unique<loglib::exports::ExportPlan>();
     plan->format = config.format;
-    plan->sourceRows = std::move(sourceRows);
+    plan->sourceRows.reserve(qtSourceRows.size());
+    for (const int row : qtSourceRows)
+    {
+        if (row >= 0)
+        {
+            plan->sourceRows.push_back(static_cast<std::size_t>(row));
+        }
+    }
     plan->visibleColumns = std::move(visibleColumns);
     plan->includeAllFieldsForJson = true; // v1: JSON always includes every field.
     plan->includeHeaderRow = config.includeHeaderRow;
@@ -5602,12 +5609,12 @@ void MainWindow::ExportFilteredRows()
     // Preserve non-ASCII filenames on Windows -- see `qstring_path.hpp`.
     plan->destination = logapp::QStringToFsPath(config.destination);
 
-    const QString formatLabel = QString::fromLatin1(slv::exports::LabelFor(config.format));
+    const QString formatLabel = ExportDialog::FormatLabel(config.format);
     BeginAsyncExport(std::move(plan), config.destination, formatLabel);
 }
 
 void MainWindow::BeginAsyncExport(
-    std::unique_ptr<slv::exports::ExportPlan> plan, const QString &destination, const QString &formatLabel
+    std::unique_ptr<loglib::exports::ExportPlan> plan, const QString &destination, const QString &formatLabel
 )
 {
     // Fresh per-run stop source so a leftover cancel from a prior
@@ -5640,11 +5647,11 @@ void MainWindow::BeginAsyncExport(
     // Share the plan + sink so the worker capture cannot race the
     // finished-slot re-reading its members. Build the sink up-front
     // so open failures surface synchronously.
-    const std::shared_ptr<slv::exports::ExportPlan> sharedPlan(std::move(plan));
-    std::shared_ptr<slv::exports::FileSink> sink;
+    const std::shared_ptr<loglib::exports::ExportPlan> sharedPlan(std::move(plan));
+    std::shared_ptr<loglib::exports::FileSink> sink;
     try
     {
-        sink = std::make_shared<slv::exports::FileSink>(sharedPlan->destination);
+        sink = std::make_shared<loglib::exports::FileSink>(sharedPlan->destination);
     }
     catch (const std::exception &e)
     {
@@ -5675,7 +5682,7 @@ void MainWindow::BeginAsyncExport(
     // reads on the next tick.
     // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
     auto future = QtConcurrent::run([sharedPlan, sink, stopToken, rowsWrittenAtomic]() {
-        auto exporter = slv::exports::MakeExporter(sharedPlan->format);
+        auto exporter = loglib::exports::MakeExporter(sharedPlan->format);
         if (exporter == nullptr)
         {
             throw std::runtime_error("Unsupported export format");
@@ -6144,7 +6151,7 @@ void MainWindow::OnExportFinishedFor(LogSession *origin)
         // is the documented idiom.
         watcher->waitForFinished();
     }
-    catch (const slv::exports::ExportCancelled &)
+    catch (const loglib::exports::ExportCancelled &)
     {
         cancelled = true;
     }

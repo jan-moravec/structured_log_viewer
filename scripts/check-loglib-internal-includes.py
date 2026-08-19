@@ -1,7 +1,6 @@
 """Fail if app/ or test/app/ include loglib/internal headers.
 
-library/ and test/lib/ may include internals. app/src/row_exporter.cpp is
-allowlisted until the export layer moves into loglib.
+library/ and test/lib/ may include internals.
 """
 
 from __future__ import annotations
@@ -12,9 +11,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TREES = (ROOT / "app", ROOT / "test" / "app")
-ALLOWED = {
-    (ROOT / "app" / "src" / "row_exporter.cpp").resolve(),
-}
 INCLUDE_RE = re.compile(r'^\s*#\s*include\s*[<"]loglib/internal/[^>"]+[>"]', re.M)
 
 
@@ -25,8 +21,6 @@ def main() -> int:
             continue
         for path in tree.rglob("*"):
             if path.suffix not in {".hpp", ".h", ".cpp", ".cc"}:
-                continue
-            if path.resolve() in ALLOWED:
                 continue
             text = path.read_text(encoding="utf-8")
             if INCLUDE_RE.search(text):

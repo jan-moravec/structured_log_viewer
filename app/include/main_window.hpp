@@ -95,10 +95,10 @@ class RegexTemplatesEditor;
 class HighlightRuleSet;
 class HighlightRulesEditor;
 
-namespace slv::exports
+namespace loglib::exports
 {
 struct ExportPlan;
-} // namespace slv::exports
+} // namespace loglib::exports
 
 class MainWindow : public QMainWindow
 {
@@ -1639,7 +1639,7 @@ private slots:
      * slice in one of the four supported formats (`JSON Lines`,
      * `CSV`, `Source snapshot`, `Markdown table`). Progress and
      * cancel run through a non-modal per-window `QProgressDialog`;
-     * user cancel unwinds via `slv::exports::ExportCancelled`.
+     * user cancel unwinds via `loglib::exports::ExportCancelled`.
      */
     void ExportFilteredRows();
 
@@ -3687,7 +3687,7 @@ private:
      * @param formatLabel The `formatLabel` value.
      */
     void BeginAsyncExport(
-        std::unique_ptr<slv::exports::ExportPlan> plan, const QString &destination, const QString &formatLabel
+        std::unique_ptr<loglib::exports::ExportPlan> plan, const QString &destination, const QString &formatLabel
     );
 
     /**

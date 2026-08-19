@@ -18,6 +18,7 @@ add_executable(
     "src/test_csv_parser.cpp"
     "src/test_decompressing_byte_source.cpp"
     "src/test_enum_dictionary.cpp"
+    "src/test_exports.cpp"
     "src/test_file_line_source.cpp"
     "src/test_format_detection.cpp"
     "src/test_histogram_bucket_index.cpp"
