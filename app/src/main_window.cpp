@@ -8762,9 +8762,9 @@ namespace
 {
 
 // Keep runtime-to-persistence source-mode coupling at one boundary.
-slv::persistence::SourceMode SourceModeFor(const LogSession *session)
+logapp::persistence::SourceMode SourceModeFor(const LogSession *session)
 {
-    using slv::persistence::SourceMode;
+    using logapp::persistence::SourceMode;
     if (session == nullptr)
     {
         return SourceMode::Empty;
@@ -8804,7 +8804,7 @@ slv::persistence::SourceMode SourceModeFor(const LogSession *session)
     {
         // Session was opened from an archive. Bundle sessions
         // additionally arm `ShouldApplyEmbeddedBundleConfig`.
-        return session->ShouldApplyEmbeddedBundleConfig() ? slv::persistence::SourceMode::Bundle
+        return session->ShouldApplyEmbeddedBundleConfig() ? logapp::persistence::SourceMode::Bundle
                                                           : SourceMode::Compressed;
     }
     if (src->locators.size() > 1)
@@ -8816,16 +8816,16 @@ slv::persistence::SourceMode SourceModeFor(const LogSession *session)
 
 } // namespace
 
-slv::persistence::WorkspaceWindow MainWindow::CaptureWorkspaceWindow() const
+logapp::persistence::WorkspaceWindow MainWindow::CaptureWorkspaceWindow() const
 {
-    slv::persistence::WorkspaceWindow snapshot;
+    logapp::persistence::WorkspaceWindow snapshot;
     snapshot.windowUuid = WorkspaceWindowUuid();
     snapshot.geometry = saveGeometry();
     snapshot.dockState = saveState();
     snapshot.activeTabIndex = (mTabWidget != nullptr) ? mTabWidget->currentIndex() : 0;
     for (const LogSession *session : hostedSessions())
     {
-        slv::persistence::WorkspaceTab tab;
+        logapp::persistence::WorkspaceTab tab;
         if (session != nullptr)
         {
             tab.sessionUuid = session->RestorableSessionUuid();
@@ -8845,7 +8845,7 @@ slv::persistence::WorkspaceWindow MainWindow::CaptureWorkspaceWindow() const
     return snapshot;
 }
 
-slv::persistence::WorkspaceWindow MainWindow::WorkspaceSnapshotForQuit() const
+logapp::persistence::WorkspaceWindow MainWindow::WorkspaceSnapshotForQuit() const
 {
     if (mQuitWorkspaceSnapshot.has_value())
     {
@@ -8854,7 +8854,7 @@ slv::persistence::WorkspaceWindow MainWindow::WorkspaceSnapshotForQuit() const
     return CaptureWorkspaceWindow();
 }
 
-void MainWindow::ApplyWorkspaceWindow(const slv::persistence::WorkspaceWindow &window, std::uint64_t generation)
+void MainWindow::ApplyWorkspaceWindow(const logapp::persistence::WorkspaceWindow &window, std::uint64_t generation)
 {
     // Adopt the persisted uuid so future publishes overwrite
     // rather than duplicate. Empty stays empty; a first-time
@@ -8909,7 +8909,7 @@ void MainWindow::ApplyWorkspaceWindow(const slv::persistence::WorkspaceWindow &w
             }
         };
         applyPersistedNames();
-        if (tab.restorePolicy == slv::persistence::RestorePolicy::Skip)
+        if (tab.restorePolicy == logapp::persistence::RestorePolicy::Skip)
         {
             // Slot reserved; no restore work. The tab stays empty
             // and keeps its captured label when one was saved.
@@ -8919,17 +8919,17 @@ void MainWindow::ApplyWorkspaceWindow(const slv::persistence::WorkspaceWindow &w
         // generation snapshot, falling back to recents. Network
         // and stdin tabs stay empty. Missing or corrupt snapshots
         // leave this tab empty and do not abort later tabs.
-        const bool isFilePath = tab.sourceMode == slv::persistence::SourceMode::File ||
-                                tab.sourceMode == slv::persistence::SourceMode::MultiFile ||
-                                tab.sourceMode == slv::persistence::SourceMode::Compressed ||
-                                tab.sourceMode == slv::persistence::SourceMode::Bundle ||
-                                tab.sourceMode == slv::persistence::SourceMode::LiveTailFile ||
-                                tab.sourceMode == slv::persistence::SourceMode::ConfigOnly;
+        const bool isFilePath = tab.sourceMode == logapp::persistence::SourceMode::File ||
+                                tab.sourceMode == logapp::persistence::SourceMode::MultiFile ||
+                                tab.sourceMode == logapp::persistence::SourceMode::Compressed ||
+                                tab.sourceMode == logapp::persistence::SourceMode::Bundle ||
+                                tab.sourceMode == logapp::persistence::SourceMode::LiveTailFile ||
+                                tab.sourceMode == logapp::persistence::SourceMode::ConfigOnly;
         if (!isFilePath || tab.sessionUuid.isEmpty())
         {
             continue;
         }
-        QString jsonPath = slv::persistence::WorkspacePersistence::SessionSnapshotPath(generation, tab.sessionUuid);
+        QString jsonPath = logapp::persistence::WorkspacePersistence::SessionSnapshotPath(generation, tab.sessionUuid);
         if (jsonPath.isEmpty() || !QFileInfo::exists(jsonPath))
         {
             jsonPath = (mHistoryManager != nullptr) ? mHistoryManager->PathForUuid(tab.sessionUuid) : QString{};

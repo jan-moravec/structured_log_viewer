@@ -145,7 +145,7 @@ Several helpers live under `library/include/loglib/internal/` and are intentiona
 
 ### GUI Application
 
-The `app` component is a Qt 6 Widgets application. It uses `loglib` for parsing and data management and exposes the data through `QAbstractTableModel` / `QSortFilterProxyModel` subclasses with support for sorting, filtering, searching, configurable columns, and live-tail streaming.
+The `app` component is a Qt 6 Widgets application. It uses `loglib` for parsing and data management and exposes the data through `QAbstractTableModel` / `QSortFilterProxyModel` subclasses with support for sorting, filtering, searching, configurable columns, and live-tail streaming. Workspace restore lives in `logapp::persistence` (`workspace_persistence.hpp`); it stays in `app/` because it is Qt `QSettings` / `QJson` / path based.
 
 The Qt-side classes that wrap `loglib` are:
 

@@ -23,7 +23,7 @@
 #include <algorithm>
 #include <utility>
 
-namespace slv::persistence
+namespace logapp::persistence
 {
 namespace
 {
@@ -620,4 +620,4 @@ bool WorkspacePersistence::Publish(Workspace workspace)
     return true;
 }
 
-} // namespace slv::persistence
+} // namespace logapp::persistence

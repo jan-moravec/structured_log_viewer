@@ -17,12 +17,12 @@
 #include <QTest>
 #include <QUuid>
 
-using slv::persistence::RestorePolicy;
-using slv::persistence::SourceMode;
-using slv::persistence::Workspace;
-using slv::persistence::WorkspacePersistence;
-using slv::persistence::WorkspaceTab;
-using slv::persistence::WorkspaceWindow;
+using logapp::persistence::RestorePolicy;
+using logapp::persistence::SourceMode;
+using logapp::persistence::Workspace;
+using logapp::persistence::WorkspacePersistence;
+using logapp::persistence::WorkspaceTab;
+using logapp::persistence::WorkspaceWindow;
 
 namespace
 {

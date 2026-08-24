@@ -578,7 +578,7 @@ public:
      * @brief Captures geometry, dock state, tab order, and per-tab restore metadata.
      * @return A workspace record for this window with a valid active-tab index.
      */
-    [[nodiscard]] slv::persistence::WorkspaceWindow CaptureWorkspaceWindow() const;
+    [[nodiscard]] logapp::persistence::WorkspaceWindow CaptureWorkspaceWindow() const;
 
     /**
      * @brief Returns the workspace record that quit persistence should publish.
@@ -588,7 +588,7 @@ public:
      *
      * @return A workspace record for this window.
      */
-    [[nodiscard]] slv::persistence::WorkspaceWindow WorkspaceSnapshotForQuit() const;
+    [[nodiscard]] logapp::persistence::WorkspaceWindow WorkspaceSnapshotForQuit() const;
 
     /**
      * @brief Returns the stable identity used for workspace persistence and routing.
@@ -609,7 +609,7 @@ public:
      * be reopened. Geometry and dock state are applied after tab binding,
      * while the window is hidden when possible.
      */
-    void ApplyWorkspaceWindow(const slv::persistence::WorkspaceWindow &window, std::uint64_t generation = 0);
+    void ApplyWorkspaceWindow(const logapp::persistence::WorkspaceWindow &window, std::uint64_t generation = 0);
 
     /**
      * @brief Restores window geometry and dock layout from `QSettings`.
@@ -2984,7 +2984,7 @@ private:
      * @brief Workspace capture taken in `closeEvent` before restorable
      * identity is detached, so quit persistence can still publish tabs.
      */
-    std::optional<slv::persistence::WorkspaceWindow> mQuitWorkspaceSnapshot;
+    std::optional<logapp::persistence::WorkspaceWindow> mQuitWorkspaceSnapshot;
 
     /**
      * @brief Guard for `OnActiveTabChanged` re-entrancy during tab

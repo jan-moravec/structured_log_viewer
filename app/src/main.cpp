@@ -33,7 +33,7 @@ namespace
 {
 
 // Bound startup work for unusually large persisted workspaces.
-constexpr std::size_t MAX_RESTORE_PEERS = slv::persistence::WorkspacePersistence::DEFAULT_RESTORE_CAP;
+constexpr std::size_t MAX_RESTORE_PEERS = logapp::persistence::WorkspacePersistence::DEFAULT_RESTORE_CAP;
 
 // Queue macOS file-open events until a live window can receive them.
 class FileOpenEventFilter : public QObject
@@ -214,10 +214,10 @@ int main(int argc, char *argv[])
         // Prefer grouped workspace state. Surplus windows stay deferred in
         // process memory and on the original file until a normal quit merges
         // them with newly captured windows.
-        slv::persistence::Workspace workspace;
+        logapp::persistence::Workspace workspace;
         {
-            slv::persistence::WorkspacePersistence::RestorePlan plan =
-                slv::persistence::WorkspacePersistence::LoadForLaunch(MAX_RESTORE_PEERS);
+            logapp::persistence::WorkspacePersistence::RestorePlan plan =
+                logapp::persistence::WorkspacePersistence::LoadForLaunch(MAX_RESTORE_PEERS);
             if (!plan.deferred.windows.empty())
             {
                 logapp::LogWarning() << "Workspace has"
@@ -367,8 +367,8 @@ int main(int argc, char *argv[])
             return;
         }
         QStringList restorable;
-        slv::persistence::Workspace workspace;
-        workspace.schemaVersion = slv::persistence::WorkspacePersistence::SCHEMA_VERSION;
+        logapp::persistence::Workspace workspace;
+        workspace.schemaVersion = logapp::persistence::WorkspacePersistence::SCHEMA_VERSION;
         // Flushing and closing windows mutates the top-level widget list.
         const QList<QWidget *> topLevels = QApplication::topLevelWidgets();
 
@@ -386,7 +386,7 @@ int main(int argc, char *argv[])
             {
                 restorable.append(windowUuid);
             }
-            slv::persistence::WorkspaceWindow snapshot = mw->WorkspaceSnapshotForQuit();
+            logapp::persistence::WorkspaceWindow snapshot = mw->WorkspaceSnapshotForQuit();
             // Persist Qt's stable top-level order when explicit MRU data is unavailable.
             if (!snapshot.windowUuid.isEmpty())
             {
@@ -407,9 +407,9 @@ int main(int argc, char *argv[])
 
         // Publish only after every close handler has finished.
         SessionHistoryManager::AddOpenWindowUuids(restorable);
-        const slv::persistence::Workspace deferred = slv::persistence::WorkspacePersistence::TakeDeferredWindows();
-        workspace = slv::persistence::WorkspacePersistence::MergeCapturedWithDeferred(std::move(workspace), deferred);
-        (void)slv::persistence::WorkspacePersistence::Publish(std::move(workspace));
+        const logapp::persistence::Workspace deferred = logapp::persistence::WorkspacePersistence::TakeDeferredWindows();
+        workspace = logapp::persistence::WorkspacePersistence::MergeCapturedWithDeferred(std::move(workspace), deferred);
+        (void)logapp::persistence::WorkspacePersistence::Publish(std::move(workspace));
     });
 
     // Route forwarded files to the active window; an empty request creates a peer.
