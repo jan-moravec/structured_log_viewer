@@ -19,7 +19,9 @@ using loglib::ParseUserTimestamp;
 namespace
 {
 
+// NOLINTNEXTLINE(readability-identifier-naming)
 const std::chrono::system_clock::time_point kNow{std::chrono::microseconds{1'700'000'000'000'000LL}};
+// NOLINTNEXTLINE(readability-identifier-naming)
 constexpr std::int64_t kNowMicros = 1'700'000'000'000'000LL;
 
 } // namespace

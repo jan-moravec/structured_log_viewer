@@ -336,15 +336,15 @@ TEST_CASE("exports: JSON Lines emits typed values per row", "[exports][row_expor
 
     const auto lines = SplitNonEmptyLines(sink.Bytes());
     REQUIRE(lines.size() == 2);
-    REQUIRE(lines[0].find("\"count\":0") != std::string::npos);
-    REQUIRE(lines[0].find("\"ok\":true") != std::string::npos);
-    REQUIRE(lines[0].find("\"ratio\":0.0") != std::string::npos);
-    REQUIRE(lines[0].find("\"ts\":\"2023-11-14T22:13:20") != std::string::npos);
-    REQUIRE(lines[1].find("\"count\":1") != std::string::npos);
-    REQUIRE(lines[1].find("\"ok\":false") != std::string::npos);
-    REQUIRE(lines[1].find("\"ratio\":0.5") != std::string::npos);
-    REQUIRE(lines[0].find("\\\"world\\\"") != std::string::npos);
-    REQUIRE(lines[0].find("\\n#0") != std::string::npos);
+    REQUIRE(lines[0].contains("\"count\":0"));
+    REQUIRE(lines[0].contains("\"ok\":true"));
+    REQUIRE(lines[0].contains("\"ratio\":0.0"));
+    REQUIRE(lines[0].contains("\"ts\":\"2023-11-14T22:13:20"));
+    REQUIRE(lines[1].contains("\"count\":1"));
+    REQUIRE(lines[1].contains("\"ok\":false"));
+    REQUIRE(lines[1].contains("\"ratio\":0.5"));
+    REQUIRE(lines[0].contains("\\\"world\\\""));
+    REQUIRE(lines[0].contains("\\n#0"));
 }
 
 TEST_CASE("exports: JSON Lines round-trips synthetic rows", "[exports][row_exporter]")
@@ -385,7 +385,7 @@ TEST_CASE("exports: JSON Lines round-trips synthetic rows", "[exports][row_expor
     REQUIRE(first.back() == '}');
     for (const char *key : {"\"ts\"", "\"level\"", "\"message\"", "\"count\"", "\"ratio\"", "\"ok\""})
     {
-        REQUIRE(first.find(key) != std::string::npos);
+        REQUIRE(first.contains(key));
     }
 }
 
@@ -408,7 +408,7 @@ TEST_CASE("exports: CSV quoting follows RFC 4180", "[exports][row_exporter]")
     REQUIRE(exporter != nullptr);
     exporter->Run(source, sink, loglib::StopToken{});
 
-    REQUIRE(sink.Bytes().find("info,\"hello, \"\"world\"\"") != std::string::npos);
+    REQUIRE(sink.Bytes().contains("info,\"hello, \"\"world\"\""));
 }
 
 TEST_CASE("exports: CSV header row respects includeHeaderRow", "[exports][row_exporter]")
@@ -550,10 +550,10 @@ TEST_CASE("exports: JSON Lines keeps a trailing .0 on whole-valued doubles", "[e
 
     const auto outLines = SplitNonEmptyLines(sink.Bytes());
     REQUIRE(outLines.size() == 4);
-    REQUIRE(outLines[0].find("\"value\":0.0") != std::string::npos);
-    REQUIRE(outLines[1].find("\"value\":1.0") != std::string::npos);
-    REQUIRE(outLines[2].find("\"value\":-3.0") != std::string::npos);
-    REQUIRE(outLines[3].find("\"value\":2.5") != std::string::npos);
+    REQUIRE(outLines[0].contains("\"value\":0.0"));
+    REQUIRE(outLines[1].contains("\"value\":1.0"));
+    REQUIRE(outLines[2].contains("\"value\":-3.0"));
+    REQUIRE(outLines[3].contains("\"value\":2.5"));
 }
 
 TEST_CASE("exports: Markdown escapes pipes and collapses newlines", "[exports][row_exporter]")
@@ -593,8 +593,8 @@ TEST_CASE("exports: Markdown escapes pipes and collapses newlines", "[exports][r
     exporter->Run(src, sink, loglib::StopToken{});
 
     const auto &out = sink.Bytes();
-    REQUIRE(out.find("a \\| b newline") != std::string::npos);
-    REQUIRE(out.find("a | b") == std::string::npos);
+    REQUIRE(out.contains("a \\| b newline"));
+    REQUIRE_FALSE(out.contains("a | b"));
     REQUIRE(out.starts_with("| Msg |\n| --- |"));
 }
 

@@ -73,14 +73,18 @@ std::FILE *OpenForWriteBinary(const std::filesystem::path &path)
 #endif
 }
 
+std::filesystem::path TempPathFor(const std::filesystem::path &destination)
+{
+    auto tempPath = destination;
+    tempPath += ".tmp";
+    return tempPath;
+}
+
 } // namespace
 
 FileSink::FileSink(std::filesystem::path destination)
-    : mDestination(std::move(destination))
+    : mDestination(std::move(destination)), mTempPath(TempPathFor(mDestination)), mFile(OpenForWriteBinary(mTempPath))
 {
-    mTempPath = mDestination;
-    mTempPath += ".tmp";
-    mFile = OpenForWriteBinary(mTempPath);
     if (mFile == nullptr)
     {
         throw std::runtime_error("Failed to open '" + mTempPath.string() + "' for writing: " + DescribeErrno(errno));
@@ -95,6 +99,7 @@ FileSink::~FileSink()
     }
     if (mFile != nullptr)
     {
+        // NOLINTNEXTLINE(cppcoreguidelines-owning-memory,cert-err33-c)
         (void)std::fclose(mFile);
         mFile = nullptr;
     }
@@ -138,10 +143,12 @@ void FileSink::Finish()
     {
         const std::string reason = DescribeErrno(errno);
         // Already throwing; close is just to release the handle.
+        // NOLINTNEXTLINE(cppcoreguidelines-owning-memory,cert-err33-c)
         (void)std::fclose(mFile);
         mFile = nullptr;
         throw std::runtime_error("Failed to flush '" + mTempPath.string() + "': " + reason);
     }
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
     if (std::fclose(mFile) != 0)
     {
         const std::string reason = DescribeErrno(errno);

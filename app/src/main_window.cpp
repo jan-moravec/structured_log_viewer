@@ -5570,7 +5570,7 @@ void MainWindow::ExportFilteredRows()
     // `OnExportFinished` so a failed export (bad path, perms, disk
     // full) does not stick as the remembered directory.
 
-    std::vector<int> qtSourceRows = CollectExportSourceRows(config.selectionOnly);
+    const std::vector<int> qtSourceRows = CollectExportSourceRows(config.selectionOnly);
 
     if (qtSourceRows.empty())
     {
