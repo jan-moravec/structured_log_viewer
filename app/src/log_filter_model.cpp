@@ -5,6 +5,7 @@
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_filter.hpp>
 #include <loglib/log_table.hpp>
+#include <loglib/row_ordering.hpp>
 
 #include <QAbstractItemModel>
 #include <QAbstractProxyModel>
@@ -337,13 +338,12 @@ void LogFilterModel::ApplySortPermutation()
         rank = EnumRankFor(mSortColumn);
     }
 
-    const std::vector<size_t> permutation = loglib::SortPermutationByColumn(
-        mLogModel->Table(),
-        std::span<const size_t>{logRows},
+    const loglib::RowOrdering ordering(
         static_cast<size_t>(mSortColumn),
-        mSortOrder == Qt::AscendingOrder,
+        mSortOrder == Qt::AscendingOrder ? loglib::SortDirection::Ascending : loglib::SortDirection::Descending,
         rank
     );
+    const std::vector<size_t> permutation = ordering.Permute(mLogModel->Table(), std::span<const size_t>{logRows});
 
     std::vector<int> sorted;
     sorted.reserve(mAcceptedSourceRows.size());
@@ -376,18 +376,18 @@ bool LogFilterModel::LessThanSourceRows(int leftSource, int rightSource) const
     {
         rank = EnumRankFor(mSortColumn);
     }
-    const int cmp = loglib::CompareRows(
+    const loglib::RowOrdering ordering(
+        static_cast<size_t>(mSortColumn),
+        mSortOrder == Qt::AscendingOrder ? loglib::SortDirection::Ascending : loglib::SortDirection::Descending,
+        rank
+    );
+    return ordering.LessThan(
         mLogModel->Table(),
         static_cast<size_t>(leftLog),
         static_cast<size_t>(rightLog),
-        static_cast<size_t>(mSortColumn),
-        rank
+        static_cast<size_t>(leftSource),
+        static_cast<size_t>(rightSource)
     );
-    if (cmp == 0)
-    {
-        return leftSource < rightSource;
-    }
-    return mSortOrder == Qt::AscendingOrder ? cmp < 0 : cmp > 0;
 }
 
 int LogFilterModel::SourceRowToLogRow(int sourceRow) const

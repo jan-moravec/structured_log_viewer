@@ -5,6 +5,7 @@
 #include <loglib/key_index.hpp>
 #include <loglib/log_compare.hpp>
 #include <loglib/log_filter.hpp>
+#include <loglib/row_ordering.hpp>
 
 #include <QAbstractProxyModel>
 #include <QList>
@@ -23,8 +24,9 @@
 /// Replaces `QSortFilterProxyModel` to skip the per-row `QModelIndex`
 /// / `QVariant` round-trip: `RebuildAcceptedRows` evaluates
 /// `loglib::RowPredicate`s straight against `loglib::LogTable`, and
-/// `sort()` permutes the map via `loglib::CompareRows` with an
-/// `EnumDictRank` cache.
+/// `sort()` permutes the map via `loglib::RowOrdering` (which
+/// composes `loglib::CompareRows` and `SortPermutationByColumn`)
+/// with an `EnumDictRank` cache.
 class LogFilterModel : public QAbstractProxyModel
 {
     Q_OBJECT

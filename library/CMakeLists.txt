@@ -55,6 +55,7 @@ add_library(
     src/normalized_json_row.cpp
     src/query_parser.cpp
     src/rotation_siblings.cpp
+    src/row_ordering.cpp
     src/session_bundle_writer.cpp
     src/session_bundle_reader.cpp
     src/parsers/csv_parser.cpp
