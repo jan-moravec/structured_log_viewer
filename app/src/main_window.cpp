@@ -39,6 +39,7 @@
 #include <loglib/ascii_case.hpp>
 #include <loglib/decompressing_byte_source.hpp>
 #include <loglib/stdin_peek.hpp>
+#include <loglib/column_projection.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_factory.hpp>
 #include <loglib/log_file.hpp>
@@ -5580,16 +5581,22 @@ void MainWindow::ExportFilteredRows()
     }
 
     // CSV / Markdown honour `includeHiddenColumns`; JSON /
-    // Snapshot are row-shape and ignore this vector.
+    // Snapshot are row-shape and ignore this vector. Hidden
+    // columns stay in the configuration; projection reads
+    // `Column::visible` only.
     std::vector<std::size_t> visibleColumns;
     const auto &configuration = mModel->Configuration();
-    visibleColumns.reserve(configuration.columns.size());
-    for (std::size_t i = 0; i < configuration.columns.size(); ++i)
+    if (config.includeHiddenColumns)
     {
-        if (config.includeHiddenColumns || configuration.columns[i].visible)
+        visibleColumns.resize(configuration.columns.size());
+        for (std::size_t i = 0; i < visibleColumns.size(); ++i)
         {
-            visibleColumns.push_back(i);
+            visibleColumns[i] = i;
         }
+    }
+    else
+    {
+        visibleColumns = loglib::ColumnProjection(configuration).Indices();
     }
 
     auto plan = std::make_unique<loglib::exports::ExportPlan>();

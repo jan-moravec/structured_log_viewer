@@ -40,6 +40,7 @@ add_library(
     src/udp_server_producer.cpp
     src/timestamp_promotion.cpp
     src/log_configuration.cpp
+    src/column_projection.cpp
     src/clang_tidy_stubs/log_configuration_glaze_meta.cpp
     src/clang_tidy_stubs/log_configuration_glaze_opts.cpp
     src/log_compare.cpp

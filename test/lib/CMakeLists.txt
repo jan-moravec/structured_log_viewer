@@ -15,6 +15,7 @@ add_executable(
     "src/benchmark_stream.cpp"
     "src/common.cpp"
     "src/test_auto_detect_parser.cpp"
+    "src/test_column_projection.cpp"
     "src/test_csv_parser.cpp"
     "src/test_decompressing_byte_source.cpp"
     "src/test_enum_dictionary.cpp"
