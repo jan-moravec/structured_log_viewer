@@ -183,7 +183,7 @@ private:
     Codec mCodec = Codec::None;
     std::size_t mCompressedSize = 0;
     std::size_t mDecompressedSize = 0;
-    /// True when `mEffectivePath` is a temp file owned by this object.
+    /** @brief True when `mEffectivePath` is a temp file owned by this object. */
     bool mOwnsTempFile = false;
     std::string mDiscardedFirstLine;
 };

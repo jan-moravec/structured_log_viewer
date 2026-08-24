@@ -16,27 +16,31 @@ namespace loglib
 
 class BytesProducer;
 
-/// `LineSource` over a live byte producer. Owns the bytes backing each
-/// line in a pair of `std::deque<std::string>`s (raw text + per-line
-/// owned arena). No session-global arena: eviction simply drops the
-/// corresponding entries.
-///
-/// - `BytesAreStable()` is `false`; the parser must emit
-///   `OwnedString` payloads (not `MmapSlice`).
-/// - `SupportsEviction()` is `true`; `EvictBefore` is the retention
-///   hook used by `LogTable` / `LogModel`.
-/// - LineIds are 1-based monotonic, assigned by `AppendLine`.
-/// - Thread-safe: a mutex guards all members. The parser worker
-///   appends; the GUI reads and may evict. `std::deque` push_back is
-///   reference-stable, so concurrent reads on existing entries are
-///   safe. `string_view`s from `ResolveOwnedBytes` are invalidated by
-///   `EvictBefore` on that line id.
+/**
+ * @brief `LineSource` over a live byte producer. Owns the bytes backing each
+ * line in a pair of `std::deque<std::string>`s (raw text + per-line
+ * owned arena). No session-global arena: eviction simply drops the
+ * corresponding entries.
+ *
+ * - `BytesAreStable()` is `false`; the parser must emit
+ *   `OwnedString` payloads (not `MmapSlice`).
+ * - `SupportsEviction()` is `true`; `EvictBefore` is the retention
+ *   hook used by `LogTable` / `LogModel`.
+ * - LineIds are 1-based monotonic, assigned by `AppendLine`.
+ * - Thread-safe: a mutex guards all members. The parser worker
+ *   appends; the GUI reads and may evict. `std::deque` push_back is
+ *   reference-stable, so concurrent reads on existing entries are
+ *   safe. `string_view`s from `ResolveOwnedBytes` are invalidated by
+ *   `EvictBefore` on that line id.
+ */
 class StreamLineSource final : public LineSource
 {
 public:
-    /// @param displayName  GUI-facing identity (typically a file path).
-    /// @param producer     Byte producer for this stream. May be null
-    ///                     in tests that drive `AppendLine` directly.
+    /**
+     * @brief @param displayName  GUI-facing identity (typically a file path).
+     * @param producer     Byte producer for this stream. May be null
+     *                     in tests that drive `AppendLine` directly.
+     */
     StreamLineSource(std::filesystem::path displayName, std::unique_ptr<BytesProducer> producer);
 
     ~StreamLineSource() override;
@@ -67,21 +71,27 @@ public:
     void EvictBefore(size_t firstSurvivingLineId) override;
     [[nodiscard]] size_t FirstAvailableLineId() const noexcept override;
 
-    /// Borrow the byte producer; ownership stays with the source.
-    /// Returns `nullptr` if the source was constructed without one.
+    /**
+     * @brief Borrow the byte producer; ownership stays with the source.
+     * Returns `nullptr` if the source was constructed without one.
+     */
     [[nodiscard]] BytesProducer *Producer() noexcept;
     [[nodiscard]] const BytesProducer *Producer() const noexcept;
 
-    /// Append @p rawLine and its escape-decoded byte arena. Returns
-    /// the assigned 1-based monotonic `lineId`. `ownedBytes` may be
-    /// empty if the line had no escape-decoded fields.
+    /**
+     * @brief Append @p rawLine and its escape-decoded byte arena. Returns
+     * the assigned 1-based monotonic `lineId`. `ownedBytes` may be
+     * empty if the line had no escape-decoded fields.
+     */
     size_t AppendLine(std::string rawLine, std::string ownedBytes);
 
-    /// Number of lines currently held (post-eviction).
+    /** @brief Number of lines currently held (post-eviction). */
     [[nodiscard]] size_t Size() const noexcept;
 
-    /// Total bytes owned: line bytes + per-line owned arenas.
-    /// Capacity-accurate; benchmark-only, not on the parse hot path.
+    /**
+     * @brief Total bytes owned: line bytes + per-line owned arenas.
+     * Capacity-accurate; benchmark-only, not on the parse hot path.
+     */
     [[nodiscard]] size_t OwnedMemoryBytes() const noexcept;
 
 private:
@@ -91,15 +101,17 @@ private:
     std::filesystem::path mDisplayName;
     std::unique_ptr<BytesProducer> mProducer;
 
-    /// Guards every member below.
+    /** @brief Guards every member below. */
     mutable std::mutex mLock;
 
-    /// Raw line text (no trailing `\n` / `\r`). `std::deque` push_back
-    /// is reference-stable, so concurrent reads on existing entries
-    /// remain valid.
+    /**
+     * @brief Raw line text (no trailing `\n` / `\r`). `std::deque` push_back
+     * is reference-stable, so concurrent reads on existing entries
+     * remain valid.
+     */
     std::deque<std::string> mLines;
 
-    /// Per-line escape-decoded byte arena. Same indexing as `mLines`.
+    /** @brief Per-line escape-decoded byte arena. Same indexing as `mLines`. */
     std::deque<std::string> mLineOwnedBytes;
 
     size_t mFirstAvailableLineId = 1;

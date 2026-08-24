@@ -14,20 +14,24 @@ namespace loglib
 
 class LogFile;
 
-/// `LineSource` over a memory-mapped, finite `LogFile`. Used by the
-/// static `File → Open…` path: the TBB pipeline parses directly over
-/// the mmap, and emitted `LogLine`s use this source for `MmapSlice` /
-/// `OwnedString` resolution.
-///
-/// Owns the `LogFile`; transferable downstream via `ReleaseFile`.
-/// LineIds are 0-based file-line indices.
+/**
+ * @brief `LineSource` over a memory-mapped, finite `LogFile`. Used by the
+ * static `File → Open…` path: the TBB pipeline parses directly over
+ * the mmap, and emitted `LogLine`s use this source for `MmapSlice` /
+ * `OwnedString` resolution.
+ *
+ * Owns the `LogFile`; transferable downstream via `ReleaseFile`.
+ * LineIds are 0-based file-line indices.
+ */
 class FileLineSource final : public LineSource
 {
 public:
-    /// Takes ownership of @p file. Throws `std::invalid_argument` if
-    /// @p file is null. After `ReleaseFile`, this source keeps
-    /// resolving bytes against the released file as long as the new
-    /// owner keeps it alive.
+    /**
+     * @brief Takes ownership of @p file. Throws `std::invalid_argument` if
+     * @p file is null. After `ReleaseFile`, this source keeps
+     * resolving bytes against the released file as long as the new
+     * owner keeps it alive.
+     */
     explicit FileLineSource(std::unique_ptr<LogFile> file);
 
     ~FileLineSource() override;
@@ -58,15 +62,19 @@ public:
     void EvictBefore(size_t firstSurvivingLineId) override;
     [[nodiscard]] size_t FirstAvailableLineId() const noexcept override;
 
-    /// Direct access to the `LogFile`. Used by the parser fast path
-    /// and any code that needs file-level state.
+    /**
+     * @brief Direct access to the `LogFile`. Used by the parser fast path
+     * and any code that needs file-level state.
+     */
     [[nodiscard]] LogFile &File() noexcept;
     [[nodiscard]] const LogFile &File() const noexcept;
 
-    /// Transfer ownership of the underlying `LogFile` to the caller.
-    /// `File()` continues to return a non-null reference; the caller
-    /// must keep the file alive at least as long as any `LogLine`
-    /// referring back through this source.
+    /**
+     * @brief Transfer ownership of the underlying `LogFile` to the caller.
+     * `File()` continues to return a non-null reference; the caller
+     * must keep the file alive at least as long as any `LogLine`
+     * referring back through this source.
+     */
     [[nodiscard]] std::unique_ptr<LogFile> ReleaseFile() noexcept;
 
 private:

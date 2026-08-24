@@ -17,64 +17,78 @@ class FileLineSource;
 class LogParseSink;
 class StreamLineSource;
 
-/// Buffered output of a synchronous parse.
+/** @brief Buffered output of a synchronous parse. */
 struct ParseResult
 {
     LogData data;
     std::vector<std::string> errors;
 };
 
-/// Maximum bytes inspected during format detection.
-/// Shared by file, stdin, and network probes so identical bytes
-/// produce identical results.
+/**
+ * @brief Maximum bytes inspected during format detection.
+ * Shared by file, stdin, and network probes so identical bytes
+ * produce identical results.
+ */
 inline constexpr std::size_t PROBE_BYTES_BUDGET = 16 * 1024;
 
-/// Base class for log-format parsers. New formats implement the
-/// byte-buffer `IsValidBytes(std::string_view)`, both `ParseStreaming`
-/// overloads, and `ToString`. The file-based `IsValid` is a
-/// non-virtual shim that reads up to `PROBE_BYTES_BUDGET` bytes
-/// and forwards to `IsValidBytes`.
-///
-/// The synchronous "parse a file" helper is `loglib::ParseFile`
-/// (see `parse_file.hpp`); production GUI code uses
-/// `ParseStreaming` directly.
+/**
+ * @brief Base class for log-format parsers. New formats implement the
+ * byte-buffer `IsValidBytes(std::string_view)`, both `ParseStreaming`
+ * overloads, and `ToString`. The file-based `IsValid` is a
+ * non-virtual shim that reads up to `PROBE_BYTES_BUDGET` bytes
+ * and forwards to `IsValidBytes`.
+ *
+ * The synchronous "parse a file" helper is `loglib::ParseFile`
+ * (see `parse_file.hpp`); production GUI code uses
+ * `ParseStreaming` directly.
+ */
 class LogParser
 {
 public:
     virtual ~LogParser() = default;
 
-    /// Byte-buffer probe: does @p sniffBuffer look like this
-    /// parser's format? Implementations must not scan past the end
-    /// of @p sniffBuffer, and should treat a partial trailing line
-    /// (no terminating `\n`) the same as a complete line -- the
-    /// buffer may have been truncated by the caller's probe budget.
-    /// Used by `IsValid(path)`, `AutoDetectParser`, and the shared
-    /// format-detection functions. The distinct name prevents a
-    /// `std::string` path from selecting this overload accidentally.
+    /**
+     * @brief Byte-buffer probe: does @p sniffBuffer look like this
+     * parser's format? Implementations must not scan past the end
+     * of @p sniffBuffer, and should treat a partial trailing line
+     * (no terminating `\n`) the same as a complete line -- the
+     * buffer may have been truncated by the caller's probe budget.
+     * Used by `IsValid(path)`, `AutoDetectParser`, and the shared
+     * format-detection functions. The distinct name prevents a
+     * `std::string` path from selecting this overload accidentally.
+     */
     virtual bool IsValidBytes(std::string_view sniffBuffer) const = 0;
 
-    /// Read up to `PROBE_BYTES_BUDGET` bytes from @p file into a
-    /// buffer and forward to `IsValidBytes`. Missing / unreadable
-    /// files return `false`. Not virtual: every parser's probe
-    /// logic lives in `IsValidBytes`.
+    /**
+     * @brief Read up to `PROBE_BYTES_BUDGET` bytes from @p file into a
+     * buffer and forward to `IsValidBytes`. Missing / unreadable
+     * files return `false`. Not virtual: every parser's probe
+     * logic lives in `IsValidBytes`.
+     */
     bool IsValid(const std::filesystem::path &file) const;
 
-    /// Static-file streaming entry. Emitted `LogLine`s carry @p source
-    /// and the line's 0-based file id.
+    /**
+     * @brief Static-file streaming entry. Emitted `LogLine`s carry @p source
+     * and the line's 0-based file id.
+     */
     virtual void ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const = 0;
 
-    /// Live-tail streaming entry. Emitted `LogLine`s carry @p source
-    /// and the 1-based monotonic id assigned by `AppendLine`.
+    /**
+     * @brief Live-tail streaming entry. Emitted `LogLine`s carry @p source
+     * and the 1-based monotonic id assigned by `AppendLine`.
+     */
     virtual void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const = 0;
 
-    /// Renders a parsed line back to the parser's native text form.
+    /** @brief Renders a parsed line back to the parser's native text form. */
     virtual std::string ToString(const LogLine &line) const = 0;
 };
 
-/// Read at most @p budget bytes from the head of @p file into a
-/// `std::string`. Empty result on missing / unreadable files.
-/// Shared helper for `LogParser::IsValid(path)` and
-/// `DetectRegexTemplate(path)`.
+/**
+ * @brief Read at most @p budget bytes from the head of @p file into a
+ * `std::string`. Empty result on missing / unreadable files.
+ * Shared helper for `LogParser::IsValid(path)` and
+ * `DetectRegexTemplate(path)`.
+ */
 [[nodiscard]] std::string ReadProbeHead(const std::filesystem::path &file, std::size_t budget = PROBE_BYTES_BUDGET);
 
 } // namespace loglib

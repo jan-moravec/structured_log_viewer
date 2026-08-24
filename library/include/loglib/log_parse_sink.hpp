@@ -11,60 +11,72 @@
 namespace loglib
 {
 
-/// Inclusive span of a multi-line record. Both members are zero-based
-/// absolute physical-line indices.
+/**
+ * @brief Inclusive span of a multi-line record. Both members are zero-based
+ * absolute physical-line indices.
+ */
 struct MultiLineRecordSpan
 {
     size_t headerLineId = 0;
     size_t lastLineId = 0;
 };
 
-/// One unit of work handed from the parser to a `LogParseSink`. A
-/// "rows-empty" batch with non-empty `errors`/`newKeys` is valid; the parser
-/// always emits a final batch before `OnFinished`.
-///
-/// `lines` carries every parsed log row regardless of session type (static
-/// file or live tail): each `LogLine` is tagged with its `LineSource *` so
-/// resolution stays uniform. `localLineOffsets` is only populated by the
-/// file-source pipeline and is forwarded to the `LogFile`'s line-offset
-/// table; the live-tail loop leaves it empty.
+/**
+ * @brief One unit of work handed from the parser to a `LogParseSink`. A
+ * "rows-empty" batch with non-empty `errors`/`newKeys` is valid; the parser
+ * always emits a final batch before `OnFinished`.
+ *
+ * `lines` carries every parsed log row regardless of session type (static
+ * file or live tail): each `LogLine` is tagged with its `LineSource *` so
+ * resolution stays uniform. `localLineOffsets` is only populated by the
+ * file-source pipeline and is forwarded to the `LogFile`'s line-offset
+ * table; the live-tail loop leaves it empty.
+ */
 struct StreamedBatch
 {
     std::vector<LogLine> lines;
     std::vector<uint64_t> localLineOffsets;
     std::vector<std::string> errors;
     std::vector<std::string> newKeys;
-    /// File-backed multi-line spans. Consumers must append
-    /// `localLineOffsets` before registering these on `LogFile`.
+    /**
+     * @brief File-backed multi-line spans. Consumers must append
+     * `localLineOffsets` before registering these on `LogFile`.
+     */
     std::vector<MultiLineRecordSpan> multiLineSpans;
-    /// 1-based absolute line number of the batch's start cursor.
-    /// - When `lines` is non-empty: matches the chunk start, not necessarily
-    ///   the first parsed line (errors preceding it can push it lower).
-    /// - When `lines` is empty: the line cursor at the time the batch was
-    ///   sealed; not tied to any specific source line.
+    /**
+     * @brief 1-based absolute line number of the batch's start cursor.
+     * - When `lines` is non-empty: matches the chunk start, not necessarily
+     *   the first parsed line (errors preceding it can push it lower).
+     * - When `lines` is empty: the line cursor at the time the batch was
+     *   sealed; not tied to any specific source line.
+     */
     size_t firstLineNumber = 0;
 };
 
-/// Sink interface for the log parser. Methods are called from a single
-/// serial-in-order worker, in this order:
-///   1. exactly one `OnStarted()`,
-///   2. **at least one** `OnBatch(...)` -- the parser *always* emits a
-///      terminal batch (possibly empty, with `lines.empty() &&
-///      errors.empty() && newKeys.empty()`) before `OnFinished`, so sinks
-///      that lazily initialise on first `OnBatch` work uniformly with
-///      empty-source / cancelled-before-Stage-A parses,
-///   3. exactly one `OnFinished(cancelled)` -- `cancelled == true` if the
-///      parse was stopped via the `ParserOptions::stopToken`.
-///
-/// The same interface serves both the synchronous static-file path
-/// (`BufferingSink`) and the live-tail GUI path (`QtStreamingLogSink`).
+/**
+ * @brief Sink interface for the log parser. Methods are called from a single
+ * serial-in-order worker, in this order:
+ *   1. exactly one `OnStarted()`,
+ *   2. **at least one** `OnBatch(...)` -- the parser *always* emits a
+ *      terminal batch (possibly empty, with `lines.empty() &&
+ *      errors.empty() && newKeys.empty()`) before `OnFinished`, so sinks
+ *      that lazily initialise on first `OnBatch` work uniformly with
+ *      empty-source / cancelled-before-Stage-A parses,
+ *   3. exactly one `OnFinished(cancelled)` -- `cancelled == true` if the
+ *      parse was stopped via the `ParserOptions::stopToken`.
+ *
+ * The same interface serves both the synchronous static-file path
+ * (`BufferingSink`) and the live-tail GUI path (`QtStreamingLogSink`).
+ */
 class LogParseSink
 {
 public:
     virtual ~LogParseSink() = default;
 
-    /// Canonical `KeyIndex` the parser interns keys into. Accessed concurrently
-    /// from every worker; must remain stable between `OnStarted` and `OnFinished`.
+    /**
+     * @brief Canonical `KeyIndex` the parser interns keys into. Accessed concurrently
+     * from every worker; must remain stable between `OnStarted` and `OnFinished`.
+     */
     virtual KeyIndex &Keys() = 0;
 
     virtual void OnStarted() = 0;
@@ -73,9 +85,11 @@ public:
 
     virtual void OnFinished(bool cancelled) = 0;
 
-    /// When true, the parser forwards each pipeline batch straight to
-    /// `OnBatch` without GUI-style coalescing. Sinks that already buffer
-    /// internally (e.g. `BufferingSink`) opt in.
+    /**
+     * @brief When true, the parser forwards each pipeline batch straight to
+     * `OnBatch` without GUI-style coalescing. Sinks that already buffer
+     * internally (e.g. `BufferingSink`) opt in.
+     */
     [[nodiscard]] virtual bool PrefersUncoalesced() const noexcept
     {
         return false;

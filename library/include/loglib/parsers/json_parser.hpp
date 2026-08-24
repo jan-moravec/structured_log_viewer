@@ -19,27 +19,35 @@ namespace internal
 struct AdvancedParserOptions;
 }
 
-/// Newline-delimited JSON parser, built on the shared TBB pipeline + simdjson.
+/** @brief Newline-delimited JSON parser, built on the shared TBB pipeline + simdjson. */
 class JsonParser : public LogParser
 {
 public:
-    /// Probe: the first non-blank line of @p sniffBuffer must parse
-    /// as a JSON object. Shared by the file-based `IsValid` shim
-    /// on the base class, by `AutoDetectParser` for network
-    /// streams, and by stdin auto-detect.
+    /**
+     * @brief Probe: the first non-blank line of @p sniffBuffer must parse
+     * as a JSON object. Shared by the file-based `IsValid` shim
+     * on the base class, by `AutoDetectParser` for network
+     * streams, and by stdin auto-detect.
+     */
     bool IsValidBytes(std::string_view sniffBuffer) const override;
 
-    /// Static-file streaming parse over @p source's mmap. Each emitted
-    /// `LogLine` carries `&source` and its 0-based file-line id.
+    /**
+     * @brief Static-file streaming parse over @p source's mmap. Each emitted
+     * `LogLine` carries `&source` and its 0-based file-line id.
+     */
     void ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
-    /// Live-tail streaming parse. Each line read from
-    /// `source.Producer()` is appended via `AppendLine` and surfaced
-    /// as a `LogLine` carrying `&source` and the new 1-based id.
+    /**
+     * @brief Live-tail streaming parse. Each line read from
+     * `source.Producer()` is appended via `AppendLine` and surfaced
+     * as a `LogLine` carrying `&source` and the new 1-based id.
+     */
     void ParseStreaming(StreamLineSource &source, LogParseSink &sink, ParserOptions options = {}) const override;
 
-    /// Static-file overload exposing internal tuning knobs (used by
-    /// benchmarks / bisects).
+    /**
+     * @brief Static-file overload exposing internal tuning knobs (used by
+     * benchmarks / bisects).
+     */
     static void ParseStreaming(
         FileLineSource &source,
         LogParseSink &sink,
@@ -49,7 +57,7 @@ public:
 
     std::string ToString(const LogLine &line) const override;
 
-    /// Convenience for `LogMap` (tests, debug dumps).
+    /** @brief Convenience for `LogMap` (tests, debug dumps). */
     static std::string ToString(const LogMap &values);
 };
 
