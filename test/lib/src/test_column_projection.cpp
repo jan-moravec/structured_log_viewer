@@ -185,13 +185,11 @@ TEST_CASE("column_projection: missing keys stay as empty CSV/Markdown cells", "[
     const ColumnProjection projection(table.Configuration().Configuration());
     REQUIRE(projection.Indices() == std::vector<std::size_t>{0, 1, 2});
 
-    const std::string csv =
-        ExportFormatBytes(table, ExportFormat::Csv, projection.Indices(), false);
+    const std::string csv = ExportFormatBytes(table, ExportFormat::Csv, projection.Indices(), false);
     REQUIRE(csv.starts_with("A,B,C\n"));
     REQUIRE(csv.find("\nx,,z\n") != std::string::npos);
 
-    const std::string markdown =
-        ExportFormatBytes(table, ExportFormat::Markdown, projection.Indices(), false);
+    const std::string markdown = ExportFormatBytes(table, ExportFormat::Markdown, projection.Indices(), false);
     REQUIRE(markdown.find("| A | B | C |") != std::string::npos);
     REQUIRE(markdown.find("| x |  | z |") != std::string::npos);
 }
@@ -201,14 +199,12 @@ TEST_CASE("column_projection: missing keys are omitted from JSON Lines", "[colum
     const auto table = BuildSparseTable();
     const ColumnProjection projection(table.Configuration().Configuration());
 
-    const std::string jsonAll =
-        ExportFormatBytes(table, ExportFormat::JsonLines, projection.Indices(), true);
+    const std::string jsonAll = ExportFormatBytes(table, ExportFormat::JsonLines, projection.Indices(), true);
     REQUIRE(jsonAll.find("\"a\":\"x\"") != std::string::npos);
     REQUIRE(jsonAll.find("\"c\":\"z\"") != std::string::npos);
     REQUIRE(jsonAll.find("\"b\"") == std::string::npos);
 
-    const std::string jsonProjected =
-        ExportFormatBytes(table, ExportFormat::JsonLines, projection.Indices(), false);
+    const std::string jsonProjected = ExportFormatBytes(table, ExportFormat::JsonLines, projection.Indices(), false);
     REQUIRE(jsonProjected.find("\"a\":\"x\"") != std::string::npos);
     REQUIRE(jsonProjected.find("\"c\":\"z\"") != std::string::npos);
     REQUIRE(jsonProjected.find("\"b\"") == std::string::npos);

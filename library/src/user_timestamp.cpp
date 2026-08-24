@@ -106,8 +106,7 @@ namespace
     }
 
     const std::int64_t offsetMicros = static_cast<std::int64_t>(n) * microsPerUnit;
-    const auto nowMicros =
-        std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+    const auto nowMicros = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
     return UserTimestampParse{.micros = nowMicros - offsetMicros, .isNaive = false};
 }
 
@@ -145,9 +144,7 @@ bool FormatHasZoneSpecifier(std::string_view format) noexcept
 }
 
 std::optional<UserTimestampParse> ParseUserTimestamp(
-    std::string_view input,
-    std::span<const std::string> columnParseFormats,
-    std::chrono::system_clock::time_point now
+    std::string_view input, std::span<const std::string> columnParseFormats, std::chrono::system_clock::time_point now
 )
 {
     const std::string_view trimmed = TrimAscii(input);

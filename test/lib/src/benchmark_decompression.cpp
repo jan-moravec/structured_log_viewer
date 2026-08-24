@@ -33,9 +33,9 @@
 #include <string>
 
 using bench::ReportThroughput;
+using loglib::DecompressingByteSource;
 using loglib::JsonParser;
 using loglib::ParseFile;
-using loglib::DecompressingByteSource;
 
 namespace
 {

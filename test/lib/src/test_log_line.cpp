@@ -1,7 +1,7 @@
 #include "common.hpp"
 
-#include <loglib/enum_dictionary.hpp>
 #include <loglib/compact_log_value.hpp>
+#include <loglib/enum_dictionary.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_line.hpp>
 

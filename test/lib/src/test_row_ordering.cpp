@@ -98,7 +98,9 @@ void RequirePermuteMatchesSortPermutation(
     REQUIRE(viaOrdering == viaLib);
 }
 
-void RequireLessThanAgreesWithPermute(const LogTable &table, std::span<const std::size_t> logRows, const RowOrdering &ordering)
+void RequireLessThanAgreesWithPermute(
+    const LogTable &table, std::span<const std::size_t> logRows, const RowOrdering &ordering
+)
 {
     const auto perm = ordering.Permute(table, logRows);
     REQUIRE(perm.size() == logRows.size());
@@ -111,9 +113,7 @@ void RequireLessThanAgreesWithPermute(const LogTable &table, std::span<const std
     }
 }
 
-void RequireCompareMatchesCompareRows(
-    const LogTable &table, std::size_t rowCount, const RowOrdering &ordering
-)
+void RequireCompareMatchesCompareRows(const LogTable &table, std::size_t rowCount, const RowOrdering &ordering)
 {
     for (std::size_t a = 0; a < rowCount; ++a)
     {
@@ -134,9 +134,7 @@ TEST_CASE("RowOrdering Compare and Permute match CompareRows / SortPermutationBy
     const TestLogFile fixture("row_ordering_integer.json");
     fixture.Write("");
     const double nan = std::numeric_limits<double>::quiet_NaN();
-    const std::vector<LogValue> values = {
-        int64_t{42}, std::monostate{}, int64_t{-1}, nan, int64_t{0}, int64_t{42}
-    };
+    const std::vector<LogValue> values = {int64_t{42}, std::monostate{}, int64_t{-1}, nan, int64_t{0}, int64_t{42}};
     const LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
     const auto logRows = IotaRows(values.size());
 
@@ -256,9 +254,8 @@ TEST_CASE("RowOrdering Enumeration uses EnumDictRank and keeps input-index ties"
     const auto perm = descending.Permute(table, logRows);
     REQUIRE(perm.size() == 5);
     const auto firstWarn = std::ranges::find_if(perm, [&](std::size_t idx) { return idx == 0 || idx == 4; });
-    const auto secondWarn = std::ranges::find_if(std::next(firstWarn), perm.end(), [&](std::size_t idx) {
-        return idx == 0 || idx == 4;
-    });
+    const auto secondWarn =
+        std::ranges::find_if(std::next(firstWarn), perm.end(), [&](std::size_t idx) { return idx == 0 || idx == 4; });
     REQUIRE(firstWarn != perm.end());
     REQUIRE(secondWarn != perm.end());
     CHECK(*firstWarn == 0);
@@ -355,7 +352,7 @@ TEST_CASE("RowOrdering mixed-column table sorts the requested column only", "[ro
     RequirePermuteMatchesSortPermutation(table, logRows, byString);
 
     const auto byN = byNumber.Permute(table, logRows);
-    CHECK(logRows[byN[0]] == 2); // 1
+    CHECK(logRows[byN[0]] == 2);     // 1
     CHECK(logRows[byN.back()] == 1); // monostate tail
 }
 

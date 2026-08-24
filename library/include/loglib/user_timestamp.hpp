@@ -51,9 +51,7 @@ struct UserTimestampParse
  * @return Parsed timestamp, or `std::nullopt` on failure or overflow.
  */
 [[nodiscard]] std::optional<UserTimestampParse> ParseUserTimestamp(
-    std::string_view input,
-    std::span<const std::string> columnParseFormats,
-    std::chrono::system_clock::time_point now
+    std::string_view input, std::span<const std::string> columnParseFormats, std::chrono::system_clock::time_point now
 );
 
 } // namespace loglib

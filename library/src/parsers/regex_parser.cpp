@@ -1,9 +1,9 @@
 #include "loglib/parsers/regex_parser.hpp"
 
+#include "loglib/compact_log_value.hpp"
 #include "loglib/file_line_source.hpp"
 #include "loglib/internal/advanced_parser_options.hpp"
 #include "loglib/internal/classify_bare_scalar.hpp"
-#include "loglib/compact_log_value.hpp"
 #include "loglib/internal/line_decoder.hpp"
 #include "loglib/internal/probe_line_view.hpp"
 #include "loglib/internal/regex_template_probe_list.hpp"
@@ -656,8 +656,7 @@ bool MatchLineAndEmit(
             // bloat the per-line array.
             continue;
         }
-        const loglib::CompactLogValue compact =
-            internal::ClassifyBareScalar(captured, fileBegin, fileSize, ownedArena);
+        const loglib::CompactLogValue compact = internal::ClassifyBareScalar(captured, fileBegin, fileSize, ownedArena);
         out.emplace_back(columnKeys[i], compact);
     }
     return true;

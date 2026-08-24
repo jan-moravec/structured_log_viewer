@@ -30,11 +30,11 @@
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
+#include <loglib/compact_log_value.hpp>
+#include <loglib/decompressing_byte_source.hpp>
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
 #include <loglib/filter_expression.hpp>
-#include <loglib/compact_log_value.hpp>
-#include <loglib/decompressing_byte_source.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
@@ -121,7 +121,6 @@
 #include <QVariant>
 #include <QWheelEvent>
 #include <QtTest/QtTest>
-
 
 #include <zlib.h>
 
@@ -681,9 +680,7 @@ loglib::StreamedBatch MakeSyntheticBatch(
         Q_ASSERT(publishedId == lineId);
         Q_UNUSED(publishedId);
         std::vector<std::pair<loglib::KeyId, loglib::CompactLogValue>> compactValues;
-        compactValues.emplace_back(
-            valueKey, loglib::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId))
-        );
+        compactValues.emplace_back(valueKey, loglib::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)));
         batch.lines.emplace_back(std::move(compactValues), keys, streamSource, lineId);
     }
     return batch;
@@ -2227,9 +2224,7 @@ private slots:
                 const size_t lineId = staticBatchRows + 1 + i;
                 static_cast<void>(liveTailSource.AppendLine("synthetic", std::string{}));
                 std::vector<std::pair<loglib::KeyId, loglib::CompactLogValue>> compactValues;
-                compactValues.emplace_back(
-                    valueKey, loglib::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId))
-                );
+                compactValues.emplace_back(valueKey, loglib::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)));
                 batch.lines.emplace_back(std::move(compactValues), keys, liveTailSource, lineId);
             }
             sink->OnBatch(std::move(batch));

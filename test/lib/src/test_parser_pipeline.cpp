@@ -1,8 +1,8 @@
 #include "common.hpp"
 
+#include <loglib/compact_log_value.hpp>
 #include <loglib/file_line_source.hpp>
 #include <loglib/internal/advanced_parser_options.hpp>
-#include <loglib/compact_log_value.hpp>
 #include <loglib/internal/static_parser_pipeline.hpp>
 #include <loglib/internal/streaming_parse_loop.hpp>
 #include <loglib/internal/timestamp_promotion.hpp>
@@ -184,9 +184,8 @@ public:
                     // below sees the per-batch view.
                     const uint64_t offset = parsed.ownedStringsArena.size();
                     parsed.ownedStringsArena.append(valueView.data(), valueView.size());
-                    auto val = loglib::CompactLogValue::MakeOwnedString(
-                        offset, static_cast<uint32_t>(valueView.size())
-                    );
+                    auto val =
+                        loglib::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(valueView.size()));
                     auto it = values.begin();
                     while (it != values.end() && it->first < keyId)
                     {
@@ -416,9 +415,8 @@ public:
 
                     const uint64_t offset = parsed.ownedStringsArena.size();
                     parsed.ownedStringsArena.append(valueView.data(), valueView.size());
-                    auto val = loglib::CompactLogValue::MakeOwnedString(
-                        offset, static_cast<uint32_t>(valueView.size())
-                    );
+                    auto val =
+                        loglib::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(valueView.size()));
                     auto it = values.begin();
                     while (it != values.end() && it->first < keyId)
                     {

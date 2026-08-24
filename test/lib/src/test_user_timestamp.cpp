@@ -19,9 +19,7 @@ using loglib::ParseUserTimestamp;
 namespace
 {
 
-const std::chrono::system_clock::time_point kNow{
-    std::chrono::microseconds{1'700'000'000'000'000LL}
-};
+const std::chrono::system_clock::time_point kNow{std::chrono::microseconds{1'700'000'000'000'000LL}};
 constexpr std::int64_t kNowMicros = 1'700'000'000'000'000LL;
 
 } // namespace
@@ -73,13 +71,11 @@ TEST_CASE("user_timestamp: overflowing relative shortcut is rejected", "[user_ti
 
     REQUIRE_FALSE(ParseUserTimestamp("-10000000000000000000h", noFormats, kNow).has_value());
 
-    const auto hourCap =
-        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max() / (3600LL * 1'000'000LL));
+    const auto hourCap = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max() / (3600LL * 1'000'000LL));
     REQUIRE_FALSE(ParseUserTimestamp(std::to_string(hourCap + 1) + "h", noFormats, kNow).has_value());
     REQUIRE(ParseUserTimestamp(std::to_string(hourCap) + "h", noFormats, kNow).has_value());
 
-    const auto minuteCap =
-        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max() / (60LL * 1'000'000LL));
+    const auto minuteCap = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max() / (60LL * 1'000'000LL));
     REQUIRE_FALSE(ParseUserTimestamp(std::to_string(minuteCap + 1) + "m", noFormats, kNow).has_value());
     REQUIRE(ParseUserTimestamp(std::to_string(minuteCap) + "m", noFormats, kNow).has_value());
 }

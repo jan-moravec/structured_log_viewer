@@ -97,11 +97,7 @@ public:
      * @return `true` when the left row belongs earlier in display order.
      */
     [[nodiscard]] bool LessThan(
-        const LogTable &table,
-        std::size_t lhsRow,
-        std::size_t rhsRow,
-        std::size_t lhsTieKey,
-        std::size_t rhsTieKey
+        const LogTable &table, std::size_t lhsRow, std::size_t rhsRow, std::size_t lhsTieKey, std::size_t rhsTieKey
     ) const;
 
     /**

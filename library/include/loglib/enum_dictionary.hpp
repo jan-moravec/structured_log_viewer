@@ -111,8 +111,7 @@ private:
      * key on `string_view`s into them.
      */
     std::deque<std::string> mValues;
-    tsl::robin_map<std::string_view, EnumValueId, loglib::TransparentStringHash, loglib::TransparentStringEqual>
-        mIndex;
+    tsl::robin_map<std::string_view, EnumValueId, loglib::TransparentStringHash, loglib::TransparentStringEqual> mIndex;
     uint16_t mCap = DEFAULT_ENUM_VALUE_CAP;
 };
 

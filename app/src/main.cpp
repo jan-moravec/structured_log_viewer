@@ -407,8 +407,10 @@ int main(int argc, char *argv[])
 
         // Publish only after every close handler has finished.
         SessionHistoryManager::AddOpenWindowUuids(restorable);
-        const logapp::persistence::Workspace deferred = logapp::persistence::WorkspacePersistence::TakeDeferredWindows();
-        workspace = logapp::persistence::WorkspacePersistence::MergeCapturedWithDeferred(std::move(workspace), deferred);
+        const logapp::persistence::Workspace deferred =
+            logapp::persistence::WorkspacePersistence::TakeDeferredWindows();
+        workspace =
+            logapp::persistence::WorkspacePersistence::MergeCapturedWithDeferred(std::move(workspace), deferred);
         (void)logapp::persistence::WorkspacePersistence::Publish(std::move(workspace));
     });
 

@@ -2,8 +2,8 @@
 
 #include "log_session_presentation.hpp"
 
-#include <loglib/filter_expression.hpp>
 #include <loglib/decompressing_byte_source.hpp>
+#include <loglib/filter_expression.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/stop_token.hpp>
 

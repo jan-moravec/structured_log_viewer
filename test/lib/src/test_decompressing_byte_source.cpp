@@ -33,9 +33,9 @@
 #include <type_traits>
 #include <vector>
 
-using loglib::StopSource;
 using loglib::DecompressingByteSource;
 using loglib::DecompressionCancelled;
+using loglib::StopSource;
 
 namespace
 {
@@ -649,9 +649,7 @@ TEST_CASE("DecompressingByteSource: max decompressed size cap trips", "[Decompre
     // 16 KiB cap << 256 KiB payload => trip on the first output chunk.
     options.maxDecompressedBytes = 16 * 1024;
 
-    CHECK_THROWS_AS(
-        DecompressingByteSource(fixture.Path(), {}, {}, options), loglib::DecompressionSizeCapExceeded
-    );
+    CHECK_THROWS_AS(DecompressingByteSource(fixture.Path(), {}, {}, options), loglib::DecompressionSizeCapExceeded);
 
     // Partial temp cleaned up on unwind, same as the cancel path.
     CHECK(countSlvTemps() == beforeSlvTemps);

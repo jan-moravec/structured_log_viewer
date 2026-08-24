@@ -1,9 +1,9 @@
 #pragma once
 
+#include "loglib/internal/timestamp_promotion.hpp"
 #include "loglib/key_index.hpp"
 #include "loglib/log_line.hpp"
 #include "loglib/transparent_string_hash.hpp"
-#include "loglib/internal/timestamp_promotion.hpp"
 
 #include <tsl/robin_map.h>
 

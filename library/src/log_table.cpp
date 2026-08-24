@@ -1,7 +1,7 @@
 #include "loglib/log_table.hpp"
 
-#include "loglib/file_line_source.hpp"
 #include "loglib/compact_log_value.hpp"
+#include "loglib/file_line_source.hpp"
 #include "loglib/log_processing.hpp"
 
 #include <date/date.h>

@@ -1,9 +1,9 @@
 #include "loglib/parsers/csv_parser.hpp"
 
+#include "loglib/compact_log_value.hpp"
 #include "loglib/file_line_source.hpp"
 #include "loglib/internal/advanced_parser_options.hpp"
 #include "loglib/internal/classify_bare_scalar.hpp"
-#include "loglib/compact_log_value.hpp"
 #include "loglib/internal/csv_tokenize.hpp"
 #include "loglib/internal/line_decoder.hpp"
 #include "loglib/internal/probe_line_view.hpp"

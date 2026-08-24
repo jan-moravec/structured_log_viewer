@@ -29,17 +29,16 @@
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
+#include <loglib/ascii_case.hpp>
 #include <loglib/auto_detect_parser.hpp>
 #include <loglib/bytes_producer.hpp>
+#include <loglib/column_projection.hpp>
+#include <loglib/decompressing_byte_source.hpp>
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/exports/export_sink.hpp>
 #include <loglib/exports/row_exporter.hpp>
 #include <loglib/file_line_source.hpp>
 #include <loglib/format_detection.hpp>
-#include <loglib/ascii_case.hpp>
-#include <loglib/decompressing_byte_source.hpp>
-#include <loglib/stdin_peek.hpp>
-#include <loglib/column_projection.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_factory.hpp>
 #include <loglib/log_file.hpp>
@@ -53,6 +52,7 @@
 #include <loglib/rotation_siblings.hpp>
 #include <loglib/session_bundle.hpp>
 #include <loglib/stdin_bytes_producer.hpp>
+#include <loglib/stdin_peek.hpp>
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
@@ -4952,9 +4952,7 @@ void MainWindow::BeginAsyncDecompression(
         };
         loglib::DecompressingByteSource::Options options;
         options.discardFirstLine = isSessionBundle;
-        return std::make_shared<loglib::DecompressingByteSource>(
-            input, std::move(progressCb), stopToken, options
-        );
+        return std::make_shared<loglib::DecompressingByteSource>(input, std::move(progressCb), stopToken, options);
     });
 
     // Own our own watcher: `LogModel::mStreamingWatcher` asserts

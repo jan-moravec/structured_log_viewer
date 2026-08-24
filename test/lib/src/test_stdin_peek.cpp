@@ -1,7 +1,7 @@
 #include <loglib/format_detection.hpp>
-#include <loglib/stdin_peek.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_parser.hpp>
+#include <loglib/stdin_peek.hpp>
 
 #include <loglib_test/scaled_ms.hpp>
 #include <test_common/pipe.hpp>

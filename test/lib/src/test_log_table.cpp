@@ -1,10 +1,10 @@
 #include "common.hpp"
 
 #include <loglib/bytes_producer.hpp>
+#include <loglib/compact_log_value.hpp>
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
 #include <loglib/filter_expression.hpp>
-#include <loglib/compact_log_value.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_data.hpp>
