@@ -52,6 +52,7 @@ add_executable(
     "src/test_tcp_server_producer.cpp"
     "src/test_theme.cpp"
     "src/test_udp_server_producer.cpp"
+    "src/test_user_timestamp.cpp"
 )
 
 # The TLS test programmatically generates a self-signed cert via
