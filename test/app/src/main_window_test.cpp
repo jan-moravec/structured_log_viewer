@@ -30,13 +30,11 @@
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
+#include <loglib/compact_log_value.hpp>
+#include <loglib/decompressing_byte_source.hpp>
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
 #include <loglib/filter_expression.hpp>
-#include <loglib/internal/advanced_parser_options.hpp>
-#include <loglib/internal/compact_log_value.hpp>
-#include <loglib/internal/decompressing_byte_source.hpp>
-#include <loglib/internal/log_configuration_glaze_meta.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
@@ -123,8 +121,6 @@
 #include <QVariant>
 #include <QWheelEvent>
 #include <QtTest/QtTest>
-
-#include <glaze/glaze.hpp>
 
 #include <zlib.h>
 
@@ -455,11 +451,10 @@ StreamingRun RunStreaming(const QString &fixturePath, ThemeControl *theme = null
     {
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
 
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *run.model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *run.model->Sink(), options);
     }
 
     if (finishedSpy.count() == 0)
@@ -491,10 +486,9 @@ StreamingRun RunStreamingLogfmt(const QString &fixturePath, ThemeControl *theme 
     {
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
 
-        loglib::LogfmtParser::ParseStreaming(*fileSourcePtr, *run.model->Sink(), options, advanced);
+        loglib::LogfmtParser{}.ParseStreaming(*fileSourcePtr, *run.model->Sink(), options);
     }
 
     if (finishedSpy.count() == 0)
@@ -685,10 +679,8 @@ loglib::StreamedBatch MakeSyntheticBatch(
         const size_t publishedId = streamSource.AppendLine("synthetic line " + std::to_string(lineId), std::string{});
         Q_ASSERT(publishedId == lineId);
         Q_UNUSED(publishedId);
-        std::vector<std::pair<loglib::KeyId, loglib::internal::CompactLogValue>> compactValues;
-        compactValues.emplace_back(
-            valueKey, loglib::internal::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId))
-        );
+        std::vector<std::pair<loglib::KeyId, loglib::CompactLogValue>> compactValues;
+        compactValues.emplace_back(valueKey, loglib::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)));
         batch.lines.emplace_back(std::move(compactValues), keys, streamSource, lineId);
     }
     return batch;
@@ -1307,11 +1299,10 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
 
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*parseSource, *model.Sink(), options, advanced);
+        parser.ParseStreaming(*parseSource, *model.Sink(), options);
 
         const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(5000);
         QVERIFY2(finished, "streamingFinished must arrive within the timeout");
@@ -2232,10 +2223,8 @@ private slots:
             {
                 const size_t lineId = staticBatchRows + 1 + i;
                 static_cast<void>(liveTailSource.AppendLine("synthetic", std::string{}));
-                std::vector<std::pair<loglib::KeyId, loglib::internal::CompactLogValue>> compactValues;
-                compactValues.emplace_back(
-                    valueKey, loglib::internal::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId))
-                );
+                std::vector<std::pair<loglib::KeyId, loglib::CompactLogValue>> compactValues;
+                compactValues.emplace_back(valueKey, loglib::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)));
                 batch.lines.emplace_back(std::move(compactValues), keys, liveTailSource, lineId);
             }
             sink->OnBatch(std::move(batch));
@@ -5135,9 +5124,8 @@ private slots:
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        options.threads = 1;
+        loglib::JsonParser{}.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         if (finishedSpy.count() == 0)
         {
             finishedSpy.wait(5000);
@@ -5513,9 +5501,8 @@ private slots:
         const loglib::StopToken firstToken = model->BeginStreamingForSyncTest(std::move(firstSource));
         loglib::ParserOptions firstOpts;
         firstOpts.stopToken = firstToken;
-        loglib::internal::AdvancedParserOptions firstAdvanced;
-        firstAdvanced.threads = 1;
-        loglib::JsonParser::ParseStreaming(*firstPtr, *model->Sink(), firstOpts, firstAdvanced);
+        firstOpts.threads = 1;
+        loglib::JsonParser{}.ParseStreaming(*firstPtr, *model->Sink(), firstOpts);
         if (firstFinishedSpy.count() == 0)
         {
             firstFinishedSpy.wait(5000);
@@ -5539,9 +5526,8 @@ private slots:
         const loglib::StopToken secondToken = model->AppendStreaming(std::move(secondSource), {});
         loglib::ParserOptions secondOpts;
         secondOpts.stopToken = secondToken;
-        loglib::internal::AdvancedParserOptions secondAdvanced;
-        secondAdvanced.threads = 1;
-        loglib::JsonParser::ParseStreaming(*secondPtr, *model->Sink(), secondOpts, secondAdvanced);
+        secondOpts.threads = 1;
+        loglib::JsonParser{}.ParseStreaming(*secondPtr, *model->Sink(), secondOpts);
         if (secondFinishedSpy.count() == 0)
         {
             secondFinishedSpy.wait(5000);
@@ -8168,10 +8154,9 @@ private slots:
         {
             loglib::ParserOptions options;
             options.stopToken = stopToken;
-            loglib::internal::AdvancedParserOptions advanced;
-            advanced.threads = 1;
+            options.threads = 1;
             const loglib::JsonParser parser;
-            loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+            parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         }
         if (finishedSpy.count() == 0)
         {
@@ -8759,13 +8744,7 @@ private slots:
         const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
         const QString cfgPath = tempDir.filePath(QStringLiteral("level-mapping.json"));
-        {
-            std::string json;
-            QVERIFY(!glz::write_json(cfg, json));
-            QFile out(cfgPath);
-            QVERIFY(out.open(QIODevice::WriteOnly | QIODevice::Truncate));
-            out.write(QByteArray::fromStdString(json));
-        }
+        loglib::LogConfigurationManager::Save(cfg, cfgPath.toStdString(), loglib::SaveScope::Full);
 
         // Step 2: load through MainWindow so the filter UI rebuilds.
         QVERIFY2(mWindow->TryLoadAsConfigurationForTest(cfgPath), "TryLoadAsConfiguration must succeed");
@@ -8869,10 +8848,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
 
         const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(5000);
         QVERIFY2(finished, "streamingFinished must arrive within the timeout");
@@ -9525,10 +9503,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
@@ -9644,10 +9621,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         if (finishedSpy.count() == 0)
         {
             finishedSpy.wait(5000);
@@ -10284,10 +10260,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         if (finishedSpy.count() == 0)
         {
             finishedSpy.wait(5000);
@@ -10400,10 +10375,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         if (finishedSpy.count() == 0)
         {
             finishedSpy.wait(5000);
@@ -10907,14 +10881,7 @@ private slots:
         const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
         const QString path = tempDir.filePath(QStringLiteral("with-filter.json"));
-        std::string json;
-        const auto writeError = glz::write_json(configuration, json);
-        QVERIFY(!writeError);
-        {
-            std::ofstream stream(path.toStdString(), std::ios::binary);
-            QVERIFY(stream.is_open());
-            stream << json;
-        }
+        loglib::LogConfigurationManager::Save(configuration, path.toStdString(), loglib::SaveScope::Full);
         model->Reset();
         mgr.Load(path.toStdString());
         QCoreApplication::processEvents();
@@ -11670,14 +11637,7 @@ private slots:
         const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
         const QString path = tempDir.filePath(QStringLiteral("mixed-filters.json"));
-        std::string json;
-        const auto writeError = glz::write_json(configuration, json);
-        QVERIFY(!writeError);
-        {
-            std::ofstream stream(path.toStdString(), std::ios::binary);
-            QVERIFY(stream.is_open());
-            stream << json;
-        }
+        loglib::LogConfigurationManager::Save(configuration, path.toStdString(), loglib::SaveScope::Full);
 
         mWindow->SetSuppressDialogsForTest(true);
         mWindow->LoadConfigurationFromPathForTest(path);
@@ -12347,13 +12307,7 @@ private slots:
         const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
         const QString cfgPath = tempDir.filePath(QStringLiteral("multi-key.json"));
-        {
-            std::string json;
-            QVERIFY(!glz::write_json(cfg, json));
-            QFile out(cfgPath);
-            QVERIFY(out.open(QIODevice::WriteOnly | QIODevice::Truncate));
-            out.write(QByteArray::fromStdString(json));
-        }
+        loglib::LogConfigurationManager::Save(cfg, cfgPath.toStdString(), loglib::SaveScope::Full);
         QVERIFY2(mWindow->TryLoadAsConfigurationForTest(cfgPath), "TryLoadAsConfiguration must succeed");
         QCoreApplication::processEvents();
 
@@ -16768,14 +16722,7 @@ private slots:
         const QTemporaryDir tempDir;
         QVERIFY(tempDir.isValid());
         const QString cfgPath = tempDir.filePath(QStringLiteral("dupes.json"));
-        {
-            std::string json;
-            const auto err = glz::write_json(mutated, json);
-            QVERIFY(!err);
-            QFile out(cfgPath);
-            QVERIFY(out.open(QIODevice::WriteOnly));
-            out.write(json.data(), static_cast<qsizetype>(json.size()));
-        }
+        loglib::LogConfigurationManager::Save(mutated, cfgPath.toStdString(), loglib::SaveScope::Full);
         QVERIFY(mWindow->TryLoadAsConfigurationForTest(cfgPath));
         QCoreApplication::processEvents();
 
@@ -17089,10 +17036,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
         const int totalRows = model->rowCount();
         QVERIFY2(totalRows > 0, "fixture must produce at least one row");
@@ -17169,10 +17115,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
         QCOMPARE(model->rowCount(), 2);
 
@@ -17289,10 +17234,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
         QCOMPARE(model->rowCount(), 40);
 
@@ -17379,10 +17323,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
         QCOMPARE(model->rowCount(), FIXTURE_LINES);
 
@@ -17501,10 +17444,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
         QCOMPARE(model->rowCount(), FIXTURE_LINES);
 
@@ -17578,10 +17520,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
 
         auto *findRecord = mWindow->findChild<FindRecordWidget *>();
@@ -17651,10 +17592,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
         QCOMPARE(model->rowCount(), lines.size());
 
@@ -20523,10 +20463,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
 
         const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(5000);
         QVERIFY2(finished, "streamingFinished must arrive within the timeout");
@@ -20619,10 +20558,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
 
         const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(5000);
         QVERIFY2(finished, "streamingFinished must arrive within the timeout");
@@ -20755,10 +20693,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
         QCOMPARE(model->rowCount(), FIXTURE_LINES);
 
@@ -20813,10 +20750,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
 
         const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
@@ -20869,10 +20805,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
 
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
@@ -20930,10 +20865,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
 
         const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
@@ -20953,11 +20887,13 @@ private slots:
         leaf.filterMaxValue = 19.0;
         cfg.expression = WireLeavesAsExpression({leaf});
 
-        std::string json;
-        QVERIFY(!glz::write_json(cfg, json));
-
-        loglib::LogConfiguration loaded;
-        QVERIFY(!glz::read_json(loaded, json));
+        const QTemporaryDir roundTripDir;
+        QVERIFY(roundTripDir.isValid());
+        const QString roundTripPath = roundTripDir.filePath(QStringLiteral("roundtrip.json"));
+        loglib::LogConfigurationManager::Save(cfg, roundTripPath.toStdString(), loglib::SaveScope::Full);
+        loglib::LogConfigurationManager loader;
+        loader.Load(roundTripPath.toStdString());
+        const loglib::LogConfiguration &loaded = loader.Configuration();
         const auto loadedLeaves = WireLeavesOf(loaded.expression);
         QCOMPARE(loadedLeaves.size(), static_cast<size_t>(1));
         QCOMPARE(loadedLeaves[0].type, loglib::LeafRule::Type::Number);
@@ -21044,10 +20980,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
 
         const int levelCol = ColumnByHeader(*model, QStringLiteral("category"));
@@ -21129,10 +21064,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
 
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
@@ -21210,10 +21144,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
 
         const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
@@ -21292,10 +21225,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
 
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
@@ -21742,10 +21674,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
 
         const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
@@ -21801,10 +21732,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
 
         const int valueCol = ColumnByHeader(*model, QStringLiteral("value"));
@@ -21872,10 +21802,9 @@ private slots:
 
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY2(finishedSpy.count() > 0 || finishedSpy.wait(5000), "streamingFinished must arrive");
 
         const int flagCol = ColumnByHeader(*model, QStringLiteral("flag"));
@@ -22789,10 +22718,9 @@ private slots:
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
         QCOMPARE(model->rowCount(), 3);
 
@@ -22905,10 +22833,9 @@ private slots:
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
         QCOMPARE(model->rowCount(), 2);
 
@@ -22956,10 +22883,9 @@ private slots:
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
 
         auto *dock = mWindow->findChild<RecordDetailDock *>();
@@ -23175,10 +23101,9 @@ private slots:
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
 
         QVERIFY(mWindow->findChildren<RecordDetailWindow *>().isEmpty());
@@ -23339,10 +23264,9 @@ private slots:
         const loglib::StopToken stopToken = model->BeginStreamingForSyncTest(std::move(fileSource));
         loglib::ParserOptions options;
         options.stopToken = stopToken;
-        loglib::internal::AdvancedParserOptions advanced;
-        advanced.threads = 1;
+        options.threads = 1;
         const loglib::JsonParser parser;
-        loglib::JsonParser::ParseStreaming(*fileSourcePtr, *model->Sink(), options, advanced);
+        parser.ParseStreaming(*fileSourcePtr, *model->Sink(), options);
         QVERIFY(finishedSpy.count() > 0 || finishedSpy.wait(5000));
         QCOMPARE(model->rowCount(), 3);
 
@@ -25971,9 +25895,9 @@ private slots:
         QVERIFY(loglib::LooksLikeSessionBundle(destPath));
 
         // Parse metadata to catch truncated output.
-        loglib::internal::DecompressingByteSource::Options options;
+        loglib::DecompressingByteSource::Options options;
         options.discardFirstLine = true;
-        const loglib::internal::DecompressingByteSource decoded(destPath, {}, {}, options);
+        const loglib::DecompressingByteSource decoded(destPath, {}, {}, options);
         const loglib::SessionBundleMetadata metadata = loglib::ParseSessionBundleMetadata(decoded.DiscardedFirstLine());
         QCOMPARE(metadata.rowCount, static_cast<std::uint64_t>(ROW_COUNT));
     }

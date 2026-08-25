@@ -29,12 +29,14 @@ public:
         Count
     };
 
-    /// Returns a no-arg-constructed parser. For `Regex` this is
-    /// "auto-detect only": `IsValid` probes the built-in template
-    /// registry, but `ParseStreaming` refuses to run until a
-    /// pattern is supplied — either via `ParserOptions::configuration`
-    /// or `RegexParser`'s explicit-pattern constructor. See
-    /// `loglib::ParseFile(path)` for the auto-detection wiring.
+    /**
+     * @brief Returns a no-arg-constructed parser. For `Regex` this is
+     * "auto-detect only": `IsValid` probes the built-in template
+     * registry, but `ParseStreaming` refuses to run until a
+     * pattern is supplied — either via `ParserOptions::configuration`
+     * or `RegexParser`'s explicit-pattern constructor. See
+     * `loglib::ParseFile(path)` for the auto-detection wiring.
+     */
     static std::unique_ptr<LogParser> Create(Parser parser);
 };
 

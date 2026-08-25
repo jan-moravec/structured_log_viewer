@@ -24,7 +24,7 @@
 
 #include <QUuid>
 
-#include <loglib/internal/decompressing_byte_source.hpp>
+#include <loglib/decompressing_byte_source.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/stop_token.hpp>
 #include <loglib/theme.hpp>
@@ -95,10 +95,10 @@ class RegexTemplatesEditor;
 class HighlightRuleSet;
 class HighlightRulesEditor;
 
-namespace slv::exports
+namespace loglib::exports
 {
 struct ExportPlan;
-} // namespace slv::exports
+} // namespace loglib::exports
 
 class MainWindow : public QMainWindow
 {
@@ -578,7 +578,7 @@ public:
      * @brief Captures geometry, dock state, tab order, and per-tab restore metadata.
      * @return A workspace record for this window with a valid active-tab index.
      */
-    [[nodiscard]] slv::persistence::WorkspaceWindow CaptureWorkspaceWindow() const;
+    [[nodiscard]] logapp::persistence::WorkspaceWindow CaptureWorkspaceWindow() const;
 
     /**
      * @brief Returns the workspace record that quit persistence should publish.
@@ -588,7 +588,7 @@ public:
      *
      * @return A workspace record for this window.
      */
-    [[nodiscard]] slv::persistence::WorkspaceWindow WorkspaceSnapshotForQuit() const;
+    [[nodiscard]] logapp::persistence::WorkspaceWindow WorkspaceSnapshotForQuit() const;
 
     /**
      * @brief Returns the stable identity used for workspace persistence and routing.
@@ -609,7 +609,7 @@ public:
      * be reopened. Geometry and dock state are applied after tab binding,
      * while the window is hidden when possible.
      */
-    void ApplyWorkspaceWindow(const slv::persistence::WorkspaceWindow &window, std::uint64_t generation = 0);
+    void ApplyWorkspaceWindow(const logapp::persistence::WorkspaceWindow &window, std::uint64_t generation = 0);
 
     /**
      * @brief Restores window geometry and dock layout from `QSettings`.
@@ -1639,7 +1639,7 @@ private slots:
      * slice in one of the four supported formats (`JSON Lines`,
      * `CSV`, `Source snapshot`, `Markdown table`). Progress and
      * cancel run through a non-modal per-window `QProgressDialog`;
-     * user cancel unwinds via `slv::exports::ExportCancelled`.
+     * user cancel unwinds via `loglib::exports::ExportCancelled`.
      */
     void ExportFilteredRows();
 
@@ -2209,7 +2209,7 @@ private:
      * @param codec The `codec` value.
      */
     void BeginAsyncDecompression(
-        LogSession *origin, const QString &originalPath, loglib::internal::DecompressingByteSource::Codec codec
+        LogSession *origin, const QString &originalPath, loglib::DecompressingByteSource::Codec codec
     );
 
     /**
@@ -2241,7 +2241,7 @@ private:
         LogSession *origin,
         const QString &originalPath,
         const std::filesystem::path &effectivePath,
-        std::shared_ptr<loglib::internal::DecompressingByteSource> decompressionAnchor
+        std::shared_ptr<loglib::DecompressingByteSource> decompressionAnchor
     );
 
     /**
@@ -2984,7 +2984,7 @@ private:
      * @brief Workspace capture taken in `closeEvent` before restorable
      * identity is detached, so quit persistence can still publish tabs.
      */
-    std::optional<slv::persistence::WorkspaceWindow> mQuitWorkspaceSnapshot;
+    std::optional<logapp::persistence::WorkspaceWindow> mQuitWorkspaceSnapshot;
 
     /**
      * @brief Guard for `OnActiveTabChanged` re-entrancy during tab
@@ -3687,7 +3687,7 @@ private:
      * @param formatLabel The `formatLabel` value.
      */
     void BeginAsyncExport(
-        std::unique_ptr<slv::exports::ExportPlan> plan, const QString &destination, const QString &formatLabel
+        std::unique_ptr<loglib::exports::ExportPlan> plan, const QString &destination, const QString &formatLabel
     );
 
     /**

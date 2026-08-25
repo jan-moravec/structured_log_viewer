@@ -1,6 +1,6 @@
 #pragma once
 
-#include "loglib/internal/compact_log_value.hpp"
+#include "loglib/compact_log_value.hpp"
 #include "loglib/internal/parse_runtime.hpp"
 #include "loglib/key_index.hpp"
 

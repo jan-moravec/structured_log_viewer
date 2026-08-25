@@ -11,6 +11,7 @@
 
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_processing.hpp>
+#include <loglib/user_timestamp.hpp>
 
 #include <QAbstractItemModel>
 #include <QAbstractItemView>
@@ -21,13 +22,10 @@
 #include <QIntValidator>
 #include <QItemSelectionModel>
 #include <QLabel>
-#include <QLatin1Char>
 #include <QLineEdit>
 #include <QModelIndex>
 #include <QProgressBar>
 #include <QPushButton>
-#include <QRegularExpression>
-#include <QRegularExpressionMatch>
 #include <QSizePolicy>
 #include <QString>
 #include <QVBoxLayout>
@@ -35,7 +33,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <optional>
 #include <ranges>
 #include <string>
@@ -316,124 +313,19 @@ void LogSessionView::ApplyLevelCellDelegate(QAbstractItemDelegate *delegate)
     mInstalledLevelDelegateColumn = newColumn;
 }
 
-namespace
-{
-
-/// True if @p fmt contains a `date::parse` zone specifier (`%z`,
-/// `%Z`, `%Ez`, `%Oz`); such a parse yields UTC and must NOT be
-/// TZ-shifted again. `%%` is a literal percent and does not
-/// register. On a non-match the scan only advances one byte so a
-/// malformed prefix like `"%E%z"` still detects the inner `%z`
-/// (false negatives here would double-shift downstream, worse
-/// than false-positive-recognising a bad format).
-[[nodiscard]] bool FormatHasZoneSpecifier(std::string_view fmt) noexcept
-{
-    for (std::size_t i = 0; i < fmt.size(); ++i)
-    {
-        if (fmt[i] != '%')
-        {
-            continue;
-        }
-        const std::size_t next = i + 1;
-        if (next >= fmt.size())
-        {
-            break;
-        }
-        if (fmt[next] == '%')
-        {
-            // `%%` is a literal percent; skip both bytes.
-            ++i;
-            continue;
-        }
-        std::size_t specifier = next;
-        if ((fmt[specifier] == 'E' || fmt[specifier] == 'O') && specifier + 1 < fmt.size())
-        {
-            ++specifier;
-        }
-        if (fmt[specifier] == 'z' || fmt[specifier] == 'Z')
-        {
-            return true;
-        }
-        // Only the outer `++i` advances; jumping past `specifier`
-        // would miss a `%z` following a malformed `%E`.
-    }
-    return false;
-}
-
-} // namespace
-
 std::optional<LogSessionView::GotoTimestampParse> LogSessionView::ParseGotoTimestampInput(
     const QString &input, const std::vector<std::string> &columnParseFormats, std::chrono::system_clock::time_point now
 )
 {
-    const QString trimmed = input.trimmed();
-    if (trimmed.isEmpty())
+    const QByteArray utf8 = input.toUtf8();
+    const auto parsed = loglib::ParseUserTimestamp(
+        std::string_view(utf8.constData(), static_cast<std::size_t>(utf8.size())), columnParseFormats, now
+    );
+    if (!parsed.has_value())
     {
         return std::nullopt;
     }
-
-    // Relative shortcut `[+-]?N[hm]` (case-insensitive,
-    // whitespace-tolerant). All sign variants mean "N units before
-    // @p now" -- "the future" is meaningless in a log viewer, and
-    // lnav / less resolve the same way.
-    static const QRegularExpression RELATIVE_SHORTCUT_RE(
-        QStringLiteral(R"(^[+-]?\s*(\d+)\s*([hm])\s*$)"), QRegularExpression::CaseInsensitiveOption
-    );
-    const auto relMatch = RELATIVE_SHORTCUT_RE.match(trimmed);
-    if (relMatch.hasMatch())
-    {
-        bool ok = false;
-        const qulonglong n = relMatch.captured(1).toULongLong(&ok);
-        if (!ok)
-        {
-            return std::nullopt;
-        }
-        const QChar unit = relMatch.captured(2).at(0).toLower();
-        // Reject values that would overflow `int64_t` micros --
-        // wrapping silently would jump the user forward, not back.
-        constexpr int64_t MICROS_PER_HOUR = 3'600LL * 1'000'000LL;
-        constexpr int64_t MICROS_PER_MINUTE = 60LL * 1'000'000LL;
-        const int64_t microsPerUnit = (unit == QLatin1Char('h')) ? MICROS_PER_HOUR : MICROS_PER_MINUTE;
-        const auto maxN = static_cast<qulonglong>(std::numeric_limits<int64_t>::max() / microsPerUnit);
-        if (n > maxN)
-        {
-            return std::nullopt;
-        }
-        const int64_t offsetMicros = static_cast<int64_t>(n) * microsPerUnit;
-        const auto nowMicros = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-        return GotoTimestampParse{.micros = nowMicros - offsetMicros, .isNaive = false};
-    }
-
-    // Absolute path: try the column's own `parseFormats` first,
-    // then two ISO fallbacks so columns with an empty format list
-    // (auto-detected `Type::Time`) still accept typical inputs.
-    const std::string stdInput = trimmed.toStdString();
-    std::vector<std::string> candidates;
-    candidates.reserve(columnParseFormats.size() + 2);
-    for (const auto &fmt : columnParseFormats)
-    {
-        candidates.push_back(fmt);
-    }
-    for (const auto *fallback : {"%FT%T", "%F %T"})
-    {
-        if (std::find(candidates.begin(), candidates.end(), std::string{fallback}) == candidates.end())
-        {
-            candidates.emplace_back(fallback);
-        }
-    }
-
-    loglib::TimestampParseScratch scratch;
-    for (const auto &fmt : candidates)
-    {
-        loglib::TimeStamp parsed{};
-        if (loglib::TryParseTimestamp(stdInput, fmt, loglib::ClassifyTimestampFormat(fmt), scratch, parsed))
-        {
-            return GotoTimestampParse{
-                .micros = parsed.time_since_epoch().count(), .isNaive = !FormatHasZoneSpecifier(fmt)
-            };
-        }
-    }
-    return std::nullopt;
+    return GotoTimestampParse{.micros = parsed->micros, .isNaive = parsed->isNaive};
 }
 
 void LogSessionView::PromptGotoLine()

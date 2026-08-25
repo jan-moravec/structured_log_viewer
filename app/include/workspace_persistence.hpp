@@ -12,7 +12,7 @@
 #include <optional>
 #include <vector>
 
-namespace slv::persistence
+namespace logapp::persistence
 {
 
 /**
@@ -337,4 +337,4 @@ public:
     static bool Publish(Workspace workspace);
 };
 
-} // namespace slv::persistence
+} // namespace logapp::persistence

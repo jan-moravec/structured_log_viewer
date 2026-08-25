@@ -1,4 +1,4 @@
-#include "loglib/internal/compact_log_value.hpp"
+#include "loglib/compact_log_value.hpp"
 
 #include "loglib/enum_dictionary.hpp"
 #include "loglib/line_source.hpp"
@@ -14,7 +14,7 @@
 #include <utility>
 #include <variant>
 
-namespace loglib::internal
+namespace loglib
 {
 
 CompactLogValue CompactLogValue::MakeMonostate() noexcept
@@ -420,4 +420,4 @@ void CompactLineFields::ShrinkToFit()
     mCapacity = mSize;
 }
 
-} // namespace loglib::internal
+} // namespace loglib

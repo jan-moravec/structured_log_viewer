@@ -1,9 +1,9 @@
 #include "loglib/parsers/logfmt_parser.hpp"
 
+#include "loglib/compact_log_value.hpp"
 #include "loglib/file_line_source.hpp"
 #include "loglib/internal/advanced_parser_options.hpp"
 #include "loglib/internal/classify_bare_scalar.hpp"
-#include "loglib/internal/compact_log_value.hpp"
 #include "loglib/internal/line_decoder.hpp"
 #include "loglib/internal/probe_line_view.hpp"
 #include "loglib/internal/static_parser_pipeline.hpp"
@@ -38,9 +38,7 @@ constexpr size_t INITIAL_FIELD_CAPACITY = 16;
 /// `std::lower_bound`. Same threshold the JSON parser uses.
 constexpr size_t INSERT_SORTED_LOWER_BOUND_THRESHOLD = 8;
 
-void InsertSorted(
-    std::vector<std::pair<KeyId, internal::CompactLogValue>> &out, KeyId id, internal::CompactLogValue value
-)
+void InsertSorted(std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out, KeyId id, loglib::CompactLogValue value)
 {
     if (out.size() < INSERT_SORTED_LOWER_BOUND_THRESHOLD)
     {
@@ -64,7 +62,7 @@ void InsertSorted(
     }
 
     auto it = std::lower_bound(
-        out.begin(), out.end(), id, [](const std::pair<KeyId, internal::CompactLogValue> &lhs, KeyId rhs) {
+        out.begin(), out.end(), id, [](const std::pair<KeyId, loglib::CompactLogValue> &lhs, KeyId rhs) {
             return lhs.first < rhs;
         }
     );
@@ -284,7 +282,7 @@ void ParseLogfmtLine(
     size_t fileSize,
     std::string &ownedArena,
     std::string &quotedScratch,
-    std::vector<std::pair<KeyId, internal::CompactLogValue>> &out,
+    std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out,
     bool &outUnterminated,
     KeyId *outLastSourceOrderKey = nullptr
 )
@@ -306,7 +304,7 @@ void ParseLogfmtLine(
 
         if (field.valueIsNull)
         {
-            InsertSorted(out, keyId, internal::CompactLogValue::MakeMonostate());
+            InsertSorted(out, keyId, loglib::CompactLogValue::MakeMonostate());
             return;
         }
 
@@ -324,7 +322,7 @@ void ParseLogfmtLine(
                 InsertSorted(
                     out,
                     keyId,
-                    internal::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(field.value.size()))
+                    loglib::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(field.value.size()))
                 );
             }
             else
@@ -411,7 +409,7 @@ void DecodeLogfmtBatch(
 
     size_t relativeLineNumber = 1;
 
-    std::vector<std::pair<KeyId, internal::CompactLogValue>> values;
+    std::vector<std::pair<KeyId, loglib::CompactLogValue>> values;
     // Last source-order key emitted for the current record.
     KeyId lastRecordContinuationTarget = INVALID_KEY_ID;
     // Batch-relative physical span of the current final record.
@@ -471,7 +469,7 @@ void DecodeLogfmtBatch(
                 continuation.append(line.data(), line.size());
 
                 auto compactSpan = parsed.lines.back().CompactValues();
-                std::vector<std::pair<KeyId, internal::CompactLogValue>> mutableValues(
+                std::vector<std::pair<KeyId, loglib::CompactLogValue>> mutableValues(
                     compactSpan.begin(), compactSpan.end()
                 );
                 const std::string_view mmapView(fileBegin, fileBegin ? static_cast<size_t>(fileEnd - fileBegin) : 0);
@@ -603,7 +601,7 @@ public:
         std::string_view line,
         KeyIndex &keys,
         internal::PerWorkerKeyCache *keyCache,
-        std::vector<std::pair<KeyId, internal::CompactLogValue>> &out,
+        std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out,
         std::string &outOwnedArena,
         std::string &errorOut
     )
@@ -872,7 +870,7 @@ void LogfmtParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, 
 
 void LogfmtParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
-    ParseStreaming(source, sink, options, internal::AdvancedParserOptions{});
+    ParseStreaming(source, sink, options, internal::FromParserOptions(options));
 }
 
 void LogfmtParser::ParseStreaming(

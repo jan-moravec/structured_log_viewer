@@ -1,6 +1,6 @@
 #include "loglib/log_configuration.hpp"
 
-#include "loglib/internal/ascii_case.hpp"
+#include "loglib/ascii_case.hpp"
 #include "loglib/internal/log_configuration_glaze_meta.hpp"
 #include "loglib/internal/log_configuration_glaze_opts.hpp"
 #include "loglib/log_data.hpp"
@@ -80,7 +80,7 @@ bool IsLogLevelKey(const std::string &key)
     };
     const std::string_view keyView(key);
     return std::ranges::any_of(LEVEL_KEYS, [keyView](std::string_view value) {
-        return internal::EqualsIgnoreCaseAscii(keyView, value);
+        return EqualsIgnoreCaseAscii(keyView, value);
     });
 }
 

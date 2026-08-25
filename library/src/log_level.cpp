@@ -1,6 +1,6 @@
 #include "loglib/log_level.hpp"
 
-#include "loglib/internal/ascii_case.hpp"
+#include "loglib/ascii_case.hpp"
 
 #include <array>
 #include <string>
@@ -110,7 +110,7 @@ std::optional<LogLevel> ParseLevelName(std::string_view bytes) noexcept
     }
     for (const LevelAlias &entry : BUILTIN_ALIASES)
     {
-        if (internal::EqualsIgnoreCaseAscii(bytes, entry.alias))
+        if (EqualsIgnoreCaseAscii(bytes, entry.alias))
         {
             return entry.level;
         }
@@ -125,7 +125,7 @@ std::optional<LogLevel> ResolveLevel(
     // Overrides win over the built-in table so callers can remap any alias.
     for (const auto &[alias, canonicalName] : overrides)
     {
-        if (!internal::EqualsIgnoreCaseAscii(bytes, alias))
+        if (!EqualsIgnoreCaseAscii(bytes, alias))
         {
             continue;
         }

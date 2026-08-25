@@ -45,8 +45,9 @@ EnumRowPredicate::EnumRowPredicate(
     // Dedupe so `mAllResolved` is keyed on distinct values regardless
     // of caller-side dedup, and so the bitset / string-set work stays
     // bounded.
-    const std::unordered_set<std::string_view, internal::TransparentStringHash, internal::TransparentStringEqual>
-        distinct(selectedValues.begin(), selectedValues.end());
+    const std::unordered_set<std::string_view, loglib::TransparentStringHash, loglib::TransparentStringEqual> distinct(
+        selectedValues.begin(), selectedValues.end()
+    );
 
     if (dictionary == nullptr)
     {

@@ -5,10 +5,10 @@
 #include <string>
 #include <string_view>
 
-namespace loglib::internal
+namespace loglib
 {
 
-/// Transparent hash for heterogeneous `string`/`string_view` lookup.
+/** @brief Transparent hash for heterogeneous `string` / `string_view` lookup. */
 struct TransparentStringHash
 {
     using is_transparent = void;
@@ -27,7 +27,7 @@ struct TransparentStringHash
     }
 };
 
-/// Transparent equality companion for `TransparentStringHash`.
+/** @brief Transparent equality companion for `TransparentStringHash`. */
 struct TransparentStringEqual
 {
     using is_transparent = void;
@@ -50,4 +50,4 @@ struct TransparentStringEqual
     }
 };
 
-} // namespace loglib::internal
+} // namespace loglib

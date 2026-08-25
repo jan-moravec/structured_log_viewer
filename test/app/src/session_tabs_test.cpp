@@ -218,8 +218,8 @@ public:
     {
         QStandardPaths::setTestModeEnabled(true);
         QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).mkpath(QStringLiteral("sessions"));
-        slv::persistence::WorkspacePersistence::Clear();
-        (void)slv::persistence::WorkspacePersistence::TakeDeferredWindows();
+        logapp::persistence::WorkspacePersistence::Clear();
+        (void)logapp::persistence::WorkspacePersistence::TakeDeferredWindows();
     }
     ScopedWorkspaceTestPaths(const ScopedWorkspaceTestPaths &) = delete;
     ScopedWorkspaceTestPaths &operator=(const ScopedWorkspaceTestPaths &) = delete;
@@ -227,8 +227,8 @@ public:
     ScopedWorkspaceTestPaths &operator=(ScopedWorkspaceTestPaths &&) = delete;
     ~ScopedWorkspaceTestPaths()
     {
-        slv::persistence::WorkspacePersistence::Clear();
-        (void)slv::persistence::WorkspacePersistence::TakeDeferredWindows();
+        logapp::persistence::WorkspacePersistence::Clear();
+        (void)logapp::persistence::WorkspacePersistence::TakeDeferredWindows();
         QStandardPaths::setTestModeEnabled(false);
     }
 };
@@ -2071,7 +2071,7 @@ private slots:
 
     static void TestCaptureWorkspaceEmitsConfigOnlyForPinnedUuidWithNoSource()
     {
-        using slv::persistence::SourceMode;
+        using logapp::persistence::SourceMode;
         MainWindow window;
         LogSession *session = window.activeSession();
         QVERIFY(session != nullptr);
@@ -2149,12 +2149,12 @@ private slots:
 
     static void TestWorkspaceRestoreAppliesCustomTabLabel()
     {
-        slv::persistence::WorkspaceWindow snapshot;
+        logapp::persistence::WorkspaceWindow snapshot;
         snapshot.windowUuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
         snapshot.tabs.resize(1);
         snapshot.tabs[0].label = QStringLiteral("app.log");
         snapshot.tabs[0].customLabel = QStringLiteral("Incident 42");
-        snapshot.tabs[0].sourceMode = slv::persistence::SourceMode::File;
+        snapshot.tabs[0].sourceMode = logapp::persistence::SourceMode::File;
 
         MainWindow restored;
         restored.SetSuppressDialogsForTest(true);
@@ -3205,7 +3205,7 @@ private slots:
     {
         const ScopedWorkspaceTestPaths paths;
         SessionHistoryManager manager(
-            slv::persistence::WorkspacePersistence::DefaultWorkspaceDir(),
+            logapp::persistence::WorkspacePersistence::DefaultWorkspaceDir(),
             std::make_unique<InMemoryRecentsIndexStorage>()
         );
         QTemporaryDir logs;
@@ -3243,41 +3243,41 @@ private slots:
 
         source.ActivateTabForTest(0);
         source.AutoSaveAllHostedSessions(/*publishOpenWindow=*/false);
-        slv::persistence::WorkspaceWindow captured = source.CaptureWorkspaceWindow();
+        logapp::persistence::WorkspaceWindow captured = source.CaptureWorkspaceWindow();
         QCOMPARE(captured.tabs.size(), std::size_t{5});
-        QCOMPARE(captured.tabs[0].sourceMode, slv::persistence::SourceMode::File);
-        QCOMPARE(captured.tabs[1].sourceMode, slv::persistence::SourceMode::ConfigOnly);
-        QCOMPARE(captured.tabs[2].sourceMode, slv::persistence::SourceMode::LiveTailFile);
-        QCOMPARE(captured.tabs[3].sourceMode, slv::persistence::SourceMode::Network);
-        QCOMPARE(captured.tabs[4].sourceMode, slv::persistence::SourceMode::Stdin);
+        QCOMPARE(captured.tabs[0].sourceMode, logapp::persistence::SourceMode::File);
+        QCOMPARE(captured.tabs[1].sourceMode, logapp::persistence::SourceMode::ConfigOnly);
+        QCOMPARE(captured.tabs[2].sourceMode, logapp::persistence::SourceMode::LiveTailFile);
+        QCOMPARE(captured.tabs[3].sourceMode, logapp::persistence::SourceMode::Network);
+        QCOMPARE(captured.tabs[4].sourceMode, logapp::persistence::SourceMode::Stdin);
 
         MainWindow peer(nullptr, &manager, nullptr);
         peer.SetSuppressDialogsForTest(true);
         LoadFileIntoActiveTab(peer, peerPath);
         peer.AutoSaveAllHostedSessions(/*publishOpenWindow=*/false);
-        slv::persistence::WorkspaceWindow capturedPeer = peer.CaptureWorkspaceWindow();
+        logapp::persistence::WorkspaceWindow capturedPeer = peer.CaptureWorkspaceWindow();
         QCOMPARE(capturedPeer.tabs.size(), std::size_t{1});
-        QCOMPARE(capturedPeer.tabs[0].sourceMode, slv::persistence::SourceMode::File);
+        QCOMPARE(capturedPeer.tabs[0].sourceMode, logapp::persistence::SourceMode::File);
 
-        slv::persistence::WorkspaceTab corrupt;
+        logapp::persistence::WorkspaceTab corrupt;
         corrupt.sessionUuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
-        corrupt.sourceMode = slv::persistence::SourceMode::File;
+        corrupt.sourceMode = logapp::persistence::SourceMode::File;
         captured.tabs.push_back(corrupt);
         captured.activeTabIndex = 0;
 
-        slv::persistence::Workspace workspace;
-        workspace.schemaVersion = slv::persistence::WorkspacePersistence::SCHEMA_VERSION;
+        logapp::persistence::Workspace workspace;
+        workspace.schemaVersion = logapp::persistence::WorkspacePersistence::SCHEMA_VERSION;
         workspace.windows.push_back(captured);
         workspace.windows.push_back(capturedPeer);
-        QVERIFY(slv::persistence::WorkspacePersistence::Publish(workspace));
+        QVERIFY(logapp::persistence::WorkspacePersistence::Publish(workspace));
 
-        const slv::persistence::Workspace published = slv::persistence::WorkspacePersistence::Read();
+        const logapp::persistence::Workspace published = logapp::persistence::WorkspacePersistence::Read();
         QCOMPARE(published.windows.size(), std::size_t{2});
         const QString corruptUuid = published.windows[0].tabs.back().sessionUuid;
         if (!corruptUuid.isEmpty())
         {
             const QString corruptPath =
-                slv::persistence::WorkspacePersistence::SessionSnapshotPath(published.generation, corruptUuid);
+                logapp::persistence::WorkspacePersistence::SessionSnapshotPath(published.generation, corruptUuid);
             QFile corruptFile(corruptPath);
             QVERIFY(corruptFile.open(QIODevice::WriteOnly | QIODevice::Truncate));
             corruptFile.write("not-json");
@@ -3334,7 +3334,7 @@ private slots:
     {
         const ScopedWorkspaceTestPaths paths;
         SessionHistoryManager manager(
-            slv::persistence::WorkspacePersistence::DefaultWorkspaceDir(),
+            logapp::persistence::WorkspacePersistence::DefaultWorkspaceDir(),
             std::make_unique<InMemoryRecentsIndexStorage>()
         );
         QTemporaryDir logs;
@@ -3350,24 +3350,24 @@ private slots:
         LoadFileIntoActiveTab(window, secondPath);
         window.AutoSaveAllHostedSessions(/*publishOpenWindow=*/false);
 
-        const slv::persistence::WorkspaceWindow beforeClose = window.CaptureWorkspaceWindow();
+        const logapp::persistence::WorkspaceWindow beforeClose = window.CaptureWorkspaceWindow();
         QCOMPARE(beforeClose.tabs.size(), std::size_t{2});
         QVERIFY(!beforeClose.tabs[0].sessionUuid.isEmpty());
         QVERIFY(!beforeClose.tabs[1].sessionUuid.isEmpty());
-        QCOMPARE(beforeClose.tabs[0].sourceMode, slv::persistence::SourceMode::File);
-        QCOMPARE(beforeClose.tabs[1].sourceMode, slv::persistence::SourceMode::File);
+        QCOMPARE(beforeClose.tabs[0].sourceMode, logapp::persistence::SourceMode::File);
+        QCOMPARE(beforeClose.tabs[1].sourceMode, logapp::persistence::SourceMode::File);
 
         QVERIFY(window.close());
         QCoreApplication::processEvents();
 
-        const slv::persistence::WorkspaceWindow forQuit = window.WorkspaceSnapshotForQuit();
+        const logapp::persistence::WorkspaceWindow forQuit = window.WorkspaceSnapshotForQuit();
         QCOMPARE(forQuit.tabs.size(), std::size_t{2});
         QCOMPARE(forQuit.tabs[0].sessionUuid, beforeClose.tabs[0].sessionUuid);
         QCOMPARE(forQuit.tabs[1].sessionUuid, beforeClose.tabs[1].sessionUuid);
-        QCOMPARE(forQuit.tabs[0].sourceMode, slv::persistence::SourceMode::File);
-        QCOMPARE(forQuit.tabs[1].sourceMode, slv::persistence::SourceMode::File);
+        QCOMPARE(forQuit.tabs[0].sourceMode, logapp::persistence::SourceMode::File);
+        QCOMPARE(forQuit.tabs[1].sourceMode, logapp::persistence::SourceMode::File);
 
-        const slv::persistence::WorkspaceWindow afterWipe = window.CaptureWorkspaceWindow();
+        const logapp::persistence::WorkspaceWindow afterWipe = window.CaptureWorkspaceWindow();
         QVERIFY2(
             afterWipe.tabs[0].sessionUuid.isEmpty() && afterWipe.tabs[1].sessionUuid.isEmpty(),
             "closeEvent still detaches restorable identity so aboutToQuit does not "
@@ -3380,7 +3380,7 @@ private slots:
     {
         const ScopedWorkspaceTestPaths paths;
         SessionHistoryManager manager(
-            slv::persistence::WorkspacePersistence::DefaultWorkspaceDir(),
+            logapp::persistence::WorkspacePersistence::DefaultWorkspaceDir(),
             std::make_unique<InMemoryRecentsIndexStorage>()
         );
         QTemporaryDir logs;
@@ -3412,18 +3412,18 @@ private slots:
         LoadFileIntoActiveTab(source, sibling);
 
         source.AutoSaveAllHostedSessions(/*publishOpenWindow=*/false);
-        slv::persistence::WorkspaceWindow captured = source.CaptureWorkspaceWindow();
+        logapp::persistence::WorkspaceWindow captured = source.CaptureWorkspaceWindow();
         QCOMPARE(captured.tabs.size(), std::size_t{2});
-        QCOMPARE(captured.tabs[0].sourceMode, slv::persistence::SourceMode::MultiFile);
-        QCOMPARE(captured.tabs[1].sourceMode, slv::persistence::SourceMode::File);
+        QCOMPARE(captured.tabs[0].sourceMode, logapp::persistence::SourceMode::MultiFile);
+        QCOMPARE(captured.tabs[1].sourceMode, logapp::persistence::SourceMode::File);
         QVERIFY(!captured.tabs[0].sessionUuid.isEmpty());
         QVERIFY(!captured.tabs[1].sessionUuid.isEmpty());
 
-        slv::persistence::Workspace workspace;
-        workspace.schemaVersion = slv::persistence::WorkspacePersistence::SCHEMA_VERSION;
+        logapp::persistence::Workspace workspace;
+        workspace.schemaVersion = logapp::persistence::WorkspacePersistence::SCHEMA_VERSION;
         workspace.windows.push_back(captured);
-        QVERIFY(slv::persistence::WorkspacePersistence::Publish(workspace));
-        const slv::persistence::Workspace published = slv::persistence::WorkspacePersistence::Read();
+        QVERIFY(logapp::persistence::WorkspacePersistence::Publish(workspace));
+        const logapp::persistence::Workspace published = logapp::persistence::WorkspacePersistence::Read();
 
         MainWindow restored(nullptr, &manager, nullptr);
         restored.SetSuppressDialogsForTest(true);
@@ -3449,15 +3449,15 @@ private slots:
     static void TestWorkspaceRestoreEmptyTabsWithSavedChromeDoesNotCrash()
     {
         const ScopedWorkspaceTestPaths paths;
-        slv::persistence::WorkspaceWindow window;
+        logapp::persistence::WorkspaceWindow window;
         window.windowUuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
         window.activeTabIndex = 2;
         window.tabs.resize(3);
         window.tabs[0].label = QStringLiteral("app.log");
         window.tabs[1].label = QStringLiteral("tcp://127.0.0.1:9000");
         window.tabs[2].label = QStringLiteral("<stdin>");
-        window.tabs[1].sourceMode = slv::persistence::SourceMode::Network;
-        window.tabs[2].sourceMode = slv::persistence::SourceMode::Stdin;
+        window.tabs[1].sourceMode = logapp::persistence::SourceMode::Network;
+        window.tabs[2].sourceMode = logapp::persistence::SourceMode::Stdin;
 
         MainWindow chromeSource;
         chromeSource.SetSuppressDialogsForTest(true);

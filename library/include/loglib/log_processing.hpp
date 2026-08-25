@@ -18,30 +18,38 @@
 namespace loglib
 {
 
-/// Classification of a `parseFormats` string. `Generic` falls through to
-/// `date::parse`; the others dispatch to a hand-rolled fast path.
+/**
+ * @brief Classification of a `parseFormats` string. `Generic` falls through to
+ * `date::parse`; the others dispatch to a hand-rolled fast path.
+ */
 enum class TimestampFormatKind : std::uint8_t
 {
     Generic,
     Iso8601_T,
     Iso8601_Space,
-    /// RFC 3164 header: `Mmm  D HH:MM:SS` (space- or zero-padded day,
-    /// English month abbreviation, no year, no timezone). The RFC pins the
-    /// English abbreviations, so a manual fast path is preferable
-    /// to `date::from_stream` -- the latter goes through `%b` /
-    /// `strftime` and depends on the process locale (breaks on
-    /// non-`C` hosts). The parser injects the year via the standard
-    /// "if parsed month > current month, use previous year" rollover
-    /// heuristic since RFC 3164 doesn't carry a year field.
+    /**
+     * @brief RFC 3164 header: `Mmm  D HH:MM:SS` (space- or zero-padded day,
+     * English month abbreviation, no year, no timezone). The RFC pins the
+     * English abbreviations, so a manual fast path is preferable
+     * to `date::from_stream` -- the latter goes through `%b` /
+     * `strftime` and depends on the process locale (breaks on
+     * non-`C` hosts). The parser injects the year via the standard
+     * "if parsed month > current month, use previous year" rollover
+     * heuristic since RFC 3164 doesn't carry a year field.
+     */
     SyslogRfc3164NoYear,
 };
 
-/// Returns the fast-path kind for @p format (`"%FT%T"` / `"%F %T"` /
-/// `"%b %e %H:%M:%S"` / `"%b %d %H:%M:%S"`), else `Generic`.
+/**
+ * @brief Returns the fast-path kind for @p format (`"%FT%T"` / `"%F %T"` /
+ * `"%b %e %H:%M:%S"` / `"%b %d %H:%M:%S"`), else `Generic`.
+ */
 TimestampFormatKind ClassifyTimestampFormat(std::string_view format);
 
-/// Per-line carry-over for the "remember the last successful (keyId, format)"
-/// fast path. `kind` caches `ClassifyTimestampFormat(format)`.
+/**
+ * @brief Per-line carry-over for the "remember the last successful (keyId, format)"
+ * fast path. `kind` caches `ClassifyTimestampFormat(format)`.
+ */
 struct LastValidTimestampParse
 {
     KeyId keyId = INVALID_KEY_ID;
@@ -49,34 +57,38 @@ struct LastValidTimestampParse
     TimestampFormatKind kind = TimestampFormatKind::Generic;
 };
 
-/// Reusable scratch for the generic `date::parse` fallback.
+/** @brief Reusable scratch for the generic `date::parse` fallback. */
 struct TimestampParseScratch
 {
     std::string str;
     std::istringstream stream;
 };
 
-/// ISO-8601 fast path. Accepts `YYYY-MM-DD<sep>HH:MM:SS[.fff[fff]]` with up to
-/// six fractional digits; @p dateTimeSep is `'T'` or `' '`. An epoch-zero
-/// result is reported as a failure (legacy contract).
+/**
+ * @brief ISO-8601 fast path. Accepts `YYYY-MM-DD<sep>HH:MM:SS[.fff[fff]]` with up to
+ * six fractional digits; @p dateTimeSep is `'T'` or `' '`. An epoch-zero
+ * result is reported as a failure.
+ */
 bool TryParseIsoTimestamp(std::string_view sv, char dateTimeSep, TimeStamp &out);
 
-/// RFC 3164 header fast path. Accepts `Mmm d HH:MM:SS` and
-/// `Mmm  D HH:MM:SS` (either zero-padded `%d` or space-padded `%e`
-/// day). English month abbreviations only (`Jan` -- `Dec`) because
-/// RFC 3164 §4.1.2 mandates them; a `date::from_stream("%b ...")`
-/// path would depend on the process locale and break on non-`C`
-/// hosts. Year is injected via the standard "if parsed month is
-/// later than current month, roll back one year" heuristic since
-/// the RFC 3164 header omits a year field.
+/**
+ * @brief RFC 3164 header fast path. Accepts `Mmm d HH:MM:SS` and
+ * `Mmm  D HH:MM:SS` (either zero-padded `%d` or space-padded `%e`
+ * day). English month abbreviations only (`Jan` -- `Dec`) because
+ * RFC 3164 §4.1.2 mandates them; a `date::from_stream("%b ...")`
+ * path would depend on the process locale and break on non-`C`
+ * hosts. Year is injected via the standard "if parsed month is
+ * later than current month, roll back one year" heuristic since
+ * the RFC 3164 header omits a year field.
+ */
 bool TryParseSyslogRfc3164Timestamp(std::string_view sv, TimeStamp &out);
 
-/// Slow-path `date::parse` fallback; reuses @p scratch across calls.
+/** @brief Slow-path `date::parse` fallback; reuses @p scratch across calls. */
 bool TryParseGenericTimestamp(
     std::string_view sv, const std::string &format, TimestampParseScratch &scratch, TimeStamp &out
 );
 
-/// Picks the fast or slow path based on @p kind.
+/** @brief Picks the fast or slow path based on @p kind. */
 bool TryParseTimestamp(
     std::string_view sv,
     const std::string &format,
@@ -85,30 +97,36 @@ bool TryParseTimestamp(
     TimeStamp &out
 );
 
-/// Installs the timezone database. Must be called before any other timestamp
-/// helper in this header.
+/**
+ * @brief Installs the timezone database. Must be called before any other timestamp
+ * helper in this header.
+ */
 void Initialize(const std::filesystem::path &tzdata);
 
-/// Process-wide cached current IANA zone. Non-null after successful `Initialize`.
+/** @brief Process-wide cached current IANA zone. Non-null after successful `Initialize`. */
 const date::time_zone *CurrentZone();
 
-/// Promotes timestamp columns in @p logData; returns per-line failure messages.
+/** @brief Promotes timestamp columns in @p logData; returns per-line failure messages. */
 std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguration &configuration);
 
-/// Promotes one configured `Type::Time` column over @p lines in place.
-/// Caller must ensure `column.type == Type::Time`. Pass a sub-span to
-/// restrict the back-fill to a slice of a larger vector (e.g. only the rows
-/// just appended in a streaming batch). Returns per-line failure messages.
+/**
+ * @brief Promotes one configured `Type::Time` column over @p lines in place.
+ * Caller must ensure `column.type == Type::Time`. Pass a sub-span to
+ * restrict the back-fill to a slice of a larger vector (e.g. only the rows
+ * just appended in a streaming batch). Returns per-line failure messages.
+ */
 std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column &column, std::span<LogLine> lines);
 
-/// Tag selecting the `void` overload that skips per-line "Failed to parse"
-/// formatting on the streaming hot path.
+/**
+ * @brief Tag selecting the `void` overload that skips per-line "Failed to parse"
+ * formatting on the streaming hot path.
+ */
 enum class BackfillErrors : uint8_t
 {
     Discard
 };
 
-/// `void` overload of `BackfillTimestampColumn` that drops error messages.
+/** @brief `void` overload of `BackfillTimestampColumn` that drops error messages. */
 void BackfillTimestampColumn(
     const LogConfiguration::Column &column, std::span<LogLine> lines, BackfillErrors discardErrors
 );
@@ -119,28 +137,32 @@ int64_t UtcMicrosecondsToLocalMilliseconds(int64_t microseconds);
 
 TimeStamp LocalMillisecondsSinceEpochToTimeStamp(int64_t milliseconds);
 
-/// Convert @p localMicroseconds -- interpreted as a wall-clock
-/// instant in @p zone -- to UTC epoch microseconds. Returns the
-/// input unchanged if @p zone is null. DST edge cases resolve via
-/// `date::to_sys(local, choose::earliest)`:
-///   * Ambiguous "fall-back" hour: the earlier candidate.
-///   * Non-existent "spring-forward" gap: the transition boundary
-///     (the first real instant after the gap).
-/// Non-DST exceptions (far-future dates past the tzdata table,
-/// corrupt zone entries) are caught and yield the naive value so
-/// the Goto Timestamp slot stays exception-safe. The @p zone
-/// argument exists for deterministic tests; production uses the
-/// overload below.
+/**
+ * @brief Convert @p localMicroseconds -- interpreted as a wall-clock
+ * instant in @p zone -- to UTC epoch microseconds. Returns the
+ * input unchanged if @p zone is null. DST edge cases resolve via
+ * `date::to_sys(local, choose::earliest)`:
+ *   * Ambiguous "fall-back" hour: the earlier candidate.
+ *   * Non-existent "spring-forward" gap: the transition boundary
+ *     (the first real instant after the gap).
+ * Non-DST exceptions (far-future dates past the tzdata table,
+ * corrupt zone entries) are caught and yield the naive value so
+ * the Goto Timestamp slot stays exception-safe. The @p zone
+ * argument exists for deterministic tests; production uses the
+ * overload below.
+ */
 int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds, const date::time_zone *zone);
 
-/// Convenience overload equivalent to
-/// `LocalMicrosecondsSinceEpochToUtc(local, CurrentZone())`.
+/**
+ * @brief Convenience overload equivalent to
+ * `LocalMicrosecondsSinceEpochToUtc(local, CurrentZone())`.
+ */
 int64_t LocalMicrosecondsSinceEpochToUtc(int64_t localMicroseconds);
 
-/// Formats UTC microseconds since epoch as a `%F %T`-style local-time string.
+/** @brief Formats UTC microseconds since epoch as a `%F %T`-style local-time string. */
 std::string UtcMicrosecondsToDateTimeString(int64_t microseconds);
 
-/// Formats a `TimeStamp` as a `%F %T`-style local-time string.
+/** @brief Formats a `TimeStamp` as a `%F %T`-style local-time string. */
 std::string TimeStampToDateTimeString(TimeStamp timeStamp);
 
 } // namespace loglib

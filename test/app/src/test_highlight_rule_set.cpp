@@ -17,7 +17,6 @@
 
 #include <loglib/file_line_source.hpp>
 #include <loglib/filter_expression.hpp>
-#include <loglib/internal/advanced_parser_options.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_filter.hpp>
@@ -89,9 +88,8 @@ void StreamJsonPathInto(LogModel &model, const QString &path)
 
     loglib::ParserOptions options;
     options.stopToken = stopToken;
-    loglib::internal::AdvancedParserOptions advanced;
-    advanced.threads = 1;
-    loglib::JsonParser::ParseStreaming(*parseSource, *model.Sink(), options, advanced);
+    options.threads = 1;
+    loglib::JsonParser{}.ParseStreaming(*parseSource, *model.Sink(), options);
 
     const bool finished = finishedSpy.count() > 0 || finishedSpy.wait(5000);
     QVERIFY2(finished, "streamingFinished must arrive within the timeout");

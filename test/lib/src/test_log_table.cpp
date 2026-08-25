@@ -1,10 +1,10 @@
 #include "common.hpp"
 
 #include <loglib/bytes_producer.hpp>
+#include <loglib/compact_log_value.hpp>
 #include <loglib/enum_dictionary.hpp>
 #include <loglib/file_line_source.hpp>
 #include <loglib/filter_expression.hpp>
-#include <loglib/internal/compact_log_value.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_data.hpp>
@@ -956,8 +956,8 @@ StreamedBatch MakeStreamBatch(
         const size_t publishedId = streamSource.AppendLine("raw" + std::to_string(lineId), std::string{});
         REQUIRE(publishedId == lineId);
 
-        std::vector<std::pair<KeyId, internal::CompactLogValue>> compactValues;
-        compactValues.emplace_back(valueKey, internal::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)));
+        std::vector<std::pair<KeyId, loglib::CompactLogValue>> compactValues;
+        compactValues.emplace_back(valueKey, loglib::CompactLogValue::MakeInt64(static_cast<int64_t>(lineId)));
         batch.lines.emplace_back(std::move(compactValues), keys, streamSource, lineId);
     }
     return batch;

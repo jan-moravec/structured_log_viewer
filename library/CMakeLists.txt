@@ -25,6 +25,8 @@ add_library(
     src/compact_log_value.cpp
     src/decompressing_byte_source.cpp
     src/enum_dictionary.cpp
+    src/exports/export_sink.cpp
+    src/exports/row_exporter.cpp
     src/file_identity.cpp
     src/file_line_source.cpp
     src/format_detection.cpp
@@ -38,6 +40,7 @@ add_library(
     src/udp_server_producer.cpp
     src/timestamp_promotion.cpp
     src/log_configuration.cpp
+    src/column_projection.cpp
     src/clang_tidy_stubs/log_configuration_glaze_meta.cpp
     src/clang_tidy_stubs/log_configuration_glaze_opts.cpp
     src/log_compare.cpp
@@ -49,10 +52,12 @@ add_library(
     src/log_line.cpp
     src/log_parser.cpp
     src/log_processing.cpp
+    src/user_timestamp.cpp
     src/log_table.cpp
     src/normalized_json_row.cpp
     src/query_parser.cpp
     src/rotation_siblings.cpp
+    src/row_ordering.cpp
     src/session_bundle_writer.cpp
     src/session_bundle_reader.cpp
     src/parsers/csv_parser.cpp

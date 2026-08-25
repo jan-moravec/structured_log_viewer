@@ -1,4 +1,4 @@
-#include "row_exporter.hpp"
+#include "loglib/exports/row_exporter.hpp"
 
 #include <loglib/internal/normalized_json_row.hpp>
 #include <loglib/key_index.hpp>
@@ -14,7 +14,7 @@
 #include <string>
 #include <string_view>
 
-namespace slv::exports
+namespace loglib::exports
 {
 
 namespace
@@ -76,12 +76,12 @@ void JsonLinesExporter::Run(
         {
             PollStop(stopToken);
         }
-        const int sourceRow = source.sourceRows[slot];
-        if (sourceRow < 0 || static_cast<size_t>(sourceRow) >= lines.size())
+        const std::size_t sourceRow = source.sourceRows[slot];
+        if (sourceRow >= lines.size())
         {
             continue;
         }
-        const auto &line = lines[static_cast<size_t>(sourceRow)];
+        const auto &line = lines[sourceRow];
         scratch.clear();
         loglib::internal::SerializeNormalizedJsonRow(line, keys, scratch);
         scratch.push_back('\n');
@@ -206,11 +206,10 @@ void CsvExporter::Run(
         {
             PollStop(stopToken);
         }
-        const int sourceRow = source.sourceRows[slot];
-        // Skip negative / past-the-end indices so a mid-export
-        // FIFO eviction on the GUI thread cannot hand us a
-        // dropped row.
-        if (sourceRow < 0 || static_cast<size_t>(sourceRow) >= lines.size())
+        const std::size_t sourceRow = source.sourceRows[slot];
+        // Skip past-the-end indices so a mid-export FIFO eviction
+        // on the GUI thread cannot hand us a dropped row.
+        if (sourceRow >= lines.size())
         {
             continue;
         }
@@ -225,8 +224,7 @@ void CsvExporter::Run(
             }
             first = false;
             cellBuffer.clear();
-            const std::string_view formatted =
-                table.GetValueOrFormatted(static_cast<size_t>(sourceRow), col, cellBuffer);
+            const std::string_view formatted = table.GetValueOrFormatted(sourceRow, col, cellBuffer);
             AppendCsvCell(scratch, formatted);
         }
         scratch.push_back('\n');
@@ -277,12 +275,12 @@ void SnapshotExporter::Run(
         {
             PollStop(stopToken);
         }
-        const int sourceRow = source.sourceRows[slot];
-        if (sourceRow < 0 || static_cast<size_t>(sourceRow) >= lines.size())
+        const std::size_t sourceRow = source.sourceRows[slot];
+        if (sourceRow >= lines.size())
         {
             continue;
         }
-        const auto &line = lines[static_cast<size_t>(sourceRow)];
+        const auto &line = lines[sourceRow];
         const auto *lineSource = line.Source();
         if (lineSource == nullptr)
         {
@@ -406,11 +404,11 @@ void MarkdownExporter::Run(
         {
             PollStop(stopToken);
         }
-        const int sourceRow = source.sourceRows[slot];
-        // Skip negative / past-the-end indices; matches JsonLines
-        // / Snapshot so a mid-export FIFO eviction on the GUI
-        // thread cannot hand us a dropped row.
-        if (sourceRow < 0 || static_cast<size_t>(sourceRow) >= lines.size())
+        const std::size_t sourceRow = source.sourceRows[slot];
+        // Skip past-the-end indices; matches JsonLines / Snapshot
+        // so a mid-export FIFO eviction on the GUI thread cannot
+        // hand us a dropped row.
+        if (sourceRow >= lines.size())
         {
             continue;
         }
@@ -421,8 +419,7 @@ void MarkdownExporter::Run(
         {
             scratch.push_back(' ');
             cellBuffer.clear();
-            const std::string_view formatted =
-                table.GetValueOrFormatted(static_cast<size_t>(sourceRow), col, cellBuffer);
+            const std::string_view formatted = table.GetValueOrFormatted(sourceRow, col, cellBuffer);
             AppendMarkdownCell(scratch, formatted);
             scratch.append(" |");
         }
@@ -494,4 +491,4 @@ std::unique_ptr<RowExporter> MakeExporter(ExportFormat format)
     return nullptr;
 }
 
-} // namespace slv::exports
+} // namespace loglib::exports

@@ -1,9 +1,9 @@
 #include "loglib/parsers/regex_parser.hpp"
 
+#include "loglib/compact_log_value.hpp"
 #include "loglib/file_line_source.hpp"
 #include "loglib/internal/advanced_parser_options.hpp"
 #include "loglib/internal/classify_bare_scalar.hpp"
-#include "loglib/internal/compact_log_value.hpp"
 #include "loglib/internal/line_decoder.hpp"
 #include "loglib/internal/probe_line_view.hpp"
 #include "loglib/internal/regex_template_probe_list.hpp"
@@ -590,7 +590,7 @@ bool MatchLineAndEmit(
     const char *fileBegin,
     size_t fileSize,
     std::string &ownedArena,
-    std::vector<std::pair<KeyId, internal::CompactLogValue>> &out,
+    std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out,
     std::string &errorOut
 )
 {
@@ -656,8 +656,7 @@ bool MatchLineAndEmit(
             // bloat the per-line array.
             continue;
         }
-        const internal::CompactLogValue compact =
-            internal::ClassifyBareScalar(captured, fileBegin, fileSize, ownedArena);
+        const loglib::CompactLogValue compact = internal::ClassifyBareScalar(captured, fileBegin, fileSize, ownedArena);
         out.emplace_back(columnKeys[i], compact);
     }
     return true;
@@ -763,7 +762,7 @@ void DecodeRegexBatch(
     parsed.localLineOffsets.reserve(estimatedLines);
 
     size_t relativeLineNumber = 1;
-    std::vector<std::pair<KeyId, internal::CompactLogValue>> values;
+    std::vector<std::pair<KeyId, loglib::CompactLogValue>> values;
     std::string lineError;
     // Batch-relative physical span of the current final record.
     size_t tailHeaderPhysical = 0;
@@ -839,7 +838,7 @@ void DecodeRegexBatch(
                 continuation.append(line.data(), line.size());
 
                 auto compactSpan = parsed.lines.back().CompactValues();
-                std::vector<std::pair<KeyId, internal::CompactLogValue>> mutableValues(
+                std::vector<std::pair<KeyId, loglib::CompactLogValue>> mutableValues(
                     compactSpan.begin(), compactSpan.end()
                 );
                 const std::string_view mmapView(fileBegin, fileBegin ? static_cast<size_t>(fileEnd - fileBegin) : 0);
@@ -979,7 +978,7 @@ public:
         std::string_view line,
         KeyIndex &keys,
         internal::PerWorkerKeyCache *keyCache,
-        std::vector<std::pair<KeyId, internal::CompactLogValue>> &out,
+        std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out,
         std::string &outOwnedArena,
         std::string &errorOut
     )
@@ -1199,7 +1198,7 @@ void RegexParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, Par
     {
         explicitView = std::string_view(*mExplicitPattern);
     }
-    ParseStreaming(source, sink, options, internal::AdvancedParserOptions{}, explicitView);
+    ParseStreaming(source, sink, options, internal::FromParserOptions(options), explicitView);
 }
 
 void RegexParser::ParseStreaming(

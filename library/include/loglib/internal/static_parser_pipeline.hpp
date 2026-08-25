@@ -1,9 +1,9 @@
 #pragma once
 
+#include "loglib/compact_log_value.hpp"
 #include "loglib/file_line_source.hpp"
 #include "loglib/internal/advanced_parser_options.hpp"
 #include "loglib/internal/batch_coalescer.hpp"
-#include "loglib/internal/compact_log_value.hpp"
 #include "loglib/internal/line_decoder.hpp"
 #include "loglib/internal/parse_runtime.hpp"
 #include "loglib/internal/timestamp_promotion.hpp"

@@ -6,7 +6,6 @@
 #include "columns_manager_dialog.hpp"
 #include "configuration_diagnostics_dialog.hpp"
 #include "export_dialog.hpp"
-#include "export_sink.hpp"
 #include "filter_editor.hpp"
 #include "highlight_rule_set.hpp"
 #include "highlight_rules_editor.hpp"
@@ -23,7 +22,6 @@
 #include "qt_streaming_log_sink.hpp"
 #include "regex_template_registry.hpp"
 #include "regex_templates_editor.hpp"
-#include "row_exporter.hpp"
 #include "session_bundle_dialog.hpp"
 #include "session_history_manager.hpp"
 #include "shortcuts_dialog.hpp"
@@ -31,14 +29,16 @@
 #include "theme_control.hpp"
 #include "uuid_utils.hpp"
 
+#include <loglib/ascii_case.hpp>
 #include <loglib/auto_detect_parser.hpp>
 #include <loglib/bytes_producer.hpp>
+#include <loglib/column_projection.hpp>
+#include <loglib/decompressing_byte_source.hpp>
 #include <loglib/enum_dictionary.hpp>
+#include <loglib/exports/export_sink.hpp>
+#include <loglib/exports/row_exporter.hpp>
 #include <loglib/file_line_source.hpp>
 #include <loglib/format_detection.hpp>
-#include <loglib/internal/ascii_case.hpp>
-#include <loglib/internal/decompressing_byte_source.hpp>
-#include <loglib/internal/stdin_peek.hpp>
 #include <loglib/log_configuration.hpp>
 #include <loglib/log_factory.hpp>
 #include <loglib/log_file.hpp>
@@ -52,6 +52,7 @@
 #include <loglib/rotation_siblings.hpp>
 #include <loglib/session_bundle.hpp>
 #include <loglib/stdin_bytes_producer.hpp>
+#include <loglib/stdin_peek.hpp>
 #include <loglib/stop_token.hpp>
 #include <loglib/stream_line_source.hpp>
 #include <loglib/tailing_bytes_producer.hpp>
@@ -438,11 +439,11 @@ BooleanFilterSides DecodeBooleanFilterSides(const std::vector<std::string> &filt
     BooleanFilterSides sides;
     for (const std::string &v : filterValues)
     {
-        if (loglib::internal::EqualsIgnoreCaseAscii(v, "true"))
+        if (loglib::EqualsIgnoreCaseAscii(v, "true"))
         {
             sides.includeTrue = true;
         }
-        else if (loglib::internal::EqualsIgnoreCaseAscii(v, "false"))
+        else if (loglib::EqualsIgnoreCaseAscii(v, "false"))
         {
             sides.includeFalse = true;
         }
@@ -4663,8 +4664,8 @@ void MainWindow::StreamNextPendingFile(LogSession *origin)
         // supported use-case, fold both into the async worker.
         // Preserve non-ASCII Windows paths during codec detection and open.
         const std::filesystem::path filePath = logapp::QStringToFsPath(file);
-        const auto codec = loglib::internal::DecompressingByteSource::SniffCodec(filePath);
-        if (codec != loglib::internal::DecompressingByteSource::Codec::None)
+        const auto codec = loglib::DecompressingByteSource::SniffCodec(filePath);
+        if (codec != loglib::DecompressingByteSource::Codec::None)
         {
             // Compressed: dispatch async so the GUI stays responsive.
             // The finished slot re-enters this function after the
@@ -4709,7 +4710,7 @@ bool MainWindow::ContinueOpenAfterPrepared(
     LogSession *origin,
     const QString &originalPath,
     const std::filesystem::path &effectivePath,
-    std::shared_ptr<loglib::internal::DecompressingByteSource> decompressionAnchor
+    std::shared_ptr<loglib::DecompressingByteSource> decompressionAnchor
 )
 {
     if (origin == nullptr)
@@ -4867,7 +4868,7 @@ bool MainWindow::ContinueOpenAfterPrepared(
 }
 
 void MainWindow::BeginAsyncDecompression(
-    LogSession *origin, const QString &originalPath, loglib::internal::DecompressingByteSource::Codec codec
+    LogSession *origin, const QString &originalPath, loglib::DecompressingByteSource::Codec codec
 )
 {
     if (origin == nullptr)
@@ -4892,7 +4893,7 @@ void MainWindow::BeginAsyncDecompression(
     // Pass the string_view size explicitly: `CodecName` currently
     // returns views over string literals, but NUL-termination is
     // not part of the string_view contract.
-    const std::string_view codecName = loglib::internal::CodecName(codec);
+    const std::string_view codecName = loglib::CodecName(codec);
     origin->SetDecompressionCodecName(QString::fromLatin1(codecName.data(), static_cast<qsizetype>(codecName.size())));
     origin->SetDecompressionStartedAt(std::chrono::steady_clock::now());
     // See `LogSession::IsDecompressionInFlight`: guards the
@@ -4931,7 +4932,7 @@ void MainWindow::BeginAsyncDecompression(
 
     // Bundle metadata stripping requires both the extension and zstd.
     const bool isSessionBundle =
-        IsSessionBundlePath(originalPath) && codec == loglib::internal::DecompressingByteSource::Codec::Zstd;
+        IsSessionBundlePath(originalPath) && codec == loglib::DecompressingByteSource::Codec::Zstd;
     // Convert on the GUI thread via `QStringToFsPath` so non-ASCII
     // bundle names survive the hop into the worker (see the
     // `file_size` note above).
@@ -4944,16 +4945,14 @@ void MainWindow::BeginAsyncDecompression(
     // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker,bugprone-exception-escape)
     auto future = QtConcurrent::run([input, sharedBytesIn, sharedTotal, stopToken, isSessionBundle]() {
         // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
-        auto progressCb = [sharedBytesIn, sharedTotal](const loglib::internal::DecompressingByteSource::Progress &p) {
+        auto progressCb = [sharedBytesIn, sharedTotal](const loglib::DecompressingByteSource::Progress &p) {
             // Relaxed: the GUI only needs a recent-enough snapshot.
             sharedBytesIn->storeRelaxed(static_cast<qint64>(p.bytesIn));
             sharedTotal->storeRelaxed(static_cast<qint64>(p.totalBytesIn));
         };
-        loglib::internal::DecompressingByteSource::Options options;
+        loglib::DecompressingByteSource::Options options;
         options.discardFirstLine = isSessionBundle;
-        return std::make_shared<loglib::internal::DecompressingByteSource>(
-            input, std::move(progressCb), stopToken, options
-        );
+        return std::make_shared<loglib::DecompressingByteSource>(input, std::move(progressCb), stopToken, options);
     });
 
     // Own our own watcher: `LogModel::mStreamingWatcher` asserts
@@ -5230,7 +5229,7 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
         return;
     }
 
-    std::shared_ptr<loglib::internal::DecompressingByteSource> dbs;
+    std::shared_ptr<loglib::DecompressingByteSource> dbs;
     std::optional<loglib::SessionBundleMetadata> bundleMetadata;
     QString errorEntry;
     bool cancelled = false;
@@ -5238,7 +5237,7 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
     {
         dbs = watcher->result();
     }
-    catch (const loglib::internal::DecompressionCancelled &)
+    catch (const loglib::DecompressionCancelled &)
     {
         cancelled = true;
     }
@@ -5394,7 +5393,7 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
     {
         const auto elapsed = std::chrono::steady_clock::now() - origin->DecompressionStartedAt();
         // Explicit size (see the matching site in `BeginAsyncDecompression`).
-        const std::string_view codecName = loglib::internal::CodecName(dbs->DetectedCodec());
+        const std::string_view codecName = loglib::CodecName(dbs->DetectedCodec());
         const QString msg = tr("Decompressed %1 (%2 \u2192 %3, %4) in %5")
                                 .arg(
                                     QFileInfo(origin->DecompressionOriginalPath()).fileName(),
@@ -5571,30 +5570,43 @@ void MainWindow::ExportFilteredRows()
     // `OnExportFinished` so a failed export (bad path, perms, disk
     // full) does not stick as the remembered directory.
 
-    std::vector<int> sourceRows = CollectExportSourceRows(config.selectionOnly);
+    const std::vector<int> qtSourceRows = CollectExportSourceRows(config.selectionOnly);
 
-    if (sourceRows.empty())
+    if (qtSourceRows.empty())
     {
         QMessageBox::information(this, tr("Export Filtered Rows"), tr("No rows match the current selection."));
         return;
     }
 
     // CSV / Markdown honour `includeHiddenColumns`; JSON /
-    // Snapshot are row-shape and ignore this vector.
+    // Snapshot are row-shape and ignore this vector. Hidden
+    // columns stay in the configuration; projection reads
+    // `Column::visible` only.
     std::vector<std::size_t> visibleColumns;
     const auto &configuration = mModel->Configuration();
-    visibleColumns.reserve(configuration.columns.size());
-    for (std::size_t i = 0; i < configuration.columns.size(); ++i)
+    if (config.includeHiddenColumns)
     {
-        if (config.includeHiddenColumns || configuration.columns[i].visible)
+        visibleColumns.resize(configuration.columns.size());
+        for (std::size_t i = 0; i < visibleColumns.size(); ++i)
         {
-            visibleColumns.push_back(i);
+            visibleColumns[i] = i;
         }
     }
+    else
+    {
+        visibleColumns = loglib::ColumnProjection(configuration).Indices();
+    }
 
-    auto plan = std::make_unique<slv::exports::ExportPlan>();
+    auto plan = std::make_unique<loglib::exports::ExportPlan>();
     plan->format = config.format;
-    plan->sourceRows = std::move(sourceRows);
+    plan->sourceRows.reserve(qtSourceRows.size());
+    for (const int row : qtSourceRows)
+    {
+        if (row >= 0)
+        {
+            plan->sourceRows.push_back(static_cast<std::size_t>(row));
+        }
+    }
     plan->visibleColumns = std::move(visibleColumns);
     plan->includeAllFieldsForJson = true; // v1: JSON always includes every field.
     plan->includeHeaderRow = config.includeHeaderRow;
@@ -5602,12 +5614,12 @@ void MainWindow::ExportFilteredRows()
     // Preserve non-ASCII filenames on Windows -- see `qstring_path.hpp`.
     plan->destination = logapp::QStringToFsPath(config.destination);
 
-    const QString formatLabel = QString::fromLatin1(slv::exports::LabelFor(config.format));
+    const QString formatLabel = ExportDialog::FormatLabel(config.format);
     BeginAsyncExport(std::move(plan), config.destination, formatLabel);
 }
 
 void MainWindow::BeginAsyncExport(
-    std::unique_ptr<slv::exports::ExportPlan> plan, const QString &destination, const QString &formatLabel
+    std::unique_ptr<loglib::exports::ExportPlan> plan, const QString &destination, const QString &formatLabel
 )
 {
     // Fresh per-run stop source so a leftover cancel from a prior
@@ -5640,11 +5652,11 @@ void MainWindow::BeginAsyncExport(
     // Share the plan + sink so the worker capture cannot race the
     // finished-slot re-reading its members. Build the sink up-front
     // so open failures surface synchronously.
-    const std::shared_ptr<slv::exports::ExportPlan> sharedPlan(std::move(plan));
-    std::shared_ptr<slv::exports::FileSink> sink;
+    const std::shared_ptr<loglib::exports::ExportPlan> sharedPlan(std::move(plan));
+    std::shared_ptr<loglib::exports::FileSink> sink;
     try
     {
-        sink = std::make_shared<slv::exports::FileSink>(sharedPlan->destination);
+        sink = std::make_shared<loglib::exports::FileSink>(sharedPlan->destination);
     }
     catch (const std::exception &e)
     {
@@ -5675,7 +5687,7 @@ void MainWindow::BeginAsyncExport(
     // reads on the next tick.
     // NOLINTNEXTLINE(clang-analyzer-webkit.UncountedLambdaCapturesChecker)
     auto future = QtConcurrent::run([sharedPlan, sink, stopToken, rowsWrittenAtomic]() {
-        auto exporter = slv::exports::MakeExporter(sharedPlan->format);
+        auto exporter = loglib::exports::MakeExporter(sharedPlan->format);
         if (exporter == nullptr)
         {
             throw std::runtime_error("Unsupported export format");
@@ -6144,7 +6156,7 @@ void MainWindow::OnExportFinishedFor(LogSession *origin)
         // is the documented idiom.
         watcher->waitForFinished();
     }
-    catch (const slv::exports::ExportCancelled &)
+    catch (const loglib::exports::ExportCancelled &)
     {
         cancelled = true;
     }
@@ -6687,7 +6699,7 @@ void MainWindow::OpenStdinStream()
 {
     // Refuse interactive stdin before the synchronous peek can
     // block the GUI thread.
-    if (loglib::internal::IsStdinInteractive())
+    if (loglib::IsStdinInteractive())
     {
         ShowParseErrors(
             tr("Error Opening Standard Input"),
@@ -6707,7 +6719,7 @@ void MainWindow::OpenStdinStream()
     // Cap the wait so slow producers cannot stall startup. Empty
     // or unmatched input defaults to JSON before streaming starts.
     constexpr auto STDIN_PEEK_TIMEOUT = std::chrono::milliseconds(500);
-    std::string peek = loglib::internal::StdinPeek(loglib::PROBE_BYTES_BUDGET, STDIN_PEEK_TIMEOUT);
+    std::string peek = loglib::StdinPeek(loglib::PROBE_BYTES_BUDGET, STDIN_PEEK_TIMEOUT);
 
     std::unique_ptr<loglib::StdinBytesProducer> producer;
     try
@@ -8748,9 +8760,9 @@ namespace
 {
 
 // Keep runtime-to-persistence source-mode coupling at one boundary.
-slv::persistence::SourceMode SourceModeFor(const LogSession *session)
+logapp::persistence::SourceMode SourceModeFor(const LogSession *session)
 {
-    using slv::persistence::SourceMode;
+    using logapp::persistence::SourceMode;
     if (session == nullptr)
     {
         return SourceMode::Empty;
@@ -8790,7 +8802,7 @@ slv::persistence::SourceMode SourceModeFor(const LogSession *session)
     {
         // Session was opened from an archive. Bundle sessions
         // additionally arm `ShouldApplyEmbeddedBundleConfig`.
-        return session->ShouldApplyEmbeddedBundleConfig() ? slv::persistence::SourceMode::Bundle
+        return session->ShouldApplyEmbeddedBundleConfig() ? logapp::persistence::SourceMode::Bundle
                                                           : SourceMode::Compressed;
     }
     if (src->locators.size() > 1)
@@ -8802,16 +8814,16 @@ slv::persistence::SourceMode SourceModeFor(const LogSession *session)
 
 } // namespace
 
-slv::persistence::WorkspaceWindow MainWindow::CaptureWorkspaceWindow() const
+logapp::persistence::WorkspaceWindow MainWindow::CaptureWorkspaceWindow() const
 {
-    slv::persistence::WorkspaceWindow snapshot;
+    logapp::persistence::WorkspaceWindow snapshot;
     snapshot.windowUuid = WorkspaceWindowUuid();
     snapshot.geometry = saveGeometry();
     snapshot.dockState = saveState();
     snapshot.activeTabIndex = (mTabWidget != nullptr) ? mTabWidget->currentIndex() : 0;
     for (const LogSession *session : hostedSessions())
     {
-        slv::persistence::WorkspaceTab tab;
+        logapp::persistence::WorkspaceTab tab;
         if (session != nullptr)
         {
             tab.sessionUuid = session->RestorableSessionUuid();
@@ -8831,7 +8843,7 @@ slv::persistence::WorkspaceWindow MainWindow::CaptureWorkspaceWindow() const
     return snapshot;
 }
 
-slv::persistence::WorkspaceWindow MainWindow::WorkspaceSnapshotForQuit() const
+logapp::persistence::WorkspaceWindow MainWindow::WorkspaceSnapshotForQuit() const
 {
     if (mQuitWorkspaceSnapshot.has_value())
     {
@@ -8840,7 +8852,7 @@ slv::persistence::WorkspaceWindow MainWindow::WorkspaceSnapshotForQuit() const
     return CaptureWorkspaceWindow();
 }
 
-void MainWindow::ApplyWorkspaceWindow(const slv::persistence::WorkspaceWindow &window, std::uint64_t generation)
+void MainWindow::ApplyWorkspaceWindow(const logapp::persistence::WorkspaceWindow &window, std::uint64_t generation)
 {
     // Adopt the persisted uuid so future publishes overwrite
     // rather than duplicate. Empty stays empty; a first-time
@@ -8895,7 +8907,7 @@ void MainWindow::ApplyWorkspaceWindow(const slv::persistence::WorkspaceWindow &w
             }
         };
         applyPersistedNames();
-        if (tab.restorePolicy == slv::persistence::RestorePolicy::Skip)
+        if (tab.restorePolicy == logapp::persistence::RestorePolicy::Skip)
         {
             // Slot reserved; no restore work. The tab stays empty
             // and keeps its captured label when one was saved.
@@ -8905,17 +8917,17 @@ void MainWindow::ApplyWorkspaceWindow(const slv::persistence::WorkspaceWindow &w
         // generation snapshot, falling back to recents. Network
         // and stdin tabs stay empty. Missing or corrupt snapshots
         // leave this tab empty and do not abort later tabs.
-        const bool isFilePath = tab.sourceMode == slv::persistence::SourceMode::File ||
-                                tab.sourceMode == slv::persistence::SourceMode::MultiFile ||
-                                tab.sourceMode == slv::persistence::SourceMode::Compressed ||
-                                tab.sourceMode == slv::persistence::SourceMode::Bundle ||
-                                tab.sourceMode == slv::persistence::SourceMode::LiveTailFile ||
-                                tab.sourceMode == slv::persistence::SourceMode::ConfigOnly;
+        const bool isFilePath = tab.sourceMode == logapp::persistence::SourceMode::File ||
+                                tab.sourceMode == logapp::persistence::SourceMode::MultiFile ||
+                                tab.sourceMode == logapp::persistence::SourceMode::Compressed ||
+                                tab.sourceMode == logapp::persistence::SourceMode::Bundle ||
+                                tab.sourceMode == logapp::persistence::SourceMode::LiveTailFile ||
+                                tab.sourceMode == logapp::persistence::SourceMode::ConfigOnly;
         if (!isFilePath || tab.sessionUuid.isEmpty())
         {
             continue;
         }
-        QString jsonPath = slv::persistence::WorkspacePersistence::SessionSnapshotPath(generation, tab.sessionUuid);
+        QString jsonPath = logapp::persistence::WorkspacePersistence::SessionSnapshotPath(generation, tab.sessionUuid);
         if (jsonPath.isEmpty() || !QFileInfo::exists(jsonPath))
         {
             jsonPath = (mHistoryManager != nullptr) ? mHistoryManager->PathForUuid(tab.sessionUuid) : QString{};

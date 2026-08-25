@@ -1,9 +1,9 @@
 #include "loglib/parsers/csv_parser.hpp"
 
+#include "loglib/compact_log_value.hpp"
 #include "loglib/file_line_source.hpp"
 #include "loglib/internal/advanced_parser_options.hpp"
 #include "loglib/internal/classify_bare_scalar.hpp"
-#include "loglib/internal/compact_log_value.hpp"
 #include "loglib/internal/csv_tokenize.hpp"
 #include "loglib/internal/line_decoder.hpp"
 #include "loglib/internal/probe_line_view.hpp"
@@ -153,7 +153,7 @@ void ParseCsvLine(
     size_t fileSize,
     std::string &ownedArena,
     std::string &quotedScratch,
-    std::vector<std::pair<KeyId, internal::CompactLogValue>> &out,
+    std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out,
     bool &outUnterminated,
     size_t &outRaggedExtra
 )
@@ -180,7 +180,7 @@ void ParseCsvLine(
             return;
         }
 
-        internal::CompactLogValue compact;
+        loglib::CompactLogValue compact;
         if (cell.wasQuoted)
         {
             if (cell.fromScratch)
@@ -188,7 +188,7 @@ void ParseCsvLine(
                 // Scratch bytes are reused per cell; copy into the arena.
                 const uint64_t offset = ownedArena.size();
                 ownedArena.append(cell.value.data(), cell.value.size());
-                compact = internal::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(cell.value.size()));
+                compact = loglib::CompactLogValue::MakeOwnedString(offset, static_cast<uint32_t>(cell.value.size()));
             }
             else
             {
@@ -266,7 +266,7 @@ void DecodeCsvBatch(
 
     size_t relativeLineNumber = 1;
 
-    std::vector<std::pair<KeyId, internal::CompactLogValue>> values;
+    std::vector<std::pair<KeyId, loglib::CompactLogValue>> values;
 
     while (cursor < end)
     {
@@ -373,7 +373,7 @@ public:
         std::string_view line,
         KeyIndex &keys,
         internal::PerWorkerKeyCache *keyCache,
-        std::vector<std::pair<KeyId, internal::CompactLogValue>> &out,
+        std::vector<std::pair<KeyId, loglib::CompactLogValue>> &out,
         std::string &outOwnedArena,
         std::string &errorOut
     )
@@ -648,7 +648,7 @@ void CsvParser::ParseStreaming(StreamLineSource &source, LogParseSink &sink, Par
 
 void CsvParser::ParseStreaming(FileLineSource &source, LogParseSink &sink, ParserOptions options) const
 {
-    ParseStreaming(source, sink, options, internal::AdvancedParserOptions{});
+    ParseStreaming(source, sink, options, internal::FromParserOptions(options));
 }
 
 void CsvParser::ParseStreaming(

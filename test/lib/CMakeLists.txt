@@ -15,9 +15,11 @@ add_executable(
     "src/benchmark_stream.cpp"
     "src/common.cpp"
     "src/test_auto_detect_parser.cpp"
+    "src/test_column_projection.cpp"
     "src/test_csv_parser.cpp"
     "src/test_decompressing_byte_source.cpp"
     "src/test_enum_dictionary.cpp"
+    "src/test_exports.cpp"
     "src/test_file_line_source.cpp"
     "src/test_format_detection.cpp"
     "src/test_histogram_bucket_index.cpp"
@@ -40,6 +42,7 @@ add_executable(
     "src/test_regex_template_io.cpp"
     "src/test_regex_templates.cpp"
     "src/test_rotation_siblings.cpp"
+    "src/test_row_ordering.cpp"
     "src/test_session_bundle.cpp"
     "src/test_stdin_bytes_producer.cpp"
     "src/test_stdin_peek.cpp"
@@ -49,6 +52,7 @@ add_executable(
     "src/test_tcp_server_producer.cpp"
     "src/test_theme.cpp"
     "src/test_udp_server_producer.cpp"
+    "src/test_user_timestamp.cpp"
 )
 
 # The TLS test programmatically generates a self-signed cert via
