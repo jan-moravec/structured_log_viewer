@@ -645,8 +645,7 @@ void WriteSessionBundle(
     embedded.source = LogConfiguration::Source{
         .kind = LogConfiguration::Source::Kind::File,
         .format = LogConfiguration::Source::Format::Json,
-        .locators = {displayLocator},
-        .locatorDedupKeys = {dedupLocator},
+        .locators = {{displayLocator, dedupLocator}},
         .regexPattern = {},
     };
 

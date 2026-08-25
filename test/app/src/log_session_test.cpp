@@ -681,12 +681,11 @@ private slots:
 
         loglib::LogConfiguration::Source src;
         src.kind = loglib::LogConfiguration::Source::Kind::File;
-        src.locators = {"logs/app.log"};
-        src.locatorDedupKeys = {"logs/app.log"};
+        src.locators = {{"logs/app.log", "logs/app.log"}};
         session.SetCurrentSource(src);
         QVERIFY(session.CurrentSource().has_value());
         QCOMPARE(session.CurrentSource()->locators.size(), std::size_t{1});
-        QCOMPARE(session.CurrentSource()->locators.front(), std::string{"logs/app.log"});
+        QCOMPARE(session.CurrentSource()->locators.front().displayPath, std::string{"logs/app.log"});
 
         session.MutableCurrentSource()->followRotationSiblings = true;
         QVERIFY(session.CurrentSource()->followRotationSiblings);

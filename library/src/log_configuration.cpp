@@ -96,6 +96,60 @@ int FirstTimeColumnIndex(const LogConfiguration &configuration)
     return -1;
 }
 
+void LogConfiguration::Source::ReplaceDisplayPaths(std::vector<std::string> paths)
+{
+    std::vector<SourceLocator> next(paths.size());
+    for (size_t i = 0; i < paths.size(); ++i)
+    {
+        next[i].displayPath = std::move(paths[i]);
+        if (i < locators.size())
+        {
+            next[i].dedupKey = std::move(locators[i].dedupKey);
+        }
+    }
+    locators = std::move(next);
+}
+
+void LogConfiguration::Source::ReplaceDedupKeys(std::vector<std::string> keys)
+{
+    if (locators.empty())
+    {
+        locators.resize(keys.size());
+        for (size_t i = 0; i < keys.size(); ++i)
+        {
+            locators[i].dedupKey = std::move(keys[i]);
+        }
+        return;
+    }
+    const size_t n = std::min(locators.size(), keys.size());
+    for (size_t i = 0; i < n; ++i)
+    {
+        locators[i].dedupKey = std::move(keys[i]);
+    }
+}
+
+std::vector<std::string> LogConfiguration::Source::DisplayPaths() const
+{
+    std::vector<std::string> paths;
+    paths.reserve(locators.size());
+    for (const SourceLocator &locator : locators)
+    {
+        paths.push_back(locator.displayPath);
+    }
+    return paths;
+}
+
+std::vector<std::string> LogConfiguration::Source::DedupKeys() const
+{
+    std::vector<std::string> keys;
+    keys.reserve(locators.size());
+    for (const SourceLocator &locator : locators)
+    {
+        keys.push_back(locator.dedupKey);
+    }
+    return keys;
+}
+
 } // namespace loglib
 
 namespace

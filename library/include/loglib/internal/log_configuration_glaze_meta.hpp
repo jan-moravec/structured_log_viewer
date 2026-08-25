@@ -69,15 +69,25 @@ template <> struct glz::meta<loglib::LogConfiguration::Source::Format>
 template <> struct glz::meta<loglib::LogConfiguration::Source>
 {
     using T = loglib::LogConfiguration::Source;
+
+    static constexpr auto readDisplayPaths = [](T &self, std::vector<std::string> paths) {
+        self.ReplaceDisplayPaths(std::move(paths));
+    };
+    static constexpr auto writeDisplayPaths = [](const T &self) { return self.DisplayPaths(); };
+    static constexpr auto readDedupKeys = [](T &self, std::vector<std::string> keys) {
+        self.ReplaceDedupKeys(std::move(keys));
+    };
+    static constexpr auto writeDedupKeys = [](const T &self) { return self.DedupKeys(); };
+
     static constexpr auto value = object(
         "kind",
         &T::kind,
         "format",
         &T::format,
         "locators",
-        &T::locators,
+        glz::custom<readDisplayPaths, writeDisplayPaths>,
         "locatorDedupKeys",
-        &T::locatorDedupKeys,
+        glz::custom<readDedupKeys, writeDedupKeys>,
         "regexPattern",
         &T::regexPattern,
         "followRotationSiblings",

@@ -266,8 +266,7 @@ TEST_CASE("session bundle metadata preserves investigation configuration and fla
     configuration.source = loglib::LogConfiguration::Source{
         .kind = loglib::LogConfiguration::Source::Kind::NetworkStream,
         .format = loglib::LogConfiguration::Source::Format::Regex,
-        .locators = {"tcp://127.0.0.1:9000"},
-        .locatorDedupKeys = {"tcp://127.0.0.1:9000"},
+        .locators = {{"tcp://127.0.0.1:9000", "tcp://127.0.0.1:9000"}},
         .regexPattern = "(?<service>.*)",
     };
     configuration.highlightRules = {
@@ -314,8 +313,8 @@ TEST_CASE("session bundle metadata preserves investigation configuration and fla
     // `locatorDedupKeys` use `internal::PathToUtf8()`, so this
     // default-options test expects them to match. The canonicalizer
     // contract is exercised in the dedicated test below.
-    CHECK(restored.source->locators == std::vector<std::string>{bundle.Path().string()});
-    CHECK(restored.source->locatorDedupKeys == std::vector<std::string>{bundle.Path().string()});
+    CHECK(restored.source->DisplayPaths() == std::vector<std::string>{bundle.Path().string()});
+    CHECK(restored.source->DedupKeys() == std::vector<std::string>{bundle.Path().string()});
     CHECK(restored.source->regexPattern.empty());
 }
 
@@ -340,8 +339,7 @@ TEST_CASE("session bundle rewrites Stdin source kind to File", "[SessionBundle]"
     configuration.source = loglib::LogConfiguration::Source{
         .kind = loglib::LogConfiguration::Source::Kind::Stdin,
         .format = loglib::LogConfiguration::Source::Format::Logfmt,
-        .locators = {"<stdin>"},
-        .locatorDedupKeys = {"<stdin>"},
+        .locators = {{"<stdin>", "<stdin>"}},
         .regexPattern = {},
     };
 
@@ -352,8 +350,8 @@ TEST_CASE("session bundle rewrites Stdin source kind to File", "[SessionBundle]"
 
     REQUIRE(restored.source.has_value());
     CHECK(restored.source->kind == loglib::LogConfiguration::Source::Kind::File);
-    CHECK(restored.source->locators == std::vector<std::string>{bundle.Path().string()});
-    CHECK(restored.source->locatorDedupKeys == std::vector<std::string>{bundle.Path().string()});
+    CHECK(restored.source->DisplayPaths() == std::vector<std::string>{bundle.Path().string()});
+    CHECK(restored.source->DedupKeys() == std::vector<std::string>{bundle.Path().string()});
 }
 
 TEST_CASE("session bundle uses canonicalizeSourceLocator for embedded source dedup key", "[SessionBundle]")
@@ -385,10 +383,10 @@ TEST_CASE("session bundle uses canonicalizeSourceLocator for embedded source ded
 
     REQUIRE(restored.source.has_value());
     // Display locator is unchanged (raw UTF-8 of the destination).
-    CHECK(restored.source->locators == std::vector<std::string>{bundle.Path().string()});
+    CHECK(restored.source->DisplayPaths() == std::vector<std::string>{bundle.Path().string()});
     // Dedup key runs through the callback, matching the shape
     // anchors are compared against.
-    CHECK(restored.source->locatorDedupKeys == std::vector<std::string>{"canonical://" + bundle.Path().string()});
+    CHECK(restored.source->DedupKeys() == std::vector<std::string>{"canonical://" + bundle.Path().string()});
 }
 
 TEST_CASE("session bundle anchors are densely remapped and detached anchors are dropped", "[SessionBundle]")

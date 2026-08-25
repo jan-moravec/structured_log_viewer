@@ -17,6 +17,14 @@ namespace loglib
 // Forward-declared so consumers don't pull in the full `log_data.hpp` chain.
 class LogData;
 
+/**
+ * @brief Serializable configuration root.
+ *
+ * Value groups live as named nested types: `Column` (schema), `Source` /
+ * `SourceLocator` (persisted source), `Sort` plus `expression` (view /
+ * session), `AnchorEntry`, and `HighlightRule`. They remain members of
+ * this root so on-disk JSON keys stay flat.
+ */
 struct LogConfiguration
 {
     /**
@@ -100,6 +108,38 @@ struct LogConfiguration
     };
 
     /**
+     * @brief One persisted source path: the display form the user sees and
+     * the normalised key used for equality.
+     *
+     * `displayPath` keeps original case and is what `QFile::open` consumes.
+     * `dedupKey` is the byte-equality form (lower-cased on Windows). Empty
+     * `dedupKey` after load means the JSON predated the split; the
+     * application backfills it via `BackfillLocatorDedupKeys`.
+     */
+    struct SourceLocator
+    {
+        std::string displayPath;
+        std::string dedupKey;
+
+        SourceLocator() = default;
+
+        /**
+         * @brief Converts a string literal so `.locators = {"path"}` compiles.
+         *
+         * `initializer_list` copy-initialization cannot chain
+         * `const char*` → `std::string` → `SourceLocator`.
+         */
+        SourceLocator(const char *display) : displayPath(display != nullptr ? display : "") {}
+
+        SourceLocator(std::string display, std::string dedup = {})
+            : displayPath(std::move(display)), dedupKey(std::move(dedup))
+        {
+        }
+
+        friend bool operator==(const SourceLocator &, const SourceLocator &) = default;
+    };
+
+    /**
      * @brief Persisted source descriptor. `nullopt` means "no source bound".
      * On load the app may re-open this; rebind failure is non-fatal
      * (columns and filters still apply). Legacy JSON using the
@@ -107,16 +147,10 @@ struct LogConfiguration
      * keeps the rest, courtesy of
      * `error_on_unknown_keys=false` (see `log_configuration_glaze_opts.hpp`).
      *
-     * `locators` and `locatorDedupKeys` are parallel arrays:
-     * - `locators[i]` is the human-facing path (original case;
-     *   what the user sees and what `QFile::open` consumes).
-     * - `locatorDedupKeys[i]` is the normalised dedup form
-     *   (lower-cased on Windows). Equality between locators is
-     *   compared on the dedup key.
-     *
-     * Mutate both vectors together via `AppendLocator` /
-     * `ClearLocators`; direct `push_back` on either alone breaks
-     * the invariant.
+     * Locators are stored as `SourceLocator` values so display path and
+     * dedup key cannot drift apart. JSON still uses the parallel
+     * `locators` / `locatorDedupKeys` arrays; glaze maps them through
+     * `ReplaceDisplayPaths` / `ReplaceDedupKeys`.
      */
     struct Source
     {
@@ -158,8 +192,7 @@ struct LogConfiguration
 
         Kind kind = Kind::File;
         Format format = Format::Json;
-        std::vector<std::string> locators;
-        std::vector<std::string> locatorDedupKeys;
+        std::vector<SourceLocator> locators;
         /**
          * @brief PCRE2 pattern with `(?<Name>...)` named capture groups.
          * Only meaningful when `format == Format::Regex`; empty
@@ -176,6 +209,29 @@ struct LogConfiguration
          * Missing values default to `true` for older configurations.
          */
         bool followRotationSiblings = true;
+
+        /**
+         * @brief Replaces display paths, keeping overlapping dedup keys.
+         *
+         * Display-path count is canonical. Used by JSON load; either
+         * field may arrive first.
+         */
+        void ReplaceDisplayPaths(std::vector<std::string> paths);
+
+        /**
+         * @brief Applies dedup keys by index.
+         *
+         * If locators are still empty, this stages keys until
+         * `ReplaceDisplayPaths` sets the count. Extra keys are ignored
+         * once display paths exist.
+         */
+        void ReplaceDedupKeys(std::vector<std::string> keys);
+
+        /** @brief Display paths in locator order, for JSON write. */
+        [[nodiscard]] std::vector<std::string> DisplayPaths() const;
+
+        /** @brief Dedup keys in locator order, for JSON write. */
+        [[nodiscard]] std::vector<std::string> DedupKeys() const;
     };
 
     /**
@@ -366,23 +422,33 @@ struct LogConfiguration
 }
 
 /**
- * @brief Append a locator, keeping `locators` and `locatorDedupKeys` in
- * lockstep. All call sites that mutate `Source::locators` MUST go
- * through this helper (or `ClearLocators`). @p dedupKey is taken
- * pre-computed because canonicalisation lives in the application
- * layer (the library has no Qt dependency).
+ * @brief Append a locator as a single `SourceLocator`. Call sites that
+ * add a source path go through this helper (or `ClearLocators`).
+ * @p dedupKey is taken pre-computed because canonicalisation lives in
+ * the application layer (the library has no Qt dependency).
  */
 inline void AppendLocator(LogConfiguration::Source &target, std::string displayPath, std::string dedupKey)
 {
-    target.locators.push_back(std::move(displayPath));
-    target.locatorDedupKeys.push_back(std::move(dedupKey));
+    target.locators.push_back(LogConfiguration::SourceLocator{std::move(displayPath), std::move(dedupKey)});
 }
 
-/** @brief Drop every locator, keeping the parallel arrays in lockstep. */
+/** @brief Drop every locator. */
 inline void ClearLocators(LogConfiguration::Source &target)
 {
     target.locators.clear();
-    target.locatorDedupKeys.clear();
+}
+
+/** @brief True when @p key matches any locator's dedup key. */
+[[nodiscard]] inline bool ContainsDedupKey(const LogConfiguration::Source &source, std::string_view key) noexcept
+{
+    for (const LogConfiguration::SourceLocator &locator : source.locators)
+    {
+        if (locator.dedupKey == key)
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 /**

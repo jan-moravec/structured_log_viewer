@@ -674,7 +674,7 @@ TEST_CASE(
     REQUIRE(reloadedFromFull.Configuration().source.has_value());
     CHECK(reloadedFromFull.Configuration().source->kind == LogConfiguration::Source::Kind::File);
     REQUIRE(reloadedFromFull.Configuration().source->locators.size() == 1);
-    CHECK(reloadedFromFull.Configuration().source->locators.front() == "C:/logs/app.json");
+    CHECK(reloadedFromFull.Configuration().source->locators.front().displayPath == "C:/logs/app.json");
 }
 
 TEST_CASE("LogConfiguration::Source round-trips both Kind variants", "[log_configuration][session][source]")
@@ -696,7 +696,7 @@ TEST_CASE("LogConfiguration::Source round-trips both Kind variants", "[log_confi
     REQUIRE(loaded.source.has_value());
     CHECK(loaded.source->kind == LogConfiguration::Source::Kind::NetworkStream);
     REQUIRE(loaded.source->locators.size() == 1);
-    CHECK(loaded.source->locators.front() == "tcp://127.0.0.1:5170");
+    CHECK(loaded.source->locators.front().displayPath == "tcp://127.0.0.1:5170");
 }
 
 TEST_CASE("LogConfiguration::Source round-trips a multi-file `File` descriptor", "[log_configuration][session][source]")
@@ -718,9 +718,9 @@ TEST_CASE("LogConfiguration::Source round-trips a multi-file `File` descriptor",
     REQUIRE(loaded.source.has_value());
     CHECK(loaded.source->kind == LogConfiguration::Source::Kind::File);
     REQUIRE(loaded.source->locators.size() == 3);
-    CHECK(loaded.source->locators[0] == "C:/logs/first.json");
-    CHECK(loaded.source->locators[1] == "C:/logs/second.json");
-    CHECK(loaded.source->locators[2] == "C:/logs/third.json");
+    CHECK(loaded.source->locators[0].displayPath == "C:/logs/first.json");
+    CHECK(loaded.source->locators[1].displayPath == "C:/logs/second.json");
+    CHECK(loaded.source->locators[2].displayPath == "C:/logs/third.json");
 }
 
 TEST_CASE("LogConfiguration::Source round-trips Format::Logfmt", "[log_configuration][session][source]")
@@ -745,7 +745,7 @@ TEST_CASE("LogConfiguration::Source round-trips Format::Logfmt", "[log_configura
     CHECK(loaded.source->kind == LogConfiguration::Source::Kind::File);
     CHECK(loaded.source->format == LogConfiguration::Source::Format::Logfmt);
     REQUIRE(loaded.source->locators.size() == 1);
-    CHECK(loaded.source->locators.front() == "C:/logs/app.logfmt");
+    CHECK(loaded.source->locators.front().displayPath == "C:/logs/app.logfmt");
 }
 
 TEST_CASE("Round-trip LeafRule with Type::Enumeration and filterValues", "[log_configuration][enum]")
@@ -1926,7 +1926,7 @@ TEST_CASE(
     REQUIRE(manager.Configuration().columns.size() == 1);
     CHECK(manager.Configuration().columns[0].header == "msg");
     REQUIRE(loglib::HasLocators(manager.Configuration().source));
-    CHECK(manager.Configuration().source->locators.front() == "C:/logs/example.json");
+    CHECK(manager.Configuration().source->locators.front().displayPath == "C:/logs/example.json");
 }
 
 TEST_CASE("Empty `locators` round-trips through Save / Load as an empty array", "[log_configuration][session][source]")
@@ -1976,6 +1976,59 @@ TEST_CASE(
     CHECK_FALSE(raw.contains("\"locator\" :"));
     CHECK(raw.contains("\"C:/logs/a.json\""));
     CHECK(raw.contains("\"C:/logs/b.json\""));
+}
+
+TEST_CASE("Source JSON zips locators with locatorDedupKeys regardless of key order", "[log_configuration][session][source]")
+{
+    auto load = [](std::string_view json) {
+        LogConfiguration loaded;
+        const auto error = glz::read_json(loaded, json);
+        REQUIRE_FALSE(error);
+        REQUIRE(loaded.source.has_value());
+        return std::move(loaded.source).value();
+    };
+
+    const auto displayFirst = load(
+        R"({"source":{"kind":"file","locators":["C:/A","C:/B"],"locatorDedupKeys":["c:/a","c:/b"]}})"
+    );
+    REQUIRE(displayFirst.locators.size() == 2);
+    CHECK(displayFirst.locators[0] == LogConfiguration::SourceLocator{"C:/A", "c:/a"});
+    CHECK(displayFirst.locators[1] == LogConfiguration::SourceLocator{"C:/B", "c:/b"});
+
+    const auto keysFirst = load(
+        R"({"source":{"kind":"file","locatorDedupKeys":["c:/a","c:/b"],"locators":["C:/A","C:/B"]}})"
+    );
+    REQUIRE(keysFirst.locators.size() == 2);
+    CHECK(keysFirst.locators[0] == LogConfiguration::SourceLocator{"C:/A", "c:/a"});
+    CHECK(keysFirst.locators[1] == LogConfiguration::SourceLocator{"C:/B", "c:/b"});
+
+    const auto missingKeys = load(R"({"source":{"kind":"file","locators":["C:/A"]}})");
+    REQUIRE(missingKeys.locators.size() == 1);
+    CHECK(missingKeys.locators[0].displayPath == "C:/A");
+    CHECK(missingKeys.locators[0].dedupKey.empty());
+
+    const auto extraKeys = load(
+        R"({"source":{"kind":"file","locators":["C:/A"],"locatorDedupKeys":["c:/a","extra"]}})"
+    );
+    REQUIRE(extraKeys.locators.size() == 1);
+    CHECK(extraKeys.locators[0] == LogConfiguration::SourceLocator{"C:/A", "c:/a"});
+}
+
+TEST_CASE("Source JSON write keeps parallel locators and locatorDedupKeys arrays", "[log_configuration][session][source]")
+{
+    LogConfiguration original;
+    original.source = LogConfiguration::Source{
+        .kind = LogConfiguration::Source::Kind::File,
+        .locators = {{"C:/Logs/App.json", "c:/logs/app.json"}},
+    };
+
+    std::string json;
+    const auto error = glz::write_json(original, json);
+    REQUIRE_FALSE(error);
+    CHECK(json.contains("\"locators\""));
+    CHECK(json.contains("\"locatorDedupKeys\""));
+    CHECK(json.contains("C:/Logs/App.json"));
+    CHECK(json.contains("c:/logs/app.json"));
 }
 
 TEST_CASE("HasLocators predicate exhaustively handles every Source state", "[log_configuration][session][source]")

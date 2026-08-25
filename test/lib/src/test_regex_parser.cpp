@@ -282,8 +282,7 @@ TEST_CASE("RegexParser pinned to empty pattern fails closed on the static path [
     config->source = LogConfiguration::Source{
         .kind = LogConfiguration::Source::Kind::File,
         .format = LogConfiguration::Source::Format::Regex,
-        .locators = {file.GetFilePath()},
-        .locatorDedupKeys = {file.GetFilePath()},
+        .locators = {{file.GetFilePath(), file.GetFilePath()}},
         .regexPattern = R"(^(?<level>\w+)\s+(?<message>.*)$)",
     };
 
@@ -1238,8 +1237,7 @@ TEST_CASE("RegexParser static overload with explicit pattern overrides configura
     config->source = LogConfiguration::Source{
         .kind = LogConfiguration::Source::Kind::File,
         .format = LogConfiguration::Source::Format::Regex,
-        .locators = {file.GetFilePath()},
-        .locatorDedupKeys = {file.GetFilePath()},
+        .locators = {{file.GetFilePath(), file.GetFilePath()}},
         // Deliberately wrong: if the overload ever falls back to
         // this pattern the columns would come out as (`k`, `v`)
         // and neither of the fixture lines would match at all.

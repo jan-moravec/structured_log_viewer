@@ -1530,8 +1530,7 @@ private slots:
         // `EnsureFreshActiveTab` from reuse to add).
         loglib::LogConfiguration::Source src;
         src.kind = loglib::LogConfiguration::Source::Kind::File;
-        src.locators = {std::string{"/tmp/pretend.log"}};
-        src.locatorDedupKeys = {std::string{"/tmp/pretend.log"}};
+        src.locators = {{std::string{"/tmp/pretend.log"}, std::string{"/tmp/pretend.log"}}};
         originalSession->MutableCurrentSource() = src;
 
         window.EnsureFreshActiveTab();
@@ -1568,22 +1567,21 @@ private slots:
         // sessions and no locator should leak.
         loglib::LogConfiguration::Source srcA;
         srcA.kind = loglib::LogConfiguration::Source::Kind::File;
-        srcA.locators = {std::string{"/tmp/a.log"}, std::string{"/tmp/a.log.1"}};
-        srcA.locatorDedupKeys = {std::string{"/tmp/a.log"}, std::string{"/tmp/a.log.1"}};
+        srcA.locators = {{std::string{"/tmp/a.log"}, std::string{"/tmp/a.log"}},
+                         {std::string{"/tmp/a.log.1"}, std::string{"/tmp/a.log.1"}}};
         sessionA->MutableCurrentSource() = srcA;
 
         loglib::LogConfiguration::Source srcB;
         srcB.kind = loglib::LogConfiguration::Source::Kind::File;
-        srcB.locators = {std::string{"/tmp/b.log"}};
-        srcB.locatorDedupKeys = {std::string{"/tmp/b.log"}};
+        srcB.locators = {{std::string{"/tmp/b.log"}, std::string{"/tmp/b.log"}}};
         sessionB->MutableCurrentSource() = srcB;
 
         QVERIFY(sessionA->CurrentSource().has_value());
         QVERIFY(sessionB->CurrentSource().has_value());
         QCOMPARE(sessionA->CurrentSource()->locators.size(), std::size_t{2});
         QCOMPARE(sessionB->CurrentSource()->locators.size(), std::size_t{1});
-        QCOMPARE(sessionA->CurrentSource()->locators.front(), std::string{"/tmp/a.log"});
-        QCOMPARE(sessionB->CurrentSource()->locators.front(), std::string{"/tmp/b.log"});
+        QCOMPARE(sessionA->CurrentSource()->locators.front().displayPath, std::string{"/tmp/a.log"});
+        QCOMPARE(sessionB->CurrentSource()->locators.front().displayPath, std::string{"/tmp/b.log"});
     }
 
     static void TestTwoStaticTabsHaveIndependentDirtyState()

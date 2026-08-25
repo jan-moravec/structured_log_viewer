@@ -652,7 +652,7 @@ QString SessionHistoryManager::BuildLabel(const loglib::LogConfiguration &config
         return QStringLiteral("(no source)");
     }
 
-    const QString primary = QString::fromStdString(configuration.source->locators.front());
+    const QString primary = QString::fromStdString(configuration.source->locators.front().displayPath);
     // Non-file locators are synthetic (URIs, `<stdin>`);
     // `QFileInfo::fileName()` would mangle them.
     QString primaryLabel;
@@ -684,7 +684,7 @@ RecentSessionEntry SessionHistoryManager::MakeEntryMetadata(const loglib::LogCon
     entry.label = BuildLabel(configuration);
     if (configuration.source.has_value() && !configuration.source->locators.empty())
     {
-        entry.primaryLocator = QString::fromStdString(configuration.source->locators.front());
+        entry.primaryLocator = QString::fromStdString(configuration.source->locators.front().displayPath);
         entry.fileCount = static_cast<int>(configuration.source->locators.size());
     }
     return entry;

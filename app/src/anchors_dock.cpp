@@ -151,15 +151,12 @@ constexpr int ANCHOR_KEY_LINE_ID_ROLE = Qt::UserRole + 2;
     {
         return QString::fromStdString(locator);
     }
-    const auto &dedupKeys = configurationSource->locatorDedupKeys;
-    const auto &displayPaths = configurationSource->locators;
-    // `min` guards against the two arrays desyncing.
-    const std::size_t count = std::min(dedupKeys.size(), displayPaths.size());
-    for (std::size_t i = 0; i < count; ++i)
+    const auto &entries = configurationSource->locators;
+    for (const auto &entry : entries)
     {
-        if (dedupKeys[i] == locator)
+        if (entry.dedupKey == locator)
         {
-            return QString::fromStdString(displayPaths[i]);
+            return QString::fromStdString(entry.displayPath);
         }
     }
     return QString::fromStdString(locator);

@@ -12700,7 +12700,7 @@ private slots:
         );
         QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators.front()),
+            QString::fromStdString(probe.Configuration().source->locators.front().displayPath),
             QString::fromStdString(syntheticSource)
         );
 
@@ -12723,7 +12723,7 @@ private slots:
             "Load -> Save round trip must preserve a loaded source descriptor"
         );
         QCOMPARE(resaveProbe.Configuration().source->locators.size(), static_cast<std::size_t>(1));
-        QCOMPARE(resaveProbe.Configuration().source->locators.front(), syntheticSource);
+        QCOMPARE(resaveProbe.Configuration().source->locators.front().displayPath, syntheticSource);
     }
 
     // `OpenMode::Append` keeps the active static session's rows / filters /
@@ -12780,20 +12780,20 @@ private slots:
         // lower-cased dedup form is parallel-indexed under
         // `locatorDedupKeys`. Assert both stay populated.
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[0]),
+            QString::fromStdString(probe.Configuration().source->locators[0].displayPath),
             logapp::CanonicalDisplayPath(fixtureA.Path())
         );
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[1]),
+            QString::fromStdString(probe.Configuration().source->locators[1].displayPath),
             logapp::CanonicalDisplayPath(fixtureB.Path())
         );
-        QCOMPARE(probe.Configuration().source->locatorDedupKeys.size(), static_cast<std::size_t>(2));
+        QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locatorDedupKeys[0]),
+            QString::fromStdString(probe.Configuration().source->locators[0].dedupKey),
             logapp::CanonicalLocator(fixtureA.Path())
         );
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locatorDedupKeys[1]),
+            QString::fromStdString(probe.Configuration().source->locators[1].dedupKey),
             logapp::CanonicalLocator(fixtureB.Path())
         );
     }
@@ -12903,9 +12903,9 @@ private slots:
         QVERIFY(probe.Configuration().source.has_value());
         const auto &locators = probe.Configuration().source->locators;
         QCOMPARE(locators.size(), static_cast<std::size_t>(3));
-        QCOMPARE(QString::fromStdString(locators[0]), logapp::CanonicalDisplayPath(olderPath));
-        QCOMPARE(QString::fromStdString(locators[1]), logapp::CanonicalDisplayPath(oldPath));
-        QCOMPARE(QString::fromStdString(locators[2]), logapp::CanonicalDisplayPath(primaryPath));
+        QCOMPARE(QString::fromStdString(locators[0].displayPath), logapp::CanonicalDisplayPath(olderPath));
+        QCOMPARE(QString::fromStdString(locators[1].displayPath), logapp::CanonicalDisplayPath(oldPath));
+        QCOMPARE(QString::fromStdString(locators[2].displayPath), logapp::CanonicalDisplayPath(primaryPath));
     }
 
     // The sibling toast names the expanded family, not the last input.
@@ -13261,7 +13261,7 @@ private slots:
         {
             const auto &source = mWindow->CurrentSourceForTest();
             QVERIFY(source.has_value());
-            QCOMPARE(source->locatorDedupKeys.size(), static_cast<std::size_t>(2));
+            QCOMPARE(source->locators.size(), static_cast<std::size_t>(2));
         }
 
         finishedSpy.clear();
@@ -13305,7 +13305,6 @@ private slots:
         spoof.kind = loglib::LogConfiguration::Source::Kind::File;
         spoof.format = loglib::LogConfiguration::Source::Format::Json;
         spoof.locators = {dir.filePath(QStringLiteral("unrelated.log")).toStdString()};
-        spoof.locatorDedupKeys = spoof.locators;
         spoof.followRotationSiblings = false;
         mWindow->SetCurrentSourceForTest(spoof);
 
@@ -13372,11 +13371,7 @@ private slots:
         const auto &source = mWindow->CurrentSourceForTest();
         QVERIFY(source.has_value());
         const std::string primaryKey = logapp::CanonicalLocator(primaryPath).toStdString();
-        const bool sawPrimary = std::any_of(
-            source->locatorDedupKeys.begin(), source->locatorDedupKeys.end(), [&primaryKey](const std::string &k) {
-                return k == primaryKey;
-            }
-        );
+        const bool sawPrimary = loglib::ContainsDedupKey(*source, primaryKey);
         QVERIFY2(sawPrimary, "promoted live tail must append primary to the source locators");
 
         mWindow->NewSessionForTest();
@@ -13443,11 +13438,7 @@ private slots:
         const auto &source = mWindow->CurrentSourceForTest();
         QVERIFY(source.has_value());
         const std::string primaryKey = logapp::CanonicalLocator(primaryPath).toStdString();
-        const bool sawPrimary = std::any_of(
-            source->locatorDedupKeys.begin(), source->locatorDedupKeys.end(), [&primaryKey](const std::string &k) {
-                return k == primaryKey;
-            }
-        );
+        const bool sawPrimary = loglib::ContainsDedupKey(*source, primaryKey);
         QVERIFY2(sawPrimary, "promoted live tail must append primary to the source locators");
 
         mWindow->NewSessionForTest();
@@ -13517,13 +13508,7 @@ private slots:
         const std::string primaryKey = logapp::CanonicalLocator(primaryPath).toStdString();
         const std::string otherKey = logapp::CanonicalLocator(otherPath).toStdString();
         const std::string siblingKey = logapp::CanonicalLocator(oldPath).toStdString();
-        const auto hasKey = [&source](const std::string &k) {
-            return std::any_of(
-                source->locatorDedupKeys.begin(), source->locatorDedupKeys.end(), [&k](const std::string &existing) {
-                    return existing == k;
-                }
-            );
-        };
+        const auto hasKey = [&source](const std::string &k) { return loglib::ContainsDedupKey(*source, k); };
         QVERIFY2(hasKey(primaryKey), "undo must resurrect the app.log primary");
         QVERIFY2(hasKey(otherKey), "undo must resurrect the other.log primary");
         QVERIFY2(!hasKey(siblingKey), "undo must not re-attach the sibling this time");
@@ -14080,18 +14065,12 @@ private slots:
         const std::string primaryKey = logapp::CanonicalLocator(primaryPath).toStdString();
         const std::string olderKey = logapp::CanonicalLocator(olderPath).toStdString();
         const std::string oldKey = logapp::CanonicalLocator(oldPath).toStdString();
-        const auto hasKey = [&source](const std::string &key) {
-            return std::any_of(
-                source->locatorDedupKeys.begin(), source->locatorDedupKeys.end(), [&key](const std::string &k) {
-                    return k == key;
-                }
-            );
-        };
+        const auto hasKey = [&source](const std::string &key) { return loglib::ContainsDedupKey(*source, key); };
         QVERIFY2(hasKey(primaryKey), "derotated live-tail must include the active primary");
         QVERIFY2(hasKey(olderKey), "picked segment must still appear in the historical prefix");
         QVERIFY2(hasKey(oldKey), "intermediate numbered sibling must be loaded");
         QCOMPARE(source->locators.size(), static_cast<std::size_t>(3));
-        QCOMPARE(QString::fromStdString(source->locators.back()), logapp::CanonicalDisplayPath(primaryPath));
+        QCOMPARE(QString::fromStdString(source->locators.back().displayPath), logapp::CanonicalDisplayPath(primaryPath));
 
         mWindow->NewSessionForTest();
         QCoreApplication::processEvents();
@@ -14134,8 +14113,8 @@ private slots:
         loglib::LogConfiguration::Source optedOut{
             .kind = loglib::LogConfiguration::Source::Kind::File,
             .format = loglib::LogConfiguration::Source::Format::Json,
-            .locators = {logapp::CanonicalDisplayPath(otherPath).toStdString()},
-            .locatorDedupKeys = {logapp::CanonicalLocator(otherPath).toStdString()},
+            .locators = {{logapp::CanonicalDisplayPath(otherPath).toStdString(),
+                          logapp::CanonicalLocator(otherPath).toStdString()}},
             .followRotationSiblings = false,
         };
         mWindow->SetCurrentSourceForTest(optedOut);
@@ -14150,8 +14129,8 @@ private slots:
 
         const auto &source = mWindow->CurrentSourceForTest();
         QVERIFY(source.has_value());
-        QCOMPARE(source->locatorDedupKeys.size(), static_cast<std::size_t>(1));
-        QCOMPARE(QString::fromStdString(source->locatorDedupKeys.front()), logapp::CanonicalLocator(primaryPath));
+        QCOMPARE(source->locators.size(), static_cast<std::size_t>(1));
+        QCOMPARE(QString::fromStdString(source->locators.front().dedupKey), logapp::CanonicalLocator(primaryPath));
 
         mWindow->NewSessionForTest();
         QCoreApplication::processEvents();
@@ -14265,11 +14244,11 @@ private slots:
         QVERIFY(probe.Configuration().source.has_value());
         QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[0]),
+            QString::fromStdString(probe.Configuration().source->locators[0].displayPath),
             logapp::CanonicalDisplayPath(fixtureA.Path())
         );
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[1]),
+            QString::fromStdString(probe.Configuration().source->locators[1].displayPath),
             logapp::CanonicalDisplayPath(fixtureB.Path())
         );
     }
@@ -14379,7 +14358,7 @@ private slots:
         QVERIFY(probe.Configuration().source.has_value());
         QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators.front()),
+            QString::fromStdString(probe.Configuration().source->locators.front().displayPath),
             logapp::CanonicalDisplayPath(fixtureB.Path())
         );
     }
@@ -14451,7 +14430,7 @@ private slots:
         QVERIFY(probe.Configuration().source.has_value());
         QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators.front()), logapp::CanonicalDisplayPath(path)
+            QString::fromStdString(probe.Configuration().source->locators.front().displayPath), logapp::CanonicalDisplayPath(path)
         );
         // Format sniff runs on the DECOMPRESSED bytes -- extension
         // (`.jsonl.gz`) must not fool the classifier.
@@ -14547,10 +14526,10 @@ private slots:
         QVERIFY(probe.Configuration().source.has_value());
         QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[0]), logapp::CanonicalDisplayPath(gzipPath)
+            QString::fromStdString(probe.Configuration().source->locators[0].displayPath), logapp::CanonicalDisplayPath(gzipPath)
         );
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[1]),
+            QString::fromStdString(probe.Configuration().source->locators[1].displayPath),
             logapp::CanonicalDisplayPath(appendFixture.Path())
         );
     }
@@ -14637,11 +14616,11 @@ private slots:
         QVERIFY(probe.Configuration().source.has_value());
         QCOMPARE(probe.Configuration().source->locators.size(), static_cast<std::size_t>(2));
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[0]),
+            QString::fromStdString(probe.Configuration().source->locators[0].displayPath),
             logapp::CanonicalDisplayPath(uncompressedFixture.Path())
         );
         QCOMPARE(
-            QString::fromStdString(probe.Configuration().source->locators[1]), logapp::CanonicalDisplayPath(gzipPath)
+            QString::fromStdString(probe.Configuration().source->locators[1].displayPath), logapp::CanonicalDisplayPath(gzipPath)
         );
     }
 
@@ -25149,7 +25128,7 @@ private slots:
         QVERIFY(probeA.Configuration().source.has_value());
         QCOMPARE(probeA.Configuration().source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probeA.Configuration().source->locators.front()),
+            QString::fromStdString(probeA.Configuration().source->locators.front().displayPath),
             logapp::CanonicalDisplayPath(fixtureA.Path())
         );
     }
@@ -25250,7 +25229,7 @@ private slots:
         QVERIFY(probeA.Configuration().source.has_value());
         QCOMPARE(probeA.Configuration().source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probeA.Configuration().source->locators.front()),
+            QString::fromStdString(probeA.Configuration().source->locators.front().displayPath),
             logapp::CanonicalDisplayPath(fixtureA.Path())
         );
     }
@@ -25331,7 +25310,7 @@ private slots:
         QVERIFY(probeA.Configuration().source.has_value());
         QCOMPARE(probeA.Configuration().source->locators.size(), static_cast<std::size_t>(1));
         QCOMPARE(
-            QString::fromStdString(probeA.Configuration().source->locators.front()),
+            QString::fromStdString(probeA.Configuration().source->locators.front().displayPath),
             logapp::CanonicalDisplayPath(fixtureA.Path())
         );
     }
@@ -25682,8 +25661,8 @@ private slots:
         const auto &source = wired->CurrentSourceForTest();
         QVERIFY(source.has_value());
         QCOMPARE(source->kind, loglib::LogConfiguration::Source::Kind::File);
-        QCOMPARE(source->locators, std::vector<std::string>{logapp::CanonicalDisplayPath(moved).toStdString()});
-        QCOMPARE(source->locatorDedupKeys, std::vector<std::string>{logapp::CanonicalLocator(moved).toStdString()});
+        QCOMPARE(source->DisplayPaths(), std::vector<std::string>{logapp::CanonicalDisplayPath(moved).toStdString()});
+        QCOMPARE(source->DedupKeys(), std::vector<std::string>{logapp::CanonicalLocator(moved).toStdString()});
         QVERIFY(!wired->windowTitle().contains(QStringLiteral("[Bundle]")));
         QCOMPARE(wired->Model()->Configuration().anchors.size(), static_cast<size_t>(1));
         // Anchor locators must match `Source::locatorDedupKeys`
