@@ -81,10 +81,12 @@ add_library(
 # test/lib translation units can still include them via BASE_DIRS;
 # they are not members of this set and must not be installed.
 set(LOGLIB_PUBLIC_HEADERS
+    include/loglib/anchor_entry.hpp
     include/loglib/ascii_case.hpp
     include/loglib/auto_detect_parser.hpp
     include/loglib/bytes_producer.hpp
     include/loglib/column_projection.hpp
+    include/loglib/column_schema.hpp
     include/loglib/compact_log_value.hpp
     include/loglib/decompressing_byte_source.hpp
     include/loglib/enum_dictionary.hpp
@@ -93,6 +95,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/file_line_source.hpp
     include/loglib/filter_expression.hpp
     include/loglib/format_detection.hpp
+    include/loglib/highlight_rule.hpp
     include/loglib/histogram_bucket_index.hpp
     include/loglib/key_index.hpp
     include/loglib/line_source.hpp
@@ -120,6 +123,8 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/rotation_siblings.hpp
     include/loglib/row_ordering.hpp
     include/loglib/session_bundle.hpp
+    include/loglib/session_view.hpp
+    include/loglib/source_descriptor.hpp
     include/loglib/stdin_bytes_producer.hpp
     include/loglib/stdin_peek.hpp
     include/loglib/stop_token.hpp

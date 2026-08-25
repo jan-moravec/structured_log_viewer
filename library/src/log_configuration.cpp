@@ -96,7 +96,7 @@ int FirstTimeColumnIndex(const LogConfiguration &configuration)
     return -1;
 }
 
-void LogConfiguration::Source::ReplaceDisplayPaths(std::vector<std::string> paths)
+void Source::ReplaceDisplayPaths(std::vector<std::string> paths)
 {
     std::vector<SourceLocator> next(paths.size());
     for (size_t i = 0; i < paths.size(); ++i)
@@ -110,7 +110,7 @@ void LogConfiguration::Source::ReplaceDisplayPaths(std::vector<std::string> path
     locators = std::move(next);
 }
 
-void LogConfiguration::Source::ReplaceDedupKeys(std::vector<std::string> keys)
+void Source::ReplaceDedupKeys(std::vector<std::string> keys)
 {
     if (locators.empty())
     {
@@ -128,7 +128,7 @@ void LogConfiguration::Source::ReplaceDedupKeys(std::vector<std::string> keys)
     }
 }
 
-std::vector<std::string> LogConfiguration::Source::DisplayPaths() const
+std::vector<std::string> Source::DisplayPaths() const
 {
     std::vector<std::string> paths;
     paths.reserve(locators.size());
@@ -139,7 +139,7 @@ std::vector<std::string> LogConfiguration::Source::DisplayPaths() const
     return paths;
 }
 
-std::vector<std::string> LogConfiguration::Source::DedupKeys() const
+std::vector<std::string> Source::DedupKeys() const
 {
     std::vector<std::string> keys;
     keys.reserve(locators.size());

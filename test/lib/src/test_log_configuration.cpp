@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -2012,6 +2013,23 @@ TEST_CASE("Source JSON zips locators with locatorDedupKeys regardless of key ord
     );
     REQUIRE(extraKeys.locators.size() == 1);
     CHECK(extraKeys.locators[0] == LogConfiguration::SourceLocator{"C:/A", "c:/a"});
+}
+
+TEST_CASE("LogConfiguration aliases extracted value groups", "[log_configuration]")
+{
+    STATIC_REQUIRE(std::is_same_v<LogConfiguration::Column, Column>);
+    STATIC_REQUIRE(std::is_same_v<LogConfiguration::Type, ColumnType>);
+    STATIC_REQUIRE(std::is_same_v<LogConfiguration::Source, Source>);
+    STATIC_REQUIRE(std::is_same_v<LogConfiguration::SourceLocator, SourceLocator>);
+    STATIC_REQUIRE(std::is_same_v<LogConfiguration::Sort, Sort>);
+    STATIC_REQUIRE(std::is_same_v<LogConfiguration::AnchorEntry, AnchorEntry>);
+    STATIC_REQUIRE(std::is_same_v<LogConfiguration::HighlightRule, HighlightRule>);
+
+    LogConfiguration configuration;
+    configuration.sort = Sort{.columnIndex = 0, .descending = true};
+    const SessionView view{.expression = configuration.expression, .sort = configuration.sort};
+    CHECK(view.sort.columnIndex == 0);
+    CHECK(view.sort.descending);
 }
 
 TEST_CASE("Source JSON write keeps parallel locators and locatorDedupKeys arrays", "[log_configuration][session][source]")
