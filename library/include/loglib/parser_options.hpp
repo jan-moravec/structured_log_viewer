@@ -1,6 +1,5 @@
 #pragma once
 
-#include "log_configuration.hpp"
 #include "stop_token.hpp"
 
 #include <cstddef>
@@ -10,16 +9,21 @@
 namespace loglib
 {
 
+struct LogConfiguration;
+
 /**
  * @brief Public options for `LogParser::ParseStreaming`.
  *
  * `threads` and `batchSizeBytes` tune the static-file TBB path.
  * `0` selects the library defaults (`min(hardware_concurrency, 8)`
- * threads and a 1 MiB Stage A batch).
+ * threads and a 1 MiB Stage A batch). `configuration` is a nullable
+ * shared pointer; this header forward-declares `LogConfiguration` so
+ * parse options do not pull in the full configuration definition.
  */
 struct ParserOptions
 {
     StopToken stopToken{};
+    /** @brief Optional immutable parse configuration. May be null. */
     std::shared_ptr<const LogConfiguration> configuration;
     /**
      * @brief Enables logfmt continuation folding.

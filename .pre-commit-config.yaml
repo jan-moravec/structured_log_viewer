@@ -44,11 +44,18 @@ repos:
       - id: codespell
         args: ["--ignore-words-list=merrors,worstcase"]
 
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.4
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
   - repo: local
     hooks:
       - id: no-loglib-internal-from-app
-        name: Forbid loglib/internal includes from app and test/app
+        name: Enforce loglib public/internal header policy
         language: python
         entry: python scripts/check-loglib-internal-includes.py
         pass_filenames: false
-        files: '^(app|test/app)/.*\.(h|hpp|cpp)$'
+        files: '^(app|test/app|test/consumer|library/include)/.*\.(h|hpp|cpp)$'

@@ -73,11 +73,91 @@ add_library(
     src/clang_tidy_stubs/theme_glaze_meta.cpp
 )
 
-target_include_directories(loglib PUBLIC ./include)
+# Supported v1 headers. This file set is the machine-readable public API:
+# CMake install/export rules consume it, and a configure-time check below
+# fails if it drifts from the non-internal headers on disk. Internal
+# headers stay under include/loglib/internal/ so in-tree library and
+# test/lib translation units can still include them via BASE_DIRS;
+# they are not members of this set and must not be installed.
+set(LOGLIB_PUBLIC_HEADERS
+    include/loglib/ascii_case.hpp
+    include/loglib/auto_detect_parser.hpp
+    include/loglib/bytes_producer.hpp
+    include/loglib/column_projection.hpp
+    include/loglib/compact_log_value.hpp
+    include/loglib/decompressing_byte_source.hpp
+    include/loglib/enum_dictionary.hpp
+    include/loglib/exports/export_sink.hpp
+    include/loglib/exports/row_exporter.hpp
+    include/loglib/file_line_source.hpp
+    include/loglib/filter_expression.hpp
+    include/loglib/format_detection.hpp
+    include/loglib/histogram_bucket_index.hpp
+    include/loglib/key_index.hpp
+    include/loglib/line_source.hpp
+    include/loglib/log_compare.hpp
+    include/loglib/log_configuration.hpp
+    include/loglib/log_data.hpp
+    include/loglib/log_factory.hpp
+    include/loglib/log_file.hpp
+    include/loglib/log_filter.hpp
+    include/loglib/log_level.hpp
+    include/loglib/log_line.hpp
+    include/loglib/log_parse_sink.hpp
+    include/loglib/log_parser.hpp
+    include/loglib/log_processing.hpp
+    include/loglib/log_table.hpp
+    include/loglib/log_value.hpp
+    include/loglib/parse_file.hpp
+    include/loglib/parser_options.hpp
+    include/loglib/parsers/csv_parser.hpp
+    include/loglib/parsers/json_parser.hpp
+    include/loglib/parsers/logfmt_parser.hpp
+    include/loglib/parsers/regex_parser.hpp
+    include/loglib/query_parser.hpp
+    include/loglib/regex_templates.hpp
+    include/loglib/rotation_siblings.hpp
+    include/loglib/row_ordering.hpp
+    include/loglib/session_bundle.hpp
+    include/loglib/stdin_bytes_producer.hpp
+    include/loglib/stdin_peek.hpp
+    include/loglib/stop_token.hpp
+    include/loglib/stream_line_source.hpp
+    include/loglib/tailing_bytes_producer.hpp
+    include/loglib/tcp_server_producer.hpp
+    include/loglib/theme.hpp
+    include/loglib/transparent_string_hash.hpp
+    include/loglib/udp_server_producer.hpp
+    include/loglib/user_timestamp.hpp
+)
+
+file(
+    GLOB_RECURSE _loglib_headers_on_disk
+    RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
+    CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/loglib/*.hpp"
+)
+list(TRANSFORM _loglib_headers_on_disk REPLACE "\\\\" "/")
+list(FILTER _loglib_headers_on_disk EXCLUDE REGEX "/internal/")
+set(_loglib_public_headers_sorted ${LOGLIB_PUBLIC_HEADERS})
+list(SORT _loglib_headers_on_disk)
+list(SORT _loglib_public_headers_sorted)
+if(NOT _loglib_headers_on_disk STREQUAL _loglib_public_headers_sorted)
+    message(
+        FATAL_ERROR
+        "LOGLIB_PUBLIC_HEADERS does not match non-internal headers under include/loglib/. "
+        "Update the supported header set in library/CMakeLists.txt."
+    )
+endif()
+
+target_sources(loglib PUBLIC FILE_SET HEADERS BASE_DIRS include FILES ${LOGLIB_PUBLIC_HEADERS})
 
 target_link_libraries(
     loglib
-    PUBLIC robin_map mio simdjson::simdjson glaze::glaze date::date date::date-tz fmt::fmt project_warnings
+    PUBLIC robin_map mio simdjson::simdjson glaze::glaze date::date date::date-tz fmt::fmt
+    # Repository warning flags stay PRIVATE so installing or consuming loglib
+    # does not export this project's `project_warnings` policy to downstream
+    # targets.
     # TBB is an implementation detail of the parallel JSON parsing pipeline; no public
     # loglib header exposes a TBB type, so link PRIVATE. Widen to PUBLIC if a future
     # public API ever returns a TBB type.
@@ -92,7 +172,16 @@ target_link_libraries(
     # for transparent decompression of the four canonical codecs. All codec
     # includes are confined to `library/src/decompressing_byte_source.cpp`;
     # no codec type appears in any public loglib header. PRIVATE link.
-    PRIVATE TBB::tbb efsw asio::asio PCRE2::pcre2-8 ZLIB::ZLIB BZip2::BZip2 LibLZMA::LibLZMA zstd::libzstd
+    PRIVATE
+        project_warnings
+        TBB::tbb
+        efsw
+        asio::asio
+        PCRE2::pcre2-8
+        ZLIB::ZLIB
+        BZip2::BZip2
+        LibLZMA::LibLZMA
+        zstd::libzstd
 )
 
 # Optional TLS support for `TcpServerProducer`. When enabled, define
