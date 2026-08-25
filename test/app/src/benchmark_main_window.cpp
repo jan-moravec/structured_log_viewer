@@ -32,6 +32,7 @@
 #include <loglib/parser_options.hpp>
 #include <loglib/parsers/json_parser.hpp>
 #include <loglib/stop_token.hpp>
+#include <loglib/time_zone_context.hpp>
 
 #include <test_common/log_format.hpp>
 #include <test_common/log_generator.hpp>
@@ -58,9 +59,9 @@
 namespace
 {
 
-// Walk the CWD ancestor chain for a `tzdata/` sibling and hand it to
-// `loglib::Initialize`. Mirrors the search the lib's `InitializeTimezoneData`
-// helper performs, minus the Catch2 dependency.
+// Walk the CWD ancestor chain for a `tzdata/` sibling and load it as
+// the process-default `TimeZoneContext`. Mirrors the search the lib's
+// `InitializeTimezoneData` helper performs, minus the Catch2 dependency.
 void StageTimezoneData()
 {
     static const auto TZ_DATA = std::filesystem::path("tzdata");
@@ -71,7 +72,7 @@ void StageTimezoneData()
         std::error_code ec;
         if (std::filesystem::exists(tzdataPath, ec))
         {
-            loglib::Initialize(tzdataPath);
+            loglib::SetProcessDefaultTimeZone(loglib::TimeZoneContext::Load(tzdataPath));
             return;
         }
         const auto parent = path.parent_path();

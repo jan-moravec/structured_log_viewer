@@ -102,6 +102,8 @@ private:
 
 void InitializeTimezoneData();
 
+[[nodiscard]] std::filesystem::path FindTestTzdata();
+
 /// Look up a shipped `loglib::RegexTemplate` by exact display name.
 /// Small linear scan (~30 entries, only used in test setup).
 /// Returns nullptr when @p name matches no built-in so the caller

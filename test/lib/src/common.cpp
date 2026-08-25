@@ -3,11 +3,11 @@
 #include <loglib/internal/log_configuration_glaze_meta.hpp>
 #include <loglib/log_file.hpp>
 #include <loglib/log_processing.hpp>
+#include <loglib/time_zone_context.hpp>
 
 #include <test_common/log_generator.hpp>
 
 #include <catch2/catch_all.hpp>
-#include <date/tz.h>
 
 #include <cassert>
 #include <cstdint>
@@ -258,21 +258,17 @@ std::unique_ptr<loglib::FileLineSource> TestLogFile::CreateFileLineSource() cons
     return std::make_unique<loglib::FileLineSource>(CreateLogFile());
 }
 
-void InitializeTimezoneData()
+std::filesystem::path FindTestTzdata()
 {
-    // Walk up the CWD ancestor chain for a sibling `tzdata/`. Both stop
-    // conditions are required: `parent.empty()` for POSIX root, and
-    // `parent == path` for Windows roots (`"C:\\"` is its own parent).
     static const auto TZ_DATA = std::filesystem::path("tzdata");
     std::filesystem::path path = std::filesystem::current_path();
     while (true)
     {
         const auto tzdataPath = path / TZ_DATA;
         std::error_code ec;
-        if (std::filesystem::exists(tzdataPath, ec))
+        if (std::filesystem::exists(tzdataPath, ec) && std::filesystem::is_directory(tzdataPath, ec))
         {
-            loglib::Initialize(tzdataPath);
-            return;
+            return tzdataPath;
         }
         const auto parent = path.parent_path();
         if (parent.empty() || parent == path)
@@ -283,11 +279,17 @@ void InitializeTimezoneData()
     }
 
     FAIL(
-        "InitializeTimezoneData(): no `tzdata` directory found along the "
+        "FindTestTzdata(): no `tzdata` directory found along the "
         "ancestor chain of the current working directory ("
         << std::filesystem::current_path().string()
         << "). Run the binary via `ctest --preset local` or invoke it from a "
            "directory whose ancestor chain contains the staged `tzdata/` "
            "(typically `build/<preset>/bin/<config>/`)."
     );
+    return {};
+}
+
+void InitializeTimezoneData()
+{
+    loglib::SetProcessDefaultTimeZone(loglib::TimeZoneContext::Load(FindTestTzdata()));
 }

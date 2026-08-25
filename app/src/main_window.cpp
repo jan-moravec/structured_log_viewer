@@ -3066,7 +3066,7 @@ bool MainWindow::InitializeTimezoneDatabase()
 
     try
     {
-        loglib::Initialize(tzdata);
+        loglib::SetProcessDefaultTimeZone(loglib::TimeZoneContext::Load(tzdata));
     }
     catch (std::exception &e)
     {

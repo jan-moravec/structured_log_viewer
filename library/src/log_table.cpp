@@ -3,9 +3,8 @@
 #include "loglib/compact_log_value.hpp"
 #include "loglib/file_line_source.hpp"
 #include "loglib/log_processing.hpp"
+#include "loglib/time_zone_context.hpp"
 
-#include <date/date.h>
-#include <date/tz.h>
 #include <fmt/format.h>
 
 #include <algorithm>
@@ -1597,7 +1596,7 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Typ
         // Leaving `Type::Time` -- drop the strftime formats we
         // seeded on entry so the new type's `fmt::vformat` doesn't
         // render them as literal text on every row. Existing
-        // `Timestamp` slots stay (they format via `date::format`)
+        // `Timestamp` slots stay (they format via `TimeZoneContext::Format`)
         // until something rewrites them.
         if (previousType == LogConfiguration::Type::Time)
         {
@@ -2193,8 +2192,7 @@ std::string LogTable::FormatLogValue(const std::string &format, const LogValue &
             }
             else if constexpr (std::is_same_v<T, TimeStamp>)
             {
-                const date::zoned_time localTime{CurrentZone(), std::chrono::round<std::chrono::milliseconds>(arg)};
-                return date::format(format, localTime);
+                return ProcessDefaultTimeZone().Format(arg, format);
             }
             else if constexpr (std::is_same_v<T, std::monostate>)
             {

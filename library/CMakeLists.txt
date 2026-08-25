@@ -52,6 +52,7 @@ add_library(
     src/log_line.cpp
     src/log_parser.cpp
     src/log_processing.cpp
+    src/time_zone_context.cpp
     src/user_timestamp.cpp
     src/log_table.cpp
     src/normalized_json_row.cpp
@@ -126,6 +127,7 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/tailing_bytes_producer.hpp
     include/loglib/tcp_server_producer.hpp
     include/loglib/theme.hpp
+    include/loglib/time_zone_context.hpp
     include/loglib/transparent_string_hash.hpp
     include/loglib/udp_server_producer.hpp
     include/loglib/user_timestamp.hpp

@@ -3,6 +3,7 @@
 #include <loglib/file_line_source.hpp>
 #include <loglib/key_index.hpp>
 #include <loglib/log_processing.hpp>
+#include <loglib/time_zone_context.hpp>
 
 #include <catch2/catch_all.hpp>
 #include <date/tz.h>
@@ -13,15 +14,16 @@
 
 using namespace loglib;
 
-TEST_CASE("Initialize function should throw an exception when an invalid path is provided", "[log_processing]")
+TEST_CASE("TimeZoneContext::Load throws when the tzdata path is invalid", "[log_processing]")
 {
     const auto invalidPath = std::filesystem::path("non_existent_path");
-    CHECK_THROWS_AS(Initialize(invalidPath), std::runtime_error);
+    CHECK_THROWS_AS(TimeZoneContext::Load(invalidPath), std::runtime_error);
 }
 
-TEST_CASE("Initialize function should correctly set up timezone database with a valid path", "[log_processing]")
+TEST_CASE("TimeZoneContext::Load accepts the staged tzdata directory", "[log_processing]")
 {
     InitializeTimezoneData();
+    CHECK_FALSE(ProcessDefaultTimeZone().IanaName().empty());
 }
 
 TEST_CASE("ParseTimestamps errors", "[log_processing]")
@@ -594,23 +596,18 @@ TEST_CASE("LocalMillisecondsSinceEpochToTimeStamp", "[log_processing]")
 }
 
 // `LocalMicrosecondsSinceEpochToUtc` under `Europe/Berlin` (a
-// pinned IANA zone rather than `CurrentZone()` for deterministic
-// CI). Covers ordinary, fall-back, spring-forward, null-zone,
+// pinned IANA zone rather than the process default for deterministic
+// CI). Covers ordinary, fall-back, spring-forward, UTC identity,
 // and far-future inputs.
 TEST_CASE("LocalMicrosecondsSinceEpochToUtc handles DST transitions", "[log_processing]")
 {
     InitializeTimezoneData();
+    const auto berlin = TimeZoneContext::Load(FindTestTzdata(), "Europe/Berlin");
+    CHECK(berlin.IanaName() == "Europe/Berlin");
 
     // Berlin DST 2024: spring forward 2024-03-31 02:00 -> 03:00
     // CEST (02:30 does not exist); fall back 2024-10-27 03:00 ->
     // 02:00 CET (02:30 exists twice).
-    const date::time_zone *berlin = date::locate_zone("Europe/Berlin");
-    REQUIRE(berlin != nullptr);
-
-    // Build a naive-as-if-UTC micros value from Y-M-D H:M:S,
-    // mirroring what the Goto Timestamp seam produces after a
-    // naive `date::parse`. Explicit `date::month{}` / `date::day{}`
-    // silences a clang-tidy narrowing warning.
     const auto naiveLocalMicros = [](int year, unsigned month, unsigned day, int hour, int minute, int second) {
         const auto ymd = date::year{year} / date::month{month} / date::day{day};
         const auto sysDays = date::sys_days{ymd};
@@ -651,10 +648,10 @@ TEST_CASE("LocalMicrosecondsSinceEpochToUtc handles DST transitions", "[log_proc
         CHECK(got == transitionBoundaryUtc);
     }
 
-    SECTION("Null zone passes the value through unchanged")
+    SECTION("UTC context passes the value through unchanged")
     {
         const int64_t localMicros = naiveLocalMicros(2024, 4, 1, 12, 0, 0);
-        const int64_t got = LocalMicrosecondsSinceEpochToUtc(localMicros, nullptr);
+        const int64_t got = LocalMicrosecondsSinceEpochToUtc(localMicros, TimeZoneContext::Utc());
         CHECK(got == localMicros);
     }
 
@@ -669,6 +666,26 @@ TEST_CASE("LocalMicrosecondsSinceEpochToUtc handles DST transitions", "[log_proc
         constexpr int64_t MAX_ZONE_OFFSET_MICROS = 14LL * 3600LL * 1'000'000LL;
         CHECK(std::llabs(gotFuture - farFutureMicros) <= MAX_ZONE_OFFSET_MICROS);
     }
+}
+
+TEST_CASE("TimeZoneContext::Load throws for an unavailable zone", "[log_processing]")
+{
+    InitializeTimezoneData();
+    CHECK_THROWS_AS(TimeZoneContext::Load(FindTestTzdata(), "Not/ARealZone"), std::runtime_error);
+}
+
+TEST_CASE("TryParseSyslogRfc3164Timestamp year rollover uses the reference instant", "[log_processing][syslog_rfc3164_fast_path]")
+{
+    TimeStamp out{};
+    const auto january = std::chrono::sys_days{date::year{2026} / date::January / 15};
+    REQUIRE(TryParseSyslogRfc3164Timestamp("Dec 31 23:59:59", out, january));
+    const date::year_month_day ymdJan{date::floor<date::days>(out)};
+    CHECK(static_cast<int>(ymdJan.year()) == 2025);
+
+    const auto december = std::chrono::sys_days{date::year{2026} / date::December / 15};
+    REQUIRE(TryParseSyslogRfc3164Timestamp("Dec 31 23:59:59", out, december));
+    const date::year_month_day ymdDec{date::floor<date::days>(out)};
+    CHECK(static_cast<int>(ymdDec.year()) == 2026);
 }
 
 TEST_CASE("UtcMicrosecondsToDateTimeString", "[log_processing]")

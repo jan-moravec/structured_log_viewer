@@ -7,9 +7,7 @@
 #include <loglib/log_level.hpp>
 #include <loglib/log_processing.hpp>
 #include <loglib/log_value.hpp>
-
-#include <date/date.h>
-#include <date/tz.h>
+#include <loglib/time_zone_context.hpp>
 
 #include <QBrush>
 #include <QColor>
@@ -161,14 +159,14 @@ QColor ColorForLevel(const ThemeControl *theme, loglib::LogLevel level)
     return "%F %T";
 }
 
-/// Render @p ts as a local-time string using the same
-/// `date::CurrentZone` / `date::format` pipeline the table uses.
-/// Rounds to whole seconds (finest rung is 1 s).
+/// Render @p ts as a local-time string using the same timezone
+/// context and format pipeline the table uses. Rounds to whole
+/// seconds (finest rung is 1 s).
 QString FormatLocalTimestampForZoom(loglib::TimeStamp ts, loglib::HistogramBucketSize size)
 {
     const auto seconds = std::chrono::floor<std::chrono::seconds>(ts);
-    const date::zoned_time localTime{loglib::CurrentZone(), seconds};
-    const std::string formatted = date::format(DateFormatForZoom(size), localTime);
+    const loglib::TimeStamp secondStamp = std::chrono::time_point_cast<std::chrono::microseconds>(seconds);
+    const std::string formatted = loglib::ProcessDefaultTimeZone().Format(secondStamp, DateFormatForZoom(size));
     return QString::fromStdString(formatted);
 }
 
