@@ -19,9 +19,8 @@ namespace loglib
  * formatting. Construction is the only point that can fail; later calls
  * do not depend on a separate `Initialize` step.
  *
- * Howard Hinnant `date` installs tzdata process-wide. `Load` with
- * conflicting tzdata paths in one process is unsupported. The selected
- * zone is per context.
+ * Installing tzdata is process-wide. `Load` with conflicting tzdata
+ * paths in one process is unsupported. The selected zone is per context.
  *
  * A default-constructed context is UTC and does not require tzdata.
  * `SetProcessDefaultTimeZone` is a documented process-wide convenience
@@ -38,7 +37,7 @@ public:
      * @brief Loads tzdata from @p tzdataPath and selects the system zone.
      *
      * @param tzdataPath Directory containing IANA tzdata. Must exist.
-     * @return Context bound to `date::current_zone()`.
+     * @return Context bound to the host's current IANA zone.
      * @throws std::runtime_error if the path is invalid or the zone cannot
      *     be resolved.
      */
@@ -88,7 +87,7 @@ public:
      */
     [[nodiscard]] TimeStamp LocalMillisecondsToUtc(std::int64_t milliseconds) const;
 
-    /** @brief Formats @p timeStamp in this zone with `date::format`. */
+    /** @brief Formats @p timeStamp in this zone using @p format. */
     [[nodiscard]] std::string Format(TimeStamp timeStamp, std::string_view format) const;
 
     /** @brief Formats UTC microseconds as `%F %T` local time in this zone. */

@@ -66,6 +66,8 @@ endif()
 target_include_directories(tests PRIVATE include)
 
 # TBB linked directly here for the concurrent KeyIndex test; loglib keeps it PRIVATE.
+# fmt is linked directly so TUs that include `loglib/internal/**` pipeline headers
+# (which use `fmt::format`) still see the header. loglib keeps fmt PRIVATE.
 # The compression codecs are linked directly too so the decompression tests can
 # build reference compressed fixtures with the same libraries loglib decodes.
 target_link_libraries(
@@ -76,6 +78,7 @@ target_link_libraries(
         Catch2::Catch2WithMain
         project_warnings
         TBB::tbb
+        fmt::fmt
         ZLIB::ZLIB
         BZip2::BZip2
         LibLZMA::LibLZMA

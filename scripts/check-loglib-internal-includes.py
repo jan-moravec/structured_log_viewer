@@ -2,7 +2,8 @@
 
 library/src and test/lib may include internals. Supported headers,
 app/, test/app/, and test/consumer/ must not. Supported headers must
-also stay Qt-free.
+also stay Qt-free and must not include implementation libraries
+(`mio`, `date`, simdjson, glaze, fmt, TBB, PCRE2).
 """
 
 from __future__ import annotations
@@ -21,6 +22,10 @@ INTERNAL_INCLUDE_RE = re.compile(
     re.M,
 )
 QT_INCLUDE_RE = re.compile(r"^\s*#\s*include\s*<Q(?:t)?[A-Za-z0-9_/]+>", re.M)
+VENDOR_INCLUDE_RE = re.compile(
+    r"^\s*#\s*include\s*[<\"](?:mio/|date/|simdjson|glaze/|fmt/|oneapi/|pcre2)[^>\"]*[>\"]",
+    re.M,
+)
 
 
 def iter_sources(tree: Path) -> list[Path]:
@@ -58,6 +63,8 @@ def main() -> int:
             violations.append(f"{rel(path)}: supported header includes loglib/internal")
         if QT_INCLUDE_RE.search(text):
             violations.append(f"{rel(path)}: supported header includes a Qt header")
+        if VENDOR_INCLUDE_RE.search(text):
+            violations.append(f"{rel(path)}: supported header includes an implementation library")
 
     if violations:
         print("loglib public/internal header policy violations:", file=sys.stderr)

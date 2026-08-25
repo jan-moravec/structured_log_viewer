@@ -156,10 +156,18 @@ target_sources(loglib PUBLIC FILE_SET HEADERS BASE_DIRS include FILES ${LOGLIB_P
 
 target_link_libraries(
     loglib
-    PUBLIC robin_map mio simdjson::simdjson glaze::glaze date::date date::date-tz fmt::fmt
+    # tsl::robin_map appears in `enum_dictionary.hpp`; it is the remaining
+    # third-party type in the supported header set.
+    PUBLIC robin_map
     # Repository warning flags stay PRIVATE so installing or consuming loglib
     # does not export this project's `project_warnings` policy to downstream
     # targets.
+    # mio backs `LogFile` mapping; the public header holds an incomplete
+    # `Mapping` type, so mio stays PRIVATE.
+    # date/tz backs `TimeZoneContext` and timestamp parsing; no `date::`
+    # type appears in supported signatures.
+    # simdjson, glaze, and fmt are confined to implementation files and
+    # `loglib/internal/**`.
     # TBB is an implementation detail of the parallel JSON parsing pipeline; no public
     # loglib header exposes a TBB type, so link PRIVATE. Widen to PUBLIC if a future
     # public API ever returns a TBB type.
@@ -176,6 +184,12 @@ target_link_libraries(
     # no codec type appears in any public loglib header. PRIVATE link.
     PRIVATE
         project_warnings
+        mio
+        simdjson::simdjson
+        glaze::glaze
+        date::date
+        date::date-tz
+        fmt::fmt
         TBB::tbb
         efsw
         asio::asio
@@ -185,6 +199,12 @@ target_link_libraries(
         LibLZMA::LibLZMA
         zstd::libzstd
 )
+
+if(WIN32)
+    # Public headers call `std::numeric_limits<T>::max()`. Windows headers
+    # otherwise define `max` as a macro and break those includes.
+    target_compile_definitions(loglib PUBLIC NOMINMAX)
+endif()
 
 # Optional TLS support for `TcpServerProducer`. When enabled, define
 # `LOGLIB_HAS_TLS` PUBLICly so downstream targets (test/lib's TLS test,
