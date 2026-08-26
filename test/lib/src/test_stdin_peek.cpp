@@ -178,24 +178,24 @@ TEST_CASE("StdinPeek bytes + DetectFormatFromBytes agree with DetectFormatForPat
     {
         std::string_view label;
         std::string_view bytes;
-        loglib::LogConfiguration::Source::Format expected;
+        loglib::Source::Format expected;
     };
     const Sample samples[] = {
         {.label = "json",
          .bytes = R"({"level":"info","message":"first"}
 {"level":"warn","message":"second"}
 )",
-         .expected = loglib::LogConfiguration::Source::Format::Json},
+         .expected = loglib::Source::Format::Json},
         {.label = "logfmt",
          .bytes = "level=info msg=first\nlevel=warn msg=second\n",
-         .expected = loglib::LogConfiguration::Source::Format::Logfmt},
+         .expected = loglib::Source::Format::Logfmt},
         {.label = "csv",
          .bytes = "level,message\ninfo,first\nwarn,second\n",
-         .expected = loglib::LogConfiguration::Source::Format::Csv},
+         .expected = loglib::Source::Format::Csv},
         {.label = "regex-syslog",
          .bytes = "Apr 28 04:02:03 host-a systemd: System starting\n"
                   "Jun 27 01:47:20 host-b configd[17]: network changed\n",
-         .expected = loglib::LogConfiguration::Source::Format::Regex},
+         .expected = loglib::Source::Format::Regex},
     };
 
     for (const Sample &s : samples)

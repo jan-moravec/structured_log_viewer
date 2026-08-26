@@ -152,7 +152,7 @@ namespace
 // Detect filters that cannot bind to the current columns.
 // NOLINTNEXTLINE(misc-no-recursion): mutually recursive with std::visit lambdas below.
 [[nodiscard]] bool FilterHasUnresolvedLeaves(
-    const loglib::FilterExpression &expression, const std::vector<loglib::LogConfiguration::Column> &columns
+    const loglib::FilterExpression &expression, const std::vector<loglib::Column> &columns
 )
 {
     return std::visit(
@@ -495,11 +495,11 @@ QString FilterValidationReasonString(FilterValidationReason reason)
 
 // Validate saved leaves before load or editing; nullopt means valid.
 std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
-    const loglib::LeafRule &filter, const std::vector<loglib::LogConfiguration::Column> &columns
+    const loglib::LeafRule &filter, const std::vector<loglib::Column> &columns
 )
 {
     using LeafType = loglib::LeafRule::Type;
-    using ColumnType = loglib::LogConfiguration::Type;
+    using ColumnType = loglib::ColumnType;
 
     const int resolvedRow = ResolveLeafColumnByKeys(filter.columnKeys, columns);
     if (resolvedRow < 0)
@@ -585,7 +585,7 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
 
 // Extract stable column keys; out-of-range rows produce an inert empty key set.
 [[nodiscard]] std::vector<std::string> ColumnKeysForRow(
-    int rowIndex, const std::vector<loglib::LogConfiguration::Column> &columns
+    int rowIndex, const std::vector<loglib::Column> &columns
 )
 {
     if (rowIndex < 0 || static_cast<size_t>(rowIndex) >= columns.size())
@@ -1818,7 +1818,7 @@ void MainWindow::OpenHighlightRulesEditor()
             mHighlightRulesEditor.data(),
             &HighlightRulesEditor::rulesSaved,
             this,
-            [this](std::vector<loglib::LogConfiguration::HighlightRule> rules) {
+            [this](std::vector<loglib::HighlightRule> rules) {
                 LogSession *origin = mHighlightRulesEditorSession.data();
                 if (origin == nullptr || HostedSession(origin->InstanceId()) != origin || origin->Model() == nullptr)
                 {
@@ -3667,7 +3667,7 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
     // analyser cannot trace through the helper.
     // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     const auto &source = *mSession->MutableCurrentSource();
-    if (source.kind != loglib::LogConfiguration::Source::Kind::File)
+    if (source.kind != loglib::Source::Kind::File)
     {
         // Network and stdin locators cannot be reopened. Stdin can
         // still reach this branch through a manually created or older bundle.
@@ -3677,7 +3677,7 @@ void MainWindow::StreamFromCurrentSourceOrSkip(bool informIfNonFile)
             if (!mSuppressDialogsForTest)
 #endif
             {
-                const bool isStdin = source.kind == loglib::LogConfiguration::Source::Kind::Stdin;
+                const bool isStdin = source.kind == loglib::Source::Kind::Stdin;
                 const QString title =
                     isStdin ? QStringLiteral("Standard Input Session") : QStringLiteral("Network Stream Session");
                 const QString body =
@@ -4785,8 +4785,8 @@ bool MainWindow::ContinueOpenAfterPrepared(
     if (isFirstFileInSession)
     {
         DetectedFormat detected = DetectFormatForPath(effectivePath);
-        currentSource = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File,
+        currentSource = loglib::Source{
+            .kind = loglib::Source::Kind::File,
             .format = detected.format,
             .locators = {{displayPath, dedupKey}},
             .regexPattern = std::move(detected.regexPattern),
@@ -4798,7 +4798,7 @@ bool MainWindow::ContinueOpenAfterPrepared(
             SyncRotationHistoryActionCheckedState();
         }
     }
-    else if (currentSource.has_value() && currentSource->kind == loglib::LogConfiguration::Source::Kind::File)
+    else if (currentSource.has_value() && currentSource->kind == loglib::Source::Kind::File)
     {
         const bool alreadyPresent = loglib::ContainsDedupKey(*currentSource, dedupKey);
         if (!alreadyPresent)
@@ -5322,7 +5322,7 @@ void MainWindow::OnDecompressionFinishedFor(LogSession *origin)
         {
             embedded.source.emplace();
         }
-        embedded.source->kind = loglib::LogConfiguration::Source::Kind::File;
+        embedded.source->kind = loglib::Source::Kind::File;
         loglib::ClearLocators(*embedded.source);
         loglib::AppendLocator(*embedded.source, displayPath, dedupKey);
         // Anchors use the same canonical locator as source deduplication.
@@ -6491,8 +6491,8 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
         const std::string displayPath = logapp::CanonicalDisplayPath(tailPath).toStdString();
         const std::string dedupKey = logapp::CanonicalLocator(tailPath).toStdString();
         DetectedFormat detected = DetectFormatForPath(filePath);
-        currentSource = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File,
+        currentSource = loglib::Source{
+            .kind = loglib::Source::Kind::File,
             .format = detected.format,
             .locators = {{displayPath, dedupKey}},
             .regexPattern = std::move(detected.regexPattern),
@@ -6519,8 +6519,8 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     // Wrap the producer in a `StreamLineSource` so each `LogLine` can
     // resolve its bytes via `LineSource::RawLine` later.
     auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(source));
-    const loglib::LogConfiguration::Source::Format format =
-        currentSource ? currentSource->format : loglib::LogConfiguration::Source::Format::Json;
+    const loglib::Source::Format format =
+        currentSource ? currentSource->format : loglib::Source::Format::Json;
     std::string regexPattern = currentSource ? currentSource->regexPattern : std::string{};
     auto parserFactory = [format, regexPattern = std::move(regexPattern)]() {
         return MakeParserForFormat(format, regexPattern);
@@ -6597,7 +6597,7 @@ void MainWindow::ContinueLiveTailAfterPrefix(LogSession *origin)
     auto &currentSource = origin->MutableCurrentSource();
     // Append the primary onto the session's locator list so the
     // full [siblings..., primary] set persists.
-    if (currentSource.has_value() && currentSource->kind == loglib::LogConfiguration::Source::Kind::File)
+    if (currentSource.has_value() && currentSource->kind == loglib::Source::Kind::File)
     {
         const bool alreadyPresent = loglib::ContainsDedupKey(*currentSource, dedupKey);
         if (!alreadyPresent)
@@ -6609,8 +6609,8 @@ void MainWindow::ContinueLiveTailAfterPrefix(LogSession *origin)
     {
         // No sibling seeded a source; detect and seed from the primary.
         DetectedFormat detected = DetectFormatForPath(filePath);
-        currentSource = loglib::LogConfiguration::Source{
-            .kind = loglib::LogConfiguration::Source::Kind::File,
+        currentSource = loglib::Source{
+            .kind = loglib::Source::Kind::File,
             .format = detected.format,
             .locators = {{displayPath, dedupKey}},
             .regexPattern = std::move(detected.regexPattern),
@@ -6656,8 +6656,8 @@ void MainWindow::ContinueLiveTailAfterPrefix(LogSession *origin)
     options.configuration = std::move(cfg);
 
     auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(producer));
-    const loglib::LogConfiguration::Source::Format format =
-        currentSource ? currentSource->format : loglib::LogConfiguration::Source::Format::Json;
+    const loglib::Source::Format format =
+        currentSource ? currentSource->format : loglib::Source::Format::Json;
     std::string regexPattern = currentSource ? currentSource->regexPattern : std::string{};
     auto parserFactory = [format, regexPattern = std::move(regexPattern)]() {
         return MakeParserForFormat(format, regexPattern);
@@ -6801,8 +6801,8 @@ void MainWindow::OpenStdinStreamFromProducer(std::unique_ptr<loglib::BytesProduc
     const loglib::DetectedFormat detected = loglib::DetectFormatFromBytes(peek);
     const auto format = detected.format;
     std::string regexPattern = detected.regexPattern;
-    mSession->MutableCurrentSource() = loglib::LogConfiguration::Source{
-        .kind = loglib::LogConfiguration::Source::Kind::Stdin,
+    mSession->MutableCurrentSource() = loglib::Source{
+        .kind = loglib::Source::Kind::Stdin,
         .format = format,
         .locators = {{displayName, displayName}},
         .regexPattern = regexPattern,
@@ -6944,23 +6944,23 @@ void MainWindow::OpenNetworkStream()
     // AutoDetect is session-only. Keep `Json` in the source metadata
     // until `AutoDetectParser` resolves the stream.
     const bool autoDetect = cfg.format == NetworkStreamDialog::Format::AutoDetect;
-    const loglib::LogConfiguration::Source::Format dialogFormat = [&] {
+    const loglib::Source::Format dialogFormat = [&] {
         switch (cfg.format)
         {
         case NetworkStreamDialog::Format::Logfmt:
-            return loglib::LogConfiguration::Source::Format::Logfmt;
+            return loglib::Source::Format::Logfmt;
         case NetworkStreamDialog::Format::Csv:
-            return loglib::LogConfiguration::Source::Format::Csv;
+            return loglib::Source::Format::Csv;
         case NetworkStreamDialog::Format::Regex:
-            return loglib::LogConfiguration::Source::Format::Regex;
+            return loglib::Source::Format::Regex;
         case NetworkStreamDialog::Format::Json:
         case NetworkStreamDialog::Format::AutoDetect:
             break;
         }
-        return loglib::LogConfiguration::Source::Format::Json;
+        return loglib::Source::Format::Json;
     }();
-    mSession->MutableCurrentSource() = loglib::LogConfiguration::Source{
-        .kind = loglib::LogConfiguration::Source::Kind::NetworkStream,
+    mSession->MutableCurrentSource() = loglib::Source{
+        .kind = loglib::Source::Kind::NetworkStream,
         .format = dialogFormat,
         .locators = {{displayName, displayName}},
         .regexPattern = cfg.regexPattern.toStdString(),
@@ -6993,8 +6993,8 @@ void MainWindow::OpenNetworkStream()
         return;
     }
     const auto &currentSource = mSession->CurrentSource();
-    const loglib::LogConfiguration::Source::Format format =
-        currentSource ? currentSource->format : loglib::LogConfiguration::Source::Format::Json;
+    const loglib::Source::Format format =
+        currentSource ? currentSource->format : loglib::Source::Format::Json;
     std::string regexPattern = currentSource ? currentSource->regexPattern : std::string{};
     auto parserFactory = [format, regexPattern = std::move(regexPattern)]() {
         return MakeParserForFormat(format, regexPattern);
@@ -7096,7 +7096,7 @@ constexpr auto SETTINGS_GEOMETRY_KEY = "ui/mainWindow/geometry";
 constexpr auto SETTINGS_STATE_KEY = "ui/mainWindow/state";
 
 // Keep file source names compact while preserving stream labels.
-QString CurrentSourceLabel(const std::optional<loglib::LogConfiguration::Source> &source, const QString &streamingName)
+QString CurrentSourceLabel(const std::optional<loglib::Source> &source, const QString &streamingName)
 {
     if (!source.has_value() || source->locators.empty())
     {
@@ -7109,7 +7109,7 @@ QString CurrentSourceLabel(const std::optional<loglib::LogConfiguration::Source>
     // Bundles surface as `Kind::File` (the receiver rewrites the
     // embedded locator to the current path in
     // `OnDecompressionFinished`), so this branch covers them too.
-    if (source->kind == loglib::LogConfiguration::Source::Kind::File)
+    if (source->kind == loglib::Source::Kind::File)
     {
         QString basename = QFileInfo(first).fileName();
         if (!basename.isEmpty())
@@ -7247,7 +7247,7 @@ void MainWindow::UpdateWindowTitle()
     // `Kind::File` with the locator rebased to the local `.slvbundle`,
     // so the glyph resolves for them too.
     if (const auto &currentSource = mSession->CurrentSource();
-        currentSource.has_value() && currentSource->kind == loglib::LogConfiguration::Source::Kind::File &&
+        currentSource.has_value() && currentSource->kind == loglib::Source::Kind::File &&
         !currentSource->locators.empty())
     {
         setWindowFilePath(QString::fromStdString(currentSource->locators.front().displayPath));
@@ -8416,7 +8416,7 @@ int MainWindow::LastDroppedFilterCountForTest() const
     return mLastDroppedFilterCountForTest;
 }
 
-void MainWindow::SetCurrentSourceForTest(std::optional<loglib::LogConfiguration::Source> source)
+void MainWindow::SetCurrentSourceForTest(std::optional<loglib::Source> source)
 {
     mSession->MutableCurrentSource() = std::move(source);
     // Test fixtures often omit dedup keys; backfill so downstream
@@ -8424,7 +8424,7 @@ void MainWindow::SetCurrentSourceForTest(std::optional<loglib::LogConfiguration:
     logapp::BackfillLocatorDedupKeys(mSession->MutableCurrentSource());
 }
 
-const std::optional<loglib::LogConfiguration::Source> &MainWindow::CurrentSourceForTest() const noexcept
+const std::optional<loglib::Source> &MainWindow::CurrentSourceForTest() const noexcept
 {
     return mSession->CurrentSource();
 }
@@ -8577,10 +8577,10 @@ void MainWindow::MirrorSessionStateToConfiguration(LogSession *session)
     // (the next launch resumes the complete set rather than a
     // strict subset). Dedup via canonical keys.
     const auto &currentSource = session->CurrentSource();
-    if (currentSource.has_value() && currentSource->kind == loglib::LogConfiguration::Source::Kind::File &&
+    if (currentSource.has_value() && currentSource->kind == loglib::Source::Kind::File &&
         !session->MutablePendingOpenFiles().isEmpty())
     {
-        loglib::LogConfiguration::Source mirrored = *currentSource;
+        loglib::Source mirrored = *currentSource;
         // Seed `seen` with existing dedup keys (case-insensitive on
         // Windows) so pending duplicates of already-streamed paths
         // are skipped.
@@ -8770,11 +8770,11 @@ logapp::persistence::SourceMode SourceModeFor(const LogSession *session)
         return session->RestorableSessionUuid().isEmpty() ? SourceMode::Empty : SourceMode::ConfigOnly;
     }
     const auto kind = src->kind;
-    if (kind == loglib::LogConfiguration::Source::Kind::Stdin)
+    if (kind == loglib::Source::Kind::Stdin)
     {
         return SourceMode::Stdin;
     }
-    if (kind == loglib::LogConfiguration::Source::Kind::NetworkStream)
+    if (kind == loglib::Source::Kind::NetworkStream)
     {
         return SourceMode::Network;
     }
@@ -9308,7 +9308,7 @@ bool MainWindow::SaveSession()
     // useless source field entirely.
     loglib::SaveScope effectiveScope = loglib::SaveScope::Full;
     if (const auto &currentSource = mSession->CurrentSource();
-        currentSource.has_value() && currentSource->kind == loglib::LogConfiguration::Source::Kind::Stdin)
+        currentSource.has_value() && currentSource->kind == loglib::Source::Kind::Stdin)
     {
 #ifdef LOGAPP_BUILD_TESTING
         if (mSuppressDialogsForTest)
@@ -9968,7 +9968,7 @@ void MainWindow::OnEnumColumnsChangedApplyFilterRebuild(EnumColumnsChangeReason 
                 mSession->SetApplyingEnumRebuild(true);
                 const auto demoteGuard = qScopeGuard([this]() { mSession->SetApplyingEnumRebuild(false); });
                 const auto &columnsCfg = mModel->Configuration().columns;
-                const loglib::LogConfiguration::Column *demotedColumn =
+                const loglib::Column *demotedColumn =
                     std::cmp_less(columnIndex, columnsCfg.size()) ? &columnsCfg[static_cast<size_t>(columnIndex)]
                                                                   : nullptr;
                 for (auto &kv : mSession->MutableSimpleLeaves())
@@ -11646,7 +11646,7 @@ bool MainWindow::EnumFilterFullyResolved(const loglib::LeafRule &filter) const
     // expand them to raw entries at predicate-build time. Dictionary
     // growth can surface entries matching a selected level, so treat
     // these as never fully resolved and rebuild on every `Grew`.
-    if (columnsCfg[static_cast<size_t>(resolvedRow)].type == loglib::LogConfiguration::Type::Level)
+    if (columnsCfg[static_cast<size_t>(resolvedRow)].type == loglib::ColumnType::Level)
     {
         return false;
     }

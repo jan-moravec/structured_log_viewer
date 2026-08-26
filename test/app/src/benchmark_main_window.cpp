@@ -221,8 +221,8 @@ private slots:
         // valid here because the underlying storage stays as `DictRef`.
         const auto levelType = columns[static_cast<size_t>(levelCol)].type;
         QVERIFY2(
-            levelType == loglib::LogConfiguration::Type::Enumeration ||
-                levelType == loglib::LogConfiguration::Type::Level,
+            levelType == loglib::ColumnType::Enumeration ||
+                levelType == loglib::ColumnType::Level,
             "level column must promote to Enumeration or Level"
         );
 
@@ -330,15 +330,15 @@ private slots:
 
         const auto levelType = columns[static_cast<size_t>(levelCol)].type;
         QVERIFY2(
-            levelType == loglib::LogConfiguration::Type::Enumeration ||
-                levelType == loglib::LogConfiguration::Type::Level,
+            levelType == loglib::ColumnType::Enumeration ||
+                levelType == loglib::ColumnType::Level,
             "level column must promote to Enumeration or Level"
         );
         // `component` is not a known level key, so it must stay
         // Enumeration. Pin it so a broadening of the heuristic shows
         // up here rather than silently losing the enum-rank gate.
         QVERIFY2(
-            columns[static_cast<size_t>(componentCol)].type == loglib::LogConfiguration::Type::Enumeration,
+            columns[static_cast<size_t>(componentCol)].type == loglib::ColumnType::Enumeration,
             "component column must remain Enumeration (no level promotion)"
         );
 
@@ -394,7 +394,7 @@ private slots:
         const int rowCount = chain.filterProxy->rowCount();
         const auto elapsed = std::chrono::steady_clock::now() - t0;
 
-        const QString sortLabel = (levelType == loglib::LogConfiguration::Type::Level)
+        const QString sortLabel = (levelType == loglib::ColumnType::Level)
                                       ? QStringLiteral("Sort by level column over %1 rows: %2 ms")
                                       : QStringLiteral("Sort by enum column over %1 rows: %2 ms");
         qDebug().noquote() << sortLabel.arg(static_cast<std::size_t>(rowCount)).arg(Ms(elapsed).count(), 0, 'f', 2);
@@ -435,7 +435,7 @@ private slots:
         QVERIFY2(levelCol >= 0, "fixture must produce a `level` column");
         QVERIFY2(componentCol >= 0, "fixture must produce a `component` column");
 
-        using Rule = loglib::LogConfiguration::HighlightRule;
+        using Rule = loglib::HighlightRule;
         auto makeRule =
             [](const std::string &name, const std::string &key, Rule::Match matchType, const std::string &needle) {
                 Rule r;
@@ -543,7 +543,7 @@ private:
 
     /// Index of the column whose `keys` list contains @p key, or -1
     /// when no column claims it. Case-sensitive.
-    static int FindColumnByKey(const std::vector<loglib::LogConfiguration::Column> &columns, const std::string &key)
+    static int FindColumnByKey(const std::vector<loglib::Column> &columns, const std::string &key)
     {
         for (size_t i = 0; i < columns.size(); ++i)
         {
@@ -581,7 +581,7 @@ private:
         if (useEnumRank)
         {
             QVERIFY2(
-                column.type == loglib::LogConfiguration::Type::Enumeration,
+                column.type == loglib::ColumnType::Enumeration,
                 qPrintable(QStringLiteral("BenchLibOnlySort(useEnumRank=true) requires Type::Enumeration; got %1")
                                .arg(static_cast<int>(column.type)))
             );

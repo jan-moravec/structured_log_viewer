@@ -55,7 +55,7 @@ struct AdvancedParserOptions;
  *   `loglib::DetectRegexTemplate`). Files needing a completely
  *   custom, unregistered pattern are reachable via
  *   `File → Open Network Stream…` (custom pattern field) or by
- *   restoring a session whose `LogConfiguration::Source` is
+ *   restoring a session whose `Source` is
  *   already pinned to `Regex` + the desired pattern.
  */
 class RegexParser : public LogParser
@@ -152,7 +152,7 @@ private:
  * match. Same probe `RegexParser::IsValid` runs; exposing it
  * separately lets callers (e.g. `MainWindow::DetectFormatForPath`)
  * capture *which* template matched so they can persist its
- * pattern on `LogConfiguration::Source`.
+ * pattern on `Source`.
  *
  * Returned by value (not by pointer into the registry) so callers
  * remain safe across a concurrent `SetExtraRegexTemplates` call —

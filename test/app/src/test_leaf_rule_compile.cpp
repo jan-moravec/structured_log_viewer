@@ -34,11 +34,11 @@
 namespace
 {
 
-using Column = loglib::LogConfiguration::Column;
+using Column = loglib::Column;
 using Leaf = loglib::LeafRule;
 
 /// One-column fixture bound to @p key.
-[[nodiscard]] Column MakeColumn(std::string header, std::string key, loglib::LogConfiguration::Type type)
+[[nodiscard]] Column MakeColumn(std::string header, std::string key, loglib::ColumnType type)
 {
     Column col;
     col.header = std::move(header);
@@ -125,14 +125,14 @@ private slots:
     /// first column with an empty key vector.
     void ResolveEmptyKeysReturnsMinusOne()
     {
-        const std::vector<Column> columns{MakeColumn("level", "level", loglib::LogConfiguration::Type::String)};
+        const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::String)};
         QCOMPARE(ResolveLeafColumnByKeys({}, columns), -1);
     }
 
     /// No column carries the requested key -> -1.
     void ResolveKeysNoMatchReturnsMinusOne()
     {
-        const std::vector<Column> columns{MakeColumn("level", "level", loglib::LogConfiguration::Type::String)};
+        const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::String)};
         QCOMPARE(ResolveLeafColumnByKeys({"missing"}, columns), -1);
     }
 
@@ -144,7 +144,7 @@ private slots:
         Column withAlias;
         withAlias.header = "level";
         withAlias.keys = {"level", "log.level"};
-        withAlias.type = loglib::LogConfiguration::Type::String;
+        withAlias.type = loglib::ColumnType::String;
         const std::vector<Column> columns{withAlias};
         QCOMPARE(ResolveLeafColumnByKeys({"level"}, columns), 0);
     }
@@ -153,8 +153,8 @@ private slots:
     void ResolveKeysReturnsFirstMatchIndex()
     {
         const std::vector<Column> columns{
-            MakeColumn("service", "service", loglib::LogConfiguration::Type::String),
-            MakeColumn("level", "level", loglib::LogConfiguration::Type::String),
+            MakeColumn("service", "service", loglib::ColumnType::String),
+            MakeColumn("level", "level", loglib::ColumnType::String),
         };
         QCOMPARE(ResolveLeafColumnByKeys({"level"}, columns), 1);
     }
@@ -165,7 +165,7 @@ private slots:
     /// pass `-1` when `ResolveLeafColumnByKeys` returned no match.
     void CompileLeafUnresolvedColumnAbsent()
     {
-        const std::vector<Column> columns{MakeColumn("level", "level", loglib::LogConfiguration::Type::String)};
+        const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::String)};
         const Leaf rule = MakeStringLeaf("level", Leaf::Match::Contains, "warn");
         QVERIFY(!CompileLeaf(rule, /*resolvedColumn=*/-1, columns, /*table=*/nullptr).has_value());
     }
@@ -176,7 +176,7 @@ private slots:
     /// otherwise accept every row (INT64_MIN..INT64_MAX).
     void CompileTimeLeafNoBoundsAbsent()
     {
-        const std::vector<Column> columns{MakeColumn("ts", "ts", loglib::LogConfiguration::Type::Time)};
+        const std::vector<Column> columns{MakeColumn("ts", "ts", loglib::ColumnType::Time)};
         const Leaf rule = MakeTimeLeaf("ts", std::nullopt, std::nullopt);
         QVERIFY(!CompileLeaf(rule, 0, columns, /*table=*/nullptr).has_value());
     }
@@ -185,7 +185,7 @@ private slots:
     /// INT64_MAX so the visitor stays a simple two-sided compare.
     void CompileTimeLeafLowerOnlyProduces()
     {
-        const std::vector<Column> columns{MakeColumn("ts", "ts", loglib::LogConfiguration::Type::Time)};
+        const std::vector<Column> columns{MakeColumn("ts", "ts", loglib::ColumnType::Time)};
         const Leaf rule = MakeTimeLeaf("ts", std::int64_t{0}, std::nullopt);
         const auto compiled = CompileLeaf(rule, 0, columns, /*table=*/nullptr);
         QVERIFY(compiled.has_value());
@@ -196,7 +196,7 @@ private slots:
     /// INT64_MIN.
     void CompileTimeLeafUpperOnlyProduces()
     {
-        const std::vector<Column> columns{MakeColumn("ts", "ts", loglib::LogConfiguration::Type::Time)};
+        const std::vector<Column> columns{MakeColumn("ts", "ts", loglib::ColumnType::Time)};
         const Leaf rule = MakeTimeLeaf("ts", std::nullopt, std::int64_t{1000});
         const auto compiled = CompileLeaf(rule, 0, columns, /*table=*/nullptr);
         QVERIFY(compiled.has_value());
@@ -205,7 +205,7 @@ private slots:
     /// Both bounds set -> the canonical case.
     void CompileTimeLeafBothBoundsProduces()
     {
-        const std::vector<Column> columns{MakeColumn("ts", "ts", loglib::LogConfiguration::Type::Time)};
+        const std::vector<Column> columns{MakeColumn("ts", "ts", loglib::ColumnType::Time)};
         const Leaf rule = MakeTimeLeaf("ts", std::int64_t{0}, std::int64_t{1000});
         const auto compiled = CompileLeaf(rule, 0, columns, /*table=*/nullptr);
         QVERIFY(compiled.has_value());
@@ -216,7 +216,7 @@ private slots:
     /// Number with neither min nor max is inert (analogous to Time).
     void CompileNumberLeafNoBoundsAbsent()
     {
-        const std::vector<Column> columns{MakeColumn("latency", "latency", loglib::LogConfiguration::Type::Number)};
+        const std::vector<Column> columns{MakeColumn("latency", "latency", loglib::ColumnType::Number)};
         const Leaf rule = MakeNumberLeaf("latency", std::nullopt, std::nullopt);
         QVERIFY(!CompileLeaf(rule, 0, columns, /*table=*/nullptr).has_value());
     }
@@ -224,7 +224,7 @@ private slots:
     /// Lower bound only -> `NumericRangeRowPredicate`.
     void CompileNumberLeafLowerOnlyProduces()
     {
-        const std::vector<Column> columns{MakeColumn("latency", "latency", loglib::LogConfiguration::Type::Number)};
+        const std::vector<Column> columns{MakeColumn("latency", "latency", loglib::ColumnType::Number)};
         const Leaf rule = MakeNumberLeaf("latency", 100.0, std::nullopt);
         const auto compiled = CompileLeaf(rule, 0, columns, /*table=*/nullptr);
         QVERIFY(compiled.has_value());
@@ -234,7 +234,7 @@ private slots:
     /// Upper bound only.
     void CompileNumberLeafUpperOnlyProduces()
     {
-        const std::vector<Column> columns{MakeColumn("latency", "latency", loglib::LogConfiguration::Type::Number)};
+        const std::vector<Column> columns{MakeColumn("latency", "latency", loglib::ColumnType::Number)};
         const Leaf rule = MakeNumberLeaf("latency", std::nullopt, 100.0);
         const auto compiled = CompileLeaf(rule, 0, columns, /*table=*/nullptr);
         QVERIFY(compiled.has_value());
@@ -246,7 +246,7 @@ private slots:
     /// too, but hand-edited configs can produce this shape).
     void CompileBooleanLeafEmptyValuesAbsent()
     {
-        const std::vector<Column> columns{MakeColumn("ok", "ok", loglib::LogConfiguration::Type::Boolean)};
+        const std::vector<Column> columns{MakeColumn("ok", "ok", loglib::ColumnType::Boolean)};
         const Leaf rule = MakeBooleanLeaf("ok", {});
         QVERIFY(!CompileLeaf(rule, 0, columns, /*table=*/nullptr).has_value());
     }
@@ -257,7 +257,7 @@ private slots:
     /// `!includeTrue && !includeFalse`).
     void CompileBooleanLeafOnlyGarbageValuesAbsent()
     {
-        const std::vector<Column> columns{MakeColumn("ok", "ok", loglib::LogConfiguration::Type::Boolean)};
+        const std::vector<Column> columns{MakeColumn("ok", "ok", loglib::ColumnType::Boolean)};
         const Leaf rule = MakeBooleanLeaf("ok", {"maybe", "yes", "no"});
         QVERIFY(!CompileLeaf(rule, 0, columns, /*table=*/nullptr).has_value());
     }
@@ -266,7 +266,7 @@ private slots:
     /// true rows.
     void CompileBooleanLeafTrueOnlyProduces()
     {
-        const std::vector<Column> columns{MakeColumn("ok", "ok", loglib::LogConfiguration::Type::Boolean)};
+        const std::vector<Column> columns{MakeColumn("ok", "ok", loglib::ColumnType::Boolean)};
         const Leaf rule = MakeBooleanLeaf("ok", {"true"});
         const auto compiled = CompileLeaf(rule, 0, columns, /*table=*/nullptr);
         QVERIFY(compiled.has_value());
@@ -278,7 +278,7 @@ private slots:
     /// silently falling through to inert.
     void CompileBooleanLeafCaseInsensitive()
     {
-        const std::vector<Column> columns{MakeColumn("ok", "ok", loglib::LogConfiguration::Type::Boolean)};
+        const std::vector<Column> columns{MakeColumn("ok", "ok", loglib::ColumnType::Boolean)};
         const Leaf rule = MakeBooleanLeaf("ok", {"True", "FALSE"});
         QVERIFY(CompileLeaf(rule, 0, columns, /*table=*/nullptr).has_value());
     }
@@ -289,7 +289,7 @@ private slots:
     /// enum columns too, but hand-edited configs can produce it).
     void CompileEnumLeafEmptyValuesAbsent()
     {
-        const std::vector<Column> columns{MakeColumn("level", "level", loglib::LogConfiguration::Type::Enumeration)};
+        const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::Enumeration)};
         const Leaf rule = MakeEnumLeaf("level", {});
         const loglib::LogTable table;
         QVERIFY(!CompileLeaf(rule, 0, columns, &table).has_value());
@@ -300,7 +300,7 @@ private slots:
     /// owns; without a table there is nothing to intern against.
     void CompileEnumLeafNullTableAbsent()
     {
-        const std::vector<Column> columns{MakeColumn("level", "level", loglib::LogConfiguration::Type::Enumeration)};
+        const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::Enumeration)};
         const Leaf rule = MakeEnumLeaf("level", {"Info", "Warn"});
         QVERIFY(!CompileLeaf(rule, 0, columns, /*table=*/nullptr).has_value());
     }
@@ -314,7 +314,7 @@ private slots:
     /// distinguishes non-Level enum columns from Level columns.
     void CompileEnumLeafNonLevelWithEmptyTableProduces()
     {
-        const std::vector<Column> columns{MakeColumn("level", "level", loglib::LogConfiguration::Type::Enumeration)};
+        const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::Enumeration)};
         const Leaf rule = MakeEnumLeaf("level", {"Info", "Warn"});
         const loglib::LogTable table;
         const auto compiled = CompileLeaf(rule, 0, columns, &table);
@@ -328,7 +328,7 @@ private slots:
     /// stream config edit doesn't silently over-accept.
     void CompileEnumLeafLevelColumnNullRankCacheAbsent()
     {
-        const std::vector<Column> columns{MakeColumn("level", "level", loglib::LogConfiguration::Type::Level)};
+        const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::Level)};
         const Leaf rule = MakeEnumLeaf("level", {"Info"});
         const loglib::LogTable table;
         QVERIFY(!CompileLeaf(rule, 0, columns, &table).has_value());
@@ -339,7 +339,7 @@ private slots:
     /// Missing `filterString` -> inert (config half-serialised).
     void CompileStringLeafNoNeedleAbsent()
     {
-        const std::vector<Column> columns{MakeColumn("msg", "msg", loglib::LogConfiguration::Type::String)};
+        const std::vector<Column> columns{MakeColumn("msg", "msg", loglib::ColumnType::String)};
         Leaf rule;
         rule.type = Leaf::Type::String;
         rule.columnKeys = {"msg"};
@@ -353,7 +353,7 @@ private slots:
     /// unambiguous).
     void CompileStringLeafNoMatchTypeAbsent()
     {
-        const std::vector<Column> columns{MakeColumn("msg", "msg", loglib::LogConfiguration::Type::String)};
+        const std::vector<Column> columns{MakeColumn("msg", "msg", loglib::ColumnType::String)};
         Leaf rule;
         rule.type = Leaf::Type::String;
         rule.columnKeys = {"msg"};
@@ -366,7 +366,7 @@ private slots:
     /// match every row and silently paint / blank the whole view.
     void CompileStringLeafContainsEmptyAbsent()
     {
-        const std::vector<Column> columns{MakeColumn("msg", "msg", loglib::LogConfiguration::Type::String)};
+        const std::vector<Column> columns{MakeColumn("msg", "msg", loglib::ColumnType::String)};
         const Leaf rule = MakeStringLeaf("msg", Leaf::Match::Contains, std::string{});
         QVERIFY(!CompileLeaf(rule, 0, columns, /*table=*/nullptr).has_value());
     }
@@ -374,7 +374,7 @@ private slots:
     /// Empty needle + `Wildcard` -> inert (same reason).
     void CompileStringLeafWildcardEmptyAbsent()
     {
-        const std::vector<Column> columns{MakeColumn("msg", "msg", loglib::LogConfiguration::Type::String)};
+        const std::vector<Column> columns{MakeColumn("msg", "msg", loglib::ColumnType::String)};
         const Leaf rule = MakeStringLeaf("msg", Leaf::Match::Wildcard, std::string{});
         QVERIFY(!CompileLeaf(rule, 0, columns, /*table=*/nullptr).has_value());
     }
@@ -382,7 +382,7 @@ private slots:
     /// Empty needle + `RegularExpression` -> inert.
     void CompileStringLeafRegexEmptyAbsent()
     {
-        const std::vector<Column> columns{MakeColumn("msg", "msg", loglib::LogConfiguration::Type::String)};
+        const std::vector<Column> columns{MakeColumn("msg", "msg", loglib::ColumnType::String)};
         const Leaf rule = MakeStringLeaf("msg", Leaf::Match::RegularExpression, std::string{});
         QVERIFY(!CompileLeaf(rule, 0, columns, /*table=*/nullptr).has_value());
     }
@@ -392,7 +392,7 @@ private slots:
     /// guard deliberately spares this case.
     void CompileStringLeafExactlyEmptyProduces()
     {
-        const std::vector<Column> columns{MakeColumn("msg", "msg", loglib::LogConfiguration::Type::String)};
+        const std::vector<Column> columns{MakeColumn("msg", "msg", loglib::ColumnType::String)};
         const Leaf rule = MakeStringLeaf("msg", Leaf::Match::Exactly, std::string{});
         const auto compiled = CompileLeaf(rule, 0, columns, /*table=*/nullptr);
         QVERIFY(compiled.has_value());
@@ -401,7 +401,7 @@ private slots:
     /// Non-empty needle -> the happy path.
     void CompileStringLeafContainsProduces()
     {
-        const std::vector<Column> columns{MakeColumn("msg", "msg", loglib::LogConfiguration::Type::String)};
+        const std::vector<Column> columns{MakeColumn("msg", "msg", loglib::ColumnType::String)};
         const Leaf rule = MakeStringLeaf("msg", Leaf::Match::Contains, std::string{"warn"});
         const auto compiled = CompileLeaf(rule, 0, columns, /*table=*/nullptr);
         QVERIFY(compiled.has_value());
@@ -415,7 +415,7 @@ private slots:
     /// `CompiledFilterExpression::And{}`.
     void CompileExprEmptyInputAndIsMatchAll()
     {
-        const std::vector<Column> columns{MakeColumn("level", "level", loglib::LogConfiguration::Type::String)};
+        const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::String)};
         const loglib::FilterExpression expr = loglib::MakeAnd({});
         const auto compiled = CompileExpression(expr, columns, /*table=*/nullptr);
         QVERIFY(loglib::IsMatchAllCompiled(compiled));
@@ -429,7 +429,7 @@ private slots:
     /// the absence-propagation directly.
     void CompileExprAllAbsentAndAtRootRendersMatchAll()
     {
-        const std::vector<Column> columns{MakeColumn("level", "level", loglib::LogConfiguration::Type::String)};
+        const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::String)};
         // Both leaves reference an unknown column; the entire
         // `And` compiles absent.
         std::vector<loglib::FilterExpression> children;
@@ -444,7 +444,7 @@ private slots:
     /// top-level fall-through renders match-all.
     void CompileExprAllAbsentOrAtRootRendersMatchAll()
     {
-        const std::vector<Column> columns{MakeColumn("level", "level", loglib::LogConfiguration::Type::String)};
+        const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::String)};
         std::vector<loglib::FilterExpression> children;
         children.push_back(loglib::MakeLeaf(MakeStringLeaf("missing_a", Leaf::Match::Contains, "x")));
         children.push_back(loglib::MakeLeaf(MakeStringLeaf("missing_b", Leaf::Match::Contains, "y")));
@@ -458,7 +458,7 @@ private slots:
     /// At the root, the wrapper renders match-all.
     void CompileExprNotOverAbsentChildAtRootRendersMatchAll()
     {
-        const std::vector<Column> columns{MakeColumn("level", "level", loglib::LogConfiguration::Type::String)};
+        const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::String)};
         const loglib::FilterExpression expr =
             loglib::MakeNot(loglib::MakeLeaf(MakeStringLeaf("missing", Leaf::Match::Contains, "x")));
         const auto compiled = CompileExpression(expr, columns, /*table=*/nullptr);
@@ -472,7 +472,7 @@ private slots:
     /// child handling in `EvaluateExpression`.
     void CompileExprNotNullChildIsMatchAll()
     {
-        const std::vector<Column> columns{MakeColumn("level", "level", loglib::LogConfiguration::Type::String)};
+        const std::vector<Column> columns{MakeColumn("level", "level", loglib::ColumnType::String)};
         loglib::FilterExpression expr;
         expr.node = loglib::FilterExpression::Not{};
         const auto compiled = CompileExpression(expr, columns, /*table=*/nullptr);
@@ -485,7 +485,7 @@ private slots:
     /// bug that would blank the view.
     void CompileExprAndDropsAbsentChild()
     {
-        const std::vector<Column> columns{MakeColumn("svc", "svc", loglib::LogConfiguration::Type::String)};
+        const std::vector<Column> columns{MakeColumn("svc", "svc", loglib::ColumnType::String)};
         std::vector<loglib::FilterExpression> children;
         children.push_back(loglib::MakeLeaf(MakeStringLeaf("svc", Leaf::Match::Contains, "auth")));
         children.push_back(loglib::MakeLeaf(MakeStringLeaf("missing", Leaf::Match::Contains, "x")));
@@ -502,7 +502,7 @@ private slots:
     /// child stays.
     void CompileExprOrDropsAbsentChild()
     {
-        const std::vector<Column> columns{MakeColumn("svc", "svc", loglib::LogConfiguration::Type::String)};
+        const std::vector<Column> columns{MakeColumn("svc", "svc", loglib::ColumnType::String)};
         std::vector<loglib::FilterExpression> children;
         children.push_back(loglib::MakeLeaf(MakeStringLeaf("svc", Leaf::Match::Contains, "auth")));
         children.push_back(loglib::MakeLeaf(MakeStringLeaf("missing", Leaf::Match::Contains, "x")));
@@ -520,7 +520,7 @@ private slots:
     /// `And`.
     void CompileExprNestedAllAbsentOrDropsFromAnd()
     {
-        const std::vector<Column> columns{MakeColumn("svc", "svc", loglib::LogConfiguration::Type::String)};
+        const std::vector<Column> columns{MakeColumn("svc", "svc", loglib::ColumnType::String)};
         std::vector<loglib::FilterExpression> orChildren;
         orChildren.push_back(loglib::MakeLeaf(MakeStringLeaf("missing_a", Leaf::Match::Contains, "x")));
         orChildren.push_back(loglib::MakeLeaf(MakeStringLeaf("missing_b", Leaf::Match::Contains, "y")));
@@ -541,7 +541,7 @@ private slots:
     /// leaves against the same column collapse to one entry.
     void CompileExprReferencedColumnsAreDeduped()
     {
-        const std::vector<Column> columns{MakeColumn("svc", "svc", loglib::LogConfiguration::Type::String)};
+        const std::vector<Column> columns{MakeColumn("svc", "svc", loglib::ColumnType::String)};
         std::vector<loglib::FilterExpression> children;
         children.push_back(loglib::MakeLeaf(MakeStringLeaf("svc", Leaf::Match::Contains, "auth")));
         children.push_back(loglib::MakeLeaf(MakeStringLeaf("svc", Leaf::Match::Contains, "backend")));
@@ -556,8 +556,8 @@ private slots:
     void CompileExprReferencedColumnsAreSortedAndDistinct()
     {
         const std::vector<Column> columns{
-            MakeColumn("svc", "svc", loglib::LogConfiguration::Type::String),
-            MakeColumn("level", "level", loglib::LogConfiguration::Type::String),
+            MakeColumn("svc", "svc", loglib::ColumnType::String),
+            MakeColumn("level", "level", loglib::ColumnType::String),
         };
         std::vector<loglib::FilterExpression> children;
         // Deliberately reverse the "natural" order so a bug that
@@ -576,7 +576,7 @@ private slots:
     /// wrapped in `And{Leaf}`.
     void CompileExprSingleLeafStaysLeaf()
     {
-        const std::vector<Column> columns{MakeColumn("svc", "svc", loglib::LogConfiguration::Type::String)};
+        const std::vector<Column> columns{MakeColumn("svc", "svc", loglib::ColumnType::String)};
         const loglib::FilterExpression expr = loglib::MakeLeaf(MakeStringLeaf("svc", Leaf::Match::Contains, "auth"));
         const auto compiled = CompileExpression(expr, columns, /*table=*/nullptr);
         QVERIFY(AsCompiledLeaf(compiled) != nullptr);
@@ -587,7 +587,7 @@ private slots:
     /// alongside the absent / null-child variants above.
     void CompileExprNotOverResolvableLeafProducesNot()
     {
-        const std::vector<Column> columns{MakeColumn("svc", "svc", loglib::LogConfiguration::Type::String)};
+        const std::vector<Column> columns{MakeColumn("svc", "svc", loglib::ColumnType::String)};
         const loglib::FilterExpression expr =
             loglib::MakeNot(loglib::MakeLeaf(MakeStringLeaf("svc", Leaf::Match::Contains, "auth")));
         const auto compiled = CompileExpression(expr, columns, /*table=*/nullptr);

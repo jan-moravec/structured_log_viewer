@@ -285,7 +285,7 @@ public:
      * accumulated health budget). Idempotent within a type.
      * Out-of-range @p columnIndex is a silent no-op.
      */
-    void OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Type previousType);
+    void OnUserChangedColumnType(size_t columnIndex, ColumnType previousType);
 
     /**
      * @brief Re-sync per-column caches with `mConfiguration` after an
@@ -307,7 +307,7 @@ public:
      * the table is empty, or @p columnIndex is out of range.
      * Returns the post-rescan column type for transition signalling.
      */
-    LogConfiguration::Type RescanColumnForAutoDetection(size_t columnIndex);
+    ColumnType RescanColumnForAutoDetection(size_t columnIndex);
 
     /**
      * @brief "Does this column's data match its configured `Type`?"
@@ -474,7 +474,7 @@ private:
      * false on hard cap overflow; long/wrong-type slots accrue in @p health.
      */
     bool EncodeColumnRangeAsEnum(
-        const LogConfiguration::Column &column, size_t rowBegin, size_t rowEnd, EnumColumnHealth &health
+        const Column &column, size_t rowBegin, size_t rowEnd, EnumColumnHealth &health
     );
 
     /**

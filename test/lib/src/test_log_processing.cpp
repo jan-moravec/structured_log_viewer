@@ -41,7 +41,7 @@ TEST_CASE("ParseTimestamps errors", "[log_processing]")
 
     // Configuration with two non-time columns initially.
     LogConfiguration configuration;
-    LogConfiguration::Column column;
+    Column column;
     column.header = "key1";
     column.keys = {"key1"};
     configuration.columns.push_back(column);
@@ -52,7 +52,7 @@ TEST_CASE("ParseTimestamps errors", "[log_processing]")
     auto errors = ParseTimestamps(logData, configuration);
     CHECK(errors.empty());
 
-    configuration.columns[0].type = LogConfiguration::Type::Time;
+    configuration.columns[0].type = ColumnType::Time;
     errors = ParseTimestamps(logData, configuration);
 
     CHECK(errors.size() == logData.Lines().size());
@@ -74,10 +74,10 @@ TEST_CASE("ParseTimestamps success for different formats", "[log_processing]")
 
     // Configuration with one Type::Time column.
     LogConfiguration configuration;
-    LogConfiguration::Column column;
+    Column column;
     column.header = "key";
     column.keys = {"key"};
-    column.type = LogConfiguration::Type::Time;
+    column.type = ColumnType::Time;
     column.parseFormats = {"%FT%T%Ez", "%F %T%Ez", "%FT%T", "%F %T"};
     configuration.columns.push_back(column);
 

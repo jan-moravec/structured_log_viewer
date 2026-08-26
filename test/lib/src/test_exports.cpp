@@ -256,23 +256,23 @@ loglib::LogTable BuildFixtureTable(std::vector<std::string> rawLines, std::size_
         {.header = "Time",
          .keys = {"ts"},
          .printFormat = "%FT%T",
-         .type = loglib::LogConfiguration::Type::Time,
+         .type = loglib::ColumnType::Time,
          .parseFormats = {"%FT%T"}}
     );
     config.columns.push_back(
-        {.header = "Level", .keys = {"level"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::String}
+        {.header = "Level", .keys = {"level"}, .printFormat = "{}", .type = loglib::ColumnType::String}
     );
     config.columns.push_back(
-        {.header = "Message", .keys = {"message"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::String}
+        {.header = "Message", .keys = {"message"}, .printFormat = "{}", .type = loglib::ColumnType::String}
     );
     config.columns.push_back(
-        {.header = "Count", .keys = {"count"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::Integer}
+        {.header = "Count", .keys = {"count"}, .printFormat = "{}", .type = loglib::ColumnType::Integer}
     );
     config.columns.push_back(
-        {.header = "Ratio", .keys = {"ratio"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::Floating}
+        {.header = "Ratio", .keys = {"ratio"}, .printFormat = "{}", .type = loglib::ColumnType::Floating}
     );
     config.columns.push_back(
-        {.header = "OK", .keys = {"ok"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::Boolean}
+        {.header = "OK", .keys = {"ok"}, .printFormat = "{}", .type = loglib::ColumnType::Boolean}
     );
 
     loglib::LogConfigurationManager manager;
@@ -475,7 +475,7 @@ TEST_CASE("exports: CSV formula-injection cells are quoted and prefixed", "[expo
 
     loglib::LogConfiguration config;
     config.columns.push_back(
-        {.header = "Message", .keys = {"message"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::String}
+        {.header = "Message", .keys = {"message"}, .printFormat = "{}", .type = loglib::ColumnType::String}
     );
     loglib::LogConfigurationManager manager;
     manager.SetConfiguration(std::move(config));
@@ -527,7 +527,7 @@ TEST_CASE("exports: JSON Lines keeps a trailing .0 on whole-valued doubles", "[e
 
     loglib::LogConfiguration config;
     config.columns.push_back(
-        {.header = "Value", .keys = {"value"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::Floating}
+        {.header = "Value", .keys = {"value"}, .printFormat = "{}", .type = loglib::ColumnType::Floating}
     );
     loglib::LogConfigurationManager manager;
     manager.SetConfiguration(std::move(config));
@@ -572,7 +572,7 @@ TEST_CASE("exports: Markdown escapes pipes and collapses newlines", "[exports][r
 
     loglib::LogConfiguration config;
     config.columns.push_back(
-        {.header = "Msg", .keys = {"message"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::String}
+        {.header = "Msg", .keys = {"message"}, .printFormat = "{}", .type = loglib::ColumnType::String}
     );
     loglib::LogConfigurationManager manager;
     manager.SetConfiguration(std::move(config));
@@ -635,7 +635,7 @@ TEST_CASE("exports: Snapshot skips unavailable source rows", "[exports][row_expo
 
     loglib::LogConfiguration config;
     config.columns.push_back(
-        {.header = "Message", .keys = {"message"}, .printFormat = "{}", .type = loglib::LogConfiguration::Type::String}
+        {.header = "Message", .keys = {"message"}, .printFormat = "{}", .type = loglib::ColumnType::String}
     );
     loglib::LogConfigurationManager manager;
     manager.SetConfiguration(std::move(config));

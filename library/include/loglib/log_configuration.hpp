@@ -170,7 +170,7 @@ public:
      * @brief Flip the type of the column at @p columnIndex; caller
      * back-fills row data. No-op out of range.
      */
-    void SetColumnType(size_t columnIndex, LogConfiguration::Type type);
+    void SetColumnType(size_t columnIndex, ColumnType type);
 
     /**
      * @brief Toggle `Column::autoDetect`. `true` hands the column to the
@@ -184,7 +184,7 @@ public:
      * this so observers never see an intermediate `(newType,
      * staleAutoDetect)` pair. No-op out of range.
      */
-    void SetColumnTypePair(size_t columnIndex, LogConfiguration::Type type, bool autoDetect);
+    void SetColumnTypePair(size_t columnIndex, ColumnType type, bool autoDetect);
 
     /**
      * @brief Toggle `Column::visible`. The column stays in the table; only
@@ -225,20 +225,20 @@ public:
      * @brief Replace `LogConfiguration::sort`. Called by the session-state
      * mirror before a `Full` save.
      */
-    void SetSort(LogConfiguration::Sort sort);
+    void SetSort(Sort sort);
 
     /** @brief Replace `LogConfiguration::source`. `nullopt` clears the binding. */
-    void SetSource(std::optional<LogConfiguration::Source> source);
+    void SetSource(std::optional<Source> source);
 
     /** @brief Replace `LogConfiguration::anchors`. Empty clears them all. */
-    void SetAnchors(std::vector<LogConfiguration::AnchorEntry> anchors);
+    void SetAnchors(std::vector<AnchorEntry> anchors);
 
     /**
      * @brief Replace `LogConfiguration::highlightRules` wholesale. Rules
      * bind by column keys, so no `MoveColumn` remap is needed
      * afterwards.
      */
-    void SetHighlightRules(std::vector<LogConfiguration::HighlightRule> rules);
+    void SetHighlightRules(std::vector<HighlightRule> rules);
 
     /**
      * @brief Apply `(srcIndex -> destIndex)` to a stored column index.

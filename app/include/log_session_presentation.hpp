@@ -177,9 +177,9 @@ enum class SessionCloseDecision : std::uint8_t
 struct HighlightRulesEditorDraft
 {
     /** @brief In-progress rule list, including unsaved form edits. */
-    std::vector<loglib::LogConfiguration::HighlightRule> localRules;
+    std::vector<loglib::HighlightRule> localRules;
     /** @brief Last committed rule list. */
-    std::vector<loglib::LogConfiguration::HighlightRule> baseline;
+    std::vector<loglib::HighlightRule> baseline;
     /** @brief Selected rule row, or `-1` when none. */
     int currentRow = -1;
 

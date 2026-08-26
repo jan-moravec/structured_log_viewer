@@ -27,6 +27,8 @@
 #include <utility>
 #include <vector>
 
+using loglib::Column;
+using loglib::ColumnType;
 using loglib::FileLineSource;
 using loglib::KeyIndex;
 using loglib::LogConfiguration;
@@ -872,10 +874,10 @@ TEST_CASE("Mock parser: timestamp promotion via shared post-decoding hook", "[mo
     content += "ts=2024-01-15T10:00:02Z level=warn msg=third\n";
     const TempTextFile fixture(content);
     auto configuration = std::make_shared<LogConfiguration>();
-    LogConfiguration::Column timeColumn;
+    Column timeColumn;
     timeColumn.header = "Timestamp";
     timeColumn.keys = {"ts"};
-    timeColumn.type = LogConfiguration::Type::Time;
+    timeColumn.type = ColumnType::Time;
     timeColumn.parseFormats = {"%FT%TZ"};
     configuration->columns.push_back(timeColumn);
 

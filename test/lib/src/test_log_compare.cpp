@@ -45,7 +45,7 @@ LogLine MakeLine(KeyIndex &keys, LineSource &source, const std::vector<std::pair
 LogTable BuildSingleColumnTable(
     const TestLogFile &testFile,
     const std::string &columnKey,
-    LogConfiguration::Type type,
+    ColumnType type,
     const std::vector<LogValue> &perRowValues,
     std::string printFormat = "{}"
 )
@@ -127,7 +127,7 @@ TEST_CASE("CompareRows handles Integer columns with monostate-tail order", "[log
     const TestLogFile fixture("log_compare_integer.json");
     fixture.Write("");
     const std::vector<LogValue> values = {int64_t{3}, int64_t{1}, std::monostate{}, int64_t{2}};
-    const LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "n", ColumnType::Integer, values);
 
     // 1 < 2 < 3 < monostate
     CHECK(SignOf(CompareRows(table, 0, 1, 0)) == 1);  // 3 vs 1
@@ -163,7 +163,7 @@ TEST_CASE(
         nhuge,      // 5: clamps to INT64_MIN (== row 3 numerically)
         int64_t{42} // 6: a plain int sandwich
     };
-    const LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "n", ColumnType::Integer, values);
 
     // We pin: no UB, clamping is order-preserving, NaN tails after
     // every integer.
@@ -215,7 +215,7 @@ TEST_CASE("CompareRows: NaN-in-Int sorts equal to monostate at the tail", "[log_
     fixture.Write("");
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const std::vector<LogValue> values = {int64_t{0}, nan, std::monostate{}, int64_t{42}};
-    const LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "n", ColumnType::Integer, values);
 
     // Tail-bucket equality: NaN <=> monostate is 0.
     CHECK(SignOf(CompareRows(table, 1, 2, 0)) == 0); // NaN == monostate
@@ -244,7 +244,7 @@ TEST_CASE(
         std::monostate{},    // 2: monostate -> tail bucket
         -3.25,               // 3: representable double
     };
-    const LogTable table = BuildSingleColumnTable(fixture, "x", LogConfiguration::Type::Floating, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "x", ColumnType::Floating, values);
 
     // Tail-bucket equality.
     CHECK(SignOf(CompareRows(table, 1, 2, 0)) == 0); // stray-string == monostate
@@ -263,7 +263,7 @@ TEST_CASE("CompareRows handles Floating columns with NaN at the tail", "[log_com
     fixture.Write("");
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const std::vector<LogValue> values = {1.5, -2.0, nan, 4.25};
-    const LogTable table = BuildSingleColumnTable(fixture, "x", LogConfiguration::Type::Floating, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "x", ColumnType::Floating, values);
 
     CHECK(SignOf(CompareRows(table, 1, 0, 0)) == -1); // -2 < 1.5
     CHECK(SignOf(CompareRows(table, 0, 3, 0)) == -1); // 1.5 < 4.25
@@ -279,7 +279,7 @@ TEST_CASE("CompareRows handles Time columns by microseconds-since-epoch", "[log_
     const TimeStamp t300{std::chrono::microseconds{300}};
     const TimeStamp t200{std::chrono::microseconds{200}};
     const std::vector<LogValue> values = {t100, t300, t200, std::monostate{}};
-    const LogTable table = BuildSingleColumnTable(fixture, "ts", LogConfiguration::Type::Time, values, "{:%FT%T}");
+    const LogTable table = BuildSingleColumnTable(fixture, "ts", ColumnType::Time, values, "{:%FT%T}");
 
     CHECK(SignOf(CompareRows(table, 0, 1, 0)) == -1); // 100 < 300
     CHECK(SignOf(CompareRows(table, 1, 2, 0)) == 1);  // 300 > 200
@@ -297,7 +297,7 @@ TEST_CASE("CompareRows on Time column compares uint64_t slots numerically", "[lo
     const TimeStamp t100{std::chrono::microseconds{100}};
     const TimeStamp t300{std::chrono::microseconds{300}};
     const std::vector<LogValue> values = {t100, uint64_t{200}, t300};
-    const LogTable table = BuildSingleColumnTable(fixture, "ts", LogConfiguration::Type::Time, values, "{:%FT%T}");
+    const LogTable table = BuildSingleColumnTable(fixture, "ts", ColumnType::Time, values, "{:%FT%T}");
 
     CHECK(SignOf(CompareRows(table, 0, 1, 0)) == -1); // 100 < 200(u)
     CHECK(SignOf(CompareRows(table, 1, 2, 0)) == -1); // 200(u) < 300
@@ -311,7 +311,7 @@ TEST_CASE("CompareRows on Time column compares uint64_t slots numerically", "[lo
     const uint64_t huge = static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 100;
     const std::vector<LogValue> bigValues = {t100, huge};
     const LogTable bigTable =
-        BuildSingleColumnTable(fixtureBig, "ts", LogConfiguration::Type::Time, bigValues, "{:%FT%T}");
+        BuildSingleColumnTable(fixtureBig, "ts", ColumnType::Time, bigValues, "{:%FT%T}");
     CHECK(SignOf(CompareRows(bigTable, 0, 1, 0)) == -1); // t100 < clamped uint
     CHECK(SignOf(CompareRows(bigTable, 1, 0, 0)) == 1);
 }
@@ -331,7 +331,7 @@ TEST_CASE("CompareRows on an Enumeration column uses the rank table", "[log_comp
         {.header = "category",
          .keys = {"category"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::Enumeration,
+         .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -354,7 +354,7 @@ TEST_CASE("CompareRows on an Enumeration column uses the rank table", "[log_comp
     batch.newKeys.emplace_back("category");
     table.AppendBatch(std::move(batch));
 
-    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
+    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
     const KeyId categoryKey = keys.Find("category");
     REQUIRE(categoryKey != INVALID_KEY_ID);
     const EnumDictionary *dict = table.EnumDictionaries().Find(categoryKey);
@@ -384,7 +384,7 @@ TEST_CASE("CompareRows on enum column with a monostate row uses tail-bucket orde
         {.header = "level",
          .keys = {"level"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::Enumeration,
+         .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -433,7 +433,7 @@ TEST_CASE("CompareEnum: non-DictRef slots all sort tail-equal under a rank table
         {.header = "category",
          .keys = {"category"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::Enumeration,
+         .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -458,7 +458,7 @@ TEST_CASE("CompareEnum: non-DictRef slots all sort tail-equal under a rank table
     batch.newKeys.emplace_back("category");
     table.AppendBatch(std::move(batch));
 
-    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Enumeration);
+    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Enumeration);
     const KeyId categoryKey = keys.Find("category");
     REQUIRE(categoryKey != INVALID_KEY_ID);
     const EnumDictionary *dict = table.EnumDictionaries().Find(categoryKey);
@@ -514,7 +514,7 @@ TEST_CASE("CompareRows on enum column without rank falls back to string compare"
         {.header = "category",
          .keys = {"category"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::Enumeration,
+         .type = ColumnType::Enumeration,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -551,7 +551,7 @@ TEST_CASE("CompareRows on Boolean columns orders false < true and sinks non-bool
         std::monostate{},
         std::string("not-a-bool"), // wrong-type slot joins the tail bucket
     };
-    const LogTable table = BuildSingleColumnTable(fixture, "flag", LogConfiguration::Type::Boolean, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "flag", ColumnType::Boolean, values);
 
     CHECK(SignOf(CompareRows(table, 0, 1, 0)) == 1);  // true > false
     CHECK(SignOf(CompareRows(table, 1, 0, 0)) == -1); // false < true
@@ -572,7 +572,7 @@ TEST_CASE("CompareRows on String/Any columns compares byte-wise", "[log_compare]
         std::string("charlie"),
         std::monostate{},
     };
-    const LogTable table = BuildSingleColumnTable(fixture, "label", LogConfiguration::Type::Any, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "label", ColumnType::Any, values);
 
     CHECK(SignOf(CompareRows(table, 0, 1, 0)) == 1);  // delta > alpha
     CHECK(SignOf(CompareRows(table, 2, 0, 0)) == -1); // charlie < delta
@@ -585,7 +585,7 @@ TEST_CASE("CompareRows is total: a<b iff b>a, and a=a", "[log_compare][propertie
     const TestLogFile fixture("log_compare_total_order.json");
     fixture.Write("");
     const std::vector<LogValue> values = {int64_t{42}, int64_t{-7}, std::monostate{}, int64_t{42}};
-    const LogTable table = BuildSingleColumnTable(fixture, "n", LogConfiguration::Type::Integer, values);
+    const LogTable table = BuildSingleColumnTable(fixture, "n", ColumnType::Integer, values);
 
     for (size_t a = 0; a < table.RowCount(); ++a)
     {
@@ -616,7 +616,7 @@ TEST_CASE(
         {.header = "level",
          .keys = {"level"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::Level,
+         .type = ColumnType::Level,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -638,7 +638,7 @@ TEST_CASE(
     batch.newKeys.emplace_back("level");
     table.AppendBatch(std::move(batch));
 
-    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Level);
+    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
     // Info(1) < Warn(0) < Error(2) < Fatal(3); the qux row joins the tail.
     CHECK(SignOf(CompareRows(table, 1, 0, 0)) == -1); // INFO < WARN
     CHECK(SignOf(CompareRows(table, 0, 2, 0)) == -1); // WARN < ERROR
@@ -666,7 +666,7 @@ TEST_CASE(
         {.header = "level",
          .keys = {"level"},
          .printFormat = "{}",
-         .type = LogConfiguration::Type::Level,
+         .type = ColumnType::Level,
          .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
@@ -694,7 +694,7 @@ TEST_CASE(
     batch.newKeys.emplace_back("level");
     table.AppendBatch(std::move(batch));
 
-    REQUIRE(table.Configuration().Configuration().columns[0].type == LogConfiguration::Type::Level);
+    REQUIRE(table.Configuration().Configuration().columns[0].type == ColumnType::Level);
 
     const std::vector<size_t> logRows = {0, 1, 2, 3, 4};
     {

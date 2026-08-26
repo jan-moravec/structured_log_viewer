@@ -26,34 +26,34 @@ namespace
 struct TypeChoice
 {
     QString label;
-    loglib::LogConfiguration::Type type;
+    loglib::ColumnType type;
     bool autoDetect;
 };
 
 const std::vector<TypeChoice> &TypeChoices()
 {
     static const std::vector<TypeChoice> TYPE_CHOICES = {
-        {.label = QStringLiteral("Auto-detect"), .type = loglib::LogConfiguration::Type::Any, .autoDetect = true},
+        {.label = QStringLiteral("Auto-detect"), .type = loglib::ColumnType::Any, .autoDetect = true},
         {.label = QStringLiteral("Any (treat as string)"),
-         .type = loglib::LogConfiguration::Type::Any,
+         .type = loglib::ColumnType::Any,
          .autoDetect = false},
-        {.label = QStringLiteral("String"), .type = loglib::LogConfiguration::Type::String, .autoDetect = false},
-        {.label = QStringLiteral("Boolean"), .type = loglib::LogConfiguration::Type::Boolean, .autoDetect = false},
-        {.label = QStringLiteral("Integer"), .type = loglib::LogConfiguration::Type::Integer, .autoDetect = false},
+        {.label = QStringLiteral("String"), .type = loglib::ColumnType::String, .autoDetect = false},
+        {.label = QStringLiteral("Boolean"), .type = loglib::ColumnType::Boolean, .autoDetect = false},
+        {.label = QStringLiteral("Integer"), .type = loglib::ColumnType::Integer, .autoDetect = false},
         {.label = QStringLiteral("Floating-point"),
-         .type = loglib::LogConfiguration::Type::Floating,
+         .type = loglib::ColumnType::Floating,
          .autoDetect = false},
-        {.label = QStringLiteral("Number"), .type = loglib::LogConfiguration::Type::Number, .autoDetect = false},
-        {.label = QStringLiteral("Time"), .type = loglib::LogConfiguration::Type::Time, .autoDetect = false},
+        {.label = QStringLiteral("Number"), .type = loglib::ColumnType::Number, .autoDetect = false},
+        {.label = QStringLiteral("Time"), .type = loglib::ColumnType::Time, .autoDetect = false},
         {.label = QStringLiteral("Enumeration"),
-         .type = loglib::LogConfiguration::Type::Enumeration,
+         .type = loglib::ColumnType::Enumeration,
          .autoDetect = false},
-        {.label = QStringLiteral("Level"), .type = loglib::LogConfiguration::Type::Level, .autoDetect = false},
+        {.label = QStringLiteral("Level"), .type = loglib::ColumnType::Level, .autoDetect = false},
     };
     return TYPE_CHOICES;
 }
 
-int FindTypeChoiceIndex(loglib::LogConfiguration::Type type, bool autoDetect)
+int FindTypeChoiceIndex(loglib::ColumnType type, bool autoDetect)
 {
     const auto &choices = TypeChoices();
     for (size_t i = 0; i < choices.size(); ++i)

@@ -251,7 +251,7 @@ bool AnchorManager::ClearAll()
     return true;
 }
 
-std::size_t AnchorManager::Replace(const std::vector<loglib::LogConfiguration::AnchorEntry> &entries)
+std::size_t AnchorManager::Replace(const std::vector<loglib::AnchorEntry> &entries)
 {
     // Snapshot previous state so an identical reload stays silent.
     std::unordered_map<Key, Value, KeyHash> previous;
@@ -263,7 +263,7 @@ std::size_t AnchorManager::Replace(const std::vector<loglib::LogConfiguration::A
     std::unordered_map<Key, bool, KeyHash> clampedByKey;
     mAnchors.reserve(entries.size());
     clampedByKey.reserve(entries.size());
-    for (const loglib::LogConfiguration::AnchorEntry &entry : entries)
+    for (const loglib::AnchorEntry &entry : entries)
     {
         // Clamp unknown palette slots instead of dropping the
         // anchor: the bookmark + note are what the user cares
@@ -310,9 +310,9 @@ std::optional<std::string> AnchorManager::NoteFor(const Key &key) const
     return it->second.note;
 }
 
-std::vector<loglib::LogConfiguration::AnchorEntry> AnchorManager::BuildSortedEntries(bool dropRuntimeOnly) const
+std::vector<loglib::AnchorEntry> AnchorManager::BuildSortedEntries(bool dropRuntimeOnly) const
 {
-    std::vector<loglib::LogConfiguration::AnchorEntry> out;
+    std::vector<loglib::AnchorEntry> out;
     out.reserve(mAnchors.size());
     for (const auto &[key, value] : mAnchors)
     {
@@ -321,7 +321,7 @@ std::vector<loglib::LogConfiguration::AnchorEntry> AnchorManager::BuildSortedEnt
             continue;
         }
         out.push_back(
-            loglib::LogConfiguration::AnchorEntry{
+            loglib::AnchorEntry{
                 .locator = key.locator,
                 .lineId = key.lineId,
                 .colorIndex = value.colorIndex,
@@ -330,7 +330,7 @@ std::vector<loglib::LogConfiguration::AnchorEntry> AnchorManager::BuildSortedEnt
         );
     }
     std::ranges::sort(
-        out, [](const loglib::LogConfiguration::AnchorEntry &lhs, const loglib::LogConfiguration::AnchorEntry &rhs) {
+        out, [](const loglib::AnchorEntry &lhs, const loglib::AnchorEntry &rhs) {
             if (lhs.locator != rhs.locator)
             {
                 return lhs.locator < rhs.locator;
@@ -341,12 +341,12 @@ std::vector<loglib::LogConfiguration::AnchorEntry> AnchorManager::BuildSortedEnt
     return out;
 }
 
-std::vector<loglib::LogConfiguration::AnchorEntry> AnchorManager::Entries() const
+std::vector<loglib::AnchorEntry> AnchorManager::Entries() const
 {
     return BuildSortedEntries(/*dropRuntimeOnly=*/true);
 }
 
-std::vector<loglib::LogConfiguration::AnchorEntry> AnchorManager::EntriesIncludingRuntimeOnly() const
+std::vector<loglib::AnchorEntry> AnchorManager::EntriesIncludingRuntimeOnly() const
 {
     return BuildSortedEntries(/*dropRuntimeOnly=*/false);
 }

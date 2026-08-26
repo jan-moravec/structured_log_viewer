@@ -111,7 +111,7 @@ std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguratio
  * restrict the back-fill to a slice of a larger vector (e.g. only the rows
  * just appended in a streaming batch). Returns per-line failure messages.
  */
-std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column &column, std::span<LogLine> lines);
+std::vector<std::string> BackfillTimestampColumn(const Column &column, std::span<LogLine> lines);
 
 /**
  * @brief Tag selecting the `void` overload that skips per-line "Failed to parse"
@@ -124,7 +124,7 @@ enum class BackfillErrors : uint8_t
 
 /** @brief `void` overload of `BackfillTimestampColumn` that drops error messages. */
 void BackfillTimestampColumn(
-    const LogConfiguration::Column &column, std::span<LogLine> lines, BackfillErrors discardErrors
+    const Column &column, std::span<LogLine> lines, BackfillErrors discardErrors
 );
 
 int64_t TimeStampToLocalMillisecondsSinceEpoch(TimeStamp timeStamp, const TimeZoneContext &timeZone);

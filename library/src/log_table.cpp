@@ -65,7 +65,7 @@ constexpr int64_t DEMOTE_TELEMETRY_LOG_THRESHOLD_US = 1000;
 /// demotes to `Type::String` (via lumped `wrongTypeSlots`), not
 /// `Boolean`. If that case matters, route the demote through here
 /// using `EnumColumnHealth`'s per-tag counters.
-LogConfiguration::Type RouteNoStringBail(
+ColumnType RouteNoStringBail(
     size_t intObservations, size_t uintObservations, size_t doubleObservations, size_t boolObservations
 ) noexcept
 {
@@ -75,37 +75,37 @@ LogConfiguration::Type RouteNoStringBail(
     const bool sawNumeric = sawIntegral || sawDouble;
     if (sawBool && sawNumeric)
     {
-        return LogConfiguration::Type::Any;
+        return ColumnType::Any;
     }
     if (sawBool)
     {
-        return LogConfiguration::Type::Boolean;
+        return ColumnType::Boolean;
     }
     if (sawIntegral && sawDouble)
     {
-        return LogConfiguration::Type::Number;
+        return ColumnType::Number;
     }
     if (sawIntegral)
     {
-        return LogConfiguration::Type::Integer;
+        return ColumnType::Integer;
     }
     if (sawDouble)
     {
-        return LogConfiguration::Type::Floating;
+        return ColumnType::Floating;
     }
-    return LogConfiguration::Type::Any;
+    return ColumnType::Any;
 }
 
-bool IsEnumPassEligible(const LogConfiguration::Column &column) noexcept
+bool IsEnumPassEligible(const Column &column) noexcept
 {
     // `Enumeration` / `Level` always need per-batch encoding (even
     // user-pinned dict columns keep accumulating `DictRef`s). `Any`
     // only enters the candidate scan when `autoDetect` is on.
-    if (column.type == LogConfiguration::Type::Enumeration || column.type == LogConfiguration::Type::Level)
+    if (column.type == ColumnType::Enumeration || column.type == ColumnType::Level)
     {
         return true;
     }
-    return column.type == LogConfiguration::Type::Any && column.autoDetect;
+    return column.type == ColumnType::Any && column.autoDetect;
 }
 
 } // namespace
@@ -385,7 +385,7 @@ void LogTable::AppendBatch(StreamedBatch batch)
     for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
     {
         const auto &column = columns[columnIndex];
-        if (column.type != LogConfiguration::Type::Time)
+        if (column.type != ColumnType::Time)
         {
             continue;
         }
@@ -758,7 +758,7 @@ void LogTable::RefreshSnapshotTimeKeys()
     const auto &columns = mConfiguration.Configuration().columns;
     for (const auto &column : columns)
     {
-        if (column.type != LogConfiguration::Type::Time)
+        if (column.type != ColumnType::Time)
         {
             continue;
         }
@@ -786,7 +786,7 @@ void LogTable::RefreshSnapshotEnumKeys()
     for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
     {
         const auto &column = columns[columnIndex];
-        if (column.type != LogConfiguration::Type::Enumeration && column.type != LogConfiguration::Type::Level)
+        if (column.type != ColumnType::Enumeration && column.type != ColumnType::Level)
         {
             continue;
         }
@@ -816,7 +816,7 @@ void LogTable::RefreshSnapshotEnumKeys()
         }
         // Seed the rank cache for saved `Type::Level` columns so it's
         // ready by the time the first encode pass runs.
-        if (column.type == LogConfiguration::Type::Level)
+        if (column.type == ColumnType::Level)
         {
             RefreshLevelRankCache(columnIndex);
         }
@@ -914,9 +914,9 @@ namespace
 /// `true` iff @p tag is a valid representation of @p declaredType.
 /// Mirrors the variants accepted by the sort / filter comparators in
 /// `log_compare.cpp` / `log_filter.cpp`; keep the two in sync.
-bool TagMatchesType(loglib::CompactTag tag, LogConfiguration::Type declaredType) noexcept
+bool TagMatchesType(loglib::CompactTag tag, ColumnType declaredType) noexcept
 {
-    using Type = LogConfiguration::Type;
+    using Type = ColumnType;
     using Tag = loglib::CompactTag;
     if (tag == Tag::Monostate)
     {
@@ -1067,7 +1067,7 @@ void LogTable::RunEnumPassForAppendBatch(
         // dictionary-cap overflow demotes immediately. Level columns
         // share the encoding path; their rank cache is refreshed below
         // to pick up any newly-added dictionary entries.
-        if (column.type == LogConfiguration::Type::Enumeration || column.type == LogConfiguration::Type::Level)
+        if (column.type == ColumnType::Enumeration || column.type == ColumnType::Level)
         {
             resolveKeys(columnIndex);
             if (resolvedKeys.empty())
@@ -1104,7 +1104,7 @@ void LogTable::RunEnumPassForAppendBatch(
             // Level-promotion re-check: re-run only on dict growth
             // plus name match so unrelated columns pay nothing.
             // Skipped on user-pinned Enumeration columns.
-            if (column.type == LogConfiguration::Type::Enumeration && column.autoDetect)
+            if (column.type == ColumnType::Enumeration && column.autoDetect)
             {
                 const EnumDictionary *dictAfter = mEnumDictionaries.Find(resolvedKeys.front());
                 const size_t newDictSize = (dictAfter != nullptr) ? dictAfter->Size() : 0;
@@ -1117,7 +1117,7 @@ void LogTable::RunEnumPassForAppendBatch(
             // flipped it to `Level`. The index is still valid
             // (the bubble is queued, not applied inline).
             const auto &columnAfterMaybe = columns[columnIndex];
-            if (columnAfterMaybe.type == LogConfiguration::Type::Level)
+            if (columnAfterMaybe.type == ColumnType::Level)
             {
                 // Idempotent: a just-promoted column's cache is already
                 // populated, an existing one picks up this batch's new
@@ -1214,7 +1214,7 @@ void LogTable::RunEnumPassForAppendBatch(
         if (tracker.killed)
         {
             // Too varied to enumerate; route to `string`.
-            mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::String);
+            mConfiguration.SetColumnType(columnIndex, ColumnType::String);
             mEnumTrackers.erase(trackerIt);
             continue;
         }
@@ -1257,14 +1257,14 @@ void LogTable::RunEnumPassForAppendBatch(
             }
             else if (highCardinality)
             {
-                mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::String);
+                mConfiguration.SetColumnType(columnIndex, ColumnType::String);
                 mEnumTrackers.erase(trackerIt);
             }
         }
     }
 }
 
-LogConfiguration::Type LogTable::RescanColumnForAutoDetection(size_t columnIndex)
+ColumnType LogTable::RescanColumnForAutoDetection(size_t columnIndex)
 {
     // Static-file Auto-detect path. Builds a fresh tracker, walks
     // every existing row, then applies `FinalizeAutoDetection`'s
@@ -1279,11 +1279,11 @@ LogConfiguration::Type LogTable::RescanColumnForAutoDetection(size_t columnIndex
     const auto &columns = mConfiguration.Configuration().columns;
     if (columnIndex >= columns.size())
     {
-        return LogConfiguration::Type::Any;
+        return ColumnType::Any;
     }
     {
         const auto &column = columns[columnIndex];
-        if (column.type != LogConfiguration::Type::Any || !column.autoDetect || column.keys.empty())
+        if (column.type != ColumnType::Any || !column.autoDetect || column.keys.empty())
         {
             return column.type;
         }
@@ -1293,7 +1293,7 @@ LogConfiguration::Type LogTable::RescanColumnForAutoDetection(size_t columnIndex
     {
         // Nothing to scan: stay in candidate state for the next
         // batch / re-stream.
-        return LogConfiguration::Type::Any;
+        return ColumnType::Any;
     }
 
     std::vector<KeyId> resolvedKeys;
@@ -1307,7 +1307,7 @@ LogConfiguration::Type LogTable::RescanColumnForAutoDetection(size_t columnIndex
     }
     if (resolvedKeys.empty())
     {
-        return LogConfiguration::Type::Any;
+        return ColumnType::Any;
     }
 
     // Drop any stale tracker so an earlier streaming kill doesn't
@@ -1362,7 +1362,7 @@ LogConfiguration::Type LogTable::RescanColumnForAutoDetection(size_t columnIndex
 
     if (tracker.killed)
     {
-        mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::String);
+        mConfiguration.SetColumnType(columnIndex, ColumnType::String);
     }
     else if (tracker.size > 0 && tracker.size <= mEnumValueCap && tracker.presenceCount >= 2)
     {
@@ -1396,7 +1396,7 @@ bool LogTable::FinalizeAutoDetection()
         for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
         {
             const auto &column = columns[columnIndex];
-            if (column.type != LogConfiguration::Type::Any || !column.autoDetect || column.keys.empty())
+            if (column.type != ColumnType::Any || !column.autoDetect || column.keys.empty())
             {
                 continue;
             }
@@ -1414,7 +1414,7 @@ bool LogTable::FinalizeAutoDetection()
             const EnumCandidateTracker &tracker = trackerIt->second;
             if (tracker.killed)
             {
-                mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::String);
+                mConfiguration.SetColumnType(columnIndex, ColumnType::String);
                 continue;
             }
             if (tracker.size > 0 && tracker.size <= mEnumValueCap && tracker.presenceCount >= 2)
@@ -1454,7 +1454,7 @@ bool LogTable::FinalizeAutoDetection()
         for (size_t columnIndex = 0; columnIndex < columnsForDemote.size(); ++columnIndex)
         {
             const auto &column = columnsForDemote[columnIndex];
-            if ((column.type != LogConfiguration::Type::Enumeration && column.type != LogConfiguration::Type::Level) ||
+            if ((column.type != ColumnType::Enumeration && column.type != ColumnType::Level) ||
                 !column.autoDetect || column.keys.empty())
             {
                 continue;
@@ -1487,7 +1487,7 @@ bool LogTable::FinalizeAutoDetection()
     return promoted;
 }
 
-void LogTable::OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Type previousType)
+void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousType)
 {
     const auto &columns = mConfiguration.Configuration().columns;
     if (columnIndex >= columns.size())
@@ -1496,7 +1496,7 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Typ
     }
     // Re-resolve via a fresh snapshot at each access -- the type
     // mutations below would otherwise risk a stale reference.
-    const auto snapshot = [this, columnIndex]() -> LogConfiguration::Column {
+    const auto snapshot = [this, columnIndex]() -> Column {
         return mConfiguration.Configuration().columns[columnIndex];
     };
 
@@ -1521,7 +1521,7 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Typ
     const auto column = snapshot();
     switch (column.type)
     {
-    case LogConfiguration::Type::Time:
+    case ColumnType::Time:
     {
         // Seed default formats so an editor-pinned Time column
         // actually parses (auto-detected ones already ship with them).
@@ -1540,8 +1540,8 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Typ
         );
         break;
     }
-    case LogConfiguration::Type::Enumeration:
-    case LogConfiguration::Type::Level:
+    case ColumnType::Enumeration:
+    case ColumnType::Level:
     {
         // Seed the dictionary, encode every existing slot as DictRef,
         // and accrue length / wrong-type observations against the
@@ -1565,7 +1565,7 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Typ
         // within-family edits so the user doesn't lose evidence on
         // a cosmetic toggle.
         const bool previousWasEnumLike =
-            previousType == LogConfiguration::Type::Enumeration || previousType == LogConfiguration::Type::Level;
+            previousType == ColumnType::Enumeration || previousType == ColumnType::Level;
         if (!previousWasEnumLike)
         {
             health = EnumColumnHealth{};
@@ -1580,25 +1580,25 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Typ
             DemoteColumnFromEnum(columnIndex, /*recordForBatch=*/false);
             return;
         }
-        if (column.type == LogConfiguration::Type::Level)
+        if (column.type == ColumnType::Level)
         {
             RefreshLevelRankCache(columnIndex);
         }
         break;
     }
-    case LogConfiguration::Type::Any:
-    case LogConfiguration::Type::String:
-    case LogConfiguration::Type::Boolean:
-    case LogConfiguration::Type::Integer:
-    case LogConfiguration::Type::Floating:
-    case LogConfiguration::Type::Number:
+    case ColumnType::Any:
+    case ColumnType::String:
+    case ColumnType::Boolean:
+    case ColumnType::Integer:
+    case ColumnType::Floating:
+    case ColumnType::Number:
     {
         // Leaving `Type::Time` -- drop the strftime formats we
         // seeded on entry so the new type's `fmt::vformat` doesn't
         // render them as literal text on every row. Existing
         // `Timestamp` slots stay (they format via `TimeZoneContext::Format`)
         // until something rewrites them.
-        if (previousType == LogConfiguration::Type::Time)
+        if (previousType == ColumnType::Time)
         {
             mConfiguration.SetColumnPrintFormat(columnIndex, "{}");
             mConfiguration.SetColumnParseFormats(columnIndex, {});
@@ -1622,7 +1622,7 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, LogConfiguration::Typ
             // accepts the call, then restore the user's pick.
             // Editor-driven, so skip the batch demote-record.
             const auto targetType = column.type;
-            mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::Enumeration);
+            mConfiguration.SetColumnType(columnIndex, ColumnType::Enumeration);
             DemoteColumnFromEnum(columnIndex, /*recordForBatch=*/false);
             mConfiguration.SetColumnType(columnIndex, targetType);
         }
@@ -1713,7 +1713,7 @@ bool LogTable::EncodeColumnRange(
 }
 
 bool LogTable::EncodeColumnRangeAsEnum(
-    const LogConfiguration::Column &column, size_t rowBegin, size_t rowEnd, EnumColumnHealth &health
+    const Column &column, size_t rowBegin, size_t rowEnd, EnumColumnHealth &health
 )
 {
     std::vector<KeyId> keyIds;
@@ -1741,7 +1741,7 @@ void LogTable::PromoteColumnToEnum(size_t columnIndex)
     }
     {
         const auto &snapshot = mConfiguration.Configuration().columns[columnIndex];
-        if (snapshot.type == LogConfiguration::Type::Enumeration || snapshot.type == LogConfiguration::Type::Level)
+        if (snapshot.type == ColumnType::Enumeration || snapshot.type == ColumnType::Level)
         {
             return;
         }
@@ -1752,7 +1752,7 @@ void LogTable::PromoteColumnToEnum(size_t columnIndex)
     const std::vector<std::string> columnKeys = mConfiguration.Configuration().columns[columnIndex].keys;
     const std::string headerKey = mConfiguration.Configuration().columns[columnIndex].header;
 
-    mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::Enumeration);
+    mConfiguration.SetColumnType(columnIndex, ColumnType::Enumeration);
     // Pre-create canonical dictionary and alias-wire so the encode hot
     // path can skip alias bookkeeping.
     KeyId canonicalKey = INVALID_KEY_ID;
@@ -1819,7 +1819,7 @@ void LogTable::DemoteColumnFromEnum(size_t columnIndex, bool recordForBatch)
         return;
     }
     const auto &column = columns[columnIndex];
-    if (column.type != LogConfiguration::Type::Enumeration && column.type != LogConfiguration::Type::Level)
+    if (column.type != ColumnType::Enumeration && column.type != ColumnType::Level)
     {
         return;
     }
@@ -1891,7 +1891,7 @@ void LogTable::DemoteColumnFromEnum(size_t columnIndex, bool recordForBatch)
     // Route to `Type::String` (terminal): a dictionary or
     // health-budget breach is a string-cardinality conclusion, not
     // "we don't know".
-    mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::String);
+    mConfiguration.SetColumnType(columnIndex, ColumnType::String);
 
     // Health and rank cache are keyed on the canonical `KeyId`, same
     // as the dict registry.
@@ -1924,10 +1924,10 @@ void LogTable::MaybePromoteToLevel(size_t columnIndex)
     }
     // Re-read the column on each access so the function tolerates the
     // `SetColumnType` mutation below.
-    const auto snapshotColumn = [this, columnIndex]() -> const LogConfiguration::Column & {
+    const auto snapshotColumn = [this, columnIndex]() -> const Column & {
         return mConfiguration.Configuration().columns[columnIndex];
     };
-    if (snapshotColumn().type != LogConfiguration::Type::Enumeration)
+    if (snapshotColumn().type != ColumnType::Enumeration)
     {
         return;
     }
@@ -1989,7 +1989,7 @@ void LogTable::MaybePromoteToLevel(size_t columnIndex)
         return;
     }
 
-    mConfiguration.SetColumnType(columnIndex, LogConfiguration::Type::Level);
+    mConfiguration.SetColumnType(columnIndex, ColumnType::Level);
     RefreshLevelRankCache(columnIndex);
     // Queue by `KeyId` (stable across other bubbles) so the
     // streaming consumer can wrap the move in `begin/endMoveColumns`.
@@ -2052,7 +2052,7 @@ void LogTable::RefreshLevelRankCache(size_t columnIndex)
         return;
     }
     const auto &column = columns[columnIndex];
-    if (column.type != LogConfiguration::Type::Level)
+    if (column.type != ColumnType::Level)
     {
         return;
     }
@@ -2116,7 +2116,7 @@ std::optional<LogLevel> LogTable::GetDisplayLevelForRow(size_t row, size_t colum
         return std::nullopt;
     }
     const auto &column = columns[columnIndex];
-    if (column.type != LogConfiguration::Type::Level || column.keys.empty())
+    if (column.type != ColumnType::Level || column.keys.empty())
     {
         return std::nullopt;
     }
@@ -2153,7 +2153,7 @@ const std::vector<LogLevel> *LogTable::LevelRankCache(size_t columnIndex) const 
         return nullptr;
     }
     const auto &column = columns[columnIndex];
-    if (column.type != LogConfiguration::Type::Level || column.keys.empty())
+    if (column.type != ColumnType::Level || column.keys.empty())
     {
         return nullptr;
     }

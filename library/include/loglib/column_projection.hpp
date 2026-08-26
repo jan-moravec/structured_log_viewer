@@ -30,7 +30,7 @@ public:
      *
      * @param columns Configuration columns in display order.
      */
-    explicit ColumnProjection(std::span<const LogConfiguration::Column> columns);
+    explicit ColumnProjection(std::span<const Column> columns);
 
     /**
      * @brief Projects @p configuration.columns to visible indices.

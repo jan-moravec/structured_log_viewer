@@ -96,9 +96,9 @@ std::vector<TimeColumnSpec> BuildTimeColumnSpecs(KeyIndex &keys, const LogConfig
     {
         return result;
     }
-    for (const LogConfiguration::Column &column : configuration->columns)
+    for (const Column &column : configuration->columns)
     {
-        if (column.type != LogConfiguration::Type::Time)
+        if (column.type != ColumnType::Time)
         {
             continue;
         }

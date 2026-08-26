@@ -215,7 +215,7 @@ public:
 /// callers set the note cell separately after this call.
 void PopulateAnchorCellForEntry(
     QTreeWidgetItem *item,
-    const loglib::LogConfiguration::AnchorEntry &entry,
+    const loglib::AnchorEntry &entry,
     const LogModel *model,
     ThemeControl *theme,
     int swatchPx
@@ -878,7 +878,7 @@ void AnchorsDock::OnAnchorChanged(const AnchorManager::Key &key)
     // changed, on insert the new item starts empty (matching what
     // `SetAnchor` seeds); the note flow goes through
     // `OnAnchorNoteChanged` instead.
-    const loglib::LogConfiguration::AnchorEntry entry{
+    const loglib::AnchorEntry entry{
         .locator = key.locator,
         .lineId = key.lineId,
         .colorIndex = *colourOpt,

@@ -434,7 +434,7 @@ namespace
 /// overloads. Returns `false` when @p lines is empty, in which case the
 /// caller should bail out (the spec arrays are not built).
 bool MakeBackfillState(
-    const LogConfiguration::Column &column,
+    const Column &column,
     std::span<LogLine> lines,
     std::array<internal::TimeColumnSpec, 1> &specsOut,
     std::vector<std::optional<LastValidTimestampParse>> &lastValidOut,
@@ -486,7 +486,7 @@ std::string_view OwnedArenaForBackfill(const LogLine & /*line*/) noexcept
 
 } // namespace
 
-std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column &column, std::span<LogLine> lines)
+std::vector<std::string> BackfillTimestampColumn(const Column &column, std::span<LogLine> lines)
 {
     std::vector<std::string> errors;
     std::array<internal::TimeColumnSpec, 1> specs;
@@ -514,7 +514,7 @@ std::vector<std::string> BackfillTimestampColumn(const LogConfiguration::Column 
 }
 
 void BackfillTimestampColumn(
-    const LogConfiguration::Column &column, std::span<LogLine> lines, BackfillErrors discardErrors
+    const Column &column, std::span<LogLine> lines, BackfillErrors discardErrors
 )
 {
     static_cast<void>(discardErrors);
@@ -540,7 +540,7 @@ std::vector<std::string> ParseTimestamps(LogData &logData, const LogConfiguratio
 
     for (const auto &column : configuration.columns)
     {
-        if (column.type == LogConfiguration::Type::Time)
+        if (column.type == ColumnType::Time)
         {
             auto columnErrors = BackfillTimestampColumn(column, logData.Lines());
             if (!columnErrors.empty())

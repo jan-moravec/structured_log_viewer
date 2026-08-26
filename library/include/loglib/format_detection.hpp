@@ -19,7 +19,7 @@ namespace loglib
  */
 struct DetectedFormat
 {
-    LogConfiguration::Source::Format format = LogConfiguration::Source::Format::Json;
+    Source::Format format = Source::Format::Json;
     std::string regexPattern;
 };
 
@@ -75,7 +75,7 @@ struct DetectedFormat
  * without depending on the app layer.
  */
 [[nodiscard]] std::unique_ptr<LogParser> MakeParserForFormat(
-    LogConfiguration::Source::Format format, std::string_view regexPattern = {}
+    Source::Format format, std::string_view regexPattern = {}
 );
 
 } // namespace loglib

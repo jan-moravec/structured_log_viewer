@@ -435,7 +435,7 @@ struct AnchorMatchSlot
 /// Anchor lookup table sized by anchor count, not row count.
 using AnchorWantedSet = std::unordered_map<AnchorLookupKey, AnchorMatchSlot, AnchorLookupKeyHash>;
 
-AnchorWantedSet BuildAnchorWantedSet(const std::vector<LogConfiguration::AnchorEntry> &anchors)
+AnchorWantedSet BuildAnchorWantedSet(const std::vector<AnchorEntry> &anchors)
 {
     AnchorWantedSet wanted;
     wanted.reserve(anchors.size());
@@ -513,7 +513,7 @@ void RemapAnchors(
     AnchorWantedSet wanted = BuildAnchorWantedSet(configuration.anchors);
     PopulateAnchorMatches(wanted, lines, options);
 
-    std::vector<LogConfiguration::AnchorEntry> remapped;
+    std::vector<AnchorEntry> remapped;
     remapped.reserve(configuration.anchors.size());
     for (const auto &anchor : configuration.anchors)
     {
@@ -540,7 +540,7 @@ void NormalizeTimeColumnParseFormats(LogConfiguration &configuration)
 {
     for (auto &column : configuration.columns)
     {
-        if (column.type != LogConfiguration::Type::Time)
+        if (column.type != ColumnType::Time)
         {
             continue;
         }
@@ -642,9 +642,9 @@ void WriteSessionBundle(
     const std::string displayLocator = internal::PathToUtf8(destination);
     const std::string dedupLocator = CanonicalizeSourceLocator(destination, options);
     RemapAnchors(embedded, lines, dedupLocator, options);
-    embedded.source = LogConfiguration::Source{
-        .kind = LogConfiguration::Source::Kind::File,
-        .format = LogConfiguration::Source::Format::Json,
+    embedded.source = Source{
+        .kind = Source::Kind::File,
+        .format = Source::Format::Json,
         .locators = {{displayLocator, dedupLocator}},
         .regexPattern = {},
     };

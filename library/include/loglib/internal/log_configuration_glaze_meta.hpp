@@ -119,7 +119,7 @@ template <> struct glz::meta<loglib::Column>
 };
 
 // A leaf of the filter tree. Column identity is a subset-match
-// against `LogConfiguration::Column::keys`, so leaves survive
+// against `Column::keys`, so leaves survive
 // `MoveColumn` and cross-source apply without any remap.
 template <> struct glz::meta<loglib::LeafRule>
 {

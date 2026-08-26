@@ -51,7 +51,7 @@ HighlightRuleSet::HighlightRuleSet(QObject *parent)
 
 HighlightRuleSet::~HighlightRuleSet() = default;
 
-const std::vector<loglib::LogConfiguration::HighlightRule> &HighlightRuleSet::Rules() const noexcept
+const std::vector<loglib::HighlightRule> &HighlightRuleSet::Rules() const noexcept
 {
     return mRules;
 }
@@ -91,7 +91,7 @@ const std::vector<int> &HighlightRuleSet::ResolvedColumnsForTest() const noexcep
 }
 
 int HighlightRuleSet::ResolveColumnByKeys(
-    const std::vector<std::string> &keys, const std::vector<loglib::LogConfiguration::Column> &columns
+    const std::vector<std::string> &keys, const std::vector<loglib::Column> &columns
 ) noexcept
 {
     // Thin wrapper over the shared factory helper so the public
@@ -100,9 +100,9 @@ int HighlightRuleSet::ResolveColumnByKeys(
 }
 
 std::optional<HighlightRuleSet::CompiledRule> HighlightRuleSet::CompileRule(
-    const loglib::LogConfiguration::HighlightRule &rule,
+    const loglib::HighlightRule &rule,
     int resolvedColumn,
-    const std::vector<loglib::LogConfiguration::Column> &columns,
+    const std::vector<loglib::Column> &columns,
     const loglib::LogTable *table
 )
 {
@@ -122,7 +122,7 @@ std::optional<HighlightRuleSet::CompiledRule> HighlightRuleSet::CompileRule(
 }
 
 void HighlightRuleSet::RecompileAll(
-    const std::vector<loglib::LogConfiguration::Column> &columns, const loglib::LogTable *table
+    const std::vector<loglib::Column> &columns, const loglib::LogTable *table
 )
 {
     // `mRowMatch` stores rule indices as `int16_t`; more than 32k
@@ -205,8 +205,8 @@ void HighlightRuleSet::RebuildAllMatches(const loglib::LogTable &table)
 }
 
 void HighlightRuleSet::SetRules(
-    std::vector<loglib::LogConfiguration::HighlightRule> rules,
-    const std::vector<loglib::LogConfiguration::Column> &columns,
+    std::vector<loglib::HighlightRule> rules,
+    const std::vector<loglib::Column> &columns,
     const loglib::LogTable *table
 )
 {
@@ -227,7 +227,7 @@ void HighlightRuleSet::SetRules(
 }
 
 void HighlightRuleSet::RebindColumns(
-    const std::vector<loglib::LogConfiguration::Column> &columns, const loglib::LogTable *table
+    const std::vector<loglib::Column> &columns, const loglib::LogTable *table
 )
 {
     if (mRules.empty())

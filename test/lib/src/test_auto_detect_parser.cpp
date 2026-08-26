@@ -251,7 +251,7 @@ TEST_CASE("AutoDetectParser (file path) uses DetectFormatForPath under the hood"
     const auto filePath = dir.Write("routing.log", "level=info message=first\nlevel=warn message=second\n");
 
     const loglib::DetectedFormat detected = loglib::DetectFormatForPath(filePath);
-    CHECK(detected.format == loglib::LogConfiguration::Source::Format::Logfmt);
+    CHECK(detected.format == loglib::Source::Format::Logfmt);
 }
 
 TEST_CASE("AutoDetectParser routes regex-template bytes to a regex parse", "[AutoDetectParser]")

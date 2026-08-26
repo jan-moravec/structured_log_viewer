@@ -41,9 +41,9 @@ constexpr int BUTTON_SPACING = 8;
 constexpr int BUTTON_MIN_WIDTH = 96;
 constexpr int ROW_VERTICAL_PADDING = 8;
 
-QString FormatType(loglib::LogConfiguration::Type type, bool autoDetect)
+QString FormatType(loglib::ColumnType type, bool autoDetect)
 {
-    using Type = loglib::LogConfiguration::Type;
+    using Type = loglib::ColumnType;
     QString base;
     switch (type)
     {

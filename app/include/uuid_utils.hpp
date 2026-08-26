@@ -72,9 +72,9 @@ namespace logapp
 /// Ensure every locator has a dedup key. Idempotent when keys are already
 /// populated. Used after loading session JSON that omitted
 /// `locatorDedupKeys`, and by test fixtures that set only display paths.
-inline void BackfillLocatorDedupKeys(loglib::LogConfiguration::Source &source)
+inline void BackfillLocatorDedupKeys(loglib::Source &source)
 {
-    for (loglib::LogConfiguration::SourceLocator &locator : source.locators)
+    for (loglib::SourceLocator &locator : source.locators)
     {
         if (!locator.dedupKey.empty())
         {
@@ -85,7 +85,7 @@ inline void BackfillLocatorDedupKeys(loglib::LogConfiguration::Source &source)
 }
 
 /// Optional overload. No-op when unset.
-inline void BackfillLocatorDedupKeys(std::optional<loglib::LogConfiguration::Source> &source)
+inline void BackfillLocatorDedupKeys(std::optional<loglib::Source> &source)
 {
     if (source.has_value())
     {

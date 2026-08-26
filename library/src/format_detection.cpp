@@ -28,11 +28,11 @@ std::optional<DetectedFormat> TryDetectFormatFromBytes(std::string_view sniffBuf
     struct Probe
     {
         LogFactory::Parser parser;
-        LogConfiguration::Source::Format format;
+        Source::Format format;
     };
     static constexpr Probe HEAD_PROBES[] = {
-        {.parser = LogFactory::Parser::Json, .format = LogConfiguration::Source::Format::Json},
-        {.parser = LogFactory::Parser::Logfmt, .format = LogConfiguration::Source::Format::Logfmt},
+        {.parser = LogFactory::Parser::Json, .format = Source::Format::Json},
+        {.parser = LogFactory::Parser::Logfmt, .format = Source::Format::Logfmt},
     };
     for (const Probe &probe : HEAD_PROBES)
     {
@@ -45,13 +45,13 @@ std::optional<DetectedFormat> TryDetectFormatFromBytes(std::string_view sniffBuf
     if (std::optional<RegexTemplate> tmpl = DetectRegexTemplateFromBytes(sniffBuffer); tmpl.has_value())
     {
         return DetectedFormat{
-            .format = LogConfiguration::Source::Format::Regex, .regexPattern = std::move(tmpl->pattern)
+            .format = Source::Format::Regex, .regexPattern = std::move(tmpl->pattern)
         };
     }
     if (const std::unique_ptr<LogParser> csv = LogFactory::Create(LogFactory::Parser::Csv);
         csv->IsValidBytes(sniffBuffer))
     {
-        return DetectedFormat{.format = LogConfiguration::Source::Format::Csv, .regexPattern = {}};
+        return DetectedFormat{.format = Source::Format::Csv, .regexPattern = {}};
     }
     return std::nullopt;
 }
@@ -71,21 +71,21 @@ DetectedFormat DetectFormatForPath(const std::filesystem::path &file)
     return DetectFormatFromBytes(head);
 }
 
-std::unique_ptr<LogParser> MakeParserForFormat(LogConfiguration::Source::Format format, std::string_view regexPattern)
+std::unique_ptr<LogParser> MakeParserForFormat(Source::Format format, std::string_view regexPattern)
 {
     switch (format)
     {
-    case LogConfiguration::Source::Format::Logfmt:
+    case Source::Format::Logfmt:
         return std::make_unique<LogfmtParser>();
-    case LogConfiguration::Source::Format::Csv:
+    case Source::Format::Csv:
         return std::make_unique<CsvParser>();
-    case LogConfiguration::Source::Format::Regex:
+    case Source::Format::Regex:
         // Pin the pattern on the parser instance directly rather
         // than relying on `ParserOptions::configuration->source->
         // regexPattern`: some callers pass an unrelated snapshot,
         // and the explicit-pattern ctor short-circuits the lookup.
         return std::make_unique<RegexParser>(std::string(regexPattern));
-    case LogConfiguration::Source::Format::Json:
+    case Source::Format::Json:
         return std::make_unique<JsonParser>();
     }
     return std::make_unique<JsonParser>();

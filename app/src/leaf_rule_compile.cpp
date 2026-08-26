@@ -25,7 +25,7 @@
 #include <vector>
 
 int ResolveLeafColumnByKeys(
-    const std::vector<std::string> &keys, const std::vector<loglib::LogConfiguration::Column> &columns
+    const std::vector<std::string> &keys, const std::vector<loglib::Column> &columns
 ) noexcept
 {
     if (keys.empty())
@@ -47,7 +47,7 @@ int ResolveLeafColumnByKeys(
     return -1;
 }
 
-loglib::LeafRule ToLeafRule(const loglib::LogConfiguration::HighlightRule &rule)
+loglib::LeafRule ToLeafRule(const loglib::HighlightRule &rule)
 {
     // Plain copy of shared payload; rendering fields (name,
     // enabled, colours, bold/italic) stay on `HighlightRule`.
@@ -67,7 +67,7 @@ loglib::LeafRule ToLeafRule(const loglib::LogConfiguration::HighlightRule &rule)
 std::optional<loglib::RowPredicate> CompileLeaf(
     const loglib::LeafRule &rule,
     int resolvedColumn,
-    const std::vector<loglib::LogConfiguration::Column> &columns,
+    const std::vector<loglib::Column> &columns,
     const loglib::LogTable *table
 )
 {
@@ -149,7 +149,7 @@ std::optional<loglib::RowPredicate> CompileLeaf(
         std::vector<std::string> expandedStorage;
         std::vector<std::string_view> selectedViews;
         const bool isLevelColumn =
-            column < columns.size() && columns[column].type == loglib::LogConfiguration::Type::Level;
+            column < columns.size() && columns[column].type == loglib::ColumnType::Level;
         if (isLevelColumn)
         {
             const std::vector<loglib::LogLevel> *ranks = table->LevelRankCache(column);
@@ -259,7 +259,7 @@ namespace
 // NOLINTNEXTLINE(misc-no-recursion)
 std::optional<loglib::CompiledFilterExpression> CompileNode(
     const loglib::FilterExpression &expr,
-    const std::vector<loglib::LogConfiguration::Column> &columns,
+    const std::vector<loglib::Column> &columns,
     const loglib::LogTable *table,
     std::vector<std::size_t> &referencedColumns
 )
@@ -408,7 +408,7 @@ std::optional<loglib::CompiledFilterExpression> CompileNode(
 
 loglib::CompiledFilterExpression CompileExpression(
     const loglib::FilterExpression &expression,
-    const std::vector<loglib::LogConfiguration::Column> &columns,
+    const std::vector<loglib::Column> &columns,
     const loglib::LogTable *table
 )
 {

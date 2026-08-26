@@ -634,7 +634,7 @@ public:
      *
      * @return The optional source descriptor.
      */
-    [[nodiscard]] const std::optional<loglib::LogConfiguration::Source> &CurrentSource() const noexcept
+    [[nodiscard]] const std::optional<loglib::Source> &CurrentSource() const noexcept
     {
         return mCurrentSource;
     }
@@ -646,7 +646,7 @@ public:
      *
      * @return The mutable optional source descriptor.
      */
-    [[nodiscard]] std::optional<loglib::LogConfiguration::Source> &MutableCurrentSource() noexcept
+    [[nodiscard]] std::optional<loglib::Source> &MutableCurrentSource() noexcept
     {
         return mCurrentSource;
     }
@@ -659,7 +659,7 @@ public:
      *
      * @param source New source descriptor.
      */
-    void SetCurrentSource(std::optional<loglib::LogConfiguration::Source> source);
+    void SetCurrentSource(std::optional<loglib::Source> source);
 
     /**
      * @brief Clears the current source descriptor.
@@ -1747,7 +1747,7 @@ private:
     QString mCustomTabLabel;
 
     // Source represented by the current model contents.
-    std::optional<loglib::LogConfiguration::Source> mCurrentSource;
+    std::optional<loglib::Source> mCurrentSource;
 
     // Pending open queue and categorized errors.
     QStringList mPendingOpenFiles;
