@@ -584,9 +584,7 @@ std::optional<FilterValidationFailure> ValidateFilterAgainstColumns(
 }
 
 // Extract stable column keys; out-of-range rows produce an inert empty key set.
-[[nodiscard]] std::vector<std::string> ColumnKeysForRow(
-    int rowIndex, const std::vector<loglib::Column> &columns
-)
+[[nodiscard]] std::vector<std::string> ColumnKeysForRow(int rowIndex, const std::vector<loglib::Column> &columns)
 {
     if (rowIndex < 0 || static_cast<size_t>(rowIndex) >= columns.size())
     {
@@ -6486,7 +6484,7 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
 
     mSession->SetStreamingFileName(QFileInfo(tailPath).fileName());
     auto &currentSource = mSession->MutableCurrentSource();
-        // Live-tail single-file open: pair display path and dedup key.
+    // Live-tail single-file open: pair display path and dedup key.
     {
         const std::string displayPath = logapp::CanonicalDisplayPath(tailPath).toStdString();
         const std::string dedupKey = logapp::CanonicalLocator(tailPath).toStdString();
@@ -6519,8 +6517,7 @@ void MainWindow::OpenLogStreamFromPath(const QString &file)
     // Wrap the producer in a `StreamLineSource` so each `LogLine` can
     // resolve its bytes via `LineSource::RawLine` later.
     auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(source));
-    const loglib::Source::Format format =
-        currentSource ? currentSource->format : loglib::Source::Format::Json;
+    const loglib::Source::Format format = currentSource ? currentSource->format : loglib::Source::Format::Json;
     std::string regexPattern = currentSource ? currentSource->regexPattern : std::string{};
     auto parserFactory = [format, regexPattern = std::move(regexPattern)]() {
         return MakeParserForFormat(format, regexPattern);
@@ -6656,8 +6653,7 @@ void MainWindow::ContinueLiveTailAfterPrefix(LogSession *origin)
     options.configuration = std::move(cfg);
 
     auto streamSource = std::make_unique<loglib::StreamLineSource>(filePath, std::move(producer));
-    const loglib::Source::Format format =
-        currentSource ? currentSource->format : loglib::Source::Format::Json;
+    const loglib::Source::Format format = currentSource ? currentSource->format : loglib::Source::Format::Json;
     std::string regexPattern = currentSource ? currentSource->regexPattern : std::string{};
     auto parserFactory = [format, regexPattern = std::move(regexPattern)]() {
         return MakeParserForFormat(format, regexPattern);
@@ -6993,8 +6989,7 @@ void MainWindow::OpenNetworkStream()
         return;
     }
     const auto &currentSource = mSession->CurrentSource();
-    const loglib::Source::Format format =
-        currentSource ? currentSource->format : loglib::Source::Format::Json;
+    const loglib::Source::Format format = currentSource ? currentSource->format : loglib::Source::Format::Json;
     std::string regexPattern = currentSource ? currentSource->regexPattern : std::string{};
     auto parserFactory = [format, regexPattern = std::move(regexPattern)]() {
         return MakeParserForFormat(format, regexPattern);
@@ -7246,9 +7241,9 @@ void MainWindow::UpdateWindowTitle()
     // are producer URIs, not paths). Bundles reach here as
     // `Kind::File` with the locator rebased to the local `.slvbundle`,
     // so the glyph resolves for them too.
-    if (const auto &currentSource = mSession->CurrentSource();
-        currentSource.has_value() && currentSource->kind == loglib::Source::Kind::File &&
-        !currentSource->locators.empty())
+    if (const auto &currentSource = mSession->CurrentSource(); currentSource.has_value() &&
+                                                               currentSource->kind == loglib::Source::Kind::File &&
+                                                               !currentSource->locators.empty())
     {
         setWindowFilePath(QString::fromStdString(currentSource->locators.front().displayPath));
     }
@@ -9968,9 +9963,9 @@ void MainWindow::OnEnumColumnsChangedApplyFilterRebuild(EnumColumnsChangeReason 
                 mSession->SetApplyingEnumRebuild(true);
                 const auto demoteGuard = qScopeGuard([this]() { mSession->SetApplyingEnumRebuild(false); });
                 const auto &columnsCfg = mModel->Configuration().columns;
-                const loglib::Column *demotedColumn =
-                    std::cmp_less(columnIndex, columnsCfg.size()) ? &columnsCfg[static_cast<size_t>(columnIndex)]
-                                                                  : nullptr;
+                const loglib::Column *demotedColumn = std::cmp_less(columnIndex, columnsCfg.size())
+                                                          ? &columnsCfg[static_cast<size_t>(columnIndex)]
+                                                          : nullptr;
                 for (auto &kv : mSession->MutableSimpleLeaves())
                 {
                     loglib::LeafRule &filter = kv.second;

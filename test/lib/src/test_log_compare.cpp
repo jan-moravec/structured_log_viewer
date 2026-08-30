@@ -310,8 +310,7 @@ TEST_CASE("CompareRows on Time column compares uint64_t slots numerically", "[lo
     fixtureBig.Write("");
     const uint64_t huge = static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 100;
     const std::vector<LogValue> bigValues = {t100, huge};
-    const LogTable bigTable =
-        BuildSingleColumnTable(fixtureBig, "ts", ColumnType::Time, bigValues, "{:%FT%T}");
+    const LogTable bigTable = BuildSingleColumnTable(fixtureBig, "ts", ColumnType::Time, bigValues, "{:%FT%T}");
     CHECK(SignOf(CompareRows(bigTable, 0, 1, 0)) == -1); // t100 < clamped uint
     CHECK(SignOf(CompareRows(bigTable, 1, 0, 0)) == 1);
 }
@@ -381,11 +380,7 @@ TEST_CASE("CompareRows on enum column with a monostate row uses tail-bucket orde
     FileLineSource *sourcePtr = source.get();
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "level",
-         .keys = {"level"},
-         .printFormat = "{}",
-         .type = ColumnType::Enumeration,
-         .parseFormats = {}}
+        {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
@@ -613,11 +608,7 @@ TEST_CASE(
     FileLineSource *sourcePtr = source.get();
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "level",
-         .keys = {"level"},
-         .printFormat = "{}",
-         .type = ColumnType::Level,
-         .parseFormats = {}}
+        {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Level, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
@@ -663,11 +654,7 @@ TEST_CASE(
     FileLineSource *sourcePtr = source.get();
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "level",
-         .keys = {"level"},
-         .printFormat = "{}",
-         .type = ColumnType::Level,
-         .parseFormats = {}}
+        {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Level, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);

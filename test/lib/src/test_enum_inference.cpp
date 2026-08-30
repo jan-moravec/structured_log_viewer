@@ -112,16 +112,18 @@ TEST_CASE("EnumInference encodes a pinned Enumeration column as DictRef", "[enum
     LogData data(std::move(source), std::move(lines), std::move(keys));
 
     LogConfiguration configuration;
-    configuration.columns.push_back(Column{
-        .header = "status",
-        .keys = {"status"},
-        .printFormat = "{}",
-        .type = ColumnType::Enumeration,
-        .parseFormats = {},
-        .visible = true,
-        .levelMapping = {},
-        .autoDetect = false,
-    });
+    configuration.columns.push_back(
+        Column{
+            .header = "status",
+            .keys = {"status"},
+            .printFormat = "{}",
+            .type = ColumnType::Enumeration,
+            .parseFormats = {},
+            .visible = true,
+            .levelMapping = {},
+            .autoDetect = false,
+        }
+    );
     const TestLogConfiguration cfgFile("enum_inference_encode_cfg.json");
     cfgFile.Write(configuration);
     LogConfigurationManager manager;
@@ -130,9 +132,9 @@ TEST_CASE("EnumInference encodes a pinned Enumeration column as DictRef", "[enum
     EnumInference inference;
     inference.RefreshSnapshot(data, manager);
     EnumColumnHealth health;
-    REQUIRE(inference.EncodeColumnRangeAsEnum(
-        data, manager.Configuration().columns[0], 0, data.Lines().size(), health
-    ));
+    REQUIRE(
+        inference.EncodeColumnRangeAsEnum(data, manager.Configuration().columns[0], 0, data.Lines().size(), health)
+    );
     CHECK(health.totalSlots == 2);
     CHECK(health.longValueSlots == 0);
     CHECK(health.wrongTypeSlots == 0);

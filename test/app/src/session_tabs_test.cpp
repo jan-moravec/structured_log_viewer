@@ -325,9 +325,7 @@ void AddContainsFilter(MainWindow &window, const QString &token)
     return rule;
 }
 
-[[nodiscard]] HighlightRulesEditorDraft MakeDirtyHighlightDraft(
-    const std::vector<loglib::HighlightRule> &committed
-)
+[[nodiscard]] HighlightRulesEditorDraft MakeDirtyHighlightDraft(const std::vector<loglib::HighlightRule> &committed)
 {
     HighlightRulesEditorDraft draft;
     draft.baseline = committed;
@@ -1567,8 +1565,10 @@ private slots:
         // sessions and no locator should leak.
         loglib::Source srcA;
         srcA.kind = loglib::Source::Kind::File;
-        srcA.locators = {{std::string{"/tmp/a.log"}, std::string{"/tmp/a.log"}},
-                         {std::string{"/tmp/a.log.1"}, std::string{"/tmp/a.log.1"}}};
+        srcA.locators = {
+            {std::string{"/tmp/a.log"}, std::string{"/tmp/a.log"}},
+            {std::string{"/tmp/a.log.1"}, std::string{"/tmp/a.log.1"}}
+        };
         sessionA->MutableCurrentSource() = srcA;
 
         loglib::Source srcB;

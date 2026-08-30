@@ -350,11 +350,7 @@ void LogConfigurationManager::Update(const LogData &logData)
             {
                 mConfiguration.columns.push_back(
                     Column{
-                        .header = key,
-                        .keys = {key},
-                        .printFormat = "{}",
-                        .type = ColumnType::Any,
-                        .parseFormats = {}
+                        .header = key, .keys = {key}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}
                     }
                 );
             }
@@ -388,13 +384,7 @@ void LogConfigurationManager::AppendKeys(const std::vector<std::string> &newKeys
         else
         {
             mConfiguration.columns.push_back(
-                Column{
-                    .header = key,
-                    .keys = {key},
-                    .printFormat = "{}",
-                    .type = ColumnType::Any,
-                    .parseFormats = {}
-                }
+                Column{.header = key, .keys = {key}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
             );
         }
         mKeysInColumns.insert(key);

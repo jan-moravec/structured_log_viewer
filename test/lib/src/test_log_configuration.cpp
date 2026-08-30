@@ -72,9 +72,7 @@ namespace
 /// Returns -1 when nothing matches or @p keys is empty. Duplicated
 /// from `leaf_rule_compile.cpp` so `loglib` tests don't take an
 /// app-side dependency.
-[[nodiscard]] int LegacyColumnKeysToRow(
-    const std::vector<std::string> &keys, const std::vector<Column> &columns
-)
+[[nodiscard]] int LegacyColumnKeysToRow(const std::vector<std::string> &keys, const std::vector<Column> &columns)
 {
     if (keys.empty())
     {
@@ -206,11 +204,7 @@ TEST_CASE("Update with mixed keys organizes timestamp first", "[LogConfiguration
 
     LogConfiguration logConfiguration;
     logConfiguration.columns.push_back(
-        {.header = "regular",
-         .keys = {"regular"},
-         .printFormat = "{}",
-         .type = ColumnType::Any,
-         .parseFormats = {}}
+        {.header = "regular", .keys = {"regular"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
     testLogConfiguration.Write(logConfiguration);
 
@@ -364,11 +358,7 @@ TEST_CASE(
     const TestLogConfiguration testLogConfiguration;
     LogConfiguration logConfiguration;
     logConfiguration.columns.push_back(
-        {.header = "regular",
-         .keys = {"regular"},
-         .printFormat = "{}",
-         .type = ColumnType::Any,
-         .parseFormats = {}}
+        {.header = "regular", .keys = {"regular"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
     testLogConfiguration.Write(logConfiguration);
 
@@ -624,9 +614,7 @@ TEST_CASE(
     filter.matchType = LeafRule::Match::Contains;
     manager.SetExpression(LeavesAsExpression({filter}));
     manager.SetSort(Sort{.columnIndex = 1, .descending = true});
-    manager.SetSource(
-        Source{.kind = Source::Kind::File, .locators = {"C:/logs/app.json"}}
-    );
+    manager.SetSource(Source{.kind = Source::Kind::File, .locators = {"C:/logs/app.json"}});
 
     const TestLogConfiguration columnsOnlyFile;
     manager.Save(columnsOnlyFile.GetFilePath(), SaveScope::ColumnsOnly);
@@ -681,9 +669,7 @@ TEST_CASE(
 TEST_CASE("Source round-trips both Kind variants", "[log_configuration][session][source]")
 {
     LogConfiguration original;
-    original.source = Source{
-        .kind = Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}
-    };
+    original.source = Source{.kind = Source::Kind::NetworkStream, .locators = {"tcp://127.0.0.1:5170"}};
 
     std::string json;
     const auto writeError = glz::write_json(original, json);
@@ -704,8 +690,7 @@ TEST_CASE("Source round-trips a multi-file `File` descriptor", "[log_configurati
 {
     LogConfiguration original;
     original.source = Source{
-        .kind = Source::Kind::File,
-        .locators = {"C:/logs/first.json", "C:/logs/second.json", "C:/logs/third.json"}
+        .kind = Source::Kind::File, .locators = {"C:/logs/first.json", "C:/logs/second.json", "C:/logs/third.json"}
     };
 
     std::string json;
@@ -727,11 +712,8 @@ TEST_CASE("Source round-trips a multi-file `File` descriptor", "[log_configurati
 TEST_CASE("Source round-trips Format::Logfmt", "[log_configuration][session][source]")
 {
     LogConfiguration original;
-    original.source = Source{
-        .kind = Source::Kind::File,
-        .format = Source::Format::Logfmt,
-        .locators = {"C:/logs/app.logfmt"}
-    };
+    original.source =
+        Source{.kind = Source::Kind::File, .format = Source::Format::Logfmt, .locators = {"C:/logs/app.logfmt"}};
 
     std::string json;
     const auto writeError = glz::write_json(original, json);
@@ -1957,9 +1939,7 @@ TEST_CASE(
 )
 {
     LogConfiguration original;
-    original.source = Source{
-        .kind = Source::Kind::File, .locators = {"C:/logs/a.json", "C:/logs/b.json"}
-    };
+    original.source = Source{.kind = Source::Kind::File, .locators = {"C:/logs/a.json", "C:/logs/b.json"}};
 
     const TestLogConfiguration file("test_log_configuration_pretty_locators.json");
     LogConfigurationManager::Save(original, file.GetFilePath(), SaveScope::Full);
@@ -1979,7 +1959,9 @@ TEST_CASE(
     CHECK(raw.contains("\"C:/logs/b.json\""));
 }
 
-TEST_CASE("Source JSON zips locators with locatorDedupKeys regardless of key order", "[log_configuration][session][source]")
+TEST_CASE(
+    "Source JSON zips locators with locatorDedupKeys regardless of key order", "[log_configuration][session][source]"
+)
 {
     auto load = [](std::string_view json) {
         LogConfiguration loaded;
@@ -1989,16 +1971,14 @@ TEST_CASE("Source JSON zips locators with locatorDedupKeys regardless of key ord
         return std::move(loaded.source).value();
     };
 
-    const auto displayFirst = load(
-        R"({"source":{"kind":"file","locators":["C:/A","C:/B"],"locatorDedupKeys":["c:/a","c:/b"]}})"
-    );
+    const auto displayFirst =
+        load(R"({"source":{"kind":"file","locators":["C:/A","C:/B"],"locatorDedupKeys":["c:/a","c:/b"]}})");
     REQUIRE(displayFirst.locators.size() == 2);
     CHECK(displayFirst.locators[0] == SourceLocator{"C:/A", "c:/a"});
     CHECK(displayFirst.locators[1] == SourceLocator{"C:/B", "c:/b"});
 
-    const auto keysFirst = load(
-        R"({"source":{"kind":"file","locatorDedupKeys":["c:/a","c:/b"],"locators":["C:/A","C:/B"]}})"
-    );
+    const auto keysFirst =
+        load(R"({"source":{"kind":"file","locatorDedupKeys":["c:/a","c:/b"],"locators":["C:/A","C:/B"]}})");
     REQUIRE(keysFirst.locators.size() == 2);
     CHECK(keysFirst.locators[0] == SourceLocator{"C:/A", "c:/a"});
     CHECK(keysFirst.locators[1] == SourceLocator{"C:/B", "c:/b"});
@@ -2008,9 +1988,8 @@ TEST_CASE("Source JSON zips locators with locatorDedupKeys regardless of key ord
     CHECK(missingKeys.locators[0].displayPath == "C:/A");
     CHECK(missingKeys.locators[0].dedupKey.empty());
 
-    const auto extraKeys = load(
-        R"({"source":{"kind":"file","locators":["C:/A"],"locatorDedupKeys":["c:/a","extra"]}})"
-    );
+    const auto extraKeys =
+        load(R"({"source":{"kind":"file","locators":["C:/A"],"locatorDedupKeys":["c:/a","extra"]}})");
     REQUIRE(extraKeys.locators.size() == 1);
     CHECK(extraKeys.locators[0] == SourceLocator{"C:/A", "c:/a"});
 }
@@ -2032,7 +2011,9 @@ TEST_CASE("LogConfiguration aliases extracted value groups", "[log_configuration
     CHECK(view.sort.descending);
 }
 
-TEST_CASE("Source JSON write keeps parallel locators and locatorDedupKeys arrays", "[log_configuration][session][source]")
+TEST_CASE(
+    "Source JSON write keeps parallel locators and locatorDedupKeys arrays", "[log_configuration][session][source]"
+)
 {
     LogConfiguration original;
     original.source = Source{
@@ -2107,10 +2088,7 @@ TEST_CASE("LogConfiguration::anchors round-trips through Save/Load", "[log_confi
     CHECK(anchors[1].note == "first error of the incident");
 }
 
-TEST_CASE(
-    "AnchorEntry without note loads with empty note",
-    "[log_configuration][session][anchors][forward_compat]"
-)
+TEST_CASE("AnchorEntry without note loads with empty note", "[log_configuration][session][anchors][forward_compat]")
 {
     // Pre-notes session JSON: `note` is absent. Glaze's
     // default-on-missing + `error_on_unknown_keys=false` load it as
@@ -2197,12 +2175,8 @@ TEST_CASE(
     {
         LogConfiguration written;
         // Include a minimal columns vector alongside.
-        written.columns.push_back(
-            Column{.header = "service", .keys = {"service"}, .type = ColumnType::String}
-        );
-        written.columns.push_back(
-            Column{.header = "duration", .keys = {"duration"}, .type = ColumnType::Number}
-        );
+        written.columns.push_back(Column{.header = "service", .keys = {"service"}, .type = ColumnType::String});
+        written.columns.push_back(Column{.header = "duration", .keys = {"duration"}, .type = ColumnType::Number});
         written.highlightRules.push_back(
             HighlightRule{
                 .name = "auth service",
@@ -2272,9 +2246,7 @@ TEST_CASE(
     const TestLogConfiguration testConfiguration;
     {
         LogConfiguration written;
-        written.columns.push_back(
-            Column{.header = "service", .keys = {"service"}, .type = ColumnType::String}
-        );
+        written.columns.push_back(Column{.header = "service", .keys = {"service"}, .type = ColumnType::String});
         written.expression = LeavesAsExpression({
             LeafRule{
                 .type = LeafRule::Type::String,
@@ -2283,9 +2255,7 @@ TEST_CASE(
                 .filterString = "auth",
             },
         });
-        written.anchors.push_back(
-            AnchorEntry{.locator = "c:/logs/one.json", .lineId = 42u, .colorIndex = 1u}
-        );
+        written.anchors.push_back(AnchorEntry{.locator = "c:/logs/one.json", .lineId = 42u, .colorIndex = 1u});
         written.highlightRules.push_back(
             HighlightRule{.name = "auth service", .columnKeys = {"service"}, .filterString = "auth"}
         );
@@ -2327,9 +2297,7 @@ TEST_CASE(
     CHECK(manager.Configuration().columns.size() == 1);
 }
 
-TEST_CASE(
-    "HighlightRule serialises with stable wire keys", "[LogConfigurationManager][highlight_rules]"
-)
+TEST_CASE("HighlightRule serialises with stable wire keys", "[LogConfigurationManager][highlight_rules]")
 {
     // Wire-format snapshot: a rename would surface here as a
     // missing key rather than as a silent shape change.
@@ -2376,18 +2344,10 @@ TEST_CASE("MoveColumn does not rewrite highlightRules[*].columnKeys", "[LogConfi
     // have no index field to remap after `MoveColumn`.
     LogConfigurationManager manager;
     LogConfiguration seed;
-    seed.columns.push_back(
-        Column{.header = "time", .keys = {"time"}, .type = ColumnType::Time}
-    );
-    seed.columns.push_back(
-        Column{.header = "service", .keys = {"service"}, .type = ColumnType::String}
-    );
-    seed.columns.push_back(
-        Column{.header = "message", .keys = {"message"}, .type = ColumnType::String}
-    );
-    seed.highlightRules.push_back(
-        HighlightRule{.name = "auth", .columnKeys = {"service"}, .filterString = "auth"}
-    );
+    seed.columns.push_back(Column{.header = "time", .keys = {"time"}, .type = ColumnType::Time});
+    seed.columns.push_back(Column{.header = "service", .keys = {"service"}, .type = ColumnType::String});
+    seed.columns.push_back(Column{.header = "message", .keys = {"message"}, .type = ColumnType::String});
+    seed.highlightRules.push_back(HighlightRule{.name = "auth", .columnKeys = {"service"}, .filterString = "auth"});
     manager.SetConfiguration(std::move(seed));
 
     manager.MoveColumn(1, 2); // Move `service` from index 1 to index 2
@@ -2404,14 +2364,16 @@ TEST_CASE("MoveColumn does not rewrite highlightRules[*].columnKeys", "[LogConfi
 TEST_CASE("Full save keeps the pre-v1 JSON key set", "[log_configuration][compat][wire_format]")
 {
     LogConfiguration original;
-    original.columns.push_back(Column{
-        .header = "msg",
-        .keys = {"msg"},
-        .printFormat = "{}",
-        .type = ColumnType::String,
-        .visible = true,
-        .autoDetect = false,
-    });
+    original.columns.push_back(
+        Column{
+            .header = "msg",
+            .keys = {"msg"},
+            .printFormat = "{}",
+            .type = ColumnType::String,
+            .visible = true,
+            .autoDetect = false,
+        }
+    );
     original.sort = Sort{.columnIndex = 0, .descending = true};
     original.source = Source{
         .kind = Source::Kind::File,
@@ -2430,30 +2392,18 @@ TEST_CASE("Full save keeps the pre-v1 JSON key set", "[log_configuration][compat
     const std::string raw((std::istreambuf_iterator<char>(readBack)), std::istreambuf_iterator<char>());
 
     for (const char *key : {
-             "\"columns\"",
-             "\"expression\"",
-             "\"sort\"",
-             "\"source\"",
-             "\"anchors\"",
-             "\"highlightRules\"",
-             "\"header\"",
-             "\"keys\"",
-             "\"printFormat\"",
-             "\"type\"",
-             "\"parseFormats\"",
-             "\"visible\"",
-             "\"autoDetect\"",
-             "\"levelMapping\"",
-             "\"kind\"",
-             "\"format\"",
-             "\"locators\"",
-             "\"locatorDedupKeys\"",
-             "\"regexPattern\"",
-             "\"followRotationSiblings\"",
-             "\"columnIndex\"",
-             "\"descending\"",
-             "\"lineId\"",
-             "\"colorIndex\"",
+             "\"columns\"",      "\"expression\"",
+             "\"sort\"",         "\"source\"",
+             "\"anchors\"",      "\"highlightRules\"",
+             "\"header\"",       "\"keys\"",
+             "\"printFormat\"",  "\"type\"",
+             "\"parseFormats\"", "\"visible\"",
+             "\"autoDetect\"",   "\"levelMapping\"",
+             "\"kind\"",         "\"format\"",
+             "\"locators\"",     "\"locatorDedupKeys\"",
+             "\"regexPattern\"", "\"followRotationSiblings\"",
+             "\"columnIndex\"",  "\"descending\"",
+             "\"lineId\"",       "\"colorIndex\"",
              "\"note\"",
          })
     {
@@ -2462,8 +2412,7 @@ TEST_CASE("Full save keeps the pre-v1 JSON key set", "[log_configuration][compat
 }
 
 TEST_CASE(
-    "Mixed-version JSON fills defaults and ignores unknown nested keys",
-    "[log_configuration][compat][mixed_version]"
+    "Mixed-version JSON fills defaults and ignores unknown nested keys", "[log_configuration][compat][mixed_version]"
 )
 {
     constexpr std::string_view JSON = R"({

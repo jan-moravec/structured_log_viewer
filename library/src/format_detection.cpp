@@ -44,9 +44,7 @@ std::optional<DetectedFormat> TryDetectFormatFromBytes(std::string_view sniffBuf
     }
     if (std::optional<RegexTemplate> tmpl = DetectRegexTemplateFromBytes(sniffBuffer); tmpl.has_value())
     {
-        return DetectedFormat{
-            .format = Source::Format::Regex, .regexPattern = std::move(tmpl->pattern)
-        };
+        return DetectedFormat{.format = Source::Format::Regex, .regexPattern = std::move(tmpl->pattern)};
     }
     if (const std::unique_ptr<LogParser> csv = LogFactory::Create(LogFactory::Parser::Csv);
         csv->IsValidBytes(sniffBuffer))

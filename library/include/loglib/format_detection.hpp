@@ -74,8 +74,6 @@ struct DetectedFormat
  * Kept in the library so `AutoDetectParser` can resolve formats
  * without depending on the app layer.
  */
-[[nodiscard]] std::unique_ptr<LogParser> MakeParserForFormat(
-    Source::Format format, std::string_view regexPattern = {}
-);
+[[nodiscard]] std::unique_ptr<LogParser> MakeParserForFormat(Source::Format format, std::string_view regexPattern = {});
 
 } // namespace loglib

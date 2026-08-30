@@ -102,10 +102,7 @@ constexpr std::array<const char *, 4> STRING_MATCH_LABELS = {"Exactly", "Contain
 } // namespace
 
 HighlightRulesEditor::HighlightRulesEditor(
-    std::vector<loglib::HighlightRule> rules,
-    std::vector<loglib::Column> columns,
-    ThemeControl *theme,
-    QWidget *parent
+    std::vector<loglib::HighlightRule> rules, std::vector<loglib::Column> columns, ThemeControl *theme, QWidget *parent
 )
     : QWidget(parent, Qt::Window),
       mColumns(std::move(columns)),
@@ -791,8 +788,7 @@ void HighlightRulesEditor::UpdateFormEnabled()
     {
         const auto ruleType = mLocalRules[static_cast<std::size_t>(mCurrentRow)].type;
         const bool isReadOnly =
-            (ruleType == loglib::HighlightRule::Type::Time ||
-             ruleType == loglib::HighlightRule::Type::Enumeration);
+            (ruleType == loglib::HighlightRule::Type::Time || ruleType == loglib::HighlightRule::Type::Enumeration);
         if (isReadOnly)
         {
             mMatchStack->setEnabled(false);

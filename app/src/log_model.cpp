@@ -663,8 +663,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
             // Snapshot enum and level columns the same way: level is
             // an enumeration subtype and shares the dictionary, so
             // `Grew` / `Demoted` apply identically.
-            if ((column.type != loglib::ColumnType::Enumeration &&
-                 column.type != loglib::ColumnType::Level) ||
+            if ((column.type != loglib::ColumnType::Enumeration && column.type != loglib::ColumnType::Level) ||
                 column.keys.empty())
             {
                 continue;
@@ -780,8 +779,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
             const auto columnIndexSz = static_cast<size_t>(entry.columnIndex);
             const auto typeAfter =
                 (columnIndexSz < columnsAfter.size()) ? columnsAfter[columnIndexSz].type : entry.typeBefore;
-            if (entry.typeBefore == loglib::ColumnType::Enumeration &&
-                typeAfter == loglib::ColumnType::Level)
+            if (entry.typeBefore == loglib::ColumnType::Enumeration && typeAfter == loglib::ColumnType::Level)
             {
                 // Sub-promotion supersedes `Grew`: receivers re-read
                 // the column type, so one signal covers both new
@@ -841,8 +839,7 @@ void LogModel::AppendBatch(loglib::StreamedBatch batch)
                 continue;
             }
             const auto colType = columns[static_cast<size_t>(columnIndex)].type;
-            if (colType != loglib::ColumnType::Enumeration &&
-                colType != loglib::ColumnType::Level)
+            if (colType != loglib::ColumnType::Enumeration && colType != loglib::ColumnType::Level)
             {
                 continue;
             }
@@ -983,10 +980,10 @@ void LogModel::EndStreaming(bool cancelled)
         {
             const auto typeAfter = columnsAfter[i].type;
             const auto typeBefore = typesBefore[i];
-            const bool isEnumLikeAfter = typeAfter == loglib::ColumnType::Enumeration ||
-                                         typeAfter == loglib::ColumnType::Level;
-            const bool wasEnumLikeBefore = typeBefore == loglib::ColumnType::Enumeration ||
-                                           typeBefore == loglib::ColumnType::Level;
+            const bool isEnumLikeAfter =
+                typeAfter == loglib::ColumnType::Enumeration || typeAfter == loglib::ColumnType::Level;
+            const bool wasEnumLikeBefore =
+                typeBefore == loglib::ColumnType::Enumeration || typeBefore == loglib::ColumnType::Level;
             // Fresh promotion to any enum-like type.
             if (!wasEnumLikeBefore && isEnumLikeAfter)
             {
@@ -995,8 +992,7 @@ void LogModel::EndStreaming(bool cancelled)
             }
             // Sub-promotion `Enumeration -> Level`: same signal so
             // the filter UI re-renders against the level picker.
-            if (typeBefore == loglib::ColumnType::Enumeration &&
-                typeAfter == loglib::ColumnType::Level)
+            if (typeBefore == loglib::ColumnType::Enumeration && typeAfter == loglib::ColumnType::Level)
             {
                 emit enumColumnsChanged(EnumColumnsChangeReason::Promoted, static_cast<int>(i));
                 continue;
@@ -1016,8 +1012,7 @@ void LogModel::EndStreaming(bool cancelled)
             }
             // Sub-demote `Level -> Enumeration`: same handling as a
             // full demote so saved Level filters get rewritten.
-            if (typeBefore == loglib::ColumnType::Level &&
-                typeAfter == loglib::ColumnType::Enumeration)
+            if (typeBefore == loglib::ColumnType::Level && typeAfter == loglib::ColumnType::Enumeration)
             {
                 auto mappingIt = levelMappingsBefore.find(static_cast<int>(i));
                 if (mappingIt != levelMappingsBefore.end())

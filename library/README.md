@@ -36,8 +36,8 @@ A Release archive built with interprocedural optimization (MSVC `/GL`) needs LTC
 [`test/consumer/src/main.cpp`](../test/consumer/src/main.cpp) is the smoke path. Typical composition:
 
 1. Construct a `TimeZoneContext` (default UTC, or `Load(tzdataPath[, zone])`).
-2. Ingest with `LogFactory::Create` / `ParseFile`.
-3. Hold rows in `LogTable`.
+1. Ingest with `LogFactory::Create` / `ParseFile`.
+1. Hold rows in `LogTable`.
 
 `SetProcessDefaultTimeZone` is a documented process-wide convenience for formatting helpers such as `TimeStampToDateTimeString`. Core conversion APIs take an explicit context; they do not require a prior `Initialize` call.
 

@@ -11,7 +11,11 @@ set(_stage "${LOGLIB_BUILD_DIR}/loglib_sdk_stage")
 set(_consumer_build "${LOGLIB_BUILD_DIR}/loglib_consumer_build")
 
 file(READ "${_consumer_src}/CMakeLists.txt" _consumer_cmake)
-foreach(_forbidden IN ITEMS fmt simdjson OpenSSL TBB glaze mio PCRE2 date robin_map zlib zstd lzma BZip2 efsw asio)
+foreach(
+    _forbidden
+    IN
+    ITEMS fmt simdjson OpenSSL TBB glaze mio PCRE2 date robin_map zlib zstd lzma BZip2 efsw asio
+)
     if(_consumer_cmake MATCHES "find_package\\([ \t]*${_forbidden}")
         message(FATAL_ERROR "test/consumer/CMakeLists.txt must not call find_package(${_forbidden})")
     endif()
@@ -22,7 +26,15 @@ endif()
 
 file(REMOVE_RECURSE "${_stage}" "${_consumer_build}")
 
-set(_install_cmd "${CMAKE_COMMAND}" --install "${LOGLIB_BUILD_DIR}" --prefix "${_stage}" --component loglib)
+set(_install_cmd
+    "${CMAKE_COMMAND}"
+    --install
+    "${LOGLIB_BUILD_DIR}"
+    --prefix
+    "${_stage}"
+    --component
+    loglib
+)
 if(LOGLIB_BUILD_TYPE)
     list(APPEND _install_cmd --config "${LOGLIB_BUILD_TYPE}")
 endif()

@@ -329,15 +329,13 @@ std::vector<loglib::AnchorEntry> AnchorManager::BuildSortedEntries(bool dropRunt
             }
         );
     }
-    std::ranges::sort(
-        out, [](const loglib::AnchorEntry &lhs, const loglib::AnchorEntry &rhs) {
-            if (lhs.locator != rhs.locator)
-            {
-                return lhs.locator < rhs.locator;
-            }
-            return lhs.lineId < rhs.lineId;
+    std::ranges::sort(out, [](const loglib::AnchorEntry &lhs, const loglib::AnchorEntry &rhs) {
+        if (lhs.locator != rhs.locator)
+        {
+            return lhs.locator < rhs.locator;
         }
-    );
+        return lhs.lineId < rhs.lineId;
+    });
     return out;
 }
 

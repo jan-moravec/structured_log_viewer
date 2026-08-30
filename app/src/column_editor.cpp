@@ -34,20 +34,14 @@ const std::vector<TypeChoice> &TypeChoices()
 {
     static const std::vector<TypeChoice> TYPE_CHOICES = {
         {.label = QStringLiteral("Auto-detect"), .type = loglib::ColumnType::Any, .autoDetect = true},
-        {.label = QStringLiteral("Any (treat as string)"),
-         .type = loglib::ColumnType::Any,
-         .autoDetect = false},
+        {.label = QStringLiteral("Any (treat as string)"), .type = loglib::ColumnType::Any, .autoDetect = false},
         {.label = QStringLiteral("String"), .type = loglib::ColumnType::String, .autoDetect = false},
         {.label = QStringLiteral("Boolean"), .type = loglib::ColumnType::Boolean, .autoDetect = false},
         {.label = QStringLiteral("Integer"), .type = loglib::ColumnType::Integer, .autoDetect = false},
-        {.label = QStringLiteral("Floating-point"),
-         .type = loglib::ColumnType::Floating,
-         .autoDetect = false},
+        {.label = QStringLiteral("Floating-point"), .type = loglib::ColumnType::Floating, .autoDetect = false},
         {.label = QStringLiteral("Number"), .type = loglib::ColumnType::Number, .autoDetect = false},
         {.label = QStringLiteral("Time"), .type = loglib::ColumnType::Time, .autoDetect = false},
-        {.label = QStringLiteral("Enumeration"),
-         .type = loglib::ColumnType::Enumeration,
-         .autoDetect = false},
+        {.label = QStringLiteral("Enumeration"), .type = loglib::ColumnType::Enumeration, .autoDetect = false},
         {.label = QStringLiteral("Level"), .type = loglib::ColumnType::Level, .autoDetect = false},
     };
     return TYPE_CHOICES;

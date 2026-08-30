@@ -270,11 +270,7 @@ TEST_CASE("RowOrdering Level uses canonical severity, not byte order", "[row_ord
     FileLineSource *sourcePtr = source.get();
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "level",
-         .keys = {"level"},
-         .printFormat = "{}",
-         .type = ColumnType::Level,
-         .parseFormats = {}}
+        {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Level, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);

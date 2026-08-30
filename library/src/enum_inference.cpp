@@ -930,9 +930,7 @@ void EnumInference::MaybePromoteToLevel(LogData &data, LogConfigurationManager &
     {
         return;
     }
-    const auto snapshotColumn = [&]() -> const Column & {
-        return configuration.Configuration().columns[columnIndex];
-    };
+    const auto snapshotColumn = [&]() -> const Column & { return configuration.Configuration().columns[columnIndex]; };
     if (snapshotColumn().type != ColumnType::Enumeration)
     {
         return;

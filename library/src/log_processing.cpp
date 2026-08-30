@@ -513,9 +513,7 @@ std::vector<std::string> BackfillTimestampColumn(const Column &column, std::span
     return errors;
 }
 
-void BackfillTimestampColumn(
-    const Column &column, std::span<LogLine> lines, BackfillErrors discardErrors
-)
+void BackfillTimestampColumn(const Column &column, std::span<LogLine> lines, BackfillErrors discardErrors)
 {
     static_cast<void>(discardErrors);
     std::array<internal::TimeColumnSpec, 1> specs;

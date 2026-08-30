@@ -677,8 +677,7 @@ void FilterEditor::OnOkClicked()
         emit FilterEnumSubmitted(mFilterID, index, selected);
     }
     else if (
-        column.type == ColumnType::Integer || column.type == ColumnType::Floating ||
-        column.type == ColumnType::Number
+        column.type == ColumnType::Integer || column.type == ColumnType::Floating || column.type == ColumnType::Number
     )
     {
         // An empty edit means "unbounded" on that side. Insist on

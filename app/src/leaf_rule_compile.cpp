@@ -24,9 +24,7 @@
 #include <utility>
 #include <vector>
 
-int ResolveLeafColumnByKeys(
-    const std::vector<std::string> &keys, const std::vector<loglib::Column> &columns
-) noexcept
+int ResolveLeafColumnByKeys(const std::vector<std::string> &keys, const std::vector<loglib::Column> &columns) noexcept
 {
     if (keys.empty())
     {
@@ -148,8 +146,7 @@ std::optional<loglib::RowPredicate> CompileLeaf(
         // scaffolding vectors go out of scope.
         std::vector<std::string> expandedStorage;
         std::vector<std::string_view> selectedViews;
-        const bool isLevelColumn =
-            column < columns.size() && columns[column].type == loglib::ColumnType::Level;
+        const bool isLevelColumn = column < columns.size() && columns[column].type == loglib::ColumnType::Level;
         if (isLevelColumn)
         {
             const std::vector<loglib::LogLevel> *ranks = table->LevelRankCache(column);

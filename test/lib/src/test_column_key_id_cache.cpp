@@ -12,18 +12,22 @@ using namespace loglib;
 TEST_CASE("RefreshColumnKeyIds records INVALID_KEY_ID for interned-missing keys", "[column_key_id_cache]")
 {
     LogConfiguration configuration;
-    configuration.columns.push_back(Column{
-        .header = "msg",
-        .keys = {"msg", "message"},
-        .printFormat = "{}",
-        .type = ColumnType::String,
-    });
-    configuration.columns.push_back(Column{
-        .header = "level",
-        .keys = {"level"},
-        .printFormat = "{}",
-        .type = ColumnType::Level,
-    });
+    configuration.columns.push_back(
+        Column{
+            .header = "msg",
+            .keys = {"msg", "message"},
+            .printFormat = "{}",
+            .type = ColumnType::String,
+        }
+    );
+    configuration.columns.push_back(
+        Column{
+            .header = "level",
+            .keys = {"level"},
+            .printFormat = "{}",
+            .type = ColumnType::Level,
+        }
+    );
 
     KeyIndex keys;
     const KeyId msgId = keys.GetOrInsert("msg");
@@ -39,7 +43,9 @@ TEST_CASE("RefreshColumnKeyIds records INVALID_KEY_ID for interned-missing keys"
     CHECK(cache[1][0] == INVALID_KEY_ID);
 }
 
-TEST_CASE("RefreshColumnKeyIdsForKeys resizes after a shrinking schema and rewrites affected columns", "[column_key_id_cache]")
+TEST_CASE(
+    "RefreshColumnKeyIdsForKeys resizes after a shrinking schema and rewrites affected columns", "[column_key_id_cache]"
+)
 {
     LogConfiguration configuration;
     configuration.columns.push_back(Column{.header = "a", .keys = {"a"}, .printFormat = "{}", .type = ColumnType::Any});

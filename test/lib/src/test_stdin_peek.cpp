@@ -189,9 +189,7 @@ TEST_CASE("StdinPeek bytes + DetectFormatFromBytes agree with DetectFormatForPat
         {.label = "logfmt",
          .bytes = "level=info msg=first\nlevel=warn msg=second\n",
          .expected = loglib::Source::Format::Logfmt},
-        {.label = "csv",
-         .bytes = "level,message\ninfo,first\nwarn,second\n",
-         .expected = loglib::Source::Format::Csv},
+        {.label = "csv", .bytes = "level,message\ninfo,first\nwarn,second\n", .expected = loglib::Source::Format::Csv},
         {.label = "regex-syslog",
          .bytes = "Apr 28 04:02:03 host-a systemd: System starting\n"
                   "Jun 27 01:47:20 host-b configd[17]: network changed\n",

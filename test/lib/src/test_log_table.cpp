@@ -45,18 +45,10 @@ TEST_CASE("Initialize a LogTable with given LogData and LogConfigurationManager"
     // Create test configuration
     LogConfiguration logConfiguration;
     logConfiguration.columns.push_back(
-        {.header = "Header1",
-         .keys = {"key1"},
-         .printFormat = "{}",
-         .type = ColumnType::Any,
-         .parseFormats = {}}
+        {.header = "Header1", .keys = {"key1"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
     logConfiguration.columns.push_back(
-        {.header = "Header2",
-         .keys = {"key2"},
-         .printFormat = "{}",
-         .type = ColumnType::Any,
-         .parseFormats = {}}
+        {.header = "Header2", .keys = {"key2"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
     const TestLogConfiguration testLogConfiguration;
     testLogConfiguration.Write(logConfiguration);
@@ -107,11 +99,7 @@ TEST_CASE("Update LogTable with new LogData", "[log_table]")
     // Create initial configuration
     LogConfiguration logConfiguration;
     logConfiguration.columns.push_back(
-        {.header = "Header1",
-         .keys = {"key1"},
-         .printFormat = "{}",
-         .type = ColumnType::Any,
-         .parseFormats = {}}
+        {.header = "Header1", .keys = {"key1"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
     const TestLogConfiguration testLogConfiguration;
     testLogConfiguration.Write(logConfiguration);
@@ -180,18 +168,10 @@ TEST_CASE("LogTable::Reset preserves the loaded LogConfiguration", "[log_table]"
 
     LogConfiguration logConfiguration;
     logConfiguration.columns.push_back(
-        {.header = "CustomA",
-         .keys = {"key1"},
-         .printFormat = "{}",
-         .type = ColumnType::Any,
-         .parseFormats = {}}
+        {.header = "CustomA", .keys = {"key1"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
     logConfiguration.columns.push_back(
-        {.header = "CustomB",
-         .keys = {"key2"},
-         .printFormat = "{}",
-         .type = ColumnType::Any,
-         .parseFormats = {}}
+        {.header = "CustomB", .keys = {"key2"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
     // Install a top-level `And` expression carrying a single string
     // leaf on the `CustomA` column so `Reset()` can be tested to
@@ -491,18 +471,10 @@ TEST_CASE("LogTable::Update is append-only for non-timestamp keys", "[log_table]
 
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "alpha",
-         .keys = {"alpha"},
-         .printFormat = "{}",
-         .type = ColumnType::Any,
-         .parseFormats = {}}
+        {.header = "alpha", .keys = {"alpha"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
     cfg.columns.push_back(
-        {.header = "beta",
-         .keys = {"beta"},
-         .printFormat = "{}",
-         .type = ColumnType::Any,
-         .parseFormats = {}}
+        {.header = "beta", .keys = {"beta"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
@@ -1379,11 +1351,7 @@ TEST_CASE(
 
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "tag",
-         .keys = {"tag"},
-         .printFormat = "{}",
-         .type = ColumnType::Enumeration,
-         .parseFormats = {}}
+        {.header = "tag", .keys = {"tag"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
@@ -1459,11 +1427,7 @@ TEST_CASE(
 
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "level",
-         .keys = {"level"},
-         .printFormat = "{}",
-         .type = ColumnType::Any,
-         .parseFormats = {}}
+        {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
@@ -1714,11 +1678,7 @@ TEST_CASE("LogTable::Update -- snapshot-enum keys are seeded against the merged 
 
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "level",
-         .keys = {"level"},
-         .printFormat = "{}",
-         .type = ColumnType::Enumeration,
-         .parseFormats = {}}
+        {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
@@ -1760,11 +1720,7 @@ TEST_CASE("LogTable::GetEnumValueId returns the dict id for DictRef slots", "[lo
 
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "level",
-         .keys = {"level"},
-         .printFormat = "{}",
-         .type = ColumnType::Enumeration,
-         .parseFormats = {}}
+        {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
@@ -1941,11 +1897,7 @@ TEST_CASE(
 
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "tag",
-         .keys = {"tag"},
-         .printFormat = "{}",
-         .type = ColumnType::Enumeration,
-         .parseFormats = {}}
+        {.header = "tag", .keys = {"tag"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
@@ -1987,11 +1939,7 @@ TEST_CASE(
 
     LogConfiguration cfg;
     cfg.columns.push_back(
-        {.header = "tag",
-         .keys = {"tag"},
-         .printFormat = "{}",
-         .type = ColumnType::Enumeration,
-         .parseFormats = {}}
+        {.header = "tag", .keys = {"tag"}, .printFormat = "{}", .type = ColumnType::Enumeration, .parseFormats = {}}
     );
     const TestLogConfiguration cfgFile;
     cfgFile.Write(cfg);
@@ -2670,11 +2618,7 @@ TEST_CASE(
     {
         LogConfiguration cfg;
         cfg.columns.push_back(
-            {.header = "level",
-             .keys = {"level"},
-             .printFormat = "{}",
-             .type = ColumnType::Any,
-             .parseFormats = {}}
+            {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
         );
         const TestLogConfiguration cfgFile;
         cfgFile.Write(cfg);
@@ -2697,11 +2641,7 @@ TEST_CASE(
     {
         LogConfiguration cfg;
         cfg.columns.push_back(
-            {.header = "level",
-             .keys = {"level"},
-             .printFormat = "{}",
-             .type = ColumnType::Any,
-             .parseFormats = {}}
+            {.header = "level", .keys = {"level"}, .printFormat = "{}", .type = ColumnType::Any, .parseFormats = {}}
         );
         const TestLogConfiguration cfgFile;
         cfgFile.Write(cfg);

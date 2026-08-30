@@ -31,9 +31,7 @@ LogTable::LogTable(LogData data, LogConfigurationManager configuration)
     RefreshColumnKeyIds();
     std::optional<size_t> firstBackfilled;
     std::optional<size_t> lastBackfilled;
-    mEnum.RunPassForAppendBatch(
-        mData, mConfiguration, mColumnKeyIds, 0U, firstBackfilled, lastBackfilled
-    );
+    mEnum.RunPassForAppendBatch(mData, mConfiguration, mColumnKeyIds, 0U, firstBackfilled, lastBackfilled);
     mEnum.Finalize(mData, mConfiguration);
     ApplyPendingLevelBubbles();
 }
@@ -83,9 +81,7 @@ void LogTable::Update(LogData &&data)
     RefreshColumnKeyIds();
     std::optional<size_t> firstBackfilled;
     std::optional<size_t> lastBackfilled;
-    mEnum.RunPassForAppendBatch(
-        mData, mConfiguration, mColumnKeyIds, oldLineCount, firstBackfilled, lastBackfilled
-    );
+    mEnum.RunPassForAppendBatch(mData, mConfiguration, mColumnKeyIds, oldLineCount, firstBackfilled, lastBackfilled);
     mEnum.Finalize(mData, mConfiguration);
     ApplyPendingLevelBubbles();
 }
@@ -239,9 +235,7 @@ void LogTable::AppendBatch(StreamedBatch batch)
         }
     }
 
-    mEnum.RunPassForAppendBatch(
-        mData, mConfiguration, mColumnKeyIds, oldLineCount, firstBackfilled, lastBackfilled
-    );
+    mEnum.RunPassForAppendBatch(mData, mConfiguration, mColumnKeyIds, oldLineCount, firstBackfilled, lastBackfilled);
 
     if (firstBackfilled.has_value())
     {
@@ -456,9 +450,7 @@ void LogTable::RefreshColumnKeyIds()
 
 void LogTable::RefreshColumnKeyIdsForKeys(const std::vector<std::string> &newKeys)
 {
-    internal::RefreshColumnKeyIdsForKeys(
-        mColumnKeyIds, mConfiguration.Configuration(), mData.Keys(), newKeys
-    );
+    internal::RefreshColumnKeyIdsForKeys(mColumnKeyIds, mConfiguration.Configuration(), mData.Keys(), newKeys);
 }
 
 void LogTable::RefreshSnapshotTimeKeys()
@@ -637,8 +629,7 @@ void LogTable::OnUserChangedColumnType(size_t columnIndex, ColumnType previousTy
             break;
         }
         EnumColumnHealth &health = mEnum.HealthFor(canonical);
-        const bool previousWasEnumLike =
-            previousType == ColumnType::Enumeration || previousType == ColumnType::Level;
+        const bool previousWasEnumLike = previousType == ColumnType::Enumeration || previousType == ColumnType::Level;
         if (!previousWasEnumLike)
         {
             health = EnumColumnHealth{};

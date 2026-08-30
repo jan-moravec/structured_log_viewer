@@ -123,9 +123,7 @@ enum class BackfillErrors : uint8_t
 };
 
 /** @brief `void` overload of `BackfillTimestampColumn` that drops error messages. */
-void BackfillTimestampColumn(
-    const Column &column, std::span<LogLine> lines, BackfillErrors discardErrors
-);
+void BackfillTimestampColumn(const Column &column, std::span<LogLine> lines, BackfillErrors discardErrors);
 
 int64_t TimeStampToLocalMillisecondsSinceEpoch(TimeStamp timeStamp, const TimeZoneContext &timeZone);
 int64_t TimeStampToLocalMillisecondsSinceEpoch(TimeStamp timeStamp);

@@ -2095,9 +2095,7 @@ private slots:
         fileSource.locators = {std::string{"C:/logs/app.log"}};
 
         // Whole-value overwrite via helper: fans once.
-        session.MutateCurrentSource([&fileSource](std::optional<loglib::Source> &src) {
-            src = fileSource;
-        });
+        session.MutateCurrentSource([&fileSource](std::optional<loglib::Source> &src) { src = fileSource; });
         QCOMPARE(spy.count(), 1);
 
         // Field mutation via helper: fans once.

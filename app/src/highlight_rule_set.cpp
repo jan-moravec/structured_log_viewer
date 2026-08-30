@@ -121,9 +121,7 @@ std::optional<HighlightRuleSet::CompiledRule> HighlightRuleSet::CompileRule(
     return CompiledRule{std::move(*predicate)};
 }
 
-void HighlightRuleSet::RecompileAll(
-    const std::vector<loglib::Column> &columns, const loglib::LogTable *table
-)
+void HighlightRuleSet::RecompileAll(const std::vector<loglib::Column> &columns, const loglib::LogTable *table)
 {
     // `mRowMatch` stores rule indices as `int16_t`; more than 32k
     // rules would wrap into the "no match" sentinel range. Clamp
@@ -205,9 +203,7 @@ void HighlightRuleSet::RebuildAllMatches(const loglib::LogTable &table)
 }
 
 void HighlightRuleSet::SetRules(
-    std::vector<loglib::HighlightRule> rules,
-    const std::vector<loglib::Column> &columns,
-    const loglib::LogTable *table
+    std::vector<loglib::HighlightRule> rules, const std::vector<loglib::Column> &columns, const loglib::LogTable *table
 )
 {
     mRules = std::move(rules);
@@ -226,9 +222,7 @@ void HighlightRuleSet::SetRules(
     emit matchesChanged();
 }
 
-void HighlightRuleSet::RebindColumns(
-    const std::vector<loglib::Column> &columns, const loglib::LogTable *table
-)
+void HighlightRuleSet::RebindColumns(const std::vector<loglib::Column> &columns, const loglib::LogTable *table)
 {
     if (mRules.empty())
     {

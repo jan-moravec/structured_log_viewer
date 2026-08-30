@@ -233,10 +233,7 @@ endif()
 # do not name OpenSSL in their own CMakeLists.
 if(LOGLIB_NETWORK_TLS)
     target_compile_definitions(loglib PUBLIC LOGLIB_HAS_TLS)
-    target_link_libraries(
-        loglib
-        PRIVATE $<BUILD_INTERFACE:OpenSSL::SSL> $<BUILD_INTERFACE:OpenSSL::Crypto>
-    )
+    target_link_libraries(loglib PRIVATE $<BUILD_INTERFACE:OpenSSL::SSL> $<BUILD_INTERFACE:OpenSSL::Crypto>)
 endif()
 
 include(${CMAKE_SOURCE_DIR}/cmake/LoglibHeaderCheck.cmake)

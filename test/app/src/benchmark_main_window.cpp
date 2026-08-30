@@ -221,8 +221,7 @@ private slots:
         // valid here because the underlying storage stays as `DictRef`.
         const auto levelType = columns[static_cast<size_t>(levelCol)].type;
         QVERIFY2(
-            levelType == loglib::ColumnType::Enumeration ||
-                levelType == loglib::ColumnType::Level,
+            levelType == loglib::ColumnType::Enumeration || levelType == loglib::ColumnType::Level,
             "level column must promote to Enumeration or Level"
         );
 
@@ -330,8 +329,7 @@ private slots:
 
         const auto levelType = columns[static_cast<size_t>(levelCol)].type;
         QVERIFY2(
-            levelType == loglib::ColumnType::Enumeration ||
-                levelType == loglib::ColumnType::Level,
+            levelType == loglib::ColumnType::Enumeration || levelType == loglib::ColumnType::Level,
             "level column must promote to Enumeration or Level"
         );
         // `component` is not a known level key, so it must stay

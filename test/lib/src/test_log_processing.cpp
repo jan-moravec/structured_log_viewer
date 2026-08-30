@@ -674,7 +674,10 @@ TEST_CASE("TimeZoneContext::Load throws for an unavailable zone", "[log_processi
     CHECK_THROWS_AS(TimeZoneContext::Load(FindTestTzdata(), "Not/ARealZone"), std::runtime_error);
 }
 
-TEST_CASE("TryParseSyslogRfc3164Timestamp year rollover uses the reference instant", "[log_processing][syslog_rfc3164_fast_path]")
+TEST_CASE(
+    "TryParseSyslogRfc3164Timestamp year rollover uses the reference instant",
+    "[log_processing][syslog_rfc3164_fast_path]"
+)
 {
     TimeStamp out{};
     const auto january = std::chrono::sys_days{date::year{2026} / date::January / 15};

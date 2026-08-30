@@ -96,15 +96,10 @@ if(BUILD_TESTING)
     add_test(
         NAME loglib_consumer
         COMMAND
-            ${CMAKE_COMMAND}
-            -DLOGLIB_BUILD_DIR=${CMAKE_BINARY_DIR}
-            -DLOGLIB_SOURCE_DIR=${CMAKE_SOURCE_DIR}
-            -DLOGLIB_GENERATOR=${CMAKE_GENERATOR}
-            -DLOGLIB_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}
-            -DLOGLIB_CXX_COMPILER=${CMAKE_CXX_COMPILER}
-            -DLOGLIB_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-            -DLOGLIB_IPO=${_loglib_ipo}
-            -P ${CMAKE_SOURCE_DIR}/cmake/RunLoglibConsumer.cmake
+            ${CMAKE_COMMAND} -DLOGLIB_BUILD_DIR=${CMAKE_BINARY_DIR} -DLOGLIB_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+            -DLOGLIB_GENERATOR=${CMAKE_GENERATOR} -DLOGLIB_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}
+            -DLOGLIB_CXX_COMPILER=${CMAKE_CXX_COMPILER} -DLOGLIB_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+            -DLOGLIB_IPO=${_loglib_ipo} -P ${CMAKE_SOURCE_DIR}/cmake/RunLoglibConsumer.cmake
     )
     set_tests_properties(loglib_consumer PROPERTIES TIMEOUT 600)
 endif()

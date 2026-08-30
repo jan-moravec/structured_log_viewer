@@ -41,9 +41,7 @@ bool TagMatchesType(CompactTag tag, ColumnType declaredType) noexcept
     return false;
 }
 
-ColumnTypeHealth ComputeColumnTypeHealth(
-    std::span<const LogLine> lines, const KeyIndex &keys, const Column &column
-)
+ColumnTypeHealth ComputeColumnTypeHealth(std::span<const LogLine> lines, const KeyIndex &keys, const Column &column)
 {
     ColumnTypeHealth health;
     health.totalSlots = lines.size();

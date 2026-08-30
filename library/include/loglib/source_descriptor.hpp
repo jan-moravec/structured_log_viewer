@@ -30,7 +30,10 @@ struct SourceLocator
      * `initializer_list` copy-initialization cannot chain
      * `const char*` → `std::string` → `SourceLocator`.
      */
-    SourceLocator(const char *display) : displayPath(display != nullptr ? display : "") {}
+    SourceLocator(const char *display)
+        : displayPath(display != nullptr ? display : "")
+    {
+    }
 
     SourceLocator(std::string display, std::string dedup = {})
         : displayPath(std::move(display)), dedupKey(std::move(dedup))

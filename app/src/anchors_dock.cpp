@@ -214,11 +214,7 @@ public:
 /// `COLUMN_NOTE` would clobber the in-flight text. Full-rebuild
 /// callers set the note cell separately after this call.
 void PopulateAnchorCellForEntry(
-    QTreeWidgetItem *item,
-    const loglib::AnchorEntry &entry,
-    const LogModel *model,
-    ThemeControl *theme,
-    int swatchPx
+    QTreeWidgetItem *item, const loglib::AnchorEntry &entry, const LogModel *model, ThemeControl *theme, int swatchPx
 )
 {
     const QString displayPath = DisplayPathForLocator(model, entry.locator);

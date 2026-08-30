@@ -266,11 +266,7 @@ public:
      * accrue in @p health.
      */
     bool EncodeColumnRange(
-        LogData &data,
-        std::span<const KeyId> aliasKeys,
-        size_t rowBegin,
-        size_t rowEnd,
-        EnumColumnHealth &health
+        LogData &data, std::span<const KeyId> aliasKeys, size_t rowBegin, size_t rowEnd, EnumColumnHealth &health
     );
 
     /**

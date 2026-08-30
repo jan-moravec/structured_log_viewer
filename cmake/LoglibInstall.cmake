@@ -50,7 +50,8 @@ function(loglib_install_library)
     endif()
 
     foreach(
-        _dep IN
+        _dep
+        IN
         ITEMS
             simdjson::simdjson
             date::date-tz
@@ -87,15 +88,9 @@ function(loglib_install_library)
         list(GET _parts 1 _type)
 
         if(_type STREQUAL "STATIC_LIBRARY")
-            install(
-                FILES $<TARGET_FILE:${_real}>
-                DESTINATION ${CMAKE_INSTALL_LIBDIR}
-                COMPONENT loglib
-                EXCLUDE_FROM_ALL
-            )
+            install(FILES $<TARGET_FILE:${_real}> DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT loglib EXCLUDE_FROM_ALL)
             string(
-                APPEND
-                _imported_cmake
+                APPEND _imported_cmake
                 "if(NOT TARGET loglib::_priv_${_real})\n"
                 "    add_library(loglib::_priv_${_real} STATIC IMPORTED)\n"
                 "    set_target_properties(loglib::_priv_${_real} PROPERTIES\n"
@@ -118,8 +113,7 @@ function(loglib_install_library)
                     EXCLUDE_FROM_ALL
                 )
                 string(
-                    APPEND
-                    _imported_cmake
+                    APPEND _imported_cmake
                     "if(NOT TARGET loglib::_priv_${_real})\n"
                     "    add_library(loglib::_priv_${_real} SHARED IMPORTED)\n"
                     "    set_target_properties(loglib::_priv_${_real} PROPERTIES\n"
@@ -142,8 +136,7 @@ function(loglib_install_library)
                     EXCLUDE_FROM_ALL
                 )
                 string(
-                    APPEND
-                    _imported_cmake
+                    APPEND _imported_cmake
                     "if(NOT TARGET loglib::_priv_${_real})\n"
                     "    add_library(loglib::_priv_${_real} SHARED IMPORTED)\n"
                     "    set_target_properties(loglib::_priv_${_real} PROPERTIES\n"
@@ -160,14 +153,8 @@ function(loglib_install_library)
     install(
         TARGETS loglib
         EXPORT loglibTargets
-        ARCHIVE
-            DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            COMPONENT loglib
-            EXCLUDE_FROM_ALL
-        FILE_SET HEADERS
-            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-            COMPONENT loglib
-            EXCLUDE_FROM_ALL
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT loglib EXCLUDE_FROM_ALL
+        FILE_SET HEADERS DESTINATION ${CMAKE_INSTALL_INCLUDEDIR} COMPONENT loglib EXCLUDE_FROM_ALL
     )
 
     if(NOT USE_SYSTEM_ROBIN_MAP)
