@@ -164,11 +164,19 @@ endif()
 
 target_sources(loglib PUBLIC FILE_SET HEADERS BASE_DIRS include FILES ${LOGLIB_PUBLIC_HEADERS})
 
+target_compile_features(loglib PUBLIC cxx_std_23)
+
 target_link_libraries(
     loglib
     # tsl::robin_map appears in `enum_dictionary.hpp`; it is the remaining
-    # third-party type in the supported header set.
+    # third-party type in the supported header set. Bundled headers are
+    # installed next to loglib so the exported `loglib::loglib` target
+    # can compile `enum_dictionary.hpp` without a separate find_package.
     PUBLIC robin_map
+    # `$<BUILD_INTERFACE:...>` keeps these off the installed link interface.
+    # Private compiled archives are reattached as `$<LINK_ONLY:...>` imported
+    # targets by `cmake/LoglibInstall.cmake`. Header-only private deps are
+    # compiled into `loglib` and are not installed.
     # Repository warning flags stay PRIVATE so installing or consuming loglib
     # does not export this project's `project_warnings` policy to downstream
     # targets.
@@ -193,21 +201,21 @@ target_link_libraries(
     # includes are confined to `library/src/decompressing_byte_source.cpp`;
     # no codec type appears in any public loglib header. PRIVATE link.
     PRIVATE
-        project_warnings
-        mio
-        simdjson::simdjson
-        glaze::glaze
-        date::date
-        date::date-tz
-        fmt::fmt
-        TBB::tbb
-        efsw
-        asio::asio
-        PCRE2::pcre2-8
-        ZLIB::ZLIB
-        BZip2::BZip2
-        LibLZMA::LibLZMA
-        zstd::libzstd
+        $<BUILD_INTERFACE:project_warnings>
+        $<BUILD_INTERFACE:mio>
+        $<BUILD_INTERFACE:simdjson::simdjson>
+        $<BUILD_INTERFACE:glaze::glaze>
+        $<BUILD_INTERFACE:date::date>
+        $<BUILD_INTERFACE:date::date-tz>
+        $<BUILD_INTERFACE:fmt::fmt>
+        $<BUILD_INTERFACE:TBB::tbb>
+        $<BUILD_INTERFACE:efsw>
+        $<BUILD_INTERFACE:asio::asio>
+        $<BUILD_INTERFACE:PCRE2::pcre2-8>
+        $<BUILD_INTERFACE:ZLIB::ZLIB>
+        $<BUILD_INTERFACE:BZip2::BZip2>
+        $<BUILD_INTERFACE:LibLZMA::LibLZMA>
+        $<BUILD_INTERFACE:zstd::libzstd>
 )
 
 if(WIN32)
@@ -221,10 +229,18 @@ endif()
 # the GUI's NetworkStreamDialog) can compile-out their TLS branches in
 # OFF builds. OpenSSL itself stays PRIVATE: only the producer's pimpl
 # uses it, and no `OpenSSL::*` type appears in any public loglib header.
+# The installed package calls `find_dependency(OpenSSL)` so consumers
+# do not name OpenSSL in their own CMakeLists.
 if(LOGLIB_NETWORK_TLS)
     target_compile_definitions(loglib PUBLIC LOGLIB_HAS_TLS)
-    target_link_libraries(loglib PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    target_link_libraries(
+        loglib
+        PRIVATE $<BUILD_INTERFACE:OpenSSL::SSL> $<BUILD_INTERFACE:OpenSSL::Crypto>
+    )
 endif()
 
 include(${CMAKE_SOURCE_DIR}/cmake/LoglibHeaderCheck.cmake)
 loglib_add_public_header_check()
+
+include(${CMAKE_SOURCE_DIR}/cmake/LoglibInstall.cmake)
+loglib_install_library()

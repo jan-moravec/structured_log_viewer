@@ -99,7 +99,7 @@ endif()
 # Enable KeyIndex call-count instrumentation; PUBLIC so the test TU and
 # `loglib` see the same static counter definitions. Gated by `BUILD_TESTING`
 # at the top level, so `-DBUILD_TESTING=OFF` strips it from shipped builds.
-target_compile_definitions(loglib PUBLIC LOGLIB_KEY_INDEX_INSTRUMENTATION)
+target_compile_definitions(loglib PUBLIC $<BUILD_INTERFACE:LOGLIB_KEY_INDEX_INSTRUMENTATION>)
 
 # On Windows the TBB runtime DLL must sit next to the test executable for both
 # `catch_discover_tests` (which runs `tests.exe --list-test-names-only` at build

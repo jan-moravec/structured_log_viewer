@@ -1,0 +1,21 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Public-interface dependencies only. Private static archives are imported
+# from this prefix via loglibPrivateImported.cmake (LINK_ONLY) so consumers
+# do not inherit vendor include paths or compile definitions. OpenSSL is
+# found here when TLS was enabled at build time; the consumer project does
+# not name it.
+if(@LOGLIB_NETWORK_TLS@)
+    find_dependency(OpenSSL)
+endif()
+
+if(NOT WIN32)
+    find_dependency(Threads)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/loglibPrivateImported.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/loglibTargets.cmake")
+
+check_required_components(loglib)
