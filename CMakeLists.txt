@@ -74,4 +74,13 @@ if(BUILD_TESTING)
     add_subdirectory(test/lib)
     add_subdirectory(test/app)
     add_subdirectory(test/log_generator)
+
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME loglib_internal_includes
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/check-loglib-internal-includes.py
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        )
+    endif()
 endif()

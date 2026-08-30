@@ -225,3 +225,6 @@ if(LOGLIB_NETWORK_TLS)
     target_compile_definitions(loglib PUBLIC LOGLIB_HAS_TLS)
     target_link_libraries(loglib PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 endif()
+
+include(${CMAKE_SOURCE_DIR}/cmake/LoglibHeaderCheck.cmake)
+loglib_add_public_header_check()

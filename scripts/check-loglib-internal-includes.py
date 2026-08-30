@@ -4,6 +4,10 @@ library/src and test/lib may include internals. Supported headers,
 app/, test/app/, and test/consumer/ must not. Supported headers must
 also stay Qt-free and must not include implementation libraries
 (`mio`, `date`, simdjson, glaze, fmt, TBB, PCRE2).
+
+Invoked from pre-commit and from the `loglib_internal_includes` CTest.
+Self-containment of each supported header is a separate compile-time
+check (`loglib_header_self_containment` in `cmake/LoglibHeaderCheck.cmake`).
 """
 
 from __future__ import annotations
