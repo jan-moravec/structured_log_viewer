@@ -25,6 +25,7 @@ add_library(
     src/compact_log_value.cpp
     src/decompressing_byte_source.cpp
     src/enum_dictionary.cpp
+    src/enum_inference.cpp
     src/exports/export_sink.cpp
     src/exports/row_exporter.cpp
     src/file_identity.cpp
@@ -41,6 +42,8 @@ add_library(
     src/timestamp_promotion.cpp
     src/log_configuration.cpp
     src/column_projection.cpp
+    src/column_key_id_cache.cpp
+    src/column_type_health.cpp
     src/clang_tidy_stubs/log_configuration_glaze_meta.cpp
     src/clang_tidy_stubs/log_configuration_glaze_opts.cpp
     src/log_compare.cpp
@@ -87,9 +90,11 @@ set(LOGLIB_PUBLIC_HEADERS
     include/loglib/bytes_producer.hpp
     include/loglib/column_projection.hpp
     include/loglib/column_schema.hpp
+    include/loglib/column_type_health.hpp
     include/loglib/compact_log_value.hpp
     include/loglib/decompressing_byte_source.hpp
     include/loglib/enum_dictionary.hpp
+    include/loglib/enum_inference.hpp
     include/loglib/exports/export_sink.hpp
     include/loglib/exports/row_exporter.hpp
     include/loglib/file_line_source.hpp
