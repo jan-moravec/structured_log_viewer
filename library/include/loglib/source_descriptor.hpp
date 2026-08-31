@@ -166,7 +166,7 @@ struct Source
  */
 inline void AppendLocator(Source &target, std::string displayPath, std::string dedupKey)
 {
-    target.locators.push_back(SourceLocator{std::move(displayPath), std::move(dedupKey)});
+    target.locators.emplace_back(std::move(displayPath), std::move(dedupKey));
 }
 
 /** @brief Drop every locator. */
