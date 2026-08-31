@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -179,14 +180,9 @@ inline void ClearLocators(Source &target)
 /** @brief True when @p key matches any locator's dedup key. */
 [[nodiscard]] inline bool ContainsDedupKey(const Source &source, std::string_view key) noexcept
 {
-    for (const SourceLocator &locator : source.locators)
-    {
-        if (locator.dedupKey == key)
-        {
-            return true;
-        }
-    }
-    return false;
+    return std::ranges::any_of(
+        source.locators, [key](const SourceLocator &locator) { return locator.dedupKey == key; }
+    );
 }
 
 } // namespace loglib
