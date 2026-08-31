@@ -80,6 +80,7 @@ TEST_CASE("ComputeColumnTypeHealth is a stateless walk of borrowed rows", "[colu
     std::vector<LogLine> lines;
     auto makeLine = [&](std::vector<std::pair<std::string, LogValue>> fields) {
         std::vector<std::pair<KeyId, LogValue>> sorted;
+        sorted.reserve(fields.size());
         for (auto &field : fields)
         {
             sorted.emplace_back(keys.GetOrInsert(field.first), std::move(field.second));
@@ -93,7 +94,7 @@ TEST_CASE("ComputeColumnTypeHealth is a stateless walk of borrowed rows", "[colu
     lines.push_back(makeLine({{"value", LogValue{std::string("x")}}}));
     lines.push_back(makeLine({{"other", LogValue{static_cast<int64_t>(9)}}}));
 
-    Column column{
+    const Column column{
         .header = "value",
         .keys = {"value"},
         .printFormat = "{}",

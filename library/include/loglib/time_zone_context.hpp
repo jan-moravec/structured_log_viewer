@@ -84,6 +84,11 @@ public:
     /**
      * @brief Interprets local milliseconds as a wall-clock time in this zone
      * and returns the UTC `TimeStamp`.
+     *
+     * DST handling matches `LocalMicrosecondsToUtc`: ambiguous fall-back
+     * times choose the earlier instant; nonexistent spring-forward times
+     * resolve to the transition boundary; far-future or corrupt-zone
+     * failures treat the milliseconds as UTC.
      */
     [[nodiscard]] TimeStamp LocalMillisecondsToUtc(std::int64_t milliseconds) const;
 

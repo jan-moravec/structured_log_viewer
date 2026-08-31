@@ -98,11 +98,17 @@ int FirstTimeColumnIndex(const LogConfiguration &configuration)
 
 void Source::ReplaceDisplayPaths(std::vector<std::string> paths)
 {
+    std::vector<std::string> stagedKeys = std::move(pendingDedupKeys);
+    pendingDedupKeys.clear();
     std::vector<SourceLocator> next(paths.size());
     for (size_t i = 0; i < paths.size(); ++i)
     {
         next[i].displayPath = std::move(paths[i]);
-        if (i < locators.size())
+        if (i < stagedKeys.size())
+        {
+            next[i].dedupKey = std::move(stagedKeys[i]);
+        }
+        else if (i < locators.size())
         {
             next[i].dedupKey = std::move(locators[i].dedupKey);
         }
@@ -114,13 +120,10 @@ void Source::ReplaceDedupKeys(std::vector<std::string> keys)
 {
     if (locators.empty())
     {
-        locators.resize(keys.size());
-        for (size_t i = 0; i < keys.size(); ++i)
-        {
-            locators[i].dedupKey = std::move(keys[i]);
-        }
+        pendingDedupKeys = std::move(keys);
         return;
     }
+    pendingDedupKeys.clear();
     const size_t n = std::min(locators.size(), keys.size());
     for (size_t i = 0; i < n; ++i)
     {

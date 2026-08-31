@@ -158,15 +158,9 @@ std::int64_t TimeZoneContext::UtcMicrosecondsToLocalMilliseconds(std::int64_t mi
 
 TimeStamp TimeZoneContext::LocalMillisecondsToUtc(std::int64_t milliseconds) const
 {
-    const auto localTime = date::local_time<std::chrono::microseconds>(
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::milliseconds(milliseconds))
-    );
-    if (mImpl->zone == nullptr)
-    {
-        return TimeStamp{localTime.time_since_epoch()};
-    }
-    const auto systemTime = mImpl->zone->to_sys(localTime);
-    return std::chrono::time_point_cast<std::chrono::microseconds>(systemTime);
+    const std::int64_t localMicroseconds =
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::milliseconds{milliseconds}).count();
+    return TimeStamp{std::chrono::microseconds{LocalMicrosecondsToUtc(localMicroseconds)}};
 }
 
 std::string TimeZoneContext::Format(TimeStamp timeStamp, std::string_view format) const
@@ -194,13 +188,13 @@ std::string TimeZoneContext::FormatTimeStamp(TimeStamp timeStamp) const
 
 void SetProcessDefaultTimeZone(TimeZoneContext context)
 {
-    std::lock_guard lock(DefaultContextMutex());
+    const std::scoped_lock lock(DefaultContextMutex());
     DefaultContextSlot() = std::move(context);
 }
 
 TimeZoneContext ProcessDefaultTimeZone()
 {
-    std::lock_guard lock(DefaultContextMutex());
+    const std::scoped_lock lock(DefaultContextMutex());
     return DefaultContextSlot();
 }
 

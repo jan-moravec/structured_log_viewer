@@ -85,7 +85,7 @@ public:
     /** @brief True when at least one multi-line record is registered. */
     [[nodiscard]] bool HasMultiLineRecords() const noexcept
     {
-        return !mMultiLineSpans.empty();
+        return mMultiLineSpans && !mMultiLineSpans->empty();
     }
 
     /**
@@ -131,8 +131,14 @@ private:
      */
     std::string mOwnedStrings;
 
-    /** @brief Maps each multi-line header to its final physical line. */
-    std::unordered_map<size_t, size_t> mMultiLineSpans;
+    /**
+     * @brief Maps each multi-line header to its final physical line.
+     * Held by `unique_ptr` so `LogFile`'s defaulted move is noexcept;
+     * `unordered_map`'s move constructor can throw.
+     */
+    std::unique_ptr<std::unordered_map<size_t, size_t>> mMultiLineSpans{
+        std::make_unique<std::unordered_map<size_t, size_t>>()
+    };
 };
 
 } // namespace loglib

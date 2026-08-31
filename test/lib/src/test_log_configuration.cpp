@@ -1994,6 +1994,70 @@ TEST_CASE(
     CHECK(extraKeys.locators[0] == SourceLocator{"C:/A", "c:/a"});
 }
 
+TEST_CASE(
+    "Source JSON discards locatorDedupKeys when locators is missing or empty", "[log_configuration][session][source]"
+)
+{
+    auto load = [](std::string_view json) {
+        LogConfiguration loaded;
+        const auto error = glz::read_json(loaded, json);
+        REQUIRE_FALSE(error);
+        REQUIRE(loaded.source.has_value());
+        return loaded;
+    };
+
+    const auto assertNotActionable = [](LogConfiguration configuration) {
+        REQUIRE(configuration.source.has_value());
+        CHECK(configuration.source->locators.empty());
+        CHECK_FALSE(loglib::HasLocators(configuration.source));
+
+        std::string json;
+        const auto writeError = glz::write_json(configuration, json);
+        REQUIRE_FALSE(writeError);
+        CHECK_FALSE(json.contains(R"("locators":[""])"));
+        CHECK_FALSE(json.contains(R"("locators":["")"));
+        CHECK_FALSE(json.contains("c:/a"));
+
+        LogConfiguration roundTrip;
+        const auto readError = glz::read_json(roundTrip, json);
+        REQUIRE_FALSE(readError);
+        CHECK_FALSE(loglib::HasLocators(roundTrip.source));
+        if (roundTrip.source.has_value())
+        {
+            CHECK(roundTrip.source->locators.empty());
+        }
+    };
+
+    SECTION("missing locators")
+    {
+        assertNotActionable(load(R"({"source":{"kind":"file","locatorDedupKeys":["c:/a"]}})"));
+    }
+
+    SECTION("empty locators array after keys")
+    {
+        assertNotActionable(load(R"({"source":{"kind":"file","locatorDedupKeys":["c:/a"],"locators":[]}})"));
+    }
+
+    SECTION("empty locators array before keys")
+    {
+        assertNotActionable(load(R"({"source":{"kind":"file","locators":[],"locatorDedupKeys":["c:/a"]}})"));
+    }
+}
+
+TEST_CASE("ReplaceDedupKeys stages keys until display paths arrive", "[log_configuration][session][source]")
+{
+    Source source;
+    source.ReplaceDedupKeys({"c:/a", "c:/b"});
+    CHECK(source.locators.empty());
+    CHECK_FALSE(loglib::HasLocators(std::optional<Source>{source}));
+
+    source.ReplaceDisplayPaths({"C:/A", "C:/B"});
+    REQUIRE(source.locators.size() == 2);
+    CHECK(source.locators[0] == SourceLocator{"C:/A", "c:/a"});
+    CHECK(source.locators[1] == SourceLocator{"C:/B", "c:/b"});
+    CHECK(source.pendingDedupKeys.empty());
+}
+
 TEST_CASE("LogConfiguration aliases extracted value groups", "[log_configuration]")
 {
     STATIC_REQUIRE(std::is_same_v<LogConfiguration::Column, Column>);

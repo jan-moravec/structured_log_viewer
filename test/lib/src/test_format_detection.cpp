@@ -13,7 +13,6 @@
 using loglib::DetectedFormat;
 using loglib::DetectFormatForPath;
 using loglib::DetectFormatFromBytes;
-using loglib::LogConfiguration;
 using loglib::MakeParserForFormat;
 using loglib::Source;
 using test_common::TempDir;

@@ -668,6 +668,54 @@ TEST_CASE("LocalMicrosecondsSinceEpochToUtc handles DST transitions", "[log_proc
     }
 }
 
+TEST_CASE("TimeZoneContext::LocalMillisecondsToUtc handles DST transitions", "[log_processing]")
+{
+    InitializeTimezoneData();
+    const auto berlin = TimeZoneContext::Load(FindTestTzdata(), "Europe/Berlin");
+    CHECK(berlin.IanaName() == "Europe/Berlin");
+
+    const auto naiveLocalMicros = [](int year, unsigned month, unsigned day, int hour, int minute, int second) {
+        const auto ymd = date::year{year} / date::month{month} / date::day{day};
+        const auto sysDays = date::sys_days{ymd};
+        const auto wallClock =
+            sysDays + std::chrono::hours{hour} + std::chrono::minutes{minute} + std::chrono::seconds{second};
+        return std::chrono::duration_cast<std::chrono::microseconds>(wallClock.time_since_epoch()).count();
+    };
+    const auto naiveLocalMillis = [&](int year, unsigned month, unsigned day, int hour, int minute, int second) {
+        return naiveLocalMicros(year, month, day, hour, minute, second) / 1000;
+    };
+    const auto utcStamp = [&](int year, unsigned month, unsigned day, int hour, int minute, int second) {
+        return TimeStamp{std::chrono::microseconds{naiveLocalMicros(year, month, day, hour, minute, second)}};
+    };
+
+    SECTION("Ordinary hour round-trips through the zone offset")
+    {
+        const TimeStamp got = berlin.LocalMillisecondsToUtc(naiveLocalMillis(2024, 4, 1, 12, 0, 0));
+        CHECK(got == utcStamp(2024, 4, 1, 10, 0, 0));
+    }
+
+    SECTION("Fall-back ambiguous hour resolves to the earlier candidate")
+    {
+        CHECK_NOTHROW(berlin.LocalMillisecondsToUtc(naiveLocalMillis(2024, 10, 27, 2, 30, 0)));
+        const TimeStamp got = berlin.LocalMillisecondsToUtc(naiveLocalMillis(2024, 10, 27, 2, 30, 0));
+        CHECK(got == utcStamp(2024, 10, 27, 0, 30, 0));
+    }
+
+    SECTION("Spring-forward gap hour snaps to the transition boundary")
+    {
+        CHECK_NOTHROW(berlin.LocalMillisecondsToUtc(naiveLocalMillis(2024, 3, 31, 2, 30, 0)));
+        const TimeStamp got = berlin.LocalMillisecondsToUtc(naiveLocalMillis(2024, 3, 31, 2, 30, 0));
+        CHECK(got == utcStamp(2024, 3, 31, 1, 0, 0));
+    }
+
+    SECTION("UTC context passes the value through unchanged")
+    {
+        const int64_t localMillis = naiveLocalMillis(2024, 4, 1, 12, 0, 0);
+        const TimeStamp got = TimeZoneContext::Utc().LocalMillisecondsToUtc(localMillis);
+        CHECK(got == TimeStamp{std::chrono::milliseconds{localMillis}});
+    }
+}
+
 TEST_CASE("TimeZoneContext::Load throws for an unavailable zone", "[log_processing]")
 {
     InitializeTimezoneData();

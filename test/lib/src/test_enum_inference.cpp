@@ -32,11 +32,15 @@ TEST_CASE("RouteNoStringBail picks a terminal type from tag counts", "[enum_infe
 
 TEST_CASE("IsEnumPassEligible covers enum, level, and auto-detect Any", "[enum_inference]")
 {
-    Column anyAuto{.header = "x", .keys = {"x"}, .printFormat = "{}", .type = ColumnType::Any, .autoDetect = true};
-    Column anyPinned{.header = "x", .keys = {"x"}, .printFormat = "{}", .type = ColumnType::Any, .autoDetect = false};
-    Column enumeration{.header = "x", .keys = {"x"}, .printFormat = "{}", .type = ColumnType::Enumeration};
-    Column level{.header = "x", .keys = {"x"}, .printFormat = "{}", .type = ColumnType::Level};
-    Column integer{.header = "x", .keys = {"x"}, .printFormat = "{}", .type = ColumnType::Integer};
+    const Column anyAuto{
+        .header = "x", .keys = {"x"}, .printFormat = "{}", .type = ColumnType::Any, .autoDetect = true
+    };
+    const Column anyPinned{
+        .header = "x", .keys = {"x"}, .printFormat = "{}", .type = ColumnType::Any, .autoDetect = false
+    };
+    const Column enumeration{.header = "x", .keys = {"x"}, .printFormat = "{}", .type = ColumnType::Enumeration};
+    const Column level{.header = "x", .keys = {"x"}, .printFormat = "{}", .type = ColumnType::Level};
+    const Column integer{.header = "x", .keys = {"x"}, .printFormat = "{}", .type = ColumnType::Integer};
 
     CHECK(IsEnumPassEligible(anyAuto));
     CHECK_FALSE(IsEnumPassEligible(anyPinned));

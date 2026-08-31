@@ -130,8 +130,8 @@ std::string LogFile::GetLine(size_t lineNumber) const
     size_t stopLine = lineNumber + 1;
     if (HasMultiLineRecords())
     {
-        const auto it = mMultiLineSpans.find(lineNumber);
-        if (it != mMultiLineSpans.end() && it->second + 1 < mLineOffsets.size())
+        const auto it = mMultiLineSpans->find(lineNumber);
+        if (it != mMultiLineSpans->end() && it->second + 1 < mLineOffsets.size())
         {
             stopLine = it->second + 1;
         }
@@ -200,7 +200,7 @@ void LogFile::RegisterMultiLineRecord(size_t headerLineId, size_t lastLineId)
     {
         return;
     }
-    mMultiLineSpans[headerLineId] = lastLineId;
+    (*mMultiLineSpans)[headerLineId] = lastLineId;
 }
 
 std::string_view LogFile::OwnedStringsView() const noexcept

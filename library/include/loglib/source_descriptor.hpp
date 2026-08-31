@@ -115,19 +115,29 @@ struct Source
     bool followRotationSiblings = true;
 
     /**
+     * @brief Staging for `locatorDedupKeys` that arrive before `locators`
+     * during JSON load. Not serialized. `ReplaceDisplayPaths` consumes
+     * and clears it; keys without a display-path array never become
+     * locators.
+     */
+    std::vector<std::string> pendingDedupKeys;
+
+    /**
      * @brief Replaces display paths, keeping overlapping dedup keys.
      *
      * Display-path count is canonical. Used by JSON load; either
-     * field may arrive first.
+     * field may arrive first. Staged `pendingDedupKeys` are applied
+     * by index and then discarded.
      */
     void ReplaceDisplayPaths(std::vector<std::string> paths);
 
     /**
      * @brief Applies dedup keys by index.
      *
-     * If locators are still empty, this stages keys until
-     * `ReplaceDisplayPaths` sets the count. Extra keys are ignored
-     * once display paths exist.
+     * If locators are still empty, keys are staged on
+     * `pendingDedupKeys` until `ReplaceDisplayPaths` sets the count.
+     * Extra keys are ignored once display paths exist. Keys without a
+     * following display-path array never become locators.
      */
     void ReplaceDedupKeys(std::vector<std::string> keys);
 
@@ -163,6 +173,7 @@ inline void AppendLocator(Source &target, std::string displayPath, std::string d
 inline void ClearLocators(Source &target)
 {
     target.locators.clear();
+    target.pendingDedupKeys.clear();
 }
 
 /** @brief True when @p key matches any locator's dedup key. */
