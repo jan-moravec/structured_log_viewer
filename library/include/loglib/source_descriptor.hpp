@@ -180,9 +180,9 @@ inline void ClearLocators(Source &target)
 /** @brief True when @p key matches any locator's dedup key. */
 [[nodiscard]] inline bool ContainsDedupKey(const Source &source, std::string_view key) noexcept
 {
-    return std::ranges::any_of(
-        source.locators, [key](const SourceLocator &locator) { return locator.dedupKey == key; }
-    );
+    return std::ranges::any_of(source.locators, [key](const SourceLocator &locator) {
+        return locator.dedupKey == key;
+    });
 }
 
 } // namespace loglib
