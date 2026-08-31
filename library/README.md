@@ -27,13 +27,11 @@ Configure with `-DCMAKE_PREFIX_PATH=<prefix>`. Do not add `library/include` or n
 
 `loglib` is a static library. Private compiled archives are linked automatically as `$<LINK_ONLY:>` imported targets so vendor types stay out of the public compile interface. Header-only private dependencies (mio, glaze, asio, Howard Hinnant `date`) are compiled into the archive and are not installed. When TLS was enabled at build time, the package calls `find_dependency(OpenSSL)`; the consumer still does not name OpenSSL.
 
-On Windows, keep `tbb12.dll` from `<prefix>/bin` on `PATH` or next to the executable. A default `TimeZoneContext` is UTC and does not need tzdata; `TimeZoneContext::Load` requires an IANA tzdata directory.
-
-A Release archive built with interprocedural optimization (MSVC `/GL`) needs LTCG at the final link. The `loglib_consumer` CTest passes `CMAKE_INTERPROCEDURAL_OPTIMIZATION` from the parent preset.
+On Windows, keep `tbb12.dll` from `<prefix>/bin` on `PATH` or next to the executable. A default `TimeZoneContext` is UTC and does not need tzdata; `TimeZoneContext::Load` requires an IANA tzdata directory. A Release archive built with interprocedural optimization (MSVC `/GL`) needs LTCG at the final link.
 
 ## Minimal usage
 
-[`test/consumer/src/main.cpp`](../test/consumer/src/main.cpp) is the smoke path. Typical composition:
+Typical composition:
 
 1. Construct a `TimeZoneContext` (default UTC, or `Load(tzdataPath[, zone])`).
 1. Ingest with `LogFactory::Create` / `ParseFile`.
@@ -51,4 +49,3 @@ Supported headers are `LOGLIB_PUBLIC_HEADERS` in [`library/CMakeLists.txt`](CMak
 - `LogFile` hides the mapping backend behind an incomplete type and an out-of-line destructor.
 - Configuration groups: `Column` / `ColumnType`, `Source` / `SourceLocator`, `Sort` / `SessionView`, `AnchorEntry`, `HighlightRule`. JSON remains flat on `LogConfiguration`.
 - Table collaborators: `EnumInference`, `ColumnTypeHealth`, and `internal::RefreshColumnKeyIds`. `LogTable` remains the row facade.
-- Package check: CTest `loglib_consumer` installs component `loglib` and builds `test/consumer` against that prefix.

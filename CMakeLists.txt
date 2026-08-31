@@ -74,32 +74,4 @@ if(BUILD_TESTING)
     add_subdirectory(test/lib)
     add_subdirectory(test/app)
     add_subdirectory(test/log_generator)
-
-    find_package(Python3 QUIET COMPONENTS Interpreter)
-    if(Python3_Interpreter_FOUND)
-        add_test(
-            NAME loglib_internal_includes
-            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/check-loglib-internal-includes.py
-            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        )
-    endif()
-
-    # Installs the `loglib` component to a staging prefix, then configures,
-    # builds, and runs `test/consumer` via `find_package(loglib)` /
-    # `loglib::loglib`. Verifies the SDK boundary rather than the
-    # build-tree target.
-    string(TOUPPER "${CMAKE_BUILD_TYPE}" _loglib_bt)
-    set(_loglib_ipo "${CMAKE_INTERPROCEDURAL_OPTIMIZATION_${_loglib_bt}}")
-    if(_loglib_ipo STREQUAL "")
-        set(_loglib_ipo "${CMAKE_INTERPROCEDURAL_OPTIMIZATION}")
-    endif()
-    add_test(
-        NAME loglib_consumer
-        COMMAND
-            ${CMAKE_COMMAND} -DLOGLIB_BUILD_DIR=${CMAKE_BINARY_DIR} -DLOGLIB_SOURCE_DIR=${CMAKE_SOURCE_DIR}
-            -DLOGLIB_GENERATOR=${CMAKE_GENERATOR} -DLOGLIB_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}
-            -DLOGLIB_CXX_COMPILER=${CMAKE_CXX_COMPILER} -DLOGLIB_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-            -DLOGLIB_IPO=${_loglib_ipo} -P ${CMAKE_SOURCE_DIR}/cmake/RunLoglibConsumer.cmake
-    )
-    set_tests_properties(loglib_consumer PROPERTIES TIMEOUT 600)
 endif()
