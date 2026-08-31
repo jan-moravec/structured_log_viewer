@@ -728,12 +728,12 @@ TEST_CASE(
 )
 {
     TimeStamp out{};
-    const auto january = std::chrono::sys_days{date::year{2026} / date::January / 15};
+    const auto january = date::sys_days{date::year{2026} / date::January / 15};
     REQUIRE(TryParseSyslogRfc3164Timestamp("Dec 31 23:59:59", out, january));
     const date::year_month_day ymdJan{date::floor<date::days>(out)};
     CHECK(static_cast<int>(ymdJan.year()) == 2025);
 
-    const auto december = std::chrono::sys_days{date::year{2026} / date::December / 15};
+    const auto december = date::sys_days{date::year{2026} / date::December / 15};
     REQUIRE(TryParseSyslogRfc3164Timestamp("Dec 31 23:59:59", out, december));
     const date::year_month_day ymdDec{date::floor<date::days>(out)};
     CHECK(static_cast<int>(ymdDec.year()) == 2026);
